@@ -43,8 +43,10 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
 # 768 is not a choice: R_B is committed at exactly one dimension, so a word table
 # of any other width has no role transform to apply.
 TEST_T5_DIM = ROLE_B_EMBEDDING_DIM
-# At least the total slot source rank (64 + 6 + 65), which model construction
-# refuses to go under: below it the first Linear cannot separate every label.
+# At least the total slot source rank (64 + 6 + 65 = 135), which model
+# construction refuses to go under: below it the first Linear cannot separate
+# every label. 136 is the smallest width at or above the rank that the test
+# models' attention can split evenly (num_heads=2).
 TEST_LATENT_DIM = 136
 
 

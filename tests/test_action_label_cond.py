@@ -217,7 +217,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
 
     def test_canonical_label_round_trips_through_the_parser(self):
         for label in ('walk, forward', 'run, forward, left, fast', 'attack, bite',
-                      'run, strafe', 'idle, attack', 'attack, idle',
+                      'idle, attack', 'attack, idle',
                       'walk, forward, weapon, 1hand', 'idle, rear, roar',
                       'run, turn, right, weapon, 1hand', 'turn, left, hover'):
             self.assertEqual(canonical_action_label(parse_action_label(label)), label)

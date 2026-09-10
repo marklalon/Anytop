@@ -35,7 +35,7 @@
 {"clip": "Bear_SneakL.npy", "action_group": "locomotion", "action_label": "walk, left, slow", "reviewed": true}
 {"clip": "Bear_Sprint.npy", "action_group": "locomotion", "action_label": "run, forward, fast", "reviewed": true}
 {"clip": "Bear_Stand.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
-{"clip": "Bear_StandAngryBreathing.npy", "action_group": "stationary", "action_label": "idle, strafe", "reviewed": true}
+{"clip": "Bear_StandAngryBreathing.npy", "action_group": "stationary", "action_label": "idle, taunt", "reviewed": true}
 {"clip": "Bear_StandBreathing.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Bear_StandEating.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "Bear_StandToHind.npy", "action_group": "transition", "action_label": "idle, rear", "reviewed": true}

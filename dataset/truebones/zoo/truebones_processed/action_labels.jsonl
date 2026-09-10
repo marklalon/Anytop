@@ -51,7 +51,7 @@
 {"clip": "Ant_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Bat_AttackBite.npy", "action_group": "stationary", "action_label": "attack", "reviewed": true}
 {"clip": "Bat_Float.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
-{"clip": "Bat_FlyGlide.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "reviewed": true}
+{"clip": "Bat_FlyGlide.npy", "action_group": "transition", "action_label": "fly, glide", "reviewed": true}
 {"clip": "Bat_FlyLoop.npy", "action_group": "locomotion", "action_label": "fly, forward", "reviewed": true}
 {"clip": "Bat_Fly.npy", "action_group": "locomotion", "action_label": "fly, forward", "reviewed": true}
 {"clip": "Bat_Kick.npy", "action_group": "stationary", "action_label": "attack, kick", "reviewed": true}
@@ -210,7 +210,7 @@
 {"clip": "Crab_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Crab_Eat.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "Crab_HitBack.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Crab_Strafe.npy", "action_group": "locomotion", "action_label": "walk, right, strafe", "reviewed": true}
+{"clip": "Crab_Strafe.npy", "action_group": "locomotion", "action_label": "walk, right", "reviewed": true}
 {"clip": "Crab_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Cricket_Attack1.npy", "action_group": "stationary", "action_label": "attack", "reviewed": true}
 {"clip": "Cricket_Attack2.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
@@ -279,8 +279,8 @@
 {"clip": "Dog-2_Slowtail.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Dog-2_Sniffing.npy", "action_group": "locomotion", "action_label": "walk, forward, sniff", "reviewed": true}
 {"clip": "Dog-2_SwimIdle.npy", "action_group": "locomotion", "action_label": "swim, forward", "reviewed": true}
-{"clip": "Dog-2_SwimTurn2.npy", "action_group": "locomotion", "action_label": "swim, turn, right", "reviewed": true}
-{"clip": "Dog-2_Swimturn.npy", "action_group": "locomotion", "action_label": "swim, turn, left", "reviewed": true}
+{"clip": "Dog-2_SwimTurn2.npy", "action_group": "locomotion", "action_label": "turn, right, swim", "reviewed": true}
+{"clip": "Dog-2_Swimturn.npy", "action_group": "locomotion", "action_label": "turn, left, swim", "reviewed": true}
 {"clip": "Dog-2_WalkLimp.npy", "action_group": "locomotion", "action_label": "walk, hurt, forward", "reviewed": true}
 {"clip": "Dog-2_WalkLoop.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Dog-2_WalkNormal.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
@@ -365,8 +365,8 @@
 {"clip": "FireAnt_AntHungry.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "FireAnt_AntIdle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "FireAnt_AntJump.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
-{"clip": "FireAnt_AntLeft.npy", "action_group": "locomotion", "action_label": "walk, left, strafe", "reviewed": true}
-{"clip": "FireAnt_AntRight.npy", "action_group": "locomotion", "action_label": "walk, right, strafe", "reviewed": true}
+{"clip": "FireAnt_AntLeft.npy", "action_group": "locomotion", "action_label": "walk, left", "reviewed": true}
+{"clip": "FireAnt_AntRight.npy", "action_group": "locomotion", "action_label": "walk, right", "reviewed": true}
 {"clip": "FireAnt_AntRipFlesh2.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "FireAnt_AntRipFlesh.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "FireAnt_AntRip.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
@@ -512,10 +512,10 @@
 {"clip": "Jaws_SharkBiteRight.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "Jaws_SharkDeadLoop.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Jaws_SharkDead.npy", "action_group": "stationary", "action_label": "dead", "reviewed": true}
-{"clip": "Jaws_SharkSwim180.npy", "action_group": "locomotion", "action_label": "swim, turn, flip", "reviewed": true}
+{"clip": "Jaws_SharkSwim180.npy", "action_group": "transition", "action_label": "turn, flip", "reviewed": true}
 {"clip": "Jaws_SharkSwimAt.npy", "action_group": "locomotion", "action_label": "swim, forward", "reviewed": true}
-{"clip": "Jaws_SharkSwimLeft.npy", "action_group": "locomotion", "action_label": "swim, turn, left", "reviewed": true}
-{"clip": "Jaws_SharkSwimRight.npy", "action_group": "locomotion", "action_label": "swim, turn, right", "reviewed": true}
+{"clip": "Jaws_SharkSwimLeft.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
+{"clip": "Jaws_SharkSwimRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "Jaws_SharkSwim.npy", "action_group": "locomotion", "action_label": "swim, forward", "reviewed": true}
 {"clip": "KingCobra_Attack2.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "KingCobra_Attack.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
@@ -659,7 +659,6 @@
 {"clip": "Pteranodon_Death.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Pteranodon_Flapergasted.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Pteranodon_FlyLoop.npy", "action_group": "locomotion", "action_label": "fly, forward", "reviewed": true}
-{"clip": "Pteranodon_GlideScream.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "reviewed": true}
 {"clip": "Pteranodon_Hit2.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Pteranodon_Hit.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Pteranodon_ScreamFly.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "reviewed": true}
@@ -714,7 +713,6 @@
 {"clip": "Raptor_Roar.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "Raptor_SlowWalk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Raptor_Yawn.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
-{"clip": "Rat_AlertRun.npy", "action_group": "transition", "action_label": "turn, flip", "reviewed": true}
 {"clip": "Rat_Clean.npy", "action_group": "stationary", "action_label": "idle, clean", "reviewed": true}
 {"clip": "Rat_Eat.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "Rat_Itch.npy", "action_group": "stationary", "action_label": "idle, scratch", "reviewed": true}
@@ -731,7 +729,7 @@
 {"clip": "Rhino_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Roach_Bristle.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
 {"clip": "Roach_Hop.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
-{"clip": "Roach_Left.npy", "action_group": "locomotion", "action_label": "walk, left, strafe", "reviewed": true}
+{"clip": "Roach_Left.npy", "action_group": "locomotion", "action_label": "walk, left", "reviewed": true}
 {"clip": "Roach_Move.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Roach_Scurry.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Roach_Shake.npy", "action_group": "stationary", "action_label": "idle, shake", "reviewed": true}
@@ -814,8 +812,8 @@
 {"clip": "Scorpion-2_StingKill.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
 {"clip": "Scorpion-2_StingYaYa.npy", "action_group": "stationary", "action_label": "attack, sting", "reviewed": true}
 {"clip": "Scorpion-2_StingYa.npy", "action_group": "stationary", "action_label": "idle, sting", "reviewed": true}
-{"clip": "Scorpion-2_StrafeLeft.npy", "action_group": "locomotion", "action_label": "walk, right, strafe", "reviewed": true}
-{"clip": "Scorpion-2_StrafeRight.npy", "action_group": "locomotion", "action_label": "walk, left, strafe", "reviewed": true}
+{"clip": "Scorpion-2_StrafeLeft.npy", "action_group": "locomotion", "action_label": "walk, right", "reviewed": true}
+{"clip": "Scorpion-2_StrafeRight.npy", "action_group": "locomotion", "action_label": "walk, left", "reviewed": true}
 {"clip": "Scorpion-2_WalkAndRise.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "Scorpion-2_WalkForward.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Scorpion-2_WildDeath.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
@@ -868,11 +866,11 @@
 {"clip": "Spider_Retreat.npy", "action_group": "locomotion", "action_label": "walk, backward, retreat", "reviewed": true}
 {"clip": "Spider_Riser.npy", "action_group": "transition", "action_label": "jump", "reviewed": true}
 {"clip": "Spider_Rising.npy", "action_group": "transition", "action_label": "spawn", "reviewed": true}
-{"clip": "Spider_Runleft.npy", "action_group": "locomotion", "action_label": "walk, left, strafe", "reviewed": true}
+{"clip": "Spider_Runleft.npy", "action_group": "locomotion", "action_label": "walk, left", "reviewed": true}
 {"clip": "Spider_Scary.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Spider_SlowIdle.npy", "action_group": "stationary", "action_label": "idle, sleep", "reviewed": true}
 {"clip": "Spider_Walker.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Spider_Walkleft.npy", "action_group": "locomotion", "action_label": "walk, left, strafe", "reviewed": true}
+{"clip": "Spider_Walkleft.npy", "action_group": "locomotion", "action_label": "walk, left", "reviewed": true}
 {"clip": "Spider_Walkloop.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Stego_Attack2.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
 {"clip": "Stego_Attack3.npy", "action_group": "stationary", "action_label": "attack, rear, swat", "reviewed": true}
@@ -922,8 +920,6 @@
 {"clip": "Trex_RunToStop.npy", "action_group": "transition", "action_label": "run, idle", "reviewed": true}
 {"clip": "Trex_SprintLoop.npy", "action_group": "locomotion", "action_label": "run, forward, fast", "reviewed": true}
 {"clip": "Trex_StepBack.npy", "action_group": "locomotion", "action_label": "walk, backward, retreat", "reviewed": true}
-{"clip": "Trex_Turn90Left.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
-{"clip": "Trex_Turn90Right.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "Trex_WalkBite.npy", "action_group": "locomotion", "action_label": "walk, attack, forward", "reviewed": true}
 {"clip": "Trex_WalkHeadLow.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Trex_WalkLoop.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}

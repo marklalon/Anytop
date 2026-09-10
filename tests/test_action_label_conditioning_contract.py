@@ -78,11 +78,11 @@ def test_slot_source_rank_covers_the_full_domain_and_projection_width():
     report = _slot_source_rank_report(table, payload, latent_dim=256)
     assert report["full_rank"]
     assert report["fits_projection"]
-    assert report["total_rank"] == 136
+    assert report["total_rank"] == 135
     assert {name: item["rank"] for name, item in report["slots"].items()} == {
         "head": 64,
         "direction": 6,
-        "modifier": 66,
+        "modifier": 65,
     }
     assert not _slot_source_rank_report(table, payload, latent_dim=134)[
         "fits_projection"

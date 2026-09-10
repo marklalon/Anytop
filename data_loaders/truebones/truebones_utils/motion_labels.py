@@ -60,7 +60,7 @@ ACTION_VOCAB: tuple[str, ...] = (
     "idle", "walk", "run", "fly", "swim", "crawl", "jump", "turn",
     "fall", "roll", "attack",
     # -- block B: how that mode is executed (gait, speed, wing state) --
-    "trot", "fast", "strafe", "glide", "slow", "retreat", "dive", "flopping",
+    "trot", "fast", "glide", "slow", "retreat", "dive", "flopping",
     # -- block C: secondary action layered on the mode (existing order kept) --
     "bite", "roar", "eat", "die", "hurt", "getup", "rest", "look",
     "shake", "throw", "taunt", "land", "takeoff", "sit", "sleep",
