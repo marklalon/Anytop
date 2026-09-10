@@ -508,8 +508,8 @@
 {"clip": "Jaguar_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Jaguar_Stancing.npy", "action_group": "stationary", "action_label": "idle, crouch", "reviewed": true}
 {"clip": "Jaguar_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Jaws_SharkBiteLeft.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
-{"clip": "Jaws_SharkBiteRight.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "Jaws_SharkBiteLeft.npy", "action_group": "locomotion", "action_label": "swim, jump, forward", "reviewed": true}
+{"clip": "Jaws_SharkBiteRight.npy", "action_group": "locomotion", "action_label": "swim, jump, forward", "reviewed": true}
 {"clip": "Jaws_SharkDeadLoop.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Jaws_SharkDead.npy", "action_group": "stationary", "action_label": "dead", "reviewed": true}
 {"clip": "Jaws_SharkSwim180.npy", "action_group": "transition", "action_label": "turn, flip", "reviewed": true}

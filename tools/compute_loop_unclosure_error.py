@@ -135,7 +135,6 @@ def write_html_report(
             gap_bg = "#d4edda" if r["loop_margin"] <= 0 else "#f8d7da"
             xz_closed = r.get("root_xz_is_closed", True)
             xz_bg = "#d4edda" if xz_closed else "#f8d7da"
-            xz_label = "Y" if xz_closed else "N"
             loop_flag = "F" if not r.get("runtime_is_loop", False) else "T"
             loop_bg = "#f8d7da" if not r.get("runtime_is_loop", False) else "#d4edda"
             rows.append(
@@ -144,8 +143,7 @@ def write_html_report(
                 f"<td><a href='{href}'>{name}</a></td>"
                 f"<td style='text-align:right'>{r['wrap_gap']:.6f}</td>"
                 f"<td style='text-align:right;background:{gap_bg}'>{r['loop_margin']:.6f}</td>"
-                f"<td style='text-align:right'>{r.get('root_xz_total_disp', 0):.6f}</td>"
-                f"<td style='text-align:center;background:{xz_bg}'>{xz_label}</td>"
+                f"<td style='text-align:right;background:{xz_bg}'>{r.get('root_xz_total_disp', 0):.6f}</td>"
                 f"<td style='text-align:right'>{r['n_frames']}</td>"
                 f"<td style='text-align:center;background:{loop_bg}'>{loop_flag}</td>"
                 f"</tr>"
@@ -154,6 +152,18 @@ def write_html_report(
 
     def _pct(values, p):
         return np.percentile(values, p)
+
+    def _stat(values, fn):
+        return f"{fn(values):.6f}" if values else "n/a"
+
+    wrap_min = _stat(all_wrap_gap, min)
+    wrap_p50 = _stat(all_wrap_gap, lambda v: _pct(v, 50))
+    wrap_p90 = _stat(all_wrap_gap, lambda v: _pct(v, 90))
+    wrap_p95 = _stat(all_wrap_gap, lambda v: _pct(v, 95))
+    wrap_p99 = _stat(all_wrap_gap, lambda v: _pct(v, 99))
+    wrap_max = _stat(all_wrap_gap, max)
+    xz_p50 = _stat(all_root_xz_disp, lambda v: _pct(v, 50))
+    xz_max = _stat(all_root_xz_disp, max)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -203,12 +213,12 @@ Object-type filter    : {args.object_type or '(none)'}
 <div class="stat-box">
   <h3>wrap_gap (max per-joint first-vs-last gap)</h3>
   <table>
-    <tr><td>min</td><td class="val">{min(all_wrap_gap):.6f}</td></tr>
-    <tr><td>p50</td><td class="val">{_pct(all_wrap_gap, 50):.6f}</td></tr>
-    <tr><td>p90</td><td class="val">{_pct(all_wrap_gap, 90):.6f}</td></tr>
-    <tr><td>p95</td><td class="val">{_pct(all_wrap_gap, 95):.6f}</td></tr>
-    <tr><td>p99</td><td class="val">{_pct(all_wrap_gap, 99):.6f}</td></tr>
-    <tr><td>max</td><td class="val">{max(all_wrap_gap):.6f}</td></tr>
+    <tr><td>min</td><td class="val">{wrap_min}</td></tr>
+    <tr><td>p50</td><td class="val">{wrap_p50}</td></tr>
+    <tr><td>p90</td><td class="val">{wrap_p90}</td></tr>
+    <tr><td>p95</td><td class="val">{wrap_p95}</td></tr>
+    <tr><td>p99</td><td class="val">{wrap_p99}</td></tr>
+    <tr><td>max</td><td class="val">{wrap_max}</td></tr>
   </table>
 </div>
 <div class="stat-box">
@@ -216,8 +226,8 @@ Object-type filter    : {args.object_type or '(none)'}
   <table>
     <tr><td>closed</td><td class="val">{root_xz_closed_count}</td></tr>
     <tr><td>not_closed</td><td class="val">{len(results) - root_xz_closed_count}</td></tr>
-    <tr><td>total_disp p50</td><td class="val">{_pct(all_root_xz_disp or [0], 50):.6f}</td></tr>
-    <tr><td>total_disp max</td><td class="val">{max(all_root_xz_disp or [0]):.6f}</td></tr>
+    <tr><td>total_disp p50</td><td class="val">{xz_p50}</td></tr>
+    <tr><td>total_disp max</td><td class="val">{xz_max}</td></tr>
   </table>
 </div>
 </div>
@@ -231,7 +241,6 @@ Object-type filter    : {args.object_type or '(none)'}
   <th>wrap_gap</th>
     <th>gap_margin</th>
     <th>xz_disp</th>
-    <th>xz_ok</th>
   <th>frames</th>
     <th>is_loop</th>
 </tr>

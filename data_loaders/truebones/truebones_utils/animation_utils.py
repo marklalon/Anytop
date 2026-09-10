@@ -97,10 +97,10 @@ ROOT_XZ_LOCOMOTION_LIMIT = 0.2
 #
 # A clip loops only when the endpoint gap fits inside that transition envelope
 # and the translation root's accumulated XZ displacement returns to the start.
-LOOP_DETECTION_GAP_RATIO = 2.2
-LOOP_DETECTION_STEP_MIN = 0.02
+LOOP_DETECTION_GAP_RATIO = 2.5
+LOOP_DETECTION_STEP_MIN = 0.03
 LOOP_DETECTION_STEP_MAX = 0.08
-LOOP_DETECTION_ROOT_XZ_TOLERANCE = 0.08
+LOOP_DETECTION_ROOT_XZ_TOLERANCE = 0.05
 
 
 ################## Joint Name Canonicalization #####################
