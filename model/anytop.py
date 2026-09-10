@@ -46,7 +46,7 @@ def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 
 class AnyTop(nn.Module):
     def __init__(self, max_joints, feature_len,
                  latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
-                 activation="gelu", t5_out_dim = 512, root_input_feats=13,
+                 activation="gelu", t5_out_dim = 512, root_input_feats=12,
                  **kargs):
         super().__init__()
 
@@ -187,7 +187,7 @@ class AnyTop(nn.Module):
             self.species_film = None
 
         # Output-coordinate-frame condition: the per-object_subset canonical
-        # (mean, std) 13-vectors the features are written in, projected and added
+        # (mean, std) 12-vectors the features are written in, projected and added
         # to the timestep token. These statistics define which of the seven affine
         # canonical spaces this sample lives in, and before this projection NOTHING
         # in the model read them -- the only trace was the object_subset word buried
@@ -197,7 +197,7 @@ class AnyTop(nn.Module):
         # not an offset.
         #
         # UNCONDITIONAL, on purpose -- there is no flag for it. Every cond.npy in
-        # the canonical_motion_v3 feature space carries these two vectors and the
+        # the canonical_motion_v4 feature space carries these two vectors and the
         # dataset refuses to load without them, so "off" would only ever mean
         # "blind to the output space", which is the defect this fixes. It is also
         # NOT CFG-droppable and not gated behind species conditioning: this is not
@@ -1116,7 +1116,7 @@ class InputProcess(nn.Module):
 
     def forward(self, x, rest_pose, joints_embedded_names, species_emb=None, joint_valid=None,
                 joint_struct=None):
-        # x.shape = [batch_size, joints, 13, frames]
+        # x.shape = [batch_size, joints, feature_len, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
         rest_pose_all_joints_except_root = self.tpos_joint_embedding(rest_pose[:, :, 1:])
         rest_pose_root_data = self.tpos_root_embedding(rest_pose[:, :, 0:1])

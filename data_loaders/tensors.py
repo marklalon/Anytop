@@ -4,6 +4,7 @@ import numpy as np
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     SLOT_PAD_ID,
 )
+from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from data_loaders.truebones.truebones_utils.motion_labels import ACTION_LABEL_MAX_WORDS
 
@@ -168,7 +169,7 @@ def truebones_collate(batch):
         })
 
     # Canonical standardization stats are a cross-species constant *per object_subset*
-    # (quadruped / winged / ... each get their own 13-vector), so a mixed-species
+    # (quadruped / winged / ... each get their own FEATS_LEN-vector), so a mixed-species
     # batch needs per-sample stats. Stack them in batch order into [B, F] so the
     # training-time aux-loss decode (canonical_to_physical_hml reads y) de-standardizes
     # each sample with its own object_subset's stats. Only stack when every item carries
@@ -310,7 +311,7 @@ def truebones_batch_collate(batch):
                 motion_name = extra
 
         item = {
-            'inp': motion.permute(1, 2, 0).float(), # [seqlen , J, 13] -> [J, 13,  seqlen]
+            'inp': motion.permute(1, 2, 0).float(), # [seqlen, J, F] -> [J, F, seqlen]
             'n_joints': n_joints,
             'lengths': b[1],
             'parents': b[2],
@@ -371,7 +372,7 @@ def truebones_batch_collate(batch):
                 np.asarray(extra_cond['canonical_feature_std'], dtype=np.float32).reshape(-1)
             )
         if extra_cond is not None:
-            item['feature_space'] = extra_cond.get('feature_space', 'canonical_motion_v3')
+            item['feature_space'] = extra_cond.get('feature_space', CANONICAL_FEATURE_SPACE)
         if motion_metadata is not None:
             for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
                 if key in motion_metadata:

@@ -10,6 +10,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata
+from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import build_species_file_tokens
 from data_loaders.truebones.truebones_utils import dataset_pipeline as dataset_pipeline_mod
@@ -25,7 +27,7 @@ def _make_cond_entry(object_type: str) -> dict[str, object]:
         "joints_names": ["Root", "Tail"],
         "parents": np.array([-1, 0], dtype=np.int64),
         "offsets": np.zeros((2, 3), dtype=np.float32),
-        "rest_pose": np.zeros((2, 13), dtype=np.float32),
+        "rest_pose": np.zeros((2, 12), dtype=np.float32),
     }
 
 
@@ -303,8 +305,8 @@ def test_regenerate_dataset_artifacts_rejects_inconsistent_translation_roots(mon
     motions_dir = dataset_dir / "motions"
     motions_dir.mkdir(parents=True)
 
-    np.save(motions_dir / "Cat_Run_001.npy", np.zeros((3, 3, 13), dtype=np.float32))
-    np.save(motions_dir / "Cat_Idle_002.npy", np.zeros((5, 3, 13), dtype=np.float32))
+    np.save(motions_dir / "Cat_Run_001.npy", np.zeros((3, 3, 12), dtype=np.float32))
+    np.save(motions_dir / "Cat_Idle_002.npy", np.zeros((5, 3, 12), dtype=np.float32))
     np.save(
         dataset_dir / "cond.npy",
         {
@@ -478,7 +480,7 @@ def test_incremental_prepare_scans_only_new_source_and_reuses_alignment(monkeypa
         lambda *_args, **_kwargs: (
             object_cond,
             tp,
-            np.zeros((1, 2, 13), dtype=np.float32),
+            np.zeros((1, 2, 12), dtype=np.float32),
             parents,
             {},
             1.0,
@@ -491,7 +493,7 @@ def test_incremental_prepare_scans_only_new_source_and_reuses_alignment(monkeypa
         dataset_pipeline_mod,
         'get_motion',
         lambda *_args, **_kwargs: (
-            np.zeros((1, 2, 13), dtype=np.float32),
+            np.zeros((1, 2, 12), dtype=np.float32),
             parents,
             2,
             None,
@@ -568,7 +570,7 @@ def test_incremental_prepare_rejects_new_source_root_mismatch(monkeypatch, tmp_p
         lambda *_args, **_kwargs: (
             {**_make_cond_entry('Cat'), 'canonical_bvh_joint_names': ['Root', 'Tail']},
             tp,
-            np.zeros((1, 2, 13), dtype=np.float32),
+            np.zeros((1, 2, 12), dtype=np.float32),
             parents,
             {},
             1.0,
@@ -635,7 +637,7 @@ def test_incremental_prepare_accepts_a_new_source_rooted_above_the_frozen_joint(
         dataset_pipeline_mod,
         '_build_rest_pose_cond',
         lambda *_args, **_kwargs: (
-            object_cond, tp, np.zeros((1, 3, 13), dtype=np.float32), parents,
+            object_cond, tp, np.zeros((1, 3, 12), dtype=np.float32), parents,
             {}, 1.0, {}, 3, None,
         ),
     )
@@ -643,7 +645,7 @@ def test_incremental_prepare_accepts_a_new_source_rooted_above_the_frozen_joint(
         dataset_pipeline_mod,
         'get_motion',
         lambda *_args, **_kwargs: (
-            np.zeros((1, 3, 13), dtype=np.float32), parents, 3, None, None,
+            np.zeros((1, 3, 12), dtype=np.float32), parents, 3, None, None,
             False, 1, None, False,
         ),
     )
@@ -679,7 +681,7 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
     motions_dir = dataset_dir / "motions"
     motions_dir.mkdir(parents=True)
 
-    np.save(motions_dir / "Cat_Run_001.npy", np.zeros((3, 3, 13), dtype=np.float32))
+    np.save(motions_dir / "Cat_Run_001.npy", np.zeros((3, 3, 12), dtype=np.float32))
     np.save(
         dataset_dir / "cond.npy",
         {
@@ -732,7 +734,7 @@ def test_regenerate_dataset_artifacts_backfills_missing_cond_root_from_unanimous
     motions_dir.mkdir(parents=True)
 
     for idx in range(4):
-        np.save(motions_dir / f"Bear_Run_{idx:03d}.npy", np.zeros((idx + 3, 3, 13), dtype=np.float32))
+        np.save(motions_dir / f"Bear_Run_{idx:03d}.npy", np.zeros((idx + 3, 3, FEATS_LEN), dtype=np.float32))
 
     np.save(
         dataset_dir / "cond.npy",
@@ -1050,7 +1052,7 @@ def test_mark_object_feature_spaces():
     regenerate_dataset_artifacts_module._mark_object_feature_spaces(rebuilt)
 
     for object_type in ('Cat', 'Dog'):
-        assert rebuilt[object_type]['feature_space'] == 'canonical_motion_v3'
+        assert rebuilt[object_type]['feature_space'] == CANONICAL_FEATURE_SPACE
         assert rebuilt[object_type]['physical_feature_space'] == 'hml_like_v_current'
         assert rebuilt[object_type]['rest_pos_ric_hml'].shape == (2, 3)
 
@@ -1165,8 +1167,8 @@ def test_write_object_outputs_rejects_clip_name_collision(tmp_path):
 
 def _cond_entry_with_stats(object_type, mean_fill, std_fill):
     entry = _make_cond_entry(object_type)
-    entry["canonical_feature_mean"] = np.full((13,), mean_fill, dtype=np.float32)
-    entry["canonical_feature_std"] = np.full((13,), std_fill, dtype=np.float32)
+    entry["canonical_feature_mean"] = np.full((FEATS_LEN,), mean_fill, dtype=np.float32)
+    entry["canonical_feature_std"] = np.full((FEATS_LEN,), std_fill, dtype=np.float32)
     return entry
 
 
@@ -1181,8 +1183,8 @@ def test_merge_inherits_canonical_stats_from_same_object_subset(tmp_path):
     )
 
     merged = _cond_by_species(dataset_dir)
-    np.testing.assert_allclose(merged["Dog"]["canonical_feature_mean"], np.full((13,), 0.5, dtype=np.float32))
-    np.testing.assert_allclose(merged["Dog"]["canonical_feature_std"], np.full((13,), 2.0, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dog"]["canonical_feature_mean"], np.full((FEATS_LEN,), 0.5, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dog"]["canonical_feature_std"], np.full((FEATS_LEN,), 2.0, dtype=np.float32))
 
 
 def test_merge_warns_and_borrows_when_no_same_object_subset_donor(tmp_path, capsys):
@@ -1203,8 +1205,8 @@ def test_merge_warns_and_borrows_when_no_same_object_subset_donor(tmp_path, caps
     warning = capsys.readouterr().out
     assert "winged" in warning and "Cat" in warning
     merged = _cond_by_species(dataset_dir)
-    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_mean"], np.full((13,), 0.5, dtype=np.float32))
-    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_std"], np.full((13,), 2.0, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_mean"], np.full((FEATS_LEN,), 0.5, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_std"], np.full((FEATS_LEN,), 2.0, dtype=np.float32))
 
 
 def test_merge_still_fast_fails_when_no_species_carries_stats(tmp_path):
@@ -1232,7 +1234,7 @@ def test_merge_update_preserves_species_own_prior_stats(tmp_path):
     )
 
     merged = _cond_by_species(dataset_dir)
-    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_mean"], np.full((13,), 0.3, dtype=np.float32))
-    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_std"], np.full((13,), 1.5, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_mean"], np.full((FEATS_LEN,), 0.3, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_std"], np.full((FEATS_LEN,), 1.5, dtype=np.float32))
 
 

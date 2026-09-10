@@ -62,7 +62,7 @@ def _model(bundle=None, latent_dim=TEST_LATENT_DIM, drop_prob=0.0,
     # chained onto the constructor here.
     model = AnyTop(
         max_joints=4,
-        feature_len=13,
+        feature_len=12,
         latent_dim=latent_dim,
         ff_size=32,
         num_layers=1,
@@ -214,7 +214,7 @@ def test_word_table_from_another_encoder_is_refused():
     bundle = make_test_bundle()
     with pytest.raises(ValueError, match="t5_out_dim"):
         AnyTop(
-            max_joints=4, feature_len=13, latent_dim=TEST_LATENT_DIM, ff_size=32,
+            max_joints=4, feature_len=12, latent_dim=TEST_LATENT_DIM, ff_size=32,
             num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
             t5_out_dim=TEST_T5_DIM // 2, action_label_cond=True,
             action_conditioning=bundle,

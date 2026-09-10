@@ -339,13 +339,15 @@ def _find_reference_bvh(reference_motion: str | None) -> Path | None:
 
 
 def _load_motion_for_scoring(path: Path) -> np.ndarray | None:
+    from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
+
     try:
         motion = np.load(path)
     except Exception as exc:
         print(f"    [WARN] failed to load {path.name}: {exc}")
         return None
-    if motion.ndim != 3 or motion.shape[-1] != 13:
-        print(f"    [WARN] expected (T,J,13), got {motion.shape} - skipping {path.name}")
+    if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN:
+        print(f"    [WARN] expected (T,J,{FEATS_LEN}), got {motion.shape} - skipping {path.name}")
         return None
     return motion.astype(np.float32)
 

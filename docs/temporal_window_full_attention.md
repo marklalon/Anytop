@@ -447,7 +447,7 @@ v3 侧无法回跑同样的探针 —— §3.2 的版本守卫按设计直接拒
 | §2.1 mask 统计 | 直接对 `create_temporal_mask_for_window(w, 60)` 取行/列；跳数用邻接矩阵幂（先把 token-0 hub 置零） |
 | §2.2 / §2.3 自相关 | 直接解析 `dataset/*/bvhs/*.bvh` 的 MOTION 块（4028 个文件，924 个 locomotion 名字，抽 400），按训练管线线性 resample 到 60 帧，逐通道归一化自相关后按方差加权平均 |
 
-**已知口径限制**：自相关是在 BVH 原始通道（euler 角 + root 位移）上算的，不是 13 维 HML 特征，
+**已知口径限制**：自相关是在 BVH 原始通道（euler 角 + root 位移）上算的，不是 HML 特征向量，
 方向可信，数值不能直接当作模型输入特征的相关系数。步时是 eager，未开 `--compile`；
 compile 只会让 launch-bound 更明显，不改变 §1 的结论。
 

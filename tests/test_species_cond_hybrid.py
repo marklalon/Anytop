@@ -46,7 +46,7 @@ class _ProbeHead(torch.nn.Module):
 def _make_model(species_cond=False, species_cfg_drop_prob=0.15, species_joint_cond=False):
     return AnyTop(
         max_joints=4,
-        feature_len=13,
+        feature_len=12,
         latent_dim=8,
         ff_size=32,
         num_layers=1,
@@ -63,8 +63,8 @@ def _make_model(species_cond=False, species_cfg_drop_prob=0.15, species_joint_co
 def _joint_cond_inputs(batch=1, joints=4, frames=3):
     """Shapes InputProcess is called with from AnyTop.forward (anytop.py:796)."""
     return (
-        torch.randn(batch, joints, 13, frames),
-        torch.randn(1, batch, joints, 13),
+        torch.randn(batch, joints, 12, frames),
+        torch.randn(1, batch, joints, 12),
         torch.randn(batch, joints, T5_DIM),
         torch.randn(batch, T5_DIM),
     )
@@ -78,15 +78,15 @@ def _joint_struct(batch=1, joints=4):
 def _make_y(species_emb=None, **extra):
     y = {
         'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-        'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
+        'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
         # The output coordinate frame is an unconditional model input: every
         # forward reads it, so a hand-built y has to carry it.
-        'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
-        'canonical_feature_std': torch.ones(13, dtype=torch.float32),
+        'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),
+        'canonical_feature_std': torch.ones(12, dtype=torch.float32),
     }
     if species_emb is not None:
         y['species_emb'] = species_emb
@@ -96,7 +96,7 @@ def _make_y(species_emb=None, **extra):
 
 class SpeciesHybridTest(unittest.TestCase):
     def test_disabled_by_default(self):
-        model = AnyTop(max_joints=4, feature_len=13, latent_dim=8, ff_size=32,
+        model = AnyTop(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
                        num_layers=1, num_heads=2, dropout=0.0, cross_limb=True)
         self.assertFalse(model.species_cond)
         self.assertIsNone(model.species_film)
@@ -205,7 +205,7 @@ class SpeciesHybridTest(unittest.TestCase):
         model = _make_model(species_joint_cond=True)
         model.eval()
         model.seqTransDecoder = _CaptureDecoder()
-        x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
+        x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         ts = torch.tensor([1, 2], dtype=torch.int64)
         with self.assertRaises(ValueError):
             model(x, ts, y=_make_y())  # no species_emb -> InputProcess raises
@@ -216,7 +216,7 @@ class SpeciesHybridTest(unittest.TestCase):
         model.eval()
         capture = _CaptureDecoder()
         model.seqTransDecoder = capture
-        x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
+        x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         ts = torch.tensor([1, 2], dtype=torch.int64)
         y = _make_y(species_emb=torch.randn(2, T5_DIM))
         out = model(x, ts, y=y)

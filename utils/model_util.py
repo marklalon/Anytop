@@ -159,9 +159,9 @@ def get_gmdm_args(args):
     njoints = 23
     nfeats = 1
     max_joints=143 #irrelevant
-    feature_len=13 #irrelevant
+    feature_len=12 #irrelevant
     cond_mode = 'object_type'
-    feature_len=13
+    feature_len=12
 
     return {'njoints': njoints, 'nfeats': nfeats, 't5_out_dim': t5_out_dim,
             'latent_dim': args.latent_dim, 'ff_size': getattr(args, 'ff_size', 1024), 'num_layers': args.layers, 'num_heads': 4,
@@ -188,7 +188,7 @@ def get_gmdm_args(args):
             # the checkpoint's own buffers are the word table.
             'action_conditioning': getattr(args, 'action_conditioning', None),
             'loop_cond_prob': getattr(args, 'loop_cond_prob', 1.0),
-            'root_input_feats': 13}
+            'root_input_feats': 12}
 
 def create_gaussian_diffusion(args):
     # default params

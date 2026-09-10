@@ -4,6 +4,7 @@ import sys
 
 import numpy as np
 import pytest
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -15,7 +16,6 @@ from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
-    FOOT_CONTACT_VEL_THRESH,
     ROOT_XZ_DRIFT_THRESHOLD,
     chain_xz_travel,
     find_translation_root,
@@ -71,7 +71,7 @@ def test_recover_animation_uses_effective_translation_root_feature_row():
     )
 
     frames = 4
-    features = np.zeros((frames, 3, 13), dtype=np.float32)
+    features = np.zeros((frames, 3, FEATS_LEN), dtype=np.float32)
     features[:, :, 3:9] = _identity_cont6d()
 
     trajectory_x = np.arange(frames, dtype=np.float32)
@@ -191,11 +191,9 @@ def test_get_motion_honors_fixed_species_translation_root():
     )
     features, _parents, _max_joints, _motion_anim, _export_anim, _is_loop, root, _root_xz, _stripped = get_motion(
         anim,
-        FOOT_CONTACT_VEL_THRESH,
         'Synthetic',
         len(parents),
         offsets,
-        [],
         tpos_rots,
         {},
         scale_factor=1.0,
@@ -314,7 +312,6 @@ def test_raw_tpose_animation_input_reapplies_tpose_normalization():
         tp.offsets,
         squared_positions_error,
         scale_factor=float(tp.scale_factor),
-        foot_indices=tp.foot_indices,
         orientation_quat=np.asarray(tp.orientation_quat, dtype=np.float64),
         animation_input_is_tpose_aligned=False,
     )
@@ -455,6 +452,11 @@ def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, m
     motion_path, motion_name = _find_motion_file(motion_dir, motion_pattern)
 
     raw = np.load(motion_path).astype(np.float32, copy=False)
+    if raw.shape[-1] != FEATS_LEN:
+        pytest.skip(
+            f"{motion_name} carries {raw.shape[-1]} channels, this code writes "
+            f"{FEATS_LEN}; re-run preprocessing"
+        )
     motion_metadata = _with_translation_root_index(
         _load_motion_metadata_entry(opt, motion_name),
         raw,
@@ -472,11 +474,9 @@ def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, m
     squared_positions_error: dict[str, float] = {}
     rebuilt, _parents, _max_joints, _feature_anim, _export_anim, _is_loop, _translation_root_index, _root_translation_xz, _root_xz_flattened = get_motion(
         anim,
-        FOOT_CONTACT_VEL_THRESH,
         object_type,
         len(cond['parents']),
         tp.offsets,
-        tp.foot_indices,
         tp.tpos_rots,
         squared_positions_error,
         scale_factor=float(cond['scale_factor']),

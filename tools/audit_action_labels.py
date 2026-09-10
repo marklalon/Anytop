@@ -153,9 +153,9 @@ DEFAULT_R1_EXEMPT_LABELS = ("die", "hurt", "getup")
 # append here for any case marked "无需修改".
 DEFAULT_IGNORE_PATH = ANYTOP_DIR / "dataset" / "review" / "action_label_audit_ignore.jsonl"
 
-# Channel offsets into a canonical_motion_v3 frame, per joint (n_feats == 13):
-# 0:3 position (rest-centered residual), 3:9 rotation 6d, 9:12 local velocity,
-# 12 foot contact. See data_loaders/truebones/truebones_utils/canonical_features.py
+# Channel offsets into a canonical_motion_v4 frame, per joint (n_feats == 12):
+# 0:3 position (rest-centered residual), 3:9 rotation 6d, 9:12 local velocity.
+# See data_loaders/truebones/truebones_utils/canonical_features.py
 # -- R1 reads the first and third, and main() checks the cond declares this space.
 POSITION_CHANNELS = (0, 3)
 VELOCITY_CHANNELS = (9, 12)
@@ -408,7 +408,7 @@ def collect_clips(cond_dict, sources, action_group=None, verbose=False,
 def load_trajectory(motion_path, n_joints, frames):
     """One clip resampled to *frames*, as a ``(position, velocity)`` pair.
 
-    Both blocks are needed. In ``canonical_motion_v3`` the position channel is a
+    Both blocks are needed. In ``canonical_motion_v4`` the position channel is a
     rest-centered residual -- the root joint's is constant to the last digit --
     so ALL of the travel lives in the velocity channels: a walk and an idle of
     one species differ by 40x there and barely at all in position. A metric

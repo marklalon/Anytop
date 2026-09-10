@@ -3,7 +3,7 @@ Feature-space cross-skeleton motion retargeting.
 
 Retargets an animation (an AnyTop ``.npy`` feature file, or a raw
 ``.glb`` / ``.gltf`` / ``.fbx``) onto a target skeleton and writes the
-target's ``(F, J, 13)`` motion features plus an inspection ``.bvh``.
+target's ``(F, J, 12)`` motion features plus an inspection ``.bvh``.
 
 * ``.npy`` sources: the source object_type is inferred from the filename
   and must be a known species; the source's cond entry is read from the

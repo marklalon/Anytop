@@ -8,7 +8,8 @@
 
 ## 1. 特征布局：root XZ 只有一个载体
 
-每关节 13 维：`[0:3]` RIC 位置、`[3:9]` 6D 旋转、`[9:12]` 局部速度、`[12]` 接触。
+每关节 12 维：`[0:3]` RIC 位置、`[3:9]` 6D 旋转、`[9:12]` 局部速度。
+（v3 时代的 `[12]` 逐帧二值 contact 通道已在 `canonical_motion_v4` 中移除，见 §2.1。）
 `get_rifke` 把所有关节（含 root 自己）减去 translation root 的 XZ，所以对 root `R`：
 
 - `ch0 / ch2`（RIC XZ）**结构性恒为 0**，不携带信息；
@@ -90,9 +91,11 @@ tile 接缝天然连续。
 这个常量精确抵消。关键在于**帧只由朝向决定，从不读路径**：常量偏移让首末两端同幅平移，
 斜坡随之整体平移同一个常量，所以管线与校验器对同一条 clip 读出同一个 drift。
 
-**foot contact 在 root XZ 编辑之前读取**（`get_contact_state` 读变换前的
-`positions_global(new_anim)`）。扁平化等于给每个关节加上步速，踩实的脚随之动起来 ——
-在变换后算接触会静默丢掉整个支撑相。终端行仍取变换后的位置（描述平铺接缝）。
+**foot contact 通道已在 `canonical_motion_v4` 中整体移除**（v3 的 index 12）。它在 v3 里是
+在 root XZ 编辑之前读取的（`get_contact_state` 读变换前的 `positions_global(new_anim)`）：
+扁平化等于给每个关节加上步速，踩实的脚随之动起来 —— 在变换后算接触会静默丢掉整个支撑相。
+现在特征向量只剩 12 维（pos 0:3 / rot 3:9 / vel 9:12）。`cond` 里的 `contact_joints` 是
+**关节语义标注**，仍供结构通道与落地烘焙使用，但它与逐帧二值通道无关。
 
 ### 2.2 两道 extent 界限
 
@@ -298,7 +301,7 @@ metadata 里 `root_xz_flattened` 是纯人读的溯源字段，不进模型。
 |---|---|
 | [animation_utils.py](../data_loaders/truebones/truebones_utils/animation_utils.py) | 全部 root XZ 算子：`flatten_root_xz_drift` / `_detrend_frame`、`scale_root_xz_extent`、`soft_clamp_*`、`select_transport_carrier`、`set_translation_root_xz`、`promote_translation_root_to_hierarchy_root` |
 | [dataset_pipeline.py](../data_loaders/truebones/truebones_utils/dataset_pipeline.py) | 两遍收敛、carrier 物种根、locomotion 门控、`root_promote_depth` 持久化 |
-| [features.py](../data_loaders/truebones/truebones_utils/features.py) | `extract_motion_features_from_aligned_anims(flatten_root_travel=, clamp_root_xz_extent=)`；contact 在变换前读取 |
+| [features.py](../data_loaders/truebones/truebones_utils/features.py) | `extract_motion_features_from_aligned_anims(flatten_root_travel=, clamp_root_xz_extent=)` |
 | [root_collapse.py](../motion_lib/root_collapse.py) | `promote_root_once`（旋转/offset/orient 复合） |
 | [validate_anytop_dataset.py](../utils/validate_anytop_dataset.py) | 三条不变量 |
 | [generate.py](../sample/generate.py) | 无条件 `_zero_root_ric_xz` |

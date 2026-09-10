@@ -18,6 +18,7 @@ from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanT
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from model.motion_transformer import circular_phase_embedding  # noqa: E402
 from utils.model_util import create_gaussian_diffusion  # noqa: E402
@@ -41,7 +42,7 @@ def _make_batch_item(
 ):
     n_frames = 5
     n_joints = 2
-    n_feats = 13
+    n_feats = FEATS_LEN
     max_joints = 3
     motion = np.zeros((n_frames, n_joints, n_feats), dtype=np.float32)
     tpose = np.zeros((n_joints, n_feats), dtype=np.float32)
@@ -141,7 +142,7 @@ class NativeLoopTests(unittest.TestCase):
     def test_anytop_coerces_default_playspeed_to_one(self):
         model = AnyTop(
             max_joints=4,
-            feature_len=13,
+            feature_len=12,
             latent_dim=8,
             ff_size=32,
             num_layers=1,
@@ -156,7 +157,7 @@ class NativeLoopTests(unittest.TestCase):
 
     def test_velocity_consistency_scales_physical_velocity_by_playspeed(self):
         diffusion = self._make_diffusion()
-        model_output = torch.zeros(1, 1, 13, 7, dtype=torch.float32)
+        model_output = torch.zeros(1, 1, 12, 7, dtype=torch.float32)
         model_output[0, 0, 0, :] = torch.linspace(0.0, 3.0, steps=7)
         model_output[0, 0, 9, :] = 1.0
         spat_mask = torch.ones(1, 1, 1, 1, dtype=torch.float32)
@@ -172,7 +173,7 @@ class NativeLoopTests(unittest.TestCase):
 
     def test_loop_wrap_loss_skips_non_loop_samples(self):
         diffusion = self._make_diffusion()
-        model_output = torch.zeros(2, 3, 13, 6, dtype=torch.float32)
+        model_output = torch.zeros(2, 3, 12, 6, dtype=torch.float32)
         model_output[:, :, 3, :] = 1.0
         model_output[:, :, 7, :] = 1.0
         model_output[1, :, 0:3, -2:] = 100.0
@@ -192,7 +193,7 @@ class NativeLoopTests(unittest.TestCase):
 
     def test_loop_wrap_components_use_the_actual_seam(self):
         diffusion = self._make_diffusion()
-        model_output = torch.zeros(1, 2, 13, 6, dtype=torch.float32)
+        model_output = torch.zeros(1, 2, 12, 6, dtype=torch.float32)
         model_output[:, :, 3, :] = 1.0
         model_output[:, :, 7, :] = 1.0
 
@@ -200,8 +201,6 @@ class NativeLoopTests(unittest.TestCase):
         model_output[:, :, 0:3, 3:5] = -10.0
         model_output[:, :, 9:12, 0] = 5.0
         model_output[:, :, 9:12, -1] = 0.0
-        model_output[:, :, 12:13, 0:2] = 1.0
-        model_output[:, :, 12:13, 4:6] = 0.0
 
         model_output[:, :, 3:9, 1] = torch.tensor([0.0, 1.0, 0.0, -1.0, 0.0, 0.0])
         model_output[:, :, 3:9, 4] = torch.tensor([0.0, -1.0, 0.0, 1.0, 0.0, 0.0])
@@ -225,7 +224,7 @@ class NativeLoopTests(unittest.TestCase):
 
     def test_loop_wrap_terminal_velocity_uses_physical_step_scale(self):
         diffusion = self._make_diffusion()
-        model_output = torch.zeros(1, 1, 13, 7, dtype=torch.float32)
+        model_output = torch.zeros(1, 1, 12, 7, dtype=torch.float32)
         model_output[:, :, 3, :] = 1.0
         model_output[:, :, 7, :] = 1.0
         model_output[0, 0, 0, -1] = -0.5
@@ -259,7 +258,7 @@ class NativeLoopTests(unittest.TestCase):
     def test_anytop_forwards_loop_phase_metadata(self):
         model = AnyTop(
             max_joints=4,
-            feature_len=13,
+            feature_len=12,
             latent_dim=8,
             ff_size=32,
             num_layers=1,
@@ -271,16 +270,16 @@ class NativeLoopTests(unittest.TestCase):
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder
 
-        x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
+        x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         y = {
             'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-            'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
+            'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
             'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             # Unconditional model input -- every forward reads the frame.
-            'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
-            'canonical_feature_std': torch.ones(13, dtype=torch.float32),
+            'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),
+            'canonical_feature_std': torch.ones(12, dtype=torch.float32),
             'is_loop': torch.tensor([True, False]),
             'lengths': torch.tensor([3, 3], dtype=torch.int64),
             'loop_phase_lengths': torch.tensor([2.0, 3.0], dtype=torch.float32),
@@ -295,7 +294,7 @@ class NativeLoopTests(unittest.TestCase):
     def test_anytop_loop_phase_requires_full_cycle_when_available(self):
         model = AnyTop(
             max_joints=4,
-            feature_len=13,
+            feature_len=12,
             latent_dim=8,
             ff_size=32,
             num_layers=1,
@@ -306,16 +305,16 @@ class NativeLoopTests(unittest.TestCase):
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder
 
-        x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
+        x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         y = {
             'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-            'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
+            'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
             'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             # Unconditional model input -- every forward reads the frame.
-            'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
-            'canonical_feature_std': torch.ones(13, dtype=torch.float32),
+            'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),
+            'canonical_feature_std': torch.ones(12, dtype=torch.float32),
             'is_loop': torch.tensor([True, True]),
             'loop_full_cycle': torch.tensor([True, False]),
             'lengths': torch.tensor([3, 3], dtype=torch.int64),

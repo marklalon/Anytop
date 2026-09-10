@@ -160,15 +160,14 @@ def _build_truebones(**kwargs) -> Truebones:
         return Truebones(**kwargs)
 
 
-def test_speed_resample_preserves_velocity_and_keeps_contact_binary() -> None:
-    source = np.zeros((4, 2, 13), dtype=np.float32)
+def test_speed_resample_preserves_velocity() -> None:
+    source = np.zeros((4, 2, 12), dtype=np.float32)
     source[:, :, 0] = np.array([0.0, 1.0, 3.0, 6.0], dtype=np.float32)[:, None]
     source[:, :, 1] = np.array([0.0, 0.5, 1.0, 2.0], dtype=np.float32)[:, None]
     source[:, :, 2] = np.array([0.0, -1.0, -1.5, -2.0], dtype=np.float32)[:, None]
     source[:, :, 9] = np.array([0.0, 2.0, 4.0, 8.0], dtype=np.float32)[:, None]
     source[:, :, 10] = 3.0
     source[:, :, 11] = 0.0
-    source[:, :, 12] = np.array([0.0, 1.0, 0.0, 1.0], dtype=np.float32)[:, None]
 
     resampled = resample_motion_features(source, 7)
 
@@ -176,11 +175,10 @@ def test_speed_resample_preserves_velocity_and_keeps_contact_binary() -> None:
 
     assert_close("resampled velocity", resampled[:, :, 9:12], expected_vel)
     assert_close("zero velocity channel", resampled[:, :, 11], np.zeros_like(resampled[:, :, 11]))
-    assert set(np.unique(resampled[:, :, 12]).tolist()).issubset({0.0, 1.0})
 
 
 def test_loop_speed_resample_rebuilds_terminal_velocity_from_wrap_delta() -> None:
-    source = np.zeros((4, 1, 13), dtype=np.float32)
+    source = np.zeros((4, 1, 12), dtype=np.float32)
     source[:, 0, 0:3] = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 1.0, 0.0], [4.0, 1.0, 1.0]],
         dtype=np.float32,

@@ -10,28 +10,28 @@
 | 注意力头数 (num_heads) | 4 |
 | 文本编码 | t5-base (t5_out_dim=768) |
 | 关节数 (njoints) | 143 (max_joints) |
-| 特征数 (nfeats) | 13 |
+| 特征数 (nfeats) | 12 (FEATS_LEN) |
 
 ---
 
 ## 网络结构图
 
 ```
-输入: [Batch, 143关节, 13特征, Frames] + Timestep: [Batch]
+输入: [Batch, 143关节, 12特征, Frames] + Timestep: [Batch]
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    InputProcess                              │
-│                    参数量: ~107K                             │
+│                    参数量: ~123K                             │
 │                                                             │
 │  ┌─────────────────────┐  ┌─────────────────────────────┐  │
 │  │ T-pose 位置编码      │  │ 当前动作编码                 │  │
 │  │ root_embedding       │  │ root_embedding              │  │
-│  │ (13→128)             │  │ (13→128)                    │  │
+│  │ (12→128)             │  │ (12→128)                    │  │
 │  │ tpos_root_embedding  │  │ tpos_joint_embedding        │  │
-│  │ (13→128)             │  │ joint_embedding             │  │
-│  │ tpos_joint_embedding │  │ (13→128)                    │  │
-│  │ (13→128)             │  └─────────────────────────────┘  │
+│  │ (12→128)             │  │ joint_embedding             │  │
+│  │ tpos_joint_embedding │  │ (12→128)                    │  │
+│  │ (12→128)             │  └─────────────────────────────┘  │
 │  └─────────────────────┘                                   │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐  │
@@ -113,34 +113,38 @@
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    OutputProcess                             │
-│                    参数量: ~3.3K                             │
+│                    参数量: ~3.1K                             │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │ root_dembedding: 128 → 13 (根关节) 1,677 params      │  │
+│  │ root_dembedding: 128 → 12 (根关节) 1,548 params      │  │
 │  └──────────────────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │ joint_dembedding: 128 → 13 (其他关节) 1,677 params   │  │
+│  │ joint_dembedding: 128 → 12 (其他关节) 1,548 params   │  │
 │  └──────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
-输出: [Batch, 143关节, 13特征, Frames] (去噪后的动作)
+输出: [Batch, 143关节, 12特征, Frames] (去噪后的动作)
 ```
 
 ---
 
 ## 参数量统计表格
 
-### InputProcess (~107K)
+### InputProcess (~123K)
 
 | 子组件 | 计算方式 | 参数量 |
 |--------|---------|--------|
-| root_embedding | Linear(13→128) | 1,792 |
-| tpos_root_embedding | Linear(13→128) | 1,792 |
-| joint_embedding | Linear(13→128) | 1,792 |
-| tpos_joint_embedding | Linear(13→128) | 1,792 |
+| root_embedding | Linear(12→128) | 1,664 |
+| tpos_root_embedding | Linear(12→128) | 1,664 |
+| joint_embedding | Linear(12→128) | 1,664 |
+| tpos_joint_embedding | Linear(12→128) | 1,664 |
 | text_embedding (T5) | Linear(768→128) | 98,432 |
-| **小计** | | **107,200** |
+| **小计** | | **123,392** |
+
+> 注：本表只列与特征维直接相关的层。InputProcess 现另含结构通道投影
+> （`struct_embedding`）、输出坐标系条件投影（`canonical_frame_projection`）等
+> 后续加入的子模块，故小计大于上表各行之和。
 
 ### GraphMotionDecoder (4层) - 总 ~1.85M
 
@@ -164,22 +168,22 @@
 | **Topology/Edge嵌入 (4层共享)** | 4×Embedding(6,128) | 3,072 |
 | **GraphMotionDecoder总计** | | **1,851,440** |
 
-### OutputProcess - 3,354
+### OutputProcess - 3,096
 
 | 子组件 | 计算方式 | 参数量 |
 |--------|---------|--------|
-| root_dembedding | Linear(128→13) | 1,677 |
-| joint_dembedding | Linear(128→13) | 1,677 |
-| **小计** | | **3,354** |
+| root_dembedding | Linear(128→12) | 1,548 |
+| joint_dembedding | Linear(128→12) | 1,548 |
+| **小计** | | **3,096** |
 
 ### 总参数量
 
 | 组件 | 参数量 |
 |------|--------|
-| InputProcess | 107,200 |
+| InputProcess | 123,392 |
 | GraphMotionDecoder (4层 + 共享嵌入) | 1,851,440 |
-| OutputProcess | 3,354 |
-| **总计 (不含ReferencePriorEncoder)** | **~1,961,994 (~2M)** |
+| OutputProcess | 3,096 |
+| **总计 (不含ReferencePriorEncoder)** | **~1,977,928 (~2M)** |
 
 ---
 
@@ -229,18 +233,18 @@ InputProcess → GraphMotionDecoder ─────────┐    OutputProc
 
 ---
 
-### 1. InputProcess (~107K) - 输入编码
+### 1. InputProcess (~123K) - 输入编码
 
-**输入形状**: [Batch, 143关节, 13特征, Frames]
+**输入形状**: [Batch, 143关节, 12特征, Frames]
 
 **处理流程**:
 ```
 ├─ T-pose 位置编码 (T-pose 参考帧)
-│  ├─ root_embedding: 13 → 128
-│  └─ tpos_joint_embedding: 13 → 128
+│  ├─ root_embedding: 12 → 128
+│  └─ tpos_joint_embedding: 12 → 128
 ├─ 当前动作编码 (Current motion)
-│  ├─ root_embedding: 13 → 128
-│  └─ joint_embedding: 13 → 128
+│  ├─ root_embedding: 12 → 128
+│  └─ joint_embedding: 12 → 128
 └─ T5文本编码 (骨骼名称)
    └─ text_embedding: 768 → 128 (来自T5-base)
 ```
@@ -419,14 +423,14 @@ Stage2中启用:
 - 在forward()中，这4张表被传给每一层的forward()调用
 - Layer1-4都使用相同的嵌入表，不会重复创建参数
 
-### 4. OutputProcess (3.3K) - 输出解码
+### 4. OutputProcess (3.1K) - 输出解码
 
 ```
 将隐空间映射回动作特征:
-├─ root_dembedding: 128 → 13 (根关节)
-└─ joint_dembedding: 128 → 13 (其他关节)
+├─ root_dembedding: 128 → 12 (根关节)
+└─ joint_dembedding: 128 → 12 (其他关节)
 
-输出形状: [Batch, 143关节, 13特征, Frames]
+输出形状: [Batch, 143关节, 12特征, Frames]
 (与输入相同)
 ```
 
@@ -436,11 +440,11 @@ Stage2中启用:
 
 ```
 Stage1 (train_tiny 配置):
-├─ InputProcess:                     107,200
+├─ InputProcess:                     123,392
 ├─ GraphMotionDecoder (4层):       1,848,368
 │  └─ 包含Topology/Edge嵌入 (4张表,共享):    3,072
-├─ OutputProcess:                     3,354
-├─ Total:                      ~1,961,994 (~2M parameters)
+├─ OutputProcess:                     3,096
+├─ Total:                      ~1,977,928 (~2M parameters)
 
 详细参数分布:
 ├─ 4层×(线性投影 + LayerNorm + Attention):  1,848,368
@@ -448,8 +452,8 @@ Stage1 (train_tiny 配置):
 │  ├─ Temporal Attention (4层): 4×66,048 = 264,192
 │  ├─ FFN (4层): 4×263,168 = 1,052,672
 │  └─ LayerNorm等其他: 剩余
-├─ Topology/Edge Embeddings (共享，不重复): 3,072
-└─ 文本编码+输入输出: 110,554
+├─ Topology/Edge嵌入 (共享，不重复): 3,072
+└─ 文本编码+输入输出: 126,488
 
 对比其他模型:
 ├─ BERT-base: 110M (百倍大)
@@ -481,7 +485,7 @@ Stage1 (train_tiny 配置):
 [padding to max_joints=143]
     ↓
 InputProcess: 动作编码 + 位置编码 + 语义编码
-             [Batch, 143, 13, Frames]
+             [Batch, 143, FEATS_LEN, Frames]
     ↓
 GraphMotionDecoder (4层, 内含Topology/Edge嵌入表):
   ├─ Layer1:
@@ -497,7 +501,7 @@ GraphMotionDecoder (4层, 内含Topology/Edge嵌入表):
      └─ edge_query/key_emb: 关系类型投影 (4×768参数)
     ↓
 OutputProcess: 解码回动作空间
-             [Batch, 143, 13, Frames]
+             [Batch, 143, FEATS_LEN, Frames]
     ↓
 输出: 去噪后的动作
 ```

@@ -18,9 +18,7 @@ import torch
 from data_loaders.truebones.truebones_utils.param_utils import (
     DROP_PROP_SOCKET_JOINTS,
     DROP_END_SITE_JOINTS,
-    FOOT_CONTACT_HEIGHT_THRESH,
     MAX_JOINTS,
-    FOOT_CONTACT_VEL_THRESH,
 )
 from utils.rotation_conversions import rotation_6d_to_matrix_np
 from .physics_joint_annotation import (
@@ -65,59 +63,7 @@ from .animation_utils import (
 )
 
 
-################## Contact & Feature Building #####################
-
-"""Compute framewise binary contact states for the provided contact-capable joints."""
-def get_contact_state(positions, contact_joint_indices, vel_thresh):
-    frames_num, joints_num = positions.shape[:2]
-    contact_joint_indices = np.asarray(contact_joint_indices, dtype=np.int64)
-    if contact_joint_indices.size == 0:
-        return np.zeros((frames_num - 1, joints_num))
-
-    foot_vel_x = (positions[1:, contact_joint_indices, 0] - positions[:-1, contact_joint_indices, 0]) ** 2
-    foot_vel_y = (positions[1:, contact_joint_indices, 1] - positions[:-1, contact_joint_indices, 1]) ** 2
-    foot_vel_z = (positions[1:, contact_joint_indices, 2] - positions[:-1, contact_joint_indices, 2]) ** 2
-    total_vel = foot_vel_x + foot_vel_y + foot_vel_z
-    foot_floor = np.percentile(positions[:, contact_joint_indices, 1], 5.0, axis=0, keepdims=True)
-    relative_height = positions[1:, contact_joint_indices, 1] - foot_floor
-    foot_contact_vel_map = np.where(
-        np.logical_and(total_vel <= vel_thresh, np.abs(relative_height) <= FOOT_CONTACT_HEIGHT_THRESH),
-        1,
-        0,
-    )
-    foot_cont = np.zeros((frames_num-1, joints_num))
-    foot_cont[:, contact_joint_indices] = foot_contact_vel_map.astype(int)
-
-    return foot_cont
-
-
-def get_terminal_contact_state(positions, contact_joint_indices, vel_thresh, is_loop):
-    """Compute the terminal-frame contact row for feature export.
-
-    For looping clips we evaluate the wrap-around transition from the last frame
-    back to the first frame. For non-looping clips we emit zeros, matching the
-    user's requested terminal-velocity semantics.
-    """
-    joints_num = positions.shape[1]
-    terminal_contact = np.zeros((joints_num,), dtype=np.float32)
-    contact_joint_indices = np.asarray(contact_joint_indices, dtype=np.int64)
-    if not is_loop or positions.shape[0] < 2 or contact_joint_indices.size == 0:
-        return terminal_contact
-
-    foot_delta = positions[0, contact_joint_indices] - positions[-1, contact_joint_indices]
-    total_vel = np.sum(foot_delta ** 2, axis=-1)
-    foot_floor = np.percentile(positions[:, contact_joint_indices, 1], 5.0, axis=0)
-    relative_height = positions[0, contact_joint_indices, 1] - foot_floor
-    terminal_contact[contact_joint_indices] = np.where(
-        np.logical_and(total_vel <= vel_thresh, np.abs(relative_height) <= FOOT_CONTACT_HEIGHT_THRESH),
-        1.0,
-        0.0,
-    )
-    return terminal_contact
-
-
-def get_foot_contact(positions, foot_joints_indices, vel_thresh):
-    return get_contact_state(positions, foot_joints_indices, vel_thresh)
+################## Feature Building #####################
 
 
 """ get 6d rotations continuous representation"""
@@ -157,28 +103,23 @@ def get_rifke(global_positions, root_rot, translation_root_index=0):
     return positions
 
 
-def get_motion_features(ric_positions, rotations, foot_contact, velocity, terminal_velocity, terminal_contact, max_joints):
+def get_motion_features(ric_positions, rotations, velocity, terminal_velocity, max_joints):
     # F = Frames# , J = joints# 
     # parents (J,1)
     # positions (F, J, 3)
     # rotations (F, J, 6)
-    # foot_contact (F - 1, J, 1) + one terminal row
     # velocity (F - 1, J, 3) + one terminal row
     # offsets (J, 3)
     
-    # feature len = 13 (pos, rot, vel, foot)
+    # feature len = 12 (pos, rot, vel)
 
-    frames, joints = ric_positions.shape[0:2]
+    joints = ric_positions.shape[1]
     if joints > max_joints:
         max_joints = joints
     pos = ric_positions  ## (Frames, joints, 3)
     rot = rotations ## (Frames, joints, 6)
     vel = np.concatenate([velocity, terminal_velocity[None, ...]], axis=0) ## (Frames, joints, 3)
-    foot = np.concatenate([
-        foot_contact.reshape(frames - 1, joints, 1),
-        terminal_contact.reshape(1, joints, 1),
-    ], axis=0) ## (Frames, joints, 1)
-    features= np.concatenate([pos, rot, vel, foot], axis=-1) 
+    features= np.concatenate([pos, rot, vel], axis=-1) 
     return features, max_joints
 
 
@@ -701,10 +642,8 @@ class TPoseFeatures:
 def extract_motion_features_from_aligned_anims(
     new_anim,
     export_anim,
-    foot_contact_vel_thresh,
     object_type,
     max_joints,
-    foot_indices,
     orientation_quat,
     translation_root_index,
     *,
@@ -720,16 +659,8 @@ def extract_motion_features_from_aligned_anims(
     new_anim = collapse_translation_root_chain(new_anim, feature_translation_root_index)
     export_anim = collapse_translation_root_chain(export_anim, feature_translation_root_index)
 
-    # Foot contact is read off the motion AS AUTHORED, before any root XZ edit.
-    # Re-seating a travelling clip in place subtracts the gait speed from every
-    # joint, so a foot that was planted now moves at that speed: the median clip
-    # this pipeline used to zero travelled 1.44 over 25 frames, i.e. 0.058/frame
-    # against the 0.0447/frame the contact threshold allows, and its whole stance
-    # phase silently lost its label. Measured on the shipped datasets, within a
-    # species, the clips that were zeroed carried 0.70 mean per-joint contact
-    # against 0.86 for the ones left alone (truebones: 0.44 vs 0.78; KI_Soldier
-    # 0.17 vs 0.78, Dog 0.08 vs 0.55). HumanML3D reads contacts off the global
-    # positions ahead of its own de-rooting for exactly this reason.
+    # The root trajectory the edits below measure and rewrite is the one the
+    # source was AUTHORED with, so it is read once here, ahead of any of them.
     source_global_positions = positions_global(new_anim)
 
     # The root XZ trajectory is decided here in two steps and applied once, so
@@ -808,7 +739,6 @@ def extract_motion_features_from_aligned_anims(
         orientation_quat,
         translation_root_index=feature_translation_root_index,
     )
-    foot_contact = get_contact_state(source_global_positions, foot_indices, foot_contact_vel_thresh)
     positions = get_rifke(global_positions, r_rot, translation_root_index=feature_translation_root_index)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
     is_loop = detect_motion_loop(
@@ -818,31 +748,18 @@ def extract_motion_features_from_aligned_anims(
     )
     prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
     terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)
-    # The terminal row describes the wrap transition, which only exists in the
-    # flattened representation the features carry -- a travelling gait's wrap
-    # would otherwise read as one whole stride of displacement and never be a
-    # contact. It sits next to the terminal VELOCITY row, computed from the same
-    # positions, and for a clip that was left alone the two sources are identical.
-    terminal_contact = get_terminal_contact_state(
-        global_positions,
-        foot_indices,
-        foot_contact_vel_thresh,
-        is_loop,
-    )
     features, max_joints = get_motion_features(
         positions,
         cont_6d_params,
-        foot_contact,
         local_vel,
         terminal_local_vel,
-        terminal_contact,
         max_joints,
     )
     return features, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_flattened
 
 
 """ processes animation, and returns a new animation that aligns with humanML3D in terms of orientation and scale"""
-def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squared_positions_error, *, scale_factor, foot_indices=None, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True, translation_root_index=None):
+def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True, translation_root_index=None):
     if not isinstance(fbx_path_or_anim, Animation):
         if preloaded is not None:
             raw_anim, names = preloaded
@@ -909,7 +826,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
 
 
 """ get motion feature representation"""
-def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joints, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True, translation_root_index=None, flatten_root_travel=False, clamp_root_xz_extent=False):
+def get_motion(fbx_path_or_anim, object_type, max_joints, offsets, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True, translation_root_index=None, flatten_root_travel=False, clamp_root_xz_extent=False):
     try:
         new_anim, export_anim, names, root_translation_xz = get_hml_aligned_anim(
             fbx_path_or_anim,
@@ -918,7 +835,6 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
             offsets,
             squared_positions_error,
             scale_factor=scale_factor,
-            foot_indices=foot_indices,
             orientation_quat=orientation_quat,
             slice_inds=slice_inds,
             preloaded=preloaded,
@@ -940,10 +856,8 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
         features, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_flattened = extract_motion_features_from_aligned_anims(
             new_anim,
             export_anim,
-            foot_contact_vel_thresh,
             object_type,
             max_joints,
-            foot_indices,
             orientation_quat,
             translation_root_index=translation_root_index,
             flatten_root_travel=flatten_root_travel,

@@ -37,6 +37,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (
+    CANONICAL_FEATURE_SPACE,
     build_canonical_rest_feature,
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
@@ -182,10 +183,6 @@ def resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
         else:
             resampled[0, :, 9:12] = 0.0
 
-    if resampled.shape[-1] >= 13:
-        nearest = np.rint(src).astype(np.int64).clip(0, source_frames - 1)
-        resampled[..., 12] = (motion[nearest, :, 12] >= 0.5).astype(resampled.dtype, copy=False)
-
     return resampled.astype(motion.dtype, copy=False)
 
 
@@ -207,8 +204,8 @@ def _tile_loop_motion(motion, repeat_count):
     the last and first frames are near-identical in a loop clip, the velocity
     at the boundary from copy *k* to copy *k+1* stays physically consistent.
 
-    Binary contact (channel 12) and 6-D rotations (channels 3-8) are
-    unaffected by tiling.  Tiling operates in whichever feature space the
+    The 6-D rotations (channels 3-8) are unaffected by tiling.  Tiling
+    operates in whichever feature space the
     caller supplies (raw or normalized); both are linear transformations of
     each other, so the result is equivalent and the caller must only ensure
     ``playspeed_cond`` reflects the post-tile frame count.
@@ -972,7 +969,7 @@ class MotionDataset(data.Dataset):
                 'rest_pos_ric_hml': self.cond_dict[object_type]['rest_pos_ric_hml'],
                 'canonical_feature_mean': self.cond_dict[object_type].get('canonical_feature_mean'),
                 'canonical_feature_std': self.cond_dict[object_type].get('canonical_feature_std'),
-                'feature_space': self.cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),
+                'feature_space': self.cond_dict[object_type].get('feature_space', CANONICAL_FEATURE_SPACE),
             }, {
                 'loop_applied': bool(loop_applied),
                 'loop_phase_offset': int(loop_phase_offset),
@@ -988,7 +985,7 @@ class MotionDataset(data.Dataset):
             'rest_pos_ric_hml': self.cond_dict[object_type]['rest_pos_ric_hml'],
             'canonical_feature_mean': self.cond_dict[object_type].get('canonical_feature_mean'),
             'canonical_feature_std': self.cond_dict[object_type].get('canonical_feature_std'),
-            'feature_space': self.cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),
+            'feature_space': self.cond_dict[object_type].get('feature_space', CANONICAL_FEATURE_SPACE),
         }
     
     def _apply_action_label_condition(self, motion_metadata) -> None:

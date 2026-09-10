@@ -27,6 +27,7 @@ from data_loaders.truebones.data.dataset import (
     resample_motion_features,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (
+    CANONICAL_FEATURE_SPACE,
     build_canonical_rest_feature,
     canonical_to_physical_hml,
     get_canonical_global_stats,
@@ -2357,7 +2358,7 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
                 object_type,
                 build_joint_struct_features(cond_dict[object_type], source=str(object_type)),
             ),
-            'feature_space': cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),
+            'feature_space': cond_dict[object_type].get('feature_space', CANONICAL_FEATURE_SPACE),
         })
         batches.append(batch)
 

@@ -32,7 +32,7 @@ def test_main_registers_cond_path_for_novel_query_species(tmp_path, monkeypatch)
     motion_path = tmp_path / "dragon_0.npy"
     cond_path = tmp_path / "cond.npy"
 
-    np.save(motion_path, np.zeros((8, 2, 13), dtype=np.float32))
+    np.save(motion_path, np.zeros((8, 2, 12), dtype=np.float32))
     cond_dict = {"dragon": _make_cond_entry(np.array([0.0, 1.0], dtype=np.float64))}
     np.save(cond_path, cond_dict, allow_pickle=True)
 

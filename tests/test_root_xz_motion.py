@@ -1,11 +1,10 @@
-"""Root XZ: what a clip keeps, what it loses, and when the contacts are read.
+"""Root XZ: what a clip keeps and what it loses.
 
 See docs/root_xz_motion_refactor.md. No clip's root XZ is zeroed. A LOCOMOTION
 clip whose cycle-window baseline ends somewhere other than where it started
 loses that travel and keeps the within-cycle surge and sway; everything else --
 a lunge, a death, a dodge, a swing -- keeps its root motion, bounded by a soft
-clamp that is the identity within 0.6 of the origin and asymptotic to 0.8. Foot
-contact is read off the motion as authored, ahead of any of it.
+clamp that is the identity within 0.6 of the origin and asymptotic to 0.8.
 """
 
 import json
@@ -43,11 +42,11 @@ from data_loaders.truebones.truebones_utils.animation_utils import (
 )
 from data_loaders.truebones.truebones_utils.features import (
     extract_motion_features_from_aligned_anims,
-    get_contact_state,
 )
 from data_loaders.truebones.truebones_utils.motion_process import (
     move_xz_to_origin,
 )
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 from data_loaders.truebones.data.dataset import _tile_loop_motion
 
 
@@ -109,14 +108,12 @@ def _turning_path(n_frames: int, radius: float, turn_deg: float) -> np.ndarray:
     return np.stack([radius * (1.0 - np.cos(ang)), radius * np.sin(ang)], axis=-1)
 
 
-def _extract(anim, foot_indices=(1,), vel_thresh=0.01, locomotion=True, clamp=False):
+def _extract(anim, locomotion=True, clamp=False):
     features, _max_joints, motion_anim, _e, is_loop, flattened = extract_motion_features_from_aligned_anims(
         anim,
         anim,
-        foot_contact_vel_thresh=vel_thresh,
         object_type='TestSkeleton',
         max_joints=8,
-        foot_indices=list(foot_indices),
         orientation_quat=Quaternions.id(1).qs[0],
         translation_root_index=0,
         flatten_root_travel=locomotion,
@@ -502,74 +499,6 @@ def test_the_heading_is_read_through_the_seated_wrapper():
     assert np.degrees(heading[-1] - heading[0]) == pytest.approx(60.0, abs=1e-6)
 
 
-# ── foot contact is read before the root is touched ────────────────────────
-
-def _gait_rig(n_frames: int, cycle: int, stride: float, travels: bool) -> Animation:
-    """A root and one foot: planted for half a cycle, swinging for the other half.
-
-    ``travels`` chooses between the same gait authored travelling and authored
-    in place. The foot's world-space behaviour is identical relative to the body
-    either way, which is exactly why their contact labels must match.
-    """
-    t = np.arange(n_frames)
-    phase = (t % cycle) / cycle
-    plant = stride * (t // cycle)
-    world_foot_x = plant + np.where(phase < 0.5, 0.0, stride * (phase - 0.5) * 2.0)
-    root_x = stride * t / cycle
-
-    parents = np.array([-1, 0], dtype=np.int64)
-    offsets = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64)
-    rotations = Quaternions(np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (n_frames, 2, 1)))
-    positions = np.zeros((n_frames, 2, 3), dtype=np.float64)
-    if travels:
-        positions[:, 0, 0] = root_x
-    positions[:, 1, 0] = world_foot_x - root_x
-    positions[:, 1, 1] = np.where(phase < 0.5, 0.0, 0.25)
-    return Animation(rotations, positions, Quaternions.id(2), offsets, parents)
-
-
-def test_contacts_survive_a_gait_fast_enough_to_break_them():
-    """Flattening subtracts the gait speed from every joint.
-
-    The median clip the old pipeline zeroed travelled 1.44 over 25 frames --
-    0.058/frame against the 0.0447/frame the contact threshold allows -- so a
-    planted foot stopped being planted and the stance phase lost its label.
-    """
-    n_frames, cycle, stride = 60, 20, 1.4
-    anim = _gait_rig(n_frames, cycle, stride, travels=True)
-
-    features, _loop, flattened, motion_anim = _extract(anim, vel_thresh=0.002)
-    assert flattened is True
-    assert features[:, 1, 12].sum() > 0
-
-    measured_after = get_contact_state(positions_global(motion_anim), [1], 0.002)
-    assert measured_after[:, 1].sum() == 0      # what the old order produced
-
-
-def test_contacts_are_the_source_motions_own_labels():
-    """Read off the motion as authored, not off what the re-seat leaves behind.
-
-    That is also what makes a flattened gait agree with the ones an artist
-    authored in place, which is the majority of this dataset's locomotion and
-    does NOT slide its feet: measured per joint, authored-in-place locomotion
-    carries 0.773 mean contact (truebones 0.755) against 0.820 (0.716) for the
-    clips authored travelling. Labelling the travelling ones off the re-seated
-    motion is what pulled them away from that.
-    """
-    n_frames, cycle, stride = 60, 20, 1.4
-    anim = _gait_rig(n_frames, cycle, stride, travels=True)
-
-    features, _loop, flattened, motion_anim = _extract(anim, vel_thresh=0.002)
-    assert flattened is True
-
-    expected = get_contact_state(positions_global(anim), [1], 0.002)
-    np.testing.assert_array_equal(features[:-1, 1, 12], expected[:, 1])
-    assert expected[:, 1].sum() > 0
-
-    # And emphatically not the re-seated motion's labels, which are all zero.
-    assert get_contact_state(positions_global(motion_anim), [1], 0.002)[:, 1].sum() == 0
-
-
 # ── the re-seat itself ─────────────────────────────────────────────────────
 
 def _intermediate_root_anim(n_frames: int, path_xz: np.ndarray) -> Animation:
@@ -687,8 +616,8 @@ def test_reextraction_after_a_resample_runs_from_the_source_anims():
     """The resample branch must not feed pass 1's output back in.
 
     Re-measuring a flattened trajectory would look for drift that was just
-    removed and would read contact off feet that are already sliding, so the
-    branch resamples the anims as AUTHORED and extracts once more from those.
+    removed, so the branch resamples the anims as AUTHORED and extracts once
+    more from those.
     """
     import inspect
 
@@ -705,7 +634,7 @@ def test_resampling_the_source_and_reextracting_agrees_with_the_first_pass():
 
     source = _intermediate_root_anim(18, _travelling_path(18))
     first, _mj, _m, _e, _loop, first_flattened = extract_motion_features_from_aligned_anims(
-        source, source, 0.01, 'TestSkeleton', 8, [2],
+        source, source, 'TestSkeleton', 8,
         Quaternions.id(1).qs[0], translation_root_index=1,
         flatten_root_travel=True,
     )
@@ -713,7 +642,7 @@ def test_resampling_the_source_and_reextracting_agrees_with_the_first_pass():
 
     resampled = _resample_animation(source, 20)
     second, _mj, _m, _e, _loop2, second_flattened = extract_motion_features_from_aligned_anims(
-        resampled, resampled, 0.01, 'TestSkeleton', 8, [2],
+        resampled, resampled, 'TestSkeleton', 8,
         Quaternions.id(1).qs[0], translation_root_index=1,
         flatten_root_travel=True,
     )
@@ -744,7 +673,7 @@ def test_a_riding_ancestor_does_not_accumulate_the_removed_travel():
     anim = _riding_root_anim(n_frames, _travelling_path(n_frames, distance=4.0))
 
     features, _mj, _m, _e, _loop, flattened = extract_motion_features_from_aligned_anims(
-        anim, anim, 0.01, 'TestSkeleton', 8, [2],
+        anim, anim, 'TestSkeleton', 8,
         Quaternions.id(1).qs[0], translation_root_index=1,
         flatten_root_travel=True,
     )
@@ -764,7 +693,7 @@ def test_travelling_loop_tiles_without_a_jump():
     """
     n_frames = 24
     step = 0.05
-    motion = np.zeros((n_frames, 2, 13), dtype=np.float32)
+    motion = np.zeros((n_frames, 2, FEATS_LEN), dtype=np.float32)
     motion[:, 1, 9] = step           # a constant stride in +X, terminal row included
 
     tiled = _tile_loop_motion(motion, 2)
@@ -788,7 +717,7 @@ def test_the_model_has_no_root_xz_strip_channel():
     from model.anytop import AnyTop
 
     model = AnyTop(
-        max_joints=4, feature_len=13, latent_dim=8, ff_size=32, num_layers=1,
+        max_joints=4, feature_len=12, latent_dim=8, ff_size=32, num_layers=1,
         num_heads=2, dropout=0.0, cross_limb=True, t5_out_dim=512,
     )
     assert not hasattr(model, 'root_xz_strip_projection')
@@ -800,8 +729,8 @@ def test_the_collate_no_longer_carries_the_flag():
 
     def _item():
         return {
-            'inp': torch.zeros(3, 13, 5),
-            'rest_pose': torch.zeros(3, 13),
+            'inp': torch.zeros(3, 12, 5),
+            'rest_pose': torch.zeros(3, 12),
             'n_joints': 3,
             'lengths': 5,
             'parents': np.array([-1, 0, 1]),
@@ -914,7 +843,7 @@ def test_the_wrapper_ric_no_longer_depends_on_where_the_clip_was_authored():
         centred, _ = move_xz_to_origin(anim, translation_root_index=1)
 
         features, _mj, _m, _e, _loop, _flat = extract_motion_features_from_aligned_anims(
-            centred, centred, 0.01, 'TestSkeleton', 8, [2],
+            centred, centred, 'TestSkeleton', 8,
             Quaternions.id(1).qs[0], translation_root_index=1,
         )
         wrapper = features[:, 0][:, [0, 2]]
@@ -1215,7 +1144,7 @@ def _run_drift_validator(motion, root_index, capsys, threshold=ROOT_XZ_DRIFT_THR
 
 
 def _motion_with_root_path(path_xz, root_index=1, joints=3):
-    motion = np.zeros((path_xz.shape[0], joints, 13), dtype=np.float32)
+    motion = np.zeros((path_xz.shape[0], joints, FEATS_LEN), dtype=np.float32)
     # Identity rotations: the validator reads the heading out of these channels,
     # and an all-zero block is not a rotation matrix.
     motion[:, :, 3:9] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
@@ -1244,7 +1173,7 @@ def test_validator_accepts_a_clip_the_pipeline_flattened(capsys):
 def test_validator_reports_a_root_index_the_features_disagree_with(capsys):
     from utils.validate_anytop_dataset import _validate_translation_root_feature_alignment
 
-    motion = np.zeros((10, 3, 13), dtype=np.float32)
+    motion = np.zeros((10, 3, 12), dtype=np.float32)
     motion[:, 1, 0] = 0.25
 
     assert not _validate_translation_root_feature_alignment(

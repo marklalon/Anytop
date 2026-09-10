@@ -7,7 +7,7 @@ coordinate space the whole way: no HML feature encode/decode, no
 locomotion therefore survives, and a self-retarget (same file as source and
 target) round-trips to float noise.
 
-For the feature-space path -- "what are this motion's AnyTop ``(F, J, 13)``
+For the feature-space path -- "what are this motion's AnyTop ``(F, J, 12)``
 features on the target skeleton" -- use ``python tools/retarget_npy.py`` instead.
 
 Usage examples:

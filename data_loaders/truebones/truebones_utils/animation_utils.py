@@ -1450,7 +1450,7 @@ def promote_translation_root_to_hierarchy_root(anim, names, depth, *, context=No
     inert control nodes -- ``Cg``, ``Ctrl``, ``All``, and rigs whose wrapper is
     merely NAMED ``Hips`` / ``Root`` / ``Body``. Their offset from the real root
     carries no motion (that is what the carrier measurement establishes), so all
-    they contribute to the model is a joint token whose whole 13-dim feature
+    they contribute to the model is a joint token whose whole 12-dim feature
     vector is a per-species constant, plus a second meaning for "joint 0".
 
     Each step folds the dropped joint's rotation, offset and animated translation

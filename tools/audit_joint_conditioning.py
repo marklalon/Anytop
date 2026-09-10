@@ -33,6 +33,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
     JOINT_STRUCT_FEATURE_NAMES,
@@ -204,10 +205,10 @@ def audit_model_padding(audit):
 
     torch.manual_seed(0)
     latent_dim, t5_dim, frames, max_joints = 16, 32, 3, 5
-    process = InputProcess(13, 13, latent_dim, t5_dim, dropout_prob=0.0).eval()
+    process = InputProcess(FEATS_LEN, FEATS_LEN, latent_dim, t5_dim, dropout_prob=0.0).eval()
 
-    x = torch.randn(2, max_joints, 13, frames)
-    rest_pose = torch.randn(1, 2, max_joints, 13)
+    x = torch.randn(2, max_joints, FEATS_LEN, frames)
+    rest_pose = torch.randn(1, 2, max_joints, FEATS_LEN)
     names = torch.randn(2, max_joints, t5_dim)
     struct = torch.randn(2, max_joints, JOINT_STRUCT_DIM)
     # Sample 0 has 3 live joints, sample 1 has all 5.

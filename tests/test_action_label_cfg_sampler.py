@@ -41,7 +41,7 @@ class _StubDenoiser(torch.nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.feature_len = 13
+        self.feature_len = 12
         self.calls = []
 
     def forward(self, x, timesteps, y=None, **kwargs):
@@ -63,7 +63,7 @@ class _TimestepEchoDecoder(torch.nn.Module):
 def _make_model():
     return AnyTop(
         max_joints=4,
-        feature_len=13,
+        feature_len=12,
         latent_dim=TEST_LATENT_DIM,
         ff_size=32,
         num_layers=1,
@@ -80,13 +80,13 @@ def _make_model():
 def _make_y():
     return {
         'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-        'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
+        'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
-        'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
-        'canonical_feature_std': torch.ones(13, dtype=torch.float32),
+        'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),
+        'canonical_feature_std': torch.ones(12, dtype=torch.float32),
         **action_cond_fields(['run, forward'] * 2, ['locomotion'] * 2),
     }
 
@@ -95,7 +95,7 @@ class ClassifierFreeActionModelTest(unittest.TestCase):
     def test_scale_one_is_a_single_conditional_forward(self):
         stub = _StubDenoiser()
         wrapped = ClassifierFreeActionModel(stub, 1.0)
-        x = torch.zeros(2, 4, 13, 3)
+        x = torch.zeros(2, 4, 12, 3)
         out = wrapped(x, torch.tensor([1, 1]), y={'action_label': ['run', 'run']})
         self.assertEqual(len(stub.calls), 1)
         self.assertTrue(torch.allclose(out, torch.full_like(x, 4.0)))
@@ -103,7 +103,7 @@ class ClassifierFreeActionModelTest(unittest.TestCase):
     def test_guidance_extrapolates_away_from_the_null_prediction(self):
         stub = _StubDenoiser()
         wrapped = ClassifierFreeActionModel(stub, 2.5)
-        x = torch.zeros(2, 4, 13, 3)
+        x = torch.zeros(2, 4, 12, 3)
         out = wrapped(x, torch.tensor([1, 1]), y={'action_label': ['run', 'run']})
         self.assertEqual(len(stub.calls), 2)
         # uncond + s * (cond - uncond) == 1 + 2.5 * (4 - 1)
@@ -111,7 +111,7 @@ class ClassifierFreeActionModelTest(unittest.TestCase):
 
     def test_zero_scale_is_the_pure_unconditional_prediction(self):
         stub = _StubDenoiser()
-        x = torch.zeros(2, 4, 13, 3)
+        x = torch.zeros(2, 4, 12, 3)
         out = ClassifierFreeActionModel(stub, 0.0)(
             x, torch.tensor([1, 1]), y={'action_label': ['run', 'run']})
         self.assertTrue(torch.allclose(out, torch.full_like(x, 1.0)))
@@ -120,7 +120,7 @@ class ClassifierFreeActionModelTest(unittest.TestCase):
         stub = _StubDenoiser()
         wrapped = ClassifierFreeActionModel(stub, 2.0)
         y = {'action_label': ['run', 'run']}
-        wrapped(torch.zeros(2, 4, 13, 3), torch.tensor([1, 1]), y=y)
+        wrapped(torch.zeros(2, 4, 12, 3), torch.tensor([1, 1]), y=y)
         cond_y, uncond_y = stub.calls
         # Conditional pass: untouched, so eval-mode keeps every row conditional.
         self.assertNotIn('action_label_active', cond_y)
@@ -144,7 +144,7 @@ class ClassifierFreeActionModelTest(unittest.TestCase):
     def test_attributes_resolve_through_to_the_denoiser(self):
         stub = _StubDenoiser()
         wrapped = ClassifierFreeActionModel(stub, 2.0)
-        self.assertEqual(wrapped.feature_len, 13)
+        self.assertEqual(wrapped.feature_len, 12)
         with self.assertRaises(AttributeError):
             _ = wrapped.no_such_attribute
 
@@ -157,7 +157,7 @@ class ClassifierFreeActionModelTest(unittest.TestCase):
         model.seqTransDecoder = _TimestepEchoDecoder()
         model.eval()
 
-        x = torch.randn(2, 4, 13, 3)
+        x = torch.randn(2, 4, 12, 3)
         t = torch.tensor([1, 2], dtype=torch.int64)
         y = _make_y()
         scale = 3.0

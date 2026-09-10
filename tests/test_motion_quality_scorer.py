@@ -19,11 +19,12 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
 import eval.motion_quality.scorer as scorer_mod
 import eval.motion_quality.reference_bank as reference_bank_mod
 from eval.motion_quality.reference_bank import ReferenceClip, ReferenceSpeciesSummary, WeightedReferenceBank
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 
 
 def _make_random_motion(seed: int, t_len: int, joint_count: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    return rng.standard_normal((t_len, joint_count, 13), dtype=np.float32)
+    return rng.standard_normal((t_len, joint_count, FEATS_LEN), dtype=np.float32)
 
 
 def _make_cond_entry(embedding: np.ndarray, joint_count: int = 2) -> dict:
@@ -36,7 +37,7 @@ def _make_cond_entry(embedding: np.ndarray, joint_count: int = 2) -> dict:
 
 
 def test_bone_length_score_keeps_valid_zero_drift_clips(monkeypatch: pytest.MonkeyPatch) -> None:
-    motions = [np.zeros((2, 1, 13), dtype=np.float32) for _ in range(2)]
+    motions = [np.zeros((2, 1, 12), dtype=np.float32) for _ in range(2)]
     drifts = [
         np.array([[0.0], [0.0]], dtype=np.float64),
         np.array([[0.0], [0.0]], dtype=np.float64),
@@ -61,7 +62,7 @@ def test_bone_length_score_keeps_valid_zero_drift_clips(monkeypatch: pytest.Monk
 
 
 def test_bone_length_score_uses_surviving_clip_weights(monkeypatch: pytest.MonkeyPatch) -> None:
-    motions = [np.zeros((2, 1, 13), dtype=np.float32) for _ in range(4)]
+    motions = [np.zeros((2, 1, 12), dtype=np.float32) for _ in range(4)]
     drifts = [
         np.full((2, 0), np.nan, dtype=np.float64),
         np.array([[0.0], [0.2]], dtype=np.float64),
@@ -169,7 +170,7 @@ def test_registered_cond_is_query_only_reference_baseline(
                     motion_name="horse",
                     n_frames=8,
                     weight=1.0,
-                    motion=np.zeros((8, 2, 13), dtype=np.float32),
+                    motion=np.zeros((8, 2, 12), dtype=np.float32),
                 )
             ],
             species=[
@@ -199,7 +200,7 @@ def test_registered_cond_is_query_only_reference_baseline(
     monkeypatch.setattr(scorer_mod.DistributionMotionQualityScorer, "_compute_low_shot", fake_compute_low_shot)
 
     report = scorer.evaluate(
-        motions=[np.zeros((8, 2, 13), dtype=np.float32)],
+        motions=[np.zeros((8, 2, 12), dtype=np.float32)],
         object_type="dragon",
         action_words="walk,run",
         top_k_species=1,
@@ -277,7 +278,7 @@ def test_low_shot_bone_length_is_global_but_contributes_to_score(
         "root": np.array([0], dtype=np.int64),
         "limbs": np.array([1], dtype=np.int64),
     }
-    query_motions = [np.zeros((8, 2, 13), dtype=np.float32)]
+    query_motions = [np.zeros((8, 2, 12), dtype=np.float32)]
     reference_clips = [
         ReferenceClip(
             path="ref.npy",
@@ -285,7 +286,7 @@ def test_low_shot_bone_length_is_global_but_contributes_to_score(
             motion_name="ref",
             n_frames=8,
             weight=1.0,
-            motion=np.zeros((8, 2, 13), dtype=np.float32),
+            motion=np.zeros((8, 2, 12), dtype=np.float32),
         )
     ]
 

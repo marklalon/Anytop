@@ -1,5 +1,12 @@
 # 强化 action label 跨物种迁移：canonical 坐标系改造
 
+> **后续变更提示（v3 → v4）**：本文记录的是 `canonical_motion_v3` 时代的设计，文中所有
+> "13 维 / index 12 是 contact / `feature_space` 版本号不变"的表述**已被后续改动取代**：
+> 逐帧二值 foot contact 通道（index 12）整体删除，`FEATS_LEN` 13 → 12，
+> `CANONICAL_FEATURE_SPACE` 改为 `canonical_motion_v4`，`CKPT_VERSION` 6 → 7。
+> 其中"contact 不属于任何块"的结论不再适用——现在三个块（pos 0:3 / rot 3:9 / vel 9:12）
+> 恰好铺满整个向量。下方内容保留为当时的历史记录。
+
 > 状态：**已实施（2026-08-31）。§5 的 1/2/3/5/6 全部完成，cond 已重生成并通过 §6.1 硬判据；
 > 只差步骤 4 的重训。§4.3 的 rest 几何清理做成了预处理的一步（幂等），不是一次性补丁——见 §8 实施记录。**
 > 前身是 `action_cond_film_and_energy_removal.md`（**已删除**，内容拆进本文与

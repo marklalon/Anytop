@@ -45,6 +45,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E40
     ROOT_XZ_LOCOMOTION_LIMIT,
 )
 from utils.misc import infer_object_type_from_filename  # noqa: E402
+from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE  # noqa: E402
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
 from data_loaders.truebones.truebones_utils.topology_relations import (  # noqa: E402
     NUM_EDGE_CODES,
@@ -284,8 +285,8 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             if rest_pos_ric_hml.shape != (n_joints, 3):
                 msg = f"{object_type} rest_pos_ric_hml shape mismatch: {rest_pos_ric_hml.shape}"
                 print_warn(f"validation error: {msg}")
-            if object_cond.get("feature_space") != "canonical_motion_v3":
-                msg = f"{object_type} feature_space must be canonical_motion_v3"
+            if object_cond.get("feature_space") != CANONICAL_FEATURE_SPACE:
+                msg = f"{object_type} feature_space must be {CANONICAL_FEATURE_SPACE}"
                 print_warn(f"validation error: {msg}")
             if object_cond.get("physical_feature_space") != "hml_like_v_current":
                 msg = f"{object_type} physical_feature_space must be hml_like_v_current"

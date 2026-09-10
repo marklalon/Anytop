@@ -61,7 +61,7 @@ class _CaptureDecoder(torch.nn.Module):
 def _make_model(action_label_cond=True, action_label_cfg_drop_prob=0.3, bundle=None):
     return AnyTop(
         max_joints=4,
-        feature_len=13,
+        feature_len=12,
         latent_dim=TEST_LATENT_DIM,
         ff_size=32,
         num_layers=1,
@@ -80,15 +80,15 @@ def _make_model(action_label_cond=True, action_label_cfg_drop_prob=0.3, bundle=N
 def _make_y(**extra):
     y = {
         'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-        'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
+        'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
         # The output coordinate frame is an unconditional model input: every
         # forward reads it, so a hand-built y has to carry it.
-        'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
-        'canonical_feature_std': torch.ones(13, dtype=torch.float32),
+        'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),
+        'canonical_feature_std': torch.ones(12, dtype=torch.float32),
     }
     y.update(extra)
     return y
@@ -291,7 +291,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
 class ActionLabelConditioningTest(unittest.TestCase):
     def test_disabled_by_default(self):
         model = AnyTop(
-            max_joints=4, feature_len=13, latent_dim=8, ff_size=32,
+            max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
             num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
             t5_out_dim=T5_DIM,
         )
@@ -302,7 +302,7 @@ class ActionLabelConditioningTest(unittest.TestCase):
         capture = _CaptureDecoder()
         model.seqTransDecoder = capture
         model.eval()
-        x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
+        x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         model(x, torch.tensor([1, 2], dtype=torch.int64),
               y=_make_y(**_label_cond(['attack, bite', 'idle'], ['stationary'] * 2)))
         self.assertIsNotNone(capture.last_kwargs)
@@ -391,16 +391,16 @@ class ActionLabelConditioningTest(unittest.TestCase):
     def test_collate_emits_padded_word_ids_and_a_valid_mask(self):
         def _item(label, group):
             return {
-                'inp': torch.zeros(4, 13, 3, dtype=torch.float32),
+                'inp': torch.zeros(4, 12, 3, dtype=torch.float32),
                 'n_joints': 4,
                 'temporal_mask': torch.ones(4, 4, dtype=torch.float32),
                 'graph_dist': torch.zeros(4, 4, dtype=torch.float32),
                 'joints_relations': torch.zeros(4, 4, dtype=torch.float32),
                 'joints_names_embs': torch.zeros(4, T5_DIM, dtype=torch.float32),
                 'joint_struct': torch.zeros(4, JOINT_STRUCT_DIM, dtype=torch.float32),
-                'rest_pose': torch.zeros(4, 13, dtype=torch.float32),
-                'mean': torch.zeros(4, 13, dtype=torch.float32),
-                'std': torch.ones(4, 13, dtype=torch.float32),
+                'rest_pose': torch.zeros(4, 12, dtype=torch.float32),
+                'mean': torch.zeros(4, 12, dtype=torch.float32),
+                'std': torch.ones(4, 12, dtype=torch.float32),
                 'action_label': label,
                 'action_group': group,
                 'action_slots': sample_action_slots(label, group),
@@ -436,7 +436,7 @@ class ActionLabelConditioningTest(unittest.TestCase):
         model.eval()
         capture = _CaptureDecoder()
         model.seqTransDecoder = capture
-        x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
+        x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         ts = torch.tensor([1, 2], dtype=torch.int64)
 
         model(x, ts, y=_make_y(**_label_cond(['attack, bite', 'idle'], ['stationary'] * 2)))

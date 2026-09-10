@@ -68,7 +68,7 @@ def _make_cond_entry() -> dict:
     }
 
 
-def _make_full_cond_entry(n_joints: int, feature_len: int = 13) -> dict:
+def _make_full_cond_entry(n_joints: int, feature_len: int = 12) -> dict:
     parents = np.array([-1] + list(range(n_joints - 1)), dtype=np.int64)
     return {
         "joints_names": [f"Joint{i}" for i in range(n_joints)],
@@ -137,7 +137,7 @@ def test_validate_reference_motion_path_rejects_unsupported_suffix() -> None:
 def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
     # Crop path: feed exactly M=40 frames (as main() does for R > M). The bundle
     # must consume the preloaded array verbatim (no disk load) and not re-trim it.
-    n_joints, feat = 3, 13
+    n_joints, feat = 3, 12
     cond = _make_full_cond_entry(n_joints, feature_len=feat)
     preloaded = np.random.default_rng(0).normal(
         size=(40, n_joints, feat)
@@ -210,18 +210,18 @@ def test_create_condition_can_sample_at_target_joint_count() -> None:
         cond_dict,
         n_frames=4,
         max_joints=3,
-        feature_len=13,
+        feature_len=12,
     )
 
     y = model_kwargs["y"]
-    assert tuple(motion_batch.shape) == (2, 3, 13, 4)
+    assert tuple(motion_batch.shape) == (2, 3, 12, 4)
     assert tuple(y["joints_padding_mask"].shape) == (2, 1, 1, 4, 4)
     assert tuple(y["graph_dist"].shape) == (2, 3, 3)
     assert torch.equal(y["n_joints"], torch.tensor([3, 3]))
     # The output coordinate frame is an unconditional model input: AnyTop.forward
     # reads it every step, so the generation path has to stack it per sample too.
-    assert tuple(y["canonical_feature_mean"].shape) == (2, 13)
-    assert tuple(y["canonical_feature_std"].shape) == (2, 13)
+    assert tuple(y["canonical_feature_mean"].shape) == (2, 12)
+    assert tuple(y["canonical_feature_std"].shape) == (2, 12)
 
 
 def test_create_condition_rejects_cond_entry_without_canonical_stats() -> None:
@@ -237,7 +237,7 @@ def test_create_condition_rejects_cond_entry_without_canonical_stats() -> None:
             cond_dict,
             n_frames=4,
             max_joints=3,
-            feature_len=13,
+            feature_len=12,
         )
 
 
@@ -249,7 +249,7 @@ def test_resolve_inpaint_joint_indices_rejects_unknown_names() -> None:
 def test_sample_batch_routes_inpainting_through_ddpm_from_pure_noise() -> None:
     diffusion = _CaptureDiffusion()
     model = _DummyModel()
-    sample_shape = (1, 3, 13, 4)
+    sample_shape = (1, 3, 12, 4)
     reference_motion = torch.ones(sample_shape, dtype=torch.float32)
     inpaint_mask = torch.zeros((1, 3, 1, 4), dtype=torch.float32)
 
@@ -279,7 +279,7 @@ def test_sample_batch_routes_inpainting_through_ddpm_from_pure_noise() -> None:
 
 def test_sample_batch_injects_cross_limb_unreliable_mask_for_single_inpaint_pass() -> None:
     diffusion = _CaptureDiffusion()
-    sample_shape = (1, 3, 13, 4)
+    sample_shape = (1, 3, 12, 4)
     reference_motion = torch.ones(sample_shape, dtype=torch.float32)
     inpaint_mask = torch.tensor(
         [[[[0.0, 1.0, 0.0, 0.0]],
@@ -317,7 +317,7 @@ def test_sample_batch_injects_cross_limb_unreliable_mask_for_single_inpaint_pass
 
 
 def test_sample_batch_applies_skip_timesteps_only_inside_inpaint_mask() -> None:
-    sample_shape = (1, 3, 13, 4)
+    sample_shape = (1, 3, 12, 4)
     reference_motion = torch.ones(sample_shape, dtype=torch.float32)
     inpaint_mask = torch.tensor(
         [[[[0.0, 1.0, 0.0, 0.0]],
@@ -371,7 +371,7 @@ def test_sample_batch_requires_reference_for_inpainting() -> None:
             model=_DummyModel(),
             model_kwargs={},
             sampling_method="ddpm",
-            sample_shape=(1, 3, 13, 4),
+            sample_shape=(1, 3, 12, 4),
             ddim_eta=0.0,
             seed=123,
             device=torch.device("cpu"),
@@ -486,7 +486,7 @@ def test_ddim_sample_loop_rejects_const_noise() -> None:
         )
 
 
-def _make_root_y_motion(pos_y, vel_y, root_idx=0, n_joints=2, n_feat=13):
+def _make_root_y_motion(pos_y, vel_y, root_idx=0, n_joints=2, n_feat=12):
     """Build a (F, J, C) motion_np tensor with the translation-root's
     pos_y / vel_y channels set, other channels zeroed.
     """
@@ -580,7 +580,7 @@ def test_reanchor_root_y_corrects_all_joints():
     # against its own boundary anchors.
     F = 6
     n_joints = 3
-    motion = np.zeros((F, n_joints, 13), dtype=np.float32)
+    motion = np.zeros((F, n_joints, 12), dtype=np.float32)
     # Joint 0 (translation_root style): outside ~1.0, inside biased to 0.4
     motion[:, 0, 1] = [1.0, 1.0, 0.4, 0.42, 1.0, 1.0]
     # Joint 1: outside ~2.5, inside biased to 1.0
@@ -625,7 +625,7 @@ def test_reanchor_root_y_multiple_spans_independent():
 def test_zero_root_ric_xz_clears_only_the_root_position_channels():
     """The root's RIC X/Z are structurally zero, so model noise there is
     cleared; everything else (notably the velocity ch9/ch11) must survive."""
-    motion = np.zeros((5, 2, 13), dtype=np.float32)
+    motion = np.zeros((5, 2, 12), dtype=np.float32)
     motion[:, 1, 0] = np.linspace(-0.1, 0.1, num=5, dtype=np.float32)
     motion[:, 1, 2] = np.linspace(0.2, -0.2, num=5, dtype=np.float32)
     motion[:, 1, 1] = np.linspace(1.0, 1.5, num=5, dtype=np.float32)
@@ -646,7 +646,7 @@ def test_zero_root_ric_xz_clears_only_the_root_position_channels():
 
 
 def test_zero_root_ric_xz_noop_for_invalid_root():
-    motion = np.zeros((4, 1, 13), dtype=np.float32)
+    motion = np.zeros((4, 1, 12), dtype=np.float32)
     motion[:, 0, 0] = 1.0
     motion[:-1, 0, 9] = 1.0
     original = motion.copy()
@@ -656,7 +656,7 @@ def test_zero_root_ric_xz_noop_for_invalid_root():
     np.testing.assert_array_equal(motion, original)
 
 
-def _make_pos_y_motion(pos_y_by_joint, n_feat=13):
+def _make_pos_y_motion(pos_y_by_joint, n_feat=12):
     """Build a (F, J, C) motion tensor with only the pos_y channel (index 1)
     populated from a dict {joint_index: [per-frame Y]}.
     """

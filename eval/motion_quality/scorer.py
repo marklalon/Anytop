@@ -20,11 +20,10 @@ Scoring dimensions
     Per-group spectral and smoothness summaries are compared to weighted
     reference priors using the same robust-deviation scheme.
 
-Motion format  (T × J × 13  float32, normalised):
+Motion format  (T × J × 12  float32, normalised):
     ch 0-2  : local RIC position
     ch 3-8  : 6-D rotation
     ch 9-11 : linear velocity
-    ch 12   : foot-contact flag  (not evaluated)
 """
 
 from __future__ import annotations
@@ -37,6 +36,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import scipy.signal
 
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict, resolve_sources
 from data_loaders.truebones.truebones_utils.dataset_sources import (
     resolve_species_key,
@@ -304,7 +304,7 @@ def _welch_psd(sig: np.ndarray, nperseg: int) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _compute_features(motion: np.ndarray, nperseg: int) -> Dict[str, np.ndarray]:
-    """Compute per-joint features for a single motion (T, J, 13)."""
+    """Compute per-joint features for a single motion (T, J, 12)."""
     t_len, joint_count, _ = motion.shape
     pos = motion[:, :, CH_POS].astype(np.float64)
 
@@ -527,7 +527,7 @@ def _sigmoid_score(drift_pct: float) -> float:
 
 
 def _compute_bone_length_drift_from_motion(
-    motion: np.ndarray,   # [T, J, 13]  motion features
+    motion: np.ndarray,   # [T, J, 12]  motion features
     parents: np.ndarray,  # [J]
     offsets: np.ndarray,  # [J, 3]
 ) -> np.ndarray:
@@ -711,10 +711,10 @@ class DistributionMotionQualityScorer:
         query_motions = [
             motion.astype(np.float32)
             for motion in motions
-            if motion.ndim == 3 and motion.shape[-1] == 13 and motion.shape[0] >= _MIN_CLIP_FRAMES
+            if motion.ndim == 3 and motion.shape[-1] == FEATS_LEN and motion.shape[0] >= _MIN_CLIP_FRAMES
         ]
         if not query_motions:
-            raise ValueError(f"Need at least one valid query motion with shape (T, J, 13) and T >= {_MIN_CLIP_FRAMES}")
+            raise ValueError(f"Need at least one valid query motion with shape (T, J, {FEATS_LEN}) and T >= {_MIN_CLIP_FRAMES}")
 
         query_joint_counts = {motion.shape[1] for motion in query_motions}
         if len(query_joint_counts) != 1:

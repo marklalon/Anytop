@@ -73,7 +73,7 @@ def _write_species_motions(tmp_path):
     for species in SPECIES:
         for action in ("Idle", "Move"):
             name = f"{species}_{action}_1.npy"
-            np.save(motions_dir / name, np.zeros((4, 3, 13), dtype=np.float32))
+            np.save(motions_dir / name, np.zeros((4, 3, 12), dtype=np.float32))
             metadata[name] = {"object_type": species}
     return motions_dir, metadata
 

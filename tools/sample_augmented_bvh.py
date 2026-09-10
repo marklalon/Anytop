@@ -121,7 +121,7 @@ def _export_bvh(
     *,
     object_cond: dict[str, object] | None = None,
 ) -> bool:
-    """Denormalized (F, J, 13) → BVH file.  Returns True on success."""
+    """Denormalized (F, J, 12) → BVH file.  Returns True on success."""
     export_parents = list(parents)
     export_offsets = np.asarray(offsets)
     export_joint_names = list(joints_names)
@@ -289,7 +289,7 @@ def main() -> int:
         try:
             # _prepare_sample applies augmentations and returns canonical motion.
             (
-                motion_canonical,  # (num_frames, J, 13) canonical model space
+                motion_canonical,  # (num_frames, J, 12) canonical model space
                 m_length,     # actual frames (before padding)
                 parents,
                 rest_pose,

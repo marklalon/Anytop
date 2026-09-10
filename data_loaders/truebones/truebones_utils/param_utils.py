@@ -81,8 +81,6 @@ TPOSE_REFERENCE_SIDECAR = "tpose_reference_paths.jsonl"
 # and everything derived from them -- object subsets, forward-chain overrides --
 # are owned by ``dataset_tags``; import ``dataset_tags.dataset_tags()`` there
 # rather than caching a copy here.
-FOOT_CONTACT_HEIGHT_THRESH = 0.2
-FOOT_CONTACT_VEL_THRESH = 0.002
 # Exact hop counts 0..MAX_PATH_LEN-1 are coded individually; everything at or
 # beyond it is subdivided by direction and normalized LCA depth instead of
 # saturating into one bucket (see ``topology_relations``). An int, not a float:
@@ -133,7 +131,7 @@ def parse_action_words(raw_action_words):
 
 MAX_JOINTS=100
 FPS=30
-FEATS_LEN=13
+FEATS_LEN=12
 SMPL_OFFSETS = np.array([[ 0.0000,  0.0000,  0.0000],
         [ 0.1031,  0.0000,  0.0000],
         [-0.1099,  0.0000,  0.0000],

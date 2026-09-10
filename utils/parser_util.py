@@ -16,7 +16,7 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 6
+CKPT_VERSION = 7
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -456,7 +456,7 @@ def add_generate_options(parser):
                        help="DDIM eta parameter. 0.0 = deterministic. Default: 0.0.")
     group.add_argument("--reference_motion", default=None, type=str,
                        help="Path to a reference motion .npy/.fbx/.glb/.gltf file. Non-NPY inputs are "
-                           "preprocessed into the same 13-channel feature-space NPY used by training, then "
+                           "preprocessed into the same 12-channel feature-space NPY used by training, then "
                            "noised to an intermediate timestep (img2img-style). If --object_type is not given, "
                            "it is inferred from the reference filename. If --object_type is given and differs "
                            "from the reference's inferred type, the reference is auto-retargeted to the requested "

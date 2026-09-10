@@ -6,10 +6,6 @@ three functional sub-modules.
 """
 
 from motion_lib.Animation import positions_global
-from data_loaders.truebones.truebones_utils.param_utils import (
-    FOOT_CONTACT_VEL_THRESH,
-)
-
 # ── animation_utils (animation processing & joint metadata) ─────────────
 from .animation_utils import (
     ROOT_XZ_DRIFT_THRESHOLD,

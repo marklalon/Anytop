@@ -14,11 +14,10 @@ the translation root's integrated XZ displacement stays within the absolute
 tolerance ``LOOP_DETECTION_ROOT_XZ_TOLERANCE``. Both checks must pass for the
 runtime loop decision to pass.
 
-Feature layout per joint (13 channels):
+Feature layout per joint (12 channels):
   0-2  : root-relative global position (face Z+, translation-root centred)
   3-8  : 6D continuous rotation representation
   9-11 : velocity (per-frame delta, scaled for playspeed)
-  12   : binary contact
 
 Usage:
     python tools/compute_loop_unclosure_error.py
@@ -46,6 +45,7 @@ from data_loaders.truebones.truebones_utils.animation_utils import (
     LOOP_DETECTION_STEP_MIN,
     compute_motion_loop_diagnostics,
 )
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 
 
 def load_motions(data_root: str) -> dict[str, dict]:
@@ -76,7 +76,7 @@ def compute_unclosure_error(motion_path: str, translation_root_index: int = 0) -
     """
     motion = np.load(motion_path).astype(np.float64)
 
-    if motion.ndim != 3 or motion.shape[-1] < 13:
+    if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN:
         return {"error": True}
     if motion.shape[0] < 2:
         return {"error": True}

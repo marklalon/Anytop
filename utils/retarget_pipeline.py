@@ -13,9 +13,6 @@ from typing import Optional
 
 import numpy as np
 
-from data_loaders.truebones.truebones_utils.param_utils import (
-    FOOT_CONTACT_VEL_THRESH,
-)
 from data_loaders.truebones.truebones_utils.animation_utils import (
     find_translation_root,
 )
@@ -205,7 +202,7 @@ def retarget_features_npy_to_target(
     """Retarget source skeleton's motion features to target skeleton's space.
 
     Args:
-        source_features:    (F, J_src, 13) motion feature array, already loaded.
+        source_features:    (F, J_src, 12) motion feature array, already loaded.
         source_cond:        Donor's cond.npy entry (parents / offsets / rest_pose
                             / orientation_quat / scale_factor, etc.).
         source_object_type: Donor object-type name.
@@ -221,7 +218,7 @@ def retarget_features_npy_to_target(
                     ``canonical_joint_names`` for name matching.
 
     Returns:
-        (F, J_tgt, 13) retargeted feature array, or None if the retarget failed.
+        (F, J_tgt, 12) retargeted feature array, or None if the retarget failed.
     """
     from utils.retarget_core import retarget_world_space_np
     from utils.exporter import animation_to_exporter_inputs
@@ -327,11 +324,9 @@ def retarget_features_npy_to_target(
     squared_positions_error = {}
     target_features, *_ = get_motion(
         tgt_anim,
-        FOOT_CONTACT_VEL_THRESH,
         target_object_type,
         max_joints,
         np.asarray(target_tp.offsets, dtype=np.float64),
-        target_tp.foot_indices,
         target_tp.tpos_rots,
         squared_positions_error,
         scale_factor=float(target_tp.scale_factor),
@@ -421,7 +416,7 @@ def retarget_animation_file_to_target(
                             for canonical joint-name prefix normalization.
 
     Returns:
-        (F, J_tgt, 13) retargeted feature array, or None if the retarget failed.
+        (F, J_tgt, 12) retargeted feature array, or None if the retarget failed.
     """
     from types import SimpleNamespace
 
@@ -433,7 +428,6 @@ def retarget_animation_file_to_target(
         calculate_root_quat,
         process_anim,
     )
-    from data_loaders.truebones.truebones_utils.param_utils import FOOT_CONTACT_VEL_THRESH
     from data_loaders.truebones.truebones_utils.face_orientation import (
         resolve_face_joints,
         resolve_forward_reference_joints,
@@ -626,11 +620,9 @@ def retarget_animation_file_to_target(
         squared_positions_error = {}
         source_features, *_unused, source_effective_root_index, _source_root_xz, _source_flattened = get_motion(
             source_motion_path,
-            FOOT_CONTACT_VEL_THRESH,
             target_object_type,
             max_joints,
             np.asarray(target_tp.offsets, dtype=np.float64),
-            target_tp.foot_indices,
             target_tp.tpos_rots,
             squared_positions_error,
             scale_factor=float(target_tp.scale_factor),
@@ -661,9 +653,9 @@ def retarget_animation_file_to_target(
     # get_common_features_from_rest_pose: the retargeter cancels a uniform
     # source scale (it renormalizes by mean_len_tgt / mean_len_src), but the
     # absolute thresholds applied while encoding the source in normalized space
-    # -- ROOT_Y_MIN_HEIGHT, the root-XZ strip / loop-detection bands, the
-    # foot-contact velocity and height thresholds -- do not, so a raw source
-    # file must land in the same normalized space its dataset clips do.
+    # -- ROOT_Y_MIN_HEIGHT, the root-XZ strip / loop-detection bands -- do not,
+    # so a raw source file must land in the same normalized space its dataset
+    # clips do.
     body_max_span = get_scale_reference_extent(bind_positions[0], src_parents, src_names)
     source_scale_factor = compute_scale_factor(axial_avg_len, body_max_span=body_max_span)
     source_tpose_anim, _source_root_xz_center, source_scale_factor = process_anim(
@@ -705,11 +697,9 @@ def retarget_animation_file_to_target(
     squared_positions_error = {}
     source_features, *_unused, source_effective_root_index, _source_root_xz, _source_flattened = get_motion(
         source_motion_path,
-        FOOT_CONTACT_VEL_THRESH,
         _SRC_FACE_HINT,
         max_joints,
         np.asarray(source_offsets, dtype=np.float64),
-        source_foot_indices,
         source_tpose_anim.rotations,
         squared_positions_error,
         scale_factor=float(source_scale_factor),
@@ -955,7 +945,7 @@ def retarget_glb_to_glb(
       the feature retarget receives. The retarget itself never asks, so a
       donor's trajectory survives the call, but the features it produces are
       then NOT what training data looks like for a travelling gait;
-    * the result is a ``(F, J, 13)`` feature array, not a playable rig.
+    * the result is a ``(F, J, 12)`` feature array, not a playable rig.
 
     None of that happens here. Both skeletons are read through ``FBX.load`` /
     ``extract_armature_skeleton_data`` -- the same function, hence the same

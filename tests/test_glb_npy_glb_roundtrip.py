@@ -2,7 +2,7 @@
 GLB -> NPY -> GLB roundtrip test.
 
 Loads a source GLB animation, converts it into AnyTop's production preprocessed
-13-channel NPY feature space, saves the bare `(F, J, 13)` tensor exactly like
+12-channel NPY feature space, saves the bare `(F, J, 12)` tensor exactly like
 the real generation pipeline, restores it through `tools/restore_glb_from_npy`,
 and compares the recovered GLB directly against the original source GLB.
 
@@ -71,7 +71,6 @@ from data_loaders.truebones.offline_reference_dataset import load_cond_dict
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS
 from data_loaders.truebones.truebones_utils.motion_process import (
-    FOOT_CONTACT_VEL_THRESH,
     get_common_features_from_T_pose,
     TPoseFeatures,
     get_motion,
@@ -239,7 +238,7 @@ def _run_test_glb_npy_glb_roundtrip(
     Pipeline:
         1. Load T-pose metadata and derive AnyTop preprocessing parameters
         2. Convert the source GLB into the same preprocessed feature-space animation
-        3. Save a metadata payload with the 13-channel NPY features
+        3. Save a metadata payload with the 12-channel NPY features
         4. Recover Animation from that payload
         5. Invert T-pose reparameterization back to processed/source-rig semantics
         6. Export baseline + recovered animations as GLB
@@ -296,11 +295,9 @@ def _run_test_glb_npy_glb_roundtrip(
         squared_positions_error: dict[str, float] = {}
         features, feature_parents, _max_joints, feature_anim, _baseline_export_anim, _is_loop, _motion_translation_root_index, motion_root_translation_xz, _root_xz_flattened = get_motion(
             anim_glb,
-            FOOT_CONTACT_VEL_THRESH,
             object_type,
             preprocess_max_joints,
             tp.offsets,
-            tp.foot_indices,
             tp.tpos_rots,
             squared_positions_error,
             scale_factor=scale_factor,

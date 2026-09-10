@@ -3,7 +3,7 @@
 The per-object_subset canonical (mean, std) that the features are standardized
 by define WHICH affine space the model writes into. They reach the model in
 ``y`` already; this projection is what lets it read them. There is deliberately
-no flag: every canonical_motion_v3 cond carries the two vectors and the loader
+no flag: every canonical_motion_v4 cond carries the two vectors and the loader
 refuses to start without them, so "off" could only mean "blind to the output
 space".
 """
@@ -30,7 +30,7 @@ LATENT = 8
 def _make_model():
     return AnyTop(
         max_joints=4,
-        feature_len=13,
+        feature_len=12,
         latent_dim=LATENT,
         ff_size=32,
         num_layers=1,
@@ -42,8 +42,8 @@ def _make_model():
 
 
 def _stats(batch=2):
-    mean = torch.arange(13, dtype=torch.float32).mul(0.01).repeat(batch, 1)
-    std = torch.arange(13, dtype=torch.float32).mul(0.1).add(0.5).repeat(batch, 1)
+    mean = torch.arange(12, dtype=torch.float32).mul(0.01).repeat(batch, 1)
+    std = torch.arange(12, dtype=torch.float32).mul(0.1).add(0.5).repeat(batch, 1)
     return {'canonical_feature_mean': mean, 'canonical_feature_std': std}
 
 
@@ -96,7 +96,7 @@ class CanonicalFrameCondTest(unittest.TestCase):
     def test_bare_vector_broadcasts_over_batch(self):
         model = _make_model()
         torch.nn.init.normal_(model.canonical_frame_projection[-1].weight, std=0.5)
-        y = {'canonical_feature_mean': torch.zeros(13), 'canonical_feature_std': torch.ones(13)}
+        y = {'canonical_feature_mean': torch.zeros(12), 'canonical_feature_std': torch.ones(12)}
         token = model._build_canonical_frame_token(y, 3, torch.device('cpu'), torch.float32)
         self.assertEqual(tuple(token.shape), (3, LATENT))
         self.assertTrue(torch.allclose(token[0], token[2]))

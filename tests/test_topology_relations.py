@@ -336,7 +336,7 @@ class CondRefreshTest(unittest.TestCase):
         np.testing.assert_array_equal(cond['some/Species']['joints_graph_dist'], expected_topo)
 
     def test_refresh_skips_entries_without_parents(self):
-        cond = {'no_parents': {'rest_pose': np.zeros((3, 13))}}
+        cond = {'no_parents': {'rest_pose': np.zeros((3, 12))}}
         refresh_topology_relations_in_cond_dict(cond)
         self.assertNotIn('joint_relations', cond['no_parents'])
 

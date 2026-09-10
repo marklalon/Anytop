@@ -138,7 +138,7 @@ def extract_layer_activations(runtime, dataset, names, batch_size, timestep, dev
             items = [motion_dataset.prepare_sample_by_name(nm) for nm in batch_names]
             motion, cond = truebones_batch_collate(items)
 
-            x = motion.to(device)                       # (B, J, 13, T)
+            x = motion.to(device)                       # (B, J, FEATS_LEN, T)
             y = _move_y_to_device(cond["y"], device)
             bs = x.shape[0]
 

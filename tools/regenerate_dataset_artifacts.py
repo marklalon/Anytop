@@ -74,6 +74,7 @@ from data_loaders.truebones.truebones_utils.rest_geometry import (  # noqa: E402
     reseat_candidates,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
+    FEATS_LEN,
     MOTION_DIR,
     MOTION_METADATA_FILE,
     ACTION_LABELS_FILE,
@@ -228,7 +229,7 @@ def _compute_canonical_stats_per_object_subset(
     motion_files: list[Path],
 ) -> None:
     """Compute per-object_subset per-channel standardization statistics and store
-    each object_subset's 13-vectors on its member cond entries.
+    each object_subset's FEATS_LEN-vectors on its member cond entries.
 
     Each physical clip is encoded into the L-normalized space (rest-centered
     position + per-skeleton size division) and accumulated into the bucket of the
@@ -268,7 +269,12 @@ def _compute_canonical_stats_per_object_subset(
             # unresolved-species fast-fail below (no global fallback).
             continue
         motion = np.load(motion_path).astype(np.float32, copy=False)
-        if motion.ndim != 3 or motion.shape[-1] < 13:
+        # Exact width, not "at least": this loop's output is written straight
+        # into cond as canonical_feature_mean/std, and neither
+        # collapse_stat_blocks nor set_canonical_global_stats validates its
+        # length -- a stale 13-channel (v3) clip would silently produce a
+        # 13-wide table on a canonical_motion_v4 cond.
+        if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN:
             continue
         try:
             subset_accs[subset] = accumulate_lnorm_stats(motion, object_cond, acc=subset_accs.get(subset))

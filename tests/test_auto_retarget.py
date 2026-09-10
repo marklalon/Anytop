@@ -536,11 +536,9 @@ def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> N
 
     features, *_ = get_motion(
         baseline_anim,
-        foot_contact_vel_thresh=0.002,
         object_type='Synthetic',
         max_joints=6,
         offsets=offsets,
-        foot_indices=[],
         tpos_rots=target_tp.tpos_rots,
         squared_positions_error={},
         scale_factor=1.0,
@@ -693,11 +691,9 @@ def test_tpose_aligned_roundtrip_with_nontrivial_rest_rotations() -> None:
 
     features, *_ = get_motion(
         baseline_anim,
-        foot_contact_vel_thresh=0.002,
         object_type='Synthetic',
         max_joints=7,
         offsets=offsets,
-        foot_indices=[],
         tpos_rots=tpos_rots,
         squared_positions_error={},
         scale_factor=1.0,
@@ -809,12 +805,12 @@ def test_retarget_features_npy_to_target_encodes_feature_space_animation_directl
     def _fake_get_motion(anim, *args, **kwargs):
         captured['anim'] = anim
         captured['kwargs'] = kwargs
-        return np.zeros((1, 2, 13), dtype=np.float32), None, None, None, None, None, None, None, False
+        return np.zeros((1, 2, 12), dtype=np.float32), None, None, None, None, None, None, None, False
 
     monkeypatch.setattr(features_mod, 'get_motion', _fake_get_motion)
 
     result = retarget_features_npy_to_target(
-        np.zeros((1, 2, 13), dtype=np.float32),
+        np.zeros((1, 2, 12), dtype=np.float32),
         source_cond,
         'Parrot',
         target_tp,
@@ -894,7 +890,7 @@ def test_retarget_features_npy_to_target_uses_effective_root_override(
         features_mod,
         'get_motion',
         lambda *args, **kwargs: (
-            np.zeros((1, 2, 13), dtype=np.float32),
+            np.zeros((1, 2, 12), dtype=np.float32),
             None,
             None,
             None,
@@ -906,7 +902,7 @@ def test_retarget_features_npy_to_target_uses_effective_root_override(
     )
 
     result = retarget_features_npy_to_target(
-        np.zeros((1, 2, 13), dtype=np.float32),
+        np.zeros((1, 2, 12), dtype=np.float32),
         source_cond,
         'Parrot',
         target_tp,

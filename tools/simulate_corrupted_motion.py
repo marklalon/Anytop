@@ -1,7 +1,7 @@
 """
 Simulate Corrupted Motion — Freeze Specified Joint Subtrees
 
-Loads a raw motion NPY ``(T, J, 13)``, freezes the channels of the requested
+Loads a raw motion NPY ``(T, J, 12)``, freezes the channels of the requested
 joints (and, by default, their subtrees) by setting their canonical features to
 zero, then decodes back to physical HML-like features and writes both the
 corrupted NPY and a BVH preview.
@@ -21,7 +21,7 @@ Usage
 
 Arguments
 ---------
-  --motion             Source raw-feature NPY (T, J, 13).
+  --motion             Source raw-feature NPY (T, J, 12).
   --object-type        Species/object key in cond.npy (e.g. Horse, Ostrich).
                        Auto-inferred from the motion filename when omitted
                        (uses utils.misc.infer_object_type_from_filename).
@@ -64,6 +64,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from model.joint_mask_utils import collect_subtree_indices
 from utils.misc import infer_object_type_from_filename
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import (
     resolve_species_key,
@@ -156,7 +157,7 @@ def parse_args() -> argparse.Namespace:
         )
     )
     p.add_argument("--motion", required=True,
-                   help="Source raw-feature NPY with shape (T, J, 13).")
+                   help="Source raw-feature NPY with shape (T, J, 12).")
     p.add_argument("--object-type", default="",
                    help="Species/object key in cond.npy (e.g. Horse, Ostrich). "
                         "Auto-inferred from the motion filename when omitted.")
@@ -245,12 +246,12 @@ def main() -> int:
         joint_names_bvh = [f"joint_{j}" for j in range(n_joints_cond)]
 
     # -----------------------------------------------------------------------
-    # Load input motion (T, J, 13) raw features
+    # Load input motion (T, J, FEATS_LEN) raw features
     # -----------------------------------------------------------------------
     motion_raw = np.load(input_path).astype(np.float32)
-    if motion_raw.ndim != 3 or motion_raw.shape[2] != 13:
+    if motion_raw.ndim != 3 or motion_raw.shape[2] != FEATS_LEN:
         print(
-            f"[ERROR] Input motion must be (T, J, 13); got {motion_raw.shape}"
+            f"[ERROR] Input motion must be (T, J, {FEATS_LEN}); got {motion_raw.shape}"
         )
         return 1
     T, J, _ = motion_raw.shape

@@ -39,6 +39,7 @@ _ANYTOP_DIR = _SCRIPT_DIR.parent
 if str(_ANYTOP_DIR) not in sys.path:
     sys.path.insert(0, str(_ANYTOP_DIR))
 
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 from eval.motion_quality.scorer import DistributionEvalReport, DistributionMotionQualityScorer
 from utils.misc import infer_object_type_from_filename
 
@@ -62,9 +63,9 @@ def _validate_motion(path: str) -> Optional[np.ndarray]:
     except Exception as exc:
         print(f"[warn] failed to load {path}: {exc}", file=sys.stderr)
         return None
-    if motion.ndim != 3 or motion.shape[-1] != 13:
+    if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN:
         print(
-            f"[warn] expected (T,J,13), got {motion.shape} - skipping {path}",
+            f"[warn] expected (T,J,{FEATS_LEN}), got {motion.shape} - skipping {path}",
             file=sys.stderr,
         )
         return None

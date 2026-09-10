@@ -1,7 +1,7 @@
 """
 Production-ready NPY roundtrip utilities.
 
-Functions for encoding, recovering, and loading AnyTop's 13-channel NPY motion features.
+Functions for encoding, recovering, and loading AnyTop's 12-channel NPY motion features.
 
 """
 from __future__ import annotations
@@ -96,7 +96,7 @@ def compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_veloc
 def coerce_feature_payload(features_or_payload: Any) -> tuple[np.ndarray, Optional[dict[str, Any]]]:
     """Unpack a roundtrip payload back into (features_tensor, payload_dict).
 
-    Accepts either a dict payload or a plain (F, J, 13) ndarray.
+    Accepts either a dict payload or a plain (F, J, FEATS_LEN) ndarray.
     """
     if isinstance(features_or_payload, dict):
         payload = features_or_payload
@@ -130,7 +130,7 @@ def _recover_from_production_motion_features(
     translation_root_index: int,
     anim_pos_threshold: float,
 ):
-    """Recover production bare `(F, J, 13)` features from get_motion_features().
+    """Recover production bare `(F, J, FEATS_LEN)` features from get_motion_features().
 
     Under the own-rotation encoding, each feature slot stores the joint's own
     local rotation directly — no more parent-child scatter needed.
@@ -139,11 +139,12 @@ def _recover_from_production_motion_features(
     from motion_lib.Quaternions import Quaternions as Qcls
 
     from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
+    from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
     from utils.rotation_conversions import rotation_6d_to_matrix_np as _r6d_to_mat
 
     frame_count, joint_count, channel_count = features_arr.shape
-    if channel_count != 13:
-        raise ValueError(f"Expected 13 channels, got {channel_count}")
+    if channel_count != FEATS_LEN:
+        raise ValueError(f"Expected {FEATS_LEN} channels, got {channel_count}")
 
     # Each slot stores the joint's own local rotation directly.
     rot_mats = _r6d_to_mat(np.asarray(features_arr[:, :, 3:9], dtype=np.float64))
@@ -195,9 +196,9 @@ def recover_from_features(
     anim_pos_threshold: float = 0.01,
     motion_metadata: Optional[dict[str, object]] = None,
 ):
-    """Recover an Animation from a 13-channel NPY feature tensor.
+    """Recover an Animation from a 12-channel NPY feature tensor.
 
-    Accepts either a dict payload or a plain (F, J, 13) ndarray.
+    Accepts either a dict payload or a plain (F, J, FEATS_LEN) ndarray.
 
     Dict payloads use the self-contained own-rotation roundtrip layout written
     by build_npy_metadata_payload(...). Plain arrays are treated as production
@@ -214,12 +215,13 @@ def recover_from_features(
     """
     from motion_lib.Animation import Animation
     from motion_lib.Quaternions import Quaternions
+    from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
     from utils.rotation_conversions import rotation_6d_to_matrix_np as _r6d_to_mat
 
     features_arr, payload = coerce_feature_payload(features)
 
     frame_count, joint_count, channel_count = features_arr.shape
-    assert channel_count == 13, f"Expected 13 channels, got {channel_count}"
+    assert channel_count == FEATS_LEN, f"Expected {FEATS_LEN} channels, got {channel_count}"
 
     if payload is None:
         if translation_root_index is None:

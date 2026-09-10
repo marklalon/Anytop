@@ -87,6 +87,7 @@ _load_utils_module("utils.npy_roundtrip_utils")
 _load_utils_module("utils.misc")
 
 from utils.misc import infer_object_type_from_filename
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import (
     resolve_species_key,
@@ -684,8 +685,8 @@ def restore_glb(
         raise ValueError(
             f"NPY has J={J} joints but cond.npy has {len(feature_joint_names)} joints for '{object_type}'."
         )
-    if C != 13:
-        raise ValueError(f"Expected 13 channels per joint, got {C}.")
+    if C != FEATS_LEN:
+        raise ValueError(f"Expected {FEATS_LEN} channels per joint, got {C}.")
 
     print(f"NPY: {F} frames, {J} joints, {C} channels")
 

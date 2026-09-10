@@ -17,7 +17,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import Counter
 import random
 import bisect
-from data_loaders.truebones.truebones_utils.param_utils import ACTION_LABELS_FILE, DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir
+from data_loaders.truebones.truebones_utils.param_utils import ACTION_LABELS_FILE, DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir
 from pathlib import Path
 from . import dataset_tags as _dataset_tags
 from .motion_labels import build_motion_labels, write_motion_metadata, load_motion_metadata, load_action_labels
@@ -220,7 +220,6 @@ def _prepare_motion_file_for_root_detection(
     file_path,
     object_type,
     offsets,
-    foot_indices,
     tpos_rots,
     scale_factor,
     orientation_quat,
@@ -250,7 +249,6 @@ def _prepare_motion_file_for_root_detection(
             offsets,
             local_errors,
             scale_factor=scale_factor,
-            foot_indices=foot_indices,
             orientation_quat=orientation_quat,
             preloaded=(raw_anim, names),
         )
@@ -331,7 +329,6 @@ def _encode_prepared_motion_file(
     object_type,
     max_joints,
     offsets,
-    foot_indices,
     tpos_rots,
     scale_factor,
     orientation_quat,
@@ -369,7 +366,6 @@ def _encode_prepared_motion_file(
                 offsets,
                 local_errors,
                 scale_factor=scale_factor,
-                foot_indices=foot_indices,
                 orientation_quat=orientation_quat,
                 preloaded=(raw_anim, names),
                 translation_root_index=translation_root_index,
@@ -377,10 +373,8 @@ def _encode_prepared_motion_file(
         motion, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_flattened = extract_motion_features_from_aligned_anims(
             new_anim,
             export_anim,
-            FOOT_CONTACT_VEL_THRESH,
             object_type,
             max_joints,
-            foot_indices,
             orientation_quat,
             translation_root_index,
             flatten_root_travel=flatten_root_travel,
@@ -499,11 +493,9 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     character_scale_factor = float(tp.scale_factor)
     rest_pose_motion, parents, max_joints, new_anim, _export_anim, _rest_is_loop, _rest_translation_root_index, _rest_root_translation_xz, _rest_root_xz_flattened = get_motion(
         tp.tpos_anim,
-        FOOT_CONTACT_VEL_THRESH,
         object_type,
         max_joints,
         tp.offsets,
-        tp.foot_indices,
         tp.tpos_rots,
         squared_positions_error,
         scale_factor=character_scale_factor,
@@ -703,7 +695,6 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 file_path,
                 object_type,
                 tp.offsets,
-                tp.foot_indices,
                 tp.tpos_rots,
                 character_scale_factor,
                 tp.orientation_quat,
@@ -808,11 +799,9 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     # motion root because a rest pose has no animated translation.
     fixed_rest = get_motion(
         tp.tpos_anim,
-        FOOT_CONTACT_VEL_THRESH,
         object_type,
         max_joints,
         tp.offsets,
-        tp.foot_indices,
         tp.tpos_rots,
         squared_positions_error,
         scale_factor=character_scale_factor,
@@ -846,7 +835,6 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             object_type,
             max_joints,
             tp.offsets,
-            tp.foot_indices,
             tp.tpos_rots,
             character_scale_factor,
             tp.orientation_quat,
@@ -873,25 +861,21 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 # RECOMPUTE the feature tensor from it. Interpolating the precomputed
                 # feature tensor directly would corrupt every channel: velocity is
                 # per-frame displacement (so it must shrink as frames are added),
-                # foot contact is binary, and the 6D rotation rep is not closed under
-                # linear interpolation. Re-extraction keeps vel = diff(pos), valid
-                # rotations, and re-thresholded contacts — all physically consistent
-                # with the resampled motion.
+                # and the 6D rotation rep is not closed under linear interpolation.
+                # Re-extraction keeps vel = diff(pos) and valid rotations — both
+                # physically consistent with the resampled motion.
                 # Re-extract from the anims as AUTHORED, not from pass 1's
                 # output. Feeding a flattened anim back in would measure drift on
-                # a trajectory whose drift was just removed and would read foot
-                # contact off a clip whose feet are already sliding; running the
-                # source through instead decides once, applies once, and leaves
-                # features, anims and verdict consistent by construction.
+                # a trajectory whose drift was just removed; running the source
+                # through instead decides once, applies once, and leaves features,
+                # anims and verdict consistent by construction.
                 result['source_new_anim'] = _resample_animation(result['source_new_anim'], resample_min_length)
                 result['source_export_anim'] = _resample_animation(result['source_export_anim'], resample_min_length)
                 motion, _, motion_anim, motion_export_anim, is_loop, root_xz_flattened = extract_motion_features_from_aligned_anims(
                     result['source_new_anim'],
                     result['source_export_anim'],
-                    FOOT_CONTACT_VEL_THRESH,
                     object_type,
                     max_joints,
-                    tp.foot_indices,
                     tp.orientation_quat,
                     result['translation_root_index'],
                     flatten_root_travel=bool(result.get('flatten_root_travel')),

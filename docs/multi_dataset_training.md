@@ -129,7 +129,9 @@ truebones/zoo_upgrade/Horse
 
 保持不变：`parents / offsets / rest_pose / joints_names_embs / species_emb / canonical_feature_mean·std / …`
 
-> 已确认两个现有数据集的 `feature_space=canonical_motion_v3`、`joints_names_embs_meta.schema_version=8`、`t5_name=t5-base` 完全一致，可直接合并。
+> 已确认两个现有数据集的 `feature_space`、`joints_names_embs_meta.schema_version=8`、`t5_name=t5-base` 完全一致，可直接合并。
+> **注意**：`feature_space` 现为 `canonical_motion_v4`（逐帧 foot contact 通道已删除，`FEATS_LEN`=12）。
+> 各源必须**重新预处理**到 v4 后才能合并——v3 的 cond 会因 `feature_space` 不一致而 fast-fail（§4.1 第 2 步）。
 
 ---
 

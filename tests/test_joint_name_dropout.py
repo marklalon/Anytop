@@ -55,7 +55,7 @@ def _make_model(joint_name_drop_prob=0.0,
                 species_joint_cond=False, max_joints=4):
     return AnyTop(
         max_joints=max_joints,
-        feature_len=13,
+        feature_len=12,
         latent_dim=8,
         ff_size=32,
         num_layers=1,
@@ -76,8 +76,8 @@ def _joint_struct(batch=2, joints=4):
 def _joint_cond_inputs(batch=2, joints=4, frames=3):
     """Shapes InputProcess is called with from AnyTop.forward."""
     return (
-        torch.randn(batch, joints, 13, frames),
-        torch.randn(1, batch, joints, 13),
+        torch.randn(batch, joints, 12, frames),
+        torch.randn(1, batch, joints, 12),
         torch.randn(batch, joints, T5_DIM),
         torch.randn(batch, T5_DIM),
     )
@@ -97,13 +97,13 @@ def _make_y(n_joints=(4, 4), max_joints=4, **extra):
     batch = len(n_joints)
     y = {
         'joints_padding_mask': _padding_mask(n_joints, max_joints),
-        'rest_pose': torch.randn(batch, max_joints, 13, dtype=torch.float32),
+        'rest_pose': torch.randn(batch, max_joints, 12, dtype=torch.float32),
         'n_joints': torch.tensor(n_joints, dtype=torch.int64),
         'joints_names_embs': torch.randn(batch, max_joints, T5_DIM, dtype=torch.float32),
         'joint_struct': _joint_struct(batch, max_joints),
         'lengths': torch.tensor([3] * batch, dtype=torch.int64),
-        'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
-        'canonical_feature_std': torch.ones(13, dtype=torch.float32),
+        'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),
+        'canonical_feature_std': torch.ones(12, dtype=torch.float32),
     }
     y.update(extra)
     return y
@@ -111,7 +111,7 @@ def _make_y(n_joints=(4, 4), max_joints=4, **extra):
 
 class JointNameDropoutTest(unittest.TestCase):
     def test_disabled_by_default(self):
-        model = AnyTop(max_joints=4, feature_len=13, latent_dim=8, ff_size=32,
+        model = AnyTop(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
                        num_layers=1, num_heads=2, dropout=0.0, cross_limb=True)
         self.assertEqual(model.joint_name_drop_prob, 0.0)
         self.assertIsNone(model.input_process.unknown_joint_name)
@@ -207,7 +207,7 @@ class JointNameDropoutTest(unittest.TestCase):
 
         model.input_process.forward = spy
         model.seqTransDecoder = _CaptureDecoder()
-        x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
+        x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         ts = torch.tensor([1, 2], dtype=torch.int64)
         out = model(x, ts, y=_make_y(n_joints=(4, 2)))
         self.assertEqual(out.shape, x.shape)
