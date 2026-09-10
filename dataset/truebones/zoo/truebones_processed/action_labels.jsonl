@@ -758,7 +758,6 @@
 {"clip": "SabreToothTiger_PissedOff2.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "SabreToothTiger_PissedOff.npy", "action_group": "stationary", "action_label": "hurt, crouch", "reviewed": true}
 {"clip": "SabreToothTiger_Roaring.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
-{"clip": "SabreToothTiger_Run2.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "SabreToothTiger_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "SabreToothTiger_Sit.npy", "action_group": "transition", "action_label": "sitdown", "reviewed": true}
 {"clip": "SabreToothTiger_Sitting2.npy", "action_group": "stationary", "action_label": "idle, sit", "reviewed": true}

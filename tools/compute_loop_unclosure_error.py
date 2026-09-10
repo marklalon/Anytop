@@ -20,8 +20,8 @@ Feature layout per joint (12 channels):
   9-11 : velocity (per-frame delta, scaled for playspeed)
 
 Usage:
-    python tools/compute_loop_unclosure_error.py
-    python tools/compute_loop_unclosure_error.py --object-type Buffalo
+    python tools/compute_loop_unclosure_error.py --data-root dataset/truebones/zoo_upgrade/clean_processed
+    python tools/compute_loop_unclosure_error.py --data-root <root> --object-type Buffalo
 """
 
 import argparse
@@ -119,6 +119,7 @@ def write_html_report(
     args,
     closest: list[dict],
     closest_label: str,
+    motion_dir_display: str,
     root_xz_closed_count: int = 0,
     all_root_xz_disp: list[float] | None = None,
 ):
@@ -190,7 +191,7 @@ def write_html_report(
 </head>
 <body>
 <h1>Loop Unclosure Error Report</h1>
-<p>Data root: {args.data_root or '(opt)'}  |  Motion dir: {args.motion_dir or '(opt)'}</p>
+<p>Data root: {args.data_root}  |  Motion dir: {motion_dir_display}</p>
 
 <h2>Parameters</h2>
 <pre>
@@ -266,12 +267,8 @@ def main():
         description="Compute loop unclosure error for is_loop motions"
     )
     parser.add_argument(
-        "--data-root", type=str, default=None,
-        help="Override dataset root directory"
-    )
-    parser.add_argument(
-        "--motion-dir", type=str, default=None,
-        help="Override motion directory"
+        "--data-root", type=str, required=True,
+        help="Dataset root directory; motions/ and bvhs/ live directly under it"
     )
     parser.add_argument(
         "--object-type", type=str, default=None,
@@ -281,25 +278,12 @@ def main():
         "--output-dir", type=str, default=None,
         help="Directory for HTML report (default: Anytop/outputs/compute_loop_unclosure_error)"
     )
-    parser.add_argument(
-        "--cond-path", dest="cond_path", type=str, default=None,
-        help="cond.npy defining the run; its first dataset source supplies the default "
-             "--data-root / --motion-dir."
-    )
-    parser.add_argument(
-        "--bvh-dir", type=str, default=None,
-        help="Directory containing BVH files for hyperlinks (default: dataset/truebones/zoo/truebones_processed/bvhs)"
-    )
     args = parser.parse_args()
 
-    # Determine paths
-    from data_loaders.truebones.truebones_utils.get_opt import get_opt
-    # opt has no single data_root any more: one cond.npy may span several dataset
-    # sources. This tool reads one directory, so it takes the first source.
-    opt = get_opt(None, getattr(args, "cond_path", None))
-    primary_source = opt.sources[0]
-    data_root = args.data_root or primary_source.root
-    motion_dir = args.motion_dir or primary_source.motion_dir
+    # Determine paths -- everything is rooted at --data-root.
+    data_root = args.data_root
+    # motions/ always lives directly under the data root.
+    motion_dir = str(Path(data_root) / "motions")
 
     # Load motions
     all_motions = load_motions(data_root)
@@ -357,9 +341,8 @@ def main():
 
     # ── HTML report ──
     output_dir = Path(args.output_dir) if args.output_dir else _ANYTOP_DIR / "outputs" / "compute_loop_unclosure_error"
-    # Resolve BVH dir to absolute path for file:/// links
-    _bvh_dir_rel = args.bvh_dir if args.bvh_dir else "../../dataset/truebones/zoo/truebones_processed/bvhs"
-    bvh_dir_abs = (output_dir / _bvh_dir_rel).resolve()
+    # BVH files live under the data root, for the bvhview:// links.
+    bvh_dir_abs = (Path(data_root) / "bvhs").resolve()
     write_html_report(
         results=results,
         all_wrap_gap=all_wrap_gap,
@@ -370,6 +353,7 @@ def main():
         args=args,
         closest=sorted_results,
         closest_label=closest_label,
+        motion_dir_display=motion_dir,
         root_xz_closed_count=root_xz_closed_count,
         all_root_xz_disp=all_root_xz_disp,
     )
