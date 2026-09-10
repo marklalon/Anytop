@@ -47,6 +47,7 @@ from .animation_utils import (
     root_xz_heading,
     flatten_root_xz_drift,
     soft_clamp_root_xz,
+    scale_root_xz_extent,
     set_translation_root_xz,
     resolve_detected_translation_root_index,
     needs_bvh_position_channels,
@@ -752,7 +753,9 @@ def extract_motion_features_from_aligned_anims(
     #
     # The measurement then says whether this particular gait take actually
     # travels, so a clip already authored in place is left untouched rather than
-    # passed through an operator that would only add float noise.
+    # passed through an operator that would only add float noise. It is the only
+    # thing the flatten is gated on: what the detrend leaves behind is BOUNDED
+    # below, not exempted here.
     root_xz_flattened = False
     if flatten_root_travel:
         flattened_root_xz, root_xz_drift = flatten_root_xz_drift(
@@ -766,15 +769,23 @@ def extract_motion_features_from_aligned_anims(
             target_root_xz = flattened_root_xz
 
     if clamp_root_xz_extent:
-        # Second and last, on whatever the first step left. A gait is flattened
-        # first precisely so it does not arrive here with a whole clip of travel
-        # to compress; what reaches the clamp is genuine excursion -- a lunge, a
-        # dodge, a death slide -- and it is bounded rather than removed.
+        # Second and last, on whatever the first step left. Both bounds live here
+        # rather than inside the detrend, because the validator calls that
+        # operator to MEASURE a stored clip and must not reshape what it reads.
         #
         # This is an OPT-IN because it is not idempotent: re-extracting features
-        # from an already-clamped clip (recovery, retarget, the resample branch's
+        # from an already-bounded clip (recovery, retarget, the resample branch's
         # second pass) would compress the excursion a second time. Only a fresh
         # pass over source animation asks for it.
+        if flatten_root_travel:
+            # Locomotion's own bound, on EVERY locomotion clip and not only the
+            # ones that travelled, so the group's limit holds by construction and
+            # the validator can read it straight off the tensor. One factor for the
+            # whole clip: what a detrend leaves behind IS the gait cycle, and a
+            # per-frame map would reshape the surge instead of only sizing it.
+            target_root_xz = scale_root_xz_extent(target_root_xz)
+        # The dataset-wide ceiling, on every clip. A lunge, a death slide or an
+        # attack reaches this one; a locomotion clip is already far inside it.
         target_root_xz = soft_clamp_root_xz(target_root_xz)
 
     motion_anim = new_anim

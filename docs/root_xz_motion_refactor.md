@@ -36,6 +36,10 @@ tile 接缝天然连续。
 阈值 `ROOT_XZ_DRIFT_THRESHOLD = 0.08`（≈ 5.8% body span）。drift 分布平滑无谷，
 这是政策选择而非数据分界。
 
+扁平化只管**取走运输量**，取完剩下多少不在这里判断 —— 一次性位移（dodge / jump / roll）
+去掉运输量后会剩下很大的残差（`MB_Unka_GroundDodgeLeft` 横移 2.02，去趋势后剩 0.21），
+这不是例外，正是 §2.2 那道 locomotion 界限存在的理由：**剩下的被封顶，不被豁免**。
+
 **算子**（`flatten_root_xz_drift`，[animation_utils.py](../data_loaders/truebones/truebones_utils/animation_utils.py)）：
 
 在世界系里转向步态的速度方向随角色一起转，没有可减的直线趋势——端到端线拟合会留下
@@ -46,28 +50,83 @@ tile 接缝天然连续。
 1. `root_xz_heading` 取 root 每帧世界朝向（+Z 前轴在 XZ 平面的角，`np.unwrap` 展开成连续
    斜坡）；动画须先 `collapse_translation_root_chain` 把惰性 wrapper 折到 root 上，
    root 的世界旋转才带上 wrapper 的 yaw。
-2. `_linear_fit` 对该朝向做最小二乘直线拟合（匀速转向在 yaw 上就是一条直线）——
-   拟合出的线是角色真正跟随的行进朝向，把每步骨盆抖动滤掉。
-3. 帧间位移按**负朝向**旋进朝向帧 → 减其均值（= 持续运输量）→ 按朝向旋转回世界系 →
+2. `_detrend_frame` 取**朝向首末两端之间的直线斜坡**，即帧角只转过这条 clip 的**净转角**，
+   不多不少。没有阈值、没有分支。
+3. 帧间位移按**负帧角**旋进朝向帧 → 减其均值（= 持续运输量）→ 按帧角旋转回世界系 →
    从 frame 0 累加。`correction` 即累积运输量，`flattened = traj - correction`，
    **frame 0 留在原点**，周期内的涌动与侧摆全部保留。
 
 `drift = ||correction[-1]||`，取**终点**而不是最大偏离：只有终点能区分"走了不回来"
 和"出去再回来"。闭合路径（含整圈绕行）按定义是"原点附近的周期性运动"，一律保留。
 
+**为什么是净转角，而不是最小二乘拟合，也不是路径方向。**
+
+朝向只是行进方向的**代理**，会在两个方向上骗人，净转角同时挡住这两个：
+
+| 情形 | 常数帧 | 最小二乘拟合 | **净转角斜坡** |
+|---|---|---|---|
+| 直线前进 + 骨盆偏斜摆动（`MB_TigerDrago_RunJump`：直行，yaw 摆 2.68 rad 净转 0.21） | 0.000 | **0.457** | **0.030** |
+| 匀速转向、骨盆干净（`IAC_Cavewoman_RunTurnRight`） | **0.466** | 0.057 | 0.057 |
+| 转向 + 骨盆摆动（`KI_Soldier_Crawling01TurnRight01`：真转 0.73 rad，yaw 总行程 11.40 rad） | **0.122** | **0.101** | **0.007** |
+
+最小二乘按全程加权，所以**不对称**的摆动会把拟合线带歪；净转角只看两端，摆出去又
+回到起点的部分在构造上贡献恰好为零，不管摆动是什么形状。它也不需要任何阈值去区分
+"转向"与"摆动"——曾经用过的 `|净转角| / Σ|帧间转角|` 比值做不到这件事：
+`KI_Soldier_Crawling01TurnRight01` 真转 42°，比值只有 0.064。
+
+首末各取几帧做平均来抗噪，实测在**所有** clip 长度上都更差（40 帧、转向 + 偏斜摆动：
+裸端点 0.031，2 帧均值 0.050，5 帧均值 0.113），因为平均会把估计拉向摆动在两端的相位，
+而那正是端点法要忽略的东西；即便注入 0.1 rad/帧的朝向噪声，裸端点仍是 0.048。朝向读自
+精确旋转矩阵，噪声远小于此，所以不设窗口。
+
+**不能用位移方向代替朝向。** 180° 转身的步态和来回突刺的路径几乎一样，区分它们的信息
+只在身体朝向里；strafe 更是侧向行进而身体不转。用路径速度方向拟合帧，会在净位移精确为
+0 的突刺上凭空量出 0.76 的运输量（折返点让角度 unwrap 成一条斜坡），超过 0.08 门限后
+被当成行进扁平化掉。
+
 **校验器从特征张量读回同一朝向**（`recover_from_bvh_rot_np` + `root_xz_heading`）：
 旋转直接取自 6D 通道，offsets 只摆关节位置、不动朝向。恢复动画带 identity orient，
 朝向可能整体差一个常量；但旋进帧、减均值、再旋转回，对帧的**常量旋转等变**，
-这个常量精确抵消，所以管线与校验器对同一条 clip 读出同一个 drift。
+这个常量精确抵消。关键在于**帧只由朝向决定，从不读路径**：常量偏移让首末两端同幅平移，
+斜坡随之整体平移同一个常量，所以管线与校验器对同一条 clip 读出同一个 drift。
 
 **foot contact 在 root XZ 编辑之前读取**（`get_contact_state` 读变换前的
 `positions_global(new_anim)`）。扁平化等于给每个关节加上步速，踩实的脚随之动起来 ——
 在变换后算接触会静默丢掉整个支撑相。终端行仍取变换后的位置（描述平铺接缝）。
 
-### 2.2 root XZ 软 clamp（无门控，所有 clip）
+### 2.2 两道 extent 界限
 
-扁平化只处理"走出去的步态"，剩下的位移原样保留但**必须封顶**：
-表示层扛不住 `Oscafish_Atk` 冲出 4.79（3.4 个 body span）这类量级。
+去掉运输量之后剩下的位移原样保留，但**必须封顶**，而且是两道：
+
+| 界限 | 范围 | 膝盖 / 天花板 | 算子 |
+|---|---|---|---|
+| **locomotion 界限** | 每一条 locomotion clip | 0.1 / 0.2 | `scale_root_xz_extent`（整段**统一缩放**） |
+| **全局天花板** | 每一条 clip | 0.6 / 0.8 | `soft_clamp_root_xz`（**逐帧**按半径） |
+
+**locomotion 界限**对**所有** locomotion clip 生效，而不只是真扁平化过的那些 ——
+这样"一条步态的 root XZ 不超过 0.2"才是这个组的**不变式**，而不是"碰巧走过路的才算"，
+校验器也就能直接从张量上读出来，不需要解码器和朝向。实测扁平化后的 locomotion extent
+分布 p50 0.013 / p90 0.110 / p95 0.159，所以约 90% 的 clip 落在膝盖以内、逐位不动。
+
+它按**一个系数**缩整条轨迹，而不是逐帧压半径。去趋势之后剩下的东西**就是步态周期本身**，
+均匀铺在整条 clip 上，逐帧映射会把每一步的远端压得比近端狠，改变的是涌动的**形状**而不只是
+大小；而这个膝盖不同于 0.6 天花板，是会被**经常**触到的，形状被改就成了模型能学到的东西。
+统一缩放只改大小。`MB_Unka_GroundDodgeLeft` 去趋势后残差 0.210 → 缩到 0.152 ——
+只比 0.2 的界限高 5%，这正是它需要这道界限的原因。
+
+**全局天花板**兜住其余一切：表示层扛不住 `Oscafish_Atk` 冲出 4.79（3.4 个 body span）
+这类量级。locomotion clip 早已远在它以内，它实际处理的是 lunge、dodge、死亡滑行。
+
+**两道界限都在 `features.py` 里，不在 `flatten_root_xz_drift` 内部** —— 校验器调用那个算子
+是为了**测量**一条已存 clip，不能让它改变自己正在读的东西。封顶不幂等：对已封顶的 clip 重新
+抽特征（recovery、retarget、resample 的第二遍）会压第二次，所以两道都挂在
+`clamp_root_xz_extent` 这个 opt-in 之下，而不是无条件执行。
+
+在这个 opt-in 之内，两道的门并不相同：**locomotion 界限还额外要求 `flatten_root_travel`**，
+而全局天花板只要求 `clamp_root_xz_extent`。`flatten_root_travel` 就是"这条 clip 是不是
+locomotion"的判定（`dataset_pipeline.py` 用 `locomotion_clips` 算出来），所以是**两者合取**
+才给出那个组的不变式 —— 只开 `clamp_root_xz_extent` 不足以建立它。校验器那一侧读的是同一个
+`locomotion_clips`，两侧口径一致。
 
 **0.6 以内完全不动，0.6 往上软压，0.8 是渐近的天花板**
 （`soft_clamp_extent` / `soft_clamp_root_xz`）：
@@ -200,7 +259,8 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
 
 | 检查 | 范围 | 判据 |
 |---|---|---|
-| `_validate_root_motion_drift` | 仅 locomotion clip | 用与管线**完全相同**的算术（解码器重建轨迹 + 同一朝向信号），扁平化后净运输量 ≤ `ROOT_XZ_DRIFT_THRESHOLD` |
+| `_validate_root_motion_drift` | 仅 locomotion clip | 用与管线**完全相同**的算术（解码器重建轨迹 + 同一朝向信号），扁平化后净运输量 ≤ `ROOT_XZ_DRIFT_THRESHOLD`。帧只由朝向的**净转角**决定，恢复动画的朝向常量偏移让首末两端同幅平移、精确抵消，所以管线与校验器选帧一致 |
+| `_validate_root_xz_ceiling`（对 locomotion 再调一次） | 仅 locomotion clip | root XZ extent ≤ `ROOT_XZ_LOCOMOTION_LIMIT` + `1e-3`。比 drift 检查更强也更便宜：不需要解码器、不需要朝向，直接读 extent |
 | `_validate_root_xz_ceiling` | **每一条** clip | root XZ extent ≤ `ROOT_XZ_SOFT_CLAMP_LIMIT` + `1e-3`。超了说明 tensor 来自 clamp 之前 |
 | `_validate_root_transport_carrier` | 每一条 clip | 逐帧取非 root 关节 RIC 位移的最小值 = 刚性整体平移的下界；超过天花板 0.8 且 root 自己轨迹不到它的一半 ⇒ 报警（位移被写在了物种根看不见的关节上） |
 
@@ -219,7 +279,9 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
 | 常量 | 值 | 含义 |
 |---|---|---|
 | `ROOT_XZ_DRIFT_THRESHOLD` | 0.08 | 扁平化门限（≈ 5.8% body span），= loop 闭合容差 |
-| `ROOT_XZ_SOFT_CLAMP_KNEE` | 0.6 | 软 clamp 不动区上限 |
+| `ROOT_XZ_LOCOMOTION_KNEE` | 0.1 | locomotion 统一缩放的不动区上限（≈ 扁平化后 extent 的 p90） |
+| `ROOT_XZ_LOCOMOTION_LIMIT` | 0.2 | locomotion 渐近界限；每一条 locomotion clip 都在此以内 |
+| `ROOT_XZ_SOFT_CLAMP_KNEE` | 0.6 | 全局软 clamp 不动区上限 |
 | `ROOT_XZ_SOFT_CLAMP_LIMIT` | 0.8 | 软 clamp 渐近天花板 |
 | `ROOT_TRANSPORT_CARRIER_SHARE` | 0.5 | carrier 须达本 clip 链上峰值的 50% |
 | `ROOT_TRANSPORT_MIN_TRAVEL` | 0.08 | carrier 绝对下限（低于它下游不会对这点位移做任何事） |
@@ -234,7 +296,7 @@ metadata 里 `root_xz_flattened` 是纯人读的溯源字段，不进模型。
 
 | 文件 | 职责 |
 |---|---|
-| [animation_utils.py](../data_loaders/truebones/truebones_utils/animation_utils.py) | 全部 root XZ 算子：`flatten_root_xz_drift`、`soft_clamp_*`、`select_transport_carrier`、`set_translation_root_xz`、`promote_translation_root_to_hierarchy_root` |
+| [animation_utils.py](../data_loaders/truebones/truebones_utils/animation_utils.py) | 全部 root XZ 算子：`flatten_root_xz_drift` / `_detrend_frame`、`scale_root_xz_extent`、`soft_clamp_*`、`select_transport_carrier`、`set_translation_root_xz`、`promote_translation_root_to_hierarchy_root` |
 | [dataset_pipeline.py](../data_loaders/truebones/truebones_utils/dataset_pipeline.py) | 两遍收敛、carrier 物种根、locomotion 门控、`root_promote_depth` 持久化 |
 | [features.py](../data_loaders/truebones/truebones_utils/features.py) | `extract_motion_features_from_aligned_anims(flatten_root_travel=, clamp_root_xz_extent=)`；contact 在变换前读取 |
 | [root_collapse.py](../motion_lib/root_collapse.py) | `promote_root_once`（旋转/offset/orient 复合） |
@@ -253,3 +315,11 @@ metadata 里 `root_xz_flattened` 是纯人读的溯源字段，不进模型。
 ## 7. 仍待执行
 
 **全量重新预处理 + 重训。** `CKPT_VERSION` 5 → 6，v5 checkpoint 不能直接续用。
+§2.1 的帧改成**朝向净转角斜坡**（删掉 coherence 比值判据与最小二乘拟合），
+§2.2 新增 **locomotion 统一缩放界限**（并删掉一次性位移门控）；特征布局不变，
+但 root XZ 数值变了，任何在旧数值上训过的 checkpoint 同样要重训。
+
+**新增/改写的测试**：`test_a_heading_that_wanders_cannot_bend_the_frame`、
+`test_a_turning_gait_still_turns_when_the_pelvis_wobbles_too`、
+`test_a_locomotion_one_shot_is_flattened_and_then_bounded`、
+`test_the_locomotion_bound_*`、`test_validator_holds_a_locomotion_clip_to_the_tighter_bound`。

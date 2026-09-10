@@ -15,6 +15,8 @@ from .animation_utils import (
     ROOT_XZ_DRIFT_THRESHOLD,
     ROOT_XZ_SOFT_CLAMP_KNEE,
     ROOT_XZ_SOFT_CLAMP_LIMIT,
+    ROOT_XZ_LOCOMOTION_KNEE,
+    ROOT_XZ_LOCOMOTION_LIMIT,
     # Joint name canonicalization
     canonical_name_for_bvh,
     collect_joint_name_collision_groups,
@@ -33,6 +35,7 @@ from .animation_utils import (
     flatten_root_xz_drift,
     soft_clamp_extent,
     soft_clamp_root_xz,
+    scale_root_xz_extent,
     move_xz_to_origin,
     # BVH export
     needs_bvh_position_channels,

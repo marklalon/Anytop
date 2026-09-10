@@ -42,6 +42,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     ROOT_XZ_DRIFT_THRESHOLD,
     ROOT_XZ_SOFT_CLAMP_LIMIT,
+    ROOT_XZ_LOCOMOTION_LIMIT,
 )
 from utils.misc import infer_object_type_from_filename  # noqa: E402
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
@@ -508,11 +509,16 @@ def _validate_root_motion_drift(
 
     The invariant preprocessing establishes, checked with the same arithmetic
     that establishes it, and gated on the same thing: only a gait's travel is
-    removed. Raw extent is deliberately NOT the measure -- a lunge is allowed to
-    reach as far as it likes, and a gait that creeps forward half a body span is
-    not. Non-locomotion clips are not checked at all: a death animation that
-    ends face down two thirds of a body span from where it started is correct,
-    and 393 clips across the shipped datasets look like that.
+    removed. Raw extent is deliberately NOT the measure here -- a lunge is
+    allowed to reach as far as it likes, and a gait that creeps forward half a
+    body span is not. Non-locomotion clips are not checked at all: a death
+    animation that ends face down two thirds of a body span from where it
+    started is correct, and 393 clips across the shipped datasets look like
+    that.
+
+    What a locomotion clip is left with, rather than what it removed, is the
+    separate and tighter statement made by ``_validate_root_xz_ceiling`` against
+    ``ROOT_XZ_LOCOMOTION_LIMIT``.
     """
     if ignored_stems and Path(motion_name).stem in ignored_stems:
         return
@@ -531,7 +537,8 @@ def _validate_root_motion_drift(
         # pose carried real ones, so this heading can sit a constant offset away
         # from the one preprocessing used -- which cancels exactly, because
         # rotating into a frame, removing a mean and rotating back is equivariant
-        # under a constant rotation of that frame.
+        # under a constant rotation of that frame. The frame is a ramp between
+        # this heading's endpoints, so a constant offset moves both alike.
         joint_parents = np.asarray(parents, dtype=np.int64)
         # Rotations come straight off the 6D channels, so the offsets only place
         # joints in space and cannot move the heading; zeros stand in for a cond
@@ -572,14 +579,19 @@ def _validate_root_xz_ceiling(
     translation_root_index: int,
     limit: float = ROOT_XZ_SOFT_CLAMP_LIMIT,
     ignored_stems: set[str] | None = None,
+    bound_name: str = "soft clamp ceiling",
 ) -> None:
-    """Warn when a clip's root XZ reaches past the soft clamp ceiling.
+    """Warn when a clip's root XZ reaches past one of the two extent bounds.
 
-    Unlike the drift check this applies to EVERY clip, gait or not: the clamp is
-    the one root-motion invariant that holds dataset-wide. Reaching past the
-    ceiling means the clip never went through the clamp -- a stale tensor from an
-    older preprocessing pass, or a hand-built one -- because the operator itself
-    cannot produce a radius at or above the limit.
+    Against ``ROOT_XZ_SOFT_CLAMP_LIMIT`` this applies to EVERY clip, gait or
+    not: the clamp is the one root-motion invariant that holds dataset-wide.
+    Reaching past the ceiling means the clip never went through the clamp -- a
+    stale tensor from an older preprocessing pass, or a hand-built one -- because
+    the operator itself cannot produce a radius at or above the limit.
+
+    The caller runs it a second time over the locomotion clips alone, against the
+    much tighter ``ROOT_XZ_LOCOMOTION_LIMIT``: every locomotion clip is scaled
+    into that bound, so unlike the drift check it needs no decoder and no heading.
     """
     if ignored_stems and Path(motion_name).stem in ignored_stems:
         return
@@ -597,9 +609,9 @@ def _validate_root_xz_ceiling(
 
     if extent > limit + ROOT_XZ_CEILING_TOLERANCE:
         print_warn(
-            f"{motion_name}: root XZ reaches {extent:.3f} from the origin, past the soft "
-            f"clamp ceiling ({limit:.2f}) -- the clip predates the clamp or bypassed it; "
-            f"translation root index {translation_root_index}"
+            f"{motion_name}: root XZ reaches {extent:.3f} from the origin, past the "
+            f"{bound_name} ({limit:.2f}) -- the clip predates that bound or bypassed "
+            f"it; translation root index {translation_root_index}"
         )
 
 
@@ -783,6 +795,14 @@ def validate_motion_files(
             )
 
             if motion_path.name in locomotion_clips:
+                _validate_root_xz_ceiling(
+                    motion,
+                    motion_path.name,
+                    translation_root_index,
+                    limit=ROOT_XZ_LOCOMOTION_LIMIT,
+                    ignored_stems=ignored_stems,
+                    bound_name="locomotion extent bound",
+                )
                 _validate_root_motion_drift(
                     motion,
                     object_type,

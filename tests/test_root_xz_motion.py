@@ -22,13 +22,17 @@ from motion_lib.Quaternions import Quaternions
 
 from data_loaders.truebones.truebones_utils.motion_process import (
     ROOT_XZ_DRIFT_THRESHOLD,
+    ROOT_XZ_LOCOMOTION_KNEE,
+    ROOT_XZ_LOCOMOTION_LIMIT,
     ROOT_XZ_SOFT_CLAMP_KNEE,
     ROOT_XZ_SOFT_CLAMP_LIMIT,
     flatten_root_xz_drift,
+    scale_root_xz_extent,
     soft_clamp_extent,
     soft_clamp_root_xz,
 )
 from data_loaders.truebones.truebones_utils.animation_utils import (
+    _frame_correction,
     _transport_carrier_index,
     collapse_translation_root_chain,
     promote_translation_root_to_hierarchy_root,
@@ -160,6 +164,25 @@ def _gait_path(n_frames: int, cycle: int, stride: float, surge: float) -> np.nda
     )
 
 
+def _least_squares_heading_fit(heading: np.ndarray) -> np.ndarray:
+    """The rejected estimator, kept as the reference the tests measure against.
+
+    A straight line through EVERY frame of the heading, which is what the detrend
+    fitted before the endpoint ramp replaced it.
+    """
+    heading = np.asarray(heading, dtype=np.float64)
+    times = np.arange(heading.shape[0], dtype=np.float64)
+    dev = times - times.mean()
+    slope = float((dev * (heading - heading.mean())).sum() / float(dev @ dev))
+    return heading.mean() + slope * dev
+
+
+def _residual_extent(traj: np.ndarray, correction: np.ndarray) -> float:
+    """How far the corrected path still ranges from its own frame 0."""
+    flat = np.asarray(traj, dtype=np.float64) - correction
+    return float(np.linalg.norm(flat - flat[0], axis=1).max())
+
+
 # ── the gate: a path that closes is kept, at any amplitude ─────────────────
 
 @pytest.mark.parametrize('amplitude', [0.3, 0.6, 2.0])
@@ -267,6 +290,37 @@ def test_a_one_shot_action_keeps_its_displacement():
     np.testing.assert_allclose(_root_path(features)[-1, 0], path[-1, 0], atol=1e-6)
 
 
+def test_a_locomotion_one_shot_is_flattened_and_then_bounded():
+    """MB_Unka_GroundDodgeLeft: one accelerate-decelerate move, 2.0 across.
+
+    Labelled locomotion, so its transport comes off like any gait's -- and what a
+    detrend leaves of it is large, 0.210, past the group's own 0.200 limit. That
+    residual is not exempted from the bound, it is what the bound is for: the
+    scale takes it to 0.152. The assertions pin the behaviour rather than the 5%
+    margin, which is the real clip's.
+    """
+    n_frames = 61
+    t = np.linspace(0.0, np.pi, n_frames)
+    path = np.stack([1.0 - np.cos(t), np.zeros(n_frames)], axis=-1)
+
+    flattened_path, drift = flatten_root_xz_drift(path, _flat_heading(n_frames))
+    residual = float(np.linalg.norm(flattened_path, axis=1).max())
+    assert drift == pytest.approx(2.0, rel=1e-6)
+    # Past the knee, so the bound has something to act on.
+    assert residual > ROOT_XZ_LOCOMOTION_KNEE
+
+    features, _loop, flattened, _anim = _extract(
+        _straight_line_anim(n_frames, path), clamp=True
+    )
+
+    reach = _reach(features)
+    assert flattened is True
+    assert ROOT_XZ_LOCOMOTION_KNEE < reach < ROOT_XZ_LOCOMOTION_LIMIT
+    # Strictly inside the residual: the scale is what bounded it, not the detrend
+    # having already left something small enough.
+    assert reach < residual
+
+
 def test_a_gait_that_was_authored_in_place_is_left_alone():
     """Permission is not an instruction: an in-place gait has no travel to take,
     so it must not be pushed through the operator for float noise."""
@@ -328,6 +382,55 @@ def test_a_turning_gait_is_flattened_as_completely_as_a_straight_one(turn_deg):
     travelled = np.linalg.norm(path - path[0], axis=1).max()
     residual = np.linalg.norm(_root_path(features), axis=1).max()
     assert residual < 0.05 * travelled
+
+
+def test_a_heading_that_wanders_cannot_bend_the_frame():
+    """MB_TigerDrago_RunJump: the clip travels dead straight while the pelvis
+    yaws and comes back.
+
+    A least-squares line through that heading reports a turn that never happened
+    and leaves 0.46 of lateral displacement in a path that has none. A ramp
+    between the endpoints is moved not at all by a yaw that returns to its start.
+    """
+    n_frames = 120
+    traj = _travelling_path(n_frames, distance=4.5)
+    u = np.linspace(0.0, 1.0, n_frames)
+    heading = 0.5 - np.sin(np.pi * u ** 2)      # wanders out and back, net turn 0
+
+    line = _least_squares_heading_fit(heading[:-1])
+    assert _residual_extent(traj, _frame_correction(traj, line)) > 0.4
+
+    correction, drift = root_xz_drift_correction(traj, heading)
+
+    assert _residual_extent(traj, correction) < 0.05
+    # ...and the travel it was carrying is still removed in full.
+    assert drift == pytest.approx(np.linalg.norm(traj[-1] - traj[0]), rel=1e-2)
+
+
+def test_a_turning_gait_still_turns_when_the_pelvis_wobbles_too():
+    """KI_Soldier_Crawling01TurnRight01: a real 0.73 rad turn under 11.40 rad of
+    crawling yaw.
+
+    Both failure modes are live at once, so it pins the frame against both:
+    holding it constant leaves the arc's sagitta (10% of the path), and fitting
+    every frame lets the wobble tilt the line. The net turn is neither -- it is
+    the turn, and only the turn.
+    """
+    n_frames = 120
+    path = _turning_path(n_frames, radius=1.6, turn_deg=45.0)
+    u = np.linspace(0.0, 1.0, n_frames)
+    turn = np.radians(45.0) * np.arange(n_frames) / (n_frames - 1)
+    heading = turn + 0.8 * (0.5 - np.sin(np.pi * u ** 2))
+
+    travelled = float(np.linalg.norm(path - path[0], axis=1).max())
+    held_constant = _frame_correction(path, np.zeros(n_frames - 1))
+    fitted = _frame_correction(path, _least_squares_heading_fit(heading[:-1]))
+    assert _residual_extent(path, held_constant) > 0.09 * travelled
+    assert _residual_extent(path, fitted) > 0.08 * travelled
+
+    correction, _drift = root_xz_drift_correction(path, heading)
+
+    assert _residual_extent(path, correction) < 0.01 * travelled
 
 
 def test_the_end_to_end_line_fit_is_what_the_heading_frame_replaces():
@@ -1032,6 +1135,72 @@ def test_the_clamp_is_opt_in_so_re_extraction_cannot_compress_twice():
     assert _reach(compressed_twice) < _reach(once)
 
 
+# ── locomotion's own extent bound ──────────────────────────────────────────
+
+def test_the_locomotion_bound_scales_by_a_single_factor():
+    """One factor for the whole clip, so the cycle keeps its shape.
+
+    A per-frame radial map would compress the far half of every stride harder
+    than the near half, changing what the surge looks like rather than its size.
+    """
+    t = np.linspace(0.0, np.pi, 40)
+    path = np.stack([0.3 * np.sin(t), 0.1 * np.sin(4.0 * t)], axis=-1)
+    # Pin one component exactly at zero, so the ratio below has to mask rather
+    # than divide to nan -- otherwise the mask is only tested by luck.
+    path[20, 0] = 0.0
+
+    scaled = scale_root_xz_extent(path)
+
+    assert float(np.linalg.norm(scaled, axis=1).max()) < ROOT_XZ_LOCOMOTION_LIMIT
+    # One factor means every NONZERO component scales alike. A component sitting
+    # exactly at zero would divide to nan and swallow the comparison, so the mask
+    # is what makes the ratio well defined rather than a property of the fixture.
+    nonzero = path[1:] != 0.0
+    assert nonzero.any()
+    ratios = scaled[1:][nonzero] / path[1:][nonzero]
+    assert float(np.ptp(ratios)) < 1e-12
+    np.testing.assert_allclose(scaled[0], path[0], atol=1e-12)
+
+
+def test_the_locomotion_bound_leaves_a_small_gait_bit_for_bit_alone():
+    """Below the knee it is the identity: most gaits detrend to well under it
+    (p50 0.013 over the shipped locomotion clips) and must not be touched."""
+    path = _closed_excursion(40, ROOT_XZ_LOCOMOTION_KNEE * 0.5)
+
+    np.testing.assert_array_equal(scale_root_xz_extent(path), path)
+
+
+def test_the_locomotion_bound_applies_even_when_nothing_was_flattened():
+    """The bound is a property of BEING locomotion, not of having travelled.
+
+    An in-place gait authored with a wide excursion never trips the drift gate,
+    so no detrend runs -- and it is still held to the group's limit, which is
+    what lets the validator state one extent invariant for every locomotion clip.
+    """
+    n_frames = 40
+    path = _closed_excursion(n_frames, 0.30)
+
+    features, _loop, flattened, _anim = _extract(
+        _straight_line_anim(n_frames, path), locomotion=True, clamp=True
+    )
+
+    assert flattened is False
+    assert ROOT_XZ_LOCOMOTION_KNEE < _reach(features) < ROOT_XZ_LOCOMOTION_LIMIT
+
+
+def test_a_non_locomotion_clip_keeps_the_wide_bound():
+    """The tighter bound is locomotion's alone: a lunge is still allowed to reach
+    for the dataset-wide ceiling."""
+    n_frames = 40
+    path = _closed_excursion(n_frames, 3.0)
+
+    features, _loop, _flattened, _anim = _extract(
+        _straight_line_anim(n_frames, path), locomotion=False, clamp=True
+    )
+
+    assert ROOT_XZ_SOFT_CLAMP_KNEE < _reach(features) < ROOT_XZ_SOFT_CLAMP_LIMIT
+
+
 # ── validator: the invariant preprocessing establishes ─────────────────────
 
 def _run_drift_validator(motion, root_index, capsys, threshold=ROOT_XZ_DRIFT_THRESHOLD):
@@ -1105,6 +1274,37 @@ def test_validator_flags_a_clip_that_never_went_through_the_clamp(capsys):
     )
 
     assert 'past the soft clamp ceiling' in out
+
+
+def test_validator_holds_a_locomotion_clip_to_the_tighter_bound(capsys):
+    """The invariant the locomotion scale establishes, read straight off the
+    tensor -- no decoder and no heading, unlike the drift check."""
+    from utils.validate_anytop_dataset import _validate_root_xz_ceiling
+
+    # Inside the dataset-wide ceiling, past what a locomotion clip may keep.
+    motion = _motion_with_root_path(_closed_excursion(40, 0.5))
+
+    assert _run_ceiling_validator(motion, 1, capsys) == ''
+
+    _validate_root_xz_ceiling(
+        motion, 'Clip_Test.npy', 1,
+        limit=ROOT_XZ_LOCOMOTION_LIMIT,
+        bound_name='locomotion extent bound',
+    )
+    assert 'locomotion extent bound' in capsys.readouterr().out
+
+
+def test_validator_accepts_a_locomotion_clip_the_scale_bounded(capsys):
+    from utils.validate_anytop_dataset import _validate_root_xz_ceiling
+
+    motion = _motion_with_root_path(scale_root_xz_extent(_closed_excursion(40, 0.5)))
+
+    _validate_root_xz_ceiling(
+        motion, 'Clip_Test.npy', 1,
+        limit=ROOT_XZ_LOCOMOTION_LIMIT,
+        bound_name='locomotion extent bound',
+    )
+    assert capsys.readouterr().out == ''
 
 
 def test_validator_checks_the_ceiling_on_every_clip_not_just_gaits(capsys):

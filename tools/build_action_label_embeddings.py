@@ -5,7 +5,7 @@ Precompute the frozen-T5 word table the action-label conditioner runs on.
 Training conditions on the controlled vocabulary token by token: every label is
 assembled at runtime from these vectors. Encoding them on the fly would mean a
 resident T5 in every training process
-for 103 vectors that never change, so they are baked once into
+for 104 vectors that never change, so they are baked once into
 ``dataset/action_word_embeddings.npy``.
 
 One vector per ``CONTROLLED_VOCAB`` token, in vocabulary order, encoded from

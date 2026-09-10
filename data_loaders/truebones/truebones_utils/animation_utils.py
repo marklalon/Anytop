@@ -79,6 +79,16 @@ ROOT_XZ_DRIFT_THRESHOLD = 0.08
 ROOT_XZ_SOFT_CLAMP_KNEE = 0.6
 ROOT_XZ_SOFT_CLAMP_LIMIT = 0.8
 
+# Locomotion's own extent bound, tighter than the soft clamp above and applied to
+# EVERY locomotion clip, not only the ones that travelled -- that is what makes it
+# an invariant of the group rather than of whether a clip happened to move. The
+# knee sits inside a normal gait's range (post-detrend extent runs p50 0.013,
+# p90 0.110, p95 0.159), so unlike the 0.6 ceiling it is touched routinely and must
+# leave the cycle's shape alone: it scales the whole clip by ONE factor, not each
+# frame's radius (see ``scale_root_xz_extent``).
+ROOT_XZ_LOCOMOTION_KNEE = 0.1
+ROOT_XZ_LOCOMOTION_LIMIT = 0.2
+
 
 # Loop detection judges the wrap-around gap (last frame -> first frame) against
 # the clip's own frame-to-frame motion distribution. A high percentile gives a
@@ -903,27 +913,42 @@ def _xz_rotation(angle):
     return np.stack([np.stack([cos, sin], -1), np.stack([-sin, cos], -1)], -2)
 
 
-def _linear_fit(values):
-    """Return the least-squares straight line through ``values`` over frame index.
+def _detrend_frame(heading):
+    """Return the per-frame frame angle to detrend in.
 
-    Used on the heading, which ramps: a turn at a steady rate is a straight line
-    in yaw, and fitting it is what separates the travel heading the character is
-    actually following from the per-stride pelvis wobble riding on top of it.
-    Feeding the raw per-frame yaw to the detrend instead costs a straight walk
-    0.063 of spurious residual, against 0.016 for the fitted one.
+    A straight ramp between the heading's endpoints, so the frame turns by the
+    clip's NET turn and nothing else: a yaw that wanders out and comes back lands
+    where it started and cannot bend it, however that wander was shaped, while a
+    clip that really turns bends it in full. A least-squares line through the
+    whole heading cannot say that -- it weights every frame, so an asymmetric
+    wobble tilts it (MB_TigerDrago_RunJump travels dead straight under 2.68 rad of
+    pelvis yaw for a net of 0.21, and the fitted line invented 0.42 of lateral
+    travel).
+
+    The heading is the right signal and the path is not: a 180-degree turning gait
+    and an out-and-back lunge trace nearly the same path, and only the body's
+    orientation says which is which. Fitting to the path's velocity direction
+    invents 0.76 of transport on a lunge whose net displacement is zero.
+
+    The frame reads the heading alone, never the path, which is what lets the
+    dataset validator re-derive it from the stored features: a constant offset
+    between the two headings shifts both endpoints alike and cancels. See
+    docs/root_xz_motion_refactor.md §2.1 for the measured comparison against the
+    constant-frame and least-squares alternatives.
     """
-    values = np.asarray(values, dtype=np.float64)
-    frames = values.shape[0]
-    if frames < 2:
-        return values.copy()
-    times = np.arange(frames, dtype=np.float64)
-    time_dev = times - times.mean()
-    denom = float(np.dot(time_dev, time_dev))
-    mean = values.mean(axis=0)
-    if denom <= 0.0:
-        return np.repeat(mean[None], frames, axis=0)
-    slope = (time_dev[:, None] * (values - mean)).sum(axis=0) / denom
-    return mean + slope[None] * time_dev[:, None]
+    heading = np.asarray(heading, dtype=np.float64).reshape(-1)
+    n_frames = heading.shape[0]
+    if n_frames < 2:
+        return heading.copy()
+    steps = np.arange(n_frames, dtype=np.float64) / (n_frames - 1)
+    return heading[0] + (heading[-1] - heading[0]) * steps
+
+
+def _frame_correction(traj, frame):
+    """Return the accumulated transport of ``traj`` measured in ``frame``."""
+    local_step = np.einsum('tij,tj->ti', _xz_rotation(-frame), np.diff(traj, axis=0))
+    transport = np.einsum('tij,j->ti', _xz_rotation(frame), local_step.mean(axis=0))
+    return np.concatenate([np.zeros((1, 2)), np.cumsum(transport, axis=0)], axis=0)
 
 
 def root_xz_drift_correction(traj, heading):
@@ -941,8 +966,12 @@ def root_xz_drift_correction(traj, heading):
     speed with the within-cycle surge and sway riding on it, and removing a
     constant is exactly what the old world-space line fit was already doing --
     just in the wrong frame. So the arithmetic is: rotate the frame-to-frame
-    displacement by the negated (fitted) heading, subtract its mean, rotate back,
+    displacement by the negated frame angle, subtract its mean, rotate back,
     re-integrate from frame 0.
+
+    The root's heading is only a proxy for the travel direction, so the frame is
+    read from its NET turn alone (``_detrend_frame``): a pelvis that yaws through
+    the stride and comes back cannot bend it.
 
     ``correction`` is the accumulated transport, so ``traj - correction`` keeps
     frame 0 where the pipeline centred it and keeps everything the transport
@@ -958,10 +987,8 @@ def root_xz_drift_correction(traj, heading):
     traj = np.asarray(traj, dtype=np.float64)
     if traj.shape[0] < 2:
         return np.zeros_like(traj), 0.0
-    heading = _linear_fit(np.asarray(heading, dtype=np.float64).reshape(-1, 1)[:-1])[:, 0]
-    local_step = np.einsum('tij,tj->ti', _xz_rotation(-heading), np.diff(traj, axis=0))
-    transport = np.einsum('tij,j->ti', _xz_rotation(heading), local_step.mean(axis=0))
-    correction = np.concatenate([np.zeros((1, 2)), np.cumsum(transport, axis=0)], axis=0)
+    frame = _detrend_frame(np.asarray(heading, dtype=np.float64)[:-1])
+    correction = _frame_correction(traj, frame)
     return correction, float(np.linalg.norm(correction[-1]))
 
 
@@ -970,7 +997,14 @@ def flatten_root_xz_drift(traj, heading):
 
     The single entry point the pipeline and the dataset validator share, so both
     answer "does this clip travel" with the same arithmetic. ``heading`` is the
-    translation root's per-frame world yaw, from ``root_xz_heading``.
+    translation root's per-frame world yaw, from ``root_xz_heading``; the frame
+    it is detrended in turns by that heading's net turn (see
+    ``root_xz_drift_correction``).
+
+    It removes the travel and nothing else. Bounding what is left is a separate
+    step the caller owns -- ``scale_root_xz_extent`` for a locomotion clip, the
+    dataset-wide ``soft_clamp_root_xz`` for every clip -- and it stays out of here
+    because the validator calls this to MEASURE a stored clip.
     """
     correction, drift = root_xz_drift_correction(traj, heading)
     return np.asarray(traj, dtype=np.float64) - correction, drift
@@ -1034,6 +1068,33 @@ def soft_clamp_root_xz(traj, knee=ROOT_XZ_SOFT_CLAMP_KNEE,
     if np.any(over):
         scale[over] = soft_clamp_extent(radius[over], knee, limit) / radius[over]
     return traj * scale[:, None]
+
+
+def scale_root_xz_extent(traj, knee=ROOT_XZ_LOCOMOTION_KNEE,
+                         limit=ROOT_XZ_LOCOMOTION_LIMIT):
+    """Return a ``(T, 2)`` root XZ path scaled by ONE factor into ``[0, limit)``.
+
+    The bound every locomotion clip is held to, applied after the detrend. It
+    reuses the hyperbola of ``soft_clamp_extent`` -- identity below the knee, a
+    strict asymptote at the limit, order-preserving in between -- but evaluates it
+    once on the clip's own extent and scales the whole path by that ratio.
+
+    The single factor is the deliberate difference from ``soft_clamp_root_xz``.
+    What a detrend leaves behind IS the gait cycle, spread over the whole clip, so
+    a per-frame radial map would compress the far half of every stride harder than
+    the near half and change the SHAPE of the surge -- and this knee, unlike the
+    0.6 ceiling, is reached routinely. One factor changes only its size.
+
+    Frame 0 sits at the origin, so scaling keeps it there and keeps a closed path
+    closed.
+    """
+    traj = np.asarray(traj, dtype=np.float64)
+    if traj.shape[0] == 0:
+        return traj.copy()
+    extent = float(np.linalg.norm(traj, axis=1).max())
+    if extent <= float(knee):
+        return traj.copy()
+    return traj * (float(soft_clamp_extent(extent, knee, limit)) / extent)
 
 
 # A joint counts as carrying transport when its world XZ moves at all. In
