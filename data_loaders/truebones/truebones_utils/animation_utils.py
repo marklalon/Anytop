@@ -22,6 +22,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     PROP_SOCKET_BONE_LENGTH_RATIO,
     PROP_SOCKET_MAX_SUBTREE_JOINTS,
     ROOT_Y_MIN_HEIGHT,
+    ROOT_Y_SOFT_CLAMP_KNEE,
     SCALE_BODY_SPAN_BLEND_WEIGHT,
     VERTICAL_CLAMP_MIN_RATIO,
     VERTICAL_CLAMP_MAX_RATIO,
@@ -695,12 +696,39 @@ def _get_reference_body_length(anim):
     return max_joint_span(positions_global(rest_pose_animation(anim))[0])
 
 
+def _excursion_scale(extent, min_h, max_h):
+    """The factor an excursion reaching ``extent`` is scaled by.
+
+    ``min_h`` is the knee and ``max_h`` the asymptote of the shared hyperbola, so
+    the peak lands on ``soft_clamp_extent`` and everything below the knee is left
+    where it is. ``max_h`` used to be the target rather than the asymptote, which
+    made it the reported height of EVERY clip that reached it -- 304 of the 582
+    winged clips, so a bird's hop and a dragon's climb came out at the same
+    number. Ordering across clips is what that cost, and what this returns.
+
+    The excess drops out of the ratio as ``w / (e + w)``, so a clip that barely
+    clears the knee is scaled by ~1 and the map is continuous there. Cancellation
+    in the numerator only bites once ``e`` is down around 1e-13, and the shift it
+    could cause is itself bounded by ``e`` -- there is nothing left to protect.
+    """
+    excess = extent - min_h
+    return (float(soft_clamp_extent(extent, min_h, max_h)) - min_h) / excess
+
+
 def _compress_positive_excursion(values, min_h, max_h):
+    """Scale the part of ``values`` above ``min_h`` so its peak approaches ``max_h``.
+
+    ONE factor for the whole clip, taken from the clip's own peak, exactly as
+    ``scale_root_xz_extent`` does and for the same reason: past the knee the
+    excursion IS the flight, so a per-frame map would bend the top of every arc
+    harder than its base and change the shape of the climb rather than its size.
+    The knee is reached routinely here -- 71.3% of winged clips peak above it.
+    """
     peak = float(values.max())
-    if peak <= max_h or max_h <= min_h:
+    if peak <= min_h or max_h <= min_h:
         return values, False
 
-    scale = (max_h - min_h) / max(peak - min_h, 1e-8)
+    scale = _excursion_scale(peak, min_h, max_h)
     compressed = values.copy()
     mask = compressed > min_h
     compressed[mask] = min_h + (compressed[mask] - min_h) * scale
@@ -708,11 +736,12 @@ def _compress_positive_excursion(values, min_h, max_h):
 
 
 def _compress_negative_excursion(values, min_h, max_h):
-    trough = float(values.min())
-    if trough >= -max_h or max_h <= min_h:
+    """The mirror of :func:`_compress_positive_excursion` on downward depth."""
+    depth = -float(values.min())
+    if depth <= min_h or max_h <= min_h:
         return values, False
 
-    scale = (max_h - min_h) / max(abs(trough) - min_h, 1e-8)
+    scale = _excursion_scale(depth, min_h, max_h)
     compressed = values.copy()
     mask = compressed < -min_h
     compressed[mask] = -min_h - ((-compressed[mask]) - min_h) * scale
@@ -724,10 +753,30 @@ def _compress_below_negative_band(values, min_h, max_h):
     return _compress_negative_excursion(values, abs(min_h), abs(max_h))
 
 
-def _clamp_min_height(values, min_height):
-    if float(values.min()) >= min_height:
+def _soft_clamp_min_height(values, knee, min_height):
+    """Bound the root's downward excursion by ``min_height`` without a hard floor.
+
+    The root-XZ hyperbola (:func:`soft_clamp_extent`) mirrored onto depth: heights
+    above ``knee`` come back bit-for-bit, the descent past it is compressed with a
+    continuous value and slope, order is preserved, and ``min_height`` is an
+    asymptote rather than a value.
+
+    A hard ``np.maximum`` floor has none of the last three. It mapped every frame
+    past -0.5 onto exactly -0.5, so what a dive, a fall or a burrow left in the
+    data was a pinned plateau, not a descent -- 86 shipped clips carried one, 19 of
+    them for 8+ consecutive frames, and Pirrana_MidSwim was a dead constant for all
+    97 of its frames. It also fought the aquatic band directly: that band puts
+    swim depth in [-minH, -maxH], which at the HML reference span is
+    [-0.417, -0.694], and the floor then sheared the deeper half of it onto one
+    height.
+    """
+    knee_depth = abs(float(knee))
+    if float(values.min()) >= -knee_depth:
         return values, False
-    return np.maximum(values, min_height), True
+    # soft_clamp_extent is identity at and below its knee, negative radii included,
+    # so every frame shallower than the knee (and every positive height) survives
+    # the round trip through the negation exactly.
+    return -soft_clamp_extent(-values, knee_depth, abs(float(min_height))), True
 
 
 def clamp_vertical_trajectory(
@@ -736,14 +785,16 @@ def clamp_vertical_trajectory(
     min_ratio=VERTICAL_CLAMP_MIN_RATIO,
     max_ratio=VERTICAL_CLAMP_MAX_RATIO,
     root_y_min_height=ROOT_Y_MIN_HEIGHT,
+    root_y_soft_clamp_knee=ROOT_Y_SOFT_CLAMP_KNEE,
     translation_root_index=None,
 ):
     """Constrain the processed translation-root vertical trajectory.
 
     What this compresses is the root's ABSOLUTE height, not its excursion: once
-    the peak passes ``max_ratio`` of the body span, everything above ``min_ratio``
-    is squeezed into that band. The band is calibrated on flight, where an
-    unbounded climb is the thing worth bounding.
+    the peak passes ``min_ratio`` of the body span, everything above ``min_ratio``
+    is scaled by one factor that sends the peak toward ``max_ratio`` without ever
+    reaching it. The band is calibrated on flight, where an unbounded climb is the
+    thing worth bounding.
 
     ``drifting`` deliberately does NOT take this branch, though it too leaves the
     ground. A drifting species holds a near-constant hover height that is a trait
@@ -753,11 +804,16 @@ def clamp_vertical_trajectory(
     a factor that depends on each clip's own peak, which would make one species'
     hover height differ from clip to clip. Its vertical range in level travel is
     already as small as level flight's, so there is nothing here worth clamping;
-    it keeps only the absolute root-Y floor, the same as a ground species.
+    it keeps only the root-Y lower bound, the same as a ground species.
 
     Aquatic species use the same positive height clamp and also apply the same
     ratios with a negative sign so their downward swim depth is compressed into
-    [-maxH, -minH]. Every species also gets the absolute root-Y floor.
+    [-maxH, -minH]. Every species then gets the root-Y lower bound, which is a
+    soft clamp, not a floor: it leaves everything above its knee alone and
+    compresses the descent below it into ``(root_y_min_height, knee]`` (see
+    :func:`_soft_clamp_min_height`). It runs last, so an aquatic dive whose band
+    reaches past the bound comes out as a monotone descent -- compressed further
+    than the band left it, but never the flat plateau a hard floor cut.
 
     ``translation_root_index`` is the species' frozen root. Without it this falls
     back to per-clip detection, which is right for a bare rest pose or a raw
@@ -803,7 +859,11 @@ def clamp_vertical_trajectory(
     else:
         clamped_world_y = world_y.copy()
 
-    clamped_world_y, changed_floor = _clamp_min_height(clamped_world_y, root_y_min_height)
+    clamped_world_y, changed_floor = _soft_clamp_min_height(
+        clamped_world_y,
+        root_y_soft_clamp_knee,
+        root_y_min_height,
+    )
     changed = changed or changed_floor
 
     if not changed:
