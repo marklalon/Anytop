@@ -222,18 +222,34 @@ def test_an_end_frame_copying_the_start_goes_whether_or_not_it_wraps():
     np.testing.assert_array_equal(positions[0], positions[-1])
 
 
-def test_trimming_does_not_change_the_loop_verdict():
-    """The verdict belongs to the extraction, not to the trim.
+def test_a_duplicated_closing_key_cannot_make_an_open_sweep_a_loop():
+    """The verdict describes the tensor that ships, not the frame removed from it.
 
-    This clip is a loop ONLY because its last frame copies the first: the frame
-    is dropped, and the clip that remains is an open sweep, which on its own is
-    NOT a loop. The verdict must survive the trim anyway -- what the clip IS was
-    decided on the clip that was authored, not on the edge frame removed from it.
+    This clip closes ONLY because its last frame copies the first: underneath, it
+    is an open sweep that ends nowhere near where it began. Reading closure off
+    the untrimmed stack reads the exporter's habit of duplicating the closing key
+    rather than the motion, and reads it off a frame this pass then deletes --
+    so the verdict is taken after the trim, on the 40 frames that remain.
     """
     open_anim = _swing_anim(np.radians(np.linspace(0.0, 4.0 * CYCLE_AMPLITUDE_DEG, 40)))
     closed_by_copy = _repeat_frame(open_anim, 0, 40)
 
     features, is_loop, _anim, _export = _extract(closed_by_copy)
+
+    assert is_loop is False
+    assert features.shape[0] == 40
+
+
+def test_a_real_cycle_survives_losing_its_duplicated_closing_key():
+    """The other half of the rule: the trim must not cost a genuine loop.
+
+    A cycle that ships the redundant closing key most loop takes arrive with
+    still closes once that key is gone, because the frame before it already
+    steps cleanly into frame 0.
+    """
+    duplicated = _repeat_frame(_cycle_anim(40), 0, 40)
+
+    features, is_loop, _anim, _export = _extract(duplicated)
 
     assert is_loop is True
     assert features.shape[0] == 40

@@ -4,15 +4,18 @@ Measures the per-joint difference between the first and last frame of each
 loop-classified motion clip, sorted from worst to best.  Small residuals
 are suppressed so only meaningful discontinuities are flagged.
 
-  ``wrap_gap`` is p75 of per-joint wrap-around gap ||pos_last - pos_first|| on
-the root-relative positions stored in channels 0-2 of each *.npy feature file.
-``loop_margin`` = wrap_gap - effective_tolerance, where effective_tolerance is
+``wrap_gap`` is the p80 over joints of the wrap-around gap
+``||pos_last - pos_first||``, on the root-relative positions stored in channels
+0-2 of each *.npy feature file. ``loop_margin`` = wrap_gap /
+effective_tolerance (a ratio: <= 1 passes, and the value says by how much),
+where effective_tolerance is
 ``clamp(LOOP_DETECTION_GAP_RATIO * transition_envelope,
 LOOP_DETECTION_STEP_MIN, LOOP_DETECTION_STEP_MAX)``. The transition envelope is
-the p65 of boundary-frame transition steps. ``root_xz_is_closed`` reports whether
-the translation root's integrated XZ displacement stays within the absolute
-tolerance ``LOOP_DETECTION_ROOT_XZ_TOLERANCE``. Both checks must pass for the
-runtime loop decision to pass.
+the p65 over all per-frame, per-joint step magnitudes in a fixed 5-frame window
+at each end. ``root_xz_is_closed`` reports whether the translation root's
+integrated XZ displacement stays within the absolute tolerance
+``LOOP_DETECTION_ROOT_XZ_TOLERANCE``. Both checks must pass for the runtime loop
+decision to pass.
 
 Feature layout per joint (12 channels):
   0-2  : root-relative global position (face Z+, translation-root centred)
@@ -20,8 +23,12 @@ Feature layout per joint (12 channels):
   9-11 : velocity (per-frame delta, scaled for playspeed)
 
 Usage:
+    python tools/compute_loop_unclosure_error.py
     python tools/compute_loop_unclosure_error.py --data-root dataset/truebones/zoo_upgrade/clean_processed
     python tools/compute_loop_unclosure_error.py --data-root <root> --object-type Buffalo
+
+``--data-root`` defaults to the truebones zoo dataset
+(``dataset/truebones/zoo/truebones_processed``).
 """
 
 import argparse
@@ -45,7 +52,10 @@ from data_loaders.truebones.truebones_utils.animation_utils import (
     LOOP_DETECTION_STEP_MIN,
     compute_motion_loop_diagnostics,
 )
-from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
+from data_loaders.truebones.truebones_utils.param_utils import (
+    FEATS_LEN,
+    get_dataset_dir,
+)
 
 
 def load_motions(data_root: str) -> dict[str, dict]:
@@ -197,8 +207,8 @@ def write_html_report(
 <pre>
 Runtime gap tolerance  = clamp({LOOP_DETECTION_GAP_RATIO} * transition_envelope, {LOOP_DETECTION_STEP_MIN}, {LOOP_DETECTION_STEP_MAX})
 Root XZ tolerance      = {LOOP_DETECTION_ROOT_XZ_TOLERANCE}  (absolute)
-Transition envelope    = p75 in-clip transition step
-Object-type filter    : {args.object_type or '(none)'}
+Transition envelope    = p65 of the step magnitudes in a fixed 5-frame window at each end
+Object-type filter     = {args.object_type or '(none)'}
 </pre>
 
 <h2>Summary ({label})</h2>
@@ -212,7 +222,7 @@ Object-type filter    : {args.object_type or '(none)'}
   </table>
 </div>
 <div class="stat-box">
-  <h3>wrap_gap (max per-joint first-vs-last gap)</h3>
+  <h3>wrap_gap (p80 per-joint first-vs-last gap)</h3>
   <table>
     <tr><td>min</td><td class="val">{wrap_min}</td></tr>
     <tr><td>p50</td><td class="val">{wrap_p50}</td></tr>
@@ -267,8 +277,10 @@ def main():
         description="Compute loop unclosure error for is_loop motions"
     )
     parser.add_argument(
-        "--data-root", type=str, required=True,
-        help="Dataset root directory; motions/ and bvhs/ live directly under it"
+        "--data-root", type=str, default=None,
+        help="Dataset root directory; motions/ and bvhs/ live directly under it "
+             "(default: the truebones zoo dataset, "
+             "dataset/truebones/zoo/truebones_processed)"
     )
     parser.add_argument(
         "--object-type", type=str, default=None,
@@ -281,7 +293,9 @@ def main():
     args = parser.parse_args()
 
     # Determine paths -- everything is rooted at --data-root.
-    data_root = args.data_root
+    data_root = args.data_root or get_dataset_dir()
+    # The report prints args.data_root, so record the path actually read.
+    args.data_root = data_root
     # motions/ always lives directly under the data root.
     motion_dir = str(Path(data_root) / "motions")
 

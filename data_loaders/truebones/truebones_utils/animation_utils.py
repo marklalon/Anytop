@@ -92,38 +92,42 @@ ROOT_XZ_LOCOMOTION_LIMIT = 0.2
 
 
 # Loop detection judges the wrap-around gap (last frame -> first frame) against
-# the clip's own frame-to-frame motion distribution. A high percentile gives a
-# compact robust envelope without tying tolerance to skeleton size.
+# the clip's own frame-to-frame motion distribution, read over the frames near
+# the two boundaries. A high percentile gives a compact robust envelope without
+# tying tolerance to skeleton size.
 #
-# A clip loops only when the endpoint gap fits inside that transition envelope
-# and the translation root's accumulated XZ displacement returns to the start.
-LOOP_DETECTION_GAP_RATIO = 2.5
+# A clip loops only when the endpoint gap fits inside
+# ``clamp(GAP_RATIO * envelope, STEP_MIN, STEP_MAX)`` and the translation root's
+# accumulated XZ displacement returns to the start.
+#
+# The constants are tightened for PRECISION, because the two errors are not
+# symmetric: a clip wrongly called a loop is tiled into training data that hitches
+# every cycle, while one wrongly refused merely loses that augmentation.
+LOOP_DETECTION_GAP_RATIO = 2
 LOOP_DETECTION_STEP_MIN = 0.03
 LOOP_DETECTION_STEP_MAX = 0.08
+
+# The translation root's accumulated XZ displacement must also return to the
+# start, or the clip transports and the second cycle begins somewhere else.
 LOOP_DETECTION_ROOT_XZ_TOLERANCE = 0.05
 
-# Exporters ship redundant edge frames: a frame that copies one the clip already
-# has. Two shapes, both dropped in any clip:
+# Exporters ship edge frames that copy one the clip already has, in two shapes:
+# a held key at an end, and a duplicated closing key (frame N == frame 0, how most
+# unitybundles loop takes arrive). In a loop the wrap is PLAYED, so the copy lands
+# next to the frame it copies and hitches every cycle; in a non-loop that pose is
+# still at index 0, so the drop costs one frame.
 #
-# * a held key at an end (frame 0 == frame 1, frame N-1 == frame N) -- dead time
-#   whose velocity row is a zero the model has to learn around;
-# * a duplicated closing key, frame N copying frame 0 -- how most unitybundles
-#   loop takes arrive. In a loop the wrap is PLAYED, so the copy lands next to
-#   the frame it copies and hitches every cycle. It is dropped from non-looping
-#   clips too: that pose is still at index 0, so the drop costs only one frame.
-#
-# Only an exact repeat is dropped, never a merely slow frame: the boundary-step
-# ratio is a slope, not a valley, so any visible-stall threshold would also catch
-# real motion. The tolerance sits far below a normal frame step and far above
-# float64 FK noise, leaving Unity's interpolated near-copies alone by design.
-REDUNDANT_FRAME_RATIO = 1e-4
+# Only a frame carrying no motion is dropped -- the boundary-step ratio is a
+# slope, not a valley, so a visible-stall threshold would also catch real motion.
+# A resampled closing key lands NEAR frame 0 rather than on it, which is why the
+# ratio sits above exact-equality noise yet far below a visible step.
+REDUNDANT_FRAME_RATIO = 5e-3
 # Arithmetic floor: at two frames the head and wrap pairs are the same pair, and
 # dropping both edges of a three-frame clip leaves nothing readable. Not a
 # clip-length policy -- resampling lifts every clip to >= 20 frames.
 TRIM_MIN_FRAMES = 3
-# Absolute floor under the ratio (a clip so slow the ratio lands in float64
-# noise); also the gate that leaves a motionless clip alone, where every frame
-# repeats every other and its length IS the held duration. Normalized units.
+# Absolute floor under the ratio; also the gate that leaves a motionless clip
+# alone, where every frame repeats every other and its length IS the held duration.
 TRIM_MIN_MOTION = 1e-9
 
 
@@ -473,41 +477,46 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
 
 ################## Animation Transform Utilities #####################
 
-def compute_motion_loop_diagnostics(positions, root_xz_velocity=None, translation_root_index=0):
+def compute_motion_loop_diagnostics(positions, root_xz_velocity=None,
+                                    translation_root_index=0):
     """Return loop diagnostics on the exact runtime boundary used by detect_motion_loop.
 
     The endpoint gap is compared against a robust upper envelope of the clip's
-    own per-frame motion. When ``root_xz_velocity`` is provided, the translation
-    root's accumulated XZ displacement must also close for the clip to count as
-    a loop.
+    own per-frame motion, taken over the frames near the two boundaries. When
+    ``root_xz_velocity`` is provided, the translation root's accumulated XZ
+    displacement must also close for the clip to count as a loop.
+
+    ``loop_margin`` is the gap as a fraction of its tolerance, so <= 1 passes and
+    the value says by how much; ``term_margins`` carries the same number under the
+    name of the term that produced it, so the runtime and the report share one
+    vocabulary even though this rule has a single term.
     """
     positions = np.asarray(positions, dtype=np.float64)
     if positions.shape[0] < 3:
         return {
-            'wrap_gap': 0.0,
-            'transition_envelope': 0.0,
-            'effective_tolerance': 0.0,
-            'root_xz_total_disp': 0.0,
-            'root_xz_is_closed': True,
-            'is_loop': False,
+            'wrap_gap': 0.0, 'transition_envelope': 0.0,
+            'effective_tolerance': 0.0, 'loop_margin': float('inf'),
+            'term_margins': {}, 'root_xz_total_disp': 0.0,
+            'root_xz_is_closed': True, 'is_closed': False, 'is_loop': False,
         }
 
-    # wrap_gap: p75 of per-joint endpoint distance — robust against a single
+    # wrap_gap: p80 of per-joint endpoint distance -- robust against a single
     # outlier joint while still capturing the bulk of the discontinuity.
-    wrap_gap = float(np.percentile(np.linalg.norm(positions[-1] - positions[0], axis=-1), 75))
+    wrap_gap = float(np.percentile(np.linalg.norm(positions[-1] - positions[0], axis=-1), 80))
 
     # Use only frames near the clip boundaries to estimate the "normal transition"
     # envelope. The wrap_gap measures the jump from last frame -> first frame, so
     # it should be compared against the typical motion amplitude at the clip edges
     # rather than the peak motion in the middle (e.g., a fast swing or stride).
+    # A fixed 5 frames per end keeps the window short and predictable across clip
+    # lengths; halved so the two windows never overlap on very short clips.
     frame_steps = np.linalg.norm(np.diff(positions, axis=0), axis=-1)  # (T-1, J)
-    boundary_ratio = 0.15  # consider the outer 15% at each end
-    boundary_count = max(1, int(np.ceil((frame_steps.shape[0] - 1) * boundary_ratio)))
+    boundary_count = min(5, frame_steps.shape[0] // 2)  # a fixed 5 frames at each end
     boundary_steps = np.concatenate([
         frame_steps[:boundary_count],
         frame_steps[-boundary_count:],
     ], axis=0)
-    transition_envelope = float(np.percentile(boundary_steps, 65.0))  # p65 — tighter than p75 wrap_gap
+    transition_envelope = float(np.percentile(boundary_steps, 65.0))  # p65 boundary envelope
     effective_tolerance = min(
         max(
             LOOP_DETECTION_GAP_RATIO * transition_envelope,
@@ -515,6 +524,10 @@ def compute_motion_loop_diagnostics(positions, root_xz_velocity=None, translatio
         ),
         LOOP_DETECTION_STEP_MAX,
     )
+    loop_margin = wrap_gap / effective_tolerance if effective_tolerance > 0.0 else float('inf')
+    term_margins = {'position_wrap': loop_margin}
+
+    is_closed = bool(wrap_gap <= effective_tolerance)
 
     root_xz_total_disp = 0.0
     root_xz_is_closed = True
@@ -534,6 +547,8 @@ def compute_motion_loop_diagnostics(positions, root_xz_velocity=None, translatio
 
         root_velocity = velocity[:, translation_root_index, :]
         if velocity.shape[0] == positions.shape[0]:
+            # The stored terminal row is the wrap delta a PREVIOUS loop verdict
+            # wrote, so reading it here would let that verdict decide this one.
             root_velocity = root_velocity[:-1]
         elif velocity.shape[0] != positions.shape[0] - 1:
             raise ValueError(
@@ -541,17 +556,19 @@ def compute_motion_loop_diagnostics(positions, root_xz_velocity=None, translatio
                 f"got {velocity.shape[0]} vs positions T={positions.shape[0]}"
             )
 
-        root_xz_steps = np.linalg.norm(root_velocity[:, [0, 2]], axis=-1)
         root_xz_total_disp = float(np.linalg.norm(np.sum(root_velocity[:, [0, 2]], axis=0)))
         root_xz_is_closed = bool(root_xz_total_disp <= LOOP_DETECTION_ROOT_XZ_TOLERANCE)
 
     return {
-        'wrap_gap': wrap_gap,
+        'wrap_gap': float(wrap_gap),
         'transition_envelope': float(transition_envelope),
         'effective_tolerance': float(effective_tolerance),
+        'loop_margin': float(loop_margin),
+        'term_margins': {name: float(value) for name, value in term_margins.items()},
         'root_xz_total_disp': float(root_xz_total_disp),
         'root_xz_is_closed': bool(root_xz_is_closed),
-        'is_loop': bool(wrap_gap <= effective_tolerance and root_xz_is_closed),
+        'is_closed': bool(is_closed),
+        'is_loop': bool(is_closed and root_xz_is_closed),
     }
 
 

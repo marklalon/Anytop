@@ -743,12 +743,6 @@ def extract_motion_features_from_aligned_anims(
     )
     positions = get_rifke(global_positions, r_rot, translation_root_index=feature_translation_root_index)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
-    is_loop = detect_motion_loop(
-        positions,
-        root_xz_velocity=local_vel,
-        translation_root_index=feature_translation_root_index,
-    )
-
     if trim_redundant_frames:
         # An edge frame that copies its neighbour, or that copies the far end,
         # holds a pose the clip already has. In a loop the copied closing key
@@ -775,8 +769,6 @@ def extract_motion_features_from_aligned_anims(
             global_positions = global_positions[frame_slice]
             positions = positions[frame_slice]
             local_vel = local_vel[frame_slice]
-            # ``is_loop`` is NOT re-read: the verdict belongs to the extraction,
-            # and trimming an edge frame must not change what the clip IS.
             dropped = ' + '.join(
                 edge for edge, taken in (('first', drop_first), ('last', drop_last)) if taken
             )
@@ -784,6 +776,17 @@ def extract_motion_features_from_aligned_anims(
                 f'    [dup-trim] {object_type}: dropped redundant {dropped} frame, '
                 f'{len(positions) + int(drop_first) + int(drop_last)} -> {len(positions)} frames'
             )
+
+    # AFTER the trim, never before: a clip that ships a duplicated closing key
+    # (frame N copying frame 0 -- how most unitybundles loop takes arrive) has a
+    # wrap gap of exactly zero, so measuring closure on the untrimmed stack reads
+    # the exporter's habit rather than the motion, and reads it off a frame this
+    # pass is about to delete. The verdict has to describe the tensor that ships.
+    is_loop = detect_motion_loop(
+        positions,
+        root_xz_velocity=local_vel,
+        translation_root_index=feature_translation_root_index,
+    )
 
     prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
     terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)
