@@ -102,6 +102,31 @@ LOOP_DETECTION_STEP_MIN = 0.03
 LOOP_DETECTION_STEP_MAX = 0.08
 LOOP_DETECTION_ROOT_XZ_TOLERANCE = 0.05
 
+# A loop clip is authored so its last frame is one motion step BEFORE the first:
+# playback wraps N -> 0 and keeps moving. Exporters break that with a redundant
+# edge frame -- a duplicated closing key (frame N copies frame 0) or a held key
+# (frame 0 == frame 1, frame N-1 == frame N) -- which stalls the wrap for a frame
+# and reads as a hitch every cycle.
+#
+# Only a repeated key is dropped, never a merely slow frame: across the shipped
+# clips the boundary-step ratio is a slope, not a valley, so any threshold in the
+# visible-stall band would decide the fate of frames that DO carry motion. Missing
+# a duplicate costs a hitch in a clip that already had one; deleting real motion
+# costs a frame nothing downstream can restore. The tolerance therefore sits far
+# below a normal frame step and far above float64 FK noise, which leaves Unity's
+# interpolated near-copies alone by design.
+LOOP_REDUNDANT_FRAME_RATIO = 1e-4
+# The floor the arithmetic below needs: at two frames the head pair and the wrap
+# pair are the SAME pair, and dropping both edges of a three-frame clip leaves
+# nothing readable. Not a clip-length policy -- preprocessing's own floor is far
+# higher (resampling lifts every clip to >= 20 frames).
+LOOP_TRIM_MIN_FRAMES = 3
+# Absolute floor under the ratio above (a clip so slow the ratio lands in float64
+# noise), and the gate that leaves a motionless clip alone: every frame repeats
+# every other there, so its length IS the held duration. Normalized units, where
+# a skeleton spans about one.
+LOOP_TRIM_MIN_MOTION = 1e-9
+
 
 ################## Joint Name Canonicalization #####################
 
@@ -537,6 +562,76 @@ def detect_motion_loop(positions, root_xz_velocity=None, translation_root_index=
         root_xz_velocity=root_xz_velocity,
         translation_root_index=translation_root_index,
     )['is_loop']
+
+
+def _boundary_pair_gaps(frames):
+    """Return ``(median frame step, gap(a, b))`` for a (T, J, D) frame stack.
+
+    The gap is the p75 over joints of the per-joint delta magnitude -- the same
+    robust summary ``compute_motion_loop_diagnostics`` uses, so a boundary step
+    and the clip's typical step are commensurable.
+    """
+    frames = np.asarray(frames, dtype=np.float64)
+    frames = frames.reshape(frames.shape[0], frames.shape[1], -1)
+    step_gaps = np.percentile(np.linalg.norm(np.diff(frames, axis=0), axis=-1), 75, axis=1)
+    reference = float(np.median(step_gaps)) if step_gaps.size else 0.0
+
+    def gap(a, b):
+        return float(np.percentile(np.linalg.norm(frames[b] - frames[a], axis=-1), 75))
+
+    return reference, gap
+
+
+def find_redundant_loop_boundary_frames(global_positions, rotations=None):
+    """Return ``(drop_first, drop_last)`` for a looping clip's redundant edges.
+
+    At most one frame per end, so an authored hold keeps its timing and only the
+    duplicate the loop itself doubles is removed:
+
+    * frame 0 is redundant when it repeats frame 1;
+    * frame N is redundant when it repeats frame N-1, or when it repeats frame 0
+      (the duplicated closing key -- on the wrap it plays back to back with the
+      frame it copies).
+
+    Positions are the FK'd GLOBAL ones on purpose: a root-relative pose can be
+    identical across two frames the root actually travelled or turned between,
+    and dropping one of those would delete real motion. Rotations, when given,
+    cover motion a position stack cannot see (a spin about a bone's own axis, a
+    zero-length bone); both stacks must call the pair redundant.
+    """
+    positions = np.asarray(global_positions, dtype=np.float64)
+    frame_count = int(positions.shape[0])
+    if frame_count < LOOP_TRIM_MIN_FRAMES + 1:
+        return False, False
+
+    position_reference, _position_gap = _boundary_pair_gaps(positions)
+    if position_reference <= LOOP_TRIM_MIN_MOTION:
+        return False, False
+
+    stacks = [(position_reference, _position_gap)]
+    if rotations is not None:
+        rotation_frames = np.asarray(rotations, dtype=np.float64)
+        if rotation_frames.shape[0] != frame_count:
+            raise ValueError(
+                f"rotations frame count {rotation_frames.shape[0]} does not match "
+                f"positions frame count {frame_count}"
+            )
+        stacks.append(_boundary_pair_gaps(rotation_frames))
+
+    def is_redundant(a, b):
+        # A stack that never changes (no joint rotates, say) reports a zero gap
+        # for every pair and so abstains from this AND rather than driving it.
+        return all(
+            gap(a, b) <= max(LOOP_REDUNDANT_FRAME_RATIO * reference, LOOP_TRIM_MIN_MOTION)
+            for reference, gap in stacks
+        )
+
+    last = frame_count - 1
+    drop_first = is_redundant(0, 1)
+    drop_last = is_redundant(last - 1, last) or is_redundant(last, 0)
+    if frame_count - int(drop_first) - int(drop_last) < LOOP_TRIM_MIN_FRAMES:
+        return False, False
+    return drop_first, drop_last
 
 
 def _translation_root_candidate_chain(parents, max_depth=5):

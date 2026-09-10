@@ -8,6 +8,7 @@ Depends on: features.py, animation_utils.py
 """
 
 from motion_lib import BVH, FBX
+from motion_lib.Animation import positions_global
 import json
 import numpy as np
 import os
@@ -42,6 +43,7 @@ from .animation_utils import (
     coerce_single_orientation_quat,
     chain_xz_travel,
     promote_translation_root_to_hierarchy_root,
+    find_redundant_loop_boundary_frames,
     find_translation_root,
     resolve_detected_translation_root_index,
     select_transport_carrier,
@@ -379,6 +381,7 @@ def _encode_prepared_motion_file(
             translation_root_index,
             flatten_root_travel=flatten_root_travel,
             clamp_root_xz_extent=True,
+            trim_redundant_loop_frames=True,
         )
     except Exception as err:
         print(err)
@@ -869,6 +872,23 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 # a trajectory whose drift was just removed; running the source
                 # through instead decides once, applies once, and leaves features,
                 # anims and verdict consistent by construction.
+                #
+                # Drop a loop's redundant edge frames BEFORE stretching: resampling
+                # would smear a duplicated key across as many frames as the stretch
+                # factor, and extraction's trim only removes one per end. Measured on
+                # the source anim, so a travelling gait's duplicate-with-root-travel
+                # is left to extraction's own trim.
+                if result.get('is_loop'):
+                    source_positions = positions_global(result['source_new_anim'])
+                    drop_first, drop_last = find_redundant_loop_boundary_frames(source_positions)
+                    if drop_first or drop_last:
+                        frame_slice = slice(1 if drop_first else 0, -1 if drop_last else None)
+                        result['source_new_anim'] = result['source_new_anim'][frame_slice]
+                        result['source_export_anim'] = result['source_export_anim'][frame_slice]
+                        print(
+                            f"    [loop-trim] {object_type} {result['action']}: dropped "
+                            f"{int(drop_first) + int(drop_last)} redundant frame(s) before resampling"
+                        )
                 result['source_new_anim'] = _resample_animation(result['source_new_anim'], resample_min_length)
                 result['source_export_anim'] = _resample_animation(result['source_export_anim'], resample_min_length)
                 motion, _, motion_anim, motion_export_anim, is_loop, root_xz_flattened = extract_motion_features_from_aligned_anims(
@@ -880,6 +900,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                     result['translation_root_index'],
                     flatten_root_travel=bool(result.get('flatten_root_travel')),
                     clamp_root_xz_extent=True,
+                    trim_redundant_loop_frames=True,
                 )
                 result['motion'] = motion
                 # Keep the stored anims the ones the features were built from, as
