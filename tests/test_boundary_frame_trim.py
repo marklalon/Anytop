@@ -1,9 +1,10 @@
-"""A loop clip must not carry a redundant edge frame.
+"""No clip may carry a redundant edge frame.
 
-Playback wraps N -> 0, so a duplicated closing key (frame N repeating frame 0)
-or a held edge (0 == 1, N-1 == N) stalls the motion for one frame every cycle --
-the hitch the eye reads as a stutter. It also zeroes the terminal velocity, which
-a loop writes as the wrap delta ``pos[0] - pos[-1]``.
+A held edge (0 == 1, N-1 == N) is dead time in any clip, and so is a closing key
+that copies frame 0 -- the pose is still there at index 0. In a loop the closing
+key is worse than dead: playback wraps N -> 0, so it stalls the motion for one
+frame every cycle (the hitch the eye reads as a stutter) and zeroes the terminal
+velocity, which a loop writes as the wrap delta ``pos[0] - pos[-1]``.
 
 Only a repeated key is dropped; a frame that moved even a little is authored
 motion and stays, because nothing downstream can put it back. Preprocessing drops
@@ -23,8 +24,8 @@ from motion_lib.Animation import Animation
 from motion_lib.Quaternions import Quaternions
 
 from data_loaders.truebones.truebones_utils.animation_utils import (
-    LOOP_TRIM_MIN_FRAMES,
-    find_redundant_loop_boundary_frames,
+    TRIM_MIN_FRAMES,
+    find_redundant_boundary_frames,
 )
 from data_loaders.truebones.truebones_utils.features import (
     extract_motion_features_from_aligned_anims,
@@ -79,7 +80,7 @@ def _extract(anim: Animation, trim: bool = True):
             max_joints=8,
             orientation_quat=Quaternions.id(1).qs[0],
             translation_root_index=0,
-            trim_redundant_loop_frames=trim,
+            trim_redundant_frames=trim,
         )
     )
     return features, is_loop, motion_anim, export_anim
@@ -90,7 +91,7 @@ def _extract(anim: Animation, trim: bool = True):
 def test_a_clean_cycle_keeps_every_frame():
     anim = _cycle_anim(40)
     assert _extract(anim)[1] is True
-    assert find_redundant_loop_boundary_frames(_positions(anim)) == (False, False)
+    assert find_redundant_boundary_frames(_positions(anim)) == (False, False)
 
 
 @pytest.mark.parametrize(
@@ -103,19 +104,19 @@ def test_a_clean_cycle_keeps_every_frame():
 )
 def test_a_duplicated_edge_frame_is_found(source, at, expected):
     anim = _repeat_frame(_cycle_anim(40), source, at)
-    assert find_redundant_loop_boundary_frames(_positions(anim)) == expected
+    assert find_redundant_boundary_frames(_positions(anim)) == expected
 
 
 def test_both_ends_are_trimmed_at_once():
     anim = _repeat_frame(_repeat_frame(_cycle_anim(40), 0, 0), 40, 41)
-    assert find_redundant_loop_boundary_frames(_positions(anim)) == (True, True)
+    assert find_redundant_boundary_frames(_positions(anim)) == (True, True)
 
 
 def test_only_one_frame_per_end_so_an_authored_hold_keeps_its_timing():
     anim = _cycle_anim(40)
     for _ in range(4):
         anim = _repeat_frame(anim, 0, 0)
-    assert find_redundant_loop_boundary_frames(_positions(anim)) == (True, False)
+    assert find_redundant_boundary_frames(_positions(anim)) == (True, False)
 
 
 @pytest.mark.parametrize('fraction_of_a_step', [0.5, 0.05, 0.01])
@@ -131,23 +132,23 @@ def test_a_near_copy_is_left_alone(fraction_of_a_step):
     step = float(np.median(np.abs(np.diff(angles))))
     near_copy = np.concatenate([angles, [angles[0] + fraction_of_a_step * step]])
 
-    assert find_redundant_loop_boundary_frames(_positions(_swing_anim(near_copy))) == (False, False)
+    assert find_redundant_boundary_frames(_positions(_swing_anim(near_copy))) == (False, False)
 
 
 def test_a_slow_edge_is_not_a_duplicate():
     """Ease-in is real motion, not a repeat: it must survive."""
     anim = _cycle_anim(40)
-    assert find_redundant_loop_boundary_frames(_positions(anim)) == (False, False)
+    assert find_redundant_boundary_frames(_positions(anim)) == (False, False)
     # ...even where the sine is flattest, which is where the cycle turns around.
     rolled = anim[np.roll(np.arange(40), 10)]
-    assert find_redundant_loop_boundary_frames(_positions(rolled)) == (False, False)
+    assert find_redundant_boundary_frames(_positions(rolled)) == (False, False)
 
 
 def test_a_motionless_clip_is_left_alone():
     """Every frame repeats every other; the frame count IS the held duration."""
     anim = _cycle_anim(40)
     anim.rotations[:] = anim.rotations[0:1]
-    assert find_redundant_loop_boundary_frames(_positions(anim)) == (False, False)
+    assert find_redundant_boundary_frames(_positions(anim)) == (False, False)
 
 
 def test_a_clip_with_no_frames_to_spare_is_left_alone():
@@ -155,11 +156,11 @@ def test_a_clip_with_no_frames_to_spare_is_left_alone():
     never gets near it (the shortest shipped clip is 20 frames), but at two
     frames the head pair and the wrap pair are the same pair."""
     # Three frames: the pairs still overlap enough that there is nothing to give.
-    assert find_redundant_loop_boundary_frames(
-        _positions(_repeat_frame(_cycle_anim(LOOP_TRIM_MIN_FRAMES), 0, 0))[:3]
+    assert find_redundant_boundary_frames(
+        _positions(_repeat_frame(_cycle_anim(TRIM_MIN_FRAMES), 0, 0))[:3]
     ) == (False, False)
     # Four, with a duplicated closing key: one frame can go, and exactly one.
-    assert find_redundant_loop_boundary_frames(
+    assert find_redundant_boundary_frames(
         _positions(_repeat_frame(_cycle_anim(4), 0, 4))[:5]
     ) == (False, True)
 
@@ -189,16 +190,36 @@ def test_the_terminal_velocity_stays_a_real_step():
     assert np.abs(trimmed[-1, :, 9:12]).max() > 1e-3
 
 
-def test_a_non_loop_is_never_trimmed():
-    """Nothing wraps, so a held edge is just the clip's own timing."""
-    # A one-way sweep: the ends are nowhere near each other.
+def test_a_held_edge_is_trimmed_out_of_a_non_loop_too():
+    """A repeated key carries nothing whether or not the clip wraps."""
+    # A one-way sweep, so the ends are nowhere near each other, with frame 0 held.
     open_anim = _repeat_frame(
         _swing_anim(np.radians(np.linspace(0.0, 4.0 * CYCLE_AMPLITUDE_DEG, 40))), 0, 0
     )
-    features, is_loop, _anim, _export = _extract(open_anim)
+    features, is_loop, motion_anim, _export = _extract(open_anim)
 
     assert is_loop is False
-    assert features.shape[0] == 41
+    assert features.shape[0] == 40
+    assert motion_anim.rotations.shape[0] == 40
+
+
+def test_an_end_frame_copying_the_start_goes_whether_or_not_it_wraps():
+    """The wrap pair is NOT loop-gated: a copy is a copy.
+
+    The clip ends exactly where it began -- a swing out and back. In a loop that
+    closing key stalls the wrap; anywhere else it is a frame whose pose the clip
+    still holds at index 0, so dropping it costs one frame of duration and no
+    motion. Exactness is what makes that true, and it is the whole rule.
+    """
+    out_and_back = np.concatenate([
+        np.radians(np.linspace(0.0, 4.0 * CYCLE_AMPLITUDE_DEG, 20)),
+        np.radians(np.linspace(4.0 * CYCLE_AMPLITUDE_DEG, 0.0, 20)),
+    ])
+    positions = _positions(_swing_anim(out_and_back))
+    assert find_redundant_boundary_frames(positions) == (False, True)
+
+    # ...and the frame that survives holds the pose the dropped one repeated.
+    np.testing.assert_array_equal(positions[0], positions[-1])
 
 
 def test_trimming_does_not_change_the_loop_verdict():

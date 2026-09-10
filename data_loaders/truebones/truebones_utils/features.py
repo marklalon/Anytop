@@ -36,7 +36,7 @@ from .ignore_warnings import skip_orientation_detection
 from .animation_utils import (
     ROOT_XZ_DRIFT_THRESHOLD,
     detect_motion_loop,
-    find_redundant_loop_boundary_frames,
+    find_redundant_boundary_frames,
     find_translation_root,
     clamp_vertical_trajectory,
     collapse_translation_root_chain,
@@ -650,7 +650,7 @@ def extract_motion_features_from_aligned_anims(
     *,
     flatten_root_travel=False,
     clamp_root_xz_extent=False,
-    trim_redundant_loop_frames=False,
+    trim_redundant_frames=False,
 ):
     feature_translation_root_index = int(translation_root_index)
 
@@ -749,9 +749,11 @@ def extract_motion_features_from_aligned_anims(
         translation_root_index=feature_translation_root_index,
     )
 
-    if trim_redundant_loop_frames and is_loop:
-        # A redundant edge frame stalls the wrap (a hitch every cycle) and zeroes
-        # the terminal velocity, which a loop writes as the wrap delta. Drop it
+    if trim_redundant_frames:
+        # An edge frame that copies its neighbour, or that copies the far end,
+        # holds a pose the clip already has. In a loop the copied closing key
+        # also stalls the wrap (a hitch every cycle) and zeroes the terminal
+        # velocity, which a loop writes as the wrap delta. Drop it
         # before anything is measured off the tensor, so the features and the
         # exported anims both describe the trimmed clip.
         #
@@ -759,7 +761,7 @@ def extract_motion_features_from_aligned_anims(
         # fresh pass over source animation may ask for it. A recovery or roundtrip
         # re-extraction must reproduce the stored tensor frame for frame,
         # including edges an older pass wrote.
-        drop_first, drop_last = find_redundant_loop_boundary_frames(global_positions, cont_6d_params)
+        drop_first, drop_last = find_redundant_boundary_frames(global_positions, cont_6d_params)
         if drop_first or drop_last:
             frame_slice = slice(1 if drop_first else 0, -1 if drop_last else None)
             motion_anim = motion_anim[frame_slice]
@@ -779,7 +781,7 @@ def extract_motion_features_from_aligned_anims(
                 edge for edge, taken in (('first', drop_first), ('last', drop_last)) if taken
             )
             print(
-                f'    [loop-trim] {object_type}: dropped redundant {dropped} frame, '
+                f'    [dup-trim] {object_type}: dropped redundant {dropped} frame, '
                 f'{len(positions) + int(drop_first) + int(drop_last)} -> {len(positions)} frames'
             )
 
