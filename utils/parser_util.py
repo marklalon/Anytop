@@ -207,7 +207,9 @@ def add_model_options(parser):
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     group.add_argument("--lambda_vel", default=0.0, type=float,
                        help="Weight for velocity-position consistency loss (0.0=off)."
-                            " Penalizes |pos[t+1]-pos[t] - vel[t]|^2 on denormalized outputs."
+                            " Penalizes |pos[t+1]-pos[t] - (vel[t] - vel_root[t])|^2 on denormalized outputs,"
+                            " the root's velocity subtracted on X/Z only (RIC positions are root-XZ-relative,"
+                            " velocities are world deltas), so the residual is exactly zero on real data."
                             " Couples position and velocity feature groups to prevent independent memorization.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")

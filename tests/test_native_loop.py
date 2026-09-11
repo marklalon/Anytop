@@ -155,21 +155,76 @@ class NativeLoopTests(unittest.TestCase):
 
         self.assertTrue(torch.equal(value, torch.ones(2, 1, dtype=torch.float32)))
 
-    def test_velocity_consistency_scales_physical_velocity_by_playspeed(self):
+    def test_velocity_consistency_compares_root_relative_xz_at_physical_step_scale(self):
+        # Joint 0 is the translation root, joint 1 a child. The root sways in
+        # world X (vel ch9) while its RIC X stays structurally zero; the child's
+        # RIC X path advances by its WORLD velocity minus the root's sway, and
+        # every Y path by its own velocity (get_rifke leaves Y alone). At
+        # playspeed 4/7 over 7 frames the physical step scale is 0.5.
         diffusion = self._make_diffusion()
-        model_output = torch.zeros(1, 1, 12, 7, dtype=torch.float32)
-        model_output[0, 0, 0, :] = torch.linspace(0.0, 3.0, steps=7)
-        model_output[0, 0, 9, :] = 1.0
-        spat_mask = torch.ones(1, 1, 1, 1, dtype=torch.float32)
+        n_frames = 7
+        step_scale = 0.5
+        ramp = torch.arange(n_frames, dtype=torch.float32)
+        model_output = torch.zeros(1, 2, 12, n_frames, dtype=torch.float32)
+        model_output[0, 0, 9, :] = 0.25
+        model_output[0, 0, 10, :] = 0.5
+        model_output[0, 0, 1, :] = ramp * 0.5 * step_scale
+        model_output[0, 1, 9, :] = 1.0
+        model_output[0, 1, 0, :] = ramp * (1.0 - 0.25) * step_scale
+        model_output[0, 1, 10, :] = 0.5
+        model_output[0, 1, 1, :] = ramp * 0.5 * step_scale
+        spat_mask = torch.ones(1, 1, 1, 2, dtype=torch.float32)
+        n_joints = torch.tensor([2])
+        y = {
+            'playspeed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
+            'translation_root_index': [0],
+        }
+
+        loss = diffusion.velocity_consistency_loss(model_output, spat_mask, n_joints, y=y)
+        self.assertLess(float(loss.item()), 1e-6)
+
+        # Negative controls, so the pass above cannot come from a mask: the
+        # same tensor read at playspeed 1 ...
+        loss_unit_step = diffusion.velocity_consistency_loss(
+            model_output, spat_mask, n_joints, y={'translation_root_index': [0]},
+        )
+        self.assertGreater(float(loss_unit_step.item()), 1e-3)
+        # ... or with the child's RIC X following its world velocity as if the
+        # root did not move.
+        world_frame = model_output.clone()
+        world_frame[0, 1, 0, :] = ramp * 1.0 * step_scale
+        loss_world = diffusion.velocity_consistency_loss(world_frame, spat_mask, n_joints, y=y)
+        self.assertGreater(float(loss_world.item()), 1e-3)
+
+    def test_velocity_consistency_is_zero_on_a_stored_clip_layout(self):
+        # Ground-truth tensors satisfy ric[t+1]-ric[t] == vel[t]-vel_root[t]
+        # (XZ) exactly, for every joint including the root. Build one the way
+        # preprocessing does -- world positions, then get_rifke and world deltas
+        # -- with the root as joint 1 to cover a non-zero translation_root_index.
+        diffusion = self._make_diffusion()
+        rng = np.random.default_rng(0)
+        n_frames, n_joints, root = 9, 3, 1
+        world = rng.normal(size=(n_frames, n_joints, 3)).astype(np.float32)
+        ric = world.copy()
+        ric[..., 0] -= world[:, root:root + 1, 0]
+        ric[..., 2] -= world[:, root:root + 1, 2]
+        vel = np.zeros_like(world)
+        vel[:-1] = world[1:] - world[:-1]
+        feats = np.zeros((n_frames, n_joints, 12), dtype=np.float32)
+        feats[..., 0:3] = ric
+        feats[..., 9:12] = vel
+        model_output = torch.as_tensor(feats).permute(1, 2, 0).unsqueeze(0)
+        spat_mask = torch.ones(1, 1, 1, n_joints, dtype=torch.float32)
 
         loss = diffusion.velocity_consistency_loss(
-            model_output,
-            spat_mask,
-            n_joints=torch.tensor([1]),
-            y={'playspeed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32)},
+            model_output, spat_mask, torch.tensor([n_joints]), y={'translation_root_index': [root]},
         )
+        self.assertLess(float(loss.item()), 1e-10)
 
-        self.assertLess(float(loss.item()), 1e-6)
+        wrong_root = diffusion.velocity_consistency_loss(
+            model_output, spat_mask, torch.tensor([n_joints]), y={'translation_root_index': [0]},
+        )
+        self.assertGreater(float(wrong_root.item()), 1e-3)
 
     def test_loop_wrap_loss_skips_non_loop_samples(self):
         diffusion = self._make_diffusion()
@@ -223,12 +278,18 @@ class NativeLoopTests(unittest.TestCase):
         self.assertLess(float(terms['loop_wrap_terminal_vel'].item()), 1e-6)
 
     def test_loop_wrap_terminal_velocity_uses_physical_step_scale(self):
+        # The root's RIC X/Z are structurally zero and masked out of the
+        # terminal term, so the seam has to be checked on a child joint (X)
+        # and on the root's height (Y): pos[0] - pos[-1] == vel[-1] * 0.5 at
+        # playspeed 4/7 over 7 frames.
         diffusion = self._make_diffusion()
-        model_output = torch.zeros(1, 1, 12, 7, dtype=torch.float32)
+        model_output = torch.zeros(1, 2, 12, 7, dtype=torch.float32)
         model_output[:, :, 3, :] = 1.0
         model_output[:, :, 7, :] = 1.0
-        model_output[0, 0, 0, -1] = -0.5
-        model_output[0, 0, 9, -1] = 1.0
+        model_output[0, 1, 0, -1] = -0.5
+        model_output[0, 1, 9, -1] = 1.0
+        model_output[0, 0, 1, -1] = -0.25
+        model_output[0, 0, 10, -1] = 0.5
         y = {
             'is_loop': torch.tensor([True]),
             'loop_full_cycle': torch.tensor([True]),
@@ -236,9 +297,14 @@ class NativeLoopTests(unittest.TestCase):
             'playspeed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
         }
 
-        terms = diffusion.loop_wrap_loss(model_output, y, n_joints=torch.tensor([1]))
-
+        terms = diffusion.loop_wrap_loss(model_output, y, n_joints=torch.tensor([2]))
         self.assertLess(float(terms['loop_wrap_terminal_vel'].item()), 1e-6)
+
+        # Same tensor at playspeed 1 leaves the seam open.
+        y_unit = dict(y)
+        y_unit.pop('playspeed_cond')
+        terms_unit = diffusion.loop_wrap_loss(model_output, y_unit, n_joints=torch.tensor([2]))
+        self.assertGreater(float(terms_unit['loop_wrap_terminal_vel'].item()), 1e-3)
 
     def test_create_gaussian_diffusion_preserves_loop_args(self):
         class Args:

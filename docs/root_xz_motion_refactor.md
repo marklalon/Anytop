@@ -252,9 +252,15 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
   没有 `--in_place` 开关（动作语义已经由 `--action_label` / `--loop` 隐含）。
 - 导出前**无条件**调 `_zero_root_ric_xz`（[generate.py:1838](../sample/generate.py#L1838)）：
   RIC 里 root 的 XZ 结构性为 0，模型在这两个通道上的噪声会和积分出的 `r_pos` 打架，清掉。
-- 训练侧 `loop_wrap_loss` 的 terminal 项与 `velocity_consistency_loss` 在 root 的
-  `ch0/ch2` 上 mask（[gaussian_diffusion.py:675](../diffusion/gaussian_diffusion.py#L675)）——
+- 训练侧 `loop_wrap_loss` 的 terminal 项在 root 的 `ch0/ch2` 上 mask
+  （[gaussian_diffusion.py:702](../diffusion/gaussian_diffusion.py#L702)）——
   这两个通道恒为 0，不 mask 会把真值 terminal 速度（步态最后一步）压向 0。
+- `velocity_consistency_loss` **不 mask，改成比对 root 相对速度**（`_root_relative_velocity`）：
+  `get_rifke` 给每个关节都减掉 root 的世界 XZ，而 `ch9/ch11` 是世界位移，所以 RIC 差分
+  = `vel_j − vel_root`（仅 XZ，Y 不动）。按世界速度比对时真值本身就有残差（= root 的原地
+  摆动，loop clip 上 p90 ≈ 0.017，对比关节 XZ 速度信号 p90 ≈ 0.032），`lambda_vel` 在拿这个
+  偏置和 `l_simple` 对拉。减掉 root XZ 速度后真值残差在所有关节上精确为 0（541 条实测
+  ≤ 2e-15），root 行两边都是 0，也就不再需要 mask。
 
 ---
 

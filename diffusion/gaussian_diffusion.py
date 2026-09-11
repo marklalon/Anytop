@@ -437,13 +437,53 @@ class GaussianDiffusion:
         source_frames = (playspeed * float(n_frames)).clamp_min(1.0)
         return ((source_frames - 1.0) / float(n_frames - 1)).clamp_min(0.0)
 
+    def _root_relative_velocity(self, vel, n_joints, y):
+        """Velocity channels re-expressed in the frame the RIC positions live in.
+
+        ``get_rifke`` subtracts the translation root's world X/Z from EVERY
+        joint's position (Y is left alone), while the velocity channel is each
+        joint's WORLD delta. So the delta a joint's stored RIC path shows is
+        its world velocity minus the root's XZ velocity:
+
+            ric[t+1] - ric[t] == vel[t] - vel_root[t]     (X and Z only)
+
+        Comparing position deltas against the raw world velocity therefore has
+        a NON-ZERO residual on the ground truth itself -- exactly the root's
+        XZ velocity, i.e. the in-place sway the root_xz refactor deliberately
+        keeps in the data (p90 ~0.017 on loop clips, against a per-joint XZ
+        velocity signal of p90 ~0.032). Subtracting the root's XZ velocity
+        makes the residual identically zero on real data for every joint, the
+        root row included (its RIC XZ is structurally zero and vel - vel == 0),
+        so no channel mask is needed on top.
+
+        ``vel``: [bs, njoints, 3, nframes]. A translation root index outside
+        the sample's real joints leaves that sample's velocity untouched.
+        """
+        batch_size, max_joints = vel.shape[0], vel.shape[1]
+        root_indices = self._coerce_index_batch(
+            (y or {}).get('translation_root_index'), batch_size, vel.device
+        )
+        n_joints_long = th.as_tensor(
+            n_joints, device=vel.device, dtype=th.long
+        ).reshape(-1).clamp(min=0, max=max_joints)
+        root_valid = (
+            (root_indices >= 0) & (root_indices < n_joints_long)
+        ).to(dtype=vel.dtype)
+        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
+        batch_indices = th.arange(batch_size, device=vel.device)
+        xz_only = vel.new_tensor([1.0, 0.0, 1.0]).view(1, 3, 1)
+        root_xz_vel = (
+            vel[batch_indices, root_indices_clamped] * xz_only * root_valid.view(batch_size, 1, 1)
+        )                                                       # [bs, 3, nframes]
+        return vel - root_xz_vel.unsqueeze(1)
+
     def velocity_consistency_loss(self, model_output, spat_mask, n_joints, y=None):
         # model_output: [bs, njoints, nfeats, nframes] (denormalized)
         # vel[t] carries physical-frame units. Scale it into the current
         # resampled window step before comparing with position deltas.
         batch_size, max_joints, _n_feats, n_frames = model_output.shape
         pos = model_output[:, :, 0:3, :]    # [bs, njoints, 3, nframes]
-        vel = model_output[:, :, 9:12, :]   # [bs, njoints, 3, nframes]
+        vel = self._root_relative_velocity(model_output[:, :, 9:12, :], n_joints, y)
         finite_diff = pos[:, :, :, 1:] - pos[:, :, :, :-1]  # [bs, njoints, 3, nframes-1]
         step_scale = self._physical_velocity_step_scale(
             y or {},
@@ -455,25 +495,7 @@ class GaussianDiffusion:
         pred_vel = vel[:, :, :, :-1] * step_scale              # [bs, njoints, 3, nframes-1]
         loss = (finite_diff - pred_vel) ** 2
         valid_joints = spat_mask.float().transpose(1, 3)        # [bs, njoints, 1, 1]
-        # The root's RIC X/Z are structurally zero, so finite_diff vanishes on
-        # those channels and this term degenerates into (vel*step_scale)**2 --
-        # a shrinkage prior on the channels that carry the root's world XZ
-        # path (up to ~7% compression left unmasked). Mask them out.
-        channel_weight = loss.new_ones((batch_size, max_joints, 3, 1))
-        root_indices = self._coerce_index_batch(
-            (y or {}).get('translation_root_index'), batch_size, model_output.device
-        )
-        n_joints_long = th.as_tensor(
-            n_joints, device=model_output.device, dtype=th.long
-        ).reshape(-1).clamp(min=0, max=max_joints)
-        root_valid = (
-            (root_indices >= 0) & (root_indices < n_joints_long)
-        ).to(dtype=loss.dtype)
-        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
-        batch_indices = th.arange(batch_size, device=model_output.device)
-        channel_weight[batch_indices, root_indices_clamped, 0, 0] -= root_valid
-        channel_weight[batch_indices, root_indices_clamped, 2, 0] -= root_valid
-        valid = (valid_joints * channel_weight).expand(-1, -1, -1, loss.shape[-1])
+        valid = valid_joints.expand(-1, -1, 3, loss.shape[-1])
         loss_val = (loss * valid).sum() / valid.sum().clamp(min=1)
         return loss_val
 
