@@ -22,7 +22,7 @@
 {"clip": "Anaconda_Idle2.npy", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "Anaconda_Idle.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Anaconda_Rise2.npy", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
-{"clip": "Anaconda_Rise.npy", "action_group": "transition", "action_label": "getup", "is_loop": true, "reviewed": true}
+{"clip": "Anaconda_Rise.npy", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
 {"clip": "Anaconda_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Anaconda_Sneaky.npy", "action_group": "locomotion", "action_label": "walk, forward, slow", "is_loop": true, "reviewed": true}
 {"clip": "Anaconda_Spin.npy", "action_group": "stationary", "action_label": "attack, bite, spin", "is_loop": true, "reviewed": true}

@@ -496,7 +496,7 @@
 {"clip": "KI_Warrior_Run01Left2HLong.npy", "action_group": "locomotion", "action_label": "run, left, weapon, 2hand", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Run01Right2HLong.npy", "action_group": "locomotion", "action_label": "run, right, weapon, 2hand", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_ShieldAttack01.npy", "action_group": "stationary", "action_label": "attack, shield", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_ShieldAttack02.npy", "action_group": "stationary", "action_label": "attack, swipe", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_ShieldAttack02.npy", "action_group": "stationary", "action_label": "attack, shield", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Sprint01.npy", "action_group": "locomotion", "action_label": "run, forward, fast, weapon, 2hand", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Strafe01Left2HLong.npy", "action_group": "locomotion", "action_label": "walk, left, weapon, 2hand", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Strafe01Right2HLong.npy", "action_group": "locomotion", "action_label": "walk, right, weapon, 2hand", "is_loop": true, "reviewed": true}
