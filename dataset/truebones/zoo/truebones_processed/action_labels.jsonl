@@ -279,8 +279,8 @@
 {"clip": "Dog-2_Slowtail.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Dog-2_Sniffing.npy", "action_group": "locomotion", "action_label": "walk, forward, sniff", "is_loop": false, "reviewed": true}
 {"clip": "Dog-2_SwimIdle.npy", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
-{"clip": "Dog-2_SwimTurn2.npy", "action_group": "locomotion", "action_label": "turn, right, swim", "is_loop": false, "reviewed": true}
-{"clip": "Dog-2_Swimturn.npy", "action_group": "locomotion", "action_label": "turn, left, swim", "is_loop": false, "reviewed": true}
+{"clip": "Dog-2_SwimTurn2.npy", "action_group": "locomotion", "action_label": "swim, turn, right", "is_loop": false, "reviewed": true}
+{"clip": "Dog-2_Swimturn.npy", "action_group": "locomotion", "action_label": "swim, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "Dog-2_WalkLimp.npy", "action_group": "locomotion", "action_label": "walk, hurt, forward", "is_loop": true, "reviewed": true}
 {"clip": "Dog-2_WalkLoop.npy", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Dog-2_WalkNormal.npy", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}

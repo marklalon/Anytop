@@ -135,7 +135,7 @@ MAX_JOINTS=100
 # pinning their playspeed condition to this value. Inference uses the same
 # multiple (reference crop budget + num_frames range). Changing it requires
 # retraining.
-MAX_SOURCE_FRAMES_MULT=3
+MAX_SOURCE_FRAMES_MULT=2
 FPS=30
 FEATS_LEN=12
 SMPL_OFFSETS = np.array([[ 0.0000,  0.0000,  0.0000],

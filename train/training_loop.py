@@ -131,6 +131,10 @@ class TrainLoop:
         self.spike_capture = True
         self.spike_save_batch = True
         self.spike_grad_threshold = float(getattr(self.args, 'spike_grad_threshold', 50.0))
+        # Ignore the warmup: early steps routinely exceed the threshold simply
+        # because the optimizer has not settled yet, which drowns the real
+        # spikes. Only steps with completed_step > spike_start_step are checked.
+        self.spike_start_step = int(getattr(self.args, 'spike_start_step', 1000))
         self.spike_max_dumps = int(getattr(self.args, 'spike_max_dumps', 10))
         self.spike_dumps_written = 0
         self._spike_ctx = None
@@ -877,10 +881,15 @@ class TrainLoop:
         augmentation flags) plus the top per-parameter grad norms to
         <save_dir>/spikes so the trigger AND the dominant layer of a spike can be
         identified post-hoc. Grad-norm is the sole trigger (it is already a host
-        float from optimize(), so this probe adds no per-step sync)."""
+        float from optimize(), so this probe adds no per-step sync). Steps at or
+        below spike_start_step are skipped as warmup noise."""
         ctx = self._spike_ctx
         self._spike_ctx = None
         if ctx is None:
+            return
+
+        completed_step = self.total_step() + 1
+        if completed_step <= self.spike_start_step:
             return
 
         grad_norm = self.mp_trainer.last_grad_norm
@@ -890,7 +899,6 @@ class TrainLoop:
         if not grad_trip:
             return
 
-        completed_step = self.total_step() + 1
         if self.spike_max_dumps and self.spike_dumps_written >= self.spike_max_dumps:
             if self.spike_dumps_written == self.spike_max_dumps:
                 tqdm.write(

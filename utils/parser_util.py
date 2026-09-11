@@ -16,7 +16,9 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 7
+# 8: action-label hands axis (hand0/hand1/hand2) in a fourth slot channel;
+#    action_label_projection widened from 3 to 4 T5 blocks.
+CKPT_VERSION = 8
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -277,7 +279,8 @@ def add_model_options(parser):
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the clip's action_label ('run, forward, "
                             "left, fast' -- controlled keywords, not prose) is split into words, pooled "
-                            "into one frozen-T5 channel per role slot (head / direction / modifier), "
+                            "into one frozen-T5 channel per role slot (head / direction / modifier / "
+                            "hands), "
                             "projected and added to the timestep token. Requires the word table "
                             "dataset/action_word_embeddings.npy "
                             "(tools/build_action_label_embeddings.py).")
@@ -384,6 +387,9 @@ def add_training_options(parser):
     # grad_norm exceeds the threshold below. Only the threshold / dump cap tune.
     group.add_argument("--spike_grad_threshold", default=50.0, type=float,
                        help="Pre-clip grad_norm above this value triggers a spike dump.")
+    group.add_argument("--spike_start_step", default=1000, type=int,
+                       help="Skip spike checks for the first N steps (warmup), where the optimizer has not "
+                           "settled and early grad spikes are routine noise. 0 = check from step 1.")
     group.add_argument("--spike_max_dumps", default=10, type=int,
                        help="Stop writing spike dumps after this many, to bound disk usage. 0 = unlimited.")
     group.add_argument("--joint_mask_prob", default=0.5, type=float,
@@ -514,7 +520,11 @@ def add_generate_options(parser):
                             "recognizable prompt written out of canonical order is rewritten to it "
                             "(with a printed note); head-word order is never touched, since it is "
                             "the time order of a transition. Naming no direction is legal and means "
-                            "'any' (the model answers with the marginal over directions). Empty = "
+                            "'any' (the model answers with the marginal over directions); the same "
+                            "holds for the hands axis -- write 'hand0' for empty hands, 'hand1' / "
+                            "'hand2' for one / both hands holding something, or nothing for 'any' "
+                            "('idle, hand0' is an unarmed idle; 'idle' alone may draw an armed "
+                            "one where that species mostly holds a weapon). Empty = "
                             "unconditional (the learned null embedding). Requires a checkpoint "
                             "trained with --action_label_cond.")
     group.add_argument("--action_label_cfg_scale", default=1.0, type=float,

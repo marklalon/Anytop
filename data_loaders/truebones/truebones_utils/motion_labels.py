@@ -89,8 +89,10 @@ ACTION_VOCAB: tuple[str, ...] = (
     "saw", "shovel", "water", "pull", "push",
     # -- block H: which body part leads a dance --
     "footwork", "fullbody", "armwork", "sway",
-    # -- block I: equipment the pose is constrained by (never the asset itself) --
-    "weapon", "1hand", "2hand", "bow", "gun", "hammer", "shield",
+    # -- block I: the implement an action is performed with (never the asset
+    # itself): archery, shooting, tool work, shield bash. What the hands HOLD is
+    # not here -- that is the separate HANDS_VOCAB axis below.
+    "bow", "gun", "hammer", "shield",
 )
 
 # The direction axis -- travel / facing direction. Separate vocabulary from the
@@ -105,14 +107,40 @@ ACTION_VOCAB: tuple[str, ...] = (
 # as a roughly linear offset that composes with unseen actions.
 DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right", "up", "down")
 
-CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB + DIRECTION_VOCAB
+# The hands axis -- how many hands are OCCUPIED, i.e. holding something:
+#
+#   hand0  both hands empty (arms swing / gesture freely)
+#   hand1  one hand holds something (a sword, a torch, a sack) and the other is free
+#   hand2  both hands hold something: a two-handed grip (greatsword, rifle, bow,
+#          spear at the ready, a crate) OR one item per hand (sword + shield)
+#
+# It is an occupancy count, not a weapon class: sword + shield is hand2 because
+# neither arm is free, exactly like a rifle; a dagger and a torch are both hand1.
+# Which implement the action uses (bow / gun / hammer / shield) stays in block I
+# and is written alongside: ``attack, bow, hand2``.
+#
+# The three tokens are MUTUALLY EXCLUSIVE -- at most one per label -- and absent
+# means "unspecified" (the model answers with the marginal over hand states),
+# so ``hand0`` is a real statement, not the default: it is what lets a prompt
+# ask for an unarmed idle in a corpus where most idles of that species hold a
+# weapon. Annotated for every clip of a species that holds something in at
+# least one clip; species that never hold anything (and anything without hands)
+# leave the axis empty.
+#
+# The axis replaced ``weapon`` + ``1hand`` / ``2hand`` (2026-09-11). That
+# spelling had no way to say "unarmed" -- the untagged clips of an armed species
+# were a MIX of armed and unarmed, so a prompt without ``weapon`` still drew
+# armed poses -- and it spent two tokens on one categorical value.
+HANDS_VOCAB: tuple[str, ...] = ("hand0", "hand1", "hand2")
+
+CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB + DIRECTION_VOCAB + HANDS_VOCAB
 
 _CONTROLLED_VOCAB_ORDER: dict[str, int] = {
     word: index for index, word in enumerate(CONTROLLED_VOCAB)
 }
 
 assert len(_CONTROLLED_VOCAB_ORDER) == len(CONTROLLED_VOCAB), (
-    "a word may appear only once across ACTION_VOCAB + DIRECTION_VOCAB: "
+    "a word may appear only once across ACTION_VOCAB + DIRECTION_VOCAB + HANDS_VOCAB: "
     + str(sorted({w for w in CONTROLLED_VOCAB if CONTROLLED_VOCAB.count(w) > 1}))
 )
 assert not any(char.isspace() for word in CONTROLLED_VOCAB for char in word), (
@@ -127,7 +155,7 @@ assert not any(char.isspace() for word in CONTROLLED_VOCAB for char in word), (
 # ---------------------------------------------------------------------------
 # STATE_VOCAB is the closed set of HEAD words: the ones a label spells in WRITE
 # order instead of vocabulary order. The test is "can the body BE IN this" --
-# hover / roll / rear qualify, weapon / 1hand / forward / cast / spin do not.
+# hover / roll / rear qualify, hand1 / bow / forward / cast / spin do not.
 # Event verbs (die, getup, spawn, land, takeoff, laydown, sitdown, lift, pickup,
 # putdown) are in as well: each is the load-bearing word of a label that names
 # nothing else.
@@ -147,6 +175,11 @@ STATE_VOCAB: tuple[str, ...] = (
 )
 
 _STATE_VOCAB_SET: frozenset[str] = frozenset(STATE_VOCAB)
+_HANDS_VOCAB_SET: frozenset[str] = frozenset(HANDS_VOCAB)
+
+assert _HANDS_VOCAB_SET.isdisjoint(_STATE_VOCAB_SET) and _HANDS_VOCAB_SET.isdisjoint(
+    DIRECTION_VOCAB
+), "a hand-state word is neither a head nor a direction"
 
 assert _STATE_VOCAB_SET <= set(CONTROLLED_VOCAB), (
     "STATE_VOCAB must be a subset of CONTROLLED_VOCAB: "
@@ -170,24 +203,24 @@ ACTION_LABEL_MAX_HEADS = 2
 # Chosen by measurement (mean-centred t5-base cosines against single-word
 # probes of the intended and the dominant-wrong sense): only tokens where the
 # wrong sense WON, as a different referent rather than a near synonym, are
-# overridden. Glued compounds are FINE -- cos("1hand", "one handed") = 0.59,
-# ("laydown", "lay down") = 0.70, ("takeoff", "take off") = 0.88, vs a p95 of
-# 0.12 over unrelated pairs; 1hand/2hand need the override for the numeral, not
-# the fragmentation.
+# overridden. Glued compounds are FINE -- cos("laydown", "lay down") = 0.70,
+# ("takeoff", "take off") = 0.88, vs a p95 of 0.12 over unrelated pairs; the
+# hand tokens need the override for the trailing numeral, not the fragmentation.
 #
 # SECOND RULE (word-keyed conditioning): an override carries only what the token
-# itself contributes, NOT what a co-occurring token already spells. 1hand/2hand
-# never appear without a weapon word (47/47 labels), so "weapon in one/both
-# hands" (cos 0.784, the table's closest pair) made `weapon, 1hand` vs
-# `weapon, 2hand` the corpus's worst near-collision; dropping the shared anchor
-# takes the pair to 0.526 and leaves them carrying the COUNT only.
+# itself contributes, NOT what a co-occurring token already spells. The hands
+# axis is written as a bare count ("empty hands" / "one hand" / "both hands"):
+# the three are exclusive members of their own slot channel, so all the model
+# needs is three well-separated points, and phrasing every one of them around
+# a shared anchor is what makes them collide (measured 2026-09-11, mean-centred
+# t5-base: "one-handed weapon" vs "two-handed weapon" 0.87, "holding in one
+# hand" vs "holding in both hands" 0.80, versus "one hand" vs "both hands"
+# 0.53 and "empty hands" vs either 0.24 / 0.34).
 #
 # Constraints, all asserted below: one-to-one on the EXPANDED table, no
 # whitespace in a token, every key a real vocabulary word. No reverse lookup --
 # this is not a synonym table; text never resolves back to a token.
 _VOCAB_T5_TEXT: dict[str, str] = {
-    "1hand": "one hand",                 # bare form reads as the numeral one
-    "2hand": "both hands",               # bare form reads as the numeral two
     "aim": "aiming a weapon",            # bare "aim" is a goal or an ambition
     "block": "raising a guard",          # bare "block" is a brick or a city block
     "bow": "archery bow",                # bare "bow" is bending forward -- a POSE
@@ -197,6 +230,9 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "clean": "grooming",                 # bare "clean" is the adjective, not the act
     "cry": "weeping",                    # bare "cry" reads as shouting out
     "flip": "somersault",                # bare "flip" is a coin or a switch
+    "hand0": "empty hands",              # bare form is "hand" + the numeral zero
+    "hand1": "one hand",                 # bare form reads as "hand one"
+    "hand2": "both hands",               # bare form reads as "hand two"
     "land": "touching down",             # bare "land" is terrain -- overwhelmingly
     "punch": "punching",                 # bare "punch" is the drink
     "rear": "rearing up",                # bare "rear" is the back side
@@ -206,7 +242,6 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "shield": "shield bash",             # bare "shield" is the verb "to protect"
     "water": "watering",                 # bare "water" is the substance
     "wave": "waving a hand",             # bare "wave" is an ocean wave
-    "weapon": "wielding a weapon",       # the pose constraint, not the object
 }
 
 assert set(_VOCAB_T5_TEXT) <= set(CONTROLLED_VOCAB), (
@@ -271,6 +306,15 @@ def direction_words_in(text: str) -> list[str]:
     return [word for word in vocab_words_in(text) if word in direction]
 
 
+def hands_words_in(text: str) -> list[str]:
+    """The :data:`HANDS_VOCAB` subset of :func:`vocab_words_in`, in vocab order.
+
+    A valid label holds at most one; the list form is so an audit can SEE a
+    violation instead of having it collapsed away.
+    """
+    return [word for word in vocab_words_in(text) if word in _HANDS_VOCAB_SET]
+
+
 def head_words_in(words) -> list[str]:
     """The :data:`STATE_VOCAB` members of *words*, in the order given -- the
     clip's time order for transitions, the only record of which way they run."""
@@ -282,8 +326,9 @@ def parse_action_label(label: str) -> list[str]:
 
     Every comma-separated piece must be a vocabulary token verbatim: no empty
     segment, no repeat, at most :data:`ACTION_LABEL_MAX_WORDS` tokens, between 1
-    and :data:`ACTION_LABEL_MAX_HEADS` head words. An empty label is legal and
-    parses to ``[]`` (= no condition).
+    and :data:`ACTION_LABEL_MAX_HEADS` head words, at most one
+    :data:`HANDS_VOCAB` word. An empty label is legal and parses to ``[]`` (= no
+    condition).
 
     Raises :class:`ActionLabelError` rather than dropping anything: a silently
     dropped token is a silently changed condition.
@@ -323,6 +368,13 @@ def parse_action_label(label: str) -> list[str]:
             f"{ACTION_LABEL_MAX_HEADS}). A label names a state, or a transition "
             f"between two of them, and nothing longer has a defined reading."
         )
+    hands = [token for token in tokens if token in _HANDS_VOCAB_SET]
+    if len(hands) > 1:
+        raise ActionLabelError(
+            f"action_label {label!r} names {len(hands)} hand-state words {hands}. "
+            f"{list(HANDS_VOCAB)} are one exclusive axis (how many hands hold "
+            f"something); write at most one, or none for 'unspecified'."
+        )
     return tokens
 
 
@@ -332,8 +384,10 @@ def canonical_action_label(words) -> str:
     HEAD ORDER IS NEVER TOUCHED -- it is the clip's time order, the only record
     of which way a transition runs. Directions bind after a ``turn`` head (or the
     last head) and precede other modifiers, so they qualify the motion rather
-    than a trailing word (``walk, right, weapon``). Other modifiers are sorted by
-    :data:`CONTROLLED_VOCAB` index: one combination, exactly one spelling.
+    than a trailing word (``walk, right, hand1``). Other modifiers are sorted by
+    :data:`CONTROLLED_VOCAB` index: one combination, exactly one spelling. The
+    hands word sorts last by construction (:data:`HANDS_VOCAB` closes the
+    vocabulary), so a label reads action, direction, manner, implement, hands.
 
     Repeats are dropped (first occurrence wins); an out-of-vocabulary word
     raises -- dropping it would quietly delete part of the condition.

@@ -60,6 +60,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_LABEL_MAX_WORDS,
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
+    HANDS_VOCAB,
     STATE_VOCAB,
     load_action_labels,
     parse_action_label,
@@ -249,7 +250,8 @@ def _channel_drift(atoms: np.ndarray, role_payload: dict[str, Any]) -> dict[str,
     check exists so a future edit that reintroduces cross-slot pooling fails
     here instead of silently reinstating 1/N dilution.
     """
-    fillers = ("weapon", "bow", "shield", "1hand", "gun", "hammer")
+    # One hands word only: the axis admits a single member per label.
+    fillers = ("bow", "shield", "gun", "hammer", "hand2")
     worst = 0.0
     samples: list[dict[str, Any]] = []
     for base in (("walk", "forward"), ("run", "forward"), ("walk", "backward"), ("idle",)):
@@ -384,6 +386,12 @@ def _slot_configuration_margins(
     configurations["modifier"] = (
         [pooled([atoms[vocab_index[w]] for w in subset]) for subset in modifier_subsets],
         modifier_subsets,
+    )
+
+    # The hands axis is exclusive, so its complete domain is the three singletons.
+    configurations["hands"] = (
+        [pooled([atoms[vocab_index[w]]]) for w in HANDS_VOCAB],
+        [(w,) for w in HANDS_VOCAB],
     )
 
     report: dict[str, Any] = {

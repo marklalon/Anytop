@@ -89,7 +89,7 @@ class AnyTop(nn.Module):
         self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
         # Action-label conditioning: a single pathway -- the frozen T5 vectors of
         # the label's WORDS, pooled into one channel per role slot (head /
-        # direction / modifier) and concatenated. A channel reads its own slot
+        # direction / modifier / hands) and concatenated. A channel reads its own slot
         # only, so a label's head and direction axes are literally unchanged by
         # however many modifiers it also spells, and unseen (action x direction)
         # combinations compose out of word vectors the model has already seen.
@@ -302,7 +302,7 @@ class AnyTop(nn.Module):
                 )
             # The gate the geometry preflight cannot enforce on its own: the
             # first Linear has to be wide enough to stay injective on the direct
-            # sum of the three slot source spaces, or labels that differ only in
+            # sum of the slot source spaces, or labels that differ only in
             # slot membership can collide before any weight is trained.
             report = bundle.slot_source_rank_report(self.latent_dim)
             if not report['full_rank']:
