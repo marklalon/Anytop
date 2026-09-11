@@ -36,8 +36,9 @@ one-shot clip, as a repeat of the previous frame. So flipping the flag here
 also rewrites that one row in place (``loop_verdict.rewrite_terminal_row``),
 keeping the flag and the tensor in step without a re-preprocess. What it
 cannot refresh is cond.npy's per-species loop-period table, which is
-aggregated over loop clips at artifact regeneration -- the page reminds you
-to rerun that after a flip.
+aggregated over loop clips at artifact regeneration
+(``tools/regenerate_dataset_artifacts.py``) -- rerun that after a batch of
+flips, as after any sidecar edit.
 
 ``action_label`` edits are normalized and validated before being written.
 Tokens are lowercased, repeated words are dropped (first occurrence kept),
@@ -556,7 +557,6 @@ class Handler(BaseHTTPRequestHandler):
                 "name": ds["name"],
                 "labels_path": str(ds["labels"]),
                 "gif_dir": str(ds["gif_dir"]),
-                "processed": ds["processed"],
                 "label_contract": {
                     "controlled_vocab": list(CONTROLLED_VOCAB),
                     "state_vocab": list(STATE_VOCAB),

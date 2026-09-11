@@ -332,8 +332,6 @@ let view = [];      // current filtered subset
 let page = 1;
 let trashRoot = '';  // where "清理待删除" parks source files (server's --trash)
 let labelContract = null; // vocabulary/order supplied by the shared Python contract
-let processedDir = '';    // the active dataset's processed dir (for the regen reminder)
-let loopNoticeShown = false; // the cond.npy regen reminder, once per dataset session
 
 // A page holds 100 animated GIFs; decoding them all at once is what kills the
 // tab. Only cards near the viewport carry a src -- the rest stay empty boxes.
@@ -580,7 +578,6 @@ async function load(keepView) {
     return;
   }
   labelContract = data.label_contract;
-  processedDir = data.processed || '';
   rows = data.rows;
   refreshGroups();
   applyFilters(keepView, keepView);
@@ -714,8 +711,7 @@ function card(row) {
   loop.title = (ls === 'yes' ? '循环 (is_loop = true)：首尾相接、可循环播放'
               : ls === 'no' ? '单次 (is_loop = false)：一次性动作'
               : '未判定：is_loop 尚未判定（预处理会自动给出提议）')
-    + '。点击改为' + (ls === 'yes' ? '单次' : '循环')
-    + '；会同时改写 NPY 末帧速度行，cond.npy 的 loop 周期需另行重新生成';
+    + '。点击改为' + (ls === 'yes' ? '单次' : '循环');
   // A one-shot clip becomes a loop and vice versa; an unjudged one is judged
   // a loop first (the more common verdict), a second click flips it back.
   loop.onclick = () => save(el, row, { is_loop: ls !== 'yes' });
@@ -908,18 +904,9 @@ async function save(el, row, patch) {
     // Adopt the row the file now holds, so the page mirrors the jsonl exactly.
     for (const k of Object.keys(row)) if (!(k in data.row)) delete row[k];
     Object.assign(row, data.row);
+    // A loop flip saves silently like a label edit; the server only sends a
+    // note when the tensor could not follow the flag (no NPY on disk).
     for (const n of (data.notes || [])) toast(n);
-    if (patch.is_loop !== undefined && !loopNoticeShown) {
-      loopNoticeShown = true;
-      notice([
-        'loop 标记已写入 action_labels.jsonl；有 NPY 的 clip 其末帧速度行已同步改写（没有的会以 toast 提示）。',
-        {
-          cls: 'n-warn',
-          text: '⚠ cond.npy 里按 loop clip 统计的 loop 周期（loop_period_by_action）还是旧的，核验完这一批后请重新生成：',
-          code: 'python tools/regenerate_dataset_artifacts.py --dataset-dir "' + processedDir + '"'
-        }
-      ], false);
-    }
     if (patch.action_group !== undefined || patch.pending_delete !== undefined ||
         patch.is_loop !== undefined) {
       // A group change can move the clip into/out of the current filter, and
@@ -1015,7 +1002,6 @@ function onDatasetChange() {
   $('loop').value = 'all';
   $('q').value = '';
   page = 1;
-  loopNoticeShown = false;
   $('notice').hidden = true;   // the report belongs to the dataset that produced it
   window.scrollTo({ top: 0 });
   load(false);
