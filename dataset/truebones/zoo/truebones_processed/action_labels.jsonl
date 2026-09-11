@@ -243,7 +243,7 @@
 {"clip": "Crow_Glide.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
 {"clip": "Crow_IdleFlap.npy", "action_group": "stationary", "action_label": "idle, yawn", "is_loop": true, "reviewed": true}
 {"clip": "Crow_Idle.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "Crow_Landflap.npy", "action_group": "transition", "action_label": "fly, land", "is_loop": true, "reviewed": true}
+{"clip": "Crow_Landflap.npy", "action_group": "transition", "action_label": "fly, land", "is_loop": false, "reviewed": true}
 {"clip": "Crow_PeckEat.npy", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
 {"clip": "Crow_TakeOff.npy", "action_group": "transition", "action_label": "takeoff", "is_loop": false, "reviewed": true}
 {"clip": "Deer_Backing.npy", "action_group": "stationary", "action_label": "attack", "is_loop": false, "reviewed": true}
@@ -277,7 +277,7 @@
 {"clip": "Dog-2_Sense.npy", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "Dog-2_Shake.npy", "action_group": "stationary", "action_label": "idle, shake", "is_loop": false, "reviewed": true}
 {"clip": "Dog-2_Slowtail.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "Dog-2_Sniffing.npy", "action_group": "locomotion", "action_label": "walk, forward, sniff", "is_loop": true, "reviewed": true}
+{"clip": "Dog-2_Sniffing.npy", "action_group": "locomotion", "action_label": "walk, forward, sniff", "is_loop": false, "reviewed": true}
 {"clip": "Dog-2_SwimIdle.npy", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
 {"clip": "Dog-2_SwimTurn2.npy", "action_group": "locomotion", "action_label": "turn, right, swim", "is_loop": false, "reviewed": true}
 {"clip": "Dog-2_Swimturn.npy", "action_group": "locomotion", "action_label": "turn, left, swim", "is_loop": false, "reviewed": true}
@@ -307,7 +307,7 @@
 {"clip": "Dog_SNiffed.npy", "action_group": "stationary", "action_label": "idle, shake, sniff", "is_loop": false, "reviewed": true}
 {"clip": "Dog_ScratchRight.npy", "action_group": "stationary", "action_label": "idle, clean", "is_loop": true, "reviewed": true}
 {"clip": "Dog_SingleBark.npy", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
-{"clip": "Dog_Sit.npy", "action_group": "transition", "action_label": "sitdown", "is_loop": true, "reviewed": true}
+{"clip": "Dog_Sit.npy", "action_group": "transition", "action_label": "sitdown", "is_loop": false, "reviewed": true}
 {"clip": "Dog_Snarling.npy", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
 {"clip": "Dog_Stare.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Dog_Swim.npy", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
@@ -322,11 +322,14 @@
 {"clip": "Dragon_WyvernAttack3.npy", "action_group": "stationary", "action_label": "attack", "is_loop": true, "reviewed": true}
 {"clip": "Dragon_WyvernAttack.npy", "action_group": "stationary", "action_label": "attack", "is_loop": false, "reviewed": true}
 {"clip": "Dragon_WyvernDie.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
-{"clip": "Dragon_WyvernFly.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": false, "reviewed": true}
+{"clip": "Dragon_WyvernFly1.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": false, "reviewed": true}
+{"clip": "Dragon_WyvernFly2.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": false, "reviewed": true}
+{"clip": "Dragon_WyvernFly3.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": false, "reviewed": true}
 {"clip": "Dragon_WyvernIdle2.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Dragon_WyvernIdle3.npy", "action_group": "stationary", "action_label": "idle", "is_loop": false, "reviewed": true}
 {"clip": "Dragon_WyvernIdle.npy", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
-{"clip": "Dragon_WyvernSlowFly.npy", "action_group": "locomotion", "action_label": "fly, forward, slow", "is_loop": false, "reviewed": true}
+{"clip": "Dragon_WyvernSlowFly1.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
+{"clip": "Dragon_WyvernSlowFly2.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
 {"clip": "Eagle_EggSteal.npy", "action_group": "stationary", "action_label": "attack, kick", "is_loop": true, "reviewed": true}
 {"clip": "Eagle_FloatDown.npy", "action_group": "locomotion", "action_label": "fly, down", "is_loop": true, "reviewed": true}
 {"clip": "Eagle_FloattUp.npy", "action_group": "locomotion", "action_label": "fly, up", "is_loop": true, "reviewed": true}
