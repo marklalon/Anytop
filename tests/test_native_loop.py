@@ -306,6 +306,161 @@ class NativeLoopTests(unittest.TestCase):
         terms_unit = diffusion.loop_wrap_loss(model_output, y_unit, n_joints=torch.tensor([2]))
         self.assertGreater(float(terms_unit['loop_wrap_terminal_vel'].item()), 1e-3)
 
+    def _closure_output(self, root_vel_x, *, n_joints=2, root_index=0):
+        """[1, n_joints, 12, T] physical output whose root X velocity rows are ``root_vel_x``."""
+        n_frames = len(root_vel_x)
+        model_output = torch.zeros(1, n_joints, 12, n_frames, dtype=torch.float32)
+        model_output[:, :, 3, :] = 1.0
+        model_output[:, :, 7, :] = 1.0
+        model_output[0, root_index, 9, :] = torch.tensor(root_vel_x, dtype=torch.float32)
+        return model_output
+
+    def test_loop_root_xz_closure_is_zero_when_all_rows_sum_to_zero(self):
+        diffusion = self._make_diffusion()
+        # Four visible steps of +1 closed by a terminal wrap row of -4: the
+        # identity every stored loop tensor satisfies.
+        model_output = self._closure_output([1.0, 1.0, 1.0, 1.0, -4.0])
+        # A DC bias on a NON-root joint and on the root's Y velocity must not
+        # count: only the root's XZ path is integrated by the exporter.
+        model_output[0, 1, 9:12, :] = 0.3
+        model_output[0, 0, 10, :] = 0.7
+        y = {
+            'is_loop': torch.tensor([True]),
+            'loop_full_cycle': torch.tensor([True]),
+            'translation_root_index': [0],
+        }
+
+        terms = diffusion.loop_root_xz_closure_loss(model_output, y, n_joints=torch.tensor([2]))
+
+        self.assertLess(float(terms['loop_root_xz_closure'].item()), 1e-6)
+        self.assertLess(float(terms['loop_root_xz_drift'].item()), 1e-6)
+
+    def test_loop_root_xz_closure_measures_the_per_cycle_dc_bias(self):
+        diffusion = self._make_diffusion()
+        # 0.01 per frame over 6 rows: the seam pop is 0.06, the loss its square.
+        model_output = self._closure_output([0.01] * 6)
+        model_output[0, 0, 11, :] = -0.01  # Z bias of the same size
+        y = {
+            'is_loop': torch.tensor([True]),
+            'loop_full_cycle': torch.tensor([True]),
+            'translation_root_index': [0],
+        }
+
+        terms = diffusion.loop_root_xz_closure_loss(model_output, y, n_joints=torch.tensor([2]))
+
+        expected_drift = float(np.hypot(0.06, 0.06))
+        self.assertAlmostEqual(float(terms['loop_root_xz_drift'].item()), expected_drift, places=6)
+        self.assertAlmostEqual(float(terms['loop_root_xz_closure'].item()), expected_drift ** 2, places=6)
+
+    def test_loop_root_xz_closure_skips_non_loop_and_averages_over_active(self):
+        diffusion = self._make_diffusion()
+        closed = self._closure_output([1.0, 1.0, -2.0])
+        drifting = self._closure_output([1.0, 1.0, 1.0])
+        one_shot = self._closure_output([5.0, 5.0, 5.0])
+        model_output = torch.cat([closed, drifting, one_shot], dim=0)
+        y = {
+            'is_loop': torch.tensor([True, True, False]),
+            'loop_full_cycle': torch.tensor([True, True, True]),
+            'translation_root_index': [0, 0, 0],
+        }
+
+        terms = diffusion.loop_root_xz_closure_loss(model_output, y, n_joints=torch.tensor([2, 2, 2]))
+
+        # (0 + 3^2) / 2 active samples; the one-shot's 15 never enters.
+        self.assertAlmostEqual(float(terms['loop_root_xz_closure'].item()), 4.5, places=6)
+        self.assertAlmostEqual(float(terms['loop_root_xz_drift'].item()), 1.5, places=6)
+
+    def test_loop_root_xz_closure_uses_physical_step_scale(self):
+        diffusion = self._make_diffusion()
+        model_output = self._closure_output([1.0] * 7)
+        y = {
+            'is_loop': torch.tensor([True]),
+            'loop_full_cycle': torch.tensor([True]),
+            'translation_root_index': [0],
+            # 7 output frames drawn from 4 source frames: step_scale = 3 / 6.
+            'playspeed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
+        }
+
+        terms = diffusion.loop_root_xz_closure_loss(model_output, y, n_joints=torch.tensor([2]))
+
+        self.assertAlmostEqual(float(terms['loop_root_xz_drift'].item()), 7.0 * 0.5, places=6)
+
+    def test_loop_root_xz_closure_follows_translation_root_index_and_masks_invalid(self):
+        diffusion = self._make_diffusion()
+        # Joint 1 is the translation root here; joint 0 carries a bias that
+        # must be ignored.
+        model_output = self._closure_output([1.0] * 4, root_index=1)
+        model_output[0, 0, 9, :] = 9.0
+        y_valid = {
+            'is_loop': torch.tensor([True]),
+            'loop_full_cycle': torch.tensor([True]),
+            'translation_root_index': [1],
+        }
+        y_invalid = dict(y_valid, translation_root_index=[5])
+
+        valid = diffusion.loop_root_xz_closure_loss(model_output, y_valid, n_joints=torch.tensor([2]))
+        invalid = diffusion.loop_root_xz_closure_loss(model_output, y_invalid, n_joints=torch.tensor([2]))
+
+        self.assertAlmostEqual(float(valid['loop_root_xz_drift'].item()), 4.0, places=6)
+        self.assertEqual(float(invalid['loop_root_xz_closure'].item()), 0.0)
+
+    def test_training_losses_adds_root_closure_only_when_weighted_but_always_logs_drift(self):
+        class _DriftingModel(torch.nn.Module):
+            def forward(self, x, t, **kwargs):
+                out = torch.zeros_like(x)
+                out[:, :, 3, :] = 1.0
+                out[:, :, 7, :] = 1.0
+                out[:, 0, 9, :] = 0.1  # root X velocity: constant drift
+                return out
+
+        batch_size, n_joints, n_feats, n_frames = 1, 2, FEATS_LEN, 5
+        model_kwargs = {
+            'y': {
+                'lengths': torch.full((batch_size,), n_frames, dtype=torch.int64),
+                'n_joints': torch.full((batch_size,), n_joints, dtype=torch.int64),
+                'joints_padding_mask': torch.ones(batch_size, 1, 1, n_joints + 1, n_joints + 1),
+                'rest_pos_ric_hml': torch.zeros(n_joints, 3),
+                'canonical_feature_mean': torch.zeros(n_feats),
+                'canonical_feature_std': torch.ones(n_feats),
+                'is_loop': torch.tensor([True]),
+                'loop_full_cycle': torch.tensor([True]),
+                'translation_root_index': [0],
+            }
+        }
+        x_start = torch.zeros(batch_size, n_joints, n_feats, n_frames)
+        x_start[:, :, 3, :] = 1.0
+        x_start[:, :, 7, :] = 1.0
+        t = torch.tensor([0], dtype=torch.int64)
+
+        def _terms(**weights):
+            diffusion = GaussianDiffusion(
+                betas=np.array([0.001, 0.002, 0.003], dtype=np.float64),
+                model_mean_type=ModelMeanType.START_X,
+                model_var_type=ModelVarType.FIXED_LARGE,
+                loss_type=LossType.MSE,
+                **weights,
+            )
+            return diffusion.training_losses(_DriftingModel(), x_start, t, model_kwargs=model_kwargs)
+
+        expected_drift = 0.1 * n_frames
+        baseline = _terms(lambda_loop_wrap=0.04)
+        self.assertAlmostEqual(float(baseline['loop_root_xz_drift'].item()), expected_drift, places=5)
+        unweighted_total = float(baseline['loss'].sum().item())
+
+        weighted = _terms(lambda_loop_wrap=0.04, lambda_loop_root_closure=2.0)
+        self.assertAlmostEqual(
+            float(weighted['loss'].sum().item()) - unweighted_total,
+            2.0 * expected_drift ** 2,
+            places=5,
+        )
+
+        closure_only = _terms(lambda_loop_root_closure=1.0)
+        self.assertNotIn('loop_wrap_loss', closure_only)
+        self.assertAlmostEqual(float(closure_only['loop_root_xz_drift'].item()), expected_drift, places=5)
+
+        off = _terms()
+        self.assertNotIn('loop_root_xz_drift', off)
+
     def test_create_gaussian_diffusion_preserves_loop_args(self):
         class Args:
             noise_schedule = 'cosine'
@@ -315,11 +470,13 @@ class NativeLoopTests(unittest.TestCase):
             lambda_geo = 0.0
             lambda_vel = 0.0
             lambda_loop_wrap = 0.75
+            lambda_loop_root_closure = 1.5
             temporal_span_seam_loss_weight = 0.0
             temporal_span_seam_width = 2
 
         diffusion = create_gaussian_diffusion(Args())
         self.assertEqual(diffusion.lambda_loop_wrap, 0.75)
+        self.assertEqual(diffusion.lambda_loop_root_closure, 1.5)
 
     def test_anytop_forwards_loop_phase_metadata(self):
         model = AnyTop(

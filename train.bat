@@ -48,6 +48,7 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 	--temporal_span_mask_prob 0.3 ^
 	--temporal_span_seam_loss_weight 0.2 ^
 	--lambda_loop_wrap 0.04 ^
+	--lambda_loop_root_closure 0.1 ^
 	--lambda_vel 0.2 ^
 	--lambda_geo 0.1 ^
 	--motion_cache_size 32768 ^

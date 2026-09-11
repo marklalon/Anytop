@@ -166,6 +166,7 @@ class GaussianDiffusion:
         lambda_geo=0.,
         lambda_vel=0.,
         lambda_loop_wrap=0.,
+        lambda_loop_root_closure=0.,
         lambda_bone=0.,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
@@ -177,11 +178,16 @@ class GaussianDiffusion:
         self.lambda_geo = lambda_geo
         self.lambda_vel = lambda_vel
         self.lambda_loop_wrap = float(lambda_loop_wrap)
+        self.lambda_loop_root_closure = float(lambda_loop_root_closure)
         self.lambda_bone = float(lambda_bone)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
         if self.lambda_loop_wrap < 0.0:
             raise ValueError(f"lambda_loop_wrap must be >= 0, got {self.lambda_loop_wrap}")
+        if self.lambda_loop_root_closure < 0.0:
+            raise ValueError(
+                f"lambda_loop_root_closure must be >= 0, got {self.lambda_loop_root_closure}"
+            )
         if self.lambda_bone < 0.0:
             raise ValueError(f"lambda_bone must be >= 0, got {self.lambda_bone}")
         if self.temporal_span_seam_loss_weight < 0.0:
@@ -713,6 +719,69 @@ class GaussianDiffusion:
             'loop_wrap_rot': rot_loss,
             'loop_wrap_terminal_vel': terminal_vel_loss,
         }
+
+    def loop_root_xz_closure_loss(self, model_output, y, n_joints):
+        """Full-cycle closure of the translation root's XZ velocity on loop samples.
+
+        The root's world XZ path is carried ONLY by its velocity channels
+        (ch9/ch11 -- its RIC ch0/ch2 are structurally zero) and the exporter
+        integrates them. A loop clip's terminal velocity row is the wrap delta
+        ``pos[0] - pos[-1]`` (features._compute_terminal_local_velocity, kept by
+        the circular roll / tile / resample in dataset._prepare_sample), so on
+        every loop training target the T root velocity rows sum to exactly zero
+        (|sum| <= 2e-16 on all 2629 loop clips of the three datasets).
+
+        Nothing else supervises that integral: ``l_simple`` is per-frame and
+        blind to a DC bias of ~1% of the velocity std, while over a cycle that
+        bias IS the seam pop (v7 --loop samples drifted ~0.01 per cycle, more
+        than the root's own in-cycle sway, all in the same direction -- the
+        pooled canonical velocity mean decoded back into the root channels).
+        ``loop_wrap_loss`` masks the root's ch0/ch2 for the pose and terminal
+        terms, so the root's XZ closure was the one loop invariant left open.
+
+        The constraint is linear in the output, so the posterior-mean x0
+        prediction can satisfy it at every timestep (E[sum v] = sum E[v] = 0);
+        unlike a geodesic term the weight carries no bias cost. It does carry
+        an optimization cost: one scalar per sample pushes T*2 elements, and
+        on the converged v7 weights lambda=0.1 already matches l_simple's
+        gradient norm at t=10 while 1.0 is ~12x it -- hence the 0.05-0.2 range
+        on --lambda_loop_root_closure.
+
+        Returns the squared per-cycle closure ``||sum_t vel_xz[t] * step||^2``
+        in physical units, averaged over the active loop samples, plus the
+        mean closure magnitude ``loop_root_xz_drift`` (the seam pop, in the
+        same units as the dataset's LOOP_DETECTION_ROOT_XZ_TOLERANCE) as a
+        metric to read against the weight.
+        """
+        batch_size, max_joints, n_feats, n_frames = model_output.shape
+        device = model_output.device
+        zero = model_output.new_zeros(())
+        if n_frames < 2 or n_feats < 12:
+            return {'loop_root_xz_closure': zero, 'loop_root_xz_drift': zero}
+        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
+        loop_full_cycle = self._coerce_bool_batch(y.get('loop_full_cycle'), batch_size, device, default=False)
+        valid_joints = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1).clamp(min=0, max=max_joints)
+        root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
+        root_valid = (root_indices >= 0) & (root_indices < valid_joints)
+        active_valid = is_loop & loop_full_cycle & root_valid
+        active_weight = active_valid.to(dtype=model_output.dtype)
+        active_denom = active_weight.sum().clamp(min=1.0)
+
+        step_scale = self._physical_velocity_step_scale(
+            y, batch_size, n_frames, device, model_output.dtype,
+        ).view(batch_size, 1)
+        batch_indices = th.arange(batch_size, device=device)
+        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
+        root_vel_xz = model_output[batch_indices, root_indices_clamped][:, [9, 11], :]  # [bs, 2, T]
+        # Every row, the terminal one included: that is the identity the
+        # stored tensors satisfy, and summing the visible rows alone would
+        # add a pull of the terminal row toward zero on top.
+        closure = root_vel_xz.sum(dim=-1) * step_scale                                 # [bs, 2]
+        closure_sq = (closure ** 2).sum(dim=-1)
+        closure_sq = th.where(active_valid, closure_sq, th.zeros_like(closure_sq))
+        loss = (closure_sq * active_weight).sum() / active_denom
+        drift = (th.sqrt(closure_sq) * active_weight).sum() / active_denom
+        return {'loop_root_xz_closure': loss, 'loop_root_xz_drift': drift}
 
     def q_mean_variance(self, x_start, t):
         """
@@ -1851,6 +1920,23 @@ class GaussianDiffusion:
                     )
                     terms.update(loop_terms)
                     terms["loss"] = terms["loss"] + self.lambda_loop_wrap * terms["loop_wrap_loss"]
+
+                if self.lambda_loop_wrap > 0.0 or self.lambda_loop_root_closure > 0.0:
+                    # Computed whenever loop supervision is on, so a run with
+                    # lambda_loop_root_closure=0 still logs loop_root_xz_drift
+                    # as the baseline the weighted run is read against.
+                    y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
+                    closure_terms = self.loop_root_xz_closure_loss(
+                        model_output_physical,
+                        y,
+                        actual_joints,
+                    )
+                    terms.update(closure_terms)
+                    if self.lambda_loop_root_closure > 0.0:
+                        terms["loss"] = (
+                            terms["loss"]
+                            + self.lambda_loop_root_closure * terms["loop_root_xz_closure"]
+                        )
 
         else:
             raise NotImplementedError(self.loss_type)

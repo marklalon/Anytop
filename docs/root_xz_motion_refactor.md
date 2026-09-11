@@ -255,6 +255,21 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
 - 训练侧 `loop_wrap_loss` 的 terminal 项在 root 的 `ch0/ch2` 上 mask
   （[gaussian_diffusion.py:702](../diffusion/gaussian_diffusion.py#L702)）——
   这两个通道恒为 0，不 mask 会把真值 terminal 速度（步态最后一步）压向 0。
+- **loop 的 root XZ 积分闭合由 `loop_root_xz_closure_loss` 单独监督**（`--lambda_loop_root_closure`）：
+  loop clip 的 terminal 行是 wrap delta，所以每条 loop 目标的 T 行 root `ch9/ch11` 之和
+  **精确为 0**（三库 2629 条 loop clip 实测 |Σ| ≤ 2e-16）。`l_simple` 逐帧、看不见 ~1% std 的
+  直流偏置，pose/terminal 项又 mask 掉 root XZ，于是这条不变量此前无人监督——v7 的 `--loop`
+  样本每周期同向漂 ~0.01（超过 root 自身周期内摆幅），方向正是池化的 canonical 速度均值。
+  该项对 **全 T 行**（含 terminal）求和取平方，物理单位，只在 `is_loop & loop_full_cycle` 样本上
+  平均；约束对输出是线性的，x0 预测在任意 t 的后验均值都能精确满足，权重没有偏置代价，
+  不折进 `lambda_loop_wrap`（单标量 vs 逐元素均值，梯度尺度差 ~J·3 倍，0.04 推不动）。
+  但它是每样本一个标量推 T×2 个元素：v7 权重实测 t=10 时 λ=0.1 的梯度范数 ≈ `l_simple`，
+  λ=1.0 ≈ 12 倍，所以取 **0.05–0.2**（train.bat 用 0.1）。只改 loss，**不需要 regen / 从头重训**。
+  `loop_root_xz_drift`（每周期接缝跳变，与 `LOOP_DETECTION_ROOT_XZ_TOLERANCE` 同单位）在
+  `lambda_loop_wrap` 或本权重任一非零时都记录，权重为 0 的跑法就是对照基线。训练期这个指标
+  的主体是逐样本的随机积分误差（v7 EMA ≈ 0.024，其中全局直流偏置只有 0.002），导出样本里
+  同向漂 0.01 的那种偏置是它的一小部分；带优化器状态续训 v7 400 步，EMA 由对照 0.030 降到
+  0.021（λ=0.02/0.1）/ 0.018（λ=1）。
 - `velocity_consistency_loss` **不 mask，改成比对 root 相对速度**（`_root_relative_velocity`）：
   `get_rifke` 给每个关节都减掉 root 的世界 XZ，而 `ch9/ch11` 是世界位移，所以 RIC 差分
   = `vel_j − vel_root`（仅 XZ，Y 不动）。按世界速度比对时真值本身就有残差（= root 的原地

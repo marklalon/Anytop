@@ -213,6 +213,17 @@ def add_model_options(parser):
                             " Couples position and velocity feature groups to prevent independent memorization.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")
+    group.add_argument("--lambda_loop_root_closure", default=0.0, type=float,
+                       help="Weight for the loop-only full-cycle closure of the translation root's XZ "
+                            "velocity (0.0=off): ||sum_t vel_xz[t] * step||^2 over ALL rows, the terminal "
+                            "wrap row included, on denormalized outputs. The root's world XZ path lives "
+                            "only in ch9/ch11 and every loop target sums to exactly zero there; l_simple "
+                            "cannot see the DC bias that integrates into a seam pop, and loop_wrap masks "
+                            "the root's XZ. Linear in the output, so the weight carries no bias cost, but "
+                            "it is one scalar per sample pushing T*2 elements: on a converged model 0.1 "
+                            "already matches l_simple's gradient norm at low t and 1.0 is ~10x it, so stay "
+                            "around 0.05-0.2. loop_root_xz_drift (the per-cycle seam pop in physical "
+                            "units) is logged whenever this or --lambda_loop_wrap is on.")
     group.add_argument("--lambda_bone", default=0.0, type=float,
                        help="Weight for the target-relative, rest-length-normalized bone-length loss (0.0=off). "
                             "Penalizes each predicted bone length's deviation from the GROUND-TRUTH bone length "
