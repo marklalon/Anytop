@@ -36,7 +36,6 @@ from .ignore_warnings import skip_orientation_detection
 from .animation_utils import (
     ROOT_XZ_DRIFT_THRESHOLD,
     detect_motion_loop,
-    find_redundant_boundary_frames,
     find_translation_root,
     clamp_vertical_trajectory,
     collapse_translation_root_chain,
@@ -650,7 +649,6 @@ def extract_motion_features_from_aligned_anims(
     *,
     flatten_root_travel=False,
     clamp_root_xz_extent=False,
-    trim_redundant_frames=False,
     is_loop=None,
 ):
     feature_translation_root_index = int(translation_root_index)
@@ -744,39 +742,6 @@ def extract_motion_features_from_aligned_anims(
     )
     positions = get_rifke(global_positions, r_rot, translation_root_index=feature_translation_root_index)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
-    if trim_redundant_frames:
-        # An edge frame that copies its neighbour, or that copies the far end,
-        # holds a pose the clip already has. In a loop the copied closing key
-        # also stalls the wrap (a hitch every cycle) and zeroes the terminal
-        # velocity, which a loop writes as the wrap delta. Drop it
-        # before anything is measured off the tensor, so the features and the
-        # exported anims both describe the trimmed clip.
-        #
-        # OPT-IN like ``clamp_root_xz_extent``: it CHANGES the clip, so only a
-        # fresh pass over source animation may ask for it. A recovery or roundtrip
-        # re-extraction must reproduce the stored tensor frame for frame,
-        # including edges an older pass wrote.
-        drop_first, drop_last = find_redundant_boundary_frames(global_positions, cont_6d_params)
-        if drop_first or drop_last:
-            frame_slice = slice(1 if drop_first else 0, -1 if drop_last else None)
-            motion_anim = motion_anim[frame_slice]
-            motion_export_anim = motion_export_anim[frame_slice]
-            # Every channel is per-frame (FK, 6D, RIC) or per-adjacent-pair
-            # (local_vel), and the pairs that leave with an edge frame are exactly
-            # the edge pairs, so one slice is exact -- verified bit-identical to
-            # re-encoding the trimmed anim.
-            cont_6d_params = cont_6d_params[frame_slice]
-            r_rot = r_rot[frame_slice]
-            global_positions = global_positions[frame_slice]
-            positions = positions[frame_slice]
-            local_vel = local_vel[frame_slice]
-            dropped = ' + '.join(
-                edge for edge, taken in (('first', drop_first), ('last', drop_last)) if taken
-            )
-            print(
-                f'    [dup-trim] {object_type}: dropped redundant {dropped} frame, '
-                f'{len(positions) + int(drop_first) + int(drop_last)} -> {len(positions)} frames'
-            )
 
     # ``is_loop`` is the caller's verdict, like ``flatten_root_travel``: the
     # action_labels sidecar's annotation when the clip has one (proposed by an
@@ -786,11 +751,9 @@ def extract_motion_features_from_aligned_anims(
     # stayed in the sidecar while the detector decided here would leave the flag
     # and the seam row disagreeing.
     if is_loop is None:
-        # AFTER the trim, never before: a clip that ships a duplicated closing key
-        # (frame N copying frame 0 -- how most unitybundles loop takes arrive) has a
-        # wrap gap of exactly zero, so measuring closure on the untrimmed stack reads
-        # the exporter's habit rather than the motion, and reads it off a frame this
-        # pass is about to delete. The verdict has to describe the tensor that ships.
+        # Closure is measured on the clip as authored. Redundant edge frames are
+        # no longer trimmed here -- they are cleaned at the source -- so the wrap
+        # gap reflects the motion rather than a duplicated closing key.
         is_loop = detect_motion_loop(
             positions,
             root_xz_velocity=local_vel,
