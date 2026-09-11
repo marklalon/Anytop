@@ -842,7 +842,6 @@
 {"clip": "MLH_Footman_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "MLH_Footman_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "MLH_Footman_Victory.npy", "action_group": "stationary", "action_label": "idle, happy", "reviewed": true}
-{"clip": "MLH_Footman_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "MLH_Griffin_Attack01.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "MLH_Griffin_Attack02.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "MLH_Griffin_Death.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
@@ -875,7 +874,6 @@
 {"clip": "MLH_Mage_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "MLH_Mage_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "MLH_Mage_Victory.npy", "action_group": "stationary", "action_label": "idle, happy", "reviewed": true}
-{"clip": "MLH_Mage_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "MLH_Worker_Death.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "MLH_Worker_GetHit.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "MLH_Worker_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}

@@ -1416,6 +1416,86 @@ def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_co
     return False
 
 
+def _inherit_loop_periods_from_reference(object_name, object_cond, reference_cond_path=None):
+    """Inherit loop periods onto a motion-less cond entry from the reference cond.
+
+    A rest-pose-only skeleton has no loop clips to measure
+    ``loop_period_by_action`` / ``loop_period_median`` from, so without them
+    ``--loop`` generation falls back to one gait cycle per window. The period is
+    a property of the body plan, not the rig, so it is inherited as the
+    per-action median over reference species sharing the same ``species_tags``,
+    then the same object_subset, then any reference species carrying a period.
+    Returns the label of the tier used, or None when nothing was inherited.
+    """
+    if object_cond.get('loop_period_by_action') or object_cond.get('loop_period_median'):
+        return 'own'
+    if not reference_cond_path or not os.path.exists(reference_cond_path):
+        print(f"[process_skeleton] no reference cond to inherit loop periods for "
+              f"'{object_name}'; --loop generation will assume one gait cycle per window.")
+        return None
+
+    from .cond_schema import load_cond
+    ref_cond = load_cond(reference_cond_path)
+    tags = _dataset_tags.dataset_tags()
+
+    def _lowered(raw):
+        return tuple(str(tag).strip().lower() for tag in (raw or ()))
+
+    target_tags = _lowered(tags.tags_for(object_name))
+    with_period = {
+        key: entry for key, entry in ref_cond.items()
+        if isinstance(entry, dict) and entry.get('loop_period_median')
+    }
+    ref_tags = {
+        key: _lowered(entry.get('species_tags') or tags.tags_for(key))
+        for key, entry in with_period.items()
+    }
+    # Narrowest tier with at least one donor wins; the final tier covers
+    # everything, so a winner is guaranteed when with_period is non-empty.
+    tiers = []
+    if target_tags:
+        tiers.append((
+            f"species_tags {'/'.join(target_tags)}",
+            [key for key in with_period if ref_tags[key] == target_tags],
+        ))
+        tiers.append((
+            f"object_subset {target_tags[0]}",
+            [key for key in with_period if ref_tags[key][:1] == target_tags[:1]],
+        ))
+    tiers.append(('all reference species', list(with_period)))
+    members = None
+    for label, candidates in tiers:
+        if candidates:
+            members = candidates
+            break
+    if members is None:
+        print(f"[process_skeleton] {reference_cond_path} carries no loop period for any "
+              f"species; '{object_name}' inherits none.")
+        return None
+
+    # Per-action median over the donors, each word taken over the species
+    # that carry it (a species without that action simply does not vote).
+    periods_by_action = {}
+    for key in members:
+        for word, period in (with_period[key].get('loop_period_by_action') or {}).items():
+            periods_by_action.setdefault(str(word), []).append(float(period))
+    object_cond['loop_period_by_action'] = {
+        word: float(np.median(periods)) for word, periods in sorted(periods_by_action.items())
+    }
+    object_cond['loop_period_median'] = float(
+        np.median([float(with_period[key]['loop_period_median']) for key in members])
+    )
+    gait = ', '.join(
+        f"{word}={object_cond['loop_period_by_action'][word]:g}"
+        for word in ('walk', 'run') if word in object_cond['loop_period_by_action']
+    )
+    print(f"[process_skeleton] inherited loop periods for '{object_name}' from "
+          f"{len(members)} reference species ({label}): "
+          f"median={object_cond['loop_period_median']:g}"
+          + (f", {gait}" if gait else '') + f" frames")
+    return label
+
+
 """Merge a freshly built object cond entry into an existing cond.npy in place.
 
 Other objects already present in cond.npy are left untouched."""
@@ -1656,6 +1736,11 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path,
     # species (reference_cond_path, required) so the cond is usable for inference;
     # a missing reference fails fast here instead of at generation time.
     _inherit_canonical_stats_from_dataset(
+        object_name, object_cond, reference_cond_path=reference_cond_path
+    )
+    # Likewise no clips to measure a gait period from: without one, --loop
+    # generation asks for a single cycle per window and the gait falls apart.
+    _inherit_loop_periods_from_reference(
         object_name, object_cond, reference_cond_path=reference_cond_path
     )
     cond[object_name] = object_cond

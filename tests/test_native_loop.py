@@ -388,6 +388,95 @@ class NativeLoopTests(unittest.TestCase):
             cond['y']['loop_phase_lengths'], torch.tensor([30.5, 20.0], dtype=torch.float32)
         ))
 
+    # ------------------------------------------------------------------
+    # process_new_skeleton: a rest-pose-only cond has no clips to measure a
+    # period from, so it inherits one from the reference cond by species_tags.
+    # Without it generation takes the one-cycle fallback above, which on a
+    # 60-frame walk window puts the legs at 60 frames/stride and the arms at 30.
+    # ------------------------------------------------------------------
+
+    def _reference_cond_file(self, tmp_dir):
+        from data_loaders.truebones.truebones_utils.cond_schema import save_cond
+
+        def entry(tags, by_action, median):
+            return {
+                'parents': np.array([-1, 0], dtype=np.int32),
+                'species_tags': tags,
+                'loop_period_by_action': by_action,
+                'loop_period_median': median,
+            }
+
+        reference = {
+            'ds/BipedA': entry(('Biped', 'Medium', 'Striding'), {'walk': 24.0, 'run': 19.0}, 39.0),
+            'ds/BipedB': entry(('Biped', 'Medium', 'Striding'), {'walk': 36.0}, 36.0),
+            'ds/BipedC': entry(('Biped', 'Medium', 'Striding'), {'walk': 20.0, 'idle': 59.0}, 20.0),
+            'ds/BigBiped': entry(('Biped', 'Large', 'Lumbering'), {'walk': 50.0}, 50.0),
+            'ds/Quad': entry(('Quadruped', 'Medium', 'Trotting'), {'walk': 30.0}, 30.0),
+        }
+        # A species with no loop clip carries no period and must not vote.
+        reference['ds/NoLoops'] = {
+            'parents': np.array([-1, 0], dtype=np.int32),
+            'species_tags': ('Biped', 'Medium', 'Striding'),
+        }
+        path = Path(tmp_dir) / 'cond.npy'
+        save_cond(path, reference)
+        return str(path)
+
+    def test_new_skeleton_inherits_loop_period_from_same_tag_species(self):
+        import tempfile
+        from data_loaders.truebones.truebones_utils import dataset_tags
+        from data_loaders.truebones.truebones_utils.dataset_pipeline import (
+            _inherit_loop_periods_from_reference,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ref_path = self._reference_cond_file(tmp_dir)
+            with dataset_tags.registered_species_tags('Human', ('Biped', 'Medium', 'Striding')):
+                cond = {}
+                tier = _inherit_loop_periods_from_reference('Human', cond, ref_path)
+            self.assertTrue(tier.startswith('species_tags'), tier)
+            # Per-action median over the three exact-tag species, each word over
+            # the species that carry it; the Large/Lumbering biped does not vote.
+            self.assertEqual(cond['loop_period_by_action']['walk'], 24.0)
+            self.assertEqual(cond['loop_period_by_action']['run'], 19.0)
+            self.assertEqual(cond['loop_period_by_action']['idle'], 59.0)
+            self.assertEqual(cond['loop_period_median'], 36.0)
+            # ...and it is exactly what generation needs: 60 frames / 24 -> 2 cycles.
+            from sample.generate import _resolve_loop_phase_length
+            phase_length, cycles = _resolve_loop_phase_length(cond, 60, 1.0, 'walk, forward')
+            self.assertEqual(cycles, 2)
+            self.assertAlmostEqual(phase_length, 30.5)
+
+    def test_new_skeleton_loop_period_falls_back_to_subset_then_everything(self):
+        import tempfile
+        from data_loaders.truebones.truebones_utils import dataset_tags
+        from data_loaders.truebones.truebones_utils.dataset_pipeline import (
+            _inherit_loop_periods_from_reference,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ref_path = self._reference_cond_file(tmp_dir)
+            # A tag triple nobody in the reference carries -> every biped votes.
+            with dataset_tags.registered_species_tags('Kappa', ('Biped', 'Small', 'Hopping')):
+                cond = {}
+                tier = _inherit_loop_periods_from_reference('Kappa', cond, ref_path)
+            self.assertEqual(tier, 'object_subset biped')
+            self.assertEqual(cond['loop_period_by_action']['walk'], np.median([24.0, 36.0, 20.0, 50.0]))
+            # A body plan nobody carries -> the whole reference votes.
+            with dataset_tags.registered_species_tags('Jelly', ('Drifting', 'Small', 'Pulsing')):
+                cond = {}
+                tier = _inherit_loop_periods_from_reference('Jelly', cond, ref_path)
+            self.assertEqual(tier, 'all reference species')
+            self.assertEqual(cond['loop_period_by_action']['walk'], 30.0)
+            # An entry that already carries a period keeps it.
+            own = {'loop_period_by_action': {'walk': 12.0}, 'loop_period_median': 12.0}
+            self.assertEqual(_inherit_loop_periods_from_reference('Jelly', own, ref_path), 'own')
+            self.assertEqual(own['loop_period_median'], 12.0)
+            # No reference at all -> nothing baked, nothing raised.
+            cond = {}
+            self.assertIsNone(_inherit_loop_periods_from_reference('Jelly', cond, ''))
+            self.assertNotIn('loop_period_median', cond)
+
 
 
 if __name__ == '__main__':
