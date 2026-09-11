@@ -771,6 +771,7 @@ def run_remove_motions(
     object_filter: str = "",
     rm_pattern: str = "",
     raw_data_dir: str = "",
+    assume_yes: bool = False,
 ) -> int:
     """Remove motions matching *rm_pattern* from the preprocessed dataset.
 
@@ -847,9 +848,10 @@ def run_remove_motions(
         print(f"  ... and {len(to_delete) - preview_n} more")
     print()
 
-    if not _confirm_yes_no("Enter 'yes' to delete these motions, or 'no' to abort: "):
-        print("\nRemoval aborted.")
-        return 0
+    if not assume_yes:
+        if not _confirm_yes_no("Enter 'yes' to delete these motions, or 'no' to abort: "):
+            print("\nRemoval aborted.")
+            return 0
 
     # --- Delete motion .npy files ---
     print("\nDeleting motion files...")
@@ -886,9 +888,12 @@ def run_remove_motions(
             print(f"  [OK] Deleted {insp_deleted} inspection file(s)")
 
     # --- Update motion_metadata.json ---
-    # The strict join: the sidecar is a run prerequisite, so an incomplete
-    # action_labels.jsonl aborts before any motion is deleted.
-    metadata = load_motion_metadata(dataset_dir_path)
+    # Raw read, NOT the strict join: --rm exists to delete clips, including
+    # ones whose source (and action_labels.jsonl row) is already gone. The
+    # strict join would refuse to touch such a clip, which is exactly the
+    # "deleted the source" case this is for.
+    from data_loaders.truebones.truebones_utils.dataset_pipeline import _load_motion_metadata_raw
+    metadata = _load_motion_metadata_raw(dataset_dir_path)
     if metadata:
         removed_meta = 0
         for mname in to_delete:
@@ -1295,6 +1300,7 @@ def main() -> int:
             args.object_filter,
             args.rm_pattern,
             args.raw_data_dir,
+            assume_yes=args.assume_yes,
         )
 
     steps_completed = []
