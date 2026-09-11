@@ -59,7 +59,13 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 
 
 def load_motions(data_root: str) -> dict[str, dict]:
-    """Return {motion_name: metadata} for all motions."""
+    """Return {motion_name: metadata} for all motions.
+
+    ``is_loop`` is joined in from action_labels.jsonl, where the verdict lives
+    (auto-proposed by preprocessing, verified by hand); motion_metadata.json
+    no longer carries it. A clip whose row has no verdict yet gets none here,
+    so the report's "metadata" column reads False for it.
+    """
     metadata_path = Path(data_root) / "motion_metadata.json"
     if not metadata_path.exists():
         print(f"ERROR: motion_metadata.json not found at {metadata_path}")
@@ -70,10 +76,21 @@ def load_motions(data_root: str) -> dict[str, dict]:
 
     motions = payload.get("motions", payload)
 
+    from data_loaders.truebones.truebones_utils.motion_labels import (
+        LOOP_FLAG_KEY,
+        load_action_labels,
+    )
+    labels = load_action_labels(data_root)
+
     result = {}
     for name, meta in motions.items():
         if not isinstance(meta, dict):
             continue
+        meta = dict(meta)
+        meta.pop(LOOP_FLAG_KEY, None)
+        row = labels.get(name) or {}
+        if LOOP_FLAG_KEY in row:
+            meta[LOOP_FLAG_KEY] = bool(row[LOOP_FLAG_KEY])
         result[name] = meta
 
     return result

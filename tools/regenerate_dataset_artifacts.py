@@ -388,7 +388,9 @@ def _compute_loop_periods(
     fallback for a label that names no action word.
 
     Only ``is_loop`` clips contribute: a non-loop clip's length is its clip
-    duration, not a cycle period.
+    duration, not a cycle period. The verdict is the action_labels.jsonl
+    annotation (joined in by load_motion_metadata), so a flag flipped in the
+    review UI changes this table on the next regeneration.
     """
     periods: dict[str, dict[str, list[int]]] = {}
     for motion_path in motion_files:
@@ -550,22 +552,24 @@ def _regenerate_dataset_artifacts(
         raise RuntimeError(f"no motion files found under {motions_dir}")
 
     # Fast-fail: motion_metadata.json must exist.  Without it, load_motion_metadata
-    # returns {} and the rebuilt metadata will be missing is_loop, source_file,
+    # returns {} and the rebuilt metadata will be missing source_file,
     # translation_root_index, and other per-clip fields.
     metadata_path = dataset_dir_path / MOTION_METADATA_FILE
     if not metadata_path.exists():
         raise RuntimeError(
             f"{MOTION_METADATA_FILE} not found at {metadata_path}.\n"
             f"This script requires an existing motion_metadata.json to preserve "
-            f"is_loop, source_file, translation_root_index, and other per-clip metadata.\n"
+            f"source_file, translation_root_index, and other per-clip metadata.\n"
             f"If you've deleted it, re-run preprocess_and_validate.py to regenerate "
             f"the full dataset, or restore it from a backup."
         )
 
     # Fast-fail: action_labels.jsonl must exist (same contract as species_tags.jsonl
-    # -- single source of truth, no inference fallback, no auto-creation).
-    # load_motion_metadata below also hard-exits when a clip has no entry, but a
-    # missing file is reported up front with the fix spelled out.
+    # -- single source of truth, no inference fallback, no auto-creation). It also
+    # carries each clip's is_loop verdict, which the loop-period table below is
+    # aggregated over. load_motion_metadata below also hard-exits when a clip has
+    # no entry or no verdict, but a missing file is reported up front with the
+    # fix spelled out.
     action_labels_path = dataset_dir_path / ACTION_LABELS_FILE
     if not action_labels_path.exists():
         raise RuntimeError(

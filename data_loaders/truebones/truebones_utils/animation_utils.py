@@ -580,6 +580,23 @@ def detect_motion_loop(positions, root_xz_velocity=None, translation_root_index=
     )['is_loop']
 
 
+def detect_loop_from_features(features, translation_root_index=0):
+    """The detector's verdict on a STORED (T, J, 12) clip.
+
+    The same rule extraction applies to a fresh clip, read off the tensor it
+    wrote: RIC positions are channels 0:3 and local velocity 9:12, and the
+    diagnostics drop the terminal velocity row themselves so an earlier
+    verdict's wrap delta cannot vote. Preprocessing uses this to propose
+    ``is_loop`` for a clip already on disk whose sidecar row has none.
+    """
+    features = np.asarray(features)
+    return detect_motion_loop(
+        features[..., 0:3],
+        root_xz_velocity=features[..., 9:12],
+        translation_root_index=translation_root_index,
+    )
+
+
 def _boundary_pair_gaps(frames):
     """Return ``(median frame step, gap(a, b))`` for a (T, J, D) frame stack.
 

@@ -651,6 +651,7 @@ def extract_motion_features_from_aligned_anims(
     flatten_root_travel=False,
     clamp_root_xz_extent=False,
     trim_redundant_frames=False,
+    is_loop=None,
 ):
     feature_translation_root_index = int(translation_root_index)
 
@@ -777,16 +778,26 @@ def extract_motion_features_from_aligned_anims(
                 f'{len(positions) + int(drop_first) + int(drop_last)} -> {len(positions)} frames'
             )
 
-    # AFTER the trim, never before: a clip that ships a duplicated closing key
-    # (frame N copying frame 0 -- how most unitybundles loop takes arrive) has a
-    # wrap gap of exactly zero, so measuring closure on the untrimmed stack reads
-    # the exporter's habit rather than the motion, and reads it off a frame this
-    # pass is about to delete. The verdict has to describe the tensor that ships.
-    is_loop = detect_motion_loop(
-        positions,
-        root_xz_velocity=local_vel,
-        translation_root_index=feature_translation_root_index,
-    )
+    # ``is_loop`` is the caller's verdict, like ``flatten_root_travel``: the
+    # action_labels sidecar's annotation when the clip has one (proposed by an
+    # earlier run or set by hand in review), and the detector only proposes for
+    # a clip nobody has annotated yet. It shapes the tensor -- the terminal
+    # velocity row below is the wrap delta for a loop -- so an annotation that
+    # stayed in the sidecar while the detector decided here would leave the flag
+    # and the seam row disagreeing.
+    if is_loop is None:
+        # AFTER the trim, never before: a clip that ships a duplicated closing key
+        # (frame N copying frame 0 -- how most unitybundles loop takes arrive) has a
+        # wrap gap of exactly zero, so measuring closure on the untrimmed stack reads
+        # the exporter's habit rather than the motion, and reads it off a frame this
+        # pass is about to delete. The verdict has to describe the tensor that ships.
+        is_loop = detect_motion_loop(
+            positions,
+            root_xz_velocity=local_vel,
+            translation_root_index=feature_translation_root_index,
+        )
+    else:
+        is_loop = bool(is_loop)
 
     prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
     terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)

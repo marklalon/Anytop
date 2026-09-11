@@ -101,7 +101,7 @@
   }
   .clip {
     position: absolute; top: 0; left: 0; right: 0;
-    padding: 3px 6px;
+    padding: 3px 26px 3px 6px;   /* the right end is the copy button's */
     background: rgba(0,0,0,.62);
     color: #fff;
     font-size: 11px;
@@ -111,6 +111,18 @@
   .clip.link { cursor: pointer; }
   .clip.link:hover { color: var(--accent); text-decoration: underline; }
   .clip.link:visited { color: #fff; }
+  /* Copies the clip name. A sibling of the title, not a child, so a click can
+     never follow the bvhview link underneath. */
+  .copy {
+    position: absolute; top: 0; right: 0;
+    width: 24px; height: 21px;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent; border: none; border-radius: 0;
+    color: #cfcfcf; padding: 0; cursor: pointer;
+  }
+  .copy svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+  .copy:hover { color: var(--accent); background: rgba(0,0,0,.35); }
+  .copy.done { color: var(--ok); }
   .group {
     position: absolute; bottom: 0; left: 0;
     padding: 2px 6px;
@@ -119,10 +131,27 @@
     font-size: 10px;
     letter-spacing: .3px;
     cursor: pointer;
-    max-width: 100%;
+    max-width: calc(100% - 28px);   /* leave the corner to the loop icon */
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .group:hover { color: var(--accent); text-decoration: underline; }
+  /* The loop verdict, bottom-right of the thumb, opposite the group tag: an
+     icon only (a loop arrow, a straight arrow, a question mark) -- the words
+     live in the tooltip and the header filter. Proposed by preprocessing,
+     confirmed or flipped here with one click. */
+  .loop {
+    position: absolute; bottom: 0; right: 0;
+    width: 24px; height: 20px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.55);
+    font-size: 15px; line-height: 1;
+    cursor: pointer;
+    user-select: none;
+  }
+  .loop.yes { color: #7fd4ff; }
+  .loop.no { color: var(--dim); }
+  .loop.none { color: #ffcf8f; }
+  .loop:hover { filter: brightness(1.3); background: rgba(0,0,0,.75); }
 
   .group-menu {
     position: fixed;
@@ -263,6 +292,14 @@
     <option value="pending">待删除</option>
   </select>
 
+  <label class="f" for="loop">loop</label>
+  <select id="loop" title="is_loop：预处理自动判定，人工在卡片右下角点击修改">
+    <option value="all">all</option>
+    <option value="yes">循环</option>
+    <option value="no">单次</option>
+    <option value="none">未判定</option>
+  </select>
+
   <input type="search" id="q" placeholder="搜索 clip / label">
 
   <span class="counts" id="counts"></span>
@@ -295,6 +332,8 @@ let view = [];      // current filtered subset
 let page = 1;
 let trashRoot = '';  // where "清理待删除" parks source files (server's --trash)
 let labelContract = null; // vocabulary/order supplied by the shared Python contract
+let processedDir = '';    // the active dataset's processed dir (for the regen reminder)
+let loopNoticeShown = false; // the cond.npy regen reminder, once per dataset session
 
 // A page holds 100 animated GIFs; decoding them all at once is what kills the
 // tab. Only cards near the viewport carry a src -- the rest stay empty boxes.
@@ -324,6 +363,9 @@ function dropImgs(root) {
 
 const isReviewed = (r) => r.reviewed === true;
 const isPending = (r) => r.pending_delete === true;
+// is_loop is tri-state on a row: true / false are verdicts (auto-proposed by
+// preprocessing or set here); a row without the key has not been judged yet.
+const loopState = (r) => (r.is_loop === true ? 'yes' : r.is_loop === false ? 'no' : 'none');
 const stripNpy = (clip) => clip.replace(/\.npy$/i, '');
 // GIF lives under /gif/<dataset id>/<clip>.gif on the server.
 const gifOf = (clip) => 'gif/' + encodeURIComponent(ds) + '/' + stripNpy(clip) + '.gif';
@@ -397,6 +439,27 @@ const normalizeLabel = (s) => {
   return canonical.concat(modifiers).join(', ');
 };
 
+// navigator.clipboard needs a secure context (localhost qualifies; a LAN
+// address over http does not), so fall back to the selection-based copy.
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  return new Promise((resolve, reject) => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (err) { /* handled below */ }
+    ta.remove();
+    ok ? resolve() : reject(new Error('浏览器不允许写剪贴板'));
+  });
+}
+
 function toast(msg) {
   const el = $('toast');
   el.textContent = msg;
@@ -409,7 +472,11 @@ function counts() {
   const done = rows.filter(isReviewed).length;
   const pending = rows.filter(isPending).length;
   const invalid = rows.filter(r => !!r.label_error).length;
+  const loops = rows.filter(r => loopState(r) === 'yes').length;
+  const unjudged = rows.filter(r => loopState(r) === 'none').length;
   $('counts').innerHTML = '已核验 <b>' + done + '</b> / ' + rows.length +
+    ' &nbsp;·&nbsp; 循环 <b>' + loops + '</b>' +
+    (unjudged ? ' <span style="color:#ffcf8f">(未判定 <b>' + unjudged + '</b>)</span>' : '') +
     (pending ? ' &nbsp;·&nbsp; 待删除 <b>' + pending + '</b>' : '') +
     (invalid ? ' &nbsp;·&nbsp; <span style="color:#ff8a80">非法 label <b>' + invalid + '</b></span>' : '') +
     ' &nbsp;·&nbsp; 当前筛选 <b>' + view.length + '</b>';
@@ -451,7 +518,8 @@ function notice(lines, bad) {
 }
 
 const dsOptionText = (d) => d.name + '（' + (d.gif_count ? d.gif_count : '无GIF') +
-  (d.invalid_labels ? '，非法label ' + d.invalid_labels : '') + '）';
+  (d.invalid_labels ? '，非法label ' + d.invalid_labels : '') +
+  (d.unflagged_loops ? '，loop未判定 ' + d.unflagged_loops : '') + '）';
 
 // Load the dataset <select> once, remembering the previous choice.
 async function loadDatasets() {
@@ -512,6 +580,7 @@ async function load(keepView) {
     return;
   }
   labelContract = data.label_contract;
+  processedDir = data.processed || '';
   rows = data.rows;
   refreshGroups();
   applyFilters(keepView, keepView);
@@ -532,12 +601,14 @@ function refreshGroups() {
 function applyFilters(keepPage, keepScroll) {
   const g = $('group').value;
   const s = $('state').value;
+  const l = $('loop').value;
   const q = $('q').value.trim().toLowerCase();
   view = rows.filter(r => {
     if (g !== 'all' && r.action_group !== g) return false;
     if (s === 'todo' && isReviewed(r)) return false;
     if (s === 'done' && !isReviewed(r)) return false;
     if (s === 'pending' && !isPending(r)) return false;
+    if (l !== 'all' && loopState(r) !== l) return false;
     if (q && !(r.clip.toLowerCase().includes(q) ||
                (r.action_label || '').toLowerCase().includes(q))) return false;
     return true;
@@ -614,12 +685,41 @@ function card(row) {
   name.textContent = label_;
   name.title = link ? '在 BVH 查看器中打开 ' + row.clip
                     : row.clip + (stripNpy(row.clip) === row.clip ? '' : '（无对应 BVH）');
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'copy';
+  copy.title = '复制 clip 名：' + label_;
+  copy.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true">' +
+    '<rect x="5.5" y="5.5" width="8" height="8" rx="1.2"/>' +
+    '<path d="M10.5 5.5V3.2a1 1 0 0 0-1-1H3.2a1 1 0 0 0-1 1v6.3a1 1 0 0 0 1 1h2.3"/></svg>';
+  copy.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    copyText(label_).then(() => {
+      copy.classList.add('done');
+      setTimeout(() => copy.classList.remove('done'), 900);
+      toast('已复制：' + label_);
+    }, (err) => toast('复制失败：' + err.message));
+  };
   const grp = document.createElement('div');
   grp.className = 'group';
   grp.textContent = row.action_group;
   grp.title = 'action group：' + row.action_group + '（点击修改）';
   grp.onclick = () => openGroupMenu(grp, row, el);
-  thumb.append(img, name, grp);
+  const loop = document.createElement('div');
+  const ls = loopState(row);
+  loop.className = 'loop ' + ls;
+  // Icon only: ↻ loop, → one-shot, ? not judged yet. The tooltip carries the words.
+  loop.textContent = ls === 'yes' ? '↻' : ls === 'no' ? '→' : '?';
+  loop.title = (ls === 'yes' ? '循环 (is_loop = true)：首尾相接、可循环播放'
+              : ls === 'no' ? '单次 (is_loop = false)：一次性动作'
+              : '未判定：is_loop 尚未判定（预处理会自动给出提议）')
+    + '。点击改为' + (ls === 'yes' ? '单次' : '循环')
+    + '；会同时改写 NPY 末帧速度行，cond.npy 的 loop 周期需另行重新生成';
+  // A one-shot clip becomes a loop and vice versa; an unjudged one is judged
+  // a loop first (the more common verdict), a second click flips it back.
+  loop.onclick = () => save(el, row, { is_loop: ls !== 'yes' });
+  thumb.append(img, name, copy, grp, loop);
   if (isPending(row)) {
     const tag = document.createElement('div');
     tag.className = 'pending-tag';
@@ -808,10 +908,24 @@ async function save(el, row, patch) {
     // Adopt the row the file now holds, so the page mirrors the jsonl exactly.
     for (const k of Object.keys(row)) if (!(k in data.row)) delete row[k];
     Object.assign(row, data.row);
-    if (patch.action_group !== undefined || patch.pending_delete !== undefined) {
+    for (const n of (data.notes || [])) toast(n);
+    if (patch.is_loop !== undefined && !loopNoticeShown) {
+      loopNoticeShown = true;
+      notice([
+        'loop 标记已写入 action_labels.jsonl；有 NPY 的 clip 其末帧速度行已同步改写（没有的会以 toast 提示）。',
+        {
+          cls: 'n-warn',
+          text: '⚠ cond.npy 里按 loop clip 统计的 loop 周期（loop_period_by_action）还是旧的，核验完这一批后请重新生成：',
+          code: 'python tools/regenerate_dataset_artifacts.py --dataset-dir "' + processedDir + '"'
+        }
+      ], false);
+    }
+    if (patch.action_group !== undefined || patch.pending_delete !== undefined ||
+        patch.is_loop !== undefined) {
       // A group change can move the clip into/out of the current filter, and
       // may add a new group option — rebuild the list and re-run the filter.
-      // pending_delete moves it into/out of the 待删除 filter the same way.
+      // pending_delete moves it into/out of the 待删除 filter the same way,
+      // and is_loop into/out of the loop filter.
       // Keep both the current page and the scroll offset so an inline edit
       // doesn't yank the viewport back to the top.
       refreshGroups();
@@ -898,8 +1012,10 @@ function onDatasetChange() {
   $('group').innerHTML = '<option value="all">all</option>';
   $('group').value = 'all';
   $('state').value = 'all';
+  $('loop').value = 'all';
   $('q').value = '';
   page = 1;
+  loopNoticeShown = false;
   $('notice').hidden = true;   // the report belongs to the dataset that produced it
   window.scrollTo({ top: 0 });
   load(false);
@@ -908,6 +1024,7 @@ function onDatasetChange() {
 $('dataset').onchange = onDatasetChange;
 $('group').onchange = () => applyFilters();
 $('state').onchange = () => applyFilters();
+$('loop').onchange = () => applyFilters();
 $('q').oninput = () => {                 // debounce: a keystroke must not rebuild 100 cards
   clearTimeout($('q')._t);
   $('q')._t = setTimeout(() => applyFilters(), 200);

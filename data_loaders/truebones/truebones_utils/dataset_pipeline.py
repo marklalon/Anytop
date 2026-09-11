@@ -21,7 +21,14 @@ import bisect
 from data_loaders.truebones.truebones_utils.param_utils import ACTION_LABELS_FILE, DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir
 from pathlib import Path
 from . import dataset_tags as _dataset_tags
-from .motion_labels import build_motion_labels, write_motion_metadata, load_motion_metadata, load_action_labels
+from .motion_labels import (
+    LOOP_FLAG_KEY,
+    build_motion_labels,
+    fill_missing_loop_flags,
+    load_action_labels,
+    load_motion_metadata,
+    write_motion_metadata,
+)
 from .physics_joint_annotation import (
     build_semantic_metadata,
     rest_positions_from_offsets,
@@ -40,6 +47,7 @@ from .animation_utils import (
     crop_animation_to_max_joints,
     drop_prop_socket_joints,
     drop_end_site_joints,
+    detect_loop_from_features,
     coerce_single_orientation_quat,
     chain_xz_travel,
     promote_translation_root_to_hierarchy_root,
@@ -336,6 +344,7 @@ def _encode_prepared_motion_file(
     orientation_quat,
     translation_root_index,
     locomotion_clips=frozenset(),
+    loop_verdicts=None,
 ):
     """Phase 2: encode a phase-1 payload with the frozen species root."""
     file_path = prepared['file_path']
@@ -350,7 +359,11 @@ def _encode_prepared_motion_file(
     # be removed, and the clip name is what the action_labels sidecar is keyed on.
     _, _file_name = os.path.split(file_path)
     clip_action = normalize_action_name(object_type, _file_name.split('.')[0])
-    flatten_root_travel = f'{object_type}_{clip_action}.npy' in locomotion_clips
+    clip_file_name = f'{object_type}_{clip_action}.npy'
+    flatten_root_travel = clip_file_name in locomotion_clips
+    # None when the sidecar row has no is_loop yet: extraction then runs the
+    # detector and this run writes its proposal back into the row.
+    loop_verdict = (loop_verdicts or {}).get(clip_file_name)
 
     try:
         detected_root = int(prepared['translation_root_index'])
@@ -382,6 +395,7 @@ def _encode_prepared_motion_file(
             flatten_root_travel=flatten_root_travel,
             clamp_root_xz_extent=True,
             trim_redundant_frames=True,
+            is_loop=loop_verdict,
         )
     except Exception as err:
         print(err)
@@ -396,6 +410,10 @@ def _encode_prepared_motion_file(
             'names': names,
             'frame_time': frame_time,
             'is_loop': is_loop,
+            # The sidecar's own verdict (None when it had none), kept apart from
+            # the verdict above so the resample re-extraction asks the same
+            # question the first pass did instead of feeding its answer back in.
+            'loop_verdict': loop_verdict,
             'root_xz_flattened': root_xz_flattened,
             'flatten_root_travel': flatten_root_travel,
             # The anims BEFORE the root XZ was flattened. Re-extraction after a
@@ -451,9 +469,73 @@ def load_locomotion_clip_names(dataset_dir):
     )
 
 
+def load_loop_verdicts(dataset_dir):
+    """{clip: is_loop} for every sidecar row that carries a verdict.
+
+    Rows without one are simply absent: for those the detector decides during
+    extraction and the run writes its proposal back (fill_missing_loop_flags),
+    so the next run -- and the review UI -- see an annotation to verify. A
+    value already there is never re-judged; delete the key to ask again.
+    """
+    labels = load_action_labels(dataset_dir)
+    return {
+        clip: bool(row[LOOP_FLAG_KEY])
+        for clip, row in labels.items()
+        if LOOP_FLAG_KEY in row
+    }
+
+
+def backfill_loop_flags_from_stored_clips(dataset_dir, exclude_object_types=()):
+    """Propose ``is_loop`` for clips already on disk whose row has none.
+
+    The detector runs on each stored tensor (the same rule extraction applies,
+    see detect_loop_from_features) and the verdict is written into the sidecar,
+    which is how a dataset built before the flag moved there gets its rows
+    filled without a rebuild. Species in ``exclude_object_types`` are skipped:
+    those are about to be wiped and rebuilt, and their fresh extraction must
+    judge the new tensor rather than inherit a proposal made on the old one.
+    Returns the number of rows filled.
+    """
+    dataset_dir = str(dataset_dir)
+    labels_path = pjoin(dataset_dir, ACTION_LABELS_FILE)
+    if not os.path.exists(labels_path):
+        return 0
+    unflagged = {
+        clip for clip, row in load_action_labels(dataset_dir).items()
+        if LOOP_FLAG_KEY not in row
+    }
+    if not unflagged:
+        return 0
+    excluded = set(exclude_object_types or ())
+    stored = _load_motion_metadata_raw(dataset_dir)
+    verdicts = {}
+    for clip in sorted(unflagged):
+        entry = stored.get(clip)
+        if entry is None:
+            continue  # not on disk yet: the build that writes it decides
+        if str(entry.get('object_type', '')) in excluded:
+            continue
+        motion_path = pjoin(dataset_dir, MOTION_DIR, clip)
+        if not os.path.exists(motion_path):
+            continue
+        translation_root_index = entry.get('translation_root_index')
+        if translation_root_index is None:
+            raise ValueError(
+                f"{clip}: {MOTION_METADATA_FILE} entry has no translation_root_index, "
+                f"so its stored tensor cannot be judged for {LOOP_FLAG_KEY}; rebuild "
+                f"the species or set the flag on its {ACTION_LABELS_FILE} row by hand."
+            )
+        verdicts[clip] = detect_loop_from_features(
+            np.load(motion_path), translation_root_index=int(translation_root_index)
+        )
+    return fill_missing_loop_flags(dataset_dir, verdicts)
+
+
 def _build_motion_metadata_entry(result, motion_file_name):
+    # The loop verdict is NOT written here: it lives in action_labels.jsonl as
+    # an annotation (see load_loop_verdicts) and a copy in the metadata would
+    # diverge the first time a row is corrected by hand.
     motion_labels = dict(result['motion_labels'])
-    motion_labels['is_loop'] = result.get('is_loop', False)
     motion_labels['motion_source'] = 'anim_dir'
 
     translation_root_index = result.get('translation_root_index')
@@ -615,7 +697,7 @@ already produced clips on disk. Matching files are dropped from this run so only
 added source files are (re)processed. The rest-pose reference carrier is still selected
 from the full file list, so the per-object cond stays stable regardless of which clips
 are new. Returns None when no source files remain to process (object fully up to date)."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, crop_enabled=True, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset()):
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, crop_enabled=True, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None):
     object_cond = dict()
     if fbxs_dir is None:
         fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
@@ -843,6 +925,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             tp.orientation_quat,
             translation_root_index,
             locomotion_clips,
+            loop_verdicts,
         ))
         # Drop raw/aligned phase-1 data as soon as its encoded result exists.
         prepared_motion_files[prepared_index] = None
@@ -900,6 +983,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                     flatten_root_travel=bool(result.get('flatten_root_travel')),
                     clamp_root_xz_extent=True,
                     trim_redundant_frames=True,
+                    is_loop=result.get('loop_verdict'),
                 )
                 result['motion'] = motion
                 # Keep the stored anims the ones the features were built from, as
@@ -960,9 +1044,12 @@ incremental path detect the same collision against clips already on disk.
 it does not participate in clip names.
 """
 def _write_object_outputs(save_dir, object_payload, files_counter, existing_clip_sources=None):
+    """Returns ``(files_counter, frames_counter, motion_metadata, loop_verdicts)``;
+    the last is ``{clip: is_loop}`` for every clip written, sidecar-bound."""
     object_type = object_payload['object_type']
     frames_counter = 0
     motion_metadata = {}
+    loop_verdicts = {}
     claimed_names = dict(existing_clip_sources or {})
 
     for result in object_payload['results']:
@@ -1000,8 +1087,9 @@ def _write_object_outputs(save_dir, object_payload, files_counter, existing_clip
 
         motion_labels = _build_motion_metadata_entry(result, motion_file_name)
         motion_metadata[motion_file_name] = motion_labels
+        loop_verdicts[motion_file_name] = bool(result.get('is_loop', False))
 
-    return files_counter, frames_counter, motion_metadata
+    return files_counter, frames_counter, motion_metadata, loop_verdicts
 
 
 def _print_dataset_summary(max_joints, files_counter, frames_counter):
@@ -1076,7 +1164,7 @@ def _resolve_preprocessing_workers(objects, object_workers=8):
     return min(object_count, max(1, int(object_workers)))
 
 
-def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset()):
+def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None):
     # ── Install a local warning collector inside the worker process ──────
     # The parent's _WarnCollector monkey-patches do NOT propagate into
     # ProcessPoolExecutor children.  Capture _warn() / degenerate-facing
@@ -1102,6 +1190,7 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, fi
             frozen_translation_root_index=frozen_translation_root_index,
             frozen_promote_root_depth=frozen_promote_root_depth,
             locomotion_clips=locomotion_clips,
+            loop_verdicts=loop_verdicts,
         )
         if payload is not None:
             payload['_warn_messages'] = _warn_messages
@@ -1124,19 +1213,21 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         raw_data_dir=raw_data_dir,
         crop_enabled=crop_enabled,
         locomotion_clips=load_locomotion_clip_names(save_dir),
+        loop_verdicts=load_loop_verdicts(save_dir),
     )
     if object_payload is None:
         return files_counter, frames_counter, max_joints, None, {}, None
 
     squared_positions_error.update(object_payload['errors'])
     max_joints = max(max_joints, object_payload['max_joints'])
-    files_counter, object_frames_counter, object_motion_metadata = _write_object_outputs(
+    files_counter, object_frames_counter, object_motion_metadata, object_loop_verdicts = _write_object_outputs(
         save_dir,
         object_payload,
         files_counter,
         existing_clip_sources=existing_clip_sources,
     )
     frames_counter += object_frames_counter
+    fill_missing_loop_flags(save_dir, object_loop_verdicts)
 
     return (files_counter, frames_counter, max_joints, object_payload['object_cond'],
             object_motion_metadata, object_payload['tpose_reference_path'])
@@ -1227,6 +1318,16 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
     # the hand-maintained action_labels sidecar's answer, not something the
     # geometry can tell us (see extract_motion_features_from_aligned_anims).
     locomotion_clips = load_locomotion_clip_names(target_dataset_dir)
+    # The loop verdicts the sidecar already holds go in as overrides; a clip
+    # without one is judged by the detector and the proposal written back
+    # below. Incremental runs keep every stored clip, so those get theirs
+    # from the stored tensor first -- a full build wipes them, and its fresh
+    # extraction must not inherit a verdict made on the old tensor.
+    if incremental:
+        filled = backfill_loop_flags_from_stored_clips(target_dataset_dir)
+        if filled:
+            print(f"[OK] {LOOP_FLAG_KEY} proposed for {filled} stored clip(s) in {ACTION_LABELS_FILE}")
+    loop_verdicts = load_loop_verdicts(target_dataset_dir)
 
     obj_workers = _resolve_preprocessing_workers(
         objects,
@@ -1249,6 +1350,7 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
                 frozen_translation_root_index=per_object_frozen_roots.get(object_type),
                 frozen_promote_root_depth=per_object_promote_depth.get(object_type),
                 locomotion_clips=locomotion_clips,
+                loop_verdicts=loop_verdicts,
             )
     else:
         with ProcessPoolExecutor(
@@ -1268,6 +1370,7 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
                     per_object_frozen_roots.get(object_type),
                     per_object_promote_depth.get(object_type),
                     locomotion_clips,
+                    loop_verdicts,
                 ): idx
                 for idx, object_type in enumerate(objects)
             }
@@ -1284,6 +1387,9 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
     # this run survive the cond.npy / motion_metadata rewrite below.
     cond = dict(existing_cond)
     motion_metadata = dict(existing_meta)
+    # {clip: is_loop} for every clip this run wrote; rows that already carry a
+    # verdict are left alone by fill_missing_loop_flags.
+    written_loop_verdicts = {}
     # Skinned-mesh reference paths travel separately from cond and are written to
     # the sidecar (never into cond.npy). Only this run's objects are collected;
     # untouched objects keep their existing sidecar entries.
@@ -1304,13 +1410,14 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
         # payload root is guaranteed to match the existing cond entry here.
         existing_key = resolve_species_key(cond, object_type)
         cur_counter = files_counter
-        files_counter, object_frames, object_motion_metadata = _write_object_outputs(
+        files_counter, object_frames, object_motion_metadata, object_loop_verdicts = _write_object_outputs(
             target_dataset_dir,
             payload,
             files_counter,
             existing_clip_sources=per_object_clip_sources.get(object_type),
         )
         frames_counter += object_frames
+        written_loop_verdicts.update(object_loop_verdicts)
         # The seeded entries are canonically keyed ('<namespace>/<species>') while a
         # freshly built one arrives under its bare species name. Write through the
         # existing key so the rebuilt species replaces itself in place instead of
@@ -1349,6 +1456,16 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
         squared_positions_error,
         tpose_refs=tpose_refs,
     )
+    # The detector's proposals become sidecar annotations, next to the labels
+    # they belong with, for the review UI to verify. Written last, after every
+    # clip and its metadata are on disk, so a failed run leaves no verdict for a
+    # clip that never landed.
+    proposed = fill_missing_loop_flags(target_dataset_dir, written_loop_verdicts)
+    if proposed:
+        print(
+            f"[OK] {LOOP_FLAG_KEY} proposed for {proposed} new clip(s) in {ACTION_LABELS_FILE} "
+            f"-- verify them in dataset/review (serve.py)"
+        )
 
 
 def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_cond_path=None):

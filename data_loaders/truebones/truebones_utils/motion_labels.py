@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 
 from data_loaders.truebones.truebones_utils.param_utils import (
@@ -8,8 +10,15 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     ACTION_LABELS_FILE,
 )
 
+# The per-clip loop verdict's key in action_labels.jsonl. An annotation, not a
+# measurement: preprocessing proposes it for a row that has none, a person
+# verifies or flips it in dataset/review, and nothing downstream re-derives it.
+LOOP_FLAG_KEY = "is_loop"
 
-MOTION_METADATA_SCHEMA_VERSION = 6
+
+# 7: ``is_loop`` left motion_metadata.json for action_labels.jsonl, where it is an
+#    annotation -- auto-filled by preprocessing, verified and corrected by hand.
+MOTION_METADATA_SCHEMA_VERSION = 7
 
 # ---------------------------------------------------------------------------
 # Action groups + controlled label vocabulary  (action_labels.jsonl)
@@ -419,8 +428,6 @@ ACTION_LABEL_MAX_WORDS = 8
 
 
 def _fail_action_labels(line_number: int, message: str) -> None:
-    import sys
-
     print(
         f"\n❌ {ACTION_LABELS_FILE}:{line_number}: {message}",
         file=sys.stderr,
@@ -524,14 +531,20 @@ def _validate_head_order_consistency(rows) -> None:
 # I/O
 # ---------------------------------------------------------------------------
 
-def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, str]]:
+def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
     """Load the hand-maintained ``action_labels.jsonl`` sidecar.
 
     Each line is a JSON object
-    ``{"clip": "<name>.npy", "action_group": "...", "action_label": "..."}``.
-    Returns a mapping ``clip -> {"action_group": ..., "action_label": ...}``.
+    ``{"clip": "<name>.npy", "action_group": "...", "action_label": "...", "is_loop": true}``.
+    Returns a mapping ``clip -> {"action_group": ..., "action_label": ..., ["is_loop": ...]}``.
     Raises ``FileNotFoundError`` if the file is absent so callers fail fast rather
     than silently training without action conditioning.
+
+    ``is_loop`` is the clip's loop verdict and is OPTIONAL per row: preprocessing
+    fills it in for a clip nobody has annotated yet (the detector's proposal), and
+    a hand-set value is never overwritten. It is returned only when the row has
+    it, so a caller can tell "annotated" from "not yet" -- :func:`load_motion_metadata`
+    is the strict join that requires it for every clip on disk.
     """
     labels_path = Path(dataset_dir) / ACTION_LABELS_FILE
     if not labels_path.exists():
@@ -580,10 +593,23 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, str]]:
                     f"token or an empty comma segment",
                 )
             _validate_action_label_entry(group, label, str(clip), line_number)
-            action_labels[str(clip)] = {
+            row: dict[str, object] = {
                 "action_group": group,
                 "action_label": label,
             }
+            if LOOP_FLAG_KEY in entry:
+                is_loop = entry[LOOP_FLAG_KEY]
+                # JSON true/false only. "true", 1 or null would each read as a
+                # verdict somebody never made, and the flag decides the terminal
+                # velocity row and the loop-period statistics.
+                if not isinstance(is_loop, bool):
+                    _fail_action_labels(
+                        line_number,
+                        f"clip '{clip}' has {LOOP_FLAG_KEY} {is_loop!r}; it must be "
+                        f"JSON true or false (or absent, to let preprocessing decide)",
+                    )
+                row[LOOP_FLAG_KEY] = is_loop
+            action_labels[str(clip)] = row
             rows.append((line_number, group, str(clip), label.split(", ") if label else []))
     # Cross-row rule, so it can only run once the whole file is in.
     _validate_head_order_consistency(rows)
@@ -592,8 +618,10 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, str]]:
 
 def load_motion_metadata(
     dataset_dir: str | Path,
+    *,
+    require_loop_flag: bool = True,
 ) -> dict[str, dict[str, object]]:
-    """Load ``motion_metadata.json`` joined with per-clip action group/label.
+    """Load ``motion_metadata.json`` joined with per-clip action group/label/loop.
 
     A clip present in the metadata but absent from ``action_labels.jsonl`` is a
     fatal error (the group decides which model the clip trains, so there is no
@@ -601,6 +629,15 @@ def load_motion_metadata(
     missing entry is always an incomplete sidecar, never a clip that is
     "labeled later". Bookkeeping-only reads that need no action fields use
     ``_load_motion_metadata_raw`` (dataset_pipeline) instead.
+
+    ``is_loop`` is joined the same way and is just as fatal when a row lacks
+    it: a default would train every unannotated loop as a one-shot clip without
+    a word. Preprocessing fills the flag in for every clip it writes and for
+    every clip already on disk, so a missing one means the dataset has not
+    been through ``preprocess_and_validate.py`` since the flag moved into the
+    sidecar. ``require_loop_flag=False`` is for the one bookkeeping read that
+    runs BEFORE that fill (capturing the untouched species of a filtered
+    rebuild): the joined entry then simply has no ``is_loop`` key.
     """
     metadata_path = Path(dataset_dir) / MOTION_METADATA_FILE
     if not metadata_path.exists():
@@ -617,6 +654,7 @@ def load_motion_metadata(
 
     normalized: dict[str, dict[str, object]] = {}
     missing_labels: list[str] = []
+    missing_loop_flags: list[str] = []
     for motion_name, metadata in motions.items():
         if not isinstance(metadata, dict):
             continue
@@ -625,15 +663,21 @@ def load_motion_metadata(
             missing_labels.append(motion_name)
             continue
         entry = dict(metadata)
+        # The sidecar is the only source: a copy an older build baked into the
+        # metadata is stale the moment the row is edited, so it never survives
+        # the join (write_motion_metadata strips it on the way out too).
+        entry.pop(LOOP_FLAG_KEY, None)
         entry["action_group"] = action["action_group"]
         entry["action_label"] = action["action_label"]
+        if LOOP_FLAG_KEY in action:
+            entry[LOOP_FLAG_KEY] = bool(action[LOOP_FLAG_KEY])
+        elif require_loop_flag:
+            missing_loop_flags.append(motion_name)
         normalized[motion_name] = entry
 
     if missing_labels:
         preview = ", ".join(sorted(missing_labels)[:10])
         more = "" if len(missing_labels) <= 10 else f" (+{len(missing_labels) - 10} more)"
-        import sys
-
         msg = (
             f"\n❌ {ACTION_LABELS_FILE} is missing entries for {len(missing_labels)} "
             f"clip(s): {preview}{more}\n\n"
@@ -643,7 +687,70 @@ def load_motion_metadata(
         )
         print(msg, file=sys.stderr, flush=True)
         sys.exit(1)
+    if missing_loop_flags:
+        preview = ", ".join(sorted(missing_loop_flags)[:10])
+        more = "" if len(missing_loop_flags) <= 10 else f" (+{len(missing_loop_flags) - 10} more)"
+        msg = (
+            f"\n❌ {ACTION_LABELS_FILE} has no {LOOP_FLAG_KEY} for {len(missing_loop_flags)} "
+            f"clip(s): {preview}{more}\n\n"
+            f"   The loop flag lives in {ACTION_LABELS_FILE} (auto-filled by preprocessing, "
+            f"verified by hand in dataset/review). Run\n"
+            f"   python preprocess_and_validate.py --dataset-dir <dataset> --validate-only\n"
+            f"   once to fill it in for every clip already on disk, or set "
+            f'"{LOOP_FLAG_KEY}": true/false on the rows yourself.\n'
+        )
+        print(msg, file=sys.stderr, flush=True)
+        sys.exit(1)
     return normalized
+
+
+def fill_missing_loop_flags(
+    dataset_dir: str | Path,
+    verdicts: dict[str, bool],
+) -> int:
+    """Write ``is_loop`` into the sidecar rows that do not have one yet.
+
+    *verdicts* maps clip -> bool. Only a row WITHOUT the key is filled: an
+    existing value is an annotation (the detector's earlier proposal or a hand
+    correction) and preprocessing never overrides one -- delete the key from a
+    row to have it re-judged. Rows are rewritten in place: line order, every
+    other key and the file's newline style are kept, and a line that changes
+    nothing is copied byte for byte. Returns the number of rows filled.
+    """
+    labels_path = Path(dataset_dir) / ACTION_LABELS_FILE
+    if not verdicts or not labels_path.exists():
+        return 0
+    raw = labels_path.read_bytes()
+    newline = "\r\n" if b"\r\n" in raw else "\n"
+    lines = raw.decode("utf-8").splitlines()
+    filled = 0
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        entry = json.loads(stripped)
+        if not isinstance(entry, dict) or LOOP_FLAG_KEY in entry:
+            continue
+        clip = entry.get("clip")
+        if clip not in verdicts:
+            continue
+        # Keep the key next to the label it annotates, so a row reads
+        # clip / group / label / is_loop / review marks.
+        rebuilt: dict[str, object] = {}
+        for key, value in entry.items():
+            rebuilt[key] = value
+            if key == "action_label":
+                rebuilt[LOOP_FLAG_KEY] = bool(verdicts[clip])
+        rebuilt.setdefault(LOOP_FLAG_KEY, bool(verdicts[clip]))
+        lines[index] = json.dumps(rebuilt, ensure_ascii=False)
+        filled += 1
+    if not filled:
+        return 0
+    tmp_path = labels_path.with_name(labels_path.name + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8", newline=newline) as handle:
+        handle.write("\n".join(lines) + "\n")
+    os.replace(tmp_path, labels_path)
+    return filled
 
 
 def write_motion_metadata(
@@ -657,12 +764,13 @@ def write_motion_metadata(
     sidecar, and every rebuild path round-trips loaded entries back through here.
     Persisting them would leave a second copy that silently diverges the moment
     ``action_labels.jsonl`` is edited -- the sidecar is the single source of truth,
-    so the joined fields are dropped on the way out. (``action_tags`` and
+    so the joined fields are dropped on the way out. ``is_loop`` moved into the
+    sidecar with schema 7 and is dropped for the same reason. (``action_tags`` and
     ``species_label`` are removed predecessors -- stripping them clears the stale
     copies earlier rebuilds baked in.)
     """
     output_path = Path(save_dir) / MOTION_METADATA_FILE
-    dropped_keys = ("action_group", "action_label", "action_tags", "species_label")
+    dropped_keys = ("action_group", "action_label", LOOP_FLAG_KEY, "action_tags", "species_label")
     sanitized_entries = {
         motion_name: {
             key: value for key, value in metadata.items() if key not in dropped_keys

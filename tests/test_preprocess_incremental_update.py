@@ -9,7 +9,11 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata
+from data_loaders.truebones.truebones_utils.motion_labels import (
+    MOTION_METADATA_SCHEMA_VERSION,
+    load_motion_metadata,
+    write_motion_metadata,
+)
 from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
@@ -31,17 +35,25 @@ def _make_cond_entry(object_type: str) -> dict[str, object]:
     }
 
 
-def _write_action_labels(dataset_dir, labels_by_clip):
+def _write_action_labels(dataset_dir, labels_by_clip, is_loop=False):
     """Write the hand-maintained action_labels.jsonl sidecar for a temp dataset.
 
-    Values are ``(action_group, action_label)`` pairs.
+    Values are ``(action_group, action_label)`` pairs, or
+    ``(action_group, action_label, is_loop)`` to carry a loop verdict; ``is_loop``
+    is the default verdict for pairs. Every clip on disk needs one for the strict
+    join (load_motion_metadata) to pass; ``is_loop=None`` leaves pairs unjudged,
+    for the tests that exercise preprocessing's proposal.
     """
     path = Path(dataset_dir) / "action_labels.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [
-        json.dumps({"clip": clip, "action_group": group, "action_label": label})
-        for clip, (group, label) in labels_by_clip.items()
-    ]
+    lines = []
+    for clip, value in labels_by_clip.items():
+        group, label = value[0], value[1]
+        row = {"clip": clip, "action_group": group, "action_label": label}
+        verdict = value[2] if len(value) > 2 else is_loop
+        if verdict is not None:
+            row["is_loop"] = bool(verdict)
+        lines.append(json.dumps(row))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -94,7 +106,7 @@ def test_write_motion_metadata_preserves_all_fields(tmp_path):
 
     payload = json.loads((dataset_dir / "motion_metadata.json").read_text(encoding="utf-8"))
     entry = payload["motions"]["Cat_Run_001.npy"]
-    assert payload["schema_version"] == 6
+    assert payload["schema_version"] == MOTION_METADATA_SCHEMA_VERSION
     assert entry["object_type"] == "Cat"
     assert entry["translation_root_index"] == 1
     assert entry["motion_name"] == "Cat_Run_001.npy"
@@ -104,6 +116,9 @@ def test_write_motion_metadata_preserves_all_fields(tmp_path):
     # writer.
     assert "action_group" not in entry
     assert "action_label" not in entry
+    # is_loop moved into the sidecar with schema 7: a copy here would go stale
+    # the first time a verdict is corrected in the review UI.
+    assert "is_loop" not in entry
     # species_label was a derived (lower-cased object_type) text label, removed
     # from the schema; the writer must strip the stale copies carried over from
     # older metadata files.
@@ -129,13 +144,14 @@ def test_load_motion_metadata_merges_action_labels_from_sidecar(tmp_path):
     )
     _write_action_labels(
         dataset_dir,
-        {"Cat_Run_001.npy": ("Locomotion", "  run,  forward ")},
+        {"Cat_Run_001.npy": ("Locomotion", "  run,  forward ", True)},
     )
 
     loaded = load_motion_metadata(dataset_dir)
     entry = loaded["Cat_Run_001.npy"]
     assert entry["action_group"] == "locomotion"
     assert entry["action_label"] == "run, forward"
+    assert entry["is_loop"] is True
 
 
 def test_load_motion_metadata_fast_fails_when_label_missing(tmp_path):
@@ -199,12 +215,14 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
         },
         total_clips=3,
     )
+    # The verdicts live in the sidecar; the metadata's is_loop above is a stale
+    # copy from an older build that the regeneration must not resurrect.
     _write_action_labels(
         dataset_dir,
         {
-            "Cat_Run_001.npy": ("locomotion", "run"),
-            "Dog_Jump_002.npy": ("transition", "jump"),
-            "Stale_Idle_003.npy": ("stationary", "idle"),
+            "Cat_Run_001.npy": ("locomotion", "run", True),
+            "Dog_Jump_002.npy": ("transition", "jump", False),
+            "Stale_Idle_003.npy": ("stationary", "idle", False),
         },
     )
     (inspection_dir / "Cat.json").write_text('{"object_type": "Cat", "stale": true}', encoding="utf-8")
@@ -281,6 +299,8 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     assert motion_metadata["Dog_Jump_002.npy"]["is_loop"] is False
     assert motion_metadata["Dog_Jump_002.npy"]["translation_root_index"] == 0
     assert motion_metadata["Dog_Jump_002.npy"]["motion_source"] == "retarget"
+    rewritten = json.loads((dataset_dir / "motion_metadata.json").read_text(encoding="utf-8"))
+    assert all("is_loop" not in entry for entry in rewritten["motions"].values())
 
     assert sorted(path.stem for path in inspection_dir.glob("*.json")) == ["Cat", "Dog"]
     collision_report = json.loads((dataset_dir / "joint_name_collision_report.json").read_text(encoding="utf-8"))
@@ -844,7 +864,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
 def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch, tmp_path):
     dataset_dir = tmp_path / "dataset"
 
-    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset()):
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None):
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
@@ -869,7 +889,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
                 'motion_name': motion_name,
                 'translation_root_index': 1,
             }
-        }
+        }, {motion_name: False}
 
     monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare_object_outputs)
     monkeypatch.setattr(dataset_pipeline_mod, '_write_object_outputs', fake_write_object_outputs)
@@ -904,7 +924,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
 def test_create_data_samples_raises_preprocess_error_instead_of_exit(monkeypatch, tmp_path):
     dataset_dir = tmp_path / 'dataset'
 
-    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset()):
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None):
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
@@ -1079,13 +1099,15 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     )
     # Preprocessing prerequisites: the hand-maintained sidecars must exist and
     # be valid before any clip is encoded.
+    # Cat_Run has no verdict yet: the build proposes one and writes it back.
     _write_action_labels(
         dataset_dir,
         {
-            'Cat_Walk.npy': ('locomotion', 'walk'),
+            'Cat_Walk.npy': ('locomotion', 'walk', True),
             'Cat_Run.npy': ('locomotion', 'run'),
-            'Dog_Idle.npy': ('stationary', 'idle'),
+            'Dog_Idle.npy': ('stationary', 'idle', False),
         },
+        is_loop=None,
     )
     _write_species_tags(dataset_dir, species=("Cat", "Dog"))
 
@@ -1094,10 +1116,12 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     def fake_prepare(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None,
                      max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20,
                      skip_source_paths=None, frozen_translation_root_index=None,
-                     frozen_promote_root_depth=None, locomotion_clips=frozenset()):
+                     frozen_promote_root_depth=None, locomotion_clips=frozenset(),
+                     loop_verdicts=None):
         captured['skip_source_paths'] = set(skip_source_paths or set())
         captured['frozen_translation_root_index'] = frozen_translation_root_index
         captured['frozen_promote_root_depth'] = frozen_promote_root_depth
+        captured['loop_verdicts'] = dict(loop_verdicts or {})
         return {
             'object_type': object_type,
             'object_cond': {**_make_cond_entry(object_type), 'translation_root_index': 0},
@@ -1117,7 +1141,7 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
         # 1:1 naming: the new source file Cat_Run.fbx yields exactly one new clip.
         name = f"{obj}_Run.npy"
         np.save(Path(save_dir) / 'motions' / name, np.zeros((3, 2, 3), dtype=np.float32))
-        return files_counter + 1, 3, {name: {'object_type': obj, 'motion_name': name}}
+        return files_counter + 1, 3, {name: {'object_type': obj, 'motion_name': name}}, {name: True}
 
     monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare)
     monkeypatch.setattr(dataset_pipeline_mod, '_write_object_outputs', fake_write)
@@ -1135,6 +1159,18 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     assert captured['skip_source_paths'] == {os.path.realpath(done_source)}
     assert captured['frozen_translation_root_index'] == 0
     assert captured['existing_clip_sources'] == {'Cat_Walk.npy': os.path.realpath(done_source)}
+    # Only the rows that carry a verdict reach the worker as overrides.
+    assert captured['loop_verdicts'] == {'Cat_Walk.npy': True, 'Dog_Idle.npy': False}
+    # The proposal for the new clip landed in the sidecar; the others are untouched.
+    labels = {
+        row['clip']: row for row in (
+            json.loads(line) for line in
+            (dataset_dir / 'action_labels.jsonl').read_text(encoding='utf-8').splitlines() if line
+        )
+    }
+    assert labels['Cat_Run.npy']['is_loop'] is True
+    assert labels['Cat_Walk.npy']['is_loop'] is True
+    assert labels['Dog_Idle.npy']['is_loop'] is False
 
     # cond.npy keeps the untouched Dog and refreshes Cat.
     merged_cond = _cond_by_species(dataset_dir)
