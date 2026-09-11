@@ -16,6 +16,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     load_action_conditioning_bundle,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (
+    MAX_SOURCE_FRAMES_MULT,
     get_action_word_embeddings_path,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
@@ -893,7 +894,7 @@ class MotionDataset(data.Dataset):
         loop_tile_count = 1
         loop_condition_active = bool(is_loop) and not loop_uncond
 
-        max_source_length = target_num_frames * 2
+        max_source_length = target_num_frames * MAX_SOURCE_FRAMES_MULT
         # ── Loop-aware data augmentation (applies to ALL is_loop motions) ──
         # Circular roll shifts the temporal phase so the model sees every loop
         # from a random starting frame.  Random tiling repeats the cycle up to
@@ -911,12 +912,14 @@ class MotionDataset(data.Dataset):
             m_length = int(motion.shape[0])
 
         if m_length > max_source_length:
-            # A clip longer than the 2n budget is cropped, which breaks the
-            # cycle, so a loop is downgraded to non-loop here and told so.
-            # The crop LENGTH is fixed at the full 2n budget -- every over-long
-            # clip contributes 2n source frames, resampled to the target length
-            # below at playspeed 2 -- while the window POSITION stays random so
-            # repeated epochs still see the whole clip.
+            # A clip longer than the n*MAX_SOURCE_FRAMES_MULT budget is cropped,
+            # which breaks the cycle, so a loop is downgraded to non-loop here
+            # and told so.
+            # The crop LENGTH is fixed at the full budget -- every over-long
+            # clip contributes n*MAX_SOURCE_FRAMES_MULT source frames, resampled
+            # to the target length below at playspeed MAX_SOURCE_FRAMES_MULT --
+            # while the window POSITION stays random so repeated epochs still
+            # see the whole clip.
             if loop_condition_active:
                 loop_uncond = True
             loop_condition_active = False

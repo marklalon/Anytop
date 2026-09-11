@@ -130,6 +130,12 @@ def parse_action_words(raw_action_words):
 
 
 MAX_JOINTS=100
+# Source-frame budget as a multiple of the target window n: clips longer than
+# n * MAX_SOURCE_FRAMES_MULT are cropped (random window) and resampled to n,
+# pinning their playspeed condition to this value. Inference uses the same
+# multiple (reference crop budget + num_frames range). Changing it requires
+# retraining.
+MAX_SOURCE_FRAMES_MULT=3
 FPS=30
 FEATS_LEN=12
 SMPL_OFFSETS = np.array([[ 0.0000,  0.0000,  0.0000],

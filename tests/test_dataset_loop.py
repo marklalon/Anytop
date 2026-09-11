@@ -28,6 +28,7 @@ from data_loaders.truebones.data.dataset import (
     _tile_loop_motion,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
+from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
 from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
@@ -56,6 +57,10 @@ def _find_motion(pattern: str) -> str:
 LOOP_MOTION = _find_motion("Ostrich_Run.npy")
 LOOP_SUBSET = "biped"
 NUM_FRAMES = 60
+# The n*MAX_SOURCE_FRAMES_MULT source-frame budget the dataset crops over-long
+# clips to (see _prepare_sample); over-long clips resample down at exactly
+# playspeed MAX_SOURCE_FRAMES_MULT.
+BUDGET_FRAMES = NUM_FRAMES * MAX_SOURCE_FRAMES_MULT
 _ENRICHED_MOTION_METADATA_LOOKUP = None
 
 
@@ -303,12 +308,12 @@ def test_long_motion_crops_fixed_length_random_window() -> None:
 
     motion_dataset = dataset.motion_dataset
 
-    # Build a NON-loop clip longer than the 2n budget: loop motions get
-    # circular-roll + tile augmentation before the crop, so their window would
-    # not match a direct raw crop.
+    # Build a NON-loop clip longer than the n*MAX_SOURCE_FRAMES_MULT budget:
+    # loop motions get circular-roll + tile augmentation before the crop, so
+    # their window would not match a direct raw crop.
     source_data = motion_dataset.data_dict[LOOP_MOTION]
     source_raw = np.load(source_data["motion_path"]).astype(np.float32, copy=False)
-    long_len = NUM_FRAMES * 2 + 37
+    long_len = BUDGET_FRAMES + 37
     repeat_count = (long_len + source_raw.shape[0] - 1) // source_raw.shape[0]
     long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:long_len]
 
@@ -334,13 +339,16 @@ def test_long_motion_crops_fixed_length_random_window() -> None:
     motion, m_length, *_rest, _motion_metadata, _name, _joint_mask_dict, aug_info = sample
 
     cond = motion_dataset.cond_dict[long_data["object_type"]]
-    # The crop length is always the full 2n budget; only the start is random.
+    # The crop length is always the full n*MAX_SOURCE_FRAMES_MULT budget; only
+    # the start is random.
     expected = _resample_raw_then_normalize(
-        long_raw[window_start:window_start + NUM_FRAMES * 2], cond, NUM_FRAMES
+        long_raw[window_start:window_start + BUDGET_FRAMES], cond, NUM_FRAMES
     )
 
     assert m_length == NUM_FRAMES, f"cropped sample should have effective length {NUM_FRAMES}, got {m_length}"
-    assert np.isclose(float(aug_info["playspeed_cond"]), 2.0), f"expected playspeed 2.0, got {aug_info}"
+    assert np.isclose(
+        float(aug_info["playspeed_cond"]), MAX_SOURCE_FRAMES_MULT
+    ), f"expected playspeed {MAX_SOURCE_FRAMES_MULT}, got {aug_info}"
     assert_close("fixed-length random crop window", motion, expected)
 
 
@@ -428,8 +436,8 @@ def test_loop_uncond_long_loop_rolls_then_crops(tmp_path) -> None:
 
     source_data = motion_dataset.data_dict[LOOP_MOTION]
     source_raw = np.load(source_data["motion_path"]).astype(np.float32, copy=False)
-    repeat_count = (NUM_FRAMES * 2 + 8 + source_raw.shape[0] - 1) // source_raw.shape[0]
-    long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:NUM_FRAMES * 2 + 8]
+    repeat_count = (BUDGET_FRAMES + 8 + source_raw.shape[0] - 1) // source_raw.shape[0]
+    long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:BUDGET_FRAMES + 8]
     motion_path = tmp_path / "long_loop.npy"
     np.save(motion_path, long_raw.astype(np.float32, copy=False))
 
@@ -453,7 +461,7 @@ def test_loop_uncond_long_loop_rolls_then_crops(tmp_path) -> None:
     cond = motion_dataset.cond_dict[long_data["object_type"]]
     expected_augmented = _circular_roll_motion(long_raw, NUM_FRAMES)
     expected = _resample_raw_then_normalize(
-        expected_augmented[window_start:window_start + NUM_FRAMES * 2], cond, NUM_FRAMES
+        expected_augmented[window_start:window_start + BUDGET_FRAMES], cond, NUM_FRAMES
     )
 
     assert motion.shape[0] == NUM_FRAMES
@@ -479,8 +487,8 @@ def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
 
     source_data = motion_dataset.data_dict[LOOP_MOTION]
     source_raw = np.load(source_data["motion_path"]).astype(np.float32, copy=False)
-    repeat_count = (NUM_FRAMES * 2 + 8 + source_raw.shape[0] - 1) // source_raw.shape[0]
-    long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:NUM_FRAMES * 2 + 8]
+    repeat_count = (BUDGET_FRAMES + 8 + source_raw.shape[0] - 1) // source_raw.shape[0]
+    long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:BUDGET_FRAMES + 8]
     motion_path = tmp_path / "conditioned_long_loop.npy"
     np.save(motion_path, long_raw.astype(np.float32, copy=False))
 
@@ -504,7 +512,7 @@ def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
     cond = motion_dataset.cond_dict[long_data["object_type"]]
     expected_augmented = _circular_roll_motion(long_raw, NUM_FRAMES)
     expected = _resample_raw_then_normalize(
-        expected_augmented[window_start:window_start + NUM_FRAMES * 2], cond, NUM_FRAMES
+        expected_augmented[window_start:window_start + BUDGET_FRAMES], cond, NUM_FRAMES
     )
 
     assert motion.shape[0] == NUM_FRAMES
@@ -514,7 +522,7 @@ def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
     assert motion_metadata["loop_phase_length"] == float(NUM_FRAMES)
     assert aug_info["loop_applied"] is False
     assert aug_info["loop_uncond"] is True
-    assert np.isclose(float(aug_info["playspeed_cond"]), 2.0)
+    assert np.isclose(float(aug_info["playspeed_cond"]), MAX_SOURCE_FRAMES_MULT)
     assert_close("conditioned long loop downgraded crop", motion, expected)
 
 

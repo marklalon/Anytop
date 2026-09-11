@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT  # noqa: E402
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from sample.generate import (  # noqa: E402
     _zero_root_ric_xz,
@@ -116,10 +117,31 @@ def test_finalize_output_lengths_returns_frames_and_playspeed() -> None:
 
 
 def test_finalize_output_lengths_rejects_out_of_window() -> None:
+    internal_num_frames = 60
+    min_length = 20
+    max_frames = MAX_SOURCE_FRAMES_MULT * internal_num_frames
+
     with pytest.raises(SystemExit):
-        _finalize_output_lengths(requested_frames=10, min_length=20, internal_num_frames=60)
+        _finalize_output_lengths(
+            requested_frames=min_length - 1,
+            min_length=min_length,
+            internal_num_frames=internal_num_frames,
+        )
+    # The upper bound is inclusive: the full source-frame budget is allowed,
+    # one frame past it is not.
+    requested, target, playspeed = _finalize_output_lengths(
+        requested_frames=max_frames,
+        min_length=min_length,
+        internal_num_frames=internal_num_frames,
+    )
+    assert (requested, target) == (max_frames, max_frames)
+    assert playspeed == pytest.approx(float(MAX_SOURCE_FRAMES_MULT))
     with pytest.raises(SystemExit):
-        _finalize_output_lengths(requested_frames=121, min_length=20, internal_num_frames=60)
+        _finalize_output_lengths(
+            requested_frames=max_frames + 1,
+            min_length=min_length,
+            internal_num_frames=internal_num_frames,
+        )
 
 
 def test_validate_reference_motion_path_accepts_supported_suffixes() -> None:

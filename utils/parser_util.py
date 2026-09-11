@@ -449,7 +449,8 @@ def add_generate_options(parser):
                             "reference's native length (R frames); otherwise defaults to 60. "
                             "When specified with --reference_motion: if R < M the tail "
                             "is auto-outpainted, if R > M the reference is cropped to M. "
-                            "Valid range: [min_length, 2*num_frames] of the checkpoint.")
+                            "Valid range: [min_length, MAX_SOURCE_FRAMES_MULT*num_frames] "
+                            "of the checkpoint (param_utils.MAX_SOURCE_FRAMES_MULT).")
     group.add_argument("--object_type", default=None, type=str,
                        help="Target object type. Optional if --reference_motion is provided "
                             "(inferred from filename), or if --cond_path points at a cond file "

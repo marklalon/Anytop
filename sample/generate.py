@@ -42,6 +42,7 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
     species_lookup_map,
 )
 from data_loaders.truebones.truebones_utils.get_opt import DEFAULT_COND_PATH, get_opt
+from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
@@ -254,10 +255,11 @@ def _finalize_output_lengths(requested_frames, min_length, internal_num_frames):
     conditioning value. Returns ``(requested_output_frames, target_output_frames,
     playspeed_cond_value)``.
     """
-    if requested_frames < min_length or requested_frames > 2 * internal_num_frames:
+    if requested_frames < min_length or requested_frames > MAX_SOURCE_FRAMES_MULT * internal_num_frames:
         sys.exit(
             f"ERROR: num_frames M={requested_frames} outside "
-            f"[min_length={min_length}, 2*num_frames={2 * internal_num_frames}]"
+            f"[min_length={min_length}, "
+            f"{MAX_SOURCE_FRAMES_MULT}*num_frames={MAX_SOURCE_FRAMES_MULT * internal_num_frames}]"
         )
     playspeed = float(requested_frames) / float(internal_num_frames)
     return requested_frames, requested_frames, playspeed
@@ -604,7 +606,7 @@ def _prepare_img2img_reference_bundle(
     # resample reference up to it like pure generation, then resample output
     # to target_output_frames afterwards.
     output_frame_count = int(requested_output_frame_count)
-    max_source_frames = max(int(min_length), output_frame_count * 2)
+    max_source_frames = max(int(min_length), output_frame_count * MAX_SOURCE_FRAMES_MULT)
     if loaded_reference_frame_count > max_source_frames:
         visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
         source_frames = min(max_source_frames, max(int(min_length), visible_frames))
@@ -1040,7 +1042,8 @@ def main(args=None, cond_dict=None, runtime=None):
         motion_frames = _ckpt_num_frames  # default to native window
 
     # Output lengths: known now if --num_frames given; otherwise deferred until
-    # reference frame count R is known (defaults to R clamped to [min_length, 2*num_frames]).
+    # reference frame count R is known (defaults to R clamped to
+    # [min_length, MAX_SOURCE_FRAMES_MULT*num_frames]).
     requested_output_frames = target_output_frames = playspeed_cond_value = None
     if motion_frames is not None:
         requested_output_frames, target_output_frames, playspeed_cond_value = (
@@ -1295,7 +1298,7 @@ def main(args=None, cond_dict=None, runtime=None):
 
         # Finalize output lengths from R (if --num_frames not specified).
         if requested_output_frames is None:
-            auto_frames = int(np.clip(R, min_length, 2 * internal_num_frames))
+            auto_frames = int(np.clip(R, min_length, MAX_SOURCE_FRAMES_MULT * internal_num_frames))
             requested_output_frames, target_output_frames, playspeed_cond_value = (
                 _finalize_output_lengths(auto_frames, min_length, internal_num_frames)
             )
@@ -1304,7 +1307,8 @@ def main(args=None, cond_dict=None, runtime=None):
             else:
                 print(
                     f'  Reference R={R} frames clamped to {auto_frames} '
-                    f'(variable-length window [{min_length}, {2 * internal_num_frames}])'
+                    f'(variable-length window [{min_length}, '
+                    f"{MAX_SOURCE_FRAMES_MULT * internal_num_frames}])"
                 )
         M = int(requested_output_frames)
 
