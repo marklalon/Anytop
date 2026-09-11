@@ -1914,13 +1914,10 @@
 {"clip": "RU01_BallRobot_TurnRightOpen.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "RU01_BlastRobot_CastSpell.npy", "action_group": "stationary", "action_label": "attack, cast", "reviewed": true}
 {"clip": "RU01_BlastRobot_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "RU01_BlastRobot_DoubleRapidAttack.npy", "action_group": "stationary", "action_label": "attack, gun", "reviewed": true}
 {"clip": "RU01_BlastRobot_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "RU01_BlastRobot_Jump.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
 {"clip": "RU01_BlastRobot_LeftBlastAttack.npy", "action_group": "stationary", "action_label": "attack, gun", "reviewed": true}
-{"clip": "RU01_BlastRobot_LeftRapidAttack.npy", "action_group": "stationary", "action_label": "attack, left, gun", "reviewed": true}
 {"clip": "RU01_BlastRobot_RightBlastAttack.npy", "action_group": "stationary", "action_label": "attack, right, gun", "reviewed": true}
-{"clip": "RU01_BlastRobot_RightRapidAttack.npy", "action_group": "stationary", "action_label": "attack, right, gun", "reviewed": true}
 {"clip": "RU01_BlastRobot_RunForward.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "RU01_BlastRobot_SuperBlastAttack.npy", "action_group": "stationary", "action_label": "attack, gun", "reviewed": true}
 {"clip": "RU01_BlastRobot_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
@@ -2173,7 +2170,6 @@
 {"clip": "RU02_DragonRobot_ProjectileAttackLow.npy", "action_group": "stationary", "action_label": "attack, projectile", "reviewed": true}
 {"clip": "RU02_DragonRobot_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, projectile", "reviewed": true}
 {"clip": "RU02_DragonRobot_Spawn.npy", "action_group": "transition", "action_label": "spawn", "reviewed": true}
-{"clip": "RU02_DragonRobot_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "RU02_DragonRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
 {"clip": "RU02_DragonRobot_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "RU02_DragonRobot_WingAttack.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}

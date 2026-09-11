@@ -620,10 +620,13 @@ class Handler(BaseHTTPRequestHandler):
         drop its row from action_labels.jsonl (one rewrite for the whole batch),
         and drop its entry from motion_metadata.json (``total_clips`` updated) --
         so the dataset is loadable immediately, not just after the next
-        preprocess. A clip whose source cannot be located, or whose source is
-        still shared with a clip that is staying, is skipped with a reason and
-        keeps its mark -- dropping the row while leaving the source in place
-        would only resurrect the clip on the next preprocess.
+        preprocess. A clip whose source is still shared with a clip that is
+        staying is skipped with a reason and keeps its mark -- dropping the row
+        while leaving the source in place would only resurrect the clip on the
+        next preprocess. A clip whose source cannot be located (no
+        ``source_fbx_path`` in the metadata -- typically because the source file
+        was deleted externally) has nothing to move, so it is retired like any
+        other: the processed artifacts are deleted and the row/entry dropped.
         """
         ds, store = self._store_and_dataset(payload.get("dataset") or payload.get("ds"))
         if ds is None:
@@ -658,27 +661,30 @@ class Handler(BaseHTTPRequestHandler):
         archived = []
         for clip in pending:
             src = (motions.get(clip) or {}).get("source_fbx_path")
-            if not src:
-                result["skipped"].append(
-                    {"clip": clip, "reason": "motion_metadata.json 里查不到 source_fbx_path"})
-                continue
-            shared = [c for c in users.get(src, []) if c not in marked]
-            if shared:
-                result["skipped"].append(
-                    {"clip": clip,
-                     "reason": f"源文件仍被保留的 {clip_stem(shared[0])} 等 {len(shared)} 个 clip 使用"})
-                continue
-            try:
-                dest, note = archive_source(src)
-            except OSError as exc:
-                result["skipped"].append({"clip": clip, "reason": f"移动源文件失败：{exc}"})
-                continue
-            if dest is not None:
-                result["moved"] += 1
-                archived.append({"when": stamp, "dataset": ds["id"], "clip": clip,
-                                 "src": str(src), "dest": str(dest)})
-            if note:
-                result["notes"].append(f"{clip_stem(clip)}：{note}")
+            if src:
+                shared = [c for c in users.get(src, []) if c not in marked]
+                if shared:
+                    result["skipped"].append(
+                        {"clip": clip,
+                         "reason": f"源文件仍被保留的 {clip_stem(shared[0])} 等 {len(shared)} 个 clip 使用"})
+                    continue
+                try:
+                    dest, note = archive_source(src)
+                except OSError as exc:
+                    result["skipped"].append({"clip": clip, "reason": f"移动源文件失败：{exc}"})
+                    continue
+                if dest is not None:
+                    result["moved"] += 1
+                    archived.append({"when": stamp, "dataset": ds["id"], "clip": clip,
+                                     "src": str(src), "dest": str(dest)})
+                if note:
+                    result["notes"].append(f"{clip_stem(clip)}：{note}")
+            else:
+                # The source file was deleted externally, so its metadata entry
+                # (and thus source_fbx_path) is gone too.  There is nothing to
+                # move -- retire the processed artifacts and drop the row anyway
+                # instead of leaving an un-cleanable zombie behind.
+                result["notes"].append(f"{clip_stem(clip)}：源文件已不存在（外部删除），无需移动")
 
             # Also retire the clip's processed data out of the dataset: its motion
             # NPY and its BVH.  Both are named by the clip's stem, so each is unique
