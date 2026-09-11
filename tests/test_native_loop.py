@@ -412,6 +412,12 @@ class NativeLoopTests(unittest.TestCase):
             'ds/BipedC': entry(('Biped', 'Medium', 'Striding'), {'walk': 20.0, 'idle': 59.0}, 20.0),
             'ds/BigBiped': entry(('Biped', 'Large', 'Lumbering'), {'walk': 50.0}, 50.0),
             'ds/Quad': entry(('Quadruped', 'Medium', 'Trotting'), {'walk': 30.0}, 30.0),
+            # The RedDragon shape: the only exact-tag sibling loops attack/idle
+            # but never flies; the flappers of other sizes do.
+            'ds/HeavyDragon': entry(('Winged', 'Heavy', 'Flapping'), {'attack': 181.0, 'idle': 220.0}, 181.0),
+            'ds/Bird': entry(('Winged', 'Small', 'Flapping'), {'fly': 40.0}, 83.0),
+            'ds/Bat': entry(('Winged', 'Small', 'Flapping'), {'fly': 20.0}, 60.0),
+            'ds/Unka': entry(('Winged', 'Heavy', 'Soaring'), {'fly': 100.0, 'hover': 120.0}, 61.0),
         }
         # A species with no loop clip carries no period and must not vote.
         reference['ds/NoLoops'] = {
@@ -433,8 +439,9 @@ class NativeLoopTests(unittest.TestCase):
             ref_path = self._reference_cond_file(tmp_dir)
             with dataset_tags.registered_species_tags('Human', ('Biped', 'Medium', 'Striding')):
                 cond = {}
-                tier = _inherit_loop_periods_from_reference('Human', cond, ref_path)
-            self.assertTrue(tier.startswith('species_tags'), tier)
+                source = _inherit_loop_periods_from_reference('Human', cond, ref_path)
+            self.assertTrue(source['walk'].startswith('species_tags'), source)
+            self.assertTrue(source['__median__'].startswith('species_tags'), source)
             # Per-action median over the three exact-tag species, each word over
             # the species that carry it; the Large/Lumbering biped does not vote.
             self.assertEqual(cond['loop_period_by_action']['walk'], 24.0)
@@ -447,6 +454,36 @@ class NativeLoopTests(unittest.TestCase):
             self.assertEqual(cycles, 2)
             self.assertAlmostEqual(phase_length, 30.5)
 
+    def test_new_skeleton_loop_period_tier_is_chosen_per_action_word(self):
+        """An exact-tag sibling that never flies must not swallow `fly` into its
+        idle-length median: each word falls through to the narrowest tier that
+        carries it, while the words the sibling does have stay with it."""
+        import tempfile
+        from data_loaders.truebones.truebones_utils import dataset_tags
+        from data_loaders.truebones.truebones_utils.dataset_pipeline import (
+            _inherit_loop_periods_from_reference,
+        )
+        from sample.generate import _resolve_loop_phase_length
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ref_path = self._reference_cond_file(tmp_dir)
+            with dataset_tags.registered_species_tags('RedDragon', ('Winged', 'Heavy', 'Flapping')):
+                cond = {}
+                source = _inherit_loop_periods_from_reference('RedDragon', cond, ref_path)
+            self.assertTrue(source['attack'].startswith('species_tags'), source)
+            self.assertEqual(cond['loop_period_by_action']['attack'], 181.0)
+            # fly: not on the sibling -> body plan + gait (the two small flappers).
+            self.assertEqual(source['fly'], 'body plan + gait winged/flapping')
+            self.assertEqual(cond['loop_period_by_action']['fly'], 30.0)
+            # hover: only the heavy soarer has it -> body plan + size.
+            self.assertEqual(source['hover'], 'body plan + size winged/heavy')
+            self.assertEqual(cond['loop_period_by_action']['hover'], 120.0)
+            # The median itself still comes from the narrowest non-empty tier.
+            self.assertEqual(cond['loop_period_median'], 181.0)
+            # And a 60-frame fly window now holds two flaps, not one.
+            _, cycles = _resolve_loop_phase_length(cond, 60, 1.0, 'fly, forward')
+            self.assertEqual(cycles, 2)
+
     def test_new_skeleton_loop_period_falls_back_to_subset_then_everything(self):
         import tempfile
         from data_loaders.truebones.truebones_utils import dataset_tags
@@ -456,17 +493,18 @@ class NativeLoopTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             ref_path = self._reference_cond_file(tmp_dir)
-            # A tag triple nobody in the reference carries -> every biped votes.
+            # A tag triple nobody carries, nor its gait or size -> every biped votes.
             with dataset_tags.registered_species_tags('Kappa', ('Biped', 'Small', 'Hopping')):
                 cond = {}
-                tier = _inherit_loop_periods_from_reference('Kappa', cond, ref_path)
-            self.assertEqual(tier, 'object_subset biped')
+                source = _inherit_loop_periods_from_reference('Kappa', cond, ref_path)
+            self.assertEqual(source['walk'], 'object_subset biped')
             self.assertEqual(cond['loop_period_by_action']['walk'], np.median([24.0, 36.0, 20.0, 50.0]))
             # A body plan nobody carries -> the whole reference votes.
             with dataset_tags.registered_species_tags('Jelly', ('Drifting', 'Small', 'Pulsing')):
                 cond = {}
-                tier = _inherit_loop_periods_from_reference('Jelly', cond, ref_path)
-            self.assertEqual(tier, 'all reference species')
+                source = _inherit_loop_periods_from_reference('Jelly', cond, ref_path)
+            self.assertEqual(source['walk'], 'all reference species')
+            self.assertEqual(source['__median__'], 'all reference species')
             self.assertEqual(cond['loop_period_by_action']['walk'], 30.0)
             # An entry that already carries a period keeps it.
             own = {'loop_period_by_action': {'walk': 12.0}, 'loop_period_median': 12.0}
@@ -476,7 +514,6 @@ class NativeLoopTests(unittest.TestCase):
             cond = {}
             self.assertIsNone(_inherit_loop_periods_from_reference('Jelly', cond, ''))
             self.assertNotIn('loop_period_median', cond)
-
 
 
 if __name__ == '__main__':

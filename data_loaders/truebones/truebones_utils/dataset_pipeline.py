@@ -1422,10 +1422,20 @@ def _inherit_loop_periods_from_reference(object_name, object_cond, reference_con
     A rest-pose-only skeleton has no loop clips to measure
     ``loop_period_by_action`` / ``loop_period_median`` from, so without them
     ``--loop`` generation falls back to one gait cycle per window. The period is
-    a property of the body plan, not the rig, so it is inherited as the
-    per-action median over reference species sharing the same ``species_tags``,
-    then the same object_subset, then any reference species carrying a period.
-    Returns the label of the tier used, or None when nothing was inherited.
+    a property of the body plan and the action, not the rig, so each action
+    word is taken as the median over the NARROWEST donor tier that carries that
+    word: species with the same ``species_tags``, then the same body plan and
+    gait style (tags 0 and 2), then the same body plan and size (tags 0 and 1),
+    then the same object_subset, then any reference species with a period. The
+    tier is chosen per word on purpose: a lone exact-tag sibling that loops only
+    attack/idle/roar must not swallow ``fly`` into its idle-length median, which
+    is what a per-species tier did (RedDragon inherited zoo/Dragon's 181 frames
+    for a flap and got one cycle per window again).
+
+    ``loop_period_median`` comes from the narrowest non-empty tier. Returns a
+    ``{word: tier label}`` map of what was inherited (plus ``'__median__'``),
+    ``'own'`` when the entry already carried a period, or None when nothing
+    was inherited.
     """
     if object_cond.get('loop_period_by_action') or object_cond.get('loop_period_median'):
         return 'own'
@@ -1446,54 +1456,64 @@ def _inherit_loop_periods_from_reference(object_name, object_cond, reference_con
         key: entry for key, entry in ref_cond.items()
         if isinstance(entry, dict) and entry.get('loop_period_median')
     }
+    if not with_period:
+        print(f"[process_skeleton] {reference_cond_path} carries no loop period for any "
+              f"species; '{object_name}' inherits none.")
+        return None
     ref_tags = {
         key: _lowered(entry.get('species_tags') or tags.tags_for(key))
         for key, entry in with_period.items()
     }
-    # Narrowest tier with at least one donor wins; the final tier covers
-    # everything, so a winner is guaranteed when with_period is non-empty.
+
+    def _tier(label, match):
+        return label, [key for key in with_period if match(ref_tags[key])]
+
     tiers = []
     if target_tags:
-        tiers.append((
-            f"species_tags {'/'.join(target_tags)}",
-            [key for key in with_period if ref_tags[key] == target_tags],
-        ))
-        tiers.append((
-            f"object_subset {target_tags[0]}",
-            [key for key in with_period if ref_tags[key][:1] == target_tags[:1]],
-        ))
+        tiers.append(_tier(f"species_tags {'/'.join(target_tags)}", lambda t: t == target_tags))
+        if len(target_tags) >= 3:
+            tiers.append(_tier(
+                f"body plan + gait {target_tags[0]}/{target_tags[2]}",
+                lambda t: len(t) >= 3 and (t[0], t[2]) == (target_tags[0], target_tags[2]),
+            ))
+        if len(target_tags) >= 2:
+            tiers.append(_tier(
+                f"body plan + size {target_tags[0]}/{target_tags[1]}",
+                lambda t: t[:2] == target_tags[:2],
+            ))
+        tiers.append(_tier(f"object_subset {target_tags[0]}", lambda t: t[:1] == target_tags[:1]))
     tiers.append(('all reference species', list(with_period)))
-    members = None
-    for label, candidates in tiers:
-        if candidates:
-            members = candidates
-            break
-    if members is None:
-        print(f"[process_skeleton] {reference_cond_path} carries no loop period for any "
-              f"species; '{object_name}' inherits none.")
-        return None
+    tiers = [(label, members) for label, members in tiers if members]
 
-    # Per-action median over the donors, each word taken over the species
-    # that carry it (a species without that action simply does not vote).
-    periods_by_action = {}
-    for key in members:
-        for word, period in (with_period[key].get('loop_period_by_action') or {}).items():
-            periods_by_action.setdefault(str(word), []).append(float(period))
-    object_cond['loop_period_by_action'] = {
-        word: float(np.median(periods)) for word, periods in sorted(periods_by_action.items())
-    }
+    # Per word: the narrowest tier with at least one donor carrying that word,
+    # median over those donors.
+    by_action = {}
+    source = {}
+    for label, members in tiers:
+        periods_by_word = {}
+        for key in members:
+            for word, period in (with_period[key].get('loop_period_by_action') or {}).items():
+                if str(word) not in by_action:
+                    periods_by_word.setdefault(str(word), []).append(float(period))
+        for word, periods in periods_by_word.items():
+            by_action[word] = float(np.median(periods))
+            source[word] = label
+    object_cond['loop_period_by_action'] = dict(sorted(by_action.items()))
+    median_label, median_members = tiers[0]
     object_cond['loop_period_median'] = float(
-        np.median([float(with_period[key]['loop_period_median']) for key in members])
+        np.median([float(with_period[key]['loop_period_median']) for key in median_members])
     )
-    gait = ', '.join(
-        f"{word}={object_cond['loop_period_by_action'][word]:g}"
-        for word in ('walk', 'run') if word in object_cond['loop_period_by_action']
+    source['__median__'] = median_label
+
+    shown = ', '.join(
+        f"{word}={by_action[word]:g} ({source[word]})"
+        for word in ('walk', 'run', 'fly', 'swim') if word in by_action
     )
-    print(f"[process_skeleton] inherited loop periods for '{object_name}' from "
-          f"{len(members)} reference species ({label}): "
-          f"median={object_cond['loop_period_median']:g}"
-          + (f", {gait}" if gait else '') + f" frames")
-    return label
+    print(f"[process_skeleton] inherited loop periods for '{object_name}': "
+          f"median={object_cond['loop_period_median']:g} ({median_label}, "
+          f"{len(median_members)} species); {len(by_action)} action words"
+          + (f": {shown}" if shown else '') + " [frames]")
+    return source
 
 
 """Merge a freshly built object cond entry into an existing cond.npy in place.
