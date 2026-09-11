@@ -37,7 +37,7 @@
 {"clip": "IAC_Caveman_RunTurnRightWeapon.npy", "action_group": "locomotion", "action_label": "run, turn, right, weapon, 1hand", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Caveman_RunTurnRight.npy", "action_group": "locomotion", "action_label": "run, turn, right", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Caveman_RunWeapon.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, 1hand", "is_loop": true, "reviewed": true}
-{"clip": "IAC_Caveman_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
+{"clip": "IAC_Caveman_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Caveman_TurnLeftWeapon.npy", "action_group": "transition", "action_label": "turn, left, weapon, 1hand", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Caveman_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Caveman_TurnRightWeapon.npy", "action_group": "transition", "action_label": "turn, right, weapon, 1hand", "is_loop": false, "reviewed": true}
@@ -370,8 +370,8 @@
 {"clip": "KI_Soldier_Crawling01Shot02.npy", "action_group": "stationary", "action_label": "attack, crawl, gun", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Crawling01StandUp.npy", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "KI_Soldier_Crawling01TakeDamage01.npy", "action_group": "stationary", "action_label": "hurt, crawl", "is_loop": true, "reviewed": true}
-{"clip": "KI_Soldier_Crawling01TurnLeft01.npy", "action_group": "locomotion", "action_label": "crawl, turn, left", "is_loop": false, "reviewed": true}
-{"clip": "KI_Soldier_Crawling01TurnRight01.npy", "action_group": "locomotion", "action_label": "crawl, turn, right", "is_loop": false, "reviewed": true}
+{"clip": "KI_Soldier_Crawling01TurnLeft01.npy", "action_group": "transition", "action_label": "turn, left, crawl", "is_loop": false, "reviewed": true}
+{"clip": "KI_Soldier_Crawling01TurnRight01.npy", "action_group": "transition", "action_label": "turn, right, crawl", "is_loop": false, "reviewed": true}
 {"clip": "KI_Soldier_Death01A.npy", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "KI_Soldier_Death02A.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "KI_Soldier_Death03A.npy", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
@@ -570,7 +570,7 @@
 {"clip": "LH_Hero_RightPunchAttack.npy", "action_group": "stationary", "action_label": "attack, punch", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_RightThrow.npy", "action_group": "stationary", "action_label": "attack, right, throw", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_RollBackward.npy", "action_group": "locomotion", "action_label": "roll, backward", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_RollForward.npy", "action_group": "locomotion", "action_label": "roll, forward", "is_loop": false, "reviewed": true}
+{"clip": "LH_Hero_RollForward.npy", "action_group": "locomotion", "action_label": "roll, forward", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_RunBackward.npy", "action_group": "locomotion", "action_label": "run, backward", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SawingWood.npy", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
@@ -651,7 +651,7 @@
 {"clip": "MB_TigerDrago_FallUP.npy", "action_group": "locomotion", "action_label": "fly, dive", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyAttackFeet.npy", "action_group": "stationary", "action_label": "attack, hover, kick", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyAttackFireBall.npy", "action_group": "stationary", "action_label": "idle, hover, taunt", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_FlyBackward.npy", "action_group": "locomotion", "action_label": "fly, backward", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_FlyBackward.npy", "action_group": "locomotion", "action_label": "fly, backward", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyDeath.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyDodgeL.npy", "action_group": "locomotion", "action_label": "roll, left", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyDodgeR.npy", "action_group": "locomotion", "action_label": "roll, right", "is_loop": true, "reviewed": true}
@@ -660,17 +660,17 @@
 {"clip": "MB_TigerDrago_FlyFall.npy", "action_group": "locomotion", "action_label": "fall, dead", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyFowardL.npy", "action_group": "locomotion", "action_label": "fly, forward, left", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyFowardR.npy", "action_group": "locomotion", "action_label": "fly, forward, right", "is_loop": false, "reviewed": true}
-{"clip": "MB_TigerDrago_FlyFoward.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_FlyFoward.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyGetHitL.npy", "action_group": "stationary", "action_label": "hurt, hover, left", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyGetHitR.npy", "action_group": "stationary", "action_label": "hurt, hover, right", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyGlideL.npy", "action_group": "locomotion", "action_label": "fly, left, glide", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyGlideR.npy", "action_group": "locomotion", "action_label": "fly, right, glide", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyGlide.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyHitAndFall.npy", "action_group": "transition", "action_label": "hurt, fall", "is_loop": false, "reviewed": true}
-{"clip": "MB_TigerDrago_FlyIdle.npy", "action_group": "stationary", "action_label": "idle, hover", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_FlyIdle.npy", "action_group": "stationary", "action_label": "idle, hover", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyL.npy", "action_group": "locomotion", "action_label": "fly, right", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyLand.npy", "action_group": "transition", "action_label": "jump, land", "is_loop": false, "reviewed": true}
-{"clip": "MB_TigerDrago_FlyR.npy", "action_group": "locomotion", "action_label": "fly, left", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_FlyR.npy", "action_group": "locomotion", "action_label": "fly, left", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyTakeOff.npy", "action_group": "transition", "action_label": "takeoff", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyTurnL.npy", "action_group": "transition", "action_label": "turn, left, hover", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyTurnR.npy", "action_group": "transition", "action_label": "turn, right, hover", "is_loop": false, "reviewed": true}
@@ -756,7 +756,7 @@
 {"clip": "MB_Unka_FallLand.npy", "action_group": "transition", "action_label": "jump, land", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FallLow.npy", "action_group": "stationary", "action_label": "jump, fall", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FireBreath.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
-{"clip": "MB_Unka_FlyBackwards.npy", "action_group": "locomotion", "action_label": "fly, backward", "is_loop": false, "reviewed": true}
+{"clip": "MB_Unka_FlyBackwards.npy", "action_group": "locomotion", "action_label": "fly, backward", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyClosedWings50.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyClosedWings75.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyDeathFloor.npy", "action_group": "transition", "action_label": "fly, dead", "is_loop": false, "reviewed": true}
@@ -770,8 +770,8 @@
 {"clip": "MB_Unka_FlyForward.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyHitDeath.npy", "action_group": "transition", "action_label": "fly, fall", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FlyStand.npy", "action_group": "stationary", "action_label": "idle, hover", "is_loop": false, "reviewed": true}
-{"clip": "MB_Unka_FlyStrafeLeft.npy", "action_group": "locomotion", "action_label": "fly, left", "is_loop": false, "reviewed": true}
-{"clip": "MB_Unka_FlyStrafeRight.npy", "action_group": "locomotion", "action_label": "fly, right", "is_loop": false, "reviewed": true}
+{"clip": "MB_Unka_FlyStrafeLeft.npy", "action_group": "locomotion", "action_label": "fly, left", "is_loop": true, "reviewed": true}
+{"clip": "MB_Unka_FlyStrafeRight.npy", "action_group": "locomotion", "action_label": "fly, right", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyTurnLeft.npy", "action_group": "transition", "action_label": "turn, left, hover", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FlyTurnRight.npy", "action_group": "transition", "action_label": "turn, right, hover", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FlyUP.npy", "action_group": "locomotion", "action_label": "fly, up", "is_loop": false, "reviewed": true}
@@ -951,7 +951,7 @@
 {"clip": "MU01_BatLord_BiteAttack.npy", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "MU01_BatLord_CastSpell.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "MU01_BatLord_Die.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
-{"clip": "MU01_BatLord_FlyForward.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": false, "reviewed": true}
+{"clip": "MU01_BatLord_FlyForward.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
 {"clip": "MU01_BatLord_Idle.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MU01_BatLord_KickAttack.npy", "action_group": "stationary", "action_label": "attack, kick", "is_loop": true, "reviewed": true}
 {"clip": "MU01_BatLord_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
@@ -1274,13 +1274,13 @@
 {"clip": "MU04_GrimReaper_DashForward.npy", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_Die.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GrimReaper_FlyForward.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
-{"clip": "MU04_GrimReaper_IdleToSpinAttack.npy", "action_group": "transition", "action_label": "idle, attack", "is_loop": true, "reviewed": true}
+{"clip": "MU04_GrimReaper_IdleToSpinAttack.npy", "action_group": "transition", "action_label": "idle, attack", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GrimReaper_Idle.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_SlashAttack01.npy", "action_group": "stationary", "action_label": "attack, slash", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_SlashAttack02.npy", "action_group": "stationary", "action_label": "attack, slash", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_Spawn.npy", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
-{"clip": "MU04_GrimReaper_SpinAttackToIdle.npy", "action_group": "transition", "action_label": "attack, idle", "is_loop": true, "reviewed": true}
+{"clip": "MU04_GrimReaper_SpinAttackToIdle.npy", "action_group": "transition", "action_label": "attack, idle", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GrimReaper_SpinAttack.npy", "action_group": "stationary", "action_label": "attack, spin", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GrimReaper_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
@@ -1308,16 +1308,16 @@
 {"clip": "MU04_Pollen_Spawn.npy", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "MU04_Pollen_SpinSlashAttack.npy", "action_group": "stationary", "action_label": "attack, spin", "is_loop": true, "reviewed": true}
 {"clip": "MU04_Pollen_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
-{"clip": "MU04_Pollen_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": true, "reviewed": true}
-{"clip": "MU04_Pollen_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "is_loop": true, "reviewed": true}
+{"clip": "MU04_Pollen_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
+{"clip": "MU04_Pollen_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
 {"clip": "MU04_QueenWorm_BiteAttack.npy", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "MU04_QueenWorm_BiteCloseAttack.npy", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "MU04_QueenWorm_Burrow.npy", "action_group": "transition", "action_label": "burrow", "is_loop": false, "reviewed": true}
 {"clip": "MU04_QueenWorm_CastSpell.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "MU04_QueenWorm_Die.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "MU04_QueenWorm_Idle.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "MU04_QueenWorm_MoveForwardFast.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
-{"clip": "MU04_QueenWorm_MoveForward.npy", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
+{"clip": "MU04_QueenWorm_MoveForwardFast.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "MU04_QueenWorm_MoveForward.npy", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "MU04_QueenWorm_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "MU04_QueenWorm_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU04_QueenWorm_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
@@ -1385,7 +1385,7 @@
 {"clip": "MU04_Worm_CastSpell.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "MU04_Worm_Die.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "MU04_Worm_Idle.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "MU04_Worm_MoveForward.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
+{"clip": "MU04_Worm_MoveForward.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "MU04_Worm_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "MU04_Worm_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU04_Worm_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
@@ -1538,7 +1538,7 @@
 {"clip": "MU06_Ice_BiteAttack.npy", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Ice_CastSpell.npy", "action_group": "stationary", "action_label": "attack, roll, cast", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Ice_DashAttack.npy", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
-{"clip": "MU06_Ice_DashForward.npy", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": false, "reviewed": true}
+{"clip": "MU06_Ice_DashForward.npy", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Ice_Die.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Ice_DiveIntoGround.npy", "action_group": "transition", "action_label": "burrow", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Ice_FlyForward.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
@@ -1547,8 +1547,8 @@
 {"clip": "MU06_Ice_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Ice_Spawn.npy", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Ice_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
-{"clip": "MU06_Ice_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": true, "reviewed": true}
-{"clip": "MU06_Ice_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "is_loop": true, "reviewed": true}
+{"clip": "MU06_Ice_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
+{"clip": "MU06_Ice_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Icicle_CastSpell.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Icicle_DashForward.npy", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Icicle_Die.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
@@ -1589,8 +1589,8 @@
 {"clip": "MU06_Whirlwind_Spawn.npy", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Whirlwind_SpinAttack.npy", "action_group": "stationary", "action_label": "attack, spin", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Whirlwind_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
-{"clip": "MU06_Whirlwind_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": true, "reviewed": true}
-{"clip": "MU06_Whirlwind_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "is_loop": true, "reviewed": true}
+{"clip": "MU06_Whirlwind_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
+{"clip": "MU06_Whirlwind_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Whirlwind_WindSlashAttack.npy", "action_group": "stationary", "action_label": "attack, slash", "is_loop": true, "reviewed": true}
 {"clip": "MU06_WindMage_CastSpell.npy", "action_group": "stationary", "action_label": "attack, spin, cast", "is_loop": true, "reviewed": true}
 {"clip": "MU06_WindMage_ClapAttackLow.npy", "action_group": "stationary", "action_label": "attack, smash", "is_loop": true, "reviewed": true}
@@ -1621,8 +1621,8 @@
 {"clip": "MU06_Wind_Spawn.npy", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Wind_SpinAttack.npy", "action_group": "stationary", "action_label": "attack, spin", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Wind_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
-{"clip": "MU06_Wind_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": true, "reviewed": true}
-{"clip": "MU06_Wind_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "is_loop": true, "reviewed": true}
+{"clip": "MU06_Wind_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
+{"clip": "MU06_Wind_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Wind_WindShield.npy", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Wind_WindSlashAttack.npy", "action_group": "stationary", "action_label": "attack, slash", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalDragon_BiteAttack.npy", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
@@ -1683,9 +1683,9 @@
 {"clip": "PC_PolygonalMagma_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalOneEyedBat_CastSpell.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalOneEyedBat_Die.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
-{"clip": "PC_PolygonalOneEyedBat_FlyDashForward.npy", "action_group": "locomotion", "action_label": "fly, forward, fast", "is_loop": false, "reviewed": true}
-{"clip": "PC_PolygonalOneEyedBat_FlyDashLeft.npy", "action_group": "locomotion", "action_label": "fly, left, fast", "is_loop": false, "reviewed": true}
-{"clip": "PC_PolygonalOneEyedBat_FlyDashRight.npy", "action_group": "locomotion", "action_label": "fly, right, fast", "is_loop": false, "reviewed": true}
+{"clip": "PC_PolygonalOneEyedBat_FlyDashForward.npy", "action_group": "locomotion", "action_label": "fly, forward, fast", "is_loop": true, "reviewed": true}
+{"clip": "PC_PolygonalOneEyedBat_FlyDashLeft.npy", "action_group": "locomotion", "action_label": "fly, left, fast", "is_loop": true, "reviewed": true}
+{"clip": "PC_PolygonalOneEyedBat_FlyDashRight.npy", "action_group": "locomotion", "action_label": "fly, right, fast", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalOneEyedBat_FlyForward.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalOneEyedBat_FlyLeft.npy", "action_group": "locomotion", "action_label": "fly, left", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalOneEyedBat_FlyRight.npy", "action_group": "locomotion", "action_label": "fly, right", "is_loop": true, "reviewed": true}
@@ -1734,10 +1734,10 @@
 {"clip": "RMW_Bat_Attack02.npy", "action_group": "stationary", "action_label": "attack", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Bat_Die.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "RMW_Bat_Dizzy.npy", "action_group": "stationary", "action_label": "idle, spin", "is_loop": true, "reviewed": true}
-{"clip": "RMW_Bat_FlyBWD.npy", "action_group": "locomotion", "action_label": "fly, backward", "is_loop": false, "reviewed": true}
-{"clip": "RMW_Bat_FlyFWD.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": false, "reviewed": true}
-{"clip": "RMW_Bat_FlyLeft.npy", "action_group": "locomotion", "action_label": "fly, left", "is_loop": false, "reviewed": true}
-{"clip": "RMW_Bat_FlyRight.npy", "action_group": "locomotion", "action_label": "fly, right", "is_loop": false, "reviewed": true}
+{"clip": "RMW_Bat_FlyBWD.npy", "action_group": "locomotion", "action_label": "fly, backward", "is_loop": true, "reviewed": true}
+{"clip": "RMW_Bat_FlyFWD.npy", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
+{"clip": "RMW_Bat_FlyLeft.npy", "action_group": "locomotion", "action_label": "fly, left", "is_loop": true, "reviewed": true}
+{"clip": "RMW_Bat_FlyRight.npy", "action_group": "locomotion", "action_label": "fly, right", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Bat_GetHit.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Bat_IdleBattle.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Bat_IdleNormal.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
@@ -1850,7 +1850,7 @@
 {"clip": "RMW_Slime_GetHit.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Slime_IdleBattle.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Slime_IdleNormal.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "RMW_Slime_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
+{"clip": "RMW_Slime_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Slime_SenseSomethingRoutine.npy", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Slime_SenseSomethingStart.npy", "action_group": "stationary", "action_label": "idle, look", "is_loop": false, "reviewed": true}
 {"clip": "RMW_Slime_Taunt.npy", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
@@ -1970,8 +1970,8 @@
 {"clip": "RU01_DeliveryRobot_SwingAttack.npy", "action_group": "stationary", "action_label": "attack", "is_loop": true, "reviewed": true}
 {"clip": "RU01_DeliveryRobot_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "RU01_DeliveryRobot_TumbleAttack.npy", "action_group": "stationary", "action_label": "attack, roll", "is_loop": true, "reviewed": true}
-{"clip": "RU01_DeliveryRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": true, "reviewed": true}
-{"clip": "RU01_DeliveryRobot_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "is_loop": true, "reviewed": true}
+{"clip": "RU01_DeliveryRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
+{"clip": "RU01_DeliveryRobot_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
 {"clip": "RU01_GridRobot_BlastAttack.npy", "action_group": "stationary", "action_label": "attack", "is_loop": true, "reviewed": true}
 {"clip": "RU01_GridRobot_CastSpell.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "RU01_GridRobot_DashForward.npy", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
@@ -2101,7 +2101,7 @@
 {"clip": "RU01_TankerRobot_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "RU01_TankerRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "RU01_TankerRobot_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
-{"clip": "RU01_TankerRobot_WalkForward.npy", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
+{"clip": "RU01_TankerRobot_WalkForward.npy", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "RU01_TechRobot_CastSpell.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "RU01_TechRobot_Die.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "RU01_TechRobot_HeadAttack.npy", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}
