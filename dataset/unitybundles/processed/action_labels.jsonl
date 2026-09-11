@@ -136,76 +136,76 @@
 {"clip": "IAC_Sabertooth_WalkTurnLeft.npy", "action_group": "locomotion", "action_label": "walk, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Sabertooth_WalkTurnRight.npy", "action_group": "locomotion", "action_label": "walk, turn, right", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Sabertooth_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_BowShot01Hold.npy", "action_group": "stationary", "action_label": "idle, aim, bow, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_BowShot01.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": false, "reviewed": true}
-{"clip": "KI_Archer_BowShot02Hold.npy", "action_group": "stationary", "action_label": "idle, up, aim, bow, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_BowShot02.npy", "action_group": "stationary", "action_label": "attack, up, bow, hand2", "is_loop": false, "reviewed": true}
-{"clip": "KI_Archer_BowShot03Hold.npy", "action_group": "stationary", "action_label": "idle, up, aim, bow, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_BowShot03.npy", "action_group": "stationary", "action_label": "attack, up, bow, hand2", "is_loop": false, "reviewed": true}
-{"clip": "KI_Archer_BowShot04Hold.npy", "action_group": "stationary", "action_label": "idle, down, aim, bow, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_BowShot04.npy", "action_group": "stationary", "action_label": "attack, down, bow, hand2", "is_loop": false, "reviewed": true}
-{"clip": "KI_Archer_CombatIdle01.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_CombatIdle02.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_BowShot01Hold.npy", "action_group": "stationary", "action_label": "idle, aim, bow", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_BowShot01.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": false, "reviewed": true}
+{"clip": "KI_Archer_BowShot02Hold.npy", "action_group": "stationary", "action_label": "idle, up, aim, bow", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_BowShot02.npy", "action_group": "stationary", "action_label": "attack, up, bow", "is_loop": false, "reviewed": true}
+{"clip": "KI_Archer_BowShot03Hold.npy", "action_group": "stationary", "action_label": "idle, up, aim, bow", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_BowShot03.npy", "action_group": "stationary", "action_label": "attack, up, bow", "is_loop": false, "reviewed": true}
+{"clip": "KI_Archer_BowShot04Hold.npy", "action_group": "stationary", "action_label": "idle, down, aim, bow", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_BowShot04.npy", "action_group": "stationary", "action_label": "attack, down, bow", "is_loop": false, "reviewed": true}
+{"clip": "KI_Archer_CombatIdle01.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_CombatIdle02.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_CombatJump01Midair.npy", "action_group": "stationary", "action_label": "jump, fall, hand0", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_CombatJump01.npy", "action_group": "stationary", "action_label": "jump, hand0", "is_loop": false, "reviewed": true}
 {"clip": "KI_Archer_Death01.npy", "action_group": "transition", "action_label": "die, hand0", "is_loop": false, "reviewed": true}
 {"clip": "KI_Archer_Death02.npy", "action_group": "transition", "action_label": "die, hand0", "is_loop": false, "reviewed": true}
-{"clip": "KI_Archer_GetArrow01.npy", "action_group": "transition", "action_label": "idle, attack, bow, hand2", "is_loop": false, "reviewed": true}
-{"clip": "KI_Archer_GetArrow02.npy", "action_group": "transition", "action_label": "idle, attack, bow, hand2", "is_loop": false, "reviewed": true}
-{"clip": "KI_Archer_GetArrow03.npy", "action_group": "transition", "action_label": "idle, attack, bow, hand2", "is_loop": false, "reviewed": true}
+{"clip": "KI_Archer_GetArrow01.npy", "action_group": "transition", "action_label": "idle, attack, bow", "is_loop": false, "reviewed": true}
+{"clip": "KI_Archer_GetArrow02.npy", "action_group": "transition", "action_label": "idle, attack, bow", "is_loop": false, "reviewed": true}
+{"clip": "KI_Archer_GetArrow03.npy", "action_group": "transition", "action_label": "idle, attack, bow", "is_loop": false, "reviewed": true}
 {"clip": "KI_Archer_Idle01.npy", "action_group": "stationary", "action_label": "idle, hand0", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_Idle02.npy", "action_group": "stationary", "action_label": "idle, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Run01BackwardLeft.npy", "action_group": "locomotion", "action_label": "run, backward, left, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Run01BackwardRight.npy", "action_group": "locomotion", "action_label": "run, backward, right, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Run01Backward.npy", "action_group": "locomotion", "action_label": "run, backward, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Run01ForwardLeft.npy", "action_group": "locomotion", "action_label": "run, forward, left, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Run01ForwardRight.npy", "action_group": "locomotion", "action_label": "run, forward, right, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Run01Forward.npy", "action_group": "locomotion", "action_label": "run, forward, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Run01Left.npy", "action_group": "locomotion", "action_label": "run, left, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Run01Right.npy", "action_group": "locomotion", "action_label": "run, right, hand0", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Run01BackwardLeft.npy", "action_group": "locomotion", "action_label": "run, backward, left, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Run01BackwardRight.npy", "action_group": "locomotion", "action_label": "run, backward, right, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Run01Backward.npy", "action_group": "locomotion", "action_label": "run, backward, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Run01ForwardLeft.npy", "action_group": "locomotion", "action_label": "run, forward, left, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Run01ForwardRight.npy", "action_group": "locomotion", "action_label": "run, forward, right, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Run01Forward.npy", "action_group": "locomotion", "action_label": "run, forward, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Run01Left.npy", "action_group": "locomotion", "action_label": "run, left, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Run01Right.npy", "action_group": "locomotion", "action_label": "run, right, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_SetTrap02.npy", "action_group": "stationary", "action_label": "attack, slash, hand0", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_Sheathe01.npy", "action_group": "transition", "action_label": "attack, idle", "is_loop": false, "reviewed": true}
-{"clip": "KI_Archer_Sprint01.npy", "action_group": "locomotion", "action_label": "run, forward, fast, hand0", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Sprint01.npy", "action_group": "locomotion", "action_label": "run, forward, fast, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_TakeDamage01.npy", "action_group": "stationary", "action_label": "hurt, hand0", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_TakeDamage02.npy", "action_group": "stationary", "action_label": "hurt, hand0", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_Unsheathe01.npy", "action_group": "transition", "action_label": "idle, attack", "is_loop": false, "reviewed": true}
-{"clip": "KI_Archer_Walk01BackwardLeft.npy", "action_group": "locomotion", "action_label": "walk, backward, left, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Walk01BackwardRight.npy", "action_group": "locomotion", "action_label": "walk, backward, right, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Walk01Backward.npy", "action_group": "locomotion", "action_label": "walk, backward, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Walk01ForwardLeft.npy", "action_group": "locomotion", "action_label": "walk, forward, left, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Walk01ForwardRight.npy", "action_group": "locomotion", "action_label": "walk, forward, right, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Walk01Forward.npy", "action_group": "locomotion", "action_label": "walk, forward, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Walk01Left.npy", "action_group": "locomotion", "action_label": "walk, left, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Walk01Right.npy", "action_group": "locomotion", "action_label": "walk, right, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Attack01.npy", "action_group": "stationary", "action_label": "attack, cast, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Attack02.npy", "action_group": "stationary", "action_label": "attack, cast, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Attack03.npy", "action_group": "stationary", "action_label": "attack, cast, hand0", "is_loop": false, "reviewed": true}
-{"clip": "KI_CasterMage_Attack04Support01.npy", "action_group": "stationary", "action_label": "attack, cast, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Attack04Support02.npy", "action_group": "stationary", "action_label": "attack, cast, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Attack05A.npy", "action_group": "stationary", "action_label": "attack, crouch, cast, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Attack06.npy", "action_group": "stationary", "action_label": "attack, hover, cast, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Block01Hit.npy", "action_group": "stationary", "action_label": "hurt, block, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Block01.npy", "action_group": "stationary", "action_label": "idle, block, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_CombatIdle01.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Damage01.npy", "action_group": "stationary", "action_label": "hurt, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Damage02.npy", "action_group": "stationary", "action_label": "hurt, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Death01A.npy", "action_group": "transition", "action_label": "die, forward, hand0", "is_loop": false, "reviewed": true}
-{"clip": "KI_CasterMage_Death02A.npy", "action_group": "transition", "action_label": "die, left, hand0", "is_loop": false, "reviewed": true}
-{"clip": "KI_CasterMage_Idle01.npy", "action_group": "stationary", "action_label": "idle, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Idle02.npy", "action_group": "stationary", "action_label": "idle, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Jump01Fall.npy", "action_group": "stationary", "action_label": "jump, fall, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Jump01Land.npy", "action_group": "transition", "action_label": "jump, land, hand0", "is_loop": false, "reviewed": true}
-{"clip": "KI_CasterMage_Jump01Start.npy", "action_group": "transition", "action_label": "jump, hand0", "is_loop": false, "reviewed": true}
-{"clip": "KI_CasterMage_Jump01.npy", "action_group": "stationary", "action_label": "jump, hand0", "is_loop": false, "reviewed": true}
-{"clip": "KI_CasterMage_RunBackwardLeft.npy", "action_group": "locomotion", "action_label": "run, backward, left, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_RunBackwardRight.npy", "action_group": "locomotion", "action_label": "run, backward, right, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_RunBackward.npy", "action_group": "locomotion", "action_label": "run, backward, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_RunForwardLeft.npy", "action_group": "locomotion", "action_label": "run, forward, left, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_RunForwardRight.npy", "action_group": "locomotion", "action_label": "run, forward, right, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_RunForward.npy", "action_group": "locomotion", "action_label": "run, forward, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_RunLeft.npy", "action_group": "locomotion", "action_label": "run, left, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_RunRight.npy", "action_group": "locomotion", "action_label": "run, right, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Sprint.npy", "action_group": "locomotion", "action_label": "run, forward, fast, hand0", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Walk01BackwardLeft.npy", "action_group": "locomotion", "action_label": "walk, backward, left, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Walk01BackwardRight.npy", "action_group": "locomotion", "action_label": "walk, backward, right, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Walk01Backward.npy", "action_group": "locomotion", "action_label": "walk, backward, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Walk01ForwardLeft.npy", "action_group": "locomotion", "action_label": "walk, forward, left, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Walk01ForwardRight.npy", "action_group": "locomotion", "action_label": "walk, forward, right, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Walk01Forward.npy", "action_group": "locomotion", "action_label": "walk, forward, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Walk01Left.npy", "action_group": "locomotion", "action_label": "walk, left, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Archer_Walk01Right.npy", "action_group": "locomotion", "action_label": "walk, right, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Attack01.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Attack02.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Attack03.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": false, "reviewed": true}
+{"clip": "KI_CasterMage_Attack04Support01.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Attack04Support02.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Attack05A.npy", "action_group": "stationary", "action_label": "attack, crouch, cast", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Attack06.npy", "action_group": "stationary", "action_label": "attack, hover, cast", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Block01Hit.npy", "action_group": "stationary", "action_label": "hurt, block", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Block01.npy", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_CombatIdle01.npy", "action_group": "stationary", "action_label": "idle, cast", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Damage01.npy", "action_group": "stationary", "action_label": "hurt, cast", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Damage02.npy", "action_group": "stationary", "action_label": "hurt, cast", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Death01A.npy", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
+{"clip": "KI_CasterMage_Death02A.npy", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "KI_CasterMage_Idle01.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Idle02.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Jump01Fall.npy", "action_group": "stationary", "action_label": "jump, fall", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Jump01Land.npy", "action_group": "transition", "action_label": "jump, land", "is_loop": false, "reviewed": true}
+{"clip": "KI_CasterMage_Jump01Start.npy", "action_group": "transition", "action_label": "jump", "is_loop": false, "reviewed": true}
+{"clip": "KI_CasterMage_Jump01.npy", "action_group": "stationary", "action_label": "jump", "is_loop": false, "reviewed": true}
+{"clip": "KI_CasterMage_RunBackwardLeft.npy", "action_group": "locomotion", "action_label": "run, backward, left", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_RunBackwardRight.npy", "action_group": "locomotion", "action_label": "run, backward, right", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_RunBackward.npy", "action_group": "locomotion", "action_label": "run, backward", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_RunForwardLeft.npy", "action_group": "locomotion", "action_label": "run, forward, left", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_RunForwardRight.npy", "action_group": "locomotion", "action_label": "run, forward, right", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_RunForward.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_RunLeft.npy", "action_group": "locomotion", "action_label": "run, left", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_RunRight.npy", "action_group": "locomotion", "action_label": "run, right", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Sprint.npy", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Cheer01.npy", "action_group": "stationary", "action_label": "jump, happy", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Cheer02.npy", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Clap01.npy", "action_group": "stationary", "action_label": "idle, clap", "is_loop": true, "reviewed": true}
@@ -390,7 +390,7 @@
 {"clip": "KI_Soldier_Run01ForwardRightRifle.npy", "action_group": "locomotion", "action_label": "run, forward, right, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Run01LeftRifle.npy", "action_group": "locomotion", "action_label": "run, left, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Run01RightRifle.npy", "action_group": "locomotion", "action_label": "run, right, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Soldier_Salute01.npy", "action_group": "stationary", "action_label": "idle, salute, hand1", "is_loop": true, "reviewed": true}
+{"clip": "KI_Soldier_Salute01.npy", "action_group": "stationary", "action_label": "idle, salute, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Shot01.npy", "action_group": "stationary", "action_label": "attack, gun, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Shot03.npy", "action_group": "stationary", "action_label": "attack, gun, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Sprint01.npy", "action_group": "locomotion", "action_label": "run, forward, fast, hand2", "is_loop": true, "reviewed": true}
@@ -421,17 +421,17 @@
 {"clip": "KI_Villager_CarryingLift01.npy", "action_group": "stationary", "action_label": "lift", "is_loop": false, "reviewed": true}
 {"clip": "KI_Villager_CarryingRun01.npy", "action_group": "locomotion", "action_label": "run, forward, carry, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_CarryingWalk01.npy", "action_group": "locomotion", "action_label": "walk, forward, carry, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Cooking01Loop.npy", "action_group": "stationary", "action_label": "idle, cook, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Cooking02Loop.npy", "action_group": "stationary", "action_label": "idle, cook, hand1", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Cooking01Loop.npy", "action_group": "stationary", "action_label": "idle, cook", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Cooking02Loop.npy", "action_group": "stationary", "action_label": "idle, cook", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Cooking0301Drop.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Cooking0301Get.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Cooking0302Drop.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Cooking0302Get.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Cooking04Loop.npy", "action_group": "stationary", "action_label": "idle, cook, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Damage01.npy", "action_group": "stationary", "action_label": "hurt, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Damage02.npy", "action_group": "stationary", "action_label": "hurt, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Death01A.npy", "action_group": "transition", "action_label": "die, backward, hand0", "is_loop": false, "reviewed": true}
-{"clip": "KI_Villager_Death02A.npy", "action_group": "transition", "action_label": "die, forward, hand0", "is_loop": false, "reviewed": true}
+{"clip": "KI_Villager_Cooking04Loop.npy", "action_group": "stationary", "action_label": "idle, cook", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Damage01.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Damage02.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Death01A.npy", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
+{"clip": "KI_Villager_Death02A.npy", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "KI_Villager_FarmIdle01A.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_FarmIdle01B.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_FarmWalk01A.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
@@ -441,49 +441,49 @@
 {"clip": "KI_Villager_Fishing02.npy", "action_group": "stationary", "action_label": "idle, fishing, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Fishing03.npy", "action_group": "stationary", "action_label": "idle, fishing, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Fishing04.npy", "action_group": "stationary", "action_label": "idle, fishing, hand2", "is_loop": false, "reviewed": true}
-{"clip": "KI_Villager_Gathering01.npy", "action_group": "stationary", "action_label": "work, crouch, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Gathering02.npy", "action_group": "stationary", "action_label": "work, crouch, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Gathering03.npy", "action_group": "stationary", "action_label": "work, hand0", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Gathering01.npy", "action_group": "stationary", "action_label": "work, crouch", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Gathering02.npy", "action_group": "stationary", "action_label": "work, crouch", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Gathering03.npy", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_HammerWorking01A.npy", "action_group": "stationary", "action_label": "work, crouch, hammer, hand1", "is_loop": false, "reviewed": true}
 {"clip": "KI_Villager_HammerWorking02.npy", "action_group": "stationary", "action_label": "work, hammer, hand1", "is_loop": false, "reviewed": true}
 {"clip": "KI_Villager_HammerWorking03.npy", "action_group": "stationary", "action_label": "work, hammer, hand1", "is_loop": false, "reviewed": true}
 {"clip": "KI_Villager_HammerWorking04A.npy", "action_group": "stationary", "action_label": "work, hammer, hand1", "is_loop": false, "reviewed": true}
 {"clip": "KI_Villager_HammerWorking05A.npy", "action_group": "stationary", "action_label": "work, hammer, hand1", "is_loop": false, "reviewed": true}
-{"clip": "KI_Villager_Idle01Action01.npy", "action_group": "stationary", "action_label": "idle, look, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Idle01Action02.npy", "action_group": "stationary", "action_label": "idle, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Idle01.npy", "action_group": "stationary", "action_label": "idle, hand0", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Idle01Action01.npy", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Idle01Action02.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Idle01.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_PickaxeIdle01.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_PickaxeMining01.npy", "action_group": "stationary", "action_label": "attack, hammer, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_PickaxeMining02.npy", "action_group": "stationary", "action_label": "attack, hammer, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_PickaxeMining03.npy", "action_group": "stationary", "action_label": "attack, hammer, hand2", "is_loop": false, "reviewed": true}
+{"clip": "KI_Villager_PickaxeMining03.npy", "action_group": "stationary", "action_label": "attack, hammer, hand1", "is_loop": false, "reviewed": true}
 {"clip": "KI_Villager_PickaxeWalk01.npy", "action_group": "locomotion", "action_label": "walk, forward, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Run01.npy", "action_group": "locomotion", "action_label": "run, forward, hand0", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Run01.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_SackIdle01.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_SackPlantingSeeds01.npy", "action_group": "stationary", "action_label": "work, hand1", "is_loop": false, "reviewed": true}
 {"clip": "KI_Villager_SackPlantingSeeds02.npy", "action_group": "stationary", "action_label": "putdown", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_SackRun01.npy", "action_group": "locomotion", "action_label": "run, forward, carry, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_SackWalk01.npy", "action_group": "locomotion", "action_label": "walk, forward, carry, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_SackRun01.npy", "action_group": "locomotion", "action_label": "run, forward, carry, hand1", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_SackWalk01.npy", "action_group": "locomotion", "action_label": "walk, forward, carry, hand1", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Sawing01.npy", "action_group": "stationary", "action_label": "work, saw, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Sawing02.npy", "action_group": "stationary", "action_label": "work, saw, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_ShovelWorking01.npy", "action_group": "stationary", "action_label": "work, shovel, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_ShovelWorking02.npy", "action_group": "stationary", "action_label": "work, shovel, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Skinning01A.npy", "action_group": "stationary", "action_label": "work, crouch, hammer, hand1", "is_loop": false, "reviewed": true}
 {"clip": "KI_Villager_Skinning02A.npy", "action_group": "stationary", "action_label": "work, hammer, hand1", "is_loop": false, "reviewed": true}
-{"clip": "KI_Villager_Walk01.npy", "action_group": "locomotion", "action_label": "walk, forward, hand0", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Walk01.npy", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_WateringCanPouring01Loop.npy", "action_group": "stationary", "action_label": "work, water, hand1", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_WateringCanPouring01.npy", "action_group": "stationary", "action_label": "work, water, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_Attack01.npy", "action_group": "stationary", "action_label": "attack, punch, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_Attack02.npy", "action_group": "stationary", "action_label": "attack, slash, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_Attack03.npy", "action_group": "stationary", "action_label": "attack, smash, hand1", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_Attack01.npy", "action_group": "stationary", "action_label": "attack, stab, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_Attack02.npy", "action_group": "stationary", "action_label": "attack, slash, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_Attack03.npy", "action_group": "stationary", "action_label": "attack, smash, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Attack04.npy", "action_group": "stationary", "action_label": "attack, spin, slash, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_Block01HitShield.npy", "action_group": "stationary", "action_label": "idle, block, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_Block01HoldShield.npy", "action_group": "stationary", "action_label": "idle, block, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_Block01Shield.npy", "action_group": "stationary", "action_label": "idle, block, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_Block01HitShield.npy", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_Block01HoldShield.npy", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_Block01Shield.npy", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_CombatIdle01.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_Death01A.npy", "action_group": "transition", "action_label": "die, left, hand1", "is_loop": false, "reviewed": true}
-{"clip": "KI_Warrior_Death02A.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
-{"clip": "KI_Warrior_Death03A.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
-{"clip": "KI_Warrior_Death04A.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
+{"clip": "KI_Warrior_Death01A.npy", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "KI_Warrior_Death02A.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
+{"clip": "KI_Warrior_Death03A.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
+{"clip": "KI_Warrior_Death04A.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "KI_Warrior_Parry012HLong.npy", "action_group": "stationary", "action_label": "idle, block, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Parry01Hit2HLong.npy", "action_group": "stationary", "action_label": "hurt, block, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Parry01Hold2HLong.npy", "action_group": "stationary", "action_label": "idle, block, hand2", "is_loop": true, "reviewed": true}
@@ -495,16 +495,16 @@
 {"clip": "KI_Warrior_Run01ForwardRight2HLong.npy", "action_group": "locomotion", "action_label": "run, forward, right, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Run01Left2HLong.npy", "action_group": "locomotion", "action_label": "run, left, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Run01Right2HLong.npy", "action_group": "locomotion", "action_label": "run, right, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_ShieldAttack01.npy", "action_group": "stationary", "action_label": "attack, shield, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_ShieldAttack02.npy", "action_group": "stationary", "action_label": "attack, shield, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_ShieldAttack01.npy", "action_group": "stationary", "action_label": "attack, shield", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_ShieldAttack02.npy", "action_group": "stationary", "action_label": "attack, shield", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Sprint01.npy", "action_group": "locomotion", "action_label": "run, forward, fast, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Strafe01Left2HLong.npy", "action_group": "locomotion", "action_label": "walk, left, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Strafe01Right2HLong.npy", "action_group": "locomotion", "action_label": "walk, right, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_TakeDamage01.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_TakeDamage02.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_TakeDamage03.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_TakeDamage04.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_TakeDamage05.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_TakeDamage01.npy", "action_group": "stationary", "action_label": "hurt, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_TakeDamage02.npy", "action_group": "stationary", "action_label": "hurt, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_TakeDamage03.npy", "action_group": "stationary", "action_label": "hurt, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_TakeDamage04.npy", "action_group": "stationary", "action_label": "hurt, hand2", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_TakeDamage05.npy", "action_group": "stationary", "action_label": "hurt, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Walk01Backward2HLong.npy", "action_group": "locomotion", "action_label": "walk, backward, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Walk01BackwardLeft2HLong.npy", "action_group": "locomotion", "action_label": "walk, backward, left, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Walk01BackwardRight2HLong.npy", "action_group": "locomotion", "action_label": "walk, backward, right, hand2", "is_loop": true, "reviewed": true}
@@ -515,28 +515,28 @@
 {"clip": "KI_Warrior_Walk01Right2HLong.npy", "action_group": "locomotion", "action_label": "walk, right, hand2", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_CastSpell02.npy", "action_group": "stationary", "action_label": "attack, cast, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_CastSpell.npy", "action_group": "stationary", "action_label": "attack, cast, hand0", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_ChopTree.npy", "action_group": "stationary", "action_label": "attack, slash, hand2", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_ChopTree.npy", "action_group": "stationary", "action_label": "attack, slash, hand1", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Clapping.npy", "action_group": "stationary", "action_label": "idle, clap, hand0", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_CrossbowAim.npy", "action_group": "stationary", "action_label": "idle, aim, gun, hand2", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_CrossbowReload.npy", "action_group": "stationary", "action_label": "idle, reload, hand2", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_CrossbowRightAim.npy", "action_group": "stationary", "action_label": "idle, aim, gun, hand2", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_CrossbowRightReload.npy", "action_group": "stationary", "action_label": "idle, reload, hand2", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_CrossbowRightShootAttack.npy", "action_group": "stationary", "action_label": "attack, gun, hand2", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_CrossbowShootAttack.npy", "action_group": "stationary", "action_label": "attack, gun, hand2", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_CrossbowAim.npy", "action_group": "stationary", "action_label": "idle, aim, gun, hand1", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_CrossbowReload.npy", "action_group": "stationary", "action_label": "idle, reload", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_CrossbowRightAim.npy", "action_group": "stationary", "action_label": "idle, aim, gun, hand1", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_CrossbowRightReload.npy", "action_group": "stationary", "action_label": "idle, reload", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_CrossbowRightShootAttack.npy", "action_group": "stationary", "action_label": "attack, gun, hand1", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_CrossbowShootAttack.npy", "action_group": "stationary", "action_label": "attack, gun, hand1", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Crying.npy", "action_group": "stationary", "action_label": "idle, cry, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Dash.npy", "action_group": "locomotion", "action_label": "run, forward, fast, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Defend.npy", "action_group": "stationary", "action_label": "idle, block, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Die.npy", "action_group": "transition", "action_label": "die, hand0", "is_loop": false, "reviewed": true}
-{"clip": "LH_Hero_Digging.npy", "action_group": "stationary", "action_label": "work, hammer, hand2", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Digging.npy", "action_group": "stationary", "action_label": "work, hammer, hand1", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_DrinkPotion.npy", "action_group": "stationary", "action_label": "idle, eat, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_FlyCastSpell01.npy", "action_group": "stationary", "action_label": "attack, hover, cast, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_FlyCastSpell02.npy", "action_group": "stationary", "action_label": "attack, hover, cast, hand0", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_FlyCrossbowShootAttack.npy", "action_group": "stationary", "action_label": "attack, hover, gun, hand2", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_FlyCrossbowShootAttack.npy", "action_group": "stationary", "action_label": "attack, hover, gun, hand1", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_FlyDefend.npy", "action_group": "stationary", "action_label": "idle, hover, block, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_FlyDie.npy", "action_group": "transition", "action_label": "hover, dead, hand0", "is_loop": false, "reviewed": true}
 {"clip": "LH_Hero_FlyIdle.npy", "action_group": "stationary", "action_label": "idle, hover, hand0", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_FlyLongbowAim01.npy", "action_group": "stationary", "action_label": "idle, hover, aim, bow, hand2", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_FlyLongbowShootAttack01.npy", "action_group": "stationary", "action_label": "attack, hover, bow, hand2", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_FlyLongbowAim01.npy", "action_group": "stationary", "action_label": "idle, hover, aim, bow", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_FlyLongbowShootAttack01.npy", "action_group": "stationary", "action_label": "attack, hover, bow", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_FlyMeleeLeftAttack01.npy", "action_group": "stationary", "action_label": "attack, hover, swipe, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_FlyMeleeRightAttack01.npy", "action_group": "stationary", "action_label": "attack, hover, punch, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_FlyMeleeRightAttack02.npy", "action_group": "stationary", "action_label": "attack, hover, punch, hand0", "is_loop": true, "reviewed": true}
@@ -552,8 +552,8 @@
 {"clip": "LH_Hero_LayGroundToIdle.npy", "action_group": "transition", "action_label": "getup, hand0", "is_loop": false, "reviewed": true}
 {"clip": "LH_Hero_LeftPunchAttack.npy", "action_group": "stationary", "action_label": "attack, punch, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_LeftThrow.npy", "action_group": "stationary", "action_label": "attack, left, throw, hand0", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_LongbowAim01.npy", "action_group": "stationary", "action_label": "idle, aim, bow, hand2", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_LongbowShootAttack01.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": false, "reviewed": true}
+{"clip": "LH_Hero_LongbowAim01.npy", "action_group": "stationary", "action_label": "idle, aim, bow", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_LongbowShootAttack01.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": false, "reviewed": true}
 {"clip": "LH_Hero_LookUpWaveHand.npy", "action_group": "stationary", "action_label": "idle, up, look, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_MeleeLeftAttack01.npy", "action_group": "stationary", "action_label": "attack, slash, hand1", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_MeleeRightAttack01.npy", "action_group": "stationary", "action_label": "attack, slash, hand1", "is_loop": true, "reviewed": true}
@@ -577,14 +577,14 @@
 {"clip": "LH_Hero_ShakeHead.npy", "action_group": "stationary", "action_label": "idle, talk, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Sitting.npy", "action_group": "stationary", "action_label": "idle, sit, hand0", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SpawnGround.npy", "action_group": "transition", "action_label": "spawn, hand0", "is_loop": false, "reviewed": true}
-{"clip": "LH_Hero_SpearCastSpell01.npy", "action_group": "stationary", "action_label": "attack, cast, hand2", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_SpearCastSpell01.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SpearDash.npy", "action_group": "locomotion", "action_label": "run, forward, fast, hand2", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_SpearDefend.npy", "action_group": "stationary", "action_label": "idle, block, hand2", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_SpearDefend.npy", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SpearDie.npy", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
 {"clip": "LH_Hero_SpearIdle.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SpearJump.npy", "action_group": "stationary", "action_label": "jump, hand2", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SpearMeleeAttack01.npy", "action_group": "stationary", "action_label": "attack, stab, hand2", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_SpearMeleeAttack02.npy", "action_group": "stationary", "action_label": "attack, stab, hand2", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_SpearMeleeAttack02.npy", "action_group": "stationary", "action_label": "attack, stab, hand1", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SpearRelax.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SpearRun.npy", "action_group": "locomotion", "action_label": "run, forward, hand2", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SpearStrafeLeft.npy", "action_group": "locomotion", "action_label": "walk, left, hand2", "is_loop": true, "reviewed": true}
@@ -824,10 +824,10 @@
 {"clip": "MB_Unka_WalkLeft.npy", "action_group": "locomotion", "action_label": "walk, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_WalkRight.npy", "action_group": "locomotion", "action_label": "walk, turn, right", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "MLH_Archer_Attack01Routine.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": true, "reviewed": true}
-{"clip": "MLH_Archer_Attack01Start.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": false, "reviewed": true}
-{"clip": "MLH_Archer_Attack02Routine.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": true, "reviewed": true}
-{"clip": "MLH_Archer_Attack02Start.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": false, "reviewed": true}
+{"clip": "MLH_Archer_Attack01Routine.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": true, "reviewed": true}
+{"clip": "MLH_Archer_Attack01Start.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": false, "reviewed": true}
+{"clip": "MLH_Archer_Attack02Routine.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": true, "reviewed": true}
+{"clip": "MLH_Archer_Attack02Start.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": false, "reviewed": true}
 {"clip": "MLH_Archer_Death.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
 {"clip": "MLH_Archer_GetHit.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Archer_Idle.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
@@ -857,8 +857,8 @@
 {"clip": "MLH_Horseman_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Horseman_Victory.npy", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Horseman_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "MLH_Knight_Attack01.npy", "action_group": "stationary", "action_label": "attack, slash, hand2", "is_loop": true, "reviewed": true}
-{"clip": "MLH_Knight_Attack02.npy", "action_group": "stationary", "action_label": "attack, stab, hand2", "is_loop": true, "reviewed": true}
+{"clip": "MLH_Knight_Attack01.npy", "action_group": "stationary", "action_label": "attack, slash, hand1", "is_loop": true, "reviewed": true}
+{"clip": "MLH_Knight_Attack02.npy", "action_group": "stationary", "action_label": "attack, stab, hand1", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Knight_Death.npy", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
 {"clip": "MLH_Knight_GetHit.npy", "action_group": "stationary", "action_label": "hurt, hand2", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Knight_Idle.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
@@ -881,8 +881,8 @@
 {"clip": "MLH_Worker_Run.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Worker_Victory.npy", "action_group": "stationary", "action_label": "idle, happy, hand1", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Worker_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "MLH_Worker_WorkRoutine.npy", "action_group": "stationary", "action_label": "work, hammer, hand2", "is_loop": true, "reviewed": true}
-{"clip": "MLH_Worker_WorkStart.npy", "action_group": "stationary", "action_label": "work, hammer, hand2", "is_loop": false, "reviewed": true}
+{"clip": "MLH_Worker_WorkRoutine.npy", "action_group": "stationary", "action_label": "work, hammer, hand1", "is_loop": true, "reviewed": true}
+{"clip": "MLH_Worker_WorkStart.npy", "action_group": "stationary", "action_label": "work, hammer, hand1", "is_loop": false, "reviewed": true}
 {"clip": "MLS_BattleOwl_Attack01.npy", "action_group": "stationary", "action_label": "attack", "is_loop": true, "reviewed": true}
 {"clip": "MLS_BattleOwl_Attack02WaveAttack.npy", "action_group": "stationary", "action_label": "attack", "is_loop": true, "reviewed": true}
 {"clip": "MLS_BattleOwl_Die.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
@@ -914,10 +914,10 @@
 {"clip": "MLS_Dryad_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Dryad_Victory.npy", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Dryad_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "MLS_ElfRanger_Attack01Routine.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": true, "reviewed": true}
-{"clip": "MLS_ElfRanger_Attack01Start.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": false, "reviewed": true}
-{"clip": "MLS_ElfRanger_Attack02Routine.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": true, "reviewed": true}
-{"clip": "MLS_ElfRanger_Attack02Start.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": false, "reviewed": true}
+{"clip": "MLS_ElfRanger_Attack01Routine.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": true, "reviewed": true}
+{"clip": "MLS_ElfRanger_Attack01Start.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": false, "reviewed": true}
+{"clip": "MLS_ElfRanger_Attack02Routine.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": true, "reviewed": true}
+{"clip": "MLS_ElfRanger_Attack02Start.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": false, "reviewed": true}
 {"clip": "MLS_ElfRanger_Die.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
 {"clip": "MLS_ElfRanger_GetHit.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
 {"clip": "MLS_ElfRanger_Idle.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
@@ -1914,7 +1914,7 @@
 {"clip": "RU01_BlastRobot_Die.npy", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "RU01_BlastRobot_Idle.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "RU01_BlastRobot_Jump.npy", "action_group": "stationary", "action_label": "jump", "is_loop": true, "reviewed": true}
-{"clip": "RU01_BlastRobot_LeftBlastAttack.npy", "action_group": "stationary", "action_label": "attack, gun", "is_loop": true, "reviewed": true}
+{"clip": "RU01_BlastRobot_LeftBlastAttack.npy", "action_group": "stationary", "action_label": "attack, left, gun", "is_loop": true, "reviewed": true}
 {"clip": "RU01_BlastRobot_RightBlastAttack.npy", "action_group": "stationary", "action_label": "attack, right, gun", "is_loop": true, "reviewed": true}
 {"clip": "RU01_BlastRobot_RunForward.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "RU01_BlastRobot_SuperBlastAttack.npy", "action_group": "stationary", "action_label": "attack, gun", "is_loop": true, "reviewed": true}
@@ -2267,11 +2267,11 @@
 {"clip": "RU02_SoldierRobot_FlyForward.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "RU02_SoldierRobot_Idle.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "RU02_SoldierRobot_Jump.npy", "action_group": "stationary", "action_label": "jump", "is_loop": true, "reviewed": true}
-{"clip": "RU02_SoldierRobot_LeftProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, gun", "is_loop": true, "reviewed": true}
+{"clip": "RU02_SoldierRobot_LeftProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, right, gun", "is_loop": true, "reviewed": true}
 {"clip": "RU02_SoldierRobot_LeftPunchAttack.npy", "action_group": "stationary", "action_label": "attack, left, punch", "is_loop": true, "reviewed": true}
 {"clip": "RU02_SoldierRobot_MouthProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "RU02_SoldierRobot_PowerBlastAttack.npy", "action_group": "stationary", "action_label": "attack, gun", "is_loop": true, "reviewed": true}
-{"clip": "RU02_SoldierRobot_RightProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, gun", "is_loop": true, "reviewed": true}
+{"clip": "RU02_SoldierRobot_RightProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, left, gun", "is_loop": true, "reviewed": true}
 {"clip": "RU02_SoldierRobot_RightPunchAttack.npy", "action_group": "stationary", "action_label": "attack, right, punch", "is_loop": true, "reviewed": true}
 {"clip": "RU02_SoldierRobot_SmashAttack.npy", "action_group": "stationary", "action_label": "attack, smash", "is_loop": true, "reviewed": true}
 {"clip": "RU02_SoldierRobot_Spawn.npy", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
@@ -2338,11 +2338,11 @@
 {"clip": "RU02_TrooperRobot_FlyForward.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "RU02_TrooperRobot_Idle.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "RU02_TrooperRobot_Jump.npy", "action_group": "stationary", "action_label": "jump", "is_loop": true, "reviewed": true}
-{"clip": "RU02_TrooperRobot_LeftProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, gun", "is_loop": true, "reviewed": true}
+{"clip": "RU02_TrooperRobot_LeftProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, left, gun", "is_loop": true, "reviewed": true}
 {"clip": "RU02_TrooperRobot_LeftPunchAttack.npy", "action_group": "stationary", "action_label": "attack, left, punch", "is_loop": true, "reviewed": true}
 {"clip": "RU02_TrooperRobot_MouthProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "RU02_TrooperRobot_PowerBlastAttack.npy", "action_group": "stationary", "action_label": "attack, gun", "is_loop": true, "reviewed": true}
-{"clip": "RU02_TrooperRobot_RightProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, gun", "is_loop": true, "reviewed": true}
+{"clip": "RU02_TrooperRobot_RightProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, right, gun", "is_loop": true, "reviewed": true}
 {"clip": "RU02_TrooperRobot_RightPunchAttack.npy", "action_group": "stationary", "action_label": "attack, right, punch", "is_loop": true, "reviewed": true}
 {"clip": "RU02_TrooperRobot_SmashAttack.npy", "action_group": "stationary", "action_label": "attack, smash", "is_loop": true, "reviewed": true}
 {"clip": "RU02_TrooperRobot_Spawn.npy", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
@@ -2352,7 +2352,7 @@
 {"clip": "RU02_TrooperRobot_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "RU02_TrooperRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "RU02_TrooperRobot_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
-{"clip": "TNR_Archer_Attack.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Archer_Attack.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Archer_CombatIdle.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Archer_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Archer_DeathA.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
@@ -2361,7 +2361,7 @@
 {"clip": "TNR_Archer_Run.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Archer_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Archer_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TNR_CavalryArcher_Attack.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TNR_CavalryArcher_Attack.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": true, "reviewed": true}
 {"clip": "TNR_CavalryArcher_DeathA.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
 {"clip": "TNR_CavalryArcher_DeathB.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
 {"clip": "TNR_CavalryArcher_Idle.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
@@ -2383,12 +2383,12 @@
 {"clip": "TNR_CavalrySpear_Charge.npy", "action_group": "locomotion", "action_label": "run, forward, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TNR_CavalrySpear_CombatIdle.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TNR_CavalrySpear_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand2", "is_loop": true, "reviewed": true}
-{"clip": "TNR_CavalrySpear_DeathA.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
-{"clip": "TNR_CavalrySpear_DeathB.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
-{"clip": "TNR_CavalrySpear_Idle.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TNR_CavalrySpear_Run.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TNR_CavalrySpear_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TNR_CavalrySpear_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
+{"clip": "TNR_CavalrySpear_DeathA.npy", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
+{"clip": "TNR_CavalrySpear_DeathB.npy", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
+{"clip": "TNR_CavalrySpear_Idle.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TNR_CavalrySpear_Run.npy", "action_group": "locomotion", "action_label": "run, forward, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TNR_CavalrySpear_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TNR_CavalrySpear_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Cavalry_AttackA.npy", "action_group": "stationary", "action_label": "attack, slash, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Cavalry_AttackB.npy", "action_group": "stationary", "action_label": "attack, slash, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Cavalry_Charge.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
@@ -2402,11 +2402,11 @@
 {"clip": "TNR_Cavalry_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Infantry_AttackA.npy", "action_group": "stationary", "action_label": "attack, slash, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Infantry_AttackB.npy", "action_group": "stationary", "action_label": "attack, slash, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TNR_Infantry_Charge.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TNR_Infantry_CombatIdle.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TNR_Infantry_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TNR_Infantry_DeathA.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
-{"clip": "TNR_Infantry_DeathB.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
+{"clip": "TNR_Infantry_Charge.npy", "action_group": "locomotion", "action_label": "run, forward, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Infantry_CombatIdle.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Infantry_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Infantry_DeathA.npy", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
+{"clip": "TNR_Infantry_DeathB.npy", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
 {"clip": "TNR_Infantry_Idle.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Infantry_Run.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Infantry_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
@@ -2441,12 +2441,12 @@
 {"clip": "TNR_Worker_Bag03Run.npy", "action_group": "locomotion", "action_label": "run, forward, carry, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Bag07Attack.npy", "action_group": "stationary", "action_label": "work, hammer, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Bag09TakeDamage.npy", "action_group": "stationary", "action_label": "hurt, hand2", "is_loop": true, "reviewed": true}
-{"clip": "TNR_Worker_DeathA.npy", "action_group": "transition", "action_label": "die, backward, hand0", "is_loop": false, "reviewed": true}
-{"clip": "TNR_Worker_DeathB.npy", "action_group": "transition", "action_label": "die, forward, hand0", "is_loop": false, "reviewed": true}
-{"clip": "TNR_Worker_Idle.npy", "action_group": "stationary", "action_label": "idle, hand0", "is_loop": true, "reviewed": true}
-{"clip": "TNR_Worker_Run.npy", "action_group": "locomotion", "action_label": "run, forward, hand0", "is_loop": true, "reviewed": true}
-{"clip": "TNR_Worker_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt, hand0", "is_loop": true, "reviewed": true}
-{"clip": "TNR_Worker_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand0", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Worker_DeathA.npy", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
+{"clip": "TNR_Worker_DeathB.npy", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
+{"clip": "TNR_Worker_Idle.npy", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Worker_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Worker_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Worker_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Wood01Idle.npy", "action_group": "stationary", "action_label": "idle, carry, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Wood02Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, carry, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Wood03Run.npy", "action_group": "locomotion", "action_label": "run, forward, carry, hand2", "is_loop": true, "reviewed": true}
@@ -2454,16 +2454,16 @@
 {"clip": "TNR_Worker_Wood09TakeDamage.npy", "action_group": "stationary", "action_label": "hurt, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_WorkingA.npy", "action_group": "stationary", "action_label": "work, hammer, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_WorkingB.npy", "action_group": "stationary", "action_label": "work, crouch, hammer, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TNR_Worker_WorkingC.npy", "action_group": "stationary", "action_label": "work, crouch, hand0", "is_loop": true, "reviewed": true}
-{"clip": "TTR_Archer_AttackA.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": true, "reviewed": true}
-{"clip": "TTR_Archer_AttackB.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Worker_WorkingC.npy", "action_group": "stationary", "action_label": "work, crouch", "is_loop": true, "reviewed": true}
+{"clip": "TTR_Archer_AttackA.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": true, "reviewed": true}
+{"clip": "TTR_Archer_AttackB.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Archer_Damage.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Archer_DeathA.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
 {"clip": "TTR_Archer_DeathB.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
 {"clip": "TTR_Archer_Idle.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Archer_Run.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Archer_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_Crossbowman_AttackA.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TTR_Crossbowman_AttackA.npy", "action_group": "stationary", "action_label": "attack, gun, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Crossbowman_Damage.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Crossbowman_DeathA.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
 {"clip": "TTR_Crossbowman_DeathB.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
@@ -2518,20 +2518,20 @@
 {"clip": "TTR_Mage_Idle.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Mage_Run.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Mage_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedKnight_AttackSpearA.npy", "action_group": "stationary", "action_label": "attack, stab, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedKnight_AttackSpearB.npy", "action_group": "stationary", "action_label": "attack, stab, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedKnight_DamageSpearA.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedKnight_DamageSpearB.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedKnight_DeathASpearA.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
-{"clip": "TTR_MountedKnight_DeathASpearB.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
-{"clip": "TTR_MountedKnight_DeathBSpearA.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
-{"clip": "TTR_MountedKnight_DeathBSpearB.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
-{"clip": "TTR_MountedKnight_IdleSpearA.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedKnight_IdleSpearB.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedKnight_RunSpearA.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedKnight_RunSpearB.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedKnight_WalkSpearA.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedKnight_WalkSpearB.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedKnight_AttackSpearA.npy", "action_group": "stationary", "action_label": "attack, stab, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedKnight_AttackSpearB.npy", "action_group": "stationary", "action_label": "attack, stab, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedKnight_DamageSpearA.npy", "action_group": "stationary", "action_label": "hurt, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedKnight_DamageSpearB.npy", "action_group": "stationary", "action_label": "hurt, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedKnight_DeathASpearA.npy", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
+{"clip": "TTR_MountedKnight_DeathASpearB.npy", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
+{"clip": "TTR_MountedKnight_DeathBSpearA.npy", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
+{"clip": "TTR_MountedKnight_DeathBSpearB.npy", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
+{"clip": "TTR_MountedKnight_IdleSpearA.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedKnight_IdleSpearB.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedKnight_RunSpearA.npy", "action_group": "locomotion", "action_label": "run, forward, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedKnight_RunSpearB.npy", "action_group": "locomotion", "action_label": "run, forward, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedKnight_WalkSpearA.npy", "action_group": "locomotion", "action_label": "walk, forward, hand2", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedKnight_WalkSpearB.npy", "action_group": "locomotion", "action_label": "walk, forward, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TTR_MountedMage_Attack.npy", "action_group": "stationary", "action_label": "attack, slash, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TTR_MountedMage_CastA.npy", "action_group": "stationary", "action_label": "attack, cast, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TTR_MountedMage_CastB.npy", "action_group": "stationary", "action_label": "attack, cast, hand1", "is_loop": true, "reviewed": true}
@@ -2541,20 +2541,20 @@
 {"clip": "TTR_MountedMage_Idle.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TTR_MountedMage_Run.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
 {"clip": "TTR_MountedMage_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedScout_AttackArcher.npy", "action_group": "stationary", "action_label": "attack, bow, hand2", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedScout_AttackCrossbow.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedScout_AttackArcher.npy", "action_group": "stationary", "action_label": "attack, bow", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedScout_AttackCrossbow.npy", "action_group": "stationary", "action_label": "attack, gun", "is_loop": true, "reviewed": true}
 {"clip": "TTR_MountedScout_DamageArcher.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedScout_DamageCrossbow.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedScout_DamageCrossbow.npy", "action_group": "stationary", "action_label": "hurt, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TTR_MountedScout_DeathAArcher.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
-{"clip": "TTR_MountedScout_DeathACrossbow.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
+{"clip": "TTR_MountedScout_DeathACrossbow.npy", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
 {"clip": "TTR_MountedScout_DeathBArcher.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
-{"clip": "TTR_MountedScout_DeathBCrossbow.npy", "action_group": "transition", "action_label": "die, hand1", "is_loop": false, "reviewed": true}
+{"clip": "TTR_MountedScout_DeathBCrossbow.npy", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
 {"clip": "TTR_MountedScout_IdleArcher.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedScout_IdleCrossbow.npy", "action_group": "stationary", "action_label": "idle, hand1", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedScout_IdleCrossbow.npy", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TTR_MountedScout_RunArcher.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedScout_RunCrossbow.npy", "action_group": "locomotion", "action_label": "run, forward, hand1", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedScout_RunCrossbow.npy", "action_group": "locomotion", "action_label": "run, forward, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TTR_MountedScout_WalkArcher.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
-{"clip": "TTR_MountedScout_WalkCrossbow.npy", "action_group": "locomotion", "action_label": "walk, forward, hand1", "is_loop": true, "reviewed": true}
+{"clip": "TTR_MountedScout_WalkCrossbow.npy", "action_group": "locomotion", "action_label": "walk, forward, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Spearman_AttackA.npy", "action_group": "stationary", "action_label": "attack, stab, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Spearman_AttackB.npy", "action_group": "stationary", "action_label": "attack, stab, hand2", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Spearman_Damage.npy", "action_group": "stationary", "action_label": "hurt, hand1", "is_loop": true, "reviewed": true}
