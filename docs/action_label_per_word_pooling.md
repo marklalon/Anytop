@@ -771,8 +771,8 @@ hands 词一旦补齐，会出现在有手物种**几乎每一条** clip 上。�
 
 ### 13.5 标注迁移
 
-工具：[`tools/dataset_cleanup/migrate_hand_state_labels.py`](../tools/dataset_cleanup/migrate_hand_state_labels.py)
-（幂等、就地改写、留 `.bak`）。每条 clip 的判定来源分三档，报告按来源分组：
+迁移一次性完成（一次性工具 `tools/dataset_cleanup/migrate_hand_state_labels.py` 已删除）。
+每条 clip 的判定来源分三档：
 
 | 来源 | 含义 | 条数 |
 |---|---|---:|
@@ -782,13 +782,14 @@ hands 词一旦补齐，会出现在有手物种**几乎每一条** clip 上。�
 | `pack` | **物种级默认**（源包惯例：RTS 单位武器不离手、KI 士兵包全程步枪…），无人逐条核过 | 412 |
 
 结果：unitybundles 685 行改动，hand0 173 / hand1 263 / hand2 249，17 条留空
-（拔剑、收剑、举起、放下、取放物），旧标签与策略无冲突。**`pack` 档 412 条需要过一遍**：
-`--dry-run --show pack` 列出，改 `SPECIES_POLICY` 表后重跑即可（幂等）。评审 GIF 只渲染骨架、
+（拔剑、收剑、举起、放下、取放物），旧标签与策略无冲突。**`pack` 档 412 条需要过一遍**
+（工具已删，如需修正直接改 `action_labels.jsonl`）。评审 GIF 只渲染骨架、
 不带道具，raw GLB 里也没有道具 mesh，所以这一档只能靠对源包的了解。
 
 同包里显然持械但从没打过旧标签、因此不在范围内的物种（`TTR_LightInfantry`、
 `TTR_LightCavalry`、`TNR_CavalryMage`、`MLH_Footman`、`MLH_Horseman`、`MLH_Mage`、
-`KI_Slinger`、`MLS_DemonHunter`…）没有动；要纳入，在 `SPECIES_POLICY` 加一行即可。
+`KI_Slinger`、`MLS_DemonHunter`…）没有动；要纳入，直接在 `action_labels.jsonl`
+补对应物种的 hand 状态（工具已删）。
 
 顺手修的一处旧缺陷：`Dog-2_Swimturn` / `SwimTurn2`（zoo，locomotion）拼的是
 `turn, left, swim`，而 unitybundles 同 group 的 `MB_TigerDrago_SwimL` 拼 `swim, turn, left`。
