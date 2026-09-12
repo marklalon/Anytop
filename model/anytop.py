@@ -126,6 +126,15 @@ class AnyTop(nn.Module):
 
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout, species_joint_cond=self.species_joint_cond,
                                           joint_name_drop_prob=self.joint_name_drop_prob)
+        # Token-type embedding for "this (frame, joint) is being re-drawn",
+        # added to the input tokens right after InputProcess so the WHOLE trunk
+        # (spatial / temporal attention, FFN, and through them the cross-limb
+        # values and queries) can see the unreliable map. The cross-limb
+        # reliability biases alone are logit shifts, which softmax cancels the
+        # moment every valid joint of a frame is flagged -- whole-frame
+        # inpainting and temporal spans were invisible. Zero-init, so the
+        # path starts as a no-op.
+        self.unreliable_embedding = nn.Parameter(torch.zeros(self.latent_dim))
         if self.loop_cond_prob > 0.0:
             self.loop_condition_projection = nn.Sequential(
                 nn.Linear(1, self.latent_dim),
@@ -226,6 +235,30 @@ class AnyTop(nn.Module):
             
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
+
+    @staticmethod
+    def _prepare_unreliable_mask(raw_mask, bs, nframes, njoints, device, dtype):
+        """(nframes+1, B, J) float map, T-pose row reliable; None when absent.
+
+        Accepts the loss-side raw (B, nframes, J) layout or the already
+        prepared one. Padding joints are never flagged by either producer
+        (the samplers draw from valid joints only; inference maps derive from
+        the inpaint mask over real joints), so nothing is re-zeroed here.
+        """
+        if raw_mask is None:
+            return None
+        mask = raw_mask.to(device=device, dtype=dtype)
+        raw_expected_shape = (bs, nframes, njoints)
+        prepared_expected_shape = (nframes + 1, bs, njoints)
+        if mask.shape == raw_expected_shape:
+            reliable_tpose = torch.zeros((bs, 1, njoints), device=device, dtype=dtype)
+            return torch.cat([reliable_tpose, mask], dim=1).transpose(0, 1).contiguous()
+        if mask.shape != prepared_expected_shape:
+            raise ValueError(
+                "y['cross_limb_unreliable_mask'] must have shape "
+                f"{raw_expected_shape} or {prepared_expected_shape}, got {tuple(mask.shape)}"
+            )
+        return mask
 
     @staticmethod
     def _build_joint_key_padding_mask(njoints, n_joints, device):
@@ -939,23 +972,16 @@ class AnyTop(nn.Module):
         # whole window, including the T-pose token at index 0 and, symmetrically,
         # that token over every frame.
 
-        cross_limb_unreliable_mask = None
-        if self.cross_limb:
-            raw_cross_limb_unreliable_mask = y.get('cross_limb_unreliable_mask')
-            if raw_cross_limb_unreliable_mask is not None:
-                cross_limb_unreliable_mask = raw_cross_limb_unreliable_mask.to(device=x.device, dtype=x.dtype)
-                raw_expected_shape = (bs, nframes, njoints)
-                prepared_expected_shape = (nframes + 1, bs, njoints)
-                if cross_limb_unreliable_mask.shape == raw_expected_shape:
-                    reliable_tpose = torch.zeros((bs, 1, njoints), device=x.device, dtype=x.dtype)
-                    cross_limb_unreliable_mask = torch.cat([reliable_tpose, cross_limb_unreliable_mask], dim=1)
-                    cross_limb_unreliable_mask = cross_limb_unreliable_mask.transpose(0, 1).contiguous()
-                elif cross_limb_unreliable_mask.shape != prepared_expected_shape:
-                    raise ValueError(
-                        "y['cross_limb_unreliable_mask'] must have shape "
-                        f"{raw_expected_shape} or {prepared_expected_shape}, got "
-                        f"{tuple(cross_limb_unreliable_mask.shape)}"
-                    )
+        # One prepared (nframes+1, B, J) unreliable map, 1 == being re-drawn,
+        # shared by the input embedding below and every cross-limb block. The
+        # training loss hands over the raw (B, nframes, J) map and the T-pose
+        # row is prepended here as reliable; inference already passes the
+        # prepared layout and must not have it prepended twice.
+        cross_limb_unreliable_mask = self._prepare_unreliable_mask(
+            y.get('cross_limb_unreliable_mask'), bs, nframes, njoints, x.device, x.dtype
+        )
+        if cross_limb_unreliable_mask is not None:
+            x = x + cross_limb_unreliable_mask.unsqueeze(-1) * self.unreliable_embedding
 
         # is_loop is the only loop conditioning: it selects the circular time
         # table (closed over the window) for those samples. The decoder coerces

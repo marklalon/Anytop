@@ -407,9 +407,35 @@ class CrossLimbTemporalBlock(nn.Module):
 
     This block adds the missing path: K learned latent tokens pool ALL joints
     per frame (cross-in), attend over time with the SAME windowed temporal mask
-    (latent temporal self-attention), then write a whole-body rhythm context
-    back to every joint (cross-out). Reuses SelectiveMultiheadAttention; the
-    final residual is post-norm to stay consistent with norm1/2/3 of the layer.
+    (latent temporal self-attention), exchange information across the K
+    latents of a frame (cross-K self-attention), then write a whole-body
+    rhythm context back to every joint (cross-out). Reuses
+    SelectiveMultiheadAttention; the final residual is post-norm to stay
+    consistent with norm1/2/3 of the layer.
+
+    Reliability (``unreliable_mask``, (T, B, J), 1 == being re-drawn) enters
+    at two levels, because a scalar bias on the cross-in logits alone cannot
+    express "this whole frame is unreliable": when every valid joint of a
+    frame carries the same bias, softmax's shift invariance cancels it
+    exactly, so whole-frame inpainting and temporal spans were invisible to
+    this path.
+      * cross-in keeps the per-joint ``reliability_bias`` (joint selection
+        within a frame);
+      * latent temporal attention gets a per-frame additive key bias,
+        ``temporal_reliability_bias * frac(unreliable valid joints in frame)``
+        (frame selection along time). It is uniform, hence cancelled, only
+        when every frame is equally unreliable -- at which point there is no
+        reliable source to prefer anyway.
+    The trunk-wide visibility of the mask is AnyTop's ``unreliable_embedding``
+    on the input tokens, not this block's job.
+
+    Cross-K is one Pre-Norm self-attention over the K latents of each frame
+    (attention batch T*B, sequence K), behind a zero-init residual gate
+    ``cross_k_scale``: without it two latents of the same frame only talk via
+    cross-out -> next layer's spatial attention -> next layer's cross-in.
+    Both new gates (``temporal_reliability_bias``, ``cross_k_scale``) are
+    zero-init, so a fresh block starts as the plain cross-in / temporal /
+    cross-out path.
 
     Efficiency: the latent pathway runs at a *narrow* bottleneck width
     ``latent_width`` (Perceiver latents are meant to be a narrow information
@@ -439,9 +465,16 @@ class CrossLimbTemporalBlock(nn.Module):
         self.proj_out = nn.Linear(d_cl, d_model) if d_cl != d_model else nn.Identity()
         self.cross_in_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         self.temporal_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
+        # Cross-K: the same attention dropout as the other three sub-layers.
+        # SelectiveMultiheadAttention defaults to 0.0, so leaving it out would
+        # silently make this one sub-layer un-regularized under --dropout_prob.
+        self.cross_k_norm = nn.LayerNorm(d_cl)
+        self.cross_k_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         self.cross_out_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         self.time_emb_scale = nn.Parameter(torch.zeros(1))
         self.reliability_bias = nn.Parameter(torch.zeros(1))
+        self.temporal_reliability_bias = nn.Parameter(torch.zeros(1))
+        self.cross_k_scale = nn.Parameter(torch.zeros(1))
         self.norm_cl = nn.LayerNorm(d_model)
         self.register_buffer('_cached_time_emb', torch.empty(0), persistent=False)
 
@@ -491,15 +524,25 @@ class CrossLimbTemporalBlock(nn.Module):
         q = self.latents.unsqueeze(1).expand(K, T * B, d)                  # (K, T*B, d_cl)
         kpm = joints_key_padding_mask.unsqueeze(0).expand(T, B, J).reshape(T * B, J)  # (T*B, J)
         reliability_attn_mask = None
+        temporal_key_bias = None
         if unreliable_mask is not None:
             if unreliable_mask.shape != (T, B, J):
                 raise ValueError(
                     f"unreliable_mask must have shape {(T, B, J)}, got {tuple(unreliable_mask.shape)}"
                 )
-            reliability_attn_mask = unreliable_mask.reshape(T * B, J)
-            reliability_attn_mask = reliability_attn_mask.to(device=xd.device, dtype=xd.dtype)
-            reliability_attn_mask = self.reliability_bias * reliability_attn_mask
+            unreliable_mask = unreliable_mask.to(device=xd.device, dtype=xd.dtype)
+            reliability_attn_mask = self.reliability_bias * unreliable_mask.reshape(T * B, J)
             reliability_attn_mask = reliability_attn_mask.unsqueeze(1).expand(T * B, K, J)
+            # Per-frame unreliability = fraction of VALID joints flagged, so a
+            # padded joint neither counts as reliable nor as unreliable. Laid
+            # out (B*K, T) to match the temporal attention batch (b*K + k).
+            valid = (~joints_key_padding_mask).to(device=xd.device, dtype=xd.dtype)   # (B, J)
+            frame_unreliable = (
+                (unreliable_mask * valid.unsqueeze(0)).sum(dim=-1)
+                / valid.sum(dim=-1).clamp_min(1.0).unsqueeze(0)
+            )                                                              # (T, B)
+            temporal_key_bias = self.temporal_reliability_bias * frame_unreliable.transpose(0, 1)
+            temporal_key_bias = temporal_key_bias.unsqueeze(1).expand(B, K, T).reshape(B * K, T)
         bz, _ = self.cross_in_attn(
             q,
             kv,
@@ -528,14 +571,31 @@ class CrossLimbTemporalBlock(nn.Module):
             time_emb = self._get_cached_time_embedding(T, zt_in.device, zt_in.dtype).unsqueeze(1)
         zt_in = zt_in + self.time_emb_scale * time_emb
         zt_resid = zt_in
-        zt, _ = self.temporal_attn(zt_in, zt_in, zt_in, attn_mask=None, need_weights=False)
+        # A float key_padding_mask is an ADDITIVE key bias in
+        # SelectiveMultiheadAttention (both the SDPA and the need_weights
+        # branches add it to the scores; only a bool mask means -inf padding),
+        # so the frame-level reliability bias rides the existing argument.
+        zt, _ = self.temporal_attn(
+            zt_in, zt_in, zt_in,
+            attn_mask=None,
+            key_padding_mask=temporal_key_bias,
+            need_weights=False,
+        )
         zt = zt_resid + zt
         zt = zt.reshape(T, B, K, d)
+
+        # --- Cross-K: the K latents of one frame attend over each other.
+        # attention batch = T*B with index (t*B + b) -- the cross-out layout,
+        # so the result feeds cross-out without another permute. Pre-Norm and
+        # a zero-init residual gate: exact no-op until cross_k_scale moves.
+        kv_out = zt.permute(2, 0, 1, 3).reshape(K, T * B, d)              # (K, T*B, d_cl)
+        zk_norm = self.cross_k_norm(kv_out)
+        zk_delta, _ = self.cross_k_attn(zk_norm, zk_norm, zk_norm, need_weights=False)
+        kv_out = kv_out + self.cross_k_scale * zk_delta
 
         # --- Cross-out: joints (query) attend over latents (key/value), per frame.
         # Both flattened to attention batch = T*B with index (t*B + b).
         q_out = xd.permute(2, 0, 1, 3).reshape(J, T * B, d)               # (J, T*B, d_cl)
-        kv_out = zt.permute(2, 0, 1, 3).reshape(K, T * B, d)              # (K, T*B, d_cl)
         delta, _ = self.cross_out_attn(q_out, kv_out, kv_out, need_weights=False)
         delta = delta.reshape(J, T, B, d).permute(1, 2, 0, 3)            # (T, B, J, d_cl)
 

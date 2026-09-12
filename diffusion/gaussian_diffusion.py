@@ -170,6 +170,7 @@ class GaussianDiffusion:
         lambda_bone=0.,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
+        renoise_same_level_prob=0.5,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -182,6 +183,12 @@ class GaussianDiffusion:
         self.lambda_bone = float(lambda_bone)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
+        self.renoise_same_level_prob = float(renoise_same_level_prob)
+        if not 0.0 <= self.renoise_same_level_prob <= 1.0:
+            raise ValueError(
+                "renoise_same_level_prob must be in [0, 1], got "
+                f"{self.renoise_same_level_prob}"
+            )
         if self.lambda_loop_wrap < 0.0:
             raise ValueError(f"lambda_loop_wrap must be >= 0, got {self.lambda_loop_wrap}")
         if self.lambda_loop_root_closure < 0.0:
@@ -1646,8 +1653,9 @@ class GaussianDiffusion:
         reliability at the model input, not to hide tokens from attention.
         The selected joints / frames keep participating in attention; only
         their x_t features are replaced by q_sample(x_0, t_random), with
-        ``t_random`` drawn from ``[t, T)`` so the flagged region is never
-        cleaner than the rest -- see ``_sample_renoise_timesteps``.
+        ``t_random`` either equal to ``t`` (same level, fresh noise) or drawn
+        from ``[t, T)`` -- never below ``t``, so the flagged region is never
+        cleaner than the rest. See ``_sample_renoise_timesteps``.
 
         Whether ``y`` carries ``'cross_limb_unreliable_mask'`` follows the
         samplers: they return ``None`` only when the feature is off (or in eval
@@ -1739,26 +1747,42 @@ class GaussianDiffusion:
     def _sample_renoise_timesteps(self, t, device):
         """Draw the independent timestep the flagged cells are re-noised at.
 
-        Uniform on ``[t, T)``: a flagged region only ever carries LESS
-        information about x_0 than its surroundings. That one-sidedness is not
-        cosmetic -- it is the only direction either consumer of the flag ever
-        sees at inference. Inpainting clamps the known region to the reference
-        at the correct level (``_inpaint_project``) and leaves the free region
-        holding the model's own half-formed guess; img2img repair likewise has
-        the damaged region carrying less usable signal than the rest. Drawing
-        from ``[0, T)`` instead would, half the time, mark a region that is
-        *cleaner* than its surroundings as unreliable -- a combination that
-        occurs nowhere at inference, that pulls the learned
-        ``reliability_bias`` toward zero by making the flag ambiguous, and that
-        directly opposes what mask-dropped steps are meant to teach.
+        A mixture of two branches, chosen per sample with
+        ``renoise_same_level_prob``:
 
-        The draw is one on-device ``rand`` (no host sync) and degenerates to
-        ``t`` as ``t`` approaches ``T``, which is correct: at near-pure noise
-        there is nothing left to degrade.
+        * same-level (``t_random = t``): the flagged region is re-drawn with
+          fresh noise at the SAME level as the rest of the sample. Its one-step
+          marginal is the plain ``q(x_t | x_0)``, so the flag is decoupled from
+          "much noisier than the surroundings". That is the regime every
+          inpainting step actually presents: the clamped region is the
+          reference at the current level (``_inpaint_project``), the free
+          region is the reverse process's own state at that same nominal level,
+          and with ``skip_timesteps`` the first step's free region is the
+          reference at that level too. Without this branch the flag and a
+          large extra noise gap are perfectly correlated in training
+          (``E[t_random - t] ~ T/4`` for uniform ``t``), and once the mask is
+          visible to the whole trunk (``unreliable_embedding``) the model can
+          read the flag as "discard" rather than "may be less reliable".
+        * hard (uniform on ``[t, T)``): the flagged region carries strictly
+          LESS information about x_0 than its surroundings, which trains the
+          repair of severe local damage from reliable context. Never below
+          ``t``: a region that is *cleaner* than its surroundings yet flagged
+          occurs nowhere at inference, and would pull ``reliability_bias``
+          toward zero by making the flag ambiguous.
+
+        Both draws are on-device ``rand`` (no host sync); the hard branch
+        degenerates to ``t`` as ``t`` approaches ``T``, which is correct: at
+        near-pure noise there is nothing left to degrade.
         """
         span = (self.num_timesteps - t).clamp(min=1).to(th.float32)
         offset = (th.rand(t.shape, device=device, dtype=th.float32) * span).to(t.dtype)
-        return (t + offset).clamp(max=self.num_timesteps - 1)
+        t_hard = (t + offset).clamp(max=self.num_timesteps - 1)
+        if self.renoise_same_level_prob <= 0.0:
+            return t_hard
+        if self.renoise_same_level_prob >= 1.0:
+            return t.clone()
+        same_level = th.rand(t.shape, device=device) < self.renoise_same_level_prob
+        return th.where(same_level, t, t_hard)
 
     @staticmethod
     def _unwrap_model_for_training_hooks(model):

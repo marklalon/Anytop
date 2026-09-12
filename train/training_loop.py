@@ -73,6 +73,44 @@ def _tile_eval_cond(cond, repeat):
             y[key] = val
     return {'y': y}
 
+# Parameters AdamW must NOT weight-decay, by ``named_parameters()`` name
+# suffix: the zero-init gates a residual or bias path is opened with
+# (cross-limb ``reliability_bias`` / ``time_emb_scale`` /
+# ``temporal_reliability_bias`` / ``cross_k_scale``, the decoder layer's
+# ``temporal_phase_scale``, the global ``unreliable_embedding``) plus the
+# cross-K LayerNorm gain/bias. Decay pulls each of them back toward its init,
+# i.e. toward closing the path it was learned to open. A name rule, not
+# ``param.ndim == 1``: those scalars are ``torch.zeros(1)``, the same rank as
+# the LayerNorm affines that are NOT on this list.
+NO_WEIGHT_DECAY_PARAM_SUFFIXES = (
+    'unreliable_embedding',
+    '.reliability_bias',
+    '.time_emb_scale',
+    '.temporal_reliability_bias',
+    '.cross_k_scale',
+    '.cross_k_norm.weight',
+    '.cross_k_norm.bias',
+    '.temporal_phase_scale',
+)
+
+
+def is_no_weight_decay_param(name: str) -> bool:
+    return name == 'unreliable_embedding' or name.endswith(NO_WEIGHT_DECAY_PARAM_SUFFIXES)
+
+
+def build_optimizer_param_groups(named_params, weight_decay: float):
+    """Two AdamW groups (decay / no decay) from ``(name, param)`` pairs."""
+    decay, no_decay = [], []
+    for name, param in named_params:
+        if not param.requires_grad:
+            continue
+        (no_decay if is_no_weight_decay_param(name) else decay).append(param)
+    groups = [{'params': decay, 'weight_decay': float(weight_decay)}]
+    if no_decay:
+        groups.append({'params': no_decay, 'weight_decay': 0.0})
+    return groups
+
+
 class TrainLoop:
     def __init__(self, args, train_platform, model, diffusion, data):
         self.args = args
@@ -161,12 +199,17 @@ class TrainLoop:
             fp16_scale_growth=self.fp16_scale_growth,
         )
         
-        self.opt = AdamW(self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay, fused=True)
+        # Grouped by parameter name (see NO_WEIGHT_DECAY_PARAM_SUFFIXES); the
+        # trainer's master params are the model params (use_fp16 is never on).
+        self.opt = AdamW(
+            build_optimizer_param_groups(self.model.named_parameters(), self.weight_decay),
+            lr=self.lr, weight_decay=self.weight_decay, fused=True,
+        )
         self._optimizer_param_names = {id(param): name for name, param in self.model.named_parameters()}
         self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.opt,
                                                 step_size=getattr(self.args, 'lr_scheduler_step_size', 10000),
                                                 gamma=getattr(self.args, 'lr_scheduler_gamma', 0.99))
-        
+
         if self.resume_step and bool(getattr(self.args, 'load_optimizer_state', True)):
             self._load_optimizer_state()
             # Model was resumed, either due to a restart or a checkpoint

@@ -21,7 +21,13 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # 9: circular time embedding is period-free (one wrap per window). Earlier
 #    weights read the loader's tile count off its period and would be asked
 #    for one cycle per window every time.
-CKPT_VERSION = 9
+# 10: cross-limb reliability fix (docs/cross_limb_reliability_cost_effective_fix.md).
+#    Training: the re-noise timestep of a flagged region is a same-level /
+#    hard mixture (--renoise_same_level_prob) instead of always [t, T).
+#    Model: a global per-joint unreliable_embedding on the input tokens, a
+#    per-block frame-level temporal_reliability_bias, and one cross-K
+#    attention per block (cross_k_norm / cross_k_attn / cross_k_scale).
+CKPT_VERSION = 10
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -433,6 +439,13 @@ def add_training_options(parser):
                        help="Weight of a target-relative acceleration (2nd temporal difference) penalty on the position channel, applied in a Gaussian seam band around sampled temporal-span boundaries. Suppresses inpainting-seam acceleration spikes that l_simple and vel_loss do not catch. 0 disables it.")
     group.add_argument("--temporal_span_seam_width", default=2, type=int,
                        help="Radius of the Gaussian seam band on each side of a sampled temporal-span boundary frame.")
+    group.add_argument("--renoise_same_level_prob", default=0.5, type=float,
+                       help="Per-sample probability that a flagged (joint-mask / temporal-span) region is re-noised "
+                            "at the SAME timestep as the rest of the sample (fresh noise, t_random = t) instead of "
+                            "the hard branch uniform on [t, T). The same-level branch decouples the unreliable flag "
+                            "from 'much noisier than the surroundings', which is the regime inpainting presents at "
+                            "every step; the hard branch keeps training the repair of severe local damage. "
+                            "0 restores the pure [t, T) draw, 1 makes every flagged region same-level.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
     group.add_argument("--use_ema", action='store_true',

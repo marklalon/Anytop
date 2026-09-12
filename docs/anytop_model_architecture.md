@@ -226,10 +226,28 @@ attention mask。
 该路径在窄 bottleneck `cross_limb_dim` 中运行，每个 active layer 有独立 block。v10 在最后
 4 层使用 8 个、128 维的 latent。
 
-训练/推理可以向 cross-in logits 加一个 learned `reliability_bias`，降低或提升标记为不可靠
-的 joint/frame。当前它是标量 bias：如果某一帧所有有效关节都被同样标记，softmax 的平移
-不变性会抵消它，所以它不能单独表达“整帧不可靠”。相应的改进目前只记录在
-`cross_limb_reliability_cost_effective_fix.md`，尚未进入模型。
+完整的 block 顺序（`CrossLimbTemporalBlock.forward`）：
+
+```text
+cross-in（per-joint reliability_bias 加在 logits 上）
+  → latent temporal self-attention（per-frame temporal_reliability_bias 作为 additive key bias）
+  → cross-K self-attention（同一帧的 K 个 latent 互相注意；Pre-Norm + 零初始化 cross_k_scale）
+  → cross-out
+```
+
+可靠性信号分三层进入网络（见 `cross_limb_reliability_cost_effective_fix.md`）：
+
+- `AnyTop.unreliable_embedding`：全局一个 `d_model` 向量，在 InputProcess 之后按
+  `unreliable_mask` 加到输入 token 上，整个 trunk（spatial/temporal attention、FFN，
+  以及 cross-limb 的 value/query）都能看到重绘区域；
+- cross-in 的标量 `reliability_bias`：帧内的关节级选择；
+- latent temporal attention 的标量 `temporal_reliability_bias`：乘以“该帧被标记的有效关节
+  占比”作为 key bias，做帧级选择。单靠 cross-in 的标量 bias 时，整帧被标记会被 softmax 的
+  平移不变性精确抵消，整帧 inpaint 和 temporal span 对这条路径等于不存在。
+
+cross-K attention 让同一帧的 K 个 latent 在 cross-out 之前直接交换信息，而不必绕
+“cross-out → 下一层 spatial attention → 下一层 cross-in”。三个新增标量都是零初始化，
+`cross_k_norm`/`cross_k_attn` 藏在零 gate 之后，新路径从 no-op 起步。
 
 ## 7. Loop 路径
 
@@ -263,14 +281,18 @@ Loop 不是单一布尔 token，而是模型、数据和损失共同组成的一
 
 ## 8. 混合可靠性训练
 
-基础扩散先按统一 timestep 生成 `x_t`，随后可对局部区域使用独立且不早于原 timestep 的
-噪声等级重新加噪：
+基础扩散先按统一 timestep 生成 `x_t`，随后可对局部区域用独立噪声重新加噪。重加噪的
+timestep 是一个混合分布（`--renoise_same_level_prob`，默认 0.5）：一半样本 `t_random = t`
+（同级、只换噪声），把“被标记”与“比周围脏得多”解绑——推理时被夹住的已知区和自由区都
+处于同一名义 timestep；另一半均匀取自 `[t, T)`，继续训练用可靠上下文修复严重局部损坏。
+两支都不早于 `t`。
 
 - subtree joint perturbation：随机选择预算内的非根子树；
 - temporal-span perturbation：随机选择连续帧，并覆盖该样本的全部真实关节；
 - 两者可以取并集；
 - supervision target 不变，被扰动单元仍参与 loss 和 attention；
-- `cross_limb_unreliable_mask` 可把位置告知 cross-limb；
+- `cross_limb_unreliable_mask` 把位置告知整个 trunk（`unreliable_embedding`）和 cross-limb
+  的两个 reliability bias；
 - `unreliable_mask_drop_prob` 会在部分样本上隐藏这张图，让模型自行定位损坏区域。
 
 这是一种训练 curriculum，不是额外的 reference encoder。
