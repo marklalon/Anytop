@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -22,6 +23,20 @@ from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa
 from model.anytop import AnyTop  # noqa: E402
 from model.motion_transformer import circular_phase_embedding  # noqa: E402
 from utils.model_util import create_gaussian_diffusion  # noqa: E402
+
+
+# circular_phase_embedding's window closure is exact only in real arithmetic:
+# in fp32 the closing phase misses 2*pi*f by ~(2*pi*f)*eps, and with the top
+# frequency at dim // 2 the residual is bounded by pi * dim * eps -- it grows
+# with dim. A flat 1e-6 passes at (6, 8) (7.0e-07) but fails at the production
+# shape (6.7e-05 at (61, 256)). 2x margin: measured worst case over length
+# 6..481, dim 8..1024 is 0.70 of the bound.
+def _closure_atol(dim: int) -> float:
+    return 2.0 * math.pi * dim * torch.finfo(torch.float32).eps
+
+
+# Toy shapes plus the production one (--num_frames 60 -> T = 61, latent_dim 256).
+_PHASE_SHAPES = ((6, 8), (8, 8), (61, 256))
 
 
 class _CaptureDecoder(torch.nn.Module):
@@ -93,33 +108,47 @@ class NativeLoopTests(unittest.TestCase):
         self.assertAlmostEqual(float(resampled[-1, 0, 0]), 0.0)
 
     def test_circular_phase_gives_loop_endpoints_same_phase(self):
-        emb = circular_phase_embedding(
-            length=6,
-            dim=8,
-            device=torch.device('cpu'),
-            dtype=torch.float32,
-        )
+        for length, dim in _PHASE_SHAPES:
+            with self.subTest(length=length, dim=dim):
+                emb = circular_phase_embedding(
+                    length=length,
+                    dim=dim,
+                    device=torch.device('cpu'),
+                    dtype=torch.float32,
+                )
 
-        self.assertEqual(tuple(emb.shape), (6, 8))
-        # Slot 0 is the T-pose token; motion frames 1..5 close on themselves.
-        self.assertTrue(torch.equal(emb[0], torch.zeros(8)))
-        self.assertTrue(torch.allclose(emb[1], emb[-1], atol=1e-6))
+                self.assertEqual(tuple(emb.shape), (length, dim))
+                # Slot 0 is the T-pose token; motion frames 1..length-1 close on
+                # themselves.
+                self.assertTrue(torch.equal(emb[0], torch.zeros(dim)))
+                atol = _closure_atol(dim)
+                self.assertTrue(
+                    torch.allclose(emb[1], emb[-1], atol=atol),
+                    f'closure residual {(emb[1] - emb[-1]).abs().max().item():.3e} '
+                    f'exceeds atol={atol:.3e} at (length={length}, dim={dim})',
+                )
 
     def test_circular_phase_wraps_exactly_once_per_window(self):
         """The period is the window, never a cycle count: no interior frame
         repeats the first frame's phase, so the embedding cannot tell the
         model how many gait cycles the window holds."""
-        emb = circular_phase_embedding(
-            length=8,
-            dim=8,
-            device=torch.device('cpu'),
-            dtype=torch.float32,
-        )
+        for length, dim in _PHASE_SHAPES:
+            with self.subTest(length=length, dim=dim):
+                emb = circular_phase_embedding(
+                    length=length,
+                    dim=dim,
+                    device=torch.device('cpu'),
+                    dtype=torch.float32,
+                )
 
-        first = emb[1]
-        for frame in range(2, 7):
-            self.assertFalse(torch.allclose(emb[frame], first, atol=1e-3), frame)
-        self.assertTrue(torch.allclose(emb[7], first, atol=3e-6))
+                first = emb[1]
+                for frame in range(2, length - 1):
+                    self.assertFalse(
+                        torch.allclose(emb[frame], first, atol=1e-3), frame
+                    )
+                self.assertTrue(
+                    torch.allclose(emb[length - 1], first, atol=_closure_atol(dim))
+                )
 
     def test_truebones_collate_forwards_loop_flags_as_bool_tensors(self):
         _, cond = truebones_batch_collate([

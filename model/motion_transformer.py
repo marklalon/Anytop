@@ -326,15 +326,33 @@ def circular_phase_embedding(
 ) -> Tensor:
     """Sinusoidal time table closed over the window, shape ``(length, dim)``.
 
-    Slot 0 is the T-pose token (zero row); the ``length - 1`` motion frames sit
-    at phase ``2*pi*t / (T-1)``, so the first and last motion frame share one
-    embedding -- the closing key every stored loop keeps. The period is the
-    window itself: how many gait cycles the window holds is NOT encoded here.
-    It used to be (period ``(T-1)/k`` for the ``k`` tiles the loader drew), which
-    made generation guess ``k`` from a per-species period table and, when that
-    guess was off, forced a stride the data prior disagreed with. The cycle
-    count is now learned from playspeed_cond and the species/action prior, the
-    same way it is for a one-shot clip.
+    Slot 0 is the T-pose token (zero row); the ``motion_frames = length - 1``
+    motion frames sit at phase ``2*pi*f*t / (motion_frames - 1)``, so the first
+    and last motion frame share one embedding -- the closing key every stored
+    loop keeps. The closure is exact only in real arithmetic: in fp32 the last
+    phase misses ``2*pi*f`` by a rounding error that grows with ``dim`` (6.7e-05
+    at length=61, dim=256), so tests must scale their tolerance with ``dim``.
+
+    This does not replace the absolute frame embedding ``InputProcess`` adds
+    for every sample: it is summed on top of it at every decoder layer
+    (``GraphMotionDecoderLayer.temporal_phase_scale``), and only for loop
+    samples.
+
+    The period is the window itself; how many gait cycles it holds is NOT
+    encoded. It used to be (period ``(motion_frames - 1)/k`` for the ``k``
+    loader tiles), which made generation guess ``k`` from a per-species table
+    and forced a wrong stride when the guess was off. The cycle count is now
+    learned from playspeed_cond and the species/action prior, as for a
+    one-shot clip.
+
+    Frequencies run over ``1..dim // 2`` unconditionally, so at production
+    shapes (``motion_frames - 1 < dim // 2``) the table is redundant: ``f`` and
+    ``f + (motion_frames - 1)`` coincide at integer ``t``, multiples of
+    ``motion_frames - 1`` are constant ``(1, 0)``, and ``f`` /
+    ``(motion_frames - 1) - f`` share a cosine with negated sine. At
+    ``--num_frames 60`` that is 59 distinct pairs out of 128. Wasted capacity,
+    not a conflict, so it is left alone: clamping to Nyquist would only swap
+    them for zero channels.
     """
     if length <= 0:
         raise ValueError(f"length must be positive, got {length}")
@@ -367,6 +385,10 @@ def _loop_aware_time_embedding(
 
     ``loop_phase_mask`` is a ``(batch_size,)`` bool tensor; returns
     ``(length, batch_size, dim)``.
+
+    Selects rather than adds (unlike the main path, which sums the circular
+    phase onto the absolute PE ``InputProcess`` already wrote into ``tgt``):
+    the cross-limb latents carry no input-level frame embedding of their own.
     """
     absolute = _sin_time_embedding(length, dim, device, dtype).unsqueeze(1).expand(-1, batch_size, -1)
     circular = circular_phase_embedding(length, dim, device, dtype).unsqueeze(1)
@@ -956,6 +978,9 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # Both loop time tables are built once here and shared by every layer:
         # the circular phase added before temporal attention (zeroed for
         # non-loop samples) and the cross-limb block's per-sample time table.
+        # Neither replaces the absolute PE InputProcess already put in `tgt`:
+        # the main path adds the phase on top (loop samples only); the
+        # cross-limb table selects instead, its latents having no PE of their own.
         loop_phase_embedding = None
         cross_limb_time_embedding = None
         if loop_phase_mask is not None:
@@ -1054,6 +1079,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                     "loop_phase_embedding must have shape "
                     f"{(frames, bs, feats)}, got {tuple(loop_phase_embedding.shape)}"
                 )
+            # Summed onto the absolute PE already in x (InputProcess), not a
+            # replacement; zero-init scale, so a fresh model starts phase-free.
             x = x + self.temporal_phase_scale * loop_phase_embedding.unsqueeze(2)
         # Temporal self-attention is unmasked: every frame token attends over the
         # whole window, including the T-pose token at index 0.

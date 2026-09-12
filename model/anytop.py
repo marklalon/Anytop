@@ -1153,7 +1153,12 @@ class InputProcess(nn.Module):
         # joints to confuse this with.
         struct_latent = struct_latent * joint_valid.unsqueeze(-1).to(struct_latent.dtype)
         x = x + struct_latent[None, ...]
-        positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1).repeat(x.shape[1], 1, 1)
+        # Absolute frame PE, the baseline frame signal for every sample (loop
+        # samples add a circular phase on top, per decoder layer -- see
+        # circular_phase_embedding). Batch dim 1: only row 0 is kept, so a
+        # [B, T, C] table would be (B-1)/B wasted. fp32 on purpose: this add
+        # promotes the bf16 residual stream back to fp32 before the decoder.
+        positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1)
         pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
         return x + pos_emb.unsqueeze(1).unsqueeze(1)
 
