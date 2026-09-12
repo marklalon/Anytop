@@ -1,511 +1,325 @@
-# AnyTop Diffusion 模型架构详解
-
-## 模型配置 (train_tiny)
-
-| 参数 | 值 |
-|------|-----|
-| 层数 (layers) | 4 |
-| 隐藏维度 (latent_dim) | 128 |
-| 前馈维度 (ff_size) | 1024 |
-| 注意力头数 (num_heads) | 4 |
-| 文本编码 | t5-base (t5_out_dim=768) |
-| 关节数 (njoints) | 143 (max_joints) |
-| 特征数 (nfeats) | 12 (FEATS_LEN) |
-
----
-
-## 网络结构图
-
-```
-输入: [Batch, 143关节, 12特征, Frames] + Timestep: [Batch]
-    │
-    ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    InputProcess                              │
-│                    参数量: ~123K                             │
-│                                                             │
-│  ┌─────────────────────┐  ┌─────────────────────────────┐  │
-│  │ T-pose 位置编码      │  │ 当前动作编码                 │  │
-│  │ root_embedding       │  │ root_embedding              │  │
-│  │ (12→128)             │  │ (12→128)                    │  │
-│  │ tpos_root_embedding  │  │ tpos_joint_embedding        │  │
-│  │ (12→128)             │  │ joint_embedding             │  │
-│  │ tpos_joint_embedding │  │ (12→128)                    │  │
-│  │ (12→128)             │  └─────────────────────────────┘  │
-│  └─────────────────────┘                                   │
-│                                                             │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │ T5文本编码                                            │  │
-│  │ text_embedding (768→128)                              │  │
-│  │ 98,432 params                                         │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                                                             │
-│  + Sinusoidal Positional Embedding                         │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 Topology/Edge Embeddings                     │
-│  (GraphMotionDecoder的内部组件，被每一层共享使用)             │
-│         参数量: 3,072 (在每层Spatial Attention中使用)        │
-│                                                             │
-│  4×Embedding(6, 128):                                       │
-│  ├─ topology_query_emb: 拓扑距离投影 Q侧                    │
-│  ├─ topology_key_emb: 拓扑距离投影 K侧                      │
-│  ├─ edge_query_emb: 关系类型投影 Q侧                        │
-│  └─ edge_key_emb: 关系类型投影 K侧                          │
-│                                                             │
-│  ↓↓↓↓ 被传入每一层的Spatial Attention使用 ↓↓↓↓              │
-└─────────────────────────────────────────────────────────────┘
-    ↓                                  ↑
-    │    (每层中使用这些嵌入)            │ (从父Decoder获取)
-    │                                  │
-│              GraphMotionDecoder (4层堆叠)                    │
-│              总参数量: ~1.85M + 3.072K = ~1.85M              │
-│                                                             │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │ Layer 1 (每层 ~462K params)                          │  │
-│  │                                                      │  │
-│  │  ┌──────────────────────────────────────────────┐   │  │
-│  │  │ Spatial Attention (GraphMultiHeadAttn)       │   │  │
-│  │  │ 66,048 params                                │   │  │
-│  │  │ 4×Linear(128→128) + Topology/Edge偏置       │   │  │
-│  │  │ ← 使用上面的4个嵌入表作为注意力logits偏置   │   │  │
-│  │  │                                              │   │  │
-│  │  │ 结果: 显式编码父子、兄弟关系                  │   │  │
-│  │  │      让肩膀運动更容易影响手臂                 │   │  │
-│  │  └──────────────────────────────────────────────┘   │  │
-│  │           ↓ LayerNorm(128) [256 params]              │  │
-│  │           ↓ Residual                                 │  │
-│  │                                                      │  │
-│  │  ┌──────────────────────────────────────────────┐   │  │
-│  │  │ Temporal Attention (MultiheadAttn)           │   │  │
-│  │  │ 66,048 params                                │   │  │
-│  │  │ 标准4头注意力 (不使用Topology/Edge嵌入)      │   │  │
-│  │  │ 处理时间维度的连贯性                         │   │  │
-│  │  │ 当前帧可看到过去和未来帧的信息               │   │  │
-│  │  └──────────────────────────────────────────────┘   │  │
-│  │           ↓ LayerNorm(128) [256 params]              │  │
-│  │           ↓ Residual                                 │  │
-│  │                                                      │  │
-│  │  ┌──────────────────────────────────────────────┐   │  │
-│  │  │ Feed Forward Network                         │   │  │
-│  │  │ 263,168 params                               │   │  │
-│  │  │ Linear(128→1024→128)                         │   │  │
-│  │  │ GELU激活 + Dropout(0.1)                      │   │  │
-│  │  │ 中间维度1024 = 128×8                         │   │  │
-│  │  └──────────────────────────────────────────────┘   │  │
-│  │           ↓ LayerNorm(128) [256 params]              │  │
-│  │           ↓ Residual                                 │  │
-│  │                                                      │  │
-│  │  ┌──────────────────────────────────────────────┐   │  │
-│  │  │ Reference Attention (可选)                   │   │  │
-│  │  │ 66,048 params                                │   │  │
-│  │  │ 标准MHA (不使用Topology/Edge嵌入)            │   │  │
-│  │  │ Stage1: 禁用 (disable_reference_branch=True) │   │  │
-│  │  │ Stage2: 启用，从参考动作提取信息             │   │  │
-│  │  └──────────────────────────────────────────────┘   │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                                                             │
-│  Layer 2, 3, 4: 相同结构，都使用同一组Topology/Edge嵌入   │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    OutputProcess                             │
-│                    参数量: ~3.1K                             │
-│                                                             │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │ root_dembedding: 128 → 12 (根关节) 1,548 params      │  │
-│  └──────────────────────────────────────────────────────┘  │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │ joint_dembedding: 128 → 12 (其他关节) 1,548 params   │  │
-│  └──────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ▼
-输出: [Batch, 143关节, 12特征, Frames] (去噪后的动作)
-```
-
----
-
-## 参数量统计表格
-
-### InputProcess (~123K)
-
-| 子组件 | 计算方式 | 参数量 |
-|--------|---------|--------|
-| root_embedding | Linear(12→128) | 1,664 |
-| tpos_root_embedding | Linear(12→128) | 1,664 |
-| joint_embedding | Linear(12→128) | 1,664 |
-| tpos_joint_embedding | Linear(12→128) | 1,664 |
-| text_embedding (T5) | Linear(768→128) | 98,432 |
-| **小计** | | **123,392** |
-
-> 注：本表只列与特征维直接相关的层。InputProcess 现另含结构通道投影
-> （`struct_embedding`）、输出坐标系条件投影（`canonical_frame_projection`）等
-> 后续加入的子模块，故小计大于上表各行之和。
-
-### GraphMotionDecoder (4层) - 总 ~1.85M
-
-包含：
-- 4层GraphMotionDecoderLayer: 1,848,368
-- Topology/Edge Embeddings (共享): 3,072
-  └─ 这些嵌入表属于GraphMotionDecoder，4层都使用同一份，不会重复计算
-
-| 组件 | 计算方式 | 参数量 |
-|------|---------|--------|
-| **每层 (~462K)** | | |
-| Spatial Attn (GraphMultiHeadAttn) | 4×Linear(128→128) | 66,048 |
-| Norm1 | LayerNorm(128) | 256 |
-| Temporal Attn (MultiheadAttn) | MultiheadAttn(4 heads) | 66,048 |
-| Norm2 | LayerNorm(128) | 256 |
-| FFN | Linear(128→1024→128) | 263,168 |
-| Norm3 | LayerNorm(128) | 256 |
-| Ref Attn (可选) | MultiheadAttn | 66,048 |
-| **Layer单层总计** | | **~462,092** |
-| **4层总计** | | **1,848,368** |
-| **Topology/Edge嵌入 (4层共享)** | 4×Embedding(6,128) | 3,072 |
-| **GraphMotionDecoder总计** | | **1,851,440** |
-
-### OutputProcess - 3,096
-
-| 子组件 | 计算方式 | 参数量 |
-|--------|---------|--------|
-| root_dembedding | Linear(128→12) | 1,548 |
-| joint_dembedding | Linear(128→12) | 1,548 |
-| **小计** | | **3,096** |
-
-### 总参数量
-
-| 组件 | 参数量 |
-|------|--------|
-| InputProcess | 123,392 |
-| GraphMotionDecoder (4层 + 共享嵌入) | 1,851,440 |
-| OutputProcess | 3,096 |
-| **总计 (不含ReferencePriorEncoder)** | **~1,977,928 (~2M)** |
-
----
-
-## 架构关键点澄清
-
-### Topology/Edge Embeddings的位置和数据流
-
-**错误理解** ❌ (之前的结构图):
-```
-InputProcess → GraphMotionDecoder → Topology/Edge Embeddings → OutputProcess
-                                    (下游，应该反馈？)
-```
-
-**正确理解** ✅ (实际代码):
-```
-                 ┌─ Topology/Edge Embeddings (4张表)
-                 │                              
-InputProcess → GraphMotionDecoder ─────────┐    OutputProcess
-                │ Layer1 ┌────────────────┘
-                │        ├─ Spatial Attn ← 使用这些嵌入作为Q,K的偏置
-                │        ├─ Temporal Attn (不使用)
-                │        ├─ FFN
-                │        └─ Ref Attn (不使用)
-                │ Layer2-4: 同样的结构，都使用相同的嵌入表
-```
-
-**关键点**：
-1. **Topology/Edge Embeddings是GraphMotionDecoder的属性** (在__init中定义)
-2. **每一层都共享这4张表** (不重复创建)
-3. **只在Spatial Attention的前向计算中使用** (作为Q,K投影的偏置)
-4. **没有"反馈"关系**，是平行的信息流
-
----
-
-### 三种注意力机制与Topology/Edge Embeddings的关系
-
-| 注意力类型 | 实现方式 | 使用Topology/Edge Embeddings | 作用 |
-|-----------|--------|----------------------------|-----|
-| **Spatial Attention** | GraphMultiHeadAttention (自定义) | ✅ 是 | 作为Q和K投影的偏置，修改节点间的注意力权重 |
-| **Temporal Attention** | MultiheadAttention (标准PyTorch) | ❌ 否 | 标准注意力，只看特征值，不涉及骨骼拓扑 |
-| **Reference Attention (Stage2可选)** | MultiheadAttention (标准PyTorch) | ❌ 否 | 标准注意力，只关注参考动作的信息 |
-
-**关键结论**：
-- **只有Spatial Attention消费Topology/Edge Embeddings**
-- 这些嵌入通过**修改注意力logits**来引导骨骼约束
-- Temporal Attention维持动作的时间连贯性，但不需要骨骼结构知识
-
----
-
-### 1. InputProcess (~123K) - 输入编码
-
-**输入形状**: [Batch, 143关节, 12特征, Frames]
-
-**处理流程**:
-```
-├─ T-pose 位置编码 (T-pose 参考帧)
-│  ├─ root_embedding: 12 → 128
-│  └─ tpos_joint_embedding: 12 → 128
-├─ 当前动作编码 (Current motion)
-│  ├─ root_embedding: 12 → 128
-│  └─ joint_embedding: 12 → 128
-└─ T5文本编码 (骨骼名称)
-   └─ text_embedding: 768 → 128 (来自T5-base)
-```
-
-**关键差异**: 为什么要双路径编码？
-- **T-pose 分支**: 提供骨骼的绝对参考位置（对理解关节关系重要）
-- **当前帧分支**: 编码实际的动作数据
-- **T5 分支**: 通过文本嵌入传输骨骼语义信息（如"Arm", "Hand"等）
-
-### 2. GraphMotionDecoder (4层) - 核心去噪
-
-每层 **462K 参数**，堆叠 4 次 = **1.85M**
-
-#### 2.1 Spatial Attention (空间注意) - 66K
-
-```
-处理骨骼本身的关节关系，使用Topology/Edge Embeddings:
-├─ GraphMultiHeadAttention (自定义，不是标准MultiheadAttention)
-│  ├─ linear_q: 128 → 128 (q投影)
-│  ├─ linear_k: 128 → 128 (k投影)
-│  ├─ linear_v: 128 → 128 (v投影)
-│  └─ output_layer: 128 → 128 (输出投影)
-│
-└─ 关键: 将Topology/Edge Embeddings作为注意力偏置
-   (这是与标准Transformer最大的区别)
-```
-
-**数据流详解 (Topology/Edge Embeddings是如何被消费的)**:
-
-```
-输入数据 (来自y字典):
-├─ y['graph_dist']: [bs, njoints, njoints] 
-│  └─ 值域: 0-5 (拓扑距离，表示节点间的最短路径长度)
-│     0: self (同一个关节)
-│     1: 父子或兄弟关系 (1跳)
-│     2-5: 更远的距离
-│     6: 无关系 ('far')
-│
-└─ y['joints_relations']: [bs, njoints, njoints]
-   └─ 值域: 0-5 (关系类型)
-      0: self (自己)
-      1: parent (父关节)
-      2: child (子关节)
-      3: sibling (兄弟关节)
-      4: no_relation (无直接关系)
-      5: end_effector (末梢节)
-
-Topology/Edge Embedding表:
-├─ topology_query_emb: Embedding(6, 128)  [距离查询]
-├─ topology_key_emb: Embedding(6, 128)    [距离键值]
-├─ edge_query_emb: Embedding(6, 128)      [关系查询]
-└─ edge_key_emb: Embedding(6, 128)        [关系键值]
-
-在GraphMultiHeadAttention前向传播中的使用:
-
-第1步: 投影Q、K、V到多头空间
-  Q = linear_q(x)           // [bs, njoints, 128] → [bs, njoints, 128]
-  K = linear_k(x)           // [bs, njoints, 128] → [bs, njoints, 128]
-  V = linear_v(x)           // [bs, njoints, 128] → [bs, njoints, 128]
-  重塑为多头: [batch, num_heads, seq_len, d_k]
-
-第2步: 计算拓扑距离偏置 (使用 topology_query_emb & topology_key_emb)
-  query_hop = matmul(Q, topology_query_emb.T)  
-             // [batch, nheads, njoints, njoints] x [nheads, ??, d_k]
-             // 结果: [batch, nheads, njoints, 6]
-             
-  query_hop = gather(query_hop, distance_matrix)
-             // 使用y['graph_dist']作为索引
-             // 从6个距离值中为每一对关节选择对应的嵌入
-             // 结果: [batch, nheads, njoints, njoints, 1]
-  
-  同样计算 key_hop (使用 topology_key_emb)
-  
-  spatial_bias = query_hop + key_hop
-                // [batch, nheads, njoints, njoints]
-
-第3步: 计算关系类型偏置 (使用 edge_query_emb & edge_key_emb)
-  query_edge = matmul(Q, edge_query_emb.T)
-              // 同样的流程，但基于边类型
-  
-  edge_bias = query_edge + key_edge
-             // [batch, nheads, njoints, njoints]
-
-第4步: 将偏置融入注意力计算
-  attention_logits = matmul(Q, K.T) + spatial_bias + edge_bias
-                    // 这是关键！偏置被直接加到Q@K的结果上
-                    
-  attention_weights = softmax(attention_logits * scale)
-                     // 使用修改后的logits计算注意力权重
-
-第5步: 应用注意力到V
-  output = matmul(attention_weights, V)
-```
-
-**具体例子**：
-假设关节关系矩阵：
-```
-     关节0(肩) 关节1(上臂)  关节2(手肘)   ...
-关节0    0        1           2       ...   (0=self, 1=child, 2=grandchild)
-关节1    1        0           1       ...   (1=parent, 0=self, 1=child)
-关节2    2        1           0       ...
-...
-```
-
-当计算**肩→上臂**的注意力权重时：
-1. 提取distance[肩, 上臂] = 1 (拓扑距离)
-2. 提取edge[肩, 上臂] = 2 (child关系)
-3. 使用索引1从topology_query_emb和topology_key_emb中选择对应的128维向量
-4. 使用索引2从edge_query_emb和edge_key_emb中选择对应的128维向量
-5. 这些偏置值被加到(Q[肩] @ K[上臂].T)上，修改最终的注意力权重
-6. 结果：**肩关节的特征可以通过修改后的更高权重来影响上臂**
-
-#### 2.2 Temporal Attention (时间注意) - 66K
-
-```
-处理动作在时间维度的连贯性:
-├─ MultiheadAttention (标准4头，不使用拓扑/边嵌入)
-│  ├─ in_proj: 128 → 384 (Q,K,V三合一)
-│  └─ out_proj: 128 → 128
-│
-└─ 目的: 关键帧应互相注意
-   (当前帧可看到过去和未来帧的信息)
-   
-⚠️  重要: Temporal Attention使用标准的MultiheadAttention，
-   与Spatial Attention不同，它不会消费Topology/Edge Embeddings
-```
-
-#### 2.3 FFN (前馈网络) - 263K
-
-```
-逐位置的非线性变换:
-├─ Linear(128 → 1024): 128×1024 + 1024 = 132,096
-└─ Linear(1024 → 128): 1024×128 + 128 = 131,072
-   
-为什么1024这么大？
-- 中间维度 = d_model × (ff_size/d_model) = 128 × 8 = 1024
-- 这个8倍扩展是标准Transformer设计
-- 在128维隐空间中"暂时展开"到1024维进行非线性处理
-```
-
-#### 2.4 Reference Attention (可选) - 66K
-
-```
-Stage1中**禁用** (disable_reference_branch=True)
-Stage2中启用:
-└─ 从参考动作(真实动作)中提取高置信区域的信息
-```
-
-### 3. Topology/Edge Embeddings (3K) - 骨骼图编码
-
-**属于 GraphMotionDecoder 的内部组件，4层共享使用**
-
-```
-4个Embedding表（只被Spatial Attention使用）:
-├─ topology_query_emb: Embedding(6 距离值, 128维)
-│  └─ 在Spatial Attention中时，Q向量投影到拓扑距离空间
-├─ topology_key_emb: Embedding(6 距离值, 128维)
-│  └─ 在Spatial Attention中时，K向量投影到拓扑距离空间
-├─ edge_query_emb: Embedding(6 关系类型, 128维)
-│  └─ 在Spatial Attention中时，Q向量投影到关系类型空间
-└─ edge_key_emb: Embedding(6 关系类型, 128维)
-   └─ 在Spatial Attention中时，K向量投影到关系类型空间
-
-关系类型 (6种):
-0: self (自己)
-1: parent (父关节)
-2: child (子关节)
-3: sibling (兄弟关节)
-4: none (无直接关系)
-5: end_effector (末梢节)
-
-⚠️  使用说明:
-- 这些嵌入在Spatial Attention中用作**注意力权重的偏置** (见上一节详细流程)
-- Stage1 (train_tiny): value_emb=False → 只有4个表（query和key嵌入）
-- 这是GraphMotionDecoder.__init()定义的属性
-- 在forward()中，这4张表被传给每一层的forward()调用
-- Layer1-4都使用相同的嵌入表，不会重复创建参数
-
-### 4. OutputProcess (3.1K) - 输出解码
-
-```
-将隐空间映射回动作特征:
-├─ root_dembedding: 128 → 12 (根关节)
-└─ joint_dembedding: 128 → 12 (其他关节)
-
-输出形状: [Batch, 143关节, 12特征, Frames]
-(与输入相同)
-```
-
----
-
-## 总体参数量对比
-
-```
-Stage1 (train_tiny 配置):
-├─ InputProcess:                     123,392
-├─ GraphMotionDecoder (4层):       1,848,368
-│  └─ 包含Topology/Edge嵌入 (4张表,共享):    3,072
-├─ OutputProcess:                     3,096
-├─ Total:                      ~1,977,928 (~2M parameters)
-
-详细参数分布:
-├─ 4层×(线性投影 + LayerNorm + Attention):  1,848,368
-│  ├─ Spatial Attention (4层): 4×66,048 = 264,192
-│  ├─ Temporal Attention (4层): 4×66,048 = 264,192
-│  ├─ FFN (4层): 4×263,168 = 1,052,672
-│  └─ LayerNorm等其他: 剩余
-├─ Topology/Edge嵌入 (共享，不重复): 3,072
-└─ 文本编码+输入输出: 126,488
-
-对比其他模型:
-├─ BERT-base: 110M (百倍大)
-├─ ViT-base: 86M (四十倍大)
-└─ 小型CNN: 5-10M (2-5倍大)
-
-所以AnyTop是一个相对轻量级的模型！
-```
-
----
-
-## 关键设计特点
-
-| 特点 | 说明 |
-|------|------|
-| **双路径输入** | T-pose + 当前帧 + T5语义，提供多角度上下文 |
-| **图感知注意** | Spatial Attn 显式编码骨骼父子、兄弟关系 |
-| **时空解耦** | 分别用 Spatial 和 Temporal Attn 处理，高效且可解释 |
-| **轻量级** | 2M参数，易于训练和部署 |
-| **模块化** | 各个组件独立，便于消融研究 |
-
----
-
-## 数据流总结
-
-```
-原始骨骼数 (1-143)
-    ↓
-[padding to max_joints=143]
-    ↓
-InputProcess: 动作编码 + 位置编码 + 语义编码
-             [Batch, 143, FEATS_LEN, Frames]
-    ↓
-GraphMotionDecoder (4层, 内含Topology/Edge嵌入表):
-  ├─ Layer1:
-  │  ├─ Spatial Attn: ← 使用topology_*_emb + edge_*_emb作为偏置
-  │  ├─ Temporal Attn: 处理时间维度
-  │  ├─ FFN: 非线性变换
-  │  └─ Ref Attn (可选): 参考动作约束
+# 当前 AnyTop 模型架构
+
+> 本文描述 `local_root_xz` 当前代码与 `save/merged_locomotion_v10/args.json` 的实际行为。
+> 它是架构现状的入口文档；`docs/` 中带“方案”“refactor”“removal”的长文是设计与迁移记录，
+> 其中的“现状”、行号和旧训练命令只对文档注明的历史提交有效。
+
+## 1. 先区分原版与当前 fork
+
+原版 AnyTop 的核心是一个直接在动作特征上去噪的 Transformer：每个“帧 × 关节”是一个
+token，先做全关节的 graph-aware spatial attention，再让每个关节沿时间做 temporal
+attention。骨架条件由 rest pose、关节名称、成对关系和拓扑距离组成。
+
+当前 fork 保留这条主干，并加入：
+
+- Perceiver 式 cross-limb temporal pathway；
+- 原生 loop 条件、圆周相位、loop 数据增强与闭合损失；
+- 13 维 per-joint structural channel 和 whole-joint name dropout；
+- 全局 species FiLM 与 per-joint species × joint FiLM；
+- 四槽 action-label 条件与 action CFG；
+- canonical output-frame 和 resample-speed 条件；
+- subtree / temporal-span 混合噪声训练；
+- full temporal attention、QK-Norm 和更细的拓扑关系码。
+
+当前模型**没有** ReferencePriorEncoder、ControlNet 或 reference cross-attention 分支。
+参考动作只在扩散采样器侧用于 img2img 初始化、inpainting clamp 和 outpainting。
+
+## 2. 当前生产配置
+
+下表来自 `save/merged_locomotion_v10/args.json`；其他 checkpoint 必须以各自的
+`args.json` 为准。
+
+| 项目 | v10 配置 |
+|---|---:|
+| decoder layers | 8 |
+| latent width | 256 |
+| FFN width | 2048 |
+| attention heads | 4 |
+| internal frames | 60 |
+| per-joint motion features | 12（position 3 + rotation 6D + velocity 3） |
+| training joint cap | 100；推理张量的关节维动态决定 |
+| diffusion | cosine schedule，100 steps，预测 `x_0` |
+| cross-limb | 8 latents，width 128，只在最后 4 层 |
+| action/species conditions | `action_label_cond`、`species_cond`、`species_joint_cond` 全开 |
+| loop condition retention | `loop_cond_prob=0.7` |
+| parameter count | 16,695,080（不含 frozen action buffers） |
+
+代码中的 `AnyTop.max_joints=143` 是遗留构造参数，不是当前训练数据的 joint cap，也不把
+推理强制固定到 143 个关节。训练预处理的上限来自 `param_utils.MAX_JOINTS=100`；新骨架推理
+在未启用 crop 时可以使用自己的真实关节数。
+
+## 3. 总体数据流
+
+```text
+x_t [B, J, 12, T]
   │
-  ├─ Layer2-4: 相同结构
+  ├─ motion projection（root / non-root 分开）
+  ├─ rest-pose projection，作为第 0 个时间 token
+  ├─ frozen-T5 joint-name embedding → trainable projection
+  ├─ 13D joint structural descriptor → MLP
+  └─ absolute sinusoidal frame PE
   │
-  └─ 共享的Topology/Edge嵌入:
-     ├─ topology_query/key_emb: 拓扑距离投影 (4×768参数)
-     └─ edge_query/key_emb: 关系类型投影 (4×768参数)
-    ↓
-OutputProcess: 解码回动作空间
-             [Batch, 143, FEATS_LEN, Frames]
-    ↓
-输出: 去噪后的动作
+  ▼
+tokens [T+1, B, J, D]
+  │
+  │  timestep condition bus
+  │    sinusoidal diffusion timestep
+  │      → species FiLM
+  │      + resample-speed token
+  │      + canonical-frame token
+  │      + loop token
+  │      + action-label token
+  │
+  ▼
+GraphMotionDecoder × L
+  ├─ graph-aware spatial attention（每帧、跨全部关节）
+  ├─ full temporal attention（每关节、跨全部 T+1 token）
+  ├─ cross-limb temporal block（配置的 active layers）
+  └─ FFN
+  │
+  ▼
+root / non-root output projections
+  │
+  └─ 丢弃第 0 个 rest-pose token → 预测 x_0 [B, J, 12, T]
 ```
 
----
+模型直接预测干净动作 `x_0`，基础目标是 masked MSE；不是“预测噪声 ε 并和真实噪声做
+MSE”。
 
-*生成时间: 2026-04-17 (已于2026-04-17修正架构关键点)*
+## 4. 输入 enrichment
+
+### 4.1 动作与 rest-pose token
+
+根关节和普通关节分别使用线性投影。rest pose 也有独立的 root/non-root 投影，并作为领先
+时间 token 拼到动作帧前面。因此 decoder 实际处理 `T+1` 个时间位置，输出时再删除第 0 个。
+
+### 4.2 关节名称
+
+T5 编码发生在预处理阶段，模型不会在每次 forward 中运行 T5。`cond.npy` 携带
+`joints_names_embs`，`InputProcess.text_embedding` 再把它投影到 latent width，并沿全部
+时间位置加到对应关节 token。
+
+`joint_name_drop_prob>0` 时，训练会把整个关节名称向量替换为 learned
+`unknown_joint_name`。它不同于普通 element-wise dropout：目的是真正隐藏关节名字，让模型
+回退到 rest geometry、pairwise topology 和 structural channel。
+
+### 4.3 关节结构通道
+
+每个关节还有一个与名字无关的 13 维结构描述，包括：
+
+- branch-free run 内的归一化位置和 run 长度；
+- run 是否落到 contact、当前 joint 是否 contact、contact 是否已知；
+- leaf 标记；
+- 归一化高度、左右 signed offset、前后位置、附着高度；
+- subtree 大小、sibling rank 和 sibling count 的倒数。
+
+这条通道由 `parents`、物理 rest positions 和 contact annotation 确定。改关节名不会改变它。
+它经独立 MLP 投影后加到 token，并在投影后重新清零 padding rows。
+
+## 5. 条件总线
+
+扩散 timestep 首先做 sinusoidal embedding，然后按以下顺序组合条件：
+
+```text
+timestep
+  → species FiLM
+  + resample_speed
+  + canonical_feature_mean/std
+  + is_loop
+  + action_label
+```
+
+组合后的 condition 在每个 decoder layer 中经该层自己的 `embed_timesteps` 再注入残差流。
+
+### 5.1 Species 的两条通路
+
+| 通路 | 输入 | 作用位置 | drop 语义 |
+|---|---|---|---|
+| `species_cond` | species T5 descriptor | timestep 的 FiLM：`gamma*t + beta` | 可由 `species_cfg_drop_prob` bypass 到 identity |
+| `species_joint_cond` | `[joint_name || species]` | 每个 joint-name embedding 的 FiLM | 始终存在，不做 CFG drop |
+
+两条 FiLM 的最后一层都以 identity 语义初始化。需要注意：只关闭 timestep species FiLM
+并不构成完全的 species-unconditional forward，因为 per-joint species FiLM 仍然开启。
+
+### 5.2 Action label
+
+Action label 使用受控词表，不接收自由文本。每个词先查 checkpoint 内冻结的 T5 word table，
+再按四个角色槽聚合：
+
+1. head/action；
+2. direction；
+3. modifier；
+4. hands。
+
+四个槽拼接后由 MLP 投影并加到 timestep condition。训练时
+`action_label_cfg_drop_prob` 把部分样本送到 learned null embedding；推理时
+`action_label_cfg_scale>1` 用 conditional/unconditional 两次 forward 做 CFG。
+
+### 5.3 Canonical frame 与 resample speed
+
+`canonical_feature_mean/std` 定义模型当前写入的输出坐标/标准化空间。这两组 12 维向量经
+zero-init MLP 投影并始终注入，不可 CFG-drop；缺失时 forward 直接失败。
+
+`resample_speed_cond = source_frames / internal_frames`，经另一条 MLP 注入。它告诉模型当前
+时间窗口相对源动作的压缩/拉伸程度。数据侧的 `motion_speed_aug` 是另一项无显式条件的数据
+增强，不应与 `resample_speed_cond` 混为一谈。
+
+## 6. Decoder layer
+
+每层的实际顺序是：
+
+```text
+x + embedded timestep/conditions
+  → Graph Spatial Attention + residual + norm
+  → Full Temporal Attention + residual + norm
+  → Cross-Limb Block（若本层启用）
+  → FFN + residual + norm
+```
+
+基类 `nn.TransformerDecoderLayer` 创建的 `self_attn` 和 `multihead_attn` 已被删除；当前层不含
+encoder-decoder memory attention，也不消费 `reference_memory`。
+
+### 6.1 Graph-aware spatial attention
+
+Spatial attention 每帧在全部有效关节之间计算，不是只让图上的一跳邻居通信。它在普通
+content attention 上加入两类 GRPE bias：
+
+```text
+score(i,j) = q_i·k_j
+           + q_i·R_query[relation(i,j)]
+           + k_j·R_key[relation(i,j)]
+           + q_i·D_query[distance(i,j)]
+           + k_j·D_key[distance(i,j)]
+```
+
+实际实现还对每个 head 的 Q/K 做 RMS normalization，约束 content dot product 和 graph
+bias 的幅度，避免 softmax 饱和。
+
+当前共有：
+
+- 12 个 directed edge relation codes：self、parent、child、sibling、保留的
+  no-relation、end-effector、ancestor、descendant、sibling-limb、三档 cousin；
+- 13 个 topology-distance codes：0–4 hop 精确编码；更远的 pair 再按是否共线以及
+  normalized LCA depth 分档。
+
+Q/K 的 topology/edge embedding 表由所有 decoder layers 共享。`value_emb=True` 时还会把
+对应关系 embedding 注入 value/output；v10 的 `value_emb=false`，因此当前走 PyTorch SDPA
+快路径。
+
+### 6.2 Full temporal attention
+
+Temporal attention 把张量视为 `[T+1, B*J, D]`，同一关节的每个时间 token 可以看到整个
+窗口，包括 rest-pose token。当前没有 `temporal_window`，也没有 causal、local 或 loop
+attention mask。
+
+### 6.3 Cross-limb temporal block
+
+基础的因子化 spatial/temporal attention 没有一条让“某条腿的完整时间轨迹”直接观察
+“另一条腿的完整时间轨迹”的短路径。Cross-limb block 用 K 个 learned latents 补上它：
+
+```text
+每帧全部 joints --cross-in--> K 个全身 latents
+全身 latents ------时间自注意--> 跨时间节奏上下文
+每帧全部 joints <--cross-out--- K 个全身 latents
+```
+
+该路径在窄 bottleneck `cross_limb_dim` 中运行，每个 active layer 有独立 block。v10 在最后
+4 层使用 8 个、128 维的 latent。
+
+训练/推理可以向 cross-in logits 加一个 learned `reliability_bias`，降低或提升标记为不可靠
+的 joint/frame。当前它是标量 bias：如果某一帧所有有效关节都被同样标记，softmax 的平移
+不变性会抵消它，所以它不能单独表达“整帧不可靠”。相应的改进目前只记录在
+`cross_limb_reliability_cost_effective_fix.md`，尚未进入模型。
+
+## 7. Loop 路径
+
+Loop 不是单一布尔 token，而是模型、数据和损失共同组成的一条路径。
+
+### 7.1 模型内
+
+- `is_loop` 经 MLP 加到 timestep condition；
+- 主 temporal path 保留 absolute PE，并在 loop 样本上额外加入 circular phase embedding；
+- cross-limb latents 自己没有输入级 absolute PE，因此 loop 样本选择 circular table，非 loop
+  样本选择 absolute table；
+- circular table 在窗口的第一个和最后一个动作帧闭合；第 0 行 rest-pose token 为零。
+
+两处 phase scale 都是 learned scalar，并以 0 初始化。
+
+### 7.2 数据侧
+
+真实 loop clip 会做随机 circular roll 和随机 tile，然后统一 resample 到内部窗口。tile count
+和 phase offset 只用于诊断，不直接喂给模型。
+
+`loop_cond_prob` 是“真实 loop 在训练时保留显式 loop 条件的概率”，不是循环强度。v10 的
+0.7 表示约 30% loop-shaped 样本仍执行 roll/tile，但对模型隐藏 `is_loop`，训练无显式条件下
+识别循环结构的能力。
+
+### 7.3 损失侧
+
+- `loop_wrap_loss`：loop 首尾的 position、rotation 和 terminal velocity 闭合；
+- `loop_root_xz_closure_loss`：translation root 的整周期 XZ velocity 积分闭合。
+
+再次强调：当前 loop 路径**不使用 loop-aware temporal mask**。
+
+## 8. 混合可靠性训练
+
+基础扩散先按统一 timestep 生成 `x_t`，随后可对局部区域使用独立且不早于原 timestep 的
+噪声等级重新加噪：
+
+- subtree joint perturbation：随机选择预算内的非根子树；
+- temporal-span perturbation：随机选择连续帧，并覆盖该样本的全部真实关节；
+- 两者可以取并集；
+- supervision target 不变，被扰动单元仍参与 loss 和 attention；
+- `cross_limb_unreliable_mask` 可把位置告知 cross-limb；
+- `unreliable_mask_drop_prob` 会在部分样本上隐藏这张图，让模型自行定位损坏区域。
+
+这是一种训练 curriculum，不是额外的 reference encoder。
+
+## 9. 损失
+
+模型预测 `x_0`。基础 `l_simple` 是按有效关节、有效帧计算的 MSE；其余项均为可选：
+
+| 损失 | 约束 | v10 权重 |
+|---|---|---:|
+| geodesic | 预测/目标 6D rotation 转 SO(3) 后的角距离 | 0.1 |
+| velocity consistency | position finite difference 与 velocity channel 一致 | 0.2 |
+| bone length | 相对 GT、按 rest length 归一化的骨长 | 0（关闭） |
+| loop wrap | loop 首尾闭合 | 0.04 |
+| loop root XZ closure | 根 XZ 速度整周期积分为零 | 0.05 |
+| temporal-span seam | span 边界附近 position 二阶差分匹配 GT | 0.2 |
+
+## 10. 参考动作与编辑：采样能力，不是模型分支
+
+当前参考动作流程不会生成 `reference_memory`，也不会在 decoder 中做 cross-attention：
+
+- plain reference generation：参考动作作为 `init_image` 在 `skip_timesteps` 指定的噪声等级
+  开始 img2img；
+- inpainting：被编辑区域自由生成，已知区域在每一步投影回相应噪声等级的 reference；
+- outpainting：已有帧 clamp，新增帧从纯噪声生成；需要时使用两阶段流程；
+- cross-skeleton reference：先在采样前 retarget 到目标骨架特征空间，再进入上述流程。
+
+因此 reference/inpainting/outpainting 能力不增加 AnyTop forward 的参数量。
+
+## 11. 当前明确不存在或已删除的设计
+
+- Reference Attention / ReferencePriorEncoder / reference memory；
+- ControlNet 式并行参考分支；
+- windowed temporal attention 与 `--temporal_window`；
+- loop temporal attention mask；
+- global-energy conditioning；
+- 预测噪声 ε 的训练目标；
+- action multi-hot 和整句 action-label embedding；当前是 per-word、role-slot T5 条件。
+
+## 12. 代码入口
+
+| 主题 | 文件 |
+|---|---|
+| AnyTop 输入、条件与 forward | `model/anytop.py` |
+| graph/temporal/cross-limb attention | `model/motion_transformer.py` |
+| diffusion 构建与 `x_0` 目标 | `utils/model_util.py` |
+| 训练 perturbation 与损失 | `diffusion/gaussian_diffusion.py` |
+| joint structural channel | `data_loaders/truebones/truebones_utils/joint_struct_features.py` |
+| refined topology codes | `data_loaders/truebones/truebones_utils/topology_relations.py` |
+| loop roll/tile/resample | `data_loaders/truebones/data/dataset.py` |
+| reference/inpainting/outpainting | `sample/generate.py` |
+| 当前生产配置 | `save/merged_locomotion_v10/args.json` |
