@@ -1,11 +1,15 @@
 """
 trim_redundant_edge_frames.py
 
-Drop the redundant edge frame of every raw GLB clip under a dataset directory:
-frame 0 goes when it repeats frame 1, frame N when it repeats frame N-1.  Only
-those two ADJACENT pairs are tested -- the wrap pair (N, 0) is not, so a loop's
-duplicated closing key is left alone.  At most one frame per end is dropped per
-run; a triple key needs a second pass.
+Drop the redundant TAIL edge frame of every raw GLB clip under a dataset
+directory: frame N-1 (the last frame) goes when it repeats frame N-2 AND the
+clip is a suspected loop (its last frame is close to its first frame).  Only
+the ADJACENT pair (N-2, N-1) is dropped; the wrap pair (N-1, 0) is never
+tested as a trim trigger, it is only read as the loop guard.  The head (frame
+0 vs frame 1) is measured but never dropped, because a repeated opening frame
+can be an authored action delay rather than a stray duplicate key.  A non-loop's
+final frame is its end pose and is kept even when it repeats the previous
+frame.  At most one frame is dropped per run; a triple key needs a second pass.
 
 The edit is a lossless in-place surgery on the GLB binary: the animation
 accessors are re-sliced (byteOffset / count) and the remaining key times are
@@ -86,10 +90,16 @@ from data_loaders.truebones.truebones_utils.param_utils import get_raw_data_dir 
 # would also catch real motion, and a deleted frame is unrecoverable while a
 # missed one only leaves a hitch that was already there.  This sits far above
 # float32 FK noise on a unit-scale rig and far below the slowest authored
-# ease-out seen (a lip settling at 3e-3 of a step); a near-miss is reported.
+# ease-out seen (a lip settling at 3e-3 of a step).
 REDUNDANT_FRAME_RATIO = 1e-4
-# Kept edges closer than this many times the ratio are listed for a human eye.
-NEAR_MISS_FACTOR = 10.0
+# A duplicated tail frame is only a safe duplicate when the clip is a suspected
+# loop: its last frame sits within this many median frame-steps of its first
+# frame (wrap gap / median step <= this).  A non-loop's final frame is the
+# action's END pose and is kept even when it repeats the previous frame (a held
+# ending); a loop's wrap-around frame is a genuine duplicate.  Measured on the
+# zoo dataset, loops cluster at ratio <= ~3.2 and non-loops (Die/GetUp/Land/...)
+# at ratio >= ~7.1, so 5.0 sits in the gap with margin on both sides.
+LOOP_GUARD_RATIO = 5.0
 # Arithmetic floor: at two frames the head pair and the tail pair are the same
 # pair, and dropping both edges of a three-frame clip leaves nothing readable.
 TRIM_MIN_FRAMES = 3
@@ -463,15 +473,22 @@ class EdgeVerdict:
 
 def find_redundant_edge_frames(global_positions: np.ndarray, rotations: np.ndarray,
                                ratio: float = REDUNDANT_FRAME_RATIO) -> EdgeVerdict:
-    """Decide the two adjacent edge pairs of a clip.
+    """Decide the redundant edge frame(s) of a clip.
 
-    Frame 0 is redundant when it repeats frame 1; frame N when it repeats frame
-    N-1.  Positions are the FK'd GLOBAL ones on purpose: a root-relative pose
-    can be identical across two frames the root actually travelled or turned
-    between.  Rotations cover motion a position stack cannot see (a spin about
-    a bone's own axis, a zero-length bone); both stacks must call the pair
-    redundant.  A stack that never changes reports a zero gap for every pair
-    and so abstains from the AND rather than driving it.
+    Only the TAIL is ever dropped, and only of a suspected loop: frame N-1 (the
+    last frame) is dropped when it repeats frame N-2 AND its distance from
+    frame 0 is within ``LOOP_GUARD_RATIO`` of the clip's median frame step.  A
+    non-loop's final frame is the action's end pose and is kept even when it
+    repeats the previous frame (a held ending); a loop's wrap-around frame is a
+    genuine duplicate.  The head (frame 0 vs frame 1) is measured but never
+    dropped, because a repeated opening frame can be an authored action delay
+    (a held wind-up) rather than a stray duplicate key.  Positions are the
+    FK'd GLOBAL ones on purpose: a root-relative pose can be identical across
+    two frames the root actually travelled or turned between.  Rotations cover
+    motion a position stack cannot see (a spin about a bone's own axis, a
+    zero-length bone); both stacks must call the pair redundant.  A stack that
+    never changes reports a zero gap for every pair and so abstains from the
+    AND rather than driving it.
     """
     positions = np.asarray(global_positions, dtype=np.float64)
     frame_count = int(positions.shape[0])
@@ -502,8 +519,21 @@ def find_redundant_edge_frames(global_positions: np.ndarray, rotations: np.ndarr
             for reference, gap in stacks.values()
         )
 
-    verdict.drop_first = is_redundant(0, 1)
-    verdict.drop_last = is_redundant(last - 1, last)
+    # The head is measured above for reporting but never dropped: a repeated
+    # opening frame may be an authored hold (an action delay), not a duplicate.
+    verdict.drop_first = False
+    # The tail is dropped only of a suspected loop (last frame close to the
+    # first).  A non-loop's final frame is the action's end pose: even when it
+    # repeats the previous frame it is the held ending, not a stray key, and
+    # must be kept.  The wrap gap is judged against the clip's own median
+    # frame step so the test is scale-free.
+    pos_reference, pos_gap = stacks["pos"]
+    wrap_gap = pos_gap(last, 0)
+    suspected_loop = (
+        pos_reference > TRIM_MIN_MOTION
+        and wrap_gap <= max(LOOP_GUARD_RATIO * pos_reference, TRIM_MIN_MOTION)
+    )
+    verdict.drop_last = is_redundant(last - 1, last) and suspected_loop
     if frame_count - int(verdict.drop_first) - int(verdict.drop_last) < TRIM_MIN_FRAMES:
         verdict.drop_first = verdict.drop_last = False
         verdict.reason = f"trim would leave fewer than {TRIM_MIN_FRAMES} frames"
@@ -633,26 +663,27 @@ def _animation_accessors_are_private(glb: Glb) -> bool:
     return True
 
 
-def _format_ratios(ratios: dict[str, float]) -> str:
-    def fmt(key: str) -> str:
-        value = ratios.get(key)
-        return "n/a" if value is None else f"{value:.1e}"
-    return (f"head pos={fmt('head_pos')} rot={fmt('head_rot')} | "
-            f"tail pos={fmt('tail_pos')} rot={fmt('tail_rot')}")
-
-
 def describe_animations(result: FileResult, verb: str) -> str:
     """One clause per animation; the ``anim[i]`` prefix only appears for a multi-animation file."""
     clauses = []
     for index, animation in enumerate(result.animations):
         prefix = f"anim[{index}] " if len(result.animations) > 1 else ""
         what = f"{verb} {' + '.join(animation.dropped)} frame" if animation.dropped else (animation.reason or "nothing to drop")
-        clauses.append(f"{prefix}{what} ({_format_ratios(animation.ratios)})")
+        clauses.append(f"{prefix}{what}")
     return "; ".join(clauses)
 
 
 def process_file(path: str, ratio: float = REDUNDANT_FRAME_RATIO, dry_run: bool = False) -> FileResult:
     try:
+        # T-pose bind files are never motion clips: some carry a 1-2 frame
+        # static "animation" the verdicts could still touch, so they are
+        # skipped outright rather than judged.
+        stem = os.path.basename(path)
+        for suffix in (BACKUP_SUFFIX, GLB_EXTENSION):
+            if stem.lower().endswith(suffix):
+                stem = stem[: -len(suffix)]
+        if stem.lower() == "tpose" or stem.lower().endswith("-tpose"):
+            return FileResult(path, "skipped", "t-pose bind file")
         glb = read_glb(path)
         animations = glb.json.get("animations", [])
         if not animations:
@@ -753,7 +784,7 @@ def _parse_patterns(text: str) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Drop the redundant edge frame (0 == 1, N-1 == N) of every raw GLB clip, in place, with a .bak backup.",
+        description="Drop the redundant tail frame (N-2 == N-1) of every raw GLB clip, in place, with a .bak backup. The head (0 == 1) is never dropped.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -768,8 +799,6 @@ def main(argv: list[str] | None = None) -> int:
                         help="Report what would be trimmed and write nothing.")
     parser.add_argument("--restore", action="store_true",
                         help="Move every <name>.glb.bak back over its <name>.glb and exit.")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Also print every clean file with its measured edge ratios.")
     parser.add_argument("--workers", "-j", default=8, type=int,
                         help="Parallel worker processes. Default 8.")
     args = parser.parse_args(argv)
@@ -804,32 +833,11 @@ def main(argv: list[str] | None = None) -> int:
 
     verb = "would drop" if args.dry_run else "dropped"
     for result in results:
-        relative = os.path.relpath(result.path, raw_data_dir)
-        if result.status == "trimmed":
-            print(f"[{result.status}] {relative}: {result.frames_before} -> {result.frames_after} frames, "
-                  f"{describe_animations(result, verb)}")
-        elif result.status == "clean" and args.verbose:
-            print(f"[{result.status}] {relative}: {result.frames_before} frames, {describe_animations(result, verb)}")
-        elif result.status in ("skipped", "error"):
-            print(f"[{result.status}] {relative}: {result.detail}")
-
-    near_misses = []
-    for result in results:
-        if result.status not in ("trimmed", "clean"):
+        if result.status != "trimmed":
             continue
-        for animation in result.animations:
-            for edge in ("head", "tail"):
-                if ("first" if edge == "head" else "last") in animation.dropped:
-                    continue
-                value = max(animation.ratios.get(f"{edge}_pos", 0.0), animation.ratios.get(f"{edge}_rot", 0.0))
-                if args.ratio < value <= NEAR_MISS_FACTOR * args.ratio:
-                    near_misses.append((os.path.relpath(result.path, raw_data_dir), edge, value))
-    if near_misses:
-        print()
-        print(f"{len(near_misses)} kept edge(s) within {NEAR_MISS_FACTOR:g}x of --ratio {args.ratio:g} "
-              f"(re-run that species with --filter and a larger --ratio if it is a repeat):")
-        for relative_path, edge, value in near_misses:
-            print(f"[near-miss] {relative_path}: {edge} {value:.1e}")
+        relative = os.path.relpath(result.path, raw_data_dir)
+        print(f"[{result.status}] {relative}: {result.frames_before} -> {result.frames_after} frames, "
+              f"{describe_animations(result, verb)}")
 
     counts = {status: sum(1 for r in results if r.status == status) for status in ("trimmed", "clean", "skipped", "error")}
     frames_dropped = sum(r.frames_before - r.frames_after for r in results if r.status == "trimmed")
