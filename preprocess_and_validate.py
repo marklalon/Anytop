@@ -909,8 +909,10 @@ def run_remove_motions(
     labels_path = dataset_dir_path / ACTION_LABELS_FILE
     if labels_path.exists():
         entries = _load_jsonl(labels_path)
-        delete_set = set(to_delete)
-        new_entries = [e for e in entries if e.get("clip", "") not in delete_set]
+        # to_delete holds motions/ file names ("<name>.npy"); the sidecar is
+        # keyed by the extension-less clip name.
+        delete_set = {Path(m).stem for m in to_delete}
+        new_entries = [e for e in entries if Path(e.get("clip", "")).stem not in delete_set]
         if len(new_entries) != len(entries):
             _write_jsonl(labels_path, new_entries)
             print(f"  [OK] Removed {len(entries) - len(new_entries)} entries from {ACTION_LABELS_FILE}")

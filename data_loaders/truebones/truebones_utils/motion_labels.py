@@ -585,12 +585,22 @@ def _validate_head_order_consistency(rows) -> None:
 # I/O
 # ---------------------------------------------------------------------------
 
+def clip_key(name: str) -> str:
+    """The sidecar key for a clip: its file name WITHOUT the ``.npy`` extension."""
+    name = str(name)
+    return name[:-4] if name.endswith(".npy") else name
+
+
 def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
     """Load the hand-maintained ``action_labels.jsonl`` sidecar.
 
     Each line is a JSON object
-    ``{"clip": "<name>.npy", "action_group": "...", "action_label": "...", "is_loop": true}``.
+    ``{"clip": "<name>", "action_group": "...", "action_label": "...", "is_loop": true}``,
+    where ``<name>`` is the clip's file name without its ``.npy`` extension (a row
+    that still carries the extension is normalized to the same key).
     Returns a mapping ``clip -> {"action_group": ..., "action_label": ..., ["is_loop": ...]}``.
+    The keys are ALWAYS extension-less, so callers join against ``motions/`` file
+    names via :func:`clip_key`.
     Raises ``FileNotFoundError`` if the file is absent so callers fail fast rather
     than silently training without action conditioning.
 
@@ -605,8 +615,8 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
         raise FileNotFoundError(
             f"{ACTION_LABELS_FILE} not found at {labels_path}. Action groups and "
             f"labels are maintained by hand in this file (one "
-            f'{{"clip": "<name>.npy", "action_group": "...", "action_label": "..."}} '
-            f"object per line)."
+            f'{{"clip": "<name>", "action_group": "...", "action_label": "..."}} '
+            f"object per line, <name> without the .npy extension)."
         )
 
     action_labels: dict[str, dict[str, str]] = {}
@@ -632,6 +642,7 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
                 raise ValueError(
                     f"{ACTION_LABELS_FILE}:{line_number} is missing the 'clip' field"
                 )
+            clip = clip_key(clip)   # rows may still spell the .npy name; the key is the stem
             group = normalize_action_group(entry.get("action_group"))
             raw_label = entry.get("action_label")
             label = normalize_action_label(raw_label)
@@ -712,7 +723,9 @@ def load_motion_metadata(
     for motion_name, metadata in motions.items():
         if not isinstance(metadata, dict):
             continue
-        action = action_labels.get(motion_name)
+        # metadata keys are the motions/ file names ("<name>.npy"); the sidecar
+        # is keyed by the extension-less clip name.
+        action = action_labels.get(clip_key(motion_name))
         if action is None:
             missing_labels.append(motion_name)
             continue
@@ -736,8 +749,9 @@ def load_motion_metadata(
             f"\n❌ {ACTION_LABELS_FILE} is missing entries for {len(missing_labels)} "
             f"clip(s): {preview}{more}\n\n"
             f"   Please open {ACTION_LABELS_FILE} and add an entry for each missing clip:\n"
-            f'   {{"clip": "clip_name.npy", "action_group": "{ACTION_GROUPS[0]}", '
+            f'   {{"clip": "clip_name", "action_group": "{ACTION_GROUPS[0]}", '
             f'"action_label": "run, gallops with head lowered"}}\n'
+            f"   (clip name without the .npy extension)\n"
         )
         print(msg, file=sys.stderr, flush=True)
         sys.exit(1)
@@ -764,16 +778,19 @@ def fill_missing_loop_flags(
 ) -> int:
     """Write ``is_loop`` into the sidecar rows that do not have one yet.
 
-    *verdicts* maps clip -> bool. Only a row WITHOUT the key is filled: an
-    existing value is an annotation (the detector's earlier proposal or a hand
-    correction) and preprocessing never overrides one -- delete the key from a
-    row to have it re-judged. Rows are rewritten in place: line order, every
-    other key and the file's newline style are kept, and a line that changes
-    nothing is copied byte for byte. Returns the number of rows filled.
+    *verdicts* maps clip -> bool, under either the extension-less clip name
+    or the motions/ file name -- both are normalized to the sidecar key before
+    matching. Only a row WITHOUT the key is filled: an existing value is an
+    annotation (the detector's earlier proposal or a hand correction) and
+    preprocessing never overrides one -- delete the key from a row to have it
+    re-judged. Rows are rewritten in place: line order, every other key and
+    the file's newline style are kept, and a line that changes nothing is
+    copied byte for byte. Returns the number of rows filled.
     """
     labels_path = Path(dataset_dir) / ACTION_LABELS_FILE
     if not verdicts or not labels_path.exists():
         return 0
+    verdicts = {clip_key(clip): bool(ok) for clip, ok in verdicts.items()}
     raw = labels_path.read_bytes()
     newline = "\r\n" if b"\r\n" in raw else "\n"
     lines = raw.decode("utf-8").splitlines()
@@ -785,7 +802,7 @@ def fill_missing_loop_flags(
         entry = json.loads(stripped)
         if not isinstance(entry, dict) or LOOP_FLAG_KEY in entry:
             continue
-        clip = entry.get("clip")
+        clip = clip_key(entry.get("clip", ""))
         if clip not in verdicts:
             continue
         # Keep the key next to the label it annotates, so a row reads

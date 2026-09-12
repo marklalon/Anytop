@@ -358,10 +358,12 @@ def _encode_prepared_motion_file(
     _, _file_name = os.path.split(file_path)
     clip_action = normalize_action_name(object_type, _file_name.split('.')[0])
     clip_file_name = f'{object_type}_{clip_action}.npy'
-    flatten_root_travel = clip_file_name in locomotion_clips
+    # The sidecar is keyed by the extension-less clip name.
+    clip_key_name = clip_file_name[:-4]
+    flatten_root_travel = clip_key_name in locomotion_clips
     # None when the sidecar row has no is_loop yet: extraction then runs the
     # detector and this run writes its proposal back into the row.
-    loop_verdict = (loop_verdicts or {}).get(clip_file_name)
+    loop_verdict = (loop_verdicts or {}).get(clip_key_name)
 
     try:
         detected_root = int(prepared['translation_root_index'])
@@ -507,12 +509,14 @@ def backfill_loop_flags_from_stored_clips(dataset_dir, exclude_object_types=()):
     stored = _load_motion_metadata_raw(dataset_dir)
     verdicts = {}
     for clip in sorted(unflagged):
-        entry = stored.get(clip)
+        # Sidecar keys are extension-less; motion_metadata.json and motions/
+        # are still keyed by the .npy file name.
+        entry = stored.get(clip + '.npy')
         if entry is None:
             continue  # not on disk yet: the build that writes it decides
         if str(entry.get('object_type', '')) in excluded:
             continue
-        motion_path = pjoin(dataset_dir, MOTION_DIR, clip)
+        motion_path = pjoin(dataset_dir, MOTION_DIR, clip + '.npy')
         if not os.path.exists(motion_path):
             continue
         translation_root_index = entry.get('translation_root_index')

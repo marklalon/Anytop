@@ -1159,8 +1159,9 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     assert captured['skip_source_paths'] == {os.path.realpath(done_source)}
     assert captured['frozen_translation_root_index'] == 0
     assert captured['existing_clip_sources'] == {'Cat_Walk.npy': os.path.realpath(done_source)}
-    # Only the rows that carry a verdict reach the worker as overrides.
-    assert captured['loop_verdicts'] == {'Cat_Walk.npy': True, 'Dog_Idle.npy': False}
+    # Only the rows that carry a verdict reach the worker as overrides,
+    # keyed by the extension-less clip name.
+    assert captured['loop_verdicts'] == {'Cat_Walk': True, 'Dog_Idle': False}
     # The proposal for the new clip landed in the sidecar; the others are untouched.
     labels = {
         row['clip']: row for row in (

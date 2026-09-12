@@ -322,7 +322,8 @@ def build_index(cond_path: str):
                     continue
                 row = json.loads(line)
                 clip = row["clip"]
-                meta = motions.get(clip)
+                # sidecar keys are extension-less; metadata is keyed by file name
+                meta = motions.get(clip if clip.endswith(".npy") else clip + ".npy")
                 if meta is None:
                     continue
                 key = canonical_key(source.namespace, meta["object_type"])
@@ -340,7 +341,9 @@ def build_index(cond_path: str):
                 clips[f"{source.namespace}::{clip}"] = ClipInfo(
                     clip=clip,
                     species=key,
-                    npy_path=os.path.join(root, MOTION_DIR, clip),
+                    npy_path=os.path.join(
+                        root, MOTION_DIR,
+                        clip if clip.endswith(".npy") else clip + ".npy"),
                     source_path=source_path,
                     source_frame_range=frame_range,
                     action_group=str(row.get("action_group") or ""),
@@ -1001,12 +1004,15 @@ def _write_labels(rows: list[dict], args) -> None:
                         existing.add(json.loads(line)["clip"])
         new_rows = []
         for row in target_rows:
-            if row["target_clip"] in existing:
+            # sidecar keys are extension-less; target_clip is the .npy file name
+            new_key = row["target_clip"][:-4] if row["target_clip"].endswith(".npy") \
+                else row["target_clip"]
+            if new_key in existing:
                 continue
-            existing.add(row["target_clip"])
+            existing.add(new_key)
             words = [w.strip() for w in row["action_label"].split(",") if w.strip()]
             new_rows.append({
-                "clip": row["target_clip"],
+                "clip": new_key,
                 "action_group": row["action_group"],
                 "action_label": canonical_action_label(words),
                 "retargeted_from": row["source_clip"],

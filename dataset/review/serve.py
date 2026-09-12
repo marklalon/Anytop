@@ -672,7 +672,8 @@ class Handler(BaseHTTPRequestHandler):
             return f"{clip_stem(clip)}：motions/ 下没有 NPY，仅更新了标记（下次预处理时按标记生成）"
         try:
             meta_payload = json.loads(ds["metadata"].read_text(encoding="utf-8"))
-            entry = (meta_payload.get("motions") or {}).get(clip) or {}
+            # metadata is keyed by the .npy file name, not the sidecar's stem key
+            entry = (meta_payload.get("motions") or {}).get(npy_name) or {}
             root = entry.get("translation_root_index")
         except (OSError, ValueError) as exc:
             return f"{clip_stem(clip)}：读取 {ds['metadata'].name} 失败，NPY 末帧速度未更新：{exc}"
@@ -735,7 +736,8 @@ class Handler(BaseHTTPRequestHandler):
         stamp = datetime.now().isoformat(timespec="seconds")
         archived = []
         for clip in pending:
-            src = (motions.get(clip) or {}).get("source_fbx_path")
+            npy_name = clip if clip.lower().endswith(".npy") else clip + ".npy"
+            src = (motions.get(npy_name) or {}).get("source_fbx_path")
             if src:
                 shared = [c for c in users.get(src, []) if c not in marked]
                 if shared:
@@ -801,7 +803,8 @@ class Handler(BaseHTTPRequestHandler):
         # unloadable.  A leftover label row (the reverse) is not fatal.
         if result["cleaned"]:
             for clip in result["cleaned"]:
-                motions.pop(clip, None)
+                # metadata is keyed by the .npy file name, not the sidecar's stem key
+                motions.pop(clip if clip.lower().endswith(".npy") else clip + ".npy", None)
             try:
                 _write_metadata(ds["metadata"], meta_payload)
             except OSError as exc:

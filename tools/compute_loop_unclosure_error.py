@@ -78,6 +78,7 @@ def load_motions(data_root: str) -> dict[str, dict]:
 
     from data_loaders.truebones.truebones_utils.motion_labels import (
         LOOP_FLAG_KEY,
+        clip_key,
         load_action_labels,
     )
     labels = load_action_labels(data_root)
@@ -88,7 +89,8 @@ def load_motions(data_root: str) -> dict[str, dict]:
             continue
         meta = dict(meta)
         meta.pop(LOOP_FLAG_KEY, None)
-        row = labels.get(name) or {}
+        # The sidecar is keyed by the extension-less clip name.
+        row = labels.get(clip_key(name)) or {}
         if LOOP_FLAG_KEY in row:
             meta[LOOP_FLAG_KEY] = bool(row[LOOP_FLAG_KEY])
         result[name] = meta

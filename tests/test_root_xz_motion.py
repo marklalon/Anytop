@@ -337,13 +337,13 @@ def test_the_pipeline_reads_the_gate_from_the_action_labels_sidecar(tmp_path):
     )
 
     rows = [
-        {"clip": "Wolf_Walk.npy", "action_group": "locomotion", "action_label": "walk"},
-        {"clip": "Wolf_Die.npy", "action_group": "transition", "action_label": "die"},
+        {"clip": "Wolf_Walk", "action_group": "locomotion", "action_label": "walk"},
+        {"clip": "Wolf_Die", "action_group": "transition", "action_label": "die"},
     ]
     (tmp_path / 'action_labels.jsonl').write_text(
         os.linesep.join(json.dumps(row) for row in rows), encoding='utf-8'
     )
-    assert load_locomotion_clip_names(tmp_path) == {'Wolf_Walk.npy'}
+    assert load_locomotion_clip_names(tmp_path) == {'Wolf_Walk'}
     with pytest.raises(FileNotFoundError):
         load_locomotion_clip_names(tmp_path / 'nope')
 

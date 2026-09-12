@@ -38,6 +38,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     load_motion_metadata,
     load_action_labels,
     action_words_in,
+    clip_key,
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     ROOT_XZ_DRIFT_THRESHOLD,
@@ -1092,7 +1093,8 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
                 motion_metadata.get("object_type") == cond[object_type].get("species_name"),
                 f"object_type mismatch for {motion_name}",
             )
-            action_entry = action_labels.get(motion_name)
+            # The sidecar is keyed by the extension-less clip name.
+            action_entry = action_labels.get(clip_key(motion_name))
             require_valid(action_entry is not None, f"entry missing in {ACTION_LABELS_FILE} for {motion_name}")
             action_group = (action_entry or {}).get("action_group", "")
             action_label = (action_entry or {}).get("action_label", "")

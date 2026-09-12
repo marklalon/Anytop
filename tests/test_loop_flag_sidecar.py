@@ -99,16 +99,26 @@ def _read_labels(path: Path):
 # ── the sidecar ───────────────────────────────────────────────────────────
 
 def test_the_sidecar_carries_the_flag_only_when_a_row_has_it(tmp_path):
+    # The sidecar is keyed by the extension-less clip name.
     _write_labels(tmp_path / "action_labels.jsonl", [
-        {"clip": "a.npy", "action_group": "stationary", "action_label": "idle", "is_loop": True},
-        {"clip": "b.npy", "action_group": "transition", "action_label": "die", "is_loop": False},
-        {"clip": "c.npy", "action_group": "locomotion", "action_label": "walk"},
+        {"clip": "a", "action_group": "stationary", "action_label": "idle", "is_loop": True},
+        {"clip": "b", "action_group": "transition", "action_label": "die", "is_loop": False},
+        {"clip": "c", "action_group": "locomotion", "action_label": "walk"},
     ])
     labels = load_action_labels(tmp_path)
-    assert labels["a.npy"][LOOP_FLAG_KEY] is True
-    assert labels["b.npy"][LOOP_FLAG_KEY] is False
+    assert labels["a"][LOOP_FLAG_KEY] is True
+    assert labels["b"][LOOP_FLAG_KEY] is False
     # Absent means "not judged yet" -- distinguishable from either verdict.
-    assert LOOP_FLAG_KEY not in labels["c.npy"]
+    assert LOOP_FLAG_KEY not in labels["c"]
+
+
+def test_a_legacy_row_spelling_the_npy_name_is_normalized_to_the_stem_key(tmp_path):
+    _write_labels(tmp_path / "action_labels.jsonl", [
+        {"clip": "a.npy", "action_group": "stationary", "action_label": "idle", "is_loop": True},
+    ])
+    labels = load_action_labels(tmp_path)
+    assert set(labels) == {"a"}
+    assert labels["a"][LOOP_FLAG_KEY] is True
 
 
 @pytest.mark.parametrize("bad", ["true", 1, None, "yes"])
@@ -303,10 +313,11 @@ def test_backfill_judges_stored_tensors_and_skips_species_about_to_be_rebuilt(tm
 
 def test_load_loop_verdicts_returns_only_judged_rows(tmp_path):
     _write_labels(tmp_path / "action_labels.jsonl", [
+        # Legacy .npy spelling: the verdicts are keyed by the extension-less name.
         {"clip": "a.npy", "action_group": "stationary", "action_label": "idle", "is_loop": True},
         {"clip": "b.npy", "action_group": "stationary", "action_label": "idle"},
     ])
-    assert dataset_pipeline.load_loop_verdicts(tmp_path) == {"a.npy": True}
+    assert dataset_pipeline.load_loop_verdicts(tmp_path) == {"a": True}
 
 
 # ── the review server ─────────────────────────────────────────────────────

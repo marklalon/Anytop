@@ -265,7 +265,10 @@ def load_label_overrides(paths):
                 if not line:
                     continue
                 entry = json.loads(line)
+                # sidecar keys are extension-less; accept either spelling
                 clip = str(entry["clip"])
+                if clip.endswith(".npy"):
+                    clip = clip[:-4]
                 group = normalize_action_group(entry.get("action_group"))
                 label = normalize_action_label(entry.get("action_label"))
                 _validate_action_label_entry(group, label, clip, line_number)
@@ -379,7 +382,8 @@ def collect_clips(cond_dict, sources, action_group=None, verbose=False,
             for name in sorted(available):
                 if name in claimed or not name.startswith(prefix):
                     continue
-                entry = labels.get(name)
+                # the sidecar is keyed by the extension-less clip name
+                entry = labels.get(name[:-4])
                 if entry is None:
                     if verbose:
                         print(f"  [skip] {name}: no action_labels.jsonl row")
@@ -967,7 +971,8 @@ def main() -> int:
     clips = collect_clips(cond_dict, sources, group_filter, verbose=args.verbose,
                           overrides=overrides)
     if overrides:
-        applied = sum(1 for clip in clips if clip["clip"] in overrides)
+        # overrides are keyed by the extension-less clip name; clips hold file names
+        applied = sum(1 for clip in clips if clip["clip"][:-4] in overrides)
         print(f"overrides : {len(overrides)} row(s) from "
               f"{', '.join(args.labels)}; {applied} applied in scope")
     if not clips:
