@@ -567,8 +567,7 @@ def detect_loop_from_features(features, translation_root_index=0):
     The same rule extraction applies to a fresh clip, read off the tensor it
     wrote: RIC positions are channels 0:3 and local velocity 9:12, and the
     diagnostics drop the terminal velocity row themselves so an earlier
-    verdict's wrap delta cannot vote. Preprocessing uses this to propose
-    ``is_loop`` for a clip already on disk whose sidecar row has none.
+    verdict's wrap delta cannot vote.
     """
     features = np.asarray(features)
     return detect_motion_loop(

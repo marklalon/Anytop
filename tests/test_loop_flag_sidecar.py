@@ -1,9 +1,10 @@
 """``is_loop`` is an annotation in action_labels.jsonl, not a metadata field.
 
-Preprocessing PROPOSES it (the detector's verdict, written into a row that has
-none) and a person VERIFIES it in the review UI. Once a row carries the flag,
-it is the truth everywhere: the terminal velocity row extraction writes, the
-loop-period table regeneration bakes, the training loader's loop path. Nothing
+``tools/prefill_loop_flags.py`` PROPOSES it (the detector's verdict on the
+source animation, written into a row that has none) and a person VERIFIES it
+in the review UI. Once a row carries the flag, it is the truth everywhere: the
+terminal velocity row extraction writes, the training loader's loop path.
+Preprocessing reads it as a prerequisite and never writes it; nothing
 downstream re-derives it, and motion_metadata.json no longer stores a copy.
 """
 
@@ -197,6 +198,32 @@ def test_fill_writes_only_the_rows_without_a_verdict_and_keeps_everything_else(t
     assert labels.read_bytes() != before
 
 
+def test_overwrite_replaces_a_verdict_but_never_a_reviewed_one(tmp_path):
+    labels = tmp_path / "action_labels.jsonl"
+    _write_labels(labels, [
+        {"clip": "a", "action_group": "stationary", "action_label": "idle", "is_loop": True, "reviewed": True},
+        {"clip": "b", "action_group": "transition", "action_label": "die", "is_loop": True},
+        {"clip": "c", "action_group": "locomotion", "action_label": "walk", "is_loop": False, "pending_delete": True},
+        {"clip": "d", "action_group": "locomotion", "action_label": "run"},
+    ])
+    before_lines = labels.read_text(encoding="utf-8").splitlines()
+
+    changed = fill_missing_loop_flags(
+        tmp_path, {"a": False, "b": False, "c": False, "d": True}, overwrite=True,
+    )
+
+    # b flipped, d filled; a is reviewed and c already agreed.
+    assert changed == 2
+    after_lines = labels.read_text(encoding="utf-8").splitlines()
+    rows = _read_labels(labels)
+    assert rows[0][LOOP_FLAG_KEY] is True and after_lines[0] == before_lines[0]
+    assert rows[1][LOOP_FLAG_KEY] is False
+    assert list(rows[1]) == ["clip", "action_group", "action_label", "is_loop"]
+    assert after_lines[2] == before_lines[2]
+    assert rows[3][LOOP_FLAG_KEY] is True
+    assert list(rows[3]) == ["clip", "action_group", "action_label", "is_loop"]
+
+
 # ── extraction honours the verdict ────────────────────────────────────────
 
 def test_extraction_defers_to_the_sidecar_verdict_and_writes_its_terminal_row():
@@ -268,48 +295,7 @@ def test_applying_a_verdict_flips_only_the_terminal_row_and_round_trips(tmp_path
     assert not list(tmp_path.glob("*.tmp*"))
 
 
-# ── backfilling clips already on disk ─────────────────────────────────────
-
-def _stored_dataset(tmp_path, clips):
-    """A processed dir with stored tensors, metadata and an unjudged sidecar."""
-    motions = tmp_path / "motions"
-    motions.mkdir(parents=True)
-    metadata, rows = {}, []
-    for clip, (object_type, anim) in clips.items():
-        features, _ = _extract(anim)
-        np.save(motions / clip, features)
-        metadata[clip] = {"object_type": object_type, "translation_root_index": 0}
-        rows.append({"clip": clip, "action_group": "stationary", "action_label": "idle"})
-    write_motion_metadata(tmp_path, metadata, len(metadata))
-    _write_labels(tmp_path / "action_labels.jsonl", rows)
-
-
-def test_backfill_judges_stored_tensors_and_skips_species_about_to_be_rebuilt(tmp_path):
-    _stored_dataset(tmp_path, {
-        "Cat_Cycle.npy": ("Cat", _cycle_anim()),
-        "Cat_Sweep.npy": ("Cat", _open_anim()),
-        "Dog_Cycle.npy": ("Dog", _cycle_anim()),
-    })
-    # A row for a clip that is not on disk yet: left for the build that writes it.
-    labels = tmp_path / "action_labels.jsonl"
-    rows = _read_labels(labels)
-    rows.append({"clip": "Cat_New.npy", "action_group": "stationary", "action_label": "idle"})
-    _write_labels(labels, rows)
-
-    filled = dataset_pipeline.backfill_loop_flags_from_stored_clips(tmp_path, exclude_object_types=("Dog",))
-
-    assert filled == 2
-    by_clip = {row["clip"]: row for row in _read_labels(labels)}
-    assert by_clip["Cat_Cycle.npy"][LOOP_FLAG_KEY] is True
-    assert by_clip["Cat_Sweep.npy"][LOOP_FLAG_KEY] is False
-    assert LOOP_FLAG_KEY not in by_clip["Dog_Cycle.npy"]
-    assert LOOP_FLAG_KEY not in by_clip["Cat_New.npy"]
-    # Now the strict join is satisfied for what is on disk (Dog aside).
-    assert dataset_pipeline.backfill_loop_flags_from_stored_clips(tmp_path) == 1
-    assert {name: entry[LOOP_FLAG_KEY] for name, entry in load_motion_metadata(tmp_path).items()} == {
-        "Cat_Cycle.npy": True, "Cat_Sweep.npy": False, "Dog_Cycle.npy": True,
-    }
-
+# ── the build reads the verdict, never writes it ──────────────────────────
 
 def test_load_loop_verdicts_returns_only_judged_rows(tmp_path):
     _write_labels(tmp_path / "action_labels.jsonl", [
@@ -318,6 +304,40 @@ def test_load_loop_verdicts_returns_only_judged_rows(tmp_path):
         {"clip": "b.npy", "action_group": "stationary", "action_label": "idle"},
     ])
     assert dataset_pipeline.load_loop_verdicts(tmp_path) == {"a": True}
+
+
+def _raw_species(tmp_path, object_type, stems):
+    """A raw species directory whose files enumerate as clips (nothing is loaded)."""
+    raw = tmp_path / "raw" / object_type
+    raw.mkdir(parents=True)
+    for stem in stems:
+        (raw / f"{stem}.glb").write_bytes(b"")
+    return str(tmp_path / "raw")
+
+
+def test_the_build_refuses_a_target_clip_without_a_verdict_before_loading_anything(tmp_path):
+    raw_data_dir = _raw_species(tmp_path, "Cat", ["Walk", "Run", "Idle"])
+    _write_labels(tmp_path / "action_labels.jsonl", [
+        {"clip": "Cat_Walk", "action_group": "locomotion", "action_label": "walk", "is_loop": True},
+        {"clip": "Cat_Run", "action_group": "locomotion", "action_label": "run"},
+        # Cat_Idle has no row at all.
+    ])
+    verdicts = dataset_pipeline.load_loop_verdicts(tmp_path)
+
+    with pytest.raises(dataset_pipeline.DatasetPreprocessingError) as excinfo:
+        dataset_pipeline._require_loop_verdicts(["Cat"], verdicts, raw_data_dir=raw_data_dir)
+    message = "\n".join(excinfo.value.motion_errors)
+    assert "Cat_Run" in message and "Cat_Idle" in message and "Cat_Walk" not in message
+    assert "prefill_loop_flags.py" in message
+
+    # Sources an incremental run skips are already on disk: not this run's problem.
+    dataset_pipeline._require_loop_verdicts(
+        ["Cat"], verdicts, raw_data_dir=raw_data_dir,
+        per_object_skip={"Cat": {
+            os.path.realpath(os.path.join(raw_data_dir, "Cat", "Run.glb")),
+            os.path.realpath(os.path.join(raw_data_dir, "Cat", "Idle.glb")),
+        }},
+    )
 
 
 # ── the review server ─────────────────────────────────────────────────────

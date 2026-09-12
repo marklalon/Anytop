@@ -35,20 +35,21 @@ name in its parent directory):
 Prerequisites (fast-fail):
     The dataset's two hand-maintained sidecars must exist and be valid before
     any work starts; neither is inferred, back-filled, or auto-created:
-        action_labels.jsonl  one entry per clip    ("clip", "action_group", "action_label")
+        action_labels.jsonl  one entry per clip    ("clip", "action_group", "action_label", "is_loop")
         species_tags.jsonl   one entry per species ("species", "species_tags")
     Preprocessing fails up front when either is missing or invalid, so label
     the new clips and register the species before running.
 
-Loop flag ("is_loop" in action_labels.jsonl -- auto-proposed, hand-verified):
-    A row that carries "is_loop" is an annotation and is used as is: it decides
-    the clip's terminal velocity row at extraction and its loop-period share in
-    cond.npy, and no run re-judges it (delete the key to ask again). A row
-    without one gets the detector's verdict written into it -- from the fresh
-    extraction for a clip being built, from the stored tensor for a clip already
-    on disk (every mode, including --validate-only, fills those in). Verify and
-    correct the flags in dataset/review (serve.py); motion_metadata.json no
-    longer stores them.
+Loop flag ("is_loop" in action_labels.jsonl -- proposed by a tool, hand-verified):
+    Every clip about to be built must already carry "is_loop"; this script only
+    READS action_labels.jsonl and never writes it. The flag decides the clip's
+    terminal velocity row at extraction and is the model's loop condition. The
+    workflow is: label the clips (action_group / action_label), run
+        python tools/prefill_loop_flags.py --dataset-dir <dataset> --raw-data-dir <raw>
+    to propose the flag from each source animation (the same alignment and
+    detector this script uses), verify the proposals in dataset/review
+    (serve.py), then preprocess. A build whose target clips are not all judged
+    fails before any source is loaded, naming the clips.
 
 Examples:
     # Default workflow: process only newly added source animations -> validate
@@ -126,7 +127,6 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E4
 )
 from utils.misc import infer_object_type_from_filename  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
-    LOOP_FLAG_KEY,
     load_motion_metadata,
     write_motion_metadata,
 )
@@ -215,38 +215,6 @@ def _install_sidecars_into_dataset_dir(args: argparse.Namespace) -> None:
         dataset_dir_path.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
         print(f"[OK] installed {filename} into {dataset_dir_path}")
-
-
-def _propose_loop_flags_for_stored_clips(
-    dataset_dir: str,
-    exclude_object_types: tuple[str, ...] = (),
-) -> None:
-    """Fill ``is_loop`` into every sidecar row of a clip already on disk.
-
-    The one-time migration for a dataset built before the flag moved into
-    action_labels.jsonl, and the reason every mode runs it: the strict join
-    (``load_motion_metadata``) refuses a clip without a verdict, and the
-    verdict for a stored clip is the detector's reading of its stored tensor
-    -- the same rule extraction applied when it was written. Species about to
-    be wiped and rebuilt are excluded so their fresh extraction judges the new
-    tensor instead of inheriting a proposal made on the old one.
-    """
-    if str(ANYTOP_DIR.parent) not in sys.path:
-        sys.path.insert(0, str(ANYTOP_DIR.parent))
-    from data_loaders.truebones.truebones_utils.dataset_pipeline import (
-        backfill_loop_flags_from_stored_clips,
-    )
-
-    dataset_dir_path = Path(get_dataset_dir(dataset_dir or None))
-    filled = backfill_loop_flags_from_stored_clips(
-        dataset_dir_path, exclude_object_types=exclude_object_types
-    )
-    if filled:
-        print(
-            f"[OK] {LOOP_FLAG_KEY} proposed for {filled} stored clip(s) in "
-            f"{dataset_dir_path / ACTION_LABELS_FILE} (detector on the stored tensor) "
-            f"-- verify them in dataset/review (serve.py)"
-        )
 
 
 def _discover_all_objects(raw_data_dir: str = "") -> tuple[str, ...]:
@@ -1271,13 +1239,6 @@ def main() -> int:
     if args.motion_orientation_threshold < 0:
         print("ERROR: --motion-orientation-threshold must be >= 0")
         return 1
-    # Loop verdicts for clips already on disk, before anything reads the strict
-    # join. Under --overwrite the targeted species are rebuilt from source, so
-    # their rows are left for the fresh extraction to fill.
-    rebuild_targets: tuple[str, ...] = ()
-    if args.overwrite and not (args.validate_only or args.re_encode_joint_names_only or args.rm_pattern):
-        rebuild_targets = _resolve_target_object_types(args.object_filter, args.raw_data_dir)
-    _propose_loop_flags_for_stored_clips(args.dataset_dir, exclude_object_types=rebuild_targets)
 
     filter_matched_nothing = False
     if args.object_filter and not args.validate_only and not args.re_encode_joint_names_only:

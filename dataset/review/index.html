@@ -293,7 +293,7 @@
   </select>
 
   <label class="f" for="loop">loop</label>
-  <select id="loop" title="is_loop：预处理自动判定，人工在卡片右下角点击修改">
+  <select id="loop" title="is_loop：prefill_loop_flags.py 自动判定，人工在卡片右下角点击修改">
     <option value="all">all</option>
     <option value="yes">循环</option>
     <option value="no">单次</option>
@@ -361,8 +361,9 @@ function dropImgs(root) {
 
 const isReviewed = (r) => r.reviewed === true;
 const isPending = (r) => r.pending_delete === true;
-// is_loop is tri-state on a row: true / false are verdicts (auto-proposed by
-// preprocessing or set here); a row without the key has not been judged yet.
+// is_loop is tri-state on a row: true / false are verdicts (proposed by
+// tools/prefill_loop_flags.py or set here); a row without the key has not been
+// judged yet.
 const loopState = (r) => (r.is_loop === true ? 'yes' : r.is_loop === false ? 'no' : 'none');
 const stripNpy = (clip) => clip.replace(/\.npy$/i, '');
 // GIF lives under /gif/<dataset id>/<clip>.gif on the server.
@@ -710,7 +711,7 @@ function card(row) {
   loop.textContent = ls === 'yes' ? '↻' : ls === 'no' ? '→' : '?';
   loop.title = (ls === 'yes' ? '循环 (is_loop = true)：首尾相接、可循环播放'
               : ls === 'no' ? '单次 (is_loop = false)：一次性动作'
-              : '未判定：is_loop 尚未判定（预处理会自动给出提议）')
+              : '未判定：is_loop 尚未判定（运行 tools/prefill_loop_flags.py 自动给出提议）')
     + '。点击改为' + (ls === 'yes' ? '单次' : '循环');
   // A one-shot clip becomes a loop and vice versa; an unjudged one is judged
   // a loop first (the more common verdict), a second click flips it back.

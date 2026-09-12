@@ -27,18 +27,18 @@ tool built on it -- down with it. Retiring a clip is spelled
 so the marked rows stay loadable until the clip is actually removed from
 ``motions/`` and ``motion_metadata.json``.
 
-``is_loop`` is the clip's loop verdict -- proposed by preprocessing (the
-detector's reading), verified and flipped by hand here. It is an annotation
-in the sidecar and nowhere else (``motion_metadata.json`` no longer carries
-it), but it also shaped the clip's tensor: preprocessing wrote the last
-velocity row of ``motions/<clip>.npy`` as the loop's wrap delta or, for a
-one-shot clip, as a repeat of the previous frame. So flipping the flag here
-also rewrites that one row in place (``loop_verdict.rewrite_terminal_row``),
-keeping the flag and the tensor in step without a re-preprocess. What it
-cannot refresh is cond.npy's per-species loop-period table, which is
-aggregated over loop clips at artifact regeneration
-(``tools/regenerate_dataset_artifacts.py``) -- rerun that after a batch of
-flips, as after any sidecar edit.
+``is_loop`` is the clip's loop verdict -- proposed by
+``tools/prefill_loop_flags.py`` (the detector's reading of the source
+animation, ahead of preprocessing), verified and flipped by hand here. It is
+an annotation in the sidecar and nowhere else (``motion_metadata.json`` no
+longer carries it, and preprocessing reads it without ever writing it), but
+it also shapes the clip's tensor: preprocessing writes the last velocity row
+of ``motions/<clip>.npy`` as the loop's wrap delta or, for a one-shot clip,
+as a repeat of the previous frame. So flipping the flag on a clip that is
+already on disk also rewrites that one row in place
+(``loop_verdict.rewrite_terminal_row``), keeping the flag and the tensor in
+step without a re-preprocess; a clip not built yet simply takes the flag
+when it is.
 
 ``action_label`` edits are normalized and validated before being written.
 Tokens are lowercased, repeated words are dropped (first occurrence kept),

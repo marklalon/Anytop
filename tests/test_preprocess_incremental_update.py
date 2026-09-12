@@ -41,8 +41,8 @@ def _write_action_labels(dataset_dir, labels_by_clip, is_loop=False):
     Values are ``(action_group, action_label)`` pairs, or
     ``(action_group, action_label, is_loop)`` to carry a loop verdict; ``is_loop``
     is the default verdict for pairs. Every clip on disk needs one for the strict
-    join (load_motion_metadata) to pass; ``is_loop=None`` leaves pairs unjudged,
-    for the tests that exercise preprocessing's proposal.
+    join (load_motion_metadata) to pass, and every clip a build targets needs
+    one up front; ``is_loop=None`` leaves pairs unjudged.
     """
     path = Path(dataset_dir) / "action_labels.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -889,7 +889,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
                 'motion_name': motion_name,
                 'translation_root_index': 1,
             }
-        }, {motion_name: False}
+        }
 
     monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare_object_outputs)
     monkeypatch.setattr(dataset_pipeline_mod, '_write_object_outputs', fake_write_object_outputs)
@@ -898,10 +898,12 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
     # be valid before any clip is encoded.
     _write_action_labels(dataset_dir, {"Cat_Run_001.npy": ("locomotion", "run")})
     _write_species_tags(dataset_dir, species=("Cat",))
+    (tmp_path / 'raw').mkdir()
 
     dataset_pipeline_mod.create_data_samples(
         objects=['Cat'],
         dataset_dir=str(dataset_dir),
+        raw_data_dir=str(tmp_path / 'raw'),
         object_workers=1,
     )
 
@@ -944,15 +946,51 @@ def test_create_data_samples_raises_preprocess_error_instead_of_exit(monkeypatch
     # be valid before any clip is encoded.
     _write_action_labels(dataset_dir, {"Cat_Run_001.npy": ("locomotion", "run")})
     _write_species_tags(dataset_dir, species=("Cat",))
+    (tmp_path / 'raw').mkdir()
 
     with pytest.raises(dataset_pipeline_mod.DatasetPreprocessingError) as exc_info:
         dataset_pipeline_mod.create_data_samples(
             objects=['Cat'],
             dataset_dir=str(dataset_dir),
+            raw_data_dir=str(tmp_path / 'raw'),
             object_workers=1,
         )
 
     assert exc_info.value.motion_errors == ('boom',)
+
+
+def test_create_data_samples_refuses_a_target_clip_without_a_loop_verdict(monkeypatch, tmp_path):
+    """The loop flag is a prerequisite: a build never proposes it, and a target
+    clip whose row has none stops the run before any source is loaded."""
+    dataset_dir = tmp_path / 'dataset'
+    (tmp_path / 'raw' / 'Cat').mkdir(parents=True)
+    for source in ('Walk.fbx', 'Run.fbx'):
+        (tmp_path / 'raw' / 'Cat' / source).write_bytes(b'')
+    _write_action_labels(
+        dataset_dir,
+        {'Cat_Walk': ('locomotion', 'walk', True), 'Cat_Run': ('locomotion', 'run')},
+        is_loop=None,
+    )
+    _write_species_tags(dataset_dir, species=("Cat",))
+    labels_before = (dataset_dir / 'action_labels.jsonl').read_bytes()
+
+    def fake_prepare_object_outputs(*args, **kwargs):
+        raise AssertionError("no source may be loaded before the loop-flag gate passes")
+
+    monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare_object_outputs)
+
+    with pytest.raises(dataset_pipeline_mod.DatasetPreprocessingError) as exc_info:
+        dataset_pipeline_mod.create_data_samples(
+            objects=['Cat'],
+            dataset_dir=str(dataset_dir),
+            raw_data_dir=str(tmp_path / 'raw'),
+            object_workers=1,
+        )
+
+    message = ' '.join(exc_info.value.motion_errors)
+    assert 'Cat_Run' in message and 'Cat_Walk' not in message
+    assert 'prefill_loop_flags.py' in message
+    assert (dataset_dir / 'action_labels.jsonl').read_bytes() == labels_before
 
 
 def test_create_data_samples_fast_fails_without_prerequisite_sidecars(monkeypatch, tmp_path):
@@ -1083,6 +1121,12 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     (dataset_dir / 'bvhs').mkdir(parents=True)
 
     # Existing dataset: Cat (Walk from Cat_Walk.fbx) and an untouched Dog object.
+    # The source files exist (empty) so the loop-flag prerequisite gate, which
+    # enumerates them by name, sees the same clips the fake below produces.
+    (tmp_path / 'raw' / 'Cat').mkdir(parents=True)
+    (tmp_path / 'raw' / 'Dog').mkdir(parents=True)
+    for source in ('Cat/Cat_Walk.fbx', 'Cat/Cat_Run.fbx', 'Dog/Dog_Idle.fbx'):
+        (tmp_path / 'raw' / source).write_bytes(b'')
     done_source = str(tmp_path / 'raw' / 'Cat' / 'Cat_Walk.fbx')
     cat_cond = _make_cond_entry('Cat')
     dog_cond = _make_cond_entry('Dog')
@@ -1098,18 +1142,19 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
         2,
     )
     # Preprocessing prerequisites: the hand-maintained sidecars must exist and
-    # be valid before any clip is encoded.
-    # Cat_Run has no verdict yet: the build proposes one and writes it back.
+    # be valid before any clip is encoded. Cat_Run's verdict was proposed ahead
+    # of the build (prefill_loop_flags.py); the build only reads it.
     _write_action_labels(
         dataset_dir,
         {
             'Cat_Walk.npy': ('locomotion', 'walk', True),
-            'Cat_Run.npy': ('locomotion', 'run'),
+            'Cat_Run.npy': ('locomotion', 'run', True),
             'Dog_Idle.npy': ('stationary', 'idle', False),
         },
         is_loop=None,
     )
     _write_species_tags(dataset_dir, species=("Cat", "Dog"))
+    labels_before = (dataset_dir / 'action_labels.jsonl').read_bytes()
 
     captured: dict[str, object] = {}
 
@@ -1141,7 +1186,7 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
         # 1:1 naming: the new source file Cat_Run.fbx yields exactly one new clip.
         name = f"{obj}_Run.npy"
         np.save(Path(save_dir) / 'motions' / name, np.zeros((3, 2, 3), dtype=np.float32))
-        return files_counter + 1, 3, {name: {'object_type': obj, 'motion_name': name}}, {name: True}
+        return files_counter + 1, 3, {name: {'object_type': obj, 'motion_name': name}}
 
     monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare)
     monkeypatch.setattr(dataset_pipeline_mod, '_write_object_outputs', fake_write)
@@ -1149,6 +1194,7 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     dataset_pipeline_mod.create_data_samples(
         objects=['Cat'],
         dataset_dir=str(dataset_dir),
+        raw_data_dir=str(tmp_path / 'raw'),
         object_workers=1,
         incremental=True,
     )
@@ -1159,19 +1205,10 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     assert captured['skip_source_paths'] == {os.path.realpath(done_source)}
     assert captured['frozen_translation_root_index'] == 0
     assert captured['existing_clip_sources'] == {'Cat_Walk.npy': os.path.realpath(done_source)}
-    # Only the rows that carry a verdict reach the worker as overrides,
-    # keyed by the extension-less clip name.
-    assert captured['loop_verdicts'] == {'Cat_Walk': True, 'Dog_Idle': False}
-    # The proposal for the new clip landed in the sidecar; the others are untouched.
-    labels = {
-        row['clip']: row for row in (
-            json.loads(line) for line in
-            (dataset_dir / 'action_labels.jsonl').read_text(encoding='utf-8').splitlines() if line
-        )
-    }
-    assert labels['Cat_Run.npy']['is_loop'] is True
-    assert labels['Cat_Walk.npy']['is_loop'] is True
-    assert labels['Dog_Idle.npy']['is_loop'] is False
+    # Every verdict the sidecar holds reaches the worker, keyed by the
+    # extension-less clip name -- and the build never writes the sidecar.
+    assert captured['loop_verdicts'] == {'Cat_Walk': True, 'Cat_Run': True, 'Dog_Idle': False}
+    assert (dataset_dir / 'action_labels.jsonl').read_bytes() == labels_before
 
     # cond.npy keeps the untouched Dog and refreshes Cat.
     merged_cond = _cond_by_species(dataset_dir)

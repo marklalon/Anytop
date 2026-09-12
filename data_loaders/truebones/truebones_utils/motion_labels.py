@@ -604,11 +604,13 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
     Raises ``FileNotFoundError`` if the file is absent so callers fail fast rather
     than silently training without action conditioning.
 
-    ``is_loop`` is the clip's loop verdict and is OPTIONAL per row: preprocessing
-    fills it in for a clip nobody has annotated yet (the detector's proposal), and
-    a hand-set value is never overwritten. It is returned only when the row has
-    it, so a caller can tell "annotated" from "not yet" -- :func:`load_motion_metadata`
-    is the strict join that requires it for every clip on disk.
+    ``is_loop`` is the clip's loop verdict and is OPTIONAL per row:
+    ``tools/prefill_loop_flags.py`` fills it in for a clip nobody has annotated
+    yet (the detector's proposal, computed from the source animation), and a
+    value already there is never overwritten. It is returned only when the row
+    has it, so a caller can tell "annotated" from "not yet" --
+    :func:`load_motion_metadata` is the strict join that requires it for every
+    clip on disk, and preprocessing refuses to build a clip whose row has none.
     """
     labels_path = Path(dataset_dir) / ACTION_LABELS_FILE
     if not labels_path.exists():
@@ -671,7 +673,8 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
                     _fail_action_labels(
                         line_number,
                         f"clip '{clip}' has {LOOP_FLAG_KEY} {is_loop!r}; it must be "
-                        f"JSON true or false (or absent, to let preprocessing decide)",
+                        f"JSON true or false (or absent, for tools/prefill_loop_flags.py "
+                        f"to propose one)",
                     )
                 row[LOOP_FLAG_KEY] = is_loop
             action_labels[str(clip)] = row
@@ -697,12 +700,13 @@ def load_motion_metadata(
 
     ``is_loop`` is joined the same way and is just as fatal when a row lacks
     it: a default would train every unannotated loop as a one-shot clip without
-    a word. Preprocessing fills the flag in for every clip it writes and for
-    every clip already on disk, so a missing one means the dataset has not
-    been through ``preprocess_and_validate.py`` since the flag moved into the
-    sidecar. ``require_loop_flag=False`` is for the one bookkeeping read that
-    runs BEFORE that fill (capturing the untouched species of a filtered
-    rebuild): the joined entry then simply has no ``is_loop`` key.
+    a word. The flag is a prerequisite annotation -- ``tools/prefill_loop_flags.py``
+    proposes it from the source animation and preprocessing refuses a clip
+    without one -- so a clip on disk with no flag means its row was edited (the
+    key deleted) after the build. ``require_loop_flag=False`` is for a
+    bookkeeping read that must not fail on such a row (capturing the untouched
+    species of a filtered rebuild): the joined entry then simply has no
+    ``is_loop`` key.
     """
     metadata_path = Path(dataset_dir) / MOTION_METADATA_FILE
     if not metadata_path.exists():
@@ -761,10 +765,11 @@ def load_motion_metadata(
         msg = (
             f"\n❌ {ACTION_LABELS_FILE} has no {LOOP_FLAG_KEY} for {len(missing_loop_flags)} "
             f"clip(s): {preview}{more}\n\n"
-            f"   The loop flag lives in {ACTION_LABELS_FILE} (auto-filled by preprocessing, "
-            f"verified by hand in dataset/review). Run\n"
-            f"   python preprocess_and_validate.py --dataset-dir <dataset> --validate-only\n"
-            f"   once to fill it in for every clip already on disk, or set "
+            f"   The loop flag lives in {ACTION_LABELS_FILE} (proposed by "
+            f"tools/prefill_loop_flags.py from the source animation, verified by hand "
+            f"in dataset/review). Run\n"
+            f"   python tools/prefill_loop_flags.py --dataset-dir <dataset> --raw-data-dir <raw>\n"
+            f"   to fill in every row that has none, or set "
             f'"{LOOP_FLAG_KEY}": true/false on the rows yourself.\n'
         )
         print(msg, file=sys.stderr, flush=True)
@@ -775,17 +780,23 @@ def load_motion_metadata(
 def fill_missing_loop_flags(
     dataset_dir: str | Path,
     verdicts: dict[str, bool],
+    *,
+    overwrite: bool = False,
 ) -> int:
     """Write ``is_loop`` into the sidecar rows that do not have one yet.
 
     *verdicts* maps clip -> bool, under either the extension-less clip name
     or the motions/ file name -- both are normalized to the sidecar key before
-    matching. Only a row WITHOUT the key is filled: an existing value is an
-    annotation (the detector's earlier proposal or a hand correction) and
-    preprocessing never overrides one -- delete the key from a row to have it
-    re-judged. Rows are rewritten in place: line order, every other key and
-    the file's newline style are kept, and a line that changes nothing is
-    copied byte for byte. Returns the number of rows filled.
+    matching. By default only a row WITHOUT the key is filled: an existing
+    value is an annotation (the detector's earlier proposal or a hand
+    correction) and is never overridden -- delete the key from a row to have
+    it re-judged. ``overwrite=True`` (``prefill_loop_flags.py --rejudge``)
+    also replaces an existing value, except on a row marked ``"reviewed":
+    true``: a person has signed that row off, and a re-run of the detector
+    does not outrank them. Rows are rewritten in place: line order, every
+    other key and the file's newline style are kept, and a line that changes
+    nothing is copied byte for byte. Returns the number of rows whose value
+    changed.
     """
     labels_path = Path(dataset_dir) / ACTION_LABELS_FILE
     if not verdicts or not labels_path.exists():
@@ -800,10 +811,20 @@ def fill_missing_loop_flags(
         if not stripped:
             continue
         entry = json.loads(stripped)
-        if not isinstance(entry, dict) or LOOP_FLAG_KEY in entry:
+        if not isinstance(entry, dict):
             continue
         clip = clip_key(entry.get("clip", ""))
         if clip not in verdicts:
+            continue
+        verdict = bool(verdicts[clip])
+        if LOOP_FLAG_KEY in entry:
+            if not overwrite or entry.get("reviewed") is True:
+                continue
+            if entry[LOOP_FLAG_KEY] is verdict:
+                continue  # same verdict: the line stays byte for byte
+            entry[LOOP_FLAG_KEY] = verdict
+            lines[index] = json.dumps(entry, ensure_ascii=False)
+            filled += 1
             continue
         # Keep the key next to the label it annotates, so a row reads
         # clip / group / label / is_loop / review marks.
@@ -811,8 +832,8 @@ def fill_missing_loop_flags(
         for key, value in entry.items():
             rebuilt[key] = value
             if key == "action_label":
-                rebuilt[LOOP_FLAG_KEY] = bool(verdicts[clip])
-        rebuilt.setdefault(LOOP_FLAG_KEY, bool(verdicts[clip]))
+                rebuilt[LOOP_FLAG_KEY] = verdict
+        rebuilt.setdefault(LOOP_FLAG_KEY, verdict)
         lines[index] = json.dumps(rebuilt, ensure_ascii=False)
         filled += 1
     if not filled:

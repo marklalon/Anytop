@@ -744,12 +744,13 @@ def extract_motion_features_from_aligned_anims(
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
 
     # ``is_loop`` is the caller's verdict, like ``flatten_root_travel``: the
-    # action_labels sidecar's annotation when the clip has one (proposed by an
-    # earlier run or set by hand in review), and the detector only proposes for
-    # a clip nobody has annotated yet. It shapes the tensor -- the terminal
-    # velocity row below is the wrap delta for a loop -- so an annotation that
-    # stayed in the sidecar while the detector decided here would leave the flag
-    # and the seam row disagreeing.
+    # action_labels sidecar's annotation on a dataset build (proposed by
+    # tools/prefill_loop_flags.py, set or corrected by hand in review), and the
+    # detector only proposes -- for that tool, and for callers with no sidecar
+    # such as retargeting. It shapes the tensor -- the terminal velocity row
+    # below is the wrap delta for a loop -- so an annotation that stayed in the
+    # sidecar while the detector decided here would leave the flag and the seam
+    # row disagreeing.
     if is_loop is None:
         # Closure is measured on the clip as authored. Redundant edge frames are
         # no longer trimmed here -- they are cleaned at the source -- so the wrap
