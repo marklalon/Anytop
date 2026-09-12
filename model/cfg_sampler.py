@@ -25,7 +25,7 @@ class ClassifierFreeActionModel(nn.Module):
 
     Only the action condition is guided. The unconditional pass differs from the
     conditional one by exactly ``y['action_label_active'] = False``, so every
-    other channel (species FiLM, the canonical output frame, loop/playspeed, the
+    other channel (species FiLM, the canonical output frame, loop/resample_speed, the
     skeleton graph itself) is bit-identical between the two and cancels out of
     the guidance term instead of being extrapolated along with the prompt.
 

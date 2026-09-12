@@ -251,9 +251,9 @@ def prepare_generation_runtime(args=None, cond_dict=None):
 
 
 def _finalize_output_lengths(requested_frames, min_length, internal_num_frames):
-    """Validate the requested output frame count M and derive the playspeed
+    """Validate the requested output frame count M and derive the resample_speed
     conditioning value. Returns ``(requested_output_frames, target_output_frames,
-    playspeed_cond_value)``.
+    resample_speed_cond_value)``.
     """
     if requested_frames < min_length or requested_frames > MAX_SOURCE_FRAMES_MULT * internal_num_frames:
         sys.exit(
@@ -261,8 +261,8 @@ def _finalize_output_lengths(requested_frames, min_length, internal_num_frames):
             f"[min_length={min_length}, "
             f"{MAX_SOURCE_FRAMES_MULT}*num_frames={MAX_SOURCE_FRAMES_MULT * internal_num_frames}]"
         )
-    playspeed = float(requested_frames) / float(internal_num_frames)
-    return requested_frames, requested_frames, playspeed
+    resample_speed = float(requested_frames) / float(internal_num_frames)
+    return requested_frames, requested_frames, resample_speed
 
 
 def _lookup_object_type_case_insensitive(object_types, requested_type):
@@ -827,7 +827,7 @@ def _generate_all_species(
     opt,
     args,
     n_frames,
-    playspeed_cond_value,
+    resample_speed_cond_value,
     target_output_frames,
     model,
     diffusion,
@@ -887,8 +887,8 @@ def _generate_all_species(
                 loop=getattr(args, 'loop', False),
                 action_condition=action_condition,
             )
-            model_kwargs['y']['playspeed_cond'] = torch.full(
-                (actual_bs,), playspeed_cond_value, dtype=torch.float32, device=dist_util.dev(),
+            model_kwargs['y']['resample_speed_cond'] = torch.full(
+                (actual_bs,), resample_speed_cond_value, dtype=torch.float32, device=dist_util.dev(),
             )
 
             print(f'  Sampling {actual_bs} species × 1 motion each ...')
@@ -1043,9 +1043,9 @@ def main(args=None, cond_dict=None, runtime=None):
     # Output lengths: known now if --num_frames given; otherwise deferred until
     # reference frame count R is known (defaults to R clamped to
     # [min_length, MAX_SOURCE_FRAMES_MULT*num_frames]).
-    requested_output_frames = target_output_frames = playspeed_cond_value = None
+    requested_output_frames = target_output_frames = resample_speed_cond_value = None
     if motion_frames is not None:
-        requested_output_frames, target_output_frames, playspeed_cond_value = (
+        requested_output_frames, target_output_frames, resample_speed_cond_value = (
             _finalize_output_lengths(
                 motion_frames,
                 min_length,
@@ -1128,7 +1128,7 @@ def main(args=None, cond_dict=None, runtime=None):
             opt=opt,
             args=args,
             n_frames=n_frames,
-            playspeed_cond_value=playspeed_cond_value,
+            resample_speed_cond_value=resample_speed_cond_value,
             target_output_frames=target_output_frames,
             model=model,
             diffusion=diffusion,
@@ -1298,7 +1298,7 @@ def main(args=None, cond_dict=None, runtime=None):
         # Finalize output lengths from R (if --num_frames not specified).
         if requested_output_frames is None:
             auto_frames = int(np.clip(R, min_length, MAX_SOURCE_FRAMES_MULT * internal_num_frames))
-            requested_output_frames, target_output_frames, playspeed_cond_value = (
+            requested_output_frames, target_output_frames, resample_speed_cond_value = (
                 _finalize_output_lengths(auto_frames, min_length, internal_num_frames)
             )
             if auto_frames == R:
@@ -1472,9 +1472,9 @@ def main(args=None, cond_dict=None, runtime=None):
         action_condition=_action_condition,
         species_emb_override=_species_emb_override,
     )
-    model_kwargs['y']['playspeed_cond'] = torch.full(
+    model_kwargs['y']['resample_speed_cond'] = torch.full(
         (args.batch_size,),
-        playspeed_cond_value,
+        resample_speed_cond_value,
         dtype=torch.float32,
         device=dist_util.dev(),
     )
@@ -2222,7 +2222,7 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         to every object in the batch, or None for unconditional generation.
     species_emb_override: [t5_out_dim] vector replacing baked species_emb for all objects.
     loop: ask for a closed window. It is the whole loop condition -- how many
-        gait cycles the window holds is the model's to decide from playspeed
+        gait cycles the window holds is the model's to decide from resample_speed
         and the species/action prior, so nothing here needs a period table.
     """
     batches = list()

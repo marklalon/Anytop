@@ -107,13 +107,13 @@ def test_map_frame_ranges_to_internal_preserves_contiguous_spans() -> None:
     assert _map_frame_ranges_to_internal("0-119", 120, 60) == "0-59"
 
 
-def test_finalize_output_lengths_returns_frames_and_playspeed() -> None:
-    requested, target, playspeed = _finalize_output_lengths(
+def test_finalize_output_lengths_returns_frames_and_resample_speed() -> None:
+    requested, target, resample_speed = _finalize_output_lengths(
         requested_frames=90, min_length=20, internal_num_frames=60
     )
     assert requested == 90
     assert target == 90
-    assert playspeed == pytest.approx(90.0 / 60.0)
+    assert resample_speed == pytest.approx(90.0 / 60.0)
 
 
 def test_finalize_output_lengths_rejects_out_of_window() -> None:
@@ -129,13 +129,13 @@ def test_finalize_output_lengths_rejects_out_of_window() -> None:
         )
     # The upper bound is inclusive: the full source-frame budget is allowed,
     # one frame past it is not.
-    requested, target, playspeed = _finalize_output_lengths(
+    requested, target, resample_speed = _finalize_output_lengths(
         requested_frames=max_frames,
         min_length=min_length,
         internal_num_frames=internal_num_frames,
     )
     assert (requested, target) == (max_frames, max_frames)
-    assert playspeed == pytest.approx(float(MAX_SOURCE_FRAMES_MULT))
+    assert resample_speed == pytest.approx(float(MAX_SOURCE_FRAMES_MULT))
     with pytest.raises(SystemExit):
         _finalize_output_lengths(
             requested_frames=max_frames + 1,
@@ -183,7 +183,7 @@ def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
     # always runs at that native window (requested_output_frame_count=60) and
     # resamples the shorter reference up to it; the requested output length is
     # honored later by resampling the sampled motion. reference_source_frame_count
-    # records the pre-resample reference length (40) for playspeed.
+    # records the pre-resample reference length (40) for resample_speed.
     assert bundle["output_frame_count"] == 60
     assert bundle["reference_source_frame_count"] == 40
     assert tuple(bundle["reference_motion"].shape) == (2, n_joints, feat, 60)

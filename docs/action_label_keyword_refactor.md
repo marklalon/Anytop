@@ -56,7 +56,7 @@
 > 原状态：**方案已定，待实施**（FiLM 一项列为 §3.3 的备选方案）
 >
 > 背景：`merged_locomotion_v3` 训练后暴露两个问题。问题 2（生成动作在时间维上
-> 时快时慢）已定位为推理端从不填 `loop_phase_length`、导致 `(playspeed, phase_len)`
+> 时快时慢）已定位为推理端从不填 `loop_phase_length`、导致 `(resample_speed, phase_len)`
 > 落在训练流形之外，已由 b30fefe 修复。问题 1（**方向性塌缩**）在补上推理端
 > action-label CFG 之后（00d5abb，契约见
 > [action_group_label_refactor.md §9.6](action_group_label_refactor.md)）
@@ -354,7 +354,7 @@ gamma = 1 + gamma_residual;  timesteps_emb = gamma * timesteps_emb + beta
 ```
 
 - 注入顺序：`species_film` → `action_film` → 再加各加性 token
-  （playspeed / loop / canonical frame）。两级都零初始化，起点是恒等，
+  （resample_speed / loop / canonical frame）。两级都零初始化，起点是恒等，
   初始化时不会互相打架。
 - 分两级而不是合并成一个头，是因为 `species_cfg_drop_prob`(0.15) 和
   `action_label_cfg_drop_prob`(0.2) 是**独立**的丢弃掩码，且 CFG 只引导 action

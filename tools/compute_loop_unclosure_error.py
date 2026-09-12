@@ -20,7 +20,7 @@ decision to pass.
 Feature layout per joint (12 channels):
   0-2  : root-relative global position (face Z+, translation-root centred)
   3-8  : 6D continuous rotation representation
-  9-11 : velocity (per-frame delta, scaled for playspeed)
+  9-11 : velocity (per-frame delta, scaled for resample_speed)
 
 Usage:
     python tools/compute_loop_unclosure_error.py

@@ -65,7 +65,28 @@ def unwrap_anytop_model(model):
     return unwrapped_model
 
 
+# The window-span condition was called ``playspeed`` until the loader grew a
+# real motion-speed augmentation; the projection MLP was renamed with it. Pure
+# rename, no semantic change, so older checkpoints are remapped instead of
+# rejected by a CKPT_VERSION bump.
+_LEGACY_STATE_DICT_PREFIXES = (
+    ('playspeed_projection.', 'resample_speed_projection.'),
+)
+
+
+def remap_legacy_state_dict_keys(state_dict):
+    remapped = {}
+    for key, value in state_dict.items():
+        for old_prefix, new_prefix in _LEGACY_STATE_DICT_PREFIXES:
+            if key.startswith(old_prefix):
+                key = new_prefix + key[len(old_prefix):]
+                break
+        remapped[key] = value
+    return remapped
+
+
 def load_model(model, state_dict):
+    state_dict = remap_legacy_state_dict_keys(state_dict)
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert len(unexpected_keys) == 0, f"Unexpected keys in checkpoint: {unexpected_keys}"
     # QK-norm params (added to bound attention logits) are absent from older

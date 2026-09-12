@@ -31,7 +31,7 @@ temporal_mask = temporal_template.unsqueeze(1).expand(-1, njoints, -1, -1, -1).r
 2. **token 0 是 T-pose token，且被全体可见**（`mask[:, 0] = 1`，
    [dataset.py:128](../data_loaders/truebones/data/dataset.py#L128)）。
 3. **序列长度恒为 `num_frames+1 = 61`，训练推理完全一致。** 推理端 `--num_frames M` 只经
-   [`_finalize_output_lengths`](../sample/generate.py#L244-L255) 变成 `playspeed = M/60`，
+   [`_finalize_output_lengths`](../sample/generate.py#L244-L255) 变成 `resample_speed = M/60`，
    采样仍在 61 个 token 上进行（[generate.py:595](../sample/generate.py#L595) 的注释：
    "Fixed-window model: always run at native window length"），采完再 resample。
    **不存在长度外推问题**，窗口注意力的经典理由之一在本仓库不成立。
@@ -249,7 +249,7 @@ loop 还有另外两路信号：
 | 项 | 内容 | 不做的理由 |
 |---|---|---|
 | ALiBi 软衰减 | 把硬窗口换成按时间距离线性递减的加性偏置，每 head 一个斜率 | **列为 §4 抖动风险的备选**。它引入一组需要调的斜率超参，买到的"局部先验"正是数据以 0.95 自相关免费提供的东西。先上朴素全注意力，出问题再加 —— 但注意窗口路径已删，届时是**再重训一次**，不是回退 |
-| `num_frames` 60 → 63/64 | 让 `T+1` 对齐到 64，消除 SDPA 的 padded bias 拷贝 | §1.3 实测：广播 bias 下拷贝只有约 30 KiB/层，测不出差别。而改它要重训，还会改变 `playspeed = M/num_frames`（[generate.py:254](../sample/generate.py#L254)）的语义，已标定的 playspeed 全要重对 |
+| `num_frames` 60 → 63/64 | 让 `T+1` 对齐到 64，消除 SDPA 的 padded bias 拷贝 | §1.3 实测：广播 bias 下拷贝只有约 30 KiB/层，测不出差别。而改它要重训，还会改变 `resample_speed = M/num_frames`（[generate.py:254](../sample/generate.py#L254)）的语义，已标定的 resample_speed 全要重对 |
 | 广播 `(1,H,T+1,T+1)` bias 重构 | 把 per-sample 物化改成 buffer | 只在保留 mask 时才有意义；本方案是**没有 mask**，自然消失。作为独立优化收益 0.4%（§1.2），不值得单做 |
 | 时间位置编码升级（相对位置 / RoPE / 逐层重注入） | 现在只在 [`InputProcess`](../model/anytop.py#L786-L788) 加一次绝对正弦 PE | 序列恒长 61 且不外推（§0 事实 3），绝对 PE 够用。**若 §6 判读显示相位仍混模态，这是下一个该动的地方，不是 mask** |
 | 推理端单独开窗口 | 用旧 ckpt 跑 `--temporal_window 121` 看效果 | **已试过，出现异常姿态，且该实验对本问题零信息量**：窗外 logit 从未被任何梯度约束过，推理时打开 mask 等于把未训练的任意 logit 放进 softmax 分母，并逐层放大。这测的是 mask 失配，不是注意力范围的效果 |

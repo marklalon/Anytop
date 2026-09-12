@@ -152,7 +152,7 @@ def resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
         # Velocity channels are stored so that `vel[t] * step_scale` recovers
         # the target-frame position delta — matching the contract that
         # velocity_consistency_loss and loop_wrap_loss multiply by step_scale
-        # (reconstructed from playspeed_cond) before comparing with pos deltas.
+        # (reconstructed from resample_speed_cond) before comparing with pos deltas.
         # Linear interpolation of source velocities would give the instantaneous
         # value at src[t], which is off whenever step_scale != 1; instead we
         # integrate to a position path, interpolate that, then take target-step
@@ -209,7 +209,7 @@ def _tile_loop_motion(motion, repeat_count):
     operates in whichever feature space the
     caller supplies (raw or normalized); both are linear transformations of
     each other, so the result is equivalent and the caller must only ensure
-    ``playspeed_cond`` reflects the post-tile frame count.
+    ``resample_speed_cond`` reflects the post-tile frame count.
     """
     repeat_count = int(repeat_count)
     if repeat_count <= 1:
@@ -915,7 +915,7 @@ class MotionDataset(data.Dataset):
             # and told so.
             # The crop LENGTH is fixed at the full budget -- every over-long
             # clip contributes n*MAX_SOURCE_FRAMES_MULT source frames, resampled
-            # to the target length below at playspeed MAX_SOURCE_FRAMES_MULT --
+            # to the target length below at resample_speed MAX_SOURCE_FRAMES_MULT --
             # while the window POSITION stays random so repeated epochs still
             # see the whole clip.
             if loop_condition_active:
@@ -925,8 +925,8 @@ class MotionDataset(data.Dataset):
             motion = motion[ind: ind + max_source_length]
             m_length = int(motion.shape[0])
 
-        source_len_for_playspeed = int(m_length)
-        playspeed_cond = float(source_len_for_playspeed) / float(target_num_frames)
+        source_len_for_resample_speed = int(m_length)
+        resample_speed_cond = float(source_len_for_resample_speed) / float(target_num_frames)
         if m_length != target_num_frames:
             motion = resample_motion_features(
                 motion,
@@ -942,11 +942,11 @@ class MotionDataset(data.Dataset):
         # is_loop is the whole loop condition the model sees: a closed window.
         # The tile count is deliberately NOT passed on -- generation has no
         # tile count, so the model must learn the cycle count from
-        # playspeed_cond (= tiles * period / T) and the species/action prior,
+        # resample_speed_cond (= tiles * period / T) and the species/action prior,
         # exactly as it does for a one-shot clip. loop_tile_count and
         # loop_phase_offset are logged for diagnostics only.
         motion_metadata['is_loop'] = bool(loop_condition_active)
-        motion_metadata['playspeed_cond'] = float(playspeed_cond)
+        motion_metadata['resample_speed_cond'] = float(resample_speed_cond)
         motion_metadata['loop_data_aug_applied'] = bool(is_loop)
         motion_metadata['loop_phase_offset'] = int(loop_phase_offset)
         motion_metadata['loop_tile_count'] = int(loop_tile_count)
@@ -966,7 +966,7 @@ class MotionDataset(data.Dataset):
                 'loop_applied': bool(loop_condition_active),
                 'loop_phase_offset': int(loop_phase_offset),
                 'loop_tile_count': int(loop_tile_count),
-                'playspeed_cond': float(playspeed_cond),
+                'resample_speed_cond': float(resample_speed_cond),
                 'loop_uncond': bool(loop_uncond),
             }
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {

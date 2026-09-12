@@ -59,7 +59,7 @@ LOOP_SUBSET = "biped"
 NUM_FRAMES = 60
 # The n*MAX_SOURCE_FRAMES_MULT source-frame budget the dataset crops over-long
 # clips to (see _prepare_sample); over-long clips resample down at exactly
-# playspeed MAX_SOURCE_FRAMES_MULT.
+# resample_speed MAX_SOURCE_FRAMES_MULT.
 BUDGET_FRAMES = NUM_FRAMES * MAX_SOURCE_FRAMES_MULT
 _ENRICHED_MOTION_METADATA_LOOKUP = None
 
@@ -229,7 +229,7 @@ def test_loop_padding_updates_effective_length() -> None:
 
     assert "loop_phase_length" not in motion_metadata
     assert "loop_full_cycle" not in motion_metadata
-    assert np.isclose(float(motion_metadata["playspeed_cond"]), float(raw_len) / float(NUM_FRAMES))
+    assert np.isclose(float(motion_metadata["resample_speed_cond"]), float(raw_len) / float(NUM_FRAMES))
     assert_close("loop-filled motion", motion, expected, atol=3e-5)
 
 
@@ -257,7 +257,7 @@ def test_loop_padding_can_tile_multiple_cycles_before_resample() -> None:
     assert name == LOOP_MOTION, f"unexpected sample: {name}"
     assert motion.shape[0] == NUM_FRAMES
     assert m_length == NUM_FRAMES
-    assert np.isclose(float(motion_metadata["playspeed_cond"]), float(raw.shape[0] * 2) / float(NUM_FRAMES))
+    assert np.isclose(float(motion_metadata["resample_speed_cond"]), float(raw.shape[0] * 2) / float(NUM_FRAMES))
     # The tile count is diagnostics only: the model is not told how many
     # cycles the window holds.
     assert motion_metadata["loop_tile_count"] == 2
@@ -351,8 +351,8 @@ def test_long_motion_crops_fixed_length_random_window() -> None:
 
     assert m_length == NUM_FRAMES, f"cropped sample should have effective length {NUM_FRAMES}, got {m_length}"
     assert np.isclose(
-        float(aug_info["playspeed_cond"]), MAX_SOURCE_FRAMES_MULT
-    ), f"expected playspeed {MAX_SOURCE_FRAMES_MULT}, got {aug_info}"
+        float(aug_info["resample_speed_cond"]), MAX_SOURCE_FRAMES_MULT
+    ), f"expected resample_speed {MAX_SOURCE_FRAMES_MULT}, got {aug_info}"
     assert_close("fixed-length random crop window", motion, expected)
 
 
@@ -384,7 +384,7 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
     assert aug_info["loop_applied"] is True, f"expected loop_applied=True, got {aug_info}"
     assert aug_info["loop_phase_offset"] == 0, f"expected loop_phase_offset=0, got {aug_info}"
     assert aug_info["loop_tile_count"] == 1, f"expected loop_tile_count=1, got {aug_info}"
-    assert np.isclose(float(aug_info["playspeed_cond"]), float(motion_dataset.data_dict[LOOP_MOTION]["length"]) / float(NUM_FRAMES))
+    assert np.isclose(float(aug_info["resample_speed_cond"]), float(motion_dataset.data_dict[LOOP_MOTION]["length"]) / float(NUM_FRAMES))
 
 
 def test_loop_uncond_keeps_legacy_loop_tile_but_non_loop_metadata() -> None:
@@ -522,7 +522,7 @@ def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
     assert motion_metadata["is_loop"] is False
     assert aug_info["loop_applied"] is False
     assert aug_info["loop_uncond"] is True
-    assert np.isclose(float(aug_info["playspeed_cond"]), MAX_SOURCE_FRAMES_MULT)
+    assert np.isclose(float(aug_info["resample_speed_cond"]), MAX_SOURCE_FRAMES_MULT)
     assert_close("conditioned long loop downgraded crop", motion, expected)
 
 
@@ -545,7 +545,7 @@ def test_batch_collate_preserves_translation_root_index() -> None:
     _motion, cond = truebones_batch_collate([sample])
 
     assert int(cond["y"]["translation_root_index"][0]) == 0
-    assert "playspeed_cond" in cond["y"]
+    assert "resample_speed_cond" in cond["y"]
     assert "loop_phase_offset" in cond["y"]
     assert "loop_tile_count" in cond["y"]
     assert "loop_data_aug_applied" in cond["y"]

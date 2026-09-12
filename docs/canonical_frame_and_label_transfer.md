@@ -509,7 +509,7 @@ pos 散布 0.57–1.78（≈3.1×），rot / vel 实质不变——与 §2.4 的
 [anytop.py](../model/anytop.py) 新增 `canonical_frame_projection`：把
 `[canonical_feature_mean ‖ canonical_feature_std]`（26 维，已由 collate 逐样本放进 `y`，
 数据侧零改动）过一个 `Linear(26,256) → GELU → Linear(256,256)`，**末层零初始化**，
-与 playspeed / loop / action 走同一条加性通路加到 timestep token 上。
+与 resample_speed / loop / action 走同一条加性通路加到 timestep token 上。
 
 - **无条件接入，没有 CLI 开关。** 最初落地时是 `--canonical_frame_cond`（默认关），
   后来固化为常开并把 flag 删掉：`canonical_motion_v3` 的每一份 cond.npy 都带这两个 key，

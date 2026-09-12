@@ -415,7 +415,7 @@ class GaussianDiffusion:
         loss_val = loss / non_zero_elements
         return loss_val
 
-    def _coerce_playspeed_batch(self, value, batch_size, device, dtype):
+    def _coerce_resample_speed_batch(self, value, batch_size, device, dtype):
         if value is None:
             return th.ones(batch_size, device=device, dtype=dtype)
         value = th.as_tensor(value, device=device, dtype=dtype).reshape(-1)
@@ -423,24 +423,24 @@ class GaussianDiffusion:
             value = value.expand(batch_size)
         elif value.numel() != batch_size:
             raise ValueError(
-                f"playspeed_cond has length {value.numel()} but expected {batch_size}."
+                f"resample_speed_cond has length {value.numel()} but expected {batch_size}."
             )
         if not th.isfinite(value).all():
-            raise ValueError("playspeed_cond must be finite")
+            raise ValueError("resample_speed_cond must be finite")
         if bool((value <= 0).any()):
-            raise ValueError("playspeed_cond must be positive")
+            raise ValueError("resample_speed_cond must be positive")
         return value
 
     def _physical_velocity_step_scale(self, y, batch_size, n_frames, device, dtype):
         if n_frames <= 1:
             return th.ones(batch_size, device=device, dtype=dtype)
-        playspeed = self._coerce_playspeed_batch(
-            y.get('playspeed_cond') if isinstance(y, dict) else None,
+        resample_speed = self._coerce_resample_speed_batch(
+            y.get('resample_speed_cond') if isinstance(y, dict) else None,
             batch_size,
             device,
             dtype,
         )
-        source_frames = (playspeed * float(n_frames)).clamp_min(1.0)
+        source_frames = (resample_speed * float(n_frames)).clamp_min(1.0)
         return ((source_frames - 1.0) / float(n_frames - 1)).clamp_min(0.0)
 
     def _root_relative_velocity(self, vel, n_joints, y):

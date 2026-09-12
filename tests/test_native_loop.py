@@ -22,7 +22,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from model.motion_transformer import circular_phase_embedding  # noqa: E402
-from utils.model_util import create_gaussian_diffusion  # noqa: E402
+from utils.model_util import create_gaussian_diffusion, load_model  # noqa: E402
 
 
 # circular_phase_embedding's window closure is exact only in real arithmetic:
@@ -51,7 +51,7 @@ class _CaptureDecoder(torch.nn.Module):
 
 def _make_batch_item(
     is_loop: bool,
-    playspeed_cond: float = 1.0,
+    resample_speed_cond: float = 1.0,
 ):
     n_frames = 5
     n_joints = 2
@@ -68,7 +68,7 @@ def _make_batch_item(
         'action_label': 'run, gallops forward',
         'translation_root_index': 0,
         'is_loop': is_loop,
-        'playspeed_cond': playspeed_cond,
+        'resample_speed_cond': resample_speed_cond,
     }
     extra_cond = {'joint_mask_candidate_roots': np.zeros((n_joints,), dtype=np.bool_)}
     return (
@@ -152,17 +152,17 @@ class NativeLoopTests(unittest.TestCase):
 
     def test_truebones_collate_forwards_loop_flags_as_bool_tensors(self):
         _, cond = truebones_batch_collate([
-            _make_batch_item(True, playspeed_cond=0.5),
-            _make_batch_item(False, playspeed_cond=2.0),
+            _make_batch_item(True, resample_speed_cond=0.5),
+            _make_batch_item(False, resample_speed_cond=2.0),
         ])
 
         self.assertEqual(cond['y']['is_loop'].dtype, torch.bool)
         self.assertEqual(cond['y']['is_loop'].tolist(), [True, False])
         self.assertNotIn('loop_full_cycle', cond['y'])
         self.assertNotIn('loop_phase_lengths', cond['y'])
-        self.assertTrue(torch.equal(cond['y']['playspeed_cond'], torch.tensor([0.5, 2.0], dtype=torch.float32)))
+        self.assertTrue(torch.equal(cond['y']['resample_speed_cond'], torch.tensor([0.5, 2.0], dtype=torch.float32)))
 
-    def test_anytop_coerces_default_playspeed_to_one(self):
+    def test_anytop_coerces_default_resample_speed_to_one(self):
         model = AnyTop(
             max_joints=4,
             feature_len=12,
@@ -174,16 +174,37 @@ class NativeLoopTests(unittest.TestCase):
             cross_limb=True,
         )
 
-        value = model._coerce_playspeed_cond(None, batch_size=2, device=torch.device('cpu'), dtype=torch.float32)
+        value = model._coerce_resample_speed_cond(None, batch_size=2, device=torch.device('cpu'), dtype=torch.float32)
 
         self.assertTrue(torch.equal(value, torch.ones(2, 1, dtype=torch.float32)))
+
+    def test_load_model_remaps_legacy_playspeed_projection_keys(self):
+        # Checkpoints written before the rename carry ``playspeed_projection.*``;
+        # they must load into ``resample_speed_projection`` unchanged.
+        kwargs = dict(
+            max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
+            num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
+        )
+        source = AnyTop(**kwargs)
+        legacy_state = {
+            (key.replace('resample_speed_projection.', 'playspeed_projection.', 1)
+             if key.startswith('resample_speed_projection.') else key): value
+            for key, value in source.state_dict().items()
+        }
+        self.assertTrue(any(key.startswith('playspeed_projection.') for key in legacy_state))
+
+        restored = AnyTop(**kwargs)
+        load_model(restored, legacy_state)
+
+        for key, value in source.state_dict().items():
+            self.assertTrue(torch.equal(restored.state_dict()[key], value), key)
 
     def test_velocity_consistency_compares_root_relative_xz_at_physical_step_scale(self):
         # Joint 0 is the translation root, joint 1 a child. The root sways in
         # world X (vel ch9) while its RIC X stays structurally zero; the child's
         # RIC X path advances by its WORLD velocity minus the root's sway, and
         # every Y path by its own velocity (get_rifke leaves Y alone). At
-        # playspeed 4/7 over 7 frames the physical step scale is 0.5.
+        # resample_speed 4/7 over 7 frames the physical step scale is 0.5.
         diffusion = self._make_diffusion()
         n_frames = 7
         step_scale = 0.5
@@ -199,7 +220,7 @@ class NativeLoopTests(unittest.TestCase):
         spat_mask = torch.ones(1, 1, 1, 2, dtype=torch.float32)
         n_joints = torch.tensor([2])
         y = {
-            'playspeed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
+            'resample_speed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
             'translation_root_index': [0],
         }
 
@@ -207,7 +228,7 @@ class NativeLoopTests(unittest.TestCase):
         self.assertLess(float(loss.item()), 1e-6)
 
         # Negative controls, so the pass above cannot come from a mask: the
-        # same tensor read at playspeed 1 ...
+        # same tensor read at resample_speed 1 ...
         loss_unit_step = diffusion.velocity_consistency_loss(
             model_output, spat_mask, n_joints, y={'translation_root_index': [0]},
         )
@@ -302,7 +323,7 @@ class NativeLoopTests(unittest.TestCase):
         # The root's RIC X/Z are structurally zero and masked out of the
         # terminal term, so the seam has to be checked on a child joint (X)
         # and on the root's height (Y): pos[0] - pos[-1] == vel[-1] * 0.5 at
-        # playspeed 4/7 over 7 frames.
+        # resample_speed 4/7 over 7 frames.
         diffusion = self._make_diffusion()
         model_output = torch.zeros(1, 2, 12, 7, dtype=torch.float32)
         model_output[:, :, 3, :] = 1.0
@@ -314,15 +335,15 @@ class NativeLoopTests(unittest.TestCase):
         y = {
             'is_loop': torch.tensor([True]),
             'translation_root_index': [0],
-            'playspeed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
+            'resample_speed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
         }
 
         terms = diffusion.loop_wrap_loss(model_output, y, n_joints=torch.tensor([2]))
         self.assertLess(float(terms['loop_wrap_terminal_vel'].item()), 1e-6)
 
-        # Same tensor at playspeed 1 leaves the seam open.
+        # Same tensor at resample_speed 1 leaves the seam open.
         y_unit = dict(y)
-        y_unit.pop('playspeed_cond')
+        y_unit.pop('resample_speed_cond')
         terms_unit = diffusion.loop_wrap_loss(model_output, y_unit, n_joints=torch.tensor([2]))
         self.assertGreater(float(terms_unit['loop_wrap_terminal_vel'].item()), 1e-3)
 
@@ -394,7 +415,7 @@ class NativeLoopTests(unittest.TestCase):
             'is_loop': torch.tensor([True]),
             'translation_root_index': [0],
             # 7 output frames drawn from 4 source frames: step_scale = 3 / 6.
-            'playspeed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
+            'resample_speed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
         }
 
         terms = diffusion.loop_root_xz_closure_loss(model_output, y, n_joints=torch.tensor([2]))

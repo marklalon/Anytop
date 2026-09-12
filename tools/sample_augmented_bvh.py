@@ -295,7 +295,7 @@ def main() -> int:
                 motion_metadata,
                 _name,
                 _candidate_roots_info,
-                aug_info,     # dict: loop_applied, playspeed_cond, loop_uncond
+                aug_info,     # dict: loop_applied, resample_speed_cond, loop_uncond
             ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 
             # ----------------------------------------------------------------

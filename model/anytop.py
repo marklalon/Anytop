@@ -134,14 +134,14 @@ class AnyTop(nn.Module):
             )
         else:
             self.loop_condition_projection = None
-        self.playspeed_projection = nn.Sequential(
+        self.resample_speed_projection = nn.Sequential(
             nn.Linear(1, self.latent_dim),
             nn.GELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
         if self.action_label_cond:
             # Project the concatenated slot channels and add the result to the
-            # timestep token, alongside loop / playspeed / canonical frame. One
+            # timestep token, alongside loop / resample_speed / canonical frame. One
             # Linear over the concatenation IS one Linear per channel block,
             # summed, so each channel's relative scale is learned rather than
             # being some offline budget we picked. Additive and linear is enough:
@@ -254,28 +254,28 @@ class AnyTop(nn.Module):
             )
         return raw_loop_cond.to(dtype=dtype).view(batch_size, 1)
 
-    def _coerce_playspeed_cond(self, raw_playspeed_cond, batch_size, device, dtype):
-        if raw_playspeed_cond is None:
-            raw_playspeed_cond = torch.ones(batch_size, device=device, dtype=dtype)
-        elif not torch.is_tensor(raw_playspeed_cond):
-            raw_playspeed_cond = torch.as_tensor(raw_playspeed_cond, device=device)
-        raw_playspeed_cond = raw_playspeed_cond.to(device=device)
-        if raw_playspeed_cond.dim() == 0:
-            raw_playspeed_cond = raw_playspeed_cond.reshape(1)
-        raw_playspeed_cond = raw_playspeed_cond.reshape(-1)
-        if raw_playspeed_cond.numel() == 1 and batch_size != 1:
-            raw_playspeed_cond = raw_playspeed_cond.expand(batch_size)
-        elif raw_playspeed_cond.numel() != batch_size:
+    def _coerce_resample_speed_cond(self, raw_resample_speed_cond, batch_size, device, dtype):
+        if raw_resample_speed_cond is None:
+            raw_resample_speed_cond = torch.ones(batch_size, device=device, dtype=dtype)
+        elif not torch.is_tensor(raw_resample_speed_cond):
+            raw_resample_speed_cond = torch.as_tensor(raw_resample_speed_cond, device=device)
+        raw_resample_speed_cond = raw_resample_speed_cond.to(device=device)
+        if raw_resample_speed_cond.dim() == 0:
+            raw_resample_speed_cond = raw_resample_speed_cond.reshape(1)
+        raw_resample_speed_cond = raw_resample_speed_cond.reshape(-1)
+        if raw_resample_speed_cond.numel() == 1 and batch_size != 1:
+            raw_resample_speed_cond = raw_resample_speed_cond.expand(batch_size)
+        elif raw_resample_speed_cond.numel() != batch_size:
             raise ValueError(
-                "playspeed_cond batch dimension must match the motion batch size, got "
-                f"{raw_playspeed_cond.numel()} for batch {batch_size}"
+                "resample_speed_cond batch dimension must match the motion batch size, got "
+                f"{raw_resample_speed_cond.numel()} for batch {batch_size}"
             )
         # `.all()` in a python `if` is a data-dependent value that forces a
         # torch.compile graph break every step, so skip the finiteness guard
         # under compilation (eager eval/inference still validates).
-        if not torch.compiler.is_compiling() and not torch.isfinite(raw_playspeed_cond).all():
-            raise ValueError("playspeed_cond must be finite")
-        return raw_playspeed_cond.to(dtype=dtype).view(batch_size, 1)
+        if not torch.compiler.is_compiling() and not torch.isfinite(raw_resample_speed_cond).all():
+            raise ValueError("resample_speed_cond must be finite")
+        return raw_resample_speed_cond.to(dtype=dtype).view(batch_size, 1)
 
     def _init_action_conditioning(self, bundle, t5_out_dim):
         """Freeze the word table and the role transform into model buffers.
@@ -889,16 +889,16 @@ class AnyTop(nn.Module):
         # disagreement (matching inpaint clamp behavior at inference).
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
         # Species FiLM modulates the base time signal *before* the additive
-        # condition tokens (action/loop/playspeed) are summed, so each conditioning
+        # condition tokens (action/loop/resample_speed) are summed, so each conditioning
         # channel stays independent and the additive tokens are not scaled by it.
         timesteps_emb = self._apply_species_film(timesteps_emb, y, bs, x.device, x.dtype)
-        playspeed_condition = self._coerce_playspeed_cond(
-            y.get('playspeed_cond'),
+        resample_speed_condition = self._coerce_resample_speed_cond(
+            y.get('resample_speed_cond'),
             batch_size=bs,
             device=x.device,
             dtype=x.dtype,
         )
-        timesteps_emb = timesteps_emb + self.playspeed_projection(playspeed_condition)
+        timesteps_emb = timesteps_emb + self.resample_speed_projection(resample_speed_condition)
         timesteps_emb = timesteps_emb + self._build_canonical_frame_token(
             y, bs, x.device, x.dtype)
         if self.loop_cond_prob > 0.0 and self.loop_condition_projection is not None:

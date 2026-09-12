@@ -204,10 +204,10 @@ def truebones_collate(batch):
             )
         })
 
-    if any('playspeed_cond' in batch_item for batch_item in notnone_batches):
+    if any('resample_speed_cond' in batch_item for batch_item in notnone_batches):
         cond['y'].update({
-            'playspeed_cond': torch.as_tensor(
-                [float(batch_item.get('playspeed_cond', 1.0)) for batch_item in notnone_batches],
+            'resample_speed_cond': torch.as_tensor(
+                [float(batch_item.get('resample_speed_cond', 1.0)) for batch_item in notnone_batches],
                 dtype=torch.float32,
             )
         })
@@ -301,7 +301,7 @@ def truebones_batch_collate(batch):
             if isinstance(extra, dict):
                 if any(key in extra for key in ('joint_mask_candidate_roots', 'rest_pos_ric_hml', 'joint_struct')):
                     extra_cond = extra
-                elif any(key in extra for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'playspeed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
+                elif any(key in extra for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'resample_speed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
                     motion_metadata = extra
             elif isinstance(extra, str):
                 motion_name = extra
@@ -370,7 +370,7 @@ def truebones_batch_collate(batch):
         if extra_cond is not None:
             item['feature_space'] = extra_cond.get('feature_space', CANONICAL_FEATURE_SPACE)
         if motion_metadata is not None:
-            for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'playspeed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
+            for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'resample_speed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
             if 'species_emb' in motion_metadata:
