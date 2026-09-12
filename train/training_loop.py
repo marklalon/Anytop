@@ -197,6 +197,10 @@ class TrainLoop:
                 min_length=getattr(self.args, 'min_length', 20),
                 main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
                 loop_cond_prob=eval_loop_cond_prob,
+                # Evaluation sees the clips at their recorded tempo regardless
+                # of --motion_speed_aug, so eval losses stay comparable across
+                # runs that differ only in the augmentation.
+                motion_speed_aug=1.0,
             )
             sampling_steps = int(getattr(self.args, 'sampling_steps', 100))
             infer_args = pycopy.deepcopy(self.args)
@@ -924,7 +928,8 @@ class TrainLoop:
         action_groups = y.get('action_group')
         flag_keys = (
             'is_loop', 'loop_data_aug_applied', 'loop_tile_count',
-            'loop_phase_offset', 'resample_speed_cond', 'n_joints',
+            'loop_phase_offset', 'resample_speed_cond', 'motion_speed_applied',
+            'n_joints',
         )
         flags = {k: field_list(k) for k in flag_keys}
 

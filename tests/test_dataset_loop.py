@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import glob
 import os
+import random
 import sys
 import tempfile
 from unittest.mock import patch
@@ -25,6 +26,7 @@ from data_loaders.truebones.data.dataset import (
     Truebones,
     _circular_roll_motion,
     resample_motion_features,
+    time_scale_motion_features,
     _tile_loop_motion,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
@@ -549,6 +551,186 @@ def test_batch_collate_preserves_translation_root_index() -> None:
     assert "loop_phase_offset" in cond["y"]
     assert "loop_tile_count" in cond["y"]
     assert "loop_data_aug_applied" in cond["y"]
+    # Diagnostics only: present so training logs can report it, never read by
+    # the model.
+    assert cond["y"]["motion_speed_applied"].dtype == torch.float32
+    assert float(cond["y"]["motion_speed_applied"][0]) == 1.0
+
+
+# ── motion-speed augmentation ──────────────────────────────────────────────
+
+def _synthetic_clip(num_frames: int, *, loop: bool) -> np.ndarray:
+    """One joint following a smooth path; velocity channels are the exact
+    per-frame world deltas (terminal = wrap delta for a loop)."""
+    t = np.linspace(0.0, 2.0 * np.pi, num_frames, endpoint=not loop, dtype=np.float64)
+    pos = np.stack([np.cos(t), 0.5 * np.sin(2.0 * t), t / (2.0 * np.pi)], axis=-1)
+    clip = np.zeros((num_frames, 1, 12), dtype=np.float32)
+    clip[:, 0, 0:3] = pos
+    clip[:, 0, 3:9] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+    clip[:-1, 0, 9:12] = (pos[1:] - pos[:-1])
+    clip[-1, 0, 9:12] = (pos[0] - pos[-1]) if loop else clip[-2, 0, 9:12]
+    return clip
+
+
+def test_time_scale_is_identity_at_the_source_length() -> None:
+    clip = _synthetic_clip(9, loop=False)
+    scaled, speed = time_scale_motion_features(clip, 9)
+    assert scaled is clip
+    assert speed == 1.0
+
+
+def test_time_scale_rescales_velocity_to_the_new_frame_step() -> None:
+    # The scaled clip must be self-consistent as a source clip in its own
+    # right: its velocity channel is the delta between ITS consecutive frames,
+    # not the per-original-frame value resample_motion_features keeps.
+    for loop in (False, True):
+        clip = _synthetic_clip(13, loop=loop)
+        for target in (9, 17):
+            scaled, speed = time_scale_motion_features(clip, target, loop_terminal=loop)
+            assert scaled.shape[0] == target
+            assert np.isclose(speed, 12.0 / float(target - 1))
+            # resample_motion_features' velocity is (path delta) / step_scale,
+            # so multiplying by step_scale hands back the plain path delta.
+            expected = _expected_resampled_velocity(clip, target, loop_terminal=loop) * np.float32(speed)
+            assert_close(f"time-scaled velocity loop={loop} target={target}", scaled[:, :, 9:12], expected, atol=1e-5)
+            # Positions / rotations are those of the plain resample.
+            assert_close(
+                f"time-scaled pose loop={loop} target={target}",
+                scaled[:, :, :9],
+                resample_motion_features(clip, target, loop_terminal=loop)[:, :, :9],
+            )
+            if loop:
+                # Closed cycle: velocities integrate back to the start.
+                total = scaled[:, 0, 9:12].astype(np.float64).sum(axis=0)
+                assert np.allclose(total, 0.0, atol=1e-4), total
+
+
+def test_time_scale_rejects_degenerate_lengths() -> None:
+    clip = _synthetic_clip(5, loop=False)
+    for bad in (0, 1):
+        try:
+            time_scale_motion_features(clip, bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"target {bad} should be rejected")
+
+
+def test_motion_speed_aug_is_transparent_to_roll_tile_crop_and_resample() -> None:
+    dataset = _build_truebones(
+        split="train",
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=2,
+    )
+    motion_dataset = dataset.motion_dataset
+    data = motion_dataset.data_dict[LOOP_MOTION]
+    cond = motion_dataset.cond_dict[data["object_type"]]
+    raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
+    raw_len = int(raw.shape[0])
+    scaled_len = int(round(raw_len / 1.15))
+    assert scaled_len != raw_len
+
+    def prepare(target_len):
+        with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=1),                 patch.object(motion_dataset, '_sample_motion_speed_target_length', return_value=target_len):
+            sample = motion_dataset._prepare_sample(
+                LOOP_MOTION, data, target_num_frames=NUM_FRAMES, loop_offset=0, return_aug_info=True,
+            )
+        return sample[0], sample[10], sample[-1]
+
+    motion, motion_metadata, aug_info = prepare(scaled_len)
+
+    # The time-scaled clip is just a shorter source clip: the window is the
+    # ordinary loop path (terminal wrap kept) applied to it, and
+    # resample_speed_cond reports ITS length -- the model is told nothing else.
+    scaled_raw, speed = time_scale_motion_features(raw, scaled_len, loop_terminal=True)
+    expected = _resample_raw_then_normalize(scaled_raw, cond, NUM_FRAMES, loop_terminal=True)
+    assert_close("time-scaled loop window", motion, expected, atol=3e-5)
+    assert np.isclose(float(aug_info["resample_speed_cond"]), float(scaled_len) / float(NUM_FRAMES))
+    assert np.isclose(float(aug_info["motion_speed_applied"]), speed)
+    assert np.isclose(float(motion_metadata["motion_speed_applied"]), speed)
+    assert bool(motion_metadata["is_loop"]), "time-scaling must not downgrade a loop"
+    assert aug_info["loop_applied"] is True
+    assert aug_info["loop_tile_count"] == 1
+    # The augmentation never becomes a model input.
+    _motion_t, cond_batch = truebones_batch_collate([
+        motion_dataset.prepare_sample_by_name(LOOP_MOTION, target_num_frames=NUM_FRAMES, loop_offset=0)
+    ])
+    assert "motion_speed_applied" in cond_batch["y"]
+    assert not any(key.startswith("motion_speed") and key != "motion_speed_applied" for key in cond_batch["y"])
+
+    # What the augmentation changes in the window: the pose/rotation CONTENT
+    # is the same clip compressed into the same T frames (identical up to one
+    # extra linear interpolation), the velocity channels scale with the speed
+    # and resample_speed_cond shrinks by it. That is the whole mechanism --
+    # it spreads the resample_speed a given content is seen at, it does not
+    # invent new poses.
+    base, _base_metadata, base_info = prepare(raw_len)
+    assert np.isclose(float(base_info["motion_speed_applied"]), 1.0)
+    pose_diff = np.abs(motion[..., :9] - base[..., :9]).mean()
+    pose_step = np.abs(np.diff(base[..., :9], axis=0)).mean()
+    assert pose_diff < 0.15 * pose_step, (pose_diff, pose_step)
+    live = np.abs(base[..., 9:12]) > 1e-2
+    vel_ratio = np.median(np.abs(motion[..., 9:12][live]) / np.abs(base[..., 9:12][live]))
+    assert abs(vel_ratio - speed) < 0.05 * speed, (vel_ratio, speed)
+    assert float(aug_info["resample_speed_cond"]) < float(base_info["resample_speed_cond"])
+
+
+class _SpeedOpt:
+    def __init__(self, ratio, prob=1.0, min_length=20):
+        self.motion_speed_aug = ratio
+        self.motion_speed_aug_prob = prob
+        self.min_length = min_length
+
+
+def _speed_sampler(ratio, prob=1.0, min_length=20):
+    sampler = dataset_module.MotionDataset.__new__(dataset_module.MotionDataset)
+    sampler.opt = _SpeedOpt(ratio, prob, min_length)
+    sampler.min_length = min_length
+    return sampler
+
+
+def test_motion_speed_sampler_is_off_by_default_and_draws_nothing() -> None:
+    sampler = _speed_sampler(1.0)
+    # Off: no RNG consumed, so tests that count random draws stay valid.
+    with patch.object(dataset_module.random, 'random', side_effect=AssertionError("must not draw")):
+        assert sampler._sample_motion_speed_target_length(31, False, BUDGET_FRAMES) == 31
+    sampler = _speed_sampler(1.2, prob=0.0)
+    assert sampler._sample_motion_speed_target_length(31, False, BUDGET_FRAMES) == 31
+
+
+def test_motion_speed_sampler_stays_inside_the_clip_boundaries() -> None:
+    sampler = _speed_sampler(1.2)
+    rng = random.Random(7)
+    with patch.object(dataset_module.random, 'random', rng.random),             patch.object(dataset_module.random, 'uniform', rng.uniform):
+        # Plain clip: log-uniform ratio in [1/1.2, 1.2] around 31 frames.
+        draws = {sampler._sample_motion_speed_target_length(31, False, BUDGET_FRAMES) for _ in range(2000)}
+        assert min(draws) == 26 and max(draws) == 37, sorted(draws)
+        assert len(draws) >= 10, "the augmentation should spread the clip length, not pick a few values"
+        # min_length clip: may only slow down.
+        draws = {sampler._sample_motion_speed_target_length(20, False, BUDGET_FRAMES) for _ in range(2000)}
+        assert min(draws) == 20 and max(draws) == 24, sorted(draws)
+        # A loop that fits the source budget keeps fitting (never crop-downgraded).
+        draws = {sampler._sample_motion_speed_target_length(115, True, BUDGET_FRAMES) for _ in range(2000)}
+        assert max(draws) == BUDGET_FRAMES and min(draws) == 96, sorted(draws)
+        # A loop already over the budget is not forced anywhere.
+        draws = {sampler._sample_motion_speed_target_length(150, True, BUDGET_FRAMES) for _ in range(2000)}
+        assert min(draws) == 125 and max(draws) == 180, sorted(draws)
+        # A non-loop clip over the budget gets cropped either way: no ceiling.
+        draws = {sampler._sample_motion_speed_target_length(115, False, BUDGET_FRAMES) for _ in range(2000)}
+        assert max(draws) > BUDGET_FRAMES, sorted(draws)
+
+
+def test_motion_speed_sampler_rejects_bad_settings() -> None:
+    for ratio, prob in ((0.8, 1.0), (1.2, 1.5), (1.2, -0.1)):
+        sampler = _speed_sampler(ratio, prob)
+        try:
+            sampler._sample_motion_speed_target_length(31, False, BUDGET_FRAMES)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"ratio={ratio} prob={prob} should be rejected")
 
 
 def main() -> None:

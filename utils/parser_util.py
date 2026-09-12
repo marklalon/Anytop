@@ -241,6 +241,21 @@ def add_model_options(parser):
                             "(periodic resampling, circular phase, and loop-condition embedding)."
                             " 0.0 = all loop clips treated as non-loop; 1.0 = always keep loop path."
                             " Controls both the model loop-condition projection and dataset loop processing.")
+    group.add_argument("--motion_speed_aug", default=1.0, type=float,
+                       help="Motion-speed augmentation range R (1.0 = off). Each training clip is first "
+                            "time-scaled by a log-uniform ratio in [1/R, R] -- played faster (fewer frames) "
+                            "or slower (more frames) at the same fps -- and then treated as an ordinary "
+                            "source clip: loop roll/tile, crop, the window resample and resample_speed_cond "
+                            "all see the scaled length, and the model is told nothing. Loader-only: no cond "
+                            "regen, no model change, no CKPT_VERSION bump. Spreads the clustered clip lengths "
+                            "(45%% of the corpus sits on five exact frame counts) so an inference num_frames "
+                            "between the clusters is in distribution. The range is narrowed per clip so the "
+                            "scaled clip stays >= min_length and a loop that fits the source budget still "
+                            "fits (never downgraded to non-loop by slowing down). 1.2 is the intended value.")
+    group.add_argument("--motion_speed_aug_prob", default=1.0, type=float,
+                       help="Per-sample probability of applying --motion_speed_aug (default 1.0 = every clip). "
+                            "The recorded tempo is one point of the continuum, so leaving a mass at exactly "
+                            "1.0 only keeps part of the length spike; lower this only to compare against it.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")

@@ -6,6 +6,7 @@ import os
 from collections import OrderedDict, defaultdict
 from os.path import join as pjoin
 from pathlib import Path
+import math
 import random
 import re
 from typing import Optional
@@ -185,6 +186,47 @@ def resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
             resampled[0, :, 9:12] = 0.0
 
     return resampled.astype(motion.dtype, copy=False)
+
+
+def time_scale_motion_features(motion, target_num_frames, *, loop_terminal=False):
+    """Play the clip faster or slower: ``L`` frames become ``target_num_frames``
+    frames at the SAME fps, so the motion itself speeds up (fewer frames) or
+    slows down (more frames).
+
+    The result is a legitimate source clip in its own right -- every downstream
+    stage (loop roll / tile, crop, the window resample and its
+    ``resample_speed_cond``) treats it exactly like a clip recorded at that
+    tempo, and the model is told nothing about it.
+
+    ``resample_motion_features`` deliberately leaves the velocity channels in
+    "per SOURCE frame" units (the loss multiplies them by the step scale it
+    reconstructs from ``resample_speed_cond``); here the new frames ARE the
+    source frames, so the velocities are rescaled to "per new frame" -- without
+    that the positions would advance ``speed``x per frame while the velocity
+    channel still claimed 1x, and the velocity-consistency / loop-wrap losses
+    would be fed a self-contradicting target.
+
+    Returns ``(motion, speed)`` where ``speed`` is the ratio that actually
+    took effect, ``(L - 1) / (target_num_frames - 1)`` (> 1 = faster); it
+    differs slightly from the requested ratio because frame counts are
+    integers.
+    """
+    source_frames = int(motion.shape[0])
+    target_num_frames = int(target_num_frames)
+    if source_frames < 2 or target_num_frames < 2:
+        raise ValueError(
+            "time_scale_motion_features needs at least 2 source and 2 target frames, "
+            f"got {source_frames} -> {target_num_frames}."
+        )
+    if target_num_frames == source_frames:
+        return motion, 1.0
+    speed = float(source_frames - 1) / float(target_num_frames - 1)
+    scaled = resample_motion_features(
+        motion, target_num_frames, loop_terminal=loop_terminal
+    )
+    if scaled.shape[-1] >= 12:
+        scaled[..., 9:12] *= np.asarray(speed, dtype=scaled.dtype)
+    return scaled, speed
 
 
 def _circular_roll_motion(motion, offset):
@@ -843,6 +885,56 @@ class MotionDataset(data.Dataset):
             return 1
         return int(random.randint(1, max_tile_count))
 
+    def _sample_motion_speed_target_length(self, length, is_loop, max_source_length):
+        """Pick the frame count a clip is time-scaled to before any other
+        augmentation, or ``length`` for no change.
+
+        The speed ratio is log-uniform in ``[1/R, R]`` (``R`` =
+        ``opt.motion_speed_aug``; 1.0 = off), drawn with probability
+        ``opt.motion_speed_aug_prob``; the recorded tempo is one point of that
+        continuum, not a mode. The range is then narrowed so the augmentation
+        never carries a clip across a boundary it was not across already --
+        the point is to fill the gaps between the corpus' clustered clip
+        lengths, not to change what else happens to the clip:
+
+        * the scaled clip stays >= ``min_length`` (inference never asks for a
+          shorter window, so anything below is training the model on a
+          ``resample_speed`` it will never see);
+        * a loop clip that fits the ``max_source_length`` budget still fits,
+          so slowing it down cannot push it into the crop branch that
+          downgrades it to non-loop.
+
+        The narrowed interval is sampled directly rather than clipped into,
+        so no probability mass piles up at the bounds (which would just be a
+        new spike).
+        """
+        length = int(length)
+        ratio = float(getattr(self.opt, 'motion_speed_aug', 1.0))
+        prob = float(getattr(self.opt, 'motion_speed_aug_prob', 1.0))
+        if ratio < 1.0:
+            raise ValueError(f"motion_speed_aug must be >= 1.0 (1.0 = off), got {ratio}.")
+        if not 0.0 <= prob <= 1.0:
+            raise ValueError(f"motion_speed_aug_prob must be in [0, 1], got {prob}.")
+        if ratio == 1.0 or length < 2 or random.random() >= prob:
+            return length
+        floor_length = max(2, min(int(self.min_length), length))
+        ceil_length = None
+        if is_loop and length <= int(max_source_length):
+            ceil_length = int(max_source_length)
+        # speed > 1 shortens the clip.
+        speed_lo = 1.0 / ratio
+        speed_hi = min(ratio, float(length) / float(floor_length))
+        if ceil_length is not None:
+            speed_lo = max(speed_lo, float(length) / float(ceil_length))
+        if speed_lo >= speed_hi:
+            return length
+        speed = math.exp(random.uniform(math.log(speed_lo), math.log(speed_hi)))
+        target_length = int(round(float(length) / speed))
+        target_length = max(target_length, floor_length)
+        if ceil_length is not None:
+            target_length = min(target_length, ceil_length)
+        return target_length
+
     def prepare_sample_by_name(self, name, target_num_frames=None, loop_offset=None):
         if name not in self.data_dict:
             raise KeyError(f"Unknown motion sample '{name}'.")
@@ -893,6 +985,25 @@ class MotionDataset(data.Dataset):
         loop_condition_active = bool(is_loop) and not loop_uncond
 
         max_source_length = target_num_frames * MAX_SOURCE_FRAMES_MULT
+        # ── Motion-speed augmentation (applies to every clip) ──
+        # Runs FIRST and is invisible to everything after it: the time-scaled
+        # clip is simply a shorter/longer source clip recorded at a different
+        # tempo, so roll / tile / crop / the window resample and
+        # resample_speed_cond all see an ordinary clip and the model is told
+        # nothing. Its purpose is the corpus' length distribution -- 45% of the
+        # clips sit on five exact frame counts (20/21/26/31/41), so without it
+        # resample_speed is a comb and an inference num_frames between the
+        # teeth is out of distribution. A loop clip is time-scaled with its
+        # terminal wrap velocity intact, so it is still a closed cycle.
+        motion_speed_applied = 1.0
+        time_scaled_length = self._sample_motion_speed_target_length(
+            m_length, is_loop, max_source_length
+        )
+        if time_scaled_length != m_length:
+            motion, motion_speed_applied = time_scale_motion_features(
+                motion, time_scaled_length, loop_terminal=bool(is_loop)
+            )
+            m_length = int(motion.shape[0])
         # ── Loop-aware data augmentation (applies to ALL is_loop motions) ──
         # Circular roll shifts the temporal phase so the model sees every loop
         # from a random starting frame.  Random tiling repeats the cycle up to
@@ -950,6 +1061,8 @@ class MotionDataset(data.Dataset):
         motion_metadata['loop_data_aug_applied'] = bool(is_loop)
         motion_metadata['loop_phase_offset'] = int(loop_phase_offset)
         motion_metadata['loop_tile_count'] = int(loop_tile_count)
+        # Diagnostics only (training logs), never a model input.
+        motion_metadata['motion_speed_applied'] = float(motion_speed_applied)
         self._apply_action_label_condition(motion_metadata)
 
         if return_aug_info:
@@ -968,6 +1081,7 @@ class MotionDataset(data.Dataset):
                 'loop_tile_count': int(loop_tile_count),
                 'resample_speed_cond': float(resample_speed_cond),
                 'loop_uncond': bool(loop_uncond),
+                'motion_speed_applied': float(motion_speed_applied),
             }
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
@@ -1139,6 +1253,8 @@ class Truebones(data.Dataset):
         self.opt.min_length = int(kwargs.get('min_length', getattr(self.opt, 'min_length', 20)))
 
         self.opt.loop_cond_prob = kwargs.get('loop_cond_prob', 1.0)
+        self.opt.motion_speed_aug = float(kwargs.get('motion_speed_aug', 1.0))
+        self.opt.motion_speed_aug_prob = float(kwargs.get('motion_speed_aug_prob', 1.0))
         cond_dict = load_cond(opt.cond_file)
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
         # Support both predefined subsets and single species names. A species
