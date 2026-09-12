@@ -227,7 +227,8 @@ def test_loop_padding_updates_effective_length() -> None:
     assert raw_len < NUM_FRAMES, "loop regression sample no longer needs padding"
     expected = _resample_raw_then_normalize(raw, cond, NUM_FRAMES, loop_terminal=True)
 
-    assert np.isclose(float(motion_metadata["loop_phase_length"]), float(NUM_FRAMES))
+    assert "loop_phase_length" not in motion_metadata
+    assert "loop_full_cycle" not in motion_metadata
     assert np.isclose(float(motion_metadata["playspeed_cond"]), float(raw_len) / float(NUM_FRAMES))
     assert_close("loop-filled motion", motion, expected, atol=3e-5)
 
@@ -257,7 +258,10 @@ def test_loop_padding_can_tile_multiple_cycles_before_resample() -> None:
     assert motion.shape[0] == NUM_FRAMES
     assert m_length == NUM_FRAMES
     assert np.isclose(float(motion_metadata["playspeed_cond"]), float(raw.shape[0] * 2) / float(NUM_FRAMES))
-    assert np.isclose(float(motion_metadata["loop_phase_length"]), ((float(NUM_FRAMES) - 1.0) / 2.0) + 1.0)
+    # The tile count is diagnostics only: the model is not told how many
+    # cycles the window holds.
+    assert motion_metadata["loop_tile_count"] == 2
+    assert "loop_phase_length" not in motion_metadata
     assert_close("loop-filled tiled motion", motion, expected, atol=3e-5)
 
 
@@ -416,7 +420,6 @@ def test_loop_uncond_keeps_legacy_loop_tile_but_non_loop_metadata() -> None:
     assert motion.shape[0] == NUM_FRAMES
     assert m_length == NUM_FRAMES
     assert motion_metadata["is_loop"] is False
-    assert motion_metadata["loop_full_cycle"] is False
     assert aug_info["loop_applied"] is False
     assert aug_info["loop_uncond"] is True
     assert_close("loop uncond resample", motion, expected, atol=3e-5)
@@ -467,7 +470,6 @@ def test_loop_uncond_long_loop_rolls_then_crops(tmp_path) -> None:
     assert motion.shape[0] == NUM_FRAMES
     assert m_length == NUM_FRAMES
     assert motion_metadata["is_loop"] is False
-    assert motion_metadata["loop_full_cycle"] is False
     assert aug_info["loop_applied"] is False
     assert aug_info["loop_uncond"] is True
     assert_close("loop uncond long crop", motion, expected)
@@ -518,8 +520,6 @@ def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
     assert motion.shape[0] == NUM_FRAMES
     assert m_length == NUM_FRAMES
     assert motion_metadata["is_loop"] is False
-    assert motion_metadata["loop_full_cycle"] is False
-    assert motion_metadata["loop_phase_length"] == float(NUM_FRAMES)
     assert aug_info["loop_applied"] is False
     assert aug_info["loop_uncond"] is True
     assert np.isclose(float(aug_info["playspeed_cond"]), MAX_SOURCE_FRAMES_MULT)

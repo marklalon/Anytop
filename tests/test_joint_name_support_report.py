@@ -135,7 +135,7 @@ def test_a_rig_the_corpus_already_carries_is_not_warned_about():
     """
     reference = _reference_cond()
     reference['unitybundles/MB_Unka'] = _unka_rig(0)
-    reference['unitybundles/MB_Unka']['loop_period_by_action'] = {f'a{i}': 1.0 for i in range(9)}
+    reference['unitybundles/MB_Unka']['action_words'] = [f'a{i}' for i in range(9)]
 
     rows = collect_joint_name_support_rows({'new/Dragon': _unka_rig(0)}, reference)
 
@@ -150,7 +150,7 @@ def test_kinship_is_decided_per_token_not_per_rig():
     """A near-twin rig only vouches for the tokens it actually carries."""
     reference = _reference_cond()
     reference['unitybundles/MB_Unka'] = _unka_rig(0)
-    reference['unitybundles/MB_Unka']['loop_period_by_action'] = {f'a{i}': 1.0 for i in range(9)}
+    reference['unitybundles/MB_Unka']['action_words'] = [f'a{i}' for i in range(9)]
 
     query = _unka_rig(0)
     query['joints_names_embs_meta']['embedding_texts'][2] = 'Left Leg'
@@ -169,7 +169,7 @@ def test_a_rig_the_corpus_barely_animates_vouches_for_nothing():
     """Matching a species with no clips behind it is not evidence of training."""
     reference = _reference_cond()
     reference['unitybundles/MB_Unka'] = _unka_rig(0)
-    reference['unitybundles/MB_Unka']['loop_period_by_action'] = {'idle': 1.0}
+    reference['unitybundles/MB_Unka']['action_words'] = ['idle']
 
     rows = collect_joint_name_support_rows({'new/Dragon': _unka_rig(0)}, reference)
 

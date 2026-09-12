@@ -888,8 +888,6 @@ class MotionDataset(data.Dataset):
         )
 
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
-        loop_applied = False
-        loop_full_cycle = False
         loop_phase_offset = 0
         loop_tile_count = 1
         loop_condition_active = bool(is_loop) and not loop_uncond
@@ -941,26 +939,17 @@ class MotionDataset(data.Dataset):
             physical_hml_to_canonical(motion, self.cond_dict[object_type])
         ).astype(np.float32, copy=False)
 
-        if loop_condition_active:
-            loop_full_cycle = True
-            loop_applied = True
-
+        # is_loop is the whole loop condition the model sees: a closed window.
+        # The tile count is deliberately NOT passed on -- generation has no
+        # tile count, so the model must learn the cycle count from
+        # playspeed_cond (= tiles * period / T) and the species/action prior,
+        # exactly as it does for a one-shot clip. loop_tile_count and
+        # loop_phase_offset are logged for diagnostics only.
         motion_metadata['is_loop'] = bool(loop_condition_active)
-        motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
         motion_metadata['playspeed_cond'] = float(playspeed_cond)
         motion_metadata['loop_data_aug_applied'] = bool(is_loop)
         motion_metadata['loop_phase_offset'] = int(loop_phase_offset)
         motion_metadata['loop_tile_count'] = int(loop_tile_count)
-        # loop_phase_length: the expected single-cycle period in output frames.
-        # When multiple tile copies were resampled to one target window the
-        # effective cycle length is compressed proportionally.
-        # Example: 32f loop tiled 2× → 64f resampled to 60f → phase_len ≈ 30.5.
-        loop_phase_length = target_num_frames
-        if loop_condition_active and loop_full_cycle and loop_tile_count > 1:
-            loop_phase_length = ((float(target_num_frames) - 1.0) / float(loop_tile_count)) + 1.0
-        motion_metadata['loop_phase_length'] = float(
-            loop_phase_length if loop_condition_active and loop_full_cycle else max(int(m_length), 1)
-        )
         self._apply_action_label_condition(motion_metadata)
 
         if return_aug_info:
@@ -974,7 +963,7 @@ class MotionDataset(data.Dataset):
                 'canonical_feature_std': self.cond_dict[object_type].get('canonical_feature_std'),
                 'feature_space': self.cond_dict[object_type].get('feature_space', CANONICAL_FEATURE_SPACE),
             }, {
-                'loop_applied': bool(loop_applied),
+                'loop_applied': bool(loop_condition_active),
                 'loop_phase_offset': int(loop_phase_offset),
                 'loop_tile_count': int(loop_tile_count),
                 'playspeed_cond': float(playspeed_cond),

@@ -923,7 +923,7 @@ class TrainLoop:
         action_labels = y.get('action_label')
         action_groups = y.get('action_group')
         flag_keys = (
-            'is_loop', 'loop_full_cycle', 'loop_data_aug_applied', 'loop_tile_count',
+            'is_loop', 'loop_data_aug_applied', 'loop_tile_count',
             'loop_phase_offset', 'playspeed_cond', 'n_joints',
         )
         flags = {k: field_list(k) for k in flag_keys}

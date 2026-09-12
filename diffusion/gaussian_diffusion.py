@@ -645,9 +645,7 @@ class GaussianDiffusion:
                 'loop_wrap_rot': zero,
                 'loop_wrap_terminal_vel': zero,
             }
-        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
-        loop_full_cycle = self._coerce_bool_batch(y.get('loop_full_cycle'), batch_size, device, default=False)
-        active = is_loop & loop_full_cycle
+        active = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
         n_joints_long = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1)
         root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
 
@@ -759,11 +757,10 @@ class GaussianDiffusion:
         if n_frames < 2 or n_feats < 12:
             return {'loop_root_xz_closure': zero, 'loop_root_xz_drift': zero}
         is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
-        loop_full_cycle = self._coerce_bool_batch(y.get('loop_full_cycle'), batch_size, device, default=False)
         valid_joints = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1).clamp(min=0, max=max_joints)
         root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
         root_valid = (root_indices >= 0) & (root_indices < valid_joints)
-        active_valid = is_loop & loop_full_cycle & root_valid
+        active_valid = is_loop & root_valid
         active_weight = active_valid.to(dtype=model_output.dtype)
         active_denom = active_weight.sum().clamp(min=1.0)
 

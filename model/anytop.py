@@ -913,29 +913,6 @@ class AnyTop(nn.Module):
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token
 
-        loop_phase_mask = None
-        raw_loop_phase_mask = y.get('is_loop')
-        if raw_loop_phase_mask is not None:
-            loop_phase_mask = torch.as_tensor(raw_loop_phase_mask, device=x.device, dtype=torch.bool).reshape(-1)
-            if loop_phase_mask.numel() == 1 and bs != 1:
-                loop_phase_mask = loop_phase_mask.expand(bs)
-            elif loop_phase_mask.numel() != bs:
-                raise ValueError(
-                    "is_loop batch dimension must match the motion batch size, got "
-                    f"{loop_phase_mask.numel()} for batch {bs}"
-                )
-            raw_loop_full_cycle = y.get('loop_full_cycle')
-            if raw_loop_full_cycle is not None:
-                loop_full_cycle_mask = torch.as_tensor(raw_loop_full_cycle, device=x.device, dtype=torch.bool).reshape(-1)
-                if loop_full_cycle_mask.numel() == 1 and bs != 1:
-                    loop_full_cycle_mask = loop_full_cycle_mask.expand(bs)
-                elif loop_full_cycle_mask.numel() != bs:
-                    raise ValueError(
-                        "loop_full_cycle batch dimension must match the motion batch size, got "
-                        f"{loop_full_cycle_mask.numel()} for batch {bs}"
-                    )
-                loop_phase_mask = loop_phase_mask & loop_full_cycle_mask
-
         species_emb_for_joints = (
             self._coerce_species_emb(y, bs, x.device, x.dtype) if self.species_joint_cond else None
         )
@@ -980,8 +957,9 @@ class AnyTop(nn.Module):
                         f"{tuple(cross_limb_unreliable_mask.shape)}"
                     )
 
-        loop_phase_lengths = y.get('loop_phase_lengths', y.get('lengths'))
-
+        # is_loop is the only loop conditioning: it selects the circular time
+        # table (closed over the window) for those samples. The decoder coerces
+        # and size-checks it.
         output = self.seqTransDecoder(
             tgt=x,
             timesteps_embs=timesteps_emb,
@@ -990,8 +968,7 @@ class AnyTop(nn.Module):
             tgt_key_padding_mask=joint_key_padding_mask,
             y=y,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
-            loop_phase_mask=loop_phase_mask,
-            lengths=loop_phase_lengths,
+            loop_phase_mask=y.get('is_loop'),
         )
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
         return output

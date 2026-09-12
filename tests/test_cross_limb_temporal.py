@@ -311,9 +311,9 @@ def test_decoder_reuses_precomputed_loop_phase_embeddings(monkeypatch):
     calls: list[tuple[int, int, int]] = []
     original = motion_transformer_module.circular_phase_embedding
 
-    def wrapped(length, dim, batch_size, device, dtype, lengths=None):
-        calls.append((length, dim, batch_size))
-        return original(length, dim, batch_size, device, dtype, lengths)
+    def wrapped(length, dim, device, dtype):
+        calls.append((length, dim))
+        return original(length, dim, device, dtype)
 
     monkeypatch.setattr(motion_transformer_module, "circular_phase_embedding", wrapped)
 
@@ -344,10 +344,9 @@ def test_decoder_reuses_precomputed_loop_phase_embeddings(monkeypatch):
         memory=None,
         y=y,
         loop_phase_mask=torch.tensor([True, False]),
-        lengths=torch.tensor([T - 1, T - 1]),
     )
 
-    assert calls == [(T, D, 2), (T, 8, 2)]
+    assert calls == [(T, D), (T, 8)]
     assert len({id(pair[0]) for pair in seen}) == 1
     assert len({id(pair[1]) for pair in seen}) == 1
 

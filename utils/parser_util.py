@@ -18,7 +18,10 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # regression rather than an incompatibility.
 # 8: action-label hands axis (hand0/hand1/hand2) in a fourth slot channel;
 #    action_label_projection widened from 3 to 4 T5 blocks.
-CKPT_VERSION = 8
+# 9: circular time embedding is period-free (one wrap per window). Earlier
+#    weights read the loader's tile count off its period and would be asked
+#    for one cycle per window every time.
+CKPT_VERSION = 9
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise

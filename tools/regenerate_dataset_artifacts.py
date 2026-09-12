@@ -361,78 +361,42 @@ def _recompute_contact_joints(rebuilt_cond: dict[str, dict]) -> None:
             )
 
 
-def _compute_loop_periods(
+def _compute_action_words(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
     motion_metadata: dict[str, dict],
     cond_lookup,
 ) -> None:
-    """Bake each species' native loop period (in frames) into cond.npy.
+    """Bake the action words each species is animated with into cond.npy.
 
-    Generation needs it to fill ``loop_phase_length``, the scalar that tells the
-    model how many gait cycles one output window holds. Training derives that
-    scalar from the tile count it chose (``loop_phase_length = (T-1)/k + 1``);
-    inference has no tile count, so it inverts the same identity:
+    ``action_words`` is the sorted set of action words (never direction words)
+    over the species' clips. Nothing in training or generation reads it; it is
+    what the joint-name support scan of process_new_skeleton uses to decide
+    whether a reference species is animated enough for a rig-token match to
+    count as evidence (``_RIG_SIBLING_MIN_ACTIONS``).
 
-        k = round(playspeed * T / L)          L = the native loop period here
-        loop_phase_length = (T-1)/k + 1
-
-    k must come out an INTEGER -- a window the model is told is closed cannot
-    hold a fractional number of cycles -- which is why this stores the period and
-    lets the caller round, rather than storing a phase length directly.
-
-    Keyed by the label's action words (never its direction words) because the
-    period is an action property, not a skeleton or heading one: a 25-frame walk
-    cycle and a 20-frame run cycle on the same rig want different k, while
-    walking left and walking forward do not. ``loop_period_median`` is the
-    fallback for a label that names no action word.
-
-    Only ``is_loop`` clips contribute: a non-loop clip's length is its clip
-    duration, not a cycle period. The verdict is the action_labels.jsonl
-    annotation (joined in by load_motion_metadata), so a flag flipped in the
-    review UI changes this table on the next regeneration.
+    (The loop-period table this replaced fed generation a per-species cycle
+    count for the circular time embedding; that embedding is now period-free,
+    so the table is gone.)
     """
-    periods: dict[str, dict[str, list[int]]] = {}
+    words_by_species: dict[str, set[str]] = {}
     for motion_path in motion_files:
         entry = motion_metadata.get(motion_path.name)
-        if not entry or not bool(entry.get("is_loop", False)):
+        if not entry:
             continue
         object_type = _infer_object_type_from_motion_name(motion_path.name, cond_lookup)
         if object_type not in rebuilt_cond:
             continue
-        frame_count = int(np.load(motion_path, mmap_mode="r").shape[0])
-        if frame_count <= 0:
-            continue
-        words = action_words_in(str(entry.get("action_label") or ""))
-        bucket = periods.setdefault(object_type, {})
-        bucket.setdefault("", []).append(frame_count)
-        for word in words:
-            bucket.setdefault(word, []).append(frame_count)
+        words_by_species.setdefault(object_type, set()).update(
+            action_words_in(str(entry.get("action_label") or ""))
+        )
 
-    covered = 0
     for object_type, object_cond in rebuilt_cond.items():
-        bucket = periods.get(object_type, {})
-        overall = bucket.get("", [])
-        if not overall:
-            object_cond.pop("loop_period_by_action", None)
-            object_cond.pop("loop_period_median", None)
-            continue
-        # One clip is enough: it is an unbiased estimate of THAT action's period
-        # and strictly more relevant than the cross-action median that would
-        # otherwise be used for it (a species' idle clips are far longer than its
-        # run cycle, so the median is the worse estimator, not the safer one).
-        by_action = {
-            word: float(np.median(lengths))
-            for word, lengths in sorted(bucket.items())
-            if word
-        }
-        object_cond["loop_period_by_action"] = by_action
-        object_cond["loop_period_median"] = float(np.median(overall))
-        covered += 1
-    print(
-        f"[OK] native loop periods baked for {covered}/{len(rebuilt_cond)} species "
-        f"(species with no loop clip carry none)"
-    )
+        object_cond.pop("loop_period_by_action", None)
+        object_cond.pop("loop_period_median", None)
+        object_cond["action_words"] = sorted(words_by_species.get(object_type, ()))
+    animated = sum(1 for words in words_by_species.values() if words)
+    print(f"[OK] action words baked for {animated}/{len(rebuilt_cond)} species")
 
 
 def _validate_object_translation_roots(
@@ -566,10 +530,9 @@ def _regenerate_dataset_artifacts(
 
     # Fast-fail: action_labels.jsonl must exist (same contract as species_tags.jsonl
     # -- single source of truth, no inference fallback, no auto-creation). It also
-    # carries each clip's is_loop verdict, which the loop-period table below is
-    # aggregated over. load_motion_metadata below also hard-exits when a clip has
-    # no entry or no verdict, but a missing file is reported up front with the
-    # fix spelled out.
+    # carries each clip's is_loop verdict. load_motion_metadata below also
+    # hard-exits when a clip has no entry or no verdict, but a missing file is
+    # reported up front with the fix spelled out.
     action_labels_path = dataset_dir_path / ACTION_LABELS_FILE
     if not action_labels_path.exists():
         raise RuntimeError(
@@ -627,13 +590,13 @@ def _regenerate_dataset_artifacts(
     print(f"[OK] translation root contracts validated in {time.time() - t0:.1f}s")
 
     t0 = time.time()
-    _compute_loop_periods(
+    _compute_action_words(
         rebuilt_cond,
         motion_files,
         existing_motion_metadata,
         species_lookup_map(rebuilt_cond),
     )
-    print(f"[OK] native loop periods computed in {time.time() - t0:.1f}s")
+    print(f"[OK] action words computed in {time.time() - t0:.1f}s")
 
     t0 = time.time()
 

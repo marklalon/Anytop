@@ -886,7 +886,6 @@ def _generate_all_species(
                 feature_len=opt.feature_len,
                 loop=getattr(args, 'loop', False),
                 action_condition=action_condition,
-                playspeed=playspeed_cond_value,
             )
             model_kwargs['y']['playspeed_cond'] = torch.full(
                 (actual_bs,), playspeed_cond_value, dtype=torch.float32, device=dist_util.dev(),
@@ -1472,7 +1471,6 @@ def main(args=None, cond_dict=None, runtime=None):
         loop=getattr(args, 'loop', False),
         action_condition=_action_condition,
         species_emb_override=_species_emb_override,
-        playspeed=playspeed_cond_value,
     )
     model_kwargs['y']['playspeed_cond'] = torch.full(
         (args.batch_size,),
@@ -2217,56 +2215,15 @@ def _wrap_action_label_cfg(model, args, action_condition):
     return ClassifierFreeActionModel(model, scale)
 
 
-def _resolve_loop_phase_length(cond_entry, n_frames, playspeed, action_label):
-    """The ``loop_phase_length`` a loop generation must send the model.
-
-    It is the scalar the circular time embedding divides by, i.e. how many gait
-    cycles one output window holds. Training derives it from the tile count it
-    drew (``loop_phase_length = (T-1)/k + 1``); generation has no tile count, so
-    it inverts the same identity against the species' native loop period ``L``
-    baked into cond by regenerate_dataset_artifacts:
-
-        k = round(playspeed * T / L)          (== round(requested_frames / L))
-        loop_phase_length = (T-1)/k + 1
-
-    ``k`` is rounded to an INTEGER on purpose: a window the model is told is
-    closed cannot hold a fractional number of cycles, and asking for one makes
-    the model warp phase inside the window to close the seam.
-
-    Falls back to ``n_frames`` (k=1, the value the model got when this was never
-    sent at all) when the species carries no period -- no loop clips, or a label
-    that names no action word and a species with no overall median.
-    """
-    from data_loaders.truebones.truebones_utils.motion_labels import action_words_in
-
-    period = None
-    by_action = cond_entry.get('loop_period_by_action') or {}
-    if action_label and isinstance(by_action, dict):
-        for word in action_words_in(str(action_label)):
-            if word in by_action:
-                period = float(by_action[word])
-                break
-    if period is None:
-        median = cond_entry.get('loop_period_median')
-        if median is not None:
-            period = float(median)
-    if not period or period <= 0.0 or n_frames <= 1:
-        return float(n_frames), None
-
-    cycles = max(1, int(round(float(playspeed) * float(n_frames) / period)))
-    phase_length = ((float(n_frames) - 1.0) / cycles) + 1.0 if cycles > 1 else float(n_frames)
-    return phase_length, cycles
-
-
-def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len, loop=False, action_condition=None, species_emb_override=None, playspeed=1.0):
+def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len, loop=False, action_condition=None, species_emb_override=None):
     """Build model_kwargs for a batch of object_types.
 
     action_condition: {'action_group', 'action_label', 'action_slots'} applied
         to every object in the batch, or None for unconditional generation.
     species_emb_override: [t5_out_dim] vector replacing baked species_emb for all objects.
-    playspeed: the playspeed_cond this batch will be sampled with; only used to
-        derive loop_phase_length, which scales with it exactly as it does in
-        training.
+    loop: ask for a closed window. It is the whole loop condition -- how many
+        gait cycles the window holds is the model's to decide from playspeed
+        and the species/action prior, so nothing here needs a period table.
     """
     batches = list()
     # One entry per species, not per sample: the structural descriptors are a pure
@@ -2274,7 +2231,7 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
     # at construction -- a second implementation here would silently condition
     # generation on something training never saw.
     joint_struct_by_object = {}
-    for i, object_type in enumerate(object_types):
+    for object_type in object_types:
         if object_type not in cond_dict:
             available = ', '.join(sorted(cond_dict.keys()))
             raise KeyError(
@@ -2301,41 +2258,8 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         batch.append(max_joints)
         metadata = {
             'is_loop': bool(loop),
-            'loop_full_cycle': bool(loop),
             'translation_root_index': cond_dict[object_type].get('translation_root_index', 0),
         }
-        if loop:
-            # Training always supplies this; before it was filled here generation
-            # never did, so the model silently fell back to y['lengths'] and was
-            # asked for exactly one gait cycle per window whatever the species.
-            phase_length, cycles = _resolve_loop_phase_length(
-                cond_dict[object_type],
-                n_frames,
-                playspeed,
-                (action_condition or {}).get('action_label', ''),
-            )
-            metadata['loop_phase_length'] = float(phase_length)
-            if i == 0:
-                if cycles is None:
-                    print(
-                        f"[generate] {object_type}: no native loop period in cond, "
-                        f"loop_phase_length={phase_length:.2f} (one cycle per window). "
-                        f"Re-run tools/regenerate_dataset_artifacts.py to bake one."
-                    )
-                else:
-                    tokens_per_cycle = float(n_frames) / cycles
-                    print(
-                        f"[generate] {object_type}: loop_phase_length={phase_length:.2f} "
-                        f"({cycles} gait cycle(s) per {n_frames}-frame window, "
-                        f"{tokens_per_cycle:.1f} frames/cycle)"
-                    )
-                    if tokens_per_cycle < 20.0:
-                        print(
-                            f"[generate] WARNING: only {tokens_per_cycle:.1f} frames per gait "
-                            f"cycle. Below ~20 the sampler cannot hold a steady stride rate "
-                            f"and the motion will speed up and slow down within the clip. "
-                            f"Lower --num_frames."
-                        )
         if 'species_emb' in cond_dict[object_type]:
             metadata['species_emb'] = cond_dict[object_type]['species_emb']
         if species_emb_override is not None:

@@ -139,13 +139,6 @@ def _export_bvh(
     return True
 
 
-def _format_float_tag(value: object) -> str:
-    number = float(value)
-    if np.isclose(number, round(number)):
-        return str(int(round(number)))
-    return f"{number:.2f}".rstrip("0").rstrip(".").replace(".", "p")
-
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -342,11 +335,11 @@ def main() -> int:
             source_metadata = dataset.data_dict[name].get("motion_metadata", {})
             source_length = int(dataset.data_dict[name].get("length", motion_canonical.shape[0]))
             is_source_loop = bool(source_metadata.get("is_loop", False))
-            loop_phase_length = float(motion_metadata.get("loop_phase_length", m_length))
+            loop_tile_count = int(aug_info.get("loop_tile_count", 1))
 
             # aug_info contains actual augmentation results (not just parameters)
             if aug_info.get("loop_applied"):
-                tags.append(f"phase{_format_float_tag(loop_phase_length)}")
+                tags.append(f"loop{loop_tile_count}x")
             elif is_source_loop:
                 tags.append("loopuncond")
 
@@ -367,7 +360,7 @@ def main() -> int:
                 if is_source_loop:
                     loop_note = (
                         f", loop_applied={bool(aug_info.get('loop_applied'))}"
-                        f", phase_len={loop_phase_length:.3g}"
+                        f", tiles={loop_tile_count}"
                         f", source={source_length}f"
                     )
                 print(f"OK  → {save_path.name}  [{m_length}f, {object_type}{loop_note}]")

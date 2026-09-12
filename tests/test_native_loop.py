@@ -36,8 +36,6 @@ class _CaptureDecoder(torch.nn.Module):
 
 def _make_batch_item(
     is_loop: bool,
-    loop_full_cycle: bool,
-    loop_phase_length: float | None = None,
     playspeed_cond: float = 1.0,
 ):
     n_frames = 5
@@ -50,15 +48,11 @@ def _make_batch_item(
     graph = np.zeros((n_joints, n_joints), dtype=np.int64)
     relations = np.zeros((n_joints, n_joints), dtype=np.int64)
     names = np.zeros((n_joints, 4), dtype=np.float32)
-    if loop_phase_length is None:
-        loop_phase_length = float(n_frames)
     metadata = {
         'action_group': 'locomotion',
         'action_label': 'run, gallops forward',
         'translation_root_index': 0,
         'is_loop': is_loop,
-        'loop_full_cycle': loop_full_cycle,
-        'loop_phase_length': loop_phase_length,
         'playspeed_cond': playspeed_cond,
     }
     extra_cond = {'joint_mask_candidate_roots': np.zeros((n_joints,), dtype=np.bool_)}
@@ -102,41 +96,41 @@ class NativeLoopTests(unittest.TestCase):
         emb = circular_phase_embedding(
             length=6,
             dim=8,
-            batch_size=1,
             device=torch.device('cpu'),
             dtype=torch.float32,
-            lengths=torch.tensor([5]),
         )
 
-        self.assertTrue(torch.allclose(emb[1, 0], emb[-1, 0], atol=1e-6))
+        self.assertEqual(tuple(emb.shape), (6, 8))
+        # Slot 0 is the T-pose token; motion frames 1..5 close on themselves.
+        self.assertTrue(torch.equal(emb[0], torch.zeros(8)))
+        self.assertTrue(torch.allclose(emb[1], emb[-1], atol=1e-6))
 
-    def test_circular_phase_can_repeat_multiple_cycles(self):
-        atol = 3e-6
+    def test_circular_phase_wraps_exactly_once_per_window(self):
+        """The period is the window, never a cycle count: no interior frame
+        repeats the first frame's phase, so the embedding cannot tell the
+        model how many gait cycles the window holds."""
         emb = circular_phase_embedding(
             length=8,
             dim=8,
-            batch_size=1,
             device=torch.device('cpu'),
             dtype=torch.float32,
-            lengths=torch.tensor([4.0]),
         )
 
-        self.assertTrue(torch.allclose(emb[1, 0], emb[4, 0], atol=atol))
-        self.assertTrue(torch.allclose(emb[4, 0], emb[7, 0], atol=atol))
-        self.assertTrue(torch.allclose(emb[2, 0], emb[5, 0], atol=atol))
-        self.assertTrue(torch.allclose(emb[3, 0], emb[6, 0], atol=atol))
+        first = emb[1]
+        for frame in range(2, 7):
+            self.assertFalse(torch.allclose(emb[frame], first, atol=1e-3), frame)
+        self.assertTrue(torch.allclose(emb[7], first, atol=3e-6))
 
     def test_truebones_collate_forwards_loop_flags_as_bool_tensors(self):
         _, cond = truebones_batch_collate([
-            _make_batch_item(True, True, loop_phase_length=3.0, playspeed_cond=0.5),
-            _make_batch_item(False, False, loop_phase_length=5.0, playspeed_cond=2.0),
+            _make_batch_item(True, playspeed_cond=0.5),
+            _make_batch_item(False, playspeed_cond=2.0),
         ])
 
         self.assertEqual(cond['y']['is_loop'].dtype, torch.bool)
-        self.assertEqual(cond['y']['loop_full_cycle'].dtype, torch.bool)
         self.assertEqual(cond['y']['is_loop'].tolist(), [True, False])
-        self.assertEqual(cond['y']['loop_full_cycle'].tolist(), [True, False])
-        self.assertTrue(torch.equal(cond['y']['loop_phase_lengths'], torch.tensor([3.0, 5.0], dtype=torch.float32)))
+        self.assertNotIn('loop_full_cycle', cond['y'])
+        self.assertNotIn('loop_phase_lengths', cond['y'])
         self.assertTrue(torch.equal(cond['y']['playspeed_cond'], torch.tensor([0.5, 2.0], dtype=torch.float32)))
 
     def test_anytop_coerces_default_playspeed_to_one(self):
@@ -235,7 +229,6 @@ class NativeLoopTests(unittest.TestCase):
 
         y = {
             'is_loop': torch.tensor([True, False]),
-            'loop_full_cycle': torch.tensor([True, True]),
             'translation_root_index': [0, 0],
         }
         terms = diffusion.loop_wrap_loss(
@@ -262,7 +255,6 @@ class NativeLoopTests(unittest.TestCase):
 
         y = {
             'is_loop': torch.tensor([True]),
-            'loop_full_cycle': torch.tensor([True]),
             'translation_root_index': [0],
         }
         terms = diffusion.loop_wrap_loss(
@@ -292,7 +284,6 @@ class NativeLoopTests(unittest.TestCase):
         model_output[0, 0, 10, -1] = 0.5
         y = {
             'is_loop': torch.tensor([True]),
-            'loop_full_cycle': torch.tensor([True]),
             'translation_root_index': [0],
             'playspeed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
         }
@@ -326,7 +317,6 @@ class NativeLoopTests(unittest.TestCase):
         model_output[0, 0, 10, :] = 0.7
         y = {
             'is_loop': torch.tensor([True]),
-            'loop_full_cycle': torch.tensor([True]),
             'translation_root_index': [0],
         }
 
@@ -342,7 +332,6 @@ class NativeLoopTests(unittest.TestCase):
         model_output[0, 0, 11, :] = -0.01  # Z bias of the same size
         y = {
             'is_loop': torch.tensor([True]),
-            'loop_full_cycle': torch.tensor([True]),
             'translation_root_index': [0],
         }
 
@@ -360,7 +349,6 @@ class NativeLoopTests(unittest.TestCase):
         model_output = torch.cat([closed, drifting, one_shot], dim=0)
         y = {
             'is_loop': torch.tensor([True, True, False]),
-            'loop_full_cycle': torch.tensor([True, True, True]),
             'translation_root_index': [0, 0, 0],
         }
 
@@ -375,7 +363,6 @@ class NativeLoopTests(unittest.TestCase):
         model_output = self._closure_output([1.0] * 7)
         y = {
             'is_loop': torch.tensor([True]),
-            'loop_full_cycle': torch.tensor([True]),
             'translation_root_index': [0],
             # 7 output frames drawn from 4 source frames: step_scale = 3 / 6.
             'playspeed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
@@ -393,7 +380,6 @@ class NativeLoopTests(unittest.TestCase):
         model_output[0, 0, 9, :] = 9.0
         y_valid = {
             'is_loop': torch.tensor([True]),
-            'loop_full_cycle': torch.tensor([True]),
             'translation_root_index': [1],
         }
         y_invalid = dict(y_valid, translation_root_index=[5])
@@ -423,7 +409,6 @@ class NativeLoopTests(unittest.TestCase):
                 'canonical_feature_mean': torch.zeros(n_feats),
                 'canonical_feature_std': torch.ones(n_feats),
                 'is_loop': torch.tensor([True]),
-                'loop_full_cycle': torch.tensor([True]),
                 'translation_root_index': [0],
             }
         }
@@ -478,7 +463,7 @@ class NativeLoopTests(unittest.TestCase):
         self.assertEqual(diffusion.lambda_loop_wrap, 0.75)
         self.assertEqual(diffusion.lambda_loop_root_closure, 1.5)
 
-    def test_anytop_forwards_loop_phase_metadata(self):
+    def test_anytop_forwards_is_loop_as_the_only_loop_condition(self):
         model = AnyTop(
             max_joints=4,
             feature_len=12,
@@ -505,238 +490,60 @@ class NativeLoopTests(unittest.TestCase):
             'canonical_feature_std': torch.ones(12, dtype=torch.float32),
             'is_loop': torch.tensor([True, False]),
             'lengths': torch.tensor([3, 3], dtype=torch.int64),
-            'loop_phase_lengths': torch.tensor([2.0, 3.0], dtype=torch.float32),
         }
 
         model(x, torch.tensor([1, 2], dtype=torch.int64), y=y)
 
         self.assertIsNotNone(capture_decoder.last_kwargs)
         self.assertTrue(torch.equal(capture_decoder.last_kwargs['loop_phase_mask'], y['is_loop']))
-        self.assertTrue(torch.equal(capture_decoder.last_kwargs['lengths'], y['loop_phase_lengths']))
+        self.assertNotIn('lengths', capture_decoder.last_kwargs)
 
-    def test_anytop_loop_phase_requires_full_cycle_when_available(self):
-        model = AnyTop(
-            max_joints=4,
-            feature_len=12,
-            latent_dim=8,
-            ff_size=32,
-            num_layers=1,
-            num_heads=2,
-            dropout=0.0,
-            cross_limb=True,
+    def test_decoder_loop_tables_are_per_sample_and_period_free(self):
+        """Loop samples get the circular table, one wrap per window; non-loop
+        samples get a zero phase and the absolute table. No per-sample period
+        exists any more, so the picture is the same for every batch."""
+        from model.motion_transformer import (
+            GraphMotionDecoder,
+            GraphMotionDecoderLayer,
+            _sin_time_embedding,
         )
-        capture_decoder = _CaptureDecoder()
-        model.seqTransDecoder = capture_decoder
 
-        x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
+        D, H, J, T = 8, 2, 3, 6
+        layer = GraphMotionDecoderLayer(D, H, dim_feedforward=16, dropout=0.0)
+        dec = GraphMotionDecoder(layer, num_layers=1, cross_limb=True, cross_limb_latents=2, cross_limb_dim=8)
+        seen = {}
+
+        def stub(output, *a, **kw):
+            seen['phase'] = kw['loop_phase_embedding']
+            seen['cross_limb'] = kw['cross_limb_time_embedding']
+            return output
+
+        dec.layers[0].forward = stub
         y = {
-            'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-            'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
-            'n_joints': torch.tensor([4, 3], dtype=torch.int64),
-            'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
-            'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
-            # Unconditional model input -- every forward reads the frame.
-            'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),
-            'canonical_feature_std': torch.ones(12, dtype=torch.float32),
-            'is_loop': torch.tensor([True, True]),
-            'loop_full_cycle': torch.tensor([True, False]),
-            'lengths': torch.tensor([3, 3], dtype=torch.int64),
+            'graph_dist': torch.zeros(2, J, J, dtype=torch.int64),
+            'joints_relations': torch.zeros(2, J, J, dtype=torch.int64),
         }
+        dec.forward(
+            tgt=torch.zeros(T, 2, J, D),
+            timesteps_embs=torch.zeros(2, D),
+            memory=None,
+            y=y,
+            loop_phase_mask=torch.tensor([True, False]),
+        )
 
-        model(x, torch.tensor([1, 2], dtype=torch.int64), y=y)
-
-        self.assertIsNotNone(capture_decoder.last_kwargs)
-        self.assertTrue(torch.equal(capture_decoder.last_kwargs['loop_phase_mask'], torch.tensor([True, False])))
-
-
-    # ------------------------------------------------------------------
-    # Generation-side loop_phase_length (the value training always supplied
-    # and generation, until this was wired, never did).
-    # ------------------------------------------------------------------
-
-    def test_generation_phase_length_inverts_the_training_identity(self):
-        """k = round(playspeed*T/L) and phase_len = (T-1)/k + 1 -- the exact
-        inverse of what the loader computes from its tile count."""
-        from sample.generate import _resolve_loop_phase_length
-
-        entry = {'loop_period_by_action': {'walk': 25.0, 'run': 20.0}, 'loop_period_median': 25.0}
-        # 60 output frames over a 25-frame walk cycle -> 2 cycles.
-        phase_length, cycles = _resolve_loop_phase_length(entry, 60, 1.0, 'walk, strides forward')
-        self.assertEqual(cycles, 2)
-        self.assertAlmostEqual(phase_length, (60 - 1) / 2 + 1, places=6)
-        # A 20-frame run cycle in the same window is 3, not 2: the period is an
-        # action property, so the label -- not just the species -- selects it.
-        phase_length, cycles = _resolve_loop_phase_length(entry, 60, 1.0, 'run, forward, fast')
-        self.assertEqual(cycles, 3)
-        self.assertAlmostEqual(phase_length, (60 - 1) / 3 + 1, places=6)
-        # playspeed scales the source length, so it scales the cycle count too.
-        _, cycles = _resolve_loop_phase_length(entry, 60, 2.0, 'walk')
-        self.assertEqual(cycles, 5)
-
-    def test_generation_phase_length_falls_back_to_one_cycle(self):
-        """No baked period -> the pre-fix value, so the change can only help."""
-        from sample.generate import _resolve_loop_phase_length
-
-        phase_length, cycles = _resolve_loop_phase_length({}, 60, 1.0, 'walk')
-        self.assertEqual(phase_length, 60.0)
-        self.assertIsNone(cycles)
-        # A label naming no core word falls through to the species median.
-        entry = {'loop_period_by_action': {'walk': 25.0}, 'loop_period_median': 30.0}
-        _, cycles = _resolve_loop_phase_length(entry, 60, 1.0, 'wobbles about')
-        self.assertEqual(cycles, 2)
-
-    def test_generation_phase_length_never_asks_for_a_fractional_cycle(self):
-        """A window the model is told is closed must hold a whole number of
-        cycles; a fractional request makes it warp phase to close the seam."""
-        from sample.generate import _resolve_loop_phase_length
-
-        for period in (13.0, 17.0, 23.0, 41.0, 57.0):
-            entry = {'loop_period_by_action': {}, 'loop_period_median': period}
-            phase_length, cycles = _resolve_loop_phase_length(entry, 60, 1.0, '')
-            self.assertEqual(cycles, int(cycles))
-            self.assertGreaterEqual(cycles, 1)
-            expected = ((60 - 1) / cycles + 1) if cycles > 1 else 60.0
-            self.assertAlmostEqual(phase_length, expected, places=6)
-
-    def test_collate_turns_generation_metadata_into_loop_phase_lengths(self):
-        """The metadata key only reaches the model if the collate emits the
-        plural tensor name the forward reads."""
-        items = [
-            _make_batch_item(True, True, loop_phase_length=30.5),
-            _make_batch_item(True, True, loop_phase_length=20.0),
-        ]
-        _, cond = truebones_batch_collate(items)
-        self.assertIn('loop_phase_lengths', cond['y'])
+        cpu = torch.device('cpu')
+        circular = circular_phase_embedding(T, D, cpu, torch.float32)
+        self.assertEqual(tuple(seen['phase'].shape), (T, 2, D))
+        self.assertTrue(torch.equal(seen['phase'][:, 0], circular))
+        self.assertTrue(torch.equal(seen['phase'][:, 1], torch.zeros(T, D)))
+        cl_dim = dec.cross_limb_blocks[0].latent_dim
+        self.assertEqual(tuple(seen['cross_limb'].shape), (T, 2, cl_dim))
         self.assertTrue(torch.equal(
-            cond['y']['loop_phase_lengths'], torch.tensor([30.5, 20.0], dtype=torch.float32)
+            seen['cross_limb'][:, 0], circular_phase_embedding(T, cl_dim, cpu, torch.float32)
         ))
-
-    # ------------------------------------------------------------------
-    # process_new_skeleton: a rest-pose-only cond has no clips to measure a
-    # period from, so it inherits one from the reference cond by species_tags.
-    # Without it generation takes the one-cycle fallback above, which on a
-    # 60-frame walk window puts the legs at 60 frames/stride and the arms at 30.
-    # ------------------------------------------------------------------
-
-    def _reference_cond_file(self, tmp_dir):
-        from data_loaders.truebones.truebones_utils.cond_schema import save_cond
-
-        def entry(tags, by_action, median):
-            return {
-                'parents': np.array([-1, 0], dtype=np.int32),
-                'species_tags': tags,
-                'loop_period_by_action': by_action,
-                'loop_period_median': median,
-            }
-
-        reference = {
-            'ds/BipedA': entry(('Biped', 'Medium', 'Striding'), {'walk': 24.0, 'run': 19.0}, 39.0),
-            'ds/BipedB': entry(('Biped', 'Medium', 'Striding'), {'walk': 36.0}, 36.0),
-            'ds/BipedC': entry(('Biped', 'Medium', 'Striding'), {'walk': 20.0, 'idle': 59.0}, 20.0),
-            'ds/BigBiped': entry(('Biped', 'Large', 'Lumbering'), {'walk': 50.0}, 50.0),
-            'ds/Quad': entry(('Quadruped', 'Medium', 'Trotting'), {'walk': 30.0}, 30.0),
-            # The RedDragon shape: the only exact-tag sibling loops attack/idle
-            # but never flies; the flappers of other sizes do.
-            'ds/HeavyDragon': entry(('Winged', 'Heavy', 'Flapping'), {'attack': 181.0, 'idle': 220.0}, 181.0),
-            'ds/Bird': entry(('Winged', 'Small', 'Flapping'), {'fly': 40.0}, 83.0),
-            'ds/Bat': entry(('Winged', 'Small', 'Flapping'), {'fly': 20.0}, 60.0),
-            'ds/Unka': entry(('Winged', 'Heavy', 'Soaring'), {'fly': 100.0, 'hover': 120.0}, 61.0),
-        }
-        # A species with no loop clip carries no period and must not vote.
-        reference['ds/NoLoops'] = {
-            'parents': np.array([-1, 0], dtype=np.int32),
-            'species_tags': ('Biped', 'Medium', 'Striding'),
-        }
-        path = Path(tmp_dir) / 'cond.npy'
-        save_cond(path, reference)
-        return str(path)
-
-    def test_new_skeleton_inherits_loop_period_from_same_tag_species(self):
-        import tempfile
-        from data_loaders.truebones.truebones_utils import dataset_tags
-        from data_loaders.truebones.truebones_utils.dataset_pipeline import (
-            _inherit_loop_periods_from_reference,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            ref_path = self._reference_cond_file(tmp_dir)
-            with dataset_tags.registered_species_tags('Human', ('Biped', 'Medium', 'Striding')):
-                cond = {}
-                source = _inherit_loop_periods_from_reference('Human', cond, ref_path)
-            self.assertTrue(source['walk'].startswith('species_tags'), source)
-            self.assertTrue(source['__median__'].startswith('species_tags'), source)
-            # Per-action median over the three exact-tag species, each word over
-            # the species that carry it; the Large/Lumbering biped does not vote.
-            self.assertEqual(cond['loop_period_by_action']['walk'], 24.0)
-            self.assertEqual(cond['loop_period_by_action']['run'], 19.0)
-            self.assertEqual(cond['loop_period_by_action']['idle'], 59.0)
-            self.assertEqual(cond['loop_period_median'], 36.0)
-            # ...and it is exactly what generation needs: 60 frames / 24 -> 2 cycles.
-            from sample.generate import _resolve_loop_phase_length
-            phase_length, cycles = _resolve_loop_phase_length(cond, 60, 1.0, 'walk, forward')
-            self.assertEqual(cycles, 2)
-            self.assertAlmostEqual(phase_length, 30.5)
-
-    def test_new_skeleton_loop_period_tier_is_chosen_per_action_word(self):
-        """An exact-tag sibling that never flies must not swallow `fly` into its
-        idle-length median: each word falls through to the narrowest tier that
-        carries it, while the words the sibling does have stay with it."""
-        import tempfile
-        from data_loaders.truebones.truebones_utils import dataset_tags
-        from data_loaders.truebones.truebones_utils.dataset_pipeline import (
-            _inherit_loop_periods_from_reference,
-        )
-        from sample.generate import _resolve_loop_phase_length
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            ref_path = self._reference_cond_file(tmp_dir)
-            with dataset_tags.registered_species_tags('RedDragon', ('Winged', 'Heavy', 'Flapping')):
-                cond = {}
-                source = _inherit_loop_periods_from_reference('RedDragon', cond, ref_path)
-            self.assertTrue(source['attack'].startswith('species_tags'), source)
-            self.assertEqual(cond['loop_period_by_action']['attack'], 181.0)
-            # fly: not on the sibling -> body plan + gait (the two small flappers).
-            self.assertEqual(source['fly'], 'body plan + gait winged/flapping')
-            self.assertEqual(cond['loop_period_by_action']['fly'], 30.0)
-            # hover: only the heavy soarer has it -> body plan + size.
-            self.assertEqual(source['hover'], 'body plan + size winged/heavy')
-            self.assertEqual(cond['loop_period_by_action']['hover'], 120.0)
-            # The median itself still comes from the narrowest non-empty tier.
-            self.assertEqual(cond['loop_period_median'], 181.0)
-            # And a 60-frame fly window now holds two flaps, not one.
-            _, cycles = _resolve_loop_phase_length(cond, 60, 1.0, 'fly, forward')
-            self.assertEqual(cycles, 2)
-
-    def test_new_skeleton_loop_period_falls_back_to_subset_then_everything(self):
-        import tempfile
-        from data_loaders.truebones.truebones_utils import dataset_tags
-        from data_loaders.truebones.truebones_utils.dataset_pipeline import (
-            _inherit_loop_periods_from_reference,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            ref_path = self._reference_cond_file(tmp_dir)
-            # A tag triple nobody carries, nor its gait or size -> every biped votes.
-            with dataset_tags.registered_species_tags('Kappa', ('Biped', 'Small', 'Hopping')):
-                cond = {}
-                source = _inherit_loop_periods_from_reference('Kappa', cond, ref_path)
-            self.assertEqual(source['walk'], 'object_subset biped')
-            self.assertEqual(cond['loop_period_by_action']['walk'], np.median([24.0, 36.0, 20.0, 50.0]))
-            # A body plan nobody carries -> the whole reference votes.
-            with dataset_tags.registered_species_tags('Jelly', ('Drifting', 'Small', 'Pulsing')):
-                cond = {}
-                source = _inherit_loop_periods_from_reference('Jelly', cond, ref_path)
-            self.assertEqual(source['walk'], 'all reference species')
-            self.assertEqual(source['__median__'], 'all reference species')
-            self.assertEqual(cond['loop_period_by_action']['walk'], 30.0)
-            # An entry that already carries a period keeps it.
-            own = {'loop_period_by_action': {'walk': 12.0}, 'loop_period_median': 12.0}
-            self.assertEqual(_inherit_loop_periods_from_reference('Jelly', own, ref_path), 'own')
-            self.assertEqual(own['loop_period_median'], 12.0)
-            # No reference at all -> nothing baked, nothing raised.
-            cond = {}
-            self.assertIsNone(_inherit_loop_periods_from_reference('Jelly', cond, ''))
-            self.assertNotIn('loop_period_median', cond)
+        self.assertTrue(torch.equal(
+            seen['cross_limb'][:, 1], _sin_time_embedding(T, cl_dim, cpu, torch.float32)
+        ))
 
 
 if __name__ == '__main__':
