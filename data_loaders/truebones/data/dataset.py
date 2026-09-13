@@ -237,15 +237,87 @@ def _circular_roll_motion(motion, offset):
     return motion[indices]
 
 
+# A loop with its closing key (last frame == frame 0) is one cycle plus one
+# frame: rolled, tiled or resampled, the (last, first) pair stalls one frame at
+# every seam.  Many loops ship that way, so the frame is dropped at load time,
+# leaving a clean period.
+#
+# The test is scale-free: each pose stack (RIC positions, 6-D rotations) and the
+# wrap velocity row are judged against the clip's own median frame step, and
+# every moving stack must call the pair a repeat.  A frame that fails is real
+# motion and stays.
+#
+# Only a frame IDENTICAL to frame 0 is a closing key -- not one a little short
+# of it.  The two are told apart by direction: the gap of a frame that moved
+# lies along the motion (anti-parallel to its own last step), the gap of a
+# repeated key is export rounding and points anywhere.  Over the three datasets
+# the gap is direction-free up to ~0.02 of a step (the coarsest packs round a
+# repeated key to ~0.01 of a step) and the first moved frames appear at ~0.03,
+# so the ratio sits at the top of the rounding band and under every moved one.
+LOOP_CLOSING_FRAME_RATIO = 0.02
+# The pose gap must ALSO be small against the clip's own last step (frame N-1
+# -> N).  A clip that eases out ends on frames a fraction of the median step
+# apart, so its last frame can sit within the ratio above of frame 0 while
+# being one full local step from it -- ordinary motion, not a repeat.  A
+# duplicated key is noise-level against both steps (<= 0.15 of the tail step
+# on every unambiguous one measured; eased idles read 0.2-1.4).  The head step
+# is deliberately not consulted: a held opening pose (frame 1 == frame 0) is
+# common and says nothing about the tail.
+LOOP_CLOSING_FRAME_LOCAL_RATIO = 0.2
+# Below this a stack is motionless and abstains; if every stack abstains the
+# clip is static and its length IS the held duration.
+LOOP_CLOSING_FRAME_MIN_MOTION = 1e-9
+
+
+def _drop_loop_closing_frame(motion, ratio=LOOP_CLOSING_FRAME_RATIO,
+                             local_ratio=LOOP_CLOSING_FRAME_LOCAL_RATIO):
+    """Drop the closing key when the last frame repeats frame 0; else unchanged.
+
+    Positions are root-relative and cannot see root travel, so the terminal
+    velocity row (the wrap delta last->first that preprocessing writes for a
+    loop) is judged as a third stack.  After the drop no channel needs
+    rewriting: the new last frame's velocity is already the wrap delta to
+    frame 0 within the tolerance that let the frame go.
+    """
+    frame_count = int(motion.shape[0])
+    if frame_count < 3 or motion.shape[-1] < 12:
+        return motion
+    frames = np.asarray(motion, dtype=np.float64)
+    voted = 0
+    for channels in (slice(0, 3), slice(3, 9)):
+        stack = frames[:, :, channels]
+        # Largest per-joint delta: any moving joint is not a repeat (a percentile
+        # would be dragged to zero by static joints).  The reference is the
+        # median of the same statistic over frames, so the two are commensurable.
+        steps = np.linalg.norm(np.diff(stack, axis=0), axis=-1).max(axis=1)
+        reference = float(np.median(steps))
+        if reference <= LOOP_CLOSING_FRAME_MIN_MOTION:
+            continue
+        voted += 1
+        gap = float(np.linalg.norm(stack[-1] - stack[0], axis=-1).max())
+        if gap > ratio * reference or gap > local_ratio * float(steps[-1]):
+            return motion
+    velocity = frames[:, :, 9:12]
+    reference = float(np.median(np.linalg.norm(velocity[:-1], axis=-1).max(axis=1)))
+    if reference > LOOP_CLOSING_FRAME_MIN_MOTION:
+        voted += 1
+        if float(np.linalg.norm(velocity[-1], axis=-1).max()) > ratio * reference:
+            return motion
+    if voted == 0:
+        return motion
+    return motion[:-1]
+
+
 def _tile_loop_motion(motion, repeat_count):
     """Concatenate ``repeat_count`` copies of a loop motion along the time axis.
 
     Feature consistency at tile boundaries is guaranteed because preprocessing
     writes the terminal velocity (channels 9-11) as the wrap-around delta
     ``pos[0] - pos[-1]`` for all motions classified as loop
-    (``detect_motion_loop`` / ``_compute_terminal_local_velocity``).  Because
-    the last and first frames are near-identical in a loop clip, the velocity
-    at the boundary from copy *k* to copy *k+1* stays physically consistent.
+    (``detect_motion_loop`` / ``_compute_terminal_local_velocity``), and the
+    caller has already dropped a closing key that repeats frame 0
+    (``_drop_loop_closing_frame``): the step from copy *k*'s last frame to copy
+    *k+1*'s first is one ordinary frame step, not a stall.
 
     The 6-D rotations (channels 3-8) are unaffected by tiling.  Tiling
     operates in whichever feature space the
@@ -984,10 +1056,23 @@ class MotionDataset(data.Dataset):
         loop_tile_count = 1
         loop_condition_active = bool(is_loop) and not loop_uncond
 
+        # ── Closing-key drop (applies to ALL is_loop motions) ──
+        # A loop authored with its last frame repeating frame 0 is one cycle
+        # plus one frame.  It goes first, on the clip as stored: every stage
+        # below treats the clip as a closed cycle (the speed resample's wrap
+        # velocity, the circular roll, the tile seams, the window resample),
+        # and each would turn that frame into a one-frame stall at a random
+        # phase of the window.  The roll also makes it undetectable afterwards
+        # -- once rolled, first and last are no longer the repeated pair.
+        if is_loop:
+            motion = _drop_loop_closing_frame(motion)
+            m_length = int(motion.shape[0])
+
         max_source_length = target_num_frames * MAX_SOURCE_FRAMES_MULT
         # ── Motion-speed augmentation (applies to every clip) ──
-        # Runs FIRST and is invisible to everything after it: the time-scaled
-        # clip is simply a shorter/longer source clip recorded at a different
+        # Runs ahead of the loop augmentations and is invisible to everything
+        # after it: the time-scaled clip is simply a shorter/longer source clip
+        # recorded at a different
         # tempo, so roll / tile / crop / the window resample and
         # resample_speed_cond all see an ordinary clip and the model is told
         # nothing. Its purpose is the corpus' length distribution -- 45% of the

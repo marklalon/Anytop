@@ -25,6 +25,7 @@ from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
     Truebones,
     _circular_roll_motion,
+    _drop_loop_closing_frame,
     resample_motion_features,
     time_scale_motion_features,
     _tile_loop_motion,
@@ -58,6 +59,12 @@ def _find_motion(pattern: str) -> str:
 
 LOOP_MOTION = _find_motion("Ostrich_Run.npy")
 LOOP_SUBSET = "biped"
+# A loop authored WITH its closing key: frame 19 repeats frame 0 (wrap gap
+# 5e-5 of a frame step, wrap velocity row ~0), so the loader drops it and the
+# cycle it augments is 19 frames long.  Ostrich_Run above ends 0.6 of a step
+# short of frame 0 and keeps all its frames.
+CLOSING_KEY_LOOP_MOTION = _find_motion("Roach_Left.npy")
+CLOSING_KEY_LOOP_SUBSET = "multiped"
 NUM_FRAMES = 60
 # The n*MAX_SOURCE_FRAMES_MULT source-frame budget the dataset crops over-long
 # clips to (see _prepare_sample); over-long clips resample down at exactly
@@ -165,6 +172,126 @@ def _build_truebones(**kwargs) -> Truebones:
     enriched_lookup = _get_enriched_motion_metadata_lookup()
     with patch.object(dataset_module, 'load_motion_metadata', return_value=enriched_lookup),             patch.object(dataset_module, 'load_cond', _load_cond_stamped_with_the_current_schema):
         return Truebones(**kwargs)
+
+
+def _synthetic_cycle(period: int, joints: int = 3, closing_key: bool = False) -> np.ndarray:
+    """A (T, J, 12) HML clip whose pose runs round one sine cycle over
+    ``period`` frames, with velocity channels that are the true frame deltas
+    and a wrap-delta terminal row -- exactly what preprocessing stores for a
+    loop.  ``closing_key`` appends frame 0 again as the last frame."""
+    frame_count = period + int(closing_key)
+    phase = 2.0 * np.pi * (np.arange(frame_count) % period) / period
+    clip = np.zeros((frame_count, joints, 12), dtype=np.float32)
+    for joint in range(joints):
+        clip[:, joint, 0] = 0.30 * np.sin(phase + joint)
+        clip[:, joint, 1] = 1.0 + 0.10 * np.cos(phase + joint)
+        clip[:, joint, 3] = np.cos(phase - joint)
+        clip[:, joint, 4] = np.sin(phase - joint)
+        clip[:, joint, 8] = 1.0
+    positions = clip[:, :, 0:3]
+    clip[:-1, :, 9:12] = positions[1:] - positions[:-1]
+    clip[-1, :, 9:12] = positions[0] - positions[-1]
+    return clip
+
+
+def test_drop_loop_closing_frame_drops_only_a_repeated_last_frame() -> None:
+    clean = _synthetic_cycle(24)
+    assert _drop_loop_closing_frame(clean) is clean, "a cycle without a closing key must pass through untouched"
+
+    with_key = _synthetic_cycle(24, closing_key=True)
+    assert_close("fixture closing key repeats frame 0", with_key[-1, :, :9], with_key[0, :, :9])
+    kept = _drop_loop_closing_frame(with_key)
+    assert kept.shape[0] == 24
+    assert_close("the clean period is what remains", kept, clean)
+    # No channel needs rewriting: the surviving last frame's velocity is its
+    # delta to the dropped frame, i.e. the wrap delta to frame 0.
+    assert_close("wrap velocity after the drop", kept[-1, :, 9:12], kept[0, :, 0:3] - kept[-1, :, 0:3])
+
+    # Export rounding on a repeated key (well inside the ratio) is a repeat.
+    noisy = with_key.copy()
+    noisy[-1, :, :9] += 0.005 * float(np.median(np.linalg.norm(np.diff(with_key[:, :, :3], axis=0), axis=-1).max(axis=1)))
+    assert _drop_loop_closing_frame(noisy).shape[0] == 24
+
+    # A last frame that is real motion -- half a step short of frame 0 -- stays.
+    short = _synthetic_cycle(24)
+    short[-1, :, :9] = 0.5 * (short[-2, :, :9] + short[0, :, :9])
+    assert _drop_loop_closing_frame(short) is short
+
+    # An eased-out ending: the last two frames creep up on frame 0 in steps of
+    # 0.5% of the way, so the last frame is within the ratio of the MEDIAN step
+    # of frame 0 (the global test passes) yet a full LOCAL step from it.  That
+    # is motion, not a repeated key, and it stays.
+    eased = _synthetic_cycle(24)
+    eased[-2, :, :9] = eased[-3, :, :9] + 0.990 * (eased[0, :, :9] - eased[-3, :, :9])
+    eased[-1, :, :9] = eased[-3, :, :9] + 0.995 * (eased[0, :, :9] - eased[-3, :, :9])
+    eased[:-1, :, 9:12] = eased[1:, :, 0:3] - eased[:-1, :, 0:3]
+    eased[-1, :, 9:12] = eased[0, :, 0:3] - eased[-1, :, 0:3]
+    pose_steps = np.linalg.norm(np.diff(eased[:, :, :9], axis=0), axis=-1).max(axis=1)
+    wrap_gap = float(np.linalg.norm(eased[-1, :, :9] - eased[0, :, :9], axis=-1).max())
+    assert wrap_gap <= 0.02 * float(np.median(pose_steps)), "fixture must pass the global test"
+    assert wrap_gap > 0.5 * float(pose_steps[-1]), "fixture must be one local step short"
+    assert _drop_loop_closing_frame(eased) is eased
+
+    # The pose may repeat while the root travelled: the wrap velocity row
+    # (world coordinates) says so, and the frame is NOT a duplicate.
+    transported = with_key.copy()
+    transported[-1, :, 9:12] = np.array([0.0, 0.0, -2.0], dtype=np.float32)
+    assert _drop_loop_closing_frame(transported) is transported
+
+    # A motionless clip is a held pose; its length is the duration.
+    held = np.repeat(with_key[:1], 10, axis=0).copy()
+    held[:, :, 9:12] = 0.0
+    assert _drop_loop_closing_frame(held) is held
+    # And a two-frame clip has nothing to give.
+    assert _drop_loop_closing_frame(with_key[:2]).shape[0] == 2
+
+
+def test_loop_with_closing_key_is_augmented_as_its_clean_period() -> None:
+    dataset = _build_truebones(
+        split="train",
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=CLOSING_KEY_LOOP_SUBSET,
+        motion_cache_size=2,
+    )
+    motion_dataset = dataset.motion_dataset
+    data = motion_dataset.data_dict[CLOSING_KEY_LOOP_MOTION]
+    cond = motion_dataset.cond_dict[data["object_type"]]
+    raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
+    period = _drop_loop_closing_frame(raw)
+    assert period.shape[0] == raw.shape[0] - 1, "fixture clip no longer ships a closing key"
+
+    # Single cycle, phase 0: the clean period is what gets resampled into the
+    # window, and resample_speed_cond counts the frames the model actually sees.
+    with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=1):
+        sample = motion_dataset._prepare_sample(
+            CLOSING_KEY_LOOP_MOTION, data, target_num_frames=NUM_FRAMES, loop_offset=0, return_aug_info=True,
+        )
+    motion, m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
+    expected = _resample_raw_then_normalize(period, cond, NUM_FRAMES, loop_terminal=True)
+    assert m_length == NUM_FRAMES
+    assert np.isclose(float(aug_info["resample_speed_cond"]), float(period.shape[0]) / float(NUM_FRAMES))
+    assert_close("closing-key loop, single cycle", motion, expected, atol=3e-5)
+    # The seam is one ordinary frame step, not the ~zero wrap the stored clip carries.
+    physical = canonical_to_physical_hml(motion, cond)
+    seam = float(np.linalg.norm(physical[-1, :, 9:12], axis=-1).max())
+    typical = float(np.median(np.linalg.norm(physical[:-1, :, 9:12], axis=-1).max(axis=1)))
+    assert seam > 0.3 * typical, f"wrap velocity {seam} still reads as a stall against a typical step {typical}"
+
+    # Rolled and tiled: the roll runs over the period and the tiles are copies
+    # of it, so no seam repeats a frame.
+    offset = 7
+    with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=2):
+        sample = motion_dataset._prepare_sample(
+            CLOSING_KEY_LOOP_MOTION, data, target_num_frames=NUM_FRAMES, loop_offset=offset, return_aug_info=True,
+        )
+    motion, _m_length, *_rest, _motion_metadata, _name, _joint_mask_dict, aug_info = sample
+    tiled = _tile_loop_motion(_circular_roll_motion(period, offset), 2)
+    assert np.isclose(float(aug_info["resample_speed_cond"]), float(2 * period.shape[0]) / float(NUM_FRAMES))
+    assert_close("closing-key loop, rolled and tiled", motion, _resample_raw_then_normalize(tiled, cond, NUM_FRAMES, loop_terminal=True), atol=3e-5)
+
+    # Idempotent: the period itself has no closing key to give.
+    assert _drop_loop_closing_frame(period) is period
 
 
 def test_speed_resample_preserves_velocity() -> None:
