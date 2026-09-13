@@ -172,13 +172,21 @@ def _resolve_inference_amp_dtype(args):
     """Resolve the effective AMP dtype for inference.
 
     Sampling runs under a single top-level ``torch.autocast`` context (applied in
-    ``_sample_batch``); this only validates bf16 availability and returns the
+    ``_sample_batch``); this validates bf16 availability and returns the
     effective dtype string ('bf16' or 'fp32'). It does not mutate the model.
+
+    On CUDA it also turns TF32 on for fp32 matmuls, the same setting --compile
+    training uses: fp32+TF32 costs ~5% per forward over bf16, while bf16's output
+    rounding inflates the scorer's jerk/spectral-flatness terms
+    (docs/bf16_precision_issues.md). This is process-global and
+    ``fixseed`` leaves it alone.
     """
     amp_dtype_arg = str(getattr(args, 'amp_dtype', 'fp32')).lower()
+    _amp_device = dist_util.dev()
+    if _amp_device.type == 'cuda':
+        torch.set_float32_matmul_precision('high')
     if amp_dtype_arg != 'bf16':
         return amp_dtype_arg
-    _amp_device = dist_util.dev()
     if _amp_device.type == 'cuda' and torch.cuda.is_bf16_supported():
         print('bf16 autocast enabled for sampling via torch.autocast; softmax/layernorm stay fp32.')
         return 'bf16'

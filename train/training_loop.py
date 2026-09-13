@@ -738,7 +738,12 @@ class TrainLoop:
         target_batch = int(self.args.eval_batch_size)
 
         infer_model.eval()
-        with torch.no_grad(), self._autocast_context():
+        # Sampling is fp32 whatever --amp_dtype trains with: bf16 rounding of the
+        # x0 prediction is frame-independent noise that inflates the Jerk / Snap /
+        # SpectralFlatness terms scored below (docs/bf16_precision_issues.md), so
+        # bf16 scores would not be comparable across checkpoints or with
+        # eval_checkpoint.py. TF32 stays whatever training set (on under --compile).
+        with torch.no_grad(), torch.autocast(device_type=self.device.type, enabled=False):
             # Iterate the whole eval split so every unique motion is sampled
             # at least once. The loader batches by eval_batch_size, so full
             # batches sample each motion once; a smaller trailing batch is

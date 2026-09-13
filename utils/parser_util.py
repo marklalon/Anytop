@@ -475,9 +475,12 @@ def add_sampling_options(parser):
     group.add_argument("--cond_path", default='', type=str,
                        help="provide cond.py path in case you wish to generate motion for skeleton not included in Truebones dataset.")
     group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'bf16'], type=str,
-                       help="Autocast precision for inference. fp32 = full precision (default). "
+                       help="Autocast precision for inference. fp32 = full precision with TF32 matmuls on CUDA "
+                            "(default; ~5%% slower than bf16). "
                             "bf16 = selective autocast on linear / attention / conv modules; "
-                            "softmax stays fp32. Requires a CUDA device with bf16 support (Ampere+).")
+                            "softmax stays fp32. Requires a CUDA device with bf16 support (Ampere+). "
+                            "bf16 rounding adds frame-to-frame noise that inflates jerk/snap scores "
+                            "(docs/bf16_precision_issues.md).")
     group.add_argument("--loop", action='store_true',
                        help="Generate with loop conditioning and loop-aware temporal masks when supported by the checkpoint.")
     group.add_argument("--fullbody_ik", action='store_true',

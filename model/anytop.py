@@ -1206,8 +1206,13 @@ class OutputProcess(nn.Module):
 
     def forward(self, output):
         # output shape [frames, batch_size, joints, latent_dim]
-        root_data = self.root_dembedding(output[:, :, 0])
-        all_joints = self.joint_dembedding(output[:, :, 1:])
+        # The x0 prediction must not be quantized to bf16: its per-frame rounding is
+        # white noise that time derivatives amplify, inflating jerk/snap/spectral
+        # flatness (docs/bf16_precision_issues.md). Two small linears, so fp32 is free.
+        with torch.autocast(device_type=output.device.type, enabled=False):
+            output = output.float()
+            root_data = self.root_dembedding(output[:, :, 0])
+            all_joints = self.joint_dembedding(output[:, :, 1:])
         output = torch.cat([root_data.unsqueeze(2), all_joints], dim=-2)
         output = output.permute(1, 2, 3, 0)[..., 1:]  # [bs, njoints, nfeats, nframes]
         return output

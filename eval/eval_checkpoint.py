@@ -10,7 +10,7 @@ evaluator, and write a self-contained HTML report.
 
 Generation tasks call ``sample.generate`` in-process with a shared generation
 runtime, so the checkpoint/model is loaded once for the whole battery. Tasks
-still use ``batch_size=8 --amp_dtype bf16`` matching ``generate.bat``.
+use ``batch_size=8 --amp_dtype fp32`` matching ``generate.bat``.
 Generated clips are scored in-process with the motion quality scorer so the
 reference bank cache is reused across tasks.
 
@@ -86,13 +86,19 @@ _DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks.json"
 # generate.py flags whose following value is a filesystem path. Their values are
 # resolved (relative → Anytop dir) when a task is loaded from the config.
 _PATH_FLAGS = ("--reference_motion", "--cond_path")
+# generate.py flags every task shares (model_path / output_dir are added per
+# task). fp32: bf16 rounds each frame of the x0 prediction independently, and
+# that white noise inflates the Jerk / Snap / SpectralFlatness scores this
+# harness reports (docs/bf16_precision_issues.md). Folded into the task checksum,
+# so output generated under different common flags is regenerated, not reused.
+_COMMON_GENERATE_ARGS = ("--batch_size", "8", "--amp_dtype", "fp32")
 
 
 # ── Task battery ────────────────────────────────────────────────────────────
 # Tasks are loaded from a JSON config file so the battery can be tuned without
 # editing code. Each task is ``{"category": str, "args": [str, ...]}`` where
-# ``args`` are the extra generate.py flags; the common args (model_path,
-# output_dir, batch_size, amp_dtype) are added per task in run_task().
+# ``args`` are the extra generate.py flags; model_path, output_dir and
+# ``_COMMON_GENERATE_ARGS`` are added per task in run_task().
 #
 # Path-valued flags (see ``_PATH_FLAGS``) accept either an absolute path or a
 # path relative to the Anytop dir; the "$LAST_OUTPUT" sentinel passes through
@@ -175,11 +181,12 @@ def _file_content_hash(path: Path) -> str:
 def _task_param_hash(extra_args: list[str]) -> str:
     """Deterministic SHA-256 checksum of a task's generate.py flags.
 
-    Hashes the full ordered argument list, so any change to a task's parameters
-    (a flag added/removed/reordered, or a value edited) yields a different
-    digest. This includes all flags — ``--model_path``, ``--output_dir``,
-    ``--batch_size``, ``--amp_dtype``, etc. — since any of these can affect
-    the generated output and should trigger a regeneration when changed.
+    Hashes ``_COMMON_GENERATE_ARGS`` followed by the task's ordered argument
+    list, so any change to a task's parameters (a flag added/removed/reordered,
+    or a value edited) or to the shared ``--batch_size`` / ``--amp_dtype`` yields
+    a different digest and triggers a regeneration. ``--model_path`` and
+    ``--output_dir`` are left out: both are fixed by the report root the task
+    dir lives under.
 
     For path-valued flags (``_PATH_FLAGS``, e.g. ``--reference_motion`` /
     ``--cond_path``) the referenced file's *contents* are folded in as well, so
@@ -187,10 +194,11 @@ def _task_param_hash(extra_args: list[str]) -> str:
     digest and forces a regen. The ``$LAST_OUTPUT`` sentinel is left as-is (it
     is resolved per-run from the previous task's output, not a fixed file).
     """
+    hashed_args = [*_COMMON_GENERATE_ARGS, *extra_args]
     parts: list[str] = []
-    for i, arg in enumerate(extra_args):
+    for i, arg in enumerate(hashed_args):
         parts.append(arg)
-        if i > 0 and extra_args[i - 1] in _PATH_FLAGS and arg != _LAST_OUTPUT:
+        if i > 0 and hashed_args[i - 1] in _PATH_FLAGS and arg != _LAST_OUTPUT:
             p = Path(arg)
             parts.append(f"sha256:{_file_content_hash(p)}" if p.is_file() else "missing")
     payload = json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
@@ -214,7 +222,10 @@ def _write_task_hash(task_dir: Path, extra_args: list[str], digest: str) -> None
     incremental run can tell whether the parameters have changed."""
     meta_path = task_dir / _TASK_HASH_FILE
     meta_path.write_text(
-        json.dumps({"hash": digest, "args": extra_args}, indent=2, ensure_ascii=False),
+        json.dumps(
+            {"hash": digest, "common_args": list(_COMMON_GENERATE_ARGS), "args": extra_args},
+            indent=2, ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
@@ -494,8 +505,7 @@ def run_task(
     generate_argv = [
         "--model_path", str(model_path),
         "--output_dir", str(task_dir),
-        "--batch_size", "8",
-        "--amp_dtype", "bf16",
+        *_COMMON_GENERATE_ARGS,
         *resolved_args,
     ]
     # Display command: only show differentiated (extra) args, not boilerplate flags.
@@ -861,8 +871,7 @@ def main() -> int:
             print("Preparing shared generation runtime (loads checkpoint once)...")
             runtime_args = generate_args([
                 "--model_path", str(model_path),
-                "--batch_size", "8",
-                "--amp_dtype", "bf16",
+                *_COMMON_GENERATE_ARGS,
             ])
             runtime = prepare_generation_runtime(runtime_args)
         return runtime
