@@ -49,7 +49,6 @@ from .animation_utils import (
     set_translation_root_xz,
     resolve_detected_translation_root_index,
     needs_bvh_position_channels,
-    reorder_animation_to_dfs,
     crop_animation_to_max_joints,
     drop_prop_socket_joints,
     drop_end_site_joints,
@@ -1162,7 +1161,6 @@ def recover_animation_from_motion_np(
     anim_pos_threshold=0.01,
     motion_metadata=None,
     allow_infer=False,
-    rigid_bone=False,
 ):
     translation_root_index = resolve_feature_translation_root_index(
         data,
@@ -1183,12 +1181,6 @@ def recover_animation_from_motion_np(
         motion_metadata=motion_metadata,
         allow_infer=allow_infer,
     )
-    # Rigid-bone export: trust the rotation channel + fixed rest offsets only
-    # (pure FK), skipping the RIC position-channel override below. Bones stay
-    # perfectly rigid; genuinely animated non-root joint translation is dropped.
-    if rigid_bone:
-        return anim_rot, needs_bvh_position_channels(anim_rot)
-
     target_global        = recover_from_bvh_ric_np(
         data,
         translation_root_index=translation_root_index,
@@ -1241,59 +1233,3 @@ def recover_animation_from_motion_np(
     anim_fixed = Animation(anim_rot.rotations, new_pos, anim_rot.orients,
                            anim_rot.offsets, anim_rot.parents)
     return anim_fixed, needs_bvh_position_channels(anim_fixed)
-
-
-def recover_bvh_export_animation_from_motion_np(
-    data,
-    parents,
-    offsets,
-    joint_names,
-    translation_root_index=None,
-    anim_pos_threshold=0.01,
-    motion_metadata=None,
-    allow_infer=False,
-    tpose_rest_rotations=None,
-    rigid_bone=False,
-):
-    """Recover a motion tensor and remap it into BVH-safe DFS order.
-
-    ``recover_animation_from_motion_np`` intentionally preserves the input joint
-    indexing because non-export callers still address joints by the original cond
-    metadata indices. BVH export has the additional requirement that joint arrays
-    must match hierarchy DFS order, so this helper layers the DFS remap on top of
-    recovery without changing the base function's semantics.
-
-    When *tpose_rest_rotations* is provided (``(J, 4)`` quaternion array in
-    ``[w, x, y, z]`` order), the recovered rest-pose-relative rotations are baked
-    back into total local rotations (rest ⊗ pose) so the BVH displays correctly
-    for skeletons with non-identity rest rotations (e.g. GLB-derived skeletons).
-    """
-    anim, has_animated_pos = recover_animation_from_motion_np(
-        data,
-        parents,
-        offsets,
-        translation_root_index=translation_root_index,
-        anim_pos_threshold=anim_pos_threshold,
-        motion_metadata=motion_metadata,
-        allow_infer=allow_infer,
-        rigid_bone=rigid_bone,
-    )
-    if anim is None:
-        return None, list(joint_names), has_animated_pos
-
-    if tpose_rest_rotations is not None:
-        anim = recover_processed_animation_from_feature_animation(
-            anim, tpose_rest_rotations,
-        )
-        # Baking the rest rotations into the local rotations leaves the offsets in
-        # the feature (rest-removed) basis, so the solved local positions deviate
-        # from the rest offsets even when the pre-bake feature animation was pure
-        # rotation. ``has_animated_pos`` from the feature animation reflects a
-        # different basis; recompute it on the baked animation so BVH export writes
-        # the position channels the reconstructed pose actually needs. Without this,
-        # rotation-only BVH (positions=False) reconstructs a garbled pose for
-        # skeletons with non-identity rest rotations (e.g. GLB-derived references).
-        has_animated_pos = needs_bvh_position_channels(anim)
-
-    anim, joint_names = reorder_animation_to_dfs(anim, joint_names)
-    return anim, joint_names, has_animated_pos

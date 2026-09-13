@@ -48,10 +48,8 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (
 )
 from data_loaders.truebones.truebones_utils.motion_process import (
     tpose_features_from_cond,
-    recover_bvh_export_animation_from_motion_np,
 )
 from model.cfg_sampler import ClassifierFreeActionModel
-from motion_lib import BVH
 from os.path import join as pjoin
 from utils import dist_util
 from utils.fixseed import fixseed
@@ -63,6 +61,8 @@ from utils.model_util import (
     resolve_t5_out_dim,
     unwrap_anytop_model,
 )
+from utils.fullbody_ik import DEFAULT_IK_STRETCH_FACTOR
+from utils.npy_restore import write_feature_bvh
 from utils.parser_util import generate_args
 from utils.misc import infer_object_type_from_filename
 
@@ -462,28 +462,19 @@ def _retarget_reference_motion(
     np.save(out_npy, target_features)
     print(f"  Retargeted features {target_features.shape} → {out_npy}")
 
-    # Inspection BVH.
-    try:
-        out_bvh = out_npy.replace('.npy', '.bvh')
-        out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
-            target_features,
-            np.asarray(tgt_cond['parents'], dtype=np.int32),
-            np.asarray(tgt_cond['offsets'], dtype=np.float32),
-            list(tgt_cond.get('canonical_bvh_joint_names', tgt_cond['joints_names'])),
-            translation_root_index=tgt_cond.get('translation_root_index'),
-            allow_infer=tgt_cond.get('translation_root_index') is None,
-            tpose_rest_rotations=tgt_tp.tpos_rots[0],
-        )
-        if out_anim is not None:
-            BVH.save(
-                out_bvh, out_anim, joint_names,
-                frametime=1.0 / fps, positions=has_animated_pos,
-            )
-            print(f"  Retargeted BVH (for inspection) → {out_bvh}")
-    except Exception as e:
-        print(f"  [WARN] Failed to write inspection BVH: {e}")
+    _write_inspection_bvh(target_features, tgt_cond, out_npy, fps, object_type=target_type)
 
     return out_npy
+
+
+def _write_inspection_bvh(features, cond_entry, out_npy, fps, *, object_type=None):
+    """BVH next to a retargeted .npy, through the same decode as the GLB restore."""
+    out_bvh = out_npy.replace('.npy', '.bvh')
+    try:
+        write_feature_bvh(features, cond_entry, out_bvh, fps=fps, object_type=object_type)
+        print(f"  Retargeted BVH (for inspection) → {out_bvh}")
+    except Exception as e:
+        print(f"  [WARN] Failed to write inspection BVH: {e}")
 
 
 def _retarget_reference_motion_from_file(
@@ -555,26 +546,7 @@ def _retarget_reference_motion_from_file(
     np.save(out_npy, target_features)
     print(f"  Retargeted features {target_features.shape} → {out_npy}")
 
-    # Inspection BVH.
-    try:
-        out_bvh = out_npy.replace('.npy', '.bvh')
-        out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
-            target_features,
-            np.asarray(tgt_cond['parents'], dtype=np.int32),
-            np.asarray(tgt_cond['offsets'], dtype=np.float32),
-            list(tgt_cond.get('canonical_bvh_joint_names', tgt_cond['joints_names'])),
-            translation_root_index=tgt_cond.get('translation_root_index'),
-            allow_infer=tgt_cond.get('translation_root_index') is None,
-            tpose_rest_rotations=tgt_tp.tpos_rots[0],
-        )
-        if out_anim is not None:
-            BVH.save(
-                out_bvh, out_anim, joint_names,
-                frametime=1.0 / fps, positions=has_animated_pos,
-            )
-            print(f"  Retargeted BVH (for inspection) → {out_bvh}")
-    except Exception as e:
-        print(f"  [WARN] Failed to write inspection BVH: {e}")
+    _write_inspection_bvh(target_features, tgt_cond, out_npy, fps, object_type=target_type)
 
     return out_npy
 
@@ -648,28 +620,31 @@ def _prepare_img2img_reference_bundle(
     }
 
 
+def _bvh_preview_options(args):
+    """The BVH preview's decode options, named like restore_glb_from_npy's."""
+    return {
+        'fullbody_ik': bool(getattr(args, 'fullbody_ik', False)),
+        'stretch_factor': float(getattr(args, 'stretch_factor', DEFAULT_IK_STRETCH_FACTOR)),
+    }
+
+
 def _export_motion(task):
-    (motion_np, parents_np, offsets, npy_name, joint_names, out_path, fps,
-     tpose_rest_rotations, translation_root_index, rigid_bone) = task
-    out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
-        motion_np,
-        parents_np,
-        offsets,
-        joint_names,
-        translation_root_index=translation_root_index,
-        allow_infer=translation_root_index is None,
-        tpose_rest_rotations=tpose_rest_rotations,
-        rigid_bone=rigid_bone,
-    )
+    """Write one generated sample as .npy plus its BVH preview.
+
+    The preview is the skeleton-only GLB's animation written as BVH: the same
+    decode ``tools/restore_glb_from_npy.py`` runs (``utils.npy_restore``), on the
+    cond skeleton in HML space, with the same optional full-body IK.
+    """
+    motion_np, cond_entry, npy_name, joint_names, out_path, fps, preview_options = task
     np.save(pjoin(out_path, npy_name), motion_np)
-    if out_anim is not None:
-        BVH.save(
-            pjoin(out_path, npy_name.replace('.npy', '.bvh')),
-            out_anim,
-            joint_names,
-            frametime=1.0 / fps,
-            positions=has_animated_pos,
-        )
+    write_feature_bvh(
+        motion_np,
+        cond_entry,
+        pjoin(out_path, npy_name.replace('.npy', '.bvh')),
+        fps=fps,
+        joint_names=joint_names,
+        **preview_options,
+    )
     return npy_name
 
 
@@ -912,7 +887,6 @@ def _generate_all_species(
                 mark_canonical_cond_entry(sp_entry)
                 n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
                 motion = motion[:n_joints]
-                parents = model_kwargs['y']['parents'][sample_idx]
                 # Decode with full cond entry (carries rest geometry + global standardization stats).
                 motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), sp_entry)[0]
                 motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
@@ -926,14 +900,9 @@ def _generate_all_species(
                 )
                 _zero_root_ric_xz(motion_np, translation_root_index)
 
-                joint_names = sp_entry.get(
+                joint_names = list(sp_entry.get(
                     'canonical_bvh_joint_names', sp_entry['joints_names'],
-                )
-
-                # T-pose rest rotations (per-species)
-                _tpose_rr = sp_entry.get('tpose_rest_rotations')
-                if _tpose_rr is not None:
-                    _tpose_rr = np.asarray(_tpose_rr, dtype=np.float32)
+                ))
 
                 # Count existing outputs so repeated runs don't overwrite.
                 sp_token = species_file_tokens[sp]
@@ -941,9 +910,8 @@ def _generate_all_species(
                             if f.startswith(sp_token) and f.endswith('.npy')]
                 npy_name = f'{sp_token}_{(len(existing))}.npy'
                 export_tasks.append((
-                    motion_np, parents, sp_entry['offsets'], npy_name, joint_names,
-                    out_path, fps, _tpose_rr, translation_root_index,
-                    bool(getattr(args, 'rigidbone', False)),
+                    motion_np, sp_entry, npy_name, joint_names, out_path, fps,
+                    _bvh_preview_options(args),
                 ))
 
             for task in tqdm(export_tasks, desc=f'batch {batch_idx} export'):
@@ -1558,15 +1526,12 @@ def main(args=None, cond_dict=None, runtime=None):
         if f.startswith(object_file_token) and f.endswith('.npy')
     )
 
-    _tpose_rest_rotations = cond_dict[object_type].get('tpose_rest_rotations')
-    if _tpose_rest_rotations is not None:
-        _tpose_rest_rotations = np.asarray(_tpose_rest_rotations, dtype=np.float32)
-
     # Collect export tasks (in-process, no pickling needed)
-    joint_names = cond_dict[object_type].get(
+    joint_names = list(cond_dict[object_type].get(
         'canonical_bvh_joint_names',
         cond_dict[object_type]['joints_names'],
-    )
+    ))
+    preview_options = _bvh_preview_options(args)
     # Inpaint Y-anchor: parse user --inpaint_frames into contiguous spans
     # (user-frame indexing, already aligned with the post-trim motion_np
     # frame axis). The correction is applied per joint via vel_y
@@ -1593,14 +1558,8 @@ def main(args=None, cond_dict=None, runtime=None):
                 target_output_frames,
             )
 
-        # Resolve the known per-species translation root index (the joint that
-        # carries the locomotion XZ velocity). This MUST be passed explicitly to
-        # BVH export: inferring it from the generated features (allow_infer) is
-        # unreliable for skeletons whose translation root is not joint 0 (e.g.
-        # Horse Bip01 at index 2). A wrong index integrates the wrong joint's
-        # velocity channels — for non-translation-root joints those channels are
-        # degenerate (zero-variance, std floored to 1.0), so the model emits
-        # ~N(0,1) noise there and the wrong integration produces large root drift.
+        # The per-species translation root (the joint carrying the locomotion
+        # XZ velocity; the hierarchy root for every collapsed cond skeleton).
         translation_root_index = _get_batch_translation_root_index(
             model_kwargs,
             sample_idx,
@@ -1627,20 +1586,15 @@ def main(args=None, cond_dict=None, runtime=None):
                 )
         _zero_root_ric_xz(motion_np, translation_root_index)
 
-        offsets = cond_dict[object_type]['offsets']
-
         npy_name = f'{object_file_token}_{base_index + sample_idx}.npy'
         export_tasks.append((
             motion_np,
-            parents,  # already np.ndarray, shared in-process
-            offsets,
+            cond_dict[object_type],
             npy_name,
             joint_names,
             out_path,
             fps,
-            _tpose_rest_rotations,
-            translation_root_index,
-            bool(getattr(args, 'rigidbone', False)),
+            preview_options,
         ))
 
     for task in tqdm(export_tasks, desc=f'{object_file_token} export'):

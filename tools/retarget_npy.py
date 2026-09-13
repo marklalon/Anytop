@@ -112,6 +112,7 @@ def main() -> None:
     from data_loaders.truebones.truebones_utils.cond_schema import load_cond
     from data_loaders.truebones.truebones_utils.dataset_sources import (
         resolve_species_key,
+        species_file_token,
         species_lookup_map,
     )
 
@@ -145,11 +146,8 @@ def main() -> None:
     from data_loaders.truebones.truebones_utils.features import (
         tpose_features_from_cond,
     )
-    from data_loaders.truebones.truebones_utils.motion_process import (
-        recover_bvh_export_animation_from_motion_np,
-    )
-    from motion_lib import BVH
     from utils.misc import infer_object_type_from_filename
+    from utils.npy_restore import write_feature_bvh
 
     base_name = os.path.splitext(os.path.basename(source_path))[0]
 
@@ -222,32 +220,22 @@ def main() -> None:
         )
 
     # ── Save outputs ───────────────────────────────────────────────────────
+    # The canonical key carries a '/'-bearing namespace; files are named by the
+    # species file token, like generate.py's intermediates.
     out_npy = os.path.join(
         output_dir,
-        f'_retargeted_to_{target_type}__{base_name}.npy',
+        f'_retargeted_to_{species_file_token(cond_dict, target_type)}__{base_name}.npy',
     )
     np.save(out_npy, target_features)
     print(f'[retarget CLI] Retargeted features {target_features.shape} → {out_npy}')
 
-    # Inspection BVH
+    # Inspection BVH -- the same decode as restore_glb_from_npy / generate.
     try:
         out_bvh = out_npy[:-4] + '.bvh'
-        out_anim, joint_names, has_pos = recover_bvh_export_animation_from_motion_np(
-            target_features,
-            np.asarray(tgt_cond['parents'], dtype=np.int32),
-            np.asarray(tgt_cond['offsets'], dtype=np.float32),
-            list(tgt_cond.get('canonical_bvh_joint_names',
-                               tgt_cond['joints_names'])),
-            allow_infer=True,
-            tpose_rest_rotations=tgt_tp.tpos_rots[0],
+        write_feature_bvh(
+            target_features, tgt_cond, out_bvh, fps=fps, object_type=target_type,
         )
-        if out_anim is not None:
-            BVH.save(
-                out_bvh, out_anim, joint_names,
-                frametime=1.0 / fps, positions=has_pos,
-                order='auto',
-            )
-            print(f'[retarget CLI] Inspection BVH → {out_bvh}')
+        print(f'[retarget CLI] Inspection BVH → {out_bvh}')
     except Exception as exc:
         print(f'[retarget CLI] WARNING: Failed to write inspection BVH: {exc}')
 

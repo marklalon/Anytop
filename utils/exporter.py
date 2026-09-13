@@ -580,7 +580,8 @@ class AnimationExporter:
             output_path: Destination ``.bvh`` path.
             bone_translations: Optional pose-bone local translations with shape
                 ``[F, J, 3]``. Non-root entries are exported as explicit BVH
-                position channels when provided.
+                position channels when provided; without it the file is
+                rotation-only (root position + per-joint rotation channels).
         """
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -713,9 +714,14 @@ class AnimationExporter:
 
         anim = Animation(rotations_dfs, positions_dfs, orients_dfs,
                          offsets_dfs, parents_dfs)
+        # Non-root position channels only when a pose translation exists:
+        # without one every non-root local position equals its HIERARCHY
+        # offset, so the rotation-only file is exact and stays readable as a
+        # rotation stream. 'auto' picks the euler order farthest from gimbal
+        # lock for this skeleton (BVH.save's default).
         bvh_save(output_path, anim, names=joint_names_dfs,
-                 frametime=1.0 / self.fps, order='xyz',
-                 positions=True)
+                 frametime=1.0 / self.fps, order='auto',
+                 positions=pose_locations_np is not None)
 
     # ------------------------------------------------------------------
     # GLB export (via Blender glTF exporter)

@@ -66,11 +66,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from motion_lib import BVH
 from data_loaders.truebones.truebones_utils.motion_process import (
-    recover_bvh_export_animation_from_motion_np,
     refresh_joint_metadata_in_cond_dict,
 )
+from utils.npy_restore import write_feature_bvh
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
@@ -129,28 +128,19 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
 def _export_bvh(
     save_path: Path,
     motion_raw: np.ndarray,
-    parents: list[int],
-    offsets: np.ndarray,
     joints_names: list[str],
-    motion_metadata: dict[str, object],
+    object_cond: dict[str, object],
     *,
-    object_cond: dict[str, object] | None = None,
+    fps: float = 30.0,
 ) -> bool:
-    """Denormalized (F, J, 12) → BVH file.  Returns True on success."""
-    export_parents = list(parents)
-    export_offsets = np.asarray(offsets)
-    export_joint_names = list(joints_names)
-
-    anim, joints_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
-        motion_raw,
-        export_parents,
-        export_offsets,
-        export_joint_names,
-        motion_metadata=motion_metadata,
-    )
-    if anim is None:
+    """Denormalized (F, J, 12) → BVH file through the shared NPY decode.  Returns True on success."""
+    try:
+        write_feature_bvh(
+            motion_raw, object_cond, str(save_path), fps=fps, joint_names=list(joints_names),
+        )
+    except Exception as exc:
+        print(f"[export] {save_path.name}: {exc}")
         return False
-    BVH.save(str(save_path), anim, joints_names, positions=has_animated_pos)
     return True
 
 
@@ -385,11 +375,8 @@ def main() -> int:
             ok = _export_bvh(
                 save_path,
                 motion_raw,
-                list(parents),
-                np.asarray(offsets, dtype=np.float32),
                 joints_names,
-                motion_metadata,
-                object_cond=cond_dict[object_type],
+                cond_dict[object_type],
             )
             if ok:
                 loop_note = ""
@@ -405,7 +392,7 @@ def main() -> int:
                 print(f"OK  → {save_path.name}  [{export_frames}f, {object_type}{loop_note}{speed_note}]")
                 exported += 1
             else:
-                print(f"FAIL (recover_animation returned None)")
+                print("FAIL (BVH export failed)")
                 failed += 1
 
             # ----------------------------------------------------------------
@@ -440,11 +427,8 @@ def main() -> int:
                     ok2 = _export_bvh(
                         masked_path,
                         motion_masked_raw,
-                        list(parents),
-                        np.asarray(offsets, dtype=np.float32),
                         joints_names,
-                        motion_metadata,
-                        object_cond=cond_dict[object_type],
+                        cond_dict[object_type],
                     )
                     if ok2:
                         print(f"     └─ masked  → {masked_path.name}")

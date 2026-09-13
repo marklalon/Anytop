@@ -480,11 +480,14 @@ def add_sampling_options(parser):
                             "softmax stays fp32. Requires a CUDA device with bf16 support (Ampere+).")
     group.add_argument("--loop", action='store_true',
                        help="Generate with loop conditioning and loop-aware temporal masks when supported by the checkpoint.")
-    group.add_argument("--rigidbone", action='store_true',
-                       help="Export BVH as pure FK (rotation + fixed rest offsets), skipping the RIC position solver. "
-                            "Keeps bone lengths rigid; drops animated non-root translations. "
-                            "Useful when the position/rotation channels disagree and the solver stretches bones. "
+    group.add_argument("--fullbody_ik", action='store_true',
+                       help="Decode the BVH preview with the same full-body IK as restore_glb_from_npy --fullbody-ik: "
+                            "rotations are re-solved on the rigid cond skeleton so the position channels are honoured "
+                            "through rotations instead of per-joint local translations. "
                             "Only affects BVH export; .npy features are unchanged.")
+    group.add_argument("--stretch_factor", default=0.1, type=float,
+                       help="Allowed bone-length elasticity for --fullbody_ik (0.1 = +/-10%%; 0 = perfectly rigid, "
+                            "which also makes the BVH rotation-only). Same meaning as restore_glb_from_npy --stretch-factor.")
 
 
 def add_generate_options(parser):

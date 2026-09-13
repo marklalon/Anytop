@@ -50,10 +50,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from motion_lib import BVH
-from data_loaders.truebones.truebones_utils.motion_process import (
-    recover_bvh_export_animation_from_motion_np,
-)
+from utils.npy_restore import write_feature_bvh
 from data_loaders.truebones.truebones_utils.animation_utils import (
     refresh_joint_metadata_in_cond_dict,
 )
@@ -233,7 +230,6 @@ def main() -> int:
     mark_canonical_cond_entry(object_cond)
 
     parents = np.asarray(object_cond["parents"], dtype=np.int64)
-    offsets = np.asarray(object_cond["offsets"], dtype=np.float32)
     n_joints_cond = parents.shape[0]
 
     joint_names_bvh = list(
@@ -329,26 +325,14 @@ def main() -> int:
     np.save(npy_out, motion_corrupted)
     print(f"[OK ] Wrote corrupted motion NPY → {npy_out}")
 
-    motion_metadata: dict[str, object] = {}
-    trans_root = object_cond.get("translation_root_index")
-    if trans_root is None:
-        trans_root = object_cond.get("forward_base_joint_index")
-    if trans_root is not None:
-        motion_metadata["translation_root_index"] = int(trans_root)
-
-    anim, joints_names_dfs, has_animated_pos = recover_bvh_export_animation_from_motion_np(
+    # Same decode as generate's BVH preview / restore_glb_from_npy.
+    write_feature_bvh(
         motion_corrupted,
-        list(parents),
-        offsets,
-        list(joint_names_bvh),
-        motion_metadata=motion_metadata,
-        allow_infer=True,
+        object_cond,
+        str(bvh_out),
+        fps=30.0,
+        joint_names=list(joint_names_bvh),
     )
-    if anim is None:
-        print("[ERROR] recover_bvh_export_animation_from_motion_np returned None")
-        return 2
-
-    BVH.save(str(bvh_out), anim, joints_names_dfs, positions=has_animated_pos)
     print(f"[OK ] Wrote BVH preview → {bvh_out}")
     return 0
 

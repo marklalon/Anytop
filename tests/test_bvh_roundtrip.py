@@ -190,9 +190,9 @@ def main() -> None:
 
         # ── Parse BVH header to validate frame count/width ──────────
         num_frames, widths = _parse_motion_width(output_path)
-        # _export_bvh writes explicit local position channels for every joint,
-        # so each joint contributes 6 channels (3 position + 3 rotation).
-        expected_width = 6 * skeleton.num_joints
+        # Without bone_translations export_bvh writes a rotation-only file:
+        # 6 channels on the root (position + rotation), 3 on every other joint.
+        expected_width = 6 + 3 * (skeleton.num_joints - 1)
         assert num_frames == joint_rotations.shape[0], (
             f"Expected {joint_rotations.shape[0]} frames, got {num_frames}"
         )

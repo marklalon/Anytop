@@ -393,11 +393,12 @@ E 量的是 x₀ 幅度而非条件敏感度，届时单独写一个即可）：
 若 swim 相对 walk 的幅度比接近 winged/quadruped 的增益比（1.55–1.95），就是坐标系泄漏的指纹。
 与 A/B/C 同构——单次前向，几乎免费。
 
-另一个旁证：导出侧已有
-`recover_animation_from_motion_np(..., rigid_bone=True)`
-（[features.py:1007](../data_loaders/truebones/truebones_utils/features.py#L1007)），纯 FK、骨长绝对刚性。
-它不修根因（姿态还是错的，只是刚性地错），但如果 Buffalo swim 在 `rigid_bone` 下从
+另一个旁证：导出侧有 `--fullbody_ik --stretch_factor 0`
+（[utils/npy_restore.py](../utils/npy_restore.py)，generate 与 restore_glb_from_npy 共用），
+在刚性 cond 骨架上用旋转逼近 position 通道、骨长绝对刚性。
+它不修根因（姿态还是错的，只是刚性地错），但如果 Buffalo swim 在刚性 IK 下从
 "完全变形"变成"姿势不对但身体完整"，就旁证了形变确实是从 position 通道进来的。
+（旧的 `--rigidbone` 纯 FK 开关已删除。）
 
 ### 6.3 重训后
 
