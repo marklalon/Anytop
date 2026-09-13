@@ -282,10 +282,10 @@ Loop 不是单一布尔 token，而是模型、数据和损失共同组成的一
 ## 8. 混合可靠性训练
 
 基础扩散先按统一 timestep 生成 `x_t`，随后可对局部区域用独立噪声重新加噪。重加噪的
-timestep 是一个混合分布（`--renoise_same_level_prob`，默认 0.5）：一半样本 `t_random = t`
+timestep 是一个混合分布（`--renoise_same_level_prob`，默认 1.0）：默认每个样本 `t_random = t`
 （同级、只换噪声），把“被标记”与“比周围脏得多”解绑——推理时被夹住的已知区和自由区都
-处于同一名义 timestep；另一半均匀取自 `[t, T)`，继续训练用可靠上下文修复严重局部损坏。
-两支都不早于 `t`。
+处于同一名义 timestep；降低该值会让一部分样本均匀取自 `[t, T)`，继续训练用可靠上下文修复
+严重局部损坏。两支都不早于 `t`。
 
 - subtree joint perturbation：随机选择预算内的非根子树；
 - temporal-span perturbation：随机选择连续帧，并覆盖该样本的全部真实关节；

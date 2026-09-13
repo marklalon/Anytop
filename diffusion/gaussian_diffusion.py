@@ -170,7 +170,7 @@ class GaussianDiffusion:
         lambda_bone=0.,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
-        renoise_same_level_prob=0.5,
+        renoise_same_level_prob=1.0,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type

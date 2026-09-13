@@ -331,7 +331,7 @@ cross_k_scale = 0
 
 | 方案项 | 代码位置 | 备注 |
 | --- | --- | --- |
-| 同级 + 困难混合重加噪 | `GaussianDiffusion._sample_renoise_timesteps`；`renoise_same_level_prob` 构造参数 | 训练 flag `--renoise_same_level_prob`（默认 0.5，training 组）；0 / 1 走短路，不多消耗一次 rand |
+| 同级 + 困难混合重加噪 | `GaussianDiffusion._sample_renoise_timesteps`；`renoise_same_level_prob` 构造参数 | 训练 flag `--renoise_same_level_prob`（默认 1.0，training 组）；0 / 1 走短路，不多消耗一次 rand |
 | per-joint unreliable embedding | `AnyTop.unreliable_embedding`，在 `input_process` 之后相加 | **不**受 `cross_limb` 开关门控：它是 trunk 级信号，`cross_limb=False` 的模型同样生效。mask 的 raw/prepared 归一化抽成 `AnyTop._prepare_unreliable_mask` |
 | temporal frame key bias | `CrossLimbTemporalBlock.temporal_reliability_bias`；float `key_padding_mask` 走既有 additive 路径 | 没有新增 `key_bias=` 别名，直接传 `key_padding_mask` 并在调用处注释语义 |
 | cross-K attention | `cross_k_norm` / `cross_k_attn` / `cross_k_scale`，在 temporal attention 之后、cross-out 的 `(K, T*B, d)` 布局上直接做 | dropout 显式传 block 的 `dropout` |

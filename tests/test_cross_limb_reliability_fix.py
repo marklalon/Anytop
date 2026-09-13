@@ -169,7 +169,7 @@ class RenoiseMixtureTests(unittest.TestCase):
             renoise_same_level_prob=same_level_prob,
         )
 
-    def test_default_is_half_and_range_is_validated(self):
+    def test_default_is_same_level_and_range_is_validated(self):
         self.assertEqual(self._diffusion(0.5).renoise_same_level_prob, 0.5)
         default = GaussianDiffusion(
             betas=np.linspace(1e-4, 0.02, 10, dtype=np.float64),
@@ -177,7 +177,7 @@ class RenoiseMixtureTests(unittest.TestCase):
             model_var_type=ModelVarType.FIXED_LARGE,
             loss_type=LossType.MSE,
         )
-        self.assertEqual(default.renoise_same_level_prob, 0.5)
+        self.assertEqual(default.renoise_same_level_prob, 1.0)
         for bad in (-0.1, 1.1):
             with self.assertRaises(ValueError):
                 self._diffusion(bad)
