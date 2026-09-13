@@ -233,6 +233,20 @@ def _length_scale_from_cond(cond_entry, *, like=None):
     )
 
 
+_SPATIAL_L_TENSOR_CACHE = {}
+
+
+def _spatial_L_vector_tensor(n_feats, device, dtype):
+    """``_spatial_L_vectors`` as a cached tensor: rebuilding it on the device on
+    every decode was a blocking host copy (a stream sync) per call."""
+    key = (int(n_feats), str(device), dtype)
+    cached = _SPATIAL_L_TENSOR_CACHE.get(key)
+    if cached is None:
+        cached = torch.as_tensor(_spatial_L_vectors(n_feats), device=device, dtype=dtype)
+        _SPATIAL_L_TENSOR_CACHE[key] = cached
+    return cached
+
+
 def _apply_L_scale(feature, cond_entry, inverse: bool):
     """Divide (encode) or multiply (decode) the position/velocity channels by the
     per-skeleton length ``L``. Exact inverse of itself with flipped ``inverse``.
@@ -244,7 +258,7 @@ def _apply_L_scale(feature, cond_entry, inverse: bool):
         out = feature
         ndim = out.dim()
         n_feats = out.shape[2] if ndim == 4 else out.shape[-1]
-        uses_L = torch.as_tensor(_spatial_L_vectors(n_feats), device=out.device, dtype=out.dtype)
+        uses_L = _spatial_L_vector_tensor(n_feats, out.device, out.dtype)
         Lt = (L if _is_torch_tensor(L) else torch.as_tensor(np.asarray(L))) \
             .to(device=out.device, dtype=out.dtype).reshape(-1)
 

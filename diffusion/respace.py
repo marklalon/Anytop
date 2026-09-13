@@ -73,6 +73,7 @@ class SpacedDiffusion(GaussianDiffusion):
     def __init__(self, use_timesteps, **kwargs):
         self.use_timesteps = set(use_timesteps)
         self.timestep_map = []
+        self._timestep_map_cache = {}
         self.original_num_steps = len(kwargs["betas"])
 
         base_diffusion = GaussianDiffusion(**kwargs)  # pylint: disable=missing-kwoa
@@ -105,8 +106,12 @@ class SpacedDiffusion(GaussianDiffusion):
     def _wrap_model(self, model):
         if isinstance(model, _WrappedModel):
             return model
+        # A new wrapper is built on every call (every training step), so the
+        # device copy of the timestep map is cached here, not on the wrapper:
+        # uploading the host list each step was a stream sync.
         return _WrappedModel(
-            model, self.timestep_map, self.rescale_timesteps, self.original_num_steps
+            model, self.timestep_map, self.rescale_timesteps, self.original_num_steps,
+            timestep_map_cache=self._timestep_map_cache,
         )
 
     def _scale_timesteps(self, t):
@@ -115,12 +120,13 @@ class SpacedDiffusion(GaussianDiffusion):
 
 
 class _WrappedModel:
-    def __init__(self, model, timestep_map, rescale_timesteps, original_num_steps):
+    def __init__(self, model, timestep_map, rescale_timesteps, original_num_steps,
+                 timestep_map_cache=None):
         self.model = model
         self.timestep_map = timestep_map
         self.rescale_timesteps = rescale_timesteps
         self.original_num_steps = original_num_steps
-        self._timestep_map_cache = {}
+        self._timestep_map_cache = {} if timestep_map_cache is None else timestep_map_cache
 
     def _get_timestep_map_tensor(self, ts):
         key = (ts.device.type, ts.device.index, ts.dtype)

@@ -4,6 +4,8 @@ import numpy as np
 import torch as th
 import torch.distributed as dist
 
+from utils.device_transfer import host_to_device
+
 
 def create_named_schedule_sampler(name, diffusion):
     """
@@ -52,9 +54,9 @@ class ScheduleSampler(ABC):
         w = self.weights()
         p = w / np.sum(w)
         indices_np = np.random.choice(len(p), size=(batch_size,), p=p)
-        indices = th.from_numpy(indices_np).long().to(device)
+        indices = host_to_device(indices_np, device, dtype=th.long)
         weights_np = 1 / (len(p) * p[indices_np])
-        weights = th.from_numpy(weights_np).float().to(device)
+        weights = host_to_device(weights_np, device, dtype=th.float32)
         return indices, weights
 
 

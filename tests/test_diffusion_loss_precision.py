@@ -458,6 +458,57 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertAlmostEqual(float(weights[40].item()), float(np.exp(-0.5)), places=5)
         self.assertAlmostEqual(float(weights[41].item()), float(np.exp(-2.0)), places=5)
 
+    def test_build_temporal_span_seam_weights_matches_per_boundary_reference(self):
+        # The batched windowed max must reproduce, bit for bit, the per-sample,
+        # per-boundary construction it replaced: multiple spans, spans touching
+        # either edge, one-frame spans, empty samples, and several widths.
+        def reference(mask_bt, band):
+            batch_size, n_frames = mask_bt.shape
+            out = torch.zeros((batch_size, 1, 1, n_frames), dtype=torch.float32)
+            sigma = max(float(band) / 2.0, 1e-6)
+            for b in range(batch_size):
+                m = mask_bt[b]
+                if not bool(m.any()):
+                    continue
+                prev = torch.zeros_like(m)
+                prev[1:] = m[:-1]
+                nxt = torch.zeros_like(m)
+                nxt[:-1] = m[1:]
+                boundaries = torch.cat([
+                    torch.nonzero(m & ~prev).flatten(), torch.nonzero(m & ~nxt).flatten(),
+                ])
+                for boundary in boundaries.tolist():
+                    left, right = max(0, boundary - band), min(n_frames, boundary + band + 1)
+                    idx = torch.arange(left, right)
+                    w = torch.exp(-0.5 * ((idx.float() - float(boundary)) / sigma) ** 2)
+                    out[b, 0, 0, left:right] = torch.maximum(out[b, 0, 0, left:right], w)
+            return out
+
+        generator = torch.Generator().manual_seed(7)
+        n_frames = 30
+        for band in (1, 2, 3, 5):
+            diffusion = self._make_diffusion(
+                model_var_type=ModelVarType.FIXED_LARGE,
+                temporal_span_seam_width=band,
+            )
+            mask = torch.rand((12, 4, n_frames), generator=generator) < 0.35
+            mask[0] = False                                   # empty sample
+            mask[1] = False
+            mask[1, :, 0:5] = True                            # touches the start
+            mask[2] = False
+            mask[2, :, n_frames - 3:] = True                  # touches the end
+            mask[3] = False
+            mask[3, :, 10] = True                             # one-frame span
+            mask[4] = False
+            mask[4, :, 4:8] = True
+            mask[4, :, 9:14] = True                           # spans closer than 2*band
+            got = diffusion._build_temporal_span_seam_weights(mask)
+            expected = reference(mask.any(dim=1), band)
+            self.assertTrue(torch.equal(got, expected), f"band={band}")
+
+        all_empty = diffusion._build_temporal_span_seam_weights(torch.zeros((3, 2, n_frames), dtype=torch.bool))
+        self.assertTrue(torch.equal(all_empty, torch.zeros((3, 1, 1, n_frames))))
+
     def test_create_gaussian_diffusion_keeps_temporal_span_seam_width(self):
         class _Args:
             diffusion_steps = 3

@@ -291,6 +291,7 @@ class MixedPrecisionTrainer:
 
         self.model_params = list(self.model.parameters())
         self.master_params = self.model_params
+        self._had_grad = [False] * len(self.model_params)
         self.param_groups_and_shapes = None
         self.lg_loss_scale = initial_lg_loss_scale
         # Pre-clip total gradient norm of the most recent optimize() call.
@@ -308,7 +309,30 @@ class MixedPrecisionTrainer:
             self.model.convert_to_fp16()
 
     def zero_grad(self):
-        zero_grad(self.model_params)
+        if self.use_fp16:
+            zero_grad(self.model_params)
+            return
+        # Drop the gradients rather than zeroing them in place: autograd then
+        # hands its fresh gradient buffers straight over, instead of one zero_
+        # here plus one in-place add_ in AccumulateGrad per parameter (~860
+        # kernel launches a step on AnyTop). _restore_skipped_grads keeps the
+        # optimizer seeing exactly what in-place zeroing gave it.
+        for index, param in enumerate(self.model_params):
+            if param.grad is not None:
+                self._had_grad[index] = True
+                param.grad = None
+
+    def _restore_skipped_grads(self):
+        """Hand a zero gradient back to every parameter that had one before but
+        got none from this backward (a feature-gated branch that did not run).
+
+        In-place zeroing kept such a gradient at zero, so AdamW still stepped the
+        parameter (momentum, weight decay) and clipping counted it; a parameter
+        that never received a gradient stays at None, exactly as before.
+        """
+        for had_grad, param in zip(self._had_grad, self.model_params):
+            if had_grad and param.grad is None:
+                param.grad = th.zeros_like(param)
 
     def backward(self, loss: th.Tensor):
         if self.amp_enabled:
@@ -320,6 +344,8 @@ class MixedPrecisionTrainer:
             loss.backward()
 
     def optimize(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
+        if not self.use_fp16:
+            self._restore_skipped_grads()
         if self.amp_enabled:
             return self._optimize_amp(opt, scheduler)
         if self.use_fp16:

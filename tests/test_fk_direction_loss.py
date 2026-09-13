@@ -188,6 +188,54 @@ class FkDirectionLossTest(unittest.TestCase):
         expected = torch.from_numpy(fx.global_rot[:, perm]).float()
         self.assertTrue(torch.allclose(G, expected, atol=1e-5))
 
+    def test_chain_global_rotations_deep_shuffled_padded_batch(self):
+        # Pointer jumping runs ceil(log2(depth + 1)) iterations, so exercise depths
+        # on both sides of powers of two, in a padded batch of differently sized
+        # rigs whose joints are shuffled (children before parents).
+        rng = np.random.default_rng(3)
+        n_frames, max_joints = 2, 40
+        depths = (1, 2, 3, 4, 7, 8, 15, 16, 25)
+        parents_batch, local = [], np.tile(np.eye(3), (len(depths), n_frames, max_joints, 1, 1))
+        expected = local.copy()   # padding rows keep their own (identity) rotation
+        for b, depth in enumerate(depths):
+            # A spine of `depth` hops plus leaves hanging off the spine above its
+            # tip, so the spine stays the deepest chain.
+            n = int(rng.integers(depth + 1, max_joints + 1))
+            chain_parents = [-1] + list(range(depth)) + [
+                int(rng.integers(0, depth)) for _ in range(depth + 1, n)
+            ]
+            perm = rng.permutation(n)                       # new index -> old index
+            inv = np.empty(n, dtype=np.int64)
+            inv[perm] = np.arange(n)
+            parents = np.array([inv[chain_parents[o]] if chain_parents[o] >= 0 else -1 for o in perm])
+            parents_batch.append(parents)
+            rots = _random_rotations(rng, (n_frames, n))
+            local[b, :, :n] = rots
+            # Reference: resolve joints once their parent is resolved.
+            resolved = np.zeros(n, dtype=bool)
+            while not resolved.all():
+                for j in np.flatnonzero(~resolved):
+                    p = parents[j]
+                    if p < 0:
+                        expected[b, :, j] = rots[:, j]
+                    elif resolved[p]:
+                        expected[b, :, j] = expected[b, :, p] @ rots[:, j]
+                    else:
+                        continue
+                    resolved[j] = True
+
+        y = {'parents': parents_batch}
+        parents_idx, is_bone, max_depth = self.diffusion._padded_parents(
+            y, len(depths), max_joints, torch.device('cpu'))
+        self.assertEqual(max_depth, max(depths))
+        for b, depth in enumerate(depths):
+            _, _, sample_depth = self.diffusion._padded_parents(
+                {'parents': [parents_batch[b]]}, 1, max_joints, torch.device('cpu'))
+            self.assertEqual(sample_depth, depth)
+        G = self.diffusion._chain_global_rotations(
+            torch.from_numpy(local), parents_idx, is_bone, max_depth)
+        self.assertTrue(torch.allclose(G, torch.from_numpy(expected), atol=1e-9))
+
     def test_leaf_rotation_does_not_change_loss(self):
         target = self.fx.features()
         perturbed = self.fx.local_rot.copy()

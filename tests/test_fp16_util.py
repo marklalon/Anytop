@@ -14,7 +14,67 @@ from diffusion.fp16_util import MixedPrecisionTrainer, inspect_optimizer_state, 
 from model.motion_transformer import GraphMultiHeadAttention, SelectiveMultiheadAttention
 
 
+class _GatedModel(nn.Module):
+    """``gate`` joins the graph only on some steps; ``never`` never does."""
+
+    def __init__(self):
+        super().__init__()
+        self.body = nn.Linear(4, 3)
+        self.gate = nn.Linear(3, 3)
+        self.never = nn.Linear(3, 3)
+
+    def forward(self, x, use_gate):
+        h = self.body(x)
+        return self.gate(h) if use_gate else h
+
+
 class MixedPrecisionTrainerTests(unittest.TestCase):
+    def test_dropped_gradients_step_like_in_place_zeroing(self):
+        # zero_grad now drops gradients instead of zeroing them. A parameter that
+        # got a gradient before and none this step must still be stepped by
+        # AdamW with a zero gradient (momentum + weight decay), a parameter that
+        # never got one must stay untouched, exactly as with in-place zeroing.
+        torch.manual_seed(0)
+        reference = _GatedModel()
+        candidate = _GatedModel()
+        candidate.load_state_dict(reference.state_dict())
+        ref_opt = AdamW(reference.parameters(), lr=1e-2, weight_decay=0.1)
+        trainer = MixedPrecisionTrainer(model=candidate, amp_enabled=False, log_norms=False)
+        cand_opt = AdamW(trainer.master_params, lr=1e-2, weight_decay=0.1)
+        ref_sched = torch.optim.lr_scheduler.StepLR(ref_opt, step_size=100)
+        cand_sched = torch.optim.lr_scheduler.StepLR(cand_opt, step_size=100)
+
+        for step, use_gate in enumerate((True, False, False, True, False)):
+            x = torch.randn(5, 4)
+            for param in reference.parameters():          # the old in-place zeroing
+                if param.grad is not None:
+                    param.grad.zero_()
+            reference(x, use_gate).square().mean().backward()
+            torch.nn.utils.clip_grad_norm_(list(reference.parameters()), max_norm=1.0)
+            ref_opt.step()
+            ref_sched.step()
+
+            trainer.zero_grad()
+            candidate(x, use_gate).square().mean().backward()
+            self.assertTrue(trainer.optimize(cand_opt, cand_sched))
+
+            for (name, ref_p), cand_p in zip(reference.named_parameters(), candidate.parameters()):
+                self.assertTrue(torch.equal(ref_p, cand_p), f"step {step}: {name}")
+                self.assertEqual(ref_p.grad is None, cand_p.grad is None, f"step {step}: {name}")
+        self.assertIsNone(candidate.never.weight.grad)
+
+    def test_update_ema_matches_per_parameter_average(self):
+        from diffusion.nn import update_ema
+
+        torch.manual_seed(0)
+        source = [torch.randn(7, 5), torch.randn(3), torch.randn(1)]
+        target = [torch.randn_like(p) for p in source]
+        expected = [t.clone().mul_(0.995).add_(s, alpha=1 - 0.995) for t, s in zip(target, source)]
+        update_ema(iter(target), iter(source), rate=0.995)
+        for got, want in zip(target, expected):
+            self.assertTrue(torch.allclose(got, want, rtol=0, atol=1e-6))
+
+
     def test_sanitize_optimizer_state_clears_nonfinite_entries(self):
         model = torch.nn.Linear(4, 2)
         opt = AdamW(model.parameters(), lr=1e-3)

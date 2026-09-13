@@ -3,6 +3,7 @@ import torch.nn as nn
 import numpy as np
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
+from utils.device_transfer import host_to_device
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     JOINT_STRUCT_DIM,
 )
@@ -661,7 +662,9 @@ class AnyTop(nn.Module):
         """
         if (not self.training) or self.joint_mask_prob <= 0.0 or self.joint_mask_budget <= 0.0:
             return None
-        n_joints_cpu = torch.as_tensor(y['n_joints'], device='cpu', dtype=torch.int64).reshape(-1)
+        n_joints_cpu = torch.as_tensor(
+            y.get('n_joints_cpu', y['n_joints']), device='cpu', dtype=torch.int64
+        ).reshape(-1)
         subtree_joint_mask = self._sample_subtree_joint_mask(y, n_joints_cpu, njoints, device)
         if subtree_joint_mask is None:
             subtree_joint_mask = torch.zeros(
@@ -702,7 +705,7 @@ class AnyTop(nn.Module):
         )
         if subtree_joint_mask_np is None:
             return None
-        return torch.from_numpy(subtree_joint_mask_np).to(device=device)
+        return host_to_device(subtree_joint_mask_np, device)
 
     def sample_temporal_span_mask_train(self, y, njoints, nframes, device):
         """Select contiguous temporal spans to perturb during training.
@@ -726,7 +729,9 @@ class AnyTop(nn.Module):
         if (not self.training) or self.temporal_span_mask_prob <= 0.0:
             return None
 
-        n_joints_batch = y.get('n_joints_cpu', y.get('n_joints'))
+        # Prefer the device copy: building the mask on the device from the host
+        # counts would be a blocking upload every step.
+        n_joints_batch = y.get('n_joints', y.get('n_joints_cpu'))
         if n_joints_batch is None:
             return None
 

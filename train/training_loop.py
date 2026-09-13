@@ -14,6 +14,7 @@ from diffusion import logger
 from utils import dist_util
 from diffusion.fp16_util import MixedPrecisionTrainer, format_nonfinite_stats, format_optimizer_slot_max, inspect_optimizer_slot_max, inspect_optimizer_state, sanitize_optimizer_state
 from diffusion.nn import update_ema
+from utils.device_transfer import host_to_device
 from diffusion.resample import LossAwareSampler
 from tqdm import tqdm
 from diffusion.resample import create_named_schedule_sampler
@@ -283,6 +284,7 @@ class TrainLoop:
             self._compile_forward_model(compile_mode)
         self._interval_loss_sums = {}
         self._interval_loss_counts = {}
+        self._ema_persistent_buffer_names = None
 
     def _compile_forward_model(self, mode='default'):
         """Wrap the training forward path with torch.compile.
@@ -517,13 +519,22 @@ class TrainLoop:
 
 
 
+    # Read only by the host-side joint-mask sampler (AnyTop.sample_subtree_joint_mask_train):
+    # moving it to the device just to read it back cost a stream sync per step.
+    HOST_ONLY_COND_KEYS = ('joint_mask_candidate_roots',)
+
     def _move_cond_to_device(self, cond):
-        return {
-            'y': {
-                key: val.to(self.device, non_blocking=self.non_blocking) if torch.is_tensor(val) else val
-                for key, val in cond['y'].items()
-            }
+        y = {
+            key: val if key in self.HOST_ONLY_COND_KEYS or not torch.is_tensor(val)
+            else val.to(self.device, non_blocking=self.non_blocking)
+            for key, val in cond['y'].items()
         }
+        # The same sampler needs the joint counts on the host; keep the
+        # collate's copy next to the device one instead of reading it back.
+        n_joints = cond['y'].get('n_joints')
+        if torch.is_tensor(n_joints):
+            y['n_joints_cpu'] = n_joints
+        return {'y': y}
 
     def _with_train_step(self, cond, train_step):
         updated = {'y': dict(cond['y'])}
@@ -653,17 +664,23 @@ class TrainLoop:
                 'drifting': members['drifting'],
             }
             self._family_species_sets = family_sets
-        l_simple = (losses["l_simple"] * weights).detach().float()
-        metrics = {}
+        # Membership is host data: decide which families are present on the host
+        # and ship one [families, B] mask, instead of a blocking copy plus an
+        # .any() readback per family every step.
+        present, rows = [], []
         for family, species in family_sets.items():
-            mask = torch.tensor(
-                [ot in species for ot in object_types],
-                device=l_simple.device, dtype=torch.bool,
-            )
-            if bool(mask.any()):
-                metrics[f'l_simple_{family}'] = l_simple[mask].mean()
-        if metrics:
-            self._accumulate_interval_losses(metrics)
+            row = [ot in species for ot in object_types]
+            if any(row):
+                present.append(family)
+                rows.append(row)
+        if not present:
+            return
+        l_simple = (losses["l_simple"] * weights).detach().float()
+        membership = host_to_device(rows, l_simple.device, dtype=torch.float32)   # [F, B]
+        family_means = (membership * l_simple).sum(dim=1) / membership.sum(dim=1)
+        self._accumulate_interval_losses({
+            f'l_simple_{family}': family_means[index] for index, family in enumerate(present)
+        })
 
     def _accumulate_interval_losses(self, losses):
         for key, value in losses.items():
@@ -841,13 +858,15 @@ class TrainLoop:
         the EMA model is never forwarded, so its cache shape would mismatch the
         live model's and copy_ would raise.
         """
-        param_names = {name for name, _ in self.model_avg.named_parameters()}
-        avg_buffers = dict(self.model_avg.named_buffers())
-        model_buffers = dict(self.model.named_buffers())
-        for name in self.model_avg.state_dict():
-            if name in param_names:
-                continue
-            avg_buffers[name].copy_(model_buffers[name])
+        # The name list is fixed once the model is built; rebuilding a full
+        # state_dict() every step just to find it cost ~2 ms of host time.
+        if self._ema_persistent_buffer_names is None:
+            param_names = {name for name, _ in self.model_avg.named_parameters()}
+            self._ema_persistent_buffer_names = [
+                name for name in self.model_avg.state_dict() if name not in param_names
+            ]
+        for name in self._ema_persistent_buffer_names:
+            self.model_avg.get_buffer(name).copy_(self.model.get_buffer(name))
 
     def run_step(self, batch, cond, epoch=-1):
         if self.detect_anomaly:

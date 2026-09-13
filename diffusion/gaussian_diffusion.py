@@ -16,6 +16,7 @@ from copy import deepcopy
 from diffusion import logger
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
+from utils.device_transfer import host_to_device
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
 from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
 
@@ -319,47 +320,31 @@ class GaussianDiffusion:
         temporal_span_time = self._normalize_temporal_span_time_mask(temporal_span_mask)
 
         batch_size, n_frames = temporal_span_time.shape
-        seam_weights = th.zeros(
-            (batch_size, 1, 1, n_frames),
-            device=temporal_span_time.device,
-            dtype=th.float32,
-        )
+        device = temporal_span_time.device
         band = int(self.temporal_span_seam_width)
         # Treat seam_width as an approximately 2-sigma support radius so the
         # boundary frame remains dominant while nearby frames still contribute.
         sigma = max(float(band) / 2.0, 1e-6)
 
-        for batch_index in range(batch_size):
-            sample_mask = temporal_span_time[batch_index]
-            if not bool(sample_mask.any()):
-                continue
+        # A boundary is a masked frame whose previous or next frame is unmasked.
+        prev_mask = th.zeros_like(temporal_span_time)
+        prev_mask[:, 1:] = temporal_span_time[:, :-1]
+        next_mask = th.zeros_like(temporal_span_time)
+        next_mask[:, :-1] = temporal_span_time[:, 1:]
+        boundary = temporal_span_time & ~(prev_mask & next_mask)                  # [B, T]
 
-            prev_mask = th.zeros_like(sample_mask)
-            prev_mask[1:] = sample_mask[:-1]
-            next_mask = th.zeros_like(sample_mask)
-            next_mask[:-1] = sample_mask[1:]
-            boundaries = th.cat(
-                [
-                    th.nonzero(sample_mask & ~prev_mask, as_tuple=False).flatten(),
-                    th.nonzero(sample_mask & ~next_mask, as_tuple=False).flatten(),
-                ],
-                dim=0,
-            )
-            for boundary in boundaries.tolist():
-                left = max(0, boundary - band)
-                right = min(n_frames, boundary + band + 1)
-                local_indices = th.arange(left, right, device=temporal_span_time.device)
-                boundary_weights = th.exp(
-                    -0.5 * ((local_indices.float() - float(boundary)) / sigma) ** 2
-                )
-                seam_weights[batch_index, 0, 0, left:right] = th.maximum(
-                    seam_weights[batch_index, 0, 0, left:right],
-                    boundary_weights,
-                )
-
-        if not bool((seam_weights > 0).any()):
-            return None
-        return seam_weights
+        # Each frame takes the largest Gaussian weight of the boundaries within
+        # `band` of it (0 when there are none), as one windowed max over the
+        # batch. The per-sample, per-boundary loop this replaces read the mask
+        # back to the host several times per sample every step.
+        offsets = th.arange(-band, band + 1, device=device)
+        kernel = th.exp(-0.5 * (offsets.float() / sigma) ** 2)                    # symmetric
+        padded = th.nn.functional.pad(boundary.to(th.float32), (band, band))
+        windows = padded.unfold(-1, 2 * band + 1, 1)                             # [B, T, 2*band+1]
+        seam_weights = (windows * kernel).amax(dim=-1)
+        # All zero when no span was drawn; the seam loss is then 0 without a
+        # host check.
+        return seam_weights.view(batch_size, 1, 1, n_frames)
 
     def temporal_span_seam_acceleration_loss(
         self, target, model_output, temporal_span_seam_weights, spat_mask
@@ -385,8 +370,7 @@ class GaussianDiffusion:
         center_weights = temporal_span_seam_weights[:, :, :, 1:-1]
         joint_valid = spat_mask.transpose(1, 3)  # [bs, njoints, 1, 1]
         weights = center_weights * joint_valid  # [bs, njoints, 1, nframes-2]
-        if not bool((weights > 0).any()):
-            return None
+        # Samples without a seam weigh 0 (weighted_feature_l2 guards the denominator).
         return self.weighted_feature_l2(acc_pred, acc_target, weights)
 
     def quat_to_mat(self, qs):
@@ -412,13 +396,17 @@ class GaussianDiffusion:
         rotations = o.reshape(qs.shape[:-1] + (3, 3))
         return rotations
     
-    def geodesic_loss(self, a, b, spat_mask, lengths, n_joints):
+    @staticmethod
+    def _physical_rotation_matrices(physical):
+        """Local rotation matrices [bs, T, J, 3, 3] of a physical [bs, J, F, T] feature."""
+        return rotation_6d_to_matrix_safe(physical.permute(0, 3, 1, 2)[..., 3:9].float())
+
+    def geodesic_loss(self, a, b, spat_mask, lengths, n_joints, rots_a=None, rots_b=None):
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
         # assuming spat_mask.shape == bs, 1, 1, max_joints
-        a = a.float()
-        b = b.float()
-        rots_target = rotation_6d_to_matrix_safe(a.permute(0, 3, 1, 2)[..., 3:9])
-        rots_pred = rotation_6d_to_matrix_safe(b.permute(0, 3, 1, 2)[..., 3:9])
+        # rots_a / rots_b: optional precomputed _physical_rotation_matrices of a / b.
+        rots_target = self._physical_rotation_matrices(a) if rots_a is None else rots_a
+        rots_pred = self._physical_rotation_matrices(b) if rots_b is None else rots_b
         loss = geodesic_distance(rots_pred, rots_target).permute(0, 2, 3, 1)
         spat_masked_loss = (loss * spat_mask.float().transpose(1,3))
         loss = sum_flat(spat_masked_loss)  # gives \sigma_euclidean over unmasked elements
@@ -429,13 +417,23 @@ class GaussianDiffusion:
     def _coerce_resample_speed_batch(self, value, batch_size, device, dtype):
         if value is None:
             return th.ones(batch_size, device=device, dtype=dtype)
-        value = th.as_tensor(value, device=device, dtype=dtype).reshape(-1)
+        on_accelerator = th.is_tensor(value) and value.device.type != 'cpu'
+        value = host_to_device(value, device, dtype=dtype).reshape(-1)
         if value.numel() == 1 and batch_size != 1:
             value = value.expand(batch_size)
         elif value.numel() != batch_size:
             raise ValueError(
                 f"resample_speed_cond has length {value.numel()} but expected {batch_size}."
             )
+        if on_accelerator:
+            # Checked on the device: reading it back would sync every step, in
+            # each of the three losses that call this. A bad value still aborts
+            # the run, as a device-side assert.
+            th._assert_async(
+                (th.isfinite(value) & (value > 0)).all(),
+                "resample_speed_cond must be finite and positive",
+            )
+            return value
         if not th.isfinite(value).all():
             raise ValueError("resample_speed_cond must be finite")
         if bool((value <= 0).any()):
@@ -488,7 +486,8 @@ class GaussianDiffusion:
         ).to(dtype=vel.dtype)
         root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
         batch_indices = th.arange(batch_size, device=vel.device)
-        xz_only = vel.new_tensor([1.0, 0.0, 1.0]).view(1, 3, 1)
+        xz_only = vel.new_zeros(1, 3, 1)
+        xz_only[:, 0::2] = 1.0
         root_xz_vel = (
             vel[batch_indices, root_indices_clamped] * xz_only * root_valid.view(batch_size, 1, 1)
         )                                                       # [bs, 3, nframes]
@@ -638,47 +637,56 @@ class GaussianDiffusion:
                 "fk_direction_loss requires y['parents'] (per-sample parent arrays "
                 "from the collate); none were provided."
             )
-        parents_idx = th.zeros(batch_size, max_joints, dtype=th.long, device=device)
-        parent_is_bone = th.zeros(batch_size, max_joints, dtype=th.bool, device=device)
-        max_depth = 0
+        # Built on the host and shipped in one non-blocking copy (a per-sample
+        # ``as_tensor(..., device=cuda)`` synced the stream once per sample).
+        parents_np = np.full((batch_size, max_joints), -1, dtype=np.int64)
+        joint_counts = np.zeros((batch_size, 1), dtype=np.int64)
         for b, p in enumerate(parents_list):
             p_np = np.asarray(p).reshape(-1).astype(np.int64)
             n = min(int(p_np.shape[0]), max_joints)
-            p_np = p_np[:n]
-            p_t = th.as_tensor(p_np, dtype=th.long, device=device)
-            parents_idx[b, :n] = p_t.clamp(min=0)
-            parent_is_bone[b, :n] = p_t >= 0
-            # Parents are not guaranteed to precede children; walk each chain up.
-            for j in range(n):
-                par = int(p_np[j])
-                d = 0
-                while 0 <= par < n and d < n:
-                    d += 1
-                    par = int(p_np[par])
-                max_depth = max(max_depth, d)
-        return parents_idx, parent_is_bone, max_depth
+            parents_np[b, :n] = p_np[:n]
+            joint_counts[b, 0] = n
+        # Parents are not guaranteed to precede children, so walk every chain up
+        # at once: after d hops a joint is still alive iff its depth is >= d.
+        rows = np.arange(batch_size)[:, None]
+        ancestor = parents_np
+        max_depth = 0
+        for depth in range(1, max_joints + 1):
+            alive = (ancestor >= 0) & (ancestor < joint_counts)
+            if not alive.any():
+                break
+            max_depth = depth
+            ancestor = np.where(alive, parents_np[rows, np.where(alive, ancestor, 0)], -1)
+
+        parents_dev = host_to_device(parents_np, device)
+        return parents_dev.clamp(min=0), parents_dev >= 0, max_depth
 
     @staticmethod
     def _chain_global_rotations(local_rot, parents_idx, parent_is_bone, max_depth):
         """Global rotation of every joint from its own-local rotations.
 
         ``local_rot``: [bs, T, J, 3, 3] with ``G[j] = G[parent] @ R[j]``,
-        ``G[root] = R[root]``. Iterating ``G <- G[parent] @ R`` ``max_depth``
-        times converges to the full chain product without a per-sample topological
-        order (the root stays pinned, so short chains terminate). One gather + one
-        batched 3x3 matmul per iteration, so a 30-deep rig is ~60 kernels, not one
-        per joint.
+        ``G[root] = R[root]``. Pointer jumping: ``P[j]`` is the product of the
+        rotations from ``A[j]`` (exclusive) down to ``j``; each iteration does
+        ``P <- P[A] @ P`` and ``A <- A[A]``, doubling the span, so a chain of
+        ``max_depth`` hops needs ``ceil(log2(max_depth + 1))`` iterations instead
+        of ``max_depth``. Roots and padding point at an appended identity row, so
+        no per-sample topological order and no masking are needed.
         """
         bs, n_frames, max_joints = local_rot.shape[:3]
-        gather_idx = parents_idx.view(bs, 1, max_joints, 1, 1).expand(-1, n_frames, -1, 3, 3)
-        is_bone = parent_is_bone.view(bs, 1, max_joints, 1, 1)
-        global_rot = local_rot
-        for _ in range(int(max_depth)):
-            parent_global = th.gather(global_rot, 2, gather_idx)
-            global_rot = th.where(is_bone, parent_global @ local_rot, local_rot)
-        return global_rot
+        sentinel = max_joints
+        identity = th.eye(3, dtype=local_rot.dtype, device=local_rot.device)
+        prod = th.cat([local_rot, identity.expand(bs, n_frames, 1, 3, 3)], dim=2)
+        ancestor = th.where(parent_is_bone, parents_idx, sentinel)
+        ancestor = th.cat([ancestor, ancestor.new_full((bs, 1), sentinel)], dim=1)   # [bs, J+1]
+        for _ in range(max(int(max_depth), 0).bit_length()):
+            gather_idx = ancestor.view(bs, 1, max_joints + 1, 1, 1).expand(-1, n_frames, -1, 3, 3)
+            prod = th.gather(prod, 2, gather_idx) @ prod
+            ancestor = th.gather(ancestor, 1, ancestor)
+        return prod[:, :, :max_joints]
 
-    def fk_direction_loss(self, pred_physical, target_physical, spat_mask, y):
+    def fk_direction_loss(self, pred_physical, target_physical, spat_mask, y,
+                          rot_pred=None, rot_tgt=None):
         """Global-rotation supervision through bone directions.
 
         ``l_simple`` and ``geodesic_loss`` grade each joint's LOCAL rotation in
@@ -702,6 +710,10 @@ class GaussianDiffusion:
         Bone-frames are weighted 0 for padding, a missing/degenerate rest length,
         a collapsed GT bone (``FK_DEGENERATE_LENGTH_RATIO``), or a GT that is itself
         FK-inconsistent beyond ``FK_GT_AGREEMENT_DEG``.
+
+        ``rot_pred`` / ``rot_tgt`` are optional precomputed
+        ``_physical_rotation_matrices`` of the two inputs (shared with
+        ``geodesic_loss`` in ``training_losses``).
 
         Returns ``fk_loss`` plus diagnostics ``fk_angle_deg`` (mean FK-vs-position
         angle on graded bones, the acceptance metric) and ``fk_gt_masked_frac``
@@ -733,8 +745,10 @@ class GaussianDiffusion:
         rest_dir = rest_vec / rest_len.clamp_min(1e-8).unsqueeze(-1)
 
         # [bs, T, J, 3, 3]; the safe 6D->matrix keeps near-collinear inputs finite.
-        rot_pred = rotation_6d_to_matrix_safe(pred_physical.permute(0, 3, 1, 2)[..., 3:9].float())
-        rot_tgt = rotation_6d_to_matrix_safe(target_physical.permute(0, 3, 1, 2)[..., 3:9].float())
+        if rot_pred is None:
+            rot_pred = self._physical_rotation_matrices(pred_physical)
+        if rot_tgt is None:
+            rot_tgt = self._physical_rotation_matrices(target_physical)
         global_pred = self._chain_global_rotations(rot_pred, parents_idx, parent_is_bone, max_depth)
         with th.no_grad():
             global_tgt = self._chain_global_rotations(rot_tgt, parents_idx, parent_is_bone, max_depth)
@@ -790,13 +804,9 @@ class GaussianDiffusion:
     def _coerce_index_batch(self, value, batch_size, device):
         if value is None:
             return th.zeros(batch_size, device=device, dtype=th.long)
-        if torch.is_tensor(value):
-            result = value.to(device=device, dtype=th.long).reshape(-1)
-        else:
-            result = th.as_tensor([
-                0 if item is None else int(item)
-                for item in value
-            ], device=device, dtype=th.long).reshape(-1)
+        if not torch.is_tensor(value):
+            value = [0 if item is None else int(item) for item in value]
+        result = host_to_device(value, device, dtype=th.long).reshape(-1)
         if result.numel() == 1 and batch_size != 1:
             result = result.expand(batch_size)
         elif result.numel() != batch_size:
@@ -940,7 +950,9 @@ class GaussianDiffusion:
         ).view(batch_size, 1)
         batch_indices = th.arange(batch_size, device=device)
         root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
-        root_vel_xz = model_output[batch_indices, root_indices_clamped][:, [9, 11], :]  # [bs, 2, T]
+        root_rows = model_output[batch_indices, root_indices_clamped]
+        # Stacked, not indexed with a host list (a blocking upload per step).
+        root_vel_xz = th.stack([root_rows[:, 9], root_rows[:, 11]], dim=1)            # [bs, 2, T]
         # Every row, the terminal one included: that is the identity the
         # stored tensors satisfy, and summing the visible rows alone would
         # add a pull of the terminal row toward zero on top.
@@ -2077,9 +2089,16 @@ class GaussianDiffusion:
                                 + self.temporal_span_seam_loss_weight * terms["temporal_span_seam_loss"]
                             )
 
+                # Both rotation losses read the same local matrices; decode them once.
+                rot_tgt = rot_pred = None
+                if self.lambda_geo > 0. and self.lambda_fk > 0.:
+                    rot_tgt = self._physical_rotation_matrices(target_physical)
+                    rot_pred = self._physical_rotation_matrices(model_output_physical)
+
                 if self.lambda_geo > 0.:
                     terms["geodesic_loss"] = self.geodesic_loss(
-                        target_physical, model_output_physical, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
+                        target_physical, model_output_physical, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32,
+                        rots_a=rot_tgt, rots_b=rot_pred,
                     )
                     terms["loss"] = terms["loss"] + self.lambda_geo * terms["geodesic_loss"]
 
@@ -2100,6 +2119,7 @@ class GaussianDiffusion:
                     fk_terms = self.fk_direction_loss(
                         model_output_physical, target_physical,
                         joints_padding_mask_fp32, y_for_decode,
+                        rot_pred=rot_pred, rot_tgt=rot_tgt,
                     )
                     terms.update(fk_terms)
                     terms["loss"] = terms["loss"] + self.lambda_fk * terms["fk_loss"]

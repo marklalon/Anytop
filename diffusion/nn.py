@@ -62,8 +62,12 @@ def update_ema(target_params, source_params, rate=0.99):
     :param source_params: the source parameter sequence.
     :param rate: the EMA rate (closer to 1 means slower).
     """
-    for targ, src in zip(target_params, source_params):
-        targ.detach().mul_(rate).add_(src, alpha=1 - rate)
+    # One multi-tensor lerp instead of a mul_ + add_ kernel pair per parameter
+    # (~860 launches a step on AnyTop). Same average up to float rounding.
+    targets = [targ.detach() for targ in target_params]
+    sources = [src.detach() for src in source_params]
+    if targets:
+        th._foreach_lerp_(targets, sources, 1 - rate)
 
 
 def zero_module(module):
