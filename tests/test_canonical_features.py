@@ -2,6 +2,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -149,6 +150,76 @@ def test_canonical_decode_torch_multi_skeleton_batch():
     )
 
 
+def test_canonical_decode_torch_padded_batch_matches_unpadded_samples():
+    """Padding joints must not change the per-skeleton geometric scale ``L``.
+
+    Training collates mixed skeletons by zero-padding ``rest_pos_ric_hml`` to
+    ``max_joints``.  The canonical encoder calibrated each sample with its
+    unpadded rest geometry, so batched decode must use ``n_joints`` to ignore
+    those padding rows and exactly match decoding each sample on its own.
+    """
+    rest_a = torch.tensor(
+        [[0.0, 0.0, 0.0], [0.0, 0.8, 0.0], [0.5, 1.2, 0.0], [0.8, 1.3, 0.4]],
+        dtype=torch.float32,
+    )
+    rest_b = torch.tensor(
+        [[0.0, 0.0, 0.0], [3.0, 1.0, -0.5]],
+        dtype=torch.float32,
+    )
+    max_joints = len(rest_a)
+    padded_rest = torch.zeros(2, max_joints, 3)
+    padded_rest[0, :len(rest_a)] = rest_a
+    padded_rest[1, :len(rest_b)] = rest_b
+
+    mean, std = _global_stats()
+    batch_y = {
+        "rest_pos_ric_hml": padded_rest,
+        "n_joints": torch.tensor([len(rest_a), len(rest_b)]),
+        "canonical_feature_mean": torch.stack(
+            [torch.as_tensor(mean), torch.as_tensor(mean + 0.25)]
+        ),
+        "canonical_feature_std": torch.stack(
+            [torch.as_tensor(std), torch.as_tensor(std * 1.5)]
+        ),
+    }
+    canonical = torch.randn(2, max_joints, 12, 5)
+    decoded_batch = canonical_to_physical_hml(canonical, batch_y)
+
+    for batch_index, rest in enumerate((rest_a, rest_b)):
+        n_joints = len(rest)
+        single_y = {
+            "rest_pos_ric_hml": rest.unsqueeze(0),
+            "canonical_feature_mean": batch_y["canonical_feature_mean"][batch_index],
+            "canonical_feature_std": batch_y["canonical_feature_std"][batch_index],
+        }
+        decoded_single = canonical_to_physical_hml(
+            canonical[batch_index:batch_index + 1, :n_joints], single_y
+        )
+        torch.testing.assert_close(
+            decoded_batch[batch_index, :n_joints], decoded_single[0],
+            atol=1e-5, rtol=1e-5,
+        )
+
+
+def test_length_scale_numpy_batch_ignores_padding_rows():
+    rest_a = np.array(
+        [[0.0, 0.0, 0.0], [0.0, 0.8, 0.0], [0.5, 1.2, 0.0]], dtype=np.float32
+    )
+    rest_b = np.array([[0.0, 0.0, 0.0], [3.0, 1.0, -0.5]], dtype=np.float32)
+    padded_rest = np.zeros((2, len(rest_a), 3), dtype=np.float32)
+    padded_rest[0] = rest_a
+    padded_rest[1, :len(rest_b)] = rest_b
+
+    batched = cf._length_scale_from_rest(
+        padded_rest, n_joints=np.array([len(rest_a), len(rest_b)])
+    )
+    expected = np.array([
+        cf._length_scale_from_rest(rest_a),
+        cf._length_scale_from_rest(rest_b),
+    ])
+    np.testing.assert_allclose(batched, expected, atol=1e-7, rtol=1e-7)
+
+
 def test_truebones_collate_drops_motion_stats_and_carries_global_stats():
     cond = _cond()
     motion = np.zeros((4, 2, 12), dtype=np.float32)
@@ -187,6 +258,129 @@ def test_truebones_collate_drops_motion_stats_and_carries_global_stats():
     # with its own object_subset's stats.
     assert tuple(y["canonical_feature_mean"].shape) == (1, 12)
     assert tuple(y["canonical_feature_std"].shape) == (1, 12)
+    # The rest length scale is fixed at collate time from the unpadded rest, so
+    # the training decode never derives it from the padded rows.
+    assert tuple(y[cf.REST_LENGTH_SCALE_KEY].shape) == (1,)
+    np.testing.assert_allclose(
+        y[cf.REST_LENGTH_SCALE_KEY].numpy(),
+        [cf._length_scale_from_rest(cond["rest_pos_ric_hml"])],
+        rtol=1e-6,
+    )
+
+
+def _collate_item(cond, rest_pos, max_joints, name):
+    n_joints = len(rest_pos)
+    entry = dict(cond)
+    entry["rest_pos_ric_hml"] = np.asarray(rest_pos, dtype=np.float32)
+    entry["rest_pose"] = np.zeros((n_joints, 12), dtype=np.float32)
+    entry["rest_pose"][:, 0:3] = entry["rest_pos_ric_hml"]
+    return (
+        np.zeros((4, n_joints, 12), dtype=np.float32),
+        4,
+        np.arange(-1, n_joints - 1, dtype=np.int64),
+        build_canonical_rest_feature(entry),
+        np.zeros((n_joints, 3), dtype=np.float32),
+        np.zeros((n_joints, n_joints), dtype=np.float32),
+        np.zeros((n_joints, n_joints), dtype=np.float32),
+        name,
+        np.zeros((n_joints, 4), dtype=np.float32),
+        max_joints,
+        {"translation_root_index": 0},
+        f"{name}_Motion_1.npy",
+        {
+            "rest_pos_ric_hml": entry["rest_pos_ric_hml"],
+            "canonical_feature_mean": entry["canonical_feature_mean"],
+            "canonical_feature_std": entry["canonical_feature_std"],
+            "feature_space": cf.CANONICAL_FEATURE_SPACE,
+        },
+    )
+
+
+def test_collated_padded_batch_decodes_like_each_unpadded_sample():
+    """End-to-end through the real collate: a mixed-skeleton batch padded to
+    max_joints decodes every sample exactly as its own unpadded cond entry does.
+    The collate supplies ``rest_length_scale`` so no padded row reaches ``L``."""
+    rest_a = [[0.0, 0.0, 0.0], [0.0, 0.8, 0.0], [0.5, 1.2, 0.0], [0.8, 1.3, 0.4]]
+    rest_b = [[0.0, 0.0, 0.0], [3.0, 1.0, -0.5]]
+    max_joints = 7
+    mean, std = _global_stats()
+    cond_a = set_canonical_global_stats(mark_canonical_cond_entry({}), mean, std)
+    cond_b = set_canonical_global_stats(mark_canonical_cond_entry({}), mean + 0.25, std * 1.5)
+    _motion, batch_cond = truebones_batch_collate([
+        _collate_item(cond_a, rest_a, max_joints, "A"),
+        _collate_item(cond_b, rest_b, max_joints, "B"),
+    ])
+    y = batch_cond["y"]
+    assert tuple(y["rest_pos_ric_hml"].shape) == (2, max_joints, 3)
+    assert cf.REST_LENGTH_SCALE_KEY in y
+
+    torch.manual_seed(0)
+    canonical = torch.randn(2, max_joints, 12, 5)
+    decoded_batch = canonical_to_physical_hml(canonical, y)
+    for index, (rest, cond) in enumerate(((rest_a, cond_a), (rest_b, cond_b))):
+        n_joints = len(rest)
+        single = dict(cond)
+        single["rest_pos_ric_hml"] = np.asarray(rest, dtype=np.float32)
+        decoded_single = canonical_to_physical_hml(canonical[index:index + 1, :n_joints], single)
+        torch.testing.assert_close(
+            decoded_batch[index, :n_joints], decoded_single[0], atol=1e-5, rtol=1e-5
+        )
+
+    # Decoding one sample out of the collated batch must slice every per-sample
+    # field; handing the decoder the whole [B, F] stat stack is an error, not a
+    # broadcast that silently reads row 0's object_subset.
+    with pytest.raises(ValueError, match="per-sample canonical stats"):
+        canonical_to_physical_hml(
+            canonical[1:2, :len(rest_b)],
+            {
+                "rest_pos_ric_hml": y["rest_pos_ric_hml"][1:2, :len(rest_b)],
+                "canonical_feature_mean": y["canonical_feature_mean"],
+                "canonical_feature_std": y["canonical_feature_std"],
+            },
+        )
+
+
+def test_rest_length_scale_in_cond_takes_precedence_over_rest_rows():
+    cond = _cond()
+    feature = np.zeros((1, 2, 12, 3), dtype=np.float32)
+    feature[..., 0:3, :] = 1.0
+    feature[..., 9:12, :] = 1.0
+    derived = float(cf._length_scale_from_rest(cond["rest_pos_ric_hml"]))
+    with_key = dict(cond)
+    with_key[cf.REST_LENGTH_SCALE_KEY] = np.float32(derived * 4.0)
+    base = cf._apply_L_scale(feature, cond, inverse=True)
+    scaled = cf._apply_L_scale(feature, with_key, inverse=True)
+    np.testing.assert_allclose(scaled[..., 0:3, :], base[..., 0:3, :] * 4.0, rtol=1e-6)
+    np.testing.assert_allclose(scaled[..., 9:12, :], base[..., 9:12, :] * 4.0, rtol=1e-6)
+    np.testing.assert_allclose(scaled[..., 3:9, :], base[..., 3:9, :], rtol=0)
+
+
+def test_length_scale_broadcasts_a_shared_rest_over_per_row_counts():
+    """A single shared rest with one count per batch row gives one ``L`` per row,
+    identically on numpy and torch -- no device-dependent collapse to row 0."""
+    rest = np.array(
+        [[0.0, 0.0, 0.0], [0.0, 0.8, 0.0], [0.5, 1.2, 0.0], [9.0, 9.0, 9.0]],
+        dtype=np.float32,
+    )
+    expected = np.array([
+        cf._length_scale_from_rest(rest[:4]),
+        cf._length_scale_from_rest(rest[:3]),
+    ])
+    np.testing.assert_allclose(
+        cf._length_scale_from_rest(rest, n_joints=np.array([4, 3])), expected, rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        cf._length_scale_from_rest(torch.as_tensor(rest), n_joints=torch.tensor([4, 3])).numpy(),
+        expected, rtol=1e-5,
+    )
+    # A lone count against an unbatched rest stays a scalar.
+    assert np.ndim(cf._length_scale_from_rest(rest, n_joints=3)) == 0
+    assert cf._length_scale_from_rest(torch.as_tensor(rest), n_joints=torch.tensor([3])).dim() == 0
+    # One count broadcasts over a batch; a mismatched count vector is an error.
+    batched = np.stack([rest, rest])
+    assert cf._length_scale_from_rest(batched, n_joints=3).shape == (2,)
+    with pytest.raises(ValueError, match="one per batch row"):
+        cf._length_scale_from_rest(np.stack([rest] * 3), n_joints=[4, 3])
 
 
 def _raw_subset_stats():

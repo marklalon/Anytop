@@ -4,7 +4,11 @@ import numpy as np
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     SLOT_PAD_ID,
 )
-from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE
+from data_loaders.truebones.truebones_utils.canonical_features import (
+    CANONICAL_FEATURE_SPACE,
+    REST_LENGTH_SCALE_KEY,
+    _length_scale_from_rest,
+)
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from data_loaders.truebones.truebones_utils.motion_labels import ACTION_LABEL_MAX_WORDS
 
@@ -150,6 +154,13 @@ def truebones_collate(batch):
                 batch_item['rest_pos_ric_hml'] for batch_item in notnone_batches
             ])
         })
+
+    # Per-sample rest length scale, stacked in batch order like the canonical
+    # stats below, and for the same reason: a partially-populated batch would
+    # misalign sample<->L, so it is emitted only when every item carries it.
+    length_scales = [batch_item.get(REST_LENGTH_SCALE_KEY) for batch_item in notnone_batches]
+    if all(v is not None for v in length_scales):
+        cond['y'][REST_LENGTH_SCALE_KEY] = torch.tensor(length_scales, dtype=torch.float32)
 
     # Structural joint descriptors. Emitted whenever the loader supplied them, so
     # the key set stays constant across every batch of a run (a key that appears
@@ -337,10 +348,15 @@ def truebones_batch_collate(batch):
         if extra_cond is not None and 'rest_pos_ric_hml' in extra_cond:
             rest_pos = torch.zeros((max_joints, 3), dtype=torch.float32)
             raw_rest_pos = np.asarray(extra_cond['rest_pos_ric_hml'], dtype=np.float32)
-            rest_pos[:min(max_joints, n_joints, raw_rest_pos.shape[0])] = torch.from_numpy(
-                raw_rest_pos[:min(max_joints, n_joints, raw_rest_pos.shape[0])]
-            )
+            rest_count = min(max_joints, n_joints, raw_rest_pos.shape[0])
+            rest_pos[:rest_count] = torch.from_numpy(raw_rest_pos[:rest_count])
             item['rest_pos_ric_hml'] = rest_pos
+            # The skeleton's length scale L, taken from the UNPADDED rest exactly
+            # as the encoder took it. Rows padded up to max_joints would drag L
+            # down (or up) with the padding count, so it is fixed here, once, on
+            # the CPU, rather than re-derived from the padded rest on every
+            # training-time aux-loss decode.
+            item[REST_LENGTH_SCALE_KEY] = float(_length_scale_from_rest(raw_rest_pos[:rest_count]))
         if extra_cond is not None and 'joint_struct' in extra_cond:
             raw_joint_struct = np.asarray(extra_cond['joint_struct'], dtype=np.float32)
             if raw_joint_struct.ndim != 2 or raw_joint_struct.shape[1] != JOINT_STRUCT_DIM:

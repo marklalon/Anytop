@@ -62,6 +62,12 @@ PHYSICAL_FEATURE_SPACE = "hml_like_v_current"
 CANONICAL_MEAN_KEY = "canonical_feature_mean"
 CANONICAL_STD_KEY = "canonical_feature_std"
 
+# Per-sample geometric length ``L`` (``[B]``) that the training collate
+# precomputes from each sample's unpadded rest and stores in ``y``; see
+# ``_length_scale_from_cond``. Never stored in cond.npy (species entries derive
+# it from ``rest_pos_ric_hml`` on the fly).
+REST_LENGTH_SCALE_KEY = "rest_length_scale"
+
 # Channels whose std falls below this floor are treated as unit-variance so the
 # encode divide never explodes (mirrors the old std_safe floor).
 _STD_FLOOR = 1e-5
@@ -98,23 +104,100 @@ def _rest_pos_from_cond(cond_entry, *, like=None):
     return np.asarray(rest_pos, dtype=np.float32)
 
 
-def _length_scale_from_rest(rest_pos):
+def _joint_count_batch(n_counts: int, rest_batch: int, rest_shape) -> int:
+    """Batch size of ``L`` for ``n_counts`` joint counts against a rest batch.
+
+    Broadcasts like numpy: one count covers every rest row, and one rest row
+    (an unbatched ``[J, 3]`` rest is one row) is shared by every count -- the
+    homogeneous batch whose loader hands a single species rest alongside the
+    collated per-row ``n_joints``. Each row then gets its own ``L`` from its own
+    count, so unequal counts are honoured rather than silently collapsed.
+    """
+    if n_counts == rest_batch or rest_batch == 1:
+        return n_counts
+    if n_counts == 1:
+        return rest_batch
+    raise ValueError(
+        f"n_joints has {n_counts} entries but rest_pos has shape {tuple(rest_shape)}: "
+        "pass one count, one per batch row, or a single shared rest."
+    )
+
+
+def _length_scale_from_rest(rest_pos, n_joints=None):
     """Per-skeleton geometric length L = RMS spread of rest-pose joint positions.
 
     Accepts ``[J, 3]`` (returns a scalar) or ``[B, J, 3]`` (returns ``[B]``).
-    Reduces over the joint and xyz axes (the trailing two), so a leading batch
-    axis is preserved. Derived purely from skeleton geometry -- no motion stats.
+    ``n_joints`` gives the real joint count(s) so the zero-padded rows of a
+    collated mixed-skeleton batch are left out; without it every row counts.
+    Counts and rest rows broadcast (see ``_joint_count_batch``): the result is a
+    scalar only for an unbatched rest with a single count, otherwise ``[B]``.
+    Derived purely from skeleton geometry -- no motion stats.
     """
     if _is_torch_tensor(rest_pos):
         rp = rest_pos.to(dtype=torch.float32)
-        centered = rp - rp.mean(dim=-2, keepdim=True)
-        L = torch.sqrt((centered ** 2).mean(dim=(-2, -1)))
+        if n_joints is None:
+            centered = rp - rp.mean(dim=-2, keepdim=True)
+            L = torch.sqrt((centered ** 2).mean(dim=(-2, -1)))
+        else:
+            if rp.dim() not in (2, 3):
+                raise ValueError(
+                    f"rest_pos must have shape [J, 3] or [B, J, 3], got {tuple(rp.shape)}."
+                )
+            rp3 = rp.unsqueeze(0) if rp.dim() == 2 else rp
+            max_joints = rp3.shape[1]
+            counts = torch.as_tensor(n_joints, device=rp3.device, dtype=torch.long).reshape(-1)
+            batch = _joint_count_batch(counts.numel(), rp3.shape[0], rp.shape)
+            rp3 = rp3.expand(batch, -1, -1)
+            counts = counts.expand(batch)
+            # Counts from a collated y live on CUDA. Validating them there would
+            # force a device synchronization on every decode, so only CPU callers
+            # get the fail-fast (the training decode reads rest_length_scale and
+            # does not reach this path at all).
+            if (
+                counts.device.type == "cpu"
+                and bool(((counts <= 0) | (counts > max_joints)).any())
+            ):
+                raise ValueError(
+                    f"n_joints must be in [1, {max_joints}], got {counts.tolist()}."
+                )
+
+            valid = torch.arange(max_joints, device=rp3.device).unsqueeze(0) < counts.unsqueeze(1)
+            valid_f = valid.to(dtype=rp3.dtype).unsqueeze(-1)
+            counts_f = counts.to(dtype=rp3.dtype)
+            mean = (rp3 * valid_f).sum(dim=-2, keepdim=True) / counts_f.view(-1, 1, 1)
+            squared = ((rp3 - mean) ** 2) * valid_f
+            L = torch.sqrt(squared.sum(dim=(-2, -1)) / (counts_f * rp3.shape[-1]))
+            if rp.dim() == 2 and counts.numel() == 1:
+                L = L[0]
         # Degenerate (single joint / collapsed) skeleton -> fall back to 1.0 so
         # the encode divide never explodes. Mirrors the numpy branch below.
         return torch.where(torch.isfinite(L) & (L > 1e-6), L, torch.ones_like(L))
+
     rp = np.asarray(rest_pos, dtype=np.float64)
-    centered = rp - rp.mean(axis=-2, keepdims=True)
-    L = np.sqrt((centered ** 2).mean(axis=(-2, -1)))
+    if n_joints is None:
+        centered = rp - rp.mean(axis=-2, keepdims=True)
+        L = np.sqrt((centered ** 2).mean(axis=(-2, -1)))
+    else:
+        if rp.ndim not in (2, 3):
+            raise ValueError(
+                f"rest_pos must have shape [J, 3] or [B, J, 3], got {rp.shape}."
+            )
+        rp3 = rp[None, ...] if rp.ndim == 2 else rp
+        max_joints = rp3.shape[1]
+        counts = np.asarray(n_joints, dtype=np.int64).reshape(-1)
+        batch = _joint_count_batch(counts.size, rp3.shape[0], rp.shape)
+        rp3 = np.broadcast_to(rp3, (batch,) + rp3.shape[1:])
+        counts = np.broadcast_to(counts, (batch,))
+        if np.any((counts <= 0) | (counts > max_joints)):
+            raise ValueError(f"n_joints must be in [1, {max_joints}], got {counts.tolist()}.")
+
+        valid = np.arange(max_joints)[None, :] < counts[:, None]
+        valid_f = valid[..., None].astype(rp3.dtype)
+        mean = (rp3 * valid_f).sum(axis=-2, keepdims=True) / counts.reshape(-1, 1, 1)
+        squared = ((rp3 - mean) ** 2) * valid_f
+        L = np.sqrt(squared.sum(axis=(-2, -1)) / (counts * rp3.shape[-1]))
+        if rp.ndim == 2 and counts.size == 1:
+            L = L[0]
     return np.where(np.isfinite(L) & (L > 1e-6), L, 1.0)
 
 
@@ -132,37 +215,60 @@ def _spatial_L_vectors(n_feats):
     return uses_L
 
 
+def _length_scale_from_cond(cond_entry, *, like=None):
+    """Resolve the per-skeleton length ``L`` for a cond entry / collated ``y``.
+
+    The collate precomputes ``rest_length_scale`` (``[B]``) from each sample's
+    UNPADDED rest, so the training aux-loss decode reads it instead of spending
+    a dozen kernel launches re-deriving it from the padded rest every step.
+    Without it, ``L`` is derived from the rest positions, honouring ``n_joints``
+    so the zero-padded rows of a collated batch are left out.
+    """
+    L = cond_entry.get(REST_LENGTH_SCALE_KEY) if hasattr(cond_entry, "get") else None
+    if L is not None:
+        return L
+    n_joints = cond_entry.get("n_joints") if hasattr(cond_entry, "get") else None
+    return _length_scale_from_rest(
+        _rest_pos_from_cond(cond_entry, like=like), n_joints=n_joints
+    )
+
+
 def _apply_L_scale(feature, cond_entry, inverse: bool):
     """Divide (encode) or multiply (decode) the position/velocity channels by the
     per-skeleton length ``L``. Exact inverse of itself with flipped ``inverse``.
     Rotation channels are left unchanged. ``L`` may be a scalar or ``[B]``.
     """
-    L = _length_scale_from_rest(_rest_pos_from_cond(cond_entry, like=feature))
+    L = _length_scale_from_cond(cond_entry, like=feature)
 
     if _is_torch_tensor(feature):
         out = feature
         ndim = out.dim()
         n_feats = out.shape[2] if ndim == 4 else out.shape[-1]
         uses_L = torch.as_tensor(_spatial_L_vectors(n_feats), device=out.device, dtype=out.dtype)
-        Lt = L.to(device=out.device, dtype=out.dtype) if _is_torch_tensor(L) \
-            else torch.as_tensor(float(L), device=out.device, dtype=out.dtype)
+        Lt = (L if _is_torch_tensor(L) else torch.as_tensor(np.asarray(L))) \
+            .to(device=out.device, dtype=out.dtype).reshape(-1)
 
         if ndim == 4:
             # [B, J, F, T]; L is scalar or [B].
-            if Lt.dim() == 0:
+            if Lt.numel() == 1:
                 scale = (Lt ** uses_L).view(1, 1, n_feats, 1)
             else:
                 scale = (Lt.view(-1, 1) ** uses_L.view(1, -1)).view(out.shape[0], 1, n_feats, 1)
         else:
             # channels on the last axis ([J, F] / [T, J, F]); L is scalar.
-            scale = Lt ** uses_L
+            if Lt.numel() != 1:
+                raise ValueError(
+                    f"a per-sample L of {Lt.numel()} entries needs a [B, J, F, T] feature, "
+                    f"got rank {ndim}; slice the collated y per sample when decoding one."
+                )
+            scale = Lt[0] ** uses_L
         return out * scale if inverse else out / scale
 
     out = np.asarray(feature, dtype=np.float32)
     ndim = out.ndim
     n_feats = out.shape[2] if ndim == 4 else out.shape[-1]
     uses_L = _spatial_L_vectors(n_feats)
-    Lnp = np.asarray(L, dtype=np.float64)
+    Lnp = np.asarray(L.detach().cpu() if _is_torch_tensor(L) else L, dtype=np.float64)
 
     if ndim == 4:
         if Lnp.ndim == 0:
@@ -200,7 +306,28 @@ def set_canonical_global_stats(cond_entry, mean, std):
     return cond_entry
 
 
-def _view_stat_torch(stat, ndim: int, n_feats: int):
+def _check_per_sample_stat(stat_rows: int, feature_shape):
+    """A per-sample ``[B, F]`` stat must line up with a ``[B, J, F, T]`` feature.
+
+    A ``[B, F]`` stat broadcasts silently against a single-sample ``[1, J, F, T]``
+    feature (the result grows to ``B`` and ``[0]`` reads row 0's object_subset
+    for every sample), so a row count that matches neither 1 nor the feature
+    batch is an error, not a broadcast.
+    """
+    if len(feature_shape) != 4:
+        raise ValueError(
+            "per-sample [B, F] canonical stats are only supported for 4D "
+            f"[B, J, F, T] features, got feature rank {len(feature_shape)}."
+        )
+    if stat_rows not in (1, feature_shape[0]):
+        raise ValueError(
+            f"per-sample canonical stats carry {stat_rows} rows but the feature batch "
+            f"has {feature_shape[0]} samples; slice the collated y per sample "
+            "(stats[i]) when decoding one sample out of a batch."
+        )
+
+
+def _view_stat_torch(stat, feature_shape, n_feats: int):
     """Shape a standardization stat tensor for broadcasting against a feature.
 
     ``stat`` is either 1D ``[F]`` (broadcast over the whole batch) or 2D
@@ -209,29 +336,21 @@ def _view_stat_torch(stat, ndim: int, n_feats: int):
     single-sample features the 1D vector broadcasts over the trailing axis as-is.
     """
     if stat.dim() >= 2:
-        if ndim != 4:
-            raise ValueError(
-                "per-sample [B, F] canonical stats are only supported for 4D "
-                f"[B, J, F, T] features, got feature rank {ndim}."
-            )
+        _check_per_sample_stat(stat.shape[0], feature_shape)
         stat2 = stat.reshape(stat.shape[0], -1)[:, :n_feats]
         return stat2.view(stat2.shape[0], 1, n_feats, 1)
     stat1 = stat.reshape(-1)[:n_feats]
-    return stat1.view(1, 1, n_feats, 1) if ndim == 4 else stat1
+    return stat1.view(1, 1, n_feats, 1) if len(feature_shape) == 4 else stat1
 
 
-def _view_stat_numpy(stat, ndim: int, n_feats: int):
+def _view_stat_numpy(stat, feature_shape, n_feats: int):
     """Numpy counterpart of _view_stat_torch (same 1D / per-sample contract)."""
     if stat.ndim >= 2:
-        if ndim != 4:
-            raise ValueError(
-                "per-sample [B, F] canonical stats are only supported for 4D "
-                f"[B, J, F, T] features, got feature rank {ndim}."
-            )
+        _check_per_sample_stat(stat.shape[0], feature_shape)
         stat2 = stat.reshape(stat.shape[0], -1)[:, :n_feats]
         return stat2.reshape(stat2.shape[0], 1, n_feats, 1)
     stat1 = stat.reshape(-1)[:n_feats]
-    return stat1.reshape(1, 1, n_feats, 1) if ndim == 4 else stat1
+    return stat1.reshape(1, 1, n_feats, 1) if len(feature_shape) == 4 else stat1
 
 
 def _apply_global_stats(feature, cond_entry, inverse: bool):
@@ -273,15 +392,15 @@ def _apply_global_stats(feature, cond_entry, inverse: bool):
             .to(device=out.device, dtype=out.dtype)
         std_t = (std if _is_torch_tensor(std) else torch.as_tensor(np.asarray(std, dtype=np.float32))) \
             .to(device=out.device, dtype=out.dtype)
-        mean_v = _view_stat_torch(mean_t, ndim, n_feats)
-        std_v = _view_stat_torch(std_t, ndim, n_feats)
+        mean_v = _view_stat_torch(mean_t, out.shape, n_feats)
+        std_v = _view_stat_torch(std_t, out.shape, n_feats)
         return (out * std_v) + mean_v if inverse else (out - mean_v) / std_v
 
     out = np.asarray(feature, dtype=np.float32)
     ndim = out.ndim
     n_feats = out.shape[2] if ndim == 4 else out.shape[-1]
-    mean_v = _view_stat_numpy(np.asarray(mean, dtype=np.float32), ndim, n_feats)
-    std_v = _view_stat_numpy(np.asarray(std, dtype=np.float32), ndim, n_feats)
+    mean_v = _view_stat_numpy(np.asarray(mean, dtype=np.float32), out.shape, n_feats)
+    std_v = _view_stat_numpy(np.asarray(std, dtype=np.float32), out.shape, n_feats)
     out = (out * std_v) + mean_v if inverse else (out - mean_v) / std_v
     return out.astype(np.float32, copy=False)
 

@@ -32,11 +32,32 @@ from utils.model_util import (
 )
 import random
 from data_loaders.get_data import get_dataset_loader
-from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
+from data_loaders.truebones.truebones_utils.canonical_features import (
+    REST_LENGTH_SCALE_KEY,
+    canonical_to_physical_hml,
+)
 from eval.motion_quality import DistributionMotionQualityScorer
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
+
+
+def _per_sample_decode_cond(y, index, n_joints):
+    """Slice a collated ``y`` down to one sample's decode cond.
+
+    ``rest_pos_ric_hml`` is cut to the sample's real joints (the collate pads it
+    to max_joints), the per-sample canonical stats and rest length scale are
+    taken at ``index``; a stat the collate did not emit stays absent so the
+    decoder raises instead of silently skipping the de-standardization.
+    """
+    decode_cond = {
+        'rest_pos_ric_hml': y['rest_pos_ric_hml'][index:index + 1, :n_joints],
+    }
+    for key in ('canonical_feature_mean', 'canonical_feature_std', REST_LENGTH_SCALE_KEY):
+        value = y.get(key)
+        if value is not None:
+            decode_cond[key] = value[index]
+    return decode_cond
 
 
 def _eval_action_words(raw_action_label):
@@ -744,13 +765,12 @@ class TrainLoop:
                         continue
                     n_joints = cond['y']['n_joints'][i].item()
                     motion_sample = sample[i][:n_joints]
+                    # Every per-sample field is sliced to row i: the canonical stats
+                    # are per object_subset, and the whole [B, F] stack does not fit
+                    # a one-sample feature (the decoder rejects it).
                     motion_physical = canonical_to_physical_hml(
                         motion_sample.unsqueeze(0),
-                        {
-                            'rest_pos_ric_hml': cond['y']['rest_pos_ric_hml'][i:i + 1, :n_joints],
-                            'canonical_feature_mean': cond['y'].get('canonical_feature_mean'),
-                            'canonical_feature_std': cond['y'].get('canonical_feature_std'),
-                        },
+                        _per_sample_decode_cond(cond['y'], i, n_joints),
                     )[0]
                     motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
                     group_key = (object_type, action_words)
