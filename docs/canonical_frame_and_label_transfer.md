@@ -1,5 +1,12 @@
 # 强化 action label 跨物种迁移：canonical 坐标系改造
 
+> **后续变更提示（v3 → v4）**：本文记录的是 `canonical_motion_v3` 时代的设计，文中所有
+> "13 维 / index 12 是 contact / `feature_space` 版本号不变"的表述**已被后续改动取代**：
+> 逐帧二值 foot contact 通道（index 12）整体删除，`FEATS_LEN` 13 → 12，
+> `CANONICAL_FEATURE_SPACE` 改为 `canonical_motion_v4`，`CKPT_VERSION` 6 → 7。
+> 其中"contact 不属于任何块"的结论不再适用——现在三个块（pos 0:3 / rot 3:9 / vel 9:12）
+> 恰好铺满整个向量。下方内容保留为当时的历史记录。
+
 > 状态：**已实施（2026-08-31）。§5 的 1/2/3/5/6 全部完成，cond 已重生成并通过 §6.1 硬判据；
 > 只差步骤 4 的重训。§4.3 的 rest 几何清理做成了预处理的一步（幂等），不是一次性补丁——见 §8 实施记录。**
 > 前身是 `action_cond_film_and_energy_removal.md`（**已删除**，内容拆进本文与
@@ -386,11 +393,12 @@ E 量的是 x₀ 幅度而非条件敏感度，届时单独写一个即可）：
 若 swim 相对 walk 的幅度比接近 winged/quadruped 的增益比（1.55–1.95），就是坐标系泄漏的指纹。
 与 A/B/C 同构——单次前向，几乎免费。
 
-另一个旁证：导出侧已有
-`recover_animation_from_motion_np(..., rigid_bone=True)`
-（[features.py:1007](../data_loaders/truebones/truebones_utils/features.py#L1007)），纯 FK、骨长绝对刚性。
-它不修根因（姿态还是错的，只是刚性地错），但如果 Buffalo swim 在 `rigid_bone` 下从
+另一个旁证：导出侧有 `--fullbody_ik --stretch_factor 0`
+（[utils/npy_restore.py](../utils/npy_restore.py)，generate 与 restore_glb_from_npy 共用），
+在刚性 cond 骨架上用旋转逼近 position 通道、骨长绝对刚性。
+它不修根因（姿态还是错的，只是刚性地错），但如果 Buffalo swim 在刚性 IK 下从
 "完全变形"变成"姿势不对但身体完整"，就旁证了形变确实是从 position 通道进来的。
+（旧的 `--rigidbone` 纯 FK 开关已删除。）
 
 ### 6.3 重训后
 
@@ -502,7 +510,7 @@ pos 散布 0.57–1.78（≈3.1×），rot / vel 实质不变——与 §2.4 的
 [anytop.py](../model/anytop.py) 新增 `canonical_frame_projection`：把
 `[canonical_feature_mean ‖ canonical_feature_std]`（26 维，已由 collate 逐样本放进 `y`，
 数据侧零改动）过一个 `Linear(26,256) → GELU → Linear(256,256)`，**末层零初始化**，
-与 playspeed / loop / action 走同一条加性通路加到 timestep token 上。
+与 resample_speed / loop / action 走同一条加性通路加到 timestep token 上。
 
 - **无条件接入，没有 CLI 开关。** 最初落地时是 `--canonical_frame_cond`（默认关），
   后来固化为常开并把 flag 删掉：`canonical_motion_v3` 的每一份 cond.npy 都带这两个 key，

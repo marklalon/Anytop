@@ -4,7 +4,7 @@ different action types (action_label words) and species groups (objects_subset).
 Motivation
 ----------
 AnyTop has NO explicit action-class conditioning: action type only enters
-through loop / playspeed scalars and the joint-name text
+through loop / resample_speed scalars and the joint-name text
 embedding. So "do different actions overlap in the same activation region?"
 is tested by probing intermediate decoder-layer activations, labelling each
 clip by its primary action label, and measuring separability.
@@ -138,7 +138,7 @@ def extract_layer_activations(runtime, dataset, names, batch_size, timestep, dev
             items = [motion_dataset.prepare_sample_by_name(nm) for nm in batch_names]
             motion, cond = truebones_batch_collate(items)
 
-            x = motion.to(device)                       # (B, J, 13, T)
+            x = motion.to(device)                       # (B, J, FEATS_LEN, T)
             y = _move_y_to_device(cond["y"], device)
             bs = x.shape[0]
 

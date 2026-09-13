@@ -16,25 +16,18 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-#
-#   1 -- windowed temporal attention (--temporal_window) removed in favour of
-#        full temporal attention. Supersedes the per-key action_tag_cond /
-#        global_energy_cond guards, which it strictly subsumes (every checkpoint
-#        they rejected predates versioning and so is rejected here too).
-# 2: the action condition became per-role-slot channels over the label's WORDS.
-# A v1 checkpoint's
-# action_label_projection reads one whole-label vector, so its weights mean
-# something else even where the shapes would line up.
-# 3: the graph attention bias code tables changed. graph_dist no longer
-# saturates into one "far" bucket and joint_relations no longer collapses
-# 88% of pairs into 'no_relation'; both embedding tables grew, so a v2
-# checkpoint cannot load, and codes 6+ meant nothing to it anyway.
-# 4: the joint condition was restructured. The joint-name text was slimmed to
-# side + body part (schema 14) and the structure it used to spell moved into a
-# per-joint STRUCTURAL channel with its own MLP (joint_struct_features). A v3
-# checkpoint's text_embedding was fitted on the long sentences and it has no
-# struct_embedding at all.
-CKPT_VERSION = 4
+# 8: action-label hands axis (hand0/hand1/hand2) in a fourth slot channel;
+#    action_label_projection widened from 3 to 4 T5 blocks.
+# 9: circular time embedding is period-free (one wrap per window). Earlier
+#    weights read the loader's tile count off its period and would be asked
+#    for one cycle per window every time.
+# 10: cross-limb reliability fix (docs/cross_limb_reliability_cost_effective_fix.md).
+#    Training: the re-noise timestep of a flagged region is a same-level /
+#    hard mixture (--renoise_same_level_prob) instead of always [t, T).
+#    Model: a global per-joint unreliable_embedding on the input tokens, a
+#    per-block frame-level temporal_reliability_bias, and one cross-K
+#    attention per block (cross_k_norm / cross_k_attn / cross_k_scale).
+CKPT_VERSION = 10
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -225,10 +218,23 @@ def add_model_options(parser):
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     group.add_argument("--lambda_vel", default=0.0, type=float,
                        help="Weight for velocity-position consistency loss (0.0=off)."
-                            " Penalizes |pos[t+1]-pos[t] - vel[t]|^2 on denormalized outputs."
+                            " Penalizes |pos[t+1]-pos[t] - (vel[t] - vel_root[t])|^2 on denormalized outputs,"
+                            " the root's velocity subtracted on X/Z only (RIC positions are root-XZ-relative,"
+                            " velocities are world deltas), so the residual is exactly zero on real data."
                             " Couples position and velocity feature groups to prevent independent memorization.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")
+    group.add_argument("--lambda_loop_root_closure", default=0.0, type=float,
+                       help="Weight for the loop-only full-cycle closure of the translation root's XZ "
+                            "velocity (0.0=off): ||sum_t vel_xz[t] * step||^2 over ALL rows, the terminal "
+                            "wrap row included, on denormalized outputs. The root's world XZ path lives "
+                            "only in ch9/ch11 and every loop target sums to exactly zero there; l_simple "
+                            "cannot see the DC bias that integrates into a seam pop, and loop_wrap masks "
+                            "the root's XZ. Linear in the output, so the weight carries no bias cost, but "
+                            "it is one scalar per sample pushing T*2 elements: on a converged model 0.1 "
+                            "already matches l_simple's gradient norm at low t and 1.0 is ~10x it, so stay "
+                            "around 0.05-0.2. loop_root_xz_drift (the per-cycle seam pop in physical "
+                            "units) is logged whenever this or --lambda_loop_wrap is on.")
     group.add_argument("--lambda_bone", default=0.0, type=float,
                        help="Weight for the target-relative, rest-length-normalized bone-length loss (0.0=off). "
                             "Penalizes each predicted bone length's deviation from the GROUND-TRUTH bone length "
@@ -236,11 +242,35 @@ def add_model_options(parser):
                             "l_simple under-weights and which stretch most on novel skeletons) get proportionally "
                             "larger gradient. Anchoring on GT (not rest) preserves genuinely animated bone-length "
                             "deformation. Computed on denormalized outputs; recommended range ~0.1-0.3.")
+    group.add_argument("--lambda_fk", default=0.0, type=float,
+                       help="Weight for the FK bone-direction loss (0.0=off). Chains the PREDICTED local "
+                            "rotations into global rotations and matches each bone's rest vector (pointed by "
+                            "its parent's predicted global rotation) against the same bone's direction in the "
+                            "GT position channel (mean 2(1-cos angle) over graded bone-frames). This adds the "
+                            "global supervision l_simple/geodesic lack, so FK(rot) agrees with pos. Direction "
+                            "only: bone length stays with the position channel. Bone-frames whose GT is itself "
+                            "FK-inconsistent are masked (~3-6%% of the corpus). Logs fk_angle_deg and "
+                            "fk_gt_masked_frac. Loss-only: no cond regen or checkpoint bump.")
     group.add_argument("--loop_cond_prob", default=1.0, type=float,
                        help="Probability that a loop training clip stays loop-conditioned "
                             "(periodic resampling, circular phase, and loop-condition embedding)."
                             " 0.0 = all loop clips treated as non-loop; 1.0 = always keep loop path."
                             " Controls both the model loop-condition projection and dataset loop processing.")
+    group.add_argument("--motion_speed_aug", default=1.0, type=float,
+                       help="Motion-speed augmentation range R (1.0 = off). Each training clip is first "
+                            "time-scaled by a log-uniform ratio in [1/R, R] -- played faster (fewer frames) "
+                            "or slower (more frames) at the same fps -- and then treated as an ordinary "
+                            "source clip: loop roll/tile, crop, the window resample and resample_speed_cond "
+                            "all see the scaled length, and the model is told nothing. Loader-only: no cond "
+                            "regen, no model change, no CKPT_VERSION bump. Spreads the clustered clip lengths "
+                            "(45%% of the corpus sits on five exact frame counts) so an inference num_frames "
+                            "between the clusters is in distribution. The range is narrowed per clip so the "
+                            "scaled clip stays >= min_length and a loop that fits the source budget still "
+                            "fits (never downgraded to non-loop by slowing down). 1.2 is the intended value.")
+    group.add_argument("--motion_speed_aug_prob", default=1.0, type=float,
+                       help="Per-sample probability of applying --motion_speed_aug (default 1.0 = every clip). "
+                            "The recorded tempo is one point of the continuum, so leaving a mass at exactly "
+                            "1.0 only keeps part of the length spike; lower this only to compare against it.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
@@ -282,7 +312,8 @@ def add_model_options(parser):
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the clip's action_label ('run, forward, "
                             "left, fast' -- controlled keywords, not prose) is split into words, pooled "
-                            "into one frozen-T5 channel per role slot (head / direction / modifier), "
+                            "into one frozen-T5 channel per role slot (head / direction / modifier / "
+                            "hands), "
                             "projected and added to the timestep token. Requires the word table "
                             "dataset/action_word_embeddings.npy "
                             "(tools/build_action_label_embeddings.py).")
@@ -389,6 +420,9 @@ def add_training_options(parser):
     # grad_norm exceeds the threshold below. Only the threshold / dump cap tune.
     group.add_argument("--spike_grad_threshold", default=50.0, type=float,
                        help="Pre-clip grad_norm above this value triggers a spike dump.")
+    group.add_argument("--spike_start_step", default=1000, type=int,
+                       help="Skip spike checks for the first N steps (warmup), where the optimizer has not "
+                           "settled and early grad spikes are routine noise. 0 = check from step 1.")
     group.add_argument("--spike_max_dumps", default=10, type=int,
                        help="Stop writing spike dumps after this many, to bound disk usage. 0 = unlimited.")
     group.add_argument("--joint_mask_prob", default=0.5, type=float,
@@ -414,6 +448,13 @@ def add_training_options(parser):
                        help="Weight of a target-relative acceleration (2nd temporal difference) penalty on the position channel, applied in a Gaussian seam band around sampled temporal-span boundaries. Suppresses inpainting-seam acceleration spikes that l_simple and vel_loss do not catch. 0 disables it.")
     group.add_argument("--temporal_span_seam_width", default=2, type=int,
                        help="Radius of the Gaussian seam band on each side of a sampled temporal-span boundary frame.")
+    group.add_argument("--renoise_same_level_prob", default=1.0, type=float,
+                       help="Per-sample probability that a flagged (joint-mask / temporal-span) region is re-noised "
+                            "at the SAME timestep as the rest of the sample (fresh noise, t_random = t) instead of "
+                            "the hard branch uniform on [t, T). The same-level branch decouples the unreliable flag "
+                            "from 'much noisier than the surroundings', which is the regime inpainting presents at "
+                            "every step; the hard branch keeps training the repair of severe local damage. "
+                            "0 restores the pure [t, T) draw, 1 (default) makes every flagged region same-level.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
     group.add_argument("--use_ema", action='store_true',
@@ -439,11 +480,14 @@ def add_sampling_options(parser):
                             "softmax stays fp32. Requires a CUDA device with bf16 support (Ampere+).")
     group.add_argument("--loop", action='store_true',
                        help="Generate with loop conditioning and loop-aware temporal masks when supported by the checkpoint.")
-    group.add_argument("--rigidbone", action='store_true',
-                       help="Export BVH as pure FK (rotation + fixed rest offsets), skipping the RIC position solver. "
-                            "Keeps bone lengths rigid; drops animated non-root translations. "
-                            "Useful when the position/rotation channels disagree and the solver stretches bones. "
+    group.add_argument("--fullbody_ik", action='store_true',
+                       help="Decode the BVH preview with the same full-body IK as restore_glb_from_npy --fullbody-ik: "
+                            "rotations are re-solved on the rigid cond skeleton so the position channels are honoured "
+                            "through rotations instead of per-joint local translations. "
                             "Only affects BVH export; .npy features are unchanged.")
+    group.add_argument("--stretch_factor", default=0.1, type=float,
+                       help="Allowed bone-length elasticity for --fullbody_ik (0.1 = +/-10%%; 0 = perfectly rigid, "
+                            "which also makes the BVH rotation-only). Same meaning as restore_glb_from_npy --stretch-factor.")
 
 
 def add_generate_options(parser):
@@ -454,7 +498,8 @@ def add_generate_options(parser):
                             "reference's native length (R frames); otherwise defaults to 60. "
                             "When specified with --reference_motion: if R < M the tail "
                             "is auto-outpainted, if R > M the reference is cropped to M. "
-                            "Valid range: [min_length, 2*num_frames] of the checkpoint.")
+                            "Valid range: [min_length, MAX_SOURCE_FRAMES_MULT*num_frames] "
+                            "of the checkpoint (param_utils.MAX_SOURCE_FRAMES_MULT).")
     group.add_argument("--object_type", default=None, type=str,
                        help="Target object type. Optional if --reference_motion is provided "
                             "(inferred from filename), or if --cond_path points at a cond file "
@@ -474,7 +519,7 @@ def add_generate_options(parser):
                        help="DDIM eta parameter. 0.0 = deterministic. Default: 0.0.")
     group.add_argument("--reference_motion", default=None, type=str,
                        help="Path to a reference motion .npy/.fbx/.glb/.gltf file. Non-NPY inputs are "
-                           "preprocessed into the same 13-channel feature-space NPY used by training, then "
+                           "preprocessed into the same 12-channel feature-space NPY used by training, then "
                            "noised to an intermediate timestep (img2img-style). If --object_type is not given, "
                            "it is inferred from the reference filename. If --object_type is given and differs "
                            "from the reference's inferred type, the reference is auto-retargeted to the requested "
@@ -518,7 +563,11 @@ def add_generate_options(parser):
                             "recognizable prompt written out of canonical order is rewritten to it "
                             "(with a printed note); head-word order is never touched, since it is "
                             "the time order of a transition. Naming no direction is legal and means "
-                            "'any' (the model answers with the marginal over directions). Empty = "
+                            "'any' (the model answers with the marginal over directions); the same "
+                            "holds for the hands axis -- write 'hand0' for empty hands, 'hand1' / "
+                            "'hand2' for one / both hands holding something, or nothing for 'any' "
+                            "('idle, hand0' is an unarmed idle; 'idle' alone may draw an armed "
+                            "one where that species mostly holds a weapon). Empty = "
                             "unconditional (the learned null embedding). Requires a checkpoint "
                             "trained with --action_label_cond.")
     group.add_argument("--action_label_cfg_scale", default=1.0, type=float,

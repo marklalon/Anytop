@@ -21,11 +21,13 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_VOCAB,
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
+    HANDS_VOCAB,
     STATE_VOCAB,
     ActionLabelError,
     action_words_in,
     canonical_action_label,
     direction_words_in,
+    hands_words_in,
     head_words_in,
     parse_action_label,
     vocab_t5_text,
@@ -61,7 +63,7 @@ class _CaptureDecoder(torch.nn.Module):
 def _make_model(action_label_cond=True, action_label_cfg_drop_prob=0.3, bundle=None):
     return AnyTop(
         max_joints=4,
-        feature_len=13,
+        feature_len=12,
         latent_dim=TEST_LATENT_DIM,
         ff_size=32,
         num_layers=1,
@@ -80,15 +82,15 @@ def _make_model(action_label_cond=True, action_label_cfg_drop_prob=0.3, bundle=N
 def _make_y(**extra):
     y = {
         'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-        'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
+        'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
         # The output coordinate frame is an unconditional model input: every
         # forward reads it, so a hand-built y has to carry it.
-        'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
-        'canonical_feature_std': torch.ones(13, dtype=torch.float32),
+        'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),
+        'canonical_feature_std': torch.ones(12, dtype=torch.float32),
     }
     y.update(extra)
     return y
@@ -100,12 +102,19 @@ def _label_cond(labels, groups):
 
 
 class ActionLabelVocabularyTest(unittest.TestCase):
-    def test_vocabulary_is_flat_and_direction_comes_last(self):
-        # One flat action vocabulary plus a separate direction axis: no core /
-        # detail split survives the removal of the multi-hot.
-        self.assertEqual(CONTROLLED_VOCAB, ACTION_VOCAB + DIRECTION_VOCAB)
+    def test_vocabulary_is_flat_and_the_axes_come_last(self):
+        # One flat action vocabulary plus two separate axes (direction, hands):
+        # no core / detail split survives the removal of the multi-hot.
+        self.assertEqual(CONTROLLED_VOCAB, ACTION_VOCAB + DIRECTION_VOCAB + HANDS_VOCAB)
         self.assertEqual(len(set(CONTROLLED_VOCAB)), len(CONTROLLED_VOCAB))
         self.assertEqual(DIRECTION_VOCAB, ("forward", "backward", "left", "right", "up", "down"))
+        # The hands axis closes the vocabulary so it sorts last among modifiers.
+        self.assertEqual(HANDS_VOCAB, ("hand0", "hand1", "hand2"))
+        self.assertEqual(CONTROLLED_VOCAB[-3:], HANDS_VOCAB)
+        # The two-token spelling it replaced is gone: 'weapon, 1hand' would now
+        # be a hard error, not a silently different condition.
+        for absent in ("weapon", "1hand", "2hand"):
+            self.assertNotIn(absent, CONTROLLED_VOCAB)
         # Derived adjectives are deliberately absent -- T5 presses "leftward" and
         # "rightward" to near-synonyms -- and so is the mushy "sideways".
         for absent in ("leftward", "rightward", "sideways"):
@@ -125,9 +134,9 @@ class ActionLabelVocabularyTest(unittest.TestCase):
                        'haste'):
             self.assertNotIn(absent, CONTROLLED_VOCAB, absent)
         # ...and the words the corpus actually uses are all in.
-        for present in ('weapon', 'cast', 'projectile', 'swat', 'spawn', '2hand',
+        for present in ('hand0', 'cast', 'projectile', 'swat', 'spawn', 'hand2',
                         'spin', 'headbutt', 'hover', 'work', 'dead', 'clean',
-                        'fast', 'fishing'):
+                        'fast', 'fishing', 'bow', 'shield'):
             self.assertIn(present, CONTROLLED_VOCAB, present)
 
     def test_state_vocab_is_a_closed_subset(self):
@@ -135,7 +144,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         self.assertEqual(len(set(STATE_VOCAB)), len(STATE_VOCAB))
         # Equipment, direction and manner words can never be head words: the
         # head slot is "a state the body is in", not "the important word".
-        for absent in ('weapon', '1hand', 'forward', 'cast', 'spin', 'block'):
+        for absent in ('hand1', 'bow', 'forward', 'cast', 'spin', 'block'):
             self.assertNotIn(absent, STATE_VOCAB, absent)
         for present in ('idle', 'attack', 'crouch', 'rear', 'hover', 'sleep', 'sit'):
             self.assertIn(present, STATE_VOCAB, present)
@@ -151,7 +160,11 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         self.assertEqual(vocab_t5_text('land'), 'touching down')
         self.assertEqual(vocab_t5_text('bow'), 'archery bow')
         self.assertEqual(vocab_t5_text('fishing'), 'fishing')
-        self.assertNotEqual(vocab_t5_text('1hand'), vocab_t5_text('2hand'))
+        # The hands axis is spelled as a bare count: three points, no shared
+        # anchor phrase for them to collide on.
+        self.assertEqual(vocab_t5_text('hand0'), 'empty hands')
+        self.assertEqual(vocab_t5_text('hand1'), 'one hand')
+        self.assertEqual(vocab_t5_text('hand2'), 'both hands')
 
     def test_vocab_words_in_is_exact_token_matching(self):
         # Synonym translation is gone: a label is exact tokens, and free text
@@ -165,42 +178,53 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # not be fed to canonical_action_label.
         self.assertEqual(vocab_words_in('forward, walk'), ['walk', 'forward'])
 
-    def test_action_and_direction_views_partition_the_hits(self):
-        text = 'run, forward, left, fast'
+    def test_action_direction_and_hands_views_partition_the_hits(self):
+        text = 'run, forward, left, fast, hand1'
         self.assertEqual(action_words_in(text), ['run', 'fast'])
         self.assertEqual(direction_words_in(text), ['forward', 'left'])
+        self.assertEqual(hands_words_in(text), ['hand1'])
         self.assertEqual(
-            action_words_in(text) + direction_words_in(text), vocab_words_in(text)
+            action_words_in(text) + direction_words_in(text) + hands_words_in(text),
+            vocab_words_in(text),
         )
+        # The hands word is not an ACTION word: loop periods are bucketed per
+        # action word, and "one hand" has no gait period of its own.
+        self.assertEqual(action_words_in('walk, hand2'), ['walk'])
 
     def test_head_words_keep_the_written_order(self):
         self.assertEqual(head_words_in(['idle', 'attack']), ['idle', 'attack'])
         self.assertEqual(head_words_in(['attack', 'idle']), ['attack', 'idle'])
-        self.assertEqual(head_words_in(['walk', 'weapon', 'forward']), ['walk'])
+        self.assertEqual(head_words_in(['walk', 'hand1', 'forward']), ['walk'])
 
     def test_canonical_label_sorts_modifiers_but_never_heads(self):
         # Modifiers are sorted, so one combination has exactly one spelling.
         self.assertEqual(
-            canonical_action_label(['walk', 'forward', 'weapon', '1hand']),
-            'walk, forward, weapon, 1hand',
+            canonical_action_label(['walk', 'forward', 'fast', 'hand1']),
+            'walk, forward, fast, hand1',
         )
         self.assertEqual(
-            canonical_action_label(['walk', '1hand', 'forward', 'weapon']),
-            'walk, forward, weapon, 1hand',
+            canonical_action_label(['walk', 'hand1', 'forward', 'fast']),
+            'walk, forward, fast, hand1',
         )
         self.assertEqual(
-            canonical_action_label(['walk', 'weapon', 'right']),
-            'walk, right, weapon',
+            canonical_action_label(['walk', 'hand1', 'right']),
+            'walk, right, hand1',
+        )
+        # The implement precedes the hand state: action, direction, manner,
+        # implement, hands.
+        self.assertEqual(
+            canonical_action_label(['attack', 'hand2', 'bow']),
+            'attack, bow, hand2',
         )
         # Directions qualify the head sequence, so unrelated qualifiers and
         # equipment must not split them from it.
         self.assertEqual(
-            canonical_action_label(['run', 'turn', 'weapon', '1hand', 'right']),
-            'run, turn, right, weapon, 1hand',
+            canonical_action_label(['run', 'turn', 'fast', 'hand1', 'right']),
+            'run, turn, right, fast, hand1',
         )
         self.assertEqual(
-            canonical_action_label(['run', 'right', '1hand', 'turn', 'weapon']),
-            'run, turn, right, weapon, 1hand',
+            canonical_action_label(['run', 'right', 'hand1', 'turn', 'fast']),
+            'run, turn, right, fast, hand1',
         )
         # Filtering the result back to head words still preserves their order.
         self.assertEqual(
@@ -217,9 +241,10 @@ class ActionLabelVocabularyTest(unittest.TestCase):
 
     def test_canonical_label_round_trips_through_the_parser(self):
         for label in ('walk, forward', 'run, forward, left, fast', 'attack, bite',
-                      'run, strafe', 'idle, attack', 'attack, idle',
-                      'walk, forward, weapon, 1hand', 'idle, rear, roar',
-                      'run, turn, right, weapon, 1hand', 'turn, left, hover'):
+                      'idle, attack', 'attack, idle',
+                      'walk, forward, hand1', 'idle, rear, roar',
+                      'run, turn, right, fast, hand1', 'turn, left, hover',
+                      'attack, bow, hand2', 'idle, hand0'):
             self.assertEqual(canonical_action_label(parse_action_label(label)), label)
 
     def test_parser_enforces_the_spelling_contract(self):
@@ -229,9 +254,11 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             ('walk, jogging', 'out-of-vocabulary token'),
             ('walk, , forward', 'empty comma segment'),
             ('walk, walk', 'repeated token'),
-            ('weapon, 1hand', 'no head word'),
+            ('hand1', 'no head word'),
             ('idle, hover, crouch', 'three head words'),
-            (', '.join(['idle'] + list(DIRECTION_VOCAB) + ['weapon', 'bow', 'gun']),
+            ('idle, hand0, hand1', 'two hand-state words on one exclusive axis'),
+            ('walk, forward, hand2, hand1', 'two hand-state words on one exclusive axis'),
+            (', '.join(['idle'] + list(DIRECTION_VOCAB) + ['bow', 'gun']),
              'over the token cap'),
         ):
             with self.assertRaises(ActionLabelError, msg=why):
@@ -261,7 +288,8 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # used to be advisory is now a gate -- a warning here could only buy a
         # silent regression, and reordering heads is a silent direction flip.
         for bad in ('walk, strides forward with arms swinging',
-                    'walk, weapon, forward',   # modifier before direction
+                    'walk, hand1, forward',    # modifier before direction
+                    'idle, hand2, bow',        # hands before the implement
                     'walk, walk'):
             with self.assertRaises(SystemExit):
                 _validate(bad)
@@ -291,7 +319,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
 class ActionLabelConditioningTest(unittest.TestCase):
     def test_disabled_by_default(self):
         model = AnyTop(
-            max_joints=4, feature_len=13, latent_dim=8, ff_size=32,
+            max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
             num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
             t5_out_dim=T5_DIM,
         )
@@ -302,7 +330,7 @@ class ActionLabelConditioningTest(unittest.TestCase):
         capture = _CaptureDecoder()
         model.seqTransDecoder = capture
         model.eval()
-        x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
+        x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         model(x, torch.tensor([1, 2], dtype=torch.int64),
               y=_make_y(**_label_cond(['attack, bite', 'idle'], ['stationary'] * 2)))
         self.assertIsNotNone(capture.last_kwargs)
@@ -391,16 +419,16 @@ class ActionLabelConditioningTest(unittest.TestCase):
     def test_collate_emits_padded_word_ids_and_a_valid_mask(self):
         def _item(label, group):
             return {
-                'inp': torch.zeros(4, 13, 3, dtype=torch.float32),
+                'inp': torch.zeros(4, 12, 3, dtype=torch.float32),
                 'n_joints': 4,
                 'temporal_mask': torch.ones(4, 4, dtype=torch.float32),
                 'graph_dist': torch.zeros(4, 4, dtype=torch.float32),
                 'joints_relations': torch.zeros(4, 4, dtype=torch.float32),
                 'joints_names_embs': torch.zeros(4, T5_DIM, dtype=torch.float32),
                 'joint_struct': torch.zeros(4, JOINT_STRUCT_DIM, dtype=torch.float32),
-                'rest_pose': torch.zeros(4, 13, dtype=torch.float32),
-                'mean': torch.zeros(4, 13, dtype=torch.float32),
-                'std': torch.ones(4, 13, dtype=torch.float32),
+                'rest_pose': torch.zeros(4, 12, dtype=torch.float32),
+                'mean': torch.zeros(4, 12, dtype=torch.float32),
+                'std': torch.ones(4, 12, dtype=torch.float32),
                 'action_label': label,
                 'action_group': group,
                 'action_slots': sample_action_slots(label, group),
@@ -436,7 +464,7 @@ class ActionLabelConditioningTest(unittest.TestCase):
         model.eval()
         capture = _CaptureDecoder()
         model.seqTransDecoder = capture
-        x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
+        x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         ts = torch.tensor([1, 2], dtype=torch.int64)
 
         model(x, ts, y=_make_y(**_label_cond(['attack, bite', 'idle'], ['stationary'] * 2)))

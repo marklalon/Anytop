@@ -1,5 +1,5 @@
 """
-Pure-numpy cross-skeleton retargeting.
+Pure-numpy cross-skeleton retargeting core.
 
 This module hosts the world-space alignment + semantic match-name remap +
 inverse-FK math originally embedded inside ``AnimationExporter.export_glb``.
@@ -7,30 +7,11 @@ Lifting it out means callers other than the GLB export pipeline — e.g. the
 cross-species reference-motion path in ``sample/generate.py`` — can run the
 same retargeting without depending on ``bpy``.
 
-Usage as CLI::
-
-    python -m utils.retarget --source <path> --object_type <Type>
+Dependency direction (one-way): the high-level orchestration in
+``utils/retarget_pipeline.py`` imports this core, and the file-level CLI lives
+in ``tools/retarget_npy.py``. This module never imports the pipeline.
 """
 from __future__ import annotations
-
-# When run directly (``python utils/retarget.py``), relative imports fail
-# because __package__ is None.  Auto-relaunch via ``python -m`` so the
-# package context is correct.
-import sys as _sys
-if __name__ == '__main__' and __package__ is None:
-    import os as __os
-    import subprocess as __sp
-    _ANYTOP_PARENT = __os.path.dirname(__os.path.dirname(__os.path.abspath(__file__)))
-    _relaunch_env = __os.environ.copy()
-    _existing_pythonpath = _relaunch_env.get('PYTHONPATH', '')
-    _parts = [p for p in (_ANYTOP_PARENT, _existing_pythonpath) if p]
-    _relaunch_env['PYTHONPATH'] = __os.pathsep.join(_parts)
-    _sys.exit(__sp.call(
-        [_sys.executable, '-m', 'utils.retarget'] + _sys.argv[1:],
-        cwd=_ANYTOP_PARENT,
-        env=_relaunch_env,
-    ))
-del _sys
 
 import json
 import os
@@ -51,6 +32,11 @@ from .retarget_cache import (
     load_from_disk,
     save_to_disk,
 )
+# Shared with the IK rebuild on purpose: this pass decides which source bones
+# carry a direction, and the IK rebuild afterwards decides which target edges it
+# may solve a rotation from.  If the two layers disagreed about what counts as a
+# degenerate bone, one would transfer a direction the other then treats as noise.
+from .fullbody_ik import degenerate_edge_epsilon
 
 
 # ---------------------------------------------------------------------------
@@ -145,12 +131,17 @@ def _llm_joint_mapping(
     tgt_parents: np.ndarray,
     src_rest_offsets: np.ndarray | None = None,
     tgt_rest_offsets: np.ndarray | None = None,
+    verbose: bool = True,
 ) -> dict[str, str | None]:
     """Call LLM to map every src joint name to a tgt joint name (or None).
 
     Results are cached (in-memory + on-disk) by a SHA-256 hash of the
     prompt content so repeated calls for the same skeleton pair skip
     the API entirely.
+
+    *verbose* gates only the per-joint mapping dump; the one-line cache/call
+    summaries are always printed, so a batch run still shows which skeleton
+    pairs cost an API round trip.
     """
     # --- Build messages (needed for cache lookup and LLM call) ---
     src_text = _build_skeleton_text(src_names, src_parents, src_rest_offsets)
@@ -326,9 +317,10 @@ def _llm_joint_mapping(
 
         matched_count = sum(1 for v in result.values() if v is not None)
         print(f"[retarget] LLM mapping result: {matched_count}/{len(src_names)} src joints matched")
-        for src_name, tgt_name in result.items():
-            status = f"→ {tgt_name}" if tgt_name else "→ (no match)"
-            print(f"[retarget]   {src_name}  {status}")
+        if verbose:
+            for src_name, tgt_name in result.items():
+                status = f"→ {tgt_name}" if tgt_name else "→ (no match)"
+                print(f"[retarget]   {src_name}  {status}")
 
         set_in_memory(system_msg, user_msg, result)
         save_to_disk(system_msg, user_msg, result)
@@ -1022,6 +1014,7 @@ def retarget_world_space_np(
             src_match_names, tgt_match_names,
             src_parents, tgt_parents,
             src_rest_offsets, tgt_rest_offsets,
+            verbose=verbose,
         )
         for i, src_name in enumerate(src_match_names):
             tgt_name = llm_result.get(src_name)
@@ -1254,22 +1247,34 @@ def retarget_world_space_np(
     target_wpos = np.zeros((F_q, J_tgt, 3), dtype=np.float64)
 
     _EPS = 1e-8
+    # ``_EPS`` alone only rejects a bone that is degenerate to float precision.
+    # Rigs also ship marker bones an order of magnitude above it and still far
+    # below any real geometry -- a jaw, an eye, a chain terminator whose rest
+    # offset is ~1e-4 on a rig whose median bone is ~7.  Those sit *consistently*
+    # above ``_EPS``, so the flicker rule below never fires and their direction --
+    # pure float dust that wanders tens of degrees per frame -- used to be
+    # transferred as if it were geometry.  ``_DUST`` is the scale-relative
+    # threshold that tells the two apart; ``_DUST_ALIGNED`` is the same length in
+    # the aligned source space the per-frame bone vectors live in.
+    _DUST = degenerate_edge_epsilon(src_rest_offsets, src_parents)
+    _DUST_ALIGNED = _DUST * scale
 
     def _stable_valid(bn):
         """Per-frame direction validity, made temporally stable against flicker.
 
         ``bn`` is the per-frame aligned source-bone length; a frame is normally
-        valid (direction transfer) when ``bn > _EPS`` and otherwise falls back to
-        the rest offset. A structurally near-zero source bone (e.g. a zero-length
-        helper like Bip01_Pelvis driving the dragon Spine) has a length that sits
-        in the numerical noise floor and STRADDLES ``_EPS`` — some frames above,
-        some below — so the per-frame choice flips every frame, snapping the mapped
-        target joint between two placements (visible as ~1-3 Hz jitter). When the
-        mask is mixed like that, the bone provides no reliable direction in any
-        frame, so we use the rest fallback consistently for the whole clip. A real
-        (even very short) bone stays consistently above ``_EPS`` and is untouched.
+        valid (direction transfer) when ``bn > _DUST_ALIGNED`` and otherwise falls
+        back to the rest offset. A structurally near-zero source bone (e.g. a
+        zero-length helper like Bip01_Pelvis driving the dragon Spine) has a length
+        that sits in the numerical noise floor and STRADDLES the threshold — some
+        frames above, some below — so the per-frame choice flips every frame,
+        snapping the mapped target joint between two placements (visible as ~1-3 Hz
+        jitter). When the mask is mixed like that, the bone provides no reliable
+        direction in any frame, so we use the rest fallback consistently for the
+        whole clip. A real bone stays consistently above the threshold and is
+        untouched.
         """
-        valid = bn > _EPS
+        valid = bn > _DUST_ALIGNED
         if valid.any() and not valid.all():
             valid[:] = False
         return valid
@@ -1314,7 +1319,7 @@ def retarget_world_space_np(
             d = src_bv_aligned[:, bridge_src_idx] / np.where(valid, bn, 1.0)[:, None]
 
             src_rest_len = float(np.linalg.norm(src_rest_offsets[bridge_src_idx]))
-            if src_rest_len > _EPS:
+            if src_rest_len > _DUST:
                 stretch = src_anim_len[:, bridge_src_idx] / src_rest_len
             else:
                 stretch = np.ones(F_q, dtype=np.float64)
@@ -1347,7 +1352,7 @@ def retarget_world_space_np(
                 bn = np.linalg.norm(src_bv_aligned[:, ii], axis=-1)  # (F,)
                 src_rest_len = float(np.linalg.norm(src_rest_offsets[ii]))
 
-                if src_rest_len > _EPS:
+                if src_rest_len > _DUST:
                     # Structurally real source bone: always transfer the source's
                     # animated direction × stretch, with no rest fallback. The
                     # transferred length L = tgt_rest_len · (src_anim_len /
@@ -1368,7 +1373,7 @@ def retarget_world_space_np(
                     # Structurally degenerate source bone (≈0 rest length, e.g. a
                     # zero-length locator / control bone). Two sub-cases:
                     #   (a) the bone is also ≈0 animated, or its length flickers
-                    #       across the _EPS noise floor frame-to-frame — the
+                    #       across the _DUST noise floor frame-to-frame — the
                     #       direction is meaningless, so fall back to the target's
                     #       rest offset consistently for the whole clip (the
                     #       _stable_valid jitter fix; e.g. a zero-len Bip01_Pelvis
@@ -1650,225 +1655,3 @@ def retarget_world_space_np(
         alignment_translation=t_align,
     )
 
-# CLI entry point
-# ---------------------------------------------------------------------------
-
-if __name__ == '__main__':
-    import argparse
-    import sys
-    import os as _os
-
-    # Ensure both the Anytop dir and its parent are on sys.path so the
-    # bare ``utils.*`` / ``data_loaders.*`` / ``motion_lib.*`` imports
-    # resolve regardless of CWD.
-    _ANYTOP_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-    _REPO_ROOT = _os.path.dirname(_ANYTOP_ROOT)
-    sys.path.insert(0, _REPO_ROOT)
-    sys.path.insert(0, _ANYTOP_ROOT)
-
-    _PARSER = argparse.ArgumentParser(
-        description='Cross-skeleton motion retargeting — retarget an animation '
-                    '(.npy/.glb/.fbx) onto a target skeleton.'
-    )
-    _PARSER.add_argument(
-        '--source', required=True, type=str,
-        help='Path to source animation file (.npy / .glb / .fbx).',
-    )
-    _PARSER.add_argument(
-        '--object_type', required=True, type=str,
-        help='Target object type name (e.g. Horse, Buffalo, Dragon). '
-             'Must match a key in the cond.npy dataset.',
-    )
-    _PARSER.add_argument(
-        '--cond_path', default=None, type=str,
-        help='Optional path to an additional cond.npy file. Entries in this '
-             'file are merged into the default training cond (not replaced). '
-             'Useful for providing cond entries for skeletons not in the '
-             'training set.',
-    )
-    _PARSER.add_argument(
-        '--output_dir', default=None, type=str,
-        help='Output directory for retargeted .npy and inspection .bvh files. '
-             'Default: Anytop/outputs/retarget_output',
-    )
-
-    _cli_args = _PARSER.parse_args()
-
-    # ── Resolve paths ─────────────────────────────────────────────────────
-    _source_path = _os.path.abspath(_cli_args.source)
-    if not _os.path.isfile(_source_path):
-        _PARSER.error(f'--source file not found: {_source_path}')
-
-    _suffix = _os.path.splitext(_source_path)[1].lower()
-    if _suffix not in {'.npy', '.glb', '.fbx', '.gltf'}:
-        _PARSER.error(
-            f'Unsupported source format "{_suffix}". '
-            f'Supported: .npy, .glb, .fbx, .gltf'
-        )
-
-    _default_cond = _os.path.join(
-        _ANYTOP_ROOT, 'dataset', 'truebones', 'zoo',
-        'truebones_processed', 'cond.npy',
-    )
-    if _cli_args.cond_path:
-        _extra_cond_path = _os.path.abspath(_cli_args.cond_path)
-        if not _os.path.isfile(_extra_cond_path):
-            _PARSER.error(f'--cond_path file not found: {_extra_cond_path}')
-    else:
-        _extra_cond_path = None
-
-    if _cli_args.output_dir:
-        _output_dir = _os.path.abspath(_cli_args.output_dir)
-    else:
-        _output_dir = _os.path.join(_ANYTOP_ROOT, 'outputs', 'retarget_output')
-    _os.makedirs(_output_dir, exist_ok=True)
-
-    # ── Load cond ──────────────────────────────────────────────────────────
-    if not _os.path.isfile(_default_cond):
-        _PARSER.error(
-            f'Default training cond not found at {_default_cond}. '
-            f'Run preprocessing first or provide --cond_path.'
-        )
-
-    from data_loaders.truebones.truebones_utils.cond_schema import load_cond as _load_cond
-    from data_loaders.truebones.truebones_utils.dataset_sources import (
-        resolve_species_key as _resolve_species_key,
-        species_lookup_map as _species_lookup_map,
-    )
-
-    _cond_dict = _load_cond(_default_cond)
-
-    if _extra_cond_path:
-        _extra_cond = _load_cond(_extra_cond_path)
-        # Merge: extra entries override/add to default, but don't replace
-        # keys that already exist in default — we only add new object_types.
-        for _key, _val in _extra_cond.items():
-            if _key not in _cond_dict:
-                _cond_dict[_key] = _val
-        print(f'[retarget CLI] Merged {len(_extra_cond)} extra cond entries '
-              f'(total: {len(_cond_dict)}).')
-
-    # Bare name, namespace suffix, canonical key, or filename token all resolve.
-    _target_type = _resolve_species_key(_cond_dict, _cli_args.object_type)
-    if _target_type is None:
-        _PARSER.error(
-            f'Target object_type "{_cli_args.object_type}" not found in cond. '
-            f'Available: {sorted(_cond_dict.keys())}'
-        )
-
-    _tgt_cond = dict(_cond_dict[_target_type])
-    _max_joints = max(
-        len(np.asarray(_cond_dict[_k]['parents']))
-        for _k in _cond_dict
-    )
-
-    # ── Retarget ───────────────────────────────────────────────────────────
-    from data_loaders.truebones.truebones_utils.features import (
-        tpose_features_from_cond,
-    )
-    from data_loaders.truebones.truebones_utils.motion_process import (
-        recover_bvh_export_animation_from_motion_np,
-    )
-    from motion_lib import BVH
-
-    _base_name = _os.path.splitext(_os.path.basename(_source_path))[0]
-
-    # Target rest-pose skeleton reconstructed from cond — no T-pose mesh read.
-    _tgt_tp = tpose_features_from_cond(_tgt_cond, _target_type)
-
-    # Resolve FPS from target cond (used for BVH export frametime).
-    _fps = float(_tgt_cond.get('fps', 30.0))
-
-    if _suffix == '.npy':
-        # Feature-space .npy source: infer source object_type from filename,
-        # then delegate to retarget_features_npy_to_target.
-        from utils.misc import infer_object_type_from_filename
-        from utils.auto_retarget import retarget_features_npy_to_target
-
-        _src_type = infer_object_type_from_filename(
-            _source_path,
-            valid_types=_species_lookup_map(_cond_dict),
-        )
-        if _src_type is None:
-            _PARSER.error(
-                f'Could not infer source object_type from filename '
-                f'"{_base_name}". For .npy sources the filename must contain '
-                f'a known object_type (e.g. Horse___Run_01.npy).'
-            )
-        if _src_type == _target_type:
-            # Same skeleton — no retarget needed; copy source features as-is.
-            print(f'[retarget CLI] Source and target are the same type '
-                  f'("{_src_type}") — skipping retarget.')
-            _target_features = np.load(_source_path).astype(np.float32)
-        else:
-            _src_cond = dict(_cond_dict[_src_type])
-            _src_features = np.load(_source_path).astype(np.float32)
-
-            print(f'[retarget CLI] Retargeting {_src_type} → {_target_type} '
-                  f'(source: {_src_features.shape})')
-
-            _target_features = retarget_features_npy_to_target(
-                _src_features,
-                _src_cond,
-                _src_type,
-                _tgt_tp,
-                _target_type,
-                _max_joints,
-                source_tp=None,
-                target_cond=_tgt_cond,
-            )
-    else:
-        # Raw animation file (.glb/.fbx/.gltf): cond-free on the source side.
-        from utils.auto_retarget import retarget_animation_file_to_target
-        from utils.misc import infer_object_type_from_filename
-
-        print(f'[retarget CLI] Retargeting {_source_path} → {_target_type}')
-        _raw_src_type = infer_object_type_from_filename(
-            _source_path,
-            valid_types=_species_lookup_map(_cond_dict),
-        )
-
-        _target_features = retarget_animation_file_to_target(
-            _source_path,
-            _tgt_tp,
-            _target_type,
-            _max_joints,
-            _tgt_cond,
-            source_object_type=_raw_src_type,
-        )
-
-    if _target_features is None:
-        sys.exit(
-            f'ERROR: Retargeting failed ({_source_path} → {_target_type}). '
-            f'Check joint-name overlap between source and target skeletons.'
-        )
-
-    # ── Save outputs ───────────────────────────────────────────────────────
-    _out_npy = _os.path.join(
-        _output_dir,
-        f'_retargeted_to_{_target_type}__{_base_name}.npy',
-    )
-    np.save(_out_npy, _target_features)
-    print(f'[retarget CLI] Retargeted features {_target_features.shape} → {_out_npy}')
-
-    # Inspection BVH
-    try:
-        _out_bvh = _out_npy[:-4] + '.bvh'
-        _out_anim, _joint_names, _has_pos = recover_bvh_export_animation_from_motion_np(
-            _target_features,
-            np.asarray(_tgt_cond['parents'], dtype=np.int32),
-            np.asarray(_tgt_cond['offsets'], dtype=np.float32),
-            list(_tgt_cond.get('canonical_bvh_joint_names',
-                               _tgt_cond['joints_names'])),
-            allow_infer=True,
-            tpose_rest_rotations=_tgt_tp.tpos_rots[0],
-        )
-        if _out_anim is not None:
-            BVH.save(
-                _out_bvh, _out_anim, _joint_names,
-                frametime=1.0 / _fps, positions=_has_pos,
-                order='auto',
-            )
-            print(f'[retarget CLI] Inspection BVH → {_out_bvh}')
-    except Exception as _exc:
-        print(f'[retarget CLI] WARNING: Failed to write inspection BVH: {_exc}')

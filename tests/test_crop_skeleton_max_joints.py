@@ -145,3 +145,20 @@ def test_rest_pose_and_motion_crop_to_identical_set():
     _, _, keep_rest = crop_animation_to_max_joints(rest, names, max_joints=6)
     _, _, keep_motion = crop_animation_to_max_joints(motion, names, max_joints=6)
     assert keep_rest == keep_motion
+
+
+def test_crop_never_shortens_the_root_chain():
+    """Why the wrapper fold can be applied one step before the crop.
+
+    Preprocessing measures the fold depth on the fully normalized skeleton but
+    applies it before the crop, so the depth has to mean the same thing on both
+    sides. It does: the crop only ever removes current leaves and never the
+    root, and every joint on the root chain has exactly one child, so no crop
+    that leaves a body behind can shorten the chain the depth counts along.
+    """
+    # Ctrl0 -> Ctrl1 -> Hips, then a fan of leaves that the crop must eat first.
+    parents = [-1, 0, 1] + [2] * 12
+    keep, removed = select_cropped_joint_indices(parents, max_joints=5)
+
+    assert keep[:3] == [0, 1, 2]
+    assert all(index >= 3 for index in removed)

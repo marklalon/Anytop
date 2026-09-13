@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local multi-dataset review server for action_labels.jsonl.
 
-Serves review/index.html (a GIF grid) and applies label / reviewed /
+Serves review/index.html (a GIF grid) and applies label / loop / reviewed /
 pending_delete edits straight back into each dataset's action_labels.jsonl so
 the page and the file never drift apart.  A dropdown in the header picks which
 dataset is on screen.
@@ -26,6 +26,19 @@ tool built on it -- down with it. Retiring a clip is spelled
 ``"pending_delete": true`` instead: ``load_action_labels`` ignores unknown keys,
 so the marked rows stay loadable until the clip is actually removed from
 ``motions/`` and ``motion_metadata.json``.
+
+``is_loop`` is the clip's loop verdict -- proposed by
+``tools/prefill_loop_flags.py`` (the detector's reading of the source
+animation, ahead of preprocessing), verified and flipped by hand here. It is
+an annotation in the sidecar and nowhere else (``motion_metadata.json`` no
+longer carries it, and preprocessing reads it without ever writing it), but
+it also shapes the clip's tensor: preprocessing writes the last velocity row
+of ``motions/<clip>.npy`` as the loop's wrap delta or, for a one-shot clip,
+as a repeat of the previous frame. So flipping the flag on a clip that is
+already on disk also rewrites that one row in place
+(``loop_verdict.rewrite_terminal_row``), keeping the flag and the tensor in
+step without a re-preprocess; a clip not built yet simply takes the flag
+when it is.
 
 ``action_label`` edits are normalized and validated before being written.
 Tokens are lowercased, repeated words are dropped (first occurrence kept),
@@ -75,11 +88,16 @@ DEFAULT_DATASETS = DATASET_ROOT / "datasets.jsonl"
 if str(ANYTOP_ROOT) not in sys.path:
     sys.path.insert(0, str(ANYTOP_ROOT))
 
+from data_loaders.truebones.truebones_utils.loop_verdict import (  # noqa: E402
+    rewrite_terminal_row,
+)
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_LABEL_MAX_HEADS,
     ACTION_LABEL_MAX_WORDS,
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
+    LOOP_FLAG_KEY,
+    MOTION_METADATA_SCHEMA_VERSION,
     STATE_VOCAB,
     ActionLabelError,
     canonical_action_label,
@@ -225,19 +243,18 @@ def _write_metadata(path, payload):
 
     Mirrors ``data_loaders.truebones.truebones_utils.motion_labels
     .write_motion_metadata`` (``indent=2``, ``sort_keys=True``, joined action
-    fields stripped, ``total_clips`` recomputed) without importing the
-    data-loader package -- the review server stays free of numpy.  The
-    ``schema_version`` is preserved from the file (default 6).
+    fields and the loop flag stripped, ``total_clips`` recomputed).  The
+    ``schema_version`` is preserved from the file (default: the current one).
     """
     motions = payload.get("motions") or {}
-    dropped = ("action_group", "action_label", "action_tags", "species_label")
+    dropped = ("action_group", "action_label", LOOP_FLAG_KEY, "action_tags", "species_label")
     sanitized = {
         name: {k: v for k, v in entry.items() if k not in dropped}
         for name, entry in motions.items()
         if isinstance(entry, dict)
     }
     out = {
-        "schema_version": payload.get("schema_version", 6),
+        "schema_version": payload.get("schema_version", MOTION_METADATA_SCHEMA_VERSION),
         "total_clips": len(sanitized),
         "motions": dict(sorted(sanitized.items())),
     }
@@ -371,12 +388,29 @@ class LabelStore:
             return result
 
     def update(self, clip, action_label=None, action_group=None, reviewed=None,
-               pending_delete=None):
+               pending_delete=None, is_loop=None):
         with self.lock:
             self._reload_if_stale()
             row = self.index.get(clip)
             if row is None:
                 raise KeyError(clip)
+            if is_loop is not None:
+                # Always written, never popped: a verdict, once made, stays a
+                # verdict (a row WITHOUT the key means "not judged yet" and
+                # preprocessing would propose one again). A first verdict goes
+                # in right after the label, where preprocessing's own fill
+                # puts it, so the file reads the same whoever judged the clip.
+                if LOOP_FLAG_KEY in row:
+                    row[LOOP_FLAG_KEY] = bool(is_loop)
+                else:
+                    ordered = {}
+                    for key, value in row.items():
+                        ordered[key] = value
+                        if key == "action_label":
+                            ordered[LOOP_FLAG_KEY] = bool(is_loop)
+                    ordered.setdefault(LOOP_FLAG_KEY, bool(is_loop))
+                    row.clear()
+                    row.update(ordered)
             if action_label is not None:
                 action_label = normalize_action_label(action_label)
                 if not action_label:
@@ -503,6 +537,8 @@ class Handler(BaseHTTPRequestHandler):
                     "reviewed": sum(1 for r in rows if r.get("reviewed")),
                     "pending": sum(1 for r in rows if r.get("pending_delete")),
                     "invalid_labels": sum(1 for r in rows if r.get("label_error")),
+                    "loops": sum(1 for r in rows if r.get(LOOP_FLAG_KEY) is True),
+                    "unflagged_loops": sum(1 for r in rows if LOOP_FLAG_KEY not in r),
                 })
             return self._send_json(200, {"datasets": payload,
                                          "trash_root": str(TRASH_ROOT)})
@@ -590,6 +626,9 @@ class Handler(BaseHTTPRequestHandler):
                     "error": "action_group must not be empty -- a blank group makes "
                              "load_action_labels exit. Send pending_delete instead."
                 })
+        is_loop = payload.get(LOOP_FLAG_KEY)
+        if is_loop is not None and not isinstance(is_loop, bool):
+            return self._send_json(400, {"error": f"{LOOP_FLAG_KEY} must be true or false"})
         try:
             row = store.update(
                 clip,
@@ -597,6 +636,7 @@ class Handler(BaseHTTPRequestHandler):
                 action_group=group,
                 reviewed=payload.get("reviewed"),
                 pending_delete=payload.get("pending_delete"),
+                is_loop=is_loop,
             )
         except KeyError:
             return self._send_json(404, {"error": f"clip not in labels file: {clip}"})
@@ -604,11 +644,47 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"error": str(exc)})
         except OSError as exc:
             return self._send_json(500, {"error": f"write failed: {exc}"})
+        notes = []
+        if is_loop is not None:
+            # The sidecar is the truth and is already written; now the tensor.
+            # A failure here is reported, not rolled back: the flag is right,
+            # the row is stale, and sending the same toggle again retries it.
+            tensor_note = self._sync_terminal_row(ds, clip, is_loop)
+            if tensor_note:
+                notes.append(tensor_note)
         # Mirror /api/labels: include the bvhview href so the frontend's save()
         # re-render keeps the clip name clickable after an edit.
         out = dict(row)
         out["bvhview"] = _bvhview_href(ds, out["clip"])
-        return self._send_json(200, {"row": out, "dataset": ds["id"]})
+        return self._send_json(200, {"row": out, "dataset": ds["id"], "notes": notes})
+
+    @staticmethod
+    def _sync_terminal_row(ds, clip, is_loop):
+        """Rewrite ``motions/<clip>``'s terminal velocity row for ``is_loop``.
+
+        Returns a human-readable note when the tensor could NOT be brought in
+        step (no NPY on disk, no ``translation_root_index`` in the metadata, a
+        failed write) and "" when it was -- or already matched.
+        """
+        npy_name = clip if clip.lower().endswith(".npy") else clip + ".npy"
+        motion_path = Path(ds["processed"]) / "motions" / npy_name
+        if not motion_path.is_file():
+            return f"{clip_stem(clip)}：motions/ 下没有 NPY，仅更新了标记（下次预处理时按标记生成）"
+        try:
+            meta_payload = json.loads(ds["metadata"].read_text(encoding="utf-8"))
+            # metadata is keyed by the .npy file name, not the sidecar's stem key
+            entry = (meta_payload.get("motions") or {}).get(npy_name) or {}
+            root = entry.get("translation_root_index")
+        except (OSError, ValueError) as exc:
+            return f"{clip_stem(clip)}：读取 {ds['metadata'].name} 失败，NPY 末帧速度未更新：{exc}"
+        if root is None:
+            return (f"{clip_stem(clip)}：{ds['metadata'].name} 里没有 translation_root_index，"
+                    f"NPY 末帧速度未更新")
+        try:
+            rewrite_terminal_row(motion_path, is_loop, int(root))
+        except (OSError, ValueError) as exc:
+            return f"{clip_stem(clip)}：NPY 末帧速度更新失败：{exc}"
+        return ""
 
     def _clean(self, payload):
         """Retire every ``pending_delete`` clip of one dataset, for real.
@@ -620,10 +696,13 @@ class Handler(BaseHTTPRequestHandler):
         drop its row from action_labels.jsonl (one rewrite for the whole batch),
         and drop its entry from motion_metadata.json (``total_clips`` updated) --
         so the dataset is loadable immediately, not just after the next
-        preprocess. A clip whose source cannot be located, or whose source is
-        still shared with a clip that is staying, is skipped with a reason and
-        keeps its mark -- dropping the row while leaving the source in place
-        would only resurrect the clip on the next preprocess.
+        preprocess. A clip whose source is still shared with a clip that is
+        staying is skipped with a reason and keeps its mark -- dropping the row
+        while leaving the source in place would only resurrect the clip on the
+        next preprocess. A clip whose source cannot be located (no
+        ``source_fbx_path`` in the metadata -- typically because the source file
+        was deleted externally) has nothing to move, so it is retired like any
+        other: the processed artifacts are deleted and the row/entry dropped.
         """
         ds, store = self._store_and_dataset(payload.get("dataset") or payload.get("ds"))
         if ds is None:
@@ -657,28 +736,32 @@ class Handler(BaseHTTPRequestHandler):
         stamp = datetime.now().isoformat(timespec="seconds")
         archived = []
         for clip in pending:
-            src = (motions.get(clip) or {}).get("source_fbx_path")
-            if not src:
-                result["skipped"].append(
-                    {"clip": clip, "reason": "motion_metadata.json 里查不到 source_fbx_path"})
-                continue
-            shared = [c for c in users.get(src, []) if c not in marked]
-            if shared:
-                result["skipped"].append(
-                    {"clip": clip,
-                     "reason": f"源文件仍被保留的 {clip_stem(shared[0])} 等 {len(shared)} 个 clip 使用"})
-                continue
-            try:
-                dest, note = archive_source(src)
-            except OSError as exc:
-                result["skipped"].append({"clip": clip, "reason": f"移动源文件失败：{exc}"})
-                continue
-            if dest is not None:
-                result["moved"] += 1
-                archived.append({"when": stamp, "dataset": ds["id"], "clip": clip,
-                                 "src": str(src), "dest": str(dest)})
-            if note:
-                result["notes"].append(f"{clip_stem(clip)}：{note}")
+            npy_name = clip if clip.lower().endswith(".npy") else clip + ".npy"
+            src = (motions.get(npy_name) or {}).get("source_fbx_path")
+            if src:
+                shared = [c for c in users.get(src, []) if c not in marked]
+                if shared:
+                    result["skipped"].append(
+                        {"clip": clip,
+                         "reason": f"源文件仍被保留的 {clip_stem(shared[0])} 等 {len(shared)} 个 clip 使用"})
+                    continue
+                try:
+                    dest, note = archive_source(src)
+                except OSError as exc:
+                    result["skipped"].append({"clip": clip, "reason": f"移动源文件失败：{exc}"})
+                    continue
+                if dest is not None:
+                    result["moved"] += 1
+                    archived.append({"when": stamp, "dataset": ds["id"], "clip": clip,
+                                     "src": str(src), "dest": str(dest)})
+                if note:
+                    result["notes"].append(f"{clip_stem(clip)}：{note}")
+            else:
+                # The source file was deleted externally, so its metadata entry
+                # (and thus source_fbx_path) is gone too.  There is nothing to
+                # move -- retire the processed artifacts and drop the row anyway
+                # instead of leaving an un-cleanable zombie behind.
+                result["notes"].append(f"{clip_stem(clip)}：源文件已不存在（外部删除），无需移动")
 
             # Also retire the clip's processed data out of the dataset: its motion
             # NPY and its BVH.  Both are named by the clip's stem, so each is unique
@@ -720,7 +803,8 @@ class Handler(BaseHTTPRequestHandler):
         # unloadable.  A leftover label row (the reverse) is not fatal.
         if result["cleaned"]:
             for clip in result["cleaned"]:
-                motions.pop(clip, None)
+                # metadata is keyed by the .npy file name, not the sidecar's stem key
+                motions.pop(clip if clip.lower().endswith(".npy") else clip + ".npy", None)
             try:
                 _write_metadata(ds["metadata"], meta_payload)
             except OSError as exc:
@@ -762,10 +846,13 @@ def main():
         done = sum(1 for r in rows if r.get("reviewed"))
         pending = sum(1 for r in rows if r.get("pending_delete"))
         invalid = sum(1 for r in rows if r.get("label_error"))
+        loops = sum(1 for r in rows if r.get(LOOP_FLAG_KEY) is True)
+        unflagged = sum(1 for r in rows if LOOP_FLAG_KEY not in r)
         gifs = len(list(d["gif_dir"].glob("*.gif"))) if d["gif_dir"].is_dir() else 0
         print(
             f"  {d['id']:<28} {done}/{len(rows)} reviewed, {pending} pending, "
-            f"{invalid} invalid labels, {gifs} gifs"
+            f"{invalid} invalid labels, {loops} loop"
+            f"{f' ({unflagged} unjudged)' if unflagged else ''}, {gifs} gifs"
         )
     print(f"labels manifest : {Path(args.datasets).resolve()}")
     print(f"clean trash dir : {TRASH_ROOT}")

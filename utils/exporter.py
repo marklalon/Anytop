@@ -24,7 +24,12 @@ from .rotation_numpy import (
     quat_multiply_wxyz_np,
     quat_rotate_wxyz_np,
 )
-from .retarget import (
+from .fullbody_ik import (
+    DEFAULT_IK_STRETCH_FACTOR,
+    FULLBODY_IK_ITERATIONS,
+    rebuild_retarget_pose_channels_with_ik,
+)
+from .retarget_core import (
     _batch_internal_pose_fk_np,
     retarget_world_space_np,
 )
@@ -294,6 +299,25 @@ def _remove_mesh_objects_for_skeleton_only_export(bpy) -> int:
     return removed
 
 
+def _has_edge_only_mesh_objects(bpy) -> bool:
+    """Return whether the export scene contains a pure loose-edge mesh.
+
+    Blender's glTF exporter drops glTF ``LINES`` primitives unless the
+    scene-wide ``use_mesh_edges`` option is enabled.  Enabling it unconditionally
+    would attach loose-edge geometry to every export, so gate it on the scene
+    actually containing a mesh made of edges and no polygons (a line-rig
+    preview).  When the flag is on, Blender exports only edges that belong to no
+    face, so ordinary surface meshes are not turned into full wireframes.
+    """
+    for obj in bpy.data.objects:
+        if obj.type != "MESH":
+            continue
+        mesh = obj.data
+        if len(mesh.edges) > 0 and len(mesh.polygons) == 0:
+            return True
+    return False
+
+
 def _clear_imported_animation_data(bpy) -> int:
     """Discard animation imported from a source asset before writing NPY motion."""
     datablocks = []
@@ -556,7 +580,8 @@ class AnimationExporter:
             output_path: Destination ``.bvh`` path.
             bone_translations: Optional pose-bone local translations with shape
                 ``[F, J, 3]``. Non-root entries are exported as explicit BVH
-                position channels when provided.
+                position channels when provided; without it the file is
+                rotation-only (root position + per-joint rotation channels).
         """
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -689,9 +714,14 @@ class AnimationExporter:
 
         anim = Animation(rotations_dfs, positions_dfs, orients_dfs,
                          offsets_dfs, parents_dfs)
+        # Non-root position channels only when a pose translation exists:
+        # without one every non-root local position equals its HIERARCHY
+        # offset, so the rotation-only file is exact and stays readable as a
+        # rotation stream. 'auto' picks the euler order farthest from gimbal
+        # lock for this skeleton (BVH.save's default).
         bvh_save(output_path, anim, names=joint_names_dfs,
-                 frametime=1.0 / self.fps, order='xyz',
-                 positions=True)
+                 frametime=1.0 / self.fps, order='auto',
+                 positions=pose_locations_np is not None)
 
     # ------------------------------------------------------------------
     # GLB export (via Blender glTF exporter)
@@ -711,6 +741,12 @@ class AnimationExporter:
         export_mesh: bool = True,
         rename_bones_to_canonical: bool = False,
         prune_unmapped_bones: bool = False,
+        coordinate_search: Optional[bool] = None,
+        src_effective_root_index: Optional[int] = None,
+        tgt_effective_root_index: Optional[int] = None,
+        fullbody_ik: bool = False,
+        fullbody_ik_stretch_factor: float = DEFAULT_IK_STRETCH_FACTOR,
+        fullbody_ik_iterations: int = FULLBODY_IK_ITERATIONS,
     ) -> None:
         """Export GLB directly through bpy in the current Python process.
 
@@ -764,6 +800,31 @@ class AnimationExporter:
                 matches the NPY / processed BVH. Bones are pruned at rest (no
                 per-frame baking); any skin weight is merged into the nearest
                 kept ancestor.
+            coordinate_search: Override the retarget's 1-of-12 rigid rest-pose
+                alignment sweep. ``None`` (default) keeps the historical
+                auto-rule below: off for a plain GLB/GLTF target, on otherwise.
+                Native GLB→GLB retargeting between two rigs authored in
+                different bases needs it forced ``True``; a self-retarget is
+                unaffected either way (identity is the first candidate and wins
+                ties at zero error).
+            src_effective_root_index: Optional source joint that carries the
+                locomotion translation in its local position channel (the
+                ``Bip01`` pattern: a static wrapper root above the joint that
+                actually moves). Without it a source rig shaped that way
+                transfers no global translation at all. Derive it with
+                ``animation_utils.find_translation_root``.
+            tgt_effective_root_index: Optional target counterpart — keeps the
+                locomotion on that joint's local translation and leaves wrapper
+                ancestors static.
+            fullbody_ik: Re-solve the retargeted pose on the *rigid* target
+                skeleton, moving what the retarget left in the pose-translation
+                channel back into rotations. Only meaningful with *mesh_path*
+                (there is no retarget without one). Off by default: it is a real
+                change to the written pose and would break the self-retarget
+                round trip.
+            fullbody_ik_stretch_factor: bone-length elasticity the IK rebuild may
+                use (0.1 = ±10 %). Only read when *fullbody_ik* is set.
+            fullbody_ik_iterations: IK passes. Only read when *fullbody_ik* is set.
         """
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -849,7 +910,7 @@ class AnimationExporter:
         # ────────────────────────────────────────────────────────────────
         # Retargeting: convert input-skeleton animation to FBX armature
         # local space via world-space alignment. The numpy core lives in
-        # ``utils.retarget`` so non-Blender callers can share it.
+        # ``utils.retarget_core`` so non-Blender callers can share it.
         # ────────────────────────────────────────────────────────────────
         if mesh_path:
             fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = extract_armature_skeleton_data(armature)
@@ -881,10 +942,19 @@ class AnimationExporter:
             # that case disabling coordinate search pins the alignment to
             # identity and cancels the intended 90-degree facing change, so we
             # re-enable the search only for the reverse-aligned path.
+            #
+            # ``coordinate_search`` overrides that auto-rule when the caller
+            # knows better — the native GLB→GLB retarget path forces it on to
+            # resolve rigs authored in different bases.
             is_gltf_mesh = bool(
                 mesh_path_lower and mesh_path_lower.endswith((".glb", ".gltf"))
             )
-            coordinate_search = (not is_gltf_mesh) or (global_similarity is not None)
+            if coordinate_search is None:
+                resolved_coordinate_search = (
+                    (not is_gltf_mesh) or (global_similarity is not None)
+                )
+            else:
+                resolved_coordinate_search = bool(coordinate_search)
             src_match_names = _build_canonical_match_names(
                 bone_names,
                 parents_input,
@@ -911,8 +981,10 @@ class AnimationExporter:
                     src_root_rotation=np.array(rr, dtype=np.float64),
                     src_match_names=src_match_names,
                     tgt_match_names=tgt_names,
+                    src_effective_root_index=src_effective_root_index,
+                    tgt_effective_root_index=tgt_effective_root_index,
                     src_bone_translations=np.array(bt, dtype=np.float64) if bt is not None else None,
-                    coordinate_search=coordinate_search,
+                    coordinate_search=resolved_coordinate_search,
                     verbose=verbose,
                 )
                 return result, tgt_bvh_names
@@ -946,9 +1018,44 @@ class AnimationExporter:
             fbx_pose_rot = retarget_result["joint_rotations"]
             fbx_pose_loc = retarget_result["bone_translations"]
             input_to_fbx = retarget_result["src_to_tgt"]
+            fbx_root_rot = retarget_result["root_rotation"]
+            fbx_root_trans = retarget_result["root_translation"]
 
             root_mask = fbx_parents < 0
             root_indices = np.flatnonzero(root_mask)
+
+            # ── Optional rigid-skeleton rebuild ───────────────────────────
+            # The retarget puts every target joint on its source counterpart's
+            # world position; the part a rotation cannot reach from the rest
+            # offset stays in the pose-translation channel, which on a
+            # cross-species transfer is the target rig stretched to the donor's
+            # proportions. IK converts that back into rotations.
+            if fullbody_ik and fbx_pose_loc is not None:
+                if root_indices.size != 1:
+                    print(
+                        f"Skipping full-body IK: target armature has "
+                        f"{root_indices.size} root bones, the rebuild needs exactly one."
+                    )
+                else:
+                    fbx_pose_rot, fbx_pose_loc, ik_mean_error, ik_max_error = (
+                        rebuild_retarget_pose_channels_with_ik(
+                            fbx_pose_rot,
+                            fbx_pose_loc,
+                            parents=fbx_parents,
+                            rest_offsets=fbx_offsets,
+                            rest_rotations=fbx_rest_rots,
+                            iterations=fullbody_ik_iterations,
+                            stretch_factor=fullbody_ik_stretch_factor,
+                        )
+                    )
+                    root_index = int(root_indices[0])
+                    fbx_root_rot = fbx_pose_rot[:, root_index, :]
+                    fbx_root_trans = fbx_pose_loc[:, root_index, :]
+                    print(
+                        f"Full-body IK residual joint error: "
+                        f"mean={ik_mean_error:.6f}, max={ik_max_error:.6f} "
+                        f"(stretch_factor={fullbody_ik_stretch_factor:.2f})"
+                    )
 
             if rotation_channel_mask_np is not None:
                 fbx_rotation_channel_mask = np.zeros((J_fbx,), dtype=bool)
@@ -960,8 +1067,8 @@ class AnimationExporter:
                 rotation_channel_mask_np = fbx_rotation_channel_mask
 
             jr = fbx_pose_rot.tolist()
-            rr = retarget_result["root_rotation"].tolist()
-            rt = retarget_result["root_translation"].tolist()
+            rr = fbx_root_rot.tolist()
+            rt = fbx_root_trans.tolist()
             bone_names = fbx_names
             bt = fbx_pose_loc.tolist() if fbx_pose_loc is not None else None
 
@@ -1100,6 +1207,7 @@ class AnimationExporter:
                     fc.update()
 
         # ── Export GLB ────────────────────────────────────────────────
+        export_loose_edges = _has_edge_only_mesh_objects(bpy)
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             bpy.ops.export_scene.gltf(
                 filepath=output_path,
@@ -1108,6 +1216,12 @@ class AnimationExporter:
                 export_animation_mode='ACTIVE_ACTIONS',
                 export_force_sampling=True,
                 export_frame_range=True,
+                # Preserve skinned skeleton-preview meshes represented as glTF
+                # LINES.  Blender imports those as loose mesh edges and its
+                # exporter silently omits them unless this opt-in is enabled,
+                # leaving an apparently successful GLB containing only EMPTY
+                # nodes and animation channels.
+                use_mesh_edges=export_loose_edges,
                 export_apply=False,
                 export_yup=yup,
             )

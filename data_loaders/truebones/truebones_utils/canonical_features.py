@@ -8,9 +8,9 @@ model feature space via three prior-free, exactly-invertible steps:
   2. Per-skeleton size normalization (L-scaling): the position and velocity
      channels are divided by the skeleton's own geometric length ``L`` so that
      every species lands in a size-free space (cross-species fair). Rotation
-     (6d) and contact are size-independent and are left untouched here.
+     (6d) is size-independent and is left untouched here.
   3. Per-object_subset standardization: subtract a per-channel mean and divide
-     by a *block-collapsed* std (13-vectors). These statistics are computed at
+     by a *block-collapsed* std (12-vectors). These statistics are computed at
      preprocessing time in the L-normalized space of step (2), pooled across all
      joints / frames / clips / species *within each object_subset* (quadruped /
      biped / multiped / serpentine / aquatic / winged / drifting). They are
@@ -21,7 +21,7 @@ model feature space via three prior-free, exactly-invertible steps:
      zero-mean / unit-std calibration (winged flapping and quadruped locomotion
      have very different velocity / rotation scales). They are stored in ``cond``
      per species (``canonical_feature_mean`` / ``canonical_feature_std``); species
-     sharing an object_subset carry the same 13-vectors.
+     sharing an object_subset carry the same 12-vectors.
 
      The raw per-channel std is passed through :func:`collapse_stat_blocks`
      before it is stored: each block (position / rotation-6d / velocity) is
@@ -31,11 +31,13 @@ model feature space via three prior-free, exactly-invertible steps:
      structurally unable to deform a skeleton. ``mean`` stays per-channel
      and per-subset (a mean mismatch is a rigid translation, bone-length exact).
 
-Channel layout per joint (n_feats == 13):
+Channel layout per joint (n_feats == 12):
     0:3   position   (rest-centered residual)
     3:9   rotation 6d
     9:12  local velocity
-    12    foot contact (binary)
+
+Every channel belongs to exactly one of the three blocks, so ``collapse_stat_blocks``
+covers the whole vector.
 
 """
 
@@ -49,11 +51,11 @@ except Exception:  # pragma: no cover - torch is present in training/runtime.
     torch = None
 
 
-CANONICAL_FEATURE_SPACE = "canonical_motion_v3"
+CANONICAL_FEATURE_SPACE = "canonical_motion_v4"
 PHYSICAL_FEATURE_SPACE = "hml_like_v_current"
 
 # Keys under which the per-object_subset per-channel standardization statistics
-# are stored in each cond entry. The 13-vectors are shared by species within the
+# are stored in each cond entry. The 12-vectors are shared by species within the
 # same object_subset (quadruped / winged / ...). Computed at preprocessing time
 # over the L-normalized training distribution -- see
 # ``_compute_canonical_stats_per_object_subset``.
@@ -67,7 +69,6 @@ _STD_FLOOR = 1e-5
 _POS_SLICE = slice(0, 3)
 _ROT_SLICE = slice(3, 9)
 _VEL_SLICE = slice(9, 12)
-_CONTACT_IDX = 12
 
 
 def _is_torch_tensor(value) -> bool:
@@ -121,8 +122,8 @@ def _spatial_L_vectors(n_feats):
     """Return a per-channel ``uses_L`` vector of length ``n_feats``.
 
     ``uses_L[c] == 1`` for the position and velocity groups (size-dependent) and
-    ``0`` for rotation/contact (size-independent). The L-scaling divides those
-    channels by the per-skeleton length ``L`` (encode) / multiplies (decode).
+    ``0`` for rotation (size-independent). The L-scaling divides those channels
+    by the per-skeleton length ``L`` (encode) / multiplies (decode).
     """
     uses_L = np.zeros(n_feats, dtype=np.float64)
     uses_L[_POS_SLICE] = 1.0
@@ -134,7 +135,7 @@ def _spatial_L_vectors(n_feats):
 def _apply_L_scale(feature, cond_entry, inverse: bool):
     """Divide (encode) or multiply (decode) the position/velocity channels by the
     per-skeleton length ``L``. Exact inverse of itself with flipped ``inverse``.
-    Rotation/contact channels are left unchanged. ``L`` may be a scalar or ``[B]``.
+    Rotation channels are left unchanged. ``L`` may be a scalar or ``[B]``.
     """
     L = _length_scale_from_rest(_rest_pos_from_cond(cond_entry, like=feature))
 
@@ -188,7 +189,7 @@ def get_canonical_global_stats(cond_entry):
 
 
 def set_canonical_global_stats(cond_entry, mean, std):
-    """Store the per-object_subset mean/std (13-vectors) on a cond entry,
+    """Store the per-object_subset mean/std (12-vectors) on a cond entry,
     flooring near-constant channels to unit std so the encode divide is safe.
     """
     mean = np.asarray(mean, dtype=np.float32).reshape(-1)
@@ -355,8 +356,8 @@ def build_canonical_rest_feature(cond_entry):
     """Build the rest-pose token in canonical feature space.
 
     The rest pose has no motion, so its physical feature is the rest rotation
-    with the position channel equal to the rest position and the velocity /
-    contact channels zeroed. Encoding it through the same forward transform
+    with the position channel equal to the rest position and the velocity
+    channels zeroed. Encoding it through the same forward transform
     keeps the rest token in exactly the canonical space the model sees (the
     position residual collapses to 0 before standardization).
     """
@@ -371,14 +372,10 @@ def build_canonical_rest_feature(cond_entry):
         rest_phys = rest.clone()
         if rest_phys.shape[-1] >= _VEL_SLICE.stop:
             rest_phys[..., _VEL_SLICE] = 0.0
-        if rest_phys.shape[-1] > _CONTACT_IDX:
-            rest_phys[..., _CONTACT_IDX] = 0.0
     else:
         rest_phys = np.asarray(rest, dtype=np.float32).copy()
         if rest_phys.shape[-1] >= _VEL_SLICE.stop:
             rest_phys[..., _VEL_SLICE] = 0.0
-        if rest_phys.shape[-1] > _CONTACT_IDX:
-            rest_phys[..., _CONTACT_IDX] = 0.0
 
     return physical_hml_to_canonical(rest_phys, cond_entry)
 
@@ -403,7 +400,7 @@ def accumulate_lnorm_stats(feature, cond_entry, acc=None):
 
 def finalize_lnorm_stats(acc):
     """Turn an accumulator from accumulate_lnorm_stats() into ``(mean, std)``
-    13-vectors. Near-constant channels are floored to unit std downstream by
+    12-vectors. Near-constant channels are floored to unit std downstream by
     set_canonical_global_stats().
     """
     if acc is None or acc["count"] <= 0:
@@ -432,7 +429,7 @@ def collapse_stat_blocks(subset_stats):
     """Collapse each object_subset's std inside feature blocks and share the
     position gain across every subset.
 
-    ``subset_stats``: ``{object_subset: (mean13, std13)}`` -> a new dict of the
+    ``subset_stats``: ``{object_subset: (mean12, std12)}`` -> a new dict of the
     same keys and shapes. Only ``std`` is touched; ``mean`` is returned as-is.
 
     Two changes:
@@ -459,15 +456,8 @@ def collapse_stat_blocks(subset_stats):
        lengths, and each body plan keeps its own unit-variance calibration where
        it costs nothing.
 
-    ``contact`` (index 12) belongs to no block and stays per-subset untouched:
-    the subsets whose contact channel is identically zero (aquatic / serpentine)
-    keep falling through to the ``_STD_FLOOR`` -> 1.0 path in
-    set_canonical_global_stats(), exactly as before.
-
-    The 13-dim shape, the two cond keys and ``CANONICAL_FEATURE_SPACE`` are all
-    unchanged -- this only changes the *numbers* written into the table, so the
-    encode/decode contract is untouched (a regenerated cond.npy is still
-    ``canonical_motion_v3``).
+    The three blocks tile the whole 12-channel vector, so every channel is
+    covered and nothing falls through to the per-channel raw std.
     """
     if not subset_stats:
         return {}

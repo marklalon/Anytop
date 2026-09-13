@@ -321,36 +321,51 @@ def _sin_time_embedding(
 def circular_phase_embedding(
     length: int,
     dim: int,
-    batch_size: int,
     device: torch.device,
     dtype: torch.dtype,
-    lengths: Optional[Tensor] = None,
 ) -> Tensor:
+    """Sinusoidal time table closed over the window, shape ``(length, dim)``.
+
+    Slot 0 is the T-pose token (zero row); the ``motion_frames = length - 1``
+    motion frames sit at phase ``2*pi*f*t / (motion_frames - 1)``, so the first
+    and last motion frame share one embedding -- the closing key every stored
+    loop keeps. The closure is exact only in real arithmetic: in fp32 the last
+    phase misses ``2*pi*f`` by a rounding error that grows with ``dim`` (6.7e-05
+    at length=61, dim=256), so tests must scale their tolerance with ``dim``.
+
+    This does not replace the absolute frame embedding ``InputProcess`` adds
+    for every sample: it is summed on top of it at every decoder layer
+    (``GraphMotionDecoderLayer.temporal_phase_scale``), and only for loop
+    samples.
+
+    The period is the window itself; how many gait cycles it holds is NOT
+    encoded. It used to be (period ``(motion_frames - 1)/k`` for the ``k``
+    loader tiles), which made generation guess ``k`` from a per-species table
+    and forced a wrong stride when the guess was off. The cycle count is now
+    learned from resample_speed_cond and the species/action prior, as for a
+    one-shot clip.
+
+    Frequencies run over ``1..dim // 2`` unconditionally, so at production
+    shapes (``motion_frames - 1 < dim // 2``) the table is redundant: ``f`` and
+    ``f + (motion_frames - 1)`` coincide at integer ``t``, multiples of
+    ``motion_frames - 1`` are constant ``(1, 0)``, and ``f`` /
+    ``(motion_frames - 1) - f`` share a cosine with negated sine. At
+    ``--num_frames 60`` that is 59 distinct pairs out of 128. Wasted capacity,
+    not a conflict, so it is left alone: clamping to Nyquist would only swap
+    them for zero channels.
+    """
     if length <= 0:
         raise ValueError(f"length must be positive, got {length}")
-    emb = torch.zeros((length, batch_size, dim), device=device, dtype=dtype)
-    motion_frames = max(length - 1, 0)
+    emb = torch.zeros((length, dim), device=device, dtype=dtype)
+    motion_frames = length - 1
     half_dim = dim // 2
     if motion_frames <= 0 or half_dim == 0:
         return emb
 
-    if lengths is None:
-        lengths_t = torch.full((batch_size,), max(motion_frames - 1, 1), device=device, dtype=dtype)
-    else:
-        lengths_t = torch.as_tensor(lengths, device=device, dtype=dtype).reshape(-1)
-        if lengths_t.numel() == 1 and batch_size != 1:
-            lengths_t = lengths_t.expand(batch_size)
-        elif lengths_t.numel() != batch_size:
-            raise ValueError(
-                "lengths batch dimension must match the motion batch size, got "
-                f"{lengths_t.numel()} for batch {batch_size}"
-            )
-        lengths_t = (lengths_t - 1.0).clamp(min=1.0)
-
+    period = float(max(motion_frames - 1, 1))
     frame_positions = torch.arange(motion_frames, device=device, dtype=dtype).unsqueeze(1)
-    phase = (2.0 * math.pi) * frame_positions / lengths_t.unsqueeze(0)
-    frequencies = torch.arange(1, half_dim + 1, device=device, dtype=dtype).view(1, 1, -1)
-    phase = phase.unsqueeze(-1) * frequencies
+    frequencies = torch.arange(1, half_dim + 1, device=device, dtype=dtype).unsqueeze(0)
+    phase = (2.0 * math.pi / period) * frame_positions * frequencies
     motion_emb = torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
     if motion_emb.shape[-1] < dim:
         motion_emb = F.pad(motion_emb, (0, dim - motion_emb.shape[-1]))
@@ -364,28 +379,19 @@ def _loop_aware_time_embedding(
     batch_size: int,
     device: torch.device,
     dtype: torch.dtype,
-    loop_phase_mask: Optional[Tensor],
-    lengths: Optional[Tensor],
+    loop_phase_mask: Tensor,
 ) -> Tensor:
-    absolute = _sin_time_embedding(length, dim, device, dtype).unsqueeze(1)
-    if loop_phase_mask is None:
-        return absolute
-    loop_phase_mask = torch.as_tensor(loop_phase_mask, device=device, dtype=torch.bool).reshape(-1)
-    if loop_phase_mask.numel() == 1 and batch_size != 1:
-        loop_phase_mask = loop_phase_mask.expand(batch_size)
-    elif loop_phase_mask.numel() != batch_size:
-        raise ValueError(
-            "loop_phase_mask batch dimension must match the motion batch size, got "
-            f"{loop_phase_mask.numel()} for batch {batch_size}"
-        )
-    # `bool(.any())` is an all-False fast path that skips the circular-embedding
-    # compute. Under torch.compile it forces a graph break, so skip the shortcut
-    # there and always take the torch.where path -- it returns `absolute` for
-    # every all-False entry, so the result is identical.
-    if not torch.compiler.is_compiling() and not bool(loop_phase_mask.any()):
-        return absolute
-    absolute = absolute.expand(-1, batch_size, -1)
-    circular = circular_phase_embedding(length, dim, batch_size, device, dtype, lengths)
+    """Per-sample time table: circular for loop samples, absolute otherwise.
+
+    ``loop_phase_mask`` is a ``(batch_size,)`` bool tensor; returns
+    ``(length, batch_size, dim)``.
+
+    Selects rather than adds (unlike the main path, which sums the circular
+    phase onto the absolute PE ``InputProcess`` already wrote into ``tgt``):
+    the cross-limb latents carry no input-level frame embedding of their own.
+    """
+    absolute = _sin_time_embedding(length, dim, device, dtype).unsqueeze(1).expand(-1, batch_size, -1)
+    circular = circular_phase_embedding(length, dim, device, dtype).unsqueeze(1)
     return torch.where(loop_phase_mask.view(1, batch_size, 1), circular, absolute)
 
 
@@ -401,9 +407,35 @@ class CrossLimbTemporalBlock(nn.Module):
 
     This block adds the missing path: K learned latent tokens pool ALL joints
     per frame (cross-in), attend over time with the SAME windowed temporal mask
-    (latent temporal self-attention), then write a whole-body rhythm context
-    back to every joint (cross-out). Reuses SelectiveMultiheadAttention; the
-    final residual is post-norm to stay consistent with norm1/2/3 of the layer.
+    (latent temporal self-attention), exchange information across the K
+    latents of a frame (cross-K self-attention), then write a whole-body
+    rhythm context back to every joint (cross-out). Reuses
+    SelectiveMultiheadAttention; the final residual is post-norm to stay
+    consistent with norm1/2/3 of the layer.
+
+    Reliability (``unreliable_mask``, (T, B, J), 1 == being re-drawn) enters
+    at two levels, because a scalar bias on the cross-in logits alone cannot
+    express "this whole frame is unreliable": when every valid joint of a
+    frame carries the same bias, softmax's shift invariance cancels it
+    exactly, so whole-frame inpainting and temporal spans were invisible to
+    this path.
+      * cross-in keeps the per-joint ``reliability_bias`` (joint selection
+        within a frame);
+      * latent temporal attention gets a per-frame additive key bias,
+        ``temporal_reliability_bias * frac(unreliable valid joints in frame)``
+        (frame selection along time). It is uniform, hence cancelled, only
+        when every frame is equally unreliable -- at which point there is no
+        reliable source to prefer anyway.
+    The trunk-wide visibility of the mask is AnyTop's ``unreliable_embedding``
+    on the input tokens, not this block's job.
+
+    Cross-K is one Pre-Norm self-attention over the K latents of each frame
+    (attention batch T*B, sequence K), behind a zero-init residual gate
+    ``cross_k_scale``: without it two latents of the same frame only talk via
+    cross-out -> next layer's spatial attention -> next layer's cross-in.
+    Both new gates (``temporal_reliability_bias``, ``cross_k_scale``) are
+    zero-init, so a fresh block starts as the plain cross-in / temporal /
+    cross-out path.
 
     Efficiency: the latent pathway runs at a *narrow* bottleneck width
     ``latent_width`` (Perceiver latents are meant to be a narrow information
@@ -433,9 +465,16 @@ class CrossLimbTemporalBlock(nn.Module):
         self.proj_out = nn.Linear(d_cl, d_model) if d_cl != d_model else nn.Identity()
         self.cross_in_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         self.temporal_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
+        # Cross-K: the same attention dropout as the other three sub-layers.
+        # SelectiveMultiheadAttention defaults to 0.0, so leaving it out would
+        # silently make this one sub-layer un-regularized under --dropout_prob.
+        self.cross_k_norm = nn.LayerNorm(d_cl)
+        self.cross_k_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         self.cross_out_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         self.time_emb_scale = nn.Parameter(torch.zeros(1))
         self.reliability_bias = nn.Parameter(torch.zeros(1))
+        self.temporal_reliability_bias = nn.Parameter(torch.zeros(1))
+        self.cross_k_scale = nn.Parameter(torch.zeros(1))
         self.norm_cl = nn.LayerNorm(d_model)
         self.register_buffer('_cached_time_emb', torch.empty(0), persistent=False)
 
@@ -467,12 +506,11 @@ class CrossLimbTemporalBlock(nn.Module):
         x: Tensor,
         joints_key_padding_mask: Tensor,
         unreliable_mask: Optional[Tensor] = None,
-        loop_phase_mask: Optional[Tensor] = None,
-        lengths: Optional[Tensor] = None,
         time_embedding: Optional[Tensor] = None,
     ) -> Tensor:
         # x: (T, B, J, d_model); joints_key_padding_mask: (B, J) bool,
-        # True == padded joint.
+        # True == padded joint. time_embedding: the decoder's per-batch
+        # (loop-aware) time table, (T, d) or (T, B, d); None == absolute time.
         T, B, J, _ = x.shape
         K, d = self.num_latents, self.latent_dim
 
@@ -486,15 +524,25 @@ class CrossLimbTemporalBlock(nn.Module):
         q = self.latents.unsqueeze(1).expand(K, T * B, d)                  # (K, T*B, d_cl)
         kpm = joints_key_padding_mask.unsqueeze(0).expand(T, B, J).reshape(T * B, J)  # (T*B, J)
         reliability_attn_mask = None
+        temporal_key_bias = None
         if unreliable_mask is not None:
             if unreliable_mask.shape != (T, B, J):
                 raise ValueError(
                     f"unreliable_mask must have shape {(T, B, J)}, got {tuple(unreliable_mask.shape)}"
                 )
-            reliability_attn_mask = unreliable_mask.reshape(T * B, J)
-            reliability_attn_mask = reliability_attn_mask.to(device=xd.device, dtype=xd.dtype)
-            reliability_attn_mask = self.reliability_bias * reliability_attn_mask
+            unreliable_mask = unreliable_mask.to(device=xd.device, dtype=xd.dtype)
+            reliability_attn_mask = self.reliability_bias * unreliable_mask.reshape(T * B, J)
             reliability_attn_mask = reliability_attn_mask.unsqueeze(1).expand(T * B, K, J)
+            # Per-frame unreliability = fraction of VALID joints flagged, so a
+            # padded joint neither counts as reliable nor as unreliable. Laid
+            # out (B*K, T) to match the temporal attention batch (b*K + k).
+            valid = (~joints_key_padding_mask).to(device=xd.device, dtype=xd.dtype)   # (B, J)
+            frame_unreliable = (
+                (unreliable_mask * valid.unsqueeze(0)).sum(dim=-1)
+                / valid.sum(dim=-1).clamp_min(1.0).unsqueeze(0)
+            )                                                              # (T, B)
+            temporal_key_bias = self.temporal_reliability_bias * frame_unreliable.transpose(0, 1)
+            temporal_key_bias = temporal_key_bias.unsqueeze(1).expand(B, K, T).reshape(B * K, T)
         bz, _ = self.cross_in_attn(
             q,
             kv,
@@ -519,29 +567,35 @@ class CrossLimbTemporalBlock(nn.Module):
                     "time_embedding must have shape "
                     f"{(T, d)} or {(T, B, d)}, got {tuple(time_embedding.shape)}"
                 )
-        elif loop_phase_mask is None:
-            time_emb = self._get_cached_time_embedding(T, zt_in.device, zt_in.dtype).unsqueeze(1)
         else:
-            time_emb = _loop_aware_time_embedding(
-                T,
-                d,
-                B,
-                zt_in.device,
-                zt_in.dtype,
-                loop_phase_mask,
-                lengths,
-            )
-            time_emb = time_emb.unsqueeze(2).expand(T, B, K, d).reshape(T, B * K, d)
+            time_emb = self._get_cached_time_embedding(T, zt_in.device, zt_in.dtype).unsqueeze(1)
         zt_in = zt_in + self.time_emb_scale * time_emb
         zt_resid = zt_in
-        zt, _ = self.temporal_attn(zt_in, zt_in, zt_in, attn_mask=None, need_weights=False)
+        # A float key_padding_mask is an ADDITIVE key bias in
+        # SelectiveMultiheadAttention (both the SDPA and the need_weights
+        # branches add it to the scores; only a bool mask means -inf padding),
+        # so the frame-level reliability bias rides the existing argument.
+        zt, _ = self.temporal_attn(
+            zt_in, zt_in, zt_in,
+            attn_mask=None,
+            key_padding_mask=temporal_key_bias,
+            need_weights=False,
+        )
         zt = zt_resid + zt
         zt = zt.reshape(T, B, K, d)
+
+        # --- Cross-K: the K latents of one frame attend over each other.
+        # attention batch = T*B with index (t*B + b) -- the cross-out layout,
+        # so the result feeds cross-out without another permute. Pre-Norm and
+        # a zero-init residual gate: exact no-op until cross_k_scale moves.
+        kv_out = zt.permute(2, 0, 1, 3).reshape(K, T * B, d)              # (K, T*B, d_cl)
+        zk_norm = self.cross_k_norm(kv_out)
+        zk_delta, _ = self.cross_k_attn(zk_norm, zk_norm, zk_norm, need_weights=False)
+        kv_out = kv_out + self.cross_k_scale * zk_delta
 
         # --- Cross-out: joints (query) attend over latents (key/value), per frame.
         # Both flattened to attention batch = T*B with index (t*B + b).
         q_out = xd.permute(2, 0, 1, 3).reshape(J, T * B, d)               # (J, T*B, d_cl)
-        kv_out = zt.permute(2, 0, 1, 3).reshape(K, T * B, d)              # (K, T*B, d_cl)
         delta, _ = self.cross_out_attn(q_out, kv_out, kv_out, need_weights=False)
         delta = delta.reshape(J, T, B, d).permute(1, 2, 0, 3)            # (T, B, J, d_cl)
 
@@ -976,51 +1030,46 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 tgt_key_padding_mask: Optional[Tensor] = None,
             memory_key_padding_mask: Optional[Tensor] = None, y=None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
-            loop_phase_mask: Optional[Tensor] = None,
-            lengths: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            loop_phase_mask: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._expand_relation_heads(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
         output = tgt
         T, B = tgt.shape[0], tgt.shape[1]
-        loop_phase_mask_batch = None
+        # Both loop time tables are built once here and shared by every layer:
+        # the circular phase added before temporal attention (zeroed for
+        # non-loop samples) and the cross-limb block's per-sample time table.
+        # Neither replaces the absolute PE InputProcess already put in `tgt`:
+        # the main path adds the phase on top (loop samples only); the
+        # cross-limb table selects instead, its latents having no PE of their own.
         loop_phase_embedding = None
         cross_limb_time_embedding = None
         if loop_phase_mask is not None:
-            loop_phase_mask_batch = torch.as_tensor(loop_phase_mask, device=tgt.device, dtype=torch.bool).reshape(-1)
-            if loop_phase_mask_batch.numel() == 1 and B != 1:
-                loop_phase_mask_batch = loop_phase_mask_batch.expand(B)
-            elif loop_phase_mask_batch.numel() != B:
+            loop_phase_mask = torch.as_tensor(loop_phase_mask, device=tgt.device, dtype=torch.bool).reshape(-1)
+            if loop_phase_mask.numel() == 1 and B != 1:
+                loop_phase_mask = loop_phase_mask.expand(B)
+            elif loop_phase_mask.numel() != B:
                 raise ValueError(
                     "loop_phase_mask batch dimension must match the motion batch size, got "
-                    f"{loop_phase_mask_batch.numel()} for batch {B}"
+                    f"{loop_phase_mask.numel()} for batch {B}"
                 )
-            # Compiling: always build the (mask-zeroed) embedding so the per-layer
-            # fallback below never has to branch on `.any()`. All-False masks
-            # zero it out, so downstream additions are no-ops -- identical result,
-            # no graph break.
-            if torch.compiler.is_compiling() or bool(loop_phase_mask_batch.any()):
-                loop_phase_embedding = circular_phase_embedding(
-                    T,
-                    self.d_model,
-                    B,
-                    tgt.device,
-                    tgt.dtype,
-                    lengths,
+            # `bool(.any())` is an all-False fast path. Under torch.compile it
+            # forces a graph break, so always build the mask-zeroed tables there:
+            # all-False zeroes the phase and selects the absolute table, so the
+            # result is identical.
+            if torch.compiler.is_compiling() or bool(loop_phase_mask.any()):
+                loop_phase_embedding = (
+                    circular_phase_embedding(T, self.d_model, tgt.device, tgt.dtype).unsqueeze(1)
+                    * loop_phase_mask.view(1, B, 1)
                 )
-                loop_phase_embedding = loop_phase_embedding * loop_phase_mask_batch.view(1, B, 1)
                 if self.cross_limb_blocks is not None and len(self.cross_limb_blocks) > 0:
-                    cross_limb_dim = self.cross_limb_blocks[0].latent_dim
                     cross_limb_time_embedding = _loop_aware_time_embedding(
                         T,
-                        cross_limb_dim,
+                        self.cross_limb_blocks[0].latent_dim,
                         B,
                         tgt.device,
                         tgt.dtype,
-                        loop_phase_mask_batch,
-                        lengths,
+                        loop_phase_mask,
                     )
-            else:
-                loop_phase_mask_batch = None
         first_cl_layer = (
             self.num_layers - self.cross_limb_last_n
             if self.cross_limb_last_n > 0 else 0
@@ -1040,8 +1089,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     tgt_key_padding_mask, memory_key_padding_mask, y,
                     cross_limb_block=cl_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
-                    loop_phase_mask=loop_phase_mask_batch,
-                    lengths=lengths,
                     loop_phase_embedding=loop_phase_embedding,
                     cross_limb_time_embedding=cross_limb_time_embedding)
         if self.norm is not None:
@@ -1084,23 +1131,17 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     
     
         # temporal attention block
-    def _temporal_mha_block_sin_joint(self, x: Tensor, key_padding_mask: Optional[Tensor], loop_phase_mask: Optional[Tensor] = None, lengths: Optional[Tensor] = None, loop_phase_embedding: Optional[Tensor] = None) -> Tensor:
-        frames, bs, njoints, feats= x.size() 
+    def _temporal_mha_block_sin_joint(self, x: Tensor, key_padding_mask: Optional[Tensor], loop_phase_embedding: Optional[Tensor] = None) -> Tensor:
+        frames, bs, njoints, feats= x.size()
         if loop_phase_embedding is not None:
             if loop_phase_embedding.shape != (frames, bs, feats):
                 raise ValueError(
                     "loop_phase_embedding must have shape "
                     f"{(frames, bs, feats)}, got {tuple(loop_phase_embedding.shape)}"
                 )
+            # Summed onto the absolute PE already in x (InputProcess), not a
+            # replacement; zero-init scale, so a fresh model starts phase-free.
             x = x + self.temporal_phase_scale * loop_phase_embedding.unsqueeze(2)
-        elif loop_phase_mask is not None:
-            loop_phase_mask = torch.as_tensor(loop_phase_mask, device=x.device, dtype=torch.bool).reshape(-1)
-            if loop_phase_mask.numel() == 1 and bs != 1:
-                loop_phase_mask = loop_phase_mask.expand(bs)
-            if torch.compiler.is_compiling() or bool(loop_phase_mask.any()):
-                phase = circular_phase_embedding(frames, feats, bs, x.device, x.dtype, lengths)
-                phase = phase * loop_phase_mask.view(1, bs, 1)
-                x = x + self.temporal_phase_scale * phase.unsqueeze(2)
         # Temporal self-attention is unmasked: every frame token attends over the
         # whole window, including the T-pose token at index 0.
         x = x.view(frames, bs * njoints, feats)
@@ -1136,8 +1177,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         y = None,
         cross_limb_block: Optional[nn.Module] = None,
         cross_limb_unreliable_mask: Optional[Tensor] = None,
-        loop_phase_mask: Optional[Tensor] = None,
-        lengths: Optional[Tensor] = None,
         loop_phase_embedding: Optional[Tensor] = None,
         cross_limb_time_embedding: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
@@ -1146,14 +1185,12 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         spatial_attn_output = self._spatial_mha_block(x, topology_rel, edge_rel, edge_key_emb, edge_query_emb, edge_value_emb,
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
-        x = self.norm2(x + self._temporal_mha_block_sin_joint(x, None, loop_phase_mask=loop_phase_mask, lengths=lengths, loop_phase_embedding=loop_phase_embedding))
+        x = self.norm2(x + self._temporal_mha_block_sin_joint(x, None, loop_phase_embedding=loop_phase_embedding))
         if cross_limb_block is not None:
             x = cross_limb_block(
                 x,
                 tgt_key_padding_mask,
                 unreliable_mask=cross_limb_unreliable_mask,
-                loop_phase_mask=loop_phase_mask,
-                lengths=lengths,
                 time_embedding=cross_limb_time_embedding,
             )
         x = self.norm3(x + self._ff_block(x))

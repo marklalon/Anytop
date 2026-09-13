@@ -23,6 +23,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_GROUPS,
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
+    HANDS_VOCAB,
     STATE_VOCAB,
     head_words_in,
 )
@@ -35,7 +36,9 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
 # read under a guarantee it cannot make.
 ACTION_WORD_EMBEDDING_SCHEMA_VERSION = 3
 ACTION_CONDITIONING_CONTRACT_SCHEMA_VERSION = 1
-ACTION_LABEL_PARSER_CONTRACT_VERSION = 1
+# 2: HANDS_VOCAB (hand0/hand1/hand2) -- exclusive, at most one per label, its
+#    own slot channel; replaced weapon + 1hand/2hand in the modifier slot.
+ACTION_LABEL_PARSER_CONTRACT_VERSION = 2
 ROLE_B_ARTIFACT_SCHEMA_VERSION = 1
 ROLE_NONE = 0
 ROLE_HEAD_1 = 1
@@ -64,10 +67,20 @@ ROLE_B_CONSTRUCTION = (
 # channel, so a word's contribution depends on ITS slot only -- appending
 # modifiers cannot shrink the head or direction axis, which is the property the
 # one-vector weighted mean could not have at any weight setting.
+#
+# The hands axis has its own channel rather than riding in the modifier slot
+# because, once annotated, it sits on nearly every clip of every hand-bearing
+# species: pooled into the modifier mean it would halve the signal of every
+# real modifier (slash, punch, fast, cast ...) on exactly those species, and
+# "attack, slash" would no longer read the same with and without a hand state.
+# In its own channel the other three are bit-identical either way, and the
+# channel is the token's own vector (the axis admits one member), so the model
+# only has to tell three points apart.
 SLOT_HEAD = 0
 SLOT_DIRECTION = 1
 SLOT_MODIFIER = 2
-ACTION_LABEL_SLOTS: tuple[str, ...] = ("head", "direction", "modifier")
+SLOT_HANDS = 3
+ACTION_LABEL_SLOTS: tuple[str, ...] = ("head", "direction", "modifier", "hands")
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -147,6 +160,12 @@ def action_label_slots(action_group: str, tokens: Iterable[str]) -> dict[str, tu
             f"action label must have 1..{ACTION_LABEL_MAX_HEADS} head words; "
             f"got {heads}"
         )
+    hands = tuple(word for word in ordered_tokens if word in HANDS_VOCAB)
+    if len(hands) > 1:
+        raise ValueError(
+            f"action label names {len(hands)} hand-state words {hands}; the hands "
+            "axis admits at most one"
+        )
 
     enabled = action_order_enabled(action_group, ordered_tokens)
     head_positions = tuple(
@@ -174,6 +193,8 @@ def word_slot(word: str) -> int:
         return SLOT_HEAD
     if word in DIRECTION_VOCAB:
         return SLOT_DIRECTION
+    if word in HANDS_VOCAB:
+        return SLOT_HANDS
     if word not in CONTROLLED_VOCAB:
         raise ValueError(f"unknown action-label token: {word!r}")
     return SLOT_MODIFIER
@@ -238,6 +259,7 @@ def slot_channel_representation() -> dict[str, Any]:
         "slots": list(ACTION_LABEL_SLOTS),
         "slot_assignment": (
             "head = STATE_VOCAB member; direction = DIRECTION_VOCAB member; "
+            "hands = HANDS_VOCAB member (at most one); "
             "modifier = every other vocabulary word"
         ),
         "slot_aggregation": "mean of member word vectors, then L2 normalisation",
@@ -455,6 +477,7 @@ def slot_source_vectors(
             for word in CONTROLLED_VOCAB
             if word_slot(word) == SLOT_MODIFIER
         ]],
+        "hands": vectors[[vocab_index[word] for word in HANDS_VOCAB]],
     }
 
 

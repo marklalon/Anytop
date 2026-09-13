@@ -2,7 +2,7 @@
 Retarget roundtrip test: GLB -> retarget NPY -> restore GLB -> compare vs source.
 
 Locks in the cond-free file-retarget path
-(``utils.auto_retarget.retarget_animation_file_to_target``): a raw source
+(``utils.retarget_pipeline.retarget_animation_file_to_target``): a raw source
 animation is retargeted onto a target skeleton purely from the file (no source
 cond entry), restored to a GLB through the production ``restore_glb_from_npy``
 tool, and compared against the original source with ``tools/compare_motions``.
@@ -44,6 +44,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 
 
 # ── ensure parent of Anytop is on sys.path (so `import Anytop` works) ───────
@@ -79,7 +80,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     tpose_features_from_cond,
     TPoseFeatures,
 )
-from utils.auto_retarget import retarget_animation_file_to_target, retarget_features_npy_to_target
+from utils.retarget_pipeline import retarget_animation_file_to_target, retarget_features_npy_to_target
 from utils.misc import normalize_bone_key as _normalize_bone_key
 from tools.restore_glb_from_npy import restore_glb
 from tools.compare_motions import (
@@ -139,7 +140,7 @@ def _run_retarget_glb_roundtrip(
     Pipeline:
         1. Build the target rest-pose features + resolve the target cond entry.
         2. Retarget the raw source animation onto the target skeleton straight
-           from the file (cond-free source) -> (F, J, 13) feature tensor.
+           from the file (cond-free source) -> (F, J, FEATS_LEN) feature tensor.
         3. Save the bare NPY exactly like the generation pipeline.
         4. Restore it to a GLB through the production restore tool.
         5. Compare the restored GLB against the original source motion.
@@ -367,6 +368,11 @@ def test_retarget_raw_glb_matches_matching_npy_reference(target_type: str) -> No
         target_cond,
     )
     source_features = np.load(_DEFAULT_MATCHING_NPY).astype(np.float32)
+    if source_features.shape[-1] != FEATS_LEN:
+        pytest.skip(
+            f"{_DEFAULT_MATCHING_NPY} carries {source_features.shape[-1]} channels, this code "
+            f"writes {FEATS_LEN}; re-run preprocessing"
+        )
     npy_features = retarget_features_npy_to_target(
         source_features,
         source_cond,

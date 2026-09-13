@@ -265,6 +265,8 @@ def create_training_data_loader(args):
         min_length=getattr(args, 'min_length', 20),
         main_process_prefetch_batches=getattr(args, 'main_process_prefetch_batches', 0),
         loop_cond_prob=loop_cond_prob,
+        motion_speed_aug=getattr(args, 'motion_speed_aug', 1.0),
+        motion_speed_aug_prob=getattr(args, 'motion_speed_aug_prob', 1.0),
     )
 
 def run_training(args):

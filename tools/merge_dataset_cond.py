@@ -58,7 +58,10 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
     build_object_subsets,
     load_species_tags,
 )
-from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS  # noqa: E402
+from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
+    FEATS_LEN,
+    MAX_JOINTS,
+)
 
 _COLOR_RESET = "\033[0m"
 _COLOR_YELLOW = "\033[93m"
@@ -164,7 +167,12 @@ def _recompute_canonical_stats(merged_cond, sources) -> dict[str, tuple]:
                 skipped += 1
                 continue
             motion = np.load(motion_path).astype(np.float32, copy=False)
-            if motion.ndim != 3 or motion.shape[-1] < 13:
+            # Exact width, not "at least": the stats table this loop builds is
+            # written straight into cond as canonical_feature_mean/std, and
+            # neither collapse_stat_blocks nor set_canonical_global_stats
+            # validates its length -- a stale 13-channel (v3) clip would
+            # silently produce a 13-wide table on a canonical_motion_v4 cond.
+            if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN:
                 skipped += 1
                 continue
             subset = subset_of[object_key]

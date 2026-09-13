@@ -19,6 +19,11 @@
 >
 > 推理端默认：语料内标签 `--action_label_cfg_scale 2`，
 > 未见过的词组合用 **1**（§12.4）。
+>
+> **2026-09-11 增补：hands 轴。** `weapon` + `1hand`/`2hand` 换成互斥的
+> `hand0`/`hand1`/`hand2`，并占第四个槽通道；§1、§2.1、§5、§6 已按四槽改写，
+> 缘由、标注迁移与实测见 **§13**。`CKPT_VERSION` 7→8，**需要重训**；§12 的读数
+> 是旧标注上的历史记录。
 
 ## 1. 当前状态
 
@@ -53,8 +58,8 @@
 action_label
   → parse_action_label + action_label_slots（唯一实现，loader 与 generate 共用）
   → loader 发 word_ids / role_ids / slot_ids / word_mask / order_head_mask（定长 8）
-  → 模型用 checkpoint 内的冻结词表拼三个槽通道（张量镜像 assemble_slot_channels）
-  → action_label_projection: Linear(3 * t5_out_dim, latent_dim)
+  → 模型用 checkpoint 内的冻结词表拼四个槽通道（张量镜像 assemble_slot_channels）
+  → action_label_projection: Linear(4 * t5_out_dim, latent_dim)
   → 加入 timestep embedding
 ```
 
@@ -70,6 +75,8 @@ action_label
 - 主词保持书写顺序；该顺序在 transition 中表示时间方向；
 - 方向词紧跟 `turn`，否则紧跟最后一个主词；
 - 其他修饰词按 `CONTROLLED_VOCAB` 顺序排列；
+- `HANDS_VOCAB`（`hand0`/`hand1`/`hand2`）**最多一个**，多于一个硬失败；它收尾整个词表，
+  所以按序排列后天然落在最后（`attack, bow, hand2`）；不写 = 未指定（§13）；
 - 空标签表示无条件分支，必须走 `action_label_null_emb`，不能编码空文本。
 
 `STATE_VOCAB` 只用于识别候选主词，不等于「自动启用顺序编码」。
@@ -152,30 +159,32 @@ label_emb = sum(weight[token] * word_emb[token]) / sum(weight[token])
 head       = L2( mean(  本槽词向量，HEAD_1 词先过 R_B ) )
 direction  = L2( mean(  本槽词向量 ) )
 modifier   = L2( mean(  本槽词向量 ) )
+hands      = L2( 本槽唯一成员的词向量 )        （2026-09-11 起，§13）
 缺席的槽   = 零行（present 标记为 False），不重新归一化其他槽
-条件输入   = 三个通道按固定顺序拼接
+条件输入   = 四个通道按固定顺序拼接
 ```
 
 槽划分：`head` = `STATE_VOCAB` 成员，`direction` = `DIRECTION_VOCAB` 成员，
-`modifier` = 其余全部词。唯一实现是
+`hands` = `HANDS_VOCAB` 成员（至多一个），`modifier` = 其余全部词。唯一实现是
 [`assemble_slot_channels`](../data_loaders/truebones/truebones_utils/action_label_conditioning_contract.py)。
 
 它为什么能同时满足两边：
 
 - **轴保留是恒等式，不是超参**。head / direction 通道的输入只含本槽的词，标签从 2 词长到
   8 词，这两个通道逐位不变（实测最大漂移 0.0）。不存在需要在 0.15 和 1.0 之间权衡的常数。
-- **可分性由拼接给出**。三个通道各自进入 `action_label_projection` 第一层的一个分块
+- **可分性由拼接给出**。各通道各自进入 `action_label_projection` 第一层的一个分块
   （对拼接做一次 Linear 恒等于对每块做一次 Linear 再求和），所以每通道的相对尺度是**可学的**，
   离线不需要、也不应该替模型定一个预算。
 - **注入性**。`(group, {(word_id, role_id)})` 在 404 个条件点上唯一，碰撞是构造上不可能。
 - **可按 token 审计**。一个词只影响它所在的槽。
 
 槽内均值不会在当前词表上造成信息碰撞。定稿词向量的槽源秩为：head 64/64（32 个原始状态词
-+ 32 个 `R_B` 角色源）、direction 6/6、modifier 65/65。源向量线性无关意味着不同成员集合的
++ 32 个 `R_B` 角色源）、direction 6/6、modifier 62/62、hands 3/3（2026-09-11 前为
+modifier 65/65、无 hands 槽，总秩同为 135）。源向量线性无关意味着不同成员集合的
 归一化和不可能相同，并且存在一个线性 readout 能判断每个词是否在槽内；这个证明覆盖解析器允许的
 **全部非空槽组合**，包括总词数上限 8，而不是只覆盖语料中见过的组合。
 
-三个槽是互不重叠的拼接块，总可达子空间秩为 135，小于默认 `latent_dim=256`，所以第一层 Linear
+各槽是互不重叠的拼接块，总可达子空间秩为 135，小于默认 `latent_dim=256`，所以第一层 Linear
 可以在整个可达空间上保持单射。另做的数值诊断穷举完整 head（1024 种）和 direction（63 种）
 配置，以及当前语料上限的 ≤3 词 modifier 配置（45825 种）；它用于观察最近邻和数值间隔，不承担
 全域正确性证明。K-token 的信息优势因此只剩布局和时间局部化能力，见 §5.1。
@@ -195,20 +204,21 @@ cross-attention。为此 loader 的输出保持词级（§7），换表示时只
 
 ## 6. 训练前 geometry gate
 
-只对模型**改不回来**的性质设硬门；p95 / 最近邻中位数 / 有效秩是各向异性指标。三槽完整
+只对模型**改不回来**的性质设硬门；p95 / 最近邻中位数 / 有效秩是各向异性指标。四槽完整
 可达子空间秩为 135，紧随其后的 256 维 `nn.Linear` 足以在这个子空间上保持单射并重标度，
-因此这些指标只报告、不阻断。硬门与实测结果：
+因此这些指标只报告、不阻断。硬门与实测结果（2026-09-11 hands 轴迁移后重跑；括号内为
+2026-09-06 的旧值）：
 
 | 硬门 | 判据 | 定稿表示实测 |
 |---|---|---|
 | 碰撞 | 余弦 ≥ 0.999999 的不同标签对 = 0 | 0 |
-| 最坏近邻 | 不高于 baseline 同项 | 0.9559（baseline 0.9900） |
-| 反向 transition | 中位数 ≤ 0.50 | 0.015 |
+| 最坏近邻 | 不高于 baseline 同项 | 0.9504（baseline 0.9881；旧 0.9559） |
+| 反向 transition | 中位数 ≤ 0.50 | 0.012（旧 0.015） |
 | 通道漂移 | 追加修饰词后 head/direction 逐元素变化 = 0 | 0.0 |
 | 词表秩 | 满仿射秩 | raw 103 / 中心化 102 |
-| 槽源秩 | head / direction / modifier 源分别满秩 | 64 / 6 / 65，全部满秩 |
-| 投影宽度 | `latent_dim` ≥ 三槽总可达秩 | 256 ≥ 135 |
-| 键唯一 | `(group, {(word, role)})` 唯一 | 404/404 |
+| 槽源秩 | head / direction / modifier / hands 源分别满秩 | 64 / 6 / 62 / 3，全部满秩（旧 64/6/65） |
+| 投影宽度 | `latent_dim` ≥ 各槽总可达秩 | 256 ≥ 135 |
+| 键唯一 | `(group, {(word, role)})` 唯一 | 473/473（旧 404/404） |
 
 评测工具为
 [`evaluate_action_label_geometry.py`](../tools/evaluate_action_label_geometry.py)，完整指标、
@@ -686,3 +696,117 @@ head 轴保住 79%。
 - **`run, right` 要不要上 §3.5 的硬输入位** —— 判据成立了（§12.3），
   性价比没算，留给下一轮决定；
 - **`run, forward` 的相位离散** —— 现象记录在 §12.6，没有定位。
+
+---
+
+## 13. hands 轴：`weapon` + `1hand`/`2hand` → `hand0`/`hand1`/`hand2`（2026-09-11）
+
+### 13.1 问题
+
+推理时不写 `weapon` 也会生成持械姿势，而且**没有办法要一个空手的动作**。根因有两层：
+
+1. **词表没有"空手"这个值。** 旧轴只有 `weapon`（+ `1hand`/`2hand`）一个方向，缺席 =
+   未指定 = 该物种所有 clip 的边缘分布。对一个大半 clip 持械的物种，"idle" 的边缘分布就是持械。
+2. **标注本身不一致。** `weapon` 只写在 combat idle / combat locomotion 上；同一角色的
+   attack / hurt / die / block 一律没写（`KI_Warrior_Attack02` 是双手剑 slash，标签
+   `attack, slash`；`LH_Hero_THSwordIdle` = `idle`，而 `THSwordRun` =
+   `run, forward, weapon, 1hand`；`IAC_Caveman_Attack1Weapon` = `attack, right, punch`）。
+   所以"没有 weapon 的 clip"本来就是持械与空手的混合，不是空手集合。
+
+另外一个类别值要写两个 token（`weapon, 2hand`），既麻烦，又让两个 token 的共享语义成为
+整张表最坏的近邻对（预检文档 §5）。
+
+### 13.2 定稿
+
+```text
+HANDS_VOCAB = ("hand0", "hand1", "hand2")      # motion_labels.py，收尾 CONTROLLED_VOCAB
+hand0  双手空着
+hand1  一只手拿着东西（剑、火把、麻袋），另一只空着
+hand2  两只手都拿着东西：双手握持（大剑、步枪、拉开的弓、箱子）或一手一件（剑 + 盾）
+```
+
+- **语义是手部占用数，不是武器类别**（用户定稿）。剑 + 盾 = hand2，与步枪相同；匕首和火把都是
+  hand1；弓提在手边 hand1，拉开 hand2。走路时哪条胳膊在摆，由这个数决定。
+- 互斥，**至多一个**；`parse_action_label` 与 `action_label_slots` 都硬失败。
+- **不写 = 未指定**（边缘分布），与方向轴同一规则。`hand0` 是一个肯定陈述，不是默认值。
+- 动作用什么器具（`bow` / `gun` / `hammer` / `shield`）留在 block I，与 hands 词并列：
+  `attack, bow, hand2`。它们描述动作种类（拉弓、射击、敲打、盾击），不是手部状态。
+- **标注范围（用户定稿）：只补出现过持械 clip 的物种**（unitybundles 34 个，见 13.4），
+  这些物种的每条 clip 都给定 hand0/1/2，手部状态在 clip 内变化的（拔剑/收剑/举起/放下）留空。
+  其余物种（含全部 zoo / zoo_upgrade）不写。
+
+### 13.3 为什么是第四个槽通道，而不是 modifier 槽
+
+hands 词一旦补齐，会出现在有手物种**几乎每一条** clip 上。放进 modifier 槽，
+`attack, slash, hand2` 的 modifier 通道 = L2(mean(slash, hand2))：`slash` 的份额减半，
+而且 `attack, slash` 带不带 hand 词读数不同——这正是 §3.2 反对的稀释。单独一个通道：
+
+- head / direction / modifier 三个通道在加不加 hand 词时**逐位相同**
+  （`test_hands_channel_is_the_token_vector_and_leaves_the_modifier_channel_alone`）；
+- 该轴至多一个成员，所以通道就是该 token 的向量本身，模型只需分开三个点；
+- 词表变了 checkpoint 本来就要重训，多一个通道零额外成本。
+
+`ACTION_LABEL_SLOTS = ("head", "direction", "modifier", "hands")`，
+`action_label_projection` 第一层 `Linear(4 * 768, latent_dim)`；
+`ACTION_LABEL_PARSER_CONTRACT_VERSION` 1→2，`CKPT_VERSION` 7→8，v7 checkpoint 拒绝加载。
+
+### 13.4 T5 文本与几何
+
+三个 token 的 T5 文本是裸计数：`hand0` = "empty hands"，`hand1` = "one hand"，
+`hand2` = "both hands"。按预检的口径（同形状探针、词表均值中心化）实测：
+
+| 候选对 | 余弦 |
+|---|---:|
+| "one hand" / "both hands"（采用） | 0.527 |
+| "empty hands" / "one hand"、"empty hands" / "both hands"（采用） | 0.244 / 0.343 |
+| "one-handed weapon" / "two-handed weapon" | 0.868 |
+| "holding in one hand" / "holding in both hands" | 0.804 |
+| "weapon in one hand" / "weapon in both hands"（旧表） | 0.787 |
+
+共享锚短语（weapon / holding）是碰撞来源，与预检 §5 的结论一致；因为 hands 是独立通道，
+三个点线性可分即可，0.53 足够。迁移后重跑预检：GO，`slot/eos_keep/center_l2`，
+最坏近邻 0.9504（旧 0.9559），hands 槽 3 个配置最坏对 0.5245、成员 readout 间隔 +1.000，
+槽源秩 64 / 6 / 62 / 3 = 135，键唯一 473/473。新 sidecar
+`embedding_fingerprint = 202b0219…`，`conditioning_contract_fingerprint = 70c8ea6a…`。
+
+### 13.5 标注迁移
+
+迁移一次性完成（一次性工具 `tools/dataset_cleanup/migrate_hand_state_labels.py` 已删除）。
+每条 clip 的判定来源分三档：
+
+| 来源 | 含义 | 条数 |
+|---|---|---:|
+| `tag` | 旧标签已带计数（`1hand`/`2hand`），直接沿用；策略表与之冲突时打印并以旧标签为准 | 120 |
+| `name` | clip 名写明了道具状态（Weapon / 2HLong / Shield / Rifle / Torch / Axe …） | 155 |
+| `impl` | 器具词决定：拉弓必然双手 | 14 |
+| `pack` | **物种级默认**（源包惯例：RTS 单位武器不离手、KI 士兵包全程步枪…），无人逐条核过 | 412 |
+
+结果：unitybundles 685 行改动，hand0 173 / hand1 263 / hand2 249，17 条留空
+（拔剑、收剑、举起、放下、取放物），旧标签与策略无冲突。**`pack` 档 412 条需要过一遍**
+（工具已删，如需修正直接改 `action_labels.jsonl`）。评审 GIF 只渲染骨架、
+不带道具，raw GLB 里也没有道具 mesh，所以这一档只能靠对源包的了解。
+
+同包里显然持械但从没打过旧标签、因此不在范围内的物种（`TTR_LightInfantry`、
+`TTR_LightCavalry`、`TNR_CavalryMage`、`MLH_Footman`、`MLH_Horseman`、`MLH_Mage`、
+`KI_Slinger`、`MLS_DemonHunter`…）没有动；要纳入，直接在 `action_labels.jsonl`
+补对应物种的 hand 状态（工具已删）。
+
+顺手修的一处旧缺陷：`Dog-2_Swimturn` / `SwimTurn2`（zoo，locomotion）拼的是
+`turn, left, swim`，而 unitybundles 同 group 的 `MB_TigerDrago_SwimL` 拼 `swim, turn, left`。
+主词序一致性校验是**按文件**跑的，跨库不查，预检的键唯一硬门才把它抓出来（迁移前就是 NO_GO）。
+已改成 `swim, turn, left/right`。
+
+### 13.6 推理
+
+```text
+--action_label "idle, hand0"          空手 idle
+--action_label "walk, forward, hand2" 双手持物前进
+--action_label "attack, bow, hand2"   拉弓
+--action_label "idle"                 手部状态未指定（该物种的边缘分布）
+```
+
+### 13.7 待办
+
+- **重训**（词表、槽布局、CKPT v8）；`merged_locomotion_v7` 及之前的 checkpoint 全部拒绝。
+- `pack` 档 395 条人工过一遍（13.5）。
+- 是否把同包未标物种纳入范围（13.5）。

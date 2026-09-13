@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_locomotion_v7
+set RUN_NAME=merged_locomotion_v12
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize
@@ -28,7 +28,8 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 	--action_label_cond ^
 	--species_cond ^
 	--species_joint_cond ^
-	--loop_cond_prob 0.5 ^
+	--loop_cond_prob 0.7 ^
+	--motion_speed_aug 1.3 ^
 	--cross_limb_dim 128 ^
 	--cross_limb_last_n 4 ^
 	--diffusion_steps 100 ^
@@ -40,6 +41,7 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 	--ema_rate 0.995 ^
 	--num_steps 200000 ^
 	--dropout_prob 0.1 ^
+	--action_label_cfg_drop_prob 0.3 ^
 	--joint_mask_prob 0.3 ^
 	--joint_mask_budget 0.15 ^
 	--unreliable_mask_drop_prob 0.2 ^
@@ -47,8 +49,10 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 	--temporal_span_mask_prob 0.3 ^
 	--temporal_span_seam_loss_weight 0.2 ^
 	--lambda_loop_wrap 0.04 ^
+	--lambda_loop_root_closure 0.05 ^
 	--lambda_vel 0.2 ^
 	--lambda_geo 0.1 ^
+	--lambda_fk 0.5 ^
 	--motion_cache_size 32768 ^
 	--amp_dtype bf16 ^
 	--main_process_prefetch_batches 64 ^

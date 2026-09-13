@@ -96,7 +96,7 @@ def _joint_name_reference_bank(reference_cond):
         if embeddings.shape[0] != len(entry_texts):
             continue
         tokens_by_species[str(object_type)] = _token_counts(entry_texts)
-        actions_by_species[str(object_type)] = len(object_cond.get('loop_period_by_action') or {})
+        actions_by_species[str(object_type)] = len(object_cond.get('action_words') or ())
         for joint_index, text in enumerate(entry_texts):
             vectors.append(embeddings[joint_index])
             texts.append(str(text))

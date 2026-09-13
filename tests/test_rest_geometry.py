@@ -17,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from data_loaders.truebones.truebones_utils import rest_geometry as rg  # noqa: E402
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa: E402
 
 
 # root -> spine -> head -> {nub (leaf), ear (leaf)}; spine also -> tail (leaf).
@@ -41,7 +42,7 @@ def _fk(offsets, parents):
 
 def _entry():
     rest_pos = _fk(OFFSETS, PARENTS)
-    rest_pose = np.zeros((len(PARENTS), 13), dtype=np.float32)
+    rest_pose = np.zeros((len(PARENTS), FEATS_LEN), dtype=np.float32)
     rest_pose[:, 0:3] = rest_pos
     return {
         "parents": PARENTS.copy(),
@@ -56,7 +57,7 @@ def _clip(entry, frames=20, seed=0):
     """A clip that collapses the nub, halves the ear, and animates the tail."""
     rng = np.random.default_rng(seed)
     rest_pos = np.asarray(entry["rest_pos_ric_hml"], dtype=np.float64)
-    motion = np.zeros((frames, len(PARENTS), 13), dtype=np.float32)
+    motion = np.zeros((frames, len(PARENTS), FEATS_LEN), dtype=np.float32)
     motion[:, :, 0:3] = rest_pos[None, :, :]
     motion[:, 3, 0:3] = rest_pos[2]                                  # nub -> onto Head
     motion[:, 4, 0:3] = rest_pos[2] + (rest_pos[4] - rest_pos[2]) * 0.5  # ear -> half
@@ -146,7 +147,7 @@ class RestGeometryTest(unittest.TestCase):
         offsets[n_spine + 1] = [0.0, 0.2, 0.0]   # nub, collapsed by the clips
         offsets[n_spine + 2] = [3.0, 0.0, 0.0]   # weapon, parked off the body
         rest_pos = _fk(offsets, parents)
-        rest_pose = np.zeros((len(parents), 13), dtype=np.float32)
+        rest_pose = np.zeros((len(parents), FEATS_LEN), dtype=np.float32)
         rest_pose[:, 0:3] = rest_pos
         entry = {
             "parents": parents, "offsets": offsets, "rest_pose": rest_pose,
@@ -154,7 +155,7 @@ class RestGeometryTest(unittest.TestCase):
             "joints_names": names,
         }
 
-        clip = np.zeros((12, len(parents), 13), dtype=np.float32)
+        clip = np.zeros((12, len(parents), FEATS_LEN), dtype=np.float32)
         clip[:, :, 0:3] = rest_pos[None, :, :]
         clip[:, n_spine + 1, 0:3] = rest_pos[n_spine]                       # nub collapsed
         parent_pos = rest_pos[n_spine]
@@ -169,7 +170,7 @@ class RestGeometryTest(unittest.TestCase):
         entry = _entry()
         self.assertIsNone(rg.finalize_rest_vs_clip(entry, None))
         # A clip with too few joints is skipped rather than raising.
-        self.assertIsNone(rg.accumulate_rest_vs_clip(entry, np.zeros((4, 2, 13), np.float32)))
+        self.assertIsNone(rg.accumulate_rest_vs_clip(entry, np.zeros((4, 2, 12), np.float32)))
         self.assertEqual(rg.reseat_candidates(entry, None), [])
         self.assertEqual(rg.apply_reseat(entry, []), 0)
 

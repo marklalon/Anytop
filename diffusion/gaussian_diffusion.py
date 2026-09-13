@@ -166,9 +166,12 @@ class GaussianDiffusion:
         lambda_geo=0.,
         lambda_vel=0.,
         lambda_loop_wrap=0.,
+        lambda_loop_root_closure=0.,
         lambda_bone=0.,
+        lambda_fk=0.,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
+        renoise_same_level_prob=1.0,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -177,13 +180,27 @@ class GaussianDiffusion:
         self.lambda_geo = lambda_geo
         self.lambda_vel = lambda_vel
         self.lambda_loop_wrap = float(lambda_loop_wrap)
+        self.lambda_loop_root_closure = float(lambda_loop_root_closure)
         self.lambda_bone = float(lambda_bone)
+        self.lambda_fk = float(lambda_fk)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
+        self.renoise_same_level_prob = float(renoise_same_level_prob)
+        if not 0.0 <= self.renoise_same_level_prob <= 1.0:
+            raise ValueError(
+                "renoise_same_level_prob must be in [0, 1], got "
+                f"{self.renoise_same_level_prob}"
+            )
         if self.lambda_loop_wrap < 0.0:
             raise ValueError(f"lambda_loop_wrap must be >= 0, got {self.lambda_loop_wrap}")
+        if self.lambda_loop_root_closure < 0.0:
+            raise ValueError(
+                f"lambda_loop_root_closure must be >= 0, got {self.lambda_loop_root_closure}"
+            )
         if self.lambda_bone < 0.0:
             raise ValueError(f"lambda_bone must be >= 0, got {self.lambda_bone}")
+        if self.lambda_fk < 0.0:
+            raise ValueError(f"lambda_fk must be >= 0, got {self.lambda_fk}")
         if self.temporal_span_seam_loss_weight < 0.0:
             raise ValueError(
                 "temporal_span_seam_loss_weight must be >= 0, got "
@@ -409,7 +426,7 @@ class GaussianDiffusion:
         loss_val = loss / non_zero_elements
         return loss_val
 
-    def _coerce_playspeed_batch(self, value, batch_size, device, dtype):
+    def _coerce_resample_speed_batch(self, value, batch_size, device, dtype):
         if value is None:
             return th.ones(batch_size, device=device, dtype=dtype)
         value = th.as_tensor(value, device=device, dtype=dtype).reshape(-1)
@@ -417,33 +434,73 @@ class GaussianDiffusion:
             value = value.expand(batch_size)
         elif value.numel() != batch_size:
             raise ValueError(
-                f"playspeed_cond has length {value.numel()} but expected {batch_size}."
+                f"resample_speed_cond has length {value.numel()} but expected {batch_size}."
             )
         if not th.isfinite(value).all():
-            raise ValueError("playspeed_cond must be finite")
+            raise ValueError("resample_speed_cond must be finite")
         if bool((value <= 0).any()):
-            raise ValueError("playspeed_cond must be positive")
+            raise ValueError("resample_speed_cond must be positive")
         return value
 
     def _physical_velocity_step_scale(self, y, batch_size, n_frames, device, dtype):
         if n_frames <= 1:
             return th.ones(batch_size, device=device, dtype=dtype)
-        playspeed = self._coerce_playspeed_batch(
-            y.get('playspeed_cond') if isinstance(y, dict) else None,
+        resample_speed = self._coerce_resample_speed_batch(
+            y.get('resample_speed_cond') if isinstance(y, dict) else None,
             batch_size,
             device,
             dtype,
         )
-        source_frames = (playspeed * float(n_frames)).clamp_min(1.0)
+        source_frames = (resample_speed * float(n_frames)).clamp_min(1.0)
         return ((source_frames - 1.0) / float(n_frames - 1)).clamp_min(0.0)
+
+    def _root_relative_velocity(self, vel, n_joints, y):
+        """Velocity channels re-expressed in the frame the RIC positions live in.
+
+        ``get_rifke`` subtracts the translation root's world X/Z from EVERY
+        joint's position (Y is left alone), while the velocity channel is each
+        joint's WORLD delta. So the delta a joint's stored RIC path shows is
+        its world velocity minus the root's XZ velocity:
+
+            ric[t+1] - ric[t] == vel[t] - vel_root[t]     (X and Z only)
+
+        Comparing position deltas against the raw world velocity therefore has
+        a NON-ZERO residual on the ground truth itself -- exactly the root's
+        XZ velocity, i.e. the in-place sway the root_xz refactor deliberately
+        keeps in the data (p90 ~0.017 on loop clips, against a per-joint XZ
+        velocity signal of p90 ~0.032). Subtracting the root's XZ velocity
+        makes the residual identically zero on real data for every joint, the
+        root row included (its RIC XZ is structurally zero and vel - vel == 0),
+        so no channel mask is needed on top.
+
+        ``vel``: [bs, njoints, 3, nframes]. A translation root index outside
+        the sample's real joints leaves that sample's velocity untouched.
+        """
+        batch_size, max_joints = vel.shape[0], vel.shape[1]
+        root_indices = self._coerce_index_batch(
+            (y or {}).get('translation_root_index'), batch_size, vel.device
+        )
+        n_joints_long = th.as_tensor(
+            n_joints, device=vel.device, dtype=th.long
+        ).reshape(-1).clamp(min=0, max=max_joints)
+        root_valid = (
+            (root_indices >= 0) & (root_indices < n_joints_long)
+        ).to(dtype=vel.dtype)
+        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
+        batch_indices = th.arange(batch_size, device=vel.device)
+        xz_only = vel.new_tensor([1.0, 0.0, 1.0]).view(1, 3, 1)
+        root_xz_vel = (
+            vel[batch_indices, root_indices_clamped] * xz_only * root_valid.view(batch_size, 1, 1)
+        )                                                       # [bs, 3, nframes]
+        return vel - root_xz_vel.unsqueeze(1)
 
     def velocity_consistency_loss(self, model_output, spat_mask, n_joints, y=None):
         # model_output: [bs, njoints, nfeats, nframes] (denormalized)
         # vel[t] carries physical-frame units. Scale it into the current
         # resampled window step before comparing with position deltas.
-        batch_size, _max_joints, _n_feats, n_frames = model_output.shape
+        batch_size, max_joints, _n_feats, n_frames = model_output.shape
         pos = model_output[:, :, 0:3, :]    # [bs, njoints, 3, nframes]
-        vel = model_output[:, :, 9:12, :]   # [bs, njoints, 3, nframes]
+        vel = self._root_relative_velocity(model_output[:, :, 9:12, :], n_joints, y)
         finite_diff = pos[:, :, :, 1:] - pos[:, :, :, :-1]  # [bs, njoints, 3, nframes-1]
         step_scale = self._physical_velocity_step_scale(
             y or {},
@@ -455,8 +512,8 @@ class GaussianDiffusion:
         pred_vel = vel[:, :, :, :-1] * step_scale              # [bs, njoints, 3, nframes-1]
         loss = (finite_diff - pred_vel) ** 2
         valid_joints = spat_mask.float().transpose(1, 3)        # [bs, njoints, 1, 1]
-        valid = valid_joints.expand(-1, -1, -1, loss.shape[-1])
-        loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
+        valid = valid_joints.expand(-1, -1, 3, loss.shape[-1])
+        loss_val = (loss * valid).sum() / valid.sum().clamp(min=1)
         return loss_val
 
     def _masked_smooth_l1(self, x, mask, beta=0.1):
@@ -558,6 +615,166 @@ class GaussianDiffusion:
         valid_bt = bone_valid.unsqueeze(-1).float().expand(-1, -1, n_frames)
         return self._masked_smooth_l1(rel, valid_bt)
 
+    # Skip bone-frames whose GT rotation already disagrees with the GT position
+    # channel by more than this: Biped rigs key translations on Spine/Clavicle/
+    # Thigh, props are position-driven, and helpers may sit off the cond rest.
+    # None of it is expressible via rotations. ~2.6% (unitybundles) /
+    # ~4.8% (truebones) of bone-frames drop out.
+    FK_GT_AGREEMENT_DEG = 5.0
+    # A GT bone shorter than this fraction of its rest length has no direction
+    # (Biped helpers collapsed onto their parent but with a non-zero rest offset).
+    FK_DEGENERATE_LENGTH_RATIO = 0.1
+
+    def _padded_parents(self, y, batch_size, max_joints, device):
+        """Padded ``(parents_idx [bs, J] long, parent_is_bone [bs, J] bool, max_depth)``.
+
+        Root/padding rows get parent 0 and ``parent_is_bone=False``. ``max_depth``
+        is the longest root-to-leaf chain in the batch, bounding the chain-product
+        iterations ``_chain_global_rotations`` needs.
+        """
+        parents_list = (y or {}).get('parents')
+        if parents_list is None:
+            raise ValueError(
+                "fk_direction_loss requires y['parents'] (per-sample parent arrays "
+                "from the collate); none were provided."
+            )
+        parents_idx = th.zeros(batch_size, max_joints, dtype=th.long, device=device)
+        parent_is_bone = th.zeros(batch_size, max_joints, dtype=th.bool, device=device)
+        max_depth = 0
+        for b, p in enumerate(parents_list):
+            p_np = np.asarray(p).reshape(-1).astype(np.int64)
+            n = min(int(p_np.shape[0]), max_joints)
+            p_np = p_np[:n]
+            p_t = th.as_tensor(p_np, dtype=th.long, device=device)
+            parents_idx[b, :n] = p_t.clamp(min=0)
+            parent_is_bone[b, :n] = p_t >= 0
+            # Parents are not guaranteed to precede children; walk each chain up.
+            for j in range(n):
+                par = int(p_np[j])
+                d = 0
+                while 0 <= par < n and d < n:
+                    d += 1
+                    par = int(p_np[par])
+                max_depth = max(max_depth, d)
+        return parents_idx, parent_is_bone, max_depth
+
+    @staticmethod
+    def _chain_global_rotations(local_rot, parents_idx, parent_is_bone, max_depth):
+        """Global rotation of every joint from its own-local rotations.
+
+        ``local_rot``: [bs, T, J, 3, 3] with ``G[j] = G[parent] @ R[j]``,
+        ``G[root] = R[root]``. Iterating ``G <- G[parent] @ R`` ``max_depth``
+        times converges to the full chain product without a per-sample topological
+        order (the root stays pinned, so short chains terminate). One gather + one
+        batched 3x3 matmul per iteration, so a 30-deep rig is ~60 kernels, not one
+        per joint.
+        """
+        bs, n_frames, max_joints = local_rot.shape[:3]
+        gather_idx = parents_idx.view(bs, 1, max_joints, 1, 1).expand(-1, n_frames, -1, 3, 3)
+        is_bone = parent_is_bone.view(bs, 1, max_joints, 1, 1)
+        global_rot = local_rot
+        for _ in range(int(max_depth)):
+            parent_global = th.gather(global_rot, 2, gather_idx)
+            global_rot = th.where(is_bone, parent_global @ local_rot, local_rot)
+        return global_rot
+
+    def fk_direction_loss(self, pred_physical, target_physical, spat_mask, y):
+        """Global-rotation supervision through bone directions.
+
+        ``l_simple`` and ``geodesic_loss`` grade each joint's LOCAL rotation in
+        isolation, so a hip error costs the same as a fingertip one -- but the
+        leg's overall direction is only graded through the position channel.
+        Measured, FK(rot) and pos disagree by 6-15 degrees on the core skeleton.
+
+        This chains the PREDICTED local rotations into global rotations
+        (``_chain_global_rotations``), points each bone's rest vector with its
+        parent's predicted global rotation, and compares that unit direction
+        with the same bone's unit direction in the GT position channel:
+
+            loss = mean over graded bone-frames of || G_p(pred) u_j - d_j(GT) ||^2
+                 = 2 (1 - cos angle)
+
+        Direction only: bone length stays with the position channel, so animated
+        bone stretch is untouched. Each bone is anchored on its GT parent (not on
+        chained predicted positions), so a masked bone doesn't contaminate its
+        descendants; gradients still reach every ancestor via the chain product.
+
+        Bone-frames are weighted 0 for padding, a missing/degenerate rest length,
+        a collapsed GT bone (``FK_DEGENERATE_LENGTH_RATIO``), or a GT that is itself
+        FK-inconsistent beyond ``FK_GT_AGREEMENT_DEG``.
+
+        Returns ``fk_loss`` plus diagnostics ``fk_angle_deg`` (mean FK-vs-position
+        angle on graded bones, the acceptance metric) and ``fk_gt_masked_frac``
+        (fraction of valid bone-frames the GT gate removed).
+        """
+        bs, max_joints, _n_feats, n_frames = pred_physical.shape
+        device = pred_physical.device
+        parents_idx, parent_is_bone, max_depth = self._padded_parents(y, bs, max_joints, device)
+
+        rest_pos = (y or {}).get('rest_pos_ric_hml')
+        if rest_pos is None:
+            rest_physical = (y or {}).get('rest_pose_physical')
+            if rest_physical is not None:
+                rest_pos = rest_physical[..., 0:3]
+        if rest_pos is None:
+            raise ValueError(
+                "fk_direction_loss requires physical rest positions "
+                "(y['rest_pos_ric_hml'] or y['rest_pose_physical']); y['rest_pose'] is "
+                "the canonical rest feature (zero position residual at rest) and "
+                "carries no bone vectors."
+            )
+        if not th.is_tensor(rest_pos):
+            rest_pos = th.as_tensor(rest_pos, dtype=th.float32)
+        rest_pos = rest_pos.to(device=device, dtype=th.float32)                       # [bs, J, 3]
+
+        gather_j3 = parents_idx.view(bs, max_joints, 1).expand(-1, -1, 3)
+        rest_vec = rest_pos - th.gather(rest_pos, 1, gather_j3)                       # [bs, J, 3]
+        rest_len = rest_vec.norm(dim=-1)                                              # [bs, J]
+        rest_dir = rest_vec / rest_len.clamp_min(1e-8).unsqueeze(-1)
+
+        # [bs, T, J, 3, 3]; the safe 6D->matrix keeps near-collinear inputs finite.
+        rot_pred = rotation_6d_to_matrix_safe(pred_physical.permute(0, 3, 1, 2)[..., 3:9].float())
+        rot_tgt = rotation_6d_to_matrix_safe(target_physical.permute(0, 3, 1, 2)[..., 3:9].float())
+        global_pred = self._chain_global_rotations(rot_pred, parents_idx, parent_is_bone, max_depth)
+        with th.no_grad():
+            global_tgt = self._chain_global_rotations(rot_tgt, parents_idx, parent_is_bone, max_depth)
+
+        gather_bt = parents_idx.view(bs, 1, max_joints, 1, 1).expand(-1, n_frames, -1, 3, 3)
+        parent_global_pred = th.gather(global_pred, 2, gather_bt)                      # [bs, T, J, 3, 3]
+        parent_global_tgt = th.gather(global_tgt, 2, gather_bt)
+        rest_dir_bt = rest_dir.unsqueeze(1).unsqueeze(-1)                             # [bs, 1, J, 3, 1]
+        dir_pred = (parent_global_pred @ rest_dir_bt).squeeze(-1)                     # [bs, T, J, 3]
+        dir_tgt_fk = (parent_global_tgt @ rest_dir_bt).squeeze(-1)
+
+        pos_tgt = target_physical[:, :, 0:3, :].permute(0, 3, 1, 2).float()          # [bs, T, J, 3]
+        gather_pos = parents_idx.view(bs, 1, max_joints, 1).expand(-1, n_frames, -1, 3)
+        bone_tgt = pos_tgt - th.gather(pos_tgt, 2, gather_pos)
+        len_tgt = bone_tgt.norm(dim=-1)                                               # [bs, T, J]
+        dir_tgt = bone_tgt / len_tgt.clamp_min(1e-8).unsqueeze(-1)
+
+        joint_valid = spat_mask.float().transpose(1, 3).reshape(bs, max_joints) > 0.5
+        bone_valid = joint_valid & parent_is_bone & (rest_len > 1e-4)                 # [bs, J]
+        candidate = bone_valid.unsqueeze(1).expand(-1, n_frames, -1)                  # [bs, T, J]
+        nondegenerate = len_tgt > self.FK_DEGENERATE_LENGTH_RATIO * rest_len.unsqueeze(1)
+        gt_cos = (dir_tgt_fk * dir_tgt).sum(dim=-1)
+        gt_consistent = gt_cos > math.cos(math.radians(self.FK_GT_AGREEMENT_DEG))
+        graded = candidate & nondegenerate & gt_consistent
+        weight = graded.to(dtype=th.float32)
+        denom = weight.sum().clamp(min=1.0)
+
+        err = ((dir_pred - dir_tgt) ** 2).sum(dim=-1)                                 # 2 (1 - cos)
+        loss = (err * weight).sum() / denom
+
+        with th.no_grad():
+            cos_pred = (dir_pred * dir_tgt).sum(dim=-1).clamp(-1.0, 1.0)
+            angle_deg = (th.rad2deg(th.acos(cos_pred)) * weight).sum() / denom
+            masked_frac = 1.0 - denom / candidate.to(th.float32).sum().clamp(min=1.0)
+        return {
+            'fk_loss': loss,
+            'fk_angle_deg': angle_deg,
+            'fk_gt_masked_frac': masked_frac,
+        }
+
     def _coerce_bool_batch(self, value, batch_size, device, default=False):
         if value is None:
             return th.full((batch_size,), bool(default), device=device, dtype=th.bool)
@@ -599,9 +816,7 @@ class GaussianDiffusion:
                 'loop_wrap_rot': zero,
                 'loop_wrap_terminal_vel': zero,
             }
-        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
-        loop_full_cycle = self._coerce_bool_batch(y.get('loop_full_cycle'), batch_size, device, default=False)
-        active = is_loop & loop_full_cycle
+        active = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
         n_joints_long = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1)
         root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
 
@@ -654,8 +869,15 @@ class GaussianDiffusion:
                 - last_frame[:, :, 0:3, 0]
                 - last_frame[:, :, 9:12, 0] * step_scale
             )
-            terminal_per_sample = ((terminal_residual ** 2) * joint_weight[:, :, None]).sum(dim=(1, 2))
-            terminal_per_sample = terminal_per_sample / (joint_weight.sum(dim=1) * 3.0).clamp(min=1.0)
+            # Same mask as pose_weight: the root's RIC X/Z are structurally zero,
+            # so the residual collapses to last_vel*step_scale there -- a pull of
+            # the terminal root XZ velocity toward zero, against the gait's
+            # genuine last step. Mask out.
+            terminal_weight = joint_weight[:, :, None].expand(-1, -1, 3).clone()
+            terminal_weight[batch_indices, root_indices_clamped, 0] *= 1.0 - root_valid
+            terminal_weight[batch_indices, root_indices_clamped, 2] *= 1.0 - root_valid
+            terminal_per_sample = ((terminal_residual ** 2) * terminal_weight).sum(dim=(1, 2))
+            terminal_per_sample = terminal_per_sample / terminal_weight.sum(dim=(1, 2)).clamp(min=1.0)
             terminal_per_sample = th.where(active_valid, terminal_per_sample, th.zeros_like(terminal_per_sample))
             terminal_vel_loss = (terminal_per_sample * active_weight).sum() / active_denom
 
@@ -666,6 +888,68 @@ class GaussianDiffusion:
             'loop_wrap_rot': rot_loss,
             'loop_wrap_terminal_vel': terminal_vel_loss,
         }
+
+    def loop_root_xz_closure_loss(self, model_output, y, n_joints):
+        """Full-cycle closure of the translation root's XZ velocity on loop samples.
+
+        The root's world XZ path is carried ONLY by its velocity channels
+        (ch9/ch11 -- its RIC ch0/ch2 are structurally zero) and the exporter
+        integrates them. A loop clip's terminal velocity row is the wrap delta
+        ``pos[0] - pos[-1]`` (features._compute_terminal_local_velocity, kept by
+        the circular roll / tile / resample in dataset._prepare_sample), so on
+        every loop training target the T root velocity rows sum to exactly zero
+        (|sum| <= 2e-16 on all 2629 loop clips of the three datasets).
+
+        Nothing else supervises that integral: ``l_simple`` is per-frame and
+        blind to a DC bias of ~1% of the velocity std, while over a cycle that
+        bias IS the seam pop (v7 --loop samples drifted ~0.01 per cycle, more
+        than the root's own in-cycle sway, all in the same direction -- the
+        pooled canonical velocity mean decoded back into the root channels).
+        ``loop_wrap_loss`` masks the root's ch0/ch2 for the pose and terminal
+        terms, so the root's XZ closure was the one loop invariant left open.
+
+        The constraint is linear in the output, so the posterior-mean x0
+        prediction can satisfy it at every timestep (E[sum v] = sum E[v] = 0);
+        unlike a geodesic term the weight carries no bias cost. It does carry
+        an optimization cost: one scalar per sample pushes T*2 elements, and
+        on the converged v7 weights lambda=0.1 already matches l_simple's
+        gradient norm at t=10 while 1.0 is ~12x it -- hence the 0.05-0.2 range
+        on --lambda_loop_root_closure.
+
+        Returns the squared per-cycle closure ``||sum_t vel_xz[t] * step||^2``
+        in physical units, averaged over the active loop samples, plus the
+        mean closure magnitude ``loop_root_xz_drift`` (the seam pop, in the
+        same units as the dataset's LOOP_DETECTION_ROOT_XZ_TOLERANCE) as a
+        metric to read against the weight.
+        """
+        batch_size, max_joints, n_feats, n_frames = model_output.shape
+        device = model_output.device
+        zero = model_output.new_zeros(())
+        if n_frames < 2 or n_feats < 12:
+            return {'loop_root_xz_closure': zero, 'loop_root_xz_drift': zero}
+        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
+        valid_joints = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1).clamp(min=0, max=max_joints)
+        root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
+        root_valid = (root_indices >= 0) & (root_indices < valid_joints)
+        active_valid = is_loop & root_valid
+        active_weight = active_valid.to(dtype=model_output.dtype)
+        active_denom = active_weight.sum().clamp(min=1.0)
+
+        step_scale = self._physical_velocity_step_scale(
+            y, batch_size, n_frames, device, model_output.dtype,
+        ).view(batch_size, 1)
+        batch_indices = th.arange(batch_size, device=device)
+        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
+        root_vel_xz = model_output[batch_indices, root_indices_clamped][:, [9, 11], :]  # [bs, 2, T]
+        # Every row, the terminal one included: that is the identity the
+        # stored tensors satisfy, and summing the visible rows alone would
+        # add a pull of the terminal row toward zero on top.
+        closure = root_vel_xz.sum(dim=-1) * step_scale                                 # [bs, 2]
+        closure_sq = (closure ** 2).sum(dim=-1)
+        closure_sq = th.where(active_valid, closure_sq, th.zeros_like(closure_sq))
+        loss = (closure_sq * active_weight).sum() / active_denom
+        drift = (th.sqrt(closure_sq) * active_weight).sum() / active_denom
+        return {'loop_root_xz_closure': loss, 'loop_root_xz_drift': drift}
 
     def q_mean_variance(self, x_start, t):
         """
@@ -1533,8 +1817,9 @@ class GaussianDiffusion:
         reliability at the model input, not to hide tokens from attention.
         The selected joints / frames keep participating in attention; only
         their x_t features are replaced by q_sample(x_0, t_random), with
-        ``t_random`` drawn from ``[t, T)`` so the flagged region is never
-        cleaner than the rest -- see ``_sample_renoise_timesteps``.
+        ``t_random`` either equal to ``t`` (same level, fresh noise) or drawn
+        from ``[t, T)`` -- never below ``t``, so the flagged region is never
+        cleaner than the rest. See ``_sample_renoise_timesteps``.
 
         Whether ``y`` carries ``'cross_limb_unreliable_mask'`` follows the
         samplers: they return ``None`` only when the feature is off (or in eval
@@ -1626,26 +1911,42 @@ class GaussianDiffusion:
     def _sample_renoise_timesteps(self, t, device):
         """Draw the independent timestep the flagged cells are re-noised at.
 
-        Uniform on ``[t, T)``: a flagged region only ever carries LESS
-        information about x_0 than its surroundings. That one-sidedness is not
-        cosmetic -- it is the only direction either consumer of the flag ever
-        sees at inference. Inpainting clamps the known region to the reference
-        at the correct level (``_inpaint_project``) and leaves the free region
-        holding the model's own half-formed guess; img2img repair likewise has
-        the damaged region carrying less usable signal than the rest. Drawing
-        from ``[0, T)`` instead would, half the time, mark a region that is
-        *cleaner* than its surroundings as unreliable -- a combination that
-        occurs nowhere at inference, that pulls the learned
-        ``reliability_bias`` toward zero by making the flag ambiguous, and that
-        directly opposes what mask-dropped steps are meant to teach.
+        A mixture of two branches, chosen per sample with
+        ``renoise_same_level_prob``:
 
-        The draw is one on-device ``rand`` (no host sync) and degenerates to
-        ``t`` as ``t`` approaches ``T``, which is correct: at near-pure noise
-        there is nothing left to degrade.
+        * same-level (``t_random = t``): the flagged region is re-drawn with
+          fresh noise at the SAME level as the rest of the sample. Its one-step
+          marginal is the plain ``q(x_t | x_0)``, so the flag is decoupled from
+          "much noisier than the surroundings". That is the regime every
+          inpainting step actually presents: the clamped region is the
+          reference at the current level (``_inpaint_project``), the free
+          region is the reverse process's own state at that same nominal level,
+          and with ``skip_timesteps`` the first step's free region is the
+          reference at that level too. Without this branch the flag and a
+          large extra noise gap are perfectly correlated in training
+          (``E[t_random - t] ~ T/4`` for uniform ``t``), and once the mask is
+          visible to the whole trunk (``unreliable_embedding``) the model can
+          read the flag as "discard" rather than "may be less reliable".
+        * hard (uniform on ``[t, T)``): the flagged region carries strictly
+          LESS information about x_0 than its surroundings, which trains the
+          repair of severe local damage from reliable context. Never below
+          ``t``: a region that is *cleaner* than its surroundings yet flagged
+          occurs nowhere at inference, and would pull ``reliability_bias``
+          toward zero by making the flag ambiguous.
+
+        Both draws are on-device ``rand`` (no host sync); the hard branch
+        degenerates to ``t`` as ``t`` approaches ``T``, which is correct: at
+        near-pure noise there is nothing left to degrade.
         """
         span = (self.num_timesteps - t).clamp(min=1).to(th.float32)
         offset = (th.rand(t.shape, device=device, dtype=th.float32) * span).to(t.dtype)
-        return (t + offset).clamp(max=self.num_timesteps - 1)
+        t_hard = (t + offset).clamp(max=self.num_timesteps - 1)
+        if self.renoise_same_level_prob <= 0.0:
+            return t_hard
+        if self.renoise_same_level_prob >= 1.0:
+            return t.clone()
+        same_level = th.rand(t.shape, device=device) < self.renoise_same_level_prob
+        return th.where(same_level, t, t_hard)
 
     @staticmethod
     def _unwrap_model_for_training_hooks(model):
@@ -1795,6 +2096,14 @@ class GaussianDiffusion:
                     )
                     terms["loss"] = terms["loss"] + self.lambda_bone * terms["bone_loss"]
 
+                if self.lambda_fk > 0.:
+                    fk_terms = self.fk_direction_loss(
+                        model_output_physical, target_physical,
+                        joints_padding_mask_fp32, y_for_decode,
+                    )
+                    terms.update(fk_terms)
+                    terms["loss"] = terms["loss"] + self.lambda_fk * terms["fk_loss"]
+
                 if self.lambda_loop_wrap > 0.0:
                     y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
                     loop_terms = self.loop_wrap_loss(
@@ -1804,6 +2113,23 @@ class GaussianDiffusion:
                     )
                     terms.update(loop_terms)
                     terms["loss"] = terms["loss"] + self.lambda_loop_wrap * terms["loop_wrap_loss"]
+
+                if self.lambda_loop_wrap > 0.0 or self.lambda_loop_root_closure > 0.0:
+                    # Computed whenever loop supervision is on, so a run with
+                    # lambda_loop_root_closure=0 still logs loop_root_xz_drift
+                    # as the baseline the weighted run is read against.
+                    y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
+                    closure_terms = self.loop_root_xz_closure_loss(
+                        model_output_physical,
+                        y,
+                        actual_joints,
+                    )
+                    terms.update(closure_terms)
+                    if self.lambda_loop_root_closure > 0.0:
+                        terms["loss"] = (
+                            terms["loss"]
+                            + self.lambda_loop_root_closure * terms["loop_root_xz_closure"]
+                        )
 
         else:
             raise NotImplementedError(self.loss_type)

@@ -13,9 +13,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT  # noqa: E402
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from sample.generate import (  # noqa: E402
-    _close_loop_root_xz_via_velocity,
+    _zero_root_ric_xz,
     _contiguous_frame_runs,
     _finalize_output_lengths,
     _map_frame_ranges_to_internal,
@@ -68,7 +69,7 @@ def _make_cond_entry() -> dict:
     }
 
 
-def _make_full_cond_entry(n_joints: int, feature_len: int = 13) -> dict:
+def _make_full_cond_entry(n_joints: int, feature_len: int = 12) -> dict:
     parents = np.array([-1] + list(range(n_joints - 1)), dtype=np.int64)
     return {
         "joints_names": [f"Joint{i}" for i in range(n_joints)],
@@ -106,20 +107,41 @@ def test_map_frame_ranges_to_internal_preserves_contiguous_spans() -> None:
     assert _map_frame_ranges_to_internal("0-119", 120, 60) == "0-59"
 
 
-def test_finalize_output_lengths_returns_frames_and_playspeed() -> None:
-    requested, target, playspeed = _finalize_output_lengths(
+def test_finalize_output_lengths_returns_frames_and_resample_speed() -> None:
+    requested, target, resample_speed = _finalize_output_lengths(
         requested_frames=90, min_length=20, internal_num_frames=60
     )
     assert requested == 90
     assert target == 90
-    assert playspeed == pytest.approx(90.0 / 60.0)
+    assert resample_speed == pytest.approx(90.0 / 60.0)
 
 
 def test_finalize_output_lengths_rejects_out_of_window() -> None:
+    internal_num_frames = 60
+    min_length = 20
+    max_frames = MAX_SOURCE_FRAMES_MULT * internal_num_frames
+
     with pytest.raises(SystemExit):
-        _finalize_output_lengths(requested_frames=10, min_length=20, internal_num_frames=60)
+        _finalize_output_lengths(
+            requested_frames=min_length - 1,
+            min_length=min_length,
+            internal_num_frames=internal_num_frames,
+        )
+    # The upper bound is inclusive: the full source-frame budget is allowed,
+    # one frame past it is not.
+    requested, target, resample_speed = _finalize_output_lengths(
+        requested_frames=max_frames,
+        min_length=min_length,
+        internal_num_frames=internal_num_frames,
+    )
+    assert (requested, target) == (max_frames, max_frames)
+    assert resample_speed == pytest.approx(float(MAX_SOURCE_FRAMES_MULT))
     with pytest.raises(SystemExit):
-        _finalize_output_lengths(requested_frames=121, min_length=20, internal_num_frames=60)
+        _finalize_output_lengths(
+            requested_frames=max_frames + 1,
+            min_length=min_length,
+            internal_num_frames=internal_num_frames,
+        )
 
 
 def test_validate_reference_motion_path_accepts_supported_suffixes() -> None:
@@ -137,7 +159,7 @@ def test_validate_reference_motion_path_rejects_unsupported_suffix() -> None:
 def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
     # Crop path: feed exactly M=40 frames (as main() does for R > M). The bundle
     # must consume the preloaded array verbatim (no disk load) and not re-trim it.
-    n_joints, feat = 3, 13
+    n_joints, feat = 3, 12
     cond = _make_full_cond_entry(n_joints, feature_len=feat)
     preloaded = np.random.default_rng(0).normal(
         size=(40, n_joints, feat)
@@ -161,7 +183,7 @@ def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
     # always runs at that native window (requested_output_frame_count=60) and
     # resamples the shorter reference up to it; the requested output length is
     # honored later by resampling the sampled motion. reference_source_frame_count
-    # records the pre-resample reference length (40) for playspeed.
+    # records the pre-resample reference length (40) for resample_speed.
     assert bundle["output_frame_count"] == 60
     assert bundle["reference_source_frame_count"] == 40
     assert tuple(bundle["reference_motion"].shape) == (2, n_joints, feat, 60)
@@ -210,18 +232,18 @@ def test_create_condition_can_sample_at_target_joint_count() -> None:
         cond_dict,
         n_frames=4,
         max_joints=3,
-        feature_len=13,
+        feature_len=12,
     )
 
     y = model_kwargs["y"]
-    assert tuple(motion_batch.shape) == (2, 3, 13, 4)
+    assert tuple(motion_batch.shape) == (2, 3, 12, 4)
     assert tuple(y["joints_padding_mask"].shape) == (2, 1, 1, 4, 4)
     assert tuple(y["graph_dist"].shape) == (2, 3, 3)
     assert torch.equal(y["n_joints"], torch.tensor([3, 3]))
     # The output coordinate frame is an unconditional model input: AnyTop.forward
     # reads it every step, so the generation path has to stack it per sample too.
-    assert tuple(y["canonical_feature_mean"].shape) == (2, 13)
-    assert tuple(y["canonical_feature_std"].shape) == (2, 13)
+    assert tuple(y["canonical_feature_mean"].shape) == (2, 12)
+    assert tuple(y["canonical_feature_std"].shape) == (2, 12)
 
 
 def test_create_condition_rejects_cond_entry_without_canonical_stats() -> None:
@@ -237,7 +259,7 @@ def test_create_condition_rejects_cond_entry_without_canonical_stats() -> None:
             cond_dict,
             n_frames=4,
             max_joints=3,
-            feature_len=13,
+            feature_len=12,
         )
 
 
@@ -249,7 +271,7 @@ def test_resolve_inpaint_joint_indices_rejects_unknown_names() -> None:
 def test_sample_batch_routes_inpainting_through_ddpm_from_pure_noise() -> None:
     diffusion = _CaptureDiffusion()
     model = _DummyModel()
-    sample_shape = (1, 3, 13, 4)
+    sample_shape = (1, 3, 12, 4)
     reference_motion = torch.ones(sample_shape, dtype=torch.float32)
     inpaint_mask = torch.zeros((1, 3, 1, 4), dtype=torch.float32)
 
@@ -279,7 +301,7 @@ def test_sample_batch_routes_inpainting_through_ddpm_from_pure_noise() -> None:
 
 def test_sample_batch_injects_cross_limb_unreliable_mask_for_single_inpaint_pass() -> None:
     diffusion = _CaptureDiffusion()
-    sample_shape = (1, 3, 13, 4)
+    sample_shape = (1, 3, 12, 4)
     reference_motion = torch.ones(sample_shape, dtype=torch.float32)
     inpaint_mask = torch.tensor(
         [[[[0.0, 1.0, 0.0, 0.0]],
@@ -317,7 +339,7 @@ def test_sample_batch_injects_cross_limb_unreliable_mask_for_single_inpaint_pass
 
 
 def test_sample_batch_applies_skip_timesteps_only_inside_inpaint_mask() -> None:
-    sample_shape = (1, 3, 13, 4)
+    sample_shape = (1, 3, 12, 4)
     reference_motion = torch.ones(sample_shape, dtype=torch.float32)
     inpaint_mask = torch.tensor(
         [[[[0.0, 1.0, 0.0, 0.0]],
@@ -371,7 +393,7 @@ def test_sample_batch_requires_reference_for_inpainting() -> None:
             model=_DummyModel(),
             model_kwargs={},
             sampling_method="ddpm",
-            sample_shape=(1, 3, 13, 4),
+            sample_shape=(1, 3, 12, 4),
             ddim_eta=0.0,
             seed=123,
             device=torch.device("cpu"),
@@ -486,7 +508,7 @@ def test_ddim_sample_loop_rejects_const_noise() -> None:
         )
 
 
-def _make_root_y_motion(pos_y, vel_y, root_idx=0, n_joints=2, n_feat=13):
+def _make_root_y_motion(pos_y, vel_y, root_idx=0, n_joints=2, n_feat=12):
     """Build a (F, J, C) motion_np tensor with the translation-root's
     pos_y / vel_y channels set, other channels zeroed.
     """
@@ -580,7 +602,7 @@ def test_reanchor_root_y_corrects_all_joints():
     # against its own boundary anchors.
     F = 6
     n_joints = 3
-    motion = np.zeros((F, n_joints, 13), dtype=np.float32)
+    motion = np.zeros((F, n_joints, 12), dtype=np.float32)
     # Joint 0 (translation_root style): outside ~1.0, inside biased to 0.4
     motion[:, 0, 1] = [1.0, 1.0, 0.4, 0.42, 1.0, 1.0]
     # Joint 1: outside ~2.5, inside biased to 1.0
@@ -622,34 +644,41 @@ def test_reanchor_root_y_multiple_spans_independent():
     np.testing.assert_allclose(fixed[7:9], 1.0, atol=1e-6)
 
 
-def test_close_loop_root_xz_distributes_velocity_residual():
-    motion = np.zeros((5, 2, 13), dtype=np.float32)
+def test_zero_root_ric_xz_clears_only_the_root_position_channels():
+    """The root's RIC X/Z are structurally zero, so model noise there is
+    cleared; everything else (notably the velocity ch9/ch11) must survive."""
+    motion = np.zeros((5, 2, 12), dtype=np.float32)
     motion[:, 1, 0] = np.linspace(-0.1, 0.1, num=5, dtype=np.float32)
     motion[:, 1, 2] = np.linspace(0.2, -0.2, num=5, dtype=np.float32)
+    motion[:, 1, 1] = np.linspace(1.0, 1.5, num=5, dtype=np.float32)
     motion[:-1, 1, 9] = np.array([1.0, 2.0, -1.0, 0.0], dtype=np.float32)
     motion[:-1, 1, 11] = np.array([0.5, -0.25, 0.25, 1.5], dtype=np.float32)
     motion[-1, 1, [9, 11]] = 100.0
     original_nonroot = motion[:, 0].copy()
+    original_root_vel = motion[:, 1, [9, 11]].copy()
+    original_root_height = motion[:, 1, 1].copy()
 
-    _close_loop_root_xz_via_velocity(motion, translation_root_index=1)
+    _zero_root_ric_xz(motion, translation_root_index=1)
 
-    np.testing.assert_allclose(motion[:-1, 1, [9, 11]].sum(axis=0), 0.0, atol=1e-6)
     np.testing.assert_allclose(motion[:, 1, [0, 2]], 0.0, atol=1e-6)
-    np.testing.assert_allclose(motion[-1, 1, [9, 11]], 0.0, atol=1e-6)
+    # Net XZ displacement is NOT cancelled any more: a loop may travel.
+    np.testing.assert_array_equal(motion[:, 1, [9, 11]], original_root_vel)
+    np.testing.assert_array_equal(motion[:, 1, 1], original_root_height)
     np.testing.assert_array_equal(motion[:, 0], original_nonroot)
 
 
-def test_close_loop_root_xz_noop_for_invalid_root():
-    motion = np.zeros((4, 1, 13), dtype=np.float32)
+def test_zero_root_ric_xz_noop_for_invalid_root():
+    motion = np.zeros((4, 1, 12), dtype=np.float32)
+    motion[:, 0, 0] = 1.0
     motion[:-1, 0, 9] = 1.0
     original = motion.copy()
 
-    _close_loop_root_xz_via_velocity(motion, translation_root_index=5)
+    _zero_root_ric_xz(motion, translation_root_index=5)
 
     np.testing.assert_array_equal(motion, original)
 
 
-def _make_pos_y_motion(pos_y_by_joint, n_feat=13):
+def _make_pos_y_motion(pos_y_by_joint, n_feat=12):
     """Build a (F, J, C) motion tensor with only the pos_y channel (index 1)
     populated from a dict {joint_index: [per-frame Y]}.
     """

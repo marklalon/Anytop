@@ -1,11 +1,10 @@
 """
 Channel layout constants and low-level motion utilities.
 
-Motion format  (T × J × 13  float32, normalised):
+Motion format  (T × J × 12  float32, normalised):
     ch 0-2  : local RIC position
     ch 3-8  : 6-D rotation  (two packed 3-D unit-norm vectors)
     ch 9-11 : linear velocity
-    ch 12   : foot-contact flag
 """
 
 from __future__ import annotations
@@ -13,14 +12,13 @@ from __future__ import annotations
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# Channel layout (13 features per joint)
+# Channel layout (12 features per joint)
 # ---------------------------------------------------------------------------
 CH_POS   = slice(0, 3)
 CH_ROT   = slice(3, 9)
 CH_ROT_A = slice(3, 6)   # first 6D basis vector
 CH_ROT_B = slice(6, 9)   # second 6D basis vector
 CH_VEL   = slice(9, 12)
-CH_CONT  = 12
 
 _ROOT_JERK_WEIGHT = 5.0   # root joint upweight in jerk aggregation
 

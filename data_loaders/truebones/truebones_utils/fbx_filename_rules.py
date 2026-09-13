@@ -44,6 +44,62 @@ def _matches_reference_tail(file_path, tail_pattern):
     return any(tail_pattern.fullmatch(candidate) for candidate in _reference_tail_candidates(file_path))
 
 
+# ---------------------------------------------------------------------------
+# Offline-retargeted source clips
+# ---------------------------------------------------------------------------
+# ``tools/offline_retarget_augment.py`` writes retargeted animations, marked by
+# a trailing ``Retarget`` token attached to the source species
+# (``Swim01Backwards_KIHumanRetarget.glb``).  The marker is provenance, not an
+# action word, so the filename rules must not read meaning into it:
+#
+#   * a marked file may never become the rest-pose / idle / walk reference
+#     carrier -- the species' own assets define its rest pose, never a clip
+#     imported from another skeleton;
+#   * the variant-codename heuristics (which reject ``Fox_A02``-style stems with
+#     no inferable action) must not fire on the marker's underscore.
+#
+# The marker DOES survive into the normalized action name, so the resulting clip
+# stays uniquely named and identifiable as retargeted.
+RETARGET_MARKER = 'Retarget'
+
+
+def _stem_segments(stem):
+    return [segment for segment in re.split(r'[^0-9A-Za-z]+', str(stem or '')) if segment]
+
+
+def is_retargeted_anim_path(file_path):
+    """True when the filename carries the offline-retarget provenance marker.
+
+    The tool writes ``<Action>_<SrcSpecies>Retarget`` -- the source species is
+    concatenated directly onto the ``Retarget`` marker (``Swim01Backwards_KIHumanRetarget``),
+    so the marker is the *suffix* of the final segment, not a segment of its own.
+    A bare ``Retarget`` or an action that merely contains the word earlier in its
+    name is not mistaken for a marker.
+    """
+    stem = os.path.splitext(os.path.basename(str(file_path or '')))[0]
+    segments = _stem_segments(stem)
+    return (
+        bool(segments)
+        and segments[-1].endswith(RETARGET_MARKER)
+        and len(segments[-1]) > len(RETARGET_MARKER)
+    )
+
+
+def strip_retarget_marker(stem):
+    """Drop the trailing ``Retarget`` provenance token from a stem.
+
+    ``Swim01Backwards_KIHumanRetarget`` becomes ``Swim01Backwards_KIHuman`` so the
+    species token -- and the ``_`` before it -- survive, matching how the rest of
+    the filename rules read the action name.
+    """
+    return re.sub(
+        r'[^0-9A-Za-z]*' + RETARGET_MARKER + r'$',
+        '',
+        str(stem or ''),
+        flags=re.IGNORECASE,
+    )
+
+
 def _is_tpose_reference_path(file_path):
     tokens, compact = _reference_stem_tokens(file_path)
     return (
@@ -78,8 +134,13 @@ def find_tpose_reference_path(anim_files):
     The selected file's bind/rest pose is used as the encoding base. Filename
     priority still prefers static pose files because they usually carry the
     cleanest skeleton/mesh container: T-pose/rest/bind > idle > walk > run > fly.
+
+    Offline-retargeted clips are never eligible: they are exported from another
+    skeleton's motion and must not define this species' rest pose.
     """
-    for file_path in anim_files:
+    own_files = [f for f in anim_files if not is_retargeted_anim_path(f)]
+
+    for file_path in own_files:
         if _is_tpose_reference_path(file_path):
             anim_files.remove(file_path)
             return file_path
@@ -90,11 +151,11 @@ def find_tpose_reference_path(anim_files):
         (_is_run_reference_path, 'run'),
         (_is_fly_reference_path, 'fly'),
     ):
-        for file_path in anim_files:
+        for file_path in own_files:
             if matcher(file_path):
                 return file_path
 
-    return anim_files[0]
+    return (own_files or anim_files)[0]
 
 
 def _compact_normalized_text(value: str) -> str:
@@ -245,8 +306,17 @@ def normalize_action_name(object_type: str, raw_action: str) -> str:
 
 
 def should_skip_anim(file_path: str, object_type: str) -> bool:
-    """Check whether an animation file should be skipped during preprocessing."""
+    """Check whether an animation file should be skipped during preprocessing.
+
+    An offline-retargeted clip is judged on its stem WITHOUT the provenance
+    marker, and is exempt from the variant-codename heuristics: its action name
+    is machine-generated from a real source clip, so the ``Name_Name`` shape the
+    heuristics reject is expected rather than a sign of a meaningless codename.
+    """
+    is_retargeted = is_retargeted_anim_path(file_path)
     stem = os.path.splitext(os.path.basename(file_path))[0]
+    if is_retargeted:
+        stem = strip_retarget_marker(stem)
     compact_stem = _compact_normalized_text(stem)
 
     if _is_all_bundle_stem(stem, object_type):
@@ -286,6 +356,9 @@ def should_skip_anim(file_path: str, object_type: str) -> bool:
         )
         return True
 
+    if is_retargeted:
+        return False
+
     variant1 = re.compile(r'^[a-z]+[a-z]_\w+$', re.IGNORECASE)
     variant2 = re.compile(r'^[a-z]+_[a-z]\d+$', re.IGNORECASE)
     if variant1.match(stripped_action) or variant2.match(stripped_action):
@@ -311,7 +384,10 @@ def should_skip_anim(file_path: str, object_type: str) -> bool:
 
 
 __all__ = [
+    'RETARGET_MARKER',
     'find_tpose_reference_path',
+    'is_retargeted_anim_path',
+    'strip_retarget_marker',
     '_compact_normalized_text',
     '_is_all_bundle_stem',
     '_matches_object_alias',

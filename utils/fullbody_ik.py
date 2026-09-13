@@ -44,6 +44,18 @@ FULLBODY_IK_ITERATIONS: int = 2
 DEFAULT_IK_STRETCH_FACTOR: float = 0.1
 """Default ±10 % bone-length elasticity during IK."""
 
+DEGENERATE_EDGE_RATIO: float = 1e-3
+"""Fraction of the median rest bone length below which an edge carries no direction.
+
+Rigs ship marker bones -- a jaw, an eye, a chain terminator -- whose rest offset
+is float dust (1e-4 world units on a rig whose median bone is ~7).  Their
+direction is numerical noise that wanders tens of degrees per frame, so anything
+solved from it is noise too.  The ratio is measured against the skeleton's own
+median bone rather than an absolute length so it holds whatever units a rig
+ships in: across the corpus the dust bones sit at most 1/16 of this threshold
+and the shortest *real* bone at least 32x above it.
+"""
+
 
 # ── Public helpers ────────────────────────────────────────────────────────────
 
@@ -171,6 +183,28 @@ def _safe_normalize_vectors(
     return np.divide(vectors, lengths, out=fallback.copy(), where=lengths > eps)
 
 
+def degenerate_edge_epsilon(
+    rest_offsets: np.ndarray,
+    parents: np.ndarray,
+    *,
+    ratio: float = DEGENERATE_EDGE_RATIO,
+) -> float:
+    """Edge length below which a bone's direction is float dust, not geometry.
+
+    Scaled off the skeleton's own median rest bone so the same call works on a
+    rig authored in centimetres and one authored in metres.  Falls back to the
+    absolute threshold this guard used to hardcode when a skeleton has no
+    positive-length bone at all to measure against.
+    """
+    rest_offsets = np.asarray(rest_offsets, dtype=np.float64)
+    parents = np.asarray(parents)
+    lengths = np.linalg.norm(rest_offsets[parents >= 0], axis=-1)
+    positive = lengths[lengths > 0.0]
+    if positive.size == 0:
+        return 1e-4
+    return float(np.median(positive)) * float(ratio)
+
+
 def _orthogonal_unit_vectors(directions: np.ndarray) -> np.ndarray:
     axes = np.zeros_like(directions)
     abs_dirs = np.abs(directions)
@@ -277,6 +311,7 @@ def constrain_fullbody_ik_targets(
     projected = np.empty_like(raw_positions)
     projected[:, root_index, :] = raw_positions[:, root_index, :]
     preserved_lookup = {int(index) for index in preserved_position_indices.tolist()}
+    edge_epsilon = degenerate_edge_epsilon(rest_offsets, parents)
 
     children: list[list[int]] = [[] for _ in range(len(parents))]
     for joint_index, parent_index in enumerate(parents):
@@ -302,7 +337,17 @@ def constrain_fullbody_ik_targets(
                 reference_edge,
                 fallback=np.zeros_like(reference_edge),
             )
-            raw_dirs = _safe_normalize_vectors(raw_edge, fallback=reference_dirs)
+            # A raw edge shorter than the dust threshold has no direction to
+            # transfer -- the donor's own marker bone was float noise, and
+            # normalising it hands the solver a direction that wanders tens of
+            # degrees per frame.  The 45 deg cone below cannot rescue that: it
+            # pins the noise to the cone boundary, so the child ends up a
+            # constant 45 deg off its parent's rest direction with a wandering
+            # axis.  Fall back to the reference, i.e. keep the rotation the
+            # retarget already produced for this joint.
+            raw_dirs = _safe_normalize_vectors(
+                raw_edge, fallback=reference_dirs, eps=edge_epsilon
+            )
             target_dirs = _limit_direction_deviation(
                 reference_dirs,
                 raw_dirs,
@@ -411,6 +456,7 @@ def run_basic_inverse_kinematics_with_constraints(
 
     frozen_rotation_lookup = {int(index) for index in frozen_rotation_indices.tolist()}
     children = animation_structure.children_list(animation.parents)
+    edge_epsilon = degenerate_edge_epsilon(animation.offsets, animation.parents)
 
     for _iteration in range(iterations):
         for joint_index in animation_structure.joints(animation.parents):
@@ -455,16 +501,25 @@ def run_basic_inverse_kinematics_with_constraints(
             axes = np.cross(joint_dirs, target_dirs)
             axes = -anim_rotations[:, joint_index, np.newaxis] * axes
 
-            valid_directions = (joint_lengths > 1e-4)[0]
+            # A child only carries a usable direction when the edge is real on
+            # *both* sides: degenerate on the current skeleton and the measured
+            # angle is noise; degenerate in the targets and the angle points at
+            # noise.  Taken over the frame median so one collapsed frame does
+            # not discard a child that is fine everywhere else.
+            valid_directions = (
+                np.median(joint_lengths, axis=0) > edge_epsilon
+            ) & (np.median(target_lengths, axis=0) > edge_epsilon)
             if not np.any(valid_directions):
+                # Nothing to solve from -- keep the seed rotation, which is the
+                # rotation the caller handed in for this joint.
                 continue
 
-            rotations = Quaternions.from_angle_axis(angles, axes)
+            rotations = Quaternions.from_angle_axis(angles, axes)[:, valid_directions]
             if rotations.shape[1] == 1:
                 averaged_rotation = rotations[:, 0]
             else:
                 averaged_rotation = Quaternions.exp(
-                    rotations[:, valid_directions].log().mean(axis=-2)
+                    rotations.log().mean(axis=-2)
                 )
 
             animation.rotations[:, joint_index] = (
@@ -572,3 +627,112 @@ def rebuild_fullbody_animation_with_ik(
         rebuilt_global_positions - target_global_positions, axis=-1
     )
     return rebuilt_anim, float(per_joint_error.mean()), float(per_joint_error.max())
+
+
+def rebuild_retarget_pose_channels_with_ik(
+    joint_rotations: np.ndarray,
+    bone_translations: np.ndarray | None,
+    *,
+    parents: np.ndarray,
+    rest_offsets: np.ndarray,
+    rest_rotations: np.ndarray,
+    iterations: int = FULLBODY_IK_ITERATIONS,
+    stretch_factor: float = DEFAULT_IK_STRETCH_FACTOR,
+) -> tuple[np.ndarray, np.ndarray, float, float]:
+    """Re-solve a retarget result so the target rig stays rigid.
+
+    ``retarget_world_space_np`` places every target joint at its source
+    counterpart's world position, and whatever a fitted rotation cannot reach
+    from the rest offset falls into the pose-translation channel (see Pass H).
+    On a cross-species transfer that channel is the target skeleton being
+    stretched to the donor's proportions.  This converts the same world-space
+    pose back into rotations on the *rigid* target skeleton, which is the
+    ``--fullbody-ik`` reconstruction :mod:`tools.restore_glb_from_npy` runs on
+    the feature-space path, applied to the native retarget instead.
+
+    The channels are the exporter's own: a local pose rotation relative to the
+    bone's rest rotation, and a pose translation expressed in that same rest
+    frame, so ``(rotation, translation)`` composes to the joint's local
+    transform as ``rest_rotation * rotation`` and
+    ``rest_offset + rest_rotation . translation``.
+
+    The joint that carries the character's transport keeps its local pose
+    verbatim (position and rotation), exactly as the restore path preserves its
+    ``translation_root_index``: that translation *is* the locomotion, and
+    letting IK re-solve it would freeze the character at its rest offset.
+
+    Args:
+        joint_rotations: ``(F, J, 4)`` WXYZ pose rotations from the retarget.
+        bone_translations: ``(F, J, 3)`` pose translations, or ``None`` for a
+            result the retarget already found rigid.
+        parents: ``(J,)`` target parent indices (``-1`` at the root).
+        rest_offsets: ``(J, 3)`` target rest offsets.
+        rest_rotations: ``(J, 4)`` target WXYZ rest rotations.
+        iterations: IK passes; see :func:`rebuild_fullbody_animation_with_ik`.
+        stretch_factor: allowed bone-length elasticity (0.1 = ±10 %).
+
+    Returns:
+        ``(joint_rotations, bone_translations, mean_error, max_error)`` in the
+        same channels as the inputs.
+
+    Raises:
+        ValueError: when the target skeleton does not have exactly one root
+            joint, which the IK rebuild cannot seed.
+    """
+    from data_loaders.truebones.truebones_utils.animation_utils import (
+        find_translation_root,
+    )
+
+    from .rotation_numpy import (
+        quat_conjugate_wxyz_np,
+        quat_multiply_wxyz_np,
+        quat_rotate_wxyz_np,
+    )
+
+    pose_rotations = np.asarray(joint_rotations, dtype=np.float64)
+    frame_count, joint_count = pose_rotations.shape[0], pose_rotations.shape[1]
+    parents = np.asarray(parents, dtype=np.int32)
+    rest_offsets = np.asarray(rest_offsets, dtype=np.float64)
+    rest_rotations = np.asarray(rest_rotations, dtype=np.float64)
+    if bone_translations is None:
+        pose_translations = np.zeros((frame_count, joint_count, 3), dtype=np.float64)
+    else:
+        pose_translations = np.asarray(bone_translations, dtype=np.float64)
+
+    # Compose the retarget's channels into the local transform pair
+    # ``Animation`` actually keys on -- ``transforms_local`` reads ``rotations``
+    # and ``positions`` directly and never re-applies orients/offsets, so the
+    # rest pose has to be folded in here and unfolded again on the way out.
+    local_rotations = quat_multiply_wxyz_np(rest_rotations[None], pose_rotations)
+    local_positions = rest_offsets[None] + quat_rotate_wxyz_np(
+        np.broadcast_to(rest_rotations[None], pose_rotations.shape), pose_translations,
+    )
+
+    retargeted_anim = Animation(
+        Quaternions(local_rotations),
+        local_positions,
+        Quaternions(rest_rotations.copy()),
+        rest_offsets.copy(),
+        parents.copy(),
+    )
+    transport_joint = int(find_translation_root(retargeted_anim))
+
+    rebuilt_anim, mean_error, max_error = rebuild_fullbody_animation_with_ik(
+        retargeted_anim,
+        rigid_offsets=rest_offsets,
+        rigid_parents=parents,
+        preserved_position_indices=[transport_joint],
+        preserved_rotation_indices=[transport_joint],
+        iterations=iterations,
+        stretch_factor=stretch_factor,
+    )
+
+    inverse_rest_rotations = quat_conjugate_wxyz_np(rest_rotations)
+    rebuilt_rotations = quat_multiply_wxyz_np(
+        inverse_rest_rotations[None], np.asarray(rebuilt_anim.rotations.qs, dtype=np.float64),
+    )
+    rebuilt_translations = quat_rotate_wxyz_np(
+        np.broadcast_to(inverse_rest_rotations[None], pose_rotations.shape),
+        np.asarray(rebuilt_anim.positions, dtype=np.float64) - rest_offsets[None],
+    )
+    return rebuilt_rotations, rebuilt_translations, mean_error, max_error

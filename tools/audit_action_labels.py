@@ -153,9 +153,9 @@ DEFAULT_R1_EXEMPT_LABELS = ("die", "hurt", "getup")
 # append here for any case marked "无需修改".
 DEFAULT_IGNORE_PATH = ANYTOP_DIR / "dataset" / "review" / "action_label_audit_ignore.jsonl"
 
-# Channel offsets into a canonical_motion_v3 frame, per joint (n_feats == 13):
-# 0:3 position (rest-centered residual), 3:9 rotation 6d, 9:12 local velocity,
-# 12 foot contact. See data_loaders/truebones/truebones_utils/canonical_features.py
+# Channel offsets into a canonical_motion_v4 frame, per joint (n_feats == 12):
+# 0:3 position (rest-centered residual), 3:9 rotation 6d, 9:12 local velocity.
+# See data_loaders/truebones/truebones_utils/canonical_features.py
 # -- R1 reads the first and third, and main() checks the cond declares this space.
 POSITION_CHANNELS = (0, 3)
 VELOCITY_CHANNELS = (9, 12)
@@ -265,7 +265,10 @@ def load_label_overrides(paths):
                 if not line:
                     continue
                 entry = json.loads(line)
+                # sidecar keys are extension-less; accept either spelling
                 clip = str(entry["clip"])
+                if clip.endswith(".npy"):
+                    clip = clip[:-4]
                 group = normalize_action_group(entry.get("action_group"))
                 label = normalize_action_label(entry.get("action_label"))
                 _validate_action_label_entry(group, label, clip, line_number)
@@ -379,7 +382,8 @@ def collect_clips(cond_dict, sources, action_group=None, verbose=False,
             for name in sorted(available):
                 if name in claimed or not name.startswith(prefix):
                     continue
-                entry = labels.get(name)
+                # the sidecar is keyed by the extension-less clip name
+                entry = labels.get(name[:-4])
                 if entry is None:
                     if verbose:
                         print(f"  [skip] {name}: no action_labels.jsonl row")
@@ -408,7 +412,7 @@ def collect_clips(cond_dict, sources, action_group=None, verbose=False,
 def load_trajectory(motion_path, n_joints, frames):
     """One clip resampled to *frames*, as a ``(position, velocity)`` pair.
 
-    Both blocks are needed. In ``canonical_motion_v3`` the position channel is a
+    Both blocks are needed. In ``canonical_motion_v4`` the position channel is a
     rest-centered residual -- the root joint's is constant to the last digit --
     so ALL of the travel lives in the velocity channels: a walk and an idle of
     one species differ by 40x there and barely at all in position. A metric
@@ -967,7 +971,8 @@ def main() -> int:
     clips = collect_clips(cond_dict, sources, group_filter, verbose=args.verbose,
                           overrides=overrides)
     if overrides:
-        applied = sum(1 for clip in clips if clip["clip"] in overrides)
+        # overrides are keyed by the extension-less clip name; clips hold file names
+        applied = sum(1 for clip in clips if clip["clip"][:-4] in overrides)
         print(f"overrides : {len(overrides)} row(s) from "
               f"{', '.join(args.labels)}; {applied} applied in scope")
     if not clips:

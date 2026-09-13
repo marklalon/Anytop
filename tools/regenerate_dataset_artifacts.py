@@ -74,6 +74,7 @@ from data_loaders.truebones.truebones_utils.rest_geometry import (  # noqa: E402
     reseat_candidates,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
+    FEATS_LEN,
     MOTION_DIR,
     MOTION_METADATA_FILE,
     ACTION_LABELS_FILE,
@@ -228,7 +229,7 @@ def _compute_canonical_stats_per_object_subset(
     motion_files: list[Path],
 ) -> None:
     """Compute per-object_subset per-channel standardization statistics and store
-    each object_subset's 13-vectors on its member cond entries.
+    each object_subset's FEATS_LEN-vectors on its member cond entries.
 
     Each physical clip is encoded into the L-normalized space (rest-centered
     position + per-skeleton size division) and accumulated into the bucket of the
@@ -268,7 +269,12 @@ def _compute_canonical_stats_per_object_subset(
             # unresolved-species fast-fail below (no global fallback).
             continue
         motion = np.load(motion_path).astype(np.float32, copy=False)
-        if motion.ndim != 3 or motion.shape[-1] < 13:
+        # Exact width, not "at least": this loop's output is written straight
+        # into cond as canonical_feature_mean/std, and neither
+        # collapse_stat_blocks nor set_canonical_global_stats validates its
+        # length -- a stale 13-channel (v3) clip would silently produce a
+        # 13-wide table on a canonical_motion_v4 cond.
+        if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN:
             continue
         try:
             subset_accs[subset] = accumulate_lnorm_stats(motion, object_cond, acc=subset_accs.get(subset))
@@ -355,92 +361,61 @@ def _recompute_contact_joints(rebuilt_cond: dict[str, dict]) -> None:
             )
 
 
-def _compute_loop_periods(
+def _compute_action_words(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
     motion_metadata: dict[str, dict],
     cond_lookup,
 ) -> None:
-    """Bake each species' native loop period (in frames) into cond.npy.
+    """Bake the action words each species is animated with into cond.npy.
 
-    Generation needs it to fill ``loop_phase_length``, the scalar that tells the
-    model how many gait cycles one output window holds. Training derives that
-    scalar from the tile count it chose (``loop_phase_length = (T-1)/k + 1``);
-    inference has no tile count, so it inverts the same identity:
+    ``action_words`` is the sorted set of action words (never direction words)
+    over the species' clips. Nothing in training or generation reads it; it is
+    what the joint-name support scan of process_new_skeleton uses to decide
+    whether a reference species is animated enough for a rig-token match to
+    count as evidence (``_RIG_SIBLING_MIN_ACTIONS``).
 
-        k = round(playspeed * T / L)          L = the native loop period here
-        loop_phase_length = (T-1)/k + 1
-
-    k must come out an INTEGER -- a window the model is told is closed cannot
-    hold a fractional number of cycles -- which is why this stores the period and
-    lets the caller round, rather than storing a phase length directly.
-
-    Keyed by the label's action words (never its direction words) because the
-    period is an action property, not a skeleton or heading one: a 25-frame walk
-    cycle and a 20-frame run cycle on the same rig want different k, while
-    walking left and walking forward do not. ``loop_period_median`` is the
-    fallback for a label that names no action word.
-
-    Only ``is_loop`` clips contribute: a non-loop clip's length is its clip
-    duration, not a cycle period.
+    (The loop-period table this replaced fed generation a per-species cycle
+    count for the circular time embedding; that embedding is now period-free,
+    so the table is gone.)
     """
-    periods: dict[str, dict[str, list[int]]] = {}
+    words_by_species: dict[str, set[str]] = {}
     for motion_path in motion_files:
         entry = motion_metadata.get(motion_path.name)
-        if not entry or not bool(entry.get("is_loop", False)):
+        if not entry:
             continue
         object_type = _infer_object_type_from_motion_name(motion_path.name, cond_lookup)
         if object_type not in rebuilt_cond:
             continue
-        frame_count = int(np.load(motion_path, mmap_mode="r").shape[0])
-        if frame_count <= 0:
-            continue
-        words = action_words_in(str(entry.get("action_label") or ""))
-        bucket = periods.setdefault(object_type, {})
-        bucket.setdefault("", []).append(frame_count)
-        for word in words:
-            bucket.setdefault(word, []).append(frame_count)
+        words_by_species.setdefault(object_type, set()).update(
+            action_words_in(str(entry.get("action_label") or ""))
+        )
 
-    covered = 0
     for object_type, object_cond in rebuilt_cond.items():
-        bucket = periods.get(object_type, {})
-        overall = bucket.get("", [])
-        if not overall:
-            object_cond.pop("loop_period_by_action", None)
-            object_cond.pop("loop_period_median", None)
-            continue
-        # One clip is enough: it is an unbiased estimate of THAT action's period
-        # and strictly more relevant than the cross-action median that would
-        # otherwise be used for it (a species' idle clips are far longer than its
-        # run cycle, so the median is the worse estimator, not the safer one).
-        by_action = {
-            word: float(np.median(lengths))
-            for word, lengths in sorted(bucket.items())
-            if word
-        }
-        object_cond["loop_period_by_action"] = by_action
-        object_cond["loop_period_median"] = float(np.median(overall))
-        covered += 1
-    print(
-        f"[OK] native loop periods baked for {covered}/{len(rebuilt_cond)} species "
-        f"(species with no loop clip carry none)"
-    )
+        object_cond.pop("loop_period_by_action", None)
+        object_cond.pop("loop_period_median", None)
+        object_cond["action_words"] = sorted(words_by_species.get(object_type, ()))
+    animated = sum(1 for words in words_by_species.values() if words)
+    print(f"[OK] action words baked for {animated}/{len(rebuilt_cond)} species")
 
 
-def _normalize_object_translation_roots(
+def _validate_object_translation_roots(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
     motion_metadata: dict[str, dict],
     cond_lookup: dict[str, str],
 ) -> dict[str, int]:
-    """Collapse per-motion translation_root_index to one canonical root per object.
+    """Validate the species root contract without mutating per-clip provenance.
 
-    Each motion's metadata already contains a `translation_root_index` from
-    preprocessing.  We just aggregate the existing values per object and pick
-    the most common one.  Ties fall back to the smaller index for determinism.
+    Feature tensors have already been encoded when this side-artifact pass runs,
+    so changing either cond or motion metadata here would make metadata disagree
+    with tensor content.  A missing cond root may be restored only when every
+    clip unanimously records the same value; any disagreement requires a full
+    preprocessing rebuild.
     """
     motion_names = {p.name for p in motion_files}
     object_root_counts: dict[str, Counter[int]] = {}
+    object_root_motions: dict[str, list[tuple[str, int]]] = {}
 
     for motion_name, entry in motion_metadata.items():
         if motion_name not in motion_names:
@@ -457,30 +432,53 @@ def _normalize_object_translation_roots(
             )
         root_index = int(entry["translation_root_index"])
         object_root_counts.setdefault(object_type, Counter())[root_index] += 1
+        object_root_motions.setdefault(object_type, []).append((motion_name, root_index))
 
     canonical_roots: dict[str, int] = {}
-    for object_type, root_counts in sorted(object_root_counts.items()):
-        canonical_root_index = min(
-            root_index
-            for root_index, count in root_counts.items()
-            if count == max(root_counts.values())
-        )
-        unique_roots = sorted(int(root_index) for root_index in root_counts)
-        rebuilt_cond[object_type]["translation_root_index"] = canonical_root_index
-        canonical_roots[object_type] = canonical_root_index
-        if len(unique_roots) > 1:
-            print(
-                f"[OK] normalized {object_type} translation_root_index "
-                f"from {dict(sorted(root_counts.items()))} to {canonical_root_index}"
+    for object_type in sorted(rebuilt_cond.keys()):
+        root_counts = object_root_counts.get(object_type)
+        if not root_counts:
+            raise RuntimeError(
+                f"No motion metadata root values found for object '{object_type}'. "
+                "Re-run preprocess_and_validate.py --overwrite."
             )
 
-    # Ensure every object in rebuilt_cond has a canonical root, even if no
-    # motion metadata existed (e.g., freshly created dataset or test fixtures).
-    for object_type in sorted(rebuilt_cond.keys()):
-        if object_type not in canonical_roots:
-            canonical_roots[object_type] = int(
-                rebuilt_cond[object_type].get("translation_root_index", 0)
+        stored_root = rebuilt_cond[object_type].get("translation_root_index")
+        unique_roots = sorted(int(root_index) for root_index in root_counts)
+        if stored_root is None:
+            if len(unique_roots) != 1:
+                raise RuntimeError(
+                    f"Object '{object_type}' has no cond translation_root_index and its "
+                    f"motion metadata disagrees: {dict(sorted(root_counts.items()))}. "
+                    "Re-run preprocess_and_validate.py --overwrite."
+                )
+            stored_root = unique_roots[0]
+            rebuilt_cond[object_type]["translation_root_index"] = stored_root
+
+        canonical_root_index = int(stored_root)
+        joint_count = len(rebuilt_cond[object_type].get("parents", ()))
+        if not 0 <= canonical_root_index < joint_count:
+            raise RuntimeError(
+                f"Object '{object_type}' translation_root_index={canonical_root_index} "
+                f"is invalid for {joint_count} joints. Re-run "
+                "preprocess_and_validate.py --overwrite."
             )
+        mismatches = [
+            f"{motion_name}={root_index}"
+            for motion_name, root_index in object_root_motions[object_type]
+            if root_index != canonical_root_index
+        ]
+        if mismatches:
+            preview = ", ".join(mismatches[:5])
+            if len(mismatches) > 5:
+                preview += f", ... ({len(mismatches)} total)"
+            raise RuntimeError(
+                f"Object '{object_type}' cond translation_root_index={canonical_root_index} "
+                f"disagrees with encoded motion metadata: {preview}. Side-artifact "
+                "regeneration will not rewrite feature provenance; re-run "
+                "preprocess_and_validate.py --overwrite."
+            )
+        canonical_roots[object_type] = canonical_root_index
 
     return canonical_roots
 
@@ -518,22 +516,23 @@ def _regenerate_dataset_artifacts(
         raise RuntimeError(f"no motion files found under {motions_dir}")
 
     # Fast-fail: motion_metadata.json must exist.  Without it, load_motion_metadata
-    # returns {} and the rebuilt metadata will be missing is_loop, source_file,
+    # returns {} and the rebuilt metadata will be missing source_file,
     # translation_root_index, and other per-clip fields.
     metadata_path = dataset_dir_path / MOTION_METADATA_FILE
     if not metadata_path.exists():
         raise RuntimeError(
             f"{MOTION_METADATA_FILE} not found at {metadata_path}.\n"
             f"This script requires an existing motion_metadata.json to preserve "
-            f"is_loop, source_file, translation_root_index, and other per-clip metadata.\n"
+            f"source_file, translation_root_index, and other per-clip metadata.\n"
             f"If you've deleted it, re-run preprocess_and_validate.py to regenerate "
             f"the full dataset, or restore it from a backup."
         )
 
     # Fast-fail: action_labels.jsonl must exist (same contract as species_tags.jsonl
-    # -- single source of truth, no inference fallback, no auto-creation).
-    # load_motion_metadata below also hard-exits when a clip has no entry, but a
-    # missing file is reported up front with the fix spelled out.
+    # -- single source of truth, no inference fallback, no auto-creation). It also
+    # carries each clip's is_loop verdict. load_motion_metadata below also
+    # hard-exits when a clip has no entry or no verdict, but a missing file is
+    # reported up front with the fix spelled out.
     action_labels_path = dataset_dir_path / ACTION_LABELS_FILE
     if not action_labels_path.exists():
         raise RuntimeError(
@@ -582,22 +581,22 @@ def _regenerate_dataset_artifacts(
     print(f"[OK] contact joints recomputed in {time.time() - t0:.1f}s")
 
     t0 = time.time()
-    canonical_translation_roots = _normalize_object_translation_roots(
+    _validate_object_translation_roots(
         rebuilt_cond,
         motion_files,
         existing_motion_metadata,
         species_lookup_map(rebuilt_cond),
     )
-    print(f"[OK] translation roots normalized in {time.time() - t0:.1f}s")
+    print(f"[OK] translation root contracts validated in {time.time() - t0:.1f}s")
 
     t0 = time.time()
-    _compute_loop_periods(
+    _compute_action_words(
         rebuilt_cond,
         motion_files,
         existing_motion_metadata,
         species_lookup_map(rebuilt_cond),
     )
-    print(f"[OK] native loop periods computed in {time.time() - t0:.1f}s")
+    print(f"[OK] action words computed in {time.time() - t0:.1f}s")
 
     t0 = time.time()
 
@@ -646,7 +645,9 @@ def _regenerate_dataset_artifacts(
         # BARE species name, which is what joins it back to cond.species_name.
         species_name = str(rebuilt_cond[object_key]["species_name"]) if object_key in rebuilt_cond else object_key
         motion_entry.update(build_motion_labels(species_name, motion_name=motion_path.name))
-        motion_entry["translation_root_index"] = int(canonical_translation_roots[object_key])
+        # Preserve the root that preprocessing used to build this tensor.  The
+        # contract check above guarantees that it equals the species root.
+        motion_entry["translation_root_index"] = int(motion_entry["translation_root_index"])
         rebuilt_motion_metadata[motion_path.name] = motion_entry
         object_counts[object_key] += 1
 

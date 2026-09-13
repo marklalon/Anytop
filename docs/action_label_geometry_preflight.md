@@ -162,6 +162,11 @@ head 和 direction 的合法域全部穷举；modifier 只穷举到当前语料�
 
 ## 5. `_VOCAB_T5_TEXT`：1hand / 2hand 改写
 
+> **历史记录（2026-09-06）。** 2026-09-11 起 `weapon` / `1hand` / `2hand` 已被互斥的
+> `hand0` / `hand1` / `hand2` 取代，并占第四个槽通道；本节的结论（共享锚短语是碰撞来源）
+> 直接决定了新 token 的 T5 文本仍是裸计数（"empty hands" / "one hand" / "both hands"）。
+> 迁移后的预检读数见 [`action_label_per_word_pooling.md`](action_label_per_word_pooling.md) §13.4。
+
 `weapon, 1hand` vs `weapon, 2hand` 曾是全语料最坏的近邻对。根因在词表文本：
 `"weapon in one hand"` / `"weapon in both hands"` 共享 weapon 语义，两个 atom 余弦 0.784，
 是整张表最近的一对。整串编码时代这没有代价；词级条件下，两个 token 共享的内容正是它们的标签

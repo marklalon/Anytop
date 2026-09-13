@@ -2,11 +2,13 @@
 """
 Unified Preprocessing + Validation Workflow
 ============================================
-Automatically chains AnyTop dataset creation with validation:
-    1. Preprocessing: Incremental by default - keyed on source anim files, so only newly
-       added animations are processed while clips already on disk are kept. --overwrite
-       forces a full (re)build of the target set.
-    2. Validation: Validates the preprocessed dataset
+Automatically chains the three AnyTop dataset phases:
+    1. Translation-root confirmation: Scan every source action of each species and
+       freeze one species-level translation root.
+    2. Motion preprocessing: Incremental by default - keyed on source anim files, so
+       only newly added animations are processed while clips already on disk are kept.
+       --overwrite forces a full (re)build of the target set.
+    3. Validation: Validate the frozen root contract and preprocessed dataset.
 
 Usage:
     python preprocess_and_validate.py [OPTIONS]
@@ -16,6 +18,7 @@ Options:
     --re-encode-joint-names-only         Skip preprocessing and validation, only re-encode joint names into cond.npy
     --skip-validate                      Skip validation step (faster for CI)
     --overwrite                          Reprocess every targeted object, deleting existing outputs first (a full wipe when no --filter is set). Without it, already-processed objects are skipped.
+    --yes, --assume-yes, -y              Auto-confirm the overwrite deletion prompt (no interactive input; for scripts/CI).
     --filter PATTERN                     Comma/semicolon-separated case-insensitive glob(s) restricting which object names are considered for processing
     --object-workers N                   Concurrent characters to preprocess (default: 16)
     --sample-count N                     Limit file validation to first N motions (0=all, default: 0)
@@ -29,12 +32,34 @@ name in its parent directory):
                                          estimating each character's facing, and silence the
                                          estimator's fallback warnings
 
+Prerequisites (fast-fail):
+    The dataset's two hand-maintained sidecars must exist and be valid before
+    any work starts; neither is inferred, back-filled, or auto-created:
+        action_labels.jsonl  one entry per clip    ("clip", "action_group", "action_label", "is_loop")
+        species_tags.jsonl   one entry per species ("species", "species_tags")
+    Preprocessing fails up front when either is missing or invalid, so label
+    the new clips and register the species before running.
+
+Loop flag ("is_loop" in action_labels.jsonl -- proposed by a tool, hand-verified):
+    Every clip about to be built must already carry "is_loop"; this script only
+    READS action_labels.jsonl and never writes it. The flag decides the clip's
+    terminal velocity row at extraction and is the model's loop condition. The
+    workflow is: label the clips (action_group / action_label), run
+        python tools/prefill_loop_flags.py --dataset-dir <dataset> --raw-data-dir <raw>
+    to propose the flag from each source animation (the same alignment and
+    detector this script uses), verify the proposals in dataset/review
+    (serve.py), then preprocess. A build whose target clips are not all judged
+    fails before any source is loaded, naming the clips.
+
 Examples:
     # Default workflow: process only newly added source animations -> validate
     python preprocess_and_validate.py
 
     # Force a full rebuild of every object
     python preprocess_and_validate.py --overwrite
+
+    # Full rebuild with no interactive confirmation (scripts/CI)
+    python preprocess_and_validate.py --overwrite --yes
 
     # Validate only (assumes preprocessing already done)
     python preprocess_and_validate.py --validate-only
@@ -434,10 +459,15 @@ def _capture_preserved_side_artifacts(
         }
 
     motions_dir = dataset_dir_path / MOTION_DIR
-    # Tolerate clips that still lack a hand-written action label: this is a
-    # preserve-only read, and the strict check belongs to artifact regeneration /
-    # training, not here.
-    for motion_name, entry in load_motion_metadata(dataset_dir_path, require_action_labels=False).items():
+    # The sidecar is a run prerequisite (verified up front before preprocessing
+    # starts), so every clip carries an entry and the strict join is the right
+    # read: an incomplete action_labels.jsonl aborts before anything is deleted.
+    # The loop flag is the one exception: the targeted species' rows may still
+    # lack it (their rebuild is what fills it), and those entries are dropped
+    # here anyway.
+    for motion_name, entry in load_motion_metadata(
+        dataset_dir_path, require_loop_flag=False
+    ).items():
         if not (motions_dir / motion_name).exists():
             continue
         object_type = str(
@@ -465,11 +495,10 @@ def _merge_preserved_side_artifacts(dataset_dir_path: Path, preserved: Preserved
         save_cond(cond_path, stamp_dataset_cond(current_cond, dataset_dir_path))
 
     motions_dir = dataset_dir_path / MOTION_DIR
-    # Carry-forward read only; freshly preprocessed clips may not be hand-labeled yet.
-    # Artifact regeneration no longer backfills labels (2026-08-30): a missing
-    # action_labels.jsonl entry fast-fails there, so label new clips before
-    # regenerating.
-    current_metadata = load_motion_metadata(dataset_dir_path, require_action_labels=False)
+    # Nothing backfills labels any more: clips are hand-labeled before
+    # preprocessing, so a missing action_labels.jsonl entry fast-fails here
+    # (and in artifact regeneration) instead of being carried forward empty.
+    current_metadata = load_motion_metadata(dataset_dir_path)
     for motion_name, entry in preserved.motion_metadata.items():
         if motion_name in current_metadata:
             continue
@@ -510,6 +539,7 @@ def check_and_clean_old_data(
     object_filter: str = "",
     raw_data_dir: str = "",
     overwrite: bool = False,
+    assume_yes: bool = False,
 ) -> tuple[bool, PreservedSideArtifacts, tuple[str, ...]]:
     """
     Resolve which object types to (re)process and clean up stale outputs.
@@ -585,11 +615,14 @@ def check_and_clean_old_data(
     print("=" * 70)
     for line in summary:
         print(line)
-    print("\nDo you want to delete the matching files and proceed with preprocessing?")
 
-    if not _confirm_yes_no("Enter 'yes' to delete and continue, or 'no' to abort: "):
-        print("\nPreprocessing aborted.")
-        return False, preserved, objects_to_process
+    if assume_yes:
+        print("\n--yes: confirmation skipped, deleting and continuing.")
+    else:
+        print("\nDo you want to delete the matching files and proceed with preprocessing?")
+        if not _confirm_yes_no("Enter 'yes' to delete and continue, or 'no' to abort: "):
+            print("\nPreprocessing aborted.")
+            return False, preserved, objects_to_process
 
     print("\nDeleting...")
     if not _delete_paths(paths_to_delete):
@@ -610,7 +643,7 @@ def run_preprocessing(
 ) -> int:
     """Run the AnyTop dataset preprocessing in-process over the given object list."""
     print("\n" + "=" * 70)
-    print("STEP 1: PREPROCESSING - Creating AnyTop dataset")
+    print("STEPS 1-2: ROOT CONFIRMATION -> MOTION PREPROCESSING")
     print("=" * 70 + "\n")
 
     objects = list(objects)
@@ -706,6 +739,7 @@ def run_remove_motions(
     object_filter: str = "",
     rm_pattern: str = "",
     raw_data_dir: str = "",
+    assume_yes: bool = False,
 ) -> int:
     """Remove motions matching *rm_pattern* from the preprocessed dataset.
 
@@ -782,9 +816,10 @@ def run_remove_motions(
         print(f"  ... and {len(to_delete) - preview_n} more")
     print()
 
-    if not _confirm_yes_no("Enter 'yes' to delete these motions, or 'no' to abort: "):
-        print("\nRemoval aborted.")
-        return 0
+    if not assume_yes:
+        if not _confirm_yes_no("Enter 'yes' to delete these motions, or 'no' to abort: "):
+            print("\nRemoval aborted.")
+            return 0
 
     # --- Delete motion .npy files ---
     print("\nDeleting motion files...")
@@ -821,7 +856,12 @@ def run_remove_motions(
             print(f"  [OK] Deleted {insp_deleted} inspection file(s)")
 
     # --- Update motion_metadata.json ---
-    metadata = load_motion_metadata(dataset_dir_path, require_action_labels=False)
+    # Raw read, NOT the strict join: --rm exists to delete clips, including
+    # ones whose source (and action_labels.jsonl row) is already gone. The
+    # strict join would refuse to touch such a clip, which is exactly the
+    # "deleted the source" case this is for.
+    from data_loaders.truebones.truebones_utils.dataset_pipeline import _load_motion_metadata_raw
+    metadata = _load_motion_metadata_raw(dataset_dir_path)
     if metadata:
         removed_meta = 0
         for mname in to_delete:
@@ -837,8 +877,10 @@ def run_remove_motions(
     labels_path = dataset_dir_path / ACTION_LABELS_FILE
     if labels_path.exists():
         entries = _load_jsonl(labels_path)
-        delete_set = set(to_delete)
-        new_entries = [e for e in entries if e.get("clip", "") not in delete_set]
+        # to_delete holds motions/ file names ("<name>.npy"); the sidecar is
+        # keyed by the extension-less clip name.
+        delete_set = {Path(m).stem for m in to_delete}
+        new_entries = [e for e in entries if Path(e.get("clip", "")).stem not in delete_set]
         if len(new_entries) != len(entries):
             _write_jsonl(labels_path, new_entries)
             print(f"  [OK] Removed {len(entries) - len(new_entries)} entries from {ACTION_LABELS_FILE}")
@@ -958,7 +1000,7 @@ def run_validation(
 ) -> int:
     """Run dataset validation."""
     print("\n" + "=" * 70)
-    print("STEP 2: VALIDATION - Checking preprocessed dataset")
+    print("STEP 3: VALIDATION - Checking preprocessed dataset")
     print("=" * 70 + "\n")
 
     # The workflow always operates over every object, so validate the whole dataset.
@@ -976,7 +1018,7 @@ def run_validation(
         print_warn,
         ValidationError,
     )
-    from data_loaders.truebones.truebones_utils.motion_process import ROOT_XZ_STRIP_THRESHOLD
+    from data_loaders.truebones.truebones_utils.motion_process import ROOT_XZ_DRIFT_THRESHOLD
 
     # Resolve dataset directory
     dataset_dir = resolve_dataset_dir(dataset_dir or None)
@@ -1012,7 +1054,7 @@ def run_validation(
             bvhs_dir,
             cond,
             sample_count,
-            ROOT_XZ_STRIP_THRESHOLD,
+            ROOT_XZ_DRIFT_THRESHOLD,
             motion_orientation_threshold=motion_orientation_threshold,
         )
 
@@ -1069,6 +1111,17 @@ def parse_args() -> argparse.Namespace:
             "Reprocess every targeted object, deleting existing outputs first (a full "
             "wipe when no --filter is set). Without it, preprocessing is incremental: only "
             "newly added source animations are processed; clips already on disk are kept."
+        ),
+    )
+    parser.add_argument(
+        "--yes",
+        "--assume-yes",
+        "-y",
+        dest="assume_yes",
+        action="store_true",
+        help=(
+            "Auto-confirm the overwrite deletion prompt (no interactive input). "
+            "Use with --overwrite in scripts/CI."
         ),
     )
     parser.add_argument(
@@ -1186,14 +1239,18 @@ def main() -> int:
     if args.motion_orientation_threshold < 0:
         print("ERROR: --motion-orientation-threshold must be >= 0")
         return 1
+
+    filter_matched_nothing = False
     if args.object_filter and not args.validate_only and not args.re_encode_joint_names_only:
         matched = _resolve_target_object_types(args.object_filter, args.raw_data_dir)
         if not matched:
+            # Non-fatal: like the incremental "no new source files" case, an unmatched
+            # filter simply means there is nothing to preprocess for this dataset.
+            filter_matched_nothing = True
             print(
-                f"ERROR: --filter '{args.object_filter}' matched no objects.\n"
+                f"[INFO] --filter '{args.object_filter}' matched no objects; nothing to preprocess.\n"
                 f"Available objects: {', '.join(_discover_all_objects(args.raw_data_dir))}"
             )
-            return 1
 
     # Handle re-encode joint names only mode
     if args.re_encode_joint_names_only:
@@ -1206,6 +1263,7 @@ def main() -> int:
             args.object_filter,
             args.rm_pattern,
             args.raw_data_dir,
+            assume_yes=args.assume_yes,
         )
 
     steps_completed = []
@@ -1215,7 +1273,8 @@ def main() -> int:
     # Check and clean old data before preprocessing
     if not args.validate_only:
         should_proceed, preserved_side_artifacts, objects_to_process = check_and_clean_old_data(
-            args.dataset_dir, args.object_filter, args.raw_data_dir, overwrite=args.overwrite
+            args.dataset_dir, args.object_filter, args.raw_data_dir,
+            overwrite=args.overwrite, assume_yes=args.assume_yes,
         )
         if not should_proceed:
             print("\n" + "=" * 70)
@@ -1226,7 +1285,9 @@ def main() -> int:
     # Preprocess if not validate-only and there is something new to process.
     if not args.validate_only:
         if not objects_to_process:
-            if args.overwrite:
+            if filter_matched_nothing:
+                print(f"\nNo objects to process: --filter '{args.object_filter}' matched no objects.")
+            elif args.overwrite:
                 print("\nNo objects to process (filter matched no objects).")
             else:
                 print("\nNo objects to process: every targeted object is up to date "

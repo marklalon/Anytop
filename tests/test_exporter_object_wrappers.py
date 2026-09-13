@@ -128,6 +128,96 @@ def _make_test_skeleton():
     return skeleton, joint_rotations, root_translation, root_rotation
 
 
+def test_export_glb_preserves_skinned_loose_edges_with_shared_datablock_name(tmp_path) -> None:
+    """Line-only rig previews must not be silently reduced to empty nodes.
+
+    Some skeleton assets store their preview as a skinned glTF ``LINES``
+    primitive.  Blender imports that primitive as a mesh containing only loose
+    edges.  It is also valid for that mesh datablock and the armature object to
+    share a name; Blender keeps separate namespaces for those datablock types.
+    """
+    source_path = str(tmp_path / "line_rig_source.glb")
+    output_path = str(tmp_path / "line_rig_animated.glb")
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.object.armature_add()
+    armature = bpy.context.active_object
+    armature.name = "SharedRig"
+    armature.data.name = "SharedRig"
+
+    bpy.ops.object.mode_set(mode="EDIT")
+    root = armature.data.edit_bones[0]
+    root.name = "Root"
+    root.head = (0.0, 0.0, 0.0)
+    root.tail = (0.0, 1.0, 0.0)
+    child = armature.data.edit_bones.new("Child")
+    child.head = root.tail
+    child.tail = (0.0, 2.0, 0.0)
+    child.parent = root
+    child.use_connect = True
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    mesh_data = bpy.data.meshes.new("SharedRig")
+    mesh_data.from_pydata([(0.0, 0.0, 0.0), (0.0, 1.0, 0.0)], [(0, 1)], [])
+    mesh = bpy.data.objects.new("SharedRig_preview", mesh_data)
+    bpy.context.collection.objects.link(mesh)
+    mesh.parent = armature
+    modifier = mesh.modifiers.new(name="Armature", type="ARMATURE")
+    modifier.object = armature
+    mesh.vertex_groups.new(name="Root").add([0], 1.0, "REPLACE")
+    mesh.vertex_groups.new(name="Child").add([1], 1.0, "REPLACE")
+
+    # Build the input fixture with the same Blender opt-in required for LINES.
+    bpy.ops.export_scene.gltf(
+        filepath=source_path,
+        export_format="GLB",
+        export_animations=False,
+        use_mesh_edges=True,
+        export_yup=True,
+    )
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.import_scene.gltf(filepath=source_path)
+    imported_armature = next(obj for obj in bpy.data.objects if obj.type == "ARMATURE")
+    names, parents, offsets, rest_rotations = exporter_mod.extract_armature_skeleton_data(
+        imported_armature
+    )
+    skeleton = build_skeleton(names, offsets, parents, rest_rotations)
+    exporter = exporter_mod.AnimationExporter(skeleton, fps=30.0)
+
+    joint_rotations = torch.zeros((2, len(names), 4), dtype=torch.float32)
+    joint_rotations[..., 0] = 1.0
+    root_translation = torch.zeros((2, 3), dtype=torch.float32)
+    root_rotation = torch.zeros((2, 4), dtype=torch.float32)
+    root_rotation[:, 0] = 1.0
+    exporter.export_glb(
+        joint_rotations,
+        root_translation,
+        root_rotation,
+        output_path,
+        mesh_path=source_path,
+    )
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.import_scene.gltf(filepath=output_path)
+    exported_armature = next(obj for obj in bpy.data.objects if obj.type == "ARMATURE")
+    exported_mesh = next(
+        obj
+        for obj in bpy.data.objects
+        if obj.type == "MESH"
+        and any(
+            mod.type == "ARMATURE" and mod.object == exported_armature
+            for mod in obj.modifiers
+        )
+    )
+
+    assert len(exported_armature.data.bones) == 2
+    assert len(exported_mesh.data.vertices) == 2
+    assert len(exported_mesh.data.edges) == 1
+    assert len(exported_mesh.data.polygons) == 0
+    assert len(exported_mesh.vertex_groups) == 2
+
+
 def test_normalize_imported_armature_and_meshes_drops_object_translation_scale_and_preserves_bind() -> None:
     armature_world = _make_transform(
         translation=(2.0, -3.0, 5.0),
@@ -233,6 +323,31 @@ def test_remove_mesh_objects_for_skeleton_only_export_keeps_armature() -> None:
 
     assert removed == 2
     assert list(fake_bpy.data.objects) == [armature]
+
+
+def test_has_edge_only_mesh_objects_ignores_surface_mesh_loose_edges() -> None:
+    surface_mesh = types.SimpleNamespace(
+        type="MESH",
+        data=types.SimpleNamespace(edges=[object()], polygons=[object()]),
+    )
+    armature = types.SimpleNamespace(type="ARMATURE", data=types.SimpleNamespace())
+    fake_bpy = types.SimpleNamespace(
+        data=types.SimpleNamespace(objects=[armature, surface_mesh])
+    )
+
+    assert exporter_mod._has_edge_only_mesh_objects(fake_bpy) is False
+
+
+def test_has_edge_only_mesh_objects_detects_pure_wireframe_mesh() -> None:
+    wireframe_mesh = types.SimpleNamespace(
+        type="MESH",
+        data=types.SimpleNamespace(edges=[object()], polygons=[]),
+    )
+    fake_bpy = types.SimpleNamespace(
+        data=types.SimpleNamespace(objects=[wireframe_mesh])
+    )
+
+    assert exporter_mod._has_edge_only_mesh_objects(fake_bpy) is True
 
 
 def test_clear_imported_animation_data_removes_source_actions() -> None:

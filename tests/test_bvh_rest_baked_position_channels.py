@@ -1,21 +1,22 @@
-"""Regression: BVH export must write position channels after rest-rotation baking.
+"""Rest-rotation baking vs. BVH position channels.
 
-``recover_bvh_export_animation_from_motion_np`` bakes the T-pose rest rotations
-into the local rotations (``recover_processed_animation_from_feature_animation``)
-while leaving the offsets in the rest-removed feature basis. The solved local
-positions therefore deviate from the rest offsets even when the *pre-bake*
-feature animation was pure rotation (``has_animated_pos == False``).
+``recover_processed_animation_from_feature_animation`` bakes the T-pose rest
+rotations into the local rotations while leaving the offsets in the rest-removed
+feature basis. The solved local positions therefore deviate from the rest
+offsets even when the *pre-bake* feature animation was pure rotation, so a BVH
+written in that basis needs position channels (the mesh-rig restore path).
 
-The bug: the returned ``has_animated_pos`` flag was computed on the pre-bake
-feature animation, so callers exported rotation-only BVH (``positions=False``)
-for pure-rotation references on skeletons with non-identity rest rotations (e.g.
-GLB-derived references). Rotation-only reconstruction then produced a garbled
-pose because the rotation/offset pair is not FK-consistent in that basis.
+The BVH preview (``utils.npy_restore.write_feature_bvh``, shared by
+sample/generate.py and the retarget tools) avoids that basis altogether: it
+decodes on the cond skeleton with identity rest -- the skeleton-only GLB's
+animation -- so a pure-rotation clip stays a rotation-only BVH.
 
-These tests lock the invariant that drives the fix:
+These tests lock both invariants:
   * baking a non-identity rest into a pure-rotation feature animation makes
-    ``needs_bvh_position_channels`` True (positions deviate from offsets);
-  * a BVH saved with that flag round-trips back to the same world pose.
+    ``needs_bvh_position_channels`` True (positions deviate from offsets), and a
+    BVH saved with that flag round-trips back to the same world pose;
+  * the preview writer keeps a pure-rotation clip rotation-only, and its BVH
+    round-trips to the decode's world pose.
 """
 from __future__ import annotations
 
@@ -39,12 +40,12 @@ from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 from data_loaders.truebones.truebones_utils.features import (
     recover_processed_animation_from_feature_animation,
-    recover_bvh_export_animation_from_motion_np,
     recover_animation_from_motion_np,
     recover_from_bvh_rot_np,
     recover_root_quat_and_pos_np,
     get_rifke,
 )
+from utils.npy_restore import write_feature_bvh
 
 
 def _axis_angle_wxyz(axis, angle):
@@ -186,45 +187,84 @@ def _make_pure_rotation_feature_tensor(feats, parents, offsets, translation_root
     return pure
 
 
-def test_export_returns_position_channels_for_pure_rotation_with_rest():
-    """End-to-end guard for the fix through the public export entry point.
+def _bvh_nonroot_position_channel_count(bvh_path):
+    """Number of non-root JOINT blocks that declare position channels."""
+    with open(bvh_path, "r", encoding="utf-8") as handle:
+        header = handle.read().split("MOTION", 1)[0]
+    channel_lines = [line for line in header.splitlines() if "CHANNELS" in line]
+    # The first CHANNELS line is the ROOT (always 6); count the rest.
+    return sum(1 for line in channel_lines[1:] if "Xposition" in line)
 
-    A pure-rotation feature tensor has ``has_animated_pos == False`` before
-    baking. With non-identity rest rotations, ``recover_bvh_export_...`` bakes the
-    rest into the rotations, which moves the local positions off the offsets, so
-    the returned flag MUST flip to True. Before the fix it leaked the stale
-    pre-bake False, producing garbled rotation-only BVH."""
+
+def test_preview_bvh_stays_rotation_only_for_pure_rotation_clip():
+    """End-to-end guard through the preview entry point generate.py uses.
+
+    A pure-rotation feature tensor has ``has_animated_pos == False``. The
+    preview decodes it on the cond skeleton with identity rest (the
+    skeleton-only GLB's animation), so nothing moves the local positions off the
+    offsets and the BVH must come out rotation-only -- and load back to the same
+    world pose the decode produced."""
     if not (os.path.isfile(_BUFFALO_NPY) and os.path.isfile(_COND)):
         pytest.skip("Buffalo NPY / cond.npy fixtures not available")
+
+    from motion_lib import BVH
 
     cond_dict = load_cond(_COND)
     cond = cond_dict[resolve_species_key(cond_dict, "Buffalo")]
     parents = np.asarray(cond["parents"], dtype=np.int32)
     offsets = np.asarray(cond["offsets"], dtype=np.float32)
-    names = list(cond.get("canonical_bvh_joint_names", cond["joints_names"]))
     raw = np.load(_BUFFALO_NPY).astype(np.float32)
     tri = int(cond.get("translation_root_index", 0) or 0)
 
     feats = _make_pure_rotation_feature_tensor(raw, parents, offsets, tri)
 
-    # Precondition: the synthesized clip is genuinely pure-rotation pre-bake.
-    _anim, pre_bake_flag = recover_animation_from_motion_np(
-        feats, parents, offsets, translation_root_index=tri, allow_infer=True,
+    # Precondition: the synthesized clip is genuinely pure-rotation.
+    _anim, pre_flag = recover_animation_from_motion_np(
+        feats, parents, offsets, translation_root_index=tri,
     )
-    assert pre_bake_flag is False, "fixture is not pure-rotation; test cannot isolate the bug"
+    assert pre_flag is False, "fixture is not pure-rotation; test cannot isolate the contract"
 
-    # Non-identity rest rotations (the GLB-derived skeleton case).
-    joints = len(parents)
-    rest = np.zeros((joints, 4), dtype=np.float64)
-    rest[:, 0] = 1.0
-    rest[1] = _axis_angle_wxyz([0.0, 0.0, 1.0], math.pi * 0.5)
-    rest[2] = _axis_angle_wxyz([1.0, 0.0, 0.0], math.pi * 0.4)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "preview.bvh")
+        restored = write_feature_bvh(feats, cond, out, fps=30.0)
+        assert restored.has_animated_pos is False
+        assert _bvh_nonroot_position_channel_count(out) == 0
 
-    anim, _names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
-        feats, parents, offsets, names,
-        translation_root_index=tri, allow_infer=True, tpose_rest_rotations=rest,
-    )
-    assert anim is not None
-    # The fix: the returned flag describes the baked animation that is saved.
-    assert has_animated_pos == needs_bvh_position_channels(anim)
-    assert has_animated_pos is True
+        loaded, names, _ft = BVH.load(out)
+
+    assert names == list(cond.get("canonical_bvh_joint_names", cond["joints_names"]))
+    err = np.max(np.linalg.norm(
+        positions_global(loaded) - positions_global(restored.animation), axis=-1,
+    ))
+    assert err < 1e-3, f"preview BVH roundtrip world-position error too large: {err}"
+
+
+def test_preview_bvh_with_rigid_ik_matches_restore_decode():
+    """``--fullbody_ik --stretch_factor 0`` keeps every bone at its rest length
+    and still writes a rotation-only BVH; the world pose stays within the IK's
+    own reported residual of the position-channel target."""
+    if not (os.path.isfile(_BUFFALO_NPY) and os.path.isfile(_COND)):
+        pytest.skip("Buffalo NPY / cond.npy fixtures not available")
+
+    from motion_lib import BVH
+
+    cond_dict = load_cond(_COND)
+    cond = cond_dict[resolve_species_key(cond_dict, "Buffalo")]
+    raw = np.load(_BUFFALO_NPY).astype(np.float32)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "preview_ik.bvh")
+        restored = write_feature_bvh(
+            raw, cond, out, fps=30.0, fullbody_ik=True, stretch_factor=0.0,
+        )
+        assert restored.ik_error is not None
+        assert _bvh_nonroot_position_channel_count(out) == 0
+        loaded, _names, _ft = BVH.load(out)
+
+    anim = restored.animation
+    # Rigid: non-root local positions are exactly the rest offsets.
+    assert np.max(np.abs(anim.positions[:, 1:] - anim.offsets[None, 1:])) < 1e-6
+    err = np.max(np.linalg.norm(
+        positions_global(loaded) - positions_global(anim), axis=-1,
+    ))
+    assert err < 1e-3, f"IK preview BVH roundtrip world-position error too large: {err}"

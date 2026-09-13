@@ -46,7 +46,7 @@ def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 
 class AnyTop(nn.Module):
     def __init__(self, max_joints, feature_len,
                  latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
-                 activation="gelu", t5_out_dim = 512, root_input_feats=13,
+                 activation="gelu", t5_out_dim = 512, root_input_feats=12,
                  **kargs):
         super().__init__()
 
@@ -89,7 +89,7 @@ class AnyTop(nn.Module):
         self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
         # Action-label conditioning: a single pathway -- the frozen T5 vectors of
         # the label's WORDS, pooled into one channel per role slot (head /
-        # direction / modifier) and concatenated. A channel reads its own slot
+        # direction / modifier / hands) and concatenated. A channel reads its own slot
         # only, so a label's head and direction axes are literally unchanged by
         # however many modifiers it also spells, and unseen (action x direction)
         # combinations compose out of word vectors the model has already seen.
@@ -126,6 +126,15 @@ class AnyTop(nn.Module):
 
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout, species_joint_cond=self.species_joint_cond,
                                           joint_name_drop_prob=self.joint_name_drop_prob)
+        # Token-type embedding for "this (frame, joint) is being re-drawn",
+        # added to the input tokens right after InputProcess so the WHOLE trunk
+        # (spatial / temporal attention, FFN, and through them the cross-limb
+        # values and queries) can see the unreliable map. The cross-limb
+        # reliability biases alone are logit shifts, which softmax cancels the
+        # moment every valid joint of a frame is flagged -- whole-frame
+        # inpainting and temporal spans were invisible. Zero-init, so the
+        # path starts as a no-op.
+        self.unreliable_embedding = nn.Parameter(torch.zeros(self.latent_dim))
         if self.loop_cond_prob > 0.0:
             self.loop_condition_projection = nn.Sequential(
                 nn.Linear(1, self.latent_dim),
@@ -134,14 +143,14 @@ class AnyTop(nn.Module):
             )
         else:
             self.loop_condition_projection = None
-        self.playspeed_projection = nn.Sequential(
+        self.resample_speed_projection = nn.Sequential(
             nn.Linear(1, self.latent_dim),
             nn.GELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
         if self.action_label_cond:
             # Project the concatenated slot channels and add the result to the
-            # timestep token, alongside loop / playspeed / canonical frame. One
+            # timestep token, alongside loop / resample_speed / canonical frame. One
             # Linear over the concatenation IS one Linear per channel block,
             # summed, so each channel's relative scale is learned rather than
             # being some offline budget we picked. Additive and linear is enough:
@@ -187,7 +196,7 @@ class AnyTop(nn.Module):
             self.species_film = None
 
         # Output-coordinate-frame condition: the per-object_subset canonical
-        # (mean, std) 13-vectors the features are written in, projected and added
+        # (mean, std) 12-vectors the features are written in, projected and added
         # to the timestep token. These statistics define which of the seven affine
         # canonical spaces this sample lives in, and before this projection NOTHING
         # in the model read them -- the only trace was the object_subset word buried
@@ -197,7 +206,7 @@ class AnyTop(nn.Module):
         # not an offset.
         #
         # UNCONDITIONAL, on purpose -- there is no flag for it. Every cond.npy in
-        # the canonical_motion_v3 feature space carries these two vectors and the
+        # the canonical_motion_v4 feature space carries these two vectors and the
         # dataset refuses to load without them, so "off" would only ever mean
         # "blind to the output space", which is the defect this fixes. It is also
         # NOT CFG-droppable and not gated behind species conditioning: this is not
@@ -228,6 +237,30 @@ class AnyTop(nn.Module):
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
 
     @staticmethod
+    def _prepare_unreliable_mask(raw_mask, bs, nframes, njoints, device, dtype):
+        """(nframes+1, B, J) float map, T-pose row reliable; None when absent.
+
+        Accepts the loss-side raw (B, nframes, J) layout or the already
+        prepared one. Padding joints are never flagged by either producer
+        (the samplers draw from valid joints only; inference maps derive from
+        the inpaint mask over real joints), so nothing is re-zeroed here.
+        """
+        if raw_mask is None:
+            return None
+        mask = raw_mask.to(device=device, dtype=dtype)
+        raw_expected_shape = (bs, nframes, njoints)
+        prepared_expected_shape = (nframes + 1, bs, njoints)
+        if mask.shape == raw_expected_shape:
+            reliable_tpose = torch.zeros((bs, 1, njoints), device=device, dtype=dtype)
+            return torch.cat([reliable_tpose, mask], dim=1).transpose(0, 1).contiguous()
+        if mask.shape != prepared_expected_shape:
+            raise ValueError(
+                "y['cross_limb_unreliable_mask'] must have shape "
+                f"{raw_expected_shape} or {prepared_expected_shape}, got {tuple(mask.shape)}"
+            )
+        return mask
+
+    @staticmethod
     def _build_joint_key_padding_mask(njoints, n_joints, device):
         """Return the padding-only joint key mask used by attention.
 
@@ -236,7 +269,7 @@ class AnyTop(nn.Module):
         """
         return torch.arange(njoints, device=device)[None, :] >= n_joints[:, None]
 
-    def _coerce_loop_condition(self, raw_loop_cond, batch_size, device, dtype):
+    def _coerce_loop_condition(self, raw_loop_cond, batch_size, device, dtype, field_name='is_loop'):
         if raw_loop_cond is None:
             raw_loop_cond = torch.zeros(batch_size, device=device, dtype=dtype)
         elif not torch.is_tensor(raw_loop_cond):
@@ -249,33 +282,33 @@ class AnyTop(nn.Module):
             raw_loop_cond = raw_loop_cond.expand(batch_size)
         elif raw_loop_cond.numel() != batch_size:
             raise ValueError(
-                "is_loop batch dimension must match the motion batch size, got "
+                f"{field_name} batch dimension must match the motion batch size, got "
                 f"{raw_loop_cond.numel()} for batch {batch_size}"
             )
         return raw_loop_cond.to(dtype=dtype).view(batch_size, 1)
 
-    def _coerce_playspeed_cond(self, raw_playspeed_cond, batch_size, device, dtype):
-        if raw_playspeed_cond is None:
-            raw_playspeed_cond = torch.ones(batch_size, device=device, dtype=dtype)
-        elif not torch.is_tensor(raw_playspeed_cond):
-            raw_playspeed_cond = torch.as_tensor(raw_playspeed_cond, device=device)
-        raw_playspeed_cond = raw_playspeed_cond.to(device=device)
-        if raw_playspeed_cond.dim() == 0:
-            raw_playspeed_cond = raw_playspeed_cond.reshape(1)
-        raw_playspeed_cond = raw_playspeed_cond.reshape(-1)
-        if raw_playspeed_cond.numel() == 1 and batch_size != 1:
-            raw_playspeed_cond = raw_playspeed_cond.expand(batch_size)
-        elif raw_playspeed_cond.numel() != batch_size:
+    def _coerce_resample_speed_cond(self, raw_resample_speed_cond, batch_size, device, dtype):
+        if raw_resample_speed_cond is None:
+            raw_resample_speed_cond = torch.ones(batch_size, device=device, dtype=dtype)
+        elif not torch.is_tensor(raw_resample_speed_cond):
+            raw_resample_speed_cond = torch.as_tensor(raw_resample_speed_cond, device=device)
+        raw_resample_speed_cond = raw_resample_speed_cond.to(device=device)
+        if raw_resample_speed_cond.dim() == 0:
+            raw_resample_speed_cond = raw_resample_speed_cond.reshape(1)
+        raw_resample_speed_cond = raw_resample_speed_cond.reshape(-1)
+        if raw_resample_speed_cond.numel() == 1 and batch_size != 1:
+            raw_resample_speed_cond = raw_resample_speed_cond.expand(batch_size)
+        elif raw_resample_speed_cond.numel() != batch_size:
             raise ValueError(
-                "playspeed_cond batch dimension must match the motion batch size, got "
-                f"{raw_playspeed_cond.numel()} for batch {batch_size}"
+                "resample_speed_cond batch dimension must match the motion batch size, got "
+                f"{raw_resample_speed_cond.numel()} for batch {batch_size}"
             )
         # `.all()` in a python `if` is a data-dependent value that forces a
         # torch.compile graph break every step, so skip the finiteness guard
         # under compilation (eager eval/inference still validates).
-        if not torch.compiler.is_compiling() and not torch.isfinite(raw_playspeed_cond).all():
-            raise ValueError("playspeed_cond must be finite")
-        return raw_playspeed_cond.to(dtype=dtype).view(batch_size, 1)
+        if not torch.compiler.is_compiling() and not torch.isfinite(raw_resample_speed_cond).all():
+            raise ValueError("resample_speed_cond must be finite")
+        return raw_resample_speed_cond.to(dtype=dtype).view(batch_size, 1)
 
     def _init_action_conditioning(self, bundle, t5_out_dim):
         """Freeze the word table and the role transform into model buffers.
@@ -302,7 +335,7 @@ class AnyTop(nn.Module):
                 )
             # The gate the geometry preflight cannot enforce on its own: the
             # first Linear has to be wide enough to stay injective on the direct
-            # sum of the three slot source spaces, or labels that differ only in
+            # sum of the slot source spaces, or labels that differ only in
             # slot membership can collide before any weight is trained.
             report = bundle.slot_source_rank_report(self.latent_dim)
             if not report['full_rank']:
@@ -889,16 +922,16 @@ class AnyTop(nn.Module):
         # disagreement (matching inpaint clamp behavior at inference).
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
         # Species FiLM modulates the base time signal *before* the additive
-        # condition tokens (action/loop/playspeed) are summed, so each conditioning
+        # condition tokens (action/loop/resample_speed) are summed, so each conditioning
         # channel stays independent and the additive tokens are not scaled by it.
         timesteps_emb = self._apply_species_film(timesteps_emb, y, bs, x.device, x.dtype)
-        playspeed_condition = self._coerce_playspeed_cond(
-            y.get('playspeed_cond'),
+        resample_speed_condition = self._coerce_resample_speed_cond(
+            y.get('resample_speed_cond'),
             batch_size=bs,
             device=x.device,
             dtype=x.dtype,
         )
-        timesteps_emb = timesteps_emb + self.playspeed_projection(playspeed_condition)
+        timesteps_emb = timesteps_emb + self.resample_speed_projection(resample_speed_condition)
         timesteps_emb = timesteps_emb + self._build_canonical_frame_token(
             y, bs, x.device, x.dtype)
         if self.loop_cond_prob > 0.0 and self.loop_condition_projection is not None:
@@ -912,29 +945,6 @@ class AnyTop(nn.Module):
         action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype)
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token
-
-        loop_phase_mask = None
-        raw_loop_phase_mask = y.get('is_loop')
-        if raw_loop_phase_mask is not None:
-            loop_phase_mask = torch.as_tensor(raw_loop_phase_mask, device=x.device, dtype=torch.bool).reshape(-1)
-            if loop_phase_mask.numel() == 1 and bs != 1:
-                loop_phase_mask = loop_phase_mask.expand(bs)
-            elif loop_phase_mask.numel() != bs:
-                raise ValueError(
-                    "is_loop batch dimension must match the motion batch size, got "
-                    f"{loop_phase_mask.numel()} for batch {bs}"
-                )
-            raw_loop_full_cycle = y.get('loop_full_cycle')
-            if raw_loop_full_cycle is not None:
-                loop_full_cycle_mask = torch.as_tensor(raw_loop_full_cycle, device=x.device, dtype=torch.bool).reshape(-1)
-                if loop_full_cycle_mask.numel() == 1 and bs != 1:
-                    loop_full_cycle_mask = loop_full_cycle_mask.expand(bs)
-                elif loop_full_cycle_mask.numel() != bs:
-                    raise ValueError(
-                        "loop_full_cycle batch dimension must match the motion batch size, got "
-                        f"{loop_full_cycle_mask.numel()} for batch {bs}"
-                    )
-                loop_phase_mask = loop_phase_mask & loop_full_cycle_mask
 
         species_emb_for_joints = (
             self._coerce_species_emb(y, bs, x.device, x.dtype) if self.species_joint_cond else None
@@ -962,26 +972,20 @@ class AnyTop(nn.Module):
         # whole window, including the T-pose token at index 0 and, symmetrically,
         # that token over every frame.
 
-        cross_limb_unreliable_mask = None
-        if self.cross_limb:
-            raw_cross_limb_unreliable_mask = y.get('cross_limb_unreliable_mask')
-            if raw_cross_limb_unreliable_mask is not None:
-                cross_limb_unreliable_mask = raw_cross_limb_unreliable_mask.to(device=x.device, dtype=x.dtype)
-                raw_expected_shape = (bs, nframes, njoints)
-                prepared_expected_shape = (nframes + 1, bs, njoints)
-                if cross_limb_unreliable_mask.shape == raw_expected_shape:
-                    reliable_tpose = torch.zeros((bs, 1, njoints), device=x.device, dtype=x.dtype)
-                    cross_limb_unreliable_mask = torch.cat([reliable_tpose, cross_limb_unreliable_mask], dim=1)
-                    cross_limb_unreliable_mask = cross_limb_unreliable_mask.transpose(0, 1).contiguous()
-                elif cross_limb_unreliable_mask.shape != prepared_expected_shape:
-                    raise ValueError(
-                        "y['cross_limb_unreliable_mask'] must have shape "
-                        f"{raw_expected_shape} or {prepared_expected_shape}, got "
-                        f"{tuple(cross_limb_unreliable_mask.shape)}"
-                    )
+        # One prepared (nframes+1, B, J) unreliable map, 1 == being re-drawn,
+        # shared by the input embedding below and every cross-limb block. The
+        # training loss hands over the raw (B, nframes, J) map and the T-pose
+        # row is prepended here as reliable; inference already passes the
+        # prepared layout and must not have it prepended twice.
+        cross_limb_unreliable_mask = self._prepare_unreliable_mask(
+            y.get('cross_limb_unreliable_mask'), bs, nframes, njoints, x.device, x.dtype
+        )
+        if cross_limb_unreliable_mask is not None:
+            x = x + cross_limb_unreliable_mask.unsqueeze(-1) * self.unreliable_embedding
 
-        loop_phase_lengths = y.get('loop_phase_lengths', y.get('lengths'))
-
+        # is_loop is the only loop conditioning: it selects the circular time
+        # table (closed over the window) for those samples. The decoder coerces
+        # and size-checks it.
         output = self.seqTransDecoder(
             tgt=x,
             timesteps_embs=timesteps_emb,
@@ -990,8 +994,7 @@ class AnyTop(nn.Module):
             tgt_key_padding_mask=joint_key_padding_mask,
             y=y,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
-            loop_phase_mask=loop_phase_mask,
-            lengths=loop_phase_lengths,
+            loop_phase_mask=y.get('is_loop'),
         )
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
         return output
@@ -1116,7 +1119,7 @@ class InputProcess(nn.Module):
 
     def forward(self, x, rest_pose, joints_embedded_names, species_emb=None, joint_valid=None,
                 joint_struct=None):
-        # x.shape = [batch_size, joints, 13, frames]
+        # x.shape = [batch_size, joints, feature_len, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
         rest_pose_all_joints_except_root = self.tpos_joint_embedding(rest_pose[:, :, 1:])
         rest_pose_root_data = self.tpos_root_embedding(rest_pose[:, :, 0:1])
@@ -1176,7 +1179,12 @@ class InputProcess(nn.Module):
         # joints to confuse this with.
         struct_latent = struct_latent * joint_valid.unsqueeze(-1).to(struct_latent.dtype)
         x = x + struct_latent[None, ...]
-        positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1).repeat(x.shape[1], 1, 1)
+        # Absolute frame PE, the baseline frame signal for every sample (loop
+        # samples add a circular phase on top, per decoder layer -- see
+        # circular_phase_embedding). Batch dim 1: only row 0 is kept, so a
+        # [B, T, C] table would be (B-1)/B wasted. fp32 on purpose: this add
+        # promotes the bf16 residual stream back to fp32 before the decoder.
+        positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1)
         pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
         return x + pos_emb.unsqueeze(1).unsqueeze(1)
 

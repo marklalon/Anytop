@@ -6,13 +6,13 @@ three functional sub-modules.
 """
 
 from motion_lib.Animation import positions_global
-from data_loaders.truebones.truebones_utils.param_utils import (
-    FOOT_CONTACT_VEL_THRESH,
-)
-
 # ── animation_utils (animation processing & joint metadata) ─────────────
 from .animation_utils import (
-    ROOT_XZ_STRIP_THRESHOLD,
+    ROOT_XZ_DRIFT_THRESHOLD,
+    ROOT_XZ_SOFT_CLAMP_KNEE,
+    ROOT_XZ_SOFT_CLAMP_LIMIT,
+    ROOT_XZ_LOCOMOTION_KNEE,
+    ROOT_XZ_LOCOMOTION_LIMIT,
     # Joint name canonicalization
     canonical_name_for_bvh,
     collect_joint_name_collision_groups,
@@ -22,7 +22,16 @@ from .animation_utils import (
     attach_t5_embeddings_to_cond,
     # Animation transforms
     find_translation_root,
+    chain_xz_travel,
+    collapse_translation_root_chain,
+    select_transport_carrier,
     xz_locomotion_extent,
+    root_xz_trajectory,
+    root_xz_heading,
+    flatten_root_xz_drift,
+    soft_clamp_extent,
+    soft_clamp_root_xz,
+    scale_root_xz_extent,
     move_xz_to_origin,
     # BVH export
     needs_bvh_position_channels,
@@ -47,7 +56,6 @@ from .features import (
     recover_from_bvh_ric_np,
     recover_from_bvh_rot_np,
     recover_animation_from_motion_np,
-    recover_bvh_export_animation_from_motion_np,
 )
 
 # ── dataset_pipeline (dataset building) ─────────────────────────────────

@@ -22,6 +22,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     PROP_SOCKET_BONE_LENGTH_RATIO,
     PROP_SOCKET_MAX_SUBTREE_JOINTS,
     ROOT_Y_MIN_HEIGHT,
+    ROOT_Y_SOFT_CLAMP_KNEE,
     SCALE_BODY_SPAN_BLEND_WEIGHT,
     VERTICAL_CLAMP_MIN_RATIO,
     VERTICAL_CLAMP_MAX_RATIO,
@@ -58,22 +59,57 @@ def _warn(msg: str):
     print(f'{ANSI_YELLOW}[WARN] {msg}{ANSI_RESET}')
 
 
-# Maximum translation-root XZ distance from the centred origin (in
-# HML-normalised units) before we consider a clip locomotion and forcibly zero
-# the root XZ. Clips are centred on the effective translation root's initial XZ
-# position before this threshold is evaluated.
-ROOT_XZ_STRIP_THRESHOLD = 0.6
+# Sustained one-directional translation-root XZ displacement (in HML-normalised
+# units, where a body span is 1.389) above which a clip is re-seated in place.
+#
+# Measured on the TRANSPORT the clip carries in its own heading frame, never on
+# its raw extent. An out-and-back excursion has no net transport however far it
+# reaches, so a lunge, a dodge or a swing keeps its root motion verbatim; a gait
+# that travels is nothing but transport and gets flattened however small each
+# step is. Clips are centred on the effective translation root's initial XZ
+# position before this is evaluated.
+ROOT_XZ_DRIFT_THRESHOLD = 0.08
+
+# Root XZ soft clamp, in HML-normalised units (a body span is 1.389).
+#
+# Travel is bounded, not gated: inside the knee nothing is touched at all, past
+# it the excess is compressed smoothly, and the ceiling is an asymptote the path
+# approaches but never reaches. This is what keeps a lunge, a dodge or a death
+# slide recognisable at a magnitude the representation can carry -- the old
+# extent gate answered the same question by zeroing the whole trajectory.
+ROOT_XZ_SOFT_CLAMP_KNEE = 0.6
+ROOT_XZ_SOFT_CLAMP_LIMIT = 0.8
+
+# Locomotion's own extent bound, tighter than the soft clamp above and applied to
+# EVERY locomotion clip, not only the ones that travelled -- that is what makes it
+# an invariant of the group rather than of whether a clip happened to move. The
+# knee sits inside a normal gait's range (post-detrend extent runs p50 0.013,
+# p90 0.110, p95 0.159), so unlike the 0.6 ceiling it is touched routinely and must
+# leave the cycle's shape alone: it scales the whole clip by ONE factor, not each
+# frame's radius (see ``scale_root_xz_extent``).
+ROOT_XZ_LOCOMOTION_KNEE = 0.1
+ROOT_XZ_LOCOMOTION_LIMIT = 0.2
+
 
 # Loop detection judges the wrap-around gap (last frame -> first frame) against
-# the clip's own frame-to-frame motion distribution. A high percentile gives a
-# compact robust envelope without tying tolerance to skeleton size.
+# the clip's own frame-to-frame motion distribution, read over the frames near
+# the two boundaries. A high percentile gives a compact robust envelope without
+# tying tolerance to skeleton size.
 #
-# A clip loops only when the endpoint gap fits inside that transition envelope
-# and the translation root's accumulated XZ displacement returns to the start.
-LOOP_DETECTION_GAP_RATIO = 2.2
-LOOP_DETECTION_STEP_MIN = 0.02
+# A clip loops only when the endpoint gap fits inside
+# ``clamp(GAP_RATIO * envelope, STEP_MIN, STEP_MAX)`` and the translation root's
+# accumulated XZ displacement returns to the start.
+#
+# The constants are tightened for PRECISION, because the two errors are not
+# symmetric: a clip wrongly called a loop is tiled into training data that hitches
+# every cycle, while one wrongly refused merely loses that augmentation.
+LOOP_DETECTION_GAP_RATIO = 2
+LOOP_DETECTION_STEP_MIN = 0.03
 LOOP_DETECTION_STEP_MAX = 0.08
-LOOP_DETECTION_ROOT_XZ_TOLERANCE = 0.08
+
+# The translation root's accumulated XZ displacement must also return to the
+# start, or the clip transports and the second cycle begins somewhere else.
+LOOP_DETECTION_ROOT_XZ_TOLERANCE = 0.05
 
 
 ################## Joint Name Canonicalization #####################
@@ -422,41 +458,46 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
 
 ################## Animation Transform Utilities #####################
 
-def compute_motion_loop_diagnostics(positions, root_xz_velocity=None, translation_root_index=0):
+def compute_motion_loop_diagnostics(positions, root_xz_velocity=None,
+                                    translation_root_index=0):
     """Return loop diagnostics on the exact runtime boundary used by detect_motion_loop.
 
     The endpoint gap is compared against a robust upper envelope of the clip's
-    own per-frame motion. When ``root_xz_velocity`` is provided, the translation
-    root's accumulated XZ displacement must also close for the clip to count as
-    a loop.
+    own per-frame motion, taken over the frames near the two boundaries. When
+    ``root_xz_velocity`` is provided, the translation root's accumulated XZ
+    displacement must also close for the clip to count as a loop.
+
+    ``loop_margin`` is the gap as a fraction of its tolerance, so <= 1 passes and
+    the value says by how much; ``term_margins`` carries the same number under the
+    name of the term that produced it, so the runtime and the report share one
+    vocabulary even though this rule has a single term.
     """
     positions = np.asarray(positions, dtype=np.float64)
     if positions.shape[0] < 3:
         return {
-            'wrap_gap': 0.0,
-            'transition_envelope': 0.0,
-            'effective_tolerance': 0.0,
-            'root_xz_total_disp': 0.0,
-            'root_xz_is_closed': True,
-            'is_loop': False,
+            'wrap_gap': 0.0, 'transition_envelope': 0.0,
+            'effective_tolerance': 0.0, 'loop_margin': float('inf'),
+            'term_margins': {}, 'root_xz_total_disp': 0.0,
+            'root_xz_is_closed': True, 'is_closed': False, 'is_loop': False,
         }
 
-    # wrap_gap: p75 of per-joint endpoint distance — robust against a single
+    # wrap_gap: p80 of per-joint endpoint distance -- robust against a single
     # outlier joint while still capturing the bulk of the discontinuity.
-    wrap_gap = float(np.percentile(np.linalg.norm(positions[-1] - positions[0], axis=-1), 75))
+    wrap_gap = float(np.percentile(np.linalg.norm(positions[-1] - positions[0], axis=-1), 80))
 
     # Use only frames near the clip boundaries to estimate the "normal transition"
     # envelope. The wrap_gap measures the jump from last frame -> first frame, so
     # it should be compared against the typical motion amplitude at the clip edges
     # rather than the peak motion in the middle (e.g., a fast swing or stride).
+    # A fixed 5 frames per end keeps the window short and predictable across clip
+    # lengths; halved so the two windows never overlap on very short clips.
     frame_steps = np.linalg.norm(np.diff(positions, axis=0), axis=-1)  # (T-1, J)
-    boundary_ratio = 0.15  # consider the outer 15% at each end
-    boundary_count = max(1, int(np.ceil((frame_steps.shape[0] - 1) * boundary_ratio)))
+    boundary_count = min(5, frame_steps.shape[0] // 2)  # a fixed 5 frames at each end
     boundary_steps = np.concatenate([
         frame_steps[:boundary_count],
         frame_steps[-boundary_count:],
     ], axis=0)
-    transition_envelope = float(np.percentile(boundary_steps, 65.0))  # p65 — tighter than p75 wrap_gap
+    transition_envelope = float(np.percentile(boundary_steps, 65.0))  # p65 boundary envelope
     effective_tolerance = min(
         max(
             LOOP_DETECTION_GAP_RATIO * transition_envelope,
@@ -464,6 +505,10 @@ def compute_motion_loop_diagnostics(positions, root_xz_velocity=None, translatio
         ),
         LOOP_DETECTION_STEP_MAX,
     )
+    loop_margin = wrap_gap / effective_tolerance if effective_tolerance > 0.0 else float('inf')
+    term_margins = {'position_wrap': loop_margin}
+
+    is_closed = bool(wrap_gap <= effective_tolerance)
 
     root_xz_total_disp = 0.0
     root_xz_is_closed = True
@@ -483,6 +528,8 @@ def compute_motion_loop_diagnostics(positions, root_xz_velocity=None, translatio
 
         root_velocity = velocity[:, translation_root_index, :]
         if velocity.shape[0] == positions.shape[0]:
+            # The stored terminal row is the wrap delta a PREVIOUS loop verdict
+            # wrote, so reading it here would let that verdict decide this one.
             root_velocity = root_velocity[:-1]
         elif velocity.shape[0] != positions.shape[0] - 1:
             raise ValueError(
@@ -490,17 +537,19 @@ def compute_motion_loop_diagnostics(positions, root_xz_velocity=None, translatio
                 f"got {velocity.shape[0]} vs positions T={positions.shape[0]}"
             )
 
-        root_xz_steps = np.linalg.norm(root_velocity[:, [0, 2]], axis=-1)
         root_xz_total_disp = float(np.linalg.norm(np.sum(root_velocity[:, [0, 2]], axis=0)))
         root_xz_is_closed = bool(root_xz_total_disp <= LOOP_DETECTION_ROOT_XZ_TOLERANCE)
 
     return {
-        'wrap_gap': wrap_gap,
+        'wrap_gap': float(wrap_gap),
         'transition_envelope': float(transition_envelope),
         'effective_tolerance': float(effective_tolerance),
+        'loop_margin': float(loop_margin),
+        'term_margins': {name: float(value) for name, value in term_margins.items()},
         'root_xz_total_disp': float(root_xz_total_disp),
         'root_xz_is_closed': bool(root_xz_is_closed),
-        'is_loop': bool(wrap_gap <= effective_tolerance and root_xz_is_closed),
+        'is_closed': bool(is_closed),
+        'is_loop': bool(is_closed and root_xz_is_closed),
     }
 
 
@@ -510,6 +559,22 @@ def detect_motion_loop(positions, root_xz_velocity=None, translation_root_index=
         root_xz_velocity=root_xz_velocity,
         translation_root_index=translation_root_index,
     )['is_loop']
+
+
+def detect_loop_from_features(features, translation_root_index=0):
+    """The detector's verdict on a STORED (T, J, 12) clip.
+
+    The same rule extraction applies to a fresh clip, read off the tensor it
+    wrote: RIC positions are channels 0:3 and local velocity 9:12, and the
+    diagnostics drop the terminal velocity row themselves so an earlier
+    verdict's wrap delta cannot vote.
+    """
+    features = np.asarray(features)
+    return detect_motion_loop(
+        features[..., 0:3],
+        root_xz_velocity=features[..., 9:12],
+        translation_root_index=translation_root_index,
+    )
 
 
 def _translation_root_candidate_chain(parents, max_depth=5):
@@ -547,12 +612,15 @@ def find_translation_root(anim, max_depth=5):
     after ``max_depth`` descendants to avoid latching onto deep noisy joints.
 
     Returns the hierarchy root (normally joint 0) when no candidate carries
-    significant local position animation.
+    significant local position animation. This answers "where is THIS clip's
+    root motion", which is not the same question as "which joint is this
+    species' transport control" -- see :func:`select_transport_carrier`.
     """
     frame_count = int(anim.positions.shape[0]) if anim.positions.ndim >= 3 else 0
     min_active_frames = max(3, int(np.ceil(frame_count * 0.2))) if frame_count > 0 else 0
     candidate_chain = _translation_root_candidate_chain(anim.parents, max_depth=max_depth)
-    fallback_joint = int(candidate_chain[0]) if candidate_chain else 0
+    first_candidate = int(candidate_chain[0]) if candidate_chain else 0
+    fallback_joint = first_candidate
 
     for j in candidate_chain:
         joint_positions = np.asarray(anim.positions[:, j], dtype=np.float64)
@@ -568,74 +636,71 @@ def find_translation_root(anim, max_depth=5):
 
         # Only consider as fallback if there are genuinely active frames,
         # not just a single-frame PTP spike from numerical noise.
-        if fallback_joint == candidate_chain[0] and j != candidate_chain[0] and active_frames >= 2:
+        if fallback_joint == first_candidate and j != first_candidate and active_frames >= 2:
             fallback_joint = j
 
     return int(fallback_joint)
 
 
-def _find_descendant_transport_chain(parents, trans_root, max_depth=2):
-    chain = []
-    current = trans_root
-    for _depth in range(max_depth):
-        children = [joint_index for joint_index, parent_index in enumerate(parents) if parent_index == current]
-        if len(children) != 1:
-            break
-        current = children[0]
-        chain.append(current)
-    return chain
+# A chain joint counts as carrying a clip's transport when its own horizontal
+# travel is at least this share of the largest travel anywhere on that chain.
+# Rigs stack several near-root control joints and animators do not always use the
+# same one, so the test has to be "is this where the motion is", not "does this
+# move at all": Crow's Spine drifts 0.026 while its Pelvis flies 0.809, and a
+# rule that counted any motion would read the whole species' trajectory off a
+# body joint.
+ROOT_TRANSPORT_CARRIER_SHARE = 0.5
+
+# ...and at least this much travel outright, in HML-normalised units. The same
+# magnitude as the flatten threshold, for the same reason: below it nothing
+# downstream reacts to the travel at all, so it cannot be worth re-rooting a
+# species over. Idle sway and vertical bob on a spine joint live down here.
+ROOT_TRANSPORT_MIN_TRAVEL = 0.08
 
 
-def bake_descendant_y_into_translation_root(anim, max_depth=2):
-    """Bake near-root locator-style Y transport back onto the translation root.
+def chain_xz_travel(anim, max_depth=5):
+    """Return ``{joint: horizontal travel}`` for the translation-root candidates.
 
-    The heuristic is intentionally narrow: follow a single chain at most two levels
-    below the effective translation root, allow one dummy node in the middle, and
-    bake only joints in that chain that carry animated local Y.
+    Travel is measured the way :func:`find_translation_root` measures activity --
+    local position, distance from the first frame -- but in XZ only, because the
+    root trajectory, the gait flattener and the soft clamp are all horizontal.
+    A joint that only bobs vertically carries no transport.
     """
-    trans_root = find_translation_root(anim)
-    chain = _find_descendant_transport_chain(anim.parents, trans_root, max_depth=max_depth)
-    bake_joints = [joint_index for joint_index in chain if np.ptp(anim.positions[:, joint_index, 1]) > 1e-4]
-    if not bake_joints:
-        return anim
+    chain = _translation_root_candidate_chain(anim.parents, max_depth=max_depth)
+    positions = np.asarray(anim.positions, dtype=np.float64)
+    travel = {}
+    for joint in chain:
+        xz = positions[:, joint][:, [0, 2]]
+        travel[int(joint)] = (
+            float(np.linalg.norm(xz - xz[0:1], axis=1).max()) if xz.shape[0] else 0.0
+        )
+    return travel
 
-    frozen_positions = anim.positions.copy()
-    for joint_index in bake_joints:
-        frozen_positions[:, joint_index, 1] = frozen_positions[0, joint_index, 1]
 
-    frozen_anim = Animation(
-        anim.rotations.copy(),
-        frozen_positions,
-        anim.orients.copy(),
-        anim.offsets.copy(),
-        anim.parents.copy(),
-    )
-    global_pos = positions_global(anim)
-    frozen_global_pos = positions_global(frozen_anim)
-    anchor_joint = chain[-1]
-    delta_y = global_pos[:, anchor_joint, 1] - frozen_global_pos[:, anchor_joint, 1]
-    if np.max(np.abs(delta_y)) <= 1e-8:
-        return anim
+def select_transport_carrier(chain_travel,
+                             share=ROOT_TRANSPORT_CARRIER_SHARE,
+                             min_travel=ROOT_TRANSPORT_MIN_TRAVEL):
+    """Return the deepest chain joint that carries the horizontal travel, or None.
 
-    new_positions = frozen_positions.copy()
-    if trans_root == 0 or anim.parents[trans_root] < 0:
-        new_positions[:, trans_root, 1] += delta_y
-    else:
-        global_rots = rotations_global(frozen_anim)
-        parent_index = anim.parents[trans_root]
-        parent_global_pos = frozen_global_pos[:, parent_index]
-        parent_global_rots = global_rots[:, parent_index]
-        desired_global = frozen_global_pos[:, trans_root].copy()
-        desired_global[:, 1] += delta_y
-        new_positions[:, trans_root] = (-parent_global_rots) * (desired_global - parent_global_pos)
+    ``None`` means this clip never goes anywhere and has no opinion about where
+    its species keeps transport.
 
-    return Animation(
-        anim.rotations.copy(),
-        new_positions,
-        anim.orients.copy(),
-        anim.offsets.copy(),
-        anim.parents.copy(),
-    )
+    DEEPEST, not most active: a joint's global position already contains every
+    ancestor's translation, so a root at or below the carrier sees all of them,
+    while a root above it sees none of that clip's travel -- it lands in a
+    descendant's RIC channel instead, where the flattener, the clamp and both
+    validators are blind to it. That is why the choice is forced rather than a
+    vote, and why the two filters above it have to do the work of deciding what
+    counts as travel in the first place.
+    """
+    if not chain_travel:
+        return None
+    peak = max(chain_travel.values())
+    if peak < min_travel:
+        return None
+    threshold = max(share * peak, min_travel)
+    carriers = [joint for joint, travel in chain_travel.items() if travel >= threshold]
+    return max(carriers) if carriers else None
 
 
 def rest_pose_animation(anim):
@@ -669,12 +734,39 @@ def _get_reference_body_length(anim):
     return max_joint_span(positions_global(rest_pose_animation(anim))[0])
 
 
+def _excursion_scale(extent, min_h, max_h):
+    """The factor an excursion reaching ``extent`` is scaled by.
+
+    ``min_h`` is the knee and ``max_h`` the asymptote of the shared hyperbola, so
+    the peak lands on ``soft_clamp_extent`` and everything below the knee is left
+    where it is. ``max_h`` used to be the target rather than the asymptote, which
+    made it the reported height of EVERY clip that reached it -- 304 of the 582
+    winged clips, so a bird's hop and a dragon's climb came out at the same
+    number. Ordering across clips is what that cost, and what this returns.
+
+    The excess drops out of the ratio as ``w / (e + w)``, so a clip that barely
+    clears the knee is scaled by ~1 and the map is continuous there. Cancellation
+    in the numerator only bites once ``e`` is down around 1e-13, and the shift it
+    could cause is itself bounded by ``e`` -- there is nothing left to protect.
+    """
+    excess = extent - min_h
+    return (float(soft_clamp_extent(extent, min_h, max_h)) - min_h) / excess
+
+
 def _compress_positive_excursion(values, min_h, max_h):
+    """Scale the part of ``values`` above ``min_h`` so its peak approaches ``max_h``.
+
+    ONE factor for the whole clip, taken from the clip's own peak, exactly as
+    ``scale_root_xz_extent`` does and for the same reason: past the knee the
+    excursion IS the flight, so a per-frame map would bend the top of every arc
+    harder than its base and change the shape of the climb rather than its size.
+    The knee is reached routinely here -- 71.3% of winged clips peak above it.
+    """
     peak = float(values.max())
-    if peak <= max_h or max_h <= min_h:
+    if peak <= min_h or max_h <= min_h:
         return values, False
 
-    scale = (max_h - min_h) / max(peak - min_h, 1e-8)
+    scale = _excursion_scale(peak, min_h, max_h)
     compressed = values.copy()
     mask = compressed > min_h
     compressed[mask] = min_h + (compressed[mask] - min_h) * scale
@@ -682,11 +774,12 @@ def _compress_positive_excursion(values, min_h, max_h):
 
 
 def _compress_negative_excursion(values, min_h, max_h):
-    trough = float(values.min())
-    if trough >= -max_h or max_h <= min_h:
+    """The mirror of :func:`_compress_positive_excursion` on downward depth."""
+    depth = -float(values.min())
+    if depth <= min_h or max_h <= min_h:
         return values, False
 
-    scale = (max_h - min_h) / max(abs(trough) - min_h, 1e-8)
+    scale = _excursion_scale(depth, min_h, max_h)
     compressed = values.copy()
     mask = compressed < -min_h
     compressed[mask] = -min_h - ((-compressed[mask]) - min_h) * scale
@@ -698,10 +791,30 @@ def _compress_below_negative_band(values, min_h, max_h):
     return _compress_negative_excursion(values, abs(min_h), abs(max_h))
 
 
-def _clamp_min_height(values, min_height):
-    if float(values.min()) >= min_height:
+def _soft_clamp_min_height(values, knee, min_height):
+    """Bound the root's downward excursion by ``min_height`` without a hard floor.
+
+    The root-XZ hyperbola (:func:`soft_clamp_extent`) mirrored onto depth: heights
+    above ``knee`` come back bit-for-bit, the descent past it is compressed with a
+    continuous value and slope, order is preserved, and ``min_height`` is an
+    asymptote rather than a value.
+
+    A hard ``np.maximum`` floor has none of the last three. It mapped every frame
+    past -0.5 onto exactly -0.5, so what a dive, a fall or a burrow left in the
+    data was a pinned plateau, not a descent -- 86 shipped clips carried one, 19 of
+    them for 8+ consecutive frames, and Pirrana_MidSwim was a dead constant for all
+    97 of its frames. It also fought the aquatic band directly: that band puts
+    swim depth in [-minH, -maxH], which at the HML reference span is
+    [-0.417, -0.694], and the floor then sheared the deeper half of it onto one
+    height.
+    """
+    knee_depth = abs(float(knee))
+    if float(values.min()) >= -knee_depth:
         return values, False
-    return np.maximum(values, min_height), True
+    # soft_clamp_extent is identity at and below its knee, negative radii included,
+    # so every frame shallower than the knee (and every positive height) survives
+    # the round trip through the negation exactly.
+    return -soft_clamp_extent(-values, knee_depth, abs(float(min_height))), True
 
 
 def clamp_vertical_trajectory(
@@ -710,13 +823,16 @@ def clamp_vertical_trajectory(
     min_ratio=VERTICAL_CLAMP_MIN_RATIO,
     max_ratio=VERTICAL_CLAMP_MAX_RATIO,
     root_y_min_height=ROOT_Y_MIN_HEIGHT,
+    root_y_soft_clamp_knee=ROOT_Y_SOFT_CLAMP_KNEE,
+    translation_root_index=None,
 ):
     """Constrain the processed translation-root vertical trajectory.
 
     What this compresses is the root's ABSOLUTE height, not its excursion: once
-    the peak passes ``max_ratio`` of the body span, everything above ``min_ratio``
-    is squeezed into that band. The band is calibrated on flight, where an
-    unbounded climb is the thing worth bounding.
+    the peak passes ``min_ratio`` of the body span, everything above ``min_ratio``
+    is scaled by one factor that sends the peak toward ``max_ratio`` without ever
+    reaching it. The band is calibrated on flight, where an unbounded climb is the
+    thing worth bounding.
 
     ``drifting`` deliberately does NOT take this branch, though it too leaves the
     ground. A drifting species holds a near-constant hover height that is a trait
@@ -726,13 +842,28 @@ def clamp_vertical_trajectory(
     a factor that depends on each clip's own peak, which would make one species'
     hover height differ from clip to clip. Its vertical range in level travel is
     already as small as level flight's, so there is nothing here worth clamping;
-    it keeps only the absolute root-Y floor, the same as a ground species.
+    it keeps only the root-Y lower bound, the same as a ground species.
 
     Aquatic species use the same positive height clamp and also apply the same
     ratios with a negative sign so their downward swim depth is compressed into
-    [-maxH, -minH]. Every species also gets the absolute root-Y floor.
+    [-maxH, -minH]. Every species then gets the root-Y lower bound, which is a
+    soft clamp, not a floor: it leaves everything above its knee alone and
+    compresses the descent below it into ``(root_y_min_height, knee]`` (see
+    :func:`_soft_clamp_min_height`). It runs last, so an aquatic dive whose band
+    reaches past the bound comes out as a monotone descent -- compressed further
+    than the band left it, but never the flat plateau a hard floor cut.
+
+    ``translation_root_index`` is the species' frozen root. Without it this falls
+    back to per-clip detection, which is right for a bare rest pose or a raw
+    retarget source but wrong inside preprocessing: a species whose clips author
+    transport on different joints (see :func:`select_transport_carrier`) would
+    get its height read off one joint and its trajectory off another, and the
+    two differ by the bone between them plus whatever that bone animates.
     """
-    trans_root = find_translation_root(processed_anim)
+    if translation_root_index is None:
+        trans_root = find_translation_root(processed_anim)
+    else:
+        trans_root = int(translation_root_index)
     global_pos = positions_global(processed_anim)
     world_y = global_pos[:, trans_root, 1]
 
@@ -766,7 +897,11 @@ def clamp_vertical_trajectory(
     else:
         clamped_world_y = world_y.copy()
 
-    clamped_world_y, changed_floor = _clamp_min_height(clamped_world_y, root_y_min_height)
+    clamped_world_y, changed_floor = _soft_clamp_min_height(
+        clamped_world_y,
+        root_y_soft_clamp_knee,
+        root_y_min_height,
+    )
     changed = changed or changed_floor
 
     if not changed:
@@ -819,9 +954,12 @@ on an intermediate bone (e.g. Bip01 for Horse).  We detect the effective
 root via its global position and apply the shift to joint 0 (whose local
 position equals its global position), so the entire skeleton moves via FK.
 """
-def move_xz_to_origin(anim, root_xz_center=None):
+def move_xz_to_origin(anim, root_xz_center=None, translation_root_index=None):
     if root_xz_center is None:
-        root_xz_center = _get_translation_root_initial_xz(anim)
+        root_xz_center = _get_translation_root_initial_xz(
+            anim,
+            translation_root_index=translation_root_index,
+        )
     else:
         root_xz_center = _coerce_root_xz_center(root_xz_center)
     new_positions = anim.positions.copy()
@@ -839,32 +977,383 @@ def xz_locomotion_extent(anim, translation_root_index):
     return float(np.linalg.norm(root_xz, axis=1).max())
 
 
-def strip_translation_root_xz(anim, translation_root_index):
-    """Return an in-place version of the animation with the effective root XZ removed.
-
-    For rigs whose locomotion lives on an intermediate joint such as Bip01, we must
-    modify that joint's own local translation channel rather than pushing the motion
-    up to joint 0. Otherwise the exported BVH changes skeleton dynamics and makes
-    Hips appear to translate incorrectly.
-    """
+def root_xz_trajectory(anim, translation_root_index):
+    """Return the effective translation root's ``(T, 2)`` world XZ path."""
     global_pos = positions_global(anim)
-    root_xz = global_pos[:, translation_root_index, [0, 2]]
-    if np.max(np.abs(root_xz)) <= 1e-8:
+    return np.asarray(global_pos[:, translation_root_index][:, [0, 2]], dtype=np.float64)
+
+
+def root_xz_heading(anim, translation_root_index):
+    """Return the translation root's per-frame world heading, unwrapped, in radians.
+
+    The angle of the root's own forward axis in the XZ plane. ``anim`` is
+    canonicalised to face +Z by ``rotate_to_hml_orientation`` before it ever gets
+    here, so the forward axis is +Z and no per-species orientation enters.
+
+    Unwrapped, so a clip that turns past +/-pi reads as one continuous ramp
+    rather than a jump -- the ramp is the whole point, it is what a straight-line
+    fit can follow and a raw angle cannot.
+
+    ``anim`` is expected to have been through ``collapse_translation_root_chain``
+    already, which seats the inert wrapper nodes onto the root; the root's world
+    rotation then carries the wrapper's rotation too, which is where some rigs
+    keep the turn.
+    """
+    rotations = rotations_global(anim)[:, int(translation_root_index)]
+    forward = rotations * np.array([0.0, 0.0, 1.0])
+    return np.unwrap(np.arctan2(forward[:, 0], forward[:, 2]))
+
+
+def _xz_rotation(angle):
+    """Return ``(T, 2, 2)`` rotations by ``angle`` about +Y, acting on ``(x, z)``."""
+    angle = np.asarray(angle, dtype=np.float64)
+    cos, sin = np.cos(angle), np.sin(angle)
+    return np.stack([np.stack([cos, sin], -1), np.stack([-sin, cos], -1)], -2)
+
+
+def _detrend_frame(heading):
+    """Return the per-frame frame angle to detrend in.
+
+    A straight ramp between the heading's endpoints, so the frame turns by the
+    clip's NET turn and nothing else: a yaw that wanders out and comes back lands
+    where it started and cannot bend it, however that wander was shaped, while a
+    clip that really turns bends it in full. A least-squares line through the
+    whole heading cannot say that -- it weights every frame, so an asymmetric
+    wobble tilts it (MB_TigerDrago_RunJump travels dead straight under 2.68 rad of
+    pelvis yaw for a net of 0.21, and the fitted line invented 0.42 of lateral
+    travel).
+
+    The heading is the right signal and the path is not: a 180-degree turning gait
+    and an out-and-back lunge trace nearly the same path, and only the body's
+    orientation says which is which. Fitting to the path's velocity direction
+    invents 0.76 of transport on a lunge whose net displacement is zero.
+
+    The frame reads the heading alone, never the path, which is what lets the
+    dataset validator re-derive it from the stored features: a constant offset
+    between the two headings shifts both endpoints alike and cancels. See
+    docs/root_xz_motion_refactor.md §2.1 for the measured comparison against the
+    constant-frame and least-squares alternatives.
+    """
+    heading = np.asarray(heading, dtype=np.float64).reshape(-1)
+    n_frames = heading.shape[0]
+    if n_frames < 2:
+        return heading.copy()
+    steps = np.arange(n_frames, dtype=np.float64) / (n_frames - 1)
+    return heading[0] + (heading[-1] - heading[0]) * steps
+
+
+def _frame_correction(traj, frame):
+    """Return the accumulated transport of ``traj`` measured in ``frame``."""
+    local_step = np.einsum('tij,tj->ti', _xz_rotation(-frame), np.diff(traj, axis=0))
+    transport = np.einsum('tij,j->ti', _xz_rotation(frame), local_step.mean(axis=0))
+    return np.concatenate([np.zeros((1, 2)), np.cumsum(transport, axis=0)], axis=0)
+
+
+def root_xz_drift_correction(traj, heading):
+    """Return ``(correction, drift)`` for a ``(T, 2)`` root XZ path.
+
+    The travel is removed IN THE ROOT'S OWN HEADING FRAME, and that frame is the
+    whole of it. In world space a turning gait's velocity direction rotates with
+    the character, so there is no straight trend to subtract and no low-order
+    curve that fits one either: an end-to-end line fit leaves the arc's sagitta
+    behind, which on the shipped data reached 0.371 for MB_Unka_GlideLeft and
+    0.732 for IAC_Cavewoman_RunTurnRight -- 27% and 53% of a body span of
+    residual travel, turning as it went.
+
+    Rotated into the heading frame the same motion is a near-constant forward
+    speed with the within-cycle surge and sway riding on it, and removing a
+    constant is exactly what the old world-space line fit was already doing --
+    just in the wrong frame. So the arithmetic is: rotate the frame-to-frame
+    displacement by the negated frame angle, subtract its mean, rotate back,
+    re-integrate from frame 0.
+
+    The root's heading is only a proxy for the travel direction, so the frame is
+    read from its NET turn alone (``_detrend_frame``): a pelvis that yaws through
+    the stride and comes back cannot bend it.
+
+    ``correction`` is the accumulated transport, so ``traj - correction`` keeps
+    frame 0 where the pipeline centred it and keeps everything the transport
+    could not explain -- the surge and sway that make a gait read as a gait
+    rather than as a rig welded to the floor.
+
+    ``drift`` is where that transport ENDS UP, not how far it ever reached. Only
+    the endpoint separates "went and stayed" from "went and came back", and both
+    of those spend most of the clip away from the origin, so no statistic over
+    time can tell them apart. An out-and-back lunge reverses in the heading frame
+    too and nets out to nothing, so it is kept whatever its amplitude.
+    """
+    traj = np.asarray(traj, dtype=np.float64)
+    if traj.shape[0] < 2:
+        return np.zeros_like(traj), 0.0
+    frame = _detrend_frame(np.asarray(heading, dtype=np.float64)[:-1])
+    correction = _frame_correction(traj, frame)
+    return correction, float(np.linalg.norm(correction[-1]))
+
+
+def flatten_root_xz_drift(traj, heading):
+    """Return ``(flattened_traj, drift)`` for a root XZ path.
+
+    The single entry point the pipeline and the dataset validator share, so both
+    answer "does this clip travel" with the same arithmetic. ``heading`` is the
+    translation root's per-frame world yaw, from ``root_xz_heading``; the frame
+    it is detrended in turns by that heading's net turn (see
+    ``root_xz_drift_correction``).
+
+    It removes the travel and nothing else. Bounding what is left is a separate
+    step the caller owns -- ``scale_root_xz_extent`` for a locomotion clip, the
+    dataset-wide ``soft_clamp_root_xz`` for every clip -- and it stays out of here
+    because the validator calls this to MEASURE a stored clip.
+    """
+    correction, drift = root_xz_drift_correction(traj, heading)
+    return np.asarray(traj, dtype=np.float64) - correction, drift
+
+
+def soft_clamp_extent(radius, knee=ROOT_XZ_SOFT_CLAMP_KNEE,
+                      limit=ROOT_XZ_SOFT_CLAMP_LIMIT):
+    """Return ``radius`` compressed into ``[0, limit)`` past ``knee``.
+
+    ``g(r) = r`` up to the knee, then ``limit - w**2 / (r - knee + w)`` with
+    ``w = limit - knee``. Four things are needed at once and this hyperbola is
+    the simplest form that has all of them:
+
+    * identity below the knee, so a clip that already stays near the origin is
+      bit-for-bit untouched;
+    * continuous VALUE AND SLOPE at the knee (``g'(knee) = 1``), so nothing in
+      the dataset has a velocity step at 0.6 for the model to learn as a feature;
+    * strictly increasing, so ordering survives -- a bigger lunge still reads as
+      a bigger lunge, which a hard clamp destroys by mapping every excursion past
+      the ceiling onto the same value;
+    * ``limit`` as an asymptote rather than a value, so the bound is strict and
+      the far tail decelerates smoothly instead of hitting a wall.
+
+    An exponential knee has the same four properties on paper and loses the third
+    one in float64: past about 34 knee-widths ``limit - w * exp(...)`` rounds to
+    ``limit`` exactly, and the deepest excursions in the shipped data (up to 4.79)
+    would land inside a 1e-3 band of each other. The hyperbola decays as ``1/r``
+    and keeps them apart.
+
+    With the shipped knee/limit: ``g(0.8) = 0.700``, ``g(1.2) = 0.750``,
+    ``g(3.0) = 0.785``, ``g(10.0) = 0.796``.
+    """
+    radius = np.asarray(radius, dtype=np.float64)
+    width = float(limit) - float(knee)
+    if width <= 0.0:
+        return np.minimum(radius, float(limit))
+    excess = np.maximum(radius - float(knee), 0.0) + width
+    return np.where(radius > knee, float(limit) - width * width / excess, radius)
+
+
+def soft_clamp_root_xz(traj, knee=ROOT_XZ_SOFT_CLAMP_KNEE,
+                       limit=ROOT_XZ_SOFT_CLAMP_LIMIT):
+    """Return a ``(T, 2)`` root XZ path with its distance from the origin bounded.
+
+    Applied per frame on the radius, so the map is a fixed function of position:
+    the parts of the clip that stay within the knee are preserved exactly, and
+    only the frames that reach past it are compressed. Scaling the whole
+    trajectory by one factor instead would shrink a clip's near-origin footwork
+    in proportion to an excursion elsewhere in the clip, and would let a single
+    outlier frame resize everything around it.
+
+    Direction is preserved frame by frame, so a closed path stays closed and
+    frame 0 -- which the pipeline centred on the origin -- stays there.
+    """
+    traj = np.asarray(traj, dtype=np.float64)
+    if traj.shape[0] == 0:
+        return traj.copy()
+    radius = np.linalg.norm(traj, axis=1)
+    scale = np.ones_like(radius)
+    over = radius > float(knee)
+    if np.any(over):
+        scale[over] = soft_clamp_extent(radius[over], knee, limit) / radius[over]
+    return traj * scale[:, None]
+
+
+def scale_root_xz_extent(traj, knee=ROOT_XZ_LOCOMOTION_KNEE,
+                         limit=ROOT_XZ_LOCOMOTION_LIMIT):
+    """Return a ``(T, 2)`` root XZ path scaled by ONE factor into ``[0, limit)``.
+
+    The bound every locomotion clip is held to, applied after the detrend. It
+    reuses the hyperbola of ``soft_clamp_extent`` -- identity below the knee, a
+    strict asymptote at the limit, order-preserving in between -- but evaluates it
+    once on the clip's own extent and scales the whole path by that ratio.
+
+    The single factor is the deliberate difference from ``soft_clamp_root_xz``.
+    What a detrend leaves behind IS the gait cycle, spread over the whole clip, so
+    a per-frame radial map would compress the far half of every stride harder than
+    the near half and change the SHAPE of the surge -- and this knee, unlike the
+    0.6 ceiling, is reached routinely. One factor changes only its size.
+
+    Frame 0 sits at the origin, so scaling keeps it there and keeps a closed path
+    closed.
+    """
+    traj = np.asarray(traj, dtype=np.float64)
+    if traj.shape[0] == 0:
+        return traj.copy()
+    extent = float(np.linalg.norm(traj, axis=1).max())
+    if extent <= float(knee):
+        return traj.copy()
+    return traj * (float(soft_clamp_extent(extent, knee, limit)) / extent)
+
+
+# A joint counts as carrying transport when its world XZ moves at all. In
+# HML-normalised units (body span 1.389) this is 0.36% of a span -- authoring
+# noise on a joint that is meant to sit still stays well under it.
+TRANSPORT_CARRIER_EPS = 5e-3
+
+
+def translation_root_ancestor_chain(parents, translation_root_index):
+    """Return the joints from the hierarchy root down to the translation root."""
+    parents = np.asarray(parents, dtype=np.int64).reshape(-1)
+    chain = []
+    joint = int(translation_root_index)
+    seen = set()
+    while 0 <= joint < parents.shape[0] and joint not in seen:
+        seen.add(joint)
+        chain.append(joint)
+        joint = int(parents[joint])
+    chain.reverse()
+    return chain
+
+
+def collapse_translation_root_chain(anim, translation_root_index):
+    """Seat the joints above the translation root rigidly onto it.
+
+    The joints between the hierarchy root and the effective root are inert
+    control nodes -- ``Cg``, ``Ctrl``, ``All``, a bare ``Root`` -- that exist to
+    hold the character, not to move relative to it. Nothing hangs off them but
+    the chain itself, and the transport was measured to live at or below the
+    effective root, so their offset from it carries no motion of its own.
+
+    Left alone it carries two artifacts instead, and both land in RIC channels
+    the model has to account for:
+
+    * an arbitrary per-clip CONSTANT. Centring subtracts the effective root's
+      initial XZ from joint 0, so a wrapper ends up at minus wherever the
+      animator happened to park the character: ``MB_TigerDrago_DogdeLeftG``
+      seats its ``Cg`` 1.546 from the origin, ``Run`` 0.193, ``Idle`` 0.102,
+      ``GetHitR`` 0.000 -- same rig, same species, four different answers.
+    * the NEGATED root trajectory, whenever the wrapper stands still while the
+      root walks away from it (``Horse_Attack`` 0.718, ``Pirrana_Jump2`` 0.783).
+
+    This rewrites the chain so every joint on it sits on its rest offset and the
+    hierarchy root carries the whole trajectory. The effective root and its
+    entire subtree keep their world positions EXACTLY -- only the inert joints
+    move -- so pose, foot contacts and the root trajectory are untouched, and
+    what is left in the wrapper's RIC is the rest geometry rather than an
+    accident of authoring. Idempotent: a second pass finds the chain already
+    seated and reproduces the same positions.
+    """
+    chain = translation_root_ancestor_chain(anim.parents, translation_root_index)
+    if len(chain) <= 1:
         return anim
 
+    parents = np.asarray(anim.parents, dtype=np.int64).reshape(-1)
+    # Only safe while nothing but the chain hangs off these joints. Every root
+    # this pipeline picks comes off the unbranched candidate chain, so this is a
+    # guard against a hand-set or stale index, not a case that occurs.
+    for joint in chain[:-1]:
+        if int(np.count_nonzero(parents == joint)) != 1:
+            return anim
+
+    target = np.asarray(
+        positions_global(anim)[:, translation_root_index], dtype=np.float64
+    )
+
+    seated_positions = anim.positions.copy()
+    for joint in chain[1:]:
+        seated_positions[:, joint] = anim.offsets[joint]
+    seated_positions[:, chain[0]] = 0.0
+
+    # Joint 0's local position IS its world position and adds straight through FK
+    # to every descendant, so one probe gives the constant to solve against.
+    probe = Animation(
+        anim.rotations, seated_positions, anim.orients, anim.offsets, anim.parents
+    )
+    base = np.asarray(
+        positions_global(probe)[:, translation_root_index], dtype=np.float64
+    )
+    seated_positions[:, chain[0]] = target - base
+
+    return Animation(
+        anim.rotations.copy(),
+        seated_positions,
+        anim.orients.copy(),
+        anim.offsets.copy(),
+        anim.parents.copy(),
+    )
+
+
+def _transport_carrier_index(anim, translation_root_index, global_pos=None,
+                             eps=TRANSPORT_CARRIER_EPS):
+    """Return the joint a root XZ correction has to be applied to.
+
+    The highest joint on the hierarchy-root-to-translation-root chain that is not
+    static in world XZ. Everything below it -- the translation root included --
+    then moves rigidly with it, so the correction lands exactly on the
+    translation root without inventing relative motion between joints that
+    travelled together in the source.
+
+    Both shapes occur in the data and they need opposite answers:
+
+    * Horse, Jaws, Bear, Crow, Pirrana: a wrapper joint sits still at the origin
+      while the effective root walks away from it. Shifting the wrapper would
+      make a static joint travel, so the correction belongs on the root itself.
+    * Dog, Dog-2: joint 0 (Hips) carries the travel and the effective root
+      Spine0 rides along rigidly. Re-seating only Spine0 leaves Hips travelling
+      and tears the two apart -- measured at 5.27 and 8.68 of fabricated
+      divergence on Dog_Running and Dog-2_RunFast, all of it landing in Hips'
+      RIC channel, which is what "the body is in place but Hips still slides"
+      looks like from the outside.
+    """
+    chain = translation_root_ancestor_chain(anim.parents, translation_root_index)
+    if len(chain) <= 1:
+        return int(translation_root_index)
+    if global_pos is None:
+        global_pos = positions_global(anim)
+    for joint in chain:
+        xz = np.asarray(global_pos[:, joint][:, [0, 2]], dtype=np.float64)
+        if float(np.ptp(xz, axis=0).max()) > eps:
+            return int(joint)
+    return int(translation_root_index)
+
+
+def set_translation_root_xz(anim, translation_root_index, target_xz):
+    """Return the animation with the effective root's world XZ set to ``target_xz``.
+
+    The edit is applied to whichever joint actually carries the transport (see
+    :func:`_transport_carrier_index`), never unconditionally to joint 0 and never
+    unconditionally to the translation root. Pushing every rig's correction up to
+    joint 0 would make a static wrapper slide backwards; keeping every rig's on
+    the translation root tears a travelling ancestor away from it.
+    """
+    target_xz = np.asarray(target_xz, dtype=np.float64)
+    global_pos = positions_global(anim)
+    root_xz = np.asarray(global_pos[:, translation_root_index][:, [0, 2]], dtype=np.float64)
+    if target_xz.shape != root_xz.shape:
+        raise ValueError(
+            f"target_xz must have shape {root_xz.shape}, got {target_xz.shape}"
+        )
+    delta = target_xz - root_xz
+    if np.max(np.abs(delta)) <= 1e-8:
+        return anim
+
+    carrier = _transport_carrier_index(anim, translation_root_index, global_pos=global_pos)
+
     new_positions = anim.positions.copy()
-    if translation_root_index == 0 or anim.parents[translation_root_index] < 0:
-        new_positions[:, translation_root_index, 0] -= root_xz[:, 0]
-        new_positions[:, translation_root_index, 2] -= root_xz[:, 1]
+    if anim.parents[carrier] < 0:
+        new_positions[:, carrier, 0] += delta[:, 0]
+        new_positions[:, carrier, 2] += delta[:, 1]
     else:
         global_rots = rotations_global(anim)
-        parent_index = anim.parents[translation_root_index]
+        parent_index = anim.parents[carrier]
         parent_global_pos = global_pos[:, parent_index]
         parent_global_rots = global_rots[:, parent_index]
-        desired_global = global_pos[:, translation_root_index].copy()
-        desired_global[:, 0] = 0.0
-        desired_global[:, 2] = 0.0
-        new_positions[:, translation_root_index] = (-parent_global_rots) * (desired_global - parent_global_pos)
+        # The carrier takes the same delta the translation root needs, so the
+        # root lands on the target exactly and the two stay rigidly linked.
+        desired_global = global_pos[:, carrier].copy()
+        desired_global[:, 0] += delta[:, 0]
+        desired_global[:, 2] += delta[:, 1]
+        new_positions[:, carrier] = (-parent_global_rots) * (desired_global - parent_global_pos)
 
     return Animation(
         anim.rotations.copy(),
@@ -990,6 +1479,88 @@ def crop_animation_to_max_joints(anim, names, max_joints=MAX_JOINTS, *, context=
     label = f' for {context}' if context else ''
     _warn(f'skeleton exceeds MAX_JOINTS ({n} > {max_joints}){label}')
     return cropped, new_names, keep_indices
+
+
+def promote_translation_root_to_hierarchy_root(anim, names, depth, *, context=None):
+    """Drop ``depth`` wrapper joints above the effective root, folding them into it.
+
+    The joints between the hierarchy root and the measured transport carrier are
+    inert control nodes -- ``Cg``, ``Ctrl``, ``All``, and rigs whose wrapper is
+    merely NAMED ``Hips`` / ``Root`` / ``Body``. Their offset from the real root
+    carries no motion (that is what the carrier measurement establishes), so all
+    they contribute to the model is a joint token whose whole 12-dim feature
+    vector is a per-species constant, plus a second meaning for "joint 0".
+
+    Each step folds the dropped joint's rotation, offset and animated translation
+    into its child (``promote_root_once``), so every remaining joint keeps its
+    world transform exactly and the character's yaw -- which 9 of the 34 wrapper
+    species author on the wrapper itself, ``SabreToothTiger_180RIght`` and
+    ``KI_Human_RunTurn02Right`` among them -- survives on the real root.
+
+    Deliberately NOT done in the FBX/BVH loader. That layer is a conservative
+    fallback that has to guess from names and offsets, and it cannot know where
+    the transport is: the species root is only decided after phase 1 has measured
+    every clip. Returns ``(anim, names, keep_indices)``, inputs unchanged and
+    ``keep_indices=None`` when ``depth`` is 0.
+    """
+    depth = int(depth)
+    if depth <= 0:
+        return anim, list(names), None
+
+    names = list(names)
+    parents = np.asarray(anim.parents, dtype=np.int64)
+    joint_count = int(parents.shape[0])
+    if len(names) != joint_count:
+        raise ValueError(
+            f"Expected {joint_count} joint names to promote the translation root, "
+            f"got {len(names)}"
+        )
+    if depth >= joint_count:
+        raise ValueError(
+            f"Cannot promote past the whole skeleton: depth {depth} of {joint_count} joints"
+        )
+
+    from motion_lib.root_collapse import promote_root_once
+
+    working_names = names
+    working_parents = np.asarray(anim.parents, dtype=np.int32)
+    working_offsets = np.asarray(anim.offsets, dtype=np.float64)
+    working_rotations = np.asarray(anim.rotations.qs, dtype=np.float64)
+    working_positions = np.asarray(anim.positions, dtype=np.float64)
+    working_orients = anim.orients
+
+    for step in range(depth):
+        if int(np.count_nonzero(working_parents == 0)) != 1:
+            where = f" for {context}" if context else ""
+            raise ValueError(
+                f"Cannot promote the translation root{where}: joint "
+                f"'{working_names[0]}' has more than one child, so dropping it "
+                f"would move something other than the root chain"
+            )
+        (
+            working_names,
+            working_parents,
+            working_offsets,
+            working_rotations,
+            working_positions,
+            working_orients,
+        ) = promote_root_once(
+            working_names,
+            working_parents,
+            working_offsets,
+            working_rotations,
+            working_positions,
+            working_orients,
+        )
+
+    promoted = Animation(
+        Quaternions(working_rotations),
+        working_positions,
+        working_orients,
+        working_offsets,
+        np.asarray(working_parents, dtype=anim.parents.dtype),
+    )
+    return promoted, working_names, list(range(depth, joint_count))
 
 
 def drop_prop_socket_joints(anim, names, *, drop_names=None, context=None):

@@ -94,6 +94,8 @@ def test_full_batch_equals_per_sample_sliced(latent_width):
     sliced result diverge from the full-batch result."""
     blk = _block(latent_width=latent_width)
     blk.reliability_bias.data.fill_(-2.0)
+    blk.temporal_reliability_bias.data.fill_(-1.5)
+    blk.cross_k_scale.data.fill_(0.7)
     x = torch.randn(T, B, J, D)
     kpm = _kpm(B, [J, J - 1, J - 3])
     unreliable = _unreliable_mask(B, per_batch_pattern=True)
@@ -123,12 +125,15 @@ def test_reliability_path_is_exact_noop_at_init():
 
     assert blk.time_emb_scale.item() == 0.0
     assert blk.reliability_bias.item() == 0.0
+    assert blk.temporal_reliability_bias.item() == 0.0
+    assert blk.cross_k_scale.item() == 0.0
     assert torch.allclose(out_without_mask, out_with_mask, atol=1e-6)
 
 
 def test_unreliable_mask_none_matches_zero_mask_even_with_nonzero_bias():
     blk = _block()
     blk.reliability_bias.data.fill_(-7.0)
+    blk.temporal_reliability_bias.data.fill_(-3.0)
     x = torch.randn(T, 1, J, D)
     kpm = _kpm(1, [J - 1])
     zero_mask = torch.zeros(T, 1, J)
@@ -164,6 +169,188 @@ def test_negative_reliability_bias_downweights_flagged_joint_influence():
 
     assert unreliable_delta < reliable_delta
 
+
+
+# --- Frame-level reliability (temporal key bias) ---------------------------
+
+
+def _whole_frame_mask(b_count: int, frames: list[int]) -> torch.Tensor:
+    """Every joint of the listed frames flagged: the case a per-joint logit
+    bias alone cannot express (softmax shift invariance cancels it)."""
+    mask = torch.zeros(T, b_count, J)
+    mask[frames] = 1.0
+    return mask
+
+
+def test_whole_frame_mask_is_invisible_to_the_cross_in_bias_alone():
+    """The defect being fixed: with only the per-joint cross-in bias (the
+    frame-level bias at 0), an all-joints-of-a-frame mask is exactly
+    cancelled by softmax and changes nothing."""
+    blk = _block()
+    blk.reliability_bias.data.fill_(-5.0)
+    blk.temporal_reliability_bias.data.zero_()
+    x = torch.randn(T, 1, J, D)
+    kpm = _kpm(1, [J])
+
+    out_none = blk(x, kpm, None)
+    out_frame = blk(x, kpm, _whole_frame_mask(1, [1, 2]))
+
+    assert torch.allclose(out_none, out_frame, atol=1e-5)
+
+
+def test_temporal_reliability_bias_makes_whole_frame_mask_change_output():
+    blk = _block()
+    blk.reliability_bias.data.fill_(-5.0)
+    blk.temporal_reliability_bias.data.fill_(-4.0)
+    x = torch.randn(T, 1, J, D)
+    kpm = _kpm(1, [J])
+
+    out_none = blk(x, kpm, None)
+    out_frame = blk(x, kpm, _whole_frame_mask(1, [1, 2]))
+
+    assert not torch.allclose(out_none, out_frame, atol=1e-5)
+
+
+def test_temporal_reliability_bias_downweights_flagged_frames_as_sources():
+    """Perturbing a frame that is flagged unreliable must move the other
+    frames' outputs less than perturbing an equally-placed reliable frame."""
+    blk = _block()
+    blk.temporal_reliability_bias.data.fill_(-20.0)
+    x = torch.randn(T, 1, J, D)
+    kpm = _kpm(1, [J])
+    unreliable = _whole_frame_mask(1, [1])
+
+    baseline = blk(x, kpm, unreliable)
+    x_unreliable = x.clone()
+    x_unreliable[1] += 8.0            # flagged frame
+    x_reliable = x.clone()
+    x_reliable[2] += 8.0              # reliable frame
+
+    probe = 4
+    unreliable_delta = torch.linalg.norm(
+        blk(x_unreliable, kpm, unreliable)[probe] - baseline[probe]
+    )
+    reliable_delta = torch.linalg.norm(
+        blk(x_reliable, kpm, unreliable)[probe] - baseline[probe]
+    )
+
+    assert unreliable_delta < reliable_delta
+
+
+def test_frame_unreliability_ignores_padded_joints():
+    """A flag on a padded joint is not a flag on the frame: the per-frame
+    fraction counts valid joints only, so it stays 0 and the temporal bias
+    (even when large) has nothing to act on."""
+    blk = _block()
+    blk.temporal_reliability_bias.data.fill_(-9.0)
+    valid = J - 2
+    kpm = _kpm(1, [valid])
+    x = torch.randn(T, 1, J, D)
+    mask = torch.zeros(T, 1, J)
+    mask[:, 0, valid:] = 1.0          # padded joints only
+
+    out_none = blk(x, kpm, None)
+    out_mask = blk(x, kpm, mask)
+
+    assert torch.allclose(out_none[:, :, :valid], out_mask[:, :, :valid], atol=1e-5)
+
+
+def test_uniformly_unreliable_window_cancels_the_temporal_bias():
+    """Documented, expected: if every frame is equally unreliable there is
+    no reliable source to prefer, and the uniform key bias cancels."""
+    blk = _block()
+    blk.temporal_reliability_bias.data.fill_(-6.0)
+    x = torch.randn(T, 1, J, D)
+    kpm = _kpm(1, [J])
+
+    out_none = blk(x, kpm, None)
+    out_all = blk(x, kpm, torch.ones(T, 1, J))
+
+    assert torch.allclose(out_none, out_all, atol=1e-5)
+
+
+# --- Cross-K latent communication ------------------------------------------
+
+
+def _cross_out_kv_after_perturbing_one_latent(
+    blk: CrossLimbTemporalBlock, x, kpm, *, latent: int, delta: float
+) -> torch.Tensor:
+    """Run the block, adding ``delta`` to latent ``latent`` (batch 0) right
+    after temporal attention, and return the (K, T*B, d) key/value tensor
+    that reaches cross-out -- i.e. the latents AFTER cross-K."""
+    orig_temporal = blk.temporal_attn.forward
+    orig_cross_out = blk.cross_out_attn.forward
+    captured = {}
+
+    # Non-uniform across channels on purpose: cross-K is Pre-Norm, and a
+    # constant shift of every channel is exactly what LayerNorm removes.
+    bump = delta * torch.linspace(-1.0, 1.0, blk.latent_dim)
+
+    def temporal_with_bump(*a, **kw):
+        out, w = orig_temporal(*a, **kw)
+        if delta != 0.0:
+            out = out.clone()
+            out[:, 0 * blk.num_latents + latent, :] += bump   # (T, B*K, d), b=0
+        return out, w
+
+    def cross_out_capture(query, key, value, *a, **kw):
+        captured["kv"] = key.detach().clone()
+        return orig_cross_out(query, key, value, *a, **kw)
+
+    blk.temporal_attn.forward = temporal_with_bump
+    blk.cross_out_attn.forward = cross_out_capture
+    try:
+        blk(x, kpm)
+    finally:
+        blk.temporal_attn.forward = orig_temporal
+        blk.cross_out_attn.forward = orig_cross_out
+    return captured["kv"]
+
+
+@pytest.mark.parametrize("scale, expect_talk", [(0.0, False), (1.0, True)])
+def test_cross_k_lets_latents_of_a_frame_communicate_only_when_gated_open(scale, expect_talk):
+    blk = _block()
+    blk.cross_k_scale.data.fill_(scale)
+    x = torch.randn(T, 1, J, D)
+    kpm = _kpm(1, [J])
+    bumped = 1
+
+    kv_base = _cross_out_kv_after_perturbing_one_latent(blk, x, kpm, latent=bumped, delta=0.0)
+    kv_bump = _cross_out_kv_after_perturbing_one_latent(blk, x, kpm, latent=bumped, delta=5.0)
+
+    others = [k for k in range(K) if k != bumped]
+    moved = not torch.allclose(kv_base[others], kv_bump[others], atol=1e-6)
+    assert moved == expect_talk
+    # The bumped latent itself always moves (its own residual carries the bump).
+    assert not torch.allclose(kv_base[bumped], kv_bump[bumped], atol=1e-6)
+
+
+def test_cross_k_is_exact_noop_at_zero_scale_but_trains():
+    blk = _block()
+    x = torch.randn(T, B, J, D, requires_grad=True)
+    kpm = _kpm(B, [J, J, J])
+
+    out = blk(x, kpm)
+    out.sum().backward()
+    # Gate closed: the cross-K weights sit behind a zero scale and get no
+    # gradient, the scale itself does (it is how the path opens).
+    assert blk.cross_k_scale.grad is not None
+    assert blk.cross_k_scale.grad.abs().sum() > 0
+    w_grad = blk.cross_k_attn.in_proj_weight.grad
+    assert w_grad is None or w_grad.abs().sum() == 0
+
+
+def test_cross_k_attention_inherits_the_block_dropout():
+    blk = CrossLimbTemporalBlock(D, H, num_latents=K, dropout=0.1, latent_width=D)
+    assert blk.cross_k_attn.dropout == blk.temporal_attn.dropout == 0.1
+
+
+def test_new_gates_are_scalar_and_zero_init():
+    blk = _block()
+    assert blk.temporal_reliability_bias.shape == (1,)
+    assert blk.cross_k_scale.shape == (1,)
+    assert blk.temporal_reliability_bias.item() == 0.0
+    assert blk.cross_k_scale.item() == 0.0
 
 
 def test_padded_joints_do_not_leak_into_valid_outputs():
@@ -311,9 +498,9 @@ def test_decoder_reuses_precomputed_loop_phase_embeddings(monkeypatch):
     calls: list[tuple[int, int, int]] = []
     original = motion_transformer_module.circular_phase_embedding
 
-    def wrapped(length, dim, batch_size, device, dtype, lengths=None):
-        calls.append((length, dim, batch_size))
-        return original(length, dim, batch_size, device, dtype, lengths)
+    def wrapped(length, dim, device, dtype):
+        calls.append((length, dim))
+        return original(length, dim, device, dtype)
 
     monkeypatch.setattr(motion_transformer_module, "circular_phase_embedding", wrapped)
 
@@ -344,10 +531,9 @@ def test_decoder_reuses_precomputed_loop_phase_embeddings(monkeypatch):
         memory=None,
         y=y,
         loop_phase_mask=torch.tensor([True, False]),
-        lengths=torch.tensor([T - 1, T - 1]),
     )
 
-    assert calls == [(T, D, 2), (T, 8, 2)]
+    assert calls == [(T, D), (T, 8)]
     assert len({id(pair[0]) for pair in seen}) == 1
     assert len({id(pair[1]) for pair in seen}) == 1
 

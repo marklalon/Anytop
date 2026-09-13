@@ -21,7 +21,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     load_motion_metadata,
     vocab_words_in,
 )
-from data_loaders.truebones.truebones_utils.param_utils import parse_action_words
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN, parse_action_words
 from utils.misc import infer_object_type_from_filename
 from utils.skeleton_similarity import SpeciesSimilarity, rank_species
 
@@ -293,7 +293,7 @@ def _build_weighted_reference_bank(
         total_frames = 0
         for path in candidate_paths:
             motion = np.load(path)
-            if motion.ndim != 3 or motion.shape[-1] != 13 or motion.shape[0] < min_frames:
+            if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN or motion.shape[0] < min_frames:
                 continue
             motion = motion.astype(np.float32)
             loaded.append((path, motion))

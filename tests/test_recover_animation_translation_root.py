@@ -4,6 +4,7 @@ import sys
 
 import numpy as np
 import pytest
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -15,10 +16,13 @@ from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
-    FOOT_CONTACT_VEL_THRESH,
-    ROOT_XZ_STRIP_THRESHOLD,
+    ROOT_XZ_DRIFT_THRESHOLD,
+    chain_xz_travel,
     find_translation_root,
+    select_transport_carrier,
     xz_locomotion_extent,
+    root_xz_trajectory,
+    flatten_root_xz_drift,
     get_common_features_from_T_pose,
     tpose_features_from_cond,
     get_hml_aligned_anim,
@@ -67,7 +71,7 @@ def test_recover_animation_uses_effective_translation_root_feature_row():
     )
 
     frames = 4
-    features = np.zeros((frames, 3, 13), dtype=np.float32)
+    features = np.zeros((frames, 3, FEATS_LEN), dtype=np.float32)
     features[:, :, 3:9] = _identity_cont6d()
 
     trajectory_x = np.arange(frames, dtype=np.float32)
@@ -115,6 +119,91 @@ def test_find_translation_root_detects_single_chain_descendant():
     anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
 
     assert find_translation_root(anim) == 2
+
+
+def _wrapper_chain_anim(frames, moving_joint=None, travel=5.0, axis=0):
+    """``CG(0) -> Pelvis(1) -> Spine(2)``, with at most one joint animated."""
+    parents = np.array([-1, 0, 1], dtype=np.int64)
+    offsets = np.zeros((3, 3), dtype=np.float64)
+    rotations = Quaternions(
+        np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64), (frames, len(parents), 1))
+    )
+    positions = np.zeros((frames, 3, 3), dtype=np.float64)
+    if moving_joint is not None:
+        positions[:, moving_joint, axis] = np.linspace(0.0, travel, num=frames, dtype=np.float64)
+    return Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
+
+
+def test_the_carrier_is_the_joint_the_travel_is_actually_on():
+    anim = _wrapper_chain_anim(8, moving_joint=1)
+
+    assert select_transport_carrier(chain_xz_travel(anim)) == 1
+
+
+def test_a_clip_that_goes_nowhere_has_no_carrier():
+    """An idle, a sleep, a hit that never leaves the spot.
+
+    ``find_translation_root`` still has to answer with an index, and answers with
+    the chain head because something must be returned. The species root decision
+    has to be able to tell that apart from evidence -- Tukan's five motionless
+    clips outvoted its two flying ones under the old rule.
+    """
+    anim = _wrapper_chain_anim(8, moving_joint=None)
+
+    assert find_translation_root(anim) == 0
+    assert select_transport_carrier(chain_xz_travel(anim)) is None
+
+
+def test_a_joint_that_only_bobs_vertically_carries_no_transport():
+    anim = _wrapper_chain_anim(8, moving_joint=1, axis=1)
+
+    assert select_transport_carrier(chain_xz_travel(anim)) is None
+
+
+def test_a_deeper_joint_that_barely_sways_is_not_the_carrier():
+    """Crow: the pelvis flies 0.809 while the spine below it drifts 0.026."""
+    anim = _wrapper_chain_anim(8, moving_joint=1, travel=0.809)
+    travel = chain_xz_travel(anim)
+    travel[2] = 0.026
+
+    assert select_transport_carrier(travel) == 1
+
+
+def test_get_motion_honors_fixed_species_translation_root():
+    parents = np.array([-1, 0], dtype=np.int64)
+    offsets = np.zeros((2, 3), dtype=np.float64)
+    rotations = Quaternions(
+        np.tile(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            (6, len(parents), 1),
+        )
+    )
+    positions = np.zeros((6, 2, 3), dtype=np.float64)
+    positions[:, 1, 0] = np.linspace(0.0, 0.5, num=6, dtype=np.float64)
+    anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
+    assert find_translation_root(anim) == 1
+
+    tpos_rots = Quaternions(
+        np.tile(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            (1, len(parents), 1),
+        )
+    )
+    features, _parents, _max_joints, _motion_anim, _export_anim, _is_loop, root, _root_xz, _stripped = get_motion(
+        anim,
+        'Synthetic',
+        len(parents),
+        offsets,
+        tpos_rots,
+        {},
+        scale_factor=1.0,
+        orientation_quat=Quaternions.id(1)[0],
+        translation_root_index=0,
+    )
+
+    assert root == 0
+    np.testing.assert_array_equal(features[:, 0, [0, 2]], 0.0)
+    assert float(np.max(np.abs(features[:, 1, 0]))) > 0.0
 
 
 def test_find_translation_root_ignores_descendants_after_branch():
@@ -187,7 +276,12 @@ def test_xz_locomotion_extent_still_detects_true_locomotion_after_initial_root_c
 
     np.testing.assert_allclose(root_translation_xz, np.array([0.0, 0.0, 0.0], dtype=np.float64), atol=1e-8)
     assert xz_locomotion_extent(centered_anim, 1) == pytest.approx(4.0)
-    assert xz_locomotion_extent(centered_anim, 1) > ROOT_XZ_STRIP_THRESHOLD
+    # And the pipeline reads that as travel: a straight ramp is all baseline.
+    _flat, drift = flatten_root_xz_drift(
+        root_xz_trajectory(centered_anim, 1),
+        np.zeros(len(centered_anim), dtype=np.float64),
+    )
+    assert drift > ROOT_XZ_DRIFT_THRESHOLD
 
 
 def test_raw_tpose_animation_input_reapplies_tpose_normalization():
@@ -218,7 +312,6 @@ def test_raw_tpose_animation_input_reapplies_tpose_normalization():
         tp.offsets,
         squared_positions_error,
         scale_factor=float(tp.scale_factor),
-        foot_indices=tp.foot_indices,
         orientation_quat=np.asarray(tp.orientation_quat, dtype=np.float64),
         animation_input_is_tpose_aligned=False,
     )
@@ -287,8 +380,8 @@ def test_common_features_apply_vertical_clamp(monkeypatch):
 
     clamp_calls = []
 
-    def fake_clamp(anim, object_type):
-        clamp_calls.append((object_type, anim.positions.copy()))
+    def fake_clamp(anim, object_type, translation_root_index=None):
+        clamp_calls.append((object_type, anim.positions.copy(), translation_root_index))
         positions = anim.positions.copy()
         positions[:, 0, 1] += 7.0
         return Animation(
@@ -305,6 +398,10 @@ def test_common_features_apply_vertical_clamp(monkeypatch):
 
     assert len(clamp_calls) == 1
     assert clamp_calls[0][0] == "Bird"
+    # The rest-pose cond is built before the species root is known, so the clamp
+    # falls back to per-clip detection here. Preprocessing re-encodes the rest
+    # pose afterwards with the frozen root, and that call does carry an index.
+    assert clamp_calls[0][2] is None
     assert tp.tpos_anim.positions[0, 0, 1] == pytest.approx(
         clamp_calls[0][1][0, 0, 1] + 7.0
     )
@@ -332,7 +429,13 @@ def _recover_pre_normalized_bvh_rotations(raw: np.ndarray, cond, motion_metadata
     ("object_type", "motion_pattern"),
     [
         ("Buffalo", "Buffalo_AlertIdle.npy"),
-        ("Horse", "Horse_GetUp.npy"),
+        # Horse's translation root is Bip01 (index 2), which is the point of the
+        # second case. It has to be a clip the pipeline leaves alone: this is a
+        # re-extraction of a SHIPPED tensor, and one whose root travel the
+        # current rules would remove cannot come back identical until the
+        # dataset is regenerated (Horse_GetUp drifts 0.194 and would be
+        # flattened; SlowWalk drifts 0.011 and is kept).
+        ("Horse", "Horse_SlowWalk.npy"),
     ],
 )
 def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, motion_pattern: str):
@@ -349,6 +452,11 @@ def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, m
     motion_path, motion_name = _find_motion_file(motion_dir, motion_pattern)
 
     raw = np.load(motion_path).astype(np.float32, copy=False)
+    if raw.shape[-1] != FEATS_LEN:
+        pytest.skip(
+            f"{motion_name} carries {raw.shape[-1]} channels, this code writes "
+            f"{FEATS_LEN}; re-run preprocessing"
+        )
     motion_metadata = _with_translation_root_index(
         _load_motion_metadata_entry(opt, motion_name),
         raw,
@@ -364,17 +472,21 @@ def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, m
     # Rest-pose features come straight from cond (no T-pose mesh access).
     tp = tpose_features_from_cond(cond, object_type)
     squared_positions_error: dict[str, float] = {}
-    rebuilt, _parents, _max_joints, _feature_anim, _export_anim, _is_loop, _translation_root_index, _root_translation_xz = get_motion(
+    rebuilt, _parents, _max_joints, _feature_anim, _export_anim, _is_loop, _translation_root_index, _root_translation_xz, _root_xz_flattened = get_motion(
         anim,
-        FOOT_CONTACT_VEL_THRESH,
         object_type,
         len(cond['parents']),
         tp.offsets,
-        tp.foot_indices,
         tp.tpos_rots,
         squared_positions_error,
         scale_factor=float(cond['scale_factor']),
         orientation_quat=np.asarray(cond['orientation_quat'], dtype=np.float64),
+        # The species root, the way every real caller supplies it. Detection is
+        # the wrong answer here: a RECOVERED animation carries its trajectory on
+        # joint 0 whatever the species is rooted on, so leaving this out de-roots
+        # Horse on its Hips wrapper instead of Bip01 and shifts the whole tensor
+        # by the bone between them.
+        translation_root_index=int(motion_metadata['translation_root_index']),
     )
 
     assert rebuilt is not None

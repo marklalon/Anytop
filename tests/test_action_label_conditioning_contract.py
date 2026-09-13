@@ -11,6 +11,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     ROLE_HEAD_1,
     ROLE_NONE,
     SLOT_DIRECTION,
+    SLOT_HANDS,
     SLOT_HEAD,
     SLOT_MODIFIER,
     action_label_slots,
@@ -25,6 +26,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
     CONTROLLED_VOCAB,
+    HANDS_VOCAB,
     vocab_t5_text,
 )
 from tools.evaluate_action_label_geometry import _slot_source_rank_report
@@ -82,7 +84,8 @@ def test_slot_source_rank_covers_the_full_domain_and_projection_width():
     assert {name: item["rank"] for name, item in report["slots"].items()} == {
         "head": 64,
         "direction": 6,
-        "modifier": 65,
+        "modifier": 62,
+        "hands": 3,
     }
     assert not _slot_source_rank_report(table, payload, latent_dim=134)[
         "fits_projection"
@@ -118,8 +121,29 @@ def _channels(group, tokens, table):
 
 
 def test_slot_ids_partition_the_label_by_role():
-    slots = action_label_slots("locomotion", ("walk", "forward", "weapon", "1hand"))
-    assert slots["slot_ids"] == (SLOT_HEAD, SLOT_DIRECTION, SLOT_MODIFIER, SLOT_MODIFIER)
+    slots = action_label_slots("locomotion", ("walk", "forward", "fast", "hand1"))
+    assert slots["slot_ids"] == (SLOT_HEAD, SLOT_DIRECTION, SLOT_MODIFIER, SLOT_HANDS)
+    assert ACTION_LABEL_SLOTS == ("head", "direction", "modifier", "hands")
+
+
+def test_hands_axis_admits_one_member():
+    with pytest.raises(ValueError, match="hand-state words"):
+        action_label_slots("stationary", ("idle", "hand0", "hand2"))
+
+
+def test_hands_channel_is_the_token_vector_and_leaves_the_modifier_channel_alone():
+    """The reason the axis has its own channel: annotating hand state on nearly
+    every clip of a species must not dilute that species' real modifiers."""
+    table = _word_table()
+    bare, bare_present = _channels("stationary", ("attack", "slash"), table)
+    armed, armed_present = _channels("stationary", ("attack", "slash", "hand2"), table)
+    assert np.array_equal(bare[SLOT_MODIFIER], armed[SLOT_MODIFIER])
+    assert np.array_equal(bare[SLOT_HEAD], armed[SLOT_HEAD])
+    assert not bare_present[SLOT_HANDS] and armed_present[SLOT_HANDS]
+    hand2 = table[CONTROLLED_VOCAB.index("hand2")]
+    assert np.allclose(armed[SLOT_HANDS], hand2 / np.linalg.norm(hand2))
+    # Three exclusive members, so the channel's domain is exactly three points.
+    assert all(word in CONTROLLED_VOCAB for word in HANDS_VOCAB)
 
 
 def test_head_and_direction_channels_ignore_added_modifiers():
@@ -132,12 +156,14 @@ def test_head_and_direction_channels_ignore_added_modifiers():
     table = _word_table()
     short, short_present = _channels("locomotion", ("walk", "forward"), table)
     long, long_present = _channels(
-        "locomotion", ("walk", "forward", "weapon", "bow", "shield"), table
+        "locomotion", ("walk", "forward", "fast", "bow", "shield", "hand2"), table
     )
     assert np.array_equal(short[SLOT_HEAD], long[SLOT_HEAD])
     assert np.array_equal(short[SLOT_DIRECTION], long[SLOT_DIRECTION])
     assert not short_present[SLOT_MODIFIER] and long_present[SLOT_MODIFIER]
+    assert not short_present[SLOT_HANDS] and long_present[SLOT_HANDS]
     assert np.array_equal(short[SLOT_MODIFIER], np.zeros(table.shape[1]))
+    assert np.array_equal(short[SLOT_HANDS], np.zeros(table.shape[1]))
 
 
 def test_absent_slot_does_not_renormalise_the_others():

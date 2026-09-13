@@ -4,6 +4,7 @@ import numpy as np
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     SLOT_PAD_ID,
 )
+from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from data_loaders.truebones.truebones_utils.motion_labels import ACTION_LABEL_MAX_WORDS
 
@@ -168,7 +169,7 @@ def truebones_collate(batch):
         })
 
     # Canonical standardization stats are a cross-species constant *per object_subset*
-    # (quadruped / winged / ... each get their own 13-vector), so a mixed-species
+    # (quadruped / winged / ... each get their own FEATS_LEN-vector), so a mixed-species
     # batch needs per-sample stats. Stack them in batch order into [B, F] so the
     # training-time aux-loss decode (canonical_to_physical_hml reads y) de-standardizes
     # each sample with its own object_subset's stats. Only stack when every item carries
@@ -187,9 +188,13 @@ def truebones_collate(batch):
             'feature_space': [batch_item.get('feature_space') for batch_item in notnone_batches]
         })
 
-    for key in ('is_loop', 'loop_full_cycle'):
-        if any(key in batch_item for batch_item in notnone_batches):
-            cond['y'].update({key: torch.as_tensor([bool(batch_item.get(key, False)) for batch_item in notnone_batches], dtype=torch.bool)})
+    if any('is_loop' in batch_item for batch_item in notnone_batches):
+        cond['y'].update({
+            'is_loop': torch.as_tensor(
+                [bool(batch_item.get('is_loop', False)) for batch_item in notnone_batches],
+                dtype=torch.bool,
+            )
+        })
 
     if any('loop_data_aug_applied' in batch_item for batch_item in notnone_batches):
         cond['y'].update({
@@ -199,18 +204,18 @@ def truebones_collate(batch):
             )
         })
 
-    if any('loop_phase_length' in batch_item for batch_item in notnone_batches):
+    if any('resample_speed_cond' in batch_item for batch_item in notnone_batches):
         cond['y'].update({
-            'loop_phase_lengths': torch.as_tensor(
-                [float(batch_item.get('loop_phase_length', batch_item.get('lengths', 1))) for batch_item in notnone_batches],
+            'resample_speed_cond': torch.as_tensor(
+                [float(batch_item.get('resample_speed_cond', 1.0)) for batch_item in notnone_batches],
                 dtype=torch.float32,
             )
         })
 
-    if any('playspeed_cond' in batch_item for batch_item in notnone_batches):
+    if any('motion_speed_applied' in batch_item for batch_item in notnone_batches):
         cond['y'].update({
-            'playspeed_cond': torch.as_tensor(
-                [float(batch_item.get('playspeed_cond', 1.0)) for batch_item in notnone_batches],
+            'motion_speed_applied': torch.as_tensor(
+                [float(batch_item.get('motion_speed_applied', 1.0)) for batch_item in notnone_batches],
                 dtype=torch.float32,
             )
         })
@@ -304,13 +309,13 @@ def truebones_batch_collate(batch):
             if isinstance(extra, dict):
                 if any(key in extra for key in ('joint_mask_candidate_roots', 'rest_pos_ric_hml', 'joint_struct')):
                     extra_cond = extra
-                elif any(key in extra for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
+                elif any(key in extra for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'resample_speed_cond', 'motion_speed_applied', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
                     motion_metadata = extra
             elif isinstance(extra, str):
                 motion_name = extra
 
         item = {
-            'inp': motion.permute(1, 2, 0).float(), # [seqlen , J, 13] -> [J, 13,  seqlen]
+            'inp': motion.permute(1, 2, 0).float(), # [seqlen, J, F] -> [J, F, seqlen]
             'n_joints': n_joints,
             'lengths': b[1],
             'parents': b[2],
@@ -371,9 +376,9 @@ def truebones_batch_collate(batch):
                 np.asarray(extra_cond['canonical_feature_std'], dtype=np.float32).reshape(-1)
             )
         if extra_cond is not None:
-            item['feature_space'] = extra_cond.get('feature_space', 'canonical_motion_v3')
+            item['feature_space'] = extra_cond.get('feature_space', CANONICAL_FEATURE_SPACE)
         if motion_metadata is not None:
-            for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
+            for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'resample_speed_cond', 'motion_speed_applied', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
             if 'species_emb' in motion_metadata:

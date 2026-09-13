@@ -750,7 +750,7 @@ Buffalo / Camel / Comodoa / Dog / Roach / Skunk / Stego / Tricera / Tyranno 各 
 
 AnyTop 预测 x0 而非 eps，所以外推发生在 x0 上，代数完全一样，`s = 1` 退化为原来的条件预测。
 **只有 action 条件被引导**：两次 forward 之间除了那个掩码逐位相同，species FiLM /
-canonical frame / loop / playspeed / 骨架图在差分里自行抵消，不会被一起放大。
+canonical frame / loop / resample_speed / 骨架图在差分里自行抵消，不会被一起放大。
 
 两次 forward 是**顺序**跑的，不是拼成一个 2B batch：`y` 里除张量外还带着逐样本的
 python 列表（parents、joint 名、metadata），batch 化要手工复制每一项，而这里两路都要

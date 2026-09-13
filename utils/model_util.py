@@ -65,7 +65,28 @@ def unwrap_anytop_model(model):
     return unwrapped_model
 
 
+# The window-span condition was called ``playspeed`` until the loader grew a
+# real motion-speed augmentation; the projection MLP was renamed with it. Pure
+# rename, no semantic change, so older checkpoints are remapped instead of
+# rejected by a CKPT_VERSION bump.
+_LEGACY_STATE_DICT_PREFIXES = (
+    ('playspeed_projection.', 'resample_speed_projection.'),
+)
+
+
+def remap_legacy_state_dict_keys(state_dict):
+    remapped = {}
+    for key, value in state_dict.items():
+        for old_prefix, new_prefix in _LEGACY_STATE_DICT_PREFIXES:
+            if key.startswith(old_prefix):
+                key = new_prefix + key[len(old_prefix):]
+                break
+        remapped[key] = value
+    return remapped
+
+
 def load_model(model, state_dict):
+    state_dict = remap_legacy_state_dict_keys(state_dict)
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert len(unexpected_keys) == 0, f"Unexpected keys in checkpoint: {unexpected_keys}"
     # QK-norm params (added to bound attention logits) are absent from older
@@ -159,9 +180,9 @@ def get_gmdm_args(args):
     njoints = 23
     nfeats = 1
     max_joints=143 #irrelevant
-    feature_len=13 #irrelevant
+    feature_len=12 #irrelevant
     cond_mode = 'object_type'
-    feature_len=13
+    feature_len=12
 
     return {'njoints': njoints, 'nfeats': nfeats, 't5_out_dim': t5_out_dim,
             'latent_dim': args.latent_dim, 'ff_size': getattr(args, 'ff_size', 1024), 'num_layers': args.layers, 'num_heads': 4,
@@ -188,7 +209,7 @@ def get_gmdm_args(args):
             # the checkpoint's own buffers are the word table.
             'action_conditioning': getattr(args, 'action_conditioning', None),
             'loop_cond_prob': getattr(args, 'loop_cond_prob', 1.0),
-            'root_input_feats': 13}
+            'root_input_feats': 12}
 
 def create_gaussian_diffusion(args):
     # default params
@@ -225,7 +246,10 @@ def create_gaussian_diffusion(args):
         lambda_geo=args.lambda_geo,
         lambda_vel=getattr(args, 'lambda_vel', 0.0),
         lambda_loop_wrap=getattr(args, 'lambda_loop_wrap', 0.0),
+        lambda_loop_root_closure=getattr(args, 'lambda_loop_root_closure', 0.0),
         lambda_bone=getattr(args, 'lambda_bone', 0.0),
+        lambda_fk=getattr(args, 'lambda_fk', 0.0),
         temporal_span_seam_loss_weight=getattr(args, 'temporal_span_seam_loss_weight', 0.0),
         temporal_span_seam_width=getattr(args, 'temporal_span_seam_width', 2),
+        renoise_same_level_prob=getattr(args, 'renoise_same_level_prob', 1.0),
     )

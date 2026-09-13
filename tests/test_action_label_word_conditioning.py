@@ -37,6 +37,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_LABEL_MAX_WORDS,
+    CONTROLLED_VOCAB,
     parse_action_label,
 )
 from model.anytop import AnyTop  # noqa: E402
@@ -61,7 +62,7 @@ def _model(bundle=None, latent_dim=TEST_LATENT_DIM, drop_prob=0.0,
     # chained onto the constructor here.
     model = AnyTop(
         max_joints=4,
-        feature_len=13,
+        feature_len=12,
         latent_dim=latent_dim,
         ff_size=32,
         num_layers=1,
@@ -95,7 +96,7 @@ def _channels(model, labels, groups, dtype=torch.float64):
 def test_model_channels_equal_the_numpy_contract():
     bundle = make_test_bundle()
     model = _model(bundle)
-    labels = ['idle, attack', 'attack, idle', 'walk, forward, weapon, 1hand', 'idle']
+    labels = ['idle, attack', 'attack, idle', 'walk, forward, hand1', 'idle, hand0']
     groups = ['transition', 'transition', 'locomotion', 'stationary']
     got = _channels(model, labels, groups)
     expected = reference_channels(bundle, labels, groups)
@@ -111,11 +112,17 @@ def test_head_and_direction_channels_do_not_move_when_modifiers_are_added():
     """Long-label axis retention as an equality, not a tuned constant."""
     model = _model(make_test_bundle())
     short = _channels(model, ['walk, forward'], ['locomotion'])
-    longer = _channels(model, ['walk, forward, weapon, 1hand, fast'], ['locomotion'])
+    longer = _channels(model, ['walk, forward, fast, hand1'], ['locomotion'])
     width = TEST_T5_DIM
     assert torch.equal(short[:, :2 * width], longer[:, :2 * width])
-    # ...and the modifier channel is exactly what moved.
-    assert not torch.equal(short[:, 2 * width:], longer[:, 2 * width:])
+    # ...and the modifier and hands channels are exactly what moved.
+    assert not torch.equal(short[:, 2 * width:3 * width], longer[:, 2 * width:3 * width])
+    assert not torch.equal(short[:, 3 * width:], longer[:, 3 * width:])
+    # The hands word moves ONLY its own channel: the modifier channel of an
+    # armed label equals that of the same label unarmed.
+    unarmed = _channels(model, ['walk, forward, fast'], ['locomotion'])
+    assert torch.equal(unarmed[:, :3 * width], longer[:, :3 * width])
+    assert torch.count_nonzero(unarmed[:, 3 * width:]) == 0
 
 
 def test_absent_slot_is_a_zero_row_and_leaves_the_others_alone():
@@ -213,7 +220,7 @@ def test_word_table_from_another_encoder_is_refused():
     bundle = make_test_bundle()
     with pytest.raises(ValueError, match="t5_out_dim"):
         AnyTop(
-            max_joints=4, feature_len=13, latent_dim=TEST_LATENT_DIM, ff_size=32,
+            max_joints=4, feature_len=12, latent_dim=TEST_LATENT_DIM, ff_size=32,
             num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
             t5_out_dim=TEST_T5_DIM // 2, action_label_cond=True,
             action_conditioning=bundle,
@@ -221,7 +228,7 @@ def test_word_table_from_another_encoder_is_refused():
 
 
 def test_a_wrong_width_word_table_has_no_role_transform():
-    narrow = np.zeros((103, 384), dtype=np.float32) + 1.0
+    narrow = np.zeros((len(CONTROLLED_VOCAB), 384), dtype=np.float32) + 1.0
     # A contract that fully describes THIS table, so the width is the only thing
     # wrong with it: otherwise the vector-hash check refuses it first and the
     # role transform never gets asked about.
@@ -398,12 +405,12 @@ def test_slot_assembly_has_exactly_one_definition():
     """The tensor path reads the contract's slot ids; it does not re-derive them."""
     bundle = make_test_bundle()
     model = _model(bundle)
-    label, group = 'walk, forward, weapon', 'locomotion'
+    label, group = 'walk, forward, hand1', 'locomotion'
     slots = action_label_slots(group, parse_action_label(label))
     numpy_channels, present = assemble_slot_channels(
         bundle.word_embeddings, slots, bundle.role_b_perm, bundle.role_b_sign
     )
-    assert present.tolist() == [True, True, True]
+    assert present.tolist() == [True, True, False, True]
     torch_channels = _channels(model, [label], [group])
     assert torch.allclose(
         torch_channels[0], torch.as_tensor(numpy_channels.reshape(-1)), atol=1e-12

@@ -1,8 +1,13 @@
 # AnyTop: Character Animation Diffusion with Any Topology
 
-The official PyTorch implementation of the paper [**"AnyTop: Character Animation Diffusion with Any Topology"**]().
+This repository is a substantially modified fork of the official PyTorch implementation of
+[**"AnyTop: Character Animation Diffusion with Any Topology"**](https://arxiv.org/abs/2502.17327).
+The original project is available at
+[Anytop2025/Anytop](https://github.com/Anytop2025/Anytop). The current model is not
+checkpoint-compatible with the original release; use each checkpoint's `args.json` with the code
+version that produced it.
 
-Please visit our [**webpage**](https://anytop2025.github.io/Anytop-page/) for more details.
+See the [**original project webpage**](https://anytop2025.github.io/Anytop-page/) for more details.
 
 ![teaser](https://github.com/Anytop2025/Anytop-page/blob/main/static/videos/anytop_teaser/teaser.gif)
 
@@ -11,6 +16,11 @@ Please visit our [**webpage**](https://anytop2025.github.io/Anytop-page/) for mo
 ## Fork Improvements
 
 This fork includes significant improvements over the original repository while preserving the core Gaussian Diffusion architecture:
+
+For the authoritative description of the current forward path, conditioning routes, loop behavior,
+cross-limb block, losses, and removed legacy branches, see
+[`docs/anytop_model_architecture.md`](docs/anytop_model_architecture.md). Historical design documents
+under `docs/` may describe superseded intermediate states.
 
 ### Data Quality & Preprocessing
 - **Semantic Joint Name Embeddings** — T5-encoded joint names with capitalization, left/right word-order, and compound-word normalization. Cached in `cond.npy`.
@@ -26,7 +36,7 @@ This fork includes significant improvements over the original repository while p
 ### Evaluation
 - **Distribution-Based Motion Quality Scorer** — Low-shot weighted-reference evaluation without autoencoders or discriminators. Scores macro distribution fidelity and local joint naturalness.
 - **Action Group Split** — Train one model per action group: `--action_group locomotion|stationary|transition` is required at training and takes exactly one of the three (no `all`, no list). The group is recorded in the checkpoint's `args.json`, and generation has no `--action_group` flag at all — it reads the group from there, so a checkpoint can only ever be sampled as the group it was trained on.
-- **Text-to-Motion Conditioning** — `--action_label_cond` conditions on the frozen-T5 embedding of the clip's `action_label`, which is controlled keywords in canonical order (`"run, forward, left, fast"`); `--action_label "run, forward"` at generation time, with `--action_label_cfg_scale` to amplify it.
+- **Text-to-Motion Conditioning** — `--action_label_cond` looks up frozen T5 embeddings per controlled-vocabulary word, pools them into four separate role slots (head/action, direction, modifier, hands), and projects the concatenated channels into the timestep condition. Use `--action_label "run, forward"` at generation time and `--action_label_cfg_scale` for classifier-free guidance.
 - **Semantic Joint Groups** — Automatic root/axial/limbs grouping from skeleton metadata for per-group evaluation.
 
 ### Data Loading

@@ -129,7 +129,9 @@ truebones/zoo_upgrade/Horse
 
 保持不变：`parents / offsets / rest_pose / joints_names_embs / species_emb / canonical_feature_mean·std / …`
 
-> 已确认两个现有数据集的 `feature_space=canonical_motion_v3`、`joints_names_embs_meta.schema_version=8`、`t5_name=t5-base` 完全一致，可直接合并。
+> 已确认两个现有数据集的 `feature_space`、`joints_names_embs_meta.schema_version=8`、`t5_name=t5-base` 完全一致，可直接合并。
+> **注意**：`feature_space` 现为 `canonical_motion_v4`（逐帧 foot contact 通道已删除，`FEATS_LEN`=12）。
+> 各源必须**重新预处理**到 v4 后才能合并——v3 的 cond 会因 `feature_space` 不一致而 fast-fail（§4.1 第 2 步）。
 
 ---
 
@@ -297,7 +299,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 | `param_utils.DEFAULT_DATASET_DIR` | 保留，仅作预处理/工具的默认值，不再被训练/推理引用 |
 | `tools/check_bone_length_drift.py`、`tools/restore_glb_from_npy.py`、`tools/simulate_corrupted_motion.py`、`tools/visualize_joint_name_embeddings.py`、`tools/extract_action_categories.py` | 硬编码 cond 路径 → 统一 `--cond-path`（默认 checkpoint 同目录 cond.npy） |
 | [utils/validate_anytop_dataset.py](../utils/validate_anytop_dataset.py) | 新增 `--datasets`，逐源循环校验（单源行为不变） |
-| `utils/auto_retarget.py` | `auto_retarget_pipeline` / `rank_donors` 已移除，donor 读 `motions/` 的依赖随之消失 —— 无需改动 |
+| `utils/retarget_pipeline.py`（原 `auto_retarget.py`） | `auto_retarget_pipeline` / `rank_donors` 已移除，donor 读 `motions/` 的依赖随之消失 —— 无需改动 |
 | `data_bridge/restore_glb_from_anytop.py` | 离线工具，读 `tpose_reference_paths.jsonl` + 原始 mesh，仍按单数据集目录运行，不改 |
 | `train.bat` | 增加 `--cond_path` |
 

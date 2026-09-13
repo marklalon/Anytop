@@ -81,21 +81,34 @@ TPOSE_REFERENCE_SIDECAR = "tpose_reference_paths.jsonl"
 # and everything derived from them -- object subsets, forward-chain overrides --
 # are owned by ``dataset_tags``; import ``dataset_tags.dataset_tags()`` there
 # rather than caching a copy here.
-FOOT_CONTACT_HEIGHT_THRESH = 0.2
-FOOT_CONTACT_VEL_THRESH = 0.002
 # Exact hop counts 0..MAX_PATH_LEN-1 are coded individually; everything at or
 # beyond it is subdivided by direction and normalized LCA depth instead of
 # saturating into one bucket (see ``topology_relations``). An int, not a float:
 # it sizes an nn.Embedding.
 MAX_PATH_LEN = 5
-# Vertical clamp thresholds expressed as a ratio of the character's reference
-# body length (measured from the processed skeleton's rest-pose joint span).
-# Motion within VERTICAL_CLAMP_MIN_RATIO is left unchanged; only the excess is
-# compressed into the [min, max] band.
+# Vertical clamp band, expressed as a ratio of the character's reference body
+# length (measured from the processed skeleton's rest-pose joint span). The two
+# are the knee and the asymptote of the shared hyperbola (``soft_clamp_extent``):
+# motion within VERTICAL_CLAMP_MIN_RATIO is left unchanged, and the excursion
+# above it is scaled -- by ONE factor for the whole clip, so a climb keeps its
+# shape -- until its peak approaches VERTICAL_CLAMP_MAX_RATIO without reaching it.
+#
+# MAX_RATIO used to be the target rather than the asymptote, so every clip that
+# reached it reported exactly that height: 304 of the 582 shipped winged clips
+# peaked at 0.5 body lengths, which made a bird's hop and a dragon's climb the
+# same number. See ``animation_utils._compress_positive_excursion``.
 VERTICAL_CLAMP_MIN_RATIO = 0.3
 VERTICAL_CLAMP_MAX_RATIO = 0.5
-# Absolute lower bound for the processed translation-root Y height, in the same
-# normalized units as the exported motion features.
+# Lower bound for the processed translation-root Y height, in the same normalized
+# units as the exported motion features. Applied to EVERY species, on top of the
+# subset bands above, and bounded the same way the root-XZ extent is: identity
+# above the knee, the excess compressed smoothly below it, and the bound an
+# asymptote the descent approaches but never reaches (see
+# ``animation_utils.soft_clamp_extent``). It used to be a hard ``np.maximum``
+# floor, which mapped every frame past -0.5 onto -0.5 -- 86 clips carried a
+# pinned plateau where their descent was, and Pirrana_MidSwim was a constant
+# -0.5 for all 97 of its frames.
+ROOT_Y_SOFT_CLAMP_KNEE = -0.3
 ROOT_Y_MIN_HEIGHT = -0.5
 
 
@@ -117,8 +130,14 @@ def parse_action_words(raw_action_words):
 
 
 MAX_JOINTS=100
+# Source-frame budget as a multiple of the target window n: clips longer than
+# n * MAX_SOURCE_FRAMES_MULT are cropped (random window) and resampled to n,
+# pinning their resample_speed condition to this value. Inference uses the same
+# multiple (reference crop budget + num_frames range). Changing it requires
+# retraining.
+MAX_SOURCE_FRAMES_MULT=2
 FPS=30
-FEATS_LEN=13
+FEATS_LEN=12
 SMPL_OFFSETS = np.array([[ 0.0000,  0.0000,  0.0000],
         [ 0.1031,  0.0000,  0.0000],
         [-0.1099,  0.0000,  0.0000],

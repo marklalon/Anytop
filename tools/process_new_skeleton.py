@@ -10,9 +10,8 @@ The output cond.npy is designed to be passed via ``--cond-path`` to ``generate.p
    ``preprocess_and_validate.py`` for training dataset creation.
 
 While designed to be as generic as possible, some skeleton-specific adjustments may be
-needed since it was originally tailored for Truebones (joint-name-based foot classification,
-velocity/height thresholds for foot contact detection). Tested on FBX from Mixamo and other
-sources.
+needed since it was originally tailored for Truebones (joint-name-based foot
+classification). Tested on FBX from Mixamo and other sources.
 
 Input Arguments:
 tpos-path         - An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base (required).

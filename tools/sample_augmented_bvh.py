@@ -5,12 +5,23 @@ Randomly samples N motions from the training dataset and exports them as BVH fil
 for manual verification. Every augmentation that the model sees during training is
 applied faithfully in the same order as dataset.py:
 
+  0. motion speed      — the clip is first time-scaled (played faster / slower
+      at the same fps) when --motion-speed-aug > 1; everything below then sees
+      the scaled clip as an ordinary source clip
   1. random crop       — random start offset when clip > num_frames
   2. loop simulation   — loop motions are repeated/resampled to num_frames,
       with random phase offset and multi-cycle phase metadata
 
 Exported filenames encode the applied augmentations, e.g.:
-  Horse___Gallop_123_loop7.bvh
+  Horse___Gallop_123__loop7x+spd1.13.bvh
+
+By default the exported BVH is the 60-frame model window itself, i.e. it plays
+at the window's compressed tempo. Pass --real-time to stretch it back to
+resample_speed_cond * num_frames frames -- what sample/generate.py does with
+its output -- so the BVH plays at the tempo the model is actually modelling.
+The speed augmentation is only visible this way: the window CONTENT of a
+time-scaled clip is the same as the original's, only its resample_speed
+(and the velocity channels) differ.
 
 Usage
 -----
@@ -27,6 +38,9 @@ Arguments
   --num-frames        Window length in frames, must match --num_frames in training (default: 60)
   --loop-only         Sample only motions marked as loop clips
   --loop-cond-prob    Probability that a loop clip follows the loop-conditioned path (default: 0.0)
+  --motion-speed-aug  Motion-speed augmentation range R, log-uniform in [1/R, R] (default: 1.0 = off)
+  --motion-speed-aug-prob  Per-clip probability of applying it (default: 1.0)
+  --real-time         Export at resample_speed_cond * num-frames frames (real 30 fps tempo)
   --objects-subset    Subset name or single species name (default: "all")
   --action-group      Single action group to keep: locomotion | stationary | transition (default: "" = all)
   --split             train / test / all (default: "train")
@@ -52,11 +66,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from motion_lib import BVH
 from data_loaders.truebones.truebones_utils.motion_process import (
-    recover_bvh_export_animation_from_motion_np,
     refresh_joint_metadata_in_cond_dict,
 )
+from utils.npy_restore import write_feature_bvh
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
@@ -66,6 +79,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
 from data_loaders.truebones.data.dataset import (
     MotionDataset,
     load_allowed_motion_names_per_source,
+    resample_motion_features,
     ALL_SPLIT_NAME,
     SUPPORTED_SPLITS,
     _build_joint_mask_candidate_roots,
@@ -114,36 +128,20 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
 def _export_bvh(
     save_path: Path,
     motion_raw: np.ndarray,
-    parents: list[int],
-    offsets: np.ndarray,
     joints_names: list[str],
-    motion_metadata: dict[str, object],
+    object_cond: dict[str, object],
     *,
-    object_cond: dict[str, object] | None = None,
+    fps: float = 30.0,
 ) -> bool:
-    """Denormalized (F, J, 13) → BVH file.  Returns True on success."""
-    export_parents = list(parents)
-    export_offsets = np.asarray(offsets)
-    export_joint_names = list(joints_names)
-
-    anim, joints_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
-        motion_raw,
-        export_parents,
-        export_offsets,
-        export_joint_names,
-        motion_metadata=motion_metadata,
-    )
-    if anim is None:
+    """Denormalized (F, J, 12) → BVH file through the shared NPY decode.  Returns True on success."""
+    try:
+        write_feature_bvh(
+            motion_raw, object_cond, str(save_path), fps=fps, joint_names=list(joints_names),
+        )
+    except Exception as exc:
+        print(f"[export] {save_path.name}: {exc}")
         return False
-    BVH.save(str(save_path), anim, joints_names, positions=has_animated_pos)
     return True
-
-
-def _format_float_tag(value: object) -> str:
-    number = float(value)
-    if np.isclose(number, round(number)):
-        return str(int(round(number)))
-    return f"{number:.2f}".rstrip("0").rstrip(".").replace(".", "p")
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +159,15 @@ def parse_args() -> argparse.Namespace:
                    help="Only sample/export motions whose metadata marks them as loop clips.")
     p.add_argument("--loop-cond-prob", type=float, default=1.0,
                    help="Probability that a loop clip follows the loop-conditioned path. Match --loop_cond_prob.")
+    p.add_argument("--motion-speed-aug", type=float, default=1.0,
+                   help="Motion-speed augmentation range R (1.0 = off). Match --motion_speed_aug.")
+    p.add_argument("--motion-speed-aug-prob", type=float, default=1.0,
+                   help="Per-clip probability of applying the motion-speed augmentation. Match --motion_speed_aug_prob.")
+    p.add_argument("--real-time", action="store_true",
+                   help="Stretch the exported window back to resample_speed_cond * num-frames frames, as "
+                        "sample/generate.py does with its output, so the BVH plays at the real 30 fps tempo. "
+                        "Without it the BVH is the compressed model window and a time-scaled clip looks "
+                        "identical to the original.")
     p.add_argument("--objects-subset", default="all",
                    help="Predefined subset name or single species (e.g. 'quadropeds_test', 'Horse').")
     p.add_argument("--action-group", default="",
@@ -214,6 +221,8 @@ def main() -> int:
 
     # Augmentation settings
     opt.loop_cond_prob = args.loop_cond_prob
+    opt.motion_speed_aug = args.motion_speed_aug
+    opt.motion_speed_aug_prob = args.motion_speed_aug_prob
     opt.motion_cache_size = 0  # no cache needed for sampling
 
     output_dir = Path(args.output_dir).resolve()
@@ -289,7 +298,7 @@ def main() -> int:
         try:
             # _prepare_sample applies augmentations and returns canonical motion.
             (
-                motion_canonical,  # (num_frames, J, 13) canonical model space
+                motion_canonical,  # (num_frames, J, 12) canonical model space
                 m_length,     # actual frames (before padding)
                 parents,
                 rest_pose,
@@ -302,7 +311,7 @@ def main() -> int:
                 motion_metadata,
                 _name,
                 _candidate_roots_info,
-                aug_info,     # dict: loop_applied, playspeed_cond, loop_uncond
+                aug_info,     # dict: loop_applied, resample_speed_cond, loop_uncond
             ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 
             # ----------------------------------------------------------------
@@ -312,6 +321,13 @@ def main() -> int:
                 motion_canonical[:m_length],
                 cond_dict[object_type],
             ).astype(np.float32)
+            export_frames = int(motion_raw.shape[0])
+            if args.real_time:
+                export_frames = max(
+                    2, int(round(float(aug_info["resample_speed_cond"]) * args.num_frames))
+                )
+                if export_frames != motion_raw.shape[0]:
+                    motion_raw = resample_motion_features(motion_raw, export_frames)
 
             # ----------------------------------------------------------------
             # Retrieve joint names from cond_dict for BVH hierarchy
@@ -342,13 +358,16 @@ def main() -> int:
             source_metadata = dataset.data_dict[name].get("motion_metadata", {})
             source_length = int(dataset.data_dict[name].get("length", motion_canonical.shape[0]))
             is_source_loop = bool(source_metadata.get("is_loop", False))
-            loop_phase_length = float(motion_metadata.get("loop_phase_length", m_length))
+            loop_tile_count = int(aug_info.get("loop_tile_count", 1))
 
             # aug_info contains actual augmentation results (not just parameters)
             if aug_info.get("loop_applied"):
-                tags.append(f"phase{_format_float_tag(loop_phase_length)}")
+                tags.append(f"loop{loop_tile_count}x")
             elif is_source_loop:
                 tags.append("loopuncond")
+            motion_speed_applied = float(aug_info.get("motion_speed_applied", 1.0))
+            if motion_speed_applied != 1.0:
+                tags.append(f"spd{motion_speed_applied:.2f}")
 
             fname = f"{stem}__{'+'.join(tags)}.bvh"
             save_path = output_dir / fname
@@ -356,24 +375,24 @@ def main() -> int:
             ok = _export_bvh(
                 save_path,
                 motion_raw,
-                list(parents),
-                np.asarray(offsets, dtype=np.float32),
                 joints_names,
-                motion_metadata,
-                object_cond=cond_dict[object_type],
+                cond_dict[object_type],
             )
             if ok:
                 loop_note = ""
                 if is_source_loop:
                     loop_note = (
                         f", loop_applied={bool(aug_info.get('loop_applied'))}"
-                        f", phase_len={loop_phase_length:.3g}"
+                        f", tiles={loop_tile_count}"
                         f", source={source_length}f"
                     )
-                print(f"OK  → {save_path.name}  [{m_length}f, {object_type}{loop_note}]")
+                speed_note = ""
+                if motion_speed_applied != 1.0:
+                    speed_note = f", speed={motion_speed_applied:.3f}"
+                print(f"OK  → {save_path.name}  [{export_frames}f, {object_type}{loop_note}{speed_note}]")
                 exported += 1
             else:
-                print(f"FAIL (recover_animation returned None)")
+                print("FAIL (BVH export failed)")
                 failed += 1
 
             # ----------------------------------------------------------------
@@ -398,6 +417,8 @@ def main() -> int:
                         motion_masked_canonical[:m_length],
                         cond_dict[object_type],
                     ).astype(np.float32)
+                    if export_frames != motion_masked_raw.shape[0]:
+                        motion_masked_raw = resample_motion_features(motion_masked_raw, export_frames)
 
                     masked_tags = list(tags) + [f"mask{int(round(args.joint_mask_budget * 100))}"]
                     masked_fname = f"{stem}__{'+'.join(masked_tags)}_masked.bvh"
@@ -406,11 +427,8 @@ def main() -> int:
                     ok2 = _export_bvh(
                         masked_path,
                         motion_masked_raw,
-                        list(parents),
-                        np.asarray(offsets, dtype=np.float32),
                         joints_names,
-                        motion_metadata,
-                        object_cond=cond_dict[object_type],
+                        cond_dict[object_type],
                     )
                     if ok2:
                         print(f"     └─ masked  → {masked_path.name}")

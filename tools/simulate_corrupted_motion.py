@@ -1,7 +1,7 @@
 """
 Simulate Corrupted Motion — Freeze Specified Joint Subtrees
 
-Loads a raw motion NPY ``(T, J, 13)``, freezes the channels of the requested
+Loads a raw motion NPY ``(T, J, 12)``, freezes the channels of the requested
 joints (and, by default, their subtrees) by setting their canonical features to
 zero, then decodes back to physical HML-like features and writes both the
 corrupted NPY and a BVH preview.
@@ -21,7 +21,7 @@ Usage
 
 Arguments
 ---------
-  --motion             Source raw-feature NPY (T, J, 13).
+  --motion             Source raw-feature NPY (T, J, 12).
   --object-type        Species/object key in cond.npy (e.g. Horse, Ostrich).
                        Auto-inferred from the motion filename when omitted
                        (uses utils.misc.infer_object_type_from_filename).
@@ -50,10 +50,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from motion_lib import BVH
-from data_loaders.truebones.truebones_utils.motion_process import (
-    recover_bvh_export_animation_from_motion_np,
-)
+from utils.npy_restore import write_feature_bvh
 from data_loaders.truebones.truebones_utils.animation_utils import (
     refresh_joint_metadata_in_cond_dict,
 )
@@ -64,6 +61,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from model.joint_mask_utils import collect_subtree_indices
 from utils.misc import infer_object_type_from_filename
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import (
     resolve_species_key,
@@ -156,7 +154,7 @@ def parse_args() -> argparse.Namespace:
         )
     )
     p.add_argument("--motion", required=True,
-                   help="Source raw-feature NPY with shape (T, J, 13).")
+                   help="Source raw-feature NPY with shape (T, J, 12).")
     p.add_argument("--object-type", default="",
                    help="Species/object key in cond.npy (e.g. Horse, Ostrich). "
                         "Auto-inferred from the motion filename when omitted.")
@@ -232,7 +230,6 @@ def main() -> int:
     mark_canonical_cond_entry(object_cond)
 
     parents = np.asarray(object_cond["parents"], dtype=np.int64)
-    offsets = np.asarray(object_cond["offsets"], dtype=np.float32)
     n_joints_cond = parents.shape[0]
 
     joint_names_bvh = list(
@@ -245,12 +242,12 @@ def main() -> int:
         joint_names_bvh = [f"joint_{j}" for j in range(n_joints_cond)]
 
     # -----------------------------------------------------------------------
-    # Load input motion (T, J, 13) raw features
+    # Load input motion (T, J, FEATS_LEN) raw features
     # -----------------------------------------------------------------------
     motion_raw = np.load(input_path).astype(np.float32)
-    if motion_raw.ndim != 3 or motion_raw.shape[2] != 13:
+    if motion_raw.ndim != 3 or motion_raw.shape[2] != FEATS_LEN:
         print(
-            f"[ERROR] Input motion must be (T, J, 13); got {motion_raw.shape}"
+            f"[ERROR] Input motion must be (T, J, {FEATS_LEN}); got {motion_raw.shape}"
         )
         return 1
     T, J, _ = motion_raw.shape
@@ -328,26 +325,14 @@ def main() -> int:
     np.save(npy_out, motion_corrupted)
     print(f"[OK ] Wrote corrupted motion NPY → {npy_out}")
 
-    motion_metadata: dict[str, object] = {}
-    trans_root = object_cond.get("translation_root_index")
-    if trans_root is None:
-        trans_root = object_cond.get("forward_base_joint_index")
-    if trans_root is not None:
-        motion_metadata["translation_root_index"] = int(trans_root)
-
-    anim, joints_names_dfs, has_animated_pos = recover_bvh_export_animation_from_motion_np(
+    # Same decode as generate's BVH preview / restore_glb_from_npy.
+    write_feature_bvh(
         motion_corrupted,
-        list(parents),
-        offsets,
-        list(joint_names_bvh),
-        motion_metadata=motion_metadata,
-        allow_infer=True,
+        object_cond,
+        str(bvh_out),
+        fps=30.0,
+        joint_names=list(joint_names_bvh),
     )
-    if anim is None:
-        print("[ERROR] recover_bvh_export_animation_from_motion_np returned None")
-        return 2
-
-    BVH.save(str(bvh_out), anim, joints_names_dfs, positions=has_animated_pos)
     print(f"[OK ] Wrote BVH preview → {bvh_out}")
     return 0
 

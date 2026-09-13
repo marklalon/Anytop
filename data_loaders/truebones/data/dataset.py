@@ -6,6 +6,7 @@ import os
 from collections import OrderedDict, defaultdict
 from os.path import join as pjoin
 from pathlib import Path
+import math
 import random
 import re
 from typing import Optional
@@ -16,6 +17,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     load_action_conditioning_bundle,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (
+    MAX_SOURCE_FRAMES_MULT,
     get_action_word_embeddings_path,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
@@ -37,6 +39,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (
+    CANONICAL_FEATURE_SPACE,
     build_canonical_rest_feature,
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
@@ -150,7 +153,7 @@ def resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
         # Velocity channels are stored so that `vel[t] * step_scale` recovers
         # the target-frame position delta — matching the contract that
         # velocity_consistency_loss and loop_wrap_loss multiply by step_scale
-        # (reconstructed from playspeed_cond) before comparing with pos deltas.
+        # (reconstructed from resample_speed_cond) before comparing with pos deltas.
         # Linear interpolation of source velocities would give the instantaneous
         # value at src[t], which is off whenever step_scale != 1; instead we
         # integrate to a position path, interpolate that, then take target-step
@@ -182,11 +185,48 @@ def resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
         else:
             resampled[0, :, 9:12] = 0.0
 
-    if resampled.shape[-1] >= 13:
-        nearest = np.rint(src).astype(np.int64).clip(0, source_frames - 1)
-        resampled[..., 12] = (motion[nearest, :, 12] >= 0.5).astype(resampled.dtype, copy=False)
-
     return resampled.astype(motion.dtype, copy=False)
+
+
+def time_scale_motion_features(motion, target_num_frames, *, loop_terminal=False):
+    """Play the clip faster or slower: ``L`` frames become ``target_num_frames``
+    frames at the SAME fps, so the motion itself speeds up (fewer frames) or
+    slows down (more frames).
+
+    The result is a legitimate source clip in its own right -- every downstream
+    stage (loop roll / tile, crop, the window resample and its
+    ``resample_speed_cond``) treats it exactly like a clip recorded at that
+    tempo, and the model is told nothing about it.
+
+    ``resample_motion_features`` deliberately leaves the velocity channels in
+    "per SOURCE frame" units (the loss multiplies them by the step scale it
+    reconstructs from ``resample_speed_cond``); here the new frames ARE the
+    source frames, so the velocities are rescaled to "per new frame" -- without
+    that the positions would advance ``speed``x per frame while the velocity
+    channel still claimed 1x, and the velocity-consistency / loop-wrap losses
+    would be fed a self-contradicting target.
+
+    Returns ``(motion, speed)`` where ``speed`` is the ratio that actually
+    took effect, ``(L - 1) / (target_num_frames - 1)`` (> 1 = faster); it
+    differs slightly from the requested ratio because frame counts are
+    integers.
+    """
+    source_frames = int(motion.shape[0])
+    target_num_frames = int(target_num_frames)
+    if source_frames < 2 or target_num_frames < 2:
+        raise ValueError(
+            "time_scale_motion_features needs at least 2 source and 2 target frames, "
+            f"got {source_frames} -> {target_num_frames}."
+        )
+    if target_num_frames == source_frames:
+        return motion, 1.0
+    speed = float(source_frames - 1) / float(target_num_frames - 1)
+    scaled = resample_motion_features(
+        motion, target_num_frames, loop_terminal=loop_terminal
+    )
+    if scaled.shape[-1] >= 12:
+        scaled[..., 9:12] *= np.asarray(speed, dtype=scaled.dtype)
+    return scaled, speed
 
 
 def _circular_roll_motion(motion, offset):
@@ -207,11 +247,11 @@ def _tile_loop_motion(motion, repeat_count):
     the last and first frames are near-identical in a loop clip, the velocity
     at the boundary from copy *k* to copy *k+1* stays physically consistent.
 
-    Binary contact (channel 12) and 6-D rotations (channels 3-8) are
-    unaffected by tiling.  Tiling operates in whichever feature space the
+    The 6-D rotations (channels 3-8) are unaffected by tiling.  Tiling
+    operates in whichever feature space the
     caller supplies (raw or normalized); both are linear transformations of
     each other, so the result is equivalent and the caller must only ensure
-    ``playspeed_cond`` reflects the post-tile frame count.
+    ``resample_speed_cond`` reflects the post-tile frame count.
     """
     repeat_count = int(repeat_count)
     if repeat_count <= 1:
@@ -845,6 +885,56 @@ class MotionDataset(data.Dataset):
             return 1
         return int(random.randint(1, max_tile_count))
 
+    def _sample_motion_speed_target_length(self, length, is_loop, max_source_length):
+        """Pick the frame count a clip is time-scaled to before any other
+        augmentation, or ``length`` for no change.
+
+        The speed ratio is log-uniform in ``[1/R, R]`` (``R`` =
+        ``opt.motion_speed_aug``; 1.0 = off), drawn with probability
+        ``opt.motion_speed_aug_prob``; the recorded tempo is one point of that
+        continuum, not a mode. The range is then narrowed so the augmentation
+        never carries a clip across a boundary it was not across already --
+        the point is to fill the gaps between the corpus' clustered clip
+        lengths, not to change what else happens to the clip:
+
+        * the scaled clip stays >= ``min_length`` (inference never asks for a
+          shorter window, so anything below is training the model on a
+          ``resample_speed`` it will never see);
+        * a loop clip that fits the ``max_source_length`` budget still fits,
+          so slowing it down cannot push it into the crop branch that
+          downgrades it to non-loop.
+
+        The narrowed interval is sampled directly rather than clipped into,
+        so no probability mass piles up at the bounds (which would just be a
+        new spike).
+        """
+        length = int(length)
+        ratio = float(getattr(self.opt, 'motion_speed_aug', 1.0))
+        prob = float(getattr(self.opt, 'motion_speed_aug_prob', 1.0))
+        if ratio < 1.0:
+            raise ValueError(f"motion_speed_aug must be >= 1.0 (1.0 = off), got {ratio}.")
+        if not 0.0 <= prob <= 1.0:
+            raise ValueError(f"motion_speed_aug_prob must be in [0, 1], got {prob}.")
+        if ratio == 1.0 or length < 2 or random.random() >= prob:
+            return length
+        floor_length = max(2, min(int(self.min_length), length))
+        ceil_length = None
+        if is_loop and length <= int(max_source_length):
+            ceil_length = int(max_source_length)
+        # speed > 1 shortens the clip.
+        speed_lo = 1.0 / ratio
+        speed_hi = min(ratio, float(length) / float(floor_length))
+        if ceil_length is not None:
+            speed_lo = max(speed_lo, float(length) / float(ceil_length))
+        if speed_lo >= speed_hi:
+            return length
+        speed = math.exp(random.uniform(math.log(speed_lo), math.log(speed_hi)))
+        target_length = int(round(float(length) / speed))
+        target_length = max(target_length, floor_length)
+        if ceil_length is not None:
+            target_length = min(target_length, ceil_length)
+        return target_length
+
     def prepare_sample_by_name(self, name, target_num_frames=None, loop_offset=None):
         if name not in self.data_dict:
             raise KeyError(f"Unknown motion sample '{name}'.")
@@ -890,13 +980,30 @@ class MotionDataset(data.Dataset):
         )
 
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
-        loop_applied = False
-        loop_full_cycle = False
         loop_phase_offset = 0
         loop_tile_count = 1
         loop_condition_active = bool(is_loop) and not loop_uncond
 
-        max_source_length = target_num_frames * 2
+        max_source_length = target_num_frames * MAX_SOURCE_FRAMES_MULT
+        # ── Motion-speed augmentation (applies to every clip) ──
+        # Runs FIRST and is invisible to everything after it: the time-scaled
+        # clip is simply a shorter/longer source clip recorded at a different
+        # tempo, so roll / tile / crop / the window resample and
+        # resample_speed_cond all see an ordinary clip and the model is told
+        # nothing. Its purpose is the corpus' length distribution -- 45% of the
+        # clips sit on five exact frame counts (20/21/26/31/41), so without it
+        # resample_speed is a comb and an inference num_frames between the
+        # teeth is out of distribution. A loop clip is time-scaled with its
+        # terminal wrap velocity intact, so it is still a closed cycle.
+        motion_speed_applied = 1.0
+        time_scaled_length = self._sample_motion_speed_target_length(
+            m_length, is_loop, max_source_length
+        )
+        if time_scaled_length != m_length:
+            motion, motion_speed_applied = time_scale_motion_features(
+                motion, time_scaled_length, loop_terminal=bool(is_loop)
+            )
+            m_length = int(motion.shape[0])
         # ── Loop-aware data augmentation (applies to ALL is_loop motions) ──
         # Circular roll shifts the temporal phase so the model sees every loop
         # from a random starting frame.  Random tiling repeats the cycle up to
@@ -914,12 +1021,14 @@ class MotionDataset(data.Dataset):
             m_length = int(motion.shape[0])
 
         if m_length > max_source_length:
-            # A clip longer than the 2n budget is cropped, which breaks the
-            # cycle, so a loop is downgraded to non-loop here and told so.
-            # The crop LENGTH is fixed at the full 2n budget -- every over-long
-            # clip contributes 2n source frames, resampled to the target length
-            # below at playspeed 2 -- while the window POSITION stays random so
-            # repeated epochs still see the whole clip.
+            # A clip longer than the n*MAX_SOURCE_FRAMES_MULT budget is cropped,
+            # which breaks the cycle, so a loop is downgraded to non-loop here
+            # and told so.
+            # The crop LENGTH is fixed at the full budget -- every over-long
+            # clip contributes n*MAX_SOURCE_FRAMES_MULT source frames, resampled
+            # to the target length below at resample_speed MAX_SOURCE_FRAMES_MULT --
+            # while the window POSITION stays random so repeated epochs still
+            # see the whole clip.
             if loop_condition_active:
                 loop_uncond = True
             loop_condition_active = False
@@ -927,8 +1036,8 @@ class MotionDataset(data.Dataset):
             motion = motion[ind: ind + max_source_length]
             m_length = int(motion.shape[0])
 
-        source_len_for_playspeed = int(m_length)
-        playspeed_cond = float(source_len_for_playspeed) / float(target_num_frames)
+        source_len_for_resample_speed = int(m_length)
+        resample_speed_cond = float(source_len_for_resample_speed) / float(target_num_frames)
         if m_length != target_num_frames:
             motion = resample_motion_features(
                 motion,
@@ -941,26 +1050,19 @@ class MotionDataset(data.Dataset):
             physical_hml_to_canonical(motion, self.cond_dict[object_type])
         ).astype(np.float32, copy=False)
 
-        if loop_condition_active:
-            loop_full_cycle = True
-            loop_applied = True
-
+        # is_loop is the whole loop condition the model sees: a closed window.
+        # The tile count is deliberately NOT passed on -- generation has no
+        # tile count, so the model must learn the cycle count from
+        # resample_speed_cond (= tiles * period / T) and the species/action prior,
+        # exactly as it does for a one-shot clip. loop_tile_count and
+        # loop_phase_offset are logged for diagnostics only.
         motion_metadata['is_loop'] = bool(loop_condition_active)
-        motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
-        motion_metadata['playspeed_cond'] = float(playspeed_cond)
+        motion_metadata['resample_speed_cond'] = float(resample_speed_cond)
         motion_metadata['loop_data_aug_applied'] = bool(is_loop)
         motion_metadata['loop_phase_offset'] = int(loop_phase_offset)
         motion_metadata['loop_tile_count'] = int(loop_tile_count)
-        # loop_phase_length: the expected single-cycle period in output frames.
-        # When multiple tile copies were resampled to one target window the
-        # effective cycle length is compressed proportionally.
-        # Example: 32f loop tiled 2× → 64f resampled to 60f → phase_len ≈ 30.5.
-        loop_phase_length = target_num_frames
-        if loop_condition_active and loop_full_cycle and loop_tile_count > 1:
-            loop_phase_length = ((float(target_num_frames) - 1.0) / float(loop_tile_count)) + 1.0
-        motion_metadata['loop_phase_length'] = float(
-            loop_phase_length if loop_condition_active and loop_full_cycle else max(int(m_length), 1)
-        )
+        # Diagnostics only (training logs), never a model input.
+        motion_metadata['motion_speed_applied'] = float(motion_speed_applied)
         self._apply_action_label_condition(motion_metadata)
 
         if return_aug_info:
@@ -972,13 +1074,14 @@ class MotionDataset(data.Dataset):
                 'rest_pos_ric_hml': self.cond_dict[object_type]['rest_pos_ric_hml'],
                 'canonical_feature_mean': self.cond_dict[object_type].get('canonical_feature_mean'),
                 'canonical_feature_std': self.cond_dict[object_type].get('canonical_feature_std'),
-                'feature_space': self.cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),
+                'feature_space': self.cond_dict[object_type].get('feature_space', CANONICAL_FEATURE_SPACE),
             }, {
-                'loop_applied': bool(loop_applied),
+                'loop_applied': bool(loop_condition_active),
                 'loop_phase_offset': int(loop_phase_offset),
                 'loop_tile_count': int(loop_tile_count),
-                'playspeed_cond': float(playspeed_cond),
+                'resample_speed_cond': float(resample_speed_cond),
                 'loop_uncond': bool(loop_uncond),
+                'motion_speed_applied': float(motion_speed_applied),
             }
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
@@ -988,7 +1091,7 @@ class MotionDataset(data.Dataset):
             'rest_pos_ric_hml': self.cond_dict[object_type]['rest_pos_ric_hml'],
             'canonical_feature_mean': self.cond_dict[object_type].get('canonical_feature_mean'),
             'canonical_feature_std': self.cond_dict[object_type].get('canonical_feature_std'),
-            'feature_space': self.cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),
+            'feature_space': self.cond_dict[object_type].get('feature_space', CANONICAL_FEATURE_SPACE),
         }
     
     def _apply_action_label_condition(self, motion_metadata) -> None:
@@ -1150,6 +1253,8 @@ class Truebones(data.Dataset):
         self.opt.min_length = int(kwargs.get('min_length', getattr(self.opt, 'min_length', 20)))
 
         self.opt.loop_cond_prob = kwargs.get('loop_cond_prob', 1.0)
+        self.opt.motion_speed_aug = float(kwargs.get('motion_speed_aug', 1.0))
+        self.opt.motion_speed_aug_prob = float(kwargs.get('motion_speed_aug_prob', 1.0))
         cond_dict = load_cond(opt.cond_file)
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
         # Support both predefined subsets and single species names. A species

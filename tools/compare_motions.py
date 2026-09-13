@@ -83,7 +83,7 @@ from motion_lib.FBX import (
     infer_sample_fps,
     get_action_sample_times,
 )
-from utils.retarget import (
+from utils.retarget_core import (
     generate_coordinate_candidates_np,
 )
 
