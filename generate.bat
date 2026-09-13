@@ -19,7 +19,6 @@ rem set MODEL_FILE=model000010000.pt
 pushd "%SCRIPT_DIR%"
 
 if not defined MODEL_FILE (
-    REM 自动查找最新的 model 文件
     for /f "delims=" %%i in ('dir /b /o-d "save\%RUN_NAME%\model*.pt" 2^>nul') do (
         set MODEL_FILE=%%i
         goto :found_model
@@ -33,14 +32,12 @@ if not defined MODEL_FILE (
     exit /b 1
 )
 
-REM 通用方法：先去掉扩展名，再去掉 "model" 前缀
 set STEP_NUM=%MODEL_FILE:.pt=%
 set STEP_NUM=%STEP_NUM:model=%
 
 set MODEL_PATH=save\%RUN_NAME%\%MODEL_FILE%
 set OUTPUT_DIR=outputs\%RUN_NAME%\generate_step%STEP_NUM%
 
-REM 清空 output_dir 目录
 if exist %OUTPUT_DIR% (
     echo Cleaning output directory: %OUTPUT_DIR%
     rmdir /s /q %OUTPUT_DIR%
