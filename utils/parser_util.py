@@ -242,6 +242,15 @@ def add_model_options(parser):
                             "l_simple under-weights and which stretch most on novel skeletons) get proportionally "
                             "larger gradient. Anchoring on GT (not rest) preserves genuinely animated bone-length "
                             "deformation. Computed on denormalized outputs; recommended range ~0.1-0.3.")
+    group.add_argument("--lambda_fk", default=0.0, type=float,
+                       help="Weight for the FK bone-direction loss (0.0=off). Chains the PREDICTED local "
+                            "rotations into global rotations and matches each bone's rest vector (pointed by "
+                            "its parent's predicted global rotation) against the same bone's direction in the "
+                            "GT position channel (mean 2(1-cos angle) over graded bone-frames). This adds the "
+                            "global supervision l_simple/geodesic lack, so FK(rot) agrees with pos. Direction "
+                            "only: bone length stays with the position channel. Bone-frames whose GT is itself "
+                            "FK-inconsistent are masked (~3-6%% of the corpus). Logs fk_angle_deg and "
+                            "fk_gt_masked_frac. Loss-only: no cond regen or checkpoint bump.")
     group.add_argument("--loop_cond_prob", default=1.0, type=float,
                        help="Probability that a loop training clip stays loop-conditioned "
                             "(periodic resampling, circular phase, and loop-condition embedding)."

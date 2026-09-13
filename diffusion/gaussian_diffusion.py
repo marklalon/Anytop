@@ -168,6 +168,7 @@ class GaussianDiffusion:
         lambda_loop_wrap=0.,
         lambda_loop_root_closure=0.,
         lambda_bone=0.,
+        lambda_fk=0.,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
         renoise_same_level_prob=1.0,
@@ -181,6 +182,7 @@ class GaussianDiffusion:
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_loop_root_closure = float(lambda_loop_root_closure)
         self.lambda_bone = float(lambda_bone)
+        self.lambda_fk = float(lambda_fk)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
         self.renoise_same_level_prob = float(renoise_same_level_prob)
@@ -197,6 +199,8 @@ class GaussianDiffusion:
             )
         if self.lambda_bone < 0.0:
             raise ValueError(f"lambda_bone must be >= 0, got {self.lambda_bone}")
+        if self.lambda_fk < 0.0:
+            raise ValueError(f"lambda_fk must be >= 0, got {self.lambda_fk}")
         if self.temporal_span_seam_loss_weight < 0.0:
             raise ValueError(
                 "temporal_span_seam_loss_weight must be >= 0, got "
@@ -610,6 +614,166 @@ class GaussianDiffusion:
         rel = (len_pred - len_tgt) * inv_rest                                 # [bs, J, T]
         valid_bt = bone_valid.unsqueeze(-1).float().expand(-1, -1, n_frames)
         return self._masked_smooth_l1(rel, valid_bt)
+
+    # Skip bone-frames whose GT rotation already disagrees with the GT position
+    # channel by more than this: Biped rigs key translations on Spine/Clavicle/
+    # Thigh, props are position-driven, and helpers may sit off the cond rest.
+    # None of it is expressible via rotations. ~2.6% (unitybundles) /
+    # ~4.8% (truebones) of bone-frames drop out.
+    FK_GT_AGREEMENT_DEG = 5.0
+    # A GT bone shorter than this fraction of its rest length has no direction
+    # (Biped helpers collapsed onto their parent but with a non-zero rest offset).
+    FK_DEGENERATE_LENGTH_RATIO = 0.1
+
+    def _padded_parents(self, y, batch_size, max_joints, device):
+        """Padded ``(parents_idx [bs, J] long, parent_is_bone [bs, J] bool, max_depth)``.
+
+        Root/padding rows get parent 0 and ``parent_is_bone=False``. ``max_depth``
+        is the longest root-to-leaf chain in the batch, bounding the chain-product
+        iterations ``_chain_global_rotations`` needs.
+        """
+        parents_list = (y or {}).get('parents')
+        if parents_list is None:
+            raise ValueError(
+                "fk_direction_loss requires y['parents'] (per-sample parent arrays "
+                "from the collate); none were provided."
+            )
+        parents_idx = th.zeros(batch_size, max_joints, dtype=th.long, device=device)
+        parent_is_bone = th.zeros(batch_size, max_joints, dtype=th.bool, device=device)
+        max_depth = 0
+        for b, p in enumerate(parents_list):
+            p_np = np.asarray(p).reshape(-1).astype(np.int64)
+            n = min(int(p_np.shape[0]), max_joints)
+            p_np = p_np[:n]
+            p_t = th.as_tensor(p_np, dtype=th.long, device=device)
+            parents_idx[b, :n] = p_t.clamp(min=0)
+            parent_is_bone[b, :n] = p_t >= 0
+            # Parents are not guaranteed to precede children; walk each chain up.
+            for j in range(n):
+                par = int(p_np[j])
+                d = 0
+                while 0 <= par < n and d < n:
+                    d += 1
+                    par = int(p_np[par])
+                max_depth = max(max_depth, d)
+        return parents_idx, parent_is_bone, max_depth
+
+    @staticmethod
+    def _chain_global_rotations(local_rot, parents_idx, parent_is_bone, max_depth):
+        """Global rotation of every joint from its own-local rotations.
+
+        ``local_rot``: [bs, T, J, 3, 3] with ``G[j] = G[parent] @ R[j]``,
+        ``G[root] = R[root]``. Iterating ``G <- G[parent] @ R`` ``max_depth``
+        times converges to the full chain product without a per-sample topological
+        order (the root stays pinned, so short chains terminate). One gather + one
+        batched 3x3 matmul per iteration, so a 30-deep rig is ~60 kernels, not one
+        per joint.
+        """
+        bs, n_frames, max_joints = local_rot.shape[:3]
+        gather_idx = parents_idx.view(bs, 1, max_joints, 1, 1).expand(-1, n_frames, -1, 3, 3)
+        is_bone = parent_is_bone.view(bs, 1, max_joints, 1, 1)
+        global_rot = local_rot
+        for _ in range(int(max_depth)):
+            parent_global = th.gather(global_rot, 2, gather_idx)
+            global_rot = th.where(is_bone, parent_global @ local_rot, local_rot)
+        return global_rot
+
+    def fk_direction_loss(self, pred_physical, target_physical, spat_mask, y):
+        """Global-rotation supervision through bone directions.
+
+        ``l_simple`` and ``geodesic_loss`` grade each joint's LOCAL rotation in
+        isolation, so a hip error costs the same as a fingertip one -- but the
+        leg's overall direction is only graded through the position channel.
+        Measured, FK(rot) and pos disagree by 6-15 degrees on the core skeleton.
+
+        This chains the PREDICTED local rotations into global rotations
+        (``_chain_global_rotations``), points each bone's rest vector with its
+        parent's predicted global rotation, and compares that unit direction
+        with the same bone's unit direction in the GT position channel:
+
+            loss = mean over graded bone-frames of || G_p(pred) u_j - d_j(GT) ||^2
+                 = 2 (1 - cos angle)
+
+        Direction only: bone length stays with the position channel, so animated
+        bone stretch is untouched. Each bone is anchored on its GT parent (not on
+        chained predicted positions), so a masked bone doesn't contaminate its
+        descendants; gradients still reach every ancestor via the chain product.
+
+        Bone-frames are weighted 0 for padding, a missing/degenerate rest length,
+        a collapsed GT bone (``FK_DEGENERATE_LENGTH_RATIO``), or a GT that is itself
+        FK-inconsistent beyond ``FK_GT_AGREEMENT_DEG``.
+
+        Returns ``fk_loss`` plus diagnostics ``fk_angle_deg`` (mean FK-vs-position
+        angle on graded bones, the acceptance metric) and ``fk_gt_masked_frac``
+        (fraction of valid bone-frames the GT gate removed).
+        """
+        bs, max_joints, _n_feats, n_frames = pred_physical.shape
+        device = pred_physical.device
+        parents_idx, parent_is_bone, max_depth = self._padded_parents(y, bs, max_joints, device)
+
+        rest_pos = (y or {}).get('rest_pos_ric_hml')
+        if rest_pos is None:
+            rest_physical = (y or {}).get('rest_pose_physical')
+            if rest_physical is not None:
+                rest_pos = rest_physical[..., 0:3]
+        if rest_pos is None:
+            raise ValueError(
+                "fk_direction_loss requires physical rest positions "
+                "(y['rest_pos_ric_hml'] or y['rest_pose_physical']); y['rest_pose'] is "
+                "the canonical rest feature (zero position residual at rest) and "
+                "carries no bone vectors."
+            )
+        if not th.is_tensor(rest_pos):
+            rest_pos = th.as_tensor(rest_pos, dtype=th.float32)
+        rest_pos = rest_pos.to(device=device, dtype=th.float32)                       # [bs, J, 3]
+
+        gather_j3 = parents_idx.view(bs, max_joints, 1).expand(-1, -1, 3)
+        rest_vec = rest_pos - th.gather(rest_pos, 1, gather_j3)                       # [bs, J, 3]
+        rest_len = rest_vec.norm(dim=-1)                                              # [bs, J]
+        rest_dir = rest_vec / rest_len.clamp_min(1e-8).unsqueeze(-1)
+
+        # [bs, T, J, 3, 3]; the safe 6D->matrix keeps near-collinear inputs finite.
+        rot_pred = rotation_6d_to_matrix_safe(pred_physical.permute(0, 3, 1, 2)[..., 3:9].float())
+        rot_tgt = rotation_6d_to_matrix_safe(target_physical.permute(0, 3, 1, 2)[..., 3:9].float())
+        global_pred = self._chain_global_rotations(rot_pred, parents_idx, parent_is_bone, max_depth)
+        with th.no_grad():
+            global_tgt = self._chain_global_rotations(rot_tgt, parents_idx, parent_is_bone, max_depth)
+
+        gather_bt = parents_idx.view(bs, 1, max_joints, 1, 1).expand(-1, n_frames, -1, 3, 3)
+        parent_global_pred = th.gather(global_pred, 2, gather_bt)                      # [bs, T, J, 3, 3]
+        parent_global_tgt = th.gather(global_tgt, 2, gather_bt)
+        rest_dir_bt = rest_dir.unsqueeze(1).unsqueeze(-1)                             # [bs, 1, J, 3, 1]
+        dir_pred = (parent_global_pred @ rest_dir_bt).squeeze(-1)                     # [bs, T, J, 3]
+        dir_tgt_fk = (parent_global_tgt @ rest_dir_bt).squeeze(-1)
+
+        pos_tgt = target_physical[:, :, 0:3, :].permute(0, 3, 1, 2).float()          # [bs, T, J, 3]
+        gather_pos = parents_idx.view(bs, 1, max_joints, 1).expand(-1, n_frames, -1, 3)
+        bone_tgt = pos_tgt - th.gather(pos_tgt, 2, gather_pos)
+        len_tgt = bone_tgt.norm(dim=-1)                                               # [bs, T, J]
+        dir_tgt = bone_tgt / len_tgt.clamp_min(1e-8).unsqueeze(-1)
+
+        joint_valid = spat_mask.float().transpose(1, 3).reshape(bs, max_joints) > 0.5
+        bone_valid = joint_valid & parent_is_bone & (rest_len > 1e-4)                 # [bs, J]
+        candidate = bone_valid.unsqueeze(1).expand(-1, n_frames, -1)                  # [bs, T, J]
+        nondegenerate = len_tgt > self.FK_DEGENERATE_LENGTH_RATIO * rest_len.unsqueeze(1)
+        gt_cos = (dir_tgt_fk * dir_tgt).sum(dim=-1)
+        gt_consistent = gt_cos > math.cos(math.radians(self.FK_GT_AGREEMENT_DEG))
+        graded = candidate & nondegenerate & gt_consistent
+        weight = graded.to(dtype=th.float32)
+        denom = weight.sum().clamp(min=1.0)
+
+        err = ((dir_pred - dir_tgt) ** 2).sum(dim=-1)                                 # 2 (1 - cos)
+        loss = (err * weight).sum() / denom
+
+        with th.no_grad():
+            cos_pred = (dir_pred * dir_tgt).sum(dim=-1).clamp(-1.0, 1.0)
+            angle_deg = (th.rad2deg(th.acos(cos_pred)) * weight).sum() / denom
+            masked_frac = 1.0 - denom / candidate.to(th.float32).sum().clamp(min=1.0)
+        return {
+            'fk_loss': loss,
+            'fk_angle_deg': angle_deg,
+            'fk_gt_masked_frac': masked_frac,
+        }
 
     def _coerce_bool_batch(self, value, batch_size, device, default=False):
         if value is None:
@@ -1931,6 +2095,14 @@ class GaussianDiffusion:
                         joints_padding_mask_fp32, y_for_decode,
                     )
                     terms["loss"] = terms["loss"] + self.lambda_bone * terms["bone_loss"]
+
+                if self.lambda_fk > 0.:
+                    fk_terms = self.fk_direction_loss(
+                        model_output_physical, target_physical,
+                        joints_padding_mask_fp32, y_for_decode,
+                    )
+                    terms.update(fk_terms)
+                    terms["loss"] = terms["loss"] + self.lambda_fk * terms["fk_loss"]
 
                 if self.lambda_loop_wrap > 0.0:
                     y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}

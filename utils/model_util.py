@@ -248,6 +248,7 @@ def create_gaussian_diffusion(args):
         lambda_loop_wrap=getattr(args, 'lambda_loop_wrap', 0.0),
         lambda_loop_root_closure=getattr(args, 'lambda_loop_root_closure', 0.0),
         lambda_bone=getattr(args, 'lambda_bone', 0.0),
+        lambda_fk=getattr(args, 'lambda_fk', 0.0),
         temporal_span_seam_loss_weight=getattr(args, 'temporal_span_seam_loss_weight', 0.0),
         temporal_span_seam_width=getattr(args, 'temporal_span_seam_width', 2),
         renoise_same_level_prob=getattr(args, 'renoise_same_level_prob', 1.0),

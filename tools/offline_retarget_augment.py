@@ -86,6 +86,7 @@ from data_loaders.truebones.truebones_utils.fbx_filename_rules import (  # noqa:
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     canonical_action_label,
+    clip_key,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     ACTION_LABELS_FILE,
@@ -1001,12 +1002,14 @@ def _write_labels(rows: list[dict], args) -> None:
                 for line in handle:
                     line = line.strip()
                     if line:
-                        existing.add(json.loads(line)["clip"])
+                        # Normalize to clip_key so a legacy "<name>.npy" row counts
+                        # as existing; otherwise a rerun appends a duplicate that
+                        # can overwrite reviewed metadata (e.g. is_loop).
+                        existing.add(clip_key(json.loads(line)["clip"]))
         new_rows = []
         for row in target_rows:
             # sidecar keys are extension-less; target_clip is the .npy file name
-            new_key = row["target_clip"][:-4] if row["target_clip"].endswith(".npy") \
-                else row["target_clip"]
+            new_key = clip_key(row["target_clip"])
             if new_key in existing:
                 continue
             existing.add(new_key)

@@ -187,6 +187,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         lambda_vel: float = 0.0,
         temporal_span_seam_loss_weight: float = 0.0,
         temporal_span_seam_width: int = 0,
+        renoise_same_level_prob: float = 1.0,
     ) -> GaussianDiffusion:
         return GaussianDiffusion(
             betas=np.array([0.001, 0.002, 0.003], dtype=np.float64),
@@ -197,6 +198,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             lambda_vel=lambda_vel,
             temporal_span_seam_loss_weight=temporal_span_seam_loss_weight,
             temporal_span_seam_width=temporal_span_seam_width,
+            renoise_same_level_prob=renoise_same_level_prob,
         )
 
     def _make_spaced_diffusion(self, *, model_var_type: ModelVarType) -> SpacedDiffusion:
@@ -515,8 +517,11 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertFalse(bool(unreliable.any()))
 
     def test_sample_renoise_timesteps_never_draws_below_t(self):
-        """A flagged region must never end up cleaner than its surroundings."""
-        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
+        """The hard branch may draw later timesteps, but never earlier ones."""
+        diffusion = self._make_diffusion(
+            model_var_type=ModelVarType.FIXED_LARGE,
+            renoise_same_level_prob=0.0,
+        )
         t = torch.randint(0, diffusion.num_timesteps, (512,), dtype=torch.int64)
 
         torch.manual_seed(0)

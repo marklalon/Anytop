@@ -306,9 +306,15 @@ timestep 是一个混合分布（`--renoise_same_level_prob`，默认 1.0）：�
 | geodesic | 预测/目标 6D rotation 转 SO(3) 后的角距离 | 0.1 |
 | velocity consistency | position finite difference 与 velocity channel 一致 | 0.2 |
 | bone length | 相对 GT、按 rest length 归一化的骨长 | 0（关闭） |
+| FK direction | 预测局部旋转沿链累乘成全局旋转，把每根骨的 rest 向量指向后与 GT position 通道的骨向比较（`2(1-cos θ)`，只管方向不管长度）；GT 自身 FK 不一致 >5° 或塌缩的骨被屏蔽 | v12 起 0.5（v10/v11 无此项） |
 | loop wrap | loop 首尾闭合 | 0.04 |
 | loop root XZ closure | 根 XZ 速度整周期积分为零 | 0.05 |
 | temporal-span seam | span 边界附近 position 二阶差分匹配 GT | 0.2 |
+
+FK direction 补的是 rot 通道缺的“全局”监督：`l_simple` 和 geodesic 都逐关节评局部旋转，髋关节转错 2° 和指尖转错 2°
+罚得一样重，而它的后果（整条腿指向哪）只经 position 通道被评过。v11 实测生成结果里 FK(rot) 与 pos 的核心骨向差
+6–15°。该项把预测的局部旋转沿链累乘、以 GT 父关节为锚比较骨向，不碰骨长，所以拉伸动画和 restore 里 fullbody-IK
+读的 pos 通道都不受影响；日志里的 `fk_angle_deg` 就是验收指标，`fk_gt_masked_frac` 是被 GT 门槛剔除的骨-帧占比。
 
 ## 10. 参考动作与编辑：采样能力，不是模型分支
 
