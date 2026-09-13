@@ -369,8 +369,8 @@ def add_training_options(parser):
                        help="If passed, automatically resume from the latest checkpoint in save_dir. Without this flag, training starts fresh and existing checkpoints in save_dir are overwritten.")
     group.add_argument("--ml_platform_type", default='NoPlatform', choices=['NoPlatform', 'ClearmlPlatform', 'TensorboardPlatform', 'WandBPlatform'], type=str,
                        help="Choose platform to log results. NoPlatform means no logging.")
-    group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'bf16'], type=str,
-                       help="Autocast precision for training. fp32 disables AMP; bf16 uses selective autocast on linear and attention modules only.")
+    group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'fp16', 'bf16'], type=str,
+                       help="Autocast precision for training. fp32 disables AMP; fp16 uses selective autocast with GradScaler; bf16 uses selective autocast on linear and attention modules only.")
     group.add_argument("--compile", default='None',
                        choices=['None', 'default', 'max-autotune-no-cudagraphs'],
                        help="Wrap the transformer decoder with torch.compile to fuse the many tiny "

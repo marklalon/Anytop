@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_locomotion_v14
+set RUN_NAME=merged_locomotion_v14_fp16
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize
@@ -54,7 +54,7 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 	--lambda_geo 0.1 ^
 	--lambda_fk 0.1 ^
 	--motion_cache_size 32768 ^
-	--amp_dtype bf16 ^
+	--amp_dtype fp16 ^
 	--main_process_prefetch_batches 64 ^
 	--compile default
 
