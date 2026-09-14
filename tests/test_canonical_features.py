@@ -66,9 +66,9 @@ def test_lnorm_scale_uses_per_skeleton_length():
     big = mark_canonical_cond_entry(
         {"rest_pose": np.tile(np.array([[10.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], dtype=np.float32), (2, 1))}
     )
-    # non-degenerate spread between the two joints
-    small["rest_pos_ric_hml"] = np.array([[0.0, 0, 0], [0.2, 0, 0]], dtype=np.float32)
-    big["rest_pos_ric_hml"] = np.array([[0.0, 0, 0], [20.0, 0, 0]], dtype=np.float32)
+    # non-degenerate spread between the two joints, both above the L floor
+    small["rest_pos_ric_hml"] = np.array([[0.0, 0, 0], [2.0, 0, 0]], dtype=np.float32)
+    big["rest_pos_ric_hml"] = np.array([[0.0, 0, 0], [200.0, 0, 0]], dtype=np.float32)
 
     L_small = cf._length_scale_from_rest(small["rest_pos_ric_hml"])
     L_big = cf._length_scale_from_rest(big["rest_pos_ric_hml"])
@@ -199,6 +199,63 @@ def test_canonical_decode_torch_padded_batch_matches_unpadded_samples():
             decoded_batch[batch_index, :n_joints], decoded_single[0],
             atol=1e-5, rtol=1e-5,
         )
+
+
+def test_length_scale_floor_is_half_the_reference_skeleton():
+    from data_loaders.truebones.truebones_utils.param_utils import (
+        HML_REF_REST_LENGTH_SCALE,
+        _SMPL_REST_POSITIONS,
+    )
+
+    # The reference skeleton sits above the floor, so its L is the raw spread.
+    np.testing.assert_allclose(
+        cf._length_scale_from_rest(_SMPL_REST_POSITIONS), HML_REF_REST_LENGTH_SCALE, rtol=1e-12
+    )
+    assert cf.REST_LENGTH_SCALE_FLOOR == pytest.approx(0.5 * HML_REF_REST_LENGTH_SCALE)
+
+
+def test_length_scale_floors_clustered_rigs_on_every_path():
+    """A few clustered joints (MU04_Pollen: 4 joints, raw L 0.03) get the floor on
+    the numpy, torch and padded-batch paths alike; a normal rig keeps its own L."""
+    floor = cf.REST_LENGTH_SCALE_FLOOR
+    clustered = np.array(
+        [[0.0, 1.835, 0.0], [0.0, 1.835, 0.0], [0.0, 1.96, 0.0], [0.0, 1.908, 0.0]],
+        dtype=np.float32,
+    )
+    normal = np.array([[0.0, 0.0, 0.0], [3.0, 1.0, -0.5]], dtype=np.float32)
+    normal_L = float(cf._length_scale_from_rest(normal))
+    assert normal_L > floor
+
+    assert float(cf._length_scale_from_rest(clustered)) == pytest.approx(floor)
+    assert float(cf._length_scale_from_rest(torch.as_tensor(clustered))) == pytest.approx(floor)
+    # Collapsed and non-finite rests land on the floor as well.
+    assert float(cf._length_scale_from_rest(np.zeros((3, 3)))) == pytest.approx(floor)
+    assert float(cf._length_scale_from_rest(torch.zeros(3, 3))) == pytest.approx(floor)
+    assert float(cf._length_scale_from_rest(np.full((2, 3), np.nan))) == pytest.approx(floor)
+
+    padded = np.zeros((2, 4, 3), dtype=np.float32)
+    padded[0] = clustered
+    padded[1, :2] = normal
+    counts = np.array([4, 2])
+    expected = np.array([floor, normal_L])
+    np.testing.assert_allclose(cf._length_scale_from_rest(padded, n_joints=counts), expected, rtol=1e-6)
+    np.testing.assert_allclose(
+        cf._length_scale_from_rest(torch.as_tensor(padded), n_joints=torch.as_tensor(counts)).numpy(),
+        expected, rtol=1e-5,
+    )
+
+
+def test_canonical_roundtrip_is_exact_for_a_floored_rig():
+    cond = _cond()
+    cond["rest_pos_ric_hml"] = np.array([[0.0, 1.835, 0.0], [0.0, 1.9, 0.0]], dtype=np.float32)
+    physical = np.random.default_rng(7).normal(size=(5, 2, 12)).astype(np.float32)
+
+    lnorm = physical_hml_to_lnorm(physical, cond)
+    np.testing.assert_allclose(
+        lnorm[..., 9:12], physical[..., 9:12] / cf.REST_LENGTH_SCALE_FLOOR, rtol=1e-5
+    )
+    recovered = canonical_to_physical_hml(physical_hml_to_canonical(physical, cond), cond)
+    np.testing.assert_allclose(recovered, physical, atol=1e-5)
 
 
 def test_length_scale_numpy_batch_ignores_padding_rows():

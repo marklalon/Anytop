@@ -37,6 +37,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from eval.motion_quality import DistributionMotionQualityScorer
 from eval.motion_quality.reference_bank import reference_prior_words
+from train.sample_loss_limit import SampleLossLimiter
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
@@ -188,6 +189,12 @@ class TrainLoop:
         if self.amp_enabled and self.device.type != 'cuda':
             raise ValueError('AMP requires CUDA. Set --amp_dtype fp32 when training on CPU.')
         self.non_blocking = self.device.type == 'cuda'
+        # Built before the optimizer restore below, which reloads its reference.
+        sample_loss_limit = float(getattr(self.args, 'sample_loss_limit', 0.0))
+        self.sample_loss_limiter = (
+            SampleLossLimiter(diffusion.num_timesteps, sample_loss_limit, self.device)
+            if sample_loss_limit > 0.0 else None
+        )
         self.detect_anomaly = bool(getattr(self.args, 'detect_anomaly', False))
         self.load_optimizer_state = bool(getattr(self.args, 'load_optimizer_state', True))
         # Spike-capture probe: when a step's pre-clip grad_norm exceeds a
@@ -475,6 +482,13 @@ class TrainLoop:
                 logger.log(f"LR scheduler inference skipped: {exc}")
         
         self._restore_rng_states(checkpoint_data)
+
+        limiter_state = checkpoint_data.get('sample_loss_limiter') if isinstance(checkpoint_data, dict) else None
+        if self.sample_loss_limiter is not None and limiter_state is not None:
+            if self.sample_loss_limiter.load_state_dict(limiter_state):
+                logger.log("sample loss limiter reference restored")
+            else:
+                logger.log("sample loss limiter reference restore skipped: timestep count changed")
 
     def run_loop(self):
         tqdm.write(f'train steps: {self.num_steps}')
@@ -904,6 +918,13 @@ class TrainLoop:
                     t, losses["loss"].detach()
                 )
 
+            if self.sample_loss_limiter is not None:
+                # Only l_simple's gradient is rescaled; the logged l_simple stays raw.
+                limit_weight = self.sample_loss_limiter.weights(t, losses["l_simple"])
+                losses["loss"] = losses["loss"] + (limit_weight - 1.0) * losses["l_simple"]
+                losses["l_simple_limit_weight"] = limit_weight
+                losses["l_simple_limited_frac"] = (limit_weight < 1.0).float()
+
             loss = (losses["loss"] * weights).mean()
             self._accumulate_interval_losses({k: v * weights for k, v in losses.items()})
             if self.spike_capture:
@@ -1193,6 +1214,8 @@ class TrainLoop:
                 
                 # Save LR scheduler state for proper resumption
                 opt_state['scheduler'] = self.lr_scheduler.state_dict()
+                if self.sample_loss_limiter is not None:
+                    opt_state['sample_loss_limiter'] = self.sample_loss_limiter.state_dict()
                 
                 # Save RNG states to ensure reproducible data shuffling on resume
                 opt_state['torch_rng_state'] = torch.get_rng_state()

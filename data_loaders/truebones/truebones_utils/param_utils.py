@@ -171,6 +171,15 @@ HML_REF_MAX_SPAN = float(np.linalg.norm(
         axis=-1,
 ).max())
 
+# RMS spread of the SMPL rest joints about their centroid -- the canonical
+# per-skeleton length ``L`` (canonical_features._length_scale_from_rest) of the
+# reference skeleton the scale normalization above targets. Every species is
+# scaled into these units, so this is what ``L`` of a normally-rigged body
+# measures (dataset median 0.229 against this 0.260).
+HML_REF_REST_LENGTH_SCALE = float(np.sqrt(
+        ((_SMPL_REST_POSITIONS - _SMPL_REST_POSITIONS.mean(axis=0)) ** 2).mean()
+))
+
 # Geometric blend weight between axial mean bone length and whole-body max span.
 # 0 keeps the existing axial-only scaling; 1 becomes pure max-span scaling.
 SCALE_BODY_SPAN_BLEND_WEIGHT = 0.5

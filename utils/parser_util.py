@@ -27,7 +27,12 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 #    Model: a global per-joint unreliable_embedding on the input tokens, a
 #    per-block frame-level temporal_reliability_bias, and one cross-K
 #    attention per block (cross_k_norm / cross_k_attn / cross_k_scale).
-CKPT_VERSION = 10
+# 11: the per-skeleton length L is floored at half the reference skeleton's
+#    (canonical_features.REST_LENGTH_SCALE_FLOOR). The 9 rigs below it (2-8
+#    joints) decode their position/velocity channels with a different L, and
+#    every object_subset's statistics were recomputed under it. Training also
+#    caps each sample's l_simple gradient by default (--sample_loss_limit).
+CKPT_VERSION = 11
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -416,6 +421,11 @@ def add_training_options(parser):
                            "settled and early grad spikes are routine noise. 0 = check from step 1.")
     group.add_argument("--spike_max_dumps", default=10, type=int,
                        help="Stop writing spike dumps after this many, to bound disk usage. 0 = unlimited.")
+    group.add_argument("--sample_loss_limit", default=8.0, type=float,
+                       help="Cap each sample's l_simple gradient at that of a sample whose l_simple is this many "
+                            "times the running geometric mean at its diffusion timestep (a per-sample Huber on the "
+                            "RMS error; see train/sample_loss_limit.py). Stops one outlier clip from owning the "
+                            "clipped batch gradient. 8 leaves ~0.3%% of locomotion samples touched. 0 disables it.")
     group.add_argument("--joint_mask_prob", default=0.5, type=float,
                        help="Per-sample probability of applying a training-time subtree joint perturbation. "
                            "Selected joints keep their supervision loss and remain visible to attention, but their x_t "

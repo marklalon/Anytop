@@ -8,7 +8,10 @@ model feature space via three prior-free, exactly-invertible steps:
   2. Per-skeleton size normalization (L-scaling): the position and velocity
      channels are divided by the skeleton's own geometric length ``L`` so that
      every species lands in a size-free space (cross-species fair). Rotation
-     (6d) is size-independent and is left untouched here.
+     (6d) is size-independent and is left untouched here. ``L`` is floored at
+     ``REST_LENGTH_SCALE_FLOOR``: a rig of a few clustered joints (MU04_Pollen,
+     4 joints, L=0.03) has almost no joint spread, and dividing its body-scale
+     root trajectory by that spread blew a 1.7-unit fall up to ~70 std.
   3. Per-object_subset standardization: subtract a per-channel mean and divide
      by a *block-collapsed* std (12-vectors). These statistics are computed at
      preprocessing time in the L-normalized space of step (2), pooled across all
@@ -45,6 +48,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from data_loaders.truebones.truebones_utils.param_utils import HML_REF_REST_LENGTH_SCALE
+
 try:
     import torch
 except Exception:  # pragma: no cover - torch is present in training/runtime.
@@ -67,6 +72,14 @@ CANONICAL_STD_KEY = "canonical_feature_std"
 # ``_length_scale_from_cond``. Never stored in cond.npy (species entries derive
 # it from ``rest_pos_ric_hml`` on the fly).
 REST_LENGTH_SCALE_KEY = "rest_length_scale"
+
+# Lower bound on ``L``: half the reference skeleton's own ``L``. Preprocessing
+# has already scaled every character to the reference body size (its extent
+# folds in the root's elevation, which the joint spread never sees), so an ``L``
+# far below the reference means clustered joints, not a small body. Of 260
+# species it lifts the seven 2-6 joint effect/drifting rigs (0.030-0.106, up to
+# 4.3x) and grazes two 8-joint rigs (0.126, 0.127 -> 0.130).
+REST_LENGTH_SCALE_FLOOR = 0.5 * HML_REF_REST_LENGTH_SCALE
 
 # Channels whose std falls below this floor are treated as unit-variance so the
 # encode divide never explodes (mirrors the old std_safe floor).
@@ -131,7 +144,9 @@ def _length_scale_from_rest(rest_pos, n_joints=None):
     collated mixed-skeleton batch are left out; without it every row counts.
     Counts and rest rows broadcast (see ``_joint_count_batch``): the result is a
     scalar only for an unbatched rest with a single count, otherwise ``[B]``.
-    Derived purely from skeleton geometry -- no motion stats.
+    Derived purely from skeleton geometry -- no motion stats. Floored at
+    ``REST_LENGTH_SCALE_FLOOR``; a collapsed or non-finite rest lands on the
+    floor too.
     """
     if _is_torch_tensor(rest_pos):
         rp = rest_pos.to(dtype=torch.float32)
@@ -169,9 +184,10 @@ def _length_scale_from_rest(rest_pos, n_joints=None):
             L = torch.sqrt(squared.sum(dim=(-2, -1)) / (counts_f * rp3.shape[-1]))
             if rp.dim() == 2 and counts.numel() == 1:
                 L = L[0]
-        # Degenerate (single joint / collapsed) skeleton -> fall back to 1.0 so
-        # the encode divide never explodes. Mirrors the numpy branch below.
-        return torch.where(torch.isfinite(L) & (L > 1e-6), L, torch.ones_like(L))
+        # Mirrors the numpy branch below.
+        return torch.where(torch.isfinite(L), L, torch.zeros_like(L)).clamp_min(
+            REST_LENGTH_SCALE_FLOOR
+        )
 
     rp = np.asarray(rest_pos, dtype=np.float64)
     if n_joints is None:
@@ -198,7 +214,7 @@ def _length_scale_from_rest(rest_pos, n_joints=None):
         L = np.sqrt(squared.sum(axis=(-2, -1)) / (counts * rp3.shape[-1]))
         if rp.ndim == 2 and counts.size == 1:
             L = L[0]
-    return np.where(np.isfinite(L) & (L > 1e-6), L, 1.0)
+    return np.maximum(np.where(np.isfinite(L), L, 0.0), REST_LENGTH_SCALE_FLOOR)
 
 
 def _spatial_L_vectors(n_feats):

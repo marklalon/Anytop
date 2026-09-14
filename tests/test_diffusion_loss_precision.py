@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, extract_into_tensor  # noqa: E402
 from diffusion.respace import SpacedDiffusion, space_timesteps  # noqa: E402
+from data_loaders.truebones.truebones_utils.canonical_features import REST_LENGTH_SCALE_FLOOR  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
@@ -404,11 +405,11 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         # acceleration at interior frames 1..4 is 1 everywhere. The seam loss is
         # measured in PHYSICAL space, so the position channel is first decoded:
         # physical = std_pos * L * canonical (+ rest/mean, which cancel under the
-        # acceleration). No global stats are set on this test's model_kwargs, so
-        # std_pos == 1, and the single-joint rest pose is degenerate (L falls back
-        # to 1.0), making the decoded acceleration 1 and the seam-band weighted
-        # mean squared acceleration error equal to 1.0.
-        expected_seam = 1.0
+        # acceleration). The model_kwargs stats are identity, so std_pos == 1, and
+        # the single-joint rest pose is degenerate, so L is the floor: the decoded
+        # acceleration is REST_LENGTH_SCALE_FLOOR and the seam-band weighted mean
+        # squared acceleration error is its square.
+        expected_seam = REST_LENGTH_SCALE_FLOOR ** 2
         x_start = torch.zeros(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
         x_start[:, :, 0:3, 2:4] = 1.0
         t = torch.tensor([1], dtype=torch.int64)
