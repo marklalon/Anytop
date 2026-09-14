@@ -13,7 +13,7 @@ REM   - Forwards all args to eval/eval_checkpoint.py.
 REM ----------------------------------------------------------------------
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_locomotion_v11
+set RUN_NAME=merged_locomotion_v15
 
 pushd "%SCRIPT_DIR%"
 

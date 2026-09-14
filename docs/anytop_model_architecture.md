@@ -69,6 +69,7 @@ tokens [T+1, B, J, D]
   │      + canonical-frame token
   │      + loop token
   │      + action-label token
+  │      + action-group token（仅 --action_group_cond）
   │
   ▼
 GraphMotionDecoder × L
@@ -127,6 +128,7 @@ timestep
   + canonical_feature_mean/std
   + is_loop
   + action_label
+  + action_group（仅 --action_group_cond）
 ```
 
 组合后的 condition 在每个 decoder layer 中经该层自己的 `embed_timesteps` 再注入残差流。
@@ -154,6 +156,11 @@ Action label 使用受控词表，不接收自由文本。每个词先查 checkp
 四个槽拼接后由 MLP 投影并加到 timestep condition。训练时
 `action_label_cfg_drop_prob` 把部分样本送到 learned null embedding；推理时
 `action_label_cfg_scale>1` 用 conditional/unconditional 两次 forward 做 CFG。
+
+`--action_group all` 训练的单模型可以再开 `--action_group_cond`：一张
+`Embedding(3 + 1, D)`（最后一行是 null，零初始化）加到 timestep condition。它有独立的
+`action_group_cfg_drop_prob`；label 的 CFG 只丢 label，所以外推基准是 (group, ∅)。
+见 [unified_action_group_training.md](unified_action_group_training.md)。
 
 ### 5.3 Canonical frame 与 resample speed
 

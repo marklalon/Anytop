@@ -35,7 +35,7 @@ under `docs/` may describe superseded intermediate states.
 
 ### Evaluation
 - **Distribution-Based Motion Quality Scorer** — Low-shot weighted-reference evaluation without autoencoders or discriminators. Scores macro distribution fidelity and local joint naturalness.
-- **Action Group Split** — Train one model per action group: `--action_group locomotion|stationary|transition` is required at training and takes exactly one of the three (no `all`, no list). The group is recorded in the checkpoint's `args.json`, and generation has no `--action_group` flag at all — it reads the group from there, so a checkpoint can only ever be sampled as the group it was trained on.
+- **Action Groups** — `--action_group locomotion|stationary|transition|all` is required at training and recorded in the checkpoint's `args.json`. A single-group checkpoint can only be sampled as its own group; an `all` checkpoint (one model over every group, with per-group sampling weights and an optional group token, see `docs/unified_action_group_training.md`) takes the group from the generation `--action_group`.
 - **Text-to-Motion Conditioning** — `--action_label_cond` looks up frozen T5 embeddings per controlled-vocabulary word, pools them into four separate role slots (head/action, direction, modifier, hands), and projects the concatenated channels into the timestep condition. Use `--action_label "run, forward"` at generation time and `--action_label_cfg_scale` for classifier-free guidance.
 - **Semantic Joint Groups** — Automatic root/axial/limbs grouping from skeleton metadata for per-group evaluation.
 

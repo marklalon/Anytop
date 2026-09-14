@@ -122,8 +122,9 @@ def _tile_eval_cond(cond, repeat):
 # suffix: the zero-init gates a residual or bias path is opened with
 # (cross-limb ``reliability_bias`` / ``time_emb_scale`` /
 # ``temporal_reliability_bias`` / ``cross_k_scale``, the decoder layer's
-# ``temporal_phase_scale``, the global ``unreliable_embedding``) plus the
-# cross-K LayerNorm gain/bias. Decay pulls each of them back toward its init,
+# ``temporal_phase_scale``, the global ``unreliable_embedding``, the
+# ``action_group_embedding`` table) plus the cross-K LayerNorm gain/bias. Decay
+# pulls each of them back toward its init,
 # i.e. toward closing the path it was learned to open. A name rule, not
 # ``param.ndim == 1``: those scalars are ``torch.zeros(1)``, the same rank as
 # the LayerNorm affines that are NOT on this list.
@@ -136,6 +137,7 @@ NO_WEIGHT_DECAY_PARAM_SUFFIXES = (
     '.cross_k_norm.weight',
     '.cross_k_norm.bias',
     '.temporal_phase_scale',
+    'action_group_embedding.weight',
 )
 
 
@@ -713,6 +715,41 @@ class TrainLoop:
             f'l_simple_{family}': family_means[index] for index, family in enumerate(present)
         })
 
+    def _accumulate_per_group_l_simple(self, losses, weights, cond):
+        """Track l_simple per action group in an ``--action_group all`` run.
+
+        The comparison a unified run exists for: each ``l_simple_<group>`` is
+        weighted like the aggregate, so it reads against the same curve of that
+        group's single-group run at the matching per-group sample count.
+        """
+        if "l_simple" not in losses:
+            return
+        if str(getattr(self.args, 'action_group', '') or '').strip().lower() != 'all':
+            return
+        groups = cond.get('y', {}).get('action_group', None)
+        if not groups:
+            return
+        from data_loaders.truebones.truebones_utils.motion_labels import (
+            ACTION_GROUPS,
+            normalize_action_group,
+        )
+        normalized = [normalize_action_group(group) for group in groups]
+        # Host-side membership, one [G, B] upload, no per-group readback.
+        present, rows = [], []
+        for group in ACTION_GROUPS:
+            row = [value == group for value in normalized]
+            if any(row):
+                present.append(group)
+                rows.append(row)
+        if not present:
+            return
+        l_simple = (losses["l_simple"] * weights).detach().float()
+        membership = host_to_device(rows, l_simple.device, dtype=torch.float32)   # [G, B]
+        group_means = (membership * l_simple).sum(dim=1) / membership.sum(dim=1)
+        self._accumulate_interval_losses({
+            f'l_simple_{group}': group_means[index] for index, group in enumerate(present)
+        })
+
     def _accumulate_interval_losses(self, losses):
         for key, value in losses.items():
             if not torch.is_tensor(value):
@@ -959,6 +996,7 @@ class TrainLoop:
             loss = (losses["loss"] * weights).mean()
             self._accumulate_interval_losses({k: v * weights for k, v in losses.items()})
             self._accumulate_per_family_l_simple(losses, weights, micro_cond)
+            self._accumulate_per_group_l_simple(losses, weights, micro_cond)
             if self.spike_capture:
                 self._stash_spike_ctx(losses, t)
             self.mp_trainer.backward(loss)

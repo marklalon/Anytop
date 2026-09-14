@@ -1,9 +1,9 @@
-"""The action group is a property of the weights, not of the request.
+"""The action group a checkpoint can generate is bound to what it was trained on.
 
-Training requires ``--action_group`` (exactly one of the three groups) and
-records it in the checkpoint's args.json; generation has no such flag and reads
-the group back from there, because the group also fixes the multi-hot mask the
-model was trained with.
+Training requires ``--action_group`` (one of the three groups, or ``all``) and
+records it in the checkpoint's args.json. Generation reconciles its own
+``--action_group`` with that record: a single-group checkpoint only ever runs as
+its own group, an ``all`` checkpoint runs as the requested one.
 """
 from __future__ import annotations
 
@@ -65,23 +65,49 @@ class ActionGroupIsBoundToTheCheckpoint(unittest.TestCase):
                     model_path = _checkpoint_dir(tmp, action_group=group)
                     self.assertEqual(_generate_args(model_path).action_group, group)
 
-    def test_generation_rejects_an_action_group_flag(self):
+    def test_single_group_checkpoint_refuses_another_group(self):
         with tempfile.TemporaryDirectory() as tmp:
             model_path = _checkpoint_dir(tmp, action_group='locomotion')
             with self.assertRaises(SystemExit):
                 _generate_args(model_path, '--action_group', 'stationary')
-            # Not even the checkpoint's own group may be restated: the flag is gone.
-            with self.assertRaises(SystemExit):
-                _generate_args(model_path, '--action_group', 'locomotion')
+            # Restating its own group is harmless.
+            args = _generate_args(model_path, '--action_group', 'locomotion')
+            self.assertEqual(args.action_group, 'locomotion')
+            self.assertEqual(args.checkpoint_action_group, 'locomotion')
+
+    def test_all_checkpoint_takes_the_requested_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = _checkpoint_dir(tmp, action_group='all')
+            for group in parser_util.ACTION_GROUPS:
+                with self.subTest(group=group):
+                    args = _generate_args(model_path, '--action_group', group)
+                    self.assertEqual(args.action_group, group)
+                    self.assertEqual(args.checkpoint_action_group, 'all')
+            # No flag: a group-less draw from the whole corpus.
+            args = _generate_args(model_path)
+            self.assertEqual(args.action_group, '')
+            self.assertEqual(args.checkpoint_action_group, 'all')
+
+    def test_unknown_generation_group_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = _checkpoint_dir(tmp, action_group='all')
+            for value in ('all', 'Locomotion', 'locomotion,stationary'):
+                with self.subTest(value=value):
+                    with self.assertRaises(SystemExit):
+                        _generate_args(model_path, '--action_group', value)
 
     def test_checkpoint_predating_the_flag_generates_without_a_group(self):
         # Unconditional generation still works; sample/generate.py is what refuses
         # --action_label for such a checkpoint.
-        for recorded in ({}, {'action_group': ''}, {'action_group': 'all'}):
+        for recorded in ({}, {'action_group': ''}):
             with self.subTest(recorded=recorded):
                 with tempfile.TemporaryDirectory() as tmp:
                     model_path = _checkpoint_dir(tmp, **recorded)
-                    self.assertEqual(_generate_args(model_path).action_group, '')
+                    args = _generate_args(model_path)
+                    self.assertEqual(args.action_group, '')
+                    self.assertEqual(args.checkpoint_action_group, '')
+                    with self.assertRaises(SystemExit):
+                        _generate_args(model_path, '--action_group', 'locomotion')
 
     def test_other_dataset_args_still_come_from_the_checkpoint(self):
         # Guards the mechanism the binding rides on: the rest of the dataset group
@@ -93,7 +119,7 @@ class ActionGroupIsBoundToTheCheckpoint(unittest.TestCase):
             self.assertEqual(args.objects_subset, 'quadruped')
 
 
-class TrainingMustNameExactlyOneGroup(unittest.TestCase):
+class TrainingMustNameOneGroupOrAll(unittest.TestCase):
 
     @staticmethod
     def _training_parser():
@@ -101,8 +127,8 @@ class TrainingMustNameExactlyOneGroup(unittest.TestCase):
         add_data_options(parser, training=True)
         return parser
 
-    def test_each_group_is_accepted(self):
-        for group in parser_util.ACTION_GROUPS:
+    def test_each_group_and_all_are_accepted(self):
+        for group in parser_util.ACTION_GROUPS + (parser_util.ACTION_GROUP_ALL,):
             with self.subTest(group=group):
                 args = self._training_parser().parse_args(['--action_group', group])
                 self.assertEqual(args.action_group, group)
@@ -111,8 +137,8 @@ class TrainingMustNameExactlyOneGroup(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._training_parser().parse_args([])
 
-    def test_all_and_empty_and_lists_are_refused(self):
-        for value in ('all', '', 'locomotion,stationary', 'Locomotion'):
+    def test_empty_and_lists_are_refused(self):
+        for value in ('', 'locomotion,stationary', 'Locomotion'):
             with self.subTest(value=value):
                 with self.assertRaises(SystemExit):
                     self._training_parser().parse_args(['--action_group', value])
@@ -139,11 +165,15 @@ class ResumeCannotRewriteTheRecordedGroup(unittest.TestCase):
             self._assert_resume('locomotion', 'stationary')
 
     def test_resuming_a_group_less_run_is_refused(self):
-        # Nothing to continue it as -- 'all' is no longer a group.
-        for recorded in ('', 'all'):
-            with self.subTest(recorded=recorded):
+        with self.assertRaises(SystemExit):
+            self._assert_resume('', 'locomotion')
+
+    def test_all_is_a_corpus_of_its_own_on_resume(self):
+        self._assert_resume('all', 'all')
+        for recorded, requested in (('all', 'locomotion'), ('locomotion', 'all')):
+            with self.subTest(recorded=recorded, requested=requested):
                 with self.assertRaises(SystemExit):
-                    self._assert_resume(recorded, 'locomotion')
+                    self._assert_resume(recorded, requested)
 
     def test_fresh_run_is_not_checked(self):
         # No resume: the existing args.json is about to be replaced wholesale.

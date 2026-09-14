@@ -301,6 +301,47 @@ def _extract_cond_path(extra_args: list) -> str | None:
     return None
 
 
+def _flag_value(extra_args: list, flag: str) -> str | None:
+    """The value after ``flag`` in extra_args, or None."""
+    try:
+        idx = extra_args.index(flag)
+    except ValueError:
+        return None
+    return extra_args[idx + 1] if idx + 1 < len(extra_args) else None
+
+
+def _score_action_words(extra_args: list) -> str:
+    """The scorer's reference-prior words: the task's --action_words, else walk,run.
+
+    A stationary or transition task has to name its own prior (``--action_words
+    idle``), or it would be scored against the gait references.
+    """
+    return _flag_value(extra_args, "--action_words") or _SCORE_ACTION_WORDS
+
+
+def _checkpoint_action_group(model_path: Path) -> str:
+    """The action_group the checkpoint's args.json records ('' when none)."""
+    args_path = model_path.parent / "args.json"
+    try:
+        recorded = json.loads(args_path.read_text(encoding="utf-8")).get("action_group")
+    except (OSError, ValueError):
+        return ""
+    return str(recorded or "").strip().lower()
+
+
+def _task_group_mismatch(checkpoint_group: str, extra_args: list) -> str | None:
+    """Why a single-group checkpoint cannot run this task, or None if it can.
+
+    A task pinned to another group with --action_group is refused by generation
+    on a single-group checkpoint; it is skipped instead, so one battery serves
+    the per-group checkpoints and an --action_group all checkpoint alike.
+    """
+    task_group = _flag_value(extra_args, "--action_group")
+    if not task_group or checkpoint_group in ("", "all") or task_group == checkpoint_group:
+        return None
+    return f"task is --action_group {task_group}, checkpoint is trained on {checkpoint_group} only"
+
+
 def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> None:
     """Load a cond.npy and register its entries as query skeleton metadata."""
     try:
@@ -413,7 +454,10 @@ def _build_record_from_existing(
 
     # Re-score existing clips.
     if object_type:
-        record["scores"] = _score_task(scorer, task_dir, object_type)
+        record["scores"] = _score_task(
+            scorer, task_dir, object_type,
+            action_words=_score_action_words(record["command"].split()),
+        )
     else:
         print(f"    [WARN] {category}/task{index}: could not determine object_type; skipping scoring")
 
@@ -430,6 +474,7 @@ def _score_task(
     scorer: DistributionMotionQualityScorer,
     task_dir: Path,
     object_type: str,
+    action_words: str = _SCORE_ACTION_WORDS,
 ) -> dict[str, float]:
     """Score a task's clips in-process so the reference-bank cache is reused."""
     out_json = task_dir / "scores.json"
@@ -450,7 +495,7 @@ def _score_task(
             report = scorer.evaluate(
                 motions=[motion],
                 object_type=object_type,
-                action_words=_SCORE_ACTION_WORDS,
+                action_words=action_words,
                 top_k_species=_SCORE_TOP_K_SPECIES,
             )
         except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:
@@ -577,7 +622,9 @@ def run_task(
     # Score the generated clips via evaluate_motion_quality.py (JSON output).
     scores: dict[str, float] = {}
     if object_type:
-        scores = _score_task(scorer, task_dir, object_type)
+        scores = _score_task(
+            scorer, task_dir, object_type, action_words=_score_action_words(extra_args),
+        )
     else:
         print("  [WARN] could not determine object_type; skipping scoring")
 
@@ -853,6 +900,7 @@ def main() -> int:
             return 1
         print(f"Filter: {args.filter} → {len(filtered)}/{len(tasks)} tasks")
         tasks = filtered
+    checkpoint_group = _checkpoint_action_group(model_path)
     total_tasks = len(tasks)
     # Per-category running index so dirs read task1, task2, ... within a category.
     cat_counter: dict[str, int] = {}
@@ -880,6 +928,13 @@ def main() -> int:
         cat_counter[category] = cat_counter.get(category, 0) + 1
         index = cat_counter[category]
         task_dir = root / category / f"task{index}"
+
+        mismatch = _task_group_mismatch(checkpoint_group, extra_args)
+        if mismatch:
+            # Left out of the report rather than recorded as a failure.
+            print(f"\n=== {category}/task{index} ({task_num}/{total_tasks}) [skip: {mismatch}] ===")
+            prev_first_npy = None
+            continue
 
         # ── Incremental mode (default): reuse existing output, re-score only. ──
         # Reuse the existing task dir only when output exists AND its recorded

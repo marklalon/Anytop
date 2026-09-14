@@ -9,6 +9,10 @@ import copy
 # module stays import-light (that one reaches numpy through param_utils).
 # tests/test_action_group_checkpoint_binding.py pins the two together.
 ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
+# The training value for one model over every group
+# (docs/unified_action_group_training.md). Recorded in args.json like a group;
+# generation then takes the group from --action_group instead of the checkpoint.
+ACTION_GROUP_ALL = 'all'
 
 # Checkpoint compatibility stamp, written into every save_dir's args.json by
 # train_anytop and required back by extract_args. Bump it for ANY change that
@@ -129,26 +133,52 @@ def assert_checkpoint_version(model_args, args_path):
 
 
 def apply_checkpoint_action_group(args, model_args, args_path):
-    """Set this generation's action group from the checkpoint being sampled.
+    """Set this generation's action group from the checkpoint and the request.
 
-    Each checkpoint is trained on exactly one group -- the group partitions the
-    corpus, so the group is a property of the weights. Generation therefore has
-    no ``--action_group`` flag at all: the value comes out of args.json and
-    nowhere else, which is why a checkpoint can only ever be sampled as the group
-    it was trained on. Asking for another group means sampling that group's
-    checkpoint.
+    ``args.action_group`` arrives holding the generation ``--action_group`` flag
+    ('' when absent) and leaves holding the group this generation runs as.
+    ``args.checkpoint_action_group`` records what the weights were trained on.
 
-    A run predating the mandatory flag records no group (or the retired 'all').
+    * A single-group checkpoint (``locomotion`` / ``stationary`` / ``transition``)
+      can only ever be sampled as that group: its corpus held nothing else. The
+      flag may be omitted or restate the group; naming another group is refused,
+      because the answer would silently come from a model of the wrong corpus.
+    * An ``all`` checkpoint was trained on every group, so the group is the
+      request's to give. It may stay empty -- an unlabeled, group-less draw from
+      the whole corpus -- but sample/generate.py refuses an ``--action_label``
+      without one, since the label's role assignment depends on the group.
+
+    A run predating the mandatory training flag records no group.
     """
+    requested_group = str(getattr(args, 'action_group', '') or '').strip().lower()
     recorded_group = str(model_args.get('action_group', '') or '').strip().lower()
+    if requested_group and requested_group not in ACTION_GROUPS:
+        raise SystemExit(
+            f"ERROR: --action_group {requested_group!r} is not one of "
+            f"{', '.join(ACTION_GROUPS)}."
+        )
+    if recorded_group == ACTION_GROUP_ALL:
+        args.checkpoint_action_group = ACTION_GROUP_ALL
+        args.action_group = requested_group
+        return
     if recorded_group and recorded_group not in ACTION_GROUPS:
         print(
             f"[parser_util] WARNING: {args_path} records action_group "
-            f"'{recorded_group}', which is not one of {', '.join(ACTION_GROUPS)}. "
-            f"Treating this checkpoint as group-less: action-label conditioning "
-            f"is unavailable, unconditional generation is unaffected."
+            f"'{recorded_group}', which is not one of {', '.join(ACTION_GROUPS)} "
+            f"or '{ACTION_GROUP_ALL}'. Treating this checkpoint as group-less: "
+            f"action-label conditioning is unavailable, unconditional generation "
+            f"is unaffected."
         )
         recorded_group = ''
+    if requested_group and requested_group != recorded_group:
+        trained_on = f"'{recorded_group}'" if recorded_group else "no group"
+        raise SystemExit(
+            f"ERROR: --action_group {requested_group} was requested, but {args_path} "
+            f"was trained on {trained_on} only, so it cannot generate "
+            f"'{requested_group}' motion. Sample that group's checkpoint, or an "
+            f"--action_group {ACTION_GROUP_ALL} checkpoint."
+        )
+    args.checkpoint_action_group = recorded_group
     args.action_group = recorded_group
 
 
@@ -316,14 +346,25 @@ def add_model_options(parser):
                        help="Per-sample probability of hard-dropping the action condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
                             "guidance at sampling time via --action_label_cfg_scale. Default 0.2.")
+    group.add_argument("--action_group_cond", action='store_true',
+                       help="Condition on the clip's action_group: a learned per-group embedding "
+                            "(zero-init) added to the timestep token. Requires --action_group all -- "
+                            "in a single-group run it would be one constant. Lets a request name a "
+                            "group without a label, and makes --action_label_cfg_scale guide from "
+                            "the group's own unconditional mode instead of the whole corpus's.")
+    group.add_argument("--action_group_cfg_drop_prob", default=0.15, type=float,
+                       help="Per-sample probability of hard-dropping the action_group condition "
+                            "during training (replaced by a learned null row). Drawn independently "
+                            "of --action_label_cfg_drop_prob, so the model also learns "
+                            "(no group, label) and (no group, no label). Default 0.15.")
 
 def add_data_options(parser, training=False):
     """Dataset selection. ``training=True`` adds the training-only options.
 
-    ``--action_group`` is one of those: it is mandatory when training (it splits
-    the corpus, and each group trains its own model) and absent when generating,
-    where the group is read back out of the checkpoint instead -- see
-    :func:`apply_checkpoint_action_group`.
+    ``--action_group`` is one of those: it is mandatory when training (it selects
+    the corpus) and recorded in the checkpoint. Generation has its own
+    ``--action_group`` in the generate options, checked against the recorded one
+    by :func:`apply_checkpoint_action_group`.
     """
     group = parser.add_argument_group('dataset')
     group.add_argument("--train_split", default='train', choices=['train', 'val', 'test', 'all'], type=str,
@@ -333,15 +374,24 @@ def add_data_options(parser, training=False):
                        help="Object subset. Can be a predefined category (e.g. 'all', 'quadruped', 'winged', 'biped', 'multiped', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
     if training:
         group.add_argument("--action_group", required=True, type=str,
-                           choices=list(ACTION_GROUPS),
-                           help="REQUIRED. The single action group to train on: 'locomotion' "
-                                "(sustained displacement), 'stationary' (in-place / interactive) "
-                                "or 'transition' (pose changes). Exclusive and single-valued -- "
-                                "each clip belongs to exactly one group and each group trains its "
-                                "own model, so there is no 'all' and no list. The value is recorded "
-                                "in the checkpoint's args.json and is the only source generation "
-                                "reads it from (there is no --action_group at generation), so a "
-                                "checkpoint can only ever be sampled as the group it was trained on.")
+                           choices=list(ACTION_GROUPS) + [ACTION_GROUP_ALL],
+                           help="REQUIRED. The corpus to train on: one group -- 'locomotion' "
+                                "(sustained displacement), 'stationary' (in-place / interactive), "
+                                "'transition' (pose changes) -- or 'all' for one model over every "
+                                "group (docs/unified_action_group_training.md). No lists: each "
+                                "clip belongs to exactly one group. Recorded in the checkpoint's "
+                                "args.json: a single-group checkpoint can only ever be sampled as "
+                                "that group, an 'all' checkpoint takes the group from the "
+                                "generation --action_group.")
+        group.add_argument("--action_group_weights", default=None, type=str,
+                           help="Only with --action_group all. Comma-separated sampling mass of "
+                                "each group, in the order locomotion,stationary,transition "
+                                "(default '1,1,1'). A group's mass is split across its clips "
+                                "(uniformly, or by species with --balanced), so equal weights "
+                                "show every group the same number of samples regardless of how "
+                                "many clips it holds -- without it the loader would draw per "
+                                "clip and stationary (~56%% of the corpus) would dominate. 0 "
+                                "leaves a group out of sampling.")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -546,6 +596,14 @@ def add_generate_options(parser):
                             "(inclusive, clipped to the reference length). Empty = all frames. Combined with "
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
                             "everything else is clamped to --reference_motion. Requires --reference_motion.")
+    group.add_argument("--action_group", default="", type=str, choices=[''] + list(ACTION_GROUPS),
+                       help="The action group to generate: 'locomotion', 'stationary' or "
+                            "'transition'. Required with --action_label on a checkpoint trained with "
+                            "--action_group all (a transition label's word roles depend on it), and "
+                            "on its own it asks such a checkpoint for that group's motion when it was "
+                            "trained with --action_group_cond. A single-group checkpoint already "
+                            "knows its group: the flag may be omitted or restate it, and naming "
+                            "another group is an error.")
     group.add_argument("--action_label", default="", type=str,
                        help="Text-to-motion prompt for this generation. Controlled-vocabulary "
                             "tokens ONLY, comma-separated, in the canonical order the labels use: "
@@ -610,9 +668,8 @@ def generate_args(argv=None):
     add_generate_options(parser)
     # These CLI args are generation-time overrides and must NOT be
     # overwritten by the training args.json (which stores their defaults).
-    # There is deliberately no --action_group here: the group belongs to the
-    # weights, so apply_checkpoint_action_group() sets args.action_group from the
-    # checkpoint's own args.json.
+    # --action_group is not listed: it lives outside the restored groups, and
+    # apply_checkpoint_action_group() reconciles it with the checkpoint's own.
     preserve_cli_args = {'action_label', 'action_words', 'species_tags'}
     args = parse_and_load_from_model(
         parser, argv=argv,

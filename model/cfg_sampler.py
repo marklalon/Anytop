@@ -27,7 +27,10 @@ class ClassifierFreeActionModel(nn.Module):
     conditional one by exactly ``y['action_label_active'] = False``, so every
     other channel (species FiLM, the canonical output frame, loop/resample_speed, the
     skeleton graph itself) is bit-identical between the two and cancels out of
-    the guidance term instead of being extrapolated along with the prompt.
+    the guidance term instead of being extrapolated along with the prompt. That
+    includes the action-group token of an ``--action_group_cond`` model: the
+    guidance base is (group, no label), the unconditional mode of the requested
+    group, not of the whole multi-group corpus.
 
     The two passes run SEQUENTIALLY rather than as one 2B batch. ``y`` carries
     per-sample python lists (parents, joint names, metadata) next to its tensors,

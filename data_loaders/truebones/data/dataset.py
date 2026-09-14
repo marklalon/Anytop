@@ -102,6 +102,49 @@ def resolve_requested_action_group(raw_action_group) -> str:
     return requested
 
 
+def resolve_action_group_weights(raw_weights, raw_action_group):
+    """Per-group sampling mass for an ``all`` run, or ``None`` for no group weighting.
+
+    ``raw_weights`` is the ``--action_group_weights`` string: comma-separated
+    non-negative numbers in :data:`ACTION_GROUPS` order, ``None`` meaning equal
+    weights. A single-group run has nothing to weigh, so passing weights to one
+    is refused rather than ignored.
+    """
+    is_all = normalize_action_group(raw_action_group) == "all"
+    if not is_all:
+        if raw_weights not in (None, ""):
+            raise ValueError(
+                f"--action_group_weights only applies to --action_group all; this run "
+                f"trains on {raw_action_group!r} alone."
+            )
+        return None
+    if raw_weights in (None, ""):
+        return {group: 1.0 for group in ACTION_GROUPS}
+    parts = [part.strip() for part in str(raw_weights).split(",")]
+    if len(parts) != len(ACTION_GROUPS):
+        raise ValueError(
+            f"--action_group_weights needs {len(ACTION_GROUPS)} comma-separated values "
+            f"({','.join(ACTION_GROUPS)}), got {raw_weights!r}."
+        )
+    weights = {}
+    for group, part in zip(ACTION_GROUPS, parts):
+        try:
+            value = float(part)
+        except ValueError:
+            raise ValueError(
+                f"--action_group_weights value for {group} is not a number: {part!r}."
+            ) from None
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(
+                f"--action_group_weights value for {group} must be finite and >= 0, "
+                f"got {part!r}."
+            )
+        weights[group] = value
+    if not any(weights.values()):
+        raise ValueError("--action_group_weights leaves every group at 0.")
+    return weights
+
+
 def filter_motion_names_by_action_group(
     motion_names,
     raw_action_group,
@@ -780,7 +823,7 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None):
+    def __init__(self, opt, cond_dict, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, action_group_weights: Optional[dict[str, float]] = None):
         self.opt = opt
         # None means the caller does not want label conditioning, so no word ids
         # are attached at all. The bundle is the model's bundle: the loader emits
@@ -808,10 +851,12 @@ class MotionDataset(data.Dataset):
             for object_key, entry in cond_dict.items()
         }
         self.balanced = balanced
-        # A weighted sampler drives indexing when species are balanced; it yields
-        # absolute name_list indices, so __getitem__ must skip the pointer offset
-        # in that case.
-        self.use_weighted_sampler = bool(self.balanced)
+        # Per-group sampling mass of an --action_group all run (None otherwise).
+        self.action_group_weights = action_group_weights
+        # A weighted sampler drives indexing when species are balanced or groups
+        # are weighted; it yields absolute name_list indices, so __getitem__ must
+        # skip the pointer offset in that case.
+        self.use_weighted_sampler = bool(self.balanced) or action_group_weights is not None
         self.sample_limit = max(0, int(sample_limit))
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
         self.motion_cache = OrderedDict()
@@ -1252,11 +1297,20 @@ class MotionDataset(data.Dataset):
         return self.prepare_sample_by_name(name)
 
 class TruebonesSampler(WeightedRandomSampler):
-    """Sub-balanced weighted sampler for species fairness.
+    """Weighted sampler: per-group mass, then (optionally) sub-balanced species.
 
-    Each species' total sampling mass is proportional to the square root of its
-    clip count, then normalized across all non-empty species; within a species
-    the mass is split uniformly across its clips.
+    Two independent layers, each one optional:
+
+    * **Groups** (``--action_group all`` with ``--action_group_weights``). Each
+      action group gets a fixed share of the draws, ``w_g / sum(w)`` over the
+      groups that actually hold clips, whatever its clip count. With equal
+      weights every group's model-side sample count matches a single-group run
+      of one third the steps. Without group weights the whole subset is one
+      partition of mass 1.
+    * **Species** (``--balanced``). Inside a partition, each species' mass is
+      proportional to the square root of its clip count in that partition, split
+      uniformly across its clips. Without ``--balanced`` a partition's mass is
+      split uniformly across its clips.
 
     Species identity is the canonical cond key, so two datasets' ``Horse``
     entries count as two species and each gets its own sqrt-mass -- the intended
@@ -1264,50 +1318,90 @@ class TruebonesSampler(WeightedRandomSampler):
     per-dataset weighting: a species' mass depends only on how many clips it
     contributes to this training subset, never on which dataset it came from.
 
-    This is a softer middle ground
-    than full per-species balancing: a species with 9 clips is sampled 3x
-    (=sqrt(9)) as often as a single-clip species, rather than equally (full
-    balance) or 9x (uniform per-clip). The clip count is taken over the already
-    split/action_group-filtered ``name_list``, so it reflects only the clips
-    actually present in this training subset.
+    The sqrt rule is a softer middle ground than full per-species balancing: a
+    species with 9 clips is sampled 3x (=sqrt(9)) as often as a single-clip
+    species, rather than equally (full balance) or 9x (uniform per-clip). The
+    clip counts are taken over the already split/action_group-filtered
+    ``name_list``, so they reflect only the clips actually present in this
+    training subset.
     """
     def __init__(self, data_source):
         motion_dataset = data_source.motion_dataset
         num_samples = len(data_source)
+        weights = self.compute_weights(motion_dataset)
+        super().__init__(num_samples=num_samples, weights=weights)
+
+    @staticmethod
+    def compute_weights(motion_dataset) -> np.ndarray:
         name_list = motion_dataset.name_list
-        total_samples = len(name_list)
         pointer = motion_dataset.pointer
-        weights = np.zeros(total_samples, dtype=np.float64)
+        weights = np.zeros(len(name_list), dtype=np.float64)
+        data_dict = motion_dataset.data_dict
+        live_indices = range(pointer, len(name_list))
+        if len(live_indices) == 0:
+            raise RuntimeError(f"No samples found for any object type in split with pointer={pointer}.")
+
+        group_weights = getattr(motion_dataset, 'action_group_weights', None)
+        if group_weights is None:
+            partitions = [(None, 1.0, list(live_indices))]
+        else:
+            indices_by_group: dict[str, list[int]] = defaultdict(list)
+            for i in live_indices:
+                group = normalize_action_group(
+                    data_dict[name_list[i]]['motion_metadata'].get('action_group')
+                )
+                if group not in group_weights:
+                    raise RuntimeError(
+                        f"clip {name_list[i]!r} has action_group {group!r}, which "
+                        f"--action_group_weights does not weigh ({', '.join(group_weights)})."
+                    )
+                indices_by_group[group].append(i)
+            weighted = [
+                (group, float(group_weights[group]), indices_by_group[group])
+                for group in group_weights
+                if group_weights[group] > 0.0 and indices_by_group.get(group)
+            ]
+            if not weighted:
+                raise RuntimeError(
+                    "--action_group_weights gives no mass to any group that has clips "
+                    f"in this subset (clips per group: "
+                    f"{ {group: len(indices_by_group.get(group, [])) for group in group_weights} })."
+                )
+            total_group_weight = sum(weight for _, weight, _ in weighted)
+            partitions = [
+                (group, weight / total_group_weight, indices)
+                for group, weight, indices in weighted
+            ]
+            summary = ', '.join(
+                f"{group} {len(indices_by_group.get(group, []))} clips -> "
+                f"{next((mass for g, mass, _ in partitions if g == group), 0.0):.1%}"
+                for group in group_weights
+            )
+            print(f"[TruebonesSampler] action_group sampling mass: {summary}")
 
         # Species membership comes from the loaded entry, not a filename prefix:
         # after merging, 'Horse_Idle_1.npy' exists under two namespaces and a
         # prefix test would assign it to both.
-        data_dict = motion_dataset.data_dict
-        indices_by_object_type: dict[str, list[int]] = defaultdict(list)
-        for i in range(pointer, len(name_list)):
-            indices_by_object_type[data_dict[name_list[i]]['object_type']].append(i)
-
-        non_empty_types = [
-            (object_type, indices_by_object_type[object_type])
-            for object_type in motion_dataset.cond_dict
-            if indices_by_object_type.get(object_type)
-        ]
-
-        # Re-balance weights among only the non-empty object types
-        if len(non_empty_types) == 0:
-            raise RuntimeError(f"No samples found for any object type in split with pointer={pointer}. "
-                             f"Available samples: {[name_list[i] for i in range(pointer, min(pointer+5, len(name_list)))]}")
-
-        # Per-species mass ~ sqrt(clip count over this filtered subset).
-        species_shares = [np.sqrt(len(object_indices)) for _, object_indices in non_empty_types]
-        total_share = float(np.sum(species_shares))
-
-        for (object_type, object_indices), share in zip(non_empty_types, species_shares):
-            indices = np.asarray(object_indices)
-            n = len(indices)
-            weights[indices] = (share / total_share) / n
-
-        super().__init__(num_samples=num_samples, weights=weights)
+        for _, partition_mass, partition_indices in partitions:
+            if not motion_dataset.balanced:
+                indices = np.asarray(partition_indices)
+                weights[indices] = partition_mass / len(indices)
+                continue
+            indices_by_object_type: dict[str, list[int]] = defaultdict(list)
+            for i in partition_indices:
+                indices_by_object_type[data_dict[name_list[i]]['object_type']].append(i)
+            non_empty_types = [
+                indices_by_object_type[object_type]
+                for object_type in motion_dataset.cond_dict
+                if indices_by_object_type.get(object_type)
+            ]
+            # Per-species mass ~ sqrt(clip count over this partition).
+            species_shares = [np.sqrt(len(object_indices)) for object_indices in non_empty_types]
+            total_share = float(np.sum(species_shares))
+            for object_indices, share in zip(non_empty_types, species_shares):
+                indices = np.asarray(object_indices)
+                weights[indices] = partition_mass * (share / total_share) / len(indices)
+        return weights
     
 class Truebones(data.Dataset):
     def __init__(self, split="train", **kwargs):
@@ -1321,6 +1415,7 @@ class Truebones(data.Dataset):
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
         self.action_group = kwargs.get('action_group', '')
+        self.action_group_weights = kwargs.get('action_group_weights')
         self.action_label_cond = bool(kwargs.get('action_label_cond', False))
         # One bundle per run: the training entry point builds it and hands the
         # same object to the model, so loader-side word ids and model-side word
@@ -1388,6 +1483,7 @@ class Truebones(data.Dataset):
             allowed_motion_names=allowed_motion_names,
             motion_metadata_lookup=motion_metadata_lookup,
             action_conditioning=self.action_conditioning,
+            action_group_weights=self.action_group_weights,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \

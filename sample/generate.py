@@ -843,7 +843,7 @@ def _generate_all_species(
           f'{len(species_batches)} batch(es) of batch_size={batch_size}')
     print(f'  All species: {", ".join(all_species)}')
     if action_condition is not None:
-        print(f'  Action label: {action_condition["action_label"]!r} '
+        print(f'  Action label: {action_condition["action_label"] or "(none)"!r} '
               f'(group={action_condition["action_group"]})')
     sampling_model = _wrap_action_label_cfg(model, args, action_condition)
 
@@ -2037,25 +2037,38 @@ def _find_cached_species_emb(tags, cond_dict, t5_name, expected_dim):
 
 
 def _resolve_action_condition(args, model):
-    """Resolve the checkpoint's action group + ``--action_label`` into one condition.
+    """Resolve ``--action_group`` + ``--action_label`` into one condition.
 
-    Returns ``None`` when no label was requested (the model then falls back to its
-    learned unconditional embedding), otherwise a dict carrying the group, the
-    label text and the word-level ids the model assembles its slot channels from.
-    No T5 runs here and no sidecar is read: the frozen word vectors live in the
+    Returns ``None`` when there is nothing to condition on (the model then falls
+    back to its learned unconditional embeddings), otherwise a dict carrying the
+    group, the label text ('' for a group-only condition) and the word-level ids
+    the model assembles its slot channels from (``None`` without a label). No T5
+    runs here and no sidecar is read: the frozen word vectors live in the
     checkpoint, so a generated clip is conditioned on exactly the table the
     weights were trained against.
 
-    ``args.action_group`` is the group this checkpoint was trained on, read out of
-    its args.json by parser_util.apply_checkpoint_action_group. There is no
-    ``--action_group`` flag at generation: each group trains its own model, so the
-    group is a property of the weights and a foreign one would describe a
-    different checkpoint. It is empty only for a checkpoint that predates the
-    mandatory training flag.
+    ``args.action_group`` was reconciled with the checkpoint by
+    parser_util.apply_checkpoint_action_group: a single-group checkpoint always
+    runs as its own group, an ``all`` checkpoint as the requested one ('' when
+    none was requested). It is empty for a single-group checkpoint only when that
+    checkpoint predates the mandatory training flag.
     """
     label = str(getattr(args, 'action_label', '') or '').strip()
     group = str(getattr(args, 'action_group', '') or '').strip().lower()
+    trained_on_all = str(getattr(args, 'checkpoint_action_group', '') or '') == 'all'
+    unwrapped = unwrap_anytop_model(model)
+    group_cond = bool(getattr(unwrapped, 'action_group_cond', False))
     if not label:
+        if group and group_cond:
+            # A group-only request: the group token is set, the label path takes
+            # its null embedding.
+            return {'action_group': group, 'action_label': '', 'action_slots': None}
+        if group and trained_on_all:
+            print(
+                f"[generate] WARNING: --action_group {group} has no effect without "
+                "--action_label on this checkpoint: it was trained on every group "
+                "without --action_group_cond, so the draw covers the whole corpus."
+            )
         return None
 
     from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
@@ -2068,24 +2081,28 @@ def _resolve_action_condition(args, model):
         parse_action_label,
     )
 
-    unwrapped = unwrap_anytop_model(model)
     if not getattr(unwrapped, 'action_label_cond', False):
         sys.exit(
             'ERROR: --action_label was passed but this checkpoint was trained '
             'without --action_label_cond. The label would have no effect.'
         )
+    if not group and trained_on_all:
+        sys.exit(
+            "ERROR: --action_label needs --action_group on this checkpoint: it was "
+            "trained on every group (--action_group all), and the label's word roles "
+            "depend on the group (the second head word of a transition is the target "
+            f"state). Pass --action_group (one of {', '.join(ACTION_GROUPS)})."
+        )
     if not group:
         sys.exit(
             "ERROR: --action_label needs an action group, and this checkpoint's "
             "args.json records none (it predates the mandatory --action_group). "
-            "Each group trains its own model, so the group is a property of the "
-            "checkpoint -- there is no --action_group at generation to supply it. "
             "Sample a checkpoint trained with --action_group (one of "
-            f"{', '.join(ACTION_GROUPS)}) instead."
+            f"{', '.join(ACTION_GROUPS)} or all) instead."
         )
-    # No group-validity check here: apply_checkpoint_action_group already
-    # normalizes anything but ''/a legal group to '' at load time, so past the
-    # guard above ``group`` is always one of ACTION_GROUPS.
+    # No group-validity check here: apply_checkpoint_action_group refuses an
+    # unknown requested group and normalizes an unknown recorded one to '', so
+    # past the guards above ``group`` is always one of ACTION_GROUPS.
     #
     # Labels are exact controlled tokens. An unrecognized one is a HARD ERROR,
     # not a pass-through: there is no synonym translation any more, and letting
@@ -2120,7 +2137,7 @@ def _resolve_action_condition(args, model):
 
     # The role of a word is contextual -- ROLE_HEAD_1 is only ever the second head
     # word of a two-state transition -- so the assignment goes through the same
-    # contract function the loader calls, with this checkpoint's own group.
+    # contract function the loader calls, with the group this generation runs as.
     slots = action_label_slots(group, tokens)
     return {
         'action_group': group,
@@ -2154,7 +2171,7 @@ def _wrap_action_label_cfg(model, args, action_condition):
             f"ERROR: --action_label_cfg_scale must be >= 0, got {scale}. A negative "
             "scale extrapolates AWAY from the prompt."
         )
-    if action_condition is None:
+    if action_condition is None or not action_condition['action_label']:
         sys.exit(
             "ERROR: --action_label_cfg_scale needs --action_label. With no prompt both "
             "CFG passes are the same unconditional forward, so the guidance term is "

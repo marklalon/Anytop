@@ -59,6 +59,7 @@ def get_dataset(
     objects_subset="all",
     sample_limit=0,
     action_group='',
+    action_group_weights=None,
     action_label_cond=False,
     action_conditioning=None,
     motion_cache_size=0,
@@ -75,6 +76,7 @@ def get_dataset(
         objects_subset=objects_subset,
         sample_limit=sample_limit,
         action_group=action_group,
+        action_group_weights=action_group_weights,
         action_label_cond=action_label_cond,
         action_conditioning=action_conditioning,
         motion_cache_size=motion_cache_size,
@@ -98,6 +100,7 @@ def get_dataset_loader(
     shuffle=True,
     drop_last=True,
     action_group='',
+    action_group_weights=None,
     action_label_cond=False,
     action_conditioning=None,
     motion_cache_size=0,
@@ -117,6 +120,7 @@ def get_dataset_loader(
         objects_subset=objects_subset,
         sample_limit=sample_limit,
         action_group=action_group,
+        action_group_weights=action_group_weights,
         action_label_cond=action_label_cond,
         action_conditioning=action_conditioning,
         motion_cache_size=motion_cache_size,
@@ -128,7 +132,8 @@ def get_dataset_loader(
     )
     collate = truebones_batch_collate
     sampler = None
-    # A weighted sampler is needed for species balancing (--balanced).
+    # A weighted sampler is needed for species balancing (--balanced) and for
+    # per-group sampling mass (--action_group all).
     if dataset.motion_dataset.use_weighted_sampler:
         from data_loaders.truebones.data.dataset import TruebonesSampler
         sampler = TruebonesSampler(dataset)

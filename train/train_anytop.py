@@ -21,6 +21,7 @@ _torch.backends.cuda.enable_flash_sdp(True)
 
 from utils.fixseed import fixseed
 from utils.parser_util import (
+    ACTION_GROUP_ALL,
     CKPT_VERSION,
     joint_condition_schema_versions,
     assert_joint_condition_schema,
@@ -32,7 +33,10 @@ from data_loaders.get_data import get_dataset_loader
 from utils.model_util import create_model_and_diffusion_general_skeleton, resolve_t5_out_dim
 from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform, WandBPlatform #required
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.data.dataset import load_action_conditioning
+from data_loaders.truebones.data.dataset import (
+    load_action_conditioning,
+    resolve_action_group_weights,
+)
 
 
 def find_latest_checkpoint(save_dir, prefix='model'):
@@ -125,20 +129,19 @@ def prepare_save_dir(args):
     return save_dir
 
 def _normalized_action_group(raw):
-    """Read a recorded action_group. '' and the retired 'all' both mean "none"."""
-    group = str(raw or '').strip().lower()
-    return '' if group == 'all' else group
+    """Read a recorded action_group: one group, 'all', or '' for none recorded."""
+    return str(raw or '').strip().lower()
 
 
 def assert_resume_keeps_action_group(args, save_dir):
     """Refuse a resume that would rewrite the checkpoint's recorded action_group.
 
-    args.json is rewritten on every launch, and it is the only place generation
-    reads the group from (utils.parser_util.apply_checkpoint_action_group; there
-    is no --action_group at generation). So a resume launched with another group
-    would not just feed the existing weights the wrong clips -- it would relabel
-    the checkpoint inference trusts, so every later generation would believe the
-    weights were fitted on a corpus they never saw. Changing groups means a fresh
+    args.json is rewritten on every launch, and generation reads the corpus the
+    weights were fitted on from there (utils.parser_util.apply_checkpoint_action_group).
+    So a resume launched with another group would not just feed the existing
+    weights the wrong clips -- it would relabel the checkpoint inference trusts,
+    so every later generation would believe the weights were fitted on a corpus
+    they never saw. Changing groups (to or from 'all' included) means a fresh
     save_dir.
     """
     if not getattr(args, 'resume_checkpoint', ''):
@@ -164,9 +167,30 @@ def assert_resume_keeps_action_group(args, save_dir):
         f"[ERROR] Resuming {args.resume_checkpoint} would change its action_group: "
         f"{args_path} records {recorded}, this run asks for '{current_group}'. The "
         f"group is baked into the checkpoint -- it names the corpus the weights "
-        f"were fitted on and is the only group this checkpoint can ever be sampled "
-        f"as. {remedy}"
+        f"were fitted on and decides which groups it can be sampled as. {remedy}"
     )
+
+
+def validate_action_group_options(args):
+    """Check the group options against each other before save_dir is touched.
+
+    Resolves ``args.action_group_weights`` to the per-group mapping the loader
+    uses (``None`` for a single-group run) and returns it.
+    """
+    group = _normalized_action_group(getattr(args, 'action_group', ''))
+    if getattr(args, 'action_group_cond', False) and group != ACTION_GROUP_ALL:
+        raise SystemExit(
+            f"[ERROR] --action_group_cond needs --action_group {ACTION_GROUP_ALL}: this "
+            f"run trains on '{group}' only, so the group embedding would be one "
+            f"constant vector."
+        )
+    try:
+        weights = resolve_action_group_weights(
+            getattr(args, 'action_group_weights', None), group
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[ERROR] {exc}") from exc
+    return weights
 
 
 def assert_resume_checkpoint_version(args, save_dir):
@@ -259,6 +283,7 @@ def create_training_data_loader(args):
         sample_limit=args.sample_limit,
         drop_last=True,
         action_group=getattr(args, 'action_group', ''),
+        action_group_weights=getattr(args, 'resolved_action_group_weights', None),
         action_label_cond=getattr(args, 'action_label_cond', False),
         action_conditioning=getattr(args, 'action_conditioning', None),
         motion_cache_size=getattr(args, 'motion_cache_size', 0),
@@ -271,6 +296,9 @@ def create_training_data_loader(args):
 
 def run_training(args):
     fixseed(args.seed)
+    # Before prepare_save_dir, which may offer to delete an existing run: a
+    # contradictory flag set should fail without touching anything.
+    resolved_weights = validate_action_group_options(args)
     save_dir = prepare_save_dir(args)
     # The recorded action_group is the checkpoint's inference contract (it is the
     # only place generation reads the group from), so a resume must not quietly
@@ -295,6 +323,8 @@ def run_training(args):
     dist_util.setup_dist(args.device)
 
     bootstrap_action_conditioning(args)
+    # Runtime-only, like action_conditioning: set after args.json is written.
+    args.resolved_action_group_weights = resolved_weights
     data = create_training_data_loader(args)
     
     # Print motion count in train split

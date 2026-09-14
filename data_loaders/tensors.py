@@ -10,7 +10,34 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     _length_scale_from_rest,
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
-from data_loaders.truebones.truebones_utils.motion_labels import ACTION_LABEL_MAX_WORDS
+from data_loaders.truebones.truebones_utils.motion_labels import (
+    ACTION_GROUPS,
+    ACTION_LABEL_MAX_WORDS,
+    normalize_action_group,
+)
+
+
+_ACTION_GROUP_INDEX = {group: index for index, group in enumerate(ACTION_GROUPS)}
+
+
+def _action_group_ids(action_groups_batch):
+    """``[B]`` long tensor of ACTION_GROUPS indices; -1 for a missing group.
+
+    A present but unknown group is an error, not -1: it would silently train or
+    sample that row as group-less.
+    """
+    ids = []
+    for raw_group in action_groups_batch:
+        group = normalize_action_group(raw_group)
+        if not group:
+            ids.append(-1)
+        elif group in _ACTION_GROUP_INDEX:
+            ids.append(_ACTION_GROUP_INDEX[group])
+        else:
+            raise ValueError(
+                f"action_group {raw_group!r} is not one of {', '.join(ACTION_GROUPS)}"
+            )
+    return torch.as_tensor(ids, dtype=torch.long)
 
 
 def _build_action_slot_batch(action_slots_batch, action_labels_batch):
@@ -135,6 +162,10 @@ def truebones_collate(batch):
         cond['y'].update({
             'action_group': action_groups_batch,
             'action_label': action_labels_batch,
+            # Index into ACTION_GROUPS, -1 for a row with no group. Built on the
+            # host so the model's group token needs no string handling; emitted
+            # with the strings, so the key set does not vary between batches.
+            'action_group_id': _action_group_ids(action_groups_batch),
         })
         slot_tensors, label_valid = _build_action_slot_batch(
             action_slots_batch, action_labels_batch

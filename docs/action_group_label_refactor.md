@@ -7,6 +7,11 @@
 > `ACTION_VOCAB_CORE` / `ACTION_VOCAB_DETAIL` / `GROUP_MULTIHOT_MASK` /
 > multi-hot 通路**已全部删除**，条件只走 frozen-T5。读本文时请按这两条折算。
 >
+> **2026-09-14：「每组一个模型」不再是唯一选项。** `--action_group all` 可以用一个模型训练
+> 全部三组（组采样权重 + group token），见
+> [unified_action_group_training.md](unified_action_group_training.md)。
+> 三组的定义和标注规则不变。
+>
 > 状态：**代码改造已完成（§7 步骤 1-6），待重训三组**
 > 已产出：三个数据集的 `action_labels.jsonl`（zoo 1106 / zoo_upgrade 265 / unitybundles 2657）；
 > 受控词表、`GROUP_MULTIHOT_MASK`、`load_action_labels` 在

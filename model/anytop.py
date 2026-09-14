@@ -18,6 +18,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     word_table_sha256,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
+    ACTION_GROUPS,
     ACTION_LABEL_MAX_WORDS,
     CONTROLLED_VOCAB,
 )
@@ -115,6 +116,15 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"action_label_cfg_drop_prob must be in [0, 1], got {self.action_label_cfg_drop_prob}"
             )
+        # Action-group conditioning, for a model trained on every group at once
+        # (docs/unified_action_group_training.md). Its own CFG drop, independent
+        # of the label's.
+        self.action_group_cond = bool(kargs.get('action_group_cond', False))
+        self.action_group_cfg_drop_prob = float(kargs.get('action_group_cfg_drop_prob', 0.15))
+        if not 0.0 <= self.action_group_cfg_drop_prob <= 1.0:
+            raise ValueError(
+                f"action_group_cfg_drop_prob must be in [0, 1], got {self.action_group_cfg_drop_prob}"
+            )
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if not 0.0 <= self.joint_mask_budget <= 1.0:
@@ -187,6 +197,17 @@ class AnyTop(nn.Module):
             self.action_label_projection = None
             self.action_label_null_emb = None
             self.action_conditioning_metadata = None
+
+        if self.action_group_cond:
+            # One row per ACTION_GROUPS entry plus a trailing null row for a
+            # dropped or group-less sample. Zero-init, so every group starts as
+            # the null condition and the token adds nothing until it is learned.
+            # Added to the timestep token like the action label, so the label's
+            # CFG (which only drops the label) guides from (group, no label).
+            self.action_group_embedding = nn.Embedding(len(ACTION_GROUPS) + 1, self.latent_dim)
+            nn.init.zeros_(self.action_group_embedding.weight)
+        else:
+            self.action_group_embedding = None
 
         # Per-species condition: a T5-derived species descriptor that FiLM-modulates
         # the timestep embedding (which every decoder layer re-injects via
@@ -651,6 +672,64 @@ class AnyTop(nn.Module):
             null_emb.unsqueeze(0).expand(batch_size, -1),
         )
 
+    def _resolve_action_group_active(self, raw_active, batch_size, device):
+        """Per-sample CFG mask for the group condition (True == conditional).
+
+        Same contract as the label's: an explicit ``y['action_group_active']``
+        wins; otherwise training hard-drops with ``action_group_cfg_drop_prob``,
+        drawn independently of the label's drop; eval/inference keeps every row.
+        """
+        if raw_active is not None:
+            active = torch.as_tensor(raw_active, device=device, dtype=torch.bool).reshape(-1)
+            if active.numel() == 1 and batch_size != 1:
+                active = active.expand(batch_size)
+            elif active.numel() != batch_size:
+                raise ValueError(
+                    "action_group_active batch dimension must match the motion batch size, got "
+                    f"{active.numel()} for batch {batch_size}"
+                )
+            return active
+        if self.training and self.action_group_cfg_drop_prob > 0.0:
+            return torch.rand(batch_size, device=device) >= self.action_group_cfg_drop_prob
+        return torch.ones(batch_size, device=device, dtype=torch.bool)
+
+    def _build_action_group_token(self, y, batch_size, device, dtype):
+        """The group token added to the timestep embedding, or ``None`` when off.
+
+        ``y['action_group_id']`` holds ACTION_GROUPS indices, -1 for a row with no
+        group; a missing key means no row has one. Inactive and group-less rows
+        both read the trailing null row.
+        """
+        if self.action_group_embedding is None:
+            return None
+        null_id = len(ACTION_GROUPS)
+        raw_ids = y.get('action_group_id')
+        if raw_ids is None:
+            ids = torch.full((batch_size,), -1, device=device, dtype=torch.long)
+        else:
+            host_ids = raw_ids if torch.is_tensor(raw_ids) else torch.as_tensor(raw_ids)
+            # Range-checked only while the ids are still on the host: the collate
+            # already guarantees the range, and a check on device ids would cost
+            # a synchronizing readback every training step.
+            if host_ids.device.type == 'cpu' and bool(((host_ids < -1) | (host_ids >= null_id)).any()):
+                raise ValueError(
+                    f"action_group_id must be -1 or an index into {ACTION_GROUPS}, "
+                    f"got {host_ids.tolist()}"
+                )
+            ids = host_ids.to(device=device, dtype=torch.long).reshape(-1)
+            if ids.numel() == 1 and batch_size != 1:
+                ids = ids.expand(batch_size)
+            elif ids.numel() != batch_size:
+                raise ValueError(
+                    "action_group_id batch dimension must match the motion batch size, got "
+                    f"{ids.numel()} for batch {batch_size}"
+                )
+        active = self._resolve_action_group_active(
+            y.get('action_group_active'), batch_size, device
+        )
+        ids = torch.where(active & (ids >= 0), ids, torch.full_like(ids, null_id))
+        return self.action_group_embedding(ids).to(dtype)
+
     def sample_subtree_joint_mask_train(self, y, njoints, device):
         """Select subtrees of joints to perturb during training.
 
@@ -967,6 +1046,9 @@ class AnyTop(nn.Module):
         action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype)
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token
+        action_group_token = self._build_action_group_token(y, bs, x.device, x.dtype)
+        if action_group_token is not None:
+            timesteps_emb = timesteps_emb + action_group_token
 
         species_emb_for_joints = (
             self._coerce_species_emb(y, bs, x.device, x.dtype) if self.species_joint_cond else None
