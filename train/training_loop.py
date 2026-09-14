@@ -923,7 +923,6 @@ class TrainLoop:
                 limit_weight = self.sample_loss_limiter.weights(t, losses["l_simple"])
                 losses["loss"] = losses["loss"] + (limit_weight - 1.0) * losses["l_simple"]
                 losses["l_simple_limit_weight"] = limit_weight
-                losses["l_simple_limited_frac"] = (limit_weight < 1.0).float()
 
             loss = (losses["loss"] * weights).mean()
             self._accumulate_interval_losses({k: v * weights for k, v in losses.items()})
