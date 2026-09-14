@@ -45,6 +45,7 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 	--joint_mask_prob 0.3 ^
 	--joint_mask_budget 0.15 ^
 	--unreliable_mask_drop_prob 0.2 ^
+	--renoise_same_level_prob 0.8 ^
 	--joint_name_drop_prob 0.15 ^
 	--temporal_span_mask_prob 0.3 ^
 	--temporal_span_seam_loss_weight 0.2 ^
