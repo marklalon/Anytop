@@ -243,12 +243,12 @@ fp16 run 是从 bf16 run 的 5000 步 checkpoint 续训的，两边在 5000–54
 | | 改动 | 落点 |
 |---|---|---|
 | A | cross-K 子路做成 fp32 孤岛 | [motion_transformer.py](../model/motion_transformer.py) `CrossLimbTemporalBlock.forward` |
-| B | GradScaler 的 loss scale 封顶在 2^16，并记录 `loss_scale_log2` / `amp_overflow` | [fp16_util.py](../diffusion/fp16_util.py) `GRAD_SCALER_MAX_SCALE`、`_cap_loss_scale`、`_optimize_amp` |
+| B | GradScaler 的 loss scale 封顶并从 2^15 开始，并记录 `loss_scale_log2` / `amp_overflow` | [fp16_util.py](../diffusion/fp16_util.py) `GRAD_SCALER_MAX_SCALE`、`_cap_loss_scale`、`_optimize_amp` |
 | C | scaler 溢出与真实梯度尖峰分开分类、分开限额、分开文件名 | [training_loop.py](../train/training_loop.py) `classify_grad_event`、`AMP_OVERFLOW_MAX_DUMPS`、`_maybe_capture_spike` |
 | D | 广播型条件头固定 fp32 | [anytop.py](../model/anytop.py) `run_in_fp32` + 8 处调用 |
 
 - **A**：`cross_k_scale` 是模型里唯一一个背后挂着整张子网络的零初始化门（其余 `time_emb_scale` / `temporal_phase_scale` / `*_reliability_bias` 只门住一个加法项，门自身的梯度并不小）。子路只有 K 个 token、瓶颈宽度，fp32 实测 0 成本。
-- **B**：`GradScaler` 的默认 `init_scale` 正好是 2^16，所以新 run 一开始就坐在上限上，只在真正溢出时下降、之后再涨回来。**恢复旧 run 时**保存的 2^17 会在第一步被拉回 2^16（并重置 growth tracker）。
+- **B**：当前 `GradScaler` 显式以 2^15 初始化并封顶，避免新 run 在第一步探测 2^16；真正溢出时仍会下降。**恢复旧 run 时**保存的更高 scale 会在第一次 optimizer update 后被拉回 2^15（并重置 growth tracker）。
 - **C**：旧逻辑用 `not np.isfinite(grad_norm)` 当尖峰触发条件，而 `_optimize_amp` 恰好用 `inf` 标记"因非有限梯度跳过"。没有 scaler 的 bf16 / fp32 下 `inf` 仍然算真实故障，照样 dump。
 - **D**：8 处 = `species_film`、`resample_speed_projection`、`loop_condition_projection`、`action_label_projection`、`canonical_frame_projection`、`input_process.{species_film_j, text_embedding, struct_embedding}`。`InputProcess` 的返回本来就在末尾被 fp32 的 pos_emb 提升，所以下游看到的 dtype 没有变化。
 
@@ -300,11 +300,11 @@ QKNorm（5000 步 checkpoint，扫 2^12–2^24）：
 ### 9.4 验证
 
 - 新增 [tests/test_fp16_precision_policy.py](../tests/test_fp16_precision_policy.py)（16 项）：孤岛在 fp16/bf16 autocast 下都是 fp32 且只覆盖 cross-K、封顶逻辑（超上限拉回 / 未超不动 / scaler 关闭时不报错 / 上限落在实测平坦窗口内）、溢出与尖峰的分类、`run_in_fp32` 与纯 fp32 调用逐位相等。全量 **849 项通过**。
-- 40 步真实 fp16 训练（eager，`--ml_platform_type NoPlatform`）：`loss_scale_log2` 稳定 16、`amp_overflow` 恒 0。
+- 40 步真实 fp16 训练（eager，`--ml_platform_type NoPlatform`）：历史 2^16 配置下 `loss_scale_log2` 稳定 16、`amp_overflow` 恒 0；当前配置预期稳定在 15。
 - 改动只动数值，不动 checkpoint 格式：现有权重可直接 resume，不需要重新生成数据，也不强制重训。但它确实改变了训练数值，所以跨此改动的 loss 曲线逐步对比没有意义（整体水平可比）。
 
 ### 9.5 上线后看什么
 
-1. `amp_overflow`（tensorboard，每步记录的 0/1 均值）应长期为 0。若出现非零，说明离群 batch 的梯度超过了 2^16 的余量，可把 `GRAD_SCALER_MAX_SCALE` 再降一档（窗口下沿到 2^14 都是平的）。
-2. `loss_scale_log2` 应稳定在 16；掉下去且不回升说明溢出频繁。
+1. `amp_overflow`（tensorboard，每步记录的 0/1 均值）应长期为 0。若出现非零，说明离群 batch 的梯度超过了 2^15 的余量，应优先检查数据/loop seam；必要时可继续降到 2^14。
+2. `loss_scale_log2` 应稳定在 15；掉下去且不回升说明溢出频繁。
 3. `save/<run>/spikes/` 下现在区分 `spike_step*.json`（真实梯度尖峰，限额 `--spike_max_dumps`，默认 10）和 `overflow_step*.json`（scaler 溢出，限额 2）。只有前者才需要按尖峰的老路子查 `top_param_grad_norms`。

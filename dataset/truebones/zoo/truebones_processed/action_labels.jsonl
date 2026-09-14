@@ -732,9 +732,9 @@
 {"clip": "Rhino_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Roach_Bristle", "action_group": "stationary", "action_label": "idle, look", "is_loop": false, "reviewed": true}
 {"clip": "Roach_Hop", "action_group": "stationary", "action_label": "jump", "is_loop": true, "reviewed": true}
-{"clip": "Roach_Left", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
+{"clip": "Roach_Left", "action_group": "locomotion", "action_label": "walk, left", "is_loop": false, "reviewed": true}
 {"clip": "Roach_Move", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "Roach_Scurry", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "Roach_Scurry", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "Roach_Shake", "action_group": "stationary", "action_label": "idle, shake", "is_loop": false, "reviewed": true}
 {"clip": "Roach_Smelling", "action_group": "stationary", "action_label": "idle, sniff", "is_loop": true, "reviewed": true}
 {"clip": "Roach_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
@@ -761,7 +761,7 @@
 {"clip": "SabreToothTiger_PissedOff2", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "SabreToothTiger_PissedOff", "action_group": "stationary", "action_label": "hurt, crouch", "is_loop": false, "reviewed": true}
 {"clip": "SabreToothTiger_Roaring", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
-{"clip": "SabreToothTiger_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "SabreToothTiger_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "SabreToothTiger_Sit", "action_group": "transition", "action_label": "sitdown", "is_loop": false, "reviewed": true}
 {"clip": "SabreToothTiger_Sitting2", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "SabreToothTiger_Sitting", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
@@ -934,7 +934,7 @@
 {"clip": "Tricera_NoseDirt", "action_group": "stationary", "action_label": "idle, clean", "is_loop": true, "reviewed": true}
 {"clip": "Tricera_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Tricera_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "Tukan_FlyLoop", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
+{"clip": "Tukan_FlyLoop", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": false, "reviewed": true}
 {"clip": "Tukan_Fly", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": false, "reviewed": true}
 {"clip": "Tukan_IdleLook", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "Tukan_Shake", "action_group": "stationary", "action_label": "idle, shake", "is_loop": true, "reviewed": true}
