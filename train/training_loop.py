@@ -1,7 +1,6 @@
 import functools
 import os
 import re
-import time
 import json
 import copy as pycopy
 import numpy as np
@@ -14,7 +13,6 @@ from diffusion import logger
 from utils import dist_util
 from diffusion.fp16_util import MixedPrecisionTrainer, format_nonfinite_stats, format_optimizer_slot_max, inspect_optimizer_slot_max, inspect_optimizer_state, sanitize_optimizer_state
 from diffusion.nn import update_ema
-from utils.device_transfer import host_to_device
 from diffusion.resample import LossAwareSampler
 from tqdm import tqdm
 from diffusion.resample import create_named_schedule_sampler
@@ -520,8 +518,6 @@ class TrainLoop:
                     for k, v in [*interval_loss_metrics.items(), *logger_metrics]:
                         if k == 'loss':
                             tqdm.write('step[{}]: loss[{:0.5f}]'.format(completed_step, v))
-                        elif k.startswith('l_simple_'):
-                            tqdm.write('step[{}]: {}[{:0.5f}]'.format(completed_step, k, v))
                         if k in ['step', 'samples']:
                             continue
                         self.train_platform.report_scalar(name=k, value=v, iteration=completed_step, group_name='Loss')
@@ -668,51 +664,6 @@ class TrainLoop:
                 f'step {completed_step} ({format_nonfinite_stats(state_stats)})'
             )
 
-    def _accumulate_per_family_l_simple(self, losses, weights, cond):
-        """Track l_simple broken down by topology family.
-
-        Maps the per-family difficulty landscape (quad/biped/millipede/serpentine/
-        aquatic/winged/drifting) and shows how negative transfer hits each family.
-        Uses the same weighting convention as the aggregate l_simple metric, so
-        all of these are directly comparable to it and to a single-family run.
-        """
-        if "l_simple" not in losses:
-            return
-        object_types = cond.get('y', {}).get('object_type', None)
-        if not object_types:
-            return
-        family_sets = getattr(self, '_family_species_sets', None)
-        if family_sets is None:
-            from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
-            members = dataset_tags().subset_members
-            family_sets = {
-                'quad': members['quadruped'],
-                'biped': members['biped'],
-                'milliped': members['multiped'],
-                'snake': members['serpentine'],
-                'aquatic': members['aquatic'],
-                'flying': members['winged'],
-                'drifting': members['drifting'],
-            }
-            self._family_species_sets = family_sets
-        # Membership is host data: decide which families are present on the host
-        # and ship one [families, B] mask, instead of a blocking copy plus an
-        # .any() readback per family every step.
-        present, rows = [], []
-        for family, species in family_sets.items():
-            row = [ot in species for ot in object_types]
-            if any(row):
-                present.append(family)
-                rows.append(row)
-        if not present:
-            return
-        l_simple = (losses["l_simple"] * weights).detach().float()
-        membership = host_to_device(rows, l_simple.device, dtype=torch.float32)   # [F, B]
-        family_means = (membership * l_simple).sum(dim=1) / membership.sum(dim=1)
-        self._accumulate_interval_losses({
-            f'l_simple_{family}': family_means[index] for index, family in enumerate(present)
-        })
-
     def _accumulate_interval_losses(self, losses):
         for key, value in losses.items():
             if not torch.is_tensor(value):
@@ -762,7 +713,6 @@ class TrainLoop:
     def evaluate(self):
         if not self.args.eval_during_training or self.eval_data is None:
             return
-        cond_dict = self.data.dataset.motion_dataset.cond_dict
         infer_model = self.model  # use raw model (not EMA) to observe real val performance
         motion_groups = {}
         missing_action_label_count = 0
@@ -958,7 +908,6 @@ class TrainLoop:
 
             loss = (losses["loss"] * weights).mean()
             self._accumulate_interval_losses({k: v * weights for k, v in losses.items()})
-            self._accumulate_per_family_l_simple(losses, weights, micro_cond)
             if self.spike_capture:
                 self._stash_spike_ctx(losses, t)
             self.mp_trainer.backward(loss)
@@ -1216,7 +1165,7 @@ class TrainLoop:
                 state_dict = build_checkpoint_payload(
                     state_dict, state_dict_avg, self.model)
 
-                logger.log(f"saving model...")
+                logger.log("saving model...")
                 filename = self.ckpt_file_name(completed_step)
                 checkpoint_path = pjoin(self.save_dir, filename)
                 if '://' in self.save_dir:
