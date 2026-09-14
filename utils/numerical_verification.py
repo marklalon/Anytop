@@ -2,10 +2,10 @@
 
 Under bf16 autocast every matmul rounds to 7 mantissa bits, and any bit-level
 perturbation upstream reshuffles that rounding. Changing the association order
-of the FK loss's chained products touched 13 of 1.15M output-gradient elements
-by 1.5e-8, yet moved parameter gradients by a median 2e-3 relative -- the same
-size as two non-deterministic runs of unchanged code. A bf16 comparison can
-neither confirm nor rule out a regression (docs/bf16_precision_issues.md 4.4).
+of a chained matrix-product experiment touched 13 of 1.15M output-gradient
+elements by 1.5e-8, yet moved parameter gradients by a median 2e-3 relative --
+the same size as two non-deterministic runs of unchanged code. A bf16 comparison
+can neither confirm nor rule out a regression (docs/bf16_precision_issues.md 4.4).
 
 Protocol for every before/after equivalence check (docs 5.2 D):
 
@@ -21,8 +21,8 @@ Protocol for every before/after equivalence check (docs 5.2 D):
 
 Steps 1-3 are ``enable_numerical_verification_mode``, 4 is ``disable_dropout``,
 5 is ``reseed``; step 1's ``--amp_dtype`` and step 6 are the caller's. bf16 is
-only for the final speed measurement. Under this mode the FK change above
-measured a median 1.5e-7 (worst 8e-7) -- plain float32 rounding.
+only for the final speed measurement. Under this mode the association-order
+change above measured a median 1.5e-7 (worst 8e-7) -- plain float32 rounding.
 """
 import os
 import random
