@@ -1,6 +1,7 @@
 # bf16 混合精度：数值精度问题与方案
 
 > 状态：调研完成（2026-09-13）；5.2 的 A + B + D 已实施（2026-09-13，见 5.5），C 待实验。第 2、4 节描述的是实施前的状态。
+> 后续：训练已于 2026-09-13 改用 fp16（`train.bat`）。fp16 与 bf16 的逐层对比见 [fp16_vs_bf16_precision.md](fp16_vs_bf16_precision.md)——每层误差是 bf16 的 1/8，本文第 4 节的问题 1、3 相应降一个数量级。
 > 测量对象：`save/merged_locomotion_v14/model000005000.pt`，locomotion 训练集 8 个 batch × 16 条（128 条样本）。
 > 环境：RTX PRO 6000 Blackwell（WDDM），torch 2.11.0+cu128，与 `train.bat` / `generate.bat` 相同的参数。
 

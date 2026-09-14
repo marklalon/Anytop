@@ -589,9 +589,20 @@ class CrossLimbTemporalBlock(nn.Module):
         # so the result feeds cross-out without another permute. Pre-Norm and
         # a zero-init residual gate: exact no-op until cross_k_scale moves.
         kv_out = zt.permute(2, 0, 1, 3).reshape(K, T * B, d)              # (K, T*B, d_cl)
-        zk_norm = self.cross_k_norm(kv_out)
-        zk_delta, _ = self.cross_k_attn(zk_norm, zk_norm, zk_norm, need_weights=False)
-        kv_out = kv_out + self.cross_k_scale * zk_delta
+        # fp32 island. Everything inside cross-K receives a gradient proportional
+        # to the zero-init gate cross_k_scale, so while that gate is still closed
+        # those gradients sit around 1e-11 -- fp16 pushes them into the subnormal
+        # range even at the loss scale a run settles on (2^17), and q_norm /
+        # k_norm's gradient comes out 26% wrong. This is the only zero-init gate
+        # in the model with a whole sub-network behind it. K tokens at the
+        # bottleneck width, so fp32 here measures 0.0% of a step, and it makes
+        # the sub-path independent of the loss scale.
+        # See docs/fp16_vs_bf16_precision.md.
+        with torch.autocast(device_type=kv_out.device.type, enabled=False):
+            kv_out = kv_out.float()
+            zk_norm = self.cross_k_norm(kv_out)
+            zk_delta, _ = self.cross_k_attn(zk_norm, zk_norm, zk_norm, need_weights=False)
+            kv_out = kv_out + self.cross_k_scale * zk_delta
 
         # --- Cross-out: joints (query) attend over latents (key/value), per frame.
         # Both flattened to attention batch = T*B with index (t*B + b).

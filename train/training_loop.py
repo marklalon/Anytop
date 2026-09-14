@@ -41,6 +41,29 @@ from eval.motion_quality import DistributionMotionQualityScorer
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
+# How many fp16 loss-scale overflows to dump before only counting them. They are
+# a property of the scaler, not of the batch, so a couple of examples is all the
+# diagnosis anyone needs; the rate is what matters and it is logged every step as
+# ``amp_overflow``.
+AMP_OVERFLOW_MAX_DUMPS = 2
+
+
+def classify_grad_event(grad_norm, scaler_enabled, spike_threshold):
+    """Name what a step's pre-clip grad_norm represents.
+
+    ``'overflow'``: the fp16 GradScaler found non-finite gradients, skipped the
+    step and halved the scale. Routine -- it is how the scaler finds the top of
+    the fp16 window -- so it must not be counted as a spike.
+    ``'spike'``: a real gradient spike (finite and over the threshold), or
+    non-finite gradients with no scaler to explain them, which is a genuine
+    numerical failure.
+    ``None``: an ordinary step.
+    """
+    if grad_norm is None:
+        return None
+    if not np.isfinite(grad_norm):
+        return 'overflow' if scaler_enabled else 'spike'
+    return 'spike' if grad_norm > spike_threshold else None
 
 
 def _per_sample_decode_cond(y, index, n_joints):
@@ -197,6 +220,14 @@ class TrainLoop:
         self.spike_start_step = int(getattr(self.args, 'spike_start_step', 1000))
         self.spike_max_dumps = int(getattr(self.args, 'spike_max_dumps', 10))
         self.spike_dumps_written = 0
+        # A non-finite grad_norm under the fp16 GradScaler is a loss-scale
+        # overflow (the step is skipped and the scale halved), not a gradient
+        # spike. It gets its own counter and a much smaller dump budget so it
+        # cannot consume the spike budget -- in the first fp16 run every one of
+        # the 10 dumps was an overflow and real spikes went unrecorded from step
+        # 30k on. See diffusion/fp16_util.GRAD_SCALER_MAX_SCALE.
+        self.amp_overflow_steps = 0
+        self.amp_overflow_dumps_written = 0
         self._spike_ctx = None
         self.autocast_dtype = None
         if self.amp_dtype == 'fp16':
@@ -973,7 +1004,11 @@ class TrainLoop:
         <save_dir>/spikes so the trigger AND the dominant layer of a spike can be
         identified post-hoc. Grad-norm is the sole trigger (it is already a host
         float from optimize(), so this probe adds no per-step sync). Steps at or
-        below spike_start_step are skipped as warmup noise."""
+        below spike_start_step are skipped as warmup noise.
+
+        An infinite grad_norm while the fp16 GradScaler is on is classified as a
+        loss-scale overflow instead, with its own counter, budget and file name
+        (see AMP_OVERFLOW_MAX_DUMPS)."""
         ctx = self._spike_ctx
         self._spike_ctx = None
         if ctx is None:
@@ -984,13 +1019,20 @@ class TrainLoop:
             return
 
         grad_norm = self.mp_trainer.last_grad_norm
-        grad_trip = grad_norm is not None and (
-            not np.isfinite(grad_norm) or grad_norm > self.spike_grad_threshold
+        # An fp16 loss-scale overflow is a different event from a gradient spike:
+        # separate counter, separate (small) dump budget, separate file name.
+        kind = classify_grad_event(
+            grad_norm, self.mp_trainer.scaler.is_enabled(), self.spike_grad_threshold
         )
-        if not grad_trip:
+        if kind is None:
             return
-
-        if self.spike_max_dumps and self.spike_dumps_written >= self.spike_max_dumps:
+        nonfinite = not np.isfinite(grad_norm)
+        amp_overflow = kind == 'overflow'
+        if amp_overflow:
+            self.amp_overflow_steps += 1
+            if self.amp_overflow_dumps_written >= AMP_OVERFLOW_MAX_DUMPS:
+                return
+        elif self.spike_max_dumps and self.spike_dumps_written >= self.spike_max_dumps:
             if self.spike_dumps_written == self.spike_max_dumps:
                 tqdm.write(
                     f'[spike] step {completed_step}: spike detected but --spike_max_dumps '
@@ -1051,15 +1093,25 @@ class TrainLoop:
             samples.append(rec)
         samples.sort(key=lambda r: r['loss'], reverse=True)
 
-        total_postclip, top_param_grads = self._top_param_grad_norms()
+        # An overflow is a skipped step: the grads are non-finite, so per-param
+        # grad norms are meaningless and the host sync is pure waste. Only real
+        # spikes need top_param_grads to localize the layer (doc 9.5).
+        if amp_overflow:
+            total_postclip, top_param_grads = None, []
+        else:
+            total_postclip, top_param_grads = self._top_param_grad_norms()
 
         record = {
             'completed_step': completed_step,
-            'grad_norm_preclip': (None if grad_norm is None else float(grad_norm)),
+            'kind': kind,
+            'grad_norm_preclip': float(grad_norm),
             'grad_clip_max_norm': 1.0,
             'grad_norm_postclip_total': total_postclip,
             'amp_dtype': self.amp_dtype,
-            'trigger': {'grad': bool(grad_trip)},
+            'loss_scale': (self.mp_trainer.scaler.get_scale()
+                           if self.mp_trainer.scaler.is_enabled() else None),
+            'amp_overflow_steps_so_far': self.amp_overflow_steps,
+            'trigger': {'grad': not amp_overflow, 'amp_overflow': amp_overflow},
             'thresholds': {'grad': self.spike_grad_threshold},
             'batch_mean_loss': float(loss_np.mean()),
             'batch_max_loss': float(loss_np.max()),
@@ -1070,7 +1122,7 @@ class TrainLoop:
 
         spike_dir = pjoin(self.save_dir, 'spikes')
         os.makedirs(spike_dir, exist_ok=True)
-        json_path = pjoin(spike_dir, f'spike_step{completed_step:09d}.json')
+        json_path = pjoin(spike_dir, f'{kind}_step{completed_step:09d}.json')
         with open(json_path, 'w') as f:
             json.dump(record, f, indent=2, default=str)
 
@@ -1088,13 +1140,23 @@ class TrainLoop:
                 v = y.get(k)
                 if torch.is_tensor(v):
                     payload[k] = v.detach().cpu()
-            torch.save(payload, pjoin(spike_dir, f'spike_step{completed_step:09d}.pt'))
+            torch.save(payload, pjoin(spike_dir, f'{kind}_step{completed_step:09d}.pt'))
+
+        if amp_overflow:
+            self.amp_overflow_dumps_written += 1
+            tqdm.write(
+                f'[overflow] step {completed_step}: fp16 loss-scale overflow #'
+                f'{self.amp_overflow_steps} (step skipped, scale halved to '
+                f'{record["loss_scale"]}), batch_mean_loss='
+                f'{record["batch_mean_loss"]:.3f} -> {json_path}'
+            )
+            return
 
         self.spike_dumps_written += 1
         top_param = top_param_grads[0]['param'] if top_param_grads else '?'
         tqdm.write(
             f'[spike] step {completed_step}: grad_norm(pre-clip)='
-            f'{"inf" if grad_norm is None or not np.isfinite(grad_norm) else f"{grad_norm:.1f}"}, '
+            f'{"inf" if nonfinite else f"{grad_norm:.1f}"}, '
             f'batch_mean_loss={record["batch_mean_loss"]:.3f}, '
             f'top-grad param={top_param} -> {json_path}'
         )

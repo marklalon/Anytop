@@ -23,6 +23,21 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
 )
 
 
+def run_in_fp32(module, tensor, *rest):
+    """Run a broadcast conditioning head outside autocast, on fp32 input.
+
+    These heads emit one vector per sample (or per joint) that is then added to
+    every one of ~1e6 tokens, so their backward sums over all of those tokens and
+    their weight gradients are the largest in the network -- they are the first
+    tensors to overflow fp16 as the loss scale rises. They are also tiny, so
+    fp32 costs under 1% of a training step (inside measurement noise) and cuts
+    the global parameter-gradient error by ~37%.
+    See docs/fp16_vs_bf16_precision.md.
+    """
+    with torch.autocast(device_type=tensor.device.type, enabled=False):
+        return module(tensor.float(), *rest)
+
+
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
                          dtype: torch.dtype = torch.float32) -> torch.Tensor:
     """Create sinusoidal positional embedding, with shape `[B, T, C]`.
@@ -632,7 +647,7 @@ class AnyTop(nn.Module):
         null_emb = self.action_label_null_emb.to(device=device, dtype=dtype)
         return torch.where(
             action_active.view(batch_size, 1),
-            self.action_label_projection(channels),
+            run_in_fp32(self.action_label_projection, channels),
             null_emb.unsqueeze(0).expand(batch_size, -1),
         )
 
@@ -849,7 +864,7 @@ class AnyTop(nn.Module):
         if self.species_film is None:
             return timesteps_emb
         species_emb = self._coerce_species_emb(y, batch_size, device, dtype)
-        gamma_residual, beta = self.species_film(species_emb).chunk(2, dim=-1)
+        gamma_residual, beta = run_in_fp32(self.species_film, species_emb).chunk(2, dim=-1)
         gamma = 1.0 + gamma_residual
         active = self._resolve_species_active(
             y.get('species_active') if y is not None else None, batch_size, device
@@ -903,7 +918,7 @@ class AnyTop(nn.Module):
             raw_mean, 'canonical_feature_mean', batch_size, device, dtype)
         std = self._coerce_canonical_frame_stat(
             raw_std, 'canonical_feature_std', batch_size, device, dtype)
-        return self.canonical_frame_projection(torch.cat([mean, std], dim=-1))
+        return run_in_fp32(self.canonical_frame_projection, torch.cat([mean, std], dim=-1))
 
     def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
         """
@@ -936,7 +951,8 @@ class AnyTop(nn.Module):
             device=x.device,
             dtype=x.dtype,
         )
-        timesteps_emb = timesteps_emb + self.resample_speed_projection(resample_speed_condition)
+        timesteps_emb = timesteps_emb + run_in_fp32(
+            self.resample_speed_projection, resample_speed_condition)
         timesteps_emb = timesteps_emb + self._build_canonical_frame_token(
             y, bs, x.device, x.dtype)
         if self.loop_cond_prob > 0.0 and self.loop_condition_projection is not None:
@@ -946,7 +962,8 @@ class AnyTop(nn.Module):
                 device=x.device,
                 dtype=x.dtype,
             )
-            timesteps_emb = timesteps_emb + self.loop_condition_projection(loop_condition)
+            timesteps_emb = timesteps_emb + run_in_fp32(
+                self.loop_condition_projection, loop_condition)
         action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype)
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token
@@ -1162,11 +1179,11 @@ class InputProcess(nn.Module):
             # drop was meant to withhold.
             # joints_clean: [B, J, t5]; species_emb: [B, t5] -> broadcast to [B, J, t5]
             species_broadcast = species_emb.to(device=x.device, dtype=joints_clean.dtype).unsqueeze(1).expand(-1, joints_clean.shape[1], -1)
-            gamma_residual, beta = self.species_film_j(
-                torch.cat([joints_clean, species_broadcast], dim=-1)
+            gamma_residual, beta = run_in_fp32(
+                self.species_film_j, torch.cat([joints_clean, species_broadcast], dim=-1)
             ).chunk(2, dim=-1)
             joints_embedded_names = (1.0 + gamma_residual) * joints_embedded_names + beta
-        joints_embedded_names = self.text_embedding(joints_embedded_names)
+        joints_embedded_names = run_in_fp32(self.text_embedding, joints_embedded_names)
         x = x + joints_embedded_names[None, ...]# [frames, batch_size, n_joints, d]
         if joint_struct is None:
             raise ValueError(
@@ -1175,8 +1192,8 @@ class InputProcess(nn.Module):
         # The name-dropout probabilities deliberately do NOT reach here: the
         # point of the structural channel is to be the signal that survives a
         # missing name.
-        struct_latent = self.struct_embedding(
-            joint_struct.to(device=x.device, dtype=x.dtype)
+        struct_latent = run_in_fp32(
+            self.struct_embedding, joint_struct.to(device=x.device, dtype=x.dtype)
         )
         # Re-zero AFTER the projection. The padded rows arrive as zeros, but
         # the MLP has biases, so a zero row does not stay zero through it --

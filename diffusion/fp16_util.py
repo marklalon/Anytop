@@ -2,6 +2,8 @@
 Helpers to train with 16-bit precision.
 """
 
+import math
+
 import numpy as np
 import torch as th
 import torch.nn as nn
@@ -11,6 +13,18 @@ from diffusion import logger
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 GRAD_NORM_ABORT_THRESHOLD = 1e12
+# Ceiling for the fp16 GradScaler's loss scale (None disables the cap).
+#
+# GradScaler doubles the scale every growth_interval until a step overflows, so
+# left alone it *manufactures* one skipped step per growth cycle -- every dump in
+# save/<run>/spikes of the first fp16 run was one of those, not a real gradient
+# spike. AnyTop's parameter-gradient error is flat from 2^14 to 2^22 and the
+# overflow wall on a typical batch is 2^23, so the top of that window buys
+# nothing: capping here keeps >100x of headroom for outlier batches and the
+# periodic overflow disappears. It is safe to sit this low only because the one
+# loss-scale-sensitive path (cross-K, behind a zero-init gate) is pinned to fp32
+# in CrossLimbTemporalBlock. See docs/fp16_vs_bf16_precision.md.
+GRAD_SCALER_MAX_SCALE = 2 ** 16
 
 
 def convert_module_to_f16(l):
@@ -379,6 +393,26 @@ class MixedPrecisionTrainer:
             f"threshold={GRAD_NORM_ABORT_THRESHOLD:.1e})"
         )
 
+    def _cap_loss_scale(self):
+        """Hold the GradScaler's loss scale at or below GRAD_SCALER_MAX_SCALE.
+
+        Without this the scaler climbs until a step overflows, which is the
+        source of the periodic skipped steps under fp16 (see the constant's
+        comment). Also logs the scale and the overflow rate, which the AMP path
+        never reported -- only the retired ``_optimize_fp16`` path logged
+        ``lg_loss_scale``, so a run's scale history was invisible.
+        ``get_scale()`` reads a device scalar, but every call site has already
+        synced on the gradient norm this step, so it adds no new sync.
+        """
+        if not self.scaler.is_enabled():
+            return
+        scale = self.scaler.get_scale()
+        if GRAD_SCALER_MAX_SCALE and scale > GRAD_SCALER_MAX_SCALE:
+            self.scaler.update(float(GRAD_SCALER_MAX_SCALE))
+            scale = float(GRAD_SCALER_MAX_SCALE)
+        if self.log_norms:
+            logger.logkv_mean("loss_scale_log2", math.log2(scale))
+
     def _optimize_amp(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
         if self.scaler.is_enabled():
             self.scaler.unscale_(opt)
@@ -397,6 +431,9 @@ class MixedPrecisionTrainer:
             if self.scaler.is_enabled():
                 self.scaler.step(opt)
                 self.scaler.update()
+                if self.log_norms:
+                    logger.logkv_mean("amp_overflow", 1.0)
+                self._cap_loss_scale()
             self.zero_grad()
             return False
 
@@ -404,9 +441,12 @@ class MixedPrecisionTrainer:
         self._abort_on_large_finite_grad_norm(clipped_norm, mode_label="AMP")
         if self.log_norms:
             logger.logkv_mean("grad_norm", clipped_norm)
+            if self.scaler.is_enabled():
+                logger.logkv_mean("amp_overflow", 0.0)
 
         self.scaler.step(opt)
         self.scaler.update()
+        self._cap_loss_scale()
         scheduler.step()
         logger.logkv_mean("lr", scheduler.get_last_lr()[0])
         return True
