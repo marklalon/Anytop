@@ -96,7 +96,7 @@ def _expected_resampled_velocity(raw: np.ndarray, target_frames: int, *, periodi
 
     The path has a node at every frame boundary, ``L + 1`` of them (the last
     one through the terminal row). An open clip samples it end to end at step
-    ``(L-1)/(T-1)`` and repeats its last row; a cycle samples ``T + 1`` nodes
+    ``(L-1)/(T-1)`` and repeats its last row; a periodic clip samples ``T + 1`` nodes
     at step ``L/T``, so its terminal row is the wrap delta.
     """
     source_frames, joints = int(raw.shape[0]), int(raw.shape[1])
@@ -209,7 +209,7 @@ def _synthetic_cycle(period: int, joints: int = 3, closing_key: bool = False) ->
 
 def test_drop_loop_closing_frame_drops_only_a_repeated_last_frame() -> None:
     clean = _synthetic_cycle(24)
-    assert _drop_loop_closing_frame(clean) is clean, "a cycle without a closing key must pass through untouched"
+    assert _drop_loop_closing_frame(clean) is clean, "a loop without a closing key must pass through untouched"
 
     with_key = _synthetic_cycle(24, closing_key=True)
     assert_close("fixture closing key repeats frame 0", with_key[-1, :, :9], with_key[0, :, :9])
@@ -366,7 +366,7 @@ def test_loop_resample_keeps_the_wrap_step_an_ordinary_step() -> None:
         assert abs(seam_ratio(open_window) - 1.0) > 0.25, (target, seam_ratio(open_window))
 
         # Every row, the terminal one included, is the step to the next frame
-        # of the cycle at step L/T -- the identity loop_wrap_loss's terminal
+        # of the clip at step L/T -- the identity loop_wrap_loss's terminal
         # term and the velocity loss read with that step scale.
         step_scale = 45.0 / float(target)
         following = np.roll(periodic[:, :, 0:3], -1, axis=0)
@@ -764,7 +764,7 @@ def test_time_scale_rescales_velocity_to_the_new_frame_step() -> None:
         for target in (9, 17):
             scaled, speed = time_scale_motion_features(clip, target, periodic=loop)
             assert scaled.shape[0] == target
-            # A cycle maps its 13 steps (the wrap included) onto the target's
+            # A loop clip maps its 13 steps (the wrap included) onto the target's
             # `target`; an open clip its 12 onto `target - 1`.
             assert np.isclose(speed, 13.0 / float(target) if loop else 12.0 / float(target - 1))
             # resample_motion_features' velocity is (path delta) / step_scale,

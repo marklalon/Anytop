@@ -254,12 +254,12 @@ def time_scale_motion_features(motion, target_num_frames, *, periodic=False):
     channel still claimed 1x, and the velocity-consistency / loop-wrap losses
     would be fed a self-contradicting target.
 
-    ``periodic`` is the loop flag: a closed cycle is time-scaled as a cycle
+    ``periodic`` is the loop flag: a loop clip is time-scaled periodically
     (see ``resample_motion_features``), so it stays uniformly periodic.
 
     Returns ``(motion, speed)`` where ``speed`` is the ratio that actually
     took effect (> 1 = faster), ``resample_step_scale``: ``(L - 1) /
-    (target_num_frames - 1)``, or ``L / target_num_frames`` for a cycle. It
+    (target_num_frames - 1)``, or ``L / target_num_frames`` for a periodic clip. It
     differs slightly from the requested ratio because frame counts are
     integers.
     """
@@ -289,10 +289,10 @@ def _circular_roll_motion(motion, offset):
     return motion[indices]
 
 
-# A loop with its closing key (last frame == frame 0) is one cycle plus one
-# frame: rolled, tiled or resampled, the (last, first) pair stalls one frame at
-# every seam.  Many loops ship that way, so the frame is dropped at load time,
-# leaving a clean period.
+# A loop with its closing key (last frame == frame 0) is the loop plus one
+# redundant frame: rolled, tiled or resampled, the (last, first) pair stalls one
+# frame at every seam.  Many loops ship that way, so the frame is dropped at load
+# time, leaving a clean period.
 #
 # The test is scale-free: each pose stack (RIC positions, 6-D rotations) and the
 # wrap velocity row are judged against the clip's own median frame step, and
@@ -1109,9 +1109,9 @@ class MotionDataset(data.Dataset):
         loop_condition_active = bool(is_loop) and not loop_uncond
 
         # ── Closing-key drop (applies to ALL is_loop motions) ──
-        # A loop authored with its last frame repeating frame 0 is one cycle
-        # plus one frame.  It goes first, on the clip as stored: every stage
-        # below treats the clip as a closed cycle (the speed resample's wrap
+        # A loop authored with its last frame repeating frame 0 is the loop
+        # plus one redundant frame.  It goes first, on the clip as stored:
+        # every stage below treats the clip as periodic (the speed resample's wrap
         # velocity, the circular roll, the tile seams, the window resample),
         # and each would turn that frame into a one-frame stall at a random
         # phase of the window.  The roll also makes it undetectable afterwards
@@ -1143,7 +1143,7 @@ class MotionDataset(data.Dataset):
             m_length = int(motion.shape[0])
         # ── Loop-aware data augmentation (applies to ALL is_loop motions) ──
         # Circular roll shifts the temporal phase so the model sees every loop
-        # from a random starting frame.  Random tiling repeats the cycle up to
+        # from a random starting frame.  Random tiling repeats the clip up to
         # 2× target length so the subsequent resample has enough source frames
         # to produce a clean stretched/clipped result without heavy speed
         # distortion.  Both are pure temporal operations on feature arrays —
@@ -1159,7 +1159,7 @@ class MotionDataset(data.Dataset):
 
         if m_length > max_source_length:
             # A clip longer than the n*MAX_SOURCE_FRAMES_MULT budget is cropped,
-            # which breaks the cycle, so a loop is downgraded to non-loop here
+            # which breaks the closed loop, so a loop is downgraded to non-loop here
             # and told so.
             # The crop LENGTH is fixed at the full budget -- every over-long
             # clip contributes n*MAX_SOURCE_FRAMES_MULT source frames, resampled
@@ -1175,7 +1175,7 @@ class MotionDataset(data.Dataset):
 
         source_len_for_resample_speed = int(m_length)
         resample_speed_cond = float(source_len_for_resample_speed) / float(target_num_frames)
-        # A loop-conditioned window is resampled as a cycle, so its period is
+        # A loop-conditioned window is resampled periodically, so its period is
         # exactly the window (what circular_phase_embedding encodes) and its
         # step is L/T = resample_speed_cond; everything else, including a loop
         # the model is told is not one, is open, at step (L-1)/(T-1). The loss

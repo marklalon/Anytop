@@ -95,9 +95,19 @@ loop 样本的训练语义，放在同一次消融里会和 action 调制的效�
     loop 片段仍按端点重采样；
   - loop 片段的速度增广 `time_scale_motion_features(periodic=True)`。否则平铺后窗口内部仍有不均匀的接缝；
   - `_physical_velocity_step_scale` 按 `y['is_loop']` 取 `L/T`，非 loop 仍是 `(L-1)/(T-1)`。
-- 生成端同步：纯 loop 生成（没有 reference）导出到 M ≠ T 帧时，也按环形重采样，否则导出结果的接缝步长又会不均匀。
-  带 reference 时，窗口里放的是 reference 按端点重采样的结果，所以导出仍按端点。`tools/sample_augmented_bvh.py --real-time`
-  也按 `loop_applied` 选重采样方式。
+- 生成端同步。`--loop` 是“这个窗口是一个环”的声明，和 reference 本身是不是 loop 无关。窗口 ↔ 输出之间只有
+  一个映射（`_resample_window_to_output`，`periodic=--loop`），三处都走它：
+  - 纯 loop 生成（没有 reference）导出到 M ≠ T 帧时按环形重采样，否则导出结果的接缝步长又会不均匀；
+  - 带 reference 时同样按环形重采样，并且 reference 本身也按环形放进窗口（`_prepare_img2img_reference_bundle`）：
+    先丢 closing key（如果它带），再按 `t·L/T` 重采样。这样窗口第 t 帧在两个方向上都对应 reference 源时刻
+    `t·L/T`，往返是恒等映射，`--inpaint_frames` 的范围落在它指名的 reference 姿态上，模型读到的
+    `resample_speed_cond = L/T` 也正是 reference 实际的步长。反过来（reference 端点重采样 + 导出端点重采样）
+    虽然自洽，但接缝步长是 1 个源帧、窗口内是 `(L-1)/(T-1)`，对 clamp 来说这个不均匀接缝会直接进入输出；
+  - `_reground_inpaint_joint_y` 用的 reference 必须和导出用同一个映射（它逐帧配对两者），否则竖直 reseat 的
+    均值取在错位的帧上。`_map_frame_ranges_to_internal` 同理，`--loop` 时用 `T/M` 而不是 `(T-1)/(M-1)`。
+  这样导出结果**结构上**一定是 loop：接缝是一步普通步长，不再有停一帧。内容闭合得多好仍取决于模型，而
+  `--skip_timesteps` 越高输出越贴着 reference——`--loop` 不强制内容闭合，它只保证不再由导出环节把环破坏掉。
+- `tools/sample_augmented_bvh.py --real-time` 没有 reference，按 `loop_applied` 选重采样方式。
 - 加载器实测。样本是 biped / multiped / quadruped 三个子集的全部 loop clip，每个抽 6 次；表中是闭合比中位数，三个数依次对应这三个子集：
 
   | | speed < 1.25 | speed ≥ 1.25 |

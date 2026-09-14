@@ -23,6 +23,7 @@ from tqdm import tqdm
 
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
+    _drop_loop_closing_frame,
     ensure_joint_name_embeddings,
     resample_motion_features,
 )
@@ -571,6 +572,7 @@ def _prepare_img2img_reference_bundle(
     requested_visible_frame_count=None,
     min_length=20,
     preloaded_features=None,
+    loop=False,
 ):
     if preloaded_features is not None:
         ref_raw = np.asarray(preloaded_features, dtype=np.float32)
@@ -591,9 +593,27 @@ def _prepare_img2img_reference_bundle(
         visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
         source_frames = min(max_source_frames, max(int(min_length), visible_frames))
         ref_raw = ref_raw[:source_frames]
+    if loop:
+        # --loop asks for a closed window, so the reference fills it periodically,
+        # exactly as the loader prepares a loop clip (dataset._prepare_sample):
+        # drop a closing key if the clip ships one, then resample periodically
+        # at step L/T.
+        #
+        # The generated window is exported with the SAME mapping (periodic when
+        # --loop), so window frame t is reference source time t*L/T in both
+        # directions: the round trip is the identity, a --inpaint_frames range
+        # lands on the reference poses it names, and the step the model is told
+        # about (resample_speed_cond = L/T) is the step the reference actually
+        # moves at. Endpoint (open) resampling would instead pin the
+        # reference's ends and leave the window's wrap step at 1 source frame
+        # against (L-1)/(T-1) inside -- the uneven seam this convention exists
+        # to remove, and under a clamp it lands in the output.
+        ref_raw = _drop_loop_closing_frame(ref_raw)
     reference_source_frame_count = int(ref_raw.shape[0])
     if ref_raw.shape[0] != output_frame_count:
-        ref_raw = resample_motion_features(ref_raw, output_frame_count)
+        ref_raw = resample_motion_features(
+            ref_raw, output_frame_count, periodic=bool(loop),
+        )
 
     mark_canonical_cond_entry(target_cond)
     ref_canonical = np.nan_to_num(
@@ -626,6 +646,31 @@ def _prepare_img2img_reference_bundle(
         'reference_source_frame_count': reference_source_frame_count,
         'loaded_reference_joint_count': loaded_reference_joint_count,
     }
+
+
+def _resample_window_to_output(motion_np, target_output_frames, output_frame_count, loop):
+    """Rescale a sampled window (``output_frame_count`` frames) to the requested
+    output length.
+
+    ``--loop`` makes the window periodic -- the model's ``is_loop`` condition,
+    its circular phase table and the loader's periodic window resample all say
+    so -- so it is rescaled the same way: output frame ``s`` is window time
+    ``s*T/M`` and the wrap is interpolated, which leaves the seam an ordinary
+    step. Endpoint (open) resampling instead pins the window's ends and leaves
+    the exported clip's wrap step at 1 source frame against ``(T-1)/(M-1)``
+    inside: a stall at every seam, i.e. a ``--loop`` run that is not a loop.
+
+    The reference bundle (``_prepare_img2img_reference_bundle``) fills the
+    window with the same mapping in the other direction, so the round trip is
+    the identity and the frames a clamp or ``--inpaint_frames`` names are the
+    reference poses they name.
+    """
+    target_output_frames = int(target_output_frames)
+    if target_output_frames == int(output_frame_count):
+        return motion_np
+    return resample_motion_features(
+        motion_np, target_output_frames, periodic=bool(loop),
+    )
 
 
 def _bvh_preview_options(args):
@@ -838,6 +883,9 @@ def _generate_all_species(
     species_batches = [all_species[i:i + batch_size] for i in range(0, len(all_species), batch_size)]
 
     output_frame_count = int(n_frames)
+    # Same meaning as in main(): the window is a closed loop, so every temporal
+    # resample of it is periodic.
+    loop_condition = bool(getattr(args, 'loop', False))
     total_species = len(all_species)
     print(f'\n### Multi-species generation: {total_species} species, '
           f'{len(species_batches)} batch(es) of batch_size={batch_size}')
@@ -867,7 +915,7 @@ def _generate_all_species(
                 output_frame_count,
                 max_joints=batch_max_joints,
                 feature_len=opt.feature_len,
-                loop=getattr(args, 'loop', False),
+                loop=loop_condition,
                 action_condition=action_condition,
             )
             model_kwargs['y']['resample_speed_cond'] = torch.full(
@@ -899,14 +947,9 @@ def _generate_all_species(
                 motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), sp_entry)[0]
                 motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
 
-                if target_output_frames != output_frame_count:
-                    # A loop window is a cycle (trained on periodically
-                    # resampled windows): stretch it as one, or the seam
-                    # step no longer matches the steps beside it.
-                    motion_np = resample_motion_features(
-                        motion_np, target_output_frames,
-                        periodic=bool(getattr(args, 'loop', False)),
-                    )
+                motion_np = _resample_window_to_output(
+                    motion_np, target_output_frames, output_frame_count, loop_condition,
+                )
 
                 translation_root_index = _get_batch_translation_root_index(
                     model_kwargs, sample_idx,
@@ -1052,6 +1095,11 @@ def main(args=None, cond_dict=None, runtime=None):
     inpaint_joints_arg = str(getattr(args, 'inpaint_joints', '') or '').strip()
     inpaint_frames_arg = str(getattr(args, 'inpaint_frames', '') or '').strip()
     inpaint_include_subtree = bool(getattr(args, 'inpaint_include_subtree', True))
+    # --loop is the whole loop condition: the model is asked for a closed window
+    # (y['is_loop'], the circular phase table, the loader's periodic window
+    # resample). Every temporal resample of a reference or of the sampled window
+    # must therefore be periodic, or the round trip stops closing.
+    loop_condition = bool(getattr(args, 'loop', False))
 
     # ── Resolve --object_type ───────────────────────────────────────────────
     # --object_type: look up directly in cond (user-provided first, then default).
@@ -1336,6 +1384,7 @@ def main(args=None, cond_dict=None, runtime=None):
             requested_visible_frame_count=target_output_frames,
             preloaded_features=ref_features_full,
             min_length=min_length,
+            loop=loop_condition,
         )
         ref_motion = reference_bundle['reference_motion']
         output_frame_count = reference_bundle['output_frame_count']
@@ -1450,7 +1499,7 @@ def main(args=None, cond_dict=None, runtime=None):
         output_frame_count,
         max_joints=max_joints,
         feature_len=opt.feature_len,
-        loop=getattr(args, 'loop', False),
+        loop=loop_condition,
         action_condition=_action_condition,
         species_emb_override=_species_emb_override,
     )
@@ -1467,6 +1516,7 @@ def main(args=None, cond_dict=None, runtime=None):
             source_frames=target_output_frames,
             target_frames=output_frame_count,
             warn_remap=warn_remap,
+            periodic=loop_condition,
         )
         return build_inpaint_mask(
             cond_dict[object_type],
@@ -1566,15 +1616,9 @@ def main(args=None, cond_dict=None, runtime=None):
         motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), cond_dict[object_type])[0]
         motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
 
-        if target_output_frames != output_frame_count:
-            # Invert the mapping that filled the window: a pure loop generation
-            # is a cycle (trained on periodically resampled windows); with a
-            # reference, the window holds the reference's open resample.
-            motion_np = resample_motion_features(
-                motion_np,
-                target_output_frames,
-                periodic=bool(getattr(args, 'loop', False)) and ref_motion is None,
-            )
+        motion_np = _resample_window_to_output(
+            motion_np, target_output_frames, output_frame_count, loop_condition,
+        )
 
         # The per-species translation root (the joint carrying the locomotion
         # XZ velocity; the hierarchy root for every collapsed cond skeleton).
@@ -1592,8 +1636,11 @@ def main(args=None, cond_dict=None, runtime=None):
                 cond_dict[object_type],
             )[0]
             ref_motion_np = ref_phys.cpu().permute(2, 0, 1).numpy()
-            if target_output_frames != output_frame_count:
-                ref_motion_np = resample_motion_features(ref_motion_np, target_output_frames)
+            # Same mapping as the exported motion: _reground_inpaint_joint_y
+            # pairs these two frame by frame.
+            ref_motion_np = _resample_window_to_output(
+                ref_motion_np, target_output_frames, output_frame_count, loop_condition,
+            )
             reseat_delta = _reground_inpaint_joint_y(
                 motion_np, ref_motion_np, reseat_free_joints, parents,
             )
@@ -1651,7 +1698,15 @@ def _parse_frame_ranges(spec, n_frames):
     return frames
 
 
-def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap=False):
+def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap=False, periodic=False):
+    """Map a frame range given in OUTPUT frames onto the sampler's window.
+
+    ``periodic`` picks the mapping the rest of the pipeline uses for a loop
+    window (``--loop``): output frame ``s`` is window time ``s*T/M``, the same
+    map ``_prepare_img2img_reference_bundle`` and ``_resample_window_to_output``
+    apply in the two directions, so a range names the reference poses it names.
+    Otherwise the window is an open clip and its frames span ``M-1`` steps.
+    """
     if not spec or int(source_frames) == int(target_frames):
         return spec
     source_frames = int(source_frames)
@@ -1660,7 +1715,10 @@ def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap
         raise ValueError(
             f"Cannot map frame ranges with source_frames={source_frames}, target_frames={target_frames}"
         )
-    scale = float(target_frames - 1) / float(source_frames - 1) if source_frames > 1 else 0.0
+    if periodic:
+        scale = float(target_frames) / float(source_frames)
+    else:
+        scale = float(target_frames - 1) / float(source_frames - 1) if source_frames > 1 else 0.0
     mapped_frames = set()
     for chunk in spec.split(','):
         chunk = chunk.strip()
@@ -1695,7 +1753,7 @@ def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap
     # causes ~1-2 frame drift. To inpaint exact frames, set --num_frames to match the model's
     # num_frames so visible == internal and no remapping happens.
     if warn_remap:
-        inv_scale = float(source_frames - 1) / float(target_frames - 1) if target_frames > 1 else 0.0
+        inv_scale = 1.0 / scale if scale > 0.0 else 0.0
         effective_runs = [
             (
                 int(np.floor(float(start) * inv_scale)),

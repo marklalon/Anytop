@@ -13,6 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
+    canonical_to_physical_hml,
+)
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT  # noqa: E402
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from sample.generate import (  # noqa: E402
@@ -24,6 +27,7 @@ from sample.generate import (  # noqa: E402
     _prepare_img2img_reference_bundle,
     _reanchor_inpaint_root_y_via_velocity,
     _reground_inpaint_joint_y,
+    _resample_window_to_output,
     _resolve_inpaint_joint_indices,
     _sample_batch,
     _validate_reference_motion_path,
@@ -107,6 +111,16 @@ def test_map_frame_ranges_to_internal_preserves_contiguous_spans() -> None:
     assert _map_frame_ranges_to_internal("0-119", 120, 60) == "0-59"
 
 
+def test_map_frame_ranges_to_internal_uses_the_cycle_map_for_loops() -> None:
+    # A loop window is a cycle: output frame s sits at window time s*T/M, the
+    # same map the reference bundle and the export apply in the two directions,
+    # so the range names the reference poses it names. The open map is
+    # (T-1)/(M-1) instead, which drifts by a frame at the end of the range.
+    assert _map_frame_ranges_to_internal("0-44", 45, 60, periodic=True) == "0-59"
+    assert _map_frame_ranges_to_internal("44-44", 45, 60, periodic=True) == "58-59"
+    assert _map_frame_ranges_to_internal("44-44", 45, 60) == "59"
+
+
 def test_finalize_output_lengths_returns_frames_and_resample_speed() -> None:
     requested, target, resample_speed = _finalize_output_lengths(
         requested_frames=90, min_length=20, internal_num_frames=60
@@ -187,6 +201,124 @@ def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
     assert bundle["output_frame_count"] == 60
     assert bundle["reference_source_frame_count"] == 40
     assert tuple(bundle["reference_motion"].shape) == (2, n_joints, feat, 60)
+
+
+def _synthetic_cycle(period: int, joints: int = 3, *, closing_key: bool = False) -> np.ndarray:
+    """(T, J, 12) HML clip running one sine cycle over ``period`` frames, with
+    velocity channels that are the true frame deltas and a wrap-delta terminal
+    row -- what preprocessing stores for a loop. ``closing_key`` appends frame 0
+    again as the last frame."""
+    frame_count = period + int(closing_key)
+    phase = 2.0 * np.pi * (np.arange(frame_count) % period) / period
+    clip = np.zeros((frame_count, joints, 12), dtype=np.float32)
+    for joint in range(joints):
+        clip[:, joint, 0] = 0.30 * np.sin(phase + joint)
+        clip[:, joint, 1] = 1.0 + 0.10 * np.cos(phase + joint)
+        clip[:, joint, 3] = np.cos(phase - joint)
+        clip[:, joint, 4] = np.sin(phase - joint)
+        clip[:, joint, 8] = 1.0
+    positions = clip[:, :, 0:3]
+    clip[:-1, :, 9:12] = positions[1:] - positions[:-1]
+    clip[-1, :, 9:12] = positions[0] - positions[-1]
+    return clip
+
+
+def _seam_ratio(window: np.ndarray) -> float:
+    """|x[0] - x[-1]| over the mean of the two steps beside it: 1.0 means the
+    seam is an ordinary step, i.e. the window is a uniform cycle."""
+    pose = window[:, :, :9].astype(np.float64)
+    step = lambda a, b: float(np.linalg.norm(pose[a] - pose[b]))
+    return step(0, -1) / (0.5 * (step(-1, -2) + step(1, 0)))
+
+
+def _reference_window(cond, clip, *, loop, output_frame_count=60):
+    """The reference as it is placed into the model window, in physical space."""
+    bundle = _prepare_img2img_reference_bundle(
+        reference_motion_path="/nonexistent/should_not_be_loaded.npy",
+        target_type="Horse",
+        target_cond=cond,
+        max_joints=clip.shape[1],
+        target_feature_len=clip.shape[2],
+        batch_size=1,
+        requested_output_frame_count=output_frame_count,
+        preloaded_features=clip,
+        loop=loop,
+    )
+    window = bundle["reference_motion"][0].permute(2, 0, 1).numpy()  # [J, F, T] -> [T, J, F]
+    return canonical_to_physical_hml(window, cond)
+
+
+def test_reference_bundle_places_a_loop_reference_as_a_cycle() -> None:
+    # --loop declares the window a cycle, so the reference fills it as one: the
+    # seam is then an ordinary step. Endpoint resampling pins the reference's
+    # ends instead, leaving a stall at the seam -- and under an inpaint clamp
+    # that stall is in the output.
+    n_joints, feat = 3, 12
+    cond = _make_full_cond_entry(n_joints, feature_len=feat)
+    clip = _synthetic_cycle(45)
+
+    loop_window = _reference_window(cond, clip, loop=True)
+    open_window = _reference_window(cond, clip, loop=False)
+
+    assert abs(_seam_ratio(loop_window) - 1.0) < 0.05, _seam_ratio(loop_window)
+    assert abs(_seam_ratio(open_window) - 1.0) > 0.25, _seam_ratio(open_window)
+
+
+def test_reference_bundle_drops_a_loop_reference_closing_key() -> None:
+    # A stored loop whose last frame repeats frame 0 is one cycle plus a frame.
+    # The loader drops it for every loop clip, so the reference must lose it
+    # too under --loop, or the clamp forces that stall into the output.
+    n_joints, feat = 3, 12
+    cond = _make_full_cond_entry(n_joints, feature_len=feat)
+    clean = _synthetic_cycle(45)
+    with_key = _synthetic_cycle(45, closing_key=True)
+
+    np.testing.assert_allclose(
+        _reference_window(cond, with_key, loop=True),
+        _reference_window(cond, clean, loop=True),
+        atol=1e-6,
+    )
+    # Without --loop the frame is the user's data and stays.
+    assert not np.allclose(
+        _reference_window(cond, with_key, loop=False),
+        _reference_window(cond, clean, loop=False),
+        atol=1e-6,
+    )
+
+
+def test_window_to_output_keeps_a_loop_a_cycle() -> None:
+    # The sampled window is a cycle under --loop, so rescaling it to the
+    # requested output length must be periodic. Endpoint resampling left the
+    # exported clip's wrap step at 1 source frame against (T-1)/(M-1) inside,
+    # which is what "--loop + --reference_motion produced a non-loop" was.
+    window = _synthetic_cycle(60)
+
+    for target in (30, 90, 97):
+        exported = _resample_window_to_output(window, target, 60, True)
+        assert exported.shape[0] == target
+        assert abs(_seam_ratio(exported) - 1.0) < 0.05, (target, _seam_ratio(exported))
+
+        open_export = _resample_window_to_output(window, target, 60, False)
+        assert abs(_seam_ratio(open_export) - 1.0) > 0.25, (target, _seam_ratio(open_export))
+
+    # A window already at the requested length is a no-op either way.
+    assert _resample_window_to_output(window, 60, 60, True) is window
+    assert _resample_window_to_output(window, 60, 60, False) is window
+
+
+def test_loop_reference_and_output_resamples_are_inverse() -> None:
+    # Both directions use the same cycle mapping, so the reference pose the
+    # clamp (and _reground_inpaint_joint_y) sees at output frame s is the pose
+    # --inpaint_frames names at frame s. The node sets align when the reference
+    # length divides the window, which makes the round trip exact.
+    n_joints, feat = 3, 12
+    cond = _make_full_cond_entry(n_joints, feature_len=feat)
+    clip = _synthetic_cycle(30)
+
+    window = _reference_window(cond, clip, loop=True)
+    exported = _resample_window_to_output(window, 30, 60, True)
+
+    np.testing.assert_allclose(exported, clip, atol=1e-6)
 
 
 def test_build_inpaint_mask_uses_all_real_joints_for_selected_frames() -> None:

@@ -353,7 +353,7 @@ class NativeLoopTests(unittest.TestCase):
         self.assertAlmostEqual(float(terms['loop_wrap_rot'].item()), 1.5 * step, places=4)
 
     def test_physical_velocity_step_scale_is_periodic_for_loops(self):
-        # resample_speed_cond = L / T. A loop window is resampled as a cycle
+        # resample_speed_cond = L / T. A loop window is resampled periodically
         # (step L/T), anything else end to end (step (L-1)/(T-1)).
         diffusion = self._make_diffusion()
         n_frames = 60
@@ -463,8 +463,8 @@ class NativeLoopTests(unittest.TestCase):
         y = {
             'is_loop': torch.tensor([True]),
             'translation_root_index': [0],
-            # 7 output frames drawn from a 4-frame cycle: step_scale = 4 / 7,
-            # so the cycle's drift is its 4 source frames of unit velocity.
+            # 7 output frames drawn from a 4-frame clip: step_scale = 4 / 7,
+            # so the clip's drift is its 4 source frames of unit velocity.
             'resample_speed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
         }
 

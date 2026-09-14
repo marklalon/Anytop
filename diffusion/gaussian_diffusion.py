@@ -439,7 +439,7 @@ class GaussianDiffusion:
         """Source frames per window frame, as dataset.resample_step_scale.
 
         An open window spans its ``L = resample_speed * T`` source frames end
-        to end, ``(L - 1) / (T - 1)``; a loop window is resampled as a cycle,
+        to end, ``(L - 1) / (T - 1)``; a loop window is resampled periodically,
         ``L / T``, which is resample_speed itself.
         """
         if n_frames <= 1:
@@ -648,7 +648,7 @@ class GaussianDiffusion:
         """Seam continuity of loop samples, on denormalized outputs.
 
         A loop window holds no closing key (dataset._drop_loop_closing_frame)
-        and is resampled as a cycle, so its last frame is one ordinary step
+        and is resampled periodically, so its last frame is one ordinary step
         BEFORE frame 0 -- the seam is a frame step like any other, not a
         repeated pose. Both terms are written for that convention:
 

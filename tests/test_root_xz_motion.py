@@ -688,7 +688,7 @@ def test_a_riding_ancestor_does_not_accumulate_the_removed_travel():
 
 def test_travelling_loop_tiles_without_a_jump():
     """Position is the cumulative sum of the velocity rows, and the terminal row
-    holds the cycle's wrap delta (its last step), so joining two copies is just
+    holds the loop's wrap delta (its last step), so joining two copies is just
     concatenating velocities -- the seam step must match the stride.
     """
     n_frames = 24
@@ -1067,7 +1067,7 @@ def test_the_clamp_is_opt_in_so_re_extraction_cannot_compress_twice():
 # ── locomotion's own extent bound ──────────────────────────────────────────
 
 def test_the_locomotion_bound_scales_by_a_single_factor():
-    """One factor for the whole clip, so the cycle keeps its shape.
+    """One factor for the whole clip, so the loop keeps its shape.
 
     A per-frame radial map would compress the far half of every stride harder
     than the near half, changing what the surge looks like rather than its size.

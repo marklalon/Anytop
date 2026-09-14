@@ -493,7 +493,13 @@ def add_sampling_options(parser):
                             "bf16 rounding adds frame-to-frame noise that inflates jerk/snap scores "
                             "(docs/bf16_precision_issues.md).")
     group.add_argument("--loop", action='store_true',
-                       help="Generate with loop conditioning and loop-aware temporal masks when supported by the checkpoint.")
+                       help="Generate a closed window (loop conditioning + loop-aware temporal masks) when supported "
+                            "by the checkpoint. The whole pipeline then treats the window as periodic: its last "
+                            "frame is one step before frame 0 and the frame after it wraps to the first (the window "
+                            "is one period of length T, whatever number of gait cycles it holds). A "
+                            "--reference_motion is placed into it the same way (a closing key is dropped, the "
+                            "reference is resampled periodically at step L/T) and the sampled window is rescaled to "
+                            "--num_frames the same way, so the output is a loop whatever the reference is.")
     group.add_argument("--fullbody_ik", action='store_true',
                        help="Decode the BVH preview with the same full-body IK as restore_glb_from_npy --fullbody-ik: "
                             "rotations are re-solved on the rigid cond skeleton so the position channels are honoured "
