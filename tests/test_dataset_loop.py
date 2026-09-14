@@ -59,11 +59,20 @@ def _find_motion(pattern: str) -> str:
 
 LOOP_MOTION = _find_motion("Ostrich_Run.npy")
 LOOP_SUBSET = "biped"
-# A loop authored WITH its closing key: frame 19 repeats frame 0 (wrap gap
-# 5e-5 of a frame step, wrap velocity row ~0), so the loader drops it and the
-# cycle it augments is 19 frames long.  Ostrich_Run above ends 0.6 of a step
+# A loop authored WITH its closing key: frame 45 repeats frame 0 (wrap gap
+# 1.3e-5 of a frame step, wrap velocity row ~0), so the loader drops it and the
+# cycle it augments is 45 frames long.  Ostrich_Run above ends 0.6 of a step
 # short of frame 0 and keeps all its frames.
-CLOSING_KEY_LOOP_MOTION = _find_motion("Roach_Left.npy")
+#
+# The two halves of that premise come from different places, which is why this
+# fixture drifts.  The repeated frame is in the motion, but the wrap terminal
+# velocity row is written by preprocessing off the sidecar's ``is_loop``
+# annotation (features.py: the annotation is the caller's verdict, the detector
+# only proposes).  A clip re-annotated as a non-loop is re-stored with a
+# repeat-the-last-step row instead, and ``_drop_loop_closing_frame`` then
+# correctly refuses it -- so the assertion below is also the tripwire for that
+# drift.  Re-point the fixture; do not relax the drop.
+CLOSING_KEY_LOOP_MOTION = _find_motion("Spider_Attack2.npy")
 CLOSING_KEY_LOOP_SUBSET = "multiped"
 NUM_FRAMES = 60
 # The n*MAX_SOURCE_FRAMES_MULT source-frame budget the dataset crops over-long
@@ -259,7 +268,11 @@ def test_loop_with_closing_key_is_augmented_as_its_clean_period() -> None:
     cond = motion_dataset.cond_dict[data["object_type"]]
     raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
     period = _drop_loop_closing_frame(raw)
-    assert period.shape[0] == raw.shape[0] - 1, "fixture clip no longer ships a closing key"
+    assert period.shape[0] == raw.shape[0] - 1, (
+        f"fixture clip {CLOSING_KEY_LOOP_MOTION} no longer ships a closing key: "
+        "its is_loop annotation or its motion changed -- re-point the fixture "
+        "to another annotated loop that still repeats frame 0"
+    )
 
     # Single cycle, phase 0: the clean period is what gets resampled into the
     # window, and resample_speed_cond counts the frames the model actually sees.
