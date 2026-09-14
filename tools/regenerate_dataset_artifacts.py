@@ -2,7 +2,7 @@
 """
 Quick script to regenerate dataset sidecar artifacts without re-preprocessing motions.
 
-This is a lightweight alternative to: python preprocess_and_validate.py --re-encode-joint-names-only
+This is a lightweight alternative to: python preprocess_and_validate.py --regenerate-side-artifacts
 
 Usage:
     python tools/regenerate_dataset_artifacts.py [--dataset-dir PATH] [--t5-model NAME]
