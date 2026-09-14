@@ -1,7 +1,6 @@
 import functools
 import os
 import re
-import time
 import json
 import copy as pycopy
 import numpy as np
@@ -14,7 +13,6 @@ from diffusion import logger
 from utils import dist_util
 from diffusion.fp16_util import MixedPrecisionTrainer, format_nonfinite_stats, format_optimizer_slot_max, inspect_optimizer_slot_max, inspect_optimizer_state, sanitize_optimizer_state
 from diffusion.nn import update_ema
-from utils.device_transfer import host_to_device
 from diffusion.resample import LossAwareSampler
 from tqdm import tqdm
 from diffusion.resample import create_named_schedule_sampler
@@ -38,6 +36,9 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
 )
 from eval.motion_quality import DistributionMotionQualityScorer
+from eval.motion_quality.reference_bank import reference_prior_words
+from train.sample_loss_limit import SampleLossLimiter
+from utils.device_transfer import host_to_device
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
@@ -83,21 +84,6 @@ def _per_sample_decode_cond(y, index, n_joints):
             decode_cond[key] = value[index]
     return decode_cond
 
-
-def _eval_action_words(raw_action_label):
-    """Controlled-vocabulary words a validation clip's label hits.
-
-    These select the scorer's reference prior, so they are the *words* and not the
-    ``action_group``: grouping would widen the prior from "the attack references"
-    to "everything stationary" and make the score meaningless. Detail words count
-    -- the reference bank matches on the same rule, so a 'sneak'-only label still
-    finds its own references.
-    """
-    if not raw_action_label:
-        return ()
-    from data_loaders.truebones.truebones_utils.motion_labels import vocab_words_in
-
-    return tuple(vocab_words_in(str(raw_action_label)))
 
 def _tile_eval_cond(cond, repeat):
     """Repeat each sample in a cond dict ``repeat`` times for batched DDIM sampling.
@@ -206,6 +192,12 @@ class TrainLoop:
         if self.amp_enabled and self.device.type != 'cuda':
             raise ValueError('AMP requires CUDA. Set --amp_dtype fp32 when training on CPU.')
         self.non_blocking = self.device.type == 'cuda'
+        # Built before the optimizer restore below, which reloads its reference.
+        sample_loss_limit = float(getattr(self.args, 'sample_loss_limit', 0.0))
+        self.sample_loss_limiter = (
+            SampleLossLimiter(diffusion.num_timesteps, sample_loss_limit, self.device)
+            if sample_loss_limit > 0.0 else None
+        )
         self.detect_anomaly = bool(getattr(self.args, 'detect_anomaly', False))
         self.load_optimizer_state = bool(getattr(self.args, 'load_optimizer_state', True))
         # Spike-capture probe: when a step's pre-clip grad_norm exceeds a
@@ -494,6 +486,13 @@ class TrainLoop:
         
         self._restore_rng_states(checkpoint_data)
 
+        limiter_state = checkpoint_data.get('sample_loss_limiter') if isinstance(checkpoint_data, dict) else None
+        if self.sample_loss_limiter is not None and limiter_state is not None:
+            if self.sample_loss_limiter.load_state_dict(limiter_state):
+                logger.log("sample loss limiter reference restored")
+            else:
+                logger.log("sample loss limiter reference restore skipped: timestep count changed")
+
     def run_loop(self):
         tqdm.write(f'train steps: {self.num_steps}')
         while self.total_step() < self.num_steps:
@@ -522,8 +521,6 @@ class TrainLoop:
                     for k, v in [*interval_loss_metrics.items(), *logger_metrics]:
                         if k == 'loss':
                             tqdm.write('step[{}]: loss[{:0.5f}]'.format(completed_step, v))
-                        elif k.startswith('l_simple_'):
-                            tqdm.write('step[{}]: {}[{:0.5f}]'.format(completed_step, k, v))
                         if k in ['step', 'samples']:
                             continue
                         self.train_platform.report_scalar(name=k, value=v, iteration=completed_step, group_name='Loss')
@@ -670,51 +667,6 @@ class TrainLoop:
                 f'step {completed_step} ({format_nonfinite_stats(state_stats)})'
             )
 
-    def _accumulate_per_family_l_simple(self, losses, weights, cond):
-        """Track l_simple broken down by topology family.
-
-        Maps the per-family difficulty landscape (quad/biped/millipede/serpentine/
-        aquatic/winged/drifting) and shows how negative transfer hits each family.
-        Uses the same weighting convention as the aggregate l_simple metric, so
-        all of these are directly comparable to it and to a single-family run.
-        """
-        if "l_simple" not in losses:
-            return
-        object_types = cond.get('y', {}).get('object_type', None)
-        if not object_types:
-            return
-        family_sets = getattr(self, '_family_species_sets', None)
-        if family_sets is None:
-            from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
-            members = dataset_tags().subset_members
-            family_sets = {
-                'quad': members['quadruped'],
-                'biped': members['biped'],
-                'milliped': members['multiped'],
-                'snake': members['serpentine'],
-                'aquatic': members['aquatic'],
-                'flying': members['winged'],
-                'drifting': members['drifting'],
-            }
-            self._family_species_sets = family_sets
-        # Membership is host data: decide which families are present on the host
-        # and ship one [families, B] mask, instead of a blocking copy plus an
-        # .any() readback per family every step.
-        present, rows = [], []
-        for family, species in family_sets.items():
-            row = [ot in species for ot in object_types]
-            if any(row):
-                present.append(family)
-                rows.append(row)
-        if not present:
-            return
-        l_simple = (losses["l_simple"] * weights).detach().float()
-        membership = host_to_device(rows, l_simple.device, dtype=torch.float32)   # [F, B]
-        family_means = (membership * l_simple).sum(dim=1) / membership.sum(dim=1)
-        self._accumulate_interval_losses({
-            f'l_simple_{family}': family_means[index] for index, family in enumerate(present)
-        })
-
     def _accumulate_per_group_l_simple(self, losses, weights, cond):
         """Track l_simple per action group in an ``--action_group all`` run.
 
@@ -799,7 +751,6 @@ class TrainLoop:
     def evaluate(self):
         if not self.args.eval_during_training or self.eval_data is None:
             return
-        cond_dict = self.data.dataset.motion_dataset.cond_dict
         infer_model = self.model  # use raw model (not EMA) to observe real val performance
         motion_groups = {}
         missing_action_label_count = 0
@@ -847,10 +798,21 @@ class TrainLoop:
 
                 for i in range(batch_size):
                     object_type = cond['y']['object_type'][i]
-                    action_words = _eval_action_words(
+                    # Grouped by the label's prior words, not its spelling: the
+                    # two directions of one transition share a reference prior.
+                    #
+                    # This call RAISES on a label that breaks the vocabulary
+                    # contract (unknown token, no head word, repeats, too many
+                    # words) and takes validation down with it -- deliberately,
+                    # and unlike the empty label handled just below: a typo must
+                    # fail loudly rather than silently narrow the prior to the
+                    # words it happened to hit and report a confident score for
+                    # it. An empty label is legal (no condition), so it only
+                    # skips this clip.
+                    prior_words = reference_prior_words(
                         cond['y'].get('action_label', [None] * batch_size)[i]
                     )
-                    if not action_words:
+                    if not prior_words:
                         missing_action_label_count += 1
                         continue
                     n_joints = cond['y']['n_joints'][i].item()
@@ -863,13 +825,13 @@ class TrainLoop:
                         _per_sample_decode_cond(cond['y'], i, n_joints),
                     )[0]
                     motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
-                    group_key = (object_type, action_words)
+                    group_key = (object_type, prior_words)
                     motion_groups.setdefault(group_key, []).append(motion_np.astype(np.float32))
 
         infer_model.train()
 
         if missing_action_label_count:
-            tqdm.write(f'Validation skipped {missing_action_label_count} motion(s) whose action_label hits no controlled word.')
+            tqdm.write(f'Validation skipped {missing_action_label_count} motion(s) with no action_label.')
 
         if not motion_groups:
             tqdm.write('Validation skipped: eval split returned no samples.')
@@ -881,15 +843,16 @@ class TrainLoop:
         snap_scores = []
         sf_scores = []
         bl_scores = []
-        for (object_type, action_words), motions in motion_groups.items():
+        for (object_type, prior_words), motions in motion_groups.items():
+            action_label = ', '.join(prior_words)
             try:
                 report = self.scorer.evaluate(
                     motions=motions,
                     object_type=object_type,
-                    action_words=','.join(action_words),
+                    action_label=action_label,
                 )
             except Exception as exc:
-                tqdm.write(f"[eval] Scoring failed for {object_type} ({','.join(action_words)}): {exc}")
+                tqdm.write(f"[eval] Scoring failed for {object_type} ({action_label}): {exc}")
                 continue
             scores.append(report.overall_score)
             jerk_scores.append(report.jerk_score)
@@ -993,9 +956,14 @@ class TrainLoop:
                     t, losses["loss"].detach()
                 )
 
+            if self.sample_loss_limiter is not None:
+                # Only l_simple's gradient is rescaled; the logged l_simple stays raw.
+                limit_weight = self.sample_loss_limiter.weights(t, losses["l_simple"])
+                losses["loss"] = losses["loss"] + (limit_weight - 1.0) * losses["l_simple"]
+                losses["l_simple_limit_weight"] = limit_weight
+
             loss = (losses["loss"] * weights).mean()
             self._accumulate_interval_losses({k: v * weights for k, v in losses.items()})
-            self._accumulate_per_family_l_simple(losses, weights, micro_cond)
             self._accumulate_per_group_l_simple(losses, weights, micro_cond)
             if self.spike_capture:
                 self._stash_spike_ctx(losses, t)
@@ -1254,7 +1222,7 @@ class TrainLoop:
                 state_dict = build_checkpoint_payload(
                     state_dict, state_dict_avg, self.model)
 
-                logger.log(f"saving model...")
+                logger.log("saving model...")
                 filename = self.ckpt_file_name(completed_step)
                 checkpoint_path = pjoin(self.save_dir, filename)
                 if '://' in self.save_dir:
@@ -1284,6 +1252,8 @@ class TrainLoop:
                 
                 # Save LR scheduler state for proper resumption
                 opt_state['scheduler'] = self.lr_scheduler.state_dict()
+                if self.sample_loss_limiter is not None:
+                    opt_state['sample_loss_limiter'] = self.sample_loss_limiter.state_dict()
                 
                 # Save RNG states to ensure reproducible data shuffling on resume
                 opt_state['torch_rng_state'] = torch.get_rng_state()

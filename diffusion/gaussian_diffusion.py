@@ -436,16 +436,25 @@ class GaussianDiffusion:
         return value
 
     def _physical_velocity_step_scale(self, y, batch_size, n_frames, device, dtype):
+        """Source frames per window frame, as dataset.resample_step_scale.
+
+        An open window spans its ``L = resample_speed * T`` source frames end
+        to end, ``(L - 1) / (T - 1)``; a loop window is resampled periodically,
+        ``L / T``, which is resample_speed itself.
+        """
         if n_frames <= 1:
             return th.ones(batch_size, device=device, dtype=dtype)
+        y = y if isinstance(y, dict) else {}
         resample_speed = self._coerce_resample_speed_batch(
-            y.get('resample_speed_cond') if isinstance(y, dict) else None,
+            y.get('resample_speed_cond'),
             batch_size,
             device,
             dtype,
         )
+        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
         source_frames = (resample_speed * float(n_frames)).clamp_min(1.0)
-        return ((source_frames - 1.0) / float(n_frames - 1)).clamp_min(0.0)
+        open_step = ((source_frames - 1.0) / float(n_frames - 1)).clamp_min(0.0)
+        return th.where(is_loop, resample_speed, open_step)
 
     def _root_relative_velocity(self, vel, n_joints, y):
         """Velocity channels re-expressed in the frame the RIC positions live in.
@@ -636,13 +645,29 @@ class GaussianDiffusion:
         return result
 
     def loop_wrap_loss(self, model_output, y, n_joints):
+        """Seam continuity of loop samples, on denormalized outputs.
+
+        A loop window holds no closing key (dataset._drop_loop_closing_frame)
+        and is resampled periodically, so its last frame is one ordinary step
+        BEFORE frame 0 -- the seam is a frame step like any other, not a
+        repeated pose. Both terms are written for that convention:
+
+        * terminal velocity: ``pos[0] - pos[-1] == vel[-1] * step_scale``, the
+          wrap delta the stored terminal row carries;
+        * rotation: the wrap step's geodesic angle ``(R[-1], R[0])`` matches
+          the mean of its neighbours ``(R[-2], R[-1])`` and ``(R[0], R[1])``.
+
+        There is no pose term. The one this replaced pulled ``pos[-1]`` onto
+        ``pos[0]`` (the old closing-key convention, as did the rotation term),
+        contradicting the terminal term and the data; the terminal term already
+        closes the position seam.
+        """
         batch_size, max_joints, n_feats, n_frames = model_output.shape
         device = model_output.device
         zero = model_output.new_zeros(())
         if n_frames < 2:
             return {
                 'loop_wrap_loss': zero,
-                'loop_wrap_pose': zero,
                 'loop_wrap_rot': zero,
                 'loop_wrap_terminal_vel': zero,
             }
@@ -661,27 +686,28 @@ class GaussianDiffusion:
         joint_mask = th.arange(max_joints, device=device).view(1, max_joints) < valid_joints.view(batch_size, 1)
         joint_weight = joint_mask.to(dtype=model_output.dtype)
 
-        pose_weight = joint_weight[:, :, None, None].expand(-1, -1, 3, -1).clone()
         batch_indices = th.arange(batch_size, device=device)
         root_valid = ((root_indices >= 0) & (root_indices < valid_joints)).to(dtype=model_output.dtype)
         root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
-        pose_weight[batch_indices, root_indices_clamped, 0, 0] *= 1.0 - root_valid
-        pose_weight[batch_indices, root_indices_clamped, 2, 0] *= 1.0 - root_valid
-        pose_denom = pose_weight.sum(dim=(1, 2, 3)).clamp(min=1.0)
-        pose_per_sample = (
-            (((first_frame[:, :, 0:3] - last_frame[:, :, 0:3]) ** 2) * pose_weight)
-            .sum(dim=(1, 2, 3))
-            / pose_denom
-        )
-        pose_per_sample = th.where(active_valid, pose_per_sample, th.zeros_like(pose_per_sample))
-        pose_loss = (pose_per_sample * active_weight).sum() / active_denom
 
-        rot_first = first_frame[:, :, 3:9].permute(0, 3, 1, 2)
-        rot_last = last_frame[:, :, 3:9].permute(0, 3, 1, 2)
-        rots_first = rotation_6d_to_matrix_safe(rot_first)
-        rots_last = rotation_6d_to_matrix_safe(rot_last)
-        rot_distance = geodesic_distance(rots_last, rots_first).squeeze(-1).squeeze(1)
-        rot_per_sample = (rot_distance * joint_weight).sum(dim=1) / joint_weight.sum(dim=1).clamp(min=1.0)
+        # Stacked, not indexed with a host list (a blocking upload per step).
+        # At n_frames == 2 both neighbours are the wrap step itself and the
+        # residual is zero: two frames have no seam to judge.
+        seam_rot6d = th.stack(
+            (
+                model_output[:, :, 3:9, -2],
+                model_output[:, :, 3:9, -1],
+                model_output[:, :, 3:9, 0],
+                model_output[:, :, 3:9, 1],
+            ),
+            dim=1,
+        )                                                                    # [bs, 4, J, 6]
+        seam_rots = rotation_6d_to_matrix_safe(seam_rot6d)                   # [bs, 4, J, 3, 3]
+        step_before = geodesic_distance(seam_rots[:, 0], seam_rots[:, 1]).squeeze(-1)   # [bs, J]
+        step_wrap = geodesic_distance(seam_rots[:, 1], seam_rots[:, 2]).squeeze(-1)
+        step_after = geodesic_distance(seam_rots[:, 2], seam_rots[:, 3]).squeeze(-1)
+        rot_residual = (step_wrap - 0.5 * (step_before + step_after)).abs()
+        rot_per_sample = (rot_residual * joint_weight).sum(dim=1) / joint_weight.sum(dim=1).clamp(min=1.0)
         rot_per_sample = th.where(active_valid, rot_per_sample, th.zeros_like(rot_per_sample))
         rot_loss = (rot_per_sample * active_weight).sum() / active_denom
 
@@ -699,10 +725,10 @@ class GaussianDiffusion:
                 - last_frame[:, :, 0:3, 0]
                 - last_frame[:, :, 9:12, 0] * step_scale
             )
-            # Same mask as pose_weight: the root's RIC X/Z are structurally zero,
-            # so the residual collapses to last_vel*step_scale there -- a pull of
-            # the terminal root XZ velocity toward zero, against the gait's
-            # genuine last step. Mask out.
+            # The root's RIC X/Z are structurally zero, so the residual
+            # collapses to last_vel*step_scale there -- a pull of the terminal
+            # root XZ velocity toward zero, against the gait's genuine last
+            # step. Mask out (loop_root_xz_closure_loss covers the root's XZ).
             terminal_weight = joint_weight[:, :, None].expand(-1, -1, 3).clone()
             terminal_weight[batch_indices, root_indices_clamped, 0] *= 1.0 - root_valid
             terminal_weight[batch_indices, root_indices_clamped, 2] *= 1.0 - root_valid
@@ -711,10 +737,9 @@ class GaussianDiffusion:
             terminal_per_sample = th.where(active_valid, terminal_per_sample, th.zeros_like(terminal_per_sample))
             terminal_vel_loss = (terminal_per_sample * active_weight).sum() / active_denom
 
-        total = pose_loss + rot_loss + terminal_vel_loss
+        total = rot_loss + terminal_vel_loss
         return {
             'loop_wrap_loss': total,
-            'loop_wrap_pose': pose_loss,
             'loop_wrap_rot': rot_loss,
             'loop_wrap_terminal_vel': terminal_vel_loss,
         }
@@ -735,8 +760,8 @@ class GaussianDiffusion:
         bias IS the seam pop (v7 --loop samples drifted ~0.01 per cycle, more
         than the root's own in-cycle sway, all in the same direction -- the
         pooled canonical velocity mean decoded back into the root channels).
-        ``loop_wrap_loss`` masks the root's ch0/ch2 for the pose and terminal
-        terms, so the root's XZ closure was the one loop invariant left open.
+        ``loop_wrap_loss`` masks the root's ch0/ch2 for its terminal term, so
+        the root's XZ closure was the one loop invariant left open.
 
         The constraint is linear in the output, so the posterior-mean x0
         prediction can satisfy it at every timestep (E[sum v] = sum E[v] = 0);

@@ -72,7 +72,7 @@ python preprocess_and_validate.py --filter "<新物种名>"
 只想刷新骨骼名相关的元数据（不重导出动作，秒级）：
 
 ```bash
-python preprocess_and_validate.py --re-encode-joint-names-only
+python preprocess_and_validate.py --regenerate-side-artifacts
 ```
 
 ### 1.3 主检查点：逐物种读 `joint_name_inspection/<species>.json`
@@ -335,15 +335,15 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 
 | 改了什么 | bump `JOINT_NAME_EMBEDDING_SCHEMA_VERSION` | 重跑预处理 | 重训 | renamer bank 重建 |
 |---|---|---|---|---|
-| B 层任意词表 | ✅ | `--re-encode-joint-names-only` 足够 | ✅ | — |
+| B 层任意词表 | ✅ | `--regenerate-side-artifacts` 足够 | ✅ | — |
 | A 层任意词表 | ✅ | 全量（BVH 骨名会变） | ✅ | ✅ |
-| C 层 side / 对称签名 | ✅ | `--re-encode-joint-names-only` 足够 | ✅ | — |
+| C 层 side / 对称签名 | ✅ | `--regenerate-side-artifacts` 足够 | ✅ | — |
 | C 层 contact / end-effector | ✅ | **全量** | ✅ | — |
 | C 层 朝向（face/forward） | ✅ | 全量 | ✅ | — |
 | D 层（`family_key`） | — | — | — | ✅（喂 S6 hierarchy prior） |
 
 ⚠️ **contact 那一行是唯一不能走增量的**：接触状态是**逐帧烘进 motion `.npy` 特征**的，
-而 `--re-encode-joint-names-only`（内部走 `tools/regenerate_dataset_artifacts.py`）只重写 cond、
+而 `--regenerate-side-artifacts`（内部走 `tools/regenerate_dataset_artifacts.py`）只重写 cond、
 不重写 motions。改了接触判定却只跑增量，cond 和动作张量会**静默失配**。
 
 版本号常量 `JOINT_NAME_EMBEDDING_SCHEMA_VERSION` 在 `physics_joint_annotation.py`。

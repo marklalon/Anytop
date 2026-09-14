@@ -4,20 +4,20 @@ Low-Shot Weighted-Reference Motion Quality Evaluator
 ====================================================
 
 Evaluates one or more motion clips by comparing them against a weighted
-reference prior built from dataset motions that share the requested semantic
-action category.
+reference prior built from dataset motions whose action_label hits the words of
+the label the clips were generated with.
 
 Usage
 -----
 python eval/evaluate_motion_quality.py \
     --motions "outputs/trial_00/*.npy" \
     --object-type Buffalo \
-    --action-words walk,run
+    --action-label run
 
 python eval/evaluate_motion_quality.py \
     --motions "outputs/new_skeleton/*.npy" \
     --object-type dragon \
-    --action-words walk \
+    --action-label "fly, forward" \
     --cond-path outputs/new_skeleton/cond.npy
 """
 
@@ -40,6 +40,7 @@ if str(_ANYTOP_DIR) not in sys.path:
     sys.path.insert(0, str(_ANYTOP_DIR))
 
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
+from eval.motion_quality.reference_bank import DEFAULT_SCORE_ACTION_LABEL
 from eval.motion_quality.scorer import DistributionEvalReport, DistributionMotionQualityScorer
 from utils.misc import infer_object_type_from_filename
 
@@ -244,7 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
 
             Reference construction:
               • semantic Top-K species neighbors in cond.npy joint-name embedding space
-              • dataset motions filtered by controlled action words (comma/semicolon separated)
+              • dataset motions whose action_label hits any word of --action_label
               • species weights distributed across reference clips by frame count
 
             Scores:
@@ -277,12 +278,13 @@ def build_parser() -> argparse.ArgumentParser:
              "reference action distributions still come from the default dataset cond.npy.",
     )
     parser.add_argument(
-        "--action_words", "--action-words",
-        required=True,
-        metavar="WORDS",
-        help="Controlled-vocabulary action words (comma/semicolon-separated), e.g. 'walk,run' or "
-             "'attack,jump'. Selects the reference prior by the words a dataset clip's action_label "
-             "hits -- not by action_group, which would widen the prior to a whole third of the corpus.",
+        "--action_label", "--action-label",
+        default=DEFAULT_SCORE_ACTION_LABEL,
+        metavar="LABEL",
+        help="The action_label the query motions were generated with, spelled like generate.py's "
+             "--action_label (e.g. 'run' or 'fly, forward'). The reference prior is every dataset "
+             "clip whose action_label hits any of its words -- not the action_group, which would "
+             f"widen the prior to a whole third of the corpus. Default: {DEFAULT_SCORE_ACTION_LABEL!r}.",
     )
     parser.add_argument(
         "--dataset_root", "--dataset-root",
@@ -332,7 +334,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # An explicit --object_type applies to every file. Otherwise the type is
     # inferred per file from its name, so a single end-of-workflow run can score
     # a mixed output tree containing several species. The reference prior is
-    # cached per (object_type, action_words), so files that share a type only pay
+    # cached per (object_type, action_label), so files that share a type only pay
     # the dataset-loading cost once.
     explicit_object_type = args.object_type
 
@@ -377,7 +379,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             report = scorer.evaluate(
                 motions=[motion],
                 object_type=object_type,
-                action_words=args.action_words,
+                action_label=args.action_label,
                 top_k_species=args.top_k_species,
             )
         except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:

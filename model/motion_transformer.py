@@ -327,11 +327,18 @@ def circular_phase_embedding(
     """Sinusoidal time table closed over the window, shape ``(length, dim)``.
 
     Slot 0 is the T-pose token (zero row); the ``motion_frames = length - 1``
-    motion frames sit at phase ``2*pi*f*t / (motion_frames - 1)``, so the first
-    and last motion frame share one embedding -- the closing key every stored
-    loop keeps. The closure is exact only in real arithmetic: in fp32 the last
-    phase misses ``2*pi*f`` by a rounding error that grows with ``dim`` (6.7e-05
-    at length=61, dim=256), so tests must scale their tolerance with ``dim``.
+    motion frames sit at phase ``2*pi*f*t / motion_frames``, so the frame AFTER
+    the last one is in phase with the first. That is the loader's convention: a
+    loop window holds no closing key (``_drop_loop_closing_frame``) and is
+    resampled periodically (``resample_motion_features(periodic=True)``), so its
+    last frame is one ordinary step before frame 0. A period of
+    ``motion_frames - 1`` gave the first and last frame the same phase and
+    generated loops whose last frame copied the first -- a one-frame stall at
+    every seam.
+
+    Closure holds only in real arithmetic: in fp32 the phase at
+    ``t = motion_frames`` misses ``2*pi*f`` by a rounding error that grows with
+    ``dim``, so tests must scale their tolerance with ``dim``.
 
     This does not replace the absolute frame embedding ``InputProcess`` adds
     for every sample: it is summed on top of it at every decoder layer
@@ -346,11 +353,11 @@ def circular_phase_embedding(
     one-shot clip.
 
     Frequencies run over ``1..dim // 2`` unconditionally, so at production
-    shapes (``motion_frames - 1 < dim // 2``) the table is redundant: ``f`` and
-    ``f + (motion_frames - 1)`` coincide at integer ``t``, multiples of
-    ``motion_frames - 1`` are constant ``(1, 0)``, and ``f`` /
-    ``(motion_frames - 1) - f`` share a cosine with negated sine. At
-    ``--num_frames 60`` that is 59 distinct pairs out of 128. Wasted capacity,
+    shapes (``motion_frames < dim // 2``) the table is redundant: ``f`` and
+    ``f + motion_frames`` coincide at integer ``t``, multiples of
+    ``motion_frames`` are constant ``(1, 0)``, and ``f`` /
+    ``motion_frames - f`` share a cosine with negated sine. At
+    ``--num_frames 60`` that is 60 distinct pairs out of 128. Wasted capacity,
     not a conflict, so it is left alone: clamping to Nyquist would only swap
     them for zero channels.
     """
@@ -362,7 +369,7 @@ def circular_phase_embedding(
     if motion_frames <= 0 or half_dim == 0:
         return emb
 
-    period = float(max(motion_frames - 1, 1))
+    period = float(motion_frames)
     frame_positions = torch.arange(motion_frames, device=device, dtype=dtype).unsqueeze(1)
     frequencies = torch.arange(1, half_dim + 1, device=device, dtype=dtype).unsqueeze(0)
     phase = (2.0 * math.pi / period) * frame_positions * frequencies

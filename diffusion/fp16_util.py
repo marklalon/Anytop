@@ -24,7 +24,7 @@ GRAD_NORM_ABORT_THRESHOLD = 1e12
 # periodic overflow disappears. It is safe to sit this low only because the one
 # loss-scale-sensitive path (cross-K, behind a zero-init gate) is pinned to fp32
 # in CrossLimbTemporalBlock. See docs/fp16_vs_bf16_precision.md.
-GRAD_SCALER_MAX_SCALE = 2 ** 16
+GRAD_SCALER_MAX_SCALE = 2 ** 15
 
 
 def convert_module_to_f16(l):
@@ -313,7 +313,13 @@ class MixedPrecisionTrainer:
         # optimize() has not run yet. Read by the trainer's spike-capture probe.
         self.last_grad_norm = None
         scaler_enabled = self.amp_enabled and self.amp_dtype == 'fp16' and self.device_type == 'cuda'
-        self.scaler = th.amp.GradScaler('cuda', enabled=scaler_enabled)
+        # Start at the cap as well as enforcing it after every update.  This
+        # avoids one first-step probe at the old default init_scale (2^16).
+        self.scaler = th.amp.GradScaler(
+            'cuda',
+            init_scale=float(GRAD_SCALER_MAX_SCALE),
+            enabled=scaler_enabled,
+        )
 
         if self.use_fp16:
             self.param_groups_and_shapes = get_param_groups_and_shapes(

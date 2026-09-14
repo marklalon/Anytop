@@ -31,7 +31,19 @@ ACTION_GROUP_ALL = 'all'
 #    Model: a global per-joint unreliable_embedding on the input tokens, a
 #    per-block frame-level temporal_reliability_bias, and one cross-K
 #    attention per block (cross_k_norm / cross_k_attn / cross_k_scale).
-CKPT_VERSION = 10
+# 11: the per-skeleton length L is floored at half the reference skeleton's
+#    (canonical_features.REST_LENGTH_SCALE_FLOOR). The 9 rigs below it (2-8
+#    joints) decode their position/velocity channels with a different L, and
+#    every object_subset's statistics were recomputed under it. Training also
+#    caps each sample's l_simple gradient by default (--sample_loss_limit).
+# 12: loop period is the window (docs/conditional_modulation_upgrade.md §2).
+#    circular_phase_embedding's period is motion_frames, not motion_frames-1,
+#    so the last frame is one step before frame 0 instead of in phase with it;
+#    loop windows (and loop time-scaling) are resampled periodically at step
+#    L/T instead of end to end at (L-1)/(T-1), and the loss step scale follows;
+#    loop_wrap_loss drops its pose term and its rotation term asks for a seam
+#    step like its neighbours instead of last == first.
+CKPT_VERSION = 12
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -253,7 +265,10 @@ def add_model_options(parser):
                             " velocities are world deltas), so the residual is exactly zero on real data."
                             " Couples position and velocity feature groups to prevent independent memorization.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
-                       help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")
+                       help="Weight for the loop-only seam continuity loss on denormalized outputs: the "
+                            "terminal velocity row equals the wrap delta pos[0]-pos[-1], and the wrap "
+                            "step's rotation angle matches its neighbouring steps. A loop window's last "
+                            "frame is one step before frame 0, never a copy of it.")
     group.add_argument("--lambda_loop_root_closure", default=0.0, type=float,
                        help="Weight for the loop-only full-cycle closure of the translation root's XZ "
                             "velocity (0.0=off): ||sum_t vel_xz[t] * step||^2 over ALL rows, the terminal "
@@ -466,6 +481,11 @@ def add_training_options(parser):
                            "settled and early grad spikes are routine noise. 0 = check from step 1.")
     group.add_argument("--spike_max_dumps", default=10, type=int,
                        help="Stop writing spike dumps after this many, to bound disk usage. 0 = unlimited.")
+    group.add_argument("--sample_loss_limit", default=8.0, type=float,
+                       help="Cap each sample's l_simple gradient at that of a sample whose l_simple is this many "
+                            "times the running geometric mean at its diffusion timestep (a per-sample Huber on the "
+                            "RMS error; see train/sample_loss_limit.py). Stops one outlier clip from owning the "
+                            "clipped batch gradient. 8 leaves ~0.3%% of locomotion samples touched. 0 disables it.")
     group.add_argument("--joint_mask_prob", default=0.5, type=float,
                        help="Per-sample probability of applying a training-time subtree joint perturbation. "
                            "Selected joints keep their supervision loss and remain visible to attention, but their x_t "
@@ -523,7 +543,13 @@ def add_sampling_options(parser):
                             "bf16 rounding adds frame-to-frame noise that inflates jerk/snap scores "
                             "(docs/bf16_precision_issues.md).")
     group.add_argument("--loop", action='store_true',
-                       help="Generate with loop conditioning and loop-aware temporal masks when supported by the checkpoint.")
+                       help="Generate a closed window (loop conditioning + loop-aware temporal masks) when supported "
+                            "by the checkpoint. The whole pipeline then treats the window as periodic: its last "
+                            "frame is one step before frame 0 and the frame after it wraps to the first (the window "
+                            "is one period of length T, whatever number of gait cycles it holds). A "
+                            "--reference_motion is placed into it the same way (a closing key is dropped, the "
+                            "reference is resampled periodically at step L/T) and the sampled window is rescaled to "
+                            "--num_frames the same way, so the output is a loop whatever the reference is.")
     group.add_argument("--fullbody_ik", action='store_true',
                        help="Decode the BVH preview with the same full-body IK as restore_glb_from_npy --fullbody-ik: "
                             "rotations are re-solved on the rigid cond skeleton so the position channels are honoured "
@@ -632,14 +658,6 @@ def add_generate_options(parser):
                             "--action_label and a checkpoint trained with a non-zero "
                             "--action_label_cfg_drop_prob (without it there is no unconditional "
                             "mode to guide away from).")
-    group.add_argument("--action_words", default="", type=str,
-                       help="Controlled-vocabulary words used to select the reference prior for the "
-                            "motion-quality scorer (eval/evaluate_motion_quality.py and the training "
-                            "eval hook), e.g. 'walk,run'. Filters dataset clips whose action_label hits "
-                            "any of these words. Deliberately not the action_group: grouping would "
-                            "widen the prior from 'the attack references' to 'everything stationary' and "
-                            "make the score meaningless. Ignored by sample/generate.py (which does not "
-                            "run the scorer).")
     group.add_argument("--species_tags", default="", type=str,
                        help="Override the target species' motion style tags for this generation, e.g. "
                             "'Quadruped,Heavy,Lumbering'. Comma/semicolon-separated. The tags are re-encoded "
@@ -668,9 +686,10 @@ def generate_args(argv=None):
     add_generate_options(parser)
     # These CLI args are generation-time overrides and must NOT be
     # overwritten by the training args.json (which stores their defaults).
-    # --action_group is not listed: it lives outside the restored groups, and
-    # apply_checkpoint_action_group() reconciles it with the checkpoint's own.
-    preserve_cli_args = {'action_label', 'action_words', 'species_tags'}
+    # There is deliberately no --action_group here: the group belongs to the
+    # weights, so apply_checkpoint_action_group() sets args.action_group from the
+    # checkpoint's own args.json.
+    preserve_cli_args = {'action_label', 'species_tags'}
     args = parse_and_load_from_model(
         parser, argv=argv,
         preserve_cli_args=preserve_cli_args,

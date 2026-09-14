@@ -353,6 +353,31 @@ quadruped 内部 2.6×。
 所以 `L` 记在这里是**背景，不是待办**——除非 D 之后仍有残留的跨物种幅度问题，
 才回来动它（那时它是单变量）。
 
+> **更新（2026-09-14）：残留问题出现了，`L` 加了下限。**
+> 上面的 p10/p90 看的是逐物种中位数，看不见少数 clip 的长尾。`merged_transition_v15`
+> 的 l_simple 是 locomotion 的 2.05×，其中 31% 来自 5 条 clip，全都是 2–6 关节的
+> effect/drifting 骨架（`MU04_Pollen` L=0.031、`MU06_Ice`/`Wind`/`Whirlwind` 2 关节、
+> `RU01_BallRobot`/`GridRobot`）做 Die/Spawn/DiveIntoGround。这些骨架的根悬在高处，
+> 身体尺寸已经由 `get_scale_reference_extent`（折入根高度）归一过，
+> 但关节挤成一团，RMS 展布几乎为 0。于是 1.7 单位的坠落除以 `L` 后到了 47–91 std。
+> 同样这 6 个物种，在 locomotion 里只占归一化能量的 3%，在 transition 里占 40%。
+>
+> 修复：`REST_LENGTH_SCALE_FLOOR = 0.5 × HML_REF_REST_LENGTH_SCALE`（SMPL 参考骨架的 `L`，
+> 0.260 → 下限 0.130）。260 个物种里它抬起 7 个 2–6 关节的 effect/drifting rig
+> （0.030–0.106，最多 4.3×），另外擦到两个 8 关节 rig（0.126、0.127 → 0.130）。merged cond 的统计量重算后，transition 单条 clip
+> 的最大归一化能量从 235 降到 45，top-5 占比从 32% 降到 8.5%，中位数不变；
+> stationary 的 `Pollen_CastSpell` 从 100 降到 20；locomotion 基本不变。共享位置增益
+> 0.837 → 0.821，drifting 速度 std 0.325 → 0.271。`CKPT_VERSION` 10 → 11。
+>
+> **为什么不对竖直位移单独用绝对单位**：在 L≥0.14 的 251 个物种上实测，除以 `L` 让
+> 身体内部位移（去掉逐帧整体平移后）的跨物种 log-std 从 0.53 降到 0.43
+> （corr(log L, log 幅度)=0.61），说明 `L` 对肢体运动确实起尺寸归一作用。
+> 根的竖直行程和速度与 `L` 不相关（velXZ corr 0.16，rootYrange 除以 `L` 后反而更散），
+> 但 RIC 位置通道里每个关节都带着根高度，只给 Y 轴换单位会让同一根骨头在竖直和水平
+> 方向上用不同尺度表示。躺倒、起身这类动作正好把 Y 和 XZ 互换，这是新的不一致。
+> 真正的"根轨迹用绝对单位、身体用 L"需要把根和身体拆开，是表示层改动；
+> 下限已经消掉了病态尾部，所以暂不做。
+
 ---
 
 ## 5. 实施顺序

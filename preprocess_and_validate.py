@@ -15,7 +15,7 @@ Usage:
 
 Options:
     --validate-only                      Skip preprocessing, only validate existing dataset
-    --re-encode-joint-names-only         Skip preprocessing and validation, only re-encode joint names into cond.npy
+    --regenerate-side-artifacts          Regenerate cond.npy, joint-name encodings and other side artifacts without re-preprocessing motions
     --skip-validate                      Skip validation step (faster for CI)
     --overwrite                          Reprocess every targeted object, deleting existing outputs first (a full wipe when no --filter is set). Without it, already-processed objects are skipped.
     --yes, --assume-yes, -y              Auto-confirm the overwrite deletion prompt (no interactive input; for scripts/CI).
@@ -67,8 +67,8 @@ Examples:
     # Preprocess without validation
     python preprocess_and_validate.py --skip-validate
 
-    # Re-encode joint names only (fast, no motion re-export)
-    python preprocess_and_validate.py --re-encode-joint-names-only
+    # Regenerate side artifacts only (fast, no motion re-export)
+    python preprocess_and_validate.py --regenerate-side-artifacts
 
     # Incrementally add new animations for matching objects (e.g. new Horse clips)
     python preprocess_and_validate.py --filter "Horse"
@@ -1095,9 +1095,9 @@ def parse_args() -> argparse.Namespace:
         help="Skip preprocessing and only validate the existing dataset.",
     )
     parser.add_argument(
-        "--re-encode-joint-names-only",
+        "--regenerate-side-artifacts",
         action="store_true",
-        help="Skip preprocessing and validation, only re-encode joint names into cond.npy.",
+        help="Regenerate cond.npy, joint-name encodings and other side artifacts without re-preprocessing motions.",
     )
     parser.add_argument(
         "--skip-validate",
@@ -1241,7 +1241,7 @@ def main() -> int:
         return 1
 
     filter_matched_nothing = False
-    if args.object_filter and not args.validate_only and not args.re_encode_joint_names_only:
+    if args.object_filter and not args.validate_only and not args.regenerate_side_artifacts:
         matched = _resolve_target_object_types(args.object_filter, args.raw_data_dir)
         if not matched:
             # Non-fatal: like the incremental "no new source files" case, an unmatched
@@ -1252,8 +1252,8 @@ def main() -> int:
                 f"Available objects: {', '.join(_discover_all_objects(args.raw_data_dir))}"
             )
 
-    # Handle re-encode joint names only mode
-    if args.re_encode_joint_names_only:
+    # Handle regenerate side artifacts only mode
+    if args.regenerate_side_artifacts:
         return run_regenerate_side_artifacts(args.dataset_dir)
 
     # Handle remove motions mode

@@ -1,5 +1,5 @@
 {
-  "_comment": "Evaluation task battery for eval_checkpoint.py. Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task. Every task names its --action_group: an --action_group all checkpoint needs it, and a single-group checkpoint skips the tasks of other groups. --action_words picks the scorer's reference prior (default walk,run).",
+  "_comment": "Evaluation task battery for eval_checkpoint.py. Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task. Every task names its --action_group: an --action_group all checkpoint needs it, and a single-group checkpoint skips the tasks of other groups. --action_label selects the scorer's reference prior (default walk, run).",
   "tasks": [
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_group", "locomotion"] },
 
@@ -25,14 +25,14 @@
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--action_group", "locomotion", "--reference_motion", "outputs/test/dragon_walk.glb", "--inpaint_joints", "RightThigh,LeftThigh,RightClavicle", "--skip_timesteps", "30"] },
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--action_group", "locomotion", "--reference_motion", "outputs/test/dragon_walk.glb", "--skip_timesteps", "30"] },
 
-    { "category": "Stationary", "args": ["--object_type", "Buffalo", "--action_group", "stationary", "--action_label", "idle", "--loop", "--action_label_cfg_scale", "2", "--action_words", "idle"] },
-    { "category": "Stationary", "args": ["--object_type", "Buffalo", "--action_group", "stationary", "--action_label", "attack, headbutt", "--loop", "--action_label_cfg_scale", "2", "--action_words", "attack"] },
-    { "category": "Stationary", "args": ["--object_type", "KI_Human", "--action_group", "stationary", "--action_label", "idle, wave", "--loop", "--action_label_cfg_scale", "2", "--action_words", "idle"] },
-    { "category": "Stationary", "args": ["--object_type", "Buffalo", "--action_group", "stationary", "--action_words", "idle,attack"] },
+    { "category": "Stationary", "args": ["--object_type", "Buffalo", "--action_group", "stationary", "--action_label", "idle", "--loop", "--action_label_cfg_scale", "2"] },
+    { "category": "Stationary", "args": ["--object_type", "Buffalo", "--action_group", "stationary", "--action_label", "attack, headbutt", "--loop", "--action_label_cfg_scale", "2"] },
+    { "category": "Stationary", "args": ["--object_type", "KI_Human", "--action_group", "stationary", "--action_label", "idle, wave", "--loop", "--action_label_cfg_scale", "2"] },
+    { "category": "Stationary", "args": ["--object_type", "Buffalo", "--action_group", "stationary", "--action_label", "idle, attack"] },
 
-    { "category": "Transition", "args": ["--object_type", "Buffalo", "--action_group", "transition", "--action_label", "die", "--action_label_cfg_scale", "2", "--action_words", "die"] },
-    { "category": "Transition", "args": ["--object_type", "Buffalo", "--action_group", "transition", "--action_label", "getup", "--action_label_cfg_scale", "2", "--action_words", "getup"] },
-    { "category": "Transition", "args": ["--object_type", "KI_Human", "--action_group", "transition", "--action_label", "idle, crouch", "--action_label_cfg_scale", "2", "--action_words", "crouch"] },
-    { "category": "Transition", "args": ["--object_type", "KI_Human", "--action_group", "transition", "--action_label", "turn, left", "--action_label_cfg_scale", "2", "--action_words", "turn"] }
+    { "category": "Transition", "args": ["--object_type", "Buffalo", "--action_group", "transition", "--action_label", "die", "--action_label_cfg_scale", "2"] },
+    { "category": "Transition", "args": ["--object_type", "Buffalo", "--action_group", "transition", "--action_label", "getup", "--action_label_cfg_scale", "2"] },
+    { "category": "Transition", "args": ["--object_type", "KI_Human", "--action_group", "transition", "--action_label", "idle, crouch", "--action_label_cfg_scale", "2"] },
+    { "category": "Transition", "args": ["--object_type", "KI_Human", "--action_group", "transition", "--action_label", "turn, left", "--action_label_cfg_scale", "2"] }
   ]
 }

@@ -122,7 +122,7 @@ resume 时，`all` 被当作一个独立的语料：`all` ↔ 单组之间不能
   新增 `Stationary`、`Transition` 两类任务，其中包括一个只给 group 不给 label 的任务；
 - 单组 checkpoint 会**跳过**其他组的任务：不写进报告，也不算失败。因此同一套任务能同时评
   v15 和 `merged_all_v1`；
-- 任务可以用 `--action_words` 指定打分用的参考先验，不写时仍是 `walk,run`；
+- 任务可以用 `--action_label` 指定打分用的参考先验，不写时回退到默认（`walk, run`）；
 - 注意：已有任务的参数变了（加了 `--action_group locomotion`），参数校验和随之改变，
   旧 checkpoint 的增量评估会把这些任务重新生成一次。
 
@@ -181,7 +181,7 @@ resume 时，`all` 被当作一个独立的语料：`all` ↔ 单组之间不能
 | `utils/model_util.py` | 透传两个模型参数 |
 | `train/training_loop.py` | `l_simple_<group>`；group embedding 不做 weight decay |
 | `sample/generate.py` | `_resolve_action_condition` 支持只给 group 的请求和 `all` checkpoint |
-| `eval/eval_checkpoint.py`、`eval/eval_tasks.json` | 按组跳过任务；`--action_words`；新增 stationary/transition 任务 |
+| `eval/eval_checkpoint.py`、`eval/eval_tasks.json` | 按组跳过任务；打分先验由 `--action_label` 派生；新增 stationary/transition 任务 |
 | `server/anytop_service.py` | 接受 `all` checkpoint，同一文件只加载一次，转发 `action_group` |
 | `train_all_groups.bat` | `merged_all_v1` 的训练配置 |
 | `tests/test_unified_action_group.py`、`tests/test_action_group_checkpoint_binding.py` | 覆盖以上改动 |

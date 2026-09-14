@@ -387,10 +387,11 @@ class EvalGroupSkipTest(unittest.TestCase):
         self.assertIsNone(_task_group_mismatch('all', stationary_task))
         self.assertIsNone(_task_group_mismatch('locomotion', ['--object_type', 'Buffalo']))
 
-    def test_task_action_words_pick_the_scorer_prior(self):
-        from eval.eval_checkpoint import _SCORE_ACTION_WORDS, _score_action_words
-        self.assertEqual(_score_action_words(['--action_words', 'die']), 'die')
-        self.assertEqual(_score_action_words(['--object_type', 'Buffalo']), _SCORE_ACTION_WORDS)
+    def test_task_action_label_picks_the_scorer_prior(self):
+        from eval.eval_checkpoint import _extract_action_label
+        from eval.motion_quality.reference_bank import DEFAULT_SCORE_ACTION_LABEL
+        self.assertEqual(_extract_action_label(['--action_label', 'die']), 'die')
+        self.assertEqual(_extract_action_label(['--object_type', 'Buffalo']), DEFAULT_SCORE_ACTION_LABEL)
 
 
 if __name__ == '__main__':
