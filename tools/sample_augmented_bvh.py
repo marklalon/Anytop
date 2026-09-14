@@ -327,7 +327,11 @@ def main() -> int:
                     2, int(round(float(aug_info["resample_speed_cond"]) * args.num_frames))
                 )
                 if export_frames != motion_raw.shape[0]:
-                    motion_raw = resample_motion_features(motion_raw, export_frames)
+                    # Invert the loader's window resample: periodic for a
+                    # loop-conditioned window.
+                    motion_raw = resample_motion_features(
+                        motion_raw, export_frames, periodic=bool(aug_info.get("loop_applied")),
+                    )
 
             # ----------------------------------------------------------------
             # Retrieve joint names from cond_dict for BVH hierarchy
@@ -418,7 +422,9 @@ def main() -> int:
                         cond_dict[object_type],
                     ).astype(np.float32)
                     if export_frames != motion_masked_raw.shape[0]:
-                        motion_masked_raw = resample_motion_features(motion_masked_raw, export_frames)
+                        motion_masked_raw = resample_motion_features(
+                            motion_masked_raw, export_frames, periodic=bool(aug_info.get("loop_applied")),
+                        )
 
                     masked_tags = list(tags) + [f"mask{int(round(args.joint_mask_budget * 100))}"]
                     masked_fname = f"{stem}__{'+'.join(masked_tags)}_masked.bvh"

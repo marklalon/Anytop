@@ -32,7 +32,14 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 #    joints) decode their position/velocity channels with a different L, and
 #    every object_subset's statistics were recomputed under it. Training also
 #    caps each sample's l_simple gradient by default (--sample_loss_limit).
-CKPT_VERSION = 11
+# 12: loop period is the window (docs/conditional_modulation_upgrade.md §2).
+#    circular_phase_embedding's period is motion_frames, not motion_frames-1,
+#    so the last frame is one step before frame 0 instead of in phase with it;
+#    loop windows (and loop time-scaling) are resampled periodically at step
+#    L/T instead of end to end at (L-1)/(T-1), and the loss step scale follows;
+#    loop_wrap_loss drops its pose term and its rotation term asks for a seam
+#    step like its neighbours instead of last == first.
+CKPT_VERSION = 12
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -228,7 +235,10 @@ def add_model_options(parser):
                             " velocities are world deltas), so the residual is exactly zero on real data."
                             " Couples position and velocity feature groups to prevent independent memorization.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
-                       help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")
+                       help="Weight for the loop-only seam continuity loss on denormalized outputs: the "
+                            "terminal velocity row equals the wrap delta pos[0]-pos[-1], and the wrap "
+                            "step's rotation angle matches its neighbouring steps. A loop window's last "
+                            "frame is one step before frame 0, never a copy of it.")
     group.add_argument("--lambda_loop_root_closure", default=0.0, type=float,
                        help="Weight for the loop-only full-cycle closure of the translation root's XZ "
                             "velocity (0.0=off): ||sum_t vel_xz[t] * step||^2 over ALL rows, the terminal "

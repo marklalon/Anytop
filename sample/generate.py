@@ -900,7 +900,13 @@ def _generate_all_species(
                 motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
 
                 if target_output_frames != output_frame_count:
-                    motion_np = resample_motion_features(motion_np, target_output_frames)
+                    # A loop window is a cycle (trained on periodically
+                    # resampled windows): stretch it as one, or the seam
+                    # step no longer matches the steps beside it.
+                    motion_np = resample_motion_features(
+                        motion_np, target_output_frames,
+                        periodic=bool(getattr(args, 'loop', False)),
+                    )
 
                 translation_root_index = _get_batch_translation_root_index(
                     model_kwargs, sample_idx,
@@ -1561,9 +1567,13 @@ def main(args=None, cond_dict=None, runtime=None):
         motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
 
         if target_output_frames != output_frame_count:
+            # Invert the mapping that filled the window: a pure loop generation
+            # is a cycle (trained on periodically resampled windows); with a
+            # reference, the window holds the reference's open resample.
             motion_np = resample_motion_features(
                 motion_np,
                 target_output_frames,
+                periodic=bool(getattr(args, 'loop', False)) and ref_motion is None,
             )
 
         # The per-species translation root (the joint carrying the locomotion

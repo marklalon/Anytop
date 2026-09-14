@@ -1,391 +1,205 @@
-# AnyTop 条件调制升级方案：additive bus → 分支级 affine modulation
+# AnyTop 条件注入改造：loop 相位周期修正 + action 条件强度
 
-> 状态：**设计建议，尚未实施**
-> 范围：`action_label`、`resample_speed_cond`、`canonical_feature_mean/std`、`is_loop`
-> 目标：保留当前稳定的 additive condition bus，同时验证哪些条件值得进一步用于
-> hidden-state / residual-branch 的乘性或仿射调制。
-> 非目标：本方案不改变动作特征格式、扩散目标、action-label 词表、CFG 语义或数据标注。
+> 状态：§2 loop 修正**已实施（CKPT 12），待重训**，见 2.6；§3 action 仍是**方案，尚未实施**，改注入方式是否有效需训练消融判定。
+> 范围：`is_loop`、`action_label`。其余条件经实测现状机制无需改造，已从本方案移除（证据见附录）。
+> 证据来源：2026-09-14 在 `save/merged_locomotion_v14_fp16/model000200000.pt`（用该 run 自带的
+> `cond.npy` 快照）上做的 teacher-forced 探针与生成探针。只测了 locomotion 组。
 
 ---
 
 ## 1. 结论
 
-当前方案不是结构性错误。把全局条件投影后加到 timestep embedding，并由每个 decoder layer
-独立投影、重复注入，是有效且常见的全局条件基线。条件随后进入 attention、LayerNorm 和带
-GELU 的 FFN，因此模型仍能在深层形成非线性的条件交互；不能把它理解成“条件只能改变最终
-输出偏置”。
+| 条件 | 实测问题 | 改造 | 需要 |
+|---|---|---|---|
+| `is_loop` | 生成的 loop 首尾几乎重合（接缝处停一帧），训练数据从不如此 | 环形相位表周期 `motion_frames-1 → motion_frames`；`loop_wrap_loss` 的 pose/rot 项改为接缝连续性 | CKPT bump + 重训 |
+| `action_label` | 未见过的 物种×方向 组合在 cfg=1 下不跟随标签；靠 cfg=3 才能跟随，但骨长误差、jerk 都变差约 20% | action 条件加一路逐层 AdaLN（temporal / FFN 分支输入），identity 初始化 | flag + 三组消融 |
 
-真正的限制是：**注入点本身只有 shift，没有显式的 `condition × activation` 交互**。
-模型若要根据条件放大某些通道、改变 temporal/spatial 分支的相对强度，必须在后续层间接学出。
-对于天然描述尺度、速率和增益的条件，这条路径表达效率偏低。
+顺序：**先做 loop 修正并重训，得到新 baseline，再在它上面做 action 消融**。loop 修正改变的是所有
+loop 样本的训练语义，放在同一次消融里会和 action 调制的效果混在一起。
 
-建议采用渐进式升级，而不是把所有 additive token 一次性替换成乘法：
+## 2. `is_loop`：环形相位周期与数据约定差一帧
 
-1. 保留 additive bus，作为 timestep、离散语义和旧行为的稳定主路径；
-2. 第一优先给 `log(resample_speed_cond)` 增加 temporal-branch affine modulation；
-3. 第二优先把 canonical mean/std 用于显式 affine modulation；
-4. action label 保留 additive shift，再通过 per-layer scale/shift/gate 增强控制；
-5. loop 继续以 circular phase / 边界结构为主，不优先改成普通通道 FiLM；
-6. 所有新增调制 head 以 identity 语义初始化，并通过等参数量消融决定是否保留。
+### 2.1 现象
 
-## 2. 当前实现边界
+闭合比 = `‖x[末帧] − x[首帧]‖ / 窗口内相邻帧步长中位数`（非根关节的 pos + rot 通道）。
 
-当前条件总线位于 [`AnyTop.forward`](../model/anytop.py)：
+| 窗口 | 低 speed | 高 speed |
+|---|---:|---:|
+| 真实加载器输出的 loop 窗口，按 speed < 1.25 / ≥ 1.25 分组（p10 / 中位数，n=258 / 186） | 0.70 / 1.32 | 0.44 / 0.64 |
+| 按加载器逻辑复现、跨度对齐的 GT 窗口，s = 1 / 2（中位数） | 0.76 | 0.44 |
+| 生成，`is_loop=True`，s = 1 / 2（中位数） | **0.14** | **0.11** |
 
-```text
-sinusoidal diffusion timestep
-  → species FiLM
-  + resample_speed token
-  + canonical-frame token
-  + loop token
-  + action-label token
-```
+生成结果比训练数据的 p10 还小 4–5 倍：末帧几乎是首帧的复制，平铺播放时接缝处接近静止一帧。
 
-组合结果在每个 `GraphMotionDecoderLayer` 中经过该层独立的 `embed_timesteps`，再广播加到所有
-帧、关节 token：
+### 2.2 原因
 
-```python
-x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
-```
+两处仍在沿用"保留 closing key（末帧 = 首帧）"的旧约定，而加载器从 `471743e` 起已经在加载时
+丢掉了 closing key（[`dataset._drop_loop_closing_frame`](../data_loaders/truebones/data/dataset.py)），
+所以窗口末帧是首帧的**前一步**：
 
-需要区分以下事实：
+1. [`circular_phase_embedding`](../model/motion_transformer.py) 用 `period = motion_frames - 1`，
+   首、末两帧的相位编码完全相同。主干每层 temporal attention 前加的相位
+   （`GraphMotionDecoderLayer.temporal_phase_scale`）和 cross-limb 的 loop 时间表
+   （[`_loop_aware_time_embedding`](../model/motion_transformer.py)）都用这张表。函数 docstring 里
+   "the closing key every stored loop keeps"已经过时。
+2. [`loop_wrap_loss`](../diffusion/gaussian_diffusion.py) 的 pose 项和 rot 项把首帧和末帧往**相等**拉；
+   同一个函数里的 terminal velocity 项要求 `首帧 − 末帧 = 末帧速度 × step`，符合新约定。两类项互相矛盾。
 
-- `action_label`、`resample_speed_cond` 和 canonical frame 当前主要走 additive token；
-- `species_cond` 已经对 timestep embedding 做 `gamma * t + beta`；
-- `species_joint_cond` 已经对每个 joint-name embedding 做 species × joint FiLM；
-- `is_loop` 除了 additive token，还控制每层 temporal attention 使用的 circular phase signal；
-- `action_group` 在服务端用于选择专用 checkpoint，不是模型 forward 内的 condition token。
+### 2.3 归因实验（推理时替换，不重训）
 
-因此本方案针对的不是“AnyTop 完全没有乘性条件”，而是：**decoder hidden state 及其
-spatial / temporal / FFN 残差分支没有条件相关的乘性调制。**
+在同一 checkpoint、相同物种和 seed 下，只替换相位表（8 个物种 × 3 个样本，`walk, forward`）：
 
-## 3. Additive bus 的能力与限制
-
-令各条件投影之和为 `c`，第 `l` 层接收：
-
-```text
-b_l = W_l(t + c)
-x_l' = x_l + b_l
-```
-
-由于 `W_l` 为线性层：
-
-```text
-W_l(t + c_action + c_speed + ...) = W_l(t) + W_l(c_action) + W_l(c_speed) + ...
-```
-
-### 3.1 它能做到什么
-
-- 每层拥有独立的 `W_l`，同一条件可以在不同深度产生不同方向的 shift；
-- shift 会改变 attention 的 query/key/value 以及后续 FFN 输入，并非只改变输出均值；
-- attention、normalization 和 GELU 可以在深层形成条件与 token content 的非线性交互；
-- 离散、全局的 action 语义用 additive token 表达是合理的。
-
-### 3.2 它不擅长什么
-
-- 没有直接表示 `(1 + gamma(c)) * x` 的短路径；
-- 多种条件先在同一个 latent 空间求和，可能发生幅值竞争或语义纠缠；
-- 同一个向量广播到所有帧和关节，无法直接定位 action 对哪个 limb、哪个时间区间生效；
-- speed 与 diffusion timestep 之间的交互只能由后续层间接恢复；
-- 条件若主要定义特征尺度，网络仍需从 additive token 推断应该缩放哪些 hidden channels。
-
-这些是学习效率和可控性问题，不是表达能力的绝对缺失。足够深、足够宽的现有网络原则上仍可
-近似相同映射，因此是否升级必须由消融而非结构直觉决定。
-
-## 4. 条件与调制机制的匹配
-
-| 条件 | 语义类型 | 建议机制 | 优先级 |
-|---|---|---|---:|
-| `resample_speed_cond` | 连续时间尺度、步频 | additive token + temporal affine modulation；输入改用 `log(speed)` | 1 |
-| canonical mean/std | 输出空间的平移与尺度定义 | affine modulation，或长期统一到单一规范空间 | 2 |
-| `action_label` | 离散、可组合语义 | 保留 additive shift，再增加 per-layer scale/shift/gate | 3 |
-| `species_cond` | 全局形态与动力学先验 | 现有 timestep FiLM 保留；可纳入 block modulation 消融 | 4 |
-| `is_loop` | 边界拓扑、周期相位 | circular phase / loop-aware temporal structure 为主 | 不优先 |
-| direction / hands 等 action slot | 空间局部语义 | 后续考虑 joint/limb-aware conditioning 或 cross-attention | 独立课题 |
-
-### 4.1 Resample speed
-
-`resample_speed_cond = source_frames / internal_frames` 表示窗口相对源动作的时间压缩或拉伸，
-最接近“增益/频率”型条件，因而是乘性调制的首选。
-
-建议先使用：
-
-```text
-s = log(clamp(resample_speed_cond, min=eps))
-e_speed = MLP(FourierFeatures(s))  # 小数据时也可先只用 MLP(s)
-```
-
-`log` 空间使互为倒数的快放/慢放围绕 0 分布，也避免原始正数比例的明显偏态。第一阶段只让
-`e_speed` 调制 temporal attention 与 FFN，不调制 spatial attention，以减少作用面并提高
-消融可解释性。
-
-但必须避免过度承诺：速度不仅改变 hidden-channel 幅度，也改变时间频率。若 temporal FiLM
-收益有限，下一步应让 speed 调制 temporal positional frequency / phase，而不是无限扩大 FiLM。
-
-### 4.2 Canonical frame
-
-canonical mean/std 定义模型写入的坐标空间，其中 std 本身就是尺度。只用 additive token 时，
-网络必须从一个全局向量间接推断每个 feature channel 的 gain。
-
-短期建议把 `[mean || log(std)]` 同时保留在 additive bus，并送入每层 affine modulation。
-mean 更自然地影响 shift，std 更自然地影响 scale，但不要用硬编码把二者完全隔离；由独立 MLP
-学习 `gamma/beta`，再通过监控验证是否符合预期。
-
-长期更干净的方向是让所有样本在同一规范化空间训练，并在模型外做确定性的坐标变换。如果
-canonical frame 可以完全从模型目标中移除，优先选择确定性变换，而不是用更复杂的条件网络
-补偿混合坐标系。
-
-### 4.3 Action label
-
-action label 需要引入“walk / attack / turn”等新语义，因此不能只靠乘法：纯 gate 只能重标定
-已有 feature，缺少自然的语义 shift。建议保留现有四槽 additive token，同时让 action
-embedding 参与 affine modulation。
-
-如果目标是提升 `left/right`、`hand1/hand2` 等局部可控性，全局 AdaLN 仍可能太粗。那类问题
-应单独设计 slot → joint/limb 的定向注入，或者引入 action-token cross-attention，而不是继续
-堆叠全局 FiLM。
-
-### 4.4 Loop
-
-loop 的核心不是“放大哪些通道”，而是窗口首尾具有周期邻接关系。当前 circular phase signal
-已经比普通 FiLM 更贴合问题。建议保留 additive loop token 和 circular phase 路径，优先验证：
-
-- circular phase 是否真正被每层的 `temporal_phase_scale` 使用；
-- loop wrap loss 与采样期闭合处理是否一致；
-- 是否需要 loop-aware relative position / circular temporal attention。
-
-只有证据显示 loop token 的全局控制不足时，才将它纳入 affine head。
-
-## 5. 建议结构
-
-### 5.1 条件保持分源，调制允许晚融合
-
-不要仅保留一个不可解释的总和。先分别构造：
-
-```text
-e_t       = timestep embedding
-e_action  = existing four-slot action projection
-e_speed   = projection(log(resample_speed_cond))
-e_frame   = projection(canonical mean, log std)
-e_loop    = loop projection
-e_species = species descriptor projection
-```
-
-additive bus 可以继续使用：
-
-```text
-e_add = e_t + e_action + e_speed + e_frame + e_loop
-```
-
-同时为 affine path 显式 concat 或分源求和：
-
-```text
-e_mod = concat(e_t, e_action, e_speed, e_frame[, e_species, e_loop])
-```
-
-concat 让 modulation head 知道信息来自哪个条件，避免在总和中先丢失来源。若参数预算不允许
-concat，可以让每种条件先经过独立线性层，再求和；不要直接复用未经分源的 `e_add`。
-
-### 5.2 每层、每分支的 affine modulation
-
-理想结构采用 Pre-Norm 风格。对第 `l` 层的分支
-`m ∈ {spatial, temporal, ffn}`：
-
-```text
-(gamma_lm, beta_lm, gate_lm) = ModHead_lm(e_mod)
-z_lm = (1 + gamma_lm) * Norm(x) + beta_lm
-x = x + (1 + gate_lm) * Branch_lm(z_lm)
-```
-
-三个分支使用不同参数，因为条件的作用不应被强制相同：
-
-- speed 预计主要改变 temporal 与 FFN；
-- morphology / canonical scale 可能同时影响 spatial 与 temporal；
-- action 可能改变三者，但不同 action slot 的最优分配未知。
-
-当前 `GraphMotionDecoderLayer` 是 Post-Norm 顺序。直接改成完整 Pre-Norm 会同时改变训练动力学，
-使“条件调制收益”与“Norm 架构变化”无法区分。因此首轮实验建议采用最小侵入版本：
-
-```text
-x_cond = (1 + gamma_lm) * x + beta_lm
-branch = Branch_lm(x_cond)
-x = Norm(x + (1 + gate_lm) * branch)
-```
-
-先在现有 Post-Norm 主干中验证调制价值。只有确认有效后，再单独比较 Pre-Norm 重构。
-
-### 5.3 Identity 初始化
-
-新增 head 的最后一个 Linear 必须零初始化：
-
-```text
-gamma = 0
-beta  = 0
-gate  = 0
-```
-
-这里 residual multiplier 使用 `1 + gate`，从而 fresh model 初始行为与当前分支一致。不要在现有
-主干上直接采用 `gate * branch` 且把 gate 零初始化，否则所有 transformer branch 会在初始时
-被关闭，比较的不再只是条件调制。
-
-必要时可用有界参数化限制 OOD 条件：
-
-```text
-scale = 1 + a * tanh(gamma)
-gate  = 1 + b * tanh(gate_residual)
-```
-
-默认先不用 clamp；只有监控发现 scale 爆炸或自定义 action/species 输入导致 OOD 崩坏时再加。
-
-## 6. 分阶段实现计划
-
-### 阶段 A：仅 speed → temporal modulation
-
-- 保留当前 speed additive token；
-- speed 输入改为或额外加入 `log(speed)`；
-- 每层只给 temporal branch 增加 `gamma/beta`；
-- 暂不增加 residual gate，避免一次引入三个自由度；
-- 所有 head zero-init；
-- 与等训练配置、等 seed 的 additive baseline 对照。
-
-这是最小、因果最清楚的一步。若没有收益，不应继续把同一设计无差别铺到所有条件。
-
-### 阶段 B：canonical frame → affine modulation
-
-- 输入使用 `[mean || log(std)]`；
-- 先调制 spatial/temporal 的输入 hidden state；
-- 保留原 canonical additive token，做 `additive only / affine only / both` 三臂消融；
-- 检查不同 object subset 下的 feature-channel 误差，而不只看全局 loss。
-
-### 阶段 C：action → scale/shift/gate
-
-- 保留现有四槽 additive action token 和 CFG null embedding；
-- conditional 与 unconditional forward 必须同时切换 action modulation；
-- 先把四槽拼接后的 action embedding 送进 modulation head；
-- 若 direction/hands 仍弱，再研究 slot-specific、joint-aware 路径。
-
-### 阶段 D：统一 block conditioner（可选）
-
-只有 A–C 中至少一项被消融证实有效后，才考虑将 timestep、action、speed、frame、species
-统一成 block conditioner，并为 spatial / temporal / FFN 一次性产生 modulation 参数。
-
-## 7. CFG 与 condition dropout 约束
-
-新增 action modulation 后，CFG 的 unconditional branch 不能只把 additive action token 换成
-`action_label_null_emb`；所有由 action 驱动的 `gamma/beta/gate` 也必须读取同一个 null 状态。
-否则 conditional/unconditional 两次 forward 的差异不再只代表 action，CFG 语义会被破坏。
-
-建议把“是否 active”的处理放在 action embedding 构造阶段：
-
-```text
-action_repr = active ? projected_action : learned_null_action
-```
-
-随后 additive path 与 modulation path 都只读取 `action_repr`，避免维护两套 drop 判断。
-
-`resample_speed_cond`、canonical frame 和 loop 当前不是 action CFG 要引导掉的对象；action CFG 的
-unconditional branch 必须保持这些条件完全一致。
-
-## 8. Checkpoint 与训练兼容性
-
-任何新增 per-layer head 都会产生新 state-dict keys。当前严格加载逻辑下：
-
-- 旧 checkpoint 不能无条件加载到新结构；
-- resume 与 inference 必须根据 checkpoint `args.json` 重建相同架构；
-- 如果新功能由默认 `False` 的显式 flag 控制，旧 checkpoint 可继续走完全不创建新参数的旧路径；
-- 不能只靠 `strict=False` 静默吞掉调制 head，因为这会让实验误以为加载了已训练能力。
-
-建议新增单一实验开关时按作用域命名，例如：
-
-```text
---speed_temporal_film
---canonical_block_film
---action_block_adaln
-```
-
-这些名字只用于首轮消融。确定最终方案后再考虑合并成统一配置，避免在尚无证据时引入一个
-语义宽泛、难以复现实验的 `--use_film`。
-
-## 9. 消融矩阵
-
-首轮不要直接做“全条件 AdaLN vs 当前模型”，否则即使结果变化也无法定位来源。推荐顺序：
-
-| Arm | Additive bus | Speed temporal affine | Canonical affine | Action affine/gate |
+| 变体 | 闭合比 s=1 / s=2 | 周期 / GT | 骨长误差 | jerk（含接缝） s=1 / s=2 |
 |---|---:|---:|---:|---:|
-| A0 baseline | ✓ | — | — | — |
-| A1 speed | ✓ | ✓ | — | — |
-| B1 frame | ✓ | — | ✓ | — |
-| C1 action | ✓ | — | — | ✓ |
-| D1 combined | ✓ | 仅纳入已胜出的项 | 仅纳入已胜出的项 | 仅纳入已胜出的项 |
+| 现状（周期 59） | 0.14 / 0.11 | 1.01 / 1.02 | 0.046 / 0.049 | 0.0198 / 0.0621 |
+| 周期 60 | **0.84 / 0.42** | 1.04 / 1.08 | 0.047 / 0.047 | 0.0192 / 0.0548 |
+| 主干相位 scale 置 0 | 1.25 / 0.64 | — | — | — |
 
-若要判断提升来自“乘性”还是单纯增加参数，再为获胜 arm 加一个等参数量 additive MLP 对照。
+只改周期，闭合比就回到数据分布内，步频和骨长不变，含接缝的 jerk 下降。说明过度闭合主要来自
+相位表。loss 的 pose/rot 项贡献多少，推理实验无法分离；它和数据矛盾，一并修正。
 
-## 10. 验收指标
+该 checkpoint 的 `temporal_phase_scale` 只有第 0 层明显非零（0.28，其余层绝对值 ≤ 0.023）。
 
-### 10.1 通用训练指标
+### 2.4 改造
 
-- 同 step 的 validation `l_simple`、velocity、geometry、loop-wrap loss；
-- 收敛速度与最终质量同时记录，避免只看某个中途 checkpoint；
-- 参数量、单 step 时间、峰值显存和采样延迟；
-- `gamma/beta/gate` 的均值、std、分位数及按层范数；
-- 条件置换测试：固定噪声和骨架，只替换一个条件，其他输入完全不动。
+1. `circular_phase_embedding`：相位改为 `2π·f·t / motion_frames`，即"末帧的下一帧"和首帧同相。
+   cross-limb 时间表调用同一函数，自动一致。同步更新 docstring。
+2. `loop_wrap_loss`：
+   - 删除 pose 项。terminal velocity 项已经按正确约定约束了位置接缝。
+   - rot 项从 `geodesic(末帧, 首帧) → 0` 改为接缝处与相邻帧步长连续，例如
+     `geodesic(末帧, 首帧) ≈ geodesic(倒数第二帧, 末帧)`。
+3. （建议同批做）加载器 loop 窗口的重采样用的是 `resample_motion_features` 的 `linspace(0, L-1, T)`
+   端点映射：接缝步长是 1 个源帧，窗口内步长是 `(L-1)/(T-1)` 个源帧，二者只在 `L = T` 时相等。
+   实测训练窗口闭合比的 p10–p90 横跨 0.44–2.58，说明周期性本身就不均匀。loop 窗口改为按
+   `t·L/T`（不含端点）环形插值后，周期严格等于 `T`。
+   注意：这会改变 loss 端从 `resample_speed_cond` 反推的 step scale（现为 `(L-1)/(T-1)`），
+   `_physical_velocity_step_scale` 要对 loop 样本同步改成 `L/T`。
+4. `CKPT_VERSION` 11 → 12：相位表语义变化，旧 loop checkpoint 不能在新代码上运行。之后重训。
+5. （可选，现有 checkpoint 的止血方案）推理时切换到周期 `T` 的相位表。2.3 的实测没有退化，
+   但对训练时的相位通路而言属于分布外，只能临时用，不作为最终方案。
 
-### 10.2 Speed 专项
+### 2.5 验收
 
-- 目标 speed 与生成 motion 的周期、步频、root velocity 的单调性；
-- 未见过的中间 speed 插值；
-- speed reciprocal 对（如 `0.75` 与 `1/0.75`）是否表现近似对称；
-- action identity、步幅、接触稳定性是否随 speed 改变而意外崩坏；
-- temporal modulation 的 `gamma` 是否随 `log(speed)` 有系统变化，而非始终接近 0。
+- 生成 loop 的闭合比落在训练窗口分布内。做了第 3 项后应接近 1，并且不随 `resample_speed` 变化。
+- 周期 / GT、骨长误差与修正前持平；含接缝的 jerk 不高于修正前。
+- 非 loop 生成不受影响（同样的指标，`is_loop=False`）。
 
-### 10.3 Canonical frame 专项
+### 2.6 实施记录（2026-09-14）
 
-- 分 object subset、分 feature channel 的去标准化后误差；
-- 不同 canonical std 下的骨长、关节角和 root displacement 一致性；
-- scale 是否主要响应 std、shift 是否主要响应 mean；这是诊断信号，不设为硬约束。
+- 第 1–4 项已实施，`CKPT_VERSION` 11 → 12。第 5 项没做：版本号升级后，旧 checkpoint 会直接被版本检查拒绝。
+- 第 2 项的 rot 项：取接缝步长与**两侧**相邻步长均值之差的绝对值，
+  `|geo(R[-1], R[0]) − ½·(geo(R[-2], R[-1]) + geo(R[0], R[1]))|`。量纲仍是弧度，`--lambda_loop_wrap 0.04`
+  不用改。训练日志里不再有 `loop_wrap_pose`。
+- 第 3 项实际改了三处，缺一处周期都不均匀：
+  - 窗口重采样 `resample_motion_features(periodic=True)`，只用于 `loop_condition_active` 的窗口。被告知“非 loop”的
+    loop 片段仍按端点重采样；
+  - loop 片段的速度增广 `time_scale_motion_features(periodic=True)`。否则平铺后窗口内部仍有不均匀的接缝；
+  - `_physical_velocity_step_scale` 按 `y['is_loop']` 取 `L/T`，非 loop 仍是 `(L-1)/(T-1)`。
+- 生成端同步：纯 loop 生成（没有 reference）导出到 M ≠ T 帧时，也按环形重采样，否则导出结果的接缝步长又会不均匀。
+  带 reference 时，窗口里放的是 reference 按端点重采样的结果，所以导出仍按端点。`tools/sample_augmented_bvh.py --real-time`
+  也按 `loop_applied` 选重采样方式。
+- 加载器实测。样本是 biped / multiped / quadruped 三个子集的全部 loop clip，每个抽 6 次；表中是闭合比中位数，三个数依次对应这三个子集：
 
-### 10.4 Action 专项
+  | | speed < 1.25 | speed ≥ 1.25 |
+  |---|---:|---:|
+  | 旧（端点重采样） | 1.06 / 1.25 / 1.06 | 0.66 / 0.64 / 0.64 |
+  | 新（环形重采样） | 1.06 / 1.08 / 1.01 | 0.98 / 1.01 / 1.01 |
 
-- 固定 skeleton/seed 下的 action adherence；
-- head、direction、modifier、hands 四槽分别置换；
-- 未见组合的 compositional generalization；
-- CFG scale sweep，观察更强 guidance 是否只增强动作语义而不破坏几何；
-- 对称词（left/right、hand1/hand2）的关节局部响应。
+  高 speed 组从 0.64 回到 ≈1，不再随 speed 变化，训练数据这一侧符合 2.5 第一条。生成结果的验收要等重训后再测。
 
-### 10.5 Loop 专项
+## 3. `action_label`：未见组合上的条件强度
 
-- 首尾 position、rotation、velocity discontinuity；
-- loop/non-loop 条件置换后的实际闭合变化；
-- circular phase scale 的层间分布；
-- 不以“普通 FiLM 参数不为零”替代真实闭合质量。
+### 3.1 实测
 
-## 11. 采纳与回退标准
+方向从肢体运动学判断（locomotion 的根 XZ 位移在预处理时被拉回原地，不能看根速度）：
+`D_fb = corr(足端高度, 足端 z 速度)`，`D_lr = corr(足端高度, 足端 x 速度)`，足端取静止姿态中高度最低三分之一的叶关节。
+分类器用 GT 各方向标签的中心点，按最近中心归类。
 
-建议在训练前冻结明确门槛，至少满足：
+| 场景 | cfg=1 | cfg=3 |
+|---|---:|---:|
+| 训练中有 walk 前/后/左/右 的 12 个物种，方向准确率（GT 自身用此指标上限 63%） | 59% | 65% |
+| 从没有后退/横移 clip 的 7 个四足骨架：forward / backward / left / right | 100 / 33 / 0 / 0 % | 100 / **100** / 0 / 29 % |
+| 8 个常规物种：walk vs run 步频比 ÷ GT 步频比（1 = 与 GT 同样分开） | 1.08 | 1.09 |
+| 第一行 12 个物种中能测出周期的 9 个（多为 unitybundles 怪物骨架），run/walk 周期比（GT 0.67） | **0.98** | 0.67 |
+| 骨长误差（常规物种，中位数） | 0.054 | 0.065 |
+| jerk / GT | 1.16 | 1.42 |
 
-1. 对目标条件的专项指标稳定优于 additive baseline；
-2. 提升超过等参数量 additive 对照，而不只是参数增多；
-3. 非目标条件、几何质量和 loop 质量无显著回退；
-4. modulation 参数确实偏离 identity，且变化与条件有可解释相关性；
-5. 推理成本与显存增量在服务预算内。
+结论：
+- 训练中见过的组合，cfg=1 基本够用（方向准确率接近指标上限，常规物种 walk/run 分得开）。
+- 模型**有**这些条件的知识：cfg=3 能让四足后退从 33% 升到 100%，也能让怪物物种分开 walk/run。
+  但 cfg=1 时条件被物种先验盖过。靠 cfg=3 补偿，要付出骨长误差 +20%、jerk +22% 的代价。
+- 四足横移在 cfg=3 下依然失败。这类步态在数据里基本不存在，不属于本方案的目标，任何注入方式都
+  无法指望解决。
 
-出现以下情况应回退：
+"cfg=1 条件太弱"是否由加性注入方式造成，无法从推理实验判断，也可能来自 CFG drop 比例或数据分布。
+所以本节是一个**需要消融验证**的改造，不是确认的缺陷。
 
-- `gamma/beta` 长期接近 0：模型不需要该路径；
-- 参数明显变化但专项指标不变：调制被模型用于无关补偿；
-- action adherence 上升但 skeleton geometry 或 motion smoothness 明显下降；
-- speed 控制只改变动作幅度，不改变实际周期/速率；
-- 效果只能由更高参数量解释。
+### 3.2 改造
 
-## 12. 推荐的最终判断
+在现有加性 action token 之外，加一路逐层 AdaLN：
 
-- **不是缺陷修复，而是有明确目标的容量重分配。** 当前 additive bus 应保留为 baseline。
-- **speed 是最值得先试的乘性条件**，但重点应放在 temporal branch，并准备进一步调制时间编码。
-- **canonical std 天然适合 scale、mean 天然适合 shift**；更长期的方案是统一坐标空间。
-- **action 不应由 additive 全面替换为 pure gate**；推荐 additive semantic shift 与 affine
-  modulation 并存。
-- **loop 优先解决周期结构，不优先解决通道增益。** 当前 circular phase 路径比普通 FiLM
-  更符合其语义。
-- 若分支级调制实施，spatial / temporal / FFN 应分开产参、identity-init，并严格维护 CFG
-  conditional/unconditional 的同源条件表示。
+```text
+action_repr = where(active, action_label_projection(channels), action_label_null_emb)   # 每次 forward 只算一次
+x_t_in  = (1 + γ_l^temporal(action_repr)) * x + β_l^temporal(action_repr)   # 只喂 temporal 分支输入，残差仍用 x
+x_ff_in = (1 + γ_l^ffn(action_repr))      * x + β_l^ffn(action_repr)        # 只喂 FFN 分支输入
+```
 
+- **位置**：当前 decoder 是 Post-Norm（`GraphMotionDecoderLayer`），temporal 和 FFN 分支的输入正好是
+  `norm1` / `norm2` 的输出，所以这就是只作用于分支输入的 AdaLN，不改 Norm 结构。spatial 分支的输入
+  已经带了 `embed_timesteps` 的加性偏移，不再重复。temporal 分支的 γ/β 在环形相位相加
+  （`GraphMotionDecoderLayer.temporal_phase_scale`）**之前**施加，避免缩放相位。
+- **初始化**：每个 head 的最后一层 Linear 零初始化，新模型一开始与现状完全一致。
+  不引入 residual gate。
+- **同一次 Bernoulli**：训练时 `AnyTop._resolve_action_label_active` 会抽 `torch.rand`。加性路径和
+  调制路径必须共用同一个 `action_repr`，不能各自调用一次 `_action_condition`，否则两条路径看到的
+  drop 掩码不同。
+- **CFG**：[`ClassifierFreeActionModel`](../model/cfg_sampler.py) 的无条件分支只把
+  `action_label_active` 置 False。只要调制读的是同一个 `action_repr`，它就自动走 null，其余条件
+  在两次前向中保持一致。`feat/all_group` 上的 group token 仍只走加性路径（label CFG 的无条件分支会保留它）。
+- **精度**：head 用 `run_in_fp32`，与其他条件投影一致。训练使用 `--amp_dtype fp16`。
+- **参数量**：每层两个 `Linear(256 → 512)`，共 8 层，约 2.1M，是现有 17.0M 的 +12%。
+- **开关**：`--action_label_adaln`，默认关。关闭时不创建任何参数，旧 checkpoint 按原路径加载，
+  不需要 CKPT bump。不要用 `strict=False` 吞掉新 key。
+
+### 3.3 消融
+
+以 §2 修正后重训的模型作为 baseline，同一数据、同样的 step 数：
+
+| Arm | 说明 |
+|---|---|
+| A0 | baseline，跑 2 个 seed，用来估计 seed 噪声 |
+| A1 | + `--action_label_adaln` |
+| A2 | 与 A1 相同的 head，但强制 γ≡0（只有 β）。用来分离"乘性调制"和"多一处注入点"两种效果 |
+
+### 3.4 采纳 / 回退
+
+采纳 A1 需同时满足：
+
+1. 四足后退迁移准确率在 cfg=1 下达到 A0 cfg=3 的水平，超出 A0 两个 seed 的差异范围；
+2. 怪物物种 walk/run 步频比在 cfg=1 下接近 GT；
+3. 训练中见过的组合的方向准确率不低于 A0；
+4. cfg=1 下骨长误差和 jerk 不高于 A0 cfg=1。本方案的意义就是免掉 cfg=3 的质量代价；
+5. 提升明显大于 A2；
+6. 推理时把 head 置零后，上述提升消失。
+
+回退条件：A1 与 A0 或 A2 无法区分。此时 action 条件强度问题的现实解法就是提高 cfg，代价见 §3.1 表格。
+
+## 4. 探针方法（复现用）
+
+- **周期**：非根关节 pos + rot 通道去均值后，把各通道的自相关相加，取最高峰 85% 以上的第一个峰，
+  再做抛物线插值；乘以 `(round(s·60)−1)/59` 换算成源帧周期。在 GT 窗口上，源帧周期对 s 不变。
+- **GT 窗口**：按加载器逻辑复现：drop closing key → tile → 截取 `round(s·60)` 帧 → `resample_motion_features`。
+- **生成**：DDPM 100 步，fp32。speed / loop 实验每个物种 2–4 个样本。
+  Elephant、Raptor 在 GT 上也测不出周期，已排除。
+- **CKPT**：v14_fp16 是 CKPT 10，加载时绕过了版本检查。它与 11 的差别只有 9 个 2–8 关节小骨架的 L 下限，
+  探针没有用到这些骨架，并且使用该 run 自带的 cond 快照。
+
+---
+
+## 附录：已排除的条件（现状机制无需改造）
+
+| 条件 | 证据 |
+|---|---|
+| canonical frame（`canonical_feature_mean/std`） | 实际只有 7 组取值，position 的 std 所有 subset 共享（0.821），本质上是 7 类类别变量。teacher-forced 把 frame 换成别的 subset，x0 误差：pos ×2.2–4.2，rot ×1.7–6.4；用真实 frame 时每个 frame 的直流偏差均值 0.003–0.010（不计只有 3 个样本的 frame），换 frame 后 0.019–0.050。加性 token 已经把输出空间分清 |
+| `species_cond` FiLM | 关掉后 x0 误差 ×1.00–1.07。信息与关节名通路重复，加调制也不会让重复的信息变有用 |
+| `resample_speed_cond` | 8 个物种、s = 0.75–2.0，生成周期（源帧）/ GT 中位数 0.85–1.09。s=1.5 / 2 各 48 个样本，77% / 88% 在 ±30% 以内（训练本身就有 ±30% 节奏增广），保持 s=1 步频不变的只有 12% / 0%。训练中 s∈[1.25, 2] 占 45%。不存在忽略 speed 的系统性问题 |

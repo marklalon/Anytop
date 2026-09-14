@@ -26,13 +26,16 @@ from utils.model_util import create_gaussian_diffusion, load_model  # noqa: E402
 
 
 # circular_phase_embedding's window closure is exact only in real arithmetic:
-# in fp32 the closing phase misses 2*pi*f by ~(2*pi*f)*eps, and with the top
+# in fp32 a phase near 2*pi*f misses by ~(2*pi*f)*eps, and with the top
 # frequency at dim // 2 the residual is bounded by pi * dim * eps -- it grows
-# with dim. A flat 1e-6 passes at (6, 8) (7.0e-07) but fails at the production
-# shape (6.7e-05 at (61, 256)). 2x margin: measured worst case over length
-# 6..481, dim 8..1024 is 0.70 of the bound.
+# with dim. A flat 1e-6 passes at (6, 8) but fails at the production shape
+# (61, 256), so tolerances scale with dim.
 def _closure_atol(dim: int) -> float:
     return 2.0 * math.pi * dim * torch.finfo(torch.float32).eps
+
+
+def _phase_step(emb: torch.Tensor, a: int, b: int) -> float:
+    return float(torch.linalg.norm(emb[a].double() - emb[b].double()))
 
 
 # Toy shapes plus the production one (--num_frames 60 -> T = 61, latent_dim 256).
@@ -107,7 +110,12 @@ class NativeLoopTests(unittest.TestCase):
         self.assertAlmostEqual(float(resampled[0, 0, 0]), 0.0)
         self.assertAlmostEqual(float(resampled[-1, 0, 0]), 0.0)
 
-    def test_circular_phase_gives_loop_endpoints_same_phase(self):
+    def test_circular_phase_wrap_is_one_ordinary_step(self):
+        """A loop window holds no closing key: its last frame is one step
+        BEFORE frame 0. So the phase of the last frame differs from the first
+        by exactly one frame step, the same as any two neighbours -- not the
+        zero step a period of motion_frames - 1 gave, which taught the model
+        to copy frame 0 into the last frame."""
         for length, dim in _PHASE_SHAPES:
             with self.subTest(length=length, dim=dim):
                 emb = circular_phase_embedding(
@@ -118,20 +126,22 @@ class NativeLoopTests(unittest.TestCase):
                 )
 
                 self.assertEqual(tuple(emb.shape), (length, dim))
-                # Slot 0 is the T-pose token; motion frames 1..length-1 close on
-                # themselves.
+                # Slot 0 is the T-pose token; motion frames are 1..length-1.
                 self.assertTrue(torch.equal(emb[0], torch.zeros(dim)))
+                ordinary = _phase_step(emb, 2, 1)
+                self.assertGreater(ordinary, 1e-2)
                 atol = _closure_atol(dim)
-                self.assertTrue(
-                    torch.allclose(emb[1], emb[-1], atol=atol),
-                    f'closure residual {(emb[1] - emb[-1]).abs().max().item():.3e} '
-                    f'exceeds atol={atol:.3e} at (length={length}, dim={dim})',
-                )
+                for a, b in ((length - 1, length - 2), (1, length - 1)):
+                    self.assertAlmostEqual(_phase_step(emb, a, b), ordinary, delta=atol)
+                # The frame after the last is frame 0: phase 0 is cos = 1, sin = 0.
+                half = dim // 2
+                expected_first = torch.cat([torch.ones(half), torch.zeros(dim - half)])
+                self.assertTrue(torch.equal(emb[1], expected_first))
 
     def test_circular_phase_wraps_exactly_once_per_window(self):
-        """The period is the window, never a cycle count: no interior frame
-        repeats the first frame's phase, so the embedding cannot tell the
-        model how many gait cycles the window holds."""
+        """The period is the window, never a cycle count: no frame after the
+        first repeats its phase, so the embedding cannot tell the model how
+        many gait cycles the window holds."""
         for length, dim in _PHASE_SHAPES:
             with self.subTest(length=length, dim=dim):
                 emb = circular_phase_embedding(
@@ -142,13 +152,10 @@ class NativeLoopTests(unittest.TestCase):
                 )
 
                 first = emb[1]
-                for frame in range(2, length - 1):
+                for frame in range(2, length):
                     self.assertFalse(
                         torch.allclose(emb[frame], first, atol=1e-3), frame
                     )
-                self.assertTrue(
-                    torch.allclose(emb[length - 1], first, atol=_closure_atol(dim))
-                )
 
     def test_truebones_collate_forwards_loop_flags_as_bool_tensors(self):
         _, cond = truebones_batch_collate([
@@ -289,41 +296,83 @@ class NativeLoopTests(unittest.TestCase):
 
         self.assertLess(float(terms['loop_wrap_loss'].item()), 1e-6)
 
+    @staticmethod
+    def _rotating_cycle(n_frames, *, n_joints=2, stall_seam=False):
+        """[1, n_joints, 12, T] physical output: every joint turns about Z at a
+        constant rate round one cycle per window, positions ride a circle, and
+        the velocity rows are the steps to the next frame of the cycle (the
+        terminal row the wrap delta), at step scale 1. ``stall_seam`` copies
+        frame 0 into the last frame -- the old closing-key convention."""
+        angles = 2.0 * math.pi * torch.arange(n_frames, dtype=torch.float32) / n_frames
+        if stall_seam:
+            angles[-1] = angles[0]
+        model_output = torch.zeros(1, n_joints, 12, n_frames, dtype=torch.float32)
+        # 6D = first two matrix rows of Rz(angle): (cos, -sin, 0), (sin, cos, 0).
+        model_output[0, :, 3, :] = torch.cos(angles)
+        model_output[0, :, 4, :] = -torch.sin(angles)
+        model_output[0, :, 6, :] = torch.sin(angles)
+        model_output[0, :, 7, :] = torch.cos(angles)
+        model_output[0, 1:, 0, :] = torch.cos(angles)
+        model_output[0, :, 1, :] = torch.sin(angles)
+        positions = model_output[0, :, 0:3, :]
+        model_output[0, :, 9:12, :] = torch.roll(positions, -1, dims=-1) - positions
+        return model_output
+
     def test_loop_wrap_components_use_the_actual_seam(self):
         diffusion = self._make_diffusion()
-        model_output = torch.zeros(1, 2, 12, 6, dtype=torch.float32)
-        model_output[:, :, 3, :] = 1.0
-        model_output[:, :, 7, :] = 1.0
-
-        model_output[:, :, 0:3, 1:3] = 10.0
-        model_output[:, :, 0:3, 3:5] = -10.0
-        model_output[:, :, 9:12, 0] = 5.0
-        model_output[:, :, 9:12, -1] = 0.0
-
-        model_output[:, :, 3:9, 1] = torch.tensor([0.0, 1.0, 0.0, -1.0, 0.0, 0.0])
-        model_output[:, :, 3:9, 4] = torch.tensor([0.0, -1.0, 0.0, 1.0, 0.0, 0.0])
-
         y = {
             'is_loop': torch.tensor([True]),
             'translation_root_index': [0],
         }
         terms = diffusion.loop_wrap_loss(
-            model_output,
-            y,
-            n_joints=torch.tensor([2]),
+            self._rotating_cycle(8), y, n_joints=torch.tensor([2]),
         )
 
-        self.assertLess(float(terms['loop_wrap_pose'].item()), 1e-6)
-        self.assertLess(float(terms['loop_wrap_rot'].item()), 1e-6)
+        # The last frame is one ordinary step before frame 0; nothing pulls
+        # it onto frame 0.
+        self.assertNotIn('loop_wrap_pose', terms)
         self.assertNotIn('loop_wrap_vel', terms)
         self.assertNotIn('loop_wrap_contact', terms)
-        self.assertLess(float(terms['loop_wrap_terminal_vel'].item()), 1e-6)
+        self.assertLess(float(terms['loop_wrap_rot'].item()), 1e-5)
+        self.assertLess(float(terms['loop_wrap_terminal_vel'].item()), 1e-10)
+
+    def test_loop_wrap_rotation_penalizes_a_stalled_seam(self):
+        # The last frame copying frame 0 is what the old period and pose/rot
+        # terms produced. Its wrap step is zero while its neighbours are two
+        # steps (frame 6 -> the copied angle 0) and one step (frame 0 -> 1):
+        # 1.5 steps short of their mean.
+        diffusion = self._make_diffusion()
+        y = {
+            'is_loop': torch.tensor([True]),
+            'translation_root_index': [0],
+        }
+        terms = diffusion.loop_wrap_loss(
+            self._rotating_cycle(8, stall_seam=True), y, n_joints=torch.tensor([2]),
+        )
+        step = 2.0 * math.pi / 8.0
+        self.assertAlmostEqual(float(terms['loop_wrap_rot'].item()), 1.5 * step, places=4)
+
+    def test_physical_velocity_step_scale_is_periodic_for_loops(self):
+        # resample_speed_cond = L / T. A loop window is resampled as a cycle
+        # (step L/T), anything else end to end (step (L-1)/(T-1)).
+        diffusion = self._make_diffusion()
+        n_frames = 60
+        speed = torch.tensor([1.5, 1.5, 0.75], dtype=torch.float32)
+        y = {
+            'is_loop': torch.tensor([True, False, True]),
+            'resample_speed_cond': speed,
+        }
+        step = diffusion._physical_velocity_step_scale(
+            y, 3, n_frames, torch.device('cpu'), torch.float32,
+        )
+        expected = torch.tensor([1.5, (90.0 - 1.0) / 59.0, 0.75], dtype=torch.float32)
+        self.assertTrue(torch.allclose(step, expected, atol=1e-6), step)
 
     def test_loop_wrap_terminal_velocity_uses_physical_step_scale(self):
         # The root's RIC X/Z are structurally zero and masked out of the
         # terminal term, so the seam has to be checked on a child joint (X)
         # and on the root's height (Y): pos[0] - pos[-1] == vel[-1] * 0.5 at
-        # resample_speed 4/7 over 7 frames.
+        # resample_speed 0.5 -- a loop window's step is L/T itself.
         diffusion = self._make_diffusion()
         model_output = torch.zeros(1, 2, 12, 7, dtype=torch.float32)
         model_output[:, :, 3, :] = 1.0
@@ -335,7 +384,7 @@ class NativeLoopTests(unittest.TestCase):
         y = {
             'is_loop': torch.tensor([True]),
             'translation_root_index': [0],
-            'resample_speed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
+            'resample_speed_cond': torch.tensor([0.5], dtype=torch.float32),
         }
 
         terms = diffusion.loop_wrap_loss(model_output, y, n_joints=torch.tensor([2]))
@@ -414,13 +463,14 @@ class NativeLoopTests(unittest.TestCase):
         y = {
             'is_loop': torch.tensor([True]),
             'translation_root_index': [0],
-            # 7 output frames drawn from 4 source frames: step_scale = 3 / 6.
+            # 7 output frames drawn from a 4-frame cycle: step_scale = 4 / 7,
+            # so the cycle's drift is its 4 source frames of unit velocity.
             'resample_speed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
         }
 
         terms = diffusion.loop_root_xz_closure_loss(model_output, y, n_joints=torch.tensor([2]))
 
-        self.assertAlmostEqual(float(terms['loop_root_xz_drift'].item()), 7.0 * 0.5, places=6)
+        self.assertAlmostEqual(float(terms['loop_root_xz_drift'].item()), 4.0, places=5)
 
     def test_loop_root_xz_closure_follows_translation_root_index_and_masks_invalid(self):
         diffusion = self._make_diffusion()
