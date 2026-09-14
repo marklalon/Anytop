@@ -56,7 +56,7 @@ class DistributionEvalReport:
     """Full low-shot weighted-reference quality report."""
 
     object_type: Optional[str]
-    action_words: Optional[str]
+    action_label: Optional[str]
     n_input: int
     n_reference: int
     input_total_frames: int
@@ -91,7 +91,7 @@ class DistributionEvalReport:
             },
             "meta": {
                 "object_type": self.object_type,
-                "action_words": self.action_words,
+                "action_label": self.action_label,
                 "n_input": self.n_input,
                 "input_total_frames": self.input_total_frames,
             },
@@ -103,7 +103,7 @@ class DistributionEvalReport:
         lines = [
             "Low-Shot Weighted-Reference Motion Quality Report",
             f"  Object type : {self.object_type or 'unknown'}",
-            f"  Action words: {self.action_words or 'unknown'}",
+            f"  Action label: {self.action_label or 'unknown'}",
             f"  Inputs      : {self.n_input} clip(s) / {self.input_total_frames} frames",
             f"  Reference   : {self.n_reference} clip(s) / {self.reference_total_frames} frames",
             "",
@@ -705,9 +705,15 @@ class DistributionMotionQualityScorer:
         self,
         motions: List[np.ndarray],
         object_type: str,
-        action_words: str,
+        action_label: str,
         top_k_species: int = 5,
     ) -> DistributionEvalReport:
+        """Score ``motions`` against the reference prior ``action_label`` selects.
+
+        ``action_label`` is spelled like generate.py's ``--action_label`` (the label
+        the clips were generated with); the prior's words are derived from it by
+        :func:`reference_bank.reference_prior_words`.
+        """
         query_motions = [
             motion.astype(np.float32)
             for motion in motions
@@ -728,7 +734,7 @@ class DistributionMotionQualityScorer:
             reference_kwargs["query_cond"] = self._query_cond_lookup[object_key]
         reference_bank = build_weighted_reference_bank(
             object_type=object_key,
-            action_words=action_words,
+            action_label=action_label,
             dataset_root=self.dataset_root,
             top_k_species=top_k_species,
             min_frames=_MIN_CLIP_FRAMES,
@@ -755,7 +761,7 @@ class DistributionMotionQualityScorer:
 
         return DistributionEvalReport(
             object_type=object_key,
-            action_words=str(action_words or "").strip(),
+            action_label=reference_bank.action_label,
             n_input=len(query_motions),
             n_reference=len(reference_bank.clips),
             input_total_frames=int(sum(motion.shape[0] for motion in query_motions)),

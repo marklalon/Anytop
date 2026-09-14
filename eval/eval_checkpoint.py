@@ -69,6 +69,7 @@ _REPO_ROOT = _ANYTOP_DIR.parent                   # pcvg-skeleton-animation/
 if str(_ANYTOP_DIR) not in sys.path:
     sys.path.insert(0, str(_ANYTOP_DIR))
 
+from eval.motion_quality.reference_bank import DEFAULT_SCORE_ACTION_LABEL
 from eval.motion_quality.scorer import DistributionMotionQualityScorer
 from sample.generate import main as generate_main
 from sample.generate import prepare_generation_runtime
@@ -76,9 +77,6 @@ from utils.parser_util import generate_args
 
 # Sentinel resolved at run time to the first output .npy of the previous task.
 _LAST_OUTPUT = "$LAST_OUTPUT"
-# Controlled words (not a group) selecting the scorer's reference prior: the
-# battery generates gait-like motion, so the prior is the walk/run references.
-_SCORE_ACTION_WORDS = "walk,run"
 _SCORE_TOP_K_SPECIES = 3
 
 # Default task battery, loaded by build_tasks() when --task_config is omitted.
@@ -301,6 +299,21 @@ def _extract_cond_path(extra_args: list) -> str | None:
     return None
 
 
+def _extract_action_label(extra_args: list) -> str:
+    """The label a task's clips are scored with: its own ``--action_label``.
+
+    A task that generates without one (unconditional, or conditioned only by a
+    reference motion) falls back to ``DEFAULT_SCORE_ACTION_LABEL``.
+    """
+    try:
+        idx = extra_args.index("--action_label")
+        if idx + 1 < len(extra_args) and extra_args[idx + 1].strip():
+            return extra_args[idx + 1]
+    except ValueError:
+        pass
+    return DEFAULT_SCORE_ACTION_LABEL
+
+
 def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> None:
     """Load a cond.npy and register its entries as query skeleton metadata."""
     try:
@@ -369,8 +382,13 @@ def _build_record_from_existing(
     index: int,
     scorer: DistributionMotionQualityScorer,
     root: Path,
+    action_label: str,
 ) -> dict:
-    """Build a result record by scanning an existing task directory (no generation)."""
+    """Build a result record by scanning an existing task directory (no generation).
+
+    ``action_label`` comes from the task's current flags: output reused here either
+    matches them (checksum) or predates the checksum and is assumed to.
+    """
     record = {
         "category": category,
         "index": index,
@@ -413,7 +431,7 @@ def _build_record_from_existing(
 
     # Re-score existing clips.
     if object_type:
-        record["scores"] = _score_task(scorer, task_dir, object_type)
+        record["scores"] = _score_task(scorer, task_dir, object_type, action_label)
     else:
         print(f"    [WARN] {category}/task{index}: could not determine object_type; skipping scoring")
 
@@ -430,8 +448,12 @@ def _score_task(
     scorer: DistributionMotionQualityScorer,
     task_dir: Path,
     object_type: str,
+    action_label: str,
 ) -> dict[str, float]:
-    """Score a task's clips in-process so the reference-bank cache is reused."""
+    """Score a task's clips in-process so the reference-bank cache is reused.
+
+    ``action_label`` selects the reference prior (see ``_extract_action_label``).
+    """
     out_json = task_dir / "scores.json"
     motion_paths = sorted(task_dir.glob(f"{object_type}_*.npy"))
     if not motion_paths:
@@ -450,7 +472,7 @@ def _score_task(
             report = scorer.evaluate(
                 motions=[motion],
                 object_type=object_type,
-                action_words=_SCORE_ACTION_WORDS,
+                action_label=action_label,
                 top_k_species=_SCORE_TOP_K_SPECIES,
             )
         except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:
@@ -577,7 +599,7 @@ def run_task(
     # Score the generated clips via evaluate_motion_quality.py (JSON output).
     scores: dict[str, float] = {}
     if object_type:
-        scores = _score_task(scorer, task_dir, object_type)
+        scores = _score_task(scorer, task_dir, object_type, _extract_action_label(extra_args))
     else:
         print("  [WARN] could not determine object_type; skipping scoring")
 
@@ -896,7 +918,9 @@ def main() -> int:
         if not args.overwrite and output_exists and params_match:
             print(f"\n=== {category}/task{index} ({task_num}/{total_tasks}) [reuse existing] ===")
             try:
-                record = _build_record_from_existing(task_dir, category, index, scorer, root)
+                record = _build_record_from_existing(
+                    task_dir, category, index, scorer, root, _extract_action_label(extra_args)
+                )
             except Exception as exc:
                 print(f"  [ERROR] {category}/task{index} rescore raised: {exc}")
                 record = {

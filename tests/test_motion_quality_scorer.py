@@ -118,6 +118,30 @@ def test_compute_features_batch_matches_single_for_mixed_shapes() -> None:
             np.testing.assert_allclose(batch_features[key], single_features[key], rtol=1e-5, atol=1e-7)
 
 
+def test_reference_prior_words_derive_from_the_action_label() -> None:
+    derive = reference_bank_mod.reference_prior_words
+
+    assert derive("fly, forward") == ("fly", "forward")
+    assert derive("walk, run") == ("walk", "run")
+    # Head order is the transition's direction, not a different prior.
+    assert derive("idle, attack") == derive("attack, idle") == ("idle", "attack")
+    assert derive("") == ()
+    assert derive(None) == ()
+
+
+def test_reference_prior_words_reject_what_generate_rejects() -> None:
+    # A typo must fail, not silently narrow "wlak, run" to the run references.
+    with pytest.raises(ValueError, match="controlled vocabulary"):
+        reference_bank_mod.reference_prior_words("wlak, run")
+    with pytest.raises(ValueError, match="no head word"):
+        reference_bank_mod.reference_prior_words("forward")
+
+
+def test_reference_bank_refuses_an_empty_label() -> None:
+    with pytest.raises(ValueError, match="names no controlled word"):
+        reference_bank_mod._build_weighted_reference_bank("horse", "")
+
+
 def test_reference_species_selection_accepts_external_query_cond() -> None:
     baseline_cond = {
         "horse": _make_cond_entry(np.array([1.0, 0.0], dtype=np.float64)),
@@ -127,7 +151,7 @@ def test_reference_species_selection_accepts_external_query_cond() -> None:
 
     selected = reference_bank_mod._select_species_weights(
         query_object_type="dragon",
-        action_words="walk,run",
+        action_label="walk, run",
         action_paths_by_species={"horse": ["horse.npy"], "snake": ["snake.npy"]},
         cond_lookup=baseline_cond,
         top_k_species=1,
@@ -161,7 +185,7 @@ def test_registered_cond_is_query_only_reference_baseline(
         return WeightedReferenceBank(
             dataset_root="test",
             object_type=str(kwargs["object_type"]),
-            action_words=str(kwargs["action_words"]),
+            action_label=str(kwargs["action_label"]),
             top_k_species=int(kwargs["top_k_species"]),
             clips=[
                 ReferenceClip(
@@ -202,11 +226,13 @@ def test_registered_cond_is_query_only_reference_baseline(
     report = scorer.evaluate(
         motions=[np.zeros((8, 2, 12), dtype=np.float32)],
         object_type="dragon",
-        action_words="walk,run",
+        action_label="walk, run",
         top_k_species=1,
     )
 
     assert report.object_type == "dragon"
+    assert report.action_label == "walk, run"
+    assert captured["action_label"] == "walk, run"
     assert "dragon" not in scorer._cond_lookup
     assert captured["cond_lookup"] is scorer._cond_lookup
     assert "dragon" not in captured["cond_lookup"]

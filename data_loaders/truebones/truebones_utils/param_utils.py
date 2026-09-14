@@ -112,23 +112,6 @@ ROOT_Y_SOFT_CLAMP_KNEE = -0.3
 ROOT_Y_MIN_HEIGHT = -0.5
 
 
-def parse_action_words(raw_action_words):
-        """Split a comma/semicolon list of controlled-vocabulary words.
-
-        Used by the evaluation reference prior, which filters dataset clips by the
-        words their ``action_label`` hits -- never by ``action_group``, which would
-        widen the prior from "the attack references" to "everything stationary"
-        and make the score meaningless.
-        """
-        if raw_action_words is None:
-                return tuple()
-        if isinstance(raw_action_words, str):
-                tokens = raw_action_words.replace(';', ',').split(',')
-        else:
-                tokens = raw_action_words
-        return tuple(token.strip().lower() for token in tokens if str(token).strip())
-
-
 MAX_JOINTS=100
 # Source-frame budget as a multiple of the target window n: clips longer than
 # n * MAX_SOURCE_FRAMES_MULT are cropped (random window) and resampled to n,

@@ -574,14 +574,6 @@ def add_generate_options(parser):
                             "--action_label and a checkpoint trained with a non-zero "
                             "--action_label_cfg_drop_prob (without it there is no unconditional "
                             "mode to guide away from).")
-    group.add_argument("--action_words", default="", type=str,
-                       help="Controlled-vocabulary words used to select the reference prior for the "
-                            "motion-quality scorer (eval/evaluate_motion_quality.py and the training "
-                            "eval hook), e.g. 'walk,run'. Filters dataset clips whose action_label hits "
-                            "any of these words. Deliberately not the action_group: grouping would "
-                            "widen the prior from 'the attack references' to 'everything stationary' and "
-                            "make the score meaningless. Ignored by sample/generate.py (which does not "
-                            "run the scorer).")
     group.add_argument("--species_tags", default="", type=str,
                        help="Override the target species' motion style tags for this generation, e.g. "
                             "'Quadruped,Heavy,Lumbering'. Comma/semicolon-separated. The tags are re-encoded "
@@ -613,7 +605,7 @@ def generate_args(argv=None):
     # There is deliberately no --action_group here: the group belongs to the
     # weights, so apply_checkpoint_action_group() sets args.action_group from the
     # checkpoint's own args.json.
-    preserve_cli_args = {'action_label', 'action_words', 'species_tags'}
+    preserve_cli_args = {'action_label', 'species_tags'}
     args = parse_and_load_from_model(
         parser, argv=argv,
         preserve_cli_args=preserve_cli_args,

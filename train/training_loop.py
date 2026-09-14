@@ -36,6 +36,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
 )
 from eval.motion_quality import DistributionMotionQualityScorer
+from eval.motion_quality.reference_bank import reference_prior_words
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
@@ -81,21 +82,6 @@ def _per_sample_decode_cond(y, index, n_joints):
             decode_cond[key] = value[index]
     return decode_cond
 
-
-def _eval_action_words(raw_action_label):
-    """Controlled-vocabulary words a validation clip's label hits.
-
-    These select the scorer's reference prior, so they are the *words* and not the
-    ``action_group``: grouping would widen the prior from "the attack references"
-    to "everything stationary" and make the score meaningless. Detail words count
-    -- the reference bank matches on the same rule, so a 'sneak'-only label still
-    finds its own references.
-    """
-    if not raw_action_label:
-        return ()
-    from data_loaders.truebones.truebones_utils.motion_labels import vocab_words_in
-
-    return tuple(vocab_words_in(str(raw_action_label)))
 
 def _tile_eval_cond(cond, repeat):
     """Repeat each sample in a cond dict ``repeat`` times for batched DDIM sampling.
@@ -760,10 +746,21 @@ class TrainLoop:
 
                 for i in range(batch_size):
                     object_type = cond['y']['object_type'][i]
-                    action_words = _eval_action_words(
+                    # Grouped by the label's prior words, not its spelling: the
+                    # two directions of one transition share a reference prior.
+                    #
+                    # This call RAISES on a label that breaks the vocabulary
+                    # contract (unknown token, no head word, repeats, too many
+                    # words) and takes validation down with it -- deliberately,
+                    # and unlike the empty label handled just below: a typo must
+                    # fail loudly rather than silently narrow the prior to the
+                    # words it happened to hit and report a confident score for
+                    # it. An empty label is legal (no condition), so it only
+                    # skips this clip.
+                    prior_words = reference_prior_words(
                         cond['y'].get('action_label', [None] * batch_size)[i]
                     )
-                    if not action_words:
+                    if not prior_words:
                         missing_action_label_count += 1
                         continue
                     n_joints = cond['y']['n_joints'][i].item()
@@ -776,13 +773,13 @@ class TrainLoop:
                         _per_sample_decode_cond(cond['y'], i, n_joints),
                     )[0]
                     motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
-                    group_key = (object_type, action_words)
+                    group_key = (object_type, prior_words)
                     motion_groups.setdefault(group_key, []).append(motion_np.astype(np.float32))
 
         infer_model.train()
 
         if missing_action_label_count:
-            tqdm.write(f'Validation skipped {missing_action_label_count} motion(s) whose action_label hits no controlled word.')
+            tqdm.write(f'Validation skipped {missing_action_label_count} motion(s) with no action_label.')
 
         if not motion_groups:
             tqdm.write('Validation skipped: eval split returned no samples.')
@@ -794,15 +791,16 @@ class TrainLoop:
         snap_scores = []
         sf_scores = []
         bl_scores = []
-        for (object_type, action_words), motions in motion_groups.items():
+        for (object_type, prior_words), motions in motion_groups.items():
+            action_label = ', '.join(prior_words)
             try:
                 report = self.scorer.evaluate(
                     motions=motions,
                     object_type=object_type,
-                    action_words=','.join(action_words),
+                    action_label=action_label,
                 )
             except Exception as exc:
-                tqdm.write(f"[eval] Scoring failed for {object_type} ({','.join(action_words)}): {exc}")
+                tqdm.write(f"[eval] Scoring failed for {object_type} ({action_label}): {exc}")
                 continue
             scores.append(report.overall_score)
             jerk_scores.append(report.jerk_score)

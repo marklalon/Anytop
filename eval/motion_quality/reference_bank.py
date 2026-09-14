@@ -17,13 +17,37 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
     split_canonical_key,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
-    CONTROLLED_VOCAB,
     load_motion_metadata,
+    parse_action_label,
     vocab_words_in,
 )
-from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN, parse_action_words
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 from utils.misc import infer_object_type_from_filename
 from utils.skeleton_similarity import SpeciesSimilarity, rank_species
+
+
+# The prior a clip is scored against when nothing names its action (a task
+# without --action_label, a CLI run without one): the eval battery generates
+# gait-like motion. It is a set of words, not a walk-to-run transition -- a
+# reference clip matches when its label hits either one.
+DEFAULT_SCORE_ACTION_LABEL = "walk, run"
+
+
+def reference_prior_words(action_label) -> tuple[str, ...]:
+    """The controlled words an ``action_label`` selects the reference prior by.
+
+    Parsed under the contract generate.py enforces on ``--action_label``, so the
+    label a clip was generated with is the label it is scored with, and a typo
+    fails instead of silently narrowing the prior. Every token counts -- direction
+    and hands words too -- because the dataset side matches a clip by
+    :func:`vocab_words_in` over its whole label. An empty label returns ``()``.
+
+    The prior is deliberately keyed by words and not by ``action_group``: grouping
+    would widen it from "the attack references" to "everything stationary", and a
+    prior that loose scores almost anything as plausible.
+    """
+    parse_action_label(action_label)
+    return tuple(vocab_words_in(action_label))
 
 
 def _resolve_lookup_key(name: str, lookup: Mapping[str, object]) -> str:
@@ -65,7 +89,7 @@ class ReferenceSpeciesSummary:
 class WeightedReferenceBank:
     dataset_root: str
     object_type: str
-    action_words: str
+    action_label: str
     top_k_species: int
     clips: List[ReferenceClip]
     species: List[ReferenceSpeciesSummary]
@@ -89,36 +113,27 @@ class WeightedReferenceBank:
         return float(1.0 / denom)
 
 
-def _collect_action_words_paths(
+def _collect_prior_word_paths(
     sources,
     cond_lookup: Mapping[str, Mapping[str, object]],
-    action_words: str,
+    prior_words: Sequence[str],
 ) -> Dict[str, List[str]]:
-    """Collect motion paths grouped by canonical species key, filtered by action words.
+    """Collect motion paths grouped by canonical species key, filtered by prior words.
 
-    The filter is over the controlled words a clip's ``action_label`` hits, NOT
-    over its ``action_group``: grouping would widen the prior from "the attack
-    references" to "everything stationary", and a prior that loose scores almost
-    anything as plausible.
+    A clip matches when its ``action_label`` hits any of ``prior_words`` (see
+    :func:`reference_prior_words`).
 
     Args:
         sources: The ``DatasetSource`` list whose ``motions/`` dirs form the pool
         cond_lookup: Canonically-keyed cond entries
-        action_words: Comma/semicolon-separated controlled-vocabulary words
+        prior_words: Controlled words from :func:`reference_prior_words`
 
     Returns:
         Dict mapping canonical species key to matching motion paths, pooled across
         every source.  Paths are absolute, so the same bare filename appearing in
         two datasets stays two distinct clips.
     """
-    requested_words = set(parse_action_words(action_words))
-    if not requested_words:
-        raise ValueError("action_words must contain at least one controlled-vocabulary word")
-    unknown = sorted(requested_words - set(CONTROLLED_VOCAB))
-    if unknown:
-        raise ValueError(
-            f"Unknown action word(s) {unknown}. Valid words: {list(CONTROLLED_VOCAB)}"
-        )
+    requested_words = set(prior_words)
 
     grouped: Dict[str, List[str]] = {}
     for source in sources:
@@ -142,8 +157,8 @@ def _collect_action_words_paths(
                 # requested word — skip it rather than fabricating empty labels.
                 continue
 
-            # Controlled words this clip's label hits, by the same matcher the
-            # requested words came from.
+            # Controlled words this clip's label hits, by the same matcher
+            # reference_prior_words reads the requested label with.
             motion_action_words = set(vocab_words_in(str(metadata.get("action_label") or "")))
 
             if not motion_action_words.intersection(requested_words):
@@ -165,7 +180,7 @@ def _collect_action_words_paths(
 
 def _select_species_weights(
     query_object_type: str,
-    action_words: str,
+    action_label: str,
     action_paths_by_species: Mapping[str, Sequence[str]],
     cond_lookup: Mapping[str, Mapping[str, object]],
     top_k_species: int,
@@ -186,7 +201,7 @@ def _select_species_weights(
     }
     if not candidate_conds:
         raise ValueError(
-            f"No dataset reference motions found for action_words={action_words!r}"
+            f"No dataset reference motions found for action_label={action_label!r}"
         )
 
     return rank_species(
@@ -207,7 +222,7 @@ def clear_reference_bank_cache() -> None:
 
 def build_weighted_reference_bank(
     object_type: str,
-    action_words: str,
+    action_label: str,
     dataset_root: Optional[str] = None,
     top_k_species: int = 5,
     min_frames: int = 8,
@@ -219,15 +234,16 @@ def build_weighted_reference_bank(
 
     Assembling the bank loads every matching reference clip from disk, which is
     the dominant cost when scoring many query clips that share the same
-    (object_type, action_words, top_k_species) prior. The result is memoized on
-    the resolved dataset root plus the normalized request so repeated calls
+    (object_type, action_label, top_k_species) prior. The result is memoized on
+    the resolved dataset root plus the normalized request -- the label's prior
+    words, so two spellings of the same words share one bank -- so repeated calls
     reuse the already-loaded clips. The returned bank is treated as read-only by
     all callers; do not mutate its clips in place.
     """
     if cond_lookup is not None or query_cond is not None or not use_cache:
         return _build_weighted_reference_bank(
             object_type,
-            action_words,
+            action_label,
             dataset_root,
             top_k_species,
             min_frames,
@@ -238,11 +254,10 @@ def build_weighted_reference_bank(
     # The cache key must name every source: two runs differing only in which
     # datasets they pool must not share a reference bank.
     dataset_root_key = tuple(source.root for source in resolve_sources(dataset_root))
-    action_words_key = frozenset(parse_action_words(action_words))
     cache_key = (
         dataset_root_key,
         str(object_type).strip().lower(),
-        action_words_key,
+        frozenset(reference_prior_words(action_label)),
         int(top_k_species),
         int(min_frames),
     )
@@ -251,7 +266,7 @@ def build_weighted_reference_bank(
         return cached
 
     bank = _build_weighted_reference_bank(
-        object_type, action_words, dataset_root, top_k_species, min_frames
+        object_type, action_label, dataset_root, top_k_species, min_frames
     )
     _REFERENCE_BANK_CACHE[cache_key] = bank
     return bank
@@ -259,25 +274,30 @@ def build_weighted_reference_bank(
 
 def _build_weighted_reference_bank(
     object_type: str,
-    action_words: str,
+    action_label: str,
     dataset_root: Optional[str] = None,
     top_k_species: int = 5,
     min_frames: int = 8,
     cond_lookup: Optional[Mapping[str, Mapping[str, object]]] = None,
     query_cond: Optional[Mapping[str, object]] = None,
 ) -> WeightedReferenceBank:
+    action_label_str = str(action_label or "").strip()
+    prior_words = reference_prior_words(action_label_str)
+    if not prior_words:
+        raise ValueError(
+            "action_label names no controlled word, so there is no reference prior "
+            f"to score against (pass one, e.g. {DEFAULT_SCORE_ACTION_LABEL!r})"
+        )
+
     sources = resolve_sources(dataset_root)
     if cond_lookup is None:
         cond_lookup = load_cond_dict(sources)
     object_key = str(object_type) if query_cond is not None else _resolve_lookup_key(object_type, cond_lookup)
-    action_words_str = str(action_words or "").strip()
-    if not action_words_str:
-        raise ValueError("action_words must be a non-empty string")
 
-    action_paths_by_species = _collect_action_words_paths(sources, cond_lookup, action_words_str)
+    action_paths_by_species = _collect_prior_word_paths(sources, cond_lookup, prior_words)
     selected_species = _select_species_weights(
         object_key,
-        action_words_str,
+        action_label_str,
         action_paths_by_species,
         cond_lookup,
         top_k_species,
@@ -332,7 +352,7 @@ def _build_weighted_reference_bank(
 
     if not clips:
         raise ValueError(
-            f"No valid reference motions found for object_type={object_key!r}, action_words={action_words_str!r}"
+            f"No valid reference motions found for object_type={object_key!r}, action_label={action_label_str!r}"
         )
 
     total_weight = float(sum(clip.weight for clip in clips))
@@ -368,7 +388,7 @@ def _build_weighted_reference_bank(
     return WeightedReferenceBank(
         dataset_root=os.pathsep.join(source.root for source in sources),
         object_type=object_key,
-        action_words=action_words_str,
+        action_label=action_label_str,
         top_k_species=int(top_k_species),
         clips=clips,
         species=species_summaries,

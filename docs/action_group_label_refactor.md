@@ -427,7 +427,7 @@ transition —— 该组样本最少、分布最独特，宁可多喂），然�
 | [anytop.py](../model/anytop.py) | `action_tag_projection`(15->D) -> `action_label_projection`(512->D) + `action_multihot_projection`(V->D)；加性通路与 `action_tag_null_emb` / CFG 逻辑原样保留；空 label 直接走 null |
 | [parser_util.py](../utils/parser_util.py) | `--action_tags` -> `--action_group`（训练过滤，单值）；新增 `--action_label`（推理）；`--action_tag_cond` -> `--action_label_cond`；新增 `--action_label_truncate_prob`（§2.6） |
 | [anytop_service.py](../../server/anytop_service.py) | 删除 tag 展开表与 `resolve_anytop_group()`；请求直接带 `action_group`，缺失或非法则报错列出三个合法值 |
-| [reference_bank.py](../eval/motion_quality/reference_bank.py) / scorer / `eval_tasks.json` | 过滤键更换。**注意用受控词而非 group 过滤参考先验**，否则先验从「attack 的参考」放宽到「整个 stationary 组」，打分会变松 |
+| [reference_bank.py](../eval/motion_quality/reference_bank.py) / scorer / `eval_tasks.json` | 过滤键更换。**注意用受控词而非 group 过滤参考先验**，否则先验从「attack 的参考」放宽到「整个 stationary 组」，打分会变松。先验词现由**生成时的 `--action_label`** 派生（原先独立的 `--action_words` 打分参数 2026-09-14 已删除，见 §9.7） |
 | [train.bat](../train.bat)、[multi_dataset_training.md](./multi_dataset_training.md)、README | 参数与训练契约描述 |
 
 ### 4.1 label 的 T5 embedding 怎么进训练
@@ -697,13 +697,13 @@ Buffalo / Camel / Comodoa / Dog / Roach / Skunk / Stego / Tricera / Tyranno 各 
 | 位置 | 结果 |
 |---|---|
 | `motion_labels.py` | `ACTION_TAGS` 删除；新增 `GROUP_MULTIHOT_MASK` / `group_multihot_mask()` / `CORE_WORD_GROUP` / `action_multihot_vector()` / `normalize_action_group` / `normalize_action_label`；`load_action_tags` -> `load_action_labels`（校验 group 合法 + 非空 label 命中受控词 + <=15 词）；`infer_action_tags_from_clip_name` -> `infer_action_label_from_clip_name`（返回 `(group, label)`；2026-08-30 已删除，见 §9.5） |
-| `param_utils.py` | `ACTION_TAGS_FILE` -> `ACTION_LABELS_FILE`；新增 `ACTION_LABEL_EMBEDDINGS_FILE = "action_label_embs.npy"`；`parse_action_tags` -> `parse_action_words` |
+| `param_utils.py` | `ACTION_TAGS_FILE` -> `ACTION_LABELS_FILE`；新增 `ACTION_LABEL_EMBEDDINGS_FILE = "action_label_embs.npy"`；`parse_action_tags` -> `parse_action_words`（该函数 2026-09-14 已删除，见 §9.7） |
 | `dataset.py` | tag 求交 -> `filter_motion_names_by_action_group` 单值相等；`resolve_requested_action_group` 拒绝逗号列表（那是 stale 的 `--action_tags` 写法）；`load_action_label_embeddings` + `_resolve_action_label_condition`（§2.6 粗粒度增强 + emb 查表） |
 | `tensors.py` | collate 产出 `action_group` / `action_label` / `action_multihot`（**逐行按自己那条的 group mask**）/ `action_label_emb` / `action_label_valid` |
 | `anytop.py` | `action_tag_projection`(15->D) -> `action_label_projection`(t5_out_dim->D) **+** `action_multihot_projection`(19->D)，两路相加；共用一个 drop 掩码；空 label 走 `action_label_null_emb` |
-| `parser_util.py` | `--action_tags` -> `--action_group`（单值 choices）；`--action_tag_cond` -> `--action_label_cond`；新增 `--action_label`（推理）/ `--action_words`（打分先验）/ `--action_label_coarse_prob`；`args.json` 带 `action_tag_cond` 时 `assert_action_conditioning_not_deprecated` 直接退出 |
+| `parser_util.py` | `--action_tags` -> `--action_group`（单值 choices）；`--action_tag_cond` -> `--action_label_cond`；新增 `--action_label`（推理）/ `--action_label_coarse_prob`；`args.json` 带 `action_tag_cond` 时 `assert_action_conditioning_not_deprecated` 直接退出（当时另加的 `--action_words` 打分先验参数 2026-09-14 已删除，见 §9.7） |
 | `anytop_service.py` / `serve.py` / `anytop_client.py` | 删除 `ANYTOP_ACTION_GROUPS` 展开表与 `resolve_anytop_group`；请求直接带 `action_group`（+ 可选 `action_label`），缺失或非法即报错列出三个合法值 |
-| `reference_bank.py` / `scorer.py` | 打分先验的过滤键改为**受控词**（`action_words`）而非 group；`eval_checkpoint._SCORE_ACTION_TAGS = "locomotion"` -> `_SCORE_ACTION_WORDS = "walk,run"`（`locomotion` 已不是受控词） |
+| `reference_bank.py` / `scorer.py` | 打分先验的过滤键改为**受控词**而非 group；`eval_checkpoint._SCORE_ACTION_TAGS = "locomotion"` -> `_SCORE_ACTION_WORDS = "walk,run"`（`locomotion` 已不是受控词）。参数名与 `_SCORE_ACTION_WORDS` 于 2026-09-14 改为直接吃 `--action_label`，见 §9.7 |
 | `eval_tasks.json` | 那里的 `--action_tags locomotion` 走的是**模型条件**通路（不是打分先验），所以译成 `--action_group locomotion --action_label walk`；与旧行为一致，checkpoint 没开对应 flag 时仍然 fail-fast（2026-08-31 起生成侧已无 `--action_group`，该行只剩 `--action_label walk`，见 §2.7.1） |
 | V2P 侧（`video2pose_dataset.py` / `train_video2pose.py` / `inference/video2pose.py`） | `--action_tags` -> `--action_group`，共用 `resolve_requested_action_group` |
 | `tools/build_action_label_embeddings.py` | **新增**。把 label 全文 + 其合成粗粒度串一起编码进 `action_label_embs.npy`（label 文本为 key）。zoo 1123 串 / zoo_upgrade 230 / unitybundles 1944，均 768 维 |
@@ -773,3 +773,37 @@ cross-attn」的情形不同）。
 | `client/anytop_client.py` | 新增 `--action-label-cfg-scale`（默认 None = 不发该字段） |
 
 代价是**采样时间翻倍**（每步两次 forward），所以默认关闭。
+
+### 9.7 打分先验改由 `--action_label` 派生，删除 `--action_words`（2026-09-14）
+
+打分先验原本要**另外**给一个 `--action_words walk,run`，与生成用的 `--action_label` 是
+两套输入。后果是两者可以不一致：一个 `--action_label run` 的 task 仍按 `walk,run` 的
+参考打分，而分数报告里看不出这件事。现在先验词直接从**生成时那条 label** 派生
+（`reference_bank.reference_prior_words()`），「用什么 label 生成，就用什么 label 打分」
+成了结构性保证，而不是调用方要记得对齐的约定。
+
+| 位置 | 结果 |
+|---|---|
+| `reference_bank.py` | 参数 / 缓存键 / `WeightedReferenceBank.action_words` -> `action_label`；新增 `DEFAULT_SCORE_ACTION_LABEL = "walk, run"` 与 `reference_prior_words()` |
+| `scorer.py` | `evaluate(action_words=…)` -> `evaluate(action_label=…)`；`DistributionEvalReport.action_words` -> `action_label`（`as_dict()["meta"]` 同步改名） |
+| `evaluate_motion_quality.py` | `--action_words`（原为**必填**）-> `--action_label`（默认 `DEFAULT_SCORE_ACTION_LABEL`，同时接受 `--action-label` 拼写） |
+| `eval_checkpoint.py` | 删除 `_SCORE_ACTION_WORDS`，新增 `_extract_action_label()`：每个 task 用**自己**的 `--action_label` 打分，没写就回退默认 |
+| `training_loop.py` | 删除 `_eval_action_words()`，改用 `reference_prior_words()` |
+| `parser_util.py` | 删除 `--action_words`（并从 `preserve_cli_args` 移除）；`param_utils.parse_action_words` 随之删除 |
+| `tests/test_evaluate_motion_quality.py` / `tests/test_motion_quality_scorer.py` | 新增 6 个用例：label -> 先验词派生、违约 label 报错、空 label 被拒、无 label 走默认、`_extract_action_label()` 的四种输入 |
+
+**校验交给 label 契约。** 先验词用 `parse_action_label()` 解析，与 `generate.py` 对
+`--action_label` 的要求同一套：未知 token / 无 head 词 / head 超 2 个 / 重复 token / 超
+词数上限都抛 `ActionLabelError`，**而不是**像旧的 `parse_action_words` 那样静默丢弃不认识
+的词。所以打错字会当场失败，不会把 `"wlak, run"` 悄悄缩成 run 的参考集。唯一例外是
+**空 label**：它解析为 `()`，由调用方各自处置 —— 训练期跳过该 clip 并计数（`action_label`
+本就是可选条件，见 §2.5），`_build_weighted_reference_bank()` 则直接报错，因为一个先验词
+都没有就无从打分。
+
+先验仍然是**受控词集合**、不是 group（§4）：`reference_prior_words()` 取
+`vocab_words_in()` 的全部命中词，方向词与手部词也算 —— 数据集侧
+`_collect_prior_word_paths()` 正是用同一个 matcher 求交，两边必须同一把尺子。
+
+旧的 `--action_words` 只存在于 generate 参数组，而 `parse_and_load_from_model` 的
+`args_to_overwrite` 只覆盖 dataset / model / diffusion 三组，因此旧 checkpoint 的
+`args.json` 里即使留着这个键，也只是被 `extract_args` 静默忽略，不影响权重加载。
