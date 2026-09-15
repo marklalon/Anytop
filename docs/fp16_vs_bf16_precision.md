@@ -243,7 +243,7 @@ fp16 run 是从 bf16 run 的 5000 步 checkpoint 续训的，两边在 5000–54
 | | 改动 | 落点 |
 |---|---|---|
 | A | cross-K 子路做成 fp32 孤岛 | [motion_transformer.py](../model/motion_transformer.py) `CrossLimbTemporalBlock.forward` |
-| B | GradScaler 的 loss scale 封顶并从 2^15 开始，并记录 `loss_scale_log2` / `amp_overflow` | [fp16_util.py](../diffusion/fp16_util.py) `GRAD_SCALER_MAX_SCALE`、`_cap_loss_scale`、`_optimize_amp` |
+| B | GradScaler 的 loss scale 封顶并从 2^15 开始，并记录 `amp_overflow` | [fp16_util.py](../diffusion/fp16_util.py) `GRAD_SCALER_MAX_SCALE`、`_cap_loss_scale`、`_optimize_amp` |
 | C | scaler 溢出与真实梯度尖峰分开分类、分开限额、分开文件名 | [training_loop.py](../train/training_loop.py) `classify_grad_event`、`AMP_OVERFLOW_MAX_DUMPS`、`_maybe_capture_spike` |
 | D | 广播型条件头固定 fp32 | [anytop.py](../model/anytop.py) `run_in_fp32` + 8 处调用 |
 
@@ -306,5 +306,4 @@ QKNorm（5000 步 checkpoint，扫 2^12–2^24）：
 ### 9.5 上线后看什么
 
 1. `amp_overflow`（tensorboard，每步记录的 0/1 均值）应长期为 0。若出现非零，说明离群 batch 的梯度超过了 2^15 的余量，应优先检查数据/loop seam；必要时可继续降到 2^14。
-2. `loss_scale_log2` 应稳定在 15；掉下去且不回升说明溢出频繁。
-3. `save/<run>/spikes/` 下现在区分 `spike_step*.json`（真实梯度尖峰，限额 `--spike_max_dumps`，默认 10）和 `overflow_step*.json`（scaler 溢出，限额 2）。只有前者才需要按尖峰的老路子查 `top_param_grad_norms`。
+2. `save/<run>/spikes/` 下现在区分 `spike_step*.json`（真实梯度尖峰，限额 `--spike_max_dumps`，默认 10）和 `overflow_step*.json`（scaler 溢出，限额 2）。只有前者才需要按尖峰的老路子查 `top_param_grad_norms`。

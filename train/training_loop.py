@@ -922,7 +922,6 @@ class TrainLoop:
                 # Only l_simple's gradient is rescaled; the logged l_simple stays raw.
                 limit_weight = self.sample_loss_limiter.weights(t, losses["l_simple"])
                 losses["loss"] = losses["loss"] + (limit_weight - 1.0) * losses["l_simple"]
-                losses["l_simple_limit_weight"] = limit_weight
 
             loss = (losses["loss"] * weights).mean()
             self._accumulate_interval_losses({k: v * weights for k, v in losses.items()})

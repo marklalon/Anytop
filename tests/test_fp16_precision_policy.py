@@ -10,7 +10,6 @@ D: the broadcast conditioning heads run in fp32 (largest weight gradients in the
 """
 from __future__ import annotations
 
-import math
 import sys
 import unittest
 from pathlib import Path
@@ -21,7 +20,6 @@ import torch.nn as nn
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from diffusion import fp16_util  # noqa: E402
 from diffusion.fp16_util import GRAD_SCALER_MAX_SCALE, MixedPrecisionTrainer  # noqa: E402
 from model.anytop import run_in_fp32  # noqa: E402
 from model.motion_transformer import CrossLimbTemporalBlock  # noqa: E402
@@ -136,20 +134,12 @@ class LossScaleCapTests(unittest.TestCase):
         self.assertGreaterEqual(GRAD_SCALER_MAX_SCALE, 2 ** 14)
         self.assertLessEqual(GRAD_SCALER_MAX_SCALE, 2 ** 18)
 
-    def test_amp_optimize_caps_and_logs(self):
-        logged = {}
+    def test_amp_trainer_caps_loss_scale(self):
         model = nn.Linear(3, 3)
         trainer = MixedPrecisionTrainer(model=model, amp_enabled=False, log_norms=True)
         trainer.scaler = self._FakeScaler(GRAD_SCALER_MAX_SCALE * 4)
-        original = fp16_util.logger.logkv_mean
-        fp16_util.logger.logkv_mean = lambda key, value: logged.__setitem__(key, value)
-        try:
-            trainer._cap_loss_scale()
-        finally:
-            fp16_util.logger.logkv_mean = original
+        trainer._cap_loss_scale()
         self.assertEqual(trainer.scaler.get_scale(), float(GRAD_SCALER_MAX_SCALE))
-        self.assertAlmostEqual(logged['loss_scale_log2'],
-                               math.log2(GRAD_SCALER_MAX_SCALE))
 
 
 class GradEventClassificationTests(unittest.TestCase):

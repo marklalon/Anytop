@@ -2,8 +2,6 @@
 Helpers to train with 16-bit precision.
 """
 
-import math
-
 import numpy as np
 import torch as th
 import torch.nn as nn
@@ -404,9 +402,7 @@ class MixedPrecisionTrainer:
 
         Without this the scaler climbs until a step overflows, which is the
         source of the periodic skipped steps under fp16 (see the constant's
-        comment). Also logs the scale and the overflow rate, which the AMP path
-        never reported -- only the retired ``_optimize_fp16`` path logged
-        ``lg_loss_scale``, so a run's scale history was invisible.
+        comment).
         ``get_scale()`` reads a device scalar, but every call site has already
         synced on the gradient norm this step, so it adds no new sync.
         """
@@ -416,8 +412,6 @@ class MixedPrecisionTrainer:
         if GRAD_SCALER_MAX_SCALE and scale > GRAD_SCALER_MAX_SCALE:
             self.scaler.update(float(GRAD_SCALER_MAX_SCALE))
             scale = float(GRAD_SCALER_MAX_SCALE)
-        if self.log_norms:
-            logger.logkv_mean("loss_scale_log2", math.log2(scale))
 
     def _optimize_amp(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
         if self.scaler.is_enabled():
