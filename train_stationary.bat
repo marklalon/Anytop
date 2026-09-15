@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_transition_v17
+set RUN_NAME=merged_stationary_v18
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize
@@ -15,12 +15,12 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 %PYTHON_EXE% train/train_anytop.py ^
 	--cond_path dataset/merged/cond.npy ^
 	--save_dir save/%RUN_NAME% ^
-	--save_interval 5000 ^
+	--save_interval 10000 ^
 	--log_interval 100 ^
 	--auto_resume ^
 	--ml_platform_type TensorboardPlatform ^
 	--objects_subset all ^
-	--action_group transition ^
+	--action_group stationary ^
 	--train_split train ^
 	--latent_dim 256 ^
 	--ff_size 2048 ^

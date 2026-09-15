@@ -212,7 +212,7 @@ opt.sources   = tuple[DatasetSource]   # 由 cond entry 的 dataset_root 去重�
    entry 内保留 `motion_path`（绝对路径）、`object_type`（规范键）、`source`。
 2. **去掉文件名前缀匹配**。[dataset.py](../data_loaders/truebones/data/dataset.py) 里两处 `name.startswith(f'{object_type}_')`（枚举与归属各一处）在合并后会让 `Horse_Idle_1.npy` 同时归属两个 Horse。改为：枚举时按 `source` + `species_name` 前缀，归属时直接读 `data_dict[name]['object_type']`。
 3. **split 按源各自划分再取并集**。AnyTop 的 split 是「按物种整体留出」，若在并集上全局重算，zoo 现有的 val/test 留出物种会全部改变、历史实验不可比。逐源调用 `ensure_split_manifests(source.root, source.motion_dir)`，结果并集后转成复合 clip id。
-   > 注意：只要传了 `--action_group`（`train.bat` 传了），[dataset.py](../data_loaders/truebones/data/dataset.py) 会无视 `train.txt` 现算 split 并覆写该文件 —— 这条路径同样按源独立执行。
+   > 注意：只要传了 `--action_group`（三个 `train_*.bat` 都传了），[dataset.py](../data_loaders/truebones/data/dataset.py) 会无视 `train.txt` 现算 split 并覆写该文件 —— 这条路径同样按源独立执行。
 4. `cache/motion_lengths.npy` 保持**每源一份**，key 仍是裸文件名（源内唯一）。
 5. `motion_metadata.json` / `action_labels.jsonl` 按源分别加载，join 时用裸文件名。
    动作词表 `dataset/action_word_embeddings.npy` **只有一份**：它按受控词表的**词**索引，
@@ -301,7 +301,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 | [utils/validate_anytop_dataset.py](../utils/validate_anytop_dataset.py) | 新增 `--datasets`，逐源循环校验（单源行为不变） |
 | `utils/retarget_pipeline.py`（原 `auto_retarget.py`） | `auto_retarget_pipeline` / `rank_donors` 已移除，donor 读 `motions/` 的依赖随之消失 —— 无需改动 |
 | `data_bridge/restore_glb_from_anytop.py` | 离线工具，读 `tpose_reference_paths.jsonl` + 原始 mesh，仍按单数据集目录运行，不改 |
-| `train.bat` | 增加 `--cond_path` |
+| 训练脚本（现为 `train_locomotion.bat` / `train_stationary.bat` / `train_transition.bat`） | 增加 `--cond_path` |
 
 ---
 

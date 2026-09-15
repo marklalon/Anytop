@@ -155,11 +155,15 @@ Horse --loop --action_label "run, forward"`).
 ## Train AnyTop 
 
 ```bat
-train.bat
+train_all.bat
 ```
 
-The full argument set of the current run lives in `train.bat`; every flag is a
-plain CLI option of `python train/train_anytop.py --help`.
+Training is split by action group: `--action_group` is mandatory and each group
+trains its own model, so there is no single training script. `train_all.bat`
+just calls `train_locomotion.bat`, `train_stationary.bat` and
+`train_transition.bat` in sequence; run one of those directly to train a single
+group. The full argument set of the current runs lives in those three scripts;
+every flag is a plain CLI option of `python train/train_anytop.py --help`.
 
 ## Acknowledgments
 We want to thank the following contributors that our code is based on:

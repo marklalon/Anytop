@@ -118,7 +118,7 @@ MAX_JOINTS=100
 # that bucket's ceiling, so the run sees one static shape (one torch.compile
 # graph) per bucket instead of every batch padded to MAX_JOINTS. Chosen from
 # the corpus: median 38 joints, 68% of clips fit in 48, 92% in 64, 8% need
-# 65-100. Step time is ~linear in the padded width (train.bat config, compile,
+# 65-100. Step time is ~linear in the padded width (training config, compile,
 # fp16, batch 16: 72 ms at 48, 102 at 64, 164 at 100), so this split runs an
 # epoch ~1.9x faster than padding everything to 100 (2 buckets (64, 100): 1.5x;
 # a 4th bucket at 32 adds only ~7% and drops more trailing clips). Keep

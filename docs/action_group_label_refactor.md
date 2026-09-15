@@ -25,7 +25,7 @@
 
 | 职责 | 入口 | 现状 |
 |---|---|---|
-| 训练集切分 | `--action_tags getup,death,fall,rest,jump,turn,gethurt`（[train.bat](../train.bat)） | 手动列出某一组的全部 tag |
+| 训练集切分 | `--action_tags getup,death,fall,rest,jump,turn,gethurt`（改造前的 `train.bat`，该脚本已由按 action group 拆分的 `train_locomotion.bat` / `train_stationary.bat` / `train_transition.bat` 取代） | 手动列出某一组的全部 tag |
 | 模型条件 | `--action_tag_cond` → 15 维 multihot → MLP → 加到 timestep token（[anytop.py](../model/anytop.py)） | 粒度只到 14 类 |
 | 推理路由 | `resolve_anytop_group()`（[anytop_service.py](../../server/anytop_service.py)） | tag → group 展开表 |
 
@@ -428,7 +428,7 @@ transition —— 该组样本最少、分布最独特，宁可多喂），然�
 | [parser_util.py](../utils/parser_util.py) | `--action_tags` -> `--action_group`（训练过滤，单值）；新增 `--action_label`（推理）；`--action_tag_cond` -> `--action_label_cond`；新增 `--action_label_truncate_prob`（§2.6） |
 | [anytop_service.py](../../server/anytop_service.py) | 删除 tag 展开表与 `resolve_anytop_group()`；请求直接带 `action_group`，缺失或非法则报错列出三个合法值 |
 | [reference_bank.py](../eval/motion_quality/reference_bank.py) / scorer / `eval_tasks.json` | 过滤键更换。**注意用受控词而非 group 过滤参考先验**，否则先验从「attack 的参考」放宽到「整个 stationary 组」，打分会变松。先验词现由**生成时的 `--action_label`** 派生（原先独立的 `--action_words` 打分参数 2026-09-14 已删除，见 §9.7） |
-| [train.bat](../train.bat)、[multi_dataset_training.md](./multi_dataset_training.md)、README | 参数与训练契约描述 |
+| [train_locomotion.bat](../train_locomotion.bat)、[train_stationary.bat](../train_stationary.bat)、[train_transition.bat](../train_transition.bat)、[multi_dataset_training.md](./multi_dataset_training.md)、README | 参数与训练契约描述 |
 
 ### 4.1 label 的 T5 embedding 怎么进训练
 
