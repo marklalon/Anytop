@@ -90,12 +90,19 @@ def _build_skeleton_text(
     names: list[str],
     parents: np.ndarray,
     rest_offsets: np.ndarray | None = None,
+    rest_positions: np.ndarray | None = None,
 ) -> str:
     """Format a skeleton as a flat list with parent, normalized bone length, children count.
 
     bone_len is the parent-relative offset magnitude normalized by the skeleton's
     max bone length (so values are in [0, 1] and comparable across skeletons of
     different units/scale).
+
+    pos, when *rest_positions* is given, is the joint's rest-pose world position
+    with the origin under the root joint on the floor, divided by the skeleton's
+    largest extent. It is what tells a generically named joint's pivot apart --
+    ``Arm 1`` off a clavicle-less chest is the shoulder ball, not a clavicle --
+    which names, lengths and child counts alone cannot.
     """
     J = len(names)
     children_count = np.zeros(J, dtype=np.int32)
@@ -109,6 +116,15 @@ def _build_skeleton_text(
         max_len = float(raw.max()) if raw.size else 0.0
         bone_len_norm = raw / max_len if max_len > 1e-8 else raw
 
+    pos_norm: np.ndarray | None = None
+    if rest_positions is not None and J > 0:
+        positions = np.asarray(rest_positions, dtype=np.float64).reshape(J, 3)
+        root_indices = np.flatnonzero(np.asarray(parents) < 0)
+        origin = positions[int(root_indices[0]) if root_indices.size else 0].copy()
+        origin[1] = positions[:, 1].min()
+        extent = float(np.ptp(positions, axis=0).max())
+        pos_norm = (positions - origin) / (extent if extent > 1e-8 else 1.0)
+
     lines = []
     for i, name in enumerate(names):
         p = int(parents[i])
@@ -121,6 +137,9 @@ def _build_skeleton_text(
             # in the LLM prompt / cache key.
             extras.append(f"bone_len: {bone_len_norm[i]:.4f}")
         extras.append(f"children: {int(children_count[i])}")
+        if pos_norm is not None:
+            x, y, z = (0.0 if abs(v) < 5e-4 else float(v) for v in pos_norm[i])
+            extras.append(f"pos: ({x:.3f}, {y:.3f}, {z:.3f})")
         lines.append(f"- {name} (parent: {parent_name}, {', '.join(extras)})")
     return "\n".join(lines)
 
@@ -133,6 +152,8 @@ def _llm_joint_mapping(
     src_rest_offsets: np.ndarray | None = None,
     tgt_rest_offsets: np.ndarray | None = None,
     verbose: bool = True,
+    src_rest_positions: np.ndarray | None = None,
+    tgt_rest_positions: np.ndarray | None = None,
 ) -> dict[str, str | None]:
     """Call LLM to map every src joint name to a tgt joint name (or None).
 
@@ -140,22 +161,44 @@ def _llm_joint_mapping(
     prompt content so repeated calls for the same skeleton pair skip
     the API entirely.
 
+    *src_rest_positions* / *tgt_rest_positions* are ``(J, 3)`` rest-pose world
+    positions (Y up). Passing both adds each joint's normalized position to the
+    prompt, which is what lets the model place generically named joints.
+
     *verbose* gates only the per-joint mapping dump; the one-line cache/call
     summaries are always printed, so a batch run still shows which skeleton
     pairs cost an API round trip.
     """
     # --- Build messages (needed for cache lookup and LLM call) ---
-    src_text = _build_skeleton_text(src_names, src_parents, src_rest_offsets)
-    tgt_text = _build_skeleton_text(tgt_names, tgt_parents, tgt_rest_offsets)
+    has_positions = src_rest_positions is not None and tgt_rest_positions is not None
+    src_text = _build_skeleton_text(
+        src_names, src_parents, src_rest_offsets,
+        src_rest_positions if has_positions else None,
+    )
+    tgt_text = _build_skeleton_text(
+        tgt_names, tgt_parents, tgt_rest_offsets,
+        tgt_rest_positions if has_positions else None,
+    )
     has_geom = src_rest_offsets is not None and tgt_rest_offsets is not None
     geom_note = (
-        "Each joint shows `bone_len` (parent-relative offset magnitude, normalized "
-        "to [0, 1] by each skeleton's longest bone — so it is scale-invariant and "
-        "comparable across skeletons) and `children` (number of direct child joints; "
-        "0 = leaf/end-effector). Use these to distinguish long limbs from short "
-        "fingers, and internal junctions (e.g. hip with 3 children for legs+spine) "
-        "from chain joints.\n\n"
+        "Each joint shows `bone_len` (the distance from its PARENT joint to this "
+        "joint — the incoming bone, not the joint's own outgoing bone — normalized "
+        "to [0, 1] by each skeleton's longest such distance, so it is scale-invariant "
+        "and comparable across skeletons) and `children` (number of direct child "
+        "joints; 0 = leaf/end-effector). Use these to distinguish long limbs from "
+        "short fingers, and internal junctions (e.g. hip with 3 children for "
+        "legs+spine) from chain joints.\n\n"
     ) if has_geom else ""
+    if has_positions:
+        geom_note += (
+            "`pos` is the joint's rest-pose position (x, y, z), normalized per "
+            "skeleton: origin on the floor under the root joint, divided by the "
+            "skeleton's largest extent. +Y is up, +X is the character's left and +Z "
+            "the direction it faces. Rest poses can differ (T-pose vs A-pose, bent vs "
+            "straight limbs), so hands and feet may sit in different places; the "
+            "order of pivots along a chain and where a chain attaches to the torso "
+            "stay comparable.\n\n"
+        )
 
     system_msg = (
         "You are a skeleton joint mapping expert. "
@@ -163,6 +206,11 @@ def _llm_joint_mapping(
         "mapping each source joint name to the best-matching target joint name, "
         "or null if no suitable match exists. "
         "Use anatomical knowledge, hierarchy, and rest-pose geometry.\n"
+        "\n"
+        "A joint is a PIVOT, not a bone: `Upper Arm` is the shoulder ball the arm "
+        "rotates about, `Forearm` the elbow, `Hand` the wrist, `Thigh` the hip "
+        "socket, `Calf`/`Shin` the knee, `Foot` the ankle. Two joints match only when "
+        "they are the same pivot.\n"
         "\n"
         "CRITICAL RULES — name similarity alone is NEVER sufficient:\n"
         "1. STRUCTURE OVER NAME. Two joints sharing a name (e.g. both called "
@@ -183,12 +231,35 @@ def _llm_joint_mapping(
         "mid-chain). These map only to similarly-positioned siblings, never to "
         "a sequential chain slot. If no sibling exists on the other side, return "
         "null.\n"
-        "4. CHAIN LENGTH MISMATCH. If src chain has N joints and tgt chain has "
-        "M with N != M, distribute proportionally along the chain (e.g. "
-        "src[i] → tgt[round(i * (M-1) / (N-1))]). Do not blindly pair by index "
-        "when chain shapes differ.\n"
+        "4. CHAIN LENGTH MISMATCH — MATCH PIVOTS, NEVER SLIDE A CHAIN. When one "
+        "side has a joint the other lacks (a clavicle/shoulder, a metacarpal/palm "
+        "bone, a twist or roll bone, an extra spine or neck segment, an end-site "
+        "nub), map the joints that are the same pivot and return null for the extra "
+        "joint. Do not shift a whole chain over by one slot so that every target "
+        "joint gets filled. Example: a target arm `ArmA → ArmB → ArmC` attached "
+        "straight to the chest with no clavicle, where ArmA sits out at the side "
+        "of the chest, ArmB halfway along the arm and ArmC at its end, is shoulder "
+        "ball → elbow → wrist: `Upper Arm → ArmA`, `Forearm → ArmB`, `Hand → ArmC`, "
+        "and the source `Clavicle`/`Shoulder → null`. Distribute proportionally "
+        "(src[i] → tgt[round(i * (M-1) / (N-1))]) only along uniform segment "
+        "chains that have no distinct pivots — spine, neck, tail, tentacle, hair.\n"
         "5. Use bone_len and children count as tiebreakers — a leaf (children=0) "
         "should not map to a junction with multiple children, and vice versa.\n"
+        "6. GENERIC NAMES → DECIDE BY POSITION. When a name does not say which "
+        "pivot a joint is (`Arm 1`, `Leg 2`, `Palm`, `Bone 07`), compare `pos`: "
+        "on the midline or out at the side of the torso, how far along the limb, "
+        "at the end of it.\n"
+        "7. FINGERS AND TOES. In 3ds Max Biped / CAT naming `Finger0` is the THUMB, "
+        "`Finger1` the index, `Finger2` the middle, `Finger3` the ring and `Finger4` "
+        "the pinky; a second digit counts joints along that finger (`Finger01` is "
+        "the thumb's second joint, `Finger12` the index's third). `Toe0` is the big "
+        "toe. Metacarpal/palm bones start at the wrist and map only to metacarpals, "
+        "never to a finger's first knuckle. A thumb maps to a thumb; when one side "
+        "has fewer fingers, drop the missing ones (usually the pinky) instead of "
+        "shifting the rest over.\n"
+        "8. PROPS AND HELPERS. Weapon, shield, backpack, container, socket, "
+        "attachment and IK-target joints map only to the same kind of joint on the "
+        "other side, otherwise null.\n"
         "\n"
         "Return ONLY valid JSON — no explanation, no markdown fences."
     )
@@ -196,7 +267,8 @@ def _llm_joint_mapping(
         f"{geom_note}"
         f"Source skeleton:\n{src_text}\n\n"
         f"Target skeleton:\n{tgt_text}\n\n"
-        'Return JSON: {"src_joint_name": "tgt_joint_name_or_null", ...}'
+        f"Return a JSON object with all {len(src_names)} source joint names as keys: "
+        '{"src_joint_name": "tgt_joint_name_or_null", ...}'
     )
 
     # --- Try in-memory cache (fast, process-local) ---
@@ -230,7 +302,7 @@ def _llm_joint_mapping(
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES + 1):
         if attempt > 0:
-            print(f"[retarget] LLM retry {attempt}/{_MAX_RETRIES} after parse error")
+            print(f"[retarget] LLM retry {attempt}/{_MAX_RETRIES} after an invalid response")
 
         try:
             response = client.chat.completions.create(
@@ -255,7 +327,9 @@ def _llm_joint_mapping(
             stripped = stripped.rsplit("```", 1)[0]
 
         try:
-            parsed = json.loads(stripped)
+            # strict=False: a raw tab or newline inside a string is still an
+            # unambiguous answer, not a reason to spend a retry.
+            parsed = json.loads(stripped, strict=False)
         except json.JSONDecodeError as exc:
             last_exc = exc
             if attempt < _MAX_RETRIES:
@@ -294,6 +368,33 @@ def _llm_joint_mapping(
             raise RuntimeError(
                 f"LLM returned wrong JSON type after {_MAX_RETRIES + 1} attempts: {type_err}\n"
                 f"Last response:\n{raw}"
+            ) from last_exc
+
+        missing_names = [name for name in src_names if name not in parsed]
+        if missing_names:
+            # Leaving a source joint out is not an answer of "no match" for it:
+            # the model gave up on the pair (a bare ``{}`` for KI_Performer onto
+            # the head-rooted FEP_MagmaDemon) or truncated. Accepting it would
+            # cache that non-answer for every later retarget of the pair.
+            omission_err = f"{len(missing_names)}/{len(src_names)} source joints missing"
+            last_exc = ValueError(omission_err)
+            if attempt < _MAX_RETRIES:
+                print(f"[retarget] LLM response incomplete (attempt {attempt}): {omission_err}")
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"Your JSON object is missing {len(missing_names)} of the "
+                        f"{len(src_names)} source joints (e.g. "
+                        f"{', '.join(repr(name) for name in missing_names[:5])}). Return the "
+                        "complete object with EVERY source joint name as a key, using null "
+                        "where no target joint matches. JSON only."
+                    ),
+                })
+                continue
+            raise RuntimeError(
+                f"LLM left source joints out of the mapping after {_MAX_RETRIES + 1} "
+                f"attempts: {omission_err}\nLast response:\n{raw}"
             ) from last_exc
 
         # Validate and clean the parsed mapping
@@ -1058,11 +1159,21 @@ def retarget_world_space_np(
             print(f"[retarget] Exact same-name matching: {len(exact_mapping)}/{J_src} matched, "
                   f"switching to LLM mapping")
         matched_tgt = np.zeros(J_tgt, dtype=bool)
+        mapping_src_rest_positions, _ = _batch_pose_fk_np(
+            np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (1, J_src, 1)), np.zeros((1, J_src, 3)),
+            src_parents, src_rest_offsets, src_rest_rotations,
+        )
+        mapping_tgt_rest_positions, _ = _batch_pose_fk_np(
+            np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (1, J_tgt, 1)), np.zeros((1, J_tgt, 3)),
+            tgt_parents, tgt_rest_offsets, tgt_rest_rotations,
+        )
         llm_result = _llm_joint_mapping(
             src_match_names, tgt_match_names,
             src_parents, tgt_parents,
             src_rest_offsets, tgt_rest_offsets,
             verbose=verbose,
+            src_rest_positions=mapping_src_rest_positions[0],
+            tgt_rest_positions=mapping_tgt_rest_positions[0],
         )
         for i, src_name in enumerate(src_match_names):
             tgt_name = llm_result.get(src_name)
