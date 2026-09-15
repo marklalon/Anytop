@@ -450,7 +450,7 @@ def _run_export_branch_case(
     captured: dict[str, object] = {}
 
     def _fake_retarget_world_space_np(**kwargs):
-        captured["coordinate_search"] = bool(kwargs["coordinate_search"])
+        captured["align_facing"] = bool(kwargs["align_facing"])
         captured["src_root_translation"] = np.asarray(kwargs["src_root_translation"], dtype=np.float64)
         raise _AbortRetarget("stop after branch capture")
 
@@ -477,11 +477,11 @@ def test_export_glb_plain_gltf_mesh_keeps_existing_basis(monkeypatch: pytest.Mon
         global_similarity=None,
     )
 
-    assert captured["coordinate_search"] is False
+    assert captured["align_facing"] is False
     assert calls == []
 
 
-def test_export_glb_hml_reverse_aligned_gltf_reenables_coordinate_search(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_export_glb_hml_reverse_aligned_gltf_reenables_align_facing(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     captured, calls = _run_export_branch_case(
         monkeypatch,
         tmp_path,
@@ -489,7 +489,7 @@ def test_export_glb_hml_reverse_aligned_gltf_reenables_coordinate_search(monkeyp
         global_similarity=(1.4354808536266768, np.array([0.70710678, 0.0, -0.70710678, 0.0], dtype=np.float64)),
     )
 
-    assert captured["coordinate_search"] is True
+    assert captured["align_facing"] is True
     assert calls == ["normalize", "similarity"]
 
 
@@ -501,5 +501,5 @@ def test_export_glb_fbx_mesh_still_normalizes_and_searches_coordinates(monkeypat
         global_similarity=None,
     )
 
-    assert captured["coordinate_search"] is True
+    assert captured["align_facing"] is True
     assert calls == ["normalize"]

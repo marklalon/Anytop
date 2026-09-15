@@ -32,6 +32,7 @@ from .fullbody_ik import (
 from .retarget_core import (
     _batch_internal_pose_fk_np,
     _batch_pose_fk_np,
+    batch_forward_kinematics_np,
     retarget_world_space_np,
 )
 from .texture_resolve import resolve_main_character_textures
@@ -97,6 +98,72 @@ def _build_canonical_match_names(
     return _build_canonical_name_variants(
         joint_names, parents, offsets, log_hint=log_hint
     )[0]
+
+
+# Neutral object-type hints: the face/forward resolvers fall back to their name
+# heuristics instead of a registered species' hard-coded joint indices, which is
+# what a rig read straight from a file needs on either side.
+_SOURCE_FACE_HINT = '__retarget_glb_source__'
+_TARGET_FACE_HINT = '__retarget_glb_target__'
+
+
+def _face_detected_facing_quat(names, parents, rest_offsets, rest_rotations, object_type_hint) -> np.ndarray:
+    """Return the (4,) WXYZ quarter turn that brings this bind pose's face to +Z.
+
+    Same face/forward-joint detection the cond-free feature path uses in
+    :func:`utils.retarget_pipeline.retarget_animation_file_to_target`, so a rig
+    canonicalizes to the same facing whichever path reads it.
+    """
+    from data_loaders.truebones.truebones_utils.face_orientation import (
+        calculate_root_quat,
+        resolve_face_joints,
+        resolve_forward_reference_joints,
+    )
+
+    parents = np.asarray(parents, dtype=np.int32)
+    identity_rotations = np.zeros((1, len(parents), 4), dtype=np.float64)
+    identity_rotations[..., 0] = 1.0
+    rest_positions, _ = batch_forward_kinematics_np(
+        identity_rotations,
+        np.asarray(rest_offsets, dtype=np.float64)[None],
+        parents,
+        rest_rotations=np.asarray(rest_rotations, dtype=np.float64),
+    )
+    face_joints = resolve_face_joints(
+        object_type_hint, list(names), parents, None,
+        rest_positions=rest_positions,
+    )
+    forward_joint, forward_base_joint = resolve_forward_reference_joints(
+        list(names), parents, object_type=object_type_hint,
+        rest_positions=rest_positions,
+    )
+    return np.asarray(
+        calculate_root_quat(
+            rest_positions,
+            object_type_hint,
+            face_joint_indx=face_joints,
+            forward_joint_index=forward_joint,
+            forward_base_joint_index=forward_base_joint,
+            joint_names=list(names),
+            parents=parents,
+        )[0].qs,
+        dtype=np.float64,
+    ).reshape(-1)
+
+
+def _face_detected_rest_facings(source_skeleton, target_skeleton) -> tuple[np.ndarray, np.ndarray]:
+    """Return each bind pose's (4,) WXYZ quarter turn bringing its face to +Z.
+
+    Each argument is ``(names, parents, rest_offsets, rest_rotations)``, with the
+    rig's own bone names. This is the retarget's ``rest_facing_quats``: it reads
+    head/face joints, so it works before any joint mapping exists -- the LLM
+    mapping prompt needs it -- and decides a biped-onto-quadruped pair whose rest
+    shapes no quarter turn fits.
+    """
+    return (
+        _face_detected_facing_quat(*source_skeleton, _SOURCE_FACE_HINT),
+        _face_detected_facing_quat(*target_skeleton, _TARGET_FACE_HINT),
+    )
 
 
 def animation_to_exporter_inputs(animation, skeleton) -> tuple[Tensor, Tensor, Tensor, Optional[Tensor]]:
@@ -839,8 +906,7 @@ class AnimationExporter:
         export_mesh: bool = True,
         rename_bones_to_canonical: bool = False,
         prune_unmapped_bones: bool = False,
-        coordinate_search: Optional[bool] = None,
-        source_alignment_rotation: Optional[np.ndarray] = None,
+        align_facing: Optional[bool] = None,
         src_effective_root_index: Optional[int] = None,
         tgt_effective_root_index: Optional[int] = None,
         fullbody_ik: bool = False,
@@ -900,18 +966,15 @@ class AnimationExporter:
                 matches the NPY / processed BVH. Bones are pruned at rest (no
                 per-frame baking); any skin weight is merged into the nearest
                 kept ancestor.
-            coordinate_search: Override the retarget's 1-of-12 rigid rest-pose
-                alignment sweep. ``None`` (default) keeps the historical
-                auto-rule below: off for a plain GLB/GLTF target, on otherwise.
-                Native GLB→GLB retargeting between two rigs authored in
-                different bases needs it forced ``True``; a self-retarget is
-                unaffected either way (identity is the first candidate and wins
-                ties at zero error).
-            source_alignment_rotation: Optional ``(3, 3)`` rotation that turns
-                the whole source -- bind pose and animation together -- into the
-                target's basis before the retarget, e.g. a facing alignment. Only
-                read on the *mesh_path* retarget path; see
-                :func:`retarget_world_space_np`.
+            align_facing: Override whether the retarget turns the source into
+                the target's facing. Both facings come from head/face joint
+                detection on the two rest poses (the same detection turns each
+                skeleton to +Z for the LLM mapping prompt); see
+                :func:`retarget_world_space_np`. ``None`` (default) keeps the
+                historical auto-rule below: off for a plain GLB/GLTF target, on
+                otherwise. Native GLB→GLB retargeting forces it ``True``; a
+                self-retarget is unaffected either way (two equal facings turn
+                nothing).
             src_effective_root_index: Optional source joint that carries the
                 locomotion translation in its local position channel (the
                 ``Bip01`` pattern: a static wrapper root above the joint that
@@ -1041,36 +1104,40 @@ class AnimationExporter:
             ])
 
             # Imported GLB rigs already carry the glTF wrapper/object space that
-            # Blender will re-emit on export. Running the internal rest-pose
-            # coordinate search there can spuriously add an extra rigid basis
-            # rotation (Horse picked R_y(+90°), which re-imports as a visible
-            # whole-character Z rotation), so plain GLB->GLB retargeting keeps
-            # the rig's existing basis.
+            # Blender will re-emit on export. Historically the retarget's
+            # alignment was a rest-shape search that could add a spurious rigid
+            # turn there (Horse picked R_y(+90°), which re-imports as a visible
+            # whole-character Z rotation), so plain GLB->GLB export keeps the
+            # rig's existing basis.
             #
             # HML restore is different: ``global_similarity`` has already
             # reverse-aligned the imported GLB rig into NPY/HML space while the
             # recovered source animation still arrives in raw export space. In
-            # that case disabling coordinate search pins the alignment to
-            # identity and cancels the intended 90-degree facing change, so we
-            # re-enable the search only for the reverse-aligned path.
+            # that case leaving the facing alone pins the alignment to identity
+            # and cancels the intended 90-degree facing change, so the facing
+            # alignment is on only for the reverse-aligned path.
             #
-            # ``coordinate_search`` overrides that auto-rule when the caller
-            # knows better — the native GLB→GLB retarget path forces it on to
-            # resolve rigs authored in different bases.
+            # ``align_facing`` overrides that auto-rule when the caller knows
+            # better — the native GLB→GLB retarget path forces it on, because
+            # two rigs facing different ways split the result otherwise.
             is_gltf_mesh = bool(
                 mesh_path_lower and mesh_path_lower.endswith((".glb", ".gltf"))
             )
-            if coordinate_search is None:
-                resolved_coordinate_search = (
+            if align_facing is None:
+                resolved_align_facing = (
                     (not is_gltf_mesh) or (global_similarity is not None)
                 )
             else:
-                resolved_coordinate_search = bool(coordinate_search)
+                resolved_align_facing = bool(align_facing)
             src_match_names = _build_canonical_match_names(
                 bone_names,
                 parents_input,
                 rest_offsets_input,
                 log_hint="export source skeleton",
+            )
+
+            source_rest_skeleton = (
+                list(bone_names), parents_input, rest_offsets_input, rest_rot_input,
             )
 
             def _retarget_to_armature(names, parents, offsets, rest_rots, verbose):
@@ -1095,8 +1162,10 @@ class AnimationExporter:
                     src_effective_root_index=src_effective_root_index,
                     tgt_effective_root_index=tgt_effective_root_index,
                     src_bone_translations=np.array(bt, dtype=np.float64) if bt is not None else None,
-                    coordinate_search=resolved_coordinate_search,
-                    src_alignment_rotation=source_alignment_rotation,
+                    align_facing=resolved_align_facing,
+                    rest_facing_quats=lambda: _face_detected_rest_facings(
+                        source_rest_skeleton, (names, parents, offsets, rest_rots),
+                    ),
                     verbose=verbose,
                 )
                 return result, tgt_bvh_names

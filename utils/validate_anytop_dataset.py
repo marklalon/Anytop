@@ -911,6 +911,8 @@ def _validate_motion_orientation(
             forward_joint_index=forward_joint_index,
             forward_base_joint_index=forward_base_joint_index,
             emit_warnings=False,
+            joint_names=joint_names,
+            parents=parents,
         )
         motion_forward = _get_facing_forward(
             motion_positions,
@@ -919,6 +921,8 @@ def _validate_motion_orientation(
             forward_joint_index=forward_joint_index,
             forward_base_joint_index=forward_base_joint_index,
             emit_warnings=False,
+            joint_names=joint_names,
+            parents=parents,
         )
         if tpose_forward is None or motion_forward is None:
             print_warn(f"{motion_name}: failed to resolve geometric facing for motion orientation validation")

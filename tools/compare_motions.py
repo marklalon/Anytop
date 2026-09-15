@@ -83,11 +83,6 @@ from motion_lib.FBX import (
     infer_sample_fps,
     get_action_sample_times,
 )
-from utils.retarget_core import (
-    generate_coordinate_candidates_np,
-)
-
-
 from utils.misc import normalize_bone_key as _normalize_bone_key
 
 
@@ -509,6 +504,43 @@ def _compute_common_bone_reindex(
 
 # ── Alignment detection ───────────────────────────────────────────────────────
 
+def _coordinate_candidates() -> list[tuple[str, np.ndarray]]:
+    """Candidate 3x3 rotation/flip matrices for the coordinate-system detection.
+
+    Deliberately wider than the retarget's quarter-turn facing search: this tool
+    diagnoses exports, so a pitched or mirrored basis should be matched and named
+    in ``rotation_label`` rather than surface only as a large error.
+    """
+    I = np.eye(3, dtype=np.float64)
+
+    def R_x(deg):
+        c, s = np.cos(np.deg2rad(deg)), np.sin(np.deg2rad(deg))
+        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=np.float64)
+
+    def R_y(deg):
+        c, s = np.cos(np.deg2rad(deg)), np.sin(np.deg2rad(deg))
+        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=np.float64)
+
+    def R_z(deg):
+        c, s = np.cos(np.deg2rad(deg)), np.sin(np.deg2rad(deg))
+        return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float64)
+
+    return [
+        ("identity", I),
+        ("R_x(+90°)", R_x(90)),
+        ("R_x(-90°)", R_x(-90)),
+        ("R_y(+90°)", R_y(90)),
+        ("R_y(-90°)", R_y(-90)),
+        ("R_z(+90°)", R_z(90)),
+        ("R_z(-90°)", R_z(-90)),
+        ("R_x(+180°)", R_x(180)),
+        ("R_z(+180°)", R_z(180)),
+        ("flip_X", np.diag([-1, 1, 1])),
+        ("flip_Y", np.diag([1, -1, 1])),
+        ("flip_Z", np.diag([1, 1, -1])),
+    ]
+
+
 def detect_and_align(
     motion_a: MotionData,
     motion_b: MotionData,
@@ -588,7 +620,7 @@ def detect_and_align(
     pos_b_aligned = pos_b_scaled + translation_offset[np.newaxis, np.newaxis, :]
 
     # ── Step 5: Detect coordinate system ────────────────────────────────────
-    candidates = generate_coordinate_candidates_np()
+    candidates = _coordinate_candidates()
 
     best_label = "identity"
     best_R = np.eye(3, dtype=np.float64)

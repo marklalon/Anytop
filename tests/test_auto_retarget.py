@@ -168,7 +168,7 @@ def test_retarget_distributes_short_source_bone_across_longer_target_chain(
         src_root_rotation=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64),
         src_match_names=['Root', 'Neck', 'Neck 1', 'Head'],
         tgt_match_names=['Root', 'Neck', 'Neck 1', 'Neck 2', 'Neck 3', 'Neck 4', 'Head'],
-        coordinate_search=False,
+        align_facing=False,
         verbose=False,
     )
 
@@ -242,7 +242,7 @@ def test_retarget_preserves_zero_pose_locations_for_rigid_longer_target_chain(
         src_bone_translations=np.zeros((2, 4, 3), dtype=np.float64),
         src_match_names=['Root', 'Neck', 'Neck 1', 'Head'],
         tgt_match_names=['Root', 'Neck', 'Neck 1', 'Neck 2', 'Neck 3', 'Neck 4', 'Head'],
-        coordinate_search=False,
+        align_facing=False,
         verbose=False,
     )
 
@@ -302,7 +302,7 @@ def test_retarget_skips_llm_and_preserves_root_motion_under_target_root_wrappers
         src_bone_translations=None,
         src_match_names=['locator2', 'koshi'],
         tgt_match_names=['EAL1_2', 'N_ALL', 'locator2', 'koshi'],
-        coordinate_search=False,
+        align_facing=False,
         verbose=False,
     )
 
@@ -970,7 +970,7 @@ def test_retarget_promotes_unmapped_effective_root_to_target_root(
         src_bone_translations=bone_translations,
         src_match_names=['Hips', 'Ctrl', 'Bip01', 'Pelvis'],
         tgt_match_names=['Cg', 'Pelvis'],
-        coordinate_search=False,
+        align_facing=False,
         verbose=False,
     )
 
@@ -1053,7 +1053,7 @@ def test_retarget_promotes_matched_effective_root_over_wrapper_root(
         src_bone_translations=bone_translations,
         src_match_names=['Hips', 'Pelvis', 'Spine', 'Head'],
         tgt_match_names=['Cg', 'Pelvis', 'Spine'],
-        coordinate_search=False,
+        align_facing=False,
         verbose=False,
     )
 
@@ -1100,7 +1100,7 @@ def test_retarget_promotes_source_root_to_nonroot_target_effective_root() -> Non
         src_bone_translations=None,
         src_match_names=['Hips', 'Pelvis'],
         tgt_match_names=['Hips', 'Pelvis'],
-        coordinate_search=False,
+        align_facing=False,
         verbose=False,
     )
 
@@ -1179,7 +1179,7 @@ def test_bridge_gap_joint_uses_source_anchor_rotation_to_avoid_spine_translation
         src_bone_translations=None,
         src_match_names=['Hips', 'Pelvis', 'Spine'],
         tgt_match_names=['Cg', 'Pelvis', 'Spine'],
-        coordinate_search=False,
+        align_facing=False,
         verbose=False,
     )
 
@@ -1268,7 +1268,7 @@ def test_bridge_ignores_degenerate_zero_length_source_wrapper_bone(
         src_bone_translations=bone_translations,
         src_match_names=['Hips', 'Pelvis', 'Spine'],
         tgt_match_names=['Hips', 'Ctrl', 'Bip01', 'Pelvis'],
-        coordinate_search=False,
+        align_facing=False,
         verbose=False,
     )
 
@@ -1338,7 +1338,7 @@ def test_root_promotion_shifts_descendant_chain_up_one_target_level(
         src_bone_translations=None,
         src_match_names=['Hips', 'Pelvis', 'Spine 1', 'Spine 2'],
         tgt_match_names=['Cg', 'Pelvis', 'Spine', 'Spine 1'],
-        coordinate_search=False,
+        align_facing=False,
         verbose=False,
     )
 
@@ -1408,7 +1408,7 @@ def test_root_promotion_redistributes_short_neck_chain_across_longer_target_chai
         src_bone_translations=None,
         src_match_names=['Hips', 'Pelvis', 'Spine 1', 'Spine 2', 'Spine 3', 'Ribcage', 'Neck 1', 'Neck 2', 'Head'],
         tgt_match_names=['Cg', 'Pelvis', 'Spine', 'Spine 1', 'Spine 2', 'Neck', 'Neck 1', 'Neck 2', 'Neck 3', 'Neck 4', 'Head'],
-        coordinate_search=False,
+        align_facing=False,
         verbose=False,
     )
 
@@ -1631,11 +1631,19 @@ def _turned_rig_retarget_case():
     )
 
 
-def test_retarget_source_alignment_rotation_turns_bind_and_animation_together(
+def test_retarget_turns_bind_and_animation_together_into_target_facing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _should_not_call_llm(*_args, **_kwargs):
         raise AssertionError("identical joint names must not reach the LLM mapping")
+
+    facing_calls = []
+
+    def _rest_facings():
+        facing_calls.append(True)
+        # The source binds facing +Z; the target's rest root turn makes it face
+        # +X, which R_y(-90°) brings back to +Z.
+        return _identity_quat(1)[0], _quat_y(-90.0)
 
     monkeypatch.setattr(retarget_mod, '_llm_joint_mapping', _should_not_call_llm)
     (
@@ -1656,10 +1664,12 @@ def test_retarget_source_alignment_rotation_turns_bind_and_animation_together(
         src_root_rotation=root_rotation,
         src_match_names=names,
         tgt_match_names=names,
-        coordinate_search=False,
-        src_alignment_rotation=turn,
+        align_facing=True,
+        rest_facing_quats=_rest_facings,
         verbose=False,
     )
+    assert facing_calls == [True]
+    assert result['alignment_label'] == "R_y(+90°)"
 
     source_world_positions, source_world_rotations = retarget_mod._batch_internal_pose_fk_np(
         joint_rotations, root_translation, root_rotation, None,
@@ -1689,3 +1699,102 @@ def test_retarget_source_alignment_rotation_turns_bind_and_animation_together(
                 realized_rotations[frame_idx, joint_idx], expected_rotations[frame_idx, joint_idx],
             )
             assert angle < 1e-4, f"frame {frame_idx} {name}: {angle:.4f} deg off the turned source"
+
+
+@pytest.mark.parametrize(
+    "rest_facings, expected_label",
+    [
+        (None, "identity"),
+        ((_identity_quat(1)[0], _identity_quat(1)[0]), "identity"),
+        ((_quat_y(-90.0), _identity_quat(1)[0]), "R_y(-90°)"),
+        ((_identity_quat(1)[0], _quat_y(-90.0)), "R_y(+90°)"),
+        ((_quat_y(90.0), _quat_y(-90.0)), "R_y(180°)"),
+    ],
+)
+def test_retarget_facing_alignment_is_target_inverse_times_source(
+    monkeypatch: pytest.MonkeyPatch, rest_facings, expected_label,
+) -> None:
+    monkeypatch.setattr(
+        retarget_mod,
+        '_llm_joint_mapping',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("identical joint names must not reach the LLM mapping")
+        ),
+    )
+    # Every mapped joint sits on the vertical axis: the rest shapes say nothing
+    # about facing, so the alignment can only come from the detected facings.
+    parents = np.array([-1, 0, 1], dtype=np.int32)
+    names = ['Hips', 'Spine', 'Head']
+    offsets = np.array([[0.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64)
+
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=parents,
+        src_rest_offsets=offsets,
+        src_rest_rotations=_identity_quat(3),
+        tgt_parents=parents,
+        tgt_rest_offsets=offsets,
+        tgt_rest_rotations=_identity_quat(3),
+        src_joint_rotations=_identity_quat(3)[None, :, :],
+        src_root_translation=np.zeros((1, 3), dtype=np.float64),
+        src_root_rotation=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64),
+        src_match_names=names,
+        tgt_match_names=names,
+        align_facing=True,
+        rest_facing_quats=None if rest_facings is None else (lambda: rest_facings),
+        verbose=False,
+    )
+
+    assert result['alignment_label'] == expected_label
+
+
+def test_retarget_llm_prompt_positions_are_turned_to_face_plus_z(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        parents, names, offsets, source_rest_rotations, target_rest_rotations,
+        joint_rotations, root_translation, root_rotation,
+    ) = _turned_rig_retarget_case()
+    target_names = [f"Target {name}" for name in names]
+    captured = {}
+
+    def _capture_llm_mapping(src_names, tgt_names, *_args, **kwargs):
+        captured['src'] = np.asarray(kwargs['src_rest_positions'], dtype=np.float64)
+        captured['tgt'] = np.asarray(kwargs['tgt_rest_positions'], dtype=np.float64)
+        return dict(zip(src_names, tgt_names))
+
+    facing_calls = []
+
+    def _rest_facings():
+        facing_calls.append(True)
+        # The source binds facing +Z already; the target's rest root turn makes
+        # it face +X, which R_y(-90°) brings back to +Z.
+        return _identity_quat(1)[0], _quat_y(-90.0)
+
+    monkeypatch.setattr(retarget_mod, '_llm_joint_mapping', _capture_llm_mapping)
+    retarget_mod.retarget_world_space_np(
+        src_parents=parents,
+        src_rest_offsets=offsets,
+        src_rest_rotations=source_rest_rotations,
+        tgt_parents=parents,
+        tgt_rest_offsets=offsets,
+        tgt_rest_rotations=target_rest_rotations,
+        src_joint_rotations=joint_rotations,
+        src_root_translation=root_translation,
+        src_root_rotation=root_rotation,
+        src_match_names=names,
+        tgt_match_names=target_names,
+        align_facing=True,
+        rest_facing_quats=_rest_facings,
+        verbose=False,
+    )
+
+    # Read once and shared by the prompt and the facing alignment.
+    assert facing_calls == [True]
+    head = names.index('Head')
+    left_thigh = names.index('Left Thigh')
+    for side in ('src', 'tgt'):
+        positions = captured[side]
+        # The prompt's convention: the head is ahead along +Z, the left leg at +X.
+        assert positions[head, 2] > 1.0 and abs(positions[head, 0]) < 1e-9, side
+        assert positions[left_thigh, 0] == pytest.approx(0.4), side
+    np.testing.assert_allclose(captured['tgt'], captured['src'], atol=1e-9)

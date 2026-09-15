@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 import warnings
-from typing import Optional, TypedDict
+from typing import Callable, Optional, TypedDict
 
 import numpy as np
 
@@ -26,6 +26,7 @@ from .rotation_numpy import (
     quat_conjugate_wxyz_np,
     quat_multiply_wxyz_np,
     quat_rotate_wxyz_np,
+    quat_to_matrix_wxyz_np,
 )
 from .retarget_cache import (
     get_from_memory,
@@ -437,36 +438,21 @@ def _llm_joint_mapping(
 # ---------------------------------------------------------------------------
 
 
-def generate_coordinate_candidates_np():
-    """Generate candidate 3x3 rotation/flip matrices for auto-detection."""
-    I = np.eye(3, dtype=np.float64)
+_YAW_LABELS = (
+    ("identity", np.eye(3, dtype=np.float64)),
+    ("R_y(+90°)", np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])),
+    ("R_y(-90°)", np.array([[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]])),
+    ("R_y(180°)", np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])),
+)
 
-    def R_x(deg):
-        c, s = np.cos(np.deg2rad(deg)), np.sin(np.deg2rad(deg))
-        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=np.float64)
 
-    def R_y(deg):
-        c, s = np.cos(np.deg2rad(deg)), np.sin(np.deg2rad(deg))
-        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=np.float64)
-
-    def R_z(deg):
-        c, s = np.cos(np.deg2rad(deg)), np.sin(np.deg2rad(deg))
-        return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float64)
-
-    return [
-        ("identity", I),
-        ("R_x(+90°)", R_x(90)),
-        ("R_x(-90°)", R_x(-90)),
-        ("R_y(+90°)", R_y(90)),
-        ("R_y(-90°)", R_y(-90)),
-        ("R_z(+90°)", R_z(90)),
-        ("R_z(-90°)", R_z(-90)),
-        ("R_x(+180°)", R_x(180)),
-        ("R_z(+180°)", R_z(180)),
-        ("flip_X", np.diag([-1, 1, 1])),
-        ("flip_Y", np.diag([1, -1, 1])),
-        ("flip_Z", np.diag([1, 1, -1])),
-    ]
+def _alignment_label(rotation: np.ndarray) -> str:
+    """Human-readable name for a source-to-target alignment rotation."""
+    for label, candidate in _YAW_LABELS:
+        if np.allclose(rotation, candidate, atol=1e-6):
+            return label
+    angle = np.degrees(np.arccos(np.clip((np.trace(rotation) - 1.0) / 2.0, -1.0, 1.0)))
+    return f"R({angle:.1f}°)"
 
 
 def _rest_direction_alignment_quat_np(
@@ -748,16 +734,16 @@ def retarget_world_space_np(
     src_effective_root_index: int | None = None,
     tgt_effective_root_index: int | None = None,
     src_bone_translations: Optional[np.ndarray] = None,
-    coordinate_search: bool = True,
-    src_alignment_rotation: Optional[np.ndarray] = None,
+    align_facing: bool = True,
+    rest_facing_quats: Optional[Callable[[], tuple[np.ndarray, np.ndarray]]] = None,
     verbose: bool = True,
 ) -> RetargetResult:
     """Retarget an exporter-style animation from a source skeleton to a target.
 
     Bone-vector direction-transfer with rigid target skeleton: each mapped
     bone is placed at ``K2 = P2 + L · dir(K − P1)`` where ``dir`` is the
-    source bone's unit world direction (aligned by a 1-of-12 rigid coordinate
-    match + scale), ``P2`` is the target-skeleton parent's world position, and
+    source bone's unit world direction (turned into the target's facing and
+    scaled), ``P2`` is the target-skeleton parent's world position, and
     ``L = ‖tgt_rest_offsets[j]‖ · (src_anim_len / src_rest_len)`` is the
     target rest bone length modulated by the source bone's *relative*
     squash/stretch — so the target keeps its own proportions while the
@@ -800,18 +786,23 @@ def retarget_world_space_np(
             ``Bip01`` beneath a static wrapper root). When that joint is left
             unmatched by semantic mapping, it may replace a mapped wrapper root
             as the target root anchor.
-        coordinate_search: when ``True``, sweep 12 rigid rotation/flip candidates
-            to find the best alignment of rest poses. Set ``False`` when the
-            source and target are known to share the same world basis (e.g.
-            both are processed cond entries from the same dataset pipeline).
-        src_alignment_rotation: optional (3, 3) world rotation that turns the
-            source into the target's basis before anything else -- a facing
-            alignment. It is a rigid basis change of the whole source, so it
-            rotates the source's bind pose together with its animation: rotating
-            the animation alone would read the turn as pose, and the per-bone
-            rest swing cannot take a yaw back out of a single vertical bone, so
-            limbs would keep one facing while the trunk took the other. The
-            coordinate search, when on, sweeps its candidates on top of it.
+        align_facing: when ``True``, turn the source into the target's facing
+            by ``target⁻¹ · source`` of *rest_facing_quats*. The turn is a basis
+            change of the whole source -- bind pose and animation together --
+            which is what keeps a rig facing +Z played on one facing +X from
+            moving one way with its limbs facing the other. Nothing turns
+            without *rest_facing_quats*. Set ``False`` when the source and
+            target are known to share the same world basis (e.g. both are
+            processed cond entries from the same dataset pipeline).
+        rest_facing_quats: optional zero-argument callable returning
+            ``(source, target)`` (4,) WXYZ quarter turns, each bringing that
+            skeleton's bind-pose face to +Z -- the exporter passes the head/face
+            joint detection the dataset itself is built with. Called at most
+            once. Both consumers need it before any joint mapping exists: the
+            LLM joint-mapping prompt turns each skeleton's rest positions by it,
+            because the prompt tells the model +Z is the way a character faces
+            and +X its left, and the facing alignment above is read straight
+            off it. Without it the prompt gets native positions.
         verbose: print one-line summary diagnostics.
 
     Returns:
@@ -820,6 +811,19 @@ def retarget_world_space_np(
         compatible and can be fed straight back into ``AnimationExporter`` or
         used to drive any other target-skeleton animation pipeline.
     """
+    resolved_rest_facings: list[tuple[np.ndarray, np.ndarray]] = []
+
+    def _rest_facings() -> tuple[np.ndarray, np.ndarray] | None:
+        if rest_facing_quats is None:
+            return None
+        if not resolved_rest_facings:
+            source_facing, target_facing = rest_facing_quats()
+            resolved_rest_facings.append((
+                np.asarray(source_facing, dtype=np.float64).reshape(4),
+                np.asarray(target_facing, dtype=np.float64).reshape(4),
+            ))
+        return resolved_rest_facings[0]
+
     src_parents = np.asarray(src_parents, dtype=np.int32)
     tgt_parents = np.asarray(tgt_parents, dtype=np.int32)
     src_rest_offsets = np.asarray(src_rest_offsets, dtype=np.float64)
@@ -1176,6 +1180,18 @@ def retarget_world_space_np(
             np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (1, J_tgt, 1)), np.zeros((1, J_tgt, 3)),
             tgt_parents, tgt_rest_offsets, tgt_rest_rotations,
         )
+        # The prompt tells the model +Z is the way a character faces and +X its
+        # left. Rigs bind facing any way -- Truebones' Lion faces +X, where its
+        # spine runs along X and would read as "out at the side" -- so each
+        # skeleton is turned to that convention before its positions are written.
+        rest_facings = _rest_facings()
+        if rest_facings is not None:
+            mapping_src_rest_positions = (
+                mapping_src_rest_positions @ quat_to_matrix_wxyz_np(rest_facings[0]).T
+            )
+            mapping_tgt_rest_positions = (
+                mapping_tgt_rest_positions @ quat_to_matrix_wxyz_np(rest_facings[1]).T
+            )
         llm_result = _llm_joint_mapping(
             src_match_names, tgt_match_names,
             src_parents, tgt_parents,
@@ -1338,25 +1354,29 @@ def retarget_world_space_np(
     t_align = np.zeros(3, dtype=np.float64)
     pos_src_rest_st = pos_src_rest * scale
 
-    candidates = generate_coordinate_candidates_np() if coordinate_search else [
-        ("identity", np.eye(3, dtype=np.float64))
-    ]
-    if src_alignment_rotation is not None:
-        pre_rotation = np.asarray(src_alignment_rotation, dtype=np.float64).reshape(3, 3)
-        candidates = [
-            (f"{label}+pre_aligned", R @ pre_rotation) for label, R in candidates
-        ]
+    # ── F2) Facing alignment ─────────────────────────────────────────────
+    # Each rig's facing is read by the same head/face detection the dataset is
+    # built with; the source turns by target⁻¹ · source. Fitting the two rest
+    # shapes against each other used to decide this and cannot: a biped onto a
+    # quadruped matches no quarter turn better than another, and the joint
+    # mapping such a fit needs is itself made with these facings.
     best_R = np.eye(3, dtype=np.float64)
-    best_label = "identity"
-    best_err = float("inf")
-
-    for label, R in candidates:
-        pos_candidate = pos_src_rest_st @ R.T
-        err = float(np.mean(np.linalg.norm(pos_tgt_rest - pos_candidate, axis=-1)))
-        if err < best_err:
-            best_err = err
-            best_label = label
-            best_R = R
+    rest_facings = _rest_facings() if align_facing else None
+    if rest_facings is not None:
+        source_facing, target_facing = rest_facings
+        # source -> +Z reference -> target basis
+        best_R = quat_to_matrix_wxyz_np(
+            quat_multiply_wxyz_np(
+                quat_conjugate_wxyz_np(target_facing[None]), source_facing[None],
+            )[0]
+        )
+    best_label = _alignment_label(best_R)
+    # Residual of the mapped rest shapes after the turn, each centered on its
+    # own mapped joints: a diagnostic of how alike the two bodies are, not an
+    # input to anything.
+    tgt_rest_centered = pos_tgt_rest[0] - pos_tgt_rest[0].mean(axis=0)
+    src_rest_centered = pos_src_rest_st[0] - pos_src_rest_st[0].mean(axis=0)
+    best_err = float(np.mean(np.linalg.norm(tgt_rest_centered - src_rest_centered @ best_R.T, axis=-1)))
 
     if verbose:
         print(f"  [Retarget] common={len(common_src_idx)}/{J_src}, "

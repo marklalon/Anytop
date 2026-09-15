@@ -131,10 +131,31 @@ class FaceOrientationChainForwardTest(unittest.TestCase):
 
         self.assertEqual(set(candidates.keys()), {'tail_spine', 'across'})
 
-    def test_priority_prefers_torso_head_over_tail_spine_and_across(self):
+    def test_named_pairs_on_an_axis_outrank_the_head(self):
+        # Rigs name their sides more reliably than they place their heads: a
+        # ghost's or robot's head reference can point anywhere.
+        torso_head = np.array([[0.0, 0.0, -1.0]], dtype=np.float64)
+        tail_spine = np.array([[-1.0, 0.0, 0.0]], dtype=np.float64)
+        across = np.array([[1.0, 0.0, 0.0]], dtype=np.float64)
+
+        candidate_name, candidate_forward = _choose_facing_forward(
+            {
+                'across': across,
+                'tail_spine': tail_spine,
+                'torso_head': torso_head,
+            },
+            object_type='PriorityBug',
+        )
+
+        self.assertEqual(candidate_name, 'across')
+        np.testing.assert_allclose(candidate_forward, across, atol=1e-8)
+
+    def test_skewed_named_pairs_defer_to_torso_head_then_tail_spine(self):
+        # Crossed clavicles (Lion, Goat) put the across 26-40 deg off any axis;
+        # the head/tail chain is the reliable reading there.
         torso_head = np.array([[0.0, 0.0, 1.0]], dtype=np.float64)
         tail_spine = np.array([[1.0, 0.0, 0.0]], dtype=np.float64)
-        across = np.array([[1.0, 0.0, 0.0]], dtype=np.float64)
+        across = np.array([[np.sin(np.deg2rad(30.0)), 0.0, np.cos(np.deg2rad(30.0))]], dtype=np.float64)
 
         candidate_name, candidate_forward = _choose_facing_forward(
             {
@@ -147,6 +168,60 @@ class FaceOrientationChainForwardTest(unittest.TestCase):
 
         self.assertEqual(candidate_name, 'torso_head')
         np.testing.assert_allclose(candidate_forward, torso_head, atol=1e-8)
+
+    def test_mirror_pairs_use_the_head_bone_or_keep_plus_z(self):
+        # Without named sides the pairs are mirror guesses: their across faces
+        # either way, and the head over the torso center fooled FlowerPotMonster.
+        # Only the head's own bone counts, and only while it is near-horizontal.
+        across = np.array([[-1.0, 0.0, 0.0]], dtype=np.float64)
+        torso_head = np.array([[0.0, 0.0, -1.0]], dtype=np.float64)
+        head_bone = np.array([[0.0, 0.0, 1.0]], dtype=np.float64)
+
+        with patch('builtins.print'):
+            candidate_name, candidate_forward = _choose_facing_forward(
+                {'across': across, 'torso_head': torso_head, 'head_bone': head_bone},
+                object_type='MirrorBug',
+                near_y_candidates={'head_bone': False},
+                sides_named=False,
+            )
+            self.assertEqual(candidate_name, 'head_bone')
+            np.testing.assert_allclose(candidate_forward, head_bone, atol=1e-8)
+
+            candidate_name, candidate_forward = _choose_facing_forward(
+                {'across': across, 'torso_head': torso_head, 'head_bone': head_bone},
+                object_type='MirrorBugVertical',
+                near_y_candidates={'head_bone': True},
+                sides_named=False,
+            )
+            self.assertIsNone(candidate_name)
+            self.assertIsNone(candidate_forward)
+
+    def test_head_bone_candidate_is_the_heads_own_bone(self):
+        # FlowerPotMonster: a neck that curls back before the head bends forward.
+        # Head minus neck base points backward; head minus its parent, forward.
+        from data_loaders.truebones.truebones_utils.face_orientation import (
+            _get_facing_candidates_with_diagnostics,
+        )
+
+        parents = np.array([-1, 0, 1, 2], dtype=np.int64)
+        joints = np.zeros((1, 4, 3), dtype=np.float64)
+        joints[:, 1] = np.array([0.0, 1.0, 0.0])    # neck base
+        joints[:, 2] = np.array([0.0, 2.0, -1.5])   # neck tip, behind the base
+        joints[:, 3] = np.array([0.0, 2.2, -0.5])   # head, bending forward again
+
+        candidates, near_y = _get_facing_candidates_with_diagnostics(
+            joints, 'FlowerPotLike', face_joint_indx=[], forward_joint_index=3,
+            forward_base_joint_index=None, parents=parents,
+        )
+        np.testing.assert_allclose(candidates['head_bone'][0], np.array([0.0, 0.0, 1.0]), atol=1e-8)
+        self.assertFalse(near_y['head_bone'])
+
+        joints[:, 3] = np.array([0.0, 4.0, -1.4])   # head straight up: no facing
+        candidates, near_y = _get_facing_candidates_with_diagnostics(
+            joints, 'BipedLike', face_joint_indx=[], forward_joint_index=3,
+            forward_base_joint_index=None, parents=parents,
+        )
+        self.assertTrue(near_y['head_bone'])
 
     def test_near_vertical_primary_falls_back_to_across(self):
         torso_head = np.array([[0.0, 0.0, 1.0]], dtype=np.float64)
@@ -215,7 +290,8 @@ class FaceOrientationChainForwardTest(unittest.TestCase):
         np.testing.assert_allclose(candidates['across'][0], np.array([0.0, 0.0, -1.0], dtype=np.float64), atol=1e-8)
 
     def test_across_selection_emits_warning_once(self):
-        across = np.array([[1.0, 0.0, 0.0]], dtype=np.float64)
+        # A skewed across with nothing better is the last resort, and says so.
+        across = np.array([[np.sin(np.deg2rad(30.0)), 0.0, np.cos(np.deg2rad(30.0))]], dtype=np.float64)
 
         with patch('builtins.print') as mock_print:
             first_name, _first_forward = _choose_facing_forward(
@@ -295,8 +371,9 @@ class FaceOrientationChainForwardTest(unittest.TestCase):
         # generic homologous pair (calf), not left empty.
         self.assertEqual((face_joints[2], face_joints[3]), (4, 3))
         self.assertNotIn(
-            '[WARN] Horse: no left-right joint pairs found; using default +Z orientation. '
-            'Provide --face-joints-names explicitly if a different orientation is needed.',
+            '[WARN] Horse: no left-right joint pairs found; the facing comes from the head bone, '
+            'else stays +Z. Provide --face-joints-names explicitly if a different '
+            'orientation is needed.',
             [call.args[0] for call in mock_print.call_args_list],
         )
 
@@ -340,8 +417,9 @@ class FaceOrientationChainForwardTest(unittest.TestCase):
 
         self.assertEqual(face_joints, [])
         mock_print.assert_called_once_with(
-            '[WARN] LegsOnly: no left-right joint pairs found; using default +Z orientation. '
-            'Provide --face-joints-names explicitly if a different orientation is needed.'
+            '[WARN] LegsOnly: no left-right joint pairs found; the facing comes from the head bone, '
+            'else stays +Z. Provide --face-joints-names explicitly if a different '
+            'orientation is needed.'
         )
 
 

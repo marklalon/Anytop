@@ -17,6 +17,22 @@ from .physics_joint_annotation import (
 
 _EMITTED_DEGENERATE_FACING_WARNINGS = set()
 _FACING_NEAR_Y_AXIS_ANGLE_DEG = 15.0
+# How far off a world axis a named left/right pair's across-forward may sit and
+# still be the facing. Rigs name their sides far more reliably than they place
+# their heads: measured on 230 rigs against their dataset facings, every
+# on-axis named pair (145/145 UnityBundles, 71/71 Truebones) was right, while
+# the head-over-torso reading was wrong on 29 of 132 (ghosts, robots, plants,
+# a headband taken for a head). The two Truebones pairs that were off axis
+# (Lion 40 deg, Goat 26 deg, crossed clavicles) are right through their heads.
+_ACROSS_AXIS_TOLERANCE_DEG = 20.0
+# A rig without any left/right joint names has only its head's own bone (head
+# minus its parent) to say where the front is. That bone is trustworthy while
+# it points near the ground plane -- 99/100 rigs within 45 deg of it agree
+# with their dataset facing -- and says nothing once the head sits straight
+# above the neck, as on a biped. FlowerPotMonster shows why it is the head's
+# OWN bone and not head-to-neck-base: its six-segment neck curls back before
+# the head bends forward again.
+_HEAD_BONE_MAX_ELEVATION_DEG = 45.0
 # A forward-reference joint whose bone (distance to its parent) is shorter than
 # this fraction of the skeleton's overall extent carries no directional
 # information and is treated as geometrically degenerate.
@@ -393,6 +409,32 @@ def _build_forward_candidate(vectors):
     return projected, _is_forward_near_y_axis(vectors)
 
 
+def _axis_offset_deg(forward):
+    """Largest angle, over frames, between an XZ forward and its nearest world axis."""
+    forward = np.asarray(forward, dtype=np.float64).reshape(-1, 3)
+    norms = np.linalg.norm(forward[:, [0, 2]], axis=-1)
+    valid = norms > 1e-8
+    if not np.any(valid):
+        return 90.0
+    nearest = np.max(np.abs(forward[valid][:, [0, 2]]), axis=-1) / norms[valid]
+    return float(np.degrees(np.arccos(np.clip(nearest, -1.0, 1.0))).max())
+
+
+def _face_pairs_are_named(joint_names, face_joint_indx):
+    """Whether the face joints are left/right by NAME rather than mirror guesses.
+
+    ``resolve_face_joints`` falls back to rest-pose mirror symmetry when a rig
+    names no sides; that pair pins the lateral axis but its right/left is
+    arbitrary, so an across-vector built from it faces either way. Without joint
+    names the pairs are trusted as named.
+    """
+    if not face_joint_indx:
+        return False
+    if joint_names is None:
+        return True
+    return all(detect_joint_side(joint_names[int(index)]) is not None for index in face_joint_indx)
+
+
 def _vector_angle_deg(vector_a, vector_b):
     a = np.asarray(vector_a, dtype=np.float64).reshape(-1)
     b = np.asarray(vector_b, dtype=np.float64).reshape(-1)
@@ -439,6 +481,29 @@ def _get_head_forward(joints, face_joint_indx, forward_joint_index, forward_base
     return _build_forward_candidate(forward)
 
 
+def _get_head_bone_forward(joints, forward_joint_index, forward_base_joint_index, parents):
+    """The head's own bone -- head minus its parent joint -- on the ground plane.
+
+    Only a true head reference qualifies (``forward_base_joint_index`` set means
+    the reference is a tail->spine body axis). The near-Y flag is raised once
+    the bone climbs past ``_HEAD_BONE_MAX_ELEVATION_DEG`` in any frame.
+    """
+    if parents is None or forward_joint_index is None or forward_base_joint_index is not None:
+        return None, True
+    parent_index = int(np.asarray(parents)[int(forward_joint_index)])
+    if parent_index < 0:
+        return None, True
+    bone = joints[:, int(forward_joint_index)] - joints[:, parent_index]
+    if not np.isfinite(bone).all():
+        return None, True
+    projected = _project_forward_to_xz(bone)
+    if projected is None:
+        return None, True
+    horizontal = np.linalg.norm(bone[..., [0, 2]], axis=-1)
+    elevation = np.degrees(np.arctan2(np.abs(bone[..., 1]), horizontal))
+    return projected, bool(np.any(elevation >= _HEAD_BONE_MAX_ELEVATION_DEG))
+
+
 def _get_across_forward(joints, face_joint_indx):
     if not face_joint_indx:
         return None
@@ -465,6 +530,7 @@ def _get_facing_candidates_with_diagnostics(
     forward_joint_index=None,
     forward_base_joint_index=None,
     emit_warnings=True,
+    parents=None,
 ):
     candidates = {}
     near_y_candidates = {}
@@ -501,6 +567,16 @@ def _get_facing_candidates_with_diagnostics(
         candidates['across'] = across_forward
         near_y_candidates['across'] = False
 
+    head_bone, head_bone_near_y = _get_head_bone_forward(
+        joints,
+        forward_joint_index,
+        forward_base_joint_index,
+        parents,
+    )
+    if head_bone is not None:
+        candidates['head_bone'] = head_bone
+        near_y_candidates['head_bone'] = head_bone_near_y
+
     return candidates, near_y_candidates
 
 
@@ -511,6 +587,7 @@ def _get_facing_candidates(
     forward_joint_index=None,
     forward_base_joint_index=None,
     emit_warnings=True,
+    parents=None,
 ):
     candidates, _near_y_candidates = _get_facing_candidates_with_diagnostics(
         joints,
@@ -519,44 +596,71 @@ def _get_facing_candidates(
         forward_joint_index=forward_joint_index,
         forward_base_joint_index=forward_base_joint_index,
         emit_warnings=emit_warnings,
+        parents=parents,
     )
     return candidates
 
 
-_PRIMARY_FACING_CANDIDATE_PRIORITY = (
-    'chain',
-    'torso_head',
-    'tail_spine',
-)
+def _choose_facing_forward(candidates, object_type=None, near_y_candidates=None, emit_warnings=True, sides_named=True):
+    """Pick the forward reading this rig can be trusted on.
 
+    In order (the constants at the top of the module carry the measurements):
 
-def _choose_facing_forward(candidates, object_type=None, near_y_candidates=None, emit_warnings=True):
+    1. ``chain``: a dataset-declared forward chain, always authoritative.
+    2. ``across`` from named left/right pairs, while it sits on a world axis.
+    3. With named pairs but a skewed across: the head/tail chain
+       (``torso_head``, then ``tail_spine``), and the skewed across last.
+    4. Without named sides the pairs are mirror guesses whose right/left is
+       arbitrary, so only the head's own bone or a tail->spine axis can say
+       where the front is. Failing both, ``None``: the caller keeps +Z.
+    """
     near_y_candidates = dict(near_y_candidates or {})
 
-    selected_name = None
-    selected_forward = None
-    for candidate_name in _PRIMARY_FACING_CANDIDATE_PRIORITY:
-        forward = candidates.get(candidate_name)
-        if forward is None:
-            continue
-        selected_name = candidate_name
-        selected_forward = forward
-        break
-
-    if selected_name is not None and not near_y_candidates.get(selected_name, False):
-        return selected_name, selected_forward
+    chain_forward = candidates.get('chain')
+    if chain_forward is not None:
+        return 'chain', chain_forward
 
     across_forward = candidates.get('across')
-    if across_forward is not None:
-        if emit_warnings:
-            _facing_warning(
-                object_type,
-                'across_selected',
-                f"{object_type}: orientation calculation fell back to the across-vector heuristic because higher-priority forward references were unavailable or near-parallel to the Y axis.",
-            )
-        return 'across', across_forward
+    if sides_named:
+        if across_forward is not None and _axis_offset_deg(across_forward) <= _ACROSS_AXIS_TOLERANCE_DEG:
+            return 'across', across_forward
+        for candidate_name in ('torso_head', 'tail_spine'):
+            forward = candidates.get(candidate_name)
+            if forward is not None and not near_y_candidates.get(candidate_name, False):
+                return candidate_name, forward
+        if across_forward is not None:
+            if emit_warnings:
+                _facing_warning(
+                    object_type,
+                    'across_selected',
+                    f"{object_type}: orientation calculation fell back to the across-vector heuristic because higher-priority forward references were unavailable or near-parallel to the Y axis.",
+                )
+            return 'across', across_forward
+        return None, None
 
-    return selected_name, selected_forward
+    for candidate_name, description in (
+        ('head_bone', "the head's own bone"),
+        ('tail_spine', 'the tail->spine body axis'),
+    ):
+        forward = candidates.get(candidate_name)
+        if forward is not None and not near_y_candidates.get(candidate_name, False):
+            if emit_warnings:
+                _facing_warning(
+                    object_type,
+                    f'{candidate_name}_selected',
+                    f"{object_type}: no named left-right joint pairs; facing taken from {description}. "
+                    "Pass --face-joints-names if the facing looks wrong.",
+                )
+            return candidate_name, forward
+
+    if emit_warnings:
+        _facing_warning(
+            object_type,
+            'default_forward',
+            f"{object_type}: no named left-right joint pairs and no usable head bone; keeping the "
+            "default +Z facing. Pass --face-joints-names if the facing looks wrong.",
+        )
+    return None, None
 
 
 def _get_facing_forward(
@@ -566,7 +670,15 @@ def _get_facing_forward(
     forward_joint_index=None,
     forward_base_joint_index=None,
     emit_warnings=True,
+    joint_names=None,
+    parents=None,
 ):
+    """Forward direction of ``joints`` on the ground plane, or ``None`` for +Z.
+
+    *joint_names* decides whether the face pairs are named sides or mirror
+    guesses, and *parents* is what the head-bone reading needs; every caller
+    that has them should pass them (see :func:`_choose_facing_forward`).
+    """
     candidates, near_y_candidates = _get_facing_candidates_with_diagnostics(
         joints,
         object_type,
@@ -574,12 +686,14 @@ def _get_facing_forward(
         forward_joint_index=forward_joint_index,
         forward_base_joint_index=forward_base_joint_index,
         emit_warnings=emit_warnings,
+        parents=parents,
     )
     _, forward = _choose_facing_forward(
         candidates,
         object_type=object_type,
         near_y_candidates=near_y_candidates,
         emit_warnings=emit_warnings,
+        sides_named=_face_pairs_are_named(joint_names, face_joint_indx),
     )
     return forward
 
@@ -794,13 +908,14 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
 
     # Asymmetric or incomplete skeletons (e.g., legs-only procedural test
     # rigs) have no left-right pairs at all.  Fall back to an empty list so
-    # that _get_facing_candidates skips across/torso_head heuristics and
-    # calculate_root_quat uses the default +Z forward direction.
+    # that _get_facing_candidates skips the across/torso_head heuristics; the
+    # facing then comes from the head's own bone, else stays the default +Z.
     _facing_warning(
         object_type,
         'no_pairs',
-        f"{object_type}: no left-right joint pairs found; using default +Z orientation. "
-        "Provide --face-joints-names explicitly if a different orientation is needed.",
+        f"{object_type}: no left-right joint pairs found; the facing comes from the head bone, "
+        "else stays +Z. Provide --face-joints-names explicitly if a different "
+        "orientation is needed.",
     )
     return []
 
@@ -842,7 +957,7 @@ def snap_forward_alignment_quat(source_forward, target_forward):
     return _y_rotation_quat(target - source)
 
 
-def calculate_root_quat(joints, object_type, face_joint_indx=None, forward_joint_index=None, forward_base_joint_index=None, emit_warnings=True):
+def calculate_root_quat(joints, object_type, face_joint_indx=None, forward_joint_index=None, forward_base_joint_index=None, emit_warnings=True, joint_names=None, parents=None):
     if face_joint_indx is None:
         face_joint_indx = resolve_face_joints(object_type)
     forward = _get_facing_forward(
@@ -852,6 +967,8 @@ def calculate_root_quat(joints, object_type, face_joint_indx=None, forward_joint
         forward_joint_index=forward_joint_index,
         forward_base_joint_index=forward_base_joint_index,
         emit_warnings=emit_warnings,
+        joint_names=joint_names,
+        parents=parents,
     )
     if forward is None:
         forward = np.array([[0.0, 0.0, 1.0]]).repeat(len(joints), axis=0)

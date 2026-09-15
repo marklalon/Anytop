@@ -477,7 +477,15 @@ def get_common_features_from_rest_pose(
         # compares each clip's recovered facing against the rest pose with them.
         rest_pose_orientation_quat = Quaternions.id(len(reference_positions))[0]
     else:
-        rest_pose_orientation_quat = calculate_root_quat(reference_positions, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
+        rest_pose_orientation_quat = calculate_root_quat(
+            reference_positions,
+            object_type,
+            face_joint_indx=face_joints,
+            forward_joint_index=forward_joint_index,
+            forward_base_joint_index=forward_base_joint_index,
+            joint_names=rest_pose_names,
+            parents=reference_anim.parents,
+        )[0]
 
     # Pre-compute the per-character scale factor once from the raw rest-pose
     # offsets and reuse it for every motion clip of the same character.

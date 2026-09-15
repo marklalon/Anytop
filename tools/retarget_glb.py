@@ -18,10 +18,6 @@ Usage examples:
         --target dataset/.../HorseALL-TPOSE.glb \\
         --output outputs/horse_walk.glb
 
-    # Rigs authored in different bases: sweep the 12 rigid candidates
-    python tools/retarget_glb.py --source a.glb --target b.glb \\
-        --output out.glb --coordinate-search on
-
     # Differently proportioned legs
     python tools/retarget_glb.py --source a.glb --target b.glb \\
         --output out.glb --ground
@@ -112,13 +108,6 @@ def build_parser() -> argparse.ArgumentParser:
              "exporter writes scene fps as an int, so fractional rates truncate.",
     )
     parser.add_argument(
-        "--coordinate-search", choices=("auto", "on", "off"), default="auto",
-        help="Rigid 1-of-12 rest-pose alignment sweep. 'auto' (default) keeps "
-             "the exporter's rule, which is off for a GLB target. Use 'on' when "
-             "the two rigs are authored in different bases. A self-retarget is "
-             "unaffected either way.",
-    )
-    parser.add_argument(
         "--ground", action="store_true",
         help="After the retarget (and --fullbody-ik), shift the target root by "
              "a constant Y so its two lowest contact joints sit at the target "
@@ -166,8 +155,6 @@ def main() -> None:
         parser.error(f"--output must be a .glb path, got {output_path}")
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
-    coordinate_search = {"auto": None, "on": True, "off": False}[args.coordinate_search]
-
     from utils.retarget_pipeline import retarget_glb_to_glb
 
     retarget_glb_to_glb(
@@ -175,7 +162,6 @@ def main() -> None:
         target_path,
         output_path,
         fps=args.fps,
-        coordinate_search=coordinate_search,
         ground=args.ground,
         export_mesh=not args.skeleton_only,
         fullbody_ik=args.fullbody_ik,

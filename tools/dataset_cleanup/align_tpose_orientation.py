@@ -141,6 +141,8 @@ def align_directory(
         forward_joint_index=tp.forward_joint_index,
         forward_base_joint_index=tp.forward_base_joint_index,
         emit_warnings=False,
+        joint_names=bind_names,
+        parents=bind_anim.parents,
     )
 
     def _clip_alignment_quat(anim, names):
@@ -159,6 +161,8 @@ def align_directory(
             forward_joint_index=fwd_j,
             forward_base_joint_index=fwd_b,
             emit_warnings=False,
+            joint_names=names,
+            parents=anim.parents,
         )
         if clip_forward is None:
             return tp.orientation_quat
