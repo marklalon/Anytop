@@ -749,6 +749,7 @@ def retarget_world_space_np(
     tgt_effective_root_index: int | None = None,
     src_bone_translations: Optional[np.ndarray] = None,
     coordinate_search: bool = True,
+    src_alignment_rotation: Optional[np.ndarray] = None,
     verbose: bool = True,
 ) -> RetargetResult:
     """Retarget an exporter-style animation from a source skeleton to a target.
@@ -803,6 +804,14 @@ def retarget_world_space_np(
             to find the best alignment of rest poses. Set ``False`` when the
             source and target are known to share the same world basis (e.g.
             both are processed cond entries from the same dataset pipeline).
+        src_alignment_rotation: optional (3, 3) world rotation that turns the
+            source into the target's basis before anything else -- a facing
+            alignment. It is a rigid basis change of the whole source, so it
+            rotates the source's bind pose together with its animation: rotating
+            the animation alone would read the turn as pose, and the per-bone
+            rest swing cannot take a yaw back out of a single vertical bone, so
+            limbs would keep one facing while the trunk took the other. The
+            coordinate search, when on, sweeps its candidates on top of it.
         verbose: print one-line summary diagnostics.
 
     Returns:
@@ -1332,6 +1341,11 @@ def retarget_world_space_np(
     candidates = generate_coordinate_candidates_np() if coordinate_search else [
         ("identity", np.eye(3, dtype=np.float64))
     ]
+    if src_alignment_rotation is not None:
+        pre_rotation = np.asarray(src_alignment_rotation, dtype=np.float64).reshape(3, 3)
+        candidates = [
+            (f"{label}+pre_aligned", R @ pre_rotation) for label, R in candidates
+        ]
     best_R = np.eye(3, dtype=np.float64)
     best_label = "identity"
     best_err = float("inf")

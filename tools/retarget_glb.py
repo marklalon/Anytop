@@ -22,9 +22,9 @@ Usage examples:
     python tools/retarget_glb.py --source a.glb --target b.glb \\
         --output out.glb --coordinate-search on
 
-    # Off-axis facing + differently proportioned legs
+    # Differently proportioned legs
     python tools/retarget_glb.py --source a.glb --target b.glb \\
-        --output out.glb --align-facing --ground
+        --output out.glb --ground
 
     # Skeleton-only output, first 120 frames, forced 24 fps
     python tools/retarget_glb.py --source a.glb --target b.glb \\
@@ -119,12 +119,6 @@ def build_parser() -> argparse.ArgumentParser:
              "unaffected either way.",
     )
     parser.add_argument(
-        "--align-facing", action="store_true",
-        help="Rotate the source into the target's facing first, using "
-             "head/face joint detection. A continuous rotation, so unlike "
-             "--coordinate-search it also fixes off-axis facings.",
-    )
-    parser.add_argument(
         "--ground", action="store_true",
         help="After the retarget (and --fullbody-ik), shift the target root by "
              "a constant Y so its two lowest contact joints sit at the target "
@@ -142,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ik-stretch-factor", type=float, default=None,
-        help="Bone-length elasticity the IK rebuild may keep (0.1 = +/-10 %). "
+        help="Bone-length elasticity the IK rebuild may keep (0.1 = +/-10 %%). "
              "Default: the pipeline's own default. Only used with --fullbody-ik.",
     )
     parser.add_argument(
@@ -182,7 +176,6 @@ def main() -> None:
         output_path,
         fps=args.fps,
         coordinate_search=coordinate_search,
-        align_facing=args.align_facing,
         ground=args.ground,
         export_mesh=not args.skeleton_only,
         fullbody_ik=args.fullbody_ik,

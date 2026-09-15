@@ -1591,3 +1591,101 @@ def test_bake_foot_floor_offset_uses_median_of_per_joint_mins() -> None:
     assert gp_after[:, 2, 1].min() == pytest.approx(-0.25, abs=1e-6)
     # Right foot min should be at 1.0 - 0.75 = 0.25
     assert gp_after[:, 4, 1].min() == pytest.approx(0.25, abs=1e-6)
+
+
+def _turned_rig_retarget_case():
+    """A +Z-facing rig and the same rig bound facing +X, plus a posed clip.
+
+    The thighs are the case the facing turn exists for: each has a single child
+    running straight down, so the per-bone rest swing is identity there and
+    cannot take a yaw out, while the hips' several bones can.
+    """
+    parents = np.array([-1, 0, 1, 0, 3, 0, 5], dtype=np.int32)
+    names = ['Hips', 'Spine', 'Head', 'Left Thigh', 'Left Calf', 'Right Thigh', 'Right Calf']
+    offsets = np.array(
+        [
+            [0.0, 2.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.3, 0.7],
+            [0.4, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [-0.4, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    source_rest_rotations = _identity_quat(7)
+    target_rest_rotations = _identity_quat(7)
+    target_rest_rotations[0] = _quat_y(90.0)
+
+    joint_rotations = np.tile(_identity_quat(7)[None, :, :], (2, 1, 1))
+    joint_rotations[1, 1] = _quat_x(-15.0)
+    joint_rotations[1, 3] = _quat_x(40.0)
+    joint_rotations[1, 4] = _quat_x(-60.0)
+    joint_rotations[1, 5] = _quat_z(20.0)
+    root_translation = np.array([[0.0, 0.0, 0.0], [0.0, 0.1, 0.5]], dtype=np.float64)
+    root_rotation = np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64), (2, 1))
+    return (
+        parents, names, offsets, source_rest_rotations, target_rest_rotations,
+        joint_rotations, root_translation, root_rotation,
+    )
+
+
+def test_retarget_source_alignment_rotation_turns_bind_and_animation_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _should_not_call_llm(*_args, **_kwargs):
+        raise AssertionError("identical joint names must not reach the LLM mapping")
+
+    monkeypatch.setattr(retarget_mod, '_llm_joint_mapping', _should_not_call_llm)
+    (
+        parents, names, offsets, source_rest_rotations, target_rest_rotations,
+        joint_rotations, root_translation, root_rotation,
+    ) = _turned_rig_retarget_case()
+    turn = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]], dtype=np.float64)
+
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=parents,
+        src_rest_offsets=offsets,
+        src_rest_rotations=source_rest_rotations,
+        tgt_parents=parents,
+        tgt_rest_offsets=offsets,
+        tgt_rest_rotations=target_rest_rotations,
+        src_joint_rotations=joint_rotations,
+        src_root_translation=root_translation,
+        src_root_rotation=root_rotation,
+        src_match_names=names,
+        tgt_match_names=names,
+        coordinate_search=False,
+        src_alignment_rotation=turn,
+        verbose=False,
+    )
+
+    source_world_positions, source_world_rotations = retarget_mod._batch_internal_pose_fk_np(
+        joint_rotations, root_translation, root_rotation, None,
+        parents, offsets, source_rest_rotations,
+    )
+    expected_positions = source_world_positions @ turn.T
+    expected_rotations = quat_multiply_wxyz_np(
+        np.broadcast_to(_quat_y(90.0), source_world_rotations.shape), source_world_rotations,
+    )
+
+    # The written channels, played back on the target rig as pose bones, must be
+    # the source turned whole -- every joint, not just the ones whose rest swing
+    # sees a yaw. The root's channels are its own pose-bone location/rotation.
+    pose_locations = np.zeros((joint_rotations.shape[0], len(names), 3), dtype=np.float64)
+    if result['bone_translations'] is not None:
+        pose_locations[:] = np.asarray(result['bone_translations'], dtype=np.float64)
+    pose_locations[:, 0] = np.asarray(result['root_translation'], dtype=np.float64)
+    realized_positions, realized_rotations = retarget_mod._batch_pose_fk_np(
+        np.asarray(result['joint_rotations'], dtype=np.float64),
+        pose_locations,
+        parents, offsets, target_rest_rotations,
+    )
+    np.testing.assert_allclose(realized_positions, expected_positions, atol=1e-6)
+    for frame_idx in range(joint_rotations.shape[0]):
+        for joint_idx, name in enumerate(names):
+            angle = _quat_angle_deg(
+                realized_rotations[frame_idx, joint_idx], expected_rotations[frame_idx, joint_idx],
+            )
+            assert angle < 1e-4, f"frame {frame_idx} {name}: {angle:.4f} deg off the turned source"

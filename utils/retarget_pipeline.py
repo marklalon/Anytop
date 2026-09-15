@@ -850,7 +850,6 @@ def retarget_glb_to_glb(
     *,
     fps: Optional[float] = None,
     coordinate_search: Optional[bool] = None,
-    align_facing: bool = False,
     ground: bool = False,
     promote_effective_root: Optional[bool] = None,
     export_mesh: bool = True,
@@ -881,7 +880,10 @@ def retarget_glb_to_glb(
     ``extract_armature_skeleton_data`` -- the same function, hence the same
     Y-up-corrected basis -- the shared :func:`retarget_world_space_np` core runs
     on their raw transforms, and ``AnimationExporter.export_glb`` writes the
-    inverse-FK result onto the target rig's own bones. Root translation stays
+    inverse-FK result onto the target rig's own bones. The source is always
+    turned, bind pose and animation together, into the target bind pose's
+    facing first; a pair that already faces the same way is not turned at all.
+    Root translation stays
     world-space throughout, so locomotion survives intact, and a self-retarget
     (``source_path == target_path``) round-trips to float noise.
 
@@ -898,12 +900,6 @@ def retarget_glb_to_glb(
         coordinate_search: forwarded to ``export_glb``. ``None`` keeps the
             exporter's auto-rule (off for a GLB target); pass ``True`` when the
             two rigs are authored in different bases.
-        align_facing: rotate the source into the target's facing before
-            retargeting, using the same head/face detection the cond-free
-            feature path uses. Unlike ``coordinate_search``'s 1-of-12 rigid
-            sweep this is a continuous rotation, so it also fixes off-axis
-            facings. Applied through the root wrapper channels, which is an
-            exact rigid rotation of the whole source world pose.
         ground: after the retarget (and *fullbody_ik*, if set), shift the target
             root by a constant Y so its two lowest contact joints sit at the
             target bind pose's contact height. Needed because the retarget core pins its rest-pose translation
@@ -932,8 +928,6 @@ def retarget_glb_to_glb(
     Returns:
         The absolute path of the written GLB.
     """
-    import torch
-
     from motion_lib import FBX
     from utils.exporter import AnimationExporter, animation_to_exporter_inputs
     from utils.fullbody_ik import DEFAULT_IK_STRETCH_FACTOR
@@ -941,7 +935,7 @@ def retarget_glb_to_glb(
     from utils.rotation_numpy import (
         quat_conjugate_wxyz_np,
         quat_multiply_wxyz_np,
-        quat_rotate_wxyz_np,
+        quat_to_matrix_wxyz_np,
     )
 
     # -- 1. Source rig + animation, in its own native space ----------------
@@ -1038,40 +1032,47 @@ def retarget_glb_to_glb(
             f"{'has no' if resolved_promote else 'has a'} target counterpart)"
         )
 
-    # -- 3. Optional facing alignment, applied through the root wrapper -----
-    # _batch_internal_pose_fk_np composes the wrapper above the hierarchy root,
-    # so rr <- R * rr and rt <- R . rt rotates the entire source world pose
-    # about the origin -- exactly rigid, and invisible to the retarget core.
-    root_translation_np = root_translation.detach().cpu().numpy().astype(np.float64)
-    root_rotation_np = root_rotation.detach().cpu().numpy().astype(np.float64)
-    if align_facing:
-        source_rest_positions = _native_rest_positions(
-            source_parents, source_rest_offsets, source_rest_rotations,
+    # -- 3. Facing alignment, as a basis change of the whole source ---------
+    # Always on: MB_Unka binds facing +Z and Truebones' Lion facing +X, and the
+    # retarget transfers each bone's rotation relative to its bind frame, so two
+    # rigs facing different ways split the result -- a hips with several rest
+    # bones takes the source's facing through its rest swing, while a single
+    # vertical leg bone's swing cannot take a yaw out and keeps the target's.
+    # Both facings come from the same head/face detection the cond-free feature
+    # path uses, snapped to a quarter turn. Handed to the retarget as the
+    # source's alignment rotation, the turn applies to the source's bind pose
+    # and its animation alike; rotating the root wrapper instead turns the
+    # animation alone, which the retarget reads as pose and splits the same way.
+    source_rest_positions = _native_rest_positions(
+        source_parents, source_rest_offsets, source_rest_rotations,
+    )
+    target_rest_positions = _native_rest_positions(
+        target_parents, target_rest_offsets, target_rest_rotations,
+    )
+    source_facing = _native_facing_quat(
+        source_names, source_parents, source_rest_positions, _NATIVE_SRC_FACE_HINT,
+    )
+    target_facing = _native_facing_quat(
+        target_names, target_parents, target_rest_positions, _NATIVE_TGT_FACE_HINT,
+    )
+    # source -> +Z reference -> target basis
+    align_quat = quat_multiply_wxyz_np(
+        quat_conjugate_wxyz_np(target_facing[None]), source_facing[None],
+    )[0]
+    angle_deg = float(np.degrees(
+        2.0 * np.arccos(np.clip(abs(float(align_quat[0])), 0.0, 1.0))
+    ))
+    # A pair that already agrees lands on identity up to float dust; passing
+    # nothing keeps such a pair -- a self-retarget above all -- on the exact code
+    # path it had before.
+    source_alignment_rotation = (
+        quat_to_matrix_wxyz_np(align_quat) if angle_deg > 1e-3 else None
+    )
+    if verbose:
+        print(
+            f"[retarget_glb] facing alignment: source turned {angle_deg:.2f} deg "
+            f"into the target's facing"
         )
-        target_rest_positions = _native_rest_positions(
-            target_parents, target_rest_offsets, target_rest_rotations,
-        )
-        source_facing = _native_facing_quat(
-            source_names, source_parents, source_rest_positions, _NATIVE_SRC_FACE_HINT,
-        )
-        target_facing = _native_facing_quat(
-            target_names, target_parents, target_rest_positions, _NATIVE_TGT_FACE_HINT,
-        )
-        # source -> +Z reference -> target basis
-        align_quat = quat_multiply_wxyz_np(
-            quat_conjugate_wxyz_np(target_facing[None]), source_facing[None],
-        )
-        batched_align_quat = np.repeat(align_quat, frame_count, axis=0)
-        root_translation_np = quat_rotate_wxyz_np(batched_align_quat, root_translation_np)
-        root_rotation_np = quat_multiply_wxyz_np(batched_align_quat, root_rotation_np)
-        if verbose:
-            angle_deg = np.degrees(
-                2.0 * np.arccos(np.clip(abs(float(align_quat[0, 0])), -1.0, 1.0))
-            )
-            print(f"[retarget_glb] facing alignment: {angle_deg:.2f} deg applied to source")
-
-    root_translation = torch.from_numpy(root_translation_np.astype(np.float32))
-    root_rotation = torch.from_numpy(root_rotation_np.astype(np.float32))
 
     # -- 4. Retarget onto the target rig and write the GLB ------------------
     # Grounding runs inside the exporter, on the final target pose: IK changes
@@ -1087,6 +1088,7 @@ def retarget_glb_to_glb(
         bone_translations=bone_translations,
         export_mesh=export_mesh,
         coordinate_search=coordinate_search,
+        source_alignment_rotation=source_alignment_rotation,
         src_effective_root_index=effective_root_argument,
         fullbody_ik=fullbody_ik,
         fullbody_ik_stretch_factor=(

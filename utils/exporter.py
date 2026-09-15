@@ -840,6 +840,7 @@ class AnimationExporter:
         rename_bones_to_canonical: bool = False,
         prune_unmapped_bones: bool = False,
         coordinate_search: Optional[bool] = None,
+        source_alignment_rotation: Optional[np.ndarray] = None,
         src_effective_root_index: Optional[int] = None,
         tgt_effective_root_index: Optional[int] = None,
         fullbody_ik: bool = False,
@@ -906,6 +907,11 @@ class AnimationExporter:
                 different bases needs it forced ``True``; a self-retarget is
                 unaffected either way (identity is the first candidate and wins
                 ties at zero error).
+            source_alignment_rotation: Optional ``(3, 3)`` rotation that turns
+                the whole source -- bind pose and animation together -- into the
+                target's basis before the retarget, e.g. a facing alignment. Only
+                read on the *mesh_path* retarget path; see
+                :func:`retarget_world_space_np`.
             src_effective_root_index: Optional source joint that carries the
                 locomotion translation in its local position channel (the
                 ``Bip01`` pattern: a static wrapper root above the joint that
@@ -1090,6 +1096,7 @@ class AnimationExporter:
                     tgt_effective_root_index=tgt_effective_root_index,
                     src_bone_translations=np.array(bt, dtype=np.float64) if bt is not None else None,
                     coordinate_search=resolved_coordinate_search,
+                    src_alignment_rotation=source_alignment_rotation,
                     verbose=verbose,
                 )
                 return result, tgt_bvh_names
