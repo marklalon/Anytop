@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_all_v1
+set RUN_NAME=merged_all_v3
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize
@@ -10,18 +10,12 @@ call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build
 
 pushd "%SCRIPT_DIR%"
 
-REM One model over every action group (docs/unified_action_group_training.md).
-REM Compared against the single-group runs at the same per-group sample count:
-REM with equal --action_group_weights each group gets 1/3 of the draws, so step
-REM 3S here matches step S of a single-group run (600k <-> 200k). The LR decays
-REM every 30k steps instead of 10k for the same reason.
-REM
 REM --objects_subset selects the training set. Use a species name (Horse,
 REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 %PYTHON_EXE% train/train_anytop.py ^
 	--cond_path dataset/merged/cond.npy ^
 	--save_dir save/%RUN_NAME% ^
-	--save_interval 5000 ^
+	--save_interval 10000 ^
 	--log_interval 100 ^
 	--auto_resume ^
 	--ml_platform_type TensorboardPlatform ^
@@ -47,7 +41,7 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 	--weight_decay 0.01 ^
 	--use_ema ^
 	--ema_rate 0.995 ^
-	--num_steps 600000 ^
+	--num_steps 300000 ^
 	--lr_scheduler_step_size 30000 ^
 	--dropout_prob 0.1 ^
 	--action_label_cfg_drop_prob 0.3 ^

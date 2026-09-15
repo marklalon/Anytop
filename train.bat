@@ -15,7 +15,7 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 %PYTHON_EXE% train/train_anytop.py ^
 	--cond_path dataset/merged/cond.npy ^
 	--save_dir save/%RUN_NAME% ^
-	--save_interval 5000 ^
+	--save_interval 10000 ^
 	--log_interval 100 ^
 	--auto_resume ^
 	--ml_platform_type TensorboardPlatform ^
