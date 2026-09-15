@@ -126,8 +126,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ground", action="store_true",
-        help="Drop the result so the target's contact joints rest at y=0. Off "
-             "by default: it is a real translation and breaks self-retarget "
+        help="After the retarget (and --fullbody-ik), shift the target root by "
+             "a constant Y so its two lowest contact joints sit at the target "
+             "bind pose's contact height. Off by default: it is a real "
+             "translation and breaks self-retarget "
              "idempotency. Useful when the two rigs differ in leg proportion.",
     )
     parser.add_argument(

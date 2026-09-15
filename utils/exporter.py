@@ -31,6 +31,7 @@ from .fullbody_ik import (
 )
 from .retarget_core import (
     _batch_internal_pose_fk_np,
+    _batch_pose_fk_np,
     retarget_world_space_np,
 )
 from .texture_resolve import resolve_main_character_textures
@@ -544,6 +545,103 @@ def _rename_armature_bones_to_canonical(
                 group.name = new_name
 
 
+# Contact joints that set the floor, and the up axis of the retarget's world
+# space (``extract_armature_skeleton_data`` hands back a Y-up basis).
+_GROUND_CONTACT_COUNT = 2
+_GROUND_UP_AXIS = 1
+
+
+def _ground_root_on_lowest_contacts(
+    pose_rotations: np.ndarray,
+    pose_translations: Optional[np.ndarray],
+    root_translation: np.ndarray,
+    *,
+    names: list[str],
+    parents: np.ndarray,
+    rest_offsets: np.ndarray,
+    rest_rotations: np.ndarray,
+) -> tuple[np.ndarray, Optional[dict]]:
+    """Shift the root by a constant so the lowest contacts sit at their bind height.
+
+    Measured on the final target pose channels -- after any IK rebuild -- so the
+    written clip is grounded exactly. Each contact joint's floor is its lowest
+    height over the clip; the two lowest of those are averaged, and the root's
+    pose location takes the one constant offset that puts that average at the
+    bind pose's contact height (the two lowest contact joints of the bind pose,
+    averaged). The bind height, not y=0, because a contact joint sits above the
+    sole: an ankle-only rig (LH_Hero) grounds its ankle ~7.5 units up. Only the
+    two lowest count because contact detection can also return joints that
+    never reach the floor (a caveman's finger tips).
+
+    The channels follow Blender pose-bone semantics, so the root's world
+    position is ``rest_offset + rest_rotation . location`` and a world-space
+    shift ``d`` is ``rest_rotation^-1 . d`` in its location channel.
+
+    Returns ``(root_translation, report)``; *report* is ``None`` when the rig
+    has no detectable contact joints and the root is returned unchanged.
+    """
+    from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+        infer_contact_joints,
+    )
+
+    parents = np.asarray(parents, dtype=np.int32)
+    rest_offsets = np.asarray(rest_offsets, dtype=np.float64)
+    rest_rotations = np.asarray(rest_rotations, dtype=np.float64)
+    pose_rotations = np.asarray(pose_rotations, dtype=np.float64)
+    root_translation = np.asarray(root_translation, dtype=np.float64)
+    frame_count, joint_count = pose_rotations.shape[:2]
+    root_index = int(np.flatnonzero(parents < 0)[0])
+
+    identity_rotations = np.zeros((1, joint_count, 4), dtype=np.float64)
+    identity_rotations[..., 0] = 1.0
+    rest_positions, _ = _batch_pose_fk_np(
+        identity_rotations,
+        np.zeros((1, joint_count, 3), dtype=np.float64),
+        parents,
+        rest_offsets,
+        rest_rotations,
+    )
+    contact_indices, _contact_source = infer_contact_joints(
+        list(names), parents, rest_positions[0],
+    )
+    contact_indices = [int(j) for j in contact_indices if 0 <= int(j) < joint_count]
+    if not contact_indices:
+        return root_translation, None
+
+    if pose_translations is None:
+        pose_locations = np.zeros((frame_count, joint_count, 3), dtype=np.float64)
+    else:
+        pose_locations = np.array(pose_translations, dtype=np.float64)
+    pose_locations[:, root_index] = root_translation
+    world_positions, _ = _batch_pose_fk_np(
+        pose_rotations, pose_locations, parents, rest_offsets, rest_rotations,
+    )
+
+    contact_floor = world_positions[:, contact_indices, _GROUND_UP_AXIS].min(axis=0)
+    lowest_order = np.argsort(contact_floor)[:_GROUND_CONTACT_COUNT]
+    floor_height = float(np.mean(contact_floor[lowest_order]))
+
+    bind_contact_heights = rest_positions[0, contact_indices, _GROUND_UP_AXIS]
+    bind_height = float(np.mean(np.sort(bind_contact_heights)[:_GROUND_CONTACT_COUNT]))
+
+    world_shift = np.zeros(3, dtype=np.float64)
+    world_shift[_GROUND_UP_AXIS] = bind_height - floor_height
+    local_shift = quat_rotate_wxyz_np(
+        quat_conjugate_wxyz_np(rest_rotations[root_index:root_index + 1]),
+        world_shift[None],
+    )[0]
+
+    report = {
+        "contacts": [
+            (names[contact_indices[k]], float(contact_floor[k])) for k in lowest_order
+        ],
+        "floor_height": floor_height,
+        "bind_height": bind_height,
+        "shift": float(world_shift[_GROUND_UP_AXIS]),
+    }
+    return root_translation + local_shift[None], report
+
+
 class AnimationExporter:
     """Export optimised joint rotations to GLB, BVH."""
 
@@ -747,6 +845,7 @@ class AnimationExporter:
         fullbody_ik: bool = False,
         fullbody_ik_stretch_factor: float = DEFAULT_IK_STRETCH_FACTOR,
         fullbody_ik_iterations: int = FULLBODY_IK_ITERATIONS,
+        ground_contacts: bool = False,
     ) -> None:
         """Export GLB directly through bpy in the current Python process.
 
@@ -825,6 +924,12 @@ class AnimationExporter:
             fullbody_ik_stretch_factor: bone-length elasticity the IK rebuild may
                 use (0.1 = ±10 %). Only read when *fullbody_ik* is set.
             fullbody_ik_iterations: IK passes. Only read when *fullbody_ik* is set.
+            ground_contacts: After the retarget (and IK, if on), shift the target
+                root by a constant Y so its two lowest contact joints sit at the
+                bind pose's contact height; see
+                :func:`_ground_root_on_lowest_contacts`. Only meaningful
+                with *mesh_path*. Off by default: it is a real translation and
+                would break the self-retarget round trip.
         """
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -1055,6 +1160,28 @@ class AnimationExporter:
                         f"Full-body IK residual joint error: "
                         f"mean={ik_mean_error:.6f}, max={ik_max_error:.6f} "
                         f"(stretch_factor={fullbody_ik_stretch_factor:.2f})"
+                    )
+
+            if ground_contacts:
+                fbx_root_trans, ground_report = _ground_root_on_lowest_contacts(
+                    fbx_pose_rot,
+                    fbx_pose_loc,
+                    fbx_root_trans,
+                    names=fbx_names,
+                    parents=fbx_parents,
+                    rest_offsets=fbx_offsets,
+                    rest_rotations=fbx_rest_rots,
+                )
+                if ground_report is None:
+                    print("Grounding skipped: no contact joints detected on the target.")
+                else:
+                    contact_text = ", ".join(
+                        f"{name} {height:+.4f}" for name, height in ground_report["contacts"]
+                    )
+                    print(
+                        f"Grounding: root shifted by {ground_report['shift']:+.4f} in Y "
+                        f"to bind contact height {ground_report['bind_height']:+.4f} "
+                        f"(lowest contacts: {contact_text})"
                     )
 
             if rotation_channel_mask_np is not None:
