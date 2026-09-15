@@ -25,7 +25,6 @@
 {"clip": "Bear_HindBreathing", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
 {"clip": "Bear_HindToStand", "action_group": "transition", "action_label": "rear, idle", "is_loop": false, "reviewed": true}
 {"clip": "Bear_Hind2", "action_group": "stationary", "action_label": "idle, rear, look", "is_loop": true, "reviewed": true}
-{"clip": "Bear_HitLying", "action_group": "stationary", "action_label": "rest, hurt", "is_loop": true, "reviewed": true}
 {"clip": "Bear_Lying", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
 {"clip": "Bear_LyingBreathing", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
 {"clip": "Bear_LyingToStand", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
