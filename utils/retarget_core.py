@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 import warnings
-from typing import Callable, Optional, TypedDict
+from typing import Optional, TypedDict
 
 import numpy as np
 
@@ -734,7 +734,7 @@ def retarget_world_space_np(
     src_effective_root_index: int | None = None,
     tgt_effective_root_index: int | None = None,
     src_bone_translations: Optional[np.ndarray] = None,
-    rest_facing_quats: Optional[Callable[[], tuple[np.ndarray, np.ndarray]]] = None,
+    rest_facings: Optional[tuple[np.ndarray, np.ndarray]] = None,
     verbose: bool = True,
 ) -> RetargetResult:
     """Retarget an exporter-style animation from a source skeleton to a target.
@@ -785,11 +785,10 @@ def retarget_world_space_np(
             ``Bip01`` beneath a static wrapper root). When that joint is left
             unmatched by semantic mapping, it may replace a mapped wrapper root
             as the target root anchor.
-        rest_facing_quats: optional zero-argument callable returning
-            ``(source, target)`` (4,) WXYZ quarter turns, each bringing that
-            skeleton's bind-pose face to +Z -- the exporter passes the head/face
-            joint detection the dataset itself is built with. Called at most
-            once. When given, the source is turned into the target's facing by
+        rest_facings: optional ``(source, target)`` pair of (4,) WXYZ quarter
+            turns, each bringing that skeleton's bind-pose face to +Z -- the
+            exporter passes the head/face joint detection the dataset itself is
+            built with. When given, the source is turned into the target's facing by
             ``target⁻¹ · source``: a basis change of the whole source -- bind
             pose and animation together -- which is what keeps a rig facing +Z
             played on one facing +X from moving one way with its limbs facing
@@ -809,18 +808,12 @@ def retarget_world_space_np(
         compatible and can be fed straight back into ``AnimationExporter`` or
         used to drive any other target-skeleton animation pipeline.
     """
-    resolved_rest_facings: list[tuple[np.ndarray, np.ndarray]] = []
-
-    def _rest_facings() -> tuple[np.ndarray, np.ndarray] | None:
-        if rest_facing_quats is None:
-            return None
-        if not resolved_rest_facings:
-            source_facing, target_facing = rest_facing_quats()
-            resolved_rest_facings.append((
-                np.asarray(source_facing, dtype=np.float64).reshape(4),
-                np.asarray(target_facing, dtype=np.float64).reshape(4),
-            ))
-        return resolved_rest_facings[0]
+    if rest_facings is not None:
+        source_facing, target_facing = rest_facings
+        rest_facings = (
+            np.asarray(source_facing, dtype=np.float64).reshape(4),
+            np.asarray(target_facing, dtype=np.float64).reshape(4),
+        )
 
     src_parents = np.asarray(src_parents, dtype=np.int32)
     tgt_parents = np.asarray(tgt_parents, dtype=np.int32)
@@ -1182,7 +1175,6 @@ def retarget_world_space_np(
         # left. Rigs bind facing any way -- Truebones' Lion faces +X, where its
         # spine runs along X and would read as "out at the side" -- so each
         # skeleton is turned to that convention before its positions are written.
-        rest_facings = _rest_facings()
         if rest_facings is not None:
             mapping_src_rest_positions = (
                 mapping_src_rest_positions @ quat_to_matrix_wxyz_np(rest_facings[0]).T
@@ -1359,7 +1351,6 @@ def retarget_world_space_np(
     # quadruped matches no quarter turn better than another, and the joint
     # mapping such a fit needs is itself made with these facings.
     best_R = np.eye(3, dtype=np.float64)
-    rest_facings = _rest_facings()
     if rest_facings is not None:
         source_facing, target_facing = rest_facings
         # source -> +Z reference -> target basis

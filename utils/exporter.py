@@ -155,7 +155,7 @@ def _face_detected_rest_facings(source_skeleton, target_skeleton) -> tuple[np.nd
     """Return each bind pose's (4,) WXYZ quarter turn bringing its face to +Z.
 
     Each argument is ``(names, parents, rest_offsets, rest_rotations)``, with the
-    rig's own bone names. This is the retarget's ``rest_facing_quats``: it reads
+    rig's own bone names. This is the retarget's ``rest_facings``: it reads
     head/face joints, so it works before any joint mapping exists -- the LLM
     mapping prompt needs it -- and decides a biped-onto-quadruped pair whose rest
     shapes no quarter turn fits.
@@ -1077,8 +1077,8 @@ class AnimationExporter:
         # ``utils.retarget_core`` so non-Blender callers can share it.
         # ────────────────────────────────────────────────────────────────
         if mesh_path:
-            fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = extract_armature_skeleton_data(armature)
-            J_fbx = len(fbx_names)
+            tgt_names, tgt_parents, tgt_offsets, tgt_rest_rots = extract_armature_skeleton_data(armature)
+            J_tgt = len(tgt_names)
 
             rest_rot_input = np.array([
                 b.rest_rotation.detach().cpu().numpy().astype(np.float64)
@@ -1105,11 +1105,23 @@ class AnimationExporter:
             )
 
             def _retarget_to_armature(names, parents, offsets, rest_rots, verbose):
-                tgt_names, tgt_bvh_names = _build_canonical_name_variants(
+                tgt_match_names, tgt_bvh_names = _build_canonical_name_variants(
                     names,
                     parents,
                     offsets,
                     log_hint=os.path.basename(mesh_path) if mesh_path else "export target armature",
+                )
+                # The source is always turned into the target's facing; both
+                # facings come from head/face joint detection on the two rest
+                # poses, so a self-retarget (or an HML restore whose rig was
+                # reverse-aligned by ``global_similarity``) gets equal facings
+                # and turns nothing, while a +Z-facing donor on a +X-facing rig
+                # is turned instead of split. Format-based gating is unnecessary
+                # now that the facing is detected rather than fitted from the
+                # two rest shapes. Detected per call: the pruning pass changes
+                # the target skeleton.
+                rest_facings = _face_detected_rest_facings(
+                    source_rest_skeleton, (names, parents, offsets, rest_rots),
                 )
                 result = retarget_world_space_np(
                     src_parents=parents_input,
@@ -1122,21 +1134,11 @@ class AnimationExporter:
                     src_root_translation=np.array(rt, dtype=np.float64),
                     src_root_rotation=np.array(rr, dtype=np.float64),
                     src_match_names=src_match_names,
-                    tgt_match_names=tgt_names,
+                    tgt_match_names=tgt_match_names,
                     src_effective_root_index=src_effective_root_index,
                     tgt_effective_root_index=tgt_effective_root_index,
                     src_bone_translations=np.array(bt, dtype=np.float64) if bt is not None else None,
-                    # The source is always turned into the target's facing; both
-                    # facings come from head/face joint detection on the two rest
-                    # poses, so a self-retarget (or an HML restore whose rig was
-                    # reverse-aligned by ``global_similarity``) gets equal
-                    # facings and turns nothing, while a +Z-facing donor on a
-                    # +X-facing rig is turned instead of split. Format-based
-                    # gating is unnecessary now that the facing is detected
-                    # rather than fitted from the two rest shapes.
-                    rest_facing_quats=lambda: _face_detected_rest_facings(
-                        source_rest_skeleton, (names, parents, offsets, rest_rots),
-                    ),
+                    rest_facings=rest_facings,
                     verbose=verbose,
                 )
                 return result, tgt_bvh_names
@@ -1148,32 +1150,32 @@ class AnimationExporter:
             # retarget against the cleaned-up armature so indices stay consistent.
             if prune_unmapped_bones:
                 mapping_result, _ = _retarget_to_armature(
-                    fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots, verbose=False
+                    tgt_names, tgt_parents, tgt_offsets, tgt_rest_rots, verbose=False
                 )
                 src_to_tgt = mapping_result["src_to_tgt"]
                 keep_bone_names = {
-                    fbx_names[int(t)] for t in src_to_tgt if int(t) >= 0
+                    tgt_names[int(t)] for t in src_to_tgt if int(t) >= 0
                 }
                 removed = _prune_unmapped_armature_bones(bpy, armature, keep_bone_names)
                 if removed:
                     preview = ", ".join(removed[:10]) + ("..." if len(removed) > 10 else "")
                     print(f"Pruned {len(removed)} unmapped bone(s): {preview}")
-                    fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = (
+                    tgt_names, tgt_parents, tgt_offsets, tgt_rest_rots = (
                         extract_armature_skeleton_data(armature)
                     )
-                    J_fbx = len(fbx_names)
+                    J_tgt = len(tgt_names)
 
             retarget_result, tgt_bvh_names = _retarget_to_armature(
-                fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots, verbose=True
+                tgt_names, tgt_parents, tgt_offsets, tgt_rest_rots, verbose=True
             )
 
-            fbx_pose_rot = retarget_result["joint_rotations"]
-            fbx_pose_loc = retarget_result["bone_translations"]
-            input_to_fbx = retarget_result["src_to_tgt"]
-            fbx_root_rot = retarget_result["root_rotation"]
-            fbx_root_trans = retarget_result["root_translation"]
+            tgt_pose_rot = retarget_result["joint_rotations"]
+            tgt_pose_loc = retarget_result["bone_translations"]
+            input_to_tgt = retarget_result["src_to_tgt"]
+            tgt_root_rot = retarget_result["root_rotation"]
+            tgt_root_trans = retarget_result["root_translation"]
 
-            root_mask = fbx_parents < 0
+            root_mask = tgt_parents < 0
             root_indices = np.flatnonzero(root_mask)
 
             # ── Optional rigid-skeleton rebuild ───────────────────────────
@@ -1182,27 +1184,27 @@ class AnimationExporter:
             # offset stays in the pose-translation channel, which on a
             # cross-species transfer is the target rig stretched to the donor's
             # proportions. IK converts that back into rotations.
-            if fullbody_ik and fbx_pose_loc is not None:
+            if fullbody_ik and tgt_pose_loc is not None:
                 if root_indices.size != 1:
                     print(
                         f"Skipping full-body IK: target armature has "
                         f"{root_indices.size} root bones, the rebuild needs exactly one."
                     )
                 else:
-                    fbx_pose_rot, fbx_pose_loc, ik_mean_error, ik_max_error = (
+                    tgt_pose_rot, tgt_pose_loc, ik_mean_error, ik_max_error = (
                         rebuild_retarget_pose_channels_with_ik(
-                            fbx_pose_rot,
-                            fbx_pose_loc,
-                            parents=fbx_parents,
-                            rest_offsets=fbx_offsets,
-                            rest_rotations=fbx_rest_rots,
+                            tgt_pose_rot,
+                            tgt_pose_loc,
+                            parents=tgt_parents,
+                            rest_offsets=tgt_offsets,
+                            rest_rotations=tgt_rest_rots,
                             iterations=fullbody_ik_iterations,
                             stretch_factor=fullbody_ik_stretch_factor,
                         )
                     )
                     root_index = int(root_indices[0])
-                    fbx_root_rot = fbx_pose_rot[:, root_index, :]
-                    fbx_root_trans = fbx_pose_loc[:, root_index, :]
+                    tgt_root_rot = tgt_pose_rot[:, root_index, :]
+                    tgt_root_trans = tgt_pose_loc[:, root_index, :]
                     print(
                         f"Full-body IK residual joint error: "
                         f"mean={ik_mean_error:.6f}, max={ik_max_error:.6f} "
@@ -1210,14 +1212,14 @@ class AnimationExporter:
                     )
 
             if ground_contacts:
-                fbx_root_trans, ground_report = _ground_root_on_lowest_contacts(
-                    fbx_pose_rot,
-                    fbx_pose_loc,
-                    fbx_root_trans,
-                    names=fbx_names,
-                    parents=fbx_parents,
-                    rest_offsets=fbx_offsets,
-                    rest_rotations=fbx_rest_rots,
+                tgt_root_trans, ground_report = _ground_root_on_lowest_contacts(
+                    tgt_pose_rot,
+                    tgt_pose_loc,
+                    tgt_root_trans,
+                    names=tgt_names,
+                    parents=tgt_parents,
+                    rest_offsets=tgt_offsets,
+                    rest_rotations=tgt_rest_rots,
                 )
                 if ground_report is None:
                     print("Grounding skipped: no contact joints detected on the target.")
@@ -1232,19 +1234,19 @@ class AnimationExporter:
                     )
 
             if rotation_channel_mask_np is not None:
-                fbx_rotation_channel_mask = np.zeros((J_fbx,), dtype=bool)
-                for ii, fi in enumerate(input_to_fbx):
+                tgt_rotation_channel_mask = np.zeros((J_tgt,), dtype=bool)
+                for ii, fi in enumerate(input_to_tgt):
                     if fi >= 0 and rotation_channel_mask_np[ii]:
-                        fbx_rotation_channel_mask[int(fi)] = True
+                        tgt_rotation_channel_mask[int(fi)] = True
                 if root_indices.size > 0:
-                    fbx_rotation_channel_mask[root_indices[0]] = True
-                rotation_channel_mask_np = fbx_rotation_channel_mask
+                    tgt_rotation_channel_mask[root_indices[0]] = True
+                rotation_channel_mask_np = tgt_rotation_channel_mask
 
-            jr = fbx_pose_rot.tolist()
-            rr = fbx_root_rot.tolist()
-            rt = fbx_root_trans.tolist()
-            bone_names = fbx_names
-            bt = fbx_pose_loc.tolist() if fbx_pose_loc is not None else None
+            jr = tgt_pose_rot.tolist()
+            rr = tgt_root_rot.tolist()
+            rt = tgt_root_trans.tolist()
+            bone_names = tgt_names
+            bt = tgt_pose_loc.tolist() if tgt_pose_loc is not None else None
 
             if rename_bones_to_canonical:
                 # Rename the imported rig's bones (and matching vertex groups) to
@@ -1253,7 +1255,7 @@ class AnimationExporter:
                 # rig's native names. The animation channels below are keyed by
                 # name, so update the lookup list to the canonical names too.
                 _rename_armature_bones_to_canonical(
-                    bpy, armature, list(zip(fbx_names, tgt_bvh_names))
+                    bpy, armature, list(zip(tgt_names, tgt_bvh_names))
                 )
                 bone_names = list(tgt_bvh_names)
 
@@ -1315,8 +1317,9 @@ class AnimationExporter:
                     continue
 
                 if mesh_path:
-                    # After retargeting, bones are FBX bones and parent comes from FBX
-                    parent_id = fbx_parents[j] if j < len(fbx_names) else -1
+                    # After retargeting, bones are the imported target rig's and
+                    # the parent comes from that rig.
+                    parent_id = tgt_parents[j] if j < len(tgt_names) else -1
                 else:
                     parent_id = self.skeleton.bones[j].parent_id if self.skeleton.bones[j].parent_id is not None else -1
                 is_root = parent_id < 0

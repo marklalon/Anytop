@@ -390,7 +390,7 @@ def retarget_animation_file_to_target(
     ``orientation_quat`` that rotates the skeleton to the dataset's +Z reference —
     only the quat is computed on the fly from the file's bind pose (via name-based
     face/forward-joint detection) instead of being read from cond. The retarget
-    core's own facing alignment (``rest_facing_quats``) reads the same detection,
+    core's own facing alignment (``rest_facings``) reads the same detection,
     but here it is applied up front, as the dataset applies it, and the core runs
     without it (source and target are both already +Z).
 
@@ -821,7 +821,7 @@ def retarget_glb_to_glb(
     on their raw transforms, and ``AnimationExporter.export_glb`` writes the
     inverse-FK result onto the target rig's own bones. The retarget always turns
     the source, bind pose and animation together, into the target's facing
-    first (see ``rest_facing_quats`` in :func:`retarget_world_space_np`); a pair
+    first (see ``rest_facings`` in :func:`retarget_world_space_np`); a pair
     that already faces the same way is not turned. Root translation stays
     world-space throughout, so locomotion survives intact, and a self-retarget
     (``source_path == target_path``) round-trips to float noise.

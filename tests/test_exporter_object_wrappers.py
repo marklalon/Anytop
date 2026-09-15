@@ -453,7 +453,7 @@ def _run_export_branch_case(
         # The facing turn is driven purely by whether the rest facings are
         # handed to the core; the exporter no longer gates that on the source
         # file format.
-        captured["turns_facing"] = kwargs["rest_facing_quats"] is not None
+        captured["turns_facing"] = kwargs["rest_facings"] is not None
         raise _AbortRetarget("stop after branch capture")
 
     monkeypatch.setattr(exporter_mod, "retarget_world_space_np", _fake_retarget_world_space_np)

@@ -1627,13 +1627,9 @@ def test_retarget_turns_bind_and_animation_together_into_target_facing(
     def _should_not_call_llm(*_args, **_kwargs):
         raise AssertionError("identical joint names must not reach the LLM mapping")
 
-    facing_calls = []
-
-    def _rest_facings():
-        facing_calls.append(True)
-        # The source binds facing +Z; the target's rest root turn makes it face
-        # +X, which R_y(-90°) brings back to +Z.
-        return _identity_quat(1)[0], _quat_y(-90.0)
+    # The source binds facing +Z; the target's rest root turn makes it face
+    # +X, which R_y(-90°) brings back to +Z.
+    rest_facings = (_identity_quat(1)[0], _quat_y(-90.0))
 
     monkeypatch.setattr(retarget_mod, '_llm_joint_mapping', _should_not_call_llm)
     (
@@ -1654,10 +1650,9 @@ def test_retarget_turns_bind_and_animation_together_into_target_facing(
         src_root_rotation=root_rotation,
         src_match_names=names,
         tgt_match_names=names,
-        rest_facing_quats=_rest_facings,
+        rest_facings=rest_facings,
         verbose=False,
     )
-    assert facing_calls == [True]
     assert result['alignment_label'] == "R_y(+90°)"
 
     source_world_positions, source_world_rotations = retarget_mod._batch_internal_pose_fk_np(
@@ -1728,7 +1723,7 @@ def test_retarget_facing_alignment_is_target_inverse_times_source(
         src_root_rotation=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64),
         src_match_names=names,
         tgt_match_names=names,
-        rest_facing_quats=None if rest_facings is None else (lambda: rest_facings),
+        rest_facings=rest_facings,
         verbose=False,
     )
 
@@ -1750,13 +1745,9 @@ def test_retarget_llm_prompt_positions_are_turned_to_face_plus_z(
         captured['tgt'] = np.asarray(kwargs['tgt_rest_positions'], dtype=np.float64)
         return dict(zip(src_names, tgt_names))
 
-    facing_calls = []
-
-    def _rest_facings():
-        facing_calls.append(True)
-        # The source binds facing +Z already; the target's rest root turn makes
-        # it face +X, which R_y(-90°) brings back to +Z.
-        return _identity_quat(1)[0], _quat_y(-90.0)
+    # The source binds facing +Z already; the target's rest root turn makes
+    # it face +X, which R_y(-90°) brings back to +Z.
+    rest_facings = (_identity_quat(1)[0], _quat_y(-90.0))
 
     monkeypatch.setattr(retarget_mod, '_llm_joint_mapping', _capture_llm_mapping)
     retarget_mod.retarget_world_space_np(
@@ -1771,12 +1762,10 @@ def test_retarget_llm_prompt_positions_are_turned_to_face_plus_z(
         src_root_rotation=root_rotation,
         src_match_names=names,
         tgt_match_names=target_names,
-        rest_facing_quats=_rest_facings,
+        rest_facings=rest_facings,
         verbose=False,
     )
 
-    # Read once and shared by the prompt and the facing alignment.
-    assert facing_calls == [True]
     head = names.index('Head')
     left_thigh = names.index('Left Thigh')
     for side in ('src', 'tgt'):
