@@ -1,10 +1,17 @@
+import functools
 import os
 import queue
 import threading
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+from data_loaders.joint_buckets import (
+    JointBucketBatchSampler,
+    bucket_ids_for_joint_counts,
+    resolve_joint_buckets,
+)
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import Truebones
+from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
 
 
 class _PrefetchSentinel:
@@ -108,7 +115,12 @@ def get_dataset_loader(
     motion_speed_aug=1.0,
     motion_speed_aug_prob=1.0,
     cond_path=None,
+    joint_buckets=JOINT_BUCKETS,
 ):
+    """``joint_buckets``: joint-count ceilings (param_utils.JOINT_BUCKETS by
+    default). Batches are grouped by rig size and padded to their bucket's
+    ceiling instead of MAX_JOINTS -- see data_loaders/joint_buckets. ``None`` or
+    ``()`` pads every batch to MAX_JOINTS."""
     # Always use main thread (num_workers=0) - multi-worker paths removed
     dataset = get_dataset(
         num_frames=num_frames,
@@ -132,15 +144,37 @@ def get_dataset_loader(
     if dataset.motion_dataset.use_weighted_sampler:
         from data_loaders.truebones.data.dataset import TruebonesSampler
         sampler = TruebonesSampler(dataset)
-    loader_kwargs = {
-        'dataset': dataset,
-        'batch_size': batch_size,
-        'sampler': sampler,
-        'shuffle': shuffle if sampler is None else False,
-        'num_workers': 0,
-        'drop_last': drop_last,
-        'collate_fn': collate,
-    }
+    buckets = resolve_joint_buckets(joint_buckets, dataset.motion_dataset.opt.max_joints)
+    if buckets is not None:
+        # The bucket sampler wraps the SAME index source a plain loader would
+        # use (RandomSampler draws from the global torch RNG exactly like
+        # shuffle=True does), so seeding and species weighting are unchanged;
+        # it only regroups the drawn indices into bucket-homogeneous batches.
+        if sampler is None:
+            sampler = RandomSampler(dataset) if shuffle else SequentialSampler(dataset)
+        bucket_ids = bucket_ids_for_joint_counts(
+            dataset.motion_dataset.sampler_index_joint_counts(), buckets
+        )
+        batch_sampler = JointBucketBatchSampler(
+            sampler, batch_size, bucket_ids, num_buckets=len(buckets), drop_last=drop_last
+        )
+        collate = functools.partial(truebones_batch_collate, joint_buckets=buckets)
+        loader_kwargs = {
+            'dataset': dataset,
+            'batch_sampler': batch_sampler,
+            'num_workers': 0,
+            'collate_fn': collate,
+        }
+    else:
+        loader_kwargs = {
+            'dataset': dataset,
+            'batch_size': batch_size,
+            'sampler': sampler,
+            'shuffle': shuffle if sampler is None else False,
+            'num_workers': 0,
+            'drop_last': drop_last,
+            'collate_fn': collate,
+        }
     if torch.cuda.is_available():
         loader_kwargs['pin_memory'] = True
     loader = DataLoader(**loader_kwargs)

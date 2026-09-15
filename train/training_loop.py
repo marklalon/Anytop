@@ -31,6 +31,7 @@ from utils.model_util import (
 )
 import random
 from data_loaders.get_data import get_dataset_loader
+from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
 from data_loaders.truebones.truebones_utils.canonical_features import (
     REST_LENGTH_SCALE_KEY,
     canonical_to_physical_hml,
@@ -288,6 +289,10 @@ class TrainLoop:
                 # of --motion_speed_aug, so eval losses stay comparable across
                 # runs that differ only in the augmentation.
                 motion_speed_aug=1.0,
+                # Same reason: keep the eval set and its batch composition fixed
+                # (per-bucket drop_last would drop different clips), so eval
+                # scores stay comparable across runs with different buckets.
+                joint_buckets=None,
             )
             sampling_steps = int(getattr(self.args, 'sampling_steps', 100))
             infer_args = pycopy.deepcopy(self.args)
@@ -321,13 +326,16 @@ class TrainLoop:
         byte identical to an uncompiled run -- the OptimizedModule never owns the
         parameters, so resume compatibility is preserved in both directions.
 
-        Joint/frame dims are fixed across batches (joints pad to the global
-        ``opt.max_joints``, frames are resampled to ``num_frames``), so
-        ``dynamic=False`` is safe and avoids dynamic-shape tracing overhead; the
-        only shape that can vary is a trailing partial batch (drop_last is
-        always True, avoiding the one extra compile). The numpy/.item() conditioning in
-        AnyTop.forward triggers graph breaks, but the heavy decoder region
-        between breaks still compiles and fuses.
+        Joint/frame dims take a small fixed set of values (joints pad to one of
+        the ``JOINT_BUCKETS`` ceilings, the last being ``opt.max_joints``; frames
+        are resampled to ``num_frames``), so ``dynamic=False`` is right:
+        every distinct joint count gets its own static graph -- one per bucket,
+        each traced the first time that bucket's batch shows up -- rather than a
+        symbolic-shape graph that gives up the shape-specialised fusions. The
+        only other shape that could vary is a trailing partial batch (drop_last
+        is always True, avoiding the one extra compile). The numpy/.item()
+        conditioning in AnyTop.forward triggers graph breaks, but the heavy
+        decoder region between breaks still compiles and fuses.
         """
         try:
             import torch._dynamo as _dynamo
@@ -348,9 +356,13 @@ class TrainLoop:
                 "Ensure the MSVC build env is active (start_torch_compile_env.ps1)."
             )
             return
+        bucket_note = (
+            f" One static graph per joint bucket {tuple(JOINT_BUCKETS)}; each bucket's "
+            "first batch compiles once." if len(JOINT_BUCKETS) > 1 else ""
+        )
         logger.log(
             f"torch.compile enabled (mode={mode}, dynamic=False). The first step "
-            "pays a one-time compilation cost before steady-state speedup."
+            f"pays a one-time compilation cost before steady-state speedup.{bucket_note}"
         )
 
     def _load_and_sync_parameters(self):

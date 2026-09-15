@@ -384,7 +384,8 @@ def add_training_options(parser):
                             "Mode: 'None' (no compile), 'default' (torch.compile default), "
                             "'max-autotune-no-cudagraphs'. Requires the MSVC build env "
                             "(start_torch_compile_env.ps1). First step pays a one-time compile "
-                            "cost; shapes are static so no recompile thrashing afterward.")
+                            "cost; shapes are static so no recompile thrashing afterward "
+                            "(one graph per JOINT_BUCKETS joint bucket).")
     group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
     group.add_argument("--lr_scheduler_step_size", default=10000, type=int,
                        help="StepLR step size: decay LR every N optimizer steps.")

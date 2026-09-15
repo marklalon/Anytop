@@ -1300,6 +1300,22 @@ class MotionDataset(data.Dataset):
     def __len__(self):
         return len(self.name_list) - self.pointer
 
+    def sampler_index_joint_counts(self):
+        """Joint count of every index the loader's sampler can yield, in that
+        sampler's coordinate.
+
+        Mirrors ``__getitem__``: the weighted sampler yields absolute
+        ``name_list`` positions (entries below ``pointer`` carry weight 0 but
+        must still be addressable), a plain sampler yields pointer-relative ones.
+        The count is the species' rig size, which is what the clip's motion array
+        carries -- the loader's joint bucketing keys on it.
+        """
+        names = self.name_list if self.use_weighted_sampler else self.name_list[self.pointer:]
+        return np.asarray(
+            [len(self.cond_dict[self.data_dict[name]['object_type']]['parents']) for name in names],
+            dtype=np.int64,
+        )
+
     def __getitem__(self, item):
         if self.use_weighted_sampler:
             idx = item #self.pointer + item (handled in weighted sampler)

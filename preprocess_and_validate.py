@@ -671,7 +671,10 @@ def run_preprocessing(
         )
         collector.summarize()
         return 0
-    except DatasetPreprocessingError:
+    except DatasetPreprocessingError as e:
+        print(f"\nERROR: Failed to preprocess dataset: {e}")
+        for detail in getattr(e, "motion_errors", ()):
+            print(detail)
         collector.summarize()
         return 1
     except Exception as e:

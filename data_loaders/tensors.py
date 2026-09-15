@@ -9,6 +9,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     REST_LENGTH_SCALE_KEY,
     _length_scale_from_rest,
 )
+from data_loaders.joint_buckets import bucket_ceiling
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from data_loaders.truebones.truebones_utils.motion_labels import ACTION_LABEL_MAX_WORDS
 
@@ -279,8 +280,15 @@ def truebones_collate(batch):
 
     return motion, cond
 
-def truebones_batch_collate(batch):
+def truebones_batch_collate(batch, joint_buckets=None):
     """Collate a raw batch from MotionDataset into the format for truebones_collate.
+
+    ``joint_buckets`` (ascending ceilings ending at MAX_JOINTS) pads the batch to
+    the smallest ceiling that holds its widest rig instead of the global
+    ``max_joints`` every sample carries at ``[9]``; the loader pairs it with
+    ``JointBucketBatchSampler`` so each batch is bucket-homogeneous and the run
+    sees one shape per bucket. Without it (inference, tests, the eval loader)
+    every batch is padded to MAX_JOINTS as before.
 
     Each element ``b`` in *batch* is a tuple returned by
     ``MotionDataset._prepare_sample`` with the following layout:
@@ -300,6 +308,8 @@ def truebones_batch_collate(batch):
         [12+] extras         – dicts (joint_mask_candidate_roots, aug info, …)
     """
     max_joints = batch[0][9]
+    if joint_buckets is not None:
+        max_joints = bucket_ceiling(max(b[0].shape[1] for b in batch), joint_buckets)
     adapted_batch = []
     for b in batch:  
         max_len, n_joints, n_feats = b[0].shape
