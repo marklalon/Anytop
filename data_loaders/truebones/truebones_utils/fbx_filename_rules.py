@@ -60,16 +60,20 @@ def is_retargeted_anim_path(file_path):
 
     The tool writes ``<Action>_<SrcSpecies>Retarget`` -- the source species is
     concatenated directly onto the ``Retarget`` marker (``Swim01Backwards_KIHumanRetarget``),
-    so the marker is the *suffix* of the final segment, not a segment of its own.
-    A bare ``Retarget`` or an action that merely contains the word earlier in its
-    name is not mistaken for a marker.
+    so the marker is usually the *suffix* of the final segment, not a segment of
+    its own.  A trailing bare ``Retarget`` segment (``Swim01Backwards_Retarget``)
+    is a marker too: it is a standalone token at the end of the name, distinct
+    from a file that is *named* ``Retarget`` or an action that merely contains
+    the word inside a segment (``MyRetargetMove``).
     """
     stem = os.path.splitext(os.path.basename(str(file_path or '')))[0]
     segments = _stem_segments(stem)
+    if not segments:
+        return False
+    last = segments[-1]
     return (
-        bool(segments)
-        and segments[-1].endswith(RETARGET_MARKER)
-        and len(segments[-1]) > len(RETARGET_MARKER)
+        (last == RETARGET_MARKER and len(segments) > 1)
+        or (last.endswith(RETARGET_MARKER) and len(last) > len(RETARGET_MARKER))
     )
 
 
