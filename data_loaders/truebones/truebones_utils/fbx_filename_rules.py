@@ -44,22 +44,10 @@ def _matches_reference_tail(file_path, tail_pattern):
     return any(tail_pattern.fullmatch(candidate) for candidate in _reference_tail_candidates(file_path))
 
 
-# ---------------------------------------------------------------------------
-# Offline-retargeted source clips
-# ---------------------------------------------------------------------------
-# ``tools/offline_retarget_augment.py`` writes retargeted animations, marked by
-# a trailing ``Retarget`` token attached to the source species
-# (``Swim01Backwards_KIHumanRetarget.glb``).  The marker is provenance, not an
-# action word, so the filename rules must not read meaning into it:
-#
-#   * a marked file may never become the rest-pose / idle / walk reference
-#     carrier -- the species' own assets define its rest pose, never a clip
-#     imported from another skeleton;
-#   * the variant-codename heuristics (which reject ``Fox_A02``-style stems with
-#     no inferable action) must not fire on the marker's underscore.
-#
-# The marker DOES survive into the normalized action name, so the resulting clip
-# stays uniquely named and identifiable as retargeted.
+# Trailing ``Retarget`` token on offline-retargeted clips (e.g.
+# ``Swim01Backwards_KIHumanRetarget.glb``). Provenance, not an action word:
+# the filename rules must not read meaning into it, and a marked file never
+# becomes the rest-pose / idle / walk reference carrier.
 RETARGET_MARKER = 'Retarget'
 
 

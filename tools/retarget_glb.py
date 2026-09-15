@@ -131,6 +131,19 @@ def build_parser() -> argparse.ArgumentParser:
              "idempotency. Useful when the two rigs differ in leg proportion.",
     )
     parser.add_argument(
+        "--fullbody-ik", action="store_true",
+        help="Re-solve the retargeted pose on the rigid target skeleton so the "
+             "bone lengths the retarget stretched to reach the donor's "
+             "proportions come back, with rotations carrying the motion instead. "
+             "Off by default: it is a real change to the written pose and breaks "
+             "self-retarget idempotency.",
+    )
+    parser.add_argument(
+        "--ik-stretch-factor", type=float, default=None,
+        help="Bone-length elasticity the IK rebuild may keep (0.1 = +/-10 %). "
+             "Default: the pipeline's own default. Only used with --fullbody-ik.",
+    )
+    parser.add_argument(
         "--skeleton-only", action="store_true",
         help="Write a skeleton-only GLB (no meshes).",
     )
@@ -170,6 +183,8 @@ def main() -> None:
         align_facing=args.align_facing,
         ground=args.ground,
         export_mesh=not args.skeleton_only,
+        fullbody_ik=args.fullbody_ik,
+        fullbody_ik_stretch_factor=args.ik_stretch_factor,
         slice_inds=args.frames,
         verbose=not args.quiet,
     )
