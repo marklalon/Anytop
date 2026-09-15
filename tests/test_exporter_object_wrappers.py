@@ -450,8 +450,10 @@ def _run_export_branch_case(
     captured: dict[str, object] = {}
 
     def _fake_retarget_world_space_np(**kwargs):
-        captured["align_facing"] = bool(kwargs["align_facing"])
-        captured["src_root_translation"] = np.asarray(kwargs["src_root_translation"], dtype=np.float64)
+        # The facing turn is driven purely by whether the rest facings are
+        # handed to the core; the exporter no longer gates that on the source
+        # file format.
+        captured["turns_facing"] = kwargs["rest_facing_quats"] is not None
         raise _AbortRetarget("stop after branch capture")
 
     monkeypatch.setattr(exporter_mod, "retarget_world_space_np", _fake_retarget_world_space_np)
@@ -469,7 +471,7 @@ def _run_export_branch_case(
     return captured, calls
 
 
-def test_export_glb_plain_gltf_mesh_keeps_existing_basis(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_export_glb_plain_gltf_mesh_turns_facing_without_normalizing(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     captured, calls = _run_export_branch_case(
         monkeypatch,
         tmp_path,
@@ -477,11 +479,11 @@ def test_export_glb_plain_gltf_mesh_keeps_existing_basis(monkeypatch: pytest.Mon
         global_similarity=None,
     )
 
-    assert captured["align_facing"] is False
+    assert captured["turns_facing"] is True
     assert calls == []
 
 
-def test_export_glb_hml_reverse_aligned_gltf_reenables_align_facing(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_export_glb_hml_reverse_aligned_gltf_normalizes_then_applies_similarity(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     captured, calls = _run_export_branch_case(
         monkeypatch,
         tmp_path,
@@ -489,11 +491,11 @@ def test_export_glb_hml_reverse_aligned_gltf_reenables_align_facing(monkeypatch:
         global_similarity=(1.4354808536266768, np.array([0.70710678, 0.0, -0.70710678, 0.0], dtype=np.float64)),
     )
 
-    assert captured["align_facing"] is True
+    assert captured["turns_facing"] is True
     assert calls == ["normalize", "similarity"]
 
 
-def test_export_glb_fbx_mesh_still_normalizes_and_searches_coordinates(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_export_glb_fbx_mesh_normalizes_and_turns_facing(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     captured, calls = _run_export_branch_case(
         monkeypatch,
         tmp_path,
@@ -501,5 +503,5 @@ def test_export_glb_fbx_mesh_still_normalizes_and_searches_coordinates(monkeypat
         global_similarity=None,
     )
 
-    assert captured["align_facing"] is True
+    assert captured["turns_facing"] is True
     assert calls == ["normalize"]

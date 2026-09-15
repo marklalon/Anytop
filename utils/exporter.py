@@ -906,7 +906,6 @@ class AnimationExporter:
         export_mesh: bool = True,
         rename_bones_to_canonical: bool = False,
         prune_unmapped_bones: bool = False,
-        align_facing: Optional[bool] = None,
         src_effective_root_index: Optional[int] = None,
         tgt_effective_root_index: Optional[int] = None,
         fullbody_ik: bool = False,
@@ -966,15 +965,6 @@ class AnimationExporter:
                 matches the NPY / processed BVH. Bones are pruned at rest (no
                 per-frame baking); any skin weight is merged into the nearest
                 kept ancestor.
-            align_facing: Override whether the retarget turns the source into
-                the target's facing. Both facings come from head/face joint
-                detection on the two rest poses (the same detection turns each
-                skeleton to +Z for the LLM mapping prompt); see
-                :func:`retarget_world_space_np`. ``None`` (default) keeps the
-                historical auto-rule below: off for a plain GLB/GLTF target, on
-                otherwise. Native GLB→GLB retargeting forces it ``True``; a
-                self-retarget is unaffected either way (two equal facings turn
-                nothing).
             src_effective_root_index: Optional source joint that carries the
                 locomotion translation in its local position channel (the
                 ``Bip01`` pattern: a static wrapper root above the joint that
@@ -1103,32 +1093,6 @@ class AnimationExporter:
                 for b in self.skeleton.bones
             ])
 
-            # Imported GLB rigs already carry the glTF wrapper/object space that
-            # Blender will re-emit on export. Historically the retarget's
-            # alignment was a rest-shape search that could add a spurious rigid
-            # turn there (Horse picked R_y(+90°), which re-imports as a visible
-            # whole-character Z rotation), so plain GLB->GLB export keeps the
-            # rig's existing basis.
-            #
-            # HML restore is different: ``global_similarity`` has already
-            # reverse-aligned the imported GLB rig into NPY/HML space while the
-            # recovered source animation still arrives in raw export space. In
-            # that case leaving the facing alone pins the alignment to identity
-            # and cancels the intended 90-degree facing change, so the facing
-            # alignment is on only for the reverse-aligned path.
-            #
-            # ``align_facing`` overrides that auto-rule when the caller knows
-            # better — the native GLB→GLB retarget path forces it on, because
-            # two rigs facing different ways split the result otherwise.
-            is_gltf_mesh = bool(
-                mesh_path_lower and mesh_path_lower.endswith((".glb", ".gltf"))
-            )
-            if align_facing is None:
-                resolved_align_facing = (
-                    (not is_gltf_mesh) or (global_similarity is not None)
-                )
-            else:
-                resolved_align_facing = bool(align_facing)
             src_match_names = _build_canonical_match_names(
                 bone_names,
                 parents_input,
@@ -1162,7 +1126,14 @@ class AnimationExporter:
                     src_effective_root_index=src_effective_root_index,
                     tgt_effective_root_index=tgt_effective_root_index,
                     src_bone_translations=np.array(bt, dtype=np.float64) if bt is not None else None,
-                    align_facing=resolved_align_facing,
+                    # The source is always turned into the target's facing; both
+                    # facings come from head/face joint detection on the two rest
+                    # poses, so a self-retarget (or an HML restore whose rig was
+                    # reverse-aligned by ``global_similarity``) gets equal
+                    # facings and turns nothing, while a +Z-facing donor on a
+                    # +X-facing rig is turned instead of split. Format-based
+                    # gating is unnecessary now that the facing is detected
+                    # rather than fitted from the two rest shapes.
                     rest_facing_quats=lambda: _face_detected_rest_facings(
                         source_rest_skeleton, (names, parents, offsets, rest_rots),
                     ),

@@ -168,7 +168,6 @@ def test_retarget_distributes_short_source_bone_across_longer_target_chain(
         src_root_rotation=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64),
         src_match_names=['Root', 'Neck', 'Neck 1', 'Head'],
         tgt_match_names=['Root', 'Neck', 'Neck 1', 'Neck 2', 'Neck 3', 'Neck 4', 'Head'],
-        align_facing=False,
         verbose=False,
     )
 
@@ -242,7 +241,6 @@ def test_retarget_preserves_zero_pose_locations_for_rigid_longer_target_chain(
         src_bone_translations=np.zeros((2, 4, 3), dtype=np.float64),
         src_match_names=['Root', 'Neck', 'Neck 1', 'Head'],
         tgt_match_names=['Root', 'Neck', 'Neck 1', 'Neck 2', 'Neck 3', 'Neck 4', 'Head'],
-        align_facing=False,
         verbose=False,
     )
 
@@ -302,7 +300,6 @@ def test_retarget_skips_llm_and_preserves_root_motion_under_target_root_wrappers
         src_bone_translations=None,
         src_match_names=['locator2', 'koshi'],
         tgt_match_names=['EAL1_2', 'N_ALL', 'locator2', 'koshi'],
-        align_facing=False,
         verbose=False,
     )
 
@@ -970,7 +967,6 @@ def test_retarget_promotes_unmapped_effective_root_to_target_root(
         src_bone_translations=bone_translations,
         src_match_names=['Hips', 'Ctrl', 'Bip01', 'Pelvis'],
         tgt_match_names=['Cg', 'Pelvis'],
-        align_facing=False,
         verbose=False,
     )
 
@@ -1053,7 +1049,6 @@ def test_retarget_promotes_matched_effective_root_over_wrapper_root(
         src_bone_translations=bone_translations,
         src_match_names=['Hips', 'Pelvis', 'Spine', 'Head'],
         tgt_match_names=['Cg', 'Pelvis', 'Spine'],
-        align_facing=False,
         verbose=False,
     )
 
@@ -1100,7 +1095,6 @@ def test_retarget_promotes_source_root_to_nonroot_target_effective_root() -> Non
         src_bone_translations=None,
         src_match_names=['Hips', 'Pelvis'],
         tgt_match_names=['Hips', 'Pelvis'],
-        align_facing=False,
         verbose=False,
     )
 
@@ -1179,7 +1173,6 @@ def test_bridge_gap_joint_uses_source_anchor_rotation_to_avoid_spine_translation
         src_bone_translations=None,
         src_match_names=['Hips', 'Pelvis', 'Spine'],
         tgt_match_names=['Cg', 'Pelvis', 'Spine'],
-        align_facing=False,
         verbose=False,
     )
 
@@ -1268,7 +1261,6 @@ def test_bridge_ignores_degenerate_zero_length_source_wrapper_bone(
         src_bone_translations=bone_translations,
         src_match_names=['Hips', 'Pelvis', 'Spine'],
         tgt_match_names=['Hips', 'Ctrl', 'Bip01', 'Pelvis'],
-        align_facing=False,
         verbose=False,
     )
 
@@ -1338,7 +1330,6 @@ def test_root_promotion_shifts_descendant_chain_up_one_target_level(
         src_bone_translations=None,
         src_match_names=['Hips', 'Pelvis', 'Spine 1', 'Spine 2'],
         tgt_match_names=['Cg', 'Pelvis', 'Spine', 'Spine 1'],
-        align_facing=False,
         verbose=False,
     )
 
@@ -1408,7 +1399,6 @@ def test_root_promotion_redistributes_short_neck_chain_across_longer_target_chai
         src_bone_translations=None,
         src_match_names=['Hips', 'Pelvis', 'Spine 1', 'Spine 2', 'Spine 3', 'Ribcage', 'Neck 1', 'Neck 2', 'Head'],
         tgt_match_names=['Cg', 'Pelvis', 'Spine', 'Spine 1', 'Spine 2', 'Neck', 'Neck 1', 'Neck 2', 'Neck 3', 'Neck 4', 'Head'],
-        align_facing=False,
         verbose=False,
     )
 
@@ -1664,7 +1654,6 @@ def test_retarget_turns_bind_and_animation_together_into_target_facing(
         src_root_rotation=root_rotation,
         src_match_names=names,
         tgt_match_names=names,
-        align_facing=True,
         rest_facing_quats=_rest_facings,
         verbose=False,
     )
@@ -1739,7 +1728,6 @@ def test_retarget_facing_alignment_is_target_inverse_times_source(
         src_root_rotation=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64),
         src_match_names=names,
         tgt_match_names=names,
-        align_facing=True,
         rest_facing_quats=None if rest_facings is None else (lambda: rest_facings),
         verbose=False,
     )
@@ -1783,7 +1771,6 @@ def test_retarget_llm_prompt_positions_are_turned_to_face_plus_z(
         src_root_rotation=root_rotation,
         src_match_names=names,
         tgt_match_names=target_names,
-        align_facing=True,
         rest_facing_quats=_rest_facings,
         verbose=False,
     )

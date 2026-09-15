@@ -734,7 +734,6 @@ def retarget_world_space_np(
     src_effective_root_index: int | None = None,
     tgt_effective_root_index: int | None = None,
     src_bone_translations: Optional[np.ndarray] = None,
-    align_facing: bool = True,
     rest_facing_quats: Optional[Callable[[], tuple[np.ndarray, np.ndarray]]] = None,
     verbose: bool = True,
 ) -> RetargetResult:
@@ -786,23 +785,22 @@ def retarget_world_space_np(
             ``Bip01`` beneath a static wrapper root). When that joint is left
             unmatched by semantic mapping, it may replace a mapped wrapper root
             as the target root anchor.
-        align_facing: when ``True``, turn the source into the target's facing
-            by ``target⁻¹ · source`` of *rest_facing_quats*. The turn is a basis
-            change of the whole source -- bind pose and animation together --
-            which is what keeps a rig facing +Z played on one facing +X from
-            moving one way with its limbs facing the other. Nothing turns
-            without *rest_facing_quats*. Set ``False`` when the source and
-            target are known to share the same world basis (e.g. both are
-            processed cond entries from the same dataset pipeline).
         rest_facing_quats: optional zero-argument callable returning
             ``(source, target)`` (4,) WXYZ quarter turns, each bringing that
             skeleton's bind-pose face to +Z -- the exporter passes the head/face
             joint detection the dataset itself is built with. Called at most
-            once. Both consumers need it before any joint mapping exists: the
-            LLM joint-mapping prompt turns each skeleton's rest positions by it,
+            once. When given, the source is turned into the target's facing by
+            ``target⁻¹ · source``: a basis change of the whole source -- bind
+            pose and animation together -- which is what keeps a rig facing +Z
+            played on one facing +X from moving one way with its limbs facing
+            the other (two equal facings turn nothing, so a self-retarget is
+            unaffected). The LLM joint-mapping prompt reads it too, before any
+            joint mapping exists: it turns each skeleton's rest positions by it,
             because the prompt tells the model +Z is the way a character faces
-            and +X its left, and the facing alignment above is read straight
-            off it. Without it the prompt gets native positions.
+            and +X its left. Leave it ``None`` when the source and target are
+            known to share the same world basis (e.g. both are processed cond
+            entries from the same dataset pipeline): nothing turns and the
+            prompt gets native positions.
         verbose: print one-line summary diagnostics.
 
     Returns:
@@ -1361,7 +1359,7 @@ def retarget_world_space_np(
     # quadruped matches no quarter turn better than another, and the joint
     # mapping such a fit needs is itself made with these facings.
     best_R = np.eye(3, dtype=np.float64)
-    rest_facings = _rest_facings() if align_facing else None
+    rest_facings = _rest_facings()
     if rest_facings is not None:
         source_facing, target_facing = rest_facings
         # source -> +Z reference -> target basis
