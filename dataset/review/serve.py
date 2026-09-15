@@ -732,7 +732,10 @@ class Handler(BaseHTTPRequestHandler):
             if src:
                 users.setdefault(src, []).append(clip)
 
-        marked = set(pending)
+        # users lists metadata keys (.npy file names) while pending holds the
+        # sidecar's stem keys -- compare in the metadata's spelling, or every
+        # clip counts as "shared" with itself.
+        marked = {c if c.lower().endswith(".npy") else c + ".npy" for c in pending}
         stamp = datetime.now().isoformat(timespec="seconds")
         archived = []
         for clip in pending:

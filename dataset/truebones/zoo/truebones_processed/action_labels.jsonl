@@ -302,7 +302,7 @@
 {"clip": "Dog_LookRight", "action_group": "stationary", "action_label": "idle, right, look", "is_loop": true, "reviewed": true}
 {"clip": "Dog_PAnting", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Dog_Paddle", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
-{"clip": "Dog_RunFrisbee", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": false, "reviewed": true}
+{"clip": "Dog_RunFrisbee", "action_group": "locomotion", "action_label": "run, jump", "is_loop": false, "reviewed": true}
 {"clip": "Dog_Running", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "Dog_SNiffed", "action_group": "stationary", "action_label": "idle, shake, sniff", "is_loop": false, "reviewed": true}
 {"clip": "Dog_ScratchRight", "action_group": "stationary", "action_label": "idle, clean", "is_loop": true, "reviewed": true}
@@ -393,7 +393,7 @@
 {"clip": "Fox_Idle3", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Fox_Idle4", "action_group": "stationary", "action_label": "idle, clean", "is_loop": true, "reviewed": true}
 {"clip": "Fox_Idle5", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
-{"clip": "Fox_Run", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Fox_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Fox_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Gazelle_Alert", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "Gazelle_Attack1", "action_group": "stationary", "action_label": "attack, jump, charge", "is_loop": true, "reviewed": true}
@@ -511,8 +511,8 @@
 {"clip": "Jaguar_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Jaguar_Stancing", "action_group": "stationary", "action_label": "idle, crouch", "is_loop": true, "reviewed": true}
 {"clip": "Jaguar_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "Jaws_SharkBiteLeft", "action_group": "locomotion", "action_label": "swim, jump, forward", "is_loop": true, "reviewed": true}
-{"clip": "Jaws_SharkBiteRight", "action_group": "locomotion", "action_label": "swim, jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Jaws_SharkBiteLeft", "action_group": "locomotion", "action_label": "swim, jump", "is_loop": true, "reviewed": true}
+{"clip": "Jaws_SharkBiteRight", "action_group": "locomotion", "action_label": "swim, jump", "is_loop": true, "reviewed": true}
 {"clip": "Jaws_SharkDeadLoop", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "Jaws_SharkDead", "action_group": "stationary", "action_label": "dead", "is_loop": true, "reviewed": true}
 {"clip": "Jaws_SharkSwim180", "action_group": "transition", "action_label": "turn, flip", "is_loop": false, "reviewed": true}
@@ -633,12 +633,10 @@
 {"clip": "Pirrana_Biting", "action_group": "stationary", "action_label": "attack, bite", "is_loop": false, "reviewed": true}
 {"clip": "Pirrana_DeadFloat2", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "Pirrana_DeadFloat", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
-{"clip": "Pirrana_DiveIn", "action_group": "locomotion", "action_label": "swim, down, dive", "is_loop": false, "reviewed": true}
 {"clip": "Pirrana_Flopping", "action_group": "stationary", "action_label": "hurt, flopping", "is_loop": false, "reviewed": true}
-{"clip": "Pirrana_Jump2", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
-{"clip": "Pirrana_MidSwim", "action_group": "locomotion", "action_label": "swim, down", "is_loop": false, "reviewed": true}
-{"clip": "Pirrana_RiseTop", "action_group": "locomotion", "action_label": "swim, up", "is_loop": false, "reviewed": true}
-{"clip": "Pirrana_SwimJump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Pirrana_Jump2", "action_group": "locomotion", "action_label": "swim, jump", "is_loop": true, "reviewed": true}
+{"clip": "Pirrana_MidSwim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": false, "reviewed": true}
+{"clip": "Pirrana_SwimJump", "action_group": "locomotion", "action_label": "swim, jump", "is_loop": true, "reviewed": true}
 {"clip": "Pirrana_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": false, "reviewed": true}
 {"clip": "PolarBearB_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "PolarBearB_Idle2", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
@@ -665,7 +663,7 @@
 {"clip": "Pteranodon_Hit2", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "Pteranodon_Hit", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "Pteranodon_ScreamFly", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
-{"clip": "Puppy_IdleEnergetic", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "Puppy_IdleEnergetic", "action_group": "stationary", "action_label": "idle, look", "is_loop": false, "reviewed": true}
 {"clip": "Puppy_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "Puppy_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Raindeer_Attack2", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}
@@ -801,7 +799,7 @@
 {"clip": "Scorpion-2_OnBackDying", "action_group": "stationary", "action_label": "hurt, flopping", "is_loop": false, "reviewed": true}
 {"clip": "Scorpion-2_PissedFangs", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Scorpion-2_RisingWalk", "action_group": "transition", "action_label": "getup, walk", "is_loop": false, "reviewed": true}
-{"clip": "Scorpion-2_RunAttack", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": false, "reviewed": true}
+{"clip": "Scorpion-2_RunAttack", "action_group": "locomotion", "action_label": "run, jump", "is_loop": false, "reviewed": true}
 {"clip": "Scorpion-2_RunToAttrack", "action_group": "transition", "action_label": "run, idle", "is_loop": false, "reviewed": true}
 {"clip": "Scorpion-2_SettleBack", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
 {"clip": "Scorpion-2_SlideBack", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
@@ -861,12 +859,12 @@
 {"clip": "Spider_BackRear", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Barking", "action_group": "locomotion", "action_label": "jump, backward", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Injuredwalk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "Spider_Jump", "action_group": "stationary", "action_label": "jump", "is_loop": false, "reviewed": true}
+{"clip": "Spider_Jump", "action_group": "stationary", "action_label": "run, jump", "is_loop": true, "reviewed": true}
 {"clip": "Spider_LandinHAir", "action_group": "transition", "action_label": "land, run", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Landing", "action_group": "transition", "action_label": "jump, land", "is_loop": false, "reviewed": true}
 {"clip": "Spider_RetreatInjured", "action_group": "locomotion", "action_label": "walk, hurt, backward", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Retreat", "action_group": "locomotion", "action_label": "walk, backward, retreat", "is_loop": true, "reviewed": true}
-{"clip": "Spider_Riser", "action_group": "transition", "action_label": "jump", "is_loop": false, "reviewed": true}
+{"clip": "Spider_Riser", "action_group": "transition", "action_label": "jump, up", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Rising", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Runleft", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Scary", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}

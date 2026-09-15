@@ -83,7 +83,7 @@
 {"clip": "Crow_Fly", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
 {"clip": "Crow_Glide", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
 {"clip": "Crow_Look", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
-{"clip": "Crow_RunJump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Crow_RunJump", "action_group": "locomotion", "action_label": "run, jump", "is_loop": true, "reviewed": true}
 {"clip": "Crow_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
 {"clip": "Deer_Buck_Grazing", "action_group": "stationary", "action_label": "idle, eat", "is_loop": false, "reviewed": true}
 {"clip": "Deer_Buck_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
@@ -196,7 +196,7 @@
 {"clip": "Rabbit_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Rabbit2_Death", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "Rabbit2_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "Rabbit2_Jog", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": false, "reviewed": true}
+{"clip": "Rabbit2_Jog", "action_group": "locomotion", "action_label": "run, jump", "is_loop": false, "reviewed": true}
 {"clip": "Rabbit2_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
 {"clip": "rhino_AtkCharge", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
 {"clip": "rhino_AtkL", "action_group": "stationary", "action_label": "attack, left, headbutt", "is_loop": true, "reviewed": true}
