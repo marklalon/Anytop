@@ -1,0 +1,35 @@
+{
+  "_comment": "Evaluation task battery for eval_checkpoint.py. checkpoint.RUN_NAME is required; checkpoint.MODEL_FILE is optional and defaults to the newest model*.pt. Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task.",
+  "checkpoint": {
+    "RUN_NAME": "merged_transition_v18"
+  },
+  "tasks": [    
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "die"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "getup"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "turn, flip", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "jump, land"] },
+
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "die"] },
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "getup"] },
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "turn, flip", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "burrow"] },
+    
+    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "die"] },
+    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "getup"] },
+    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "turn, flip", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "fly, land"] },
+    
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "die"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "getup"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "turn, flip", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "jump, land"] },
+    
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_reddragon/cond.npy", "--action_label", "die, hover", "--action_label_cfg_scale", "2"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_reddragon/cond.npy", "--action_label", "turn, left, hover"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_elephant/cond.npy", "--action_label", "die"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_elephant/cond.npy", "--action_label", "getup"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_human/cond.npy", "--action_label", "die"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_human/cond.npy", "--action_label", "laydown"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_human/cond.npy", "--action_label", "getup"] }
+  ]
+}

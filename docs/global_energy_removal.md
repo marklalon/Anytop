@@ -147,7 +147,7 @@ energy 是从 x₀ 直接算出的目标泄漏。删掉它 `l_simple` **必然�
 | `utils/parser_util.py` | 两个训练 flag + 一个采样 flag |
 | `train/training_loop.py` | spike-capture 的 `global_energy_cond` 记录 + 两处注释 |
 | `tests/` | `test_dataset_loop.py` 的两个能量探针测试、`test_native_loop.py` 的 `global_energy_cond` collate 测试与 fixture 形参、`test_generate_inpainting.py` 的 `physical_energy_features` 实参 |
-| `train.bat` / `eval/eval_tasks.json` / `client/anytop_client.py` / `server/anytop_service.py` / `server/serve.py` | CLI/服务层的 flag 透传（服务端会把 payload 里的 `global_energy` 转成 `--global_energy`，不删就会给 generate.py 传未知参数） |
+| `train.bat` / `eval/eval_tasks_locomotion.json` / `client/anytop_client.py` / `server/anytop_service.py` / `server/serve.py` | CLI/服务层的 flag 透传（服务端会把 payload 里的 `global_energy` 转成 `--global_energy`，不删就会给 generate.py 传未知参数） |
 
 ### §1 末的确认
 

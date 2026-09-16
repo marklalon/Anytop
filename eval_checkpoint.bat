@@ -1,45 +1,39 @@
 @echo off
+setlocal EnableExtensions
 REM ----------------------------------------------------------------------
 REM Run the checkpoint evaluation battery + HTML report.
 REM
 REM Usage:
-REM   eval_checkpoint.bat --model_path save\<RUN_NAME>\<model>.pt [extra args]
+REM   eval_checkpoint.bat <task_config.json> [extra eval args]
+REM   eval_checkpoint.bat eval\eval_tasks_locomotion.json --overwrite
 REM
-REM   - Defaults to the latest model*.pt in save\%RUN_NAME% if no --model_path
-REM     is given (same auto-discovery as generate.bat).
-REM   - Default: incremental (reuses existing outputs, generates new tasks).
-REM   - --force: wipes output root and regenerates everything.
-REM   - Forwards all args to eval/eval_checkpoint.py.
+REM The task config must define checkpoint.RUN_NAME. checkpoint.MODEL_FILE is
+REM optional; when omitted, eval_checkpoint.py selects the newest model*.pt
+REM under save\<RUN_NAME>.
 REM ----------------------------------------------------------------------
-set SCRIPT_DIR=%~dp0
-set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_locomotion_v18
+set "SCRIPT_DIR=%~dp0"
+set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 
+if "%~1"=="" (
+    echo Usage: eval_checkpoint.bat ^<task_config.json^> [extra eval args]
+    exit /b 2
+)
+
+set "TASK_CONFIG=%~1"
+shift
+
+REM Preserve all remaining arguments while making the task config explicit to
+REM the Python entry point. This also keeps quoted paths with spaces intact.
+set "EXTRA_ARGS="
+:collect_args
+if "%~1"=="" goto :run
+set "EXTRA_ARGS=%EXTRA_ARGS% %1"
+shift
+goto :collect_args
+
+:run
 pushd "%SCRIPT_DIR%"
-
-REM If the caller passed --model_path, just forward everything through.
-echo %* | findstr /C:"--model_path" >nul
-if %errorlevel%==0 (
-    "%PYTHON_EXE%" eval\eval_checkpoint.py %*
-    popd
-    exit /b %errorlevel%
-)
-
-REM Otherwise auto-discover the latest model in save\%RUN_NAME%.
-if not defined MODEL_FILE (
-    for /f "delims=" %%i in ('dir /b /o-d "save\%RUN_NAME%\model*.pt" 2^>nul') do (
-        set MODEL_FILE=%%i
-        goto :found_model
-    )
-)
-
-:found_model
-if not defined MODEL_FILE (
-    echo Error: No model file found in save\%RUN_NAME%\
-    popd
-    exit /b 1
-)
-
-"%PYTHON_EXE%" eval\eval_checkpoint.py --model_path "save\%RUN_NAME%\%MODEL_FILE%" %*
-
+"%PYTHON_EXE%" eval\eval_checkpoint.py --task_config "%TASK_CONFIG%" %EXTRA_ARGS%
+set "EXIT_CODE=%ERRORLEVEL%"
 popd
+endlocal & exit /b %EXIT_CODE%

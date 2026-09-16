@@ -427,7 +427,7 @@ transition —— 该组样本最少、分布最独特，宁可多喂），然�
 | [anytop.py](../model/anytop.py) | `action_tag_projection`(15->D) -> `action_label_projection`(512->D) + `action_multihot_projection`(V->D)；加性通路与 `action_tag_null_emb` / CFG 逻辑原样保留；空 label 直接走 null |
 | [parser_util.py](../utils/parser_util.py) | `--action_tags` -> `--action_group`（训练过滤，单值）；新增 `--action_label`（推理）；`--action_tag_cond` -> `--action_label_cond`；新增 `--action_label_truncate_prob`（§2.6） |
 | [anytop_service.py](../../server/anytop_service.py) | 删除 tag 展开表与 `resolve_anytop_group()`；请求直接带 `action_group`，缺失或非法则报错列出三个合法值 |
-| [reference_bank.py](../eval/motion_quality/reference_bank.py) / scorer / `eval_tasks.json` | 过滤键更换。**注意用受控词而非 group 过滤参考先验**，否则先验从「attack 的参考」放宽到「整个 stationary 组」，打分会变松。先验词现由**生成时的 `--action_label`** 派生（原先独立的 `--action_words` 打分参数 2026-09-14 已删除，见 §9.7） |
+| [reference_bank.py](../eval/motion_quality/reference_bank.py) / scorer / `eval_tasks_locomotion.json` | 过滤键更换。**注意用受控词而非 group 过滤参考先验**，否则先验从「attack 的参考」放宽到「整个 stationary 组」，打分会变松。先验词现由**生成时的 `--action_label`** 派生（原先独立的 `--action_words` 打分参数 2026-09-14 已删除，见 §9.7） |
 | [train_locomotion.bat](../train_locomotion.bat)、[train_stationary.bat](../train_stationary.bat)、[train_transition.bat](../train_transition.bat)、[multi_dataset_training.md](./multi_dataset_training.md)、README | 参数与训练契约描述 |
 
 ### 4.1 label 的 T5 embedding 怎么进训练
@@ -704,7 +704,7 @@ Buffalo / Camel / Comodoa / Dog / Roach / Skunk / Stego / Tricera / Tyranno 各 
 | `parser_util.py` | `--action_tags` -> `--action_group`（单值 choices）；`--action_tag_cond` -> `--action_label_cond`；新增 `--action_label`（推理）/ `--action_label_coarse_prob`；`args.json` 带 `action_tag_cond` 时 `assert_action_conditioning_not_deprecated` 直接退出（当时另加的 `--action_words` 打分先验参数 2026-09-14 已删除，见 §9.7） |
 | `anytop_service.py` / `serve.py` / `anytop_client.py` | 删除 `ANYTOP_ACTION_GROUPS` 展开表与 `resolve_anytop_group`；请求直接带 `action_group`（+ 可选 `action_label`），缺失或非法即报错列出三个合法值 |
 | `reference_bank.py` / `scorer.py` | 打分先验的过滤键改为**受控词**而非 group；`eval_checkpoint._SCORE_ACTION_TAGS = "locomotion"` -> `_SCORE_ACTION_WORDS = "walk,run"`（`locomotion` 已不是受控词）。参数名与 `_SCORE_ACTION_WORDS` 于 2026-09-14 改为直接吃 `--action_label`，见 §9.7 |
-| `eval_tasks.json` | 那里的 `--action_tags locomotion` 走的是**模型条件**通路（不是打分先验），所以译成 `--action_group locomotion --action_label walk`；与旧行为一致，checkpoint 没开对应 flag 时仍然 fail-fast（2026-08-31 起生成侧已无 `--action_group`，该行只剩 `--action_label walk`，见 §2.7.1） |
+| `eval_tasks_locomotion.json` | 那里的 `--action_tags locomotion` 走的是**模型条件**通路（不是打分先验），所以译成 `--action_group locomotion --action_label walk`；与旧行为一致，checkpoint 没开对应 flag 时仍然 fail-fast（2026-08-31 起生成侧已无 `--action_group`，该行只剩 `--action_label walk`，见 §2.7.1） |
 | V2P 侧（`video2pose_dataset.py` / `train_video2pose.py` / `inference/video2pose.py`） | `--action_tags` -> `--action_group`，共用 `resolve_requested_action_group` |
 | `tools/build_action_label_embeddings.py` | **新增**。把 label 全文 + 其合成粗粒度串一起编码进 `action_label_embs.npy`（label 文本为 key）。zoo 1123 串 / zoo_upgrade 230 / unitybundles 1944，均 768 维 |
 

@@ -31,17 +31,23 @@ checksummed into a ``task_params.json`` sidecar; if a task's parameters change
 in place), the stale output is wiped and the task is regenerated.  Pass
 ``--overwrite`` to wipe the output root and regenerate everything.
 
-The task battery is loaded from a JSON config (``--task_config``, default
-``eval/eval_tasks.json``) so it can be tuned without editing code. Each task is
+The checkpoint and task battery are loaded from a JSON config (``--task_config``,
+default ``eval/eval_tasks_locomotion.json``) so they can be tuned without
+editing code. The config must define ``checkpoint.RUN_NAME`` and may define
+``checkpoint.MODEL_FILE``. Each task is
 ``{"category": str, "args": [<generate.py flags>]}``; path-valued flags accept
 absolute paths or paths relative to the Anytop dir.
 
+The shipped batteries are ``eval/eval_tasks_locomotion.json``,
+``eval/eval_tasks_stationary.json`` and ``eval/eval_tasks_transition.json``
+(one per action group, each naming its own ``checkpoint.RUN_NAME``).
+
 Usage::
 
-    python eval/eval_checkpoint.py --model_path save/quadropeds_locomotion_slim_v2/model000020000.pt
-    python eval/eval_checkpoint.py --model_path .../model.pt --output_root <dir>
+    python eval/eval_checkpoint.py --task_config eval/eval_tasks_locomotion.json
+    python eval/eval_checkpoint.py --task_config my_tasks.json --output_root <dir>
+    python eval/eval_checkpoint.py --task_config my_tasks.json --overwrite
     python eval/eval_checkpoint.py --model_path .../model.pt --task_config my_tasks.json
-    python eval/eval_checkpoint.py --model_path .../model.pt --overwrite
 """
 
 from __future__ import annotations
@@ -79,8 +85,10 @@ from utils.parser_util import generate_args
 _LAST_OUTPUT = "$LAST_OUTPUT"
 _SCORE_TOP_K_SPECIES = 3
 
-# Default task battery, loaded by build_tasks() when --task_config is omitted.
-_DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks.json"
+# Default task battery, loaded when --task_config is omitted. The batch entry
+# point requires this path explicitly; the Python default is kept for direct
+# invocations. The per-action-group batteries are eval_tasks_<group>.json.
+_DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks_locomotion.json"
 # generate.py flags whose following value is a filesystem path. Their values are
 # resolved (relative → Anytop dir) when a task is loaded from the config.
 _PATH_FLAGS = ("--reference_motion", "--cond_path")
@@ -100,7 +108,7 @@ _COMMON_GENERATE_ARGS = ("--batch_size", "8", "--amp_dtype", "fp32")
 #
 # Path-valued flags (see ``_PATH_FLAGS``) accept either an absolute path or a
 # path relative to the Anytop dir; the "$LAST_OUTPUT" sentinel passes through
-# unchanged. See eval/eval_tasks.json for the default battery.
+# unchanged. See eval/eval_tasks_locomotion.json for the default battery.
 def _resolve_arg_path(value: str, base_dir: Path) -> str:
     """Resolve a path-valued task arg.
 
@@ -116,20 +124,43 @@ def _resolve_arg_path(value: str, base_dir: Path) -> str:
     return str(p)
 
 
-def build_tasks(config_path: Path) -> list[tuple[str, list[str]]]:
-    """Load the evaluation task battery from a JSON config file.
+def _load_task_config(config_path: Path) -> tuple[dict, list]:
+    """Load checkpoint metadata and the evaluation task battery.
 
-    The config is either a list of task objects or an object with a ``"tasks"``
-    list. Each task is ``{"category": str, "args": [str, ...]}``. Path-valued
-    flag arguments are resolved relative to the Anytop dir unless absolute.
+    The config is an object with a ``checkpoint`` object and a ``tasks`` list.
+    ``checkpoint.RUN_NAME`` is required and ``checkpoint.MODEL_FILE`` is
+    optional. Each task is ``{"category": str, "args": [str, ...]}``.
+    Path-valued flag arguments are resolved relative to the Anytop dir unless
+    absolute.
     """
     with open(config_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    raw_tasks = data.get("tasks", []) if isinstance(data, dict) else data
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Task config must be a JSON object with 'checkpoint' and 'tasks': {config_path}"
+        )
+
+    checkpoint = data.get("checkpoint")
+    if not isinstance(checkpoint, dict):
+        raise ValueError(
+            f"Task config {config_path} must define a 'checkpoint' object"
+        )
+    run_name = checkpoint.get("RUN_NAME")
+    if not isinstance(run_name, str) or not run_name.strip():
+        raise ValueError(
+            f"Task config {config_path} must define a non-empty checkpoint.RUN_NAME"
+        )
+    model_file = checkpoint.get("MODEL_FILE")
+    if model_file is not None and (not isinstance(model_file, str) or not model_file.strip()):
+        raise ValueError(
+            f"Task config {config_path}: checkpoint.MODEL_FILE must be a non-empty string when set"
+        )
+
+    raw_tasks = data.get("tasks", [])
     if not isinstance(raw_tasks, list):
         raise ValueError(
-            f"Task config must be a JSON list or an object with a 'tasks' list: {config_path}"
+            f"Task config {config_path} must define a 'tasks' list"
         )
 
     tasks: list[tuple[str, list[str]]] = []
@@ -156,7 +187,31 @@ def build_tasks(config_path: Path) -> list[tuple[str, list[str]]]:
 
     if not tasks:
         raise ValueError(f"No tasks found in config: {config_path}")
-    return tasks
+    return checkpoint, tasks
+
+
+def _resolve_checkpoint(checkpoint: dict) -> Path:
+    """Resolve a config checkpoint, choosing the newest model when omitted."""
+    run_name = checkpoint["RUN_NAME"].strip()
+    checkpoint_dir = _ANYTOP_DIR / "save" / run_name
+    model_file = checkpoint.get("MODEL_FILE")
+
+    if model_file:
+        model_path = Path(os.path.expanduser(os.path.expandvars(model_file)))
+        if not model_path.is_absolute():
+            model_path = checkpoint_dir / model_path
+        return model_path.resolve()
+
+    candidates = sorted(
+        checkpoint_dir.glob("model*.pt"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        raise FileNotFoundError(
+            f"No model checkpoint found in {checkpoint_dir} (set checkpoint.MODEL_FILE to choose one)"
+        )
+    return candidates[0].resolve()
 
 
 # ── Task parameter checksum (incremental change detection) ───────────────────
@@ -800,8 +855,9 @@ def main() -> int:
         description="Run a battery of generation tasks on a checkpoint and write an HTML quality report.",
     )
     parser.add_argument(
-        "--model_path", "--model-path", required=True,
-        help="Path to the checkpoint .pt (absolute, or relative to the Anytop dir).",
+        "--model_path", "--model-path", default=None,
+        help="Optional checkpoint override (absolute, or relative to the Anytop dir). "
+             "By default it is read from checkpoint.RUN_NAME/MODEL_FILE in the task config.",
     )
     parser.add_argument(
         "--output_root", "--output-root", default=None,
@@ -817,7 +873,7 @@ def main() -> int:
         "--task_config", "--task-config", default=str(_DEFAULT_TASK_CONFIG),
         help="Path to the JSON file defining the task battery (absolute, or "
              "relative to the current working directory, falling back to the "
-             "Anytop dir). Default: eval/eval_tasks.json.",
+             "Anytop dir). Default: eval/eval_tasks_locomotion.json.",
     )
     parser.add_argument(
         "--filter", default=None,
@@ -827,13 +883,6 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    model_path = Path(args.model_path)
-    if not model_path.is_absolute():
-        model_path = (_ANYTOP_DIR / model_path).resolve()
-    if not model_path.is_file():
-        print(f"ERROR: checkpoint not found: {model_path}", file=sys.stderr)
-        return 1
-
     # Resolve the task config path: absolute as-is; relative against the cwd,
     # falling back to the Anytop dir so both invocation styles work.
     task_config = Path(os.path.expanduser(os.path.expandvars(args.task_config)))
@@ -842,6 +891,26 @@ def main() -> int:
     task_config = task_config.resolve()
     if not task_config.is_file():
         print(f"ERROR: task config not found: {task_config}", file=sys.stderr)
+        return 1
+
+    try:
+        checkpoint, tasks = _load_task_config(task_config)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"ERROR: invalid task config: {exc}", file=sys.stderr)
+        return 1
+
+    if args.model_path:
+        model_path = Path(os.path.expanduser(os.path.expandvars(args.model_path)))
+        if not model_path.is_absolute():
+            model_path = (_ANYTOP_DIR / model_path).resolve()
+    else:
+        try:
+            model_path = _resolve_checkpoint(checkpoint)
+        except (OSError, ValueError) as exc:
+            print(f"ERROR: cannot resolve checkpoint: {exc}", file=sys.stderr)
+            return 1
+    if not model_path.is_file():
+        print(f"ERROR: checkpoint not found: {model_path}", file=sys.stderr)
         return 1
 
     run_name = model_path.parent.name                      # e.g. quadropeds_locomotion_slim_v2
@@ -864,8 +933,6 @@ def main() -> int:
     print(f"Checkpoint  : {model_path}")
     print(f"Task config : {task_config}")
     print(f"Output root : {root}")
-
-    tasks = build_tasks(task_config)
 
     # Filter tasks by category wildcard pattern
     if args.filter:

@@ -1,0 +1,31 @@
+{
+  "_comment": "Evaluation task battery for eval_checkpoint.py. checkpoint.RUN_NAME is required; checkpoint.MODEL_FILE is optional and defaults to the newest model*.pt. Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task.",
+  "checkpoint": {
+    "RUN_NAME": "merged_stationary_v18"
+  },
+  "tasks": [    
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "idle", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "attack, rear"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "jump", "--num_frames", "30", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "hurt"] },
+
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "idle", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "attack, bite", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "jump", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "hurt"] },
+    
+    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "idle, hover", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "attack, bite"] },
+    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "jump"] },
+    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "hurt"] },
+    
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "idle, look", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "attack, punch"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "jump", "--num_frames", "30", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "hurt"] },
+    
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_reddragon/cond.npy", "--action_label", "jump", "--num_frames", "30", "--action_label_cfg_scale", "2"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_elephant/cond.npy", "--action_label", "jump", "--num_frames", "60", "--action_label_cfg_scale", "2"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_human/cond.npy", "--action_label", "jump"] }
+  ]
+}
