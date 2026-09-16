@@ -42,7 +42,7 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
     species_file_token,
     species_lookup_map,
 )
-from data_loaders.truebones.truebones_utils.get_opt import DEFAULT_COND_PATH, get_opt
+from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
@@ -53,6 +53,11 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 from model.cfg_sampler import ClassifierFreeActionModel
 from os.path import join as pjoin
 from utils import dist_util
+from utils.clip_length_prior import (
+    auto_num_frames,
+    has_clip_length_prior,
+    merge_prior_pool,
+)
 from utils.fixseed import fixseed
 from utils.model_util import (
     bind_checkpoint_action_conditioning,
@@ -123,14 +128,29 @@ def _checkpoint_cond_path(model_path):
 
 
 def _resolve_generation_cond_path(args):
-    """--cond_path, else the checkpoint's own snapshot, else the default dataset."""
+    """``--cond_path``, else the checkpoint's own snapshot. Never the dataset.
+
+    The checkpoint's cond is the contract the weights were trained against --
+    the species it knows, their skeletons, their baked statistics. The dataset's
+    cond is a moving target: it is re-preprocessed, re-merged and re-baked
+    between training runs, so reaching for it would silently sample a checkpoint
+    against conditioning it never saw. A checkpoint with no cond.npy next to it
+    is therefore an error, not a reason to substitute the dataset's.
+    """
     explicit = getattr(args, 'cond_path', '') or ''
     if explicit:
         return explicit
     checkpoint_cond = _checkpoint_cond_path(getattr(args, 'model_path', ''))
     if checkpoint_cond:
         return checkpoint_cond
-    return DEFAULT_COND_PATH
+    sys.exit(
+        f"ERROR: no cond.npy next to the checkpoint "
+        f"{os.path.dirname(os.path.abspath(getattr(args, 'model_path', '') or '.'))}. "
+        "A checkpoint carries its own cond snapshot (training copies it into "
+        "save_dir); generation reads that and never the dataset's cond, which "
+        "has moved on since. Copy the cond the run was trained with next to the "
+        "checkpoint, or name one explicitly with --cond_path."
+    )
 
 
 def _load_generation_cond(args, opt, cond_dict=None):
@@ -274,6 +294,131 @@ def _finalize_output_lengths(requested_frames, min_length, internal_num_frames):
     return requested_frames, requested_frames, resample_speed
 
 
+def _resolve_auto_output_lengths(
+    cond_dict,
+    target_type,
+    action_condition,
+    *,
+    min_length,
+    internal_num_frames,
+    default_frames,
+    loop,
+    fallback_cond_loader=None,
+    verbose=True,
+):
+    """Pick ``--num_frames`` when it was not given, with no reference motion.
+
+    Returns the same triple as :func:`_finalize_output_lengths`. ``target_type``
+    is ``None`` for ``--object_type all``, where one length covers every species
+    and the prior is therefore pooled corpus-wide.
+
+    ``fallback_cond_loader`` is consulted only when the active cond answers
+    nothing: a narrow ``--cond_path`` (a new skeleton's own one-species cond) has
+    no neighbours to borrow a length from, and the checkpoint's own snapshot is
+    the pool wanted -- the species the weights were actually trained on. It is
+    loaded lazily because on the ordinary path it is the same file.
+
+    Without an ``--action_label`` there is nothing to key a length on -- a
+    species' clips span idles and attacks and gallops -- so the checkpoint's
+    native window stands, which is the behaviour every earlier run had.
+    """
+    pool = cond_dict
+    resolved = None
+    if action_condition is not None:
+        def ask(candidates):
+            return auto_num_frames(
+                candidates,
+                target_type,
+                action_group=action_condition['action_group'],
+                action_label=action_condition['action_label'],
+                loop=loop,
+                min_frames=min_length,
+                max_frames=MAX_SOURCE_FRAMES_MULT * internal_num_frames,
+            )
+
+        resolved = ask(cond_dict)
+        if resolved is None and fallback_cond_loader is not None:
+            extra = fallback_cond_loader()
+            if extra:
+                pool = merge_prior_pool(cond_dict, extra)
+                resolved = ask(pool)
+                if resolved is not None:
+                    frames, explanation = resolved
+                    resolved = (frames, f"{explanation}, from the checkpoint's cond")
+
+    if resolved is not None:
+        frames, explanation = resolved
+        if verbose:
+            print(f'  num_frames (auto) -> {frames} ({explanation})')
+    else:
+        frames = int(default_frames)
+        if action_condition is None:
+            reason = 'no --action_label to infer a length from'
+        elif not has_clip_length_prior(pool):
+            reason = (
+                'no clip-length prior in this cond.npy -- bake one with '
+                'tools/regenerate_dataset_artifacts.py, or point --cond_path at '
+                'a cond that has one'
+            )
+        else:
+            loop_note = ' loop' if loop else ''
+            reason = (
+                f'no{loop_note} training clip matches '
+                f'{action_condition["action_label"]!r}'
+            )
+        if verbose:
+            print(f'  num_frames (auto) -> {frames} (checkpoint native window: {reason})')
+    return _finalize_output_lengths(frames, min_length, internal_num_frames)
+
+
+def _all_species_output_lengths(
+    cond_dict,
+    action_condition,
+    *,
+    explicit,
+    min_length,
+    internal_num_frames,
+    default_frames,
+    loop,
+    fallback_cond_loader=None,
+):
+    """``{species: (target_output_frames, resample_speed_cond)}`` for --object_type all.
+
+    ``explicit`` is the pair an explicit ``--num_frames`` already fixed, and it
+    applies to every species unchanged -- a number the user typed is a decision,
+    not a hint. Otherwise each species is resolved on its own prior: one shared
+    median would time every species but the average one wrongly, and the length
+    is free to differ because it is per-sample in the batch anyway.
+    """
+    if explicit is not None:
+        return {species: explicit for species in cond_dict}
+
+    lengths = {}
+    for species in cond_dict:
+        _, target, speed = _resolve_auto_output_lengths(
+            cond_dict,
+            species,
+            action_condition,
+            min_length=min_length,
+            internal_num_frames=internal_num_frames,
+            default_frames=default_frames,
+            loop=loop,
+            fallback_cond_loader=fallback_cond_loader,
+            verbose=False,
+        )
+        lengths[species] = (target, speed)
+
+    resolved = sorted(target for target, _ in lengths.values())
+    if resolved:
+        # One line instead of one per species; each batch header repeats the
+        # number next to the species it belongs to.
+        print(
+            f'  num_frames (auto): per species, median {resolved[len(resolved) // 2]}, '
+            f'range {resolved[0]}-{resolved[-1]} over {len(resolved)} species'
+        )
+    return lengths
+
+
 def _lookup_object_type_case_insensitive(object_types, requested_type):
     """Resolve user/filename species text to a canonical cond key.
 
@@ -312,6 +457,27 @@ def _load_default_cond_cache(default_cond_file, actual_cond_file):
             return None
 
     return load_cond(default_cond_file)
+
+
+def _checkpoint_cond_loader(args, actual_cond_file):
+    """A no-argument loader for the checkpoint's own cond snapshot, or ``None``.
+
+    Returns ``None`` (nothing to load) when the snapshot IS the active cond,
+    which is the ordinary case -- so the caller never pays for a second np.load
+    unless it is really looking at a different, narrower cond file. The load is
+    memoized because the all-species path asks once per species.
+    """
+    default_cond_file = _checkpoint_cond_path(getattr(args, 'model_path', ''))
+    if not default_cond_file or os.path.realpath(default_cond_file) == os.path.realpath(actual_cond_file):
+        return None
+    cache = []
+
+    def load():
+        if not cache:
+            cache.append(_load_default_cond_cache(default_cond_file, actual_cond_file))
+        return cache[0]
+
+    return load
 
 
 def _resolve_reference_source_type(
@@ -855,8 +1021,7 @@ def _generate_all_species(
     opt,
     args,
     n_frames,
-    resample_speed_cond_value,
-    target_output_frames,
+    species_output_lengths,
     model,
     diffusion,
     sampling_method,
@@ -875,6 +1040,14 @@ def _generate_all_species(
     ``action_condition`` (from ``--action_label``) is applied to every species,
     which is exactly what the flag means here: the same prompt performed by each
     skeleton.
+
+    ``species_output_lengths`` is ``{species: (target_output_frames,
+    resample_speed_cond)}``. Length is per species for the same reason the
+    conditioning is: a Pigeon's walk cycle is not a Horse's, so one shared
+    number would put every species but the average one off its training
+    distribution. Both values are already per-sample in the batch (the speed is
+    a conditioning channel, the frame count only affects the export resample),
+    so nothing about the shared forward pass changes.
     """
     all_species = sorted(cond_dict.keys())
     # Canonical keys carry '/', so output filenames use the file token instead.
@@ -906,8 +1079,11 @@ def _generate_all_species(
                     f"cond/model max_joints={cond_max_joints}"
                 )
 
+            batch_roster = ", ".join(
+                f'{sp}({species_output_lengths[sp][0]}f)' for sp in batch_species
+            )
             print(f'\n--- Batch {batch_idx}/{len(species_batches)} ({actual_bs} species, '
-                  f'max_joints={batch_max_joints}): {", ".join(batch_species)} ---')
+                  f'max_joints={batch_max_joints}): {batch_roster} ---')
 
             _, model_kwargs = create_condition(
                 list(batch_species),
@@ -918,8 +1094,9 @@ def _generate_all_species(
                 loop=loop_condition,
                 action_condition=action_condition,
             )
-            model_kwargs['y']['resample_speed_cond'] = torch.full(
-                (actual_bs,), resample_speed_cond_value, dtype=torch.float32, device=dist_util.dev(),
+            model_kwargs['y']['resample_speed_cond'] = torch.tensor(
+                [species_output_lengths[sp][1] for sp in batch_species],
+                dtype=torch.float32, device=dist_util.dev(),
             )
 
             print(f'  Sampling {actual_bs} species × 1 motion each ...')
@@ -948,7 +1125,7 @@ def _generate_all_species(
                 motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
 
                 motion_np = _resample_window_to_output(
-                    motion_np, target_output_frames, output_frame_count, loop_condition,
+                    motion_np, species_output_lengths[sp][0], output_frame_count, loop_condition,
                 )
 
                 translation_root_index = _get_batch_translation_root_index(
@@ -1060,14 +1237,18 @@ def main(args=None, cond_dict=None, runtime=None):
     n_frames = internal_num_frames
     cond_max_joints = opt.max_joints
 
-    reference_present = bool(getattr(args, 'reference_motion', None))
     motion_frames = getattr(args, 'num_frames', None)
-    if motion_frames is None and not reference_present:
-        motion_frames = _ckpt_num_frames  # default to native window
 
-    # Output lengths: known now if --num_frames given; otherwise deferred until
-    # reference frame count R is known (defaults to R clamped to
-    # [min_length, MAX_SOURCE_FRAMES_MULT*num_frames]).
+    # Output length, in priority order:
+    #   1. --num_frames itself. An explicit number is the user's decision and
+    #      outranks everything, reference included (R < M outpaints the tail,
+    #      R > M crops): it is finalized right here, and every fallback below is
+    #      guarded on requested_output_frames still being None.
+    #   2. a --reference_motion's own frame count R -- with no number given, the
+    #      reference IS the requested length.
+    #   3. the training-length prior for --action_label, resolved once
+    #      --object_type is known (below, and in the all-species branch).
+    #   4. the checkpoint's native window.
     requested_output_frames = target_output_frames = resample_speed_cond_value = None
     if motion_frames is not None:
         requested_output_frames, target_output_frames, resample_speed_cond_value = (
@@ -1152,14 +1333,26 @@ def main(args=None, cond_dict=None, runtime=None):
         # unreported). The condition is species-independent: it is word ids into
         # the checkpoint's own vocabulary.
         _all_action_condition = _resolve_action_condition(args, model)
+        _species_output_lengths = _all_species_output_lengths(
+            cond_dict,
+            _all_action_condition,
+            explicit=(
+                None if requested_output_frames is None
+                else (target_output_frames, resample_speed_cond_value)
+            ),
+            min_length=min_length,
+            internal_num_frames=internal_num_frames,
+            default_frames=_ckpt_num_frames,
+            loop=loop_condition,
+            fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file),
+        )
         _generate_all_species(
             cond_dict=cond_dict,
             cond_max_joints=cond_max_joints,
             opt=opt,
             args=args,
             n_frames=n_frames,
-            resample_speed_cond_value=resample_speed_cond_value,
-            target_output_frames=target_output_frames,
+            species_output_lengths=_species_output_lengths,
             model=model,
             diffusion=diffusion,
             sampling_method=sampling_method,
@@ -1271,6 +1464,26 @@ def main(args=None, cond_dict=None, runtime=None):
                 print(f"Reference motion object_type: {inferred_display}")
 
     print(f'\nSampling object_type: {object_type}  method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
+
+    # Resolved here, ahead of every reference/retarget step, because
+    # an unset ``--num_frames`` needs the label -- and because a bad label should
+    # fail before minutes of retargeting, not after.
+    _action_condition = _resolve_action_condition(args, model)
+    if requested_output_frames is None and not reference_motion_path:
+        # A reference outranks the label: with one present the length is its own
+        # R, finalized from the loaded reference further down.
+        requested_output_frames, target_output_frames, resample_speed_cond_value = (
+            _resolve_auto_output_lengths(
+                cond_dict,
+                object_type,
+                _action_condition,
+                min_length=min_length,
+                internal_num_frames=internal_num_frames,
+                default_frames=_ckpt_num_frames,
+                loop=loop_condition,
+                fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file),
+            )
+        )
 
     # Prepare reference motion (normalize + reshape)
     ref_motion = None
@@ -1435,7 +1648,6 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # Create condition with effective frame count (shared across passes).
     obj_batch = [object_type] * args.batch_size
-    _action_condition = _resolve_action_condition(args, model)
     _sampling_model = _wrap_action_label_cfg(model, args, _action_condition)
 
     # ── --species_tags: restyle the target species' motion descriptor ────────

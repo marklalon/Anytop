@@ -514,13 +514,20 @@ def add_sampling_options(parser):
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
     group.add_argument("--num_frames", default=None, type=int,
-                       help="The number of frames in the sampled motion. "
-                            "If omitted with --reference_motion, defaults to the "
-                            "reference's native length (R frames); otherwise defaults to 60. "
+                       help="The number of frames in the sampled motion. Omit it to let "
+                            "generation pick one, in this priority order: --reference_motion's "
+                            "native length (R frames) when a reference is given; else, when "
+                            "--action_label is given, the median length of the training clips "
+                            "carrying that label -- the target species' own clips if it has any, "
+                            "otherwise the most similar species' -- so the resample_speed "
+                            "condition the model is handed stays inside its training distribution "
+                            "(needs a cond.npy baked by tools/regenerate_dataset_artifacts.py); "
+                            "else the checkpoint's native window (60). "
                             "When specified with --reference_motion: if R < M the tail "
                             "is auto-outpainted, if R > M the reference is cropped to M. "
                             "Valid range: [min_length, MAX_SOURCE_FRAMES_MULT*num_frames] "
-                            "of the checkpoint (param_utils.MAX_SOURCE_FRAMES_MULT).")
+                            "of the checkpoint (param_utils.MAX_SOURCE_FRAMES_MULT); an "
+                            "auto-picked length is clamped into it.")
     group.add_argument("--object_type", default=None, type=str,
                        help="Target object type. Optional if --reference_motion is provided "
                             "(inferred from filename), or if --cond_path points at a cond file "

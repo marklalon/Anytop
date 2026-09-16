@@ -90,6 +90,11 @@ from utils.misc import (
     infer_object_type_from_filename,
     normalize_identifier as _normalize_identifier,
 )
+from utils.clip_length_prior import (  # noqa: E402
+    COND_KEY as CLIP_LENGTH_PRIOR_COND_KEY,
+    build_clip_length_prior,
+    source_clip_length,
+)
 
 
 def _resolve_dataset_dir_path(dataset_dir: str | Path | None) -> Path:
@@ -399,6 +404,63 @@ def _compute_action_words(
     print(f"[OK] action words baked for {animated}/{len(rebuilt_cond)} species")
 
 
+def _compute_clip_length_prior(
+    rebuilt_cond: dict[str, dict],
+    motion_files: list[Path],
+    motion_metadata: dict[str, dict],
+    cond_lookup,
+) -> None:
+    """Bake the frame counts each species was animated at into cond.npy.
+
+    Read at generation when ``--num_frames`` is omitted (utils/clip_length_prior), which
+    is the only consumer: a requested length M is handed to the model as
+    ``resample_speed_cond = M / n``, so a length no clip of that motion ever had
+    is a condition value the model never trained on.
+
+    The recorded length is the clip's SOURCE length as the loader sees it -- a
+    loop's redundant closing key dropped, nothing else -- so a loop entry is one
+    period. The loader's own speed augmentation, tiling and source-frame crop
+    spread the distribution around that value; they do not move it, so they are
+    deliberately not simulated here.
+    """
+    # Local import: the loader pulls torch, which this tool otherwise only needs
+    # transitively, and the closing-key rule must be the loader's own.
+    from data_loaders.truebones.data.dataset import _drop_loop_closing_frame
+
+    records: dict[str, list[tuple[str, str, bool, int]]] = {}
+    for motion_path in motion_files:
+        entry = motion_metadata.get(motion_path.name)
+        if not entry:
+            continue
+        object_type = _infer_object_type_from_motion_name(motion_path.name, cond_lookup)
+        if object_type not in rebuilt_cond:
+            continue
+        action_label = str(entry.get("action_label") or "").strip()
+        if not action_label:
+            # An unlabeled clip says nothing about any prompt's duration.
+            continue
+        is_loop = bool(entry.get("is_loop"))
+        if is_loop:
+            motion = np.load(motion_path)
+        else:
+            motion = np.load(motion_path, mmap_mode="r")
+        length = source_clip_length(motion, is_loop, _drop_loop_closing_frame)
+        records.setdefault(object_type, []).append(
+            (str(entry.get("action_group") or ""), action_label, is_loop, length)
+        )
+
+    for object_type, object_cond in rebuilt_cond.items():
+        object_cond[CLIP_LENGTH_PRIOR_COND_KEY] = build_clip_length_prior(
+            records.get(object_type, ())
+        )
+    covered = sum(1 for values in records.values() if values)
+    total = sum(len(values) for values in records.values())
+    print(
+        f"[OK] clip-length prior baked for {covered}/{len(rebuilt_cond)} species "
+        f"({total} labeled clips)"
+    )
+
+
 def _validate_object_translation_roots(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
@@ -597,6 +659,15 @@ def _regenerate_dataset_artifacts(
         species_lookup_map(rebuilt_cond),
     )
     print(f"[OK] action words computed in {time.time() - t0:.1f}s")
+
+    t0 = time.time()
+    _compute_clip_length_prior(
+        rebuilt_cond,
+        motion_files,
+        existing_motion_metadata,
+        species_lookup_map(rebuilt_cond),
+    )
+    print(f"[OK] clip-length prior computed in {time.time() - t0:.1f}s")
 
     t0 = time.time()
 
