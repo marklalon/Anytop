@@ -1,111 +1,123 @@
 """Shared skeleton-similarity scoring.
 
-A single place to answer "how morphologically/semantically close are two
-skeletons?", reused by:
+A single place to answer "how close is this skeleton, as a *mover*, to that
+one?", reused by:
 
-  * eval/motion_quality/reference_bank.py -- pick reference species to score a
-    generated clip against.
+  * eval/motion_quality/reference_bank.py -- pick the reference species a
+    generated clip is scored against;
+  * utils/clip_length_prior.py -- pool neighbouring species when a species
+    has no training clip for the requested action.
 
-Similarity blends three complementary signals (see ``SimilarityWeights``):
+Similarity blends three signals (see ``SimilarityWeights``), each a distance
+in ``[0, ~1]``:
 
-  * **Jaccard** over synonym-normalised canonical joint names -- the *primary*
-    semantic term. Counts actually-shared body parts (thigh, calf, spine,
-    tail, ...); robust to naming-convention differences via the synonym map.
-    Far more discriminative than mean-pooled name embeddings, which wash out
-    structure (a primate can sit near a dragon in mean-embedding space while
-    sharing few real body parts).
-  * **Joint-name embedding** cosine -- a *secondary*, graded fallback. Gives
-    partial credit to joints absent from the synonym map (e.g. a dragon's
-    wings), where Jaccard sees a hard non-match.
+  * **Motion tags** -- the *primary* term. Every cond entry carries a baked
+    ``species_tags`` triple ``(body-plan, size, gait)`` such as
+    ``('Quadruped', 'Large', 'Galloping')``; the slots are compared one by one
+    and weighted (body plan first, gait second, size last), so a Horse is close
+    to a Deer and a Cavalry unit, and no closer to a Chicken than to a Crow.
+    Grouping by *how an animal moves* is what the smoothness / spectral
+    statistics the scorer compares actually depend on.
+  * **Body parts** -- Jaccard over the *slim* joint tokens the joint-name
+    embedding schema already normalises every rig to (``Tail``, ``Thigh``,
+    ``Wing``, ``Ear HeadFeature`` ...), with the side / front / back qualifiers
+    dropped. The slim vocabulary is ~370 tokens across every dataset, so two
+    rigs that share body parts overlap even when their raw joint names follow
+    different conventions (``Tail 01`` / ``Tail 1`` / ``Right Front Upper
+    Leg`` / ``Right Thigh``).
   * **Topology descriptor** -- a permutation- and size-tolerant morphology
-    vector (leaf/branch fractions, depth, kinematic-chain length stats, size)
-    computed from the *biological* skeleton (helper/augmentation leaves and
-    padding dropped).
-
-Plus a graded ``group_tags`` discount: each species carries a small motion
-descriptor ``(body-plan, gait/dynamics, refinement)`` tag triple (e.g. Cat ->
-('Quadruped', 'Agile', 'Stalking')); the more tags two skeletons share, the
-larger the fractional discount on their combined distance. Grouping by *how an
-animal moves* (rather than phylogeny) matches what a motion model cares about.
+    vector (leaf/branch fractions, depth, kinematic-chain length stats, size);
+    a weak tie-breaker only, since joint count says little about motion.
 
 The module is intentionally numpy-only so the lightweight motion-quality
-scorer does not pull in torch/motion_lib. Components degrade gracefully: a
-skeleton missing ``joints_names_embs`` (e.g. a freshly built retarget target)
-simply drops the embedding term and the remaining weights are renormalised;
-a species absent from the motion-tag table simply gets no group discount.
+scorer does not pull in torch/motion_lib. A cond entry without ``species_tags``
+(an unregistered retarget target) gets the maximum tag distance to everything
+and is ranked by the two morphological terms alone.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Mapping, Optional, Sequence
+from typing import List, Mapping, MutableMapping, Optional, Sequence
 
 import numpy as np
 
-# Single source of truth for the per-species motion descriptor tags
-# ((body-plan, gait/dynamics, refinement) per species). dataset_tags is
-# torch-free (json/pathlib/numpy only) and reads its sidecars lazily, so
+# The tag sidecar is the fallback for a cond entry that predates baked
+# species_tags. dataset_tags is torch-free and reads its sidecars lazily, so
 # importing it keeps this module lightweight.
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
-# Every registered species carries this many motion tags; the graded group
-# discount normalises overlap by it (full overlap -> full bonus).
-_GROUP_TAG_ARITY = 3
 
 
-# ── Canonical joint-name normalisation (for Jaccard) ─────────────────────────
-_CANONICAL_SYNONYMS: dict[str, str] = {
-    "leg 1": "thigh", "leg 2": "calf", "leg ankle": "foot", "leg ball 1": "toe 0",
-    "arm collarbone": "clavicle", "arm 1": "upper arm", "arm 2": "forearm",
-    "arm palm": "hand", "arm ball 1": "wrist",
-    "index": "finger 0", "middle": "finger 1", "ring": "finger 2", "pinky": "finger 3",
-    "spine 1": "spine", "spine 2": "spine 1", "spine 3": "spine 2", "spine 4": "spine 3",
-    "neck 1": "neck", "neck 2": "neck 1",
-    "jaw": "chin",
-}
-_SYNONYM_EXACT = {k: v for k, v in _CANONICAL_SYNONYMS.items() if any(c.isdigit() for c in k)}
-_SYNONYM_PREFIX = {k: v for k, v in _CANONICAL_SYNONYMS.items() if not any(c.isdigit() for c in k)}
+# ── Motion tags ──────────────────────────────────────────────────────────────
+# Slot weights of the species_tags triple: (body-plan, size, gait). Body plan
+# decides which limbs carry the motion; gait is the dynamics; size mostly
+# scales the tempo. The last word of the gait slot is compared, so the
+# "Chibi" / "Robotic" style prefixes ("Chibi Striding" vs "Striding") do not
+# separate species that move the same way.
+_TAG_SLOT_WEIGHTS = (0.5, 0.2, 0.3)
+_TAG_ARITY = len(_TAG_SLOT_WEIGHTS)
+_GAIT_SLOT = 2
 
 
-def normalize_match_name(name: str) -> str:
-    """Normalize a joint name via the canonical synonym map (for Jaccard scoring)."""
-    lower = str(name).lower().strip()
-    if lower in _SYNONYM_EXACT:
-        return _SYNONYM_EXACT[lower]
-    for side in ("left ", "right "):
-        if lower.startswith(side):
-            return side + normalize_match_name(lower[len(side):])
-    for key, value in _SYNONYM_PREFIX.items():
-        if lower == key or lower.startswith(key + " "):
-            suffix = lower[len(key):].strip()
-            if suffix:
-                # Extract trailing digit(s) from the suffix
-                digit = ""
-                for ch in reversed(suffix):
-                    if ch.isdigit():
-                        digit = ch + digit
-                    elif ch == " ":
-                        continue
-                    else:
-                        break
-                if digit:
-                    # Replace the trailing digit in the canonical value
-                    # e.g. "finger 0" + digit "02" -> "finger 2"
-                    digit_int = str(int(digit))
-                    parts = value.rsplit(" ", 1)
-                    if parts[-1].isdigit():
-                        return parts[0] + " " + digit_int
-                    return value + " " + digit_int
-            return value
-    return lower
+def species_tags_of(object_cond: Mapping[str, object], object_type_hint: str) -> tuple[str, ...]:
+    """The ``(body-plan, size, gait)`` triple of a cond entry, lower-cased.
 
-
-def strip_helper_names(names: Sequence[str]) -> set:
-    """Joint names for skeleton similarity.
-
-    Under own-rotation encoding no leaf rotation helpers exist.
-    Returns all names unchanged for backward compatibility.
+    Reads the entry's baked ``species_tags`` (every cond since schema v4 has
+    them, including a custom retarget cond), falling back to the tag sidecar
+    by object_type. Returns ``()`` for an unregistered species.
     """
-    return set(names)
+    tags = object_cond.get("species_tags")
+    if not tags:
+        tags = dataset_tags().tags_for(object_cond.get("object_type") or object_type_hint)
+    return tuple(str(tag).strip().lower() for tag in (tags or ()))
+
+
+def tag_distance(query_tags: Sequence[str], candidate_tags: Sequence[str]) -> float:
+    """Weighted slot mismatch of two tag triples, in ``[0, 1]``.
+
+    A triple that is missing or short (unregistered species) is maximally far
+    from everything, so ranking falls back to the morphological terms.
+    """
+    if len(query_tags) < _TAG_ARITY or len(candidate_tags) < _TAG_ARITY:
+        return 1.0
+    similarity = 0.0
+    for slot, weight in enumerate(_TAG_SLOT_WEIGHTS):
+        query_word, candidate_word = query_tags[slot], candidate_tags[slot]
+        if slot == _GAIT_SLOT:
+            query_word, candidate_word = query_word.split()[-1], candidate_word.split()[-1]
+        if query_word == candidate_word:
+            similarity += weight
+    return float(1.0 - similarity)
+
+
+# ── Body-part tokens (for Jaccard) ───────────────────────────────────────────
+# Qualifiers that say *which* copy of a part a joint is, not *what* it is.
+_PART_QUALIFIERS = frozenset({"left", "right", "front", "back", "rear", "fore", "hind"})
+
+
+def _part_token(text: object) -> str:
+    words = [w for w in str(text).lower().split() if w not in _PART_QUALIFIERS]
+    # Segment numbers / helper suffixes only appear on raw names (the slim
+    # tokens carry none); dropping them makes the raw fallback comparable.
+    words = [w for w in words if not w.isdigit() and w != "nub"]
+    return " ".join(words)
+
+
+def part_token_set(object_cond: Mapping[str, object], object_type_hint: str) -> frozenset:
+    """Body-part tokens of a skeleton, qualifier-free.
+
+    Prefers the slim texts the joint-name embeddings were encoded from
+    (``joints_names_embs_meta.embedding_texts``); falls back to the canonical
+    (then raw) joint names with numbers and side words stripped, which is a
+    coarser but compatible vocabulary.
+    """
+    meta = object_cond.get("joints_names_embs_meta") or {}
+    texts = meta.get("embedding_texts") if isinstance(meta, Mapping) else None
+    if not texts:
+        texts = object_cond.get("canonical_joint_names") or object_cond.get("joints_names")
+    if not texts:
+        raise ValueError(f"No joint names available for {object_type_hint}")
+    return frozenset(token for token in (_part_token(t) for t in texts) if token)
 
 
 def require_canonical_joint_names(
@@ -125,44 +137,6 @@ def require_canonical_joint_names(
             f"{len(canonical_joint_names)} but joint count requires at least {int(joint_count)}"
         )
     return canonical_joint_names
-
-
-def joint_name_set(object_cond: Mapping[str, object], object_type_hint: str) -> set:
-    """Synonym-normalised, helper-free joint-name set for similarity scoring.
-
-    Prefers ``canonical_joint_names``; falls back to ``joints_names`` so that
-    conds without canonical names can still be ranked (retarget mapping uses
-    the strict ``require_canonical_joint_names`` instead).
-    """
-    raw = object_cond.get("canonical_joint_names")
-    if raw is None:
-        raw = object_cond.get("joints_names")
-    if raw is None:
-        raise ValueError(f"No joint names available for {object_type_hint}")
-    return {normalize_match_name(n) for n in strip_helper_names(list(raw))}
-
-
-# ── Joint-name embedding (secondary semantic term) ───────────────────────────
-def _l2_normalize(vector: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    norm = float(np.linalg.norm(vector))
-    if norm <= eps:
-        return vector.copy()
-    return vector / norm
-
-
-def has_embedding(object_cond: Mapping[str, object]) -> bool:
-    embs = object_cond.get("joints_names_embs")
-    if embs is None:
-        return False
-    arr = np.asarray(embs)
-    return arr.ndim == 2 and arr.shape[0] > 0 and arr.shape[1] > 0
-
-
-def embedding_for_object(object_cond: Mapping[str, object]) -> np.ndarray:
-    joint_embs = np.asarray(object_cond.get("joints_names_embs"), dtype=np.float64)
-    if joint_embs.ndim != 2 or joint_embs.shape[0] == 0 or joint_embs.shape[1] == 0:
-        raise ValueError("cond entry is missing valid joints_names_embs")
-    return _l2_normalize(joint_embs.mean(axis=0))
 
 
 # ── Skeleton topology descriptor ─────────────────────────────────────────────
@@ -223,32 +197,37 @@ def topology_descriptor(object_cond: Mapping[str, object]) -> np.ndarray:
     ], dtype=np.float64)
 
 
-def group_tags(object_type: object) -> frozenset:
-    """Motion descriptor tags ``(body-plan, gait/dynamics, refinement)`` for an object_type.
+# ── Per-skeleton profile (what the ranking reads) ────────────────────────────
+@dataclass(frozen=True)
+class SkeletonProfile:
+    """The three similarity inputs of one skeleton, computed once."""
 
-    Case-insensitive; species absent from ``species_tags.jsonl`` (e.g. a novel
-    retarget target the user has not registered) return an empty set, which
-    yields no group discount.
-    """
-    return frozenset(dataset_tags().tags_for(object_type))
+    tags: tuple[str, ...]
+    parts: frozenset
+    descriptor: np.ndarray
+
+
+def skeleton_profile(object_cond: Mapping[str, object], object_type_hint: str) -> SkeletonProfile:
+    return SkeletonProfile(
+        tags=species_tags_of(object_cond, object_type_hint),
+        parts=part_token_set(object_cond, object_type_hint),
+        descriptor=topology_descriptor(object_cond),
+    )
 
 
 # ── Combined similarity ──────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class SimilarityWeights:
-    """Relative weights of the three distance terms plus the group discount.
+    """Relative weights of the three distance terms.
 
-    ``jaccard`` + ``embedding`` + ``topology`` need not sum to 1: only their
-    ratios matter, and inactive terms (e.g. missing embeddings) are dropped
-    with the rest renormalised. ``group_bonus`` is the *maximum* fractional
-    discount, applied at full motion-tag overlap (identical mover); partial
-    overlap (e.g. same body-plan only) gets a proportional share.
+    They need not sum to 1: only their ratios matter. ``tags`` and ``parts``
+    are bounded in ``[0, 1]``; the topology distance is pool-normalised to a
+    mean of ~1 first so the blend is scale-free.
     """
 
-    topology: float = 0.5
-    jaccard: float = 0.4
-    embedding: float = 0.1
-    group_bonus: float = 0.3
+    tags: float = 0.5
+    parts: float = 0.3
+    topology: float = 0.2
 
 
 DEFAULT_WEIGHTS = SimilarityWeights()
@@ -257,11 +236,11 @@ DEFAULT_WEIGHTS = SimilarityWeights()
 @dataclass
 class SpeciesSimilarity:
     name: str
-    jaccard: float
-    semantic_distance: float      # 1 - embedding cosine (nan if embedding inactive)
+    tag_distance: float           # weighted slot mismatch of the species_tags triples
+    jaccard: float                # body-part overlap (1 = identical part set)
     topology_distance: float      # z-scored descriptor euclidean (pool-relative)
     combined_distance: float
-    same_group: bool            # identical motion descriptor (full tag overlap)
+    same_tags: bool               # identical motion descriptor (all three slots)
     weight: float = 0.0
 
 
@@ -271,106 +250,19 @@ def _pool_scale(values: np.ndarray) -> np.ndarray:
     return values / mean if mean > 1e-12 else np.zeros_like(values)
 
 
-def rank_species(
-    query_cond: Mapping[str, object],
-    candidate_conds: Mapping[str, Mapping[str, object]],
-    *,
-    query_hint: str,
-    top_k: Optional[int] = None,
-    weights: SimilarityWeights = DEFAULT_WEIGHTS,
-) -> List[SpeciesSimilarity]:
-    """Rank candidate skeletons by similarity to ``query_cond`` (closest first).
+def assign_softmax_weights(results: Sequence[SpeciesSimilarity]) -> None:
+    """Set ``weight`` on ``results`` in place: softmax of ``-distance / T``.
 
-    Returns one ``SpeciesSimilarity`` per selected candidate, sorted by ascending
-    ``combined_distance``, with softmax ``weight`` over the selected set. ``top_k``
-    None ranks every candidate.
+    The temperature is the median positive distance of the set (floored), so
+    the weights adapt to how spread out the selected neighbours are. Called by
+    :func:`rank_species` over its selection and again by callers that widen or
+    narrow that selection afterwards.
     """
-    names = list(candidate_conds.keys())
-    if not names:
-        raise ValueError("No candidate skeletons to rank")
-    if top_k is not None and top_k <= 0:
-        raise ValueError("top_k must be >= 1 or None")
-
-    query_names = joint_name_set(query_cond, query_hint)
-    query_desc = topology_descriptor(query_cond)
-    # Motion tags drive a graded group discount. The dict key (``name`` /
-    # ``query_hint``) is the object_type; prefer an explicit cond field if set.
-    query_tags = group_tags(query_cond.get("object_type") or query_hint)
-    query_emb = embedding_for_object(query_cond) if has_embedding(query_cond) else None
-
-    jaccard_arr = np.zeros(len(names), dtype=np.float64)
-    semantic_arr = np.full(len(names), np.nan, dtype=np.float64)
-    descriptors: List[np.ndarray] = []
-    group_overlap = np.zeros(len(names), dtype=np.int64)
-    for i, name in enumerate(names):
-        cond = candidate_conds[name]
-        cand_names = joint_name_set(cond, name)
-        union = len(query_names | cand_names)
-        jaccard_arr[i] = (len(query_names & cand_names) / union) if union else 0.0
-        descriptors.append(topology_descriptor(cond))
-        cand_tags = group_tags(cond.get("object_type") or name)
-        group_overlap[i] = len(query_tags & cand_tags)
-        if query_emb is not None and has_embedding(cond):
-            cos = float(np.clip(np.dot(query_emb, embedding_for_object(cond)), -1.0, 1.0))
-            semantic_arr[i] = max(0.0, 1.0 - cos)
-
-    jaccard_distance = 1.0 - jaccard_arr
-
-    # Topology distance: z-score each feature over {query + candidates}, then
-    # Euclidean distance in that standardised, scale-free space.
-    descriptor_arr = np.asarray(descriptors, dtype=np.float64)
-    stacked = np.vstack([query_desc[None, :], descriptor_arr])
-    feature_std = stacked.std(axis=0)
-    feature_std = np.where(feature_std > 1e-9, feature_std, 1.0)
-    feature_mean = stacked.mean(axis=0)
-    query_z = (query_desc - feature_mean) / feature_std
-    candidate_z = (descriptor_arr - feature_mean) / feature_std
-    topology_distance = np.linalg.norm(candidate_z - query_z[None, :], axis=1)
-
-    # Embedding term is active only when the query and *every* candidate carries
-    # an embedding (otherwise the comparison would be apples-to-oranges).
-    embedding_active = query_emb is not None and not np.isnan(semantic_arr).any()
-
-    # Pool-normalise each active term (mean ~1) then blend by renormalised weight.
-    terms: List[tuple[float, np.ndarray]] = [
-        (weights.jaccard, jaccard_distance),
-        (weights.topology, topology_distance),
-    ]
-    if embedding_active:
-        terms.append((weights.embedding, semantic_arr))
-    total_weight = sum(w for w, _ in terms) or 1.0
-    combined = np.zeros(len(names), dtype=np.float64)
-    for weight, distance in terms:
-        combined += (weight / total_weight) * _pool_scale(distance)
-
-    # Graded motion-group discount: shared motion tags fractionally shrink the
-    # combined distance. Full overlap (identical mover, e.g. Cat/Lion) gets the
-    # full bonus; partial overlap (e.g. same body-plan only, Cat/Horse) gets a
-    # proportional share; no shared tag (or an unregistered species) -> no
-    # discount. ``same_group`` means "identical motion descriptor" (full overlap).
-    same_group = group_overlap >= _GROUP_TAG_ARITY
-    group_factor = 1.0 - weights.group_bonus * (group_overlap / _GROUP_TAG_ARITY)
-    combined = combined * group_factor
-
-    order = sorted(range(len(names)), key=lambda i: (combined[i], names[i]))
-    selected = order if top_k is None else order[: min(top_k, len(order))]
-
-    results = [
-        SpeciesSimilarity(
-            name=names[i],
-            jaccard=float(jaccard_arr[i]),
-            semantic_distance=float(semantic_arr[i]) if embedding_active else float("nan"),
-            topology_distance=float(topology_distance[i]),
-            combined_distance=float(combined[i]),
-            same_group=bool(same_group[i]),
-        )
-        for i in selected
-    ]
-
+    if not results:
+        return
     if len(results) == 1:
         results[0].weight = 1.0
-        return results
-
+        return
     distances = np.asarray([r.combined_distance for r in results], dtype=np.float64)
     positive = distances[distances > 1e-8]
     temperature = max(float(np.median(positive)) if positive.size else 0.03, 0.03)
@@ -380,4 +272,80 @@ def rank_species(
     softmax /= softmax.sum()
     for result, weight in zip(results, softmax):
         result.weight = float(weight)
+
+
+def rank_species(
+    query_cond: Mapping[str, object],
+    candidate_conds: Mapping[str, Mapping[str, object]],
+    *,
+    query_hint: str,
+    top_k: Optional[int] = None,
+    weights: SimilarityWeights = DEFAULT_WEIGHTS,
+    profiles: Optional[MutableMapping[str, SkeletonProfile]] = None,
+) -> List[SpeciesSimilarity]:
+    """Rank candidate skeletons by similarity to ``query_cond`` (closest first).
+
+    Returns one ``SpeciesSimilarity`` per selected candidate, sorted by ascending
+    ``combined_distance``, with softmax ``weight`` over the selected set. ``top_k``
+    None ranks every candidate. ``profiles`` is an optional memo of candidate
+    profiles keyed by name, filled in as candidates are first seen, for callers
+    that rank against the same pool repeatedly.
+    """
+    names = list(candidate_conds.keys())
+    if not names:
+        raise ValueError("No candidate skeletons to rank")
+    if top_k is not None and top_k <= 0:
+        raise ValueError("top_k must be >= 1 or None")
+
+    query = skeleton_profile(query_cond, query_hint)
+
+    tag_arr = np.zeros(len(names), dtype=np.float64)
+    jaccard_arr = np.zeros(len(names), dtype=np.float64)
+    descriptors: List[np.ndarray] = []
+    same_tags = np.zeros(len(names), dtype=bool)
+    for i, name in enumerate(names):
+        profile = profiles.get(name) if profiles is not None else None
+        if profile is None:
+            profile = skeleton_profile(candidate_conds[name], name)
+            if profiles is not None:
+                profiles[name] = profile
+        tag_arr[i] = tag_distance(query.tags, profile.tags)
+        same_tags[i] = bool(query.tags) and query.tags == profile.tags
+        union = len(query.parts | profile.parts)
+        jaccard_arr[i] = (len(query.parts & profile.parts) / union) if union else 0.0
+        descriptors.append(profile.descriptor)
+
+    # Topology distance: z-score each feature over {query + candidates}, then
+    # Euclidean distance in that standardised, scale-free space.
+    descriptor_arr = np.asarray(descriptors, dtype=np.float64)
+    stacked = np.vstack([query.descriptor[None, :], descriptor_arr])
+    feature_std = stacked.std(axis=0)
+    feature_std = np.where(feature_std > 1e-9, feature_std, 1.0)
+    feature_mean = stacked.mean(axis=0)
+    query_z = (query.descriptor - feature_mean) / feature_std
+    candidate_z = (descriptor_arr - feature_mean) / feature_std
+    topology_distance = np.linalg.norm(candidate_z - query_z[None, :], axis=1)
+
+    total_weight = (weights.tags + weights.parts + weights.topology) or 1.0
+    combined = (
+        weights.tags * tag_arr
+        + weights.parts * (1.0 - jaccard_arr)
+        + weights.topology * _pool_scale(topology_distance)
+    ) / total_weight
+
+    order = sorted(range(len(names)), key=lambda i: (combined[i], names[i]))
+    selected = order if top_k is None else order[: min(top_k, len(order))]
+
+    results = [
+        SpeciesSimilarity(
+            name=names[i],
+            tag_distance=float(tag_arr[i]),
+            jaccard=float(jaccard_arr[i]),
+            topology_distance=float(topology_distance[i]),
+            combined_distance=float(combined[i]),
+            same_tags=bool(same_tags[i]),
+        )
+        for i in selected
+    ]
+    assign_softmax_weights(results)
     return results

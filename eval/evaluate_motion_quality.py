@@ -4,8 +4,10 @@ Low-Shot Weighted-Reference Motion Quality Evaluator
 ====================================================
 
 Evaluates one or more motion clips by comparing them against a weighted
-reference prior built from dataset motions whose action_label hits the words of
-the label the clips were generated with.
+reference prior built from dataset motions whose action_label shares a head
+word (walk, run, attack, ...) with the label the clips were generated with.
+The prior is pooled over every dataset in ``dataset/datasets.jsonl`` unless
+``--dataset_root`` says otherwise.
 
 Usage
 -----
@@ -40,9 +42,13 @@ if str(_ANYTOP_DIR) not in sys.path:
     sys.path.insert(0, str(_ANYTOP_DIR))
 
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
-from eval.motion_quality.reference_bank import DEFAULT_SCORE_ACTION_LABEL
+from eval.motion_quality.reference_bank import DEFAULT_MIN_REFERENCE_CLIPS
 from eval.motion_quality.scorer import DistributionEvalReport, DistributionMotionQualityScorer
 from utils.misc import infer_object_type_from_filename
+
+# The datasets the reference prior is pooled over by default: every processed
+# dataset the training cond was merged from.
+_DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets.jsonl"
 
 
 def _expand_patterns(patterns: List[str]) -> List[str]:
@@ -226,8 +232,9 @@ def _print_per_file_summary(
         for species in report.reference_species:
             print(
                 "    "
-                f"{species['object_type']:<18} weight={species['species_weight']:.4f} "
-                f"distance={species['cosine_distance']:.4f} clips={species['clip_count']} frames={species['total_frames']}"
+                f"{species['object_type']:<36} weight={species['species_weight']:.4f} "
+                f"distance={species['combined_distance']:.4f} (tags={species['tag_distance']:.2f} "
+                f"parts={species['jaccard']:.2f}) clips={species['clip_count']} frames={species['total_frames']}"
             )
         print()
 
@@ -244,8 +251,9 @@ def build_parser() -> argparse.ArgumentParser:
             assembled from dataset motions whose action_label names the same actions.
 
             Reference construction:
-              • semantic Top-K species neighbors in cond.npy joint-name embedding space
-              • dataset motions whose action_label hits any word of --action_label
+              • dataset motions whose action_label shares a head word with --action_label
+              • Top-K species nearest the query skeleton by motion tags / body parts /
+                topology, widened until the prior holds --min_reference_clips clips
               • species weights distributed across reference clips by frame count
 
             Scores:
@@ -279,27 +287,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--action_label", "--action-label",
-        default=DEFAULT_SCORE_ACTION_LABEL,
+        required=True,
         metavar="LABEL",
-        help="The action_label the query motions were generated with, spelled like generate.py's "
-             "--action_label (e.g. 'run' or 'fly, forward'). The reference prior is every dataset "
-             "clip whose action_label hits any of its words -- not the action_group, which would "
-             f"widen the prior to a whole third of the corpus. Default: {DEFAULT_SCORE_ACTION_LABEL!r}.",
+        help="Required. The action_label the query motions were generated with, spelled like "
+             "generate.py's --action_label (e.g. 'run' or 'fly, forward'). The reference prior is "
+             "every dataset clip whose action_label shares a head word with it -- not the "
+             "action_group, which would widen the prior to a whole third of the corpus. There is "
+             "no default: for clips generated without a label, name the action of their reference clip.",
     )
     parser.add_argument(
         "--dataset_root", "--dataset-root",
-        default=None,
+        default=str(_DEFAULT_DATASET_ROOT),
         metavar="DIR_OR_MANIFEST",
         help="Dataset root containing cond.npy, motion_metadata.json, and motions/. "
              "A path ending in .jsonl is read as a dataset manifest instead, pooling the "
-             "reference distribution over every dataset it lists. Auto-detected when omitted.",
+             "reference distribution over every dataset it lists. Default: dataset/datasets.jsonl.",
+    )
+    parser.add_argument(
+        "--min_reference_clips", "--min-reference-clips",
+        type=int,
+        default=DEFAULT_MIN_REFERENCE_CLIPS,
+        metavar="N",
+        help="Widen the prior past --top_k_species, nearest species first, until it holds at "
+             "least N reference clips. Default: %(default)s.",
     )
     parser.add_argument(
         "--top_k_species", "--top-k-species",
         type=int,
         default=3,
         metavar="N",
-        help="Number of semantic neighbor species to use for the weighted reference prior (default: 3).",
+        help="Number of nearest species (by motion tags / body parts / topology) in the weighted reference prior (default: 3).",
     )
     parser.add_argument(
         "--output_json",
@@ -381,6 +398,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 object_type=object_type,
                 action_label=args.action_label,
                 top_k_species=args.top_k_species,
+                min_reference_clips=args.min_reference_clips,
             )
         except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:
             print(f"[warn] evaluation failed for {path}: {exc}", file=sys.stderr)

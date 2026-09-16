@@ -3,7 +3,10 @@ from __future__ import annotations
 import os
 import sys
 
+import json
+
 import numpy as np
+import pytest
 
 
 _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,7 +19,6 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
 
 
 import eval.evaluate_motion_quality as eval_mod
-from eval.motion_quality.reference_bank import DEFAULT_SCORE_ACTION_LABEL
 from eval.motion_quality.scorer import DistributionEvalReport
 
 
@@ -40,10 +42,11 @@ def _fake_scorer_class(captured: dict[str, object]):
         def species_lookup(self):
             return {}
 
-        def evaluate(self, motions, object_type, action_label, top_k_species):
+        def evaluate(self, motions, object_type, action_label, top_k_species, min_reference_clips):
             captured["object_type"] = object_type
             captured["action_label"] = action_label
             captured["top_k_species"] = top_k_species
+            captured["min_reference_clips"] = min_reference_clips
             captured["n_motions"] = len(motions)
             return DistributionEvalReport(
                 object_type=object_type,
@@ -98,33 +101,91 @@ def test_main_registers_cond_path_for_novel_query_species(tmp_path, monkeypatch)
     assert captured["object_type"] == "dragon"
     assert captured["action_label"] == "fly, forward"
     assert captured["top_k_species"] == 3
+    assert captured["min_reference_clips"] == 12
     assert captured["n_motions"] == 1
+    # The prior is pooled over every dataset by default.
+    assert str(captured["dataset_root"]).replace("\\", "/").endswith("dataset/datasets.jsonl")
 
 
-def test_main_without_action_label_scores_against_the_default_prior(tmp_path, monkeypatch) -> None:
+def test_main_without_action_label_is_rejected(tmp_path, monkeypatch, capsys) -> None:
     motion_path = tmp_path / "Buffalo_0.npy"
     np.save(motion_path, np.zeros((8, 2, 12), dtype=np.float32))
 
     captured: dict[str, object] = {}
     monkeypatch.setattr(eval_mod, "DistributionMotionQualityScorer", _fake_scorer_class(captured))
 
-    exit_code = eval_mod.main([
-        "--motions", str(motion_path),
-        "--object-type", "Buffalo",
-        "--no_color",
-    ])
+    # argparse exits before anything is scored: there is no default prior.
+    with pytest.raises(SystemExit) as exc_info:
+        eval_mod.main([
+            "--motions", str(motion_path),
+            "--object-type", "Buffalo",
+            "--no_color",
+        ])
 
-    assert exit_code == 0
-    assert captured["action_label"] == DEFAULT_SCORE_ACTION_LABEL == "walk, run"
+    assert exc_info.value.code == 2
+    assert "--action_label" in capsys.readouterr().err
+    assert "action_label" not in captured
 
 
 def test_eval_checkpoint_scores_each_task_with_its_own_action_label() -> None:
     from eval import eval_checkpoint
 
-    extract = eval_checkpoint._extract_action_label
-    assert extract(["--object_type", "Buffalo", "--action_label", "run", "--loop"]) == "run"
-    assert extract(["--cond_path", "cond.npy", "--action_label", "fly, forward"]) == "fly, forward"
-    # No label (unconditional / reference-only tasks) keeps the walk/run prior.
-    assert extract(["--object_type", "Buffalo"]) == DEFAULT_SCORE_ACTION_LABEL
-    assert extract(["--action_label", ""]) == DEFAULT_SCORE_ACTION_LABEL
-    assert extract(["--action_label"]) == DEFAULT_SCORE_ACTION_LABEL
+    label = eval_checkpoint._task_score_label
+    assert label(["--object_type", "Buffalo", "--action_label", "run", "--loop"], None) == "run"
+    assert label(["--cond_path", "cond.npy", "--action_label", "fly, forward"], None) == "fly, forward"
+    # A reference-only task names the action of its reference clip.
+    assert label(["--reference_motion", "Buffalo_RunLoop.npy", "--loop"], "run") == "run"
+    assert label(["--reference_motion", "Buffalo_RunLoop.npy"], "  run ") == "run"
+
+
+def test_eval_checkpoint_rejects_a_task_without_a_scoring_label() -> None:
+    from eval import eval_checkpoint
+
+    label = eval_checkpoint._task_score_label
+    for args, eval_label in [
+        (["--object_type", "Buffalo"], None),
+        (["--action_label", ""], None),
+        (["--action_label"], None),
+        (["--reference_motion", "x.npy"], ""),
+    ]:
+        with pytest.raises(ValueError, match="no --action_label and no eval_label"):
+            label(args, eval_label)
+    # Both at once is a contradiction; a typo in either fails the contract.
+    with pytest.raises(ValueError, match="both"):
+        label(["--action_label", "run"], "run")
+    with pytest.raises(ValueError, match="controlled vocabulary"):
+        label(["--reference_motion", "x.npy"], "wlak")
+    with pytest.raises(ValueError, match="no head word"):
+        label(["--action_label", "forward"], None)
+
+
+def test_eval_checkpoint_config_load_fails_fast_on_a_label_less_task(tmp_path) -> None:
+    from eval import eval_checkpoint
+
+    config = {
+        "checkpoint": {"RUN_NAME": "run"},
+        "tasks": [
+            {"category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "run"]},
+            {"category": "Inpaint", "args": ["--object_type", "Buffalo", "--inpaint_frames", "1-2"]},
+        ],
+    }
+    config_path = tmp_path / "tasks.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"Task #1 \(Inpaint\).*no --action_label and no eval_label"):
+        eval_checkpoint._load_task_config(config_path)
+
+    config["tasks"][1]["eval_label"] = "run"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    _checkpoint, tasks = eval_checkpoint._load_task_config(config_path)
+    assert [(category, score_label) for category, _args, score_label in tasks] == [
+        ("Basic", "run"),
+        ("Inpaint", "run"),
+    ]
+
+
+def test_shipped_task_configs_all_carry_a_scoring_label() -> None:
+    from eval import eval_checkpoint
+
+    for name in ("eval_tasks_locomotion.json", "eval_tasks_stationary.json", "eval_tasks_transition.json"):
+        _checkpoint, tasks = eval_checkpoint._load_task_config(eval_checkpoint._SCRIPT_DIR / name)
+        assert all(score_label for _category, _args, score_label in tasks), name

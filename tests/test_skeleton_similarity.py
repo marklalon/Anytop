@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import copy
 import os
 import sys
 
 import numpy as np
+import pytest
 
 _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _ANYTOP_ROOT = os.path.dirname(_TESTS_DIR)
@@ -15,96 +15,140 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
         sys.path.insert(0, _path)
 
 from utils.skeleton_similarity import (  # noqa: E402
-    DEFAULT_WEIGHTS,
-    group_tags,
+    assign_softmax_weights,
+    part_token_set,
     rank_species,
+    species_tags_of,
+    tag_distance,
 )
 
 
-# ── group_tags helper ────────────────────────────────────────────────────────
-def test_group_tags_are_case_insensitive() -> None:
-    assert group_tags("Cat") == frozenset({"Quadruped", "Small", "Stalking"})
-    assert group_tags("cat") == group_tags("CAT") == group_tags("Cat")
-
-
-def test_group_overlap_is_graded() -> None:
-    jaguar = group_tags("Jaguar")
-    # Identical mover (Jaguar/Lynx share all 3 tags) -> 3;
-    # same body-plan + one trait (Cat/Lion: Quadruped + Stalking) -> 2;
-    # unrelated (Cat/Eagle) -> 0.
-    assert len(jaguar & group_tags("Lynx")) == 3
-    assert len(group_tags("Cat") & group_tags("Lion")) == 2  # {Quadruped, Stalking}
-    assert len(group_tags("Cat") & group_tags("Eagle")) == 0
-
-
-def test_newly_registered_species_reuse_existing_tags() -> None:
-    assert group_tags("Monkey") == frozenset({"Quadruped", "Medium", "Climbing"})
-    assert group_tags("Skunk") == frozenset({"Quadruped", "Small", "Scurrying"})
-    assert group_tags("Pirrana") == frozenset({"Aquatic", "Small", "Swimming"})
-
-
-def test_sandmouse_is_a_small_scurrier() -> None:
-    assert group_tags("SandMouse") == frozenset({"Quadruped", "Small", "Scurrying"})
-
-
-def test_unregistered_species_has_no_tags() -> None:
-    assert group_tags("Wombat") == frozenset()
-
-
-# ── graded discount inside rank_species ──────────────────────────────────────
-def _cond(parents, joints_names) -> dict:
-    return {
+def _cond(parents, joints_names, tags=None, slim=None) -> dict:
+    cond = {
         "parents": np.asarray(parents, dtype=np.int32),
         "joints_names": list(joints_names),
     }
+    if tags is not None:
+        cond["species_tags"] = tuple(tags)
+    if slim is not None:
+        cond["joints_names_embs_meta"] = {"embedding_texts": list(slim)}
+    return cond
 
 
-def test_graded_group_discount_orders_and_scales_distance() -> None:
-    # Query differs morphologically from the candidates (so the pre-discount
-    # combined distance is > 0), while the three candidates are morphologically
-    # identical to one another -> only their motion-tag relationship to the
-    # query can differentiate them.
-    query = _cond([-1, 0, 1], ["Hip", "RightThigh", "RightCalf"])
-    template = _cond([-1, 0, 1, 2], ["Spine", "Neck", "Head", "Beak"])
-    candidate_conds = {
-        # Cat -> (Quadruped, Small, Stalking)
-        "Lion": copy.deepcopy(template),   # (Quadruped, Medium, Stalking)  -> overlap 2
-        "Horse": copy.deepcopy(template),  # (Quadruped, Large, Galloping)  -> overlap 1
-        "Eagle": copy.deepcopy(template),  # (Winged, Medium, Soaring)      -> overlap 0
+# ── motion tags ──────────────────────────────────────────────────────────────
+def test_species_tags_prefer_the_baked_triple_and_fall_back_to_the_sidecar() -> None:
+    baked = _cond([-1], ["Root"], tags=("Winged", "Heavy", "Soaring"))
+    assert species_tags_of(baked, "anything") == ("winged", "heavy", "soaring")
+    # No baked tags: the sidecar answers by object_type (case-insensitive).
+    assert species_tags_of(_cond([-1], ["Root"]), "cat") == ("quadruped", "small", "stalking")
+    assert species_tags_of(_cond([-1], ["Root"]), "Wombat") == ()
+
+
+def test_tag_distance_weights_slots_and_ignores_style_prefixes() -> None:
+    horse = ("quadruped", "large", "galloping")
+    assert tag_distance(horse, horse) == pytest.approx(0.0)
+    # Same body plan and gait, different size -> only the size weight is lost.
+    assert tag_distance(horse, ("quadruped", "medium", "galloping")) == pytest.approx(0.2)
+    # Same body plan and size, different gait.
+    assert tag_distance(horse, ("quadruped", "large", "trotting")) == pytest.approx(0.3)
+    # Different body plan is the largest single penalty.
+    assert tag_distance(horse, ("winged", "large", "galloping")) == pytest.approx(0.5)
+    # "Chibi Galloping" gallops like "Galloping".
+    assert tag_distance(horse, ("quadruped", "large", "chibi galloping")) == pytest.approx(0.0)
+    # An unregistered species is maximally far from everything.
+    assert tag_distance((), horse) == pytest.approx(1.0)
+
+
+# ── body parts ───────────────────────────────────────────────────────────────
+def test_part_tokens_drop_qualifiers_and_prefer_slim_texts() -> None:
+    cond = _cond(
+        [-1, 0, 1, 1],
+        ["Hips", "Tail 01", "Right Front Upper Leg", "Left Back Upper Leg"],
+        slim=["Hips", "Tail", "Right Front Thigh", "Left Back Thigh"],
+    )
+    assert part_token_set(cond, "x") == {"hips", "tail", "thigh"}
+    # Raw fallback strips segment numbers, sides and helper suffixes.
+    raw = _cond([-1, 0, 1, 1], ["Hips", "Tail 01", "Right Thigh", "Left Toe 0 Nub"])
+    assert part_token_set(raw, "x") == {"hips", "tail", "thigh", "toe"}
+
+
+# ── ranking ──────────────────────────────────────────────────────────────────
+def test_rank_species_puts_the_same_mover_first_regardless_of_joint_names() -> None:
+    # A quadruped galloper named one way; candidates: the same mover named the
+    # other way, a quadruped with the same names but a different gait, and a
+    # bird with similar joint count.
+    query = _cond(
+        [-1, 0, 1, 1, 0],
+        ["Hips", "Spine", "Right Front Upper Leg", "Left Front Upper Leg", "Tail 01"],
+        tags=("Quadruped", "Large", "Galloping"),
+        slim=["Hips", "Spine", "Right Front Thigh", "Left Front Thigh", "Tail"],
+    )
+    candidates = {
+        "Deer": _cond(
+            [-1, 0, 1, 1, 0],
+            ["Pelvis", "Spine1", "RightThigh", "LeftThigh", "Tail1"],
+            tags=("Quadruped", "Large", "Galloping"),
+            slim=["Pelvis", "Spine", "Right Thigh", "Left Thigh", "Tail"],
+        ),
+        "Bear": _cond(
+            [-1, 0, 1, 1, 0],
+            ["Hips", "Spine", "Right Front Upper Leg", "Left Front Upper Leg", "Tail 01"],
+            tags=("Quadruped", "Large", "Lumbering"),
+            slim=["Hips", "Spine", "Right Front Thigh", "Left Front Thigh", "Tail"],
+        ),
+        "Crow": _cond(
+            [-1, 0, 1, 1, 0],
+            ["Hips", "Spine", "Right Wing", "Left Wing", "Tail 01"],
+            tags=("Winged", "Small", "Flapping"),
+            slim=["Hips", "Spine", "Right Wing", "Left Wing", "Tail"],
+        ),
     }
-
-    ranked = rank_species(query, candidate_conds, query_hint="Cat", top_k=None)
+    ranked = rank_species(query, candidates, query_hint="Horse", top_k=None)
+    # Deer: tags match, 3/5 parts (0.3 * 0.4 = 0.12); Bear: parts match, gait differs (0.5 * 0.3 = 0.15).
+    assert [r.name for r in ranked] == ["Deer", "Bear", "Crow"]
     by_name = {r.name: r for r in ranked}
-
-    # Closer motion group -> larger discount -> smaller distance -> earlier in order.
-    assert [r.name for r in ranked] == ["Lion", "Horse", "Eagle"]
-
-    # All three share the same pre-discount base, so the ratios of the final
-    # combined distances must equal the ratios of the graded group factors
-    # (Cat vs candidates: Lion overlap 2/3, Horse overlap 1/3, Eagle overlap 0/3).
-    bonus = DEFAULT_WEIGHTS.group_bonus
-    base = by_name["Eagle"].combined_distance          # factor 1.0
-    assert base > 0
-    assert np.isclose(by_name["Lion"].combined_distance, base * (1.0 - bonus * 2.0 / 3.0))
-    assert np.isclose(by_name["Horse"].combined_distance, base * (1.0 - bonus * 1.0 / 3.0))
-
-    # same_group means "identical motion descriptor" (full overlap).
-    # Lion shares 2/3 tags with Cat (Medium vs Small mismatch) — not full overlap.
-    assert by_name["Lion"].same_group is False
-    assert by_name["Horse"].same_group is False
-    assert by_name["Eagle"].same_group is False
+    # Bear shares every body part; Deer shares the tags. Both beat the bird by a margin.
+    assert by_name["Deer"].same_tags is True and by_name["Deer"].tag_distance == pytest.approx(0.0)
+    assert by_name["Bear"].jaccard == pytest.approx(1.0)
+    assert by_name["Crow"].combined_distance > 2 * max(by_name["Deer"].combined_distance, by_name["Bear"].combined_distance)
+    assert sum(r.weight for r in ranked) == pytest.approx(1.0)
+    assert by_name["Crow"].weight < min(by_name["Deer"].weight, by_name["Bear"].weight)
 
 
-def test_unregistered_query_gets_no_discount() -> None:
-    query = _cond([-1, 0, 1], ["Hip", "RightThigh", "RightCalf"])
-    template = _cond([-1, 0, 1, 2], ["Spine", "Neck", "Head", "Beak"])
-    candidate_conds = {
-        "Lion": copy.deepcopy(template),
-        "Eagle": copy.deepcopy(template),
+def test_rank_species_top_k_and_softmax_over_the_selection() -> None:
+    query = _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine", "Small", "Slithering"))
+    candidates = {
+        "Snake": _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine", "Small", "Slithering")),
+        "Worm": _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine", "Small", "Undulating")),
+        "Eel": _cond([-1, 0], ["Hips", "Tail"], tags=("Aquatic", "Small", "Swimming")),
     }
+    ranked = rank_species(query, candidates, query_hint="Snake", top_k=2)
+    assert [r.name for r in ranked] == ["Snake", "Worm"]
+    assert sum(r.weight for r in ranked) == pytest.approx(1.0)
+    # Widening the selection re-weights over the new set.
+    widened = rank_species(query, candidates, query_hint="Snake", top_k=None)
+    assign_softmax_weights(widened)
+    assert [r.name for r in widened] == ["Snake", "Worm", "Eel"]
+    assert sum(r.weight for r in widened) == pytest.approx(1.0)
+    assert widened[0].weight > widened[1].weight > widened[2].weight
 
-    ranked = rank_species(query, candidate_conds, query_hint="Wombat", top_k=None)
-    # No motion tags for the query -> overlap 0 everywhere -> no discount, so
-    # the candidates tie on distance and fall back to name ordering.
-    assert all(r.same_group is False for r in ranked)
-    assert np.isclose(ranked[0].combined_distance, ranked[1].combined_distance)
+
+def test_rank_species_fills_the_profile_memo() -> None:
+    query = _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine", "Small", "Slithering"))
+    candidates = {"Snake": _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine", "Small", "Slithering"))}
+    profiles: dict = {}
+    rank_species(query, candidates, query_hint="Snake", profiles=profiles)
+    assert set(profiles) == {"Snake"}
+    assert profiles["Snake"].tags == ("serpentine", "small", "slithering")
+
+
+def test_unregistered_query_is_ranked_by_morphology_alone() -> None:
+    query = _cond([-1, 0, 1], ["Hip", "RightThigh", "RightCalf"])
+    candidates = {
+        "Lion": _cond([-1, 0, 1], ["Hip", "RightThigh", "RightCalf"], tags=("Quadruped", "Medium", "Stalking")),
+        "Eagle": _cond([-1, 0, 1, 2], ["Spine", "Neck", "Head", "Beak"], tags=("Winged", "Medium", "Soaring")),
+    }
+    ranked = rank_species(query, candidates, query_hint="Wombat", top_k=None)
+    assert all(r.tag_distance == pytest.approx(1.0) for r in ranked)
+    assert all(r.same_tags is False for r in ranked)
+    assert [r.name for r in ranked] == ["Lion", "Eagle"]

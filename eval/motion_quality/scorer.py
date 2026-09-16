@@ -6,11 +6,14 @@ Scores one or more query motions by comparing them against a weighted
 reference prior assembled from dataset motions that share the requested
 semantic action words.
 
-Reference construction
+Reference construction (see ``reference_bank.ReferenceCorpus``)
 ----------------------
 - Resolve the query species in cond.npy.
-- Find the Top-K nearest species in semantic joint-name embedding space.
-- Filter dataset motions by the controlled words a clip's action_label hits.
+- Keep the dataset motions whose action_label shares a head word (walk, run,
+  attack, ...) with the requested label.
+- Rank the species that have such clips by motion-tag / body-part / topology
+  similarity to the query skeleton; take the Top-K, widened until the bank
+  holds at least ``min_reference_clips`` clips.
 - Distribute each selected species weight across its reference motions in
   proportion to motion frame count.
 
@@ -37,14 +40,14 @@ import numpy as np
 import scipy.signal
 
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
-from data_loaders.truebones.offline_reference_dataset import load_cond_dict, resolve_sources
+from data_loaders.truebones.offline_reference_dataset import resolve_sources
 from data_loaders.truebones.truebones_utils.dataset_sources import (
     resolve_species_key,
     species_lookup_map,
 )
 
 from .bone_length_drift import compute_bone_length_drift, resolve_comparison_edges
-from .reference_bank import ReferenceClip, WeightedReferenceBank, build_weighted_reference_bank
+from .reference_bank import DEFAULT_MIN_REFERENCE_CLIPS, ReferenceCorpus, WeightedReferenceBank
 from .reference_stats import CH_POS, CH_ROT
 
 _MIN_CLIP_FRAMES = 8
@@ -668,7 +671,8 @@ class DistributionMotionQualityScorer:
         them -- it is the one thing a cond snapshot cannot stand in for, since it
         must be measured from real clips."""
         self.dataset_root = tuple(resolve_sources(dataset_root))
-        self._cond_lookup = load_cond_dict(self.dataset_root)
+        self._corpus = ReferenceCorpus(self.dataset_root)
+        self._cond_lookup = self._corpus.cond_lookup
         self._query_cond_lookup = dict(self._cond_lookup)
         self._custom_cond_keys: set[str] = set()
         self._joint_group_cache: Dict[Tuple[str, int], Tuple[Dict[str, np.ndarray], str]] = {}
@@ -692,6 +696,7 @@ class DistributionMotionQualityScorer:
             for cache_key in list(self._joint_group_cache):
                 if cache_key[0] == target_key:
                     del self._joint_group_cache[cache_key]
+            self._corpus.forget_query(target_key)
 
     def species_lookup(self) -> Dict[str, str]:
         """``{filename token: canonical key}`` over every species this scorer knows.
@@ -707,12 +712,14 @@ class DistributionMotionQualityScorer:
         object_type: str,
         action_label: str,
         top_k_species: int = 5,
+        min_reference_clips: int = DEFAULT_MIN_REFERENCE_CLIPS,
     ) -> DistributionEvalReport:
         """Score ``motions`` against the reference prior ``action_label`` selects.
 
         ``action_label`` is spelled like generate.py's ``--action_label`` (the label
         the clips were generated with); the prior's words are derived from it by
-        :func:`reference_bank.reference_prior_words`.
+        :func:`reference_bank.reference_prior_words`. The ``top_k_species`` nearest
+        species form the prior, widened to at least ``min_reference_clips`` clips.
         """
         query_motions = [
             motion.astype(np.float32)
@@ -728,17 +735,16 @@ class DistributionMotionQualityScorer:
 
         object_key = self._resolve_object_type_key(object_type)
         query_joint_groups, joint_group_source = self._resolve_joint_groups(object_key, next(iter(query_joint_counts)))
-        reference_kwargs: Dict[str, object] = {}
-        if object_key in self._custom_cond_keys:
-            reference_kwargs["cond_lookup"] = self._cond_lookup
-            reference_kwargs["query_cond"] = self._query_cond_lookup[object_key]
-        reference_bank = build_weighted_reference_bank(
+        # A registered custom skeleton is only ever the query: the reference
+        # baseline stays the corpus cond.
+        query_cond = self._query_cond_lookup[object_key] if object_key in self._custom_cond_keys else None
+        reference_bank = self._corpus.build_bank(
             object_type=object_key,
             action_label=action_label,
-            dataset_root=self.dataset_root,
             top_k_species=top_k_species,
+            min_reference_clips=min_reference_clips,
             min_frames=_MIN_CLIP_FRAMES,
-            **reference_kwargs,
+            query_cond=query_cond,
         )
 
         min_t = min(
@@ -747,13 +753,11 @@ class DistributionMotionQualityScorer:
         )
         nperseg = max(4, min(64, min_t))
         query_weights = _normalize_weights(np.asarray([motion.shape[0] for motion in query_motions], dtype=np.float64))
-        reference_weights = reference_bank.clip_weights
 
         local = self._compute_low_shot(
             query_motions,
             query_weights,
-            reference_bank.clips,
-            reference_weights,
+            reference_bank,
             nperseg,
             query_joint_groups,
             object_key,
@@ -761,7 +765,7 @@ class DistributionMotionQualityScorer:
 
         return DistributionEvalReport(
             object_type=object_key,
-            action_label=reference_bank.action_label,
+            action_label=str(action_label).strip(),
             n_input=len(query_motions),
             n_reference=len(reference_bank.clips),
             input_total_frames=int(sum(motion.shape[0] for motion in query_motions)),
@@ -771,10 +775,11 @@ class DistributionMotionQualityScorer:
             reference_species=[
                 {
                     "object_type": species.object_type,
-                    "cosine_distance": round(species.cosine_distance, 4),
+                    "tag_distance": round(species.tag_distance, 4),
+                    "jaccard": round(species.jaccard, 4),
                     "topology_distance": round(species.topology_distance, 4),
                     "combined_distance": round(species.combined_distance, 4),
-                    "same_group": species.same_group,
+                    "same_tags": species.same_tags,
                     "species_weight": round(species.species_weight, 4),
                     "clip_count": species.clip_count,
                     "total_frames": species.total_frames,
@@ -823,12 +828,33 @@ class DistributionMotionQualityScorer:
         self._joint_group_cache[cache_key] = result
         return result
 
+    def _reference_group_features(self, reference_bank: WeightedReferenceBank, nperseg: int) -> List[dict]:
+        """Per-clip ``{metric: {group: mean}}`` of a bank's reference clips.
+
+        Memoised on the bank per ``nperseg``: the reference side of a bank does
+        not change between the query clips scored against it, and recomputing
+        its spectra for every query clip was the dominant per-clip cost.
+        """
+        cached = reference_bank.feature_cache.get(nperseg)
+        if cached is not None:
+            return cached
+        ref_motions = [clip.motion for clip in reference_bank.clips]
+        ref_features_list = _compute_features_batch(ref_motions, nperseg)
+        reference_local = []
+        for clip, features in zip(reference_bank.clips, ref_features_list):
+            clip_joint_groups, _ = self._resolve_joint_groups(clip.object_type, clip.motion.shape[1])
+            reference_local.append({
+                key: _group_scalar_means(values, clip_joint_groups)
+                for key, values in features.items()
+            })
+        reference_bank.feature_cache[nperseg] = reference_local
+        return reference_local
+
     def _compute_low_shot(
         self,
         query_motions: List[np.ndarray],
         query_weights: np.ndarray,
-        reference_clips: List[ReferenceClip],
-        reference_weights: np.ndarray,
+        reference_bank: WeightedReferenceBank,
         nperseg: int,
         query_joint_groups: Mapping[str, np.ndarray],
         object_key: str,
@@ -844,16 +870,8 @@ class DistributionMotionQualityScorer:
                 for key, values in features.items()
             })
 
-        # Batch feature extraction for reference clips
-        ref_motions = [clip.motion for clip in reference_clips]
-        ref_features_list = _compute_features_batch(ref_motions, nperseg)
-        reference_local = []
-        for clip, features in zip(reference_clips, ref_features_list):
-            clip_joint_groups, _ = self._resolve_joint_groups(clip.object_type, clip.motion.shape[1])
-            reference_local.append({
-                key: _group_scalar_means(values, clip_joint_groups)
-                for key, values in features.items()
-            })
+        reference_local = self._reference_group_features(reference_bank, nperseg)
+        reference_weights = reference_bank.clip_weights
 
         # Bone length scoring: use FK-based drift directly (no reference comparison)
         query_cond = self._query_cond_lookup.get(object_key)

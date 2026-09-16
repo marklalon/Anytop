@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence
 
@@ -12,42 +12,53 @@ from data_loaders.truebones.offline_reference_dataset import (
     resolve_sources,
 )
 from data_loaders.truebones.truebones_utils.dataset_sources import (
+    DatasetSource,
     resolve_species_key,
     species_lookup_map,
     split_canonical_key,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
+    head_words_in,
     load_motion_metadata,
     parse_action_label,
     vocab_words_in,
 )
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 from utils.misc import infer_object_type_from_filename
-from utils.skeleton_similarity import SpeciesSimilarity, rank_species
+from utils.skeleton_similarity import (
+    SkeletonProfile,
+    SpeciesSimilarity,
+    assign_softmax_weights,
+    rank_species,
+)
 
 
-# The prior a clip is scored against when nothing names its action (a task
-# without --action_label, a CLI run without one): the eval battery generates
-# gait-like motion. It is a set of words, not a walk-to-run transition -- a
-# reference clip matches when its label hits either one.
-DEFAULT_SCORE_ACTION_LABEL = "walk, run"
+# The reference prior is never narrower than this many clips: after the
+# top-k species, the next-nearest species are added until the floor is met.
+# Top-3 alone often yields 8-10 clips, and the IQR the scorer scales its
+# deviations by is unstable at that size.
+DEFAULT_MIN_REFERENCE_CLIPS = 12
 
 
 def reference_prior_words(action_label) -> tuple[str, ...]:
-    """The controlled words an ``action_label`` selects the reference prior by.
+    """The head words an ``action_label`` selects the reference prior by.
 
     Parsed under the contract generate.py enforces on ``--action_label``, so the
     label a clip was generated with is the label it is scored with, and a typo
-    fails instead of silently narrowing the prior. Every token counts -- direction
-    and hands words too -- because the dataset side matches a clip by
-    :func:`vocab_words_in` over its whole label. An empty label returns ``()``.
+    fails instead of silently narrowing the prior. Only the head words (the
+    STATE_VOCAB members: walk, run, idle, attack, ...) select reference clips;
+    direction, hands and secondary words do not. A direction word is shared by
+    every travelling action, so letting it match made ``walk, forward`` and
+    ``run, forward`` select the same bank. The words are returned in vocabulary
+    order, so both directions of a transition share one prior. An empty label
+    returns ``()``.
 
-    The prior is deliberately keyed by words and not by ``action_group``: grouping
-    would widen it from "the attack references" to "everything stationary", and a
-    prior that loose scores almost anything as plausible.
+    The prior is deliberately keyed by head words and not by ``action_group``:
+    grouping would widen it from "the attack references" to "everything
+    stationary", and a prior that loose scores almost anything as plausible.
     """
     parse_action_label(action_label)
-    return tuple(vocab_words_in(action_label))
+    return tuple(head_words_in(vocab_words_in(action_label)))
 
 
 def _resolve_lookup_key(name: str, lookup: Mapping[str, object]) -> str:
@@ -76,23 +87,27 @@ class ReferenceClip:
 @dataclass(frozen=True)
 class ReferenceSpeciesSummary:
     object_type: str
-    cosine_distance: float
+    tag_distance: float
     species_weight: float
     clip_count: int
     total_frames: int
+    jaccard: float = 0.0
     topology_distance: float = 0.0
     combined_distance: float = 0.0
-    same_group: bool = False
+    same_tags: bool = False
 
 
 @dataclass(frozen=True)
 class WeightedReferenceBank:
     dataset_root: str
     object_type: str
-    action_label: str
+    action_label: str             # the prior's head words, comma-joined (not a request label)
     top_k_species: int
     clips: List[ReferenceClip]
     species: List[ReferenceSpeciesSummary]
+    # Scorer-side memo of per-clip reference features keyed by nperseg. The
+    # bank is otherwise read-only; the dict is the one thing that grows.
+    feature_cache: dict = field(default_factory=dict, compare=False, repr=False)
 
     @property
     def clip_weights(self) -> np.ndarray:
@@ -113,283 +128,291 @@ class WeightedReferenceBank:
         return float(1.0 / denom)
 
 
-def _collect_prior_word_paths(
-    sources,
-    cond_lookup: Mapping[str, Mapping[str, object]],
-    prior_words: Sequence[str],
-) -> Dict[str, List[str]]:
-    """Collect motion paths grouped by canonical species key, filtered by prior words.
+class ReferenceCorpus:
+    """The dataset side of the reference prior, indexed once per source set.
 
-    A clip matches when its ``action_label`` hits any of ``prior_words`` (see
-    :func:`reference_prior_words`).
-
-    Args:
-        sources: The ``DatasetSource`` list whose ``motions/`` dirs form the pool
-        cond_lookup: Canonically-keyed cond entries
-        prior_words: Controlled words from :func:`reference_prior_words`
-
-    Returns:
-        Dict mapping canonical species key to matching motion paths, pooled across
-        every source.  Paths are absolute, so the same bare filename appearing in
-        two datasets stays two distinct clips.
+    Assembling a bank used to re-read every source's ``motion_metadata.json``,
+    re-load the cond and re-resolve every clip's species on each call. The
+    corpus does that once: it keeps the merged cond, a ``{species: {head
+    word: [clip paths]}}`` index over every source's ``motions/`` dir, the
+    similarity profile of each species, the clips already loaded from disk,
+    and the banks already assembled, so a bank costs a dictionary filter plus
+    the ranking, and a clip is read from disk once no matter how many banks
+    share it.
     """
-    requested_words = set(prior_words)
 
-    grouped: Dict[str, List[str]] = {}
-    for source in sources:
-        motion_dir = Path(source.motion_dir)
-        metadata_lookup = load_motion_metadata(source.root)
-        # Species membership is resolved inside the owning source, so a bare
-        # 'Horse' from one dataset's metadata never binds to the other's.
-        source_lookup = {
-            key: entry for key, entry in cond_lookup.items()
-            if str(entry.get("dataset_namespace")) == source.namespace
-        }
-        if not source_lookup:
-            continue
-        filename_lookup = species_lookup_map(source_lookup)
-
-        for path in sorted(motion_dir.glob("*.npy")):
-            motion_name = path.name
-            metadata = metadata_lookup.get(motion_name)
-            if metadata is None:
-                # No metadata means no action label, so the clip can never match a
-                # requested word — skip it rather than fabricating empty labels.
-                continue
-
-            # Controlled words this clip's label hits, by the same matcher
-            # reference_prior_words reads the requested label with.
-            motion_action_words = set(vocab_words_in(str(metadata.get("action_label") or "")))
-
-            if not motion_action_words.intersection(requested_words):
-                continue
-
-            species = str(metadata.get("object_type") or "").strip()
-            if not species:
-                object_type = infer_object_type_from_filename(
-                    motion_name, valid_types=filename_lookup
-                )
-                if object_type is None:
-                    continue
-            else:
-                object_type = _resolve_lookup_key(species, source_lookup)
-            grouped.setdefault(object_type, []).append(str(path))
-
-    return grouped
-
-
-def _select_species_weights(
-    query_object_type: str,
-    action_label: str,
-    action_paths_by_species: Mapping[str, Sequence[str]],
-    cond_lookup: Mapping[str, Mapping[str, object]],
-    top_k_species: int,
-    query_cond: Optional[Mapping[str, object]] = None,
-) -> List[SpeciesSimilarity]:
-    if top_k_species <= 0:
-        raise ValueError("top_k_species must be >= 1")
-    if query_cond is None:
-        query_key = _resolve_lookup_key(query_object_type, cond_lookup)
-        query_cond_obj: Mapping[str, object] = cond_lookup[query_key]
-    else:
-        query_cond_obj = query_cond
-
-    candidate_conds = {
-        object_type: cond_lookup[object_type]
-        for object_type, paths in action_paths_by_species.items()
-        if paths
-    }
-    if not candidate_conds:
-        raise ValueError(
-            f"No dataset reference motions found for action_label={action_label!r}"
+    def __init__(self, dataset_root=None, cond_lookup: Optional[Mapping[str, Mapping[str, object]]] = None):
+        self.sources: tuple[DatasetSource, ...] = tuple(resolve_sources(dataset_root))
+        self.cond_lookup: Dict[str, Mapping[str, object]] = (
+            dict(cond_lookup) if cond_lookup is not None else load_cond_dict(self.sources)
         )
+        self._clips_by_species: Dict[str, Dict[str, List[str]]] = self._index_clips()
+        self._profiles: Dict[str, SkeletonProfile] = {}
+        self._motions: Dict[str, np.ndarray] = {}
+        self._banks: Dict[tuple, WeightedReferenceBank] = {}
 
-    return rank_species(
-        query_cond_obj,
-        candidate_conds,
-        query_hint=query_object_type,
-        top_k=top_k_species,
-    )
+    # ── Index ────────────────────────────────────────────────────────────────
+    def _index_clips(self) -> Dict[str, Dict[str, List[str]]]:
+        """``{canonical species key: {head word: [absolute clip paths]}}``.
 
+        Paths are absolute, so the same bare filename appearing in two datasets
+        stays two distinct clips. Species membership is resolved inside the
+        owning source, so a bare 'Horse' from one dataset's metadata never binds
+        to the other's.
+        """
+        grouped: Dict[str, Dict[str, List[str]]] = {}
+        for source in self.sources:
+            motion_dir = Path(source.motion_dir)
+            metadata_lookup = load_motion_metadata(source.root)
+            source_lookup = {
+                key: entry for key, entry in self.cond_lookup.items()
+                if str(entry.get("dataset_namespace")) == source.namespace
+            }
+            if not source_lookup:
+                continue
+            filename_lookup = species_lookup_map(source_lookup)
+            species_keys: Dict[str, Optional[str]] = {}
 
-_REFERENCE_BANK_CACHE: Dict[tuple, WeightedReferenceBank] = {}
+            for path in sorted(motion_dir.glob("*.npy")):
+                metadata = metadata_lookup.get(path.name)
+                if metadata is None:
+                    # No metadata means no action label, so the clip can never
+                    # match a head word -- skip it rather than fabricate a label.
+                    continue
+                heads = head_words_in(vocab_words_in(str(metadata.get("action_label") or "")))
+                if not heads:
+                    continue
 
+                species = str(metadata.get("object_type") or "").strip()
+                if species:
+                    if species not in species_keys:
+                        species_keys[species] = _resolve_lookup_key(species, source_lookup)
+                    object_type = species_keys[species]
+                else:
+                    object_type = infer_object_type_from_filename(
+                        path.name, valid_types=filename_lookup
+                    )
+                    if object_type is None:
+                        continue
+                by_head = grouped.setdefault(object_type, {})
+                for head in heads:
+                    by_head.setdefault(head, []).append(str(path))
+        return grouped
 
-def clear_reference_bank_cache() -> None:
-    """Drop all memoized reference banks (frees the loaded clip arrays)."""
-    _REFERENCE_BANK_CACHE.clear()
+    def clip_paths(self, prior_words: Sequence[str]) -> Dict[str, List[str]]:
+        """``{species: [paths]}`` of every clip whose label hits any prior word.
 
+        A clip labelled with two of the words (a transition) is listed once.
+        """
+        requested = set(prior_words)
+        matched: Dict[str, List[str]] = {}
+        for species, by_head in self._clips_by_species.items():
+            seen: Dict[str, None] = {}
+            for head, paths in by_head.items():
+                if head in requested:
+                    for path in paths:
+                        seen.setdefault(path, None)
+            if seen:
+                matched[species] = list(seen)
+        return matched
 
-def build_weighted_reference_bank(
-    object_type: str,
-    action_label: str,
-    dataset_root: Optional[str] = None,
-    top_k_species: int = 5,
-    min_frames: int = 8,
-    use_cache: bool = True,
-    cond_lookup: Optional[Mapping[str, Mapping[str, object]]] = None,
-    query_cond: Optional[Mapping[str, object]] = None,
-) -> WeightedReferenceBank:
-    """Build (or fetch from cache) the weighted reference prior.
+    def _load_motion(self, path: str) -> np.ndarray:
+        motion = self._motions.get(path)
+        if motion is None:
+            motion = np.load(path)
+            if motion.ndim == 3 and motion.shape[-1] == FEATS_LEN:
+                motion = motion.astype(np.float32)
+            self._motions[path] = motion
+        return motion
 
-    Assembling the bank loads every matching reference clip from disk, which is
-    the dominant cost when scoring many query clips that share the same
-    (object_type, action_label, top_k_species) prior. The result is memoized on
-    the resolved dataset root plus the normalized request -- the label's prior
-    words, so two spellings of the same words share one bank -- so repeated calls
-    reuse the already-loaded clips. The returned bank is treated as read-only by
-    all callers; do not mutate its clips in place.
-    """
-    if cond_lookup is not None or query_cond is not None or not use_cache:
-        return _build_weighted_reference_bank(
-            object_type,
-            action_label,
-            dataset_root,
+    def forget_query(self, object_key: str) -> None:
+        """Drop banks built for a (re-)registered custom query skeleton."""
+        for key in [k for k in self._banks if k[0] == object_key]:
+            del self._banks[key]
+
+    # ── Species selection ────────────────────────────────────────────────────
+    def select_species(
+        self,
+        query_object_type: str,
+        prior_words: Sequence[str],
+        paths_by_species: Mapping[str, Sequence[str]],
+        top_k_species: int,
+        min_reference_clips: int,
+        query_cond: Optional[Mapping[str, object]] = None,
+    ) -> List[SpeciesSimilarity]:
+        """Nearest species with clips for ``prior_words``, softmax-weighted.
+
+        The ``top_k_species`` nearest are always taken; the next-nearest are
+        appended while the selection holds fewer than ``min_reference_clips``
+        clips. Weights are the softmax over the final selection.
+        """
+        if top_k_species <= 0:
+            raise ValueError("top_k_species must be >= 1")
+        if query_cond is None:
+            query_key = _resolve_lookup_key(query_object_type, self.cond_lookup)
+            query_cond = self.cond_lookup[query_key]
+
+        candidate_conds = {
+            object_type: self.cond_lookup[object_type]
+            for object_type, paths in paths_by_species.items()
+            if paths
+        }
+        if not candidate_conds:
+            raise ValueError(
+                f"No dataset reference motions found for action words {list(prior_words)!r}"
+            )
+
+        ranked = rank_species(
+            query_cond,
+            candidate_conds,
+            query_hint=query_object_type,
+            top_k=None,
+            profiles=self._profiles,
+        )
+        selected: List[SpeciesSimilarity] = []
+        clip_total = 0
+        for entry in ranked:
+            if len(selected) >= top_k_species and clip_total >= min_reference_clips:
+                break
+            selected.append(entry)
+            clip_total += len(paths_by_species[entry.name])
+        assign_softmax_weights(selected)
+        return selected
+
+    # ── Bank assembly ────────────────────────────────────────────────────────
+    def build_bank(
+        self,
+        object_type: str,
+        action_label: str,
+        top_k_species: int = 5,
+        min_reference_clips: int = DEFAULT_MIN_REFERENCE_CLIPS,
+        min_frames: int = 8,
+        query_cond: Optional[Mapping[str, object]] = None,
+    ) -> WeightedReferenceBank:
+        """The weighted reference prior for one (species, action label) pair.
+
+        Memoised on the resolved species key plus the normalised request -- the
+        label's head words, so two spellings of the same words share one bank.
+        The returned bank is treated as read-only by all callers. ``query_cond``
+        stands in for a skeleton that is not in the corpus (a custom retarget
+        target); ``object_type`` is then its registered key, and the caller
+        owns invalidation through :meth:`forget_query`.
+        """
+        action_label_str = str(action_label or "").strip()
+        prior_words = reference_prior_words(action_label_str)
+        if not prior_words:
+            raise ValueError(
+                "action_label names no head word, so there is no reference prior "
+                "to score against (pass the label the clips were generated with, "
+                "e.g. 'run' or 'fly, forward')"
+            )
+        object_key = (
+            str(object_type) if query_cond is not None
+            else _resolve_lookup_key(object_type, self.cond_lookup)
+        )
+        cache_key = (object_key, prior_words, int(top_k_species), int(min_reference_clips), int(min_frames))
+        cached = self._banks.get(cache_key)
+        if cached is not None:
+            return cached
+
+        paths_by_species = self.clip_paths(prior_words)
+        selected_species = self.select_species(
+            object_key,
+            prior_words,
+            paths_by_species,
             top_k_species,
-            min_frames,
-            cond_lookup=cond_lookup,
+            min_reference_clips,
             query_cond=query_cond,
         )
 
-    # The cache key must name every source: two runs differing only in which
-    # datasets they pool must not share a reference bank.
-    dataset_root_key = tuple(source.root for source in resolve_sources(dataset_root))
-    cache_key = (
-        dataset_root_key,
-        str(object_type).strip().lower(),
-        frozenset(reference_prior_words(action_label)),
-        int(top_k_species),
-        int(min_frames),
-    )
-    cached = _REFERENCE_BANK_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-
-    bank = _build_weighted_reference_bank(
-        object_type, action_label, dataset_root, top_k_species, min_frames
-    )
-    _REFERENCE_BANK_CACHE[cache_key] = bank
-    return bank
-
-
-def _build_weighted_reference_bank(
-    object_type: str,
-    action_label: str,
-    dataset_root: Optional[str] = None,
-    top_k_species: int = 5,
-    min_frames: int = 8,
-    cond_lookup: Optional[Mapping[str, Mapping[str, object]]] = None,
-    query_cond: Optional[Mapping[str, object]] = None,
-) -> WeightedReferenceBank:
-    action_label_str = str(action_label or "").strip()
-    prior_words = reference_prior_words(action_label_str)
-    if not prior_words:
-        raise ValueError(
-            "action_label names no controlled word, so there is no reference prior "
-            f"to score against (pass one, e.g. {DEFAULT_SCORE_ACTION_LABEL!r})"
-        )
-
-    sources = resolve_sources(dataset_root)
-    if cond_lookup is None:
-        cond_lookup = load_cond_dict(sources)
-    object_key = str(object_type) if query_cond is not None else _resolve_lookup_key(object_type, cond_lookup)
-
-    action_paths_by_species = _collect_prior_word_paths(sources, cond_lookup, prior_words)
-    selected_species = _select_species_weights(
-        object_key,
-        action_label_str,
-        action_paths_by_species,
-        cond_lookup,
-        top_k_species,
-        query_cond=query_cond,
-    )
-
-    clips: List[ReferenceClip] = []
-    species_summaries: List[ReferenceSpeciesSummary] = []
-    for ranked in selected_species:
-        species_name = ranked.name
-        candidate_paths = action_paths_by_species.get(species_name, [])
-        loaded: List[tuple[str, np.ndarray]] = []
-        total_frames = 0
-        for path in candidate_paths:
-            motion = np.load(path)
-            if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN or motion.shape[0] < min_frames:
+        clips: List[ReferenceClip] = []
+        species_summaries: List[ReferenceSpeciesSummary] = []
+        for ranked in selected_species:
+            species_name = ranked.name
+            loaded: List[tuple[str, np.ndarray]] = []
+            total_frames = 0
+            for path in paths_by_species.get(species_name, []):
+                motion = self._load_motion(path)
+                if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN or motion.shape[0] < min_frames:
+                    continue
+                loaded.append((path, motion))
+                total_frames += int(motion.shape[0])
+            if not loaded or total_frames <= 0:
                 continue
-            motion = motion.astype(np.float32)
-            loaded.append((path, motion))
-            total_frames += int(motion.shape[0])
-        if not loaded or total_frames <= 0:
-            continue
 
-        clip_namespace = split_canonical_key(species_name)[0]
-        for path, motion in loaded:
-            # Composite clip id: the bare filename repeats across datasets.
-            motion_name = f"{clip_namespace}/{Path(path).name}" if clip_namespace else Path(path).name
-            clip_weight = ranked.weight * (float(motion.shape[0]) / float(total_frames))
-            clips.append(
-                ReferenceClip(
-                    path=path,
+            clip_namespace = split_canonical_key(species_name)[0]
+            for path, motion in loaded:
+                # Composite clip id: the bare filename repeats across datasets.
+                motion_name = f"{clip_namespace}/{Path(path).name}" if clip_namespace else Path(path).name
+                clip_weight = ranked.weight * (float(motion.shape[0]) / float(total_frames))
+                clips.append(
+                    ReferenceClip(
+                        path=path,
+                        object_type=species_name,
+                        motion_name=motion_name,
+                        n_frames=int(motion.shape[0]),
+                        weight=float(clip_weight),
+                        motion=motion,
+                    )
+                )
+
+            species_summaries.append(
+                ReferenceSpeciesSummary(
                     object_type=species_name,
-                    motion_name=motion_name,
-                    n_frames=int(motion.shape[0]),
-                    weight=float(clip_weight),
-                    motion=motion,
+                    tag_distance=float(ranked.tag_distance),
+                    species_weight=float(ranked.weight),
+                    clip_count=len(loaded),
+                    total_frames=int(total_frames),
+                    jaccard=float(ranked.jaccard),
+                    topology_distance=float(ranked.topology_distance),
+                    combined_distance=float(ranked.combined_distance),
+                    same_tags=bool(ranked.same_tags),
                 )
             )
 
-        species_summaries.append(
-            ReferenceSpeciesSummary(
-                object_type=species_name,
-                cosine_distance=float(ranked.semantic_distance),
-                species_weight=float(ranked.weight),
-                clip_count=len(loaded),
-                total_frames=int(total_frames),
-                topology_distance=float(ranked.topology_distance),
-                combined_distance=float(ranked.combined_distance),
-                same_group=bool(ranked.same_group),
+        if not clips:
+            raise ValueError(
+                f"No valid reference motions found for object_type={object_key!r}, action_label={action_label_str!r}"
             )
+
+        total_weight = float(sum(clip.weight for clip in clips))
+        if total_weight <= 0.0:
+            raise ValueError("Reference weights collapsed to zero")
+        if abs(total_weight - 1.0) > 1e-6:
+            clips = [
+                ReferenceClip(
+                    path=clip.path,
+                    object_type=clip.object_type,
+                    motion_name=clip.motion_name,
+                    n_frames=clip.n_frames,
+                    weight=float(clip.weight / total_weight),
+                    motion=clip.motion,
+                )
+                for clip in clips
+            ]
+            species_summaries = [
+                ReferenceSpeciesSummary(
+                    object_type=species.object_type,
+                    tag_distance=species.tag_distance,
+                    species_weight=float(species.species_weight / total_weight),
+                    clip_count=species.clip_count,
+                    total_frames=species.total_frames,
+                    jaccard=species.jaccard,
+                    topology_distance=species.topology_distance,
+                    combined_distance=species.combined_distance,
+                    same_tags=species.same_tags,
+                )
+                for species in species_summaries
+            ]
+
+        species_summaries.sort(key=lambda item: (-item.species_weight, item.combined_distance, item.object_type))
+        bank = WeightedReferenceBank(
+            dataset_root=os.pathsep.join(source.root for source in self.sources),
+            object_type=object_key,
+            action_label=", ".join(prior_words),
+            top_k_species=int(top_k_species),
+            clips=clips,
+            species=species_summaries,
         )
-
-    if not clips:
-        raise ValueError(
-            f"No valid reference motions found for object_type={object_key!r}, action_label={action_label_str!r}"
-        )
-
-    total_weight = float(sum(clip.weight for clip in clips))
-    if total_weight <= 0.0:
-        raise ValueError("Reference weights collapsed to zero")
-    if abs(total_weight - 1.0) > 1e-6:
-        clips = [
-            ReferenceClip(
-                path=clip.path,
-                object_type=clip.object_type,
-                motion_name=clip.motion_name,
-                n_frames=clip.n_frames,
-                weight=float(clip.weight / total_weight),
-                motion=clip.motion,
-            )
-            for clip in clips
-        ]
-        species_summaries = [
-            ReferenceSpeciesSummary(
-                object_type=species.object_type,
-                cosine_distance=species.cosine_distance,
-                species_weight=float(species.species_weight / total_weight),
-                clip_count=species.clip_count,
-                total_frames=species.total_frames,
-                topology_distance=species.topology_distance,
-                combined_distance=species.combined_distance,
-                same_group=species.same_group,
-            )
-            for species in species_summaries
-        ]
-
-    species_summaries.sort(key=lambda item: (-item.species_weight, item.cosine_distance, item.object_type))
-    return WeightedReferenceBank(
-        dataset_root=os.pathsep.join(source.root for source in sources),
-        object_type=object_key,
-        action_label=action_label_str,
-        top_k_species=int(top_k_species),
-        clips=clips,
-        species=species_summaries,
-    )
+        self._banks[cache_key] = bank
+        return bank

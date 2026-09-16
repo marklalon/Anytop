@@ -11,8 +11,15 @@ evaluator, and write a self-contained HTML report.
 Generation tasks call ``sample.generate`` in-process with a shared generation
 runtime, so the checkpoint/model is loaded once for the whole battery. Tasks
 use ``batch_size=8 --amp_dtype fp32`` matching ``generate.bat``.
-Generated clips are scored in-process with the motion quality scorer so the
-reference bank cache is reused across tasks.
+Generated clips are scored in-process with the motion quality scorer, whose
+reference prior is pooled over every dataset in ``--dataset_root`` (default
+``dataset/datasets.jsonl``) and indexed once for the whole battery.
+
+Every task must name the label its clips are scored against: its own
+``--action_label``, or -- for a task that generates without one (unconditional,
+or conditioned only by a reference motion) -- an ``"eval_label"`` entry naming
+the action of the reference clip. A task with neither fails the config load
+before anything is generated; there is no default prior.
 
 Output layout::
 
@@ -35,8 +42,8 @@ The checkpoint and task battery are loaded from a JSON config (``--task_config``
 default ``eval/eval_tasks_locomotion.json``) so they can be tuned without
 editing code. The config must define ``checkpoint.RUN_NAME`` and may define
 ``checkpoint.MODEL_FILE``. Each task is
-``{"category": str, "args": [<generate.py flags>]}``; path-valued flags accept
-absolute paths or paths relative to the Anytop dir.
+``{"category": str, "args": [<generate.py flags>], "eval_label": str?}``;
+path-valued flags accept absolute paths or paths relative to the Anytop dir.
 
 The shipped batteries are ``eval/eval_tasks_locomotion.json``,
 ``eval/eval_tasks_stationary.json`` and ``eval/eval_tasks_transition.json``
@@ -75,7 +82,7 @@ _REPO_ROOT = _ANYTOP_DIR.parent                   # pcvg-skeleton-animation/
 if str(_ANYTOP_DIR) not in sys.path:
     sys.path.insert(0, str(_ANYTOP_DIR))
 
-from eval.motion_quality.reference_bank import DEFAULT_SCORE_ACTION_LABEL
+from eval.motion_quality.reference_bank import reference_prior_words
 from eval.motion_quality.scorer import DistributionMotionQualityScorer
 from sample.generate import main as generate_main
 from sample.generation_runtime import prepare_generation_runtime
@@ -89,6 +96,9 @@ _SCORE_TOP_K_SPECIES = 3
 # point requires this path explicitly; the Python default is kept for direct
 # invocations. The per-action-group batteries are eval_tasks_<group>.json.
 _DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks_locomotion.json"
+# The datasets the scorer's reference prior is pooled over: every processed
+# dataset the training cond was merged from, not just the first one.
+_DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets.jsonl"
 # generate.py flags whose following value is a filesystem path. Their values are
 # resolved (relative → Anytop dir) when a task is loaded from the config.
 _PATH_FLAGS = ("--reference_motion", "--cond_path")
@@ -104,7 +114,8 @@ _COMMON_GENERATE_ARGS = ("--batch_size", "8", "--amp_dtype", "fp32")
 # Tasks are loaded from a JSON config file so the battery can be tuned without
 # editing code. Each task is ``{"category": str, "args": [str, ...]}`` where
 # ``args`` are the extra generate.py flags; model_path, output_dir and
-# ``_COMMON_GENERATE_ARGS`` are added per task in run_task().
+# ``_COMMON_GENERATE_ARGS`` are added per task in run_task(). A task whose args
+# carry no ``--action_label`` must set ``"eval_label"`` (scoring only).
 #
 # Path-valued flags (see ``_PATH_FLAGS``) accept either an absolute path or a
 # path relative to the Anytop dir; the "$LAST_OUTPUT" sentinel passes through
@@ -129,9 +140,12 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
 
     The config is an object with a ``checkpoint`` object and a ``tasks`` list.
     ``checkpoint.RUN_NAME`` is required and ``checkpoint.MODEL_FILE`` is
-    optional. Each task is ``{"category": str, "args": [str, ...]}``.
-    Path-valued flag arguments are resolved relative to the Anytop dir unless
-    absolute.
+    optional. Each task is ``{"category": str, "args": [str, ...]}`` plus an
+    optional ``"eval_label"``; every task resolves to a scoring label
+    (see :func:`_task_score_label`) or the whole config is rejected here,
+    before any generation. Path-valued flag arguments are resolved relative to
+    the Anytop dir unless absolute. Returns ``(checkpoint, [(category, args,
+    score_label), ...])``.
     """
     with open(config_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -163,7 +177,7 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
             f"Task config {config_path} must define a 'tasks' list"
         )
 
-    tasks: list[tuple[str, list[str]]] = []
+    tasks: list[tuple[str, list[str], str]] = []
     for i, entry in enumerate(raw_tasks):
         try:
             category = entry["category"]
@@ -172,6 +186,13 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
             raise ValueError(
                 f"Task #{i} in {config_path} must have 'category' and an 'args' list ({exc})"
             )
+        eval_label = entry.get("eval_label")
+        if eval_label is not None and not isinstance(eval_label, str):
+            raise ValueError(f"Task #{i} in {config_path}: eval_label must be a string")
+        try:
+            score_label = _task_score_label(args, eval_label)
+        except ValueError as exc:
+            raise ValueError(f"Task #{i} ({category}) in {config_path}: {exc}")
         # Resolve the value following each path-valued flag, in place.
         for j in range(len(args) - 1):
             if args[j] in _PATH_FLAGS:
@@ -183,7 +204,7 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
                         f"non-existent file: {resolved}"
                     )
                 args[j + 1] = resolved
-        tasks.append((category, args))
+        tasks.append((category, args, score_label))
 
     if not tasks:
         raise ValueError(f"No tasks found in config: {config_path}")
@@ -354,19 +375,42 @@ def _extract_cond_path(extra_args: list) -> str | None:
     return None
 
 
-def _extract_action_label(extra_args: list) -> str:
-    """The label a task's clips are scored with: its own ``--action_label``.
+def _task_score_label(extra_args: list, eval_label: str | None) -> str:
+    """The label a task's clips are scored with.
 
-    A task that generates without one (unconditional, or conditioned only by a
-    reference motion) falls back to ``DEFAULT_SCORE_ACTION_LABEL``.
+    A task that generates with ``--action_label`` is scored with that label. A
+    task that generates without one (unconditional, or conditioned only by a
+    reference motion) must say what its clips are in ``eval_label`` -- the
+    action of the reference clip, e.g. ``"run"`` for a run-loop inpaint. Both
+    at once is a contradiction and neither is an error: there is no default
+    prior, because a wrong prior scores confidently and silently. The label is
+    parsed under the generate.py contract so a typo fails here, not mid-run.
     """
+    action_label = None
     try:
         idx = extra_args.index("--action_label")
-        if idx + 1 < len(extra_args) and extra_args[idx + 1].strip():
-            return extra_args[idx + 1]
     except ValueError:
-        pass
-    return DEFAULT_SCORE_ACTION_LABEL
+        idx = -1
+    if idx >= 0 and idx + 1 < len(extra_args) and extra_args[idx + 1].strip():
+        action_label = extra_args[idx + 1].strip()
+
+    eval_label = eval_label.strip() if eval_label else None
+    if action_label and eval_label:
+        raise ValueError(
+            f"task has both --action_label {action_label!r} and eval_label {eval_label!r}; "
+            "a task generated with --action_label is scored with it, so drop eval_label"
+        )
+    label = action_label or eval_label
+    if not label:
+        raise ValueError(
+            "task has no --action_label and no eval_label, so there is no reference "
+            "prior to score its clips against; add \"eval_label\": \"<action>\" "
+            "naming the action of the reference clip (e.g. \"run\")"
+        )
+    # Parse under the generate.py contract so a typo fails here, not mid-run
+    # (an unknown word or a head-less label raises before anything is generated).
+    reference_prior_words(label)
+    return label
 
 
 def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> None:
@@ -437,12 +481,12 @@ def _build_record_from_existing(
     index: int,
     scorer: DistributionMotionQualityScorer,
     root: Path,
-    action_label: str,
+    score_label: str,
 ) -> dict:
     """Build a result record by scanning an existing task directory (no generation).
 
-    ``action_label`` comes from the task's current flags: output reused here either
-    matches them (checksum) or predates the checksum and is assumed to.
+    ``score_label`` comes from the task's current config: output reused here either
+    matches its flags (checksum) or predates the checksum and is assumed to.
     """
     record = {
         "category": category,
@@ -454,6 +498,7 @@ def _build_record_from_existing(
         "status": "ok",
         "first_npy": None,
         "reference_motion": None,
+        "score_label": score_label,
     }
 
     # Try to recover the command from generate.log.
@@ -486,7 +531,7 @@ def _build_record_from_existing(
 
     # Re-score existing clips.
     if object_type:
-        record["scores"] = _score_task(scorer, task_dir, object_type, action_label)
+        record["scores"] = _score_task(scorer, task_dir, object_type, score_label)
     else:
         print(f"    [WARN] {category}/task{index}: could not determine object_type; skipping scoring")
 
@@ -503,11 +548,11 @@ def _score_task(
     scorer: DistributionMotionQualityScorer,
     task_dir: Path,
     object_type: str,
-    action_label: str,
+    score_label: str,
 ) -> dict[str, float]:
     """Score a task's clips in-process so the reference-bank cache is reused.
 
-    ``action_label`` selects the reference prior (see ``_extract_action_label``).
+    ``score_label`` selects the reference prior (see ``_task_score_label``).
     """
     out_json = task_dir / "scores.json"
     motion_paths = sorted(task_dir.glob(f"{object_type}_*.npy"))
@@ -527,7 +572,7 @@ def _score_task(
             report = scorer.evaluate(
                 motions=[motion],
                 object_type=object_type,
-                action_label=action_label,
+                action_label=score_label,
                 top_k_species=_SCORE_TOP_K_SPECIES,
             )
         except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:
@@ -558,6 +603,7 @@ def run_task(
     category: str,
     index: int,
     extra_args: list[str],
+    score_label: str,
     root: Path,
     prev_first_npy: Path | None,
     total: int = 0,
@@ -601,6 +647,7 @@ def run_task(
         "first_npy": None,
         "reference_motion": _extract_reference_motion(extra_args),
         "last_output_resolved": str(last_output_resolved) if last_output_resolved is not None else None,
+        "score_label": score_label,
     }
 
     if last_output_unresolved:
@@ -651,10 +698,10 @@ def run_task(
     if task_cond_path:
         _register_cond_path(scorer, task_cond_path)
 
-    # Score the generated clips via evaluate_motion_quality.py (JSON output).
+    # Score the generated clips in-process (scores.json per task).
     scores: dict[str, float] = {}
     if object_type:
-        scores = _score_task(scorer, task_dir, object_type, _extract_action_label(extra_args))
+        scores = _score_task(scorer, task_dir, object_type, score_label)
     else:
         print("  [WARN] could not determine object_type; skipping scoring")
 
@@ -755,9 +802,10 @@ def write_html_report(
             score = r["median"]
             bg = "#d4edda" if score >= 0.7 else ("#fff3cd" if score >= 0.4 else "#f8d7da")
             n = len(r["scores"])
+            prior = html.escape(str(r.get("score_label") or ""))
             score_cell = (
                 f'<span class="val">{score:.4f}</span>'
-                f'<br><span class="path">median of {n} clip(s)</span>'
+                f'<br><span class="path">median of {n} clip(s) &middot; prior: {prior}</span>'
             )
         else:
             bg = "#f4f4f4"
@@ -881,6 +929,12 @@ def main() -> int:
              "'convert*'). Uses fnmatch-style glob patterns. Without this flag, "
              "all tasks are run.",
     )
+    parser.add_argument(
+        "--dataset_root", "--dataset-root", default=str(_DEFAULT_DATASET_ROOT),
+        help="Datasets the scorer's reference prior is pooled over: a processed "
+             "dataset dir or a datasets.jsonl manifest (absolute, or relative to "
+             "the Anytop dir). Default: dataset/datasets.jsonl.",
+    )
     args = parser.parse_args()
 
     # Resolve the task config path: absolute as-is; relative against the cwd,
@@ -928,15 +982,22 @@ def main() -> int:
             shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=True)
 
-    scorer = DistributionMotionQualityScorer()
+    dataset_root = Path(os.path.expanduser(os.path.expandvars(args.dataset_root)))
+    if not dataset_root.is_absolute():
+        dataset_root = _ANYTOP_DIR / dataset_root
+    if not dataset_root.exists():
+        print(f"ERROR: dataset root not found: {dataset_root}", file=sys.stderr)
+        return 1
+    scorer = DistributionMotionQualityScorer(dataset_root=str(dataset_root))
     print(f"Python      : {sys.executable}")
     print(f"Checkpoint  : {model_path}")
     print(f"Task config : {task_config}")
+    print(f"Datasets    : {dataset_root}")
     print(f"Output root : {root}")
 
     # Filter tasks by category wildcard pattern
     if args.filter:
-        filtered = [(cat, task_args) for cat, task_args in tasks if fnmatch.fnmatch(cat, args.filter)]
+        filtered = [task for task in tasks if fnmatch.fnmatch(task[0], args.filter)]
         if not filtered:
             print(f"ERROR: no tasks match filter '{args.filter}'", file=sys.stderr)
             return 1
@@ -965,7 +1026,7 @@ def main() -> int:
             runtime = prepare_generation_runtime(runtime_args)
         return runtime
 
-    for task_num, (category, extra_args) in enumerate(tasks, 1):
+    for task_num, (category, extra_args, score_label) in enumerate(tasks, 1):
         cat_counter[category] = cat_counter.get(category, 0) + 1
         index = cat_counter[category]
         task_dir = root / category / f"task{index}"
@@ -986,7 +1047,7 @@ def main() -> int:
             print(f"\n=== {category}/task{index} ({task_num}/{total_tasks}) [reuse existing] ===")
             try:
                 record = _build_record_from_existing(
-                    task_dir, category, index, scorer, root, _extract_action_label(extra_args)
+                    task_dir, category, index, scorer, root, score_label
                 )
             except Exception as exc:
                 print(f"  [ERROR] {category}/task{index} rescore raised: {exc}")
@@ -1017,8 +1078,8 @@ def main() -> int:
         # ── Otherwise generate the task (new task, or full run). ──
         try:
             record = run_task(
-                _ensure_runtime(), scorer, model_path, category, index, extra_args, root, prev_first_npy,
-                total=total_tasks, current=task_num,
+                _ensure_runtime(), scorer, model_path, category, index, extra_args, score_label,
+                root, prev_first_npy, total=total_tasks, current=task_num,
             )
         except Exception as exc:  # never let one task abort the whole battery
             print(f"  [ERROR] {category}/task{index} raised: {exc}")
