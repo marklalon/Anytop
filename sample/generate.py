@@ -720,7 +720,9 @@ def main(args=None, cond_dict=None, runtime=None):
         model,
         cond_dict,
         object_type,
-        default_cond_file=getattr(opt, 'cond_file', None),
+        default_cond_file=_checkpoint_cond_path(
+            getattr(args, 'model_path', ''),
+        ),
         actual_cond_file=actual_cond_file,
         t5_conditioner=getattr(runtime, 't5_conditioner', None),
     )
