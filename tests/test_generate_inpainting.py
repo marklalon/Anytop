@@ -18,22 +18,26 @@ from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa:
 )
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT  # noqa: E402
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
-from sample.generate import (  # noqa: E402
-    _zero_root_ric_xz,
+from sample.conditioning import create_condition  # noqa: E402
+from sample.export import _zero_root_ric_xz  # noqa: E402
+from sample.inpaint import (  # noqa: E402
     _contiguous_frame_runs,
-    _finalize_output_lengths,
     _map_frame_ranges_to_internal,
     _parse_frame_ranges,
-    _prepare_img2img_reference_bundle,
     _reanchor_inpaint_root_y_via_velocity,
     _reground_inpaint_joint_y,
-    _resample_window_to_output,
     _resolve_inpaint_joint_indices,
-    _sample_batch,
-    _validate_reference_motion_path,
     build_inpaint_mask,
-    create_condition,
 )
+from sample.output_lengths import (  # noqa: E402
+    _finalize_output_lengths,
+    _resample_window_to_output,
+)
+from sample.reference_motion import (  # noqa: E402
+    _prepare_img2img_reference_bundle,
+    _validate_reference_motion_path,
+)
+from sample.sampling import _sample_batch  # noqa: E402
 
 
 class _DummyModel(nn.Module):

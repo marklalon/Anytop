@@ -72,7 +72,7 @@ if str(_ANYTOP_DIR) not in sys.path:
 from eval.motion_quality.reference_bank import DEFAULT_SCORE_ACTION_LABEL
 from eval.motion_quality.scorer import DistributionMotionQualityScorer
 from sample.generate import main as generate_main
-from sample.generate import prepare_generation_runtime
+from sample.generation_runtime import prepare_generation_runtime
 from utils.parser_util import generate_args
 
 # Sentinel resolved at run time to the first output .npy of the previous task.

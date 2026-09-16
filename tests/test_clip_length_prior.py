@@ -259,7 +259,7 @@ def test_generate_num_frames_defaults_to_none_meaning_auto():
 
 
 def test_auto_output_lengths_falls_back_to_the_native_window(capsys):
-    from sample.generate import _resolve_auto_output_lengths
+    from sample.output_lengths import _resolve_auto_output_lengths
 
     cond = {"ns/Horse": _entry([("locomotion", "walk, forward", True, 84)])}
     # No action label -> nothing to key a length on.
@@ -281,7 +281,7 @@ def test_auto_output_lengths_falls_back_to_the_native_window(capsys):
 
 
 def test_auto_output_lengths_names_an_unbaked_cond(capsys):
-    from sample.generate import _resolve_auto_output_lengths
+    from sample.output_lengths import _resolve_auto_output_lengths
 
     frames, _, _ = _resolve_auto_output_lengths(
         {"ns/Horse": {}}, "ns/Horse",
@@ -295,7 +295,7 @@ def test_auto_output_lengths_names_an_unbaked_cond(capsys):
 def test_auto_output_lengths_tells_a_baked_cond_apart_from_an_unbaked_one(capsys):
     """A baked cond whose clips carry no label is not an unbaked one: re-running
     the bake would change nothing, so the user must not be sent there."""
-    from sample.generate import _resolve_auto_output_lengths
+    from sample.output_lengths import _resolve_auto_output_lengths
 
     frames, _, _ = _resolve_auto_output_lengths(
         {"ns/Horse": _entry([])}, "ns/Horse",
@@ -311,7 +311,7 @@ def test_auto_output_lengths_tells_a_baked_cond_apart_from_an_unbaked_one(capsys
 def test_auto_output_lengths_falls_back_to_the_checkpoint_cond(capsys):
     """A one-species --cond_path has no neighbours; the checkpoint's own cond is
     the pool the weights were trained on."""
-    from sample.generate import _resolve_auto_output_lengths
+    from sample.output_lengths import _resolve_auto_output_lengths
 
     calls = []
 

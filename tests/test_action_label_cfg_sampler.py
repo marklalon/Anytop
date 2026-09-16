@@ -186,7 +186,7 @@ class ActionLabelCfgFlagTest(unittest.TestCase):
                 'action_slots': sample_action_slots('run', 'locomotion')}
 
     def setUp(self):
-        from sample.generate import _wrap_action_label_cfg
+        from sample.conditioning import _wrap_action_label_cfg
         self.wrap = _wrap_action_label_cfg
         self.model = _StubDenoiser()
 

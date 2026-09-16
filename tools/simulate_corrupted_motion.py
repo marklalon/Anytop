@@ -70,7 +70,7 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
 
 
 # ---------------------------------------------------------------------------
-# Joint name resolution — mirrors sample/generate._resolve_inpaint_joint_indices
+# Joint name resolution — mirrors sample/inpaint._resolve_inpaint_joint_indices
 # ---------------------------------------------------------------------------
 
 def _resolve_freeze_joint_indices(

@@ -10,7 +10,7 @@ one place, so the claims cannot drift away from the implementation:
   4. text slimming -- token counts, and that no structure-derived word survives
   5. padding -- the structural latent of a padded joint is exactly zero AFTER
      the MLP projection, and a mixed batch matches a single sample
-  6. path consistency -- the loader and sample/generate.py call one builder
+  6. path consistency -- the loader and sample/conditioning.py call one builder
   7. version stamps -- the schema numbers and the cond file's hash
 
 Writes nothing. Exits non-zero when a check fails, so it can gate a run.
@@ -241,12 +241,12 @@ def audit_model_padding(audit):
 
 def audit_path_consistency(audit):
     import data_loaders.truebones.data.dataset as dataset_module
-    import sample.generate as generate_module
+    import sample.conditioning as conditioning_module
 
     audit.check(
-        'the loader and generate.py share ONE structural builder',
+        'the loader and sample/conditioning.py share ONE structural builder',
         dataset_module.build_joint_struct_features
-        is generate_module.build_joint_struct_features
+        is conditioning_module.build_joint_struct_features
         is build_joint_struct_features,
     )
 

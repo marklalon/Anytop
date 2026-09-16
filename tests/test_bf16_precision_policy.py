@@ -19,7 +19,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from eval import eval_checkpoint  # noqa: E402
 from model.anytop import OutputProcess  # noqa: E402
 from model.motion_transformer import SelectiveMultiheadAttention  # noqa: E402
-from sample import generate  # noqa: E402
+from sample import generation_runtime  # noqa: E402
 from utils import numerical_verification  # noqa: E402
 from utils.fixseed import fixseed  # noqa: E402
 
@@ -64,15 +64,15 @@ class InferencePrecisionTests(_MatmulPrecisionRestore):
 
     def test_cuda_fp32_inference_enables_tf32(self):
         torch.set_float32_matmul_precision("highest")
-        with patch.object(generate.dist_util, "dev", return_value=torch.device("cuda:0")):
-            amp_dtype = generate._resolve_inference_amp_dtype(SimpleNamespace(amp_dtype="fp32"))
+        with patch.object(generation_runtime.dist_util, "dev", return_value=torch.device("cuda:0")):
+            amp_dtype = generation_runtime._resolve_inference_amp_dtype(SimpleNamespace(amp_dtype="fp32"))
         self.assertEqual(amp_dtype, "fp32")
         self.assertEqual(torch.get_float32_matmul_precision(), "high")
 
     def test_cpu_inference_keeps_matmul_precision(self):
         torch.set_float32_matmul_precision("highest")
-        with patch.object(generate.dist_util, "dev", return_value=torch.device("cpu")):
-            amp_dtype = generate._resolve_inference_amp_dtype(SimpleNamespace(amp_dtype="fp32"))
+        with patch.object(generation_runtime.dist_util, "dev", return_value=torch.device("cpu")):
+            amp_dtype = generation_runtime._resolve_inference_amp_dtype(SimpleNamespace(amp_dtype="fp32"))
         self.assertEqual(amp_dtype, "fp32")
         self.assertEqual(torch.get_float32_matmul_precision(), "highest")
 

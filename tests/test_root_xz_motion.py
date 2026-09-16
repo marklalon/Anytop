@@ -749,9 +749,9 @@ def test_the_collate_no_longer_carries_the_flag():
 def test_generation_declares_no_root_xz_flag():
     import inspect
 
-    from sample import generate as generate_module
+    from sample import conditioning
 
-    source = inspect.getsource(generate_module.create_condition)
+    source = inspect.getsource(conditioning.create_condition)
     assert 'root_xz_stripped' not in source
 
 
