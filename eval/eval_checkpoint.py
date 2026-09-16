@@ -413,13 +413,40 @@ def _task_score_label(extra_args: list, eval_label: str | None) -> str:
     return label
 
 
-def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> None:
-    """Load a cond.npy and register its entries as query skeleton metadata."""
+def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> dict | None:
+    """Load a cond.npy and register its entries as query skeleton metadata.
+
+    Returns the loaded cond dict (None when it could not be loaded) so the
+    caller can resolve the task's filename token against it.
+    """
     try:
         from data_loaders.truebones.truebones_utils.cond_schema import load_cond
-        scorer.register_cond(load_cond(cond_path))
+        cond = load_cond(cond_path)
     except Exception as exc:
         print(f"    [WARN] failed to register cond_path {cond_path}: {exc}")
+        return None
+    scorer.register_cond(cond)
+    return cond
+
+
+def _task_object_type(file_token: str, task_cond: dict | None) -> str:
+    """Canonical cond key for a task's generated clips.
+
+    generate.py names clips after the cond it ran with: a bare species name
+    when unique there, so a ``--cond_path`` task whose species also exists in
+    the training corpus (``Elephant`` in ``new_skeleton_elephant`` vs
+    ``truebones/zoo/Elephant``) writes ``Elephant_0.npy``. The scorer's bare-name
+    rule takes the first corpus entry in insertion order, which is the corpus
+    one -- the wrong skeleton with the wrong joint count. Resolving the token
+    against the task's own cond first yields the canonical key, which the
+    scorer matches exactly, so it can never be hijacked by a corpus namesake.
+    """
+    if task_cond:
+        from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
+        resolved = resolve_species_key(task_cond, file_token)
+        if resolved is not None:
+            return resolved
+    return file_token
 
 
 def _find_reference_bvh(reference_motion: str | None) -> Path | None:
@@ -501,6 +528,7 @@ def _build_record_from_existing(
         "score_label": score_label,
     }
 
+    task_cond: dict | None = None
     # Try to recover the command from generate.log.
     log_path = task_dir / "generate.log"
     if log_path.is_file():
@@ -523,15 +551,16 @@ def _build_record_from_existing(
             record["reference_motion"] = m.group(1) or m.group(2)
         m = re.search(r'--cond_path\s+(?:"([^"]*)"|(\S+))', record["command"])
         if m:
-            _register_cond_path(scorer, m.group(1) or m.group(2))
+            task_cond = _register_cond_path(scorer, m.group(1) or m.group(2))
 
     first_npy = _first_output_npy(task_dir)
     record["first_npy"] = first_npy
-    object_type = _extract_object_type(first_npy) if first_npy else None
+    file_token = _extract_object_type(first_npy) if first_npy else None
 
     # Re-score existing clips.
-    if object_type:
-        record["scores"] = _score_task(scorer, task_dir, object_type, score_label)
+    if file_token:
+        object_type = _task_object_type(file_token, task_cond)
+        record["scores"] = _score_task(scorer, task_dir, file_token, object_type, score_label)
     else:
         print(f"    [WARN] {category}/task{index}: could not determine object_type; skipping scoring")
 
@@ -547,15 +576,19 @@ def _build_record_from_existing(
 def _score_task(
     scorer: DistributionMotionQualityScorer,
     task_dir: Path,
+    file_token: str,
     object_type: str,
     score_label: str,
 ) -> dict[str, float]:
     """Score a task's clips in-process so the reference-bank cache is reused.
 
-    ``score_label`` selects the reference prior (see ``_task_score_label``).
+    ``file_token`` is the species token the clips are named with (selects the
+    files); ``object_type`` is the cond key they are scored as (see
+    ``_task_object_type``). ``score_label`` selects the reference prior (see
+    ``_task_score_label``).
     """
     out_json = task_dir / "scores.json"
-    motion_paths = sorted(task_dir.glob(f"{object_type}_*.npy"))
+    motion_paths = sorted(task_dir.glob(f"{file_token}_*.npy"))
     if not motion_paths:
         print(f"    [WARN] no generated .npy files found for object_type={object_type!r}")
         return {}
@@ -689,19 +722,21 @@ def run_task(
 
     first_npy = _first_output_npy(task_dir)
     record["first_npy"] = first_npy
-    object_type = _extract_object_type(first_npy) if first_npy else None
+    file_token = _extract_object_type(first_npy) if first_npy else None
 
     # Register custom cond_path into the scorer so novel skeleton types
     # (e.g., 'dragon') can be resolved for query grouping and bone-length
     # scoring while reference comparisons still use the default cond baseline.
+    task_cond: dict | None = None
     task_cond_path = _extract_cond_path(extra_args)
     if task_cond_path:
-        _register_cond_path(scorer, task_cond_path)
+        task_cond = _register_cond_path(scorer, task_cond_path)
 
     # Score the generated clips in-process (scores.json per task).
     scores: dict[str, float] = {}
-    if object_type:
-        scores = _score_task(scorer, task_dir, object_type, score_label)
+    if file_token:
+        object_type = _task_object_type(file_token, task_cond)
+        scores = _score_task(scorer, task_dir, file_token, object_type, score_label)
     else:
         print("  [WARN] could not determine object_type; skipping scoring")
 
