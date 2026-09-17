@@ -219,12 +219,12 @@ def test_loader_emits_exactly_the_three_slot_fields():
 def test_latent_dim_below_the_slot_source_rank_fails_at_construction():
     bundle = make_test_bundle()
     total_rank = bundle.slot_source_rank_report(TEST_LATENT_DIM)['total_rank']
-    # 32 head words, 6 directions, 66 + 32 modifier sources (a head word after
+    # 32 head words, 6 directions, 65 + 32 modifier sources (a head word after
     # the first is a modifier), 3 hands.
-    assert total_rank == 139
+    assert total_rank == 138
     with pytest.raises(ValueError, match="smaller than the total slot source rank"):
         _model(bundle, latent_dim=total_rank - 1)
-    _model(bundle, latent_dim=TEST_LATENT_DIM)  # the first width at or above it
+    _model(bundle, latent_dim=TEST_LATENT_DIM)  # a width at or above it
 
 
 def test_word_table_from_another_encoder_is_refused():

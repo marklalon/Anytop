@@ -88,7 +88,7 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     "crouch", "dead", "sit", "sleep",
     # -- block C: how a strike is delivered (manner before strike type) --
     "spin", "flip", "twist", "charge",
-    "headbutt", "punch", "swat", "slash", "stab", "smash", "swipe", "whip",
+    "headbutt", "punch", "swat", "slash", "stab", "smash", "whip",
     "block", "cast", "projectile",
     # -- block D: affect / social gesture --
     "happy", "talk", "clap", "wave", "cry", "salute",

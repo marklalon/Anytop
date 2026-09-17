@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_stationary_v19
+set RUN_NAME=merged_stationary_v20
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize
@@ -35,7 +35,7 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
 	--batch_size 24 ^
-	--lr 1e-4 ^
+	--lr 1.2e-4 ^
 	--weight_decay 0.01 ^
 	--use_ema ^
 	--ema_rate 0.999 ^

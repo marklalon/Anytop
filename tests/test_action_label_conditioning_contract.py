@@ -33,15 +33,15 @@ def test_slot_source_rank_covers_the_full_domain_and_projection_width():
     assert report["full_rank"]
     assert report["fits_projection"]
     # A head word is a modifier source too (any head word after the first), so
-    # the modifier slot draws on the whole action vocabulary: 66 + 32.
-    assert report["total_rank"] == 139
+    # the modifier slot draws on the whole action vocabulary: 65 + 32.
+    assert report["total_rank"] == 138
     assert {name: item["rank"] for name, item in report["slots"].items()} == {
         "head": 32,
         "direction": 6,
-        "modifier": 98,
+        "modifier": 97,
         "hands": 3,
     }
-    assert not _slot_source_rank_report(table, latent_dim=138)["fits_projection"]
+    assert not _slot_source_rank_report(table, latent_dim=137)["fits_projection"]
 
 
 def test_slot_assignment_carries_ids_masks_and_slots_only():
