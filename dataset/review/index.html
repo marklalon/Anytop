@@ -300,7 +300,12 @@
     <option value="none">未判定</option>
   </select>
 
-  <input type="search" id="q" placeholder="搜索 clip / label">
+  <select id="searchField" title="选择搜索字段">
+    <option value="label" selected>label</option>
+    <option value="clip">clip</option>
+    <option value="both">both</option>
+  </select>
+  <input type="search" id="q" placeholder="搜索 label">
 
   <span class="counts" id="counts"></span>
   <span class="spacer"></span>
@@ -322,12 +327,13 @@
 
 <script>
 const PAGE_SIZE = 100;
+const ALL_DATASETS = 'all';
 const $ = (id) => document.getElementById(id);
 const DS_KEY = 'actionReview.dataset';      // remember the chosen dataset across reloads
 
 let datasets = [];  // server's dataset list: [{id, name, total, gif_count, ...}]
-let ds = null;      // currently selected dataset id (== the active action_labels file)
-let rows = [];      // server truth for the active dataset, in jsonl order
+let ds = null;      // selected dataset id, or "all" for the aggregate view
+let rows = [];      // server truth for the selected dataset(s), in jsonl order
 let view = [];      // current filtered subset
 let page = 1;
 let trashRoot = '';  // where "清理待删除" parks source files (server's --trash)
@@ -366,8 +372,10 @@ const isPending = (r) => r.pending_delete === true;
 // judged yet.
 const loopState = (r) => (r.is_loop === true ? 'yes' : r.is_loop === false ? 'no' : 'none');
 const stripNpy = (clip) => clip.replace(/\.npy$/i, '');
-// GIF lives under /gif/<dataset id>/<clip>.gif on the server.
-const gifOf = (clip) => 'gif/' + encodeURIComponent(ds) + '/' + stripNpy(clip) + '.gif';
+// GIF lives under /gif/<dataset id>/<clip>.gif on the server. Aggregate rows
+// carry their own dataset id because different datasets may use the same clip.
+const gifOf = (row) => 'gif/' + encodeURIComponent(row._dataset || ds) + '/' +
+  stripNpy(row.clip) + '.gif';
 
 // Give an invalid word a useful correction hint without ever applying a typo
 // correction automatically (that could silently change the annotation).
@@ -480,8 +488,11 @@ function counts() {
     (invalid ? ' &nbsp;·&nbsp; <span style="color:#ff8a80">非法 label <b>' + invalid + '</b></span>' : '') +
     ' &nbsp;·&nbsp; 当前筛选 <b>' + view.length + '</b>';
   const clean = $('clean');
-  clean.disabled = pending === 0 || clean.dataset.busy === '1';
+  clean.disabled = ds === ALL_DATASETS || pending === 0 || clean.dataset.busy === '1';
   clean.textContent = pending ? '清理待删除 (' + pending + ')' : '清理待删除';
+  clean.title = ds === ALL_DATASETS
+    ? 'all 视图只用于筛选和编辑；请切换到具体数据集后清理待删除动作'
+    : '清理当前数据集所有标记为待删除的动作';
 }
 
 // A sticky report bar. Unlike the toast it stays until dismissed, so the
@@ -516,9 +527,26 @@ function notice(lines, bad) {
   el.style.top = document.querySelector('header').offsetHeight + 'px';
 }
 
-const dsOptionText = (d) => d.name + '（' + (d.gif_count ? d.gif_count : '无GIF') +
+const datasetCountText = (d) => {
+  const clips = Number(d.total) || 0;
+  const gifs = Number(d.gif_count) || 0;
+  return clips === gifs ? String(clips) : clips + ' clips，' + gifs + ' GIF';
+};
+
+const dsOptionText = (d) => d.name + '（' + datasetCountText(d) +
   (d.invalid_labels ? '，非法label ' + d.invalid_labels : '') +
   (d.unflagged_loops ? '，loop未判定 ' + d.unflagged_loops : '') + '）';
+
+const allOptionText = (list) => {
+  const sum = (key) => list.reduce((n, d) => n + (Number(d[key]) || 0), 0);
+  return dsOptionText({
+    name: 'all',
+    total: sum('total'),
+    gif_count: sum('gif_count'),
+    invalid_labels: sum('invalid_labels'),
+    unflagged_loops: sum('unflagged_loops'),
+  });
+};
 
 // Load the dataset <select> once, remembering the previous choice.
 async function loadDatasets() {
@@ -539,12 +567,13 @@ async function loadDatasets() {
   }
   datasets = list;
   const saved = localStorage.getItem(DS_KEY);
-  const found = list.some(d => d.id === saved);
+  const found = saved === ALL_DATASETS || list.some(d => d.id === saved);
   if (!found) localStorage.setItem(DS_KEY, list[0].id);
   ds = found ? saved : list[0].id;
 
   const sel = $('dataset');
-  sel.innerHTML = list.map(d =>
+  sel.innerHTML = '<option value="' + ALL_DATASETS + '">' + allOptionText(list) + '</option>' +
+    list.map(d =>
     '<option value="' + d.id + '">' + dsOptionText(d) + '</option>'
   ).join('');
   sel.value = ds;
@@ -560,6 +589,10 @@ async function refreshDatasetCounts() {
     if (!res.ok) return;
     datasets = (await res.json()).datasets;
     for (const opt of $('dataset').options) {
+      if (opt.value === ALL_DATASETS) {
+        opt.textContent = allOptionText(datasets);
+        continue;
+      }
       const d = datasets.find((x) => x.id === opt.value);
       if (d) opt.textContent = dsOptionText(d);
     }
@@ -600,6 +633,7 @@ function applyFilters(keepPage, keepScroll) {
   const g = $('group').value;
   const s = $('state').value;
   const l = $('loop').value;
+  const searchField = $('searchField').value;
   const q = $('q').value.trim().toLowerCase();
   view = rows.filter(r => {
     if (g !== 'all' && r.action_group !== g) return false;
@@ -607,8 +641,13 @@ function applyFilters(keepPage, keepScroll) {
     if (s === 'done' && !isReviewed(r)) return false;
     if (s === 'pending' && !isPending(r)) return false;
     if (l !== 'all' && loopState(r) !== l) return false;
-    if (q && !(r.clip.toLowerCase().includes(q) ||
-               (r.action_label || '').toLowerCase().includes(q))) return false;
+    if (q) {
+      const inLabel = (r.action_label || '').toLowerCase().includes(q);
+      const inClip = (r.clip || '').toLowerCase().includes(q);
+      if (searchField === 'label' && !inLabel) return false;
+      if (searchField === 'clip' && !inClip) return false;
+      if (searchField === 'both' && !inLabel && !inClip) return false;
+    }
     return true;
   });
   if (!keepPage) page = 1;
@@ -654,7 +693,7 @@ function card(row) {
   img.height = 224;
   img.decoding = 'async';
   img.alt = '';
-  img.dataset.src = gifOf(row.clip);
+  img.dataset.src = gifOf(row);
   img.onload = () => thumb.classList.remove('failed');
   img.onerror = () => {
     if (!img.getAttribute('src')) return;         // we cleared it on purpose
@@ -680,9 +719,11 @@ function card(row) {
     name.href = link;
     name.rel = 'noopener';
   }
-  name.textContent = label_;
-  name.title = link ? '在 BVH 查看器中打开 ' + row.clip
-                    : row.clip + (stripNpy(row.clip) === row.clip ? '' : '（无对应 BVH）');
+  const owner = row._dataset || ds;
+  name.textContent = ds === ALL_DATASETS ? '[' + owner + '] ' + label_ : label_;
+  name.title = (ds === ALL_DATASETS ? '数据集：' + owner + '\n' : '') +
+    (link ? '在 BVH 查看器中打开 ' + row.clip
+          : row.clip + (stripNpy(row.clip) === row.clip ? '' : '（无对应 BVH）'));
   const copy = document.createElement('button');
   copy.type = 'button';
   copy.className = 'copy';
@@ -898,7 +939,7 @@ async function save(el, row, patch) {
     const res = await fetch('api/update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(Object.assign({ dataset: ds, clip: row.clip }, patch))
+      body: JSON.stringify(Object.assign({ dataset: row._dataset || ds, clip: row.clip }, patch))
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.status);
@@ -936,6 +977,10 @@ async function save(el, row, patch) {
 // dataset stays loadable immediately). Reloads afterwards so the counts on
 // screen (and the selector's GIF count) match what is left on disk.
 async function clean() {
+  if (ds === ALL_DATASETS) {
+    toast('请先切换到具体数据集，再执行清理待删除');
+    return;
+  }
   const pending = rows.filter(isPending);
   if (!pending.length) return;
   const shown = pending.slice(0, 12).map(r => '  · ' + stripNpy(r.clip));
@@ -1012,6 +1057,11 @@ $('dataset').onchange = onDatasetChange;
 $('group').onchange = () => applyFilters();
 $('state').onchange = () => applyFilters();
 $('loop').onchange = () => applyFilters();
+$('searchField').onchange = () => {
+  const field = $('searchField').value;
+  $('q').placeholder = field === 'both' ? '搜索 label / clip' : '搜索 ' + field;
+  applyFilters();
+};
 $('q').oninput = () => {                 // debounce: a keystroke must not rebuild 100 cards
   clearTimeout($('q')._t);
   $('q')._t = setTimeout(() => applyFilters(), 200);

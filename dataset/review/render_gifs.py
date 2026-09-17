@@ -24,6 +24,10 @@ re-implementing them here would be a second copy free to drift.  So a dataset
 is renderable once it has been preprocessed; ``cond.npy`` is read too, for the
 per-species facing and size corrections, but a missing cond only costs those.
 
+A run is incremental: a clip is rendered when its GIF is missing or when its
+source GLB has been modified since the GIF was written (:func:`_gif_state`),
+and ``--overwrite`` renders everything selected regardless.
+
 The scene is shared by every dataset, so the galleries read the same way: a
 fixed 1x1 see-through grid at ``z = 0`` under a shadow-casting sun, a 50mm lens
 on a 45-degree oblique 25 degrees up, and a camera that holds still until the
@@ -72,6 +76,7 @@ Run with the project venv so ``bpy`` resolves::
 from __future__ import annotations
 
 import argparse
+import collections
 import fnmatch
 import io
 import json
@@ -107,6 +112,8 @@ DURATION_CLAMP = (40, 250)   # ms per frame, applied to the real clip timing
 TARGET_FPS = 10.0
 MAX_FRAMES = 32          # cap for the few 250-frame clips
 MIN_FRAMES = 4           # a short clip still gets four frames
+MTIME_SLACK = 2.0        # seconds a source may postdate its GIF and still count
+#                          as drawn from (see _gif_state)
 
 # -- image / engine ----------------------------------------------------------
 # Square is a precondition, not a preference: the projection solver below uses
@@ -345,8 +352,27 @@ def _load_scales(cond):
     return scales
 
 
+def _gif_state(gif_path, source):
+    """``"missing"``, ``"stale"`` or ``None`` (up to date) for one clip's GIF.
+
+    Staleness is the source's modification time against the GIF's: the GIF is
+    a picture of that one file, so a source rewritten after it was drawn (the
+    loop-boundary trims edit the raw GLBs in place) is the one thing that can
+    make it wrong without the clip index changing at all.  ``MTIME_SLACK``
+    absorbs filesystem timestamp granularity and a copy that lands a source
+    and its GIF within the same second; it is not a policy knob.
+    """
+    if not os.path.isfile(gif_path) or not os.path.getsize(gif_path):
+        return "missing"
+    if os.path.getmtime(source) > os.path.getmtime(gif_path) + MTIME_SLACK:
+        return "stale"
+    return None
+
+
 def _plan(args, datasets):
-    """``(jobs, skipped)`` -- one job per selected clip whose GIF is missing."""
+    """``(jobs, skipped)`` -- one job per selected clip whose GIF is missing or
+    stale (see :func:`_gif_state`), or every selected clip under ``--overwrite``.
+    Each job carries its reason, which is what the dry run prints."""
     jobs, skipped = [], 0
     base_opts = {"engine": args.engine, "size": args.size,
                  "supersample": args.supersample, "colors": args.colors,
@@ -376,15 +402,15 @@ def _plan(args, datasets):
             if not fnmatch.fnmatch(clip, args.clip):
                 continue
             gif_path = os.path.join(gif_root, clip + ".gif")
-            if not args.overwrite and os.path.isfile(gif_path) \
-                    and os.path.getsize(gif_path):
-                skipped += 1
-                continue
             if not os.path.isfile(source):
                 print("  [WARN] %s:%s: source is gone (%s)"
                       % (namespace, clip, source))
                 continue
-            opts = dict(base_opts, namespace=namespace,
+            reason = "forced" if args.overwrite else _gif_state(gif_path, source)
+            if reason is None:
+                skipped += 1
+                continue
+            opts = dict(base_opts, namespace=namespace, reason=reason,
                         facing_yaw_deg=facing.get(species, 0.0),
                         canonical_scale=scales.get(species))
             jobs.append((namespace, clip, species, source, gif_path, opts))
@@ -1557,7 +1583,8 @@ def main():
     ap.add_argument("--workers", "-j", type=int, default=8)
     ap.add_argument("--limit", type=int, default=0, help="limit scheduled jobs")
     ap.add_argument("--overwrite", action="store_true",
-                    help="re-render everything selected (default: update mode)")
+                    help="re-render everything selected (default: only GIFs "
+                         "that are missing or older than their source GLB)")
     ap.add_argument("--engine", default="eevee", choices=("eevee", "cycles"))
     ap.add_argument("--size", type=int, default=GIF_SIZE,
                     help="GIF edge in pixels (default: %(default)s)")
@@ -1636,17 +1663,20 @@ def main():
     if args.limit:
         jobs = jobs[:args.limit]
 
+    reasons = collections.Counter(job[5]["reason"] for job in jobs)
+    why = ", ".join("%d %s" % (reasons[r], r) for r in ("missing", "stale", "forced")
+                    if reasons[r])
     if args.dry_run:
         for namespace, clip, _species, source, _gif, opts in jobs:
-            print("%-22s %-42s yaw %+7.1f  %s"
-                  % (namespace, clip, opts["facing_yaw_deg"],
+            print("%-22s %-42s %-7s yaw %+7.1f  %s"
+                  % (namespace, clip, opts["reason"], opts["facing_yaw_deg"],
                      os.path.basename(source)))
-        print("\n%d job(s), %d already rendered, across %d dataset(s): %s"
-              % (len(jobs), skipped, len(ready),
+        print("\n%d job(s) (%s), %d up to date, across %d dataset(s): %s"
+              % (len(jobs), why or "none", skipped, len(ready),
                  ", ".join(d["namespace"] for d in ready)))
         return 0
     if not jobs:
-        print("[OK] nothing to do (%d already rendered)" % skipped)
+        print("[OK] nothing to do (%d up to date)" % skipped)
         return 0
 
     for gif_path in {os.path.dirname(job[4]) for job in jobs}:
@@ -1654,8 +1684,8 @@ def main():
     if args.frames_dir:
         os.makedirs(args.frames_dir, exist_ok=True)
     workers = max(1, min(args.workers, len(jobs)))
-    print("Rendering %d clip(s) with %d worker(s) from %s"
-          % (len(jobs), workers, ", ".join(d["namespace"] for d in ready)),
+    print("Rendering %d clip(s) (%s) with %d worker(s) from %s"
+          % (len(jobs), why, workers, ", ".join(d["namespace"] for d in ready)),
           flush=True)
     print("mode %s  engine %s  %dpx (x%d)  %d colors  dither %s  %.0f fps  "
           "<=%d frames  follow %s  radius %.3f x mean bone, clamped to "
@@ -1710,7 +1740,7 @@ def main():
         finally:
             restore_output()
 
-    print("\ndone: %d ok, %d failed, %d skipped, %d frames, %.1f MB in %.0fs"
+    print("\ndone: %d ok, %d failed, %d up to date, %d frames, %.1f MB in %.0fs"
           % (ok, fail, skipped, frames, written / 1048576.0, time.time() - started))
     for label, error in failures:
         print("\n[FAIL] %s\n%s" % (label, error))

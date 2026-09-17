@@ -74,3 +74,41 @@ def test_store_sorts_valid_startup_labels_and_exposes_invalid_ones(tmp_path):
     assert fixed["action_label"] == "run, forward, fast"
     assert "label_error" not in fixed
     assert "label_error" not in store.snapshot()[1]
+
+
+def test_all_dataset_view_keeps_the_owner_on_duplicate_clip_names(tmp_path):
+    datasets = []
+    stores = {}
+    for dataset_id, label in (("one", "walk, forward"), ("two", "run, forward")):
+        processed = tmp_path / dataset_id
+        processed.mkdir()
+        labels = processed / "action_labels.jsonl"
+        labels.write_text(
+            json.dumps({
+                "clip": "shared.npy",
+                "action_group": "locomotion",
+                "action_label": label,
+            }) + "\n",
+            encoding="utf-8",
+        )
+        datasets.append({
+            "id": dataset_id,
+            "name": dataset_id,
+            "processed": str(processed),
+            "labels": labels,
+            "gif_dir": processed / "review" / "gif",
+        })
+        stores[dataset_id] = review.LabelStore(labels)
+
+    handler = object.__new__(review.Handler)
+    handler.path = "/api/labels?ds=all"
+    handler.datasets = datasets
+    handler.stores = stores
+    handler._send_json = lambda status, payload: (status, payload)
+
+    status, payload = handler.do_GET()
+
+    assert status == 200
+    assert payload["id"] == "all"
+    assert [row["clip"] for row in payload["rows"]] == ["shared.npy", "shared.npy"]
+    assert [row["_dataset"] for row in payload["rows"]] == ["one", "two"]

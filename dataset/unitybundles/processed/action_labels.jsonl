@@ -515,40 +515,40 @@
 {"clip": "LH_Hero_CrossbowRightShootAttack", "action_group": "stationary", "action_label": "attack, gun, hand1", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_CrossbowShootAttack", "action_group": "stationary", "action_label": "attack, gun, hand1", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Crying", "action_group": "stationary", "action_label": "idle, cry", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_Dance01Retarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true}
-{"clip": "LH_Hero_Dance0201Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true}
-{"clip": "LH_Hero_Dance0202Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true}
-{"clip": "LH_Hero_Dance0203Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true}
-{"clip": "LH_Hero_Dance03Retarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true}
-{"clip": "LH_Hero_Dance04Retarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true}
-{"clip": "LH_Hero_Dance05Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true}
-{"clip": "LH_Hero_Dance06Retarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true}
-{"clip": "LH_Hero_Dance07Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true}
-{"clip": "LH_Hero_Dance08Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true}
-{"clip": "LH_Hero_Dance09Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true}
-{"clip": "LH_Hero_Dance10Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true}
-{"clip": "LH_Hero_Dance11Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true}
-{"clip": "LH_Hero_Dance12Retarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true}
-{"clip": "LH_Hero_Dance13Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true}
-{"clip": "LH_Hero_Dance14ARetarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true}
-{"clip": "LH_Hero_Dance15Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true}
-{"clip": "LH_Hero_Dance16Retarget", "action_group": "stationary", "action_label": "dance, armwork", "is_loop": true}
-{"clip": "LH_Hero_Dance17ARetarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true}
-{"clip": "LH_Hero_Dance18Retarget", "action_group": "stationary", "action_label": "dance, armwork", "is_loop": true}
-{"clip": "LH_Hero_Dance19Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true}
-{"clip": "LH_Hero_Dance20Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true}
-{"clip": "LH_Hero_Dance21Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true}
-{"clip": "LH_Hero_Dance22Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true}
-{"clip": "LH_Hero_Dance23Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": false}
-{"clip": "LH_Hero_Dance24Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true}
-{"clip": "LH_Hero_Dance25Retarget", "action_group": "stationary", "action_label": "dance, armwork", "is_loop": true}
-{"clip": "LH_Hero_Dance2601Retarget", "action_group": "stationary", "action_label": "dance, armwork", "is_loop": true}
-{"clip": "LH_Hero_Dance2602Retarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true}
-{"clip": "LH_Hero_Dance2603Retarget", "action_group": "stationary", "action_label": "dance, armwork", "is_loop": true}
-{"clip": "LH_Hero_Dance27Retarget", "action_group": "stationary", "action_label": "dance, armwork", "is_loop": false}
-{"clip": "LH_Hero_Dance28Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true}
-{"clip": "LH_Hero_Dance29Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true}
-{"clip": "LH_Hero_Dance30Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true}
+{"clip": "LH_Hero_Dance01Retarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance0201Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance0202Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance0203Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance03Retarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance04Retarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance05Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance06Retarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance07Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance08Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance09Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance10Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance11Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance12Retarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance13Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance14ARetarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance15Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance16Retarget", "action_group": "stationary", "action_label": "dance, armwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance17ARetarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance18Retarget", "action_group": "stationary", "action_label": "dance, armwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance19Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance20Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance21Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance22Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance23Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": false, "reviewed": true}
+{"clip": "LH_Hero_Dance24Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance25Retarget", "action_group": "stationary", "action_label": "dance, armwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance2601Retarget", "action_group": "stationary", "action_label": "dance, armwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance2602Retarget", "action_group": "stationary", "action_label": "dance, sway", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance2603Retarget", "action_group": "stationary", "action_label": "dance, armwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance27Retarget", "action_group": "stationary", "action_label": "dance, armwork", "is_loop": false, "reviewed": true}
+{"clip": "LH_Hero_Dance28Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance29Retarget", "action_group": "stationary", "action_label": "dance, fullbody", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance30Retarget", "action_group": "stationary", "action_label": "dance, footwork", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Dash", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Defend", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}

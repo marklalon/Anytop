@@ -14,9 +14,9 @@ dataset::
 
 ``path`` is relative to the Anytop tree that holds this ``dataset/`` folder.
 Each processed dir must carry ``action_labels.jsonl``; that dataset's review
-GIFs are expected under ``<processed>/review/gif/`` (produced by that
-dataset's render_gifs.py).  A dataset whose GIFs have not been rendered yet
-(for example truebones/zoo_upgrade) simply shows each card's
+GIFs are expected under ``<processed>/review/gif/`` (produced by
+``render_gifs.py`` next to this file, which reads the same manifest).  A
+dataset whose GIFs have not been rendered yet simply shows each card's
 "GIF 加载失败 · 点击重试" placeholder until the files exist -- it is listed
 and fully editable either way.
 
@@ -545,19 +545,37 @@ class Handler(BaseHTTPRequestHandler):
                                          "trash_root": str(TRASH_ROOT)})
 
         if path == "/api/labels":
-            ds, store = self._store_and_dataset(self._query().get("ds"))
-            if ds is None:
+            requested = self._query().get("ds")
+            selected = self.datasets if requested == "all" else []
+            if not selected:
+                ds, store = self._store_and_dataset(requested)
+                selected = [ds] if ds is not None else []
+            if not selected:
                 return self._send_json(500, {"error": "no datasets configured"})
-            # Each row gets a bvhview:// href to its .bvh so the grid can open the
-            # motion in the BVH viewer by clicking the clip name (null when absent).
-            rows = store.snapshot()
-            for row in rows:
-                row["bvhview"] = _bvhview_href(ds, row["clip"])
+
+            # In the aggregate view clip names are not necessarily unique.  Keep
+            # their owning dataset on every row so GIF reads and later edits are
+            # routed to the right store instead of whichever dataset is selected
+            # globally in the browser.
+            rows = []
+            for selected_ds in selected:
+                selected_store = self.stores.get(selected_ds["id"])
+                if selected_store is None:
+                    continue
+                for row in selected_store.snapshot():
+                    row["_dataset"] = selected_ds["id"]
+                    row["bvhview"] = _bvhview_href(selected_ds, row["clip"])
+                    rows.append(row)
+
+            aggregate = requested == "all"
+            ds = selected[0]
             return self._send_json(200, {
-                "id": ds["id"],
-                "name": ds["name"],
-                "labels_path": str(ds["labels"]),
-                "gif_dir": str(ds["gif_dir"]),
+                "id": "all" if aggregate else ds["id"],
+                "name": "all" if aggregate else ds["name"],
+                "labels_path": ([str(d["labels"]) for d in selected]
+                                if aggregate else str(ds["labels"])),
+                "gif_dir": ([str(d["gif_dir"]) for d in selected]
+                             if aggregate else str(ds["gif_dir"])),
                 "label_contract": {
                     "controlled_vocab": list(CONTROLLED_VOCAB),
                     "head_vocab": list(HEAD_VOCAB),
@@ -656,6 +674,7 @@ class Handler(BaseHTTPRequestHandler):
         # Mirror /api/labels: include the bvhview href so the frontend's save()
         # re-render keeps the clip name clickable after an edit.
         out = dict(row)
+        out["_dataset"] = ds["id"]
         out["bvhview"] = _bvhview_href(ds, out["clip"])
         return self._send_json(200, {"row": out, "dataset": ds["id"], "notes": notes})
 
