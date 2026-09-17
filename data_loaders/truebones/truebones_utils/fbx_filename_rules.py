@@ -285,6 +285,24 @@ def _camel_case_action_name(raw_action: str) -> str:
     return ''.join(normalized_parts)
 
 
+_SLICE_TOKEN_PATTERN = re.compile(r'^slice[0-9a-z]*$', re.IGNORECASE)
+
+
+def _split_slice_suffix(action: str) -> tuple[str, str]:
+    """Split a trailing ``_slice<N>`` clip-part marker off an action name.
+
+    Returns ``(base, slice_suffix)`` where ``slice_suffix`` is the marker
+    (e.g. ``_slice1``) or ``''``. The marker names a *part* of a clip, not an
+    action word: it must not be misread as a ``word_code`` variant codename, and
+    it is preserved verbatim (lower-cased) in the normalized name so
+    ``EggLaying_slice1`` and ``EggLaying_slice2`` stay distinct clips.
+    """
+    tokens = [t for t in re.split(r'[^0-9A-Za-z]+', str(action or '').strip()) if t]
+    if len(tokens) >= 2 and _SLICE_TOKEN_PATTERN.match(tokens[-1]):
+        return ' '.join(tokens[:-1]), '_' + tokens[-1].lower()
+    return str(action or '').strip(), ''
+
+
 def normalize_action_name(object_type: str, raw_action: str) -> str:
     """Normalize an action name extracted from an FBX filename."""
     if not raw_action:
@@ -294,7 +312,11 @@ def normalize_action_name(object_type: str, raw_action: str) -> str:
     if not raw_action:
         return raw_action
 
-    return _camel_case_action_name(raw_action)
+    base, slice_suffix = _split_slice_suffix(raw_action)
+    if not base:
+        return raw_action
+
+    return _camel_case_action_name(base) + slice_suffix
 
 
 def should_skip_anim(file_path: str, object_type: str) -> bool:
@@ -351,9 +373,12 @@ def should_skip_anim(file_path: str, object_type: str) -> bool:
     if is_retargeted:
         return False
 
+    # A trailing ``_slice<N>`` marker names a clip part, not a codename:
+    # ``EggLaying_slice1`` is the action ``EggLaying``, not ``word_code``.
+    codename_candidate = _split_slice_suffix(stripped_action)[0]
     variant1 = re.compile(r'^[a-z]+[a-z]_\w+$', re.IGNORECASE)
     variant2 = re.compile(r'^[a-z]+_[a-z]\d+$', re.IGNORECASE)
-    if variant1.match(stripped_action) or variant2.match(stripped_action):
+    if variant1.match(codename_candidate) or variant2.match(codename_candidate):
         print(
             f'  [SKIP] {os.path.basename(file_path)}: '
             f'variant codename, no inferable action name'

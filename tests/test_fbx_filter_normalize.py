@@ -95,6 +95,12 @@ tests = [
     ('CrabAll-Die.fbx', 'HermitCrab', False, 'Die'),
     ('Parrot-ALL.fbx', 'Parrot2', True, None),
     ('SandMouseA02.fbx', 'SandMouse', True, None),
+    # ── Trailing ``_slice<N>`` clip-part marker: a real action, not a codename ──
+    # The marker must not trigger the variant-codename skip, and it is kept
+    # verbatim (lower-cased) in the normalized name so the slices stay distinct.
+    ('Chicken-EggLaying_slice1.fbx', 'Chicken', False, 'EggLaying_slice1'),
+    ('Chicken-EggLaying_slice2.fbx', 'Chicken', False, 'EggLaying_slice2'),
+    ('Chicken-SitSlice1.fbx', 'Chicken', False, 'SitSlice1'),
 ]
 
 

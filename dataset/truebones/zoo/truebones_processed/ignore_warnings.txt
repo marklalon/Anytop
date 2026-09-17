@@ -14,6 +14,8 @@ Scorpion-2_Death
 Scorpion-2_OnBackDying
 Spider_Gliding
 SpiderG_Die
+Goat_Walk
+Leapord_DieLoop
 # Bat: orientation calculation fell back to the across-vector heuristic
 # Crab: orientation calculation fell back to the across-vector heuristic
 # skeleton exceeds MAX_JOINTS (143 > 100) for Dragon
