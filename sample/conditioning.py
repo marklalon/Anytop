@@ -248,8 +248,9 @@ def _resolve_action_condition(args, model):
     # the string the model fitted, and the one recorded next to the sample -- but
     # the rewrite may only reorder NON-HEAD words: directions bind next to their
     # head, then the remaining modifiers follow. Head-word order is kept as
-    # given: the model pools the head slot as a set, so the order changes no
-    # condition, and the corpus spells one word set one way per group.
+    # given: the first head word is the head slot and any later one a modifier,
+    # so reordering them would change the condition; the corpus spells one
+    # word set one way per group, and the prompt's order is the caller's call.
     try:
         tokens = parse_action_label(label)
     except ActionLabelError as exc:
@@ -264,8 +265,9 @@ def _resolve_action_condition(args, model):
         )
         label = canonical
         # Re-parse so the word order handed to the model is the canonical one.
-        # Every slot pools as a set, so this changes no condition; it keeps
-        # generation emitting exactly what the loader emits for the same label.
+        # Only non-head words moved and every slot pools as a set within
+        # itself, so this changes no condition; it keeps generation emitting
+        # exactly what the loader emits for the same label.
         tokens = parse_action_label(label)
 
     # The same contract function the loader calls, so the sampler cannot hand

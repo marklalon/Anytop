@@ -1,15 +1,15 @@
 {
   "_comment": "Evaluation task battery for eval_checkpoint.py. checkpoint.RUN_NAME is required; checkpoint.MODEL_FILE is optional and defaults to the newest model*.pt. Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task. A task without --action_label must set eval_label (the action of its reference clip); it is only used to pick the reference prior the clips are scored against.",
   "checkpoint": {
-    "RUN_NAME": "merged_locomotion_v18"
+    "RUN_NAME": "merged_locomotion_v19"
   },
   "tasks": [
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "walk, forward", "--loop", "--action_label_cfg_scale", "2"] },
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "run, forward", "--loop", "--action_label_cfg_scale", "2"] },
     { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "run, forward", "--loop", "--action_label_cfg_scale", "2"] },
-    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "jump, forward", "--loop", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "fall", "--loop"] },
     { "category": "Basic", "args": ["--object_type", "Parrot", "--action_label", "fly, forward", "--loop", "--action_label_cfg_scale", "2"] },
-    { "category": "Basic", "args": ["--object_type", "Parrot", "--action_label", "fly, backward", "--loop", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "Parrot", "--action_label", "hover", "--loop"] },
     { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "run, forward", "--loop", "--action_label_cfg_scale", "2"] },
     { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "swim, forward", "--loop", "--action_label_cfg_scale", "2"] },
 

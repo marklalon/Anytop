@@ -27,20 +27,9 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
 )
 
 
-# 3: the embedding contract carries word_table_sha256, so the embedding
-# fingerprint covers the VECTORS and not only the inputs that should have
-# produced them.  A schema-2 sidecar or checkpoint has no such field and its
-# fingerprint certifies nothing about its table, so it is refused rather than
-# read under a guarantee it cannot make.
 ACTION_WORD_EMBEDDING_SCHEMA_VERSION = 3
 ACTION_CONDITIONING_CONTRACT_SCHEMA_VERSION = 1
-# 2: HANDS_VOCAB (hand0/hand1/hand2) -- exclusive, at most one per label, its
-#    own slot channel; replaced weapon + 1hand/2hand in the modifier slot.
-# 3: head order carries no direction.  The transition group pools its head
-#    words as a set exactly like the other two groups; the signed-permutation
-#    role transform (R_B) on a transition's second head, its role ids and the
-#    order-head mask are gone, and a word set has one head order in every group.
-ACTION_LABEL_PARSER_CONTRACT_VERSION = 3
+ACTION_LABEL_PARSER_CONTRACT_VERSION = 4
 
 # Slots.  The approved representation gives each slot its own conditioning
 # channel, so a word's contribution depends on ITS slot only -- appending
@@ -106,8 +95,9 @@ def action_label_slots(tokens: Iterable[str]) -> dict[str, tuple]:
 
     This is the canonical slot-assignment implementation, shared by training
     and inference rather than copied into either path.  A word's slot is a
-    property of the word alone: the label's group and the head order play no
-    part, so the same label is the same condition in every group's model.
+    property of the word and its position only (see :func:`label_slot_ids`):
+    the label's group plays no part, so the same label is the same condition
+    in every group's model.
     """
     ordered_tokens = tuple(tokens)
     if len(ordered_tokens) > ACTION_LABEL_MAX_WORDS:
@@ -137,21 +127,51 @@ def action_label_slots(tokens: Iterable[str]) -> dict[str, tuple]:
     return {
         "word_ids": tuple(vocab_index[word] for word in ordered_tokens),
         "word_mask": tuple(True for _ in ordered_tokens),
-        "slot_ids": tuple(word_slot(word) for word in ordered_tokens),
+        "slot_ids": label_slot_ids(ordered_tokens),
     }
 
 
-def word_slot(word: str) -> int:
-    """Which conditioning channel one vocabulary word feeds."""
+def word_slots(word: str) -> tuple[int, ...]:
+    """Every conditioning channel one vocabulary word can feed.
+
+    A direction, hands or modifier word has one slot.  A head word has two: the
+    head slot when it leads the label, the modifier slot when another head word
+    does (:func:`label_slot_ids`).  The rank report certifies every slot over
+    all the words that can reach it, so a head word counts as a modifier source
+    too.
+    """
     if word in HEAD_VOCAB:
-        return SLOT_HEAD
+        return (SLOT_HEAD, SLOT_MODIFIER)
     if word in DIRECTION_VOCAB:
-        return SLOT_DIRECTION
+        return (SLOT_DIRECTION,)
     if word in HANDS_VOCAB:
-        return SLOT_HANDS
+        return (SLOT_HANDS,)
     if word not in CONTROLLED_VOCAB:
         raise ValueError(f"unknown action-label token: {word!r}")
-    return SLOT_MODIFIER
+    return (SLOT_MODIFIER,)
+
+
+def label_slot_ids(ordered_tokens: Iterable[str]) -> tuple[int, ...]:
+    """The slot each token of one label feeds, in the label's written order.
+
+    The FIRST head word is what the label is about and is the head slot's only
+    member; a later head word qualifies it (the posture or medium it happens
+    in: "attack, hover", "walk, crouch", "land, jump") and is pooled with the
+    modifiers.  So the head channel is always one undiluted word vector, and
+    which head word is written first decides the condition -- the corpus
+    spells one word set one way per group for exactly that reason
+    (motion_labels._validate_head_order_consistency).
+    """
+    slots = []
+    head_seen = False
+    for word in ordered_tokens:
+        own = word_slots(word)[0]
+        if own == SLOT_HEAD:
+            slots.append(SLOT_MODIFIER if head_seen else SLOT_HEAD)
+            head_seen = True
+        else:
+            slots.append(own)
+    return tuple(slots)
 
 
 def assemble_slot_channels(
@@ -165,8 +185,9 @@ def assemble_slot_channels(
     model mirrors it on tensors, against the same slot ids) so a channel cannot
     acquire two definitions.
 
-    Each slot holds the mean of its member word vectors, L2-normalised: a set,
-    so the order the words were written in does not reach the model.
+    Each slot holds the mean of its member word vectors, L2-normalised: a set
+    within the slot, so the order words were written in does not reach the
+    model beyond what the slot ids already encode (which head word leads).
     Normalising per slot is what makes the head axis independent of how many
     modifiers the label spells; an absent slot is a zero row flagged in the
     returned mask, never a renormalisation of the others.
@@ -205,11 +226,13 @@ def slot_channel_representation() -> dict[str, Any]:
         "kind": "slot_channels",
         "slots": list(ACTION_LABEL_SLOTS),
         "slot_assignment": (
-            "head = HEAD_VOCAB member; direction = DIRECTION_VOCAB member; "
+            "head = the label's first HEAD_VOCAB word (exactly one member); "
+            "direction = DIRECTION_VOCAB member; "
             "hands = HANDS_VOCAB member (at most one); "
-            "modifier = every other vocabulary word"
+            "modifier = every other vocabulary word, including every HEAD_VOCAB "
+            "word after the first"
         ),
-        "slot_aggregation": "mean of member word vectors (a set: word order is not encoded), then L2 normalisation",
+        "slot_aggregation": "mean of member word vectors (a set within the slot), then L2 normalisation",
         "absent_slot": "zero row, reported in slot_mask; never renormalises the other slots",
         "channel_layout": "concatenated in ACTION_LABEL_SLOTS order",
         "per_word_weights": None,
@@ -273,7 +296,7 @@ def conditioning_contract_payload(
         "head_vocab": list(HEAD_VOCAB),
         "max_words": ACTION_LABEL_MAX_WORDS,
         "max_heads": ACTION_LABEL_MAX_HEADS,
-        "canonicalization": "preserve written head order (one head order per word set and group; the order itself is not encoded); bind directions after turn or final head; sort remaining modifiers by ordered_vocab",
+        "canonicalization": "preserve written head order (one head order per word set and group; the first head word is the head slot, later head words are modifier-slot members, so the order is the condition); bind directions after turn or final head; sort remaining modifiers by ordered_vocab",
         "slot_fields": ["word_ids", "word_mask", "slot_ids"],
         "slot_names": list(ACTION_LABEL_SLOTS),
         "group_is_checkpoint_local": True,
@@ -300,18 +323,22 @@ def numerical_rank(vectors: np.ndarray) -> tuple[int, float]:
 
 
 def slot_source_vectors(word_vectors: np.ndarray) -> dict[str, np.ndarray]:
-    """The source rows each slot channel can be a normalised sum of."""
+    """The source rows each slot channel can be a normalised sum of.
+
+    A head word is a source of the modifier slot as well as the head slot
+    (:func:`word_slots`), so the modifier rows are the modifier vocabulary plus
+    the whole head vocabulary.  The same vector in two slots is fine for the
+    proof: the slots are disjoint blocks, so each block's rank is its own.
+    """
     vectors = np.asarray(word_vectors, dtype=np.float64)
     vocab_index = {word: index for index, word in enumerate(CONTROLLED_VOCAB)}
     return {
-        "head": vectors[[vocab_index[word] for word in HEAD_VOCAB]],
-        "direction": vectors[[vocab_index[word] for word in DIRECTION_VOCAB]],
-        "modifier": vectors[[
+        name: vectors[[
             vocab_index[word]
             for word in CONTROLLED_VOCAB
-            if word_slot(word) == SLOT_MODIFIER
-        ]],
-        "hands": vectors[[vocab_index[word] for word in HANDS_VOCAB]],
+            if slot in word_slots(word)
+        ]]
+        for slot, name in enumerate(ACTION_LABEL_SLOTS)
     }
 
 

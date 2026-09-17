@@ -32,14 +32,16 @@ def test_slot_source_rank_covers_the_full_domain_and_projection_width():
     report = _slot_source_rank_report(table, latent_dim=256)
     assert report["full_rank"]
     assert report["fits_projection"]
-    assert report["total_rank"] == 107
+    # A head word is a modifier source too (any head word after the first), so
+    # the modifier slot draws on the whole action vocabulary: 66 + 32.
+    assert report["total_rank"] == 139
     assert {name: item["rank"] for name, item in report["slots"].items()} == {
-        "head": 36,
+        "head": 32,
         "direction": 6,
-        "modifier": 62,
+        "modifier": 98,
         "hands": 3,
     }
-    assert not _slot_source_rank_report(table, latent_dim=106)["fits_projection"]
+    assert not _slot_source_rank_report(table, latent_dim=138)["fits_projection"]
 
 
 def test_slot_assignment_carries_ids_masks_and_slots_only():
@@ -47,7 +49,12 @@ def test_slot_assignment_carries_ids_masks_and_slots_only():
     slots = action_label_slots(("idle", "attack"))
     assert set(slots) == {"word_ids", "word_mask", "slot_ids"}
     assert slots["word_mask"] == (True, True)
-    assert slots["slot_ids"] == (SLOT_HEAD, SLOT_HEAD)
+    # Only the first head word is the head; the second is a modifier-slot member.
+    assert slots["slot_ids"] == (SLOT_HEAD, SLOT_MODIFIER)
+    assert action_label_slots(("attack", "idle"))["slot_ids"] == (SLOT_HEAD, SLOT_MODIFIER)
+    assert action_label_slots(("run", "turn", "left", "fast", "hand1"))["slot_ids"] == (
+        SLOT_HEAD, SLOT_MODIFIER, SLOT_DIRECTION, SLOT_MODIFIER, SLOT_HANDS,
+    )
 
 
 def _word_table(dim=768):
@@ -117,22 +124,32 @@ def test_absent_slot_does_not_renormalise_the_others():
             assert np.linalg.norm(without[slot]) == pytest.approx(1.0)
 
 
-def test_head_slot_is_a_set():
-    """Head order never reaches the model: "a, b" and "b, a" are one condition.
+def test_first_head_word_is_the_head_and_later_ones_are_modifiers():
+    """"a, b" and "b, a" are two conditions: the first head word is the head.
 
-    That is safe only because the data contract lets one word set have one head
-    order per group (motion_labels._validate_head_order_consistency) -- in every
-    group, the transition group included. This test records the dependency, so
-    removing that rule fails here.
+    The head channel is that one word's vector, undiluted by a second head
+    word, which lands in the modifier channel instead. The data contract's
+    one-head-order-per-word-set rule (motion_labels._validate_head_order_consistency)
+    is what keeps the corpus from spelling one kind of clip as two conditions.
     """
     table = _word_table()
-    first, _ = _channels(("idle", "sit"), table)
-    second, _ = _channels(("sit", "idle"), table)
-    assert np.array_equal(first, second)
-    # ...and a second head does qualify the first: the pooled channel is neither
-    # head alone.
-    alone, _ = _channels(("idle",), table)
-    assert not np.allclose(first[SLOT_HEAD], alone[SLOT_HEAD])
+    first, first_present = _channels(("attack", "hover"), table)
+    second, _ = _channels(("hover", "attack"), table)
+    assert not np.allclose(first[SLOT_HEAD], second[SLOT_HEAD])
+    # The head channel of "attack, hover" is exactly the head channel of "attack".
+    alone, alone_present = _channels(("attack",), table)
+    assert np.array_equal(first[SLOT_HEAD], alone[SLOT_HEAD])
+    assert not alone_present[SLOT_MODIFIER] and first_present[SLOT_MODIFIER]
+    # ...and the second head word pools with the modifiers: "attack, hover, bite"
+    # has the modifier channel of the {hover, bite} set, while its head channel
+    # is still "attack" alone.
+    with_bite, _ = _channels(("attack", "hover", "bite"), table)
+    assert np.array_equal(with_bite[SLOT_HEAD], alone[SLOT_HEAD])
+    hover_id = CONTROLLED_VOCAB.index("hover")
+    bite_id = CONTROLLED_VOCAB.index("bite")
+    expected = (table[hover_id] + table[bite_id]) / 2.0
+    expected = expected / np.linalg.norm(expected)
+    assert np.allclose(with_bite[SLOT_MODIFIER], expected)
 
 
 def test_slot_channel_representation_is_pinned_in_the_conditioning_fingerprint():
@@ -169,7 +186,8 @@ def test_conditioning_contract_carries_no_role_material():
     assert payload["slot_fields"] == ["word_ids", "word_mask", "slot_ids"]
     assert not any("role" in key for key in payload)
     assert not any("role" in key for key in payload["representation"])
-    assert payload["parser_contract_version"] == 3
+    # 4: the first head word is the head slot, later head words are modifiers.
+    assert payload["parser_contract_version"] == 4
 
 
 def test_embedding_change_propagates_into_conditioning_fingerprint():

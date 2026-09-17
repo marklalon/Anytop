@@ -494,8 +494,9 @@ class AnyTop(nn.Module):
         """Tensor mirror of ``assemble_slot_channels``: ``[B, S * D]``.
 
         Same rule, same slot ids, one channel per slot: the mean of that slot's
-        member word vectors (a set -- word order never reaches the model),
-        L2-normalised, and a zero row for an absent slot. Because a channel is a
+        member word vectors (a set within the slot; which head word leads is
+        already decided by the slot ids), L2-normalised, and a zero row for an
+        absent slot. Because a channel is a
         function of its own slot's members only, appending modifiers moves the
         head and direction channels by exactly zero.
         """

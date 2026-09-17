@@ -162,8 +162,13 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # head slot is "what the label is about", not "the important word".
         for absent in ('hand1', 'bow', 'forward', 'cast', 'spin', 'block'):
             self.assertNotIn(absent, HEAD_VOCAB, absent)
-        for present in ('idle', 'attack', 'crouch', 'rear', 'hover', 'sleep', 'sit',
-                        'draw', 'sheathe', 'stop', 'kneel'):
+        # Posture states that only ever qualified a head (crouch / dead / sit /
+        # sleep) are modifiers: a label is never ABOUT them.
+        for absent in ('crouch', 'dead', 'sit', 'sleep'):
+            self.assertNotIn(absent, HEAD_VOCAB, absent)
+            self.assertIn(absent, MODIFIER_VOCAB, absent)
+        for present in ('idle', 'attack', 'rear', 'hover', 'draw', 'sheathe',
+                        'stop', 'kneel'):
             self.assertIn(present, HEAD_VOCAB, present)
 
     def test_t5_text_map_is_one_to_one_on_the_expanded_table(self):
@@ -273,7 +278,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             ('walk, , forward', 'empty comma segment'),
             ('walk, walk', 'repeated token'),
             ('hand1', 'no head word'),
-            ('idle, hover, crouch', 'three head words'),
+            ('idle, hover, rear', 'three head words'),
             ('idle, hand0, hand1', 'two hand-state words on one exclusive axis'),
             ('walk, forward, hand2, hand1', 'two hand-state words on one exclusive axis'),
             (', '.join(['idle'] + list(DIRECTION_VOCAB) + ['bow', 'gun']),
@@ -321,9 +326,10 @@ class ActionLabelVocabularyTest(unittest.TestCase):
     def test_head_order_is_consistent_within_every_group(self):
         from data_loaders.truebones.truebones_utils import motion_labels
 
-        # One word set, one head order -- the transition group included: head
-        # order carries no direction, so two spellings are one condition under
-        # two strings, never a transition and its reverse.
+        # One word set, one head order -- the transition group included: the
+        # first head word is the head slot and the second a modifier, so two
+        # spellings would be two conditions for what the corpus treats as one
+        # kind of clip, never a transition and its reverse.
         for group in ('transition', 'stationary', 'locomotion'):
             with self.assertRaises(SystemExit, msg=group):
                 motion_labels._validate_head_order_consistency([

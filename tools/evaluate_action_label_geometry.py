@@ -51,7 +51,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     fingerprint,
     slot_channel_representation,
     slot_source_rank_report,
-    word_slot,
+    word_slots,
     word_table_sha256,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
@@ -335,7 +335,9 @@ def _slot_configuration_margins(
     import itertools
 
     vocab_index = {word: index for index, word in enumerate(CONTROLLED_VOCAB)}
-    modifiers = tuple(word for word in CONTROLLED_VOCAB if word_slot(word) == SLOT_MODIFIER)
+    # A head word can be a modifier too (any head word after the first), so the
+    # modifier domain is the whole vocabulary the slot can draw on.
+    modifiers = tuple(word for word in CONTROLLED_VOCAB if SLOT_MODIFIER in word_slots(word))
 
     def pooled(vectors: list[np.ndarray]) -> np.ndarray:
         mean = np.mean(np.stack(vectors), axis=0)
@@ -343,14 +345,11 @@ def _slot_configuration_margins(
 
     configurations: dict[str, tuple[list[np.ndarray], list[tuple[str, ...]]]] = {}
     head_vectors, head_names = [], []
+    # The head slot holds exactly one member (the label's first head word); a
+    # second head word is a modifier-slot configuration, enumerated below.
     for word in HEAD_VOCAB:
         head_vectors.append(pooled([atoms[vocab_index[word]]]))
         head_names.append((word,))
-    # Head pairs are SETS: the head slot pools its members, so "a, b" and
-    # "b, a" are one configuration.
-    for first, second in itertools.combinations(HEAD_VOCAB, 2):
-        head_vectors.append(pooled([atoms[vocab_index[first]], atoms[vocab_index[second]]]))
-        head_names.append((first, second))
     configurations["head"] = (head_vectors, head_names)
 
     direction_vectors, direction_names = [], []
@@ -516,10 +515,11 @@ def _hard_gate(candidate: dict[str, Any], baseline: dict[str, Any]) -> tuple[boo
 def _bundle_keys_are_unique(keyed: Iterable[tuple[str, str]]) -> bool:
     """Distinct labels must produce distinct (group, {word}) keys.
 
-    Every slot pools its words as a set, so two labels whose only difference is
-    word ORDER share a channel. The per-file validator forbids two head orders
-    of one word set within a group, but it reads one sidecar at a time; this is
-    the corpus-wide check that keeps a second file from reopening it.
+    Two head orders of one word set are two conditions (the first head word is
+    the head slot, a later one a modifier), so the corpus has to decide once
+    which word a kind of clip is about. The per-file validator forbids two head
+    orders of one word set within a group, but it reads one sidecar at a time;
+    this is the corpus-wide check that keeps a second file from reopening it.
     """
     seen: set[tuple[str, frozenset]] = set()
     for group, label in keyed:

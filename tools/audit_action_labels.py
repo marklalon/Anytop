@@ -48,9 +48,12 @@ same GIFs to the vision model for exactly this purpose.
 
   R4  direction spelling.  Every ``locomotion`` label must name a heading:
       a planar one, or a vertical one for a clip that travels out of the ground
-      plane ("fly, up", "jump, fall").  Corpus-wide a plain forward walk is
-      spelled "walk" 87 times and "walk, forward" 30 times, which makes
-      "forward" noise in a condition shared across every species.
+      plane ("fly, up", "jump, fall").  A label carrying a word with no planar
+      travel to name -- ``hover`` (held in place) or ``jump`` (a vertical
+      burst) -- is exempt, because there is no heading to spell (override with
+      --r4-exempt-words).  Corpus-wide a plain forward walk is spelled "walk"
+      87 times and "walk, forward" 30 times, which makes "forward" noise in a
+      condition shared across every species.
 
   R5  gait-word conflicts.  ``die`` + ``fall``, ``die`` + ``idle``, ``walk`` +
       ``run`` (should be ``walk, trot``), ``glide`` + ``flap``, and ``slow`` +
@@ -169,6 +172,14 @@ PLANAR_DIRECTIONS = ("forward", "backward", "left", "right")
 # real ones. ``fall`` and ``dive`` are ACTION_VOCAB words, not directions, but
 # they name the same vertical axis and settle the same question.
 VERTICAL_WORDS = ("up", "down", "dive", "fall")
+
+# Words that name an action with no planar heading to spell: ``hover`` holds
+# the body in place and ``jump`` is a vertical burst -- neither travels across
+# the ground plane, so R4 must not demand a direction of them the way it does
+# of a walk or a run.  Distinct from VERTICAL_WORDS (which name travel OUT of
+# the plane): these name the absence of a planar component.  Matched anywhere
+# in the label, not just as the head -- "run, jump" keeps "run" first.
+NO_HEADING_WORDS = ("hover", "jump")
 
 # A renamed direction word would otherwise turn R4 into "every locomotion clip
 # is a violation" without anything saying why.
@@ -663,11 +674,14 @@ def check_r3(clips, ignored_clips=None):
     return findings, stats
 
 
-def check_r4(clips, ignored_clips=None):
+def check_r4(clips, ignored_clips=None, no_heading_words=None):
     """``locomotion`` labels that name neither a planar nor a vertical heading."""
     ignored = set(ignored_clips or ())
+    no_heading = (set(NO_HEADING_WORDS) if no_heading_words is None
+                  else set(no_heading_words))
     findings = []
-    stats = {"locomotion_clips": 0, "vertical_clips": 0, "suppressed": 0}
+    stats = {"locomotion_clips": 0, "vertical_clips": 0,
+             "no_heading_clips": 0, "suppressed": 0}
     planar = set(PLANAR_DIRECTIONS)
     vertical = set(VERTICAL_WORDS)
     for clip in sorted(clips, key=lambda item: (item["species"], item["clip"])):
@@ -684,6 +698,11 @@ def check_r4(clips, ignored_clips=None):
             # 'fly, up', 'swim, down', 'jump, fall', 'fly, dive, down': the
             # heading is named, it just is not in the ground plane.
             stats["vertical_clips"] += 1
+            continue
+        if no_heading & words:
+            # 'hover', 'hover, slow', 'run, jump', 'swim, jump': the action has
+            # no planar travel to name, so a direction is not a defect.
+            stats["no_heading_clips"] += 1
             continue
         findings.append({
             "rule": "R4",
@@ -811,7 +830,13 @@ def report_r4(findings, stats, detail=True):
     print("\n== R4  direction spelling ==")
     total = stats["locomotion_clips"]
     vertical = stats["vertical_clips"]
-    exempt = f" ({vertical} vertical, exempt)" if vertical else ""
+    no_heading = stats.get("no_heading_clips", 0)
+    parts = []
+    if vertical:
+        parts.append(f"{vertical} vertical")
+    if no_heading:
+        parts.append(f"{no_heading} no-heading")
+    exempt = f" ({', '.join(parts)}, exempt)" if parts else ""
     if stats.get("suppressed"):
         print(f"   {stats['suppressed']} clip(s) already confirmed fine")
     if not findings:
@@ -898,6 +923,13 @@ def main() -> int:
         help="R1: comma-separated label HEAD words whose buckets are skipped -- "
              "categories diverse by nature (default: %(default)s). Pass '' to "
              "disable the exemption.",
+    )
+    parser.add_argument(
+        "--r4-exempt-words", "--r4_exempt_words", dest="r4_exempt_words",
+        default=",".join(NO_HEADING_WORDS),
+        help="R4: comma-separated words that name an action with no planar "
+             "heading (default: %(default)s), so a label carrying one is not "
+             "flagged. Pass '' to disable the exemption.",
     )
     parser.add_argument(
         "--ignore", action="append", default=None, metavar="JSONL",
@@ -987,6 +1019,9 @@ def main() -> int:
     exempt_heads = {word.strip().lower()
                     for word in (args.r1_exempt_labels or "").split(",")
                     if word.strip()}
+    r4_no_heading = {word.strip().lower()
+                     for word in (args.r4_exempt_words or "").split(",")
+                     if word.strip()}
     n_ignore = len(ignored_buckets) + len(ignored_clips)
     if n_ignore:
         print(f"ignore    : {n_ignore} confirmed-fine item(s) "
@@ -995,6 +1030,9 @@ def main() -> int:
     if exempt_heads:
         print(f"exempt    : R1 skips label head word(s) "
               f"{', '.join(sorted(exempt_heads))}")
+    if r4_no_heading:
+        print(f"exempt    : R4 skips labels with word(s) "
+              f"{', '.join(sorted(r4_no_heading))} (no planar heading to name)")
 
     print(f"cond      : {cond_path}")
     print(f"sources   : {', '.join(source.namespace for source in sources)}")
@@ -1023,7 +1061,7 @@ def main() -> int:
         report_r3(found, stats, detail)
         findings += found
     if "R4" in requested:
-        found, stats = check_r4(clips, ignored_clips)
+        found, stats = check_r4(clips, ignored_clips, no_heading_words=r4_no_heading)
         report_r4(found, stats, detail)
         findings += found
     if "R5" in requested:

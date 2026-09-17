@@ -45,36 +45,37 @@ MOTION_METADATA_SCHEMA_VERSION = 7
 ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 
 # The action vocabulary (flat -- no core/detail split). Every word reaches the
-# model through the same path, the frozen-T5 embedding of the label text, so a
-# rare word is just a point next to its pretrained neighbours.
+# model through the same frozen-T5 embedding of the label text, so a rare word
+# is just a point next to its pretrained neighbours.
 #
 # ADMISSION RULE: a word stays in only if the corpus shows variation
-# attributable to it after species, group and base action are held fixed; words
-# that fail that test are dropped rather than carried as noise. The table is a
-# maintained controlled set, not a fixed list -- it changes as the corpus grows.
+# attributable to it after species, group and base action are held fixed; the
+# table is a maintained controlled set, not a fixed list.
 #
 # The vocabulary is two tuples. HEAD_VOCAB is the closed set of HEAD words --
-# the word(s) a label is about, spelled in WRITTEN order (primary word first)
-# and pooled into the head slot as a set; their position in the tuple decides
-# nothing. MODIFIER_VOCAB is every other action word; ITS ORDER IS THE CANONICAL
+# the words a label can be ABOUT: a state the body is in (idle, run, hover,
+# rear ...) or an event that is the whole clip (die, getup, land, draw,
+# sheathe, stop ...). Their tuple position decides nothing; they are spelled
+# in WRITTEN order. Only the FIRST head word feeds the head slot; a second head
+# QUALIFIES it ("land, hover" = a landing out of flight, "attack, hover" an
+# attack in the air) and is routed to the modifier slot
+# (action_label_conditioning_contract.label_slot_ids), so the head channel is
+# always one undiluted word. Because a later head reaches the model as a
+# modifier, head order IS the condition: "attack, hover" and "hover, attack"
+# are two labels -- hence one word set may have only one head order per group
+# (_validate_head_order_consistency) and nothing may reorder head words. Head
+# order still carries no DIRECTION. At most ACTION_LABEL_MAX_HEADS heads per
+# label ("block" is deliberately OUT: "idle, hover, block" would hold three).
+#
+# MODIFIER_VOCAB is every other action word; ITS ORDER IS THE CANONICAL
 # SPELLING ORDER: direction words bind after a ``turn`` head (or the last head),
 # the modifiers follow in tuple order -- one combination, exactly one spelling.
 # See canonical_action_label. DIRECTION_VOCAB and HANDS_VOCAB are separate axes.
-#
-# A head is a word the label can be ABOUT: a state the body is in (idle, run,
-# hover, rear, crouch ...) or an event that is the whole clip (die, getup, land,
-# draw, sheathe, stop ...). A second head QUALIFIES the first ("land, fly" is a
-# landing out of flight, "getup, crouch" a get-up into a crouch). Head order
-# carries NO direction -- the model pools the head slot as a set, so "a, b" and
-# "b, a" are one condition -- which is why one word set may have only one head
-# order per group (_validate_head_order_consistency) and why nothing may reorder
-# head words on its own. "block" is deliberately OUT: "idle, hover, block" would
-# hold three heads and break the at-most-two rule.
 HEAD_VOCAB: tuple[str, ...] = (
-    "attack", "burrow", "crawl", "crouch", "dance", "dead", "die", "draw", "fall",
+    "attack", "burrow", "crawl", "dance", "die", "draw", "fall",
     "fly", "getup", "hover", "hurt", "idle", "jump", "kneel", "land", "laydown",
-    "lift", "pickup", "putdown", "rear", "rest", "roll", "run", "sheathe", "sit",
-    "sitdown", "sleep", "spawn", "stop", "swim", "takeoff", "turn", "walk", "work",
+    "lift", "pickup", "putdown", "rear", "rest", "roll", "run", "sheathe",
+    "sitdown", "spawn", "stop", "swim", "takeoff", "turn", "walk", "work",
 )
 
 # Blocks order the spelling only; nothing weights a word by its block.
@@ -84,6 +85,7 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     # -- block B: secondary action layered on the head --
     "bite", "roar", "eat", "look", "shake", "throw", "taunt",
     "sniff", "yawn", "catch", "sting", "kick", "spit", "wag", "scratch",
+    "crouch", "dead", "sit", "sleep",
     # -- block C: how a strike is delivered (manner before strike type) --
     "spin", "flip", "twist", "charge",
     "headbutt", "punch", "swat", "slash", "stab", "smash", "swipe", "whip",
@@ -103,42 +105,29 @@ MODIFIER_VOCAB: tuple[str, ...] = (
 
 ACTION_VOCAB: tuple[str, ...] = HEAD_VOCAB + MODIFIER_VOCAB
 
-# The direction axis -- travel / facing direction. Separate vocabulary from the
-# action words above. Directions bind after a ``turn`` head (or the last head),
-# before the remaining modifiers.
-# Spelled BARE ("forward", not "leftward"): the derived adjectives collapse to
-# nearly the same T5 point, while bare left/right stay distinct.
-#
-# up/down are DIRECTIONS (where the net travel goes), not actions -- dive stays
-# an action (what the body is doing). The vertical word is spelled LAST, after
-# the planar ones; at most one vertical word per label. T5 carries a direction
-# as a roughly linear offset that composes with unseen actions.
+# The direction axis -- travel / facing direction, a separate vocabulary from
+# the action words. Directions bind after a ``turn`` head (or the last head),
+# before the remaining modifiers, spelled BARE ("forward", not "leftward": the
+# derived adjectives collapse to nearly the same T5 point). up/down are
+# DIRECTIONS (where the net travel goes), not actions -- dive stays an action;
+# the vertical word is spelled LAST after the planar ones, at most one per label.
 DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right", "up", "down")
 
-# The hands axis -- how many hands are OCCUPIED, i.e. holding something:
+# The hands axis -- how many hands are OCCUPIED (holding something):
+#   hand0 both empty | hand1 one hand holds, the other free |
+#   hand2 both hold: a two-handed grip OR one item per hand (sword + shield).
+# It is an occupancy count, not a weapon class: sword + shield is hand2 (neither
+# arm is free), a dagger and a torch are both hand1. Which implement is used
+# (bow / gun / hammer / shield) stays a modifier (MODIFIER_VOCAB block G):
+# ``attack, bow, hand2``.
 #
-#   hand0  both hands empty (arms swing / gesture freely)
-#   hand1  one hand holds something (a sword, a torch, a sack) and the other is free
-#   hand2  both hands hold something: a two-handed grip (greatsword, rifle, bow,
-#          spear at the ready, a crate) OR one item per hand (sword + shield)
-#
-# It is an occupancy count, not a weapon class: sword + shield is hand2 because
-# neither arm is free, exactly like a rifle; a dagger and a torch are both hand1.
-# Which implement the action uses (bow / gun / hammer / shield) stays a
-# modifier (MODIFIER_VOCAB block G) and is written alongside: ``attack, bow, hand2``.
-#
-# The three tokens are MUTUALLY EXCLUSIVE -- at most one per label -- and absent
-# means "unspecified" (the model answers with the marginal over hand states),
-# so ``hand0`` is a real statement, not the default: it is what lets a prompt
-# ask for an unarmed idle in a corpus where most idles of that species hold a
-# weapon. Annotated for every clip of a species that holds something in at
-# least one clip; species that never hold anything (and anything without hands)
-# leave the axis empty.
-#
-# The axis replaced ``weapon`` + ``1hand`` / ``2hand`` (2026-09-11). That
-# spelling had no way to say "unarmed" -- the untagged clips of an armed species
-# were a MIX of armed and unarmed, so a prompt without ``weapon`` still drew
-# armed poses -- and it spent two tokens on one categorical value.
+# The three tokens are MUTUALLY EXCLUSIVE (at most one per label); absent means
+# "unspecified" (the marginal over hand states), so ``hand0`` is a real
+# statement, not the default -- it is what lets a prompt ask for an unarmed
+# idle in a corpus where most idles hold a weapon. Annotate the axis for every
+# clip of a species that holds something in at least one clip; species that
+# never hold anything (and anything without hands) leave it empty. Replaced
+# ``weapon`` + ``1hand``/``2hand`` (2026-09-11), which could not say "unarmed".
 HANDS_VOCAB: tuple[str, ...] = ("hand0", "hand1", "hand2")
 
 CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB + DIRECTION_VOCAB + HANDS_VOCAB
@@ -178,27 +167,20 @@ ACTION_LABEL_MAX_HEADS = 2
 # ---------------------------------------------------------------------------
 # token -> T5 text
 # ---------------------------------------------------------------------------
-# A token is the canonical ID: what the annotation writes, what keys the
-# embedding sidecar, what indexes the per-word weight. The T5 TEXT is what is
-# actually encoded; a missing key means "encode the token itself". The entries
-# below are the tokens whose bare spelling lands in the WRONG T5 neighbourhood.
+# A token is the canonical ID (what the annotation writes, what keys the
+# embedding sidecar); the T5 TEXT is what is actually encoded. A missing key
+# means "encode the token itself". The entries below are the tokens whose bare
+# spelling lands in the WRONG T5 neighbourhood, chosen by measurement
+# (mean-centred t5-base cosines): only tokens where the wrong sense WON as a
+# different referent, not a near synonym, are overridden. Glued compounds are
+# FINE; the hand tokens need the override for the trailing numeral, not the
+# fragmentation.
 #
-# Chosen by measurement (mean-centred t5-base cosines against single-word
-# probes of the intended and the dominant-wrong sense): only tokens where the
-# wrong sense WON, as a different referent rather than a near synonym, are
-# overridden. Glued compounds are FINE -- cos("laydown", "lay down") = 0.70,
-# ("takeoff", "take off") = 0.88, vs a p95 of 0.12 over unrelated pairs; the
-# hand tokens need the override for the trailing numeral, not the fragmentation.
-#
-# SECOND RULE (word-keyed conditioning): an override carries only what the token
-# itself contributes, NOT what a co-occurring token already spells. The hands
-# axis is written as a bare count ("empty hands" / "one hand" / "both hands"):
-# the three are exclusive members of their own slot channel, so all the model
-# needs is three well-separated points, and phrasing every one of them around
-# a shared anchor is what makes them collide (measured 2026-09-11, mean-centred
-# t5-base: "one-handed weapon" vs "two-handed weapon" 0.87, "holding in one
-# hand" vs "holding in both hands" 0.80, versus "one hand" vs "both hands"
-# 0.53 and "empty hands" vs either 0.24 / 0.34).
+# An override carries only what the token itself contributes, NOT what a
+# co-occurring token already spells: the hands axis is a bare count ("empty
+# hands" / "one hand" / "both hands") -- the three are exclusive members of
+# their own slot channel, so what the model needs is three well-separated
+# points, and phrasing them around a shared anchor makes them collide.
 #
 # Constraints, all asserted below: one-to-one on the EXPANDED table, no
 # whitespace in a token, every key a real vocabulary word. No reverse lookup --
@@ -367,8 +349,8 @@ def canonical_action_label(words) -> str:
     """Spell *words* with stable head order and canonical modifier placement.
 
     HEAD ORDER IS NEVER TOUCHED -- it is the written order (primary word first),
-    and the corpus is spelled so that one word set has one head order per group;
-    re-sorting here would split that spelling. Directions bind after a ``turn``
+    and the first head word is the one that feeds the head slot; re-sorting
+    here would change the condition, not just the spelling. Directions bind after a ``turn``
     head (or the last head) and precede other modifiers, so they qualify the
     motion rather than a trailing word (``walk, right, hand1``). Other modifiers are sorted by
     :data:`CONTROLLED_VOCAB` index: one combination, exactly one spelling. The
@@ -537,10 +519,12 @@ def _validate_action_label_entry(
 def _validate_head_order_consistency(rows) -> None:
     """Within a group, one word set has one head order.
 
-    The model pools the head slot as a set, so two head orders of one word set
-    are one condition under two label strings -- an inconsistent annotation,
-    never a distinction the model could learn. Applies to every group alike:
-    head order carries no direction anywhere.
+    The first head word feeds the head slot and any later one the modifier
+    slot, so two head orders of one word set are two DIFFERENT conditions. Two
+    spellings of the same word set inside one group would therefore be the
+    corpus contradicting itself about what those clips are about; the
+    annotation has to decide once. Applies to every group alike: head order
+    carries no direction anywhere.
 
     *rows* is an iterable of ``(line_number, group, clip, tokens)``.
     """
@@ -561,9 +545,9 @@ def _validate_head_order_consistency(rows) -> None:
                 f"clip '{clip}' spells the head words of {sorted(key[1])} as "
                 f"{list(heads)}, but {ACTION_LABELS_FILE}:{first_line} "
                 f"('{first_clip}') spells the same word set as "
-                f"{list(first_heads)}. Head order carries no meaning to the "
-                f"model (the head slot pools as a set), so within {group} one "
-                f"word set must have one spelling.",
+                f"{list(first_heads)}. The first head word is the head slot, "
+                f"the second a modifier, so these are two different conditions; "
+                f"within {group} one word set must have one spelling.",
             )
 
 # ---------------------------------------------------------------------------

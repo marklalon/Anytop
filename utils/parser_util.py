@@ -16,37 +16,7 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-# 8: action-label hands axis (hand0/hand1/hand2) in a fourth slot channel;
-#    action_label_projection widened from 3 to 4 T5 blocks.
-# 9: circular time embedding is period-free (one wrap per window). Earlier
-#    weights read the loader's tile count off its period and would be asked
-#    for one cycle per window every time.
-# 10: cross-limb reliability fix (docs/cross_limb_reliability_cost_effective_fix.md).
-#    Training: the re-noise timestep of a flagged region is a same-level /
-#    hard mixture (--renoise_same_level_prob) instead of always [t, T).
-#    Model: a global per-joint unreliable_embedding on the input tokens, a
-#    per-block frame-level temporal_reliability_bias, and one cross-K
-#    attention per block (cross_k_norm / cross_k_attn / cross_k_scale).
-# 11: the per-skeleton length L is floored at half the reference skeleton's
-#    (canonical_features.REST_LENGTH_SCALE_FLOOR). The 9 rigs below it (2-8
-#    joints) decode their position/velocity channels with a different L, and
-#    every object_subset's statistics were recomputed under it. Training also
-#    caps each sample's l_simple gradient by default (--sample_loss_limit).
-# 12: loop period is the window (docs/conditional_modulation_upgrade.md §2).
-#    circular_phase_embedding's period is motion_frames, not motion_frames-1,
-#    so the last frame is one step before frame 0 instead of in phase with it;
-#    loop windows (and loop time-scaling) are resampled periodically at step
-#    L/T instead of end to end at (L-1)/(T-1), and the loss step scale follows;
-#    loop_wrap_loss drops its pose term and its rotation term asks for a seam
-#    step like its neighbours instead of last == first.
-# 13: action-label head order carries no direction. The transition group pools
-#    its head words as a set like the other groups: the signed-permutation role
-#    transform (R_B) on a transition's second head, its role ids, the order-head
-#    mask and the model's action_role_b_* buffers are gone, and the corpus was
-#    relabelled from "from, to" pairs to single event words (draw / sheathe /
-#    stop / kneel). Parser contract 2 -> 3; the conditioning-contract
-#    fingerprint refuses the old checkpoints on its own, this bump names why.
-CKPT_VERSION = 13
+CKPT_VERSION = 14
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise

@@ -136,24 +136,30 @@ def test_absent_slot_is_a_zero_row_and_leaves_the_others_alone():
     assert torch.equal(with_direction[:, :width], without[:, :width])
 
 
-def test_head_order_never_reaches_the_model():
-    """Two head words pool as a set, in every group alike.
+def test_first_head_word_leads_in_every_group():
+    """The first head word is the head channel; a second one is a modifier.
 
-    The corpus spells one word set one way per group (the loader's head-order
-    consistency gate), so this is never two conditions under one channel -- it
-    is one condition under one spelling, and the transition group is no longer
-    an exception to it.
+    So "land, hover" and "hover, land" are two conditions in every group alike
+    (the loader's head-order consistency gate keeps the corpus from spelling
+    one kind of clip both ways), and the head channel of "land, hover" is the
+    head channel of "land" itself.
     """
     model = _model(make_test_bundle())
+    width = model.action_word_embeddings.shape[1]
     for group in ('transition', 'stationary', 'locomotion'):
-        first = _channels(model, ['land, fly'], [group])
-        second = _channels(model, ['fly, land'], [group])
-        assert torch.equal(first, second)
-    # The group itself is not part of the condition either: one label is the
-    # same channel vector whichever checkpoint it is fed to.
+        first = _channels(model, ['land, hover'], [group])
+        second = _channels(model, ['hover, land'], [group])
+        assert not torch.equal(first[:, :width], second[:, :width])
+        alone = _channels(model, ['land'], [group])
+        assert torch.equal(first[:, :width], alone[:, :width])
+        # The second head word is in the modifier block, which "land" alone leaves empty.
+        assert torch.count_nonzero(alone[:, 2 * width:3 * width]) == 0
+        assert torch.count_nonzero(first[:, 2 * width:3 * width]) > 0
+    # The group itself is not part of the condition: one label is the same
+    # channel vector whichever checkpoint it is fed to.
     assert torch.equal(
-        _channels(model, ['land, fly'], ['transition']),
-        _channels(model, ['land, fly'], ['stationary']),
+        _channels(model, ['land, hover'], ['transition']),
+        _channels(model, ['land, hover'], ['stationary']),
     )
 
 
@@ -213,7 +219,9 @@ def test_loader_emits_exactly_the_three_slot_fields():
 def test_latent_dim_below_the_slot_source_rank_fails_at_construction():
     bundle = make_test_bundle()
     total_rank = bundle.slot_source_rank_report(TEST_LATENT_DIM)['total_rank']
-    assert total_rank == 107  # 36 state words, 6 directions, 62 modifiers, 3 hands
+    # 32 head words, 6 directions, 66 + 32 modifier sources (a head word after
+    # the first is a modifier), 3 hands.
+    assert total_rank == 139
     with pytest.raises(ValueError, match="smaller than the total slot source rank"):
         _model(bundle, latent_dim=total_rank - 1)
     _model(bundle, latent_dim=TEST_LATENT_DIM)  # the first width at or above it
