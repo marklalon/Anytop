@@ -1,43 +1,73 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Render every processed Truebones clip to a 224x224 review GIF.
+"""Render every processed clip of every dataset to a 224x224 review GIF.
 
-Input is the untouched source tree ``dataset/truebones/zoo/Truebone_Z-OO`` --
-one directory per species, one textured GLB per animation -- and the output is
-one GIF per *processed clip*::
+Datasets are the ones ``../datasets.jsonl`` lists -- the same manifest
+``serve.py`` reads, one line per processed tree::
 
-    truebones_processed/review/gif/<Species>_<Action>.gif
+    {"namespace": "truebones/zoo",         "path": "dataset/truebones/zoo/truebones_processed"}
+    {"namespace": "truebones/zoo_upgrade", "path": "dataset/truebones/zoo_upgrade/clean_processed"}
+    {"namespace": "unitybundles",          "path": "dataset/unitybundles/processed"}
+
+and for each of them the output is one GIF per *processed clip*::
+
+    <processed>/review/gif/<Species>_<Action>.gif
 
 The names are the ``bvhs/`` names, exactly: a GIF is the picture of the clip
 that sits next to it in ``bvhs/`` and ``motions/``, so ``Alligator_BigMouth.gif``
 shows what ``Alligator_BigMouth.bvh`` contains and nothing has to be re-derived
-to line the two up.  Which source GLB that is comes straight out of
-``motion_metadata.json`` (``motions[<clip>.npy].source_fbx_path``), the only
-record of the mapping -- the preprocessor's filename rules strip species
-prefixes, drop all-in-one bundles and CamelCase the rest, and re-implementing
-them here would be a second copy free to drift.
+to line the two up.  Which source GLB that is comes straight out of the
+dataset's ``motion_metadata.json`` (``motions[<clip>.npy].source_fbx_path``),
+the only record of the mapping -- the preprocessor's filename rules strip
+species prefixes, drop all-in-one bundles and CamelCase the rest, and
+re-implementing them here would be a second copy free to drift.  So a dataset
+is renderable once it has been preprocessed; ``cond.npy`` is read too, for the
+per-species facing and size corrections, but a missing cond only costs those.
 
-The scene is the one ``E:/Dataset/UnityBundles/build/render_for_llm.py`` renders
-the UnityBundles library with, so the two review galleries read the same way: a
+The scene is shared by every dataset, so the galleries read the same way: a
 fixed 1x1 see-through grid at ``z = 0`` under a shadow-casting sun, a 50mm lens
 on a 45-degree oblique 25 degrees up, and a camera that holds still until the
-silhouette leaves a centre safe box and then trucks the minimum amount that puts
-it back (:func:`_solve_follow`).  The camera solver, the ground and the framing
-constants below are lifted from that script; the passes it has that this one
-does not (per-species stills, mp4 mux, a render index) exist for a VLM, and the
-reader here is a human with a browser.
+silhouette leaves a centre safe box and then trucks the minimum amount that
+puts it back (:func:`_solve_follow`).  The scene, the solver and the framing
+constants were lifted from ``E:/Dataset/UnityBundles/build/render_for_llm.py``;
+the passes it has that this one does not (per-species stills, mp4 mux, a
+render index) exist for a VLM, and the reader here is a human with a browser.
 
-Unlike that library, Truebones species do not share a facing: 58 of the 74 need a
-quarter turn and 9 need a half turn before they look at the camera.  That angle
-is already known -- ``cond.npy`` carries the per-species ``orientation_quat`` the
-preprocessor rotates each skeleton by -- so it is read from there rather than
-guessed or hand-listed (see :func:`_load_facing`).
+**Two ways to draw the creature**, because the libraries differ in what their
+GLBs carry:
+
+``mesh``
+    The textured skin the GLB ships (Truebones zoo, UnityBundles), rendered as
+    imported after :func:`_normalize_materials` takes the FBX-conversion sheen
+    and the blanket vertex-alpha translucency off it.
+
+``skeleton``
+    The ``zoo_upgrade`` sources are skeletons only -- an armature and an
+    animation and not one mesh -- so there is nothing to photograph.  The
+    picture is built instead: one capsule per bone (a cylinder between the two
+    joints it joins, closed with a hemisphere at each end) and one sphere at
+    every joint, generated as a plain mesh at the posed joint positions of each
+    rendered frame (:class:`_SkeletonMesh`).  Which segments are drawn is every
+    parent-child pair of the imported armature, which for every species checked
+    is exactly the joint set ``cond.npy`` lists in ``joints_names`` -- so the
+    GIF shows the skeleton the model is trained on.  Blender's own bone *tails*
+    are not used at all: the glTF importer synthesises them (a Bear's ``root``
+    comes in 119 units long, half the animal), and the joints -- the bone heads
+    -- are the only part of the imported rest that means anything.  How thick a
+    capsule is: ``RADIUS_RATIO`` of the skeleton's mean bone length, clamped
+    into ``RADIUS_SPAN_CLAMP`` of its bounding diagonal (see those constants).
+
+``--mode auto`` (the default) picks per GLB: ``mesh`` when the file has a
+renderable mesh, ``skeleton`` otherwise.  ``--mode skeleton`` forces the
+capsule drawing on a skinned library too, which is the way to look at the
+rig a mesh is hiding.
 
 Run with the project venv so ``bpy`` resolves::
 
-    .venv/Scripts/python.exe Anytop/dataset/truebones/zoo/truebones_processed/review/render_gifs.py
-    .venv/Scripts/python.exe .../render_gifs.py --filter Dog --overwrite
-    .venv/Scripts/python.exe .../render_gifs.py --clip 'Horse_*' -j 4 --dry-run
+    .venv/Scripts/python.exe Anytop/dataset/review/render_gifs.py
+    .venv/Scripts/python.exe .../render_gifs.py --dataset unitybundles --filter 'IAC_*'
+    .venv/Scripts/python.exe .../render_gifs.py --dataset 'truebones/*' --clip 'Horse_*' -j 4 --dry-run
+    .venv/Scripts/python.exe .../render_gifs.py --mode skeleton --overwrite --filter Dog
 """
 from __future__ import annotations
 
@@ -57,15 +87,15 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-PROCESSED_ROOT = os.path.dirname(HERE)                       # truebones_processed
-ZOO_ROOT = os.path.dirname(PROCESSED_ROOT)                   # zoo
+HERE = os.path.dirname(os.path.abspath(__file__))              # dataset/review
+DATASET_ROOT = os.path.dirname(HERE)                           # dataset
+ANYTOP_ROOT = os.path.dirname(DATASET_ROOT)                    # Anytop
 
 # -- paths -------------------------------------------------------------------
-RAW_ROOT = os.path.join(ZOO_ROOT, "Truebone_Z-OO")
-GIF_ROOT = os.path.join(HERE, "gif")
-METADATA_PATH = os.path.join(PROCESSED_ROOT, "motion_metadata.json")
-COND_PATH = os.path.join(PROCESSED_ROOT, "cond.npy")
+DATASETS_PATH = os.path.join(DATASET_ROOT, "datasets.jsonl")
+METADATA_NAME = "motion_metadata.json"
+COND_NAME = "cond.npy"
+GIF_SUBDIR = os.path.join("review", "gif")
 
 # -- gif ---------------------------------------------------------------------
 GIF_SIZE = 224           # the review grid's card, so the browser scales nothing
@@ -137,23 +167,95 @@ SUN_ANGLE_DEG = 3.0      # soft edge, so contact shadows stay readable
 # Standard, not AgX: AgX spends its contrast budget on highlight rolloff, which
 # costs ~40% of the floor's tonal spread -- the grid and the shadow both.
 VIEW_TRANSFORM = "Standard"
-# The Truebones GLBs come out of the FBX conversion with a metallic sheen they
-# were never authored for; the texture-linked Base Color is left alone.
+
+SCENE_FPS = 30           # every clip in every library here was authored at 30
+#                          (checked on all 1039 exported Truebones BVHs; the
+#                          UnityBundles bridge flattens to 30); this is the grid
+#                          the glTF importer converts the clip's key times onto
+
+# -- mesh mode ---------------------------------------------------------------
+# Skinned GLBs come out of the FBX conversion with a metallic sheen they were
+# never authored for; the texture-linked Base Color is left alone.
 MATERIAL_METALLIC = 0.4
 MATERIAL_ROUGHNESS = 0.8
 
-SCENE_FPS = 30           # every Truebones clip was authored at 30 (checked on
-#                          all 1039 exported BVHs); this is the grid the glTF
-#                          importer converts the clip's key times onto
+# -- skeleton mode -----------------------------------------------------------
+SKELETON_NAME = "ReviewSkeleton"
+RADIUS_RATIO = 0.25      # capsule radius, in mean bone lengths: a skeleton's own
+#                          bones set its own scale, so a 13-bone Hen and an
+#                          89-bone serpent_man are each drawn at the weight their
+#                          own skeleton suggests rather than at one library-wide
+#                          number
+RADIUS_SPAN_CLAMP = (0.012, 0.05)   # ... and its floor/ceiling, as a fraction of
+#                          the rest skeleton's own bounding diagonal.  The mean
+#                          alone is not enough at the two ends of a library:
+#                          over the 30 zoo_upgrade species the mean bone is
+#                          between 3.4% (Cobra: 31 short segments strung down a
+#                          long snake) and 21% (Hen: 13 bones and nothing else)
+#                          of the diagonal, a 6x spread that at 224 pixels is the
+#                          difference between a one-pixel thread and a sausage.
+#                          The band is set so the clamp catches exactly those two
+#                          and the mean rules the other 28.
+JOINT_SCALE = 1.25       # joint sphere radius, in capsule radii: a ball a little
+#                          proud of the bone is what makes articulation read at
+#                          224 pixels
+CAPSULE_SEGMENTS = 10    # radial resolution of a capsule ...
+CAPSULE_CAP_RINGS = 2    # ... and rings per hemispherical cap
+SPHERE_SEGMENTS = 10
+SPHERE_RINGS = 5         # latitude rings between the two poles
+BONE_COLOR = (0.92, 0.42, 0.05)     # orange bone against a deep blue joint: the
+JOINT_COLOR = (0.09, 0.24, 0.78)    # pair is the widest hue separation this
+#                          scene has room for, and neither collides with the
+#                          blue-grey floor -- the joint blue is far darker than
+#                          the sky it would otherwise sit on top of
+CAPSULE_ROUGHNESS = 0.5
+CAPSULE_METALLIC = 0.0
+
+DRAW_MODES = ("auto", "mesh", "skeleton")
 
 
 # ============================ job planning ==================================
-def _load_clip_sources(metadata_path=METADATA_PATH):
+def _discover_datasets(manifest_path=DATASETS_PATH, anytop_root=ANYTOP_ROOT):
+    """The processed trees ``datasets.jsonl`` lists, as ``{namespace, ...}`` rows.
+
+    Mirrors ``serve.py``'s reading of the same file: ``path`` is relative to the
+    Anytop tree that holds ``dataset/``.  A tree with no ``motion_metadata.json``
+    has not been preprocessed and has no clip index to render from, so it is
+    reported and left out rather than failing the run for the others.
+    """
+    out = []
+    if not os.path.isfile(manifest_path):
+        return out
+    with open(manifest_path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            rel = entry.get("path") or entry.get("rel_path")
+            if not rel:
+                continue
+            namespace = str(entry.get("namespace") or entry.get("name")
+                            or os.path.basename(rel))
+            processed = os.path.normpath(os.path.join(anytop_root, rel))
+            out.append({"namespace": namespace, "processed": processed,
+                        "metadata": os.path.join(processed, METADATA_NAME),
+                        "cond": os.path.join(processed, COND_NAME),
+                        "gif_dir": os.path.join(processed, GIF_SUBDIR)})
+    return out
+
+
+def _load_clip_sources(metadata_path, anytop_root=ANYTOP_ROOT):
     """``{clip stem: (species, source GLB path)}`` from ``motion_metadata.json``.
 
     The clip stem *is* the BVH stem (``Alligator_BigMouth``), which is what the
     GIF is named after.  Nothing else in the tree records which source file a
-    clip came from, and the filename rules that produced it are lossy.
+    clip came from, and the filename rules that produced it are lossy.  The
+    recorded path is absolute in every dataset built so far; a relative one is
+    taken against the Anytop root, the same base ``datasets.jsonl`` uses.
     """
     with open(metadata_path, "r", encoding="utf-8") as fh:
         motions = json.load(fh).get("motions", {})
@@ -161,41 +263,49 @@ def _load_clip_sources(metadata_path=METADATA_PATH):
     for motion_name, entry in motions.items():
         stem = os.path.splitext(motion_name)[0]
         source = entry.get("source_fbx_path")
-        if source:
-            clips[stem] = (str(entry.get("object_type") or stem.split("_")[0]),
-                           source)
+        if not source:
+            continue
+        if not os.path.isabs(source):
+            source = os.path.join(anytop_root, source)
+        clips[stem] = (str(entry.get("object_type") or stem.split("_")[0]),
+                       os.path.normpath(source))
     return clips
 
 
-def _load_facing(cond_path=COND_PATH):
+def _load_cond(cond_path):
+    try:
+        return np.load(cond_path, allow_pickle=True).item()
+    except (OSError, ValueError, AttributeError) as exc:
+        print("[WARN] no cond (%s): %s -- rendering without the per-species "
+              "facing and size corrections" % (cond_path, exc))
+        return {}
+
+
+def _load_facing(cond):
     """``{species: yaw deg}`` putting each species' front towards azimuth 0.
 
     ``cond.npy`` stores, per species, the ``orientation_quat`` the preprocessor
     rotates the skeleton by to make it face the canonical +Z; it is always a pure
-    +Y turn snapped to a quarter (measured: -90 for 58 species, +-180 for 9, 0
-    for 7).  glTF's +Y is Blender's +Z and glTF's +Z is Blender's -Y (the
-    importer's Y-up conversion is a rotation, so a turn about +Y keeps its
-    angle), and Blender's -Y is the axis :func:`_camera_basis` measures azimuth
-    from -- so the quat's angle is the azimuth correction, up to its sign.
+    +Y turn snapped to a quarter.  Measured: -90 for 58 of the 74 zoo species,
+    +-180 for 9 and 0 for 7; 0 for 26 of the 30 zoo_upgrade species, +90 for
+    Cobra and Rabbit2, 180 for Crow and Seagull; 0 for all 156 UnityBundles
+    species, which the bridge already turned onto +Z.  glTF's +Y is Blender's +Z
+    and glTF's +Z is Blender's -Y (the importer's Y-up conversion is a rotation,
+    so a turn about +Y keeps its angle), and Blender's -Y is the axis
+    :func:`_camera_basis` measures azimuth from -- so the quat's angle is the
+    azimuth correction, up to its sign.
 
     The sign is the inverse: the quat turns the creature onto the canonical
     front, and what the camera needs is where the creature is pointing *now*.
     Verified rather than argued, because it is easy to get backwards and a
-    180-degree error renders the whole library from behind -- for each species
-    the head and hips named by ``canonical_joint_names`` were read out of the
-    Blender armature and the real forward measured off them.  All 70 species
-    whose head has any horizontal offset from their hips land on ``-angle``
-    within a few degrees.  The four that do not are unmeasurable, not
-    counterexamples: Spider and Scorpion carry their head directly above their
-    hips, and Crab and Pigeon have no head joint at all.
-
-    A missing or unreadable cond costs nothing but the correction.
+    180-degree error renders a whole library from behind -- for each zoo
+    species the head and hips named by ``canonical_joint_names`` were read out
+    of the Blender armature and the real forward measured off them.  All 70
+    species whose head has any horizontal offset from their hips land on
+    ``-angle`` within a few degrees.  The four that do not are unmeasurable,
+    not counterexamples: Spider and Scorpion carry their head directly above
+    their hips, and Crab and Pigeon have no head joint at all.
     """
-    try:
-        cond = np.load(cond_path, allow_pickle=True).item()
-    except (OSError, ValueError, AttributeError) as exc:
-        print("[WARN] no per-species facing (%s): %s" % (cond_path, exc))
-        return {}
     facing = {}
     for key, entry in cond.items():
         quat = entry.get("orientation_quat") if isinstance(entry, dict) else None
@@ -207,28 +317,24 @@ def _load_facing(cond_path=COND_PATH):
     return facing
 
 
-def _load_scales(cond_path=COND_PATH):
+def _load_scales(cond):
     """``{species: scale_factor}`` -- cond's own canonical size normalisation.
 
-    The GLBs are not on a shared scale: as imported, a Rat spans 0.35 world
+    The GLBs are not on a shared scale: as imported, a zoo Rat spans 0.35 world
     units and a Crab spans 160, a 457x spread, because most assets carry a 0.01
-    node scale and the Crab carries 1.0.  The grid is what pays for that.  Its
-    cell is a fixed world unit, so at the small end a whole creature sits inside
-    one cell and at the large end the lines converge into flat grey and the
-    200-unit ground plane's own edge comes into frame -- which is what the Crab
-    renders as.
+    node scale and the Crab carries 1.0 (zoo_upgrade: a Rabbit2 at 0.75 against
+    a Horse at 360).  The grid is what pays for that.  Its cell is a fixed world
+    unit, so at the small end a whole creature sits inside one cell and at the
+    large end the lines converge into flat grey and the 200-unit ground plane's
+    own edge comes into frame -- which is what the Crab renders as.
 
     ``scale_factor`` is the number the preprocessor multiplies each species by
     to reach the canonical size the model trains on, so it is both the fix and
-    the right unit: applied, the library lands between 1.4 and 2.4 units and one
-    cell means the same fraction of a body everywhere.  Note it multiplies the
-    *armature-local* coordinates, so the node scale has to be divided back out
-    (see :func:`_rescale_to_canonical`).
+    the right unit: applied, a library lands between roughly 1 and 2.5 units
+    and one cell means the same fraction of a body everywhere.  Note it
+    multiplies the *armature-local* coordinates, so the node scale has to be
+    divided back out (see :func:`_rescale_to_canonical`).
     """
-    try:
-        cond = np.load(cond_path, allow_pickle=True).item()
-    except (OSError, ValueError, AttributeError):
-        return {}                      # _load_facing already warned
     scales = {}
     for key, entry in cond.items():
         if not isinstance(entry, dict):
@@ -239,7 +345,7 @@ def _load_scales(cond_path=COND_PATH):
     return scales
 
 
-def _plan(args, clips, facing, scales):
+def _plan(args, datasets):
     """``(jobs, skipped)`` -- one job per selected clip whose GIF is missing."""
     jobs, skipped = [], 0
     base_opts = {"engine": args.engine, "size": args.size,
@@ -247,24 +353,41 @@ def _plan(args, clips, facing, scales):
                  "checker_size": args.checker_size, "scene_fps": SCENE_FPS,
                  "follow": args.follow == "on", "smooth_sigma": args.smooth_sigma,
                  "target_fps": args.fps, "max_frames": args.max_frames,
-                 "dither": args.dither, "frames_dir": args.frames_dir}
-    for clip in sorted(clips):
-        species, source = clips[clip]
-        if not fnmatch.fnmatch(species, args.filter):
+                 "dither": args.dither, "frames_dir": args.frames_dir,
+                 "mode": args.mode, "radius_ratio": args.radius_ratio,
+                 "radius_clamp": tuple(args.radius_clamp),
+                 "joint_scale": args.joint_scale}
+    for dataset in datasets:
+        namespace = dataset["namespace"]
+        clips = _load_clip_sources(dataset["metadata"])
+        if not clips:
+            print("[WARN] %s: %s lists no clips" % (namespace, dataset["metadata"]))
             continue
-        if not fnmatch.fnmatch(clip, args.clip):
-            continue
-        gif_path = os.path.join(args.gif_root, clip + ".gif")
-        if not args.overwrite and os.path.isfile(gif_path) \
-                and os.path.getsize(gif_path):
-            skipped += 1
-            continue
-        if not os.path.isfile(source):
-            print("  [WARN] %s: source is gone (%s)" % (clip, source))
-            continue
-        opts = dict(base_opts, facing_yaw_deg=facing.get(species, 0.0),
-                    canonical_scale=scales.get(species))
-        jobs.append((clip, species, source, gif_path, opts))
+        cond = _load_cond(dataset["cond"]) if args.facing or args.canonical_scale \
+            else {}
+        facing = _load_facing(cond) if args.facing else {}
+        scales = _load_scales(cond) if args.canonical_scale else {}
+        gif_root = os.path.join(args.gif_root, *namespace.split("/")) \
+            if args.gif_root else dataset["gif_dir"]
+        for clip in sorted(clips):
+            species, source = clips[clip]
+            if not fnmatch.fnmatch(species, args.filter):
+                continue
+            if not fnmatch.fnmatch(clip, args.clip):
+                continue
+            gif_path = os.path.join(gif_root, clip + ".gif")
+            if not args.overwrite and os.path.isfile(gif_path) \
+                    and os.path.getsize(gif_path):
+                skipped += 1
+                continue
+            if not os.path.isfile(source):
+                print("  [WARN] %s:%s: source is gone (%s)"
+                      % (namespace, clip, source))
+                continue
+            opts = dict(base_opts, namespace=namespace,
+                        facing_yaw_deg=facing.get(species, 0.0),
+                        canonical_scale=scales.get(species))
+            jobs.append((namespace, clip, species, source, gif_path, opts))
     return jobs, skipped
 
 
@@ -302,9 +425,9 @@ def _set_time(scene, sample_time):
 def _source_fps(times, scene_fps):
     """Playback rate of the source clip, read off its own key spacing.
 
-    Every Truebones clip was authored at 30 fps, so this is a constant in
-    practice -- but it is the number both the frame stride and the GIF's frame
-    delay are derived from, and reading it beats asserting it.
+    Every clip in every library here was authored at 30 fps, so this is a
+    constant in practice -- but it is the number both the frame stride and the
+    GIF's frame delay are derived from, and reading it beats asserting it.
     """
     if len(times) < 2:
         return float(scene_fps)
@@ -420,12 +543,12 @@ def _add_ground(bpy, scene, cell_size):
     """A fixed-size grid at ``z = 0``, built from data (no operators).
 
     Lines and not filled cells, because an opaque floor hides whatever sinks
-    below it, and this library is full of deaths, digs and swims that do exactly
-    that.  A grid keeps the same reading -- fixed cell size, so displacement is
-    still "count the squares" -- while the gaps stay see-through.  The cells are
-    not fully transparent: ``GRID_CELL_ALPHA`` of floor is what the contact
-    shadow lands on.  Object texture coordinates put the grid in world units, so
-    a cell is exactly *cell_size* units wide.
+    below it, and these libraries are full of deaths, digs and swims that do
+    exactly that.  A grid keeps the same reading -- fixed cell size, so
+    displacement is still "count the squares" -- while the gaps stay
+    see-through.  The cells are not fully transparent: ``GRID_CELL_ALPHA`` of
+    floor is what the contact shadow lands on.  Object texture coordinates put
+    the grid in world units, so a cell is exactly *cell_size* units wide.
     """
     half = GROUND_SIZE * 0.5
     mesh = bpy.data.meshes.new(GROUND_NAME)
@@ -482,6 +605,42 @@ def _add_ground(bpy, scene, cell_size):
         mat.blend_method = "BLEND"
     mesh.materials.append(mat)
     return ground
+
+
+def _add_camera(bpy, scene, basis):
+    from mathutils import Matrix
+
+    right, up, view = basis
+    back = -view
+    data = bpy.data.cameras.new("ReviewCamera")
+    data.type = "PERSP"
+    data.lens = CAMERA_LENS
+    data.sensor_width = CAMERA_SENSOR
+    data.sensor_fit = "AUTO"
+    data.clip_start, data.clip_end = CAMERA_CLIP
+    cam = bpy.data.objects.new("ReviewCamera", data)
+    cam.rotation_euler = Matrix(((right[0], up[0], back[0]),
+                                 (right[1], up[1], back[1]),
+                                 (right[2], up[2], back[2]))).to_euler()
+    scene.collection.objects.link(cam)
+    scene.camera = cam
+    return cam
+
+
+# ======================== mesh mode: the imported skin ======================
+def _visible_meshes(bpy):
+    """The meshes that actually render -- what the framing may be solved on.
+
+    Every GLB in these libraries carries a unit ``Icosphere`` origin marker in
+    the importer's ``glTF_not_exported`` collection, which is excluded from the
+    view layer: its ``hide_render`` is False but its ``visible_get()`` is not,
+    and framing on its +-1 bounds squashes the creature to a dot and drags the
+    safe box around after it.  Faces are checked too: a mesh with no polygons
+    contributes nothing.
+    """
+    return [obj for obj in bpy.data.objects
+            if obj.type == "MESH" and not obj.hide_render
+            and obj.visible_get() and len(obj.data.polygons) > 0]
 
 
 def _first_upstream(socket, node_type, seen=None):
@@ -554,37 +713,263 @@ def _normalize_materials(bpy):
             _solidify_alpha(mat, node)
 
 
-def _add_camera(bpy, scene, basis):
-    from mathutils import Matrix
+def _frame_cloud(bpy, scene, meshes, sample_time):
+    """World-space deformed vertices at one frame (creature only)."""
+    _set_time(scene, sample_time)
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    parts = []
+    for obj in meshes:
+        evaluated = obj.evaluated_get(depsgraph)
+        mesh = evaluated.data
+        count = len(mesh.vertices)
+        if not count:
+            continue
+        coords = np.empty(count * 3, dtype=np.float64)
+        mesh.vertices.foreach_get("co", coords)
+        matrix = np.asarray(evaluated.matrix_world, dtype=np.float64)
+        parts.append(coords.reshape(count, 3) @ matrix[:3, :3].T + matrix[:3, 3])
+    if not parts:
+        return np.empty((0, 3))
+    return np.concatenate(parts, 0)
 
-    right, up, view = basis
-    back = -view
-    data = bpy.data.cameras.new("ReviewCamera")
-    data.type = "PERSP"
-    data.lens = CAMERA_LENS
-    data.sensor_width = CAMERA_SENSOR
-    data.sensor_fit = "AUTO"
-    data.clip_start, data.clip_end = CAMERA_CLIP
-    cam = bpy.data.objects.new("ReviewCamera", data)
-    cam.rotation_euler = Matrix(((right[0], up[0], back[0]),
-                                 (right[1], up[1], back[1]),
-                                 (right[2], up[2], back[2]))).to_euler()
-    scene.collection.objects.link(cam)
-    scene.camera = cam
-    return cam
 
+# ==================== skeleton mode: skeleton -> capsule mesh ===============
+def _skeleton_links(armature, rest):
+    """``[(parent index, child index)]`` -- the segments worth drawing.
 
-def _visible_meshes(bpy):
-    """The meshes that actually render -- what the framing may be solved on.
-
-    Every Truebones GLB carries a hidden unit ``Icosphere`` origin marker whose
-    ``hide_render`` is False but whose ``visible_get()`` is not; framing on its
-    +-1 bounds squashes the creature to a dot and drags the safe box around after
-    it.  Faces are checked too: a mesh with no polygons contributes nothing.
+    Every parent-child pair of the armature, minus the ones whose two joints are
+    on top of each other in the rest pose (seven zoo_upgrade species have at
+    least one: an aux joint, a mirrored pivot).  A zero-length segment has no
+    axis to build a capsule around and nothing to show that its joint sphere
+    does not; dropping it at *rest* rather than per frame is what keeps the
+    mesh topology fixed for the whole clip, which is what lets the render just
+    overwrite coordinates.
     """
-    return [obj for obj in bpy.data.objects
-            if obj.type == "MESH" and not obj.hide_render
-            and obj.visible_get() and len(obj.data.polygons) > 0]
+    bones = list(armature.data.bones)
+    index = {bone.name: i for i, bone in enumerate(bones)}
+    links = []
+    for child, bone in enumerate(bones):
+        if bone.parent is None:
+            continue
+        parent = index[bone.parent.name]
+        if np.linalg.norm(rest[child] - rest[parent]) > 1e-9:
+            links.append((parent, child))
+    return links
+
+
+def _joint_positions(armature, posed=True):
+    """World-space joint positions: the bone *heads*, in armature bone order.
+
+    Heads and not tails.  The glTF importer synthesises a tail for every bone
+    (there is no such thing in glTF), and the lengths it invents are not the
+    skeleton's -- a Bear's ``root`` bone arrives 119 local units long against a
+    244-unit animal.  The head is the joint node itself, which is the only thing
+    the file actually stated.
+    """
+    matrix = np.asarray(armature.matrix_world, dtype=np.float64)
+    if posed:
+        pose = armature.pose.bones
+        heads = [tuple(pose[bone.name].head) for bone in armature.data.bones]
+    else:
+        heads = [tuple(bone.head_local) for bone in armature.data.bones]
+    local = np.asarray(heads, dtype=np.float64).reshape(-1, 3)
+    return local @ matrix[:3, :3].T + matrix[:3, 3]
+
+
+def _capsule_radius(rest, links, ratio, clamp):
+    """``(radius, mean bone length)`` in world units -- see ``RADIUS_SPAN_CLAMP``.
+
+    A skeleton with no drawable link at all (there is none in these libraries,
+    but a single-joint rig would be one) falls back to a tenth of its own span,
+    which for a lone joint sphere is simply a visible dot.
+    """
+    span = float(np.linalg.norm(rest.max(0) - rest.min(0))) or 1.0
+    if links:
+        pairs = np.asarray(links, dtype=np.int64)
+        mean = float(np.linalg.norm(rest[pairs[:, 1]] - rest[pairs[:, 0]],
+                                    axis=1).mean())
+    else:
+        mean = span * 0.1
+    return float(np.clip(ratio * mean, clamp[0] * span, clamp[1] * span)), mean
+
+
+def _lathe_faces(rings, segments, base):
+    """Faces of one surface of revolution: quad bands plus a fan at each pole.
+
+    The vertex block it indexes is ``rings * segments`` ring vertices -- rings
+    ordered along the axis, each ring's vertices at increasing angle -- followed
+    by the low-end pole and then the high-end pole.  Both the capsule and the
+    joint sphere are that shape, which is why they share one function; winding
+    comes out facing outward for that ordering.
+    """
+    faces = []
+    for ring in range(rings - 1):
+        row, nxt = base + ring * segments, base + (ring + 1) * segments
+        for k in range(segments):
+            k1 = (k + 1) % segments
+            faces.append((row + k, row + k1, nxt + k1, nxt + k))
+    low = base + rings * segments
+    high = low + 1
+    first, last = base, base + (rings - 1) * segments
+    for k in range(segments):
+        k1 = (k + 1) % segments
+        faces.append((low, first + k1, first + k))
+        faces.append((high, last + k, last + k1))
+    return faces
+
+
+def _capsule_rings(cap_rings):
+    """``(alpha, push, radius)`` per ring of a unit-radius capsule.
+
+    A ring's centre is ``A + alpha * (B - A) + radius * push * u`` and its
+    vertices sit *radius* out from it, all three in capsule radii: ``alpha``
+    picks which end of the segment the ring belongs to, ``push`` carries the
+    hemispherical caps past that end, and the equator is ``push = 0, radius = 1``.
+    Ordered from the A pole to the B pole, which is the order
+    :func:`_lathe_faces` expects.
+    """
+    phis = [0.5 * math.pi * (j + 1) / (cap_rings + 1) for j in range(cap_rings)]
+    rings = [(0.0, -math.sin(phi), math.cos(phi)) for phi in reversed(phis)]
+    rings.append((0.0, 0.0, 1.0))
+    rings.append((1.0, 0.0, 1.0))
+    rings.extend((1.0, math.sin(phi), math.cos(phi)) for phi in phis)
+    return (np.array([r[0] for r in rings]), np.array([r[1] for r in rings]),
+            np.array([r[2] for r in rings]))
+
+
+def _sphere_offsets(radius, rings, segments):
+    """Vertex offsets of one joint sphere, in :func:`_lathe_faces` order.
+
+    Latitudes run from the -Z pole upward so the ring order is "along the axis",
+    the same convention the capsule uses.
+    """
+    angles = np.linspace(0.0, 2.0 * math.pi, segments, endpoint=False)
+    phis = np.array([math.pi * (j + 1) / (rings + 1) for j in range(rings)])[::-1]
+    ring = np.empty((rings, segments, 3))
+    ring[:, :, 0] = np.sin(phis)[:, None] * np.cos(angles)[None, :]
+    ring[:, :, 1] = np.sin(phis)[:, None] * np.sin(angles)[None, :]
+    ring[:, :, 2] = np.repeat(np.cos(phis)[:, None], segments, 1)
+    poles = np.array([[0.0, 0.0, -1.0], [0.0, 0.0, 1.0]])
+    return radius * np.concatenate([ring.reshape(-1, 3), poles], 0)
+
+
+class _SkeletonMesh:
+    """A capsule-and-ball skeleton whose topology is fixed and whose vertices
+    are rewritten per frame.
+
+    Both halves matter.  Fixed topology means a frame costs one ``foreach_set``
+    of a float buffer instead of rebuilding a mesh, and it means the framing
+    cloud handed to the camera solver is vertex-for-vertex the geometry that will
+    be rendered -- the silhouette the solver fits is the real one, radius
+    included, not the joint cloud inside it.  Rewriting rather than skinning
+    sidesteps the bind-pose question entirely: the coordinates come from
+    ``pose_bone.head``, which is where Blender says the joint is, so whatever the
+    importer did to the rest pose cannot leak into the picture.
+    """
+
+    def __init__(self, bpy, scene, links, joint_count, radius, joint_scale,
+                 name=SKELETON_NAME):
+        self.links = np.asarray(links, dtype=np.int64).reshape(-1, 2)
+        self.radius = float(radius)
+        self.angles = np.linspace(0.0, 2.0 * math.pi, CAPSULE_SEGMENTS,
+                                  endpoint=False)
+        self.alpha, self.push, self.ring_radius = _capsule_rings(CAPSULE_CAP_RINGS)
+        self.sphere = _sphere_offsets(radius * joint_scale, SPHERE_RINGS,
+                                      SPHERE_SEGMENTS)
+        self.per_capsule = len(self.alpha) * CAPSULE_SEGMENTS + 2
+        self.per_sphere = len(self.sphere)
+        self.capsule_verts = len(self.links) * self.per_capsule
+        self.joint_count = joint_count
+
+        faces = []
+        for i in range(len(self.links)):
+            faces.extend(_lathe_faces(len(self.alpha), CAPSULE_SEGMENTS,
+                                      i * self.per_capsule))
+        capsule_faces = len(faces)
+        for j in range(joint_count):
+            faces.extend(_lathe_faces(SPHERE_RINGS, SPHERE_SEGMENTS,
+                                      self.capsule_verts + j * self.per_sphere))
+
+        total = self.capsule_verts + joint_count * self.per_sphere
+        self.mesh = bpy.data.meshes.new(name)
+        self.mesh.from_pydata([(0.0, 0.0, 0.0)] * total, [], faces)
+        self.mesh.update()
+        for material in (_capsule_material(bpy, name + "Bone", BONE_COLOR),
+                         _capsule_material(bpy, name + "Joint", JOINT_COLOR)):
+            self.mesh.materials.append(material)
+        slot = np.zeros(len(self.mesh.polygons), dtype=np.int32)
+        slot[capsule_faces:] = 1
+        self.mesh.polygons.foreach_set("material_index", slot)
+        self.mesh.polygons.foreach_set(
+            "use_smooth", np.ones(len(self.mesh.polygons), dtype=np.int8))
+        self.object = bpy.data.objects.new(name, self.mesh)
+        scene.collection.objects.link(self.object)
+
+    def vertices(self, joints):
+        """The full vertex buffer for one frame's world-space *joints*."""
+        out = np.empty((self.capsule_verts + self.joint_count * self.per_sphere,
+                        3), dtype=np.float64)
+        if len(self.links):
+            head = joints[self.links[:, 0]]
+            axis = joints[self.links[:, 1]] - head
+            length = np.linalg.norm(axis, axis=1, keepdims=True)
+            unit = axis / np.maximum(length, 1e-12)
+            # Any perpendicular pair will do -- a capsule is a surface of
+            # revolution, so the choice of "angle zero" is not observable; the
+            # reference is only swapped to keep the cross product well
+            # conditioned when the segment runs up the world Z axis.
+            reference = np.where(np.abs(unit[:, 2:3]) < 0.9,
+                                 np.array([0.0, 0.0, 1.0]),
+                                 np.array([1.0, 0.0, 0.0]))
+            side = np.cross(unit, reference)
+            side /= np.maximum(np.linalg.norm(side, axis=1, keepdims=True), 1e-12)
+            other = np.cross(unit, side)
+
+            centre = (head[:, None, :]
+                      + self.alpha[None, :, None] * axis[:, None, :]
+                      + (self.radius * self.push)[None, :, None] * unit[:, None, :])
+            radial = (self.radius * self.ring_radius)[None, :, None, None] * (
+                np.cos(self.angles)[None, None, :, None] * side[:, None, None, :]
+                + np.sin(self.angles)[None, None, :, None] * other[:, None, None, :])
+            block = out[:self.capsule_verts].reshape(len(self.links),
+                                                     self.per_capsule, 3)
+            rings = len(self.alpha) * CAPSULE_SEGMENTS
+            block[:, :rings] = (centre[:, :, None, :] + radial).reshape(
+                len(self.links), rings, 3)
+            block[:, rings] = head - self.radius * unit
+            block[:, rings + 1] = head + axis + self.radius * unit
+        out[self.capsule_verts:] = (joints[:, None, :]
+                                    + self.sphere[None, :, :]).reshape(-1, 3)
+        return out
+
+    def pose(self, vertices):
+        """Move the mesh onto a vertex buffer from :meth:`vertices`."""
+        self.mesh.vertices.foreach_set("co", np.ascontiguousarray(
+            vertices, dtype=np.float32).ravel())
+        self.mesh.update()
+
+
+def _capsule_material(bpy, name, color):
+    mat = bpy.data.materials.new(name)
+    if mat.node_tree is None:        # see _setup_scene
+        mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    if bsdf is not None:
+        bsdf.inputs["Base Color"].default_value = (*color, 1.0)
+        bsdf.inputs["Roughness"].default_value = CAPSULE_ROUGHNESS
+        bsdf.inputs["Metallic"].default_value = CAPSULE_METALLIC
+    return mat
+
+
+def _build_skeleton(bpy, scene, armature, opts):
+    """The capsule skeleton for *armature*, sized off its rest pose."""
+    rest = _joint_positions(armature, posed=False)
+    links = _skeleton_links(armature, rest)
+    radius, _mean = _capsule_radius(rest, links, opts["radius_ratio"],
+                                    opts["radius_clamp"])
+    return _SkeletonMesh(bpy, scene, links, len(rest), radius,
+                         opts["joint_scale"])
 
 
 # =========================== camera solving =================================
@@ -616,9 +1001,9 @@ def _ground_anchor(points):
     Framing the creature alone lets its contact shadow fall out of shot, and the
     shadow is what answers "is that foot on the ground".  The drop is clamped to
     ``GROUND_REACH`` of the creature's own *height*, so a walker lands exactly on
-    ``z = 0`` and keeps its shadow while a flier (this library has bats, eagles
-    and dragons) shows at most a quarter of its own height of air beneath it
-    instead of shrinking to a speck above a mandatory floor.
+    ``z = 0`` and keeps its shadow while a flier (these libraries have bats,
+    eagles and dragons) shows at most a quarter of its own height of air beneath
+    it instead of shrinking to a speck above a mandatory floor.
     """
     lowest, highest = float(points[:, 2].min()), float(points[:, 2].max())
     anchor = points.copy()
@@ -635,36 +1020,6 @@ def _anchored(cloud):
     standing still; see :func:`_solve_follow`.
     """
     return np.concatenate([cloud, _ground_anchor(cloud)], 0)
-
-
-def _frame_cloud(bpy, scene, meshes, sample_time):
-    """World-space deformed vertices at one frame (creature only)."""
-    _set_time(scene, sample_time)
-    bpy.context.view_layer.update()
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    parts = []
-    for obj in meshes:
-        evaluated = obj.evaluated_get(depsgraph)
-        mesh = evaluated.data
-        count = len(mesh.vertices)
-        if not count:
-            continue
-        coords = np.empty(count * 3, dtype=np.float64)
-        mesh.vertices.foreach_get("co", coords)
-        matrix = np.asarray(evaluated.matrix_world, dtype=np.float64)
-        parts.append(coords.reshape(count, 3) @ matrix[:3, :3].T + matrix[:3, 3])
-    if not parts:
-        return np.empty((0, 3))
-    return np.concatenate(parts, 0)
-
-
-def _joint_cloud(bpy, scene, armature, sample_time):
-    """Fallback cloud for a meshless GLB: every pose-bone head."""
-    _set_time(scene, sample_time)
-    bpy.context.view_layer.update()
-    matrix = armature.matrix_world
-    heads = np.array([tuple(matrix @ bone.head) for bone in armature.pose.bones])
-    return heads if len(heads) else np.empty((0, 3))
 
 
 def _project(points, cam_pos, basis, k):
@@ -894,8 +1249,9 @@ def _rescale_to_canonical(bpy, canonical_scale):
 
     ``scale_factor`` is defined against the *armature-local* coordinates, while
     what is in the scene has the glTF node transform already applied (0.01 on
-    almost every asset, 1.0 on the Crab), so the node scale is divided back out.
-    Only the roots are touched; children ride along on the parent transform.
+    almost every asset, 1.0 on the zoo Crab and on 19 of the 30 zoo_upgrade
+    rigs), so the node scale is divided back out.  Only the roots are touched;
+    children ride along on the parent transform.
 
     Scaling about the world origin rather than the creature is deliberate and
     free: the camera solver frames on the geometry wherever it lands, so the
@@ -918,11 +1274,22 @@ def _rescale_to_canonical(bpy, canonical_scale):
 
 
 def _load_glb(bpy, path, opts):
-    """Fresh scene, GLB imported, lights/cameras of its own dropped.
+    """Fresh scene, GLB imported, the draw mode settled, the review set built.
 
     The fps is set *before* the import: the glTF importer converts the clip's
-    keyframe times from seconds using the scene fps, and every Truebones clip was
+    keyframe times from seconds using the scene fps, and every clip here was
     authored at 30, so anything else lands the keys off the frame grid.
+
+    ``auto`` resolves to ``mesh`` when the file carries a renderable mesh and
+    to ``skeleton`` when it does not.  Whatever the mode, every mesh that is
+    not going to be rendered is deleted rather than left around: in skeleton
+    mode that is all of them (the ``Icosphere`` origin marker every asset
+    ships, plus the skin itself when the mode was forced on a skinned GLB, so
+    the capsules are what is seen), in mesh mode only the marker.  Only leaf
+    objects go, so nothing loses the parent it rides on.
+
+    Returns ``(scene, armature, meshes, sun, mode)``; *meshes* is empty in
+    skeleton mode.
     """
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
@@ -936,36 +1303,45 @@ def _load_glb(bpy, path, opts):
     _rescale_to_canonical(bpy, opts.get("canonical_scale"))
 
     meshes = _visible_meshes(bpy)          # before the ground is added
-    _normalize_materials(bpy)              # before the ground has a material
+    mode = opts["mode"]
+    if mode == "auto":
+        mode = "mesh" if meshes else "skeleton"
+    if mode == "skeleton":
+        meshes = []
+    elif not meshes:
+        raise RuntimeError("no renderable mesh in %s (use --mode skeleton "
+                           "or auto)" % os.path.basename(path))
+    keep = {obj.as_pointer() for obj in meshes}
+    for obj in list(bpy.data.objects):
+        if obj.type == "MESH" and obj.as_pointer() not in keep \
+                and not obj.children:
+            bpy.data.objects.remove(obj, do_unlink=True)
+    if mode == "mesh":
+        _normalize_materials(bpy)          # before the ground has a material
+
     resolution = opts["size"] * opts["supersample"]
     scene = _setup_scene(bpy, resolution, opts["engine"], TAA_RENDER_SAMPLES)
     sun = _add_sun(bpy, scene)
     _add_ground(bpy, scene, opts["checker_size"])
     armature = next((o for o in bpy.data.objects if o.type == "ARMATURE"), None)
-    return scene, armature, meshes, sun
-
-
-def _clouds_for(bpy, scene, meshes, armature, times):
-    clouds = []
-    for sample_time in times:
-        cloud = _frame_cloud(bpy, scene, meshes, sample_time) if meshes \
-            else np.empty((0, 3))
-        if cloud.size == 0 and armature is not None:
-            cloud = _joint_cloud(bpy, scene, armature, sample_time)
-        if cloud.size == 0:
-            raise RuntimeError("nothing renderable to frame the camera on")
-        clouds.append(cloud)
-    return clouds
+    return scene, armature, meshes, sun, mode
 
 
 def _render_frames(bpy, glb_path, frame_dir, opts):
     """Render one clip into ``frame_dir/NNNNN.png``.
 
-    Returns ``(frame paths, per-frame delays in ms, source frame count)``.
+    Returns ``(frame paths, per-frame delays in ms, source frame count, mode)``.
+
+    Every frame's geometry is gathered up front in both modes: the camera is
+    solved over the whole clip, so the clouds have to exist before the first
+    frame is rendered anyway.  In skeleton mode the cloud *is* the frame's
+    vertex buffer, so holding them means each frame is posed once rather than
+    twice; in mesh mode the skin is re-posed by ``frame_set`` and the cloud is
+    only the solver's copy of it.
     """
     from mathutils import Vector
 
-    scene, armature, meshes, sun = _load_glb(bpy, glb_path, opts)
+    scene, armature, meshes, sun, mode = _load_glb(bpy, glb_path, opts)
     if armature is None:
         raise RuntimeError("no armature in %s" % os.path.basename(glb_path))
     azimuth = CLIP_AZIMUTH_DEG + opts["facing_yaw_deg"]
@@ -976,24 +1352,42 @@ def _render_frames(bpy, glb_path, frame_dir, opts):
     stride = max(1, int(round(source_fps / max(opts["target_fps"], 1e-6))))
     times = _pick_times(src_times, stride, opts["max_frames"])
 
+    skeleton = None
+    clouds = []
+    if mode == "skeleton":
+        skeleton = _build_skeleton(bpy, scene, armature, opts)
+        for sample_time in times:
+            _set_time(scene, sample_time)
+            bpy.context.view_layer.update()
+            clouds.append(skeleton.vertices(_joint_positions(armature)))
+    else:
+        for sample_time in times:
+            cloud = _frame_cloud(bpy, scene, meshes, sample_time)
+            if cloud.size == 0:
+                raise RuntimeError("nothing renderable to frame the camera on")
+            clouds.append(cloud)
+
     basis = _camera_basis(azimuth, ELEVATION_DEG)
     cam = _add_camera(bpy, scene, basis)
     k = CAMERA_LENS / CAMERA_SENSOR
-    clouds = _clouds_for(bpy, scene, meshes, armature, times)
     positions = _solve_follow(clouds, basis, k, FILL_HALF, SAFE_HALF,
                               opts["follow"], opts["smooth_sigma"])
 
     os.makedirs(frame_dir, exist_ok=True)
     paths = []
     with _quiet_fds():
-        for index, (sample_time, position) in enumerate(zip(times, positions), 1):
-            _set_time(scene, sample_time)
+        for index, (sample_time, cloud, position) in enumerate(
+                zip(times, clouds, positions), 1):
+            if skeleton is not None:
+                skeleton.pose(cloud)
+            else:
+                _set_time(scene, sample_time)
             cam.location = Vector(position.tolist())   # per frame, no keyframes
             frame_path = os.path.join(frame_dir, "%05d.png" % index)
             scene.render.filepath = frame_path
             bpy.ops.render.render(write_still=True)
             paths.append(frame_path)
-    return paths, _durations_ms(times, source_fps), len(src_times)
+    return paths, _durations_ms(times, source_fps), len(src_times), mode
 
 
 def _write_gif(frame_paths, gif_path, opts):
@@ -1039,25 +1433,31 @@ def _run_job(job):
     Runs in a pooled worker process; ``import bpy`` is amortised because the pool
     reuses its processes across many jobs.  The frames are scratch -- the GIF is
     the deliverable -- so they go to a temp directory that is removed on the way
-    out unless ``--frames-dir`` asked to keep them.
+    out unless ``--frames-dir`` asked to keep them (under ``<namespace>/<clip>``,
+    since a clip name is only unique within its dataset).
     """
     import bpy   # heavy; kept in the worker and cached after the first job
 
-    clip, species, glb_path, gif_path, opts = job
+    namespace, clip, species, glb_path, gif_path, opts = job
     keep = opts.get("frames_dir")
-    frame_dir = os.path.join(keep, clip) if keep else tempfile.mkdtemp(prefix="tbgif_")
+    frame_dir = os.path.join(keep, *namespace.split("/"), clip) if keep \
+        else tempfile.mkdtemp(prefix="reviewgif_")
+    result = {"dataset": namespace, "clip": clip, "species": species,
+              "mode": opts["mode"], "frames": 0, "src_frames": 0, "bytes": 0,
+              "error": None}
     try:
-        paths, durations, src_frames = _render_frames(bpy, glb_path, frame_dir, opts)
+        paths, durations, src_frames, mode = _render_frames(bpy, glb_path,
+                                                            frame_dir, opts)
         size = _write_gif(paths, gif_path, dict(opts, durations=durations))
-        return {"clip": clip, "species": species, "frames": len(paths),
-                "src_frames": src_frames, "bytes": size, "error": None}
+        result.update(mode=mode, frames=len(paths), src_frames=src_frames,
+                      bytes=size)
     except Exception as exc:    # noqa: BLE001 -- one bad clip must not end the run
-        return {"clip": clip, "species": species, "frames": 0, "src_frames": 0,
-                "bytes": 0, "error": "%s: %s\n%s" % (type(exc).__name__, exc,
-                                                     traceback.format_exc())}
+        result["error"] = "%s: %s\n%s" % (type(exc).__name__, exc,
+                                          traceback.format_exc())
     finally:
         if not keep:
             shutil.rmtree(frame_dir, ignore_errors=True)
+    return result
 
 
 # --- worker stdout plumbing (mirrors render_for_llm.py) ---------------------
@@ -1137,17 +1537,23 @@ def _filtered_worker_output():
 # ================================== CLI =====================================
 def main():
     ap = argparse.ArgumentParser(
-        description="Render every processed Truebones clip to a review GIF.")
+        description="Render every processed clip of every dataset to a review GIF.")
+    ap.add_argument("--datasets", default=DATASETS_PATH,
+                    help="datasets.jsonl manifest (default: %(default)s)")
+    ap.add_argument("--dataset", default="*",
+                    help="namespace glob, e.g. 'truebones/*' or unitybundles "
+                         "(default: %(default)s)")
     ap.add_argument("--filter", default="*",
                     help="species glob, e.g. 'Dog*' (default: %(default)s)")
     ap.add_argument("--clip", default="*",
                     help="glob on the clip name, e.g. 'Horse_Walk*'")
-    ap.add_argument("--raw-root", default=RAW_ROOT)
-    ap.add_argument("--gif-root", default=GIF_ROOT)
-    ap.add_argument("--metadata", default=METADATA_PATH,
-                    help="motion_metadata.json: the clip -> source GLB mapping")
-    ap.add_argument("--cond", default=COND_PATH,
-                    help="cond.npy, read for the per-species facing correction")
+    ap.add_argument("--gif-root", default=None,
+                    help="write GIFs under DIR/<namespace>/ instead of each "
+                         "dataset's <processed>/review/gif (a scratch run)")
+    ap.add_argument("--mode", default="auto", choices=DRAW_MODES,
+                    help="how the creature is drawn: the imported skin, a "
+                         "capsule skeleton, or whichever the GLB allows "
+                         "(default: %(default)s)")
     ap.add_argument("--workers", "-j", type=int, default=8)
     ap.add_argument("--limit", type=int, default=0, help="limit scheduled jobs")
     ap.add_argument("--overwrite", action="store_true",
@@ -1165,6 +1571,18 @@ def main():
                          "identical between frames (default: %(default)s)")
     ap.add_argument("--checker-size", type=float, default=GRID_CELL_SIZE,
                     help="ground cell size in world units (default: %(default)s)")
+    ap.add_argument("--radius-ratio", type=float, default=RADIUS_RATIO,
+                    help="skeleton mode: capsule radius in mean bone lengths "
+                         "(default: %(default)s)")
+    ap.add_argument("--radius-clamp", type=float, nargs=2,
+                    default=list(RADIUS_SPAN_CLAMP), metavar=("MIN", "MAX"),
+                    help="skeleton mode: floor and ceiling on that radius, as a "
+                         "fraction of the rest skeleton's bounding diagonal "
+                         "(default: %(default)s)")
+    ap.add_argument("--joint-scale", type=float, default=JOINT_SCALE,
+                    help="skeleton mode: joint sphere radius in capsule radii; "
+                         "1.0 draws plain capsules with no ball at the joint "
+                         "(default: %(default)s)")
     ap.add_argument("--follow", default="on", choices=("on", "off"),
                     help="'off' pins the camera for the whole clip (control)")
     ap.add_argument("--smooth-sigma", type=float, default=SMOOTH_SIGMA,
@@ -1174,13 +1592,13 @@ def main():
                     help="frames sampled per second of clip (default: %(default)s)")
     ap.add_argument("--max-frames", type=int, default=MAX_FRAMES)
     ap.add_argument("--no-facing", dest="facing", action="store_false",
-                    help="ignore cond.npy's orientation_quat; most species then "
-                         "render side-on or from behind")
+                    help="ignore cond.npy's orientation_quat; species authored "
+                         "off +Z then render side-on or from behind")
     ap.add_argument("--no-canonical-scale", dest="canonical_scale",
                     action="store_false",
                     help="import the GLBs at their own scale; the grid cell then "
                          "means a different fraction of a body per species, and "
-                         "the Crab loses its grid entirely")
+                         "the zoo Crab loses its grid entirely")
     ap.add_argument("--frames-dir", default=None,
                     help="keep the rendered PNG frames under this directory "
                          "(default: a temp dir, removed per clip)")
@@ -1192,40 +1610,60 @@ def main():
         raise SystemExit("--colors must be between 2 and 256")
     if args.supersample < 1:
         raise SystemExit("--supersample must be at least 1")
-    if not os.path.isfile(args.metadata):
-        raise SystemExit("no clip index: %s" % args.metadata)
-    if not os.path.isdir(args.raw_root):
-        raise SystemExit("raw tree not found: %s" % args.raw_root)
+    if args.radius_ratio <= 0.0 or args.joint_scale <= 0.0:
+        raise SystemExit("--radius-ratio and --joint-scale must be positive")
+    if not 0.0 < args.radius_clamp[0] <= args.radius_clamp[1]:
+        raise SystemExit("--radius-clamp must be 0 < MIN <= MAX")
+    if not os.path.isfile(args.datasets):
+        raise SystemExit("no dataset manifest: %s" % args.datasets)
 
-    clips = _load_clip_sources(args.metadata)
-    if not clips:
-        raise SystemExit("%s lists no clips" % args.metadata)
-    facing = _load_facing(args.cond) if args.facing else {}
-    scales = _load_scales(args.cond) if args.canonical_scale else {}
-    jobs, skipped = _plan(args, clips, facing, scales)
+    datasets = [d for d in _discover_datasets(args.datasets)
+                if fnmatch.fnmatch(d["namespace"], args.dataset)]
+    if not datasets:
+        raise SystemExit("%s lists no dataset matching %r"
+                         % (args.datasets, args.dataset))
+    ready = []
+    for dataset in datasets:
+        if os.path.isfile(dataset["metadata"]):
+            ready.append(dataset)
+        else:
+            print("[WARN] %s: not preprocessed yet (no %s), skipped"
+                  % (dataset["namespace"], dataset["metadata"]))
+    if not ready:
+        raise SystemExit("no dataset has a clip index to render from")
+
+    jobs, skipped = _plan(args, ready)
     if args.limit:
         jobs = jobs[:args.limit]
 
     if args.dry_run:
-        for clip, _species, source, _gif, opts in jobs:
-            print("%-42s yaw %+7.1f  %s"
-                  % (clip, opts["facing_yaw_deg"], os.path.basename(source)))
-        print("\n%d job(s), %d already rendered, %d clip(s) indexed"
-              % (len(jobs), skipped, len(clips)))
+        for namespace, clip, _species, source, _gif, opts in jobs:
+            print("%-22s %-42s yaw %+7.1f  %s"
+                  % (namespace, clip, opts["facing_yaw_deg"],
+                     os.path.basename(source)))
+        print("\n%d job(s), %d already rendered, across %d dataset(s): %s"
+              % (len(jobs), skipped, len(ready),
+                 ", ".join(d["namespace"] for d in ready)))
         return 0
     if not jobs:
         print("[OK] nothing to do (%d already rendered)" % skipped)
         return 0
 
-    os.makedirs(args.gif_root, exist_ok=True)
+    for gif_path in {os.path.dirname(job[4]) for job in jobs}:
+        os.makedirs(gif_path, exist_ok=True)
     if args.frames_dir:
         os.makedirs(args.frames_dir, exist_ok=True)
     workers = max(1, min(args.workers, len(jobs)))
-    print("Rendering %d clip(s) with %d worker(s) -> %s"
-          % (len(jobs), workers, args.gif_root), flush=True)
-    print("engine %s  %dpx (x%d)  %d colors  dither %s  %.0f fps  <=%d frames  "
-          "follow %s" % (args.engine, args.size, args.supersample, args.colors,
-                         args.dither, args.fps, args.max_frames, args.follow),
+    print("Rendering %d clip(s) with %d worker(s) from %s"
+          % (len(jobs), workers, ", ".join(d["namespace"] for d in ready)),
+          flush=True)
+    print("mode %s  engine %s  %dpx (x%d)  %d colors  dither %s  %.0f fps  "
+          "<=%d frames  follow %s  radius %.3f x mean bone, clamped to "
+          "[%.3f, %.3f] of span, joints x%.2f"
+          % (args.mode, args.engine, args.size, args.supersample, args.colors,
+             args.dither, args.fps, args.max_frames, args.follow,
+             args.radius_ratio, args.radius_clamp[0], args.radius_clamp[1],
+             args.joint_scale),
           flush=True)
 
     started = time.time()
@@ -1234,18 +1672,19 @@ def main():
 
     def _report(i, result):
         nonlocal ok, fail, frames, written
+        label = "%s:%s" % (result["dataset"], result["clip"])
         if result["error"]:
             fail += 1
-            failures.append((result["clip"], result["error"]))
+            failures.append((label, result["error"]))
             print("  [FAIL] [%d/%d] %s -- %s"
-                  % (i, len(jobs), result["clip"],
-                     result["error"].splitlines()[0]), flush=True)
+                  % (i, len(jobs), label, result["error"].splitlines()[0]),
+                  flush=True)
             return
         ok += 1
         frames += result["frames"]
         written += result["bytes"]
-        print("  [OK]   [%d/%d] %s -- %d/%d frame(s), %.0f KB"
-              % (i, len(jobs), result["clip"], result["frames"],
+        print("  [OK]   [%d/%d] %s -- %s, %d/%d frame(s), %.0f KB"
+              % (i, len(jobs), label, result["mode"], result["frames"],
                  result["src_frames"], result["bytes"] / 1024.0), flush=True)
 
     if workers == 1:
@@ -1262,8 +1701,9 @@ def main():
                     try:
                         result = future.result()
                     except Exception as exc:      # noqa: BLE001
-                        result = {"clip": job[0], "species": job[1], "frames": 0,
-                                  "src_frames": 0, "bytes": 0,
+                        result = {"dataset": job[0], "clip": job[1],
+                                  "species": job[2], "mode": job[5]["mode"],
+                                  "frames": 0, "src_frames": 0, "bytes": 0,
                                   "error": "worker crashed: %s: %s"
                                            % (type(exc).__name__, exc)}
                     _report(i, result)
@@ -1272,8 +1712,8 @@ def main():
 
     print("\ndone: %d ok, %d failed, %d skipped, %d frames, %.1f MB in %.0fs"
           % (ok, fail, skipped, frames, written / 1048576.0, time.time() - started))
-    for clip, error in failures:
-        print("\n[FAIL] %s\n%s" % (clip, error))
+    for label, error in failures:
+        print("\n[FAIL] %s\n%s" % (label, error))
     return 0 if fail == 0 else 1
 
 
