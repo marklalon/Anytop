@@ -148,9 +148,9 @@
 {"clip": "KI_Archer_CombatJump01", "action_group": "transition", "action_label": "jump, hand0", "is_loop": false, "reviewed": true}
 {"clip": "KI_Archer_Death01", "action_group": "transition", "action_label": "die, hand0", "is_loop": false, "reviewed": true}
 {"clip": "KI_Archer_Death02", "action_group": "transition", "action_label": "die, hand0", "is_loop": false, "reviewed": true}
-{"clip": "KI_Archer_GetArrow01", "action_group": "transition", "action_label": "idle, attack, bow", "is_loop": false, "reviewed": true}
-{"clip": "KI_Archer_GetArrow02", "action_group": "transition", "action_label": "idle, attack, bow", "is_loop": false, "reviewed": true}
-{"clip": "KI_Archer_GetArrow03", "action_group": "transition", "action_label": "idle, attack, bow", "is_loop": false, "reviewed": true}
+{"clip": "KI_Archer_GetArrow01", "action_group": "transition", "action_label": "draw, bow", "is_loop": false, "reviewed": true}
+{"clip": "KI_Archer_GetArrow02", "action_group": "transition", "action_label": "draw, bow", "is_loop": false, "reviewed": true}
+{"clip": "KI_Archer_GetArrow03", "action_group": "transition", "action_label": "draw, bow", "is_loop": false, "reviewed": true}
 {"clip": "KI_Archer_Idle01", "action_group": "stationary", "action_label": "idle, hand0", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_Idle02", "action_group": "stationary", "action_label": "idle, hand0", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_Run01BackwardLeft", "action_group": "locomotion", "action_label": "run, backward, left, hand2", "is_loop": true, "reviewed": true}
@@ -162,11 +162,11 @@
 {"clip": "KI_Archer_Run01Left", "action_group": "locomotion", "action_label": "run, left, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_Run01Right", "action_group": "locomotion", "action_label": "run, right, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_SetTrap02", "action_group": "stationary", "action_label": "attack, slash, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Sheathe01", "action_group": "transition", "action_label": "attack, idle", "is_loop": false, "reviewed": true}
+{"clip": "KI_Archer_Sheathe01", "action_group": "transition", "action_label": "sheathe", "is_loop": false, "reviewed": true}
 {"clip": "KI_Archer_Sprint01", "action_group": "locomotion", "action_label": "run, forward, fast, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_TakeDamage01", "action_group": "stationary", "action_label": "hurt, hand0", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_TakeDamage02", "action_group": "stationary", "action_label": "hurt, hand0", "is_loop": true, "reviewed": true}
-{"clip": "KI_Archer_Unsheathe01", "action_group": "transition", "action_label": "idle, attack", "is_loop": false, "reviewed": true}
+{"clip": "KI_Archer_Unsheathe01", "action_group": "transition", "action_label": "draw", "is_loop": false, "reviewed": true}
 {"clip": "KI_Archer_Walk01BackwardLeft", "action_group": "locomotion", "action_label": "walk, backward, left, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_Walk01BackwardRight", "action_group": "locomotion", "action_label": "walk, backward, right, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Archer_Walk01Backward", "action_group": "locomotion", "action_label": "walk, backward, hand2", "is_loop": true, "reviewed": true}
@@ -209,8 +209,8 @@
 {"clip": "KI_Human_Clap01", "action_group": "stationary", "action_label": "idle, clap", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Clap02", "action_group": "stationary", "action_label": "idle, clap", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Crouch01AIdle", "action_group": "stationary", "action_label": "idle, crouch", "is_loop": true, "reviewed": true}
-{"clip": "KI_Human_Crouch01End", "action_group": "transition", "action_label": "crouch, idle", "is_loop": false, "reviewed": true}
-{"clip": "KI_Human_Crouch01Start", "action_group": "transition", "action_label": "idle, crouch", "is_loop": false, "reviewed": true}
+{"clip": "KI_Human_Crouch01End", "action_group": "transition", "action_label": "getup, crouch", "is_loop": false, "reviewed": true}
+{"clip": "KI_Human_Crouch01Start", "action_group": "transition", "action_label": "kneel", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_Crouch01Walk01BackwardsLeft", "action_group": "locomotion", "action_label": "walk, crouch, backward, left", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Crouch01Walk01BackwardsRight", "action_group": "locomotion", "action_label": "walk, crouch, backward, right", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Crouch01Walk01Backwards", "action_group": "locomotion", "action_label": "walk, crouch, backward", "is_loop": true, "reviewed": true}
@@ -233,9 +233,9 @@
 {"clip": "KI_Human_Jump01MidAir", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Jump01", "action_group": "transition", "action_label": "jump", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_LandRoll01Run", "action_group": "locomotion", "action_label": "roll, forward", "is_loop": false, "reviewed": true}
-{"clip": "KI_Human_Loot01End", "action_group": "transition", "action_label": "crouch, idle", "is_loop": false, "reviewed": true}
+{"clip": "KI_Human_Loot01End", "action_group": "transition", "action_label": "getup, crouch", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_Loot01Loop", "action_group": "stationary", "action_label": "idle, crouch", "is_loop": true, "reviewed": true}
-{"clip": "KI_Human_Loot01Start", "action_group": "transition", "action_label": "idle, crouch", "is_loop": false, "reviewed": true}
+{"clip": "KI_Human_Loot01Start", "action_group": "transition", "action_label": "kneel", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_Opening01Loop", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Question01", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Question02", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
@@ -263,7 +263,7 @@
 {"clip": "KI_Human_SitMed01AEnd", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_SitMed01ALoop", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_SitMed01AStart", "action_group": "transition", "action_label": "sitdown", "is_loop": false, "reviewed": true}
-{"clip": "KI_Human_SkidStop01", "action_group": "transition", "action_label": "run, idle", "is_loop": false, "reviewed": true}
+{"clip": "KI_Human_SkidStop01", "action_group": "transition", "action_label": "stop", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_Sprint01ForwardsLeft", "action_group": "locomotion", "action_label": "run, forward, left, fast", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Sprint01ForwardsRight", "action_group": "locomotion", "action_label": "run, forward, right, fast", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Sprint01Forwards", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
@@ -350,11 +350,11 @@
 {"clip": "KI_Soldier_CombatIdle01", "action_group": "stationary", "action_label": "idle, aim, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_CombatJump01MidairRifle", "action_group": "locomotion", "action_label": "fall, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_CombatJump01Rifle", "action_group": "transition", "action_label": "jump, hand2", "is_loop": true, "reviewed": true}
-{"clip": "KI_Soldier_Cover01ExposeRifle", "action_group": "transition", "action_label": "crouch, idle, hand2", "is_loop": false, "reviewed": true}
+{"clip": "KI_Soldier_Cover01ExposeRifle", "action_group": "transition", "action_label": "getup, crouch, hand2", "is_loop": false, "reviewed": true}
 {"clip": "KI_Soldier_Cover01IdleRifle", "action_group": "stationary", "action_label": "idle, crouch, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Crawling01CombatIdle01", "action_group": "stationary", "action_label": "idle, crawl, aim, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Crawling01Death01", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
-{"clip": "KI_Soldier_Crawling01DrawWeapon01", "action_group": "transition", "action_label": "crawl, attack", "is_loop": false, "reviewed": true}
+{"clip": "KI_Soldier_Crawling01DrawWeapon01", "action_group": "transition", "action_label": "draw, crawl", "is_loop": false, "reviewed": true}
 {"clip": "KI_Soldier_Crawling01Forward", "action_group": "locomotion", "action_label": "crawl, forward, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Crawling01Grenade01", "action_group": "stationary", "action_label": "attack, crawl, throw, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Crawling01Idle01", "action_group": "stationary", "action_label": "idle, crawl, hand2", "is_loop": true, "reviewed": true}
@@ -367,7 +367,7 @@
 {"clip": "KI_Soldier_Death02A", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
 {"clip": "KI_Soldier_Death03A", "action_group": "transition", "action_label": "die, backward, hand2", "is_loop": false, "reviewed": true}
 {"clip": "KI_Soldier_Death04A", "action_group": "transition", "action_label": "die, hand2", "is_loop": false, "reviewed": true}
-{"clip": "KI_Soldier_DrawWeapon01", "action_group": "transition", "action_label": "idle, attack", "is_loop": false, "reviewed": true}
+{"clip": "KI_Soldier_DrawWeapon01", "action_group": "transition", "action_label": "draw, gun", "is_loop": false, "reviewed": true}
 {"clip": "KI_Soldier_Grenade01", "action_group": "stationary", "action_label": "attack, throw, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Grenade02", "action_group": "stationary", "action_label": "attack, throw, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Idle01Action01", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
@@ -677,11 +677,11 @@
 {"clip": "MB_TigerDrago_FlyAttackFeet", "action_group": "stationary", "action_label": "attack, hover, kick", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyAttackFireBall", "action_group": "stationary", "action_label": "attack, hover, cast", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyBackward", "action_group": "locomotion", "action_label": "fly, backward", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_FlyDeath", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_FlyDeath", "action_group": "transition", "action_label": "die, fall", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyDodgeL", "action_group": "locomotion", "action_label": "roll, left", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyDodgeR", "action_group": "locomotion", "action_label": "roll, right", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyDown", "action_group": "locomotion", "action_label": "fly, dive", "is_loop": false, "reviewed": true}
-{"clip": "MB_TigerDrago_FlyFallRecover", "action_group": "transition", "action_label": "fall, fly", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_FlyFallRecover", "action_group": "locomotion", "action_label": "fly, roll", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyFall", "action_group": "locomotion", "action_label": "fall, dead", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyFowardL", "action_group": "locomotion", "action_label": "fly, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyFowardR", "action_group": "locomotion", "action_label": "fly, turn, right", "is_loop": false, "reviewed": true}
@@ -691,7 +691,7 @@
 {"clip": "MB_TigerDrago_FlyGlideL", "action_group": "locomotion", "action_label": "fly, left, glide", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyGlideR", "action_group": "locomotion", "action_label": "fly, right, glide", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyGlide", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_FlyHitAndFall", "action_group": "transition", "action_label": "fly, fall", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_FlyHitAndFall", "action_group": "stationary", "action_label": "hurt, fall", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyIdle", "action_group": "locomotion", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyL", "action_group": "locomotion", "action_label": "fly, right", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyLand", "action_group": "transition", "action_label": "jump, land", "is_loop": false, "reviewed": true}
@@ -753,7 +753,7 @@
 {"clip": "MB_Unka_AttackBiteFront", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackClawsL", "action_group": "stationary", "action_label": "attack, swat", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackFireBall", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
-{"clip": "MB_Unka_AttackSpecial1Land", "action_group": "transition", "action_label": "fly, land", "is_loop": false, "reviewed": true}
+{"clip": "MB_Unka_AttackSpecial1Land", "action_group": "transition", "action_label": "land, fly", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_AttackSpecial1Middle", "action_group": "stationary", "action_label": "attack, hover, projectile", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackSpecial1Start", "action_group": "transition", "action_label": "takeoff, spin", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_AttackStump", "action_group": "stationary", "action_label": "attack, smash", "is_loop": false, "reviewed": true}
@@ -774,8 +774,8 @@
 {"clip": "MB_Unka_FlyBackwards", "action_group": "locomotion", "action_label": "fly, backward", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyClosedWings50", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyClosedWings75", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
-{"clip": "MB_Unka_FlyDeathFloor", "action_group": "transition", "action_label": "fall, die", "is_loop": false, "reviewed": true}
-{"clip": "MB_Unka_FlyDeathRecover", "action_group": "transition", "action_label": "fall, fly", "is_loop": false, "reviewed": true}
+{"clip": "MB_Unka_FlyDeathFloor", "action_group": "transition", "action_label": "die, fall", "is_loop": false, "reviewed": true}
+{"clip": "MB_Unka_FlyDeathRecover", "action_group": "locomotion", "action_label": "fly, roll", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FlyDodgeLeft", "action_group": "locomotion", "action_label": "roll, left", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyDodgeRight", "action_group": "locomotion", "action_label": "roll, right", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyDown", "action_group": "locomotion", "action_label": "fly, dive", "is_loop": false, "reviewed": true}
@@ -783,7 +783,7 @@
 {"clip": "MB_Unka_FlyForwardLeft", "action_group": "locomotion", "action_label": "fly, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FlyForwardRight", "action_group": "locomotion", "action_label": "fly, turn, right", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FlyForward", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
-{"clip": "MB_Unka_FlyHitDeath", "action_group": "transition", "action_label": "fly, fall", "is_loop": false, "reviewed": true}
+{"clip": "MB_Unka_FlyHitDeath", "action_group": "stationary", "action_label": "hurt, fall", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FlyStand", "action_group": "locomotion", "action_label": "hover", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FlyStrafeLeft", "action_group": "locomotion", "action_label": "fly, left", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyStrafeRight", "action_group": "locomotion", "action_label": "fly, right", "is_loop": true, "reviewed": true}
@@ -996,7 +996,7 @@
 {"clip": "MU01_Bird_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU01_Bird_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MU01_Bird_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
-{"clip": "MU01_Bumble_CastSpell", "action_group": "locomotion", "action_label": "attack, hover, cast", "is_loop": true, "reviewed": true}
+{"clip": "MU01_Bumble_CastSpell", "action_group": "stationary", "action_label": "attack, hover, cast", "is_loop": true, "reviewed": true}
 {"clip": "MU01_Bumble_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "MU01_Bumble_FlyForward", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
 {"clip": "MU01_Bumble_HeadAttack", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}
@@ -1227,7 +1227,6 @@
 {"clip": "MU04_GolemEarth_DashForward", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GolemEarth_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemEarth_FlyForward", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
-{"clip": "MU04_GolemEarth_IdleToSpinAttack", "action_group": "transition", "action_label": "idle, attack", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemEarth_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GolemEarth_Jump", "action_group": "transition", "action_label": "jump", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GolemEarth_LeftPunchAttack", "action_group": "stationary", "action_label": "attack, left, punch", "is_loop": true, "reviewed": true}
@@ -1237,7 +1236,6 @@
 {"clip": "MU04_GolemEarth_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemEarth_SpinAttackLoop", "action_group": "stationary", "action_label": "attack, spin", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemEarth_SpinAttackOnce", "action_group": "stationary", "action_label": "attack, spin", "is_loop": true, "reviewed": true}
-{"clip": "MU04_GolemEarth_SpinAttackToIdle", "action_group": "transition", "action_label": "attack, idle", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemEarth_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GolemEarth_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemEarth_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
@@ -1245,7 +1243,6 @@
 {"clip": "MU04_GolemFire_DashForward", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GolemFire_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemFire_FlyForward", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "MU04_GolemFire_IdleToSpinAttack", "action_group": "transition", "action_label": "idle, attack", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemFire_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GolemFire_Jump", "action_group": "transition", "action_label": "jump", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GolemFire_LeftPunchAttack", "action_group": "stationary", "action_label": "attack, left, punch", "is_loop": true, "reviewed": true}
@@ -1257,7 +1254,6 @@
 {"clip": "MU04_GolemFire_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemFire_SpinAttackLoop", "action_group": "stationary", "action_label": "attack, spin", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemFire_SpinAttackOnce", "action_group": "stationary", "action_label": "attack, spin", "is_loop": true, "reviewed": true}
-{"clip": "MU04_GolemFire_SpinAttackToIdle", "action_group": "transition", "action_label": "attack, idle", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemFire_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GolemFire_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemFire_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
@@ -1265,7 +1261,6 @@
 {"clip": "MU04_GolemIce_DashForward", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GolemIce_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemIce_FlyForward", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "MU04_GolemIce_IdleToSpinAttack", "action_group": "transition", "action_label": "idle, attack", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemIce_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GolemIce_Jump", "action_group": "transition", "action_label": "jump", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GolemIce_LeftPunchAttack", "action_group": "stationary", "action_label": "attack, left, punch", "is_loop": true, "reviewed": true}
@@ -1275,7 +1270,6 @@
 {"clip": "MU04_GolemIce_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemIce_SpinAttackLoop", "action_group": "stationary", "action_label": "attack, spin", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemIce_SpinAttackOnce", "action_group": "stationary", "action_label": "attack, spin", "is_loop": true, "reviewed": true}
-{"clip": "MU04_GolemIce_SpinAttackToIdle", "action_group": "transition", "action_label": "attack, idle", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemIce_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GolemIce_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GolemIce_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
@@ -1283,13 +1277,11 @@
 {"clip": "MU04_GrimReaper_DashForward", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GrimReaper_FlyForward", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
-{"clip": "MU04_GrimReaper_IdleToSpinAttack", "action_group": "transition", "action_label": "idle, attack", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GrimReaper_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_ProjectileAttack", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_SlashAttack01", "action_group": "stationary", "action_label": "attack, slash", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_SlashAttack02", "action_group": "stationary", "action_label": "attack, slash", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
-{"clip": "MU04_GrimReaper_SpinAttackToIdle", "action_group": "transition", "action_label": "attack, idle", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GrimReaper_SpinAttack", "action_group": "stationary", "action_label": "attack, spin", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GrimReaper_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
@@ -1999,13 +1991,10 @@
 {"clip": "RU01_GripperRobot_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "RU01_GripperRobot_FlyForward", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "RU01_GripperRobot_HitGroundAttack", "action_group": "stationary", "action_label": "attack, smash", "is_loop": true, "reviewed": true}
-{"clip": "RU01_GripperRobot_IdleToRightGrip", "action_group": "transition", "action_label": "idle, attack", "is_loop": false, "reviewed": true}
-{"clip": "RU01_GripperRobot_IdleToTwoHandsGrip", "action_group": "transition", "action_label": "idle, attack", "is_loop": false, "reviewed": true}
 {"clip": "RU01_GripperRobot_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "RU01_GripperRobot_LeftPunchAttack", "action_group": "stationary", "action_label": "attack, left, punch", "is_loop": true, "reviewed": true}
 {"clip": "RU01_GripperRobot_ProjectileAttack", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "RU01_GripperRobot_RapidProjectileAttackLoop", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
-{"clip": "RU01_GripperRobot_RightGripToIdle", "action_group": "transition", "action_label": "attack, idle", "is_loop": false, "reviewed": true}
 {"clip": "RU01_GripperRobot_RightPunchAttack", "action_group": "stationary", "action_label": "attack, right, punch", "is_loop": true, "reviewed": true}
 {"clip": "RU01_GripperRobot_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "RU01_GripperRobot_SpinAndHitGroundAttack", "action_group": "stationary", "action_label": "attack, smash", "is_loop": true, "reviewed": true}
@@ -2013,7 +2002,6 @@
 {"clip": "RU01_GripperRobot_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "RU01_GripperRobot_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
 {"clip": "RU01_GripperRobot_TwoHandsGripLoop", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
-{"clip": "RU01_GripperRobot_TwoHandsGripToIdle", "action_group": "transition", "action_label": "attack, idle", "is_loop": false, "reviewed": true}
 {"clip": "RU01_GripperRobot_Working", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
 {"clip": "RU01_HermitRobot_BlastAttack", "action_group": "stationary", "action_label": "attack", "is_loop": true, "reviewed": true}
 {"clip": "RU01_HermitRobot_CastSpell", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
@@ -2191,7 +2179,6 @@
 {"clip": "RU02_GalaxyRobot_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "RU02_GalaxyRobot_SpinAttackLoop", "action_group": "stationary", "action_label": "attack, spin", "is_loop": false, "reviewed": true}
 {"clip": "RU02_GalaxyRobot_SpinAttackOnce", "action_group": "stationary", "action_label": "attack, spin", "is_loop": true, "reviewed": true}
-{"clip": "RU02_GalaxyRobot_SpinAttackToIdle", "action_group": "transition", "action_label": "attack, idle", "is_loop": false, "reviewed": true}
 {"clip": "RU02_GalaxyRobot_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "RU02_GalaxyRobot_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "RU02_GalaxyRobot_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
@@ -2281,7 +2268,6 @@
 {"clip": "RU02_SoldierRobot_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "RU02_SoldierRobot_SpinAttackLoop", "action_group": "stationary", "action_label": "attack, spin", "is_loop": false, "reviewed": true}
 {"clip": "RU02_SoldierRobot_SpinAttackOnce", "action_group": "stationary", "action_label": "attack, spin", "is_loop": true, "reviewed": true}
-{"clip": "RU02_SoldierRobot_SpinAttackToIdle", "action_group": "transition", "action_label": "attack, idle", "is_loop": false, "reviewed": true}
 {"clip": "RU02_SoldierRobot_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "RU02_SoldierRobot_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "RU02_SoldierRobot_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
@@ -2352,7 +2338,6 @@
 {"clip": "RU02_TrooperRobot_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "RU02_TrooperRobot_SpinAttackLoop", "action_group": "stationary", "action_label": "attack, spin", "is_loop": false, "reviewed": true}
 {"clip": "RU02_TrooperRobot_SpinAttackOnce", "action_group": "stationary", "action_label": "attack, spin", "is_loop": true, "reviewed": true}
-{"clip": "RU02_TrooperRobot_SpinAttackToIdle", "action_group": "transition", "action_label": "attack, idle", "is_loop": false, "reviewed": true}
 {"clip": "RU02_TrooperRobot_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "RU02_TrooperRobot_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "RU02_TrooperRobot_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}

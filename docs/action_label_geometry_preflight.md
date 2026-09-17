@@ -1,10 +1,15 @@
 # action_label 条件几何预检
 
 > 日期：2026-09-06  
-> 结论：**GO —— 定稿表示为每个角色槽一个条件通道 `slot/eos_keep/center_l2`。**  
+> 结论：**GO —— 定稿表示为每个槽一个条件通道 `slot/eos_keep/center_l2`。**
 > 工具：[`tools/evaluate_action_label_geometry.py`](../tools/evaluate_action_label_geometry.py)  
-> 固定角色变换：由 `role_b_material()` 按需推导，见
-> [`action_label_conditioning_contract.py`](../data_loaders/truebones/truebones_utils/action_label_conditioning_contract.py)
+> 槽契约：[`action_label_conditioning_contract.py`](../data_loaders/truebones/truebones_utils/action_label_conditioning_contract.py)
+>
+> **2026-09-17：transition 的方向机制已删除**（[`action_label_per_word_pooling.md`](action_label_per_word_pooling.md) §14）。
+> 固定角色变换 `R_B`、`role_ids` / `order_head_mask`、「反向 transition 中位数 ≤ 0.50」硬门
+> 与报告里的 `rev50` 列都不复存在，head 配置枚举改为无序对，键唯一判据改为 `(group, {word})`。
+> §1、§4、§5 是 2026-09-06 的原始记录，其中的 `R_B` 材料 hash、反向对读数、`(word, role)` 键
+> 和 135 的槽源秩都属于旧契约，按当日原样保留；**当前契约的读数见 §7**。
 
 ## 1. 可复现输入
 
@@ -96,12 +101,14 @@ CPU/GPU 结果一致到 ~1e-12。全合法输入域的注入性由槽源秩硬�
 |---|---|
 | 碰撞 | 同一 checkpoint 内不同标签余弦 ≥ 0.999999 的对数为 0 |
 | 最坏近邻 | 每个 checkpoint 的最近邻余弦最大值不高于 baseline 的同项 |
-| 反向 transition | 5 对真实反向对的余弦中位数 ≤ 0.50 |
 | 通道漂移 | 追加修饰词后 head/direction 通道的最大逐元素变化 = 0 |
-| 词表秩 | 冻结词表满仿射秩（raw 103，中心化后 102） |
-| 槽源秩 | head 的 64 个普通/角色源、direction 的 6 个源、modifier 的 65 个源分别满秩 |
-| 投影宽度 | `latent_dim` 不小于三个槽的总可达秩 |
-| 键唯一 | `(group, {(word_id, role_id)})` 在语料上唯一 |
+| 词表秩 | 冻结词表满仿射秩（raw 107，中心化后 106） |
+| 槽源秩 | head 的 36 个状态词源、direction 的 6 个源、modifier 的 62 个源、hands 的 3 个源分别满秩 |
+| 投影宽度 | `latent_dim` 不小于四个槽的总可达秩 |
+| 键唯一 | `(group, {word_id})` 在语料上唯一 |
+
+（2026-09-06 的原始硬门还有一条「5 对真实反向 transition 的余弦中位数 ≤ 0.50」，
+随方向机制一起删除；§4.1 的「反向对中位」列是那条硬门的历史读数。）
 
 其余指标（p95 / 最近邻中位 / 有效秩）改为**只报告**，与 baseline 对比以便发现回归。
 
@@ -194,10 +201,44 @@ head 和 direction 的合法域全部穷举；modifier 只穷举到当前语料�
 
 ## 6. 对实现的约束
 
-- loader 只发 `word_ids / role_ids / word_mask / order_head_mask / slot_ids`，槽拼装在模型侧
+- loader 只发 `word_ids / slot_ids / word_mask`，槽拼装在模型侧
   用 checkpoint 内的冻结词表完成；离线不预拼 label→bundle 查表，否则表示被锁进数据通路。
 - 槽拼装的唯一实现是
   [`assemble_slot_channels`](../data_loaders/truebones/truebones_utils/action_label_conditioning_contract.py)，
   模型侧用张量镜像同一套 `slot_ids`，不另写一份。
 - 学习后的通道缩放、CFG 与生成动作质量不属于这份训练前预检；它们仍必须进入实现后的消融与
   held-out 生成验收。
+
+## 7. 2026-09-17 重跑：当前契约
+
+去掉方向机制、词表补 `draw` / `sheathe` / `stop` / `kneel`（107 个 token）、
+`STATE_VOCAB` 改名 `HEAD_VOCAB` 并抽成 `ACTION_VOCAB` 的首 block、语料改写为
+3745 行 / 383 个 label / 384 个条件点之后，CUDA 全量重跑（含数值诊断）：
+
+| 变体 | 最坏近邻 | 通道漂移 | 词表秩 | 槽源总秩 | 键唯一 | 结论 |
+|---|---:|---:|---:|---:|---|---|
+| baseline 整串 T5 | 0.9873 | — | — | — | — | 参考 |
+| **slot/eos_keep/center_l2（选中）** | **0.9521** | **0.0** | 106（raw 107） | 107 | 是 | **GO** |
+| slot/eos_keep/center | 0.9481 | 0.0 | 106 | 107 | 是 | GO |
+| slot/eos_keep/raw | 0.9568 | 0.0 | 107 | 107 | 是 | GO |
+| slot/eos_keep/l2 | 0.9605 | 0.0 | 107 | 107 | 是 | GO |
+| slot/eos_drop/center_l2 | 0.9520 | 0.0 | 106 | 107 | 是 | GO |
+
+八个变体全部 GO；`center` 的最坏近邻比 `center_l2` 低 0.0040，在 `SELECTION_TOLERANCE`
+之内，按固定顺序仍选 `center_l2`。槽源秩 head 36 / direction 6 / modifier 62 / hands 3。
+（`--device cpu` 的同一轮读数只在第四位小数上不同：0.9525 / 0.9607 / 0.9523。）
+
+只报告的几何（相对 baseline）：locomotion Δp95 −0.192、Δ最近邻中位 −0.087、有效秩比 0.843；
+stationary −0.168 / −0.032 / 0.703；transition −0.172 / −0.062 / 0.774。
+
+| 槽 | 枚举配置数 | 最坏配置对余弦 | 最小成员 readout 间隔 |
+|---|---:|---:|---:|
+| head | 666（36 单头 + 630 无序对） | 0.8920 | +0.771（putdown） |
+| direction | 63（全部非空子集） | 0.9580 | +0.559（right） |
+| modifier | 39773（≤3 词子集） | 0.9690 | +0.627（bite） |
+| hands | 3 | 0.5238 | +1.000（hand2） |
+
+定稿指纹（CUDA；出厂 sidecar 由 `build_action_label_embeddings.py --force` 同日重建，两处逐字相同）：
+`embedding_fingerprint ef548fd76e18da58f34a3adac2325fec720ca2c5583de50c1752b394a618bc1d`、
+`conditioning_contract_fingerprint 52785435c57deaf2e7f915f5492acfcaa280745059350e0b9dce1491847073e4`。
+（`--device cpu` 复算得到的是另一对指纹，原因见 §1；核对指纹用 CUDA。）

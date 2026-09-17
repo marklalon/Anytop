@@ -388,11 +388,11 @@ class TrainLoop:
                 payload, self.resume_checkpoint, prefer_ema=False)
             self._assert_resume_action_conditioning(metadata)
 
-            # The bind comes SECOND, on each set of weights, because the buffers
-            # it certifies -- the word table and the role transform -- are the
-            # CHECKPOINT's, and they only exist in the model once load_model has
-            # overwritten this run's own. Binding first certified the material
-            # the run started with and then let load_model replace it unchecked.
+            # The bind comes SECOND, on each set of weights, because the buffer
+            # it certifies -- the word table -- is the CHECKPOINT's, and it only
+            # exists in the model once load_model has overwritten this run's
+            # own. Binding first certified the material the run started with
+            # and then let load_model replace it unchecked.
             load_model(self.model, state_dict)
             bind_checkpoint_action_conditioning(
                 self.model, metadata, self.resume_checkpoint)

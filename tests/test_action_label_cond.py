@@ -22,7 +22,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
     HANDS_VOCAB,
-    STATE_VOCAB,
+    HEAD_VOCAB,
     ActionLabelError,
     action_words_in,
     canonical_action_label,
@@ -125,6 +125,13 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             self.assertEqual(word, word.strip())
             self.assertNotIn(' ', word)
 
+    def test_separability_plot_uses_the_written_primary_head(self):
+        from tools.visualize_action_separability import primary_action_word
+
+        self.assertEqual(primary_action_word('land, fly'), 'land')
+        self.assertEqual(primary_action_word('getup, crouch'), 'getup')
+        self.assertEqual(primary_action_word('draw, crawl'), 'draw')
+
     def test_zero_use_words_are_gone_from_the_closed_table(self):
         # The vocabulary is closed now: a word nobody annotates is a token the
         # autocomplete would offer, the model never trained, and whose weight
@@ -139,15 +146,25 @@ class ActionLabelVocabularyTest(unittest.TestCase):
                         'fast', 'fishing', 'bow', 'shield'):
             self.assertIn(present, CONTROLLED_VOCAB, present)
 
-    def test_state_vocab_is_a_closed_subset(self):
-        self.assertLessEqual(set(STATE_VOCAB), set(CONTROLLED_VOCAB))
-        self.assertEqual(len(set(STATE_VOCAB)), len(STATE_VOCAB))
+    def test_head_vocab_is_a_closed_subset(self):
+        from data_loaders.truebones.truebones_utils.motion_labels import (
+            ACTION_VOCAB, MODIFIER_VOCAB,
+        )
+
+        self.assertLessEqual(set(HEAD_VOCAB), set(CONTROLLED_VOCAB))
+        self.assertEqual(len(set(HEAD_VOCAB)), len(HEAD_VOCAB))
+        # A word is a head or a modifier, never both, and the action vocabulary
+        # is exactly the two of them: heads first (their position decides
+        # nothing), then the modifiers in canonical spelling order.
+        self.assertEqual(ACTION_VOCAB, HEAD_VOCAB + MODIFIER_VOCAB)
+        self.assertTrue(set(HEAD_VOCAB).isdisjoint(MODIFIER_VOCAB))
         # Equipment, direction and manner words can never be head words: the
-        # head slot is "a state the body is in", not "the important word".
+        # head slot is "what the label is about", not "the important word".
         for absent in ('hand1', 'bow', 'forward', 'cast', 'spin', 'block'):
-            self.assertNotIn(absent, STATE_VOCAB, absent)
-        for present in ('idle', 'attack', 'crouch', 'rear', 'hover', 'sleep', 'sit'):
-            self.assertIn(present, STATE_VOCAB, present)
+            self.assertNotIn(absent, HEAD_VOCAB, absent)
+        for present in ('idle', 'attack', 'crouch', 'rear', 'hover', 'sleep', 'sit',
+                        'draw', 'sheathe', 'stop', 'kneel'):
+            self.assertIn(present, HEAD_VOCAB, present)
 
     def test_t5_text_map_is_one_to_one_on_the_expanded_table(self):
         # The constraint is on the EXPANDED table, not on the override dict:
@@ -231,17 +248,18 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             canonical_action_label(['turn', 'hover', 'left']),
             'turn, left, hover',
         )
-        # Head order is NOT sorted: it is the clip's time order and the only
-        # record of which way a transition runs. This is the load-bearing case.
-        self.assertEqual(canonical_action_label(['idle', 'attack']), 'idle, attack')
-        self.assertEqual(canonical_action_label(['attack', 'idle']), 'attack, idle')
+        # Head order is NOT sorted: it is the written order the corpus is
+        # validated against (one order per word set and group), and the
+        # contract never re-sorts head words on its own.
+        self.assertEqual(canonical_action_label(['land', 'fly']), 'land, fly')
+        self.assertEqual(canonical_action_label(['fly', 'land']), 'fly, land')
         self.assertEqual(canonical_action_label(['run', 'run']), 'run')
         with self.assertRaises(ActionLabelError):
             canonical_action_label(['run', 'nonsense'])
 
     def test_canonical_label_round_trips_through_the_parser(self):
         for label in ('walk, forward', 'run, forward, left, fast', 'attack, bite',
-                      'idle, attack', 'attack, idle',
+                      'land, fly', 'getup, crouch, hand2', 'draw', 'sheathe', 'stop',
                       'walk, forward, hand1', 'idle, rear, roar',
                       'run, turn, right, fast, hand1', 'turn, left, hover',
                       'attack, bow, hand2', 'idle, hand0'):
@@ -249,7 +267,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
 
     def test_parser_enforces_the_spelling_contract(self):
         self.assertEqual(parse_action_label(''), [])
-        self.assertEqual(parse_action_label('attack, idle'), ['attack', 'idle'])
+        self.assertEqual(parse_action_label('land, fly'), ['land', 'fly'])
         for bad, why in (
             ('walk, jogging', 'out-of-vocabulary token'),
             ('walk, , forward', 'empty comma segment'),
@@ -283,10 +301,10 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # Legal: canonical keywords, and the empty (unconditional) label.
         _validate('walk, forward')
         _validate('')
-        _validate('attack, idle', group='transition')
+        _validate('land, fly', group='transition')
         # The vocabulary is closed and the corpus is spelled to match, so what
         # used to be advisory is now a gate -- a warning here could only buy a
-        # silent regression, and reordering heads is a silent direction flip.
+        # silent regression.
         for bad in ('walk, strides forward with arms swinging',
                     'walk, hand1, forward',    # modifier before direction
                     'idle, hand2, bow',        # hands before the implement
@@ -300,20 +318,24 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             motion_labels._validate_action_label_entry('emote', 'idle', 'c.npy', 1)
 
-    def test_head_order_may_only_diverge_in_transition(self):
+    def test_head_order_is_consistent_within_every_group(self):
         from data_loaders.truebones.truebones_utils import motion_labels
 
-        # Two spellings of one word set: the clip's time order in a transition...
+        # One word set, one head order -- the transition group included: head
+        # order carries no direction, so two spellings are one condition under
+        # two strings, never a transition and its reverse.
+        for group in ('transition', 'stationary', 'locomotion'):
+            with self.assertRaises(SystemExit, msg=group):
+                motion_labels._validate_head_order_consistency([
+                    (1, group, 'a.npy', ['idle', 'rear']),
+                    (2, group, 'b.npy', ['rear', 'idle']),
+                ])
+        # The same word set may be spelled differently in DIFFERENT groups: each
+        # group is its own checkpoint.
         motion_labels._validate_head_order_consistency([
-            (1, 'transition', 'a.npy', ['idle', 'attack']),
-            (2, 'transition', 'b.npy', ['attack', 'idle']),
+            (1, 'transition', 'a.npy', ['land', 'fly']),
+            (2, 'locomotion', 'b.npy', ['fly', 'land']),
         ])
-        # ...and an inconsistent annotation anywhere else.
-        with self.assertRaises(SystemExit):
-            motion_labels._validate_head_order_consistency([
-                (1, 'stationary', 'a.npy', ['idle', 'rear']),
-                (2, 'stationary', 'b.npy', ['rear', 'idle']),
-            ])
 
 
 class ActionLabelConditioningTest(unittest.TestCase):

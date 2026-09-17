@@ -247,10 +247,9 @@ def _resolve_action_condition(args, model):
     # A recognizable prompt is still REWRITTEN to its canonical spelling -- it is
     # the string the model fitted, and the one recorded next to the sample -- but
     # the rewrite may only reorder NON-HEAD words: directions bind next to their
-    # head, then the remaining modifiers follow. Head-word order is the clip's
-    # time order and the only record of which way a transition runs, so
-    # re-sorting it would silently turn every "attack, idle" sheathe into an
-    # "idle, attack" draw.
+    # head, then the remaining modifiers follow. Head-word order is kept as
+    # given: the model pools the head slot as a set, so the order changes no
+    # condition, and the corpus spells one word set one way per group.
     try:
         tokens = parse_action_label(label)
     except ActionLabelError as exc:
@@ -265,24 +264,20 @@ def _resolve_action_condition(args, model):
         )
         label = canonical
         # Re-parse so the word order handed to the model is the canonical one.
-        # Only head order carries meaning and canonicalization preserves it, so
-        # this changes no condition; it keeps generation emitting exactly what
-        # the loader emits for the same label.
+        # Every slot pools as a set, so this changes no condition; it keeps
+        # generation emitting exactly what the loader emits for the same label.
         tokens = parse_action_label(label)
 
-    # The role of a word is contextual -- ROLE_HEAD_1 is only ever the second head
-    # word of a two-state transition -- so the assignment goes through the same
-    # contract function the loader calls, with this checkpoint's own group.
-    slots = action_label_slots(group, tokens)
+    # The same contract function the loader calls, so the sampler cannot hand
+    # the model a slot assignment training never produced.
+    slots = action_label_slots(tokens)
     return {
         'action_group': group,
         'action_label': label,
         'action_slots': {
             'word_ids': np.asarray(slots['word_ids'], dtype=np.int64),
-            'role_ids': np.asarray(slots['role_ids'], dtype=np.int64),
             'slot_ids': np.asarray(slots['slot_ids'], dtype=np.int64),
             'word_mask': np.asarray(slots['word_mask'], dtype=np.bool_),
-            'order_head_mask': np.asarray(slots['order_head_mask'], dtype=np.bool_),
         },
     }
 

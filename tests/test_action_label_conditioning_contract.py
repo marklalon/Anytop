@@ -5,11 +5,6 @@ import pytest
 
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_LABEL_SLOTS,
-    ROLE_B_EMBEDDING_DIM,
-    ROLE_B_MATERIAL_SHA256,
-    ROLE_B_NAMESPACE,
-    ROLE_HEAD_1,
-    ROLE_NONE,
     SLOT_DIRECTION,
     SLOT_HANDS,
     SLOT_HEAD,
@@ -19,10 +14,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     conditioning_contract_payload,
     embedding_contract_payload,
     fingerprint,
-    role_b_material,
-    role_b_payload_hash,
     slot_channel_representation,
-    validate_role_b_payload,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
     CONTROLLED_VOCAB,
@@ -35,76 +27,27 @@ from tools.evaluate_action_label_geometry import _slot_source_rank_report
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_role_b_is_a_material_orthogonal_signed_permutation():
-    payload = role_b_material(expected_dim=ROLE_B_EMBEDDING_DIM)
-    perm = np.asarray(payload["perm"], dtype=np.int64)
-    sign = np.asarray(payload["sign"], dtype=np.float32)
-    probe = np.arange(ROLE_B_EMBEDDING_DIM, dtype=np.float32) - 100.0
-    transformed = sign * probe[perm]
-    assert np.dot(transformed, transformed) == pytest.approx(np.dot(probe, probe))
-
-
-def test_role_b_derivation_is_stable_and_matches_the_committed_hash():
-    """The committed hash, not a checked-in file, is what freezes R_B."""
-    first = role_b_material()
-    second = role_b_material()
-    assert first == second
-    assert first["namespace"] == ROLE_B_NAMESPACE
-    assert first["material_sha256"] == ROLE_B_MATERIAL_SHA256
-    assert role_b_payload_hash(first) == ROLE_B_MATERIAL_SHA256
-    # The committed material itself, so a re-derivation cannot quietly move it.
-    assert first["perm"][:4] == [434, 266, 440, 623]
-    assert first["sign"][:4] == [-1, -1, 1, -1]
-    assert sum(first["sign"]) == -52
-
-
-def test_role_b_rejects_material_tampering():
-    """Material that did not come from the derivation still gets checked."""
-    payload = role_b_material()
-    payload["sign"][0] *= -1
-    with pytest.raises(ValueError, match="material hash mismatch"):
-        validate_role_b_payload(payload, expected_dim=ROLE_B_EMBEDDING_DIM)
-
-
-def test_role_b_rejects_a_foreign_permutation():
-    payload = role_b_material()
-    payload["perm"][0] = payload["perm"][1]
-    payload["material_sha256"] = role_b_payload_hash(payload)
-    with pytest.raises(ValueError, match="not a permutation"):
-        validate_role_b_payload(payload, expected_dim=ROLE_B_EMBEDDING_DIM)
-
-
 def test_slot_source_rank_covers_the_full_domain_and_projection_width():
     table = _word_table()
-    payload = role_b_material(expected_dim=table.shape[1])
-    report = _slot_source_rank_report(table, payload, latent_dim=256)
+    report = _slot_source_rank_report(table, latent_dim=256)
     assert report["full_rank"]
     assert report["fits_projection"]
-    assert report["total_rank"] == 135
+    assert report["total_rank"] == 107
     assert {name: item["rank"] for name, item in report["slots"].items()} == {
-        "head": 64,
+        "head": 36,
         "direction": 6,
         "modifier": 62,
         "hands": 3,
     }
-    assert not _slot_source_rank_report(table, payload, latent_dim=134)[
-        "fits_projection"
-    ]
+    assert not _slot_source_rank_report(table, latent_dim=106)["fits_projection"]
 
 
-@pytest.mark.parametrize(
-    ("group", "tokens", "roles", "order_mask"),
-    [
-        ("transition", ("idle",), (ROLE_NONE,), (False,)),
-        ("transition", ("turn", "hover", "left"), (ROLE_NONE,) * 3, (False,) * 3),
-        ("transition", ("idle", "attack"), (ROLE_NONE, ROLE_HEAD_1), (True, True)),
-        ("stationary", ("idle", "attack"), (ROLE_NONE, ROLE_NONE), (False, False)),
-    ],
-)
-def test_slot_contract_is_contextual(group, tokens, roles, order_mask):
-    slots = action_label_slots(group, tokens)
-    assert slots["role_ids"] == roles
-    assert slots["order_head_mask"] == order_mask
+def test_slot_assignment_carries_ids_masks_and_slots_only():
+    """No role ids, no order mask: a label's condition is its (word, slot) set."""
+    slots = action_label_slots(("idle", "attack"))
+    assert set(slots) == {"word_ids", "word_mask", "slot_ids"}
+    assert slots["word_mask"] == (True, True)
+    assert slots["slot_ids"] == (SLOT_HEAD, SLOT_HEAD)
 
 
 def _word_table(dim=768):
@@ -113,30 +56,27 @@ def _word_table(dim=768):
     return generator.standard_normal((len(CONTROLLED_VOCAB), dim))
 
 
-def _channels(group, tokens, table):
-    payload = role_b_material(expected_dim=table.shape[1])
-    return assemble_slot_channels(
-        table, action_label_slots(group, tokens), payload["perm"], payload["sign"]
-    )
+def _channels(tokens, table):
+    return assemble_slot_channels(table, action_label_slots(tokens))
 
 
-def test_slot_ids_partition_the_label_by_role():
-    slots = action_label_slots("locomotion", ("walk", "forward", "fast", "hand1"))
+def test_slot_ids_partition_the_label_by_slot():
+    slots = action_label_slots(("walk", "forward", "fast", "hand1"))
     assert slots["slot_ids"] == (SLOT_HEAD, SLOT_DIRECTION, SLOT_MODIFIER, SLOT_HANDS)
     assert ACTION_LABEL_SLOTS == ("head", "direction", "modifier", "hands")
 
 
 def test_hands_axis_admits_one_member():
     with pytest.raises(ValueError, match="hand-state words"):
-        action_label_slots("stationary", ("idle", "hand0", "hand2"))
+        action_label_slots(("idle", "hand0", "hand2"))
 
 
 def test_hands_channel_is_the_token_vector_and_leaves_the_modifier_channel_alone():
     """The reason the axis has its own channel: annotating hand state on nearly
     every clip of a species must not dilute that species' real modifiers."""
     table = _word_table()
-    bare, bare_present = _channels("stationary", ("attack", "slash"), table)
-    armed, armed_present = _channels("stationary", ("attack", "slash", "hand2"), table)
+    bare, bare_present = _channels(("attack", "slash"), table)
+    armed, armed_present = _channels(("attack", "slash", "hand2"), table)
     assert np.array_equal(bare[SLOT_MODIFIER], armed[SLOT_MODIFIER])
     assert np.array_equal(bare[SLOT_HEAD], armed[SLOT_HEAD])
     assert not bare_present[SLOT_HANDS] and armed_present[SLOT_HANDS]
@@ -154,9 +94,9 @@ def test_head_and_direction_channels_ignore_added_modifiers():
     number.
     """
     table = _word_table()
-    short, short_present = _channels("locomotion", ("walk", "forward"), table)
+    short, short_present = _channels(("walk", "forward"), table)
     long, long_present = _channels(
-        "locomotion", ("walk", "forward", "fast", "bow", "shield", "hand2"), table
+        ("walk", "forward", "fast", "bow", "shield", "hand2"), table
     )
     assert np.array_equal(short[SLOT_HEAD], long[SLOT_HEAD])
     assert np.array_equal(short[SLOT_DIRECTION], long[SLOT_DIRECTION])
@@ -168,8 +108,8 @@ def test_head_and_direction_channels_ignore_added_modifiers():
 
 def test_absent_slot_does_not_renormalise_the_others():
     table = _word_table()
-    with_direction, _ = _channels("locomotion", ("walk", "forward"), table)
-    without, present = _channels("stationary", ("walk",), table)
+    with_direction, _ = _channels(("walk", "forward"), table)
+    without, present = _channels(("walk",), table)
     assert np.array_equal(with_direction[SLOT_HEAD], without[SLOT_HEAD])
     assert not present[SLOT_DIRECTION]
     for slot in range(len(ACTION_LABEL_SLOTS)):
@@ -177,35 +117,26 @@ def test_absent_slot_does_not_renormalise_the_others():
             assert np.linalg.norm(without[slot]) == pytest.approx(1.0)
 
 
-def test_role_transform_separates_a_transition_from_its_reverse():
-    table = _word_table()
-    forward, _ = _channels("transition", ("idle", "attack"), table)
-    backward, _ = _channels("transition", ("attack", "idle"), table)
-    cosine = float(
-        forward[SLOT_HEAD] @ backward[SLOT_HEAD]
-        / (np.linalg.norm(forward[SLOT_HEAD]) * np.linalg.norm(backward[SLOT_HEAD]))
-    )
-    assert cosine < 0.5
-
-
-def test_head_slot_is_order_invariant_where_the_role_gate_is_closed():
-    """Outside transition the head slot pools without a role transform.
+def test_head_slot_is_a_set():
+    """Head order never reaches the model: "a, b" and "b, a" are one condition.
 
     That is safe only because the data contract lets one word set have one head
-    order there (motion_labels._validate_head_order_consistency). This test
-    records the dependency, so removing that rule fails here.
+    order per group (motion_labels._validate_head_order_consistency) -- in every
+    group, the transition group included. This test records the dependency, so
+    removing that rule fails here.
     """
     table = _word_table()
-    first, _ = _channels("stationary", ("idle", "sit"), table)
-    second, _ = _channels("stationary", ("sit", "idle"), table)
-    assert np.allclose(first[SLOT_HEAD], second[SLOT_HEAD])
+    first, _ = _channels(("idle", "sit"), table)
+    second, _ = _channels(("sit", "idle"), table)
+    assert np.array_equal(first, second)
+    # ...and a second head does qualify the first: the pooled channel is neither
+    # head alone.
+    alone, _ = _channels(("idle",), table)
+    assert not np.allclose(first[SLOT_HEAD], alone[SLOT_HEAD])
 
 
 def test_slot_channel_representation_is_pinned_in_the_conditioning_fingerprint():
-    common = dict(
-        embedding_fingerprint=fingerprint(_embedding_payload()),
-        role_b_material_sha256="1" * 64,
-    )
+    common = dict(embedding_fingerprint=fingerprint(_embedding_payload()))
     approved = conditioning_contract_payload(representation=slot_channel_representation(), **common)
     altered = dict(slot_channel_representation(), slot_aggregation="mean of member word vectors")
     assert fingerprint(approved) != fingerprint(
@@ -229,32 +160,22 @@ def _embedding_payload():
     )
 
 
-def test_role_change_invalidates_conditioning_but_not_embedding_fingerprint():
-    embedding_payload = _embedding_payload()
-    embedding_fp = fingerprint(embedding_payload)
-    common = dict(
-        embedding_fingerprint=embedding_fp,
+def test_conditioning_contract_carries_no_role_material():
+    """The contract names what the model does with a word: its slot, nothing else."""
+    payload = conditioning_contract_payload(
+        embedding_fingerprint=fingerprint(_embedding_payload()),
         representation=slot_channel_representation(),
     )
-    first = conditioning_contract_payload(
-        role_b_material_sha256="1" * 64,
-        **common,
-    )
-    second = conditioning_contract_payload(
-        role_b_material_sha256="2" * 64,
-        **common,
-    )
-    assert fingerprint(embedding_payload) == embedding_fp
-    assert fingerprint(first) != fingerprint(second)
+    assert payload["slot_fields"] == ["word_ids", "word_mask", "slot_ids"]
+    assert not any("role" in key for key in payload)
+    assert not any("role" in key for key in payload["representation"])
+    assert payload["parser_contract_version"] == 3
 
 
 def test_embedding_change_propagates_into_conditioning_fingerprint():
     first_embedding = _embedding_payload()
     second_embedding = dict(first_embedding, eos_policy="drop")
-    common = dict(
-        role_b_material_sha256="1" * 64,
-        representation=slot_channel_representation(),
-    )
+    common = dict(representation=slot_channel_representation())
     first = conditioning_contract_payload(
         embedding_fingerprint=fingerprint(first_embedding), **common
     )
@@ -265,10 +186,7 @@ def test_embedding_change_propagates_into_conditioning_fingerprint():
 
 
 def test_representation_layout_is_part_of_conditioning_fingerprint():
-    common = dict(
-        embedding_fingerprint=fingerprint(_embedding_payload()),
-        role_b_material_sha256="1" * 64,
-    )
+    common = dict(embedding_fingerprint=fingerprint(_embedding_payload()))
     slots = conditioning_contract_payload(
         representation=slot_channel_representation(), **common
     )

@@ -51,6 +51,7 @@ from data_loaders.get_data import get_dataset
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.motion_labels import (
     action_words_in,
+    head_words_in,
     vocab_words_in,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
@@ -78,6 +79,13 @@ def primary_action_word(raw_label):
     gets a class instead of collapsing into 'unknown' with everything else.
     """
     text = str(raw_label or "")
+    # Head order is the label's written order (primary word first), while
+    # action_words_in returns vocabulary order.  Read the head directly from
+    # the spelling so two-head labels such as "land, fly" stay labelled land.
+    written = [piece.strip() for piece in text.split(",")]
+    heads = head_words_in(written)
+    if heads:
+        return heads[0]
     actions = action_words_in(text)
     if actions:
         return actions[0]

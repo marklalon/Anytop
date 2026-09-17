@@ -21,7 +21,6 @@ if str(REPO_ROOT) not in sys.path:
 from data_loaders.tensors import _build_action_slot_batch  # noqa: E402
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (  # noqa: E402
     ACTION_LABEL_SLOTS,
-    ROLE_B_EMBEDDING_DIM,
     ACTION_WORD_EMBEDDING_DTYPE,
     ACTION_WORD_EMBEDDING_EOS_POLICY,
     ACTION_WORD_EMBEDDING_POOLING,
@@ -40,14 +39,13 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
 
 # The stand-in table is dense random, so every slot's sources are independent --
 # the same full-rank property the real T5 table has and the model checks for.
-# 768 is not a choice: R_B is committed at exactly one dimension, so a word table
-# of any other width has no role transform to apply.
-TEST_T5_DIM = ROLE_B_EMBEDDING_DIM
-# At least the total slot source rank (64 + 6 + 65 = 135), which model
+# 768 is t5-base's width, the one the real sidecar is encoded at.
+TEST_T5_DIM = 768
+# At least the total slot source rank (36 + 6 + 62 + 3 = 107), which model
 # construction refuses to go under: below it the first Linear cannot separate
-# every label. 136 is the smallest width at or above the rank that the test
+# every label. 108 is the smallest width at or above the rank that the test
 # models' attention can split evenly (num_heads=2).
-TEST_LATENT_DIM = 136
+TEST_LATENT_DIM = 108
 
 
 def make_test_bundle(dim: int = TEST_T5_DIM, seed: int = 20260906, t5_name: str = "t5-test"):
@@ -77,16 +75,19 @@ def make_test_bundle(dim: int = TEST_T5_DIM, seed: int = 20260906, t5_name: str 
 
 
 def sample_action_slots(label: str, group: str):
-    """One clip's slot arrays, exactly as the dataset attaches them."""
+    """One clip's slot arrays, exactly as the dataset attaches them.
+
+    *group* is accepted so callers can keep spelling (label, group) pairs the
+    way the collate sees them; the slot assignment itself does not read it.
+    """
+    del group
     if not label:
         return None
-    slots = action_label_slots(group, parse_action_label(label))
+    slots = action_label_slots(parse_action_label(label))
     return {
         'word_ids': np.asarray(slots['word_ids'], dtype=np.int64),
-        'role_ids': np.asarray(slots['role_ids'], dtype=np.int64),
         'slot_ids': np.asarray(slots['slot_ids'], dtype=np.int64),
         'word_mask': np.asarray(slots['word_mask'], dtype=np.bool_),
-        'order_head_mask': np.asarray(slots['order_head_mask'], dtype=np.bool_),
     }
 
 
@@ -115,6 +116,6 @@ def reference_channels(bundle, labels, groups, dtype=torch.float64):
         if not label:
             rows.append(np.zeros(len(ACTION_LABEL_SLOTS) * bundle.embedding_dim))
             continue
-        channels, _present = bundle.channels_for(group, parse_action_label(label))
+        channels, _present = bundle.channels_for(parse_action_label(label))
         rows.append(channels.reshape(-1))
     return torch.as_tensor(np.stack(rows), dtype=dtype)

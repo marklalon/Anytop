@@ -53,51 +53,59 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # that fail that test are dropped rather than carried as noise. The table is a
 # maintained controlled set, not a fixed list -- it changes as the corpus grows.
 #
-# TUPLE ORDER IS THE CANONICAL SPELLING ORDER FOR MODIFIERS ONLY. Head words
-# keep the written (time) order; direction words bind after a ``turn`` head (or
-# the last head); the rest follow this tuple's order -- one combination, exactly
-# one spelling. See canonical_action_label.
+# The vocabulary is two tuples. HEAD_VOCAB is the closed set of HEAD words --
+# the word(s) a label is about, spelled in WRITTEN order (primary word first)
+# and pooled into the head slot as a set; their position in the tuple decides
+# nothing. MODIFIER_VOCAB is every other action word; ITS ORDER IS THE CANONICAL
+# SPELLING ORDER: direction words bind after a ``turn`` head (or the last head),
+# the modifiers follow in tuple order -- one combination, exactly one spelling.
+# See canonical_action_label. DIRECTION_VOCAB and HANDS_VOCAB are separate axes.
 #
-# The tuple is ordered in ROLE BLOCKS (A basic mode, B how it is executed,
-# C..I secondary actions, states, manners, affect, activities, dance qualifiers
-# and equipment). DIRECTION_VOCAB is a separate axis, not a block. The blocks
-# order the vocabulary only; nothing weights a word by its block.
-ACTION_VOCAB: tuple[str, ...] = (
-    # -- block A: basic mode --
-    # Travel modes first; "attack" closes the block as a mode of its own, so
-    # "run, attack" still leads with the gait and "attack, fast" does not invert.
-    "idle", "walk", "run", "fly", "swim", "crawl", "jump", "turn",
-    "fall", "roll", "attack",
-    # -- block B: how that mode is executed (gait, speed, wing state) --
+# A head is a word the label can be ABOUT: a state the body is in (idle, run,
+# hover, rear, crouch ...) or an event that is the whole clip (die, getup, land,
+# draw, sheathe, stop ...). A second head QUALIFIES the first ("land, fly" is a
+# landing out of flight, "getup, crouch" a get-up into a crouch). Head order
+# carries NO direction -- the model pools the head slot as a set, so "a, b" and
+# "b, a" are one condition -- which is why one word set may have only one head
+# order per group (_validate_head_order_consistency) and why nothing may reorder
+# head words on its own. "block" is deliberately OUT: "idle, hover, block" would
+# hold three heads and break the at-most-two rule.
+HEAD_VOCAB: tuple[str, ...] = (
+    "attack", "burrow", "crawl", "crouch", "dance", "dead", "die", "draw", "fall",
+    "fly", "getup", "hover", "hurt", "idle", "jump", "kneel", "land", "laydown",
+    "lift", "pickup", "putdown", "rear", "rest", "roll", "run", "sheathe", "sit",
+    "sitdown", "sleep", "spawn", "stop", "swim", "takeoff", "turn", "walk", "work",
+)
+
+# Blocks order the spelling only; nothing weights a word by its block.
+MODIFIER_VOCAB: tuple[str, ...] = (
+    # -- block A: how the head is executed (gait, speed, wing state) --
     "trot", "fast", "glide", "slow", "retreat", "dive", "flopping",
-    # -- block C: secondary action layered on the mode (existing order kept) --
-    "bite", "roar", "eat", "die", "hurt", "getup", "rest", "look",
-    "shake", "throw", "taunt", "land", "takeoff", "sit", "sleep",
-    "sniff", "yawn", "catch", "sting", "kick", "spit",
-    "dance", "wag", "scratch", "rear", "crouch",
-    # -- block D: body states and one-shot posture changes --
-    "hover", "burrow", "laydown", "sitdown", "dead", "spawn", "work",
-    "lift", "pickup", "putdown",
-    # -- block E: how a strike is delivered (manner before strike type) --
+    # -- block B: secondary action layered on the head --
+    "bite", "roar", "eat", "look", "shake", "throw", "taunt",
+    "sniff", "yawn", "catch", "sting", "kick", "spit", "wag", "scratch",
+    # -- block C: how a strike is delivered (manner before strike type) --
     "spin", "flip", "twist", "charge",
     "headbutt", "punch", "swat", "slash", "stab", "smash", "swipe", "whip",
     "block", "cast", "projectile",
-    # -- block F: affect / social gesture --
+    # -- block D: affect / social gesture --
     "happy", "talk", "clap", "wave", "cry", "salute",
-    # -- block G: activity and object handling --
+    # -- block E: activity and object handling --
     "clean", "aim", "carry", "fishing", "cook", "reload",
     "saw", "shovel", "water", "pull", "push",
-    # -- block H: which body part leads a dance --
+    # -- block F: which body part leads a dance --
     "footwork", "fullbody", "armwork", "sway",
-    # -- block I: the implement an action is performed with (never the asset
+    # -- block G: the implement an action is performed with (never the asset
     # itself): archery, shooting, tool work, shield bash. What the hands HOLD is
     # not here -- that is the separate HANDS_VOCAB axis below.
     "bow", "gun", "hammer", "shield",
 )
 
+ACTION_VOCAB: tuple[str, ...] = HEAD_VOCAB + MODIFIER_VOCAB
+
 # The direction axis -- travel / facing direction. Separate vocabulary from the
-# ACTION_VOCAB role blocks above. Directions bind after a ``turn`` head (or the
-# last head), before the remaining modifiers.
+# action words above. Directions bind after a ``turn`` head (or the last head),
+# before the remaining modifiers.
 # Spelled BARE ("forward", not "leftward"): the derived adjectives collapse to
 # nearly the same T5 point, while bare left/right stay distinct.
 #
@@ -116,8 +124,8 @@ DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right", "up"
 #
 # It is an occupancy count, not a weapon class: sword + shield is hand2 because
 # neither arm is free, exactly like a rifle; a dagger and a torch are both hand1.
-# Which implement the action uses (bow / gun / hammer / shield) stays in block I
-# and is written alongside: ``attack, bow, hand2``.
+# Which implement the action uses (bow / gun / hammer / shield) stays a
+# modifier (MODIFIER_VOCAB block G) and is written alongside: ``attack, bow, hand2``.
 #
 # The three tokens are MUTUALLY EXCLUSIVE -- at most one per label -- and absent
 # means "unspecified" (the model answers with the marginal over hand states),
@@ -150,45 +158,20 @@ assert not any(char.isspace() for word in CONTROLLED_VOCAB for char in word), (
 )
 
 
-# ---------------------------------------------------------------------------
-# Head words
-# ---------------------------------------------------------------------------
-# STATE_VOCAB is the closed set of HEAD words: the ones a label spells in WRITE
-# order instead of vocabulary order. The test is "can the body BE IN this" --
-# hover / roll / rear qualify, hand1 / bow / forward / cast / spin do not.
-# Event verbs (die, getup, spawn, land, takeoff, laydown, sitdown, lift, pickup,
-# putdown) are in as well: each is the load-bearing word of a label that names
-# nothing else.
-#
-# Head order is the clip's TIME order, the only place a transition's direction is
-# recorded ("idle, attack" is a draw, "attack, idle" a sheathe). Nothing may
-# reorder head words -- see canonical_action_label.
-#
-# "sit"/"sleep" are in (postures a body is in; a future "sleep, idle" get-up
-# should carry its direction). "block" is deliberately OUT: "idle, hover, block"
-# would hold three heads and break the at-most-two rule.
-STATE_VOCAB: tuple[str, ...] = (
-    "attack", "burrow", "crawl", "crouch", "dance", "dead", "die", "fall", "fly",
-    "getup", "hover", "hurt", "idle", "jump", "land", "laydown", "lift", "pickup",
-    "putdown", "rear", "rest", "roll", "run", "sit", "sitdown", "sleep", "spawn",
-    "swim", "takeoff", "turn", "walk", "work",
-)
-
-_STATE_VOCAB_SET: frozenset[str] = frozenset(STATE_VOCAB)
+_HEAD_VOCAB_SET: frozenset[str] = frozenset(HEAD_VOCAB)
 _HANDS_VOCAB_SET: frozenset[str] = frozenset(HANDS_VOCAB)
 
-assert _HANDS_VOCAB_SET.isdisjoint(_STATE_VOCAB_SET) and _HANDS_VOCAB_SET.isdisjoint(
+assert _HANDS_VOCAB_SET.isdisjoint(_HEAD_VOCAB_SET) and _HANDS_VOCAB_SET.isdisjoint(
     DIRECTION_VOCAB
 ), "a hand-state word is neither a head nor a direction"
-
-assert _STATE_VOCAB_SET <= set(CONTROLLED_VOCAB), (
-    "STATE_VOCAB must be a subset of CONTROLLED_VOCAB: "
-    + str(sorted(_STATE_VOCAB_SET - set(CONTROLLED_VOCAB)))
+assert _HEAD_VOCAB_SET.isdisjoint(MODIFIER_VOCAB), (
+    "a word is a head or a modifier, never both: "
+    + str(sorted(_HEAD_VOCAB_SET & set(MODIFIER_VOCAB)))
 )
-assert len(_STATE_VOCAB_SET) == len(STATE_VOCAB), "STATE_VOCAB has a repeat"
+assert len(_HEAD_VOCAB_SET) == len(HEAD_VOCAB), "HEAD_VOCAB has a repeat"
 
-# At most this many heads per label: a label names a state, or a transition
-# between two states. Three would have no defined reading.
+# At most this many heads per label: a primary head, optionally qualified by
+# one more. Three would have no defined reading.
 ACTION_LABEL_MAX_HEADS = 2
 
 
@@ -228,6 +211,7 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "cast": "spellcasting",              # bare "cast" is plaster, or a film cast
     "charge": "rushing forward",         # bare "charge" is voltage or a fee
     "clean": "grooming",                 # bare "clean" is the adjective, not the act
+    "draw": "drawing a weapon",          # bare "draw" is pulling a line or a card
     "cry": "weeping",                    # bare "cry" reads as shouting out
     "flip": "somersault",                # bare "flip" is a coin or a switch
     "hand0": "empty hands",              # bare form is "hand" + the numeral zero
@@ -240,6 +224,7 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "saw": "sawing wood",                # bare "saw" is the past tense of see
     "shake": "shaking",                  # bare "shake" is a milkshake
     "shield": "shield bash",             # bare "shield" is the verb "to protect"
+    "stop": "run to stop",               # bare "stop" is ceasing in general, or a bus stop
     "water": "watering",                 # bare "water" is the substance
     "wave": "waving a hand",             # bare "wave" is an ocean wave
 }
@@ -316,9 +301,9 @@ def hands_words_in(text: str) -> list[str]:
 
 
 def head_words_in(words) -> list[str]:
-    """The :data:`STATE_VOCAB` members of *words*, in the order given -- the
-    clip's time order for transitions, the only record of which way they run."""
-    return [word for word in words if word in _STATE_VOCAB_SET]
+    """The :data:`HEAD_VOCAB` members of *words*, in the order given (the
+    written order: primary word first)."""
+    return [word for word in words if word in _HEAD_VOCAB_SET]
 
 
 def parse_action_label(label: str) -> list[str]:
@@ -360,13 +345,13 @@ def parse_action_label(label: str) -> list[str]:
     if not heads:
         raise ActionLabelError(
             f"action_label {label!r} names no head word. Every label needs at "
-            f"least one STATE_VOCAB word: {list(STATE_VOCAB)}"
+            f"least one HEAD_VOCAB word: {list(HEAD_VOCAB)}"
         )
     if len(heads) > ACTION_LABEL_MAX_HEADS:
         raise ActionLabelError(
             f"action_label {label!r} names {len(heads)} head words {heads} (max "
-            f"{ACTION_LABEL_MAX_HEADS}). A label names a state, or a transition "
-            f"between two of them, and nothing longer has a defined reading."
+            f"{ACTION_LABEL_MAX_HEADS}). A label names a state, optionally "
+            f"qualified by one more, and nothing longer has a defined reading."
         )
     hands = [token for token in tokens if token in _HANDS_VOCAB_SET]
     if len(hands) > 1:
@@ -381,10 +366,11 @@ def parse_action_label(label: str) -> list[str]:
 def canonical_action_label(words) -> str:
     """Spell *words* with stable head order and canonical modifier placement.
 
-    HEAD ORDER IS NEVER TOUCHED -- it is the clip's time order, the only record
-    of which way a transition runs. Directions bind after a ``turn`` head (or the
-    last head) and precede other modifiers, so they qualify the motion rather
-    than a trailing word (``walk, right, hand1``). Other modifiers are sorted by
+    HEAD ORDER IS NEVER TOUCHED -- it is the written order (primary word first),
+    and the corpus is spelled so that one word set has one head order per group;
+    re-sorting here would split that spelling. Directions bind after a ``turn``
+    head (or the last head) and precede other modifiers, so they qualify the
+    motion rather than a trailing word (``walk, right, hand1``). Other modifiers are sorted by
     :data:`CONTROLLED_VOCAB` index: one combination, exactly one spelling. The
     hands word sorts last by construction (:data:`HANDS_VOCAB` closes the
     vocabulary), so a label reads action, direction, manner, implement, hands.
@@ -402,7 +388,7 @@ def canonical_action_label(words) -> str:
             f"{unknown} are not controlled-vocabulary tokens. "
             f"Valid tokens: {list(CONTROLLED_VOCAB)}"
         )
-    heads = [word for word in ordered if word in _STATE_VOCAB_SET]
+    heads = [word for word in ordered if word in _HEAD_VOCAB_SET]
     directions = sorted(
         (word for word in ordered if word in DIRECTION_VOCAB),
         key=_CONTROLLED_VOCAB_ORDER.__getitem__,
@@ -410,7 +396,7 @@ def canonical_action_label(words) -> str:
     modifiers = sorted(
         (
             word for word in ordered
-            if word not in _STATE_VOCAB_SET and word not in directions
+            if word not in _HEAD_VOCAB_SET and word not in directions
         ),
         key=_CONTROLLED_VOCAB_ORDER.__getitem__,
     )
@@ -510,9 +496,7 @@ def _validate_action_label_entry(
     spell it.
 
     THESE ARE GATES, NOT HINTS: the vocabulary is closed and the corpus is
-    spelled to match, so a warning could only buy a silent regression -- and
-    reordering head words flips a transition's direction without changing
-    anything a loss can see.
+    spelled to match, so a warning could only buy a silent regression.
 
     An *empty* label is legal and means "no condition" -- it is routed to the
     learned null embedding, never encoded as an empty string, which would
@@ -542,7 +526,7 @@ def _validate_action_label_entry(
             line_number,
             f"clip '{clip}' has action_label {label!r}, which is not the canonical "
             f"spelling. Write it as {canonical!r}: head words "
-            f"({', '.join(head_words_in(tokens))}) in the order they happen, "
+            f"({', '.join(head_words_in(tokens))}) as written, "
             f"directions next to their head, then the remaining modifiers "
             f"in CONTROLLED_VOCAB order. One word combination must "
             f"have exactly one spelling, or its training mass splits across "
@@ -551,17 +535,18 @@ def _validate_action_label_entry(
 
 
 def _validate_head_order_consistency(rows) -> None:
-    """Outside ``transition``, one word set has one head order.
+    """Within a group, one word set has one head order.
 
-    Head order is the clip's time order and carries meaning only in transitions;
-    in the other groups two spellings of the same word set are an inconsistent
-    annotation, and an inconsistent one would train the role transform on noise.
+    The model pools the head slot as a set, so two head orders of one word set
+    are one condition under two label strings -- an inconsistent annotation,
+    never a distinction the model could learn. Applies to every group alike:
+    head order carries no direction anywhere.
 
     *rows* is an iterable of ``(line_number, group, clip, tokens)``.
     """
     seen: dict = {}
     for line_number, group, clip, tokens in rows:
-        if group == "transition" or not tokens:
+        if not tokens:
             continue
         key = (group, frozenset(tokens))
         heads = tuple(head_words_in(tokens))
@@ -576,9 +561,9 @@ def _validate_head_order_consistency(rows) -> None:
                 f"clip '{clip}' spells the head words of {sorted(key[1])} as "
                 f"{list(heads)}, but {ACTION_LABELS_FILE}:{first_line} "
                 f"('{first_clip}') spells the same word set as "
-                f"{list(first_heads)}. Head order may only differ in the "
-                f"transition group, where it is the clip's time order; in "
-                f"{group} a divergence is an inconsistent annotation.",
+                f"{list(first_heads)}. Head order carries no meaning to the "
+                f"model (the head slot pools as a set), so within {group} one "
+                f"word set must have one spelling.",
             )
 
 # ---------------------------------------------------------------------------

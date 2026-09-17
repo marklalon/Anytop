@@ -23,7 +23,7 @@
 {"clip": "Bear_AtkStand2", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
 {"clip": "Bear_Hind", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
 {"clip": "Bear_HindBreathing", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
-{"clip": "Bear_HindToStand", "action_group": "transition", "action_label": "rear, idle", "is_loop": false, "reviewed": true}
+{"clip": "Bear_HindToStand", "action_group": "transition", "action_label": "rear, down", "is_loop": false, "reviewed": true}
 {"clip": "Bear_Hind2", "action_group": "stationary", "action_label": "idle, rear, look", "is_loop": true, "reviewed": true}
 {"clip": "Bear_Lying", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
 {"clip": "Bear_LyingBreathing", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
@@ -37,7 +37,7 @@
 {"clip": "Bear_StandAngryBreathing", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
 {"clip": "Bear_StandBreathing", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Bear_StandEating", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
-{"clip": "Bear_StandToHind", "action_group": "transition", "action_label": "idle, rear", "is_loop": false, "reviewed": true}
+{"clip": "Bear_StandToHind", "action_group": "transition", "action_label": "rear, up", "is_loop": false, "reviewed": true}
 {"clip": "Bear_StandToLying", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
 {"clip": "Bear_Stand2", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Bear_Trot", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}

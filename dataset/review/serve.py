@@ -43,9 +43,9 @@ when it is.
 ``action_label`` edits are normalized and validated before being written.
 Tokens are lowercased, repeated words are dropped (first occurrence kept),
 checked against the training pipeline's controlled vocabulary, and put in its
-canonical order.  Head words retain their written order because that is the
-time direction of a transition; directions and other modifiers are sorted by
-the shared conditioning contract.  Existing valid labels receive the same
+canonical order.  Head words retain their written order (the primary word
+first; the corpus spells one word set one way per group); directions and other
+modifiers are sorted by the shared conditioning contract.  Existing valid labels receive the same
 canonicalization when a dataset is loaded.  Existing invalid labels are kept
 verbatim and exposed to the page with an error so they can be repaired there.
 
@@ -98,7 +98,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     DIRECTION_VOCAB,
     LOOP_FLAG_KEY,
     MOTION_METADATA_SCHEMA_VERSION,
-    STATE_VOCAB,
+    HEAD_VOCAB,
     ActionLabelError,
     canonical_action_label,
     parse_action_label,
@@ -129,8 +129,9 @@ def normalize_action_label(value):
     raise with spelling suggestions.  The shared motion-label contract then
     checks the head/length constraints and supplies canonical order.
 
-    Head order is intentionally preserved: for a two-head transition it is
-    semantic (``idle, attack`` is not the same as ``attack, idle``).
+    Head order is intentionally preserved: it is the written order the corpus
+    is validated against (one head order per word set and group), and the
+    contract never re-sorts head words on its own.
     """
     parts = re.split(r"[,，、;；]+", str(value))
     seen = set()
@@ -559,7 +560,7 @@ class Handler(BaseHTTPRequestHandler):
                 "gif_dir": str(ds["gif_dir"]),
                 "label_contract": {
                     "controlled_vocab": list(CONTROLLED_VOCAB),
-                    "state_vocab": list(STATE_VOCAB),
+                    "head_vocab": list(HEAD_VOCAB),
                     "direction_vocab": list(DIRECTION_VOCAB),
                     "max_words": ACTION_LABEL_MAX_WORDS,
                     "max_heads": ACTION_LABEL_MAX_HEADS,

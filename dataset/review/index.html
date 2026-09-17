@@ -417,9 +417,9 @@ const normalizeLabel = (s) => {
     throw new Error('词数为 ' + tokens.length + '，最多允许 ' + labelContract.max_words + ' 个');
   }
 
-  const states = new Set(labelContract.state_vocab);
+  const headWords = new Set(labelContract.head_vocab);
   const directionSet = new Set(labelContract.direction_vocab);
-  const heads = tokens.filter((word) => states.has(word));
+  const heads = tokens.filter((word) => headWords.has(word));
   if (!heads.length) throw new Error('至少需要一个 head/action 词');
   if (heads.length > labelContract.max_heads) {
     throw new Error('head/action 词为 ' + heads.length + ' 个，最多允许 ' + labelContract.max_heads + ' 个');
@@ -428,7 +428,7 @@ const normalizeLabel = (s) => {
   const rank = new Map(labelContract.controlled_vocab.map((word, i) => [word, i]));
   const byRank = (a, b) => rank.get(a) - rank.get(b);
   const directions = tokens.filter((word) => directionSet.has(word)).sort(byRank);
-  const modifiers = tokens.filter((word) => !states.has(word) && !directionSet.has(word)).sort(byRank);
+  const modifiers = tokens.filter((word) => !headWords.has(word) && !directionSet.has(word)).sort(byRank);
   const anchor = heads.includes('turn') ? 'turn' : heads[heads.length - 1];
   const canonical = [];
   for (const head of heads) {

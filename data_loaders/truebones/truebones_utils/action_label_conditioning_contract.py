@@ -2,14 +2,13 @@
 
 This module deliberately has no torch dependency.  The sidecar builder, the data
 loader, model construction and the checkpoint loader all import these helpers, so
-role assignment, slot layout and the two fingerprints cannot acquire competing
+slot assignment, slot layout and the two fingerprints cannot acquire competing
 definitions across those four call sites; the model mirrors ``assemble_slot_channels``
 on tensors against the very ``slot_ids`` produced here.
 """
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import pathlib
@@ -20,11 +19,10 @@ import numpy as np
 from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_LABEL_MAX_HEADS,
     ACTION_LABEL_MAX_WORDS,
-    ACTION_GROUPS,
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
     HANDS_VOCAB,
-    STATE_VOCAB,
+    HEAD_VOCAB,
     head_words_in,
 )
 
@@ -38,32 +36,13 @@ ACTION_WORD_EMBEDDING_SCHEMA_VERSION = 3
 ACTION_CONDITIONING_CONTRACT_SCHEMA_VERSION = 1
 # 2: HANDS_VOCAB (hand0/hand1/hand2) -- exclusive, at most one per label, its
 #    own slot channel; replaced weapon + 1hand/2hand in the modifier slot.
-ACTION_LABEL_PARSER_CONTRACT_VERSION = 2
-ROLE_B_ARTIFACT_SCHEMA_VERSION = 1
-ROLE_NONE = 0
-ROLE_HEAD_1 = 1
+# 3: head order carries no direction.  The transition group pools its head
+#    words as a set exactly like the other two groups; the signed-permutation
+#    role transform (R_B) on a transition's second head, its role ids and the
+#    order-head mask are gone, and a word set has one head order in every group.
+ACTION_LABEL_PARSER_CONTRACT_VERSION = 3
 
-# The fixed role transform is derived on demand from a committed namespace
-# (~1 ms) instead of being carried as a checked-in array file.  What pins the
-# material is not a file but ROLE_B_MATERIAL_SHA256 below: any edit to the
-# namespace, the dimension or the derivation changes the hash and makes
-# role_b_material() fail loudly, and the same hash travels inside
-# conditioning_contract_payload, so a checkpoint trained against other material
-# is rejected on load exactly as before.
-ROLE_B_NAMESPACE = "anytop/action-label/role-b/v1/t5-base/768"
-ROLE_B_EMBEDDING_DIM = 768
-ROLE_B_MATERIAL_SHA256 = (
-    "0204f95ca92d163554ed17bc8ff22ee2858ae128c2691b4893cc0f9c958c4c2b"
-)
-ROLE_B_CONSTRUCTION = (
-    "Derived on demand: indices sorted by SHA-256(namespace/perm/index), signs "
-    "from SHA-256(namespace/sign/output_index) byte-0 parity. Pure stdlib and "
-    "integer-only, so every host reproduces the same material; the result is "
-    "checked against the committed ROLE_B_MATERIAL_SHA256 before use. A "
-    "checkpoint keeps its own perm/sign, which stay authoritative for it."
-)
-
-# Role slots.  The approved representation gives each slot its own conditioning
+# Slots.  The approved representation gives each slot its own conditioning
 # channel, so a word's contribution depends on ITS slot only -- appending
 # modifiers cannot shrink the head or direction axis, which is the property the
 # one-vector weighted mean could not have at any weight setting.
@@ -122,25 +101,13 @@ def word_table_sha256(word_embeddings) -> str:
     return digest.hexdigest()
 
 
-def action_order_enabled(action_group: str, tokens: Iterable[str]) -> bool:
-    """Whether one label carries an ordered two-state transition."""
-    ordered_tokens = tuple(tokens)
-    if action_group not in ACTION_GROUPS:
-        raise ValueError(f"unknown action_group: {action_group!r}")
-    heads = tuple(head_words_in(ordered_tokens))
-    return (
-        action_group == "transition"
-        and len(heads) == ACTION_LABEL_MAX_HEADS
-        and heads[0] != "turn"
-    )
+def action_label_slots(tokens: Iterable[str]) -> dict[str, tuple]:
+    """Map parsed tokens to the ids/masks the loader and the sampler emit.
 
-
-def action_label_slots(action_group: str, tokens: Iterable[str]) -> dict[str, tuple]:
-    """Map parsed tokens to the IDs/masks the future loader will emit.
-
-    This is the canonical role-assignment implementation.  It is usable before
-    the model work and later becomes the common implementation for training and
-    inference rather than being copied into either path.
+    This is the canonical slot-assignment implementation, shared by training
+    and inference rather than copied into either path.  A word's slot is a
+    property of the word alone: the label's group and the head order play no
+    part, so the same label is the same condition in every group's model.
     """
     ordered_tokens = tuple(tokens)
     if len(ordered_tokens) > ACTION_LABEL_MAX_WORDS:
@@ -167,29 +134,16 @@ def action_label_slots(action_group: str, tokens: Iterable[str]) -> dict[str, tu
             "axis admits at most one"
         )
 
-    enabled = action_order_enabled(action_group, ordered_tokens)
-    head_positions = tuple(
-        index for index, word in enumerate(ordered_tokens) if word in STATE_VOCAB
-    )
-    order_positions = frozenset(head_positions if enabled else ())
-    second_head = head_positions[1] if enabled else None
     return {
         "word_ids": tuple(vocab_index[word] for word in ordered_tokens),
-        "role_ids": tuple(
-            ROLE_HEAD_1 if index == second_head else ROLE_NONE
-            for index in range(len(ordered_tokens))
-        ),
         "word_mask": tuple(True for _ in ordered_tokens),
-        "order_head_mask": tuple(
-            index in order_positions for index in range(len(ordered_tokens))
-        ),
         "slot_ids": tuple(word_slot(word) for word in ordered_tokens),
     }
 
 
 def word_slot(word: str) -> int:
     """Which conditioning channel one vocabulary word feeds."""
-    if word in STATE_VOCAB:
+    if word in HEAD_VOCAB:
         return SLOT_HEAD
     if word in DIRECTION_VOCAB:
         return SLOT_DIRECTION
@@ -203,8 +157,6 @@ def word_slot(word: str) -> int:
 def assemble_slot_channels(
     word_vectors: np.ndarray,
     slots: Mapping[str, tuple],
-    role_b_perm: Iterable[int],
-    role_b_sign: Iterable[int],
 ) -> tuple[np.ndarray, np.ndarray]:
     """Turn one label's slot assignment into its (S, D) conditioning channels.
 
@@ -213,8 +165,8 @@ def assemble_slot_channels(
     model mirrors it on tensors, against the same slot ids) so a channel cannot
     acquire two definitions.
 
-    Each slot holds the mean of its member word vectors, L2-normalised, with the
-    committed ``R_B`` applied to the ``ROLE_HEAD_1`` word before the head mean.
+    Each slot holds the mean of its member word vectors, L2-normalised: a set,
+    so the order the words were written in does not reach the model.
     Normalising per slot is what makes the head axis independent of how many
     modifiers the label spells; an absent slot is a zero row flagged in the
     returned mask, never a renormalisation of the others.
@@ -222,20 +174,15 @@ def assemble_slot_channels(
     vectors = np.asarray(word_vectors, dtype=np.float64)
     if vectors.ndim != 2:
         raise ValueError(f"word_vectors must be (V, D), got {vectors.shape}")
-    perm = np.asarray(list(role_b_perm), dtype=np.int64)
-    sign = np.asarray(list(role_b_sign), dtype=np.float64)
-    if perm.shape != (vectors.shape[1],) or sign.shape != (vectors.shape[1],):
-        raise ValueError("R_B perm/sign must match the embedding dimension")
 
     word_ids = tuple(slots["word_ids"])
-    role_ids = tuple(slots["role_ids"])
     slot_ids = tuple(slots["slot_ids"])
     channels = np.zeros((len(ACTION_LABEL_SLOTS), vectors.shape[1]), dtype=np.float64)
     present = np.zeros(len(ACTION_LABEL_SLOTS), dtype=bool)
     for slot in range(len(ACTION_LABEL_SLOTS)):
         members = [
-            sign * vectors[word_id][perm] if role == ROLE_HEAD_1 else vectors[word_id]
-            for word_id, role, assigned in zip(word_ids, role_ids, slot_ids)
+            vectors[word_id]
+            for word_id, assigned in zip(word_ids, slot_ids)
             if assigned == slot
         ]
         if not members:
@@ -255,114 +202,18 @@ def assemble_slot_channels(
 def slot_channel_representation() -> dict[str, Any]:
     """The ``representation`` block of the approved conditioning contract."""
     return {
-        "kind": "role_slot_channels",
+        "kind": "slot_channels",
         "slots": list(ACTION_LABEL_SLOTS),
         "slot_assignment": (
-            "head = STATE_VOCAB member; direction = DIRECTION_VOCAB member; "
+            "head = HEAD_VOCAB member; direction = DIRECTION_VOCAB member; "
             "hands = HANDS_VOCAB member (at most one); "
             "modifier = every other vocabulary word"
         ),
-        "slot_aggregation": "mean of member word vectors, then L2 normalisation",
-        "role_transform": "R_B applied to the ROLE_HEAD_1 word before the head-slot mean",
+        "slot_aggregation": "mean of member word vectors (a set: word order is not encoded), then L2 normalisation",
         "absent_slot": "zero row, reported in slot_mask; never renormalises the other slots",
         "channel_layout": "concatenated in ACTION_LABEL_SLOTS order",
         "per_word_weights": None,
     }
-
-
-def role_b_payload_hash(payload: Mapping[str, Any]) -> str:
-    """Hash the material role transform, excluding descriptive metadata."""
-    material = {
-        "schema_version": int(payload["schema_version"]),
-        "embedding_dim": int(payload["embedding_dim"]),
-        "perm": [int(value) for value in payload["perm"]],
-        "sign": [int(value) for value in payload["sign"]],
-    }
-    return fingerprint(material)
-
-
-@functools.lru_cache(maxsize=None)
-def _derive_role_b(namespace: str, embedding_dim: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Derive the signed permutation from a namespace, deterministically.
-
-    Integer-only and stdlib-only: SHA-256 digests are byte-exact everywhere and
-    the sort keys are distinct, so ``sorted`` is order-stable across hosts,
-    Python builds and runs.
-    """
-    def key(kind: str, index: int) -> bytes:
-        return hashlib.sha256(f"{namespace}/{kind}/{index}".encode("utf-8")).digest()
-
-    perm = tuple(sorted(range(embedding_dim), key=lambda index: key("perm", index)))
-    sign = tuple(1 if key("sign", index)[0] & 1 else -1 for index in range(embedding_dim))
-    return perm, sign
-
-
-def validate_role_b_payload(
-    payload: Mapping[str, Any],
-    expected_dim: int | None = None,
-    *,
-    source: str = "R_B payload",
-) -> dict[str, Any]:
-    """Fully validate one signed-permutation payload, wherever it came from.
-
-    Used for material that is not derived here -- a checkpoint's stored buffers,
-    an exported audit copy -- so those paths cannot skip the structural and hash
-    checks the derivation itself gets.
-    """
-    if int(payload.get("schema_version", -1)) != ROLE_B_ARTIFACT_SCHEMA_VERSION:
-        raise ValueError(f"unsupported R_B schema in {source}")
-
-    dim = int(payload.get("embedding_dim", -1))
-    if expected_dim is not None and dim != int(expected_dim):
-        raise ValueError(
-            f"R_B dimension {dim} does not match embedding dimension {expected_dim}"
-        )
-    perm = np.asarray(payload.get("perm"), dtype=np.int64)
-    sign = np.asarray(payload.get("sign"), dtype=np.int8)
-    if perm.shape != (dim,) or set(perm.tolist()) != set(range(dim)):
-        raise ValueError(f"R_B perm in {source} is not a permutation of 0..{dim - 1}")
-    if sign.shape != (dim,) or not np.isin(sign, (-1, 1)).all():
-        raise ValueError(f"R_B sign in {source} must contain exactly +/-1 values")
-
-    actual_hash = role_b_payload_hash(payload)
-    if payload.get("material_sha256") != actual_hash:
-        raise ValueError(
-            f"R_B material hash mismatch in {source}: "
-            f"stored={payload.get('material_sha256')!r}, actual={actual_hash}"
-        )
-    return dict(payload)
-
-
-def role_b_material(expected_dim: int | None = None) -> dict[str, Any]:
-    """Return the committed role transform, derived on demand.
-
-    The sidecar builder, the geometry preflight and model construction all call
-    this instead of reading an artifact file.  Derivation is ~1 ms and cached,
-    and the result is pinned to ``ROLE_B_MATERIAL_SHA256``: changing the
-    namespace, the dimension or the derivation fails here rather than silently
-    re-defining what ``ROLE_HEAD_1`` means.
-    """
-    perm, sign = _derive_role_b(ROLE_B_NAMESPACE, ROLE_B_EMBEDDING_DIM)
-    payload = {
-        "schema_version": ROLE_B_ARTIFACT_SCHEMA_VERSION,
-        "name": "R_B",
-        "construction": ROLE_B_CONSTRUCTION,
-        "namespace": ROLE_B_NAMESPACE,
-        "embedding_dim": ROLE_B_EMBEDDING_DIM,
-        "perm": list(perm),
-        "sign": list(sign),
-    }
-    payload["material_sha256"] = role_b_payload_hash(payload)
-    validate_role_b_payload(payload, expected_dim, source="derived R_B material")
-    if payload["material_sha256"] != ROLE_B_MATERIAL_SHA256:
-        raise ValueError(
-            "derived R_B material does not match the committed hash: "
-            f"derived={payload['material_sha256']}, "
-            f"committed={ROLE_B_MATERIAL_SHA256}. The role transform is frozen; "
-            "a deliberate change needs a new namespace, a new committed hash and "
-            "a new conditioning contract fingerprint."
-        )
-    return payload
 
 
 def embedding_contract_payload(
@@ -411,9 +262,7 @@ def embedding_contract_payload(
 def conditioning_contract_payload(
     *,
     embedding_fingerprint: str,
-    role_b_material_sha256: str,
     representation: Mapping[str, Any],
-    role_gate: str = "transition && two_heads && first_head != turn",
 ) -> dict[str, Any]:
     """Inputs that determine how token vectors acquire runtime semantics."""
     return {
@@ -421,17 +270,14 @@ def conditioning_contract_payload(
         "parser_contract_version": ACTION_LABEL_PARSER_CONTRACT_VERSION,
         "embedding_fingerprint": embedding_fingerprint,
         "ordered_vocab": list(CONTROLLED_VOCAB),
-        "state_vocab": list(STATE_VOCAB),
+        "head_vocab": list(HEAD_VOCAB),
         "max_words": ACTION_LABEL_MAX_WORDS,
         "max_heads": ACTION_LABEL_MAX_HEADS,
-        "canonicalization": "preserve head order; bind directions after turn or final head; sort remaining modifiers by ordered_vocab",
-        "slot_fields": ["word_ids", "role_ids", "word_mask", "order_head_mask", "slot_ids"],
+        "canonicalization": "preserve written head order (one head order per word set and group; the order itself is not encoded); bind directions after turn or final head; sort remaining modifiers by ordered_vocab",
+        "slot_fields": ["word_ids", "word_mask", "slot_ids"],
         "slot_names": list(ACTION_LABEL_SLOTS),
         "group_is_checkpoint_local": True,
         "empty_label_semantics": "route to learned action_label_null_emb; do not encode empty text",
-        "role_gate": role_gate,
-        "role_b_material_sha256": role_b_material_sha256,
-        "role_ids": {"NONE": ROLE_NONE, "HEAD_1": ROLE_HEAD_1},
         "representation": dict(representation),
     }
 
@@ -453,24 +299,12 @@ def numerical_rank(vectors: np.ndarray) -> tuple[int, float]:
     return rank, ratio
 
 
-def slot_source_vectors(
-    word_vectors: np.ndarray,
-    role_b_perm: Iterable[int],
-    role_b_sign: Iterable[int],
-) -> dict[str, np.ndarray]:
-    """The source rows each slot channel can be a normalised sum of.
-
-    The head sources carry both the plain and the ``R_B``-transformed version of
-    every state word, so the independence argument covers ordered transitions as
-    well as plain ones.
-    """
+def slot_source_vectors(word_vectors: np.ndarray) -> dict[str, np.ndarray]:
+    """The source rows each slot channel can be a normalised sum of."""
     vectors = np.asarray(word_vectors, dtype=np.float64)
-    perm = np.asarray(list(role_b_perm), dtype=np.int64)
-    sign = np.asarray(list(role_b_sign), dtype=np.float64)
     vocab_index = {word: index for index, word in enumerate(CONTROLLED_VOCAB)}
-    head = vectors[[vocab_index[word] for word in STATE_VOCAB]]
     return {
-        "head": np.concatenate((head, sign * head[:, perm]), axis=0),
+        "head": vectors[[vocab_index[word] for word in HEAD_VOCAB]],
         "direction": vectors[[vocab_index[word] for word in DIRECTION_VOCAB]],
         "modifier": vectors[[
             vocab_index[word]
@@ -481,12 +315,7 @@ def slot_source_vectors(
     }
 
 
-def slot_source_rank_report(
-    word_vectors: np.ndarray,
-    role_b_perm: Iterable[int],
-    role_b_sign: Iterable[int],
-    latent_dim: int,
-) -> dict[str, Any]:
+def slot_source_rank_report(word_vectors: np.ndarray, latent_dim: int) -> dict[str, Any]:
     """Whether the slot channels stay separable and fit the first projection.
 
     If a slot's source rows are independent, two different 0/1 membership vectors
@@ -499,7 +328,7 @@ def slot_source_rank_report(
     if latent_dim <= 0:
         raise ValueError(f"latent_dim must be positive, got {latent_dim}")
     slots: dict[str, Any] = {}
-    for name, vectors in slot_source_vectors(word_vectors, role_b_perm, role_b_sign).items():
+    for name, vectors in slot_source_vectors(word_vectors).items():
         rank, relative_min_singular = numerical_rank(vectors)
         slots[name] = {
             "rank": rank,
@@ -540,7 +369,8 @@ SLOT_PAD_ID = -1
 # The checkpoint payload format that carries the two fingerprints.
 # Distinct from utils.parser_util.CKPT_VERSION, which versions args.json and the
 # training semantics: this one versions the .pt layout itself.
-ACTION_CHECKPOINT_VERSION = 2
+# 3: removed the persistent action_role_b_perm/action_role_b_sign buffers.
+ACTION_CHECKPOINT_VERSION = 3
 
 
 class ActionConditioningError(RuntimeError):
@@ -548,7 +378,7 @@ class ActionConditioningError(RuntimeError):
 
 
 class ActionConditioningBundle:
-    """The immutable word table, role material and both fingerprints.
+    """The immutable word table and both fingerprints.
 
     Built once at a training entry point and handed to BOTH the loader and the
     model, so the ordered vocabulary, the slot rule and the fingerprints cannot
@@ -557,7 +387,7 @@ class ActionConditioningBundle:
     """
 
     __slots__ = (
-        "_word_embeddings", "_role_b", "_embedding_contract",
+        "_word_embeddings", "_embedding_contract",
         "_conditioning_contract", "_embedding_fingerprint",
         "_conditioning_contract_fingerprint", "_source",
     )
@@ -566,7 +396,6 @@ class ActionConditioningBundle:
         self,
         *,
         word_embeddings: np.ndarray,
-        role_b: Mapping[str, Any],
         embedding_contract: Mapping[str, Any],
         conditioning_contract: Mapping[str, Any],
         source: str,
@@ -574,7 +403,6 @@ class ActionConditioningBundle:
         table = np.array(word_embeddings, dtype=np.float32, copy=True)
         table.flags.writeable = False
         self._word_embeddings = table
-        self._role_b = dict(role_b)
         self._embedding_contract = dict(embedding_contract)
         self._conditioning_contract = dict(conditioning_contract)
         self._embedding_fingerprint = fingerprint(self._embedding_contract)
@@ -592,18 +420,6 @@ class ActionConditioningBundle:
     @property
     def ordered_vocab(self) -> tuple[str, ...]:
         return CONTROLLED_VOCAB
-
-    @property
-    def role_b_perm(self) -> tuple[int, ...]:
-        return tuple(int(value) for value in self._role_b["perm"])
-
-    @property
-    def role_b_sign(self) -> tuple[int, ...]:
-        return tuple(int(value) for value in self._role_b["sign"])
-
-    @property
-    def role_b_material_sha256(self) -> str:
-        return str(self._role_b["material_sha256"])
 
     @property
     def embedding_contract(self) -> dict[str, Any]:
@@ -625,23 +441,14 @@ class ActionConditioningBundle:
     def source(self) -> str:
         return self._source
 
-    def slots_for(self, action_group: str, tokens: Iterable[str]) -> dict[str, tuple]:
-        return action_label_slots(action_group, tokens)
+    def slots_for(self, tokens: Iterable[str]) -> dict[str, tuple]:
+        return action_label_slots(tokens)
 
-    def channels_for(
-        self, action_group: str, tokens: Iterable[str]
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return assemble_slot_channels(
-            self._word_embeddings,
-            self.slots_for(action_group, tokens),
-            self.role_b_perm,
-            self.role_b_sign,
-        )
+    def channels_for(self, tokens: Iterable[str]) -> tuple[np.ndarray, np.ndarray]:
+        return assemble_slot_channels(self._word_embeddings, self.slots_for(tokens))
 
     def slot_source_rank_report(self, latent_dim: int) -> dict[str, Any]:
-        return slot_source_rank_report(
-            self._word_embeddings, self.role_b_perm, self.role_b_sign, latent_dim
-        )
+        return slot_source_rank_report(self._word_embeddings, latent_dim)
 
     def checkpoint_metadata(self) -> dict[str, Any]:
         """The ``action_conditioning`` block written into every checkpoint."""
@@ -721,25 +528,12 @@ def build_action_conditioning_bundle(
                 "it with tools/build_action_label_embeddings.py --force."
             )
 
-    try:
-        role_b = role_b_material(expected_dim=int(table.shape[1]))
-    except ValueError as exc:
-        # The role transform is committed at ONE dimension: a table of another
-        # width has no ROLE_HEAD_1 to apply, so this is a wrong-encoder error
-        # rather than something to derive around.
-        raise ActionConditioningError(
-            f"{source}: {exc}. The committed role transform is "
-            f"{ROLE_B_EMBEDDING_DIM}-dimensional ({ROLE_B_NAMESPACE}), so the word "
-            "table has to come from that encoder."
-        ) from exc
     conditioning_contract = conditioning_contract_payload(
         embedding_fingerprint=fingerprint(contract),
-        role_b_material_sha256=role_b["material_sha256"],
         representation=slot_channel_representation(),
     )
     return ActionConditioningBundle(
         word_embeddings=table,
-        role_b=role_b,
         embedding_contract=contract,
         conditioning_contract=conditioning_contract,
         source=source,
@@ -811,8 +605,8 @@ def validate_action_conditioning_metadata(
     Self-consistency first (each fingerprint hashes its own block, and the
     conditioning contract names the embedding contract it was derived from), then
     the part that needs no sidecar: rebuild the conditioning contract from the
-    CURRENT vocabulary, parser contract, slot rule and ``R_B``, and require the
-    same fingerprint.  That is what lets inference stay independent of the data
+    CURRENT vocabulary, parser contract and slot rule, and require the same
+    fingerprint.  That is what lets inference stay independent of the data
     directory while still refusing a checkpoint whose runtime semantics this code
     no longer implements.
     """
@@ -857,16 +651,15 @@ def validate_action_conditioning_metadata(
         )
     expected = conditioning_contract_payload(
         embedding_fingerprint=embedding_fp,
-        role_b_material_sha256=role_b_material()["material_sha256"],
         representation=slot_channel_representation(),
     )
     if fingerprint(expected) != conditioning_fp:
         raise ActionConditioningError(
             f"{source}: its conditioning contract ({conditioning_fp}) is not the one "
             f"this code implements ({fingerprint(expected)}). The vocabulary, the parser "
-            "contract, the slot layout or the role transform changed since it was "
-            "trained, so its weights would run under semantics they were never fitted "
-            "for. Retrain, or migrate it with an explicit tool."
+            "contract or the slot layout changed since it was trained, so its weights "
+            "would run under semantics they were never fitted for. Retrain, or migrate "
+            "it with an explicit tool."
         )
     return {
         "embedding_contract": dict(embedding_contract),

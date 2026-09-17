@@ -37,7 +37,10 @@ from typing import Iterable, Mapping, Optional, Sequence
 
 import numpy as np
 
-from data_loaders.truebones.truebones_utils.motion_labels import action_words_in
+from data_loaders.truebones.truebones_utils.motion_labels import (
+    head_words_in,
+    vocab_words_in,
+)
 
 # cond.npy key holding the table, and the table's own schema version. A reader
 # that meets a newer schema than it knows ignores the table instead of guessing
@@ -208,13 +211,14 @@ def _head_word_matcher(action_group, action_label):
     word is what sets the duration, a direction or a hands token does not.
     """
     group = str(action_group or "").strip().lower()
-    wanted = tuple(action_words_in(str(action_label or "")))
+    wanted = tuple(head_words_in(vocab_words_in(str(action_label or ""))))
     if not wanted:
         return None
 
     def matches(key):
         key_group, key_label = split_label_key(key)
-        return key_group == group and tuple(action_words_in(key_label)) == wanted
+        candidate = tuple(head_words_in(vocab_words_in(key_label)))
+        return key_group == group and candidate == wanted
 
     return matches
 
@@ -301,8 +305,8 @@ def auto_num_frames(
     matchers = [("exact label", _exact_matcher(action_group, label))]
     head_words = _head_word_matcher(action_group, label)
     if head_words is not None:
-        words = ", ".join(action_words_in(label))
-        matchers.append((f"action word(s) '{words}'", head_words))
+        words = ", ".join(head_words_in(vocab_words_in(label)))
+        matchers.append((f"head word(s) '{words}'", head_words))
 
     loop_only = bool(loop)
 

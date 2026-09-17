@@ -22,7 +22,6 @@ if str(REPO_ROOT) not in sys.path:
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (  # noqa: E402
     ACTION_CHECKPOINT_VERSION,
     ACTION_LABEL_SLOTS,
-    ROLE_HEAD_1,
     SLOT_PAD_ID,
     ActionConditioningError,
     action_label_slots,
@@ -83,7 +82,6 @@ def _channels(model, labels, groups, dtype=torch.float64):
     fields = action_cond_fields(labels, groups)
     return model._assemble_action_slot_channels(
         fields['action_word_ids'],
-        fields['action_role_ids'],
         fields['action_slot_ids'],
         fields['action_word_mask'],
         dtype,
@@ -96,7 +94,7 @@ def _channels(model, labels, groups, dtype=torch.float64):
 def test_model_channels_equal_the_numpy_contract():
     bundle = make_test_bundle()
     model = _model(bundle)
-    labels = ['idle, attack', 'attack, idle', 'walk, forward, hand1', 'idle, hand0']
+    labels = ['land, fly', 'draw', 'walk, forward, hand1', 'idle, hand0']
     groups = ['transition', 'transition', 'locomotion', 'stationary']
     got = _channels(model, labels, groups)
     expected = reference_channels(bundle, labels, groups)
@@ -138,17 +136,25 @@ def test_absent_slot_is_a_zero_row_and_leaves_the_others_alone():
     assert torch.equal(with_direction[:, :width], without[:, :width])
 
 
-def test_reverse_transitions_do_not_collide():
+def test_head_order_never_reaches_the_model():
+    """Two head words pool as a set, in every group alike.
+
+    The corpus spells one word set one way per group (the loader's head-order
+    consistency gate), so this is never two conditions under one channel -- it
+    is one condition under one spelling, and the transition group is no longer
+    an exception to it.
+    """
     model = _model(make_test_bundle())
-    forward = _channels(model, ['idle, attack'], ['transition'])
-    backward = _channels(model, ['attack, idle'], ['transition'])
-    cosine = torch.nn.functional.cosine_similarity(forward, backward).item()
-    assert abs(cosine) < 0.5
-    # The same two words in a group whose role gate is closed DO pool the same:
-    # order is only meaningful for a transition.
-    stationary = [_channels(model, [label], ['stationary'])
-                  for label in ('idle, attack', 'attack, idle')]
-    assert torch.allclose(stationary[0], stationary[1], atol=1e-12)
+    for group in ('transition', 'stationary', 'locomotion'):
+        first = _channels(model, ['land, fly'], [group])
+        second = _channels(model, ['fly, land'], [group])
+        assert torch.equal(first, second)
+    # The group itself is not part of the condition either: one label is the
+    # same channel vector whichever checkpoint it is fed to.
+    assert torch.equal(
+        _channels(model, ['land, fly'], ['transition']),
+        _channels(model, ['land, fly'], ['stationary']),
+    )
 
 
 def test_padding_and_masks_take_full_effect():
@@ -157,8 +163,8 @@ def test_padding_and_masks_take_full_effect():
     model = _model(bundle)
     fields = action_cond_fields(['walk, forward'], ['locomotion'])
     clean = model._assemble_action_slot_channels(
-        fields['action_word_ids'], fields['action_role_ids'],
-        fields['action_slot_ids'], fields['action_word_mask'], torch.float64,
+        fields['action_word_ids'], fields['action_slot_ids'],
+        fields['action_word_mask'], torch.float64,
     )
     # Fill the padded columns with a real word in a real slot: the mask, not the
     # ids, is what keeps them out.
@@ -167,8 +173,7 @@ def test_padding_and_masks_take_full_effect():
     dirty_ids[:, 2:] = 5
     dirty_slots[:, 2:] = 0
     dirty = model._assemble_action_slot_channels(
-        dirty_ids, fields['action_role_ids'], dirty_slots,
-        fields['action_word_mask'], torch.float64,
+        dirty_ids, dirty_slots, fields['action_word_mask'], torch.float64,
     )
     assert torch.equal(clean, dirty)
     assert fields['action_slot_ids'][0, 2] == SLOT_PAD_ID
@@ -191,17 +196,15 @@ def test_word_id_outside_the_vocabulary_is_refused():
         model._action_slot_inputs(fields, 1, torch.device('cpu'))
 
 
-def test_loader_and_model_agree_on_the_role_gate():
-    """The gate is contextual, so the ids the loader emits carry it, not the model."""
-    slots = action_label_slots('transition', parse_action_label('idle, attack'))
-    assert slots['role_ids'][1] == ROLE_HEAD_1
-    fields = action_cond_fields(['idle, attack'], ['transition'])
-    assert fields['action_role_ids'][0, :2].tolist() == [0, ROLE_HEAD_1]
-    assert fields['action_order_head_mask'][0, :2].tolist() == [True, True]
-    # turn-headed and single-head transitions never apply R_B.
-    for label in ('turn, hover, left', 'die'):
-        emitted = action_cond_fields([label], ['transition'])
-        assert not bool((emitted['action_role_ids'] == ROLE_HEAD_1).any())
+def test_loader_emits_exactly_the_three_slot_fields():
+    """No role ids, no order mask: the collate carries ids, slots and a mask."""
+    fields = action_cond_fields(['land, fly'], ['transition'])
+    emitted = {key for key in fields if key.startswith('action_') and key not in (
+        'action_label', 'action_group', 'action_label_valid'
+    )}
+    assert emitted == {'action_word_ids', 'action_slot_ids', 'action_word_mask'}
+    assert fields['action_word_mask'][0, :2].tolist() == [True, True]
+    assert not fields['action_word_mask'][0, 2:].any()
 
 
 # --------------------------------------------------------------------------
@@ -210,7 +213,7 @@ def test_loader_and_model_agree_on_the_role_gate():
 def test_latent_dim_below_the_slot_source_rank_fails_at_construction():
     bundle = make_test_bundle()
     total_rank = bundle.slot_source_rank_report(TEST_LATENT_DIM)['total_rank']
-    assert total_rank == 135  # 32 state words + their R_B images, 6 directions, 65 modifiers
+    assert total_rank == 107  # 36 state words, 6 directions, 62 modifiers, 3 hands
     with pytest.raises(ValueError, match="smaller than the total slot source rank"):
         _model(bundle, latent_dim=total_rank - 1)
     _model(bundle, latent_dim=TEST_LATENT_DIM)  # the first width at or above it
@@ -227,19 +230,24 @@ def test_word_table_from_another_encoder_is_refused():
         )
 
 
-def test_a_wrong_width_word_table_has_no_role_transform():
-    narrow = np.zeros((len(CONTROLLED_VOCAB), 384), dtype=np.float32) + 1.0
-    # A contract that fully describes THIS table, so the width is the only thing
-    # wrong with it: otherwise the vector-hash check refuses it first and the
-    # role transform never gets asked about.
+def test_a_rank_deficient_word_table_is_refused_at_construction():
+    """A table whose state words are not independent cannot separate labels."""
+    flat = np.zeros((len(CONTROLLED_VOCAB), 384), dtype=np.float32) + 1.0
+    # A contract that fully describes THIS table, so its rank is the only thing
+    # wrong with it: otherwise the vector-hash check refuses it first.
     contract = dict(
         make_test_bundle().embedding_contract,
         embedding_dim=384,
-        word_table_sha256=word_table_sha256(narrow),
+        word_table_sha256=word_table_sha256(flat),
     )
-    with pytest.raises(ActionConditioningError, match="role transform"):
-        build_action_conditioning_bundle(
-            narrow, contract, source='narrow', check_token_text=False,
+    bundle = build_action_conditioning_bundle(
+        flat, contract, source='flat', check_token_text=False,
+    )
+    with pytest.raises(ValueError, match="full slot-source rank"):
+        AnyTop(
+            max_joints=4, feature_len=12, latent_dim=TEST_LATENT_DIM, ff_size=32,
+            num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
+            t5_out_dim=384, action_label_cond=True, action_conditioning=bundle,
         )
 
 
@@ -295,6 +303,7 @@ def test_checkpoint_carries_both_fingerprints():
     model = _model(bundle)
     payload = build_checkpoint_payload(model.state_dict(), None, model)
     metadata = payload['metadata']
+    assert ACTION_CHECKPOINT_VERSION == 3
     assert metadata['checkpoint_version'] == ACTION_CHECKPOINT_VERSION
     action = metadata['action_conditioning']
     assert action['embedding_fingerprint'] == bundle.embedding_fingerprint
@@ -319,9 +328,8 @@ def test_save_load_resume_round_trip_keeps_the_condition(tmp_path):
     load_model(restored, state)
     bind_checkpoint_action_conditioning(restored, metadata, 'model.pt')
     assert torch.equal(restored.action_word_embeddings, model.action_word_embeddings)
-    assert torch.equal(restored.action_role_b_perm, model.action_role_b_perm)
 
-    labels, groups = ['idle, attack', 'walk, forward'], ['transition', 'locomotion']
+    labels, groups = ['land, fly', 'walk, forward'], ['transition', 'locomotion']
     y_fields = action_cond_fields(labels, groups)
     before = model._build_action_label_token(y_fields, 2, torch.device('cpu'), torch.float32)
     after = restored._build_action_label_token(y_fields, 2, torch.device('cpu'), torch.float32)
@@ -358,7 +366,7 @@ def test_a_checkpoint_under_another_conditioning_contract_is_refused():
     metadata = _model(bundle).action_conditioning_metadata
     tampered = dict(metadata)
     contract = dict(tampered['conditioning_contract'])
-    contract['role_gate'] = 'always'
+    contract['max_heads'] = 3
     tampered['conditioning_contract'] = contract
     tampered['conditioning_contract_fingerprint'] = fingerprint(contract)
     with pytest.raises(ActionConditioningError, match="not the one this code implements"):
@@ -373,14 +381,14 @@ def test_a_pre_v2_checkpoint_is_refused(tmp_path):
         load_checkpoint_weights(payload, str(path), prefer_ema=True)
 
 
-def test_tampered_role_buffers_are_refused():
-    bundle = make_test_bundle()
-    model = _model(bundle)
-    metadata = model.action_conditioning_metadata
-    with torch.no_grad():
-        model.action_role_b_sign[0] *= -1
-    with pytest.raises(ActionConditioningError, match="material hash mismatch"):
-        model.validate_loaded_action_conditioning(metadata, source='model.pt')
+def test_a_v2_role_buffer_checkpoint_is_refused_before_loading_weights():
+    payload = {
+        'model': {},
+        'model_avg': {},
+        'metadata': {'checkpoint_version': 2, 'action_conditioning': {}},
+    }
+    with pytest.raises(ActionConditioningError, match="records checkpoint_version 2"):
+        load_checkpoint_weights(payload, 'role-buffer-v2.pt', prefer_ema=True)
 
 
 def test_a_checkpoint_whose_table_did_not_load_is_refused():
@@ -406,10 +414,8 @@ def test_slot_assembly_has_exactly_one_definition():
     bundle = make_test_bundle()
     model = _model(bundle)
     label, group = 'walk, forward, hand1', 'locomotion'
-    slots = action_label_slots(group, parse_action_label(label))
-    numpy_channels, present = assemble_slot_channels(
-        bundle.word_embeddings, slots, bundle.role_b_perm, bundle.role_b_sign
-    )
+    slots = action_label_slots(parse_action_label(label))
+    numpy_channels, present = assemble_slot_channels(bundle.word_embeddings, slots)
     assert present.tolist() == [True, True, False, True]
     torch_channels = _channels(model, [label], [group])
     assert torch.allclose(
@@ -531,21 +537,6 @@ def _write_checkpoint(tmp_path, model, model_avg=None, name='model000100.pt'):
     path = tmp_path / name
     torch.save(payload, path)
     return path, payload
-
-
-def test_resume_certifies_the_buffers_that_actually_landed(tmp_path):
-    """Binding before load_model certified this run's material, not the file's."""
-    bundle = make_test_bundle()
-    saved = _model(bundle)
-    path, payload = _write_checkpoint(tmp_path, saved, saved)
-    tampered = payload['model']['action_role_b_sign'].clone()
-    tampered[0] *= -1
-    payload['model'] = dict(payload['model'], action_role_b_sign=tampered)
-    payload['model_avg'] = payload['model']
-    torch.save(payload, path)
-
-    with pytest.raises(ActionConditioningError, match="material hash mismatch"):
-        _resume(path, bundle, _model(bundle), _model(bundle))
 
 
 def test_resume_refuses_a_checkpoint_whose_table_was_swapped(tmp_path):

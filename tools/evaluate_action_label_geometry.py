@@ -6,9 +6,8 @@ measured, and they are not the same kind of thing:
 
 * the HARD gate -- properties the model cannot repair after the fact: two
   distinct labels landing on one point, a word whose contribution vanishes as
-  the label grows, a frozen table/slot source basis that has lost rank, a
-  projection narrower than the complete slot source space, or a transition
-  that reads the same in both directions;
+  the label grows, a frozen table/slot source basis that has lost rank, or a
+  projection narrower than the complete slot source space;
 * REPORTED geometry -- pairwise p95, nearest-neighbour median and effective
   rank.  These are anisotropy measures, and the first learned Linear of
   ``action_label_projection`` can rescale any subspace, so they are tracked as
@@ -50,7 +49,6 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     conditioning_contract_payload,
     embedding_contract_payload,
     fingerprint,
-    role_b_material,
     slot_channel_representation,
     slot_source_rank_report,
     word_slot,
@@ -61,7 +59,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
     HANDS_VOCAB,
-    STATE_VOCAB,
+    HEAD_VOCAB,
     load_action_labels,
     parse_action_label,
     vocab_t5_text,
@@ -81,13 +79,11 @@ HARD_GATE = {
     # near neighbour must be no closer than the current baseline's worst case.
     "collision_cosine": 0.999999,
     "max_worst_nearest_over_baseline": 0.0,
-    # A transition must not read the same in both directions.
-    "max_reverse_pair_median": 0.50,
     # Axis retention is an EQUALITY for a slot representation: a channel's input
     # is a function of its own slot, so appending modifiers changes it by zero.
     "max_channel_drift": 0.0,
-    # No word or role-specific slot source may be a linear combination of the
-    # others.  Full slot-source rank proves injectivity and linear membership
+    # No slot source word may be a linear combination of the others in its
+    # slot.  Full slot-source rank proves injectivity and linear membership
     # readout for every non-empty subset admitted by the total-word cap; it does
     # not need a combinatorial enumeration.
     "require_full_rank_word_table": True,
@@ -195,9 +191,8 @@ def _cosine_matrix(vectors: np.ndarray) -> np.ndarray:
 def _slot_bundle(
     atoms: np.ndarray,
     keyed: Iterable[tuple[str, str]],
-    role_payload: dict[str, Any],
 ) -> np.ndarray:
-    """Concatenated role-slot channels, standardised per channel and per group.
+    """Concatenated slot channels, standardised per channel and per group.
 
     Per-channel standardisation is not cosmetic: each channel enters the model
     through its own block of ``action_label_projection``'s first Linear (one
@@ -208,10 +203,8 @@ def _slot_bundle(
     rows: list[np.ndarray] = []
     groups: list[str] = []
     for group, label in keyed:
-        slots = action_label_slots(group, parse_action_label(label))
-        channels, _present = assemble_slot_channels(
-            atoms, slots, role_payload["perm"], role_payload["sign"]
-        )
+        slots = action_label_slots(parse_action_label(label))
+        channels, _present = assemble_slot_channels(atoms, slots)
         rows.append(channels.reshape(-1))
         groups.append(group)
     bundle = np.stack(rows)
@@ -243,7 +236,7 @@ def _worst_nearest(vectors: np.ndarray, groups: list[str]) -> dict[str, dict[str
     return result
 
 
-def _channel_drift(atoms: np.ndarray, role_payload: dict[str, Any]) -> dict[str, Any]:
+def _channel_drift(atoms: np.ndarray) -> dict[str, Any]:
     """Does a head/direction channel move when unrelated modifiers are appended?
 
     For a slot representation the answer is exactly zero by construction; the
@@ -255,20 +248,12 @@ def _channel_drift(atoms: np.ndarray, role_payload: dict[str, Any]) -> dict[str,
     worst = 0.0
     samples: list[dict[str, Any]] = []
     for base in (("walk", "forward"), ("run", "forward"), ("walk", "backward"), ("idle",)):
-        reference, _ = assemble_slot_channels(
-            atoms,
-            action_label_slots("locomotion" if len(base) > 1 else "stationary", base),
-            role_payload["perm"], role_payload["sign"],
-        )
+        reference, _ = assemble_slot_channels(atoms, action_label_slots(base))
         for count in range(1, len(fillers) + 1):
             tokens = base + fillers[:count]
             if len(tokens) > 8:
                 break
-            grown, _ = assemble_slot_channels(
-                atoms,
-                action_label_slots("locomotion" if len(base) > 1 else "stationary", tokens),
-                role_payload["perm"], role_payload["sign"],
-            )
+            grown, _ = assemble_slot_channels(atoms, action_label_slots(tokens))
             drift = max(
                 float(np.max(np.abs(grown[slot] - reference[slot])))
                 for slot in (SLOT_HEAD, SLOT_DIRECTION)
@@ -336,7 +321,7 @@ def _ridge_readout(design: np.ndarray, targets: np.ndarray, device: str) -> np.n
 
 
 def _slot_configuration_margins(
-    atoms: np.ndarray, role_payload: dict[str, Any], max_subset: int, device: str = "cpu"
+    atoms: np.ndarray, max_subset: int, device: str = "cpu"
 ) -> dict[str, Any]:
     """Quantitative nearest-pair/readout diagnostic over useful configurations.
 
@@ -349,8 +334,6 @@ def _slot_configuration_margins(
     """
     import itertools
 
-    perm = np.asarray(role_payload["perm"], dtype=np.int64)
-    sign = np.asarray(role_payload["sign"], dtype=np.float64)
     vocab_index = {word: index for index, word in enumerate(CONTROLLED_VOCAB)}
     modifiers = tuple(word for word in CONTROLLED_VOCAB if word_slot(word) == SLOT_MODIFIER)
 
@@ -360,13 +343,13 @@ def _slot_configuration_margins(
 
     configurations: dict[str, tuple[list[np.ndarray], list[tuple[str, ...]]]] = {}
     head_vectors, head_names = [], []
-    for word in STATE_VOCAB:
+    for word in HEAD_VOCAB:
         head_vectors.append(pooled([atoms[vocab_index[word]]]))
         head_names.append((word,))
-    for first, second in itertools.permutations(STATE_VOCAB, 2):
-        head_vectors.append(pooled([
-            atoms[vocab_index[first]], sign * atoms[vocab_index[second]][perm]
-        ]))
+    # Head pairs are SETS: the head slot pools its members, so "a, b" and
+    # "b, a" are one configuration.
+    for first, second in itertools.combinations(HEAD_VOCAB, 2):
+        head_vectors.append(pooled([atoms[vocab_index[first]], atoms[vocab_index[second]]]))
         head_names.append((first, second))
     configurations["head"] = (head_vectors, head_names)
 
@@ -435,18 +418,12 @@ def _slot_configuration_margins(
     return report
 
 
-def _slot_source_rank_report(
-    atoms: np.ndarray,
-    role_payload: dict[str, Any],
-    latent_dim: int,
-) -> dict[str, Any]:
+def _slot_source_rank_report(atoms: np.ndarray, latent_dim: int) -> dict[str, Any]:
     """Certify every slot subset without enumerating the power set.
 
     If a slot's source rows are independent, two different 0/1 membership
     vectors cannot yield proportional sums.  L2-normalising those sums therefore
     creates neither a collision nor a loss of linear membership readability.
-    The head source basis includes both the ordinary and ``R_B``-transformed
-    version of every state word so the same argument covers ordered transitions.
 
     Slots occupy disjoint blocks after concatenation, hence their ranks add.  A
     first Linear at least that wide can be injective on the entire reachable
@@ -456,9 +433,7 @@ def _slot_source_rank_report(
     construction runs the same certificate against ``latent_dim`` before a run
     starts; a second copy here would be a second definition of injectivity.
     """
-    return slot_source_rank_report(
-        atoms, role_payload["perm"], role_payload["sign"], latent_dim
-    )
+    return slot_source_rank_report(atoms, latent_dim)
 
 
 def _effective_rank(vectors: np.ndarray) -> float:
@@ -469,33 +444,9 @@ def _effective_rank(vectors: np.ndarray) -> float:
     return float(eigen.sum() ** 2 / denominator) if denominator else 0.0
 
 
-def _reverse_pairs(labels: list[str], label_to_group: dict[str, str]) -> list[tuple[int, int]]:
-    signatures: dict[tuple[frozenset[str], tuple[str, ...]], list[tuple[int, tuple[str, ...]]]] = {}
-    for index, label in enumerate(labels):
-        if label_to_group[label] != "transition":
-            continue
-        tokens = parse_action_label(label)
-        slots = action_label_slots("transition", tokens)
-        if not any(slots["order_head_mask"]):
-            continue
-        heads = tuple(token for token, flagged in zip(tokens, slots["order_head_mask"]) if flagged)
-        modifiers = tuple(token for token, flagged in zip(tokens, slots["order_head_mask"]) if not flagged)
-        key = (frozenset(heads), modifiers)
-        signatures.setdefault(key, []).append((index, heads))
-
-    pairs: list[tuple[int, int]] = []
-    for variants in signatures.values():
-        for left_pos, (left_index, left_heads) in enumerate(variants):
-            for right_index, right_heads in variants[left_pos + 1:]:
-                if left_heads == tuple(reversed(right_heads)):
-                    pairs.append((left_index, right_index))
-    return sorted(pairs)
-
-
 def _metrics(
     vectors: np.ndarray,
     groups: list[str],
-    reverse_pairs: list[tuple[int, int]],
     collision: float,
 ) -> dict[str, Any]:
     # Models/checkpoints are group-specific.  Pooling across groups would count
@@ -528,12 +479,6 @@ def _metrics(
         rank_count += len(indices)
         collision_pairs += collisions
 
-    # Reverse pairs are all transition-local; compute them against the full
-    # occurrence matrix only to keep their original indices.
-    unit = _l2_rows(vectors.astype(np.float64, copy=False))
-    reverse = np.asarray(
-        [float(unit[left] @ unit[right]) for left, right in reverse_pairs], dtype=np.float64
-    )
     upper = np.concatenate(all_upper)
     nearest = np.concatenate(all_nearest)
     return {
@@ -541,9 +486,6 @@ def _metrics(
         "nearest_cosine_median": float(np.median(nearest)),
         "effective_rank": rank_weighted / max(rank_count, 1),
         "collision_pairs": collision_pairs,
-        "reverse_pair_count": int(len(reverse_pairs)),
-        "reverse_pair_cosine_median": float(np.median(reverse)) if len(reverse) else None,
-        "reverse_pair_cosine_max": float(np.max(reverse)) if len(reverse) else None,
         "by_group": by_group,
     }
 
@@ -558,9 +500,6 @@ def _hard_gate(candidate: dict[str, Any], baseline: dict[str, Any]) -> tuple[boo
         allowed = reference + HARD_GATE["max_worst_nearest_over_baseline"]
         if metrics["worst_nearest_cosine"] > allowed:
             failures.append(f"{group}:worst_nearest")
-    reverse_median = candidate["reverse_pair_cosine_median"]
-    if reverse_median is None or reverse_median > HARD_GATE["max_reverse_pair_median"]:
-        failures.append("reverse_pairs")
     if candidate["channel_drift"]["max_channel_drift"] > HARD_GATE["max_channel_drift"]:
         failures.append("channel_drift")
     if not candidate["word_table"]["full_rank"]:
@@ -575,17 +514,17 @@ def _hard_gate(candidate: dict[str, Any], baseline: dict[str, Any]) -> tuple[boo
 
 
 def _bundle_keys_are_unique(keyed: Iterable[tuple[str, str]]) -> bool:
-    """Distinct labels must produce distinct (group, {(word, role)}) keys.
+    """Distinct labels must produce distinct (group, {word}) keys.
 
-    The head slot pools its words, so two labels whose only difference is head
-    ORDER would share a channel unless a role transform separates them. The data
-    contract forbids that outside ``transition`` and R_B covers the gated case;
-    this is the invariant that keeps a future annotation from reopening it.
+    Every slot pools its words as a set, so two labels whose only difference is
+    word ORDER share a channel. The per-file validator forbids two head orders
+    of one word set within a group, but it reads one sidecar at a time; this is
+    the corpus-wide check that keeps a second file from reopening it.
     """
     seen: set[tuple[str, frozenset]] = set()
     for group, label in keyed:
-        slots = action_label_slots(group, parse_action_label(label))
-        key = (group, frozenset(zip(slots["word_ids"], slots["role_ids"])))
+        slots = action_label_slots(parse_action_label(label))
+        key = (group, frozenset(slots["word_ids"]))
         if key in seen:
             return False
         seen.add(key)
@@ -599,12 +538,12 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     for row in rows:
         label_groups.setdefault(row["label"], set()).add(row["group"])
     cross_group = {label: groups for label, groups in label_groups.items() if len(groups) > 1}
-    # Geometry is checkpoint-local.  Duplicate strings in two groups must be
-    # represented once per group so their role gate is never inferred globally.
+    # Geometry is checkpoint-local.  Duplicate strings in two groups are
+    # represented once per group, as the two conditions they are.
     keyed_labels = sorted({(row["group"], row["label"]) for row in rows})
     keyed_names = [f"{group}\0{label}" for group, label in keyed_labels]
-    role_labels = [name.split("\0", 1)[1] for name in keyed_names]
-    role_group_by_occurrence = {name: name.split("\0", 1)[0] for name in keyed_names}
+    occurrence_labels = [name.split("\0", 1)[1] for name in keyed_names]
+    group_by_occurrence = {name: name.split("\0", 1)[0] for name in keyed_names}
 
     t5_dir = _resolve_t5_dir(args.t5_path, args.t5_model)
     t5_files = (
@@ -633,50 +572,34 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         tokenizer, encoder, device, word_texts, args.batch_size
     )
     # Baseline faithfully encodes the current comma-separated label strings.
-    unique_label_texts = sorted(set(role_labels))
+    unique_label_texts = sorted(set(occurrence_labels))
     full_by_eos = _encode_both_eos_policies(
         tokenizer, encoder, device, unique_label_texts, args.batch_size
     )
     unique_index = {label: index for index, label in enumerate(unique_label_texts)}
 
-    role_payload = role_b_material(expected_dim=atom_by_eos["keep"].shape[1])
     variants: dict[str, dict[str, Any]] = {}
-    reverse_pairs = _reverse_pairs(
-        role_labels,
-        {label: group for label, group in zip(role_labels, (role_group_by_occurrence[n] for n in keyed_names))},
-    )
-    # Repeated strings across groups make the mapping above ambiguous. Rebuild
-    # the pair set directly over group-qualified occurrences.
-    reverse_pairs = []
-    for group in ("locomotion", "stationary", "transition"):
-        indices = [i for i, key in enumerate(keyed_names) if key.startswith(group + "\0")]
-        local_labels = [role_labels[i] for i in indices]
-        local_pairs = _reverse_pairs(local_labels, {label: group for label in local_labels})
-        reverse_pairs.extend((indices[left], indices[right]) for left, right in local_pairs)
-
-    groups = [role_group_by_occurrence[name] for name in keyed_names]
+    groups = [group_by_occurrence[name] for name in keyed_names]
     bundle_keys_unique = _bundle_keys_are_unique(keyed_labels)
 
     for eos_policy in ("keep", "drop"):
         baseline_vectors = np.stack(
-            [full_by_eos[eos_policy][unique_index[label]] for label in role_labels]
+            [full_by_eos[eos_policy][unique_index[label]] for label in occurrence_labels]
         )
-        baseline_metrics = _metrics(
-            baseline_vectors, groups, reverse_pairs, HARD_GATE["collision_cosine"]
-        )
+        baseline_metrics = _metrics(baseline_vectors, groups, HARD_GATE["collision_cosine"])
         baseline_metrics["worst_nearest"] = _worst_nearest(baseline_vectors, groups)
         variants[f"baseline/eos_{eos_policy}"] = baseline_metrics
 
-        # --- the approved representation: one channel per role slot -----------
+        # --- the approved representation: one channel per slot ----------------
         raw_singular = np.linalg.svd(atom_by_eos[eos_policy], compute_uv=False)
         raw_table_rank = int(np.count_nonzero(raw_singular > raw_singular[0] * 1e-10))
         for postprocess in ("raw", "center", "l2", "center_l2"):
             atoms = _postprocess_atoms(atom_by_eos[eos_policy], postprocess)
             name = f"slot/eos_{eos_policy}/{postprocess}"
-            bundle = _slot_bundle(atoms, keyed_labels, role_payload)
-            metrics = _metrics(bundle, groups, reverse_pairs, HARD_GATE["collision_cosine"])
+            bundle = _slot_bundle(atoms, keyed_labels)
+            metrics = _metrics(bundle, groups, HARD_GATE["collision_cosine"])
             metrics["worst_nearest"] = _worst_nearest(bundle, groups)
-            metrics["channel_drift"] = _channel_drift(atoms, role_payload)
+            metrics["channel_drift"] = _channel_drift(atoms)
             # Mean-centering costs exactly one dimension by construction, so the
             # criterion is affine independence: no word may be a combination of
             # the others, which is rank V for a raw table and V-1 for a centered
@@ -691,13 +614,11 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 "full_rank": rank >= expected_rank and raw_table_rank == len(CONTROLLED_VOCAB),
                 "condition_number": float(singular[0] / max(singular[rank - 1], 1e-12)),
             }
-            metrics["slot_source_rank"] = _slot_source_rank_report(
-                atoms, role_payload, args.latent_dim
-            )
+            metrics["slot_source_rank"] = _slot_source_rank_report(atoms, args.latent_dim)
             metrics["bundle_key_is_unique"] = bundle_keys_unique
             if not args.skip_exhaustive:
                 metrics["slot_configurations"] = _slot_configuration_margins(
-                    atoms, role_payload, args.max_subset_size, device
+                    atoms, args.max_subset_size, device
                 )
             # Reported only: the same numbers the rejected family was blocked on.
             metrics["reported_vs_baseline"] = {
@@ -771,15 +692,14 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         embedding_fp = fingerprint(embedding_contract)
         conditioning_contract = conditioning_contract_payload(
             embedding_fingerprint=embedding_fp,
-            role_b_material_sha256=role_payload["material_sha256"],
             representation=slot_channel_representation(),
         )
 
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "GO" if selected_name else "NO_GO",
         "selected_variant": selected_name,
-        "selection_rule": "role-slot-channel candidates passing every hard criterion; then the lowest worst-case nearest cosine outside a 0.005 tolerance band; then fixed canonical order",
+        "selection_rule": "slot-channel candidates passing every hard criterion; then the lowest worst-case nearest cosine outside a 0.005 tolerance band; then fixed canonical order",
         "thresholds": {
             "hard": HARD_GATE,
             "projection_latent_dim": args.latent_dim,
@@ -794,10 +714,9 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 for path in dataset_dirs
             },
             "rows": len(rows),
-            "distinct_labels": len(set(role_labels)),
-            "group_qualified_labels": len(role_labels),
+            "distinct_labels": len(set(occurrence_labels)),
+            "group_qualified_labels": len(occurrence_labels),
             "cross_group_label_strings": len(cross_group),
-            "reverse_pairs": len(reverse_pairs),
         },
         "encoder": {
             "t5_name": args.t5_model,
@@ -806,11 +725,6 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "transformers_version": importlib.metadata.version("transformers"),
             "torch_version": torch.__version__,
             "device": device,
-        },
-        "role_b": {
-            "namespace": role_payload["namespace"],
-            "material_sha256": role_payload["material_sha256"],
-            "embedding_dim": role_payload["embedding_dim"],
         },
         "variants": variants,
         "embedding_contract": embedding_contract,
@@ -826,24 +740,22 @@ def _print_summary(report: dict[str, Any]) -> None:
     print(
         "corpus: "
         f"{report['corpus']['rows']} rows, "
-        f"{report['corpus']['distinct_labels']} labels, "
-        f"{report['corpus']['reverse_pairs']} reverse pair(s)"
+        f"{report['corpus']['distinct_labels']} labels"
     )
     print()
     print("HARD gate -- irreversible properties only")
-    print("variant                          worstNN  rev50   drift  word  src  keys  gate")
+    print("variant                          worstNN   drift  word  src  keys  gate")
     for name, metrics in report["variants"].items():
         if not name.startswith(("slot/", "baseline/")):
             continue
-        reverse = metrics["reverse_pair_cosine_median"]
         worst = max(g["worst_nearest_cosine"] for g in metrics["worst_nearest"].values())
         if "go" not in metrics:
-            print(f"{name:32s} {worst:7.4f} {reverse:6.3f}     ---   ---  ---   ---  BASE")
+            print(f"{name:32s} {worst:7.4f}     ---   ---  ---   ---  BASE")
             continue
         gate = "GO" if metrics["go"] else "NO:" + ",".join(metrics["failures"])
         table = metrics["word_table"]
         print(
-            f"{name:32s} {worst:7.4f} {reverse:6.3f} "
+            f"{name:32s} {worst:7.4f} "
             f"{metrics['channel_drift']['max_channel_drift']:7.1e} "
             f"{table['rank']:5d} {metrics['slot_source_rank']['total_rank']:4d} "
             f"{str(metrics['bundle_key_is_unique']):>5s}  {gate}"

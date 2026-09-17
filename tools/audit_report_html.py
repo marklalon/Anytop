@@ -45,7 +45,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_LABEL_MAX_WORDS,
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
-    STATE_VOCAB,
+    HEAD_VOCAB,
 )
 
 # Written next to the other review front-end so both live in one place. It is a
@@ -279,11 +279,11 @@ def write_html_report(path, findings, clips, meta) -> Path:
         "cases": cases,
         "vocab": {
             # The page mirrors canonical_action_label exactly: head words keep
-            # the order they were typed (that order is a transition's time
-            # order); directions bind after turn when present, or after the
-            # complete head sequence otherwise, before the sorted modifiers.
+            # the order they were typed (primary word first; never re-sorted);
+            # directions bind after turn when present, or after the complete
+            # head sequence otherwise, before the sorted modifiers.
             "order": {word: index for index, word in enumerate(CONTROLLED_VOCAB)},
-            "heads": list(STATE_VOCAB),
+            "heads": list(HEAD_VOCAB),
             "directions": list(DIRECTION_VOCAB),
             "groups": list(ACTION_GROUPS),
             "max_words": ACTION_LABEL_MAX_WORDS,

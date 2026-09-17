@@ -15,7 +15,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import ACTION_LABEL_MA
 
 
 def _build_action_slot_batch(action_slots_batch, action_labels_batch):
-    """Pad the per-sample word ids / roles / slots to ``[B, ACTION_LABEL_MAX_WORDS]``.
+    """Pad the per-sample word ids / slots to ``[B, ACTION_LABEL_MAX_WORDS]``.
 
     Padded to the contract's word cap rather than to the batch maximum, so the
     conditioning tensors have one fixed shape for every batch: a shape that moved
@@ -30,10 +30,8 @@ def _build_action_slot_batch(action_slots_batch, action_labels_batch):
     batch_size = len(action_slots_batch)
     width = ACTION_LABEL_MAX_WORDS
     word_ids = torch.zeros((batch_size, width), dtype=torch.int64)
-    role_ids = torch.zeros((batch_size, width), dtype=torch.int64)
     slot_ids = torch.full((batch_size, width), SLOT_PAD_ID, dtype=torch.int64)
     word_mask = torch.zeros((batch_size, width), dtype=torch.bool)
-    order_head_mask = torch.zeros((batch_size, width), dtype=torch.bool)
     valid = torch.zeros((batch_size,), dtype=torch.bool)
     any_slots = False
     for row_index, slots in enumerate(action_slots_batch):
@@ -46,21 +44,15 @@ def _build_action_slot_batch(action_slots_batch, action_labels_batch):
                 f"action label has {count} words, over the contract cap {width}"
             )
         word_ids[row_index, :count] = torch.as_tensor(slots['word_ids'], dtype=torch.int64)
-        role_ids[row_index, :count] = torch.as_tensor(slots['role_ids'], dtype=torch.int64)
         slot_ids[row_index, :count] = torch.as_tensor(slots['slot_ids'], dtype=torch.int64)
         word_mask[row_index, :count] = torch.as_tensor(slots['word_mask'], dtype=torch.bool)
-        order_head_mask[row_index, :count] = torch.as_tensor(
-            slots['order_head_mask'], dtype=torch.bool
-        )
         valid[row_index] = bool(str(action_labels_batch[row_index] or ""))
     if not any_slots:
         return None, valid
     return {
         'action_word_ids': word_ids,
-        'action_role_ids': role_ids,
         'action_slot_ids': slot_ids,
         'action_word_mask': word_mask,
-        'action_order_head_mask': order_head_mask,
     }, valid
 
 def n_joints_to_mask(n_joints, max_joints):

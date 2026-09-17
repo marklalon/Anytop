@@ -107,6 +107,19 @@ def test_head_words_are_the_first_fallback():
     assert "walk" in why
 
 
+def test_head_word_fallback_ignores_action_modifiers():
+    """A modifier must not hide clips that have the requested head set."""
+    cond = {"ns/Archer": _entry([
+        ("transition", "draw, bow", False, 42),
+        ("transition", "draw, gun", False, 46),
+    ])}
+    frames, why = _ask(
+        cond, "ns/Archer", "draw", group="transition", loop=False
+    )
+    assert frames == 44
+    assert "draw" in why
+
+
 def test_own_head_word_clips_beat_a_neighbours_exact_label():
     """Duration is set more by the body than by the modifier, so every matcher is
     tried on the target species before any neighbour is consulted."""

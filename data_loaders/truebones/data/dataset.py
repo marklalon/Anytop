@@ -1237,16 +1237,13 @@ class MotionDataset(data.Dataset):
         }
     
     def _apply_action_label_condition(self, motion_metadata) -> None:
-        """Attach this sample's word ids, roles and slot assignment.
+        """Attach this sample's word ids and slot assignment.
 
         The loader emits IDs, never assembled vectors: the slot channels are
         built on the model side from the frozen table inside the checkpoint, so
         changing the representation later touches the model and nothing in the
-        data path.
-
-        The role gate is contextual -- the second head word of a two-state
-        transition is the only word that ever carries ``ROLE_HEAD_1`` -- so the
-        clip's own ``action_group`` decides it, not the group this run filters on.
+        data path. A word's slot is a property of the word alone, so the clip's
+        ``action_group`` plays no part here.
         """
         if self.action_conditioning is None:
             return
@@ -1258,21 +1255,17 @@ class MotionDataset(data.Dataset):
         if not label:
             motion_metadata['action_slots'] = None
             return
-        group = normalize_action_group(motion_metadata.get('action_group'))
         try:
-            slots = self.action_conditioning.slots_for(group, parse_action_label(label))
+            slots = self.action_conditioning.slots_for(parse_action_label(label))
         except (ActionLabelError, ValueError) as exc:
             raise ValueError(
                 f"clip {motion_metadata.get('motion_name', '?')!r} carries "
-                f"action_label {label!r} in group {group!r}, which this code cannot "
-                f"encode: {exc}"
+                f"action_label {label!r}, which this code cannot encode: {exc}"
             ) from exc
         motion_metadata['action_slots'] = {
             'word_ids': np.asarray(slots['word_ids'], dtype=np.int64),
-            'role_ids': np.asarray(slots['role_ids'], dtype=np.int64),
             'slot_ids': np.asarray(slots['slot_ids'], dtype=np.int64),
             'word_mask': np.asarray(slots['word_mask'], dtype=np.bool_),
-            'order_head_mask': np.asarray(slots['order_head_mask'], dtype=np.bool_),
         }
 
     def _load_physical_motion(self, data):

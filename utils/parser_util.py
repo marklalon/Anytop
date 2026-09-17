@@ -39,7 +39,14 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 #    L/T instead of end to end at (L-1)/(T-1), and the loss step scale follows;
 #    loop_wrap_loss drops its pose term and its rotation term asks for a seam
 #    step like its neighbours instead of last == first.
-CKPT_VERSION = 12
+# 13: action-label head order carries no direction. The transition group pools
+#    its head words as a set like the other groups: the signed-permutation role
+#    transform (R_B) on a transition's second head, its role ids, the order-head
+#    mask and the model's action_role_b_* buffers are gone, and the corpus was
+#    relabelled from "from, to" pairs to single event words (draw / sheathe /
+#    stop / kneel). Parser contract 2 -> 3; the conditioning-contract
+#    fingerprint refuses the old checkpoints on its own, this bump names why.
+CKPT_VERSION = 13
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -589,8 +596,8 @@ def add_generate_options(parser):
                             "unknown token is a hard error listing the valid ones, because the "
                             "vectors live in the checkpoint and no T5 runs at generation. A "
                             "recognizable prompt written out of canonical order is rewritten to it "
-                            "(with a printed note); head-word order is never touched, since it is "
-                            "the time order of a transition. Naming no direction is legal and means "
+                            "(with a printed note); head-word order is kept as given, since it "
+                            "carries no meaning to the model. Naming no direction is legal and means "
                             "'any' (the model answers with the marginal over directions); the same "
                             "holds for the hands axis -- write 'hand0' for empty hands, 'hand1' / "
                             "'hand2' for one / both hands holding something, or nothing for 'any' "

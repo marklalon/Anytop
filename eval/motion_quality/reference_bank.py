@@ -46,12 +46,12 @@ def reference_prior_words(action_label) -> tuple[str, ...]:
     Parsed under the contract generate.py enforces on ``--action_label``, so the
     label a clip was generated with is the label it is scored with, and a typo
     fails instead of silently narrowing the prior. Only the head words (the
-    STATE_VOCAB members: walk, run, idle, attack, ...) select reference clips;
+    HEAD_VOCAB members: walk, run, idle, attack, ...) select reference clips;
     direction, hands and secondary words do not. A direction word is shared by
     every travelling action, so letting it match made ``walk, forward`` and
     ``run, forward`` select the same bank. The words are returned in vocabulary
-    order, so both directions of a transition share one prior. An empty label
-    returns ``()``.
+    order, so the prior is keyed by the head SET, as the model's head slot is.
+    An empty label returns ``()``.
 
     The prior is deliberately keyed by head words and not by ``action_group``:
     grouping would widen it from "the attack references" to "everything
@@ -202,7 +202,7 @@ class ReferenceCorpus:
     def clip_paths(self, prior_words: Sequence[str]) -> Dict[str, List[str]]:
         """``{species: [paths]}`` of every clip whose label hits any prior word.
 
-        A clip labelled with two of the words (a transition) is listed once.
+        A clip labelled with two of the words is listed once.
         """
         requested = set(prior_words)
         matched: Dict[str, List[str]] = {}

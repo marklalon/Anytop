@@ -145,9 +145,10 @@ def test_reference_prior_words_are_the_head_words_of_the_action_label() -> None:
     # direction is shared by every travelling action.
     assert derive("fly, forward") == ("fly",)
     assert derive("attack, bite, hand1") == ("attack",)
-    assert derive("walk, run") == ("walk", "run")
-    # Head order is the transition's direction, not a different prior.
-    assert derive("idle, attack") == derive("attack, idle") == ("idle", "attack")
+    assert derive("walk, run") == ("run", "walk")
+    # Head order is spelling, not a different prior: the words come back in
+    # vocabulary order (HEAD_VOCAB is alphabetical), whichever way they were written.
+    assert derive("land, fly") == derive("fly, land") == ("fly", "land")
     assert derive("") == ()
     assert derive(None) == ()
 
