@@ -18,7 +18,7 @@
 {"clip": "bat_demon_Start", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "bat_demon_Taunt", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
 {"clip": "bat_demon_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
-{"clip": "Bear_AtkRun", "action_group": "locomotion", "action_label": "run, attack, forward", "is_loop": true, "reviewed": true}
+{"clip": "Bear_AtkRun", "action_group": "locomotion", "action_label": "run, jump", "is_loop": true, "reviewed": true}
 {"clip": "Bear_AtkStand", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
 {"clip": "Bear_AtkStand2", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
 {"clip": "Bear_Hind", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
