@@ -154,16 +154,16 @@
 {"clip": "Camel_Restless", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}
 {"clip": "Camel_RunFast", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Camel_Run", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
-{"clip": "Camel_ScrapeHoof", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Camel_ScrapeHoof", "action_group": "stationary", "action_label": "idle, look, scratch", "is_loop": true, "reviewed": true}
 {"clip": "Camel_SlowWalk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "Camel_Specail", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true}
+{"clip": "Camel_Specail", "action_group": "stationary", "action_label": "idle, rear, scratch", "is_loop": true, "reviewed": true}
 {"clip": "Camel_StandUp", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "Camel_StopWalk", "action_group": "transition", "action_label": "stop", "is_loop": false, "reviewed": true}
 {"clip": "Camel_Trot", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}
 {"clip": "Camel_Wild1", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
-{"clip": "Camel_Yell", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Camel_Yell", "action_group": "stationary", "action_label": "idle, yawn", "is_loop": true, "reviewed": true}
 {"clip": "Cat_LickCleanIdle", "action_group": "stationary", "action_label": "idle, sit, clean", "is_loop": false, "reviewed": true}
-{"clip": "Cat_StretchYawnIdle", "action_group": "stationary", "action_label": "idle, yawn", "is_loop": true, "reviewed": true}
+{"clip": "Cat_StretchYawnIdle", "action_group": "stationary", "action_label": "idle, yawn", "is_loop": false, "reviewed": true}
 {"clip": "Cat_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Centipede_Attack1", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
 {"clip": "Centipede_Attack2", "action_group": "stationary", "action_label": "attack, charge", "is_loop": true, "reviewed": true}
@@ -172,7 +172,7 @@
 {"clip": "Centipede_Idle2", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Centipede_Idle3", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Centipede_Idle", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
-{"clip": "Centipede_Rearing", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "Centipede_Rearing", "action_group": "stationary", "action_label": "idle, rear, look", "is_loop": true, "reviewed": true}
 {"clip": "Centipede_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Centipede_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Chicken_EggLaying_slice1", "action_group": "transition", "action_label": "sitdown", "is_loop": false, "reviewed": true}
@@ -461,7 +461,7 @@
 {"clip": "Horse_Rearing2", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
 {"clip": "Horse_Rearing", "action_group": "stationary", "action_label": "idle, rear", "is_loop": false, "reviewed": true}
 {"clip": "Horse_Restless3", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true}
-{"clip": "Horse_Restless", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
+{"clip": "Horse_Restless", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
 {"clip": "Horse_RunJump", "action_group": "transition", "action_label": "jump, forward", "is_loop": false, "reviewed": true}
 {"clip": "Horse_RunLoop", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Horse_RunToStop", "action_group": "transition", "action_label": "stop", "is_loop": false, "reviewed": true}
@@ -919,7 +919,7 @@
 {"clip": "Turtle_Attack2", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}
 {"clip": "Turtle_Attack3", "action_group": "stationary", "action_label": "attack, roll, charge", "is_loop": false, "reviewed": true}
 {"clip": "Turtle_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
-{"clip": "Turtle_Hide", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
+{"clip": "Turtle_Hide", "action_group": "stationary", "action_label": "idle, shield", "is_loop": true, "reviewed": true}
 {"clip": "Turtle_Idle2", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Turtle_Idle", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
 {"clip": "Turtle_Onback", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
