@@ -864,7 +864,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
 def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch, tmp_path):
     dataset_dir = tmp_path / "dataset"
 
-    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None):
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None, transition_clips=frozenset()):
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
@@ -926,7 +926,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
 def test_create_data_samples_raises_preprocess_error_instead_of_exit(monkeypatch, tmp_path):
     dataset_dir = tmp_path / 'dataset'
 
-    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None):
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None, transition_clips=frozenset()):
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
@@ -1162,7 +1162,7 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
                      max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20,
                      skip_source_paths=None, frozen_translation_root_index=None,
                      frozen_promote_root_depth=None, locomotion_clips=frozenset(),
-                     loop_verdicts=None):
+                     loop_verdicts=None, transition_clips=frozenset()):
         captured['skip_source_paths'] = set(skip_source_paths or set())
         captured['frozen_translation_root_index'] = frozen_translation_root_index
         captured['frozen_promote_root_depth'] = frozen_promote_root_depth

@@ -1,10 +1,9 @@
 """Root XZ: what a clip keeps and what it loses.
 
-See docs/root_xz_motion_refactor.md. No clip's root XZ is zeroed. A LOCOMOTION
-clip whose cycle-window baseline ends somewhere other than where it started
-loses that travel and keeps the within-cycle surge and sway; everything else --
-a lunge, a death, a dodge, a swing -- keeps its root motion, bounded by a soft
-clamp that is the identity within 0.6 of the origin and asymptotic to 0.8.
+See docs/root_xz_motion_refactor.md. No clip's root XZ is zeroed. Locomotion
+clips retain their historical detrend behavior; transition clips additionally
+receive the same detrend and tighter extent bound when marked loop; stationary
+clips never receive either operation.
 """
 
 import json
@@ -267,16 +266,16 @@ def test_flattening_is_idempotent():
     assert second_drift <= ROOT_XZ_DRIFT_THRESHOLD
 
 
-# ── only a gait's travel is removed ────────────────────────────────────────
+# ── only clips admitted by the group/verdict policy are detrended ─────────
 
 def test_a_one_shot_action_keeps_its_displacement():
     """A death, a knockdown, a leap: the character ends up somewhere else and
     that IS the action.
 
-    No measurement separates these from a gait take -- both are one closed cycle
-    that ends displaced -- so the caller's action group decides. On the shipped
-    datasets a pure drift test would have flattened 393 death and knockdown
-    clips (Monkey_Die drifts 0.91, TNR_Archer_DeathA 0.82).
+    No measurement separates these from a gait take -- both can end displaced --
+    so the caller's action-group/loop policy decides. On the shipped datasets a
+    pure drift test would have flattened 393 death and knockdown clips
+    (Monkey_Die drifts 0.91, TNR_Archer_DeathA 0.82).
     """
     path = _travelling_path(40, distance=0.8)
     features, _loop, flattened, _anim = _extract(
@@ -330,10 +329,10 @@ def test_a_gait_that_was_authored_in_place_is_left_alone():
 
 
 def test_the_pipeline_reads_the_gate_from_the_action_labels_sidecar(tmp_path):
-    """And a dataset with no sidecar fails fast: preprocessing never flattens
-    on a guess, the sidecar is a prerequisite."""
+    """The locomotion extent bound still comes from the action-label sidecar."""
     from data_loaders.truebones.truebones_utils.dataset_pipeline import (
         load_locomotion_clip_names,
+        load_transition_clip_names,
     )
 
     rows = [
@@ -344,17 +343,149 @@ def test_the_pipeline_reads_the_gate_from_the_action_labels_sidecar(tmp_path):
         os.linesep.join(json.dumps(row) for row in rows), encoding='utf-8'
     )
     assert load_locomotion_clip_names(tmp_path) == {'Wolf_Walk'}
+    assert load_transition_clip_names(tmp_path) == {'Wolf_Die'}
     with pytest.raises(FileNotFoundError):
         load_locomotion_clip_names(tmp_path / 'nope')
 
 
-def test_the_validator_only_checks_locomotion_clips():
+def test_both_gate_sets_come_from_one_sidecar_read(tmp_path, monkeypatch):
+    """Two questions, one parse: the policy is asked for both sets together."""
+    from data_loaders.truebones.truebones_utils import dataset_pipeline
+
+    rows = [
+        {"clip": "Wolf_Walk", "action_group": "locomotion", "action_label": "walk"},
+        {"clip": "Wolf_Die", "action_group": "transition", "action_label": "die"},
+        {"clip": "Wolf_Idle", "action_group": "stationary", "action_label": "idle"},
+    ]
+    (tmp_path / 'action_labels.jsonl').write_text(
+        os.linesep.join(json.dumps(row) for row in rows), encoding='utf-8'
+    )
+
+    reads = []
+    real_load_action_labels = dataset_pipeline.load_action_labels
+
+    def counting_load_action_labels(dataset_dir):
+        reads.append(dataset_dir)
+        return real_load_action_labels(dataset_dir)
+
+    monkeypatch.setattr(dataset_pipeline, 'load_action_labels', counting_load_action_labels)
+    locomotion, transition = dataset_pipeline.load_root_xz_gate_clip_names(tmp_path)
+
+    assert locomotion == {'Wolf_Walk'}
+    assert transition == {'Wolf_Die'}
+    assert len(reads) == 1
+
+
+def test_pipeline_detrend_gate_preserves_groups_and_adds_transition_loops():
+    """Locomotion stays opt-in; only transition loops join it."""
+    from data_loaders.truebones.truebones_utils.dataset_pipeline import (
+        _encode_prepared_motion_file,
+    )
+
+    def encode(action, *, action_group, is_loop):
+        # An accelerate/decelerate path whose detrend residual remains above the
+        # 0.1 knee, so the test can observe the subsequent 0.2 extent policy.
+        t = np.linspace(0.0, np.pi, 61)
+        path = np.stack([1.0 - np.cos(t), np.zeros_like(t)], axis=-1)
+        anim = _straight_line_anim(len(path), path)
+        clip = f'MB_TigerDrago_{action}'
+        payload = _encode_prepared_motion_file(
+            {
+                'file_path': f'{action}.fbx',
+                'raw_anim': anim,
+                'names': ['Root', 'Child'],
+                'frame_time': 1.0 / 30.0,
+                'errors': {},
+                'translation_root_index': 0,
+                'new_anim': anim,
+                'export_anim': anim,
+                'root_translation_xz': None,
+            },
+            'MB_TigerDrago',
+            8,
+            anim.offsets,
+            Quaternions.id(2).qs[None],
+            1.0,
+            Quaternions.id(1).qs[0],
+            0,
+            frozenset({clip} if action_group == 'locomotion' else ()),
+            {clip: is_loop},
+            frozenset({clip} if action_group == 'transition' else ()),
+        )
+        assert not payload['motion_errors']
+        return payload['results'][0]
+
+    transition_loops = [
+        encode('RunJump', action_group='transition', is_loop=True),
+        encode('DogdeRightG', action_group='transition', is_loop=True),
+    ]
+    transition_one_shot = encode('JumpForward', action_group='transition', is_loop=False)
+    locomotion_one_shot = encode('RunRight', action_group='locomotion', is_loop=False)
+    stationary_loop = encode('AttackBiteL', action_group='stationary', is_loop=True)
+
+    assert all(result['root_xz_flattened'] is True for result in transition_loops)
+    assert locomotion_one_shot['root_xz_flattened'] is True
+    assert transition_one_shot['root_xz_flattened'] is False
+    assert stationary_loop['root_xz_flattened'] is False
+    assert all(result['flatten_root_travel'] is True for result in transition_loops)
+    assert all(_reach(result['motion']) < ROOT_XZ_LOCOMOTION_LIMIT for result in transition_loops)
+    assert locomotion_one_shot['flatten_root_travel'] is True
+    assert _reach(locomotion_one_shot['motion']) < ROOT_XZ_LOCOMOTION_LIMIT
+    assert stationary_loop['flatten_root_travel'] is False
+    assert _reach(stationary_loop['motion']) > ROOT_XZ_LOCOMOTION_LIMIT
+
+
+def test_validator_uses_the_same_group_and_loop_detrend_gate():
     import inspect
 
     from utils import validate_anytop_dataset
 
     source = inspect.getsource(validate_anytop_dataset.validate_motion_files)
-    assert 'if motion_path.name in locomotion_clips:' in source
+    assert 'is_locomotion = motion_path.stem in locomotion_clips' in source
+    assert 'motion_path.stem in transition_clips' in source
+    assert 'uses_locomotion_root_xz_policy = is_locomotion or is_transition_loop' in source
+
+
+def test_validator_reads_the_sidecar_only_for_the_gate_it_was_not_given(tmp_path, monkeypatch):
+    """One parse serves whichever gate the caller left out; none if neither.
+
+    Both gates are answers the same hand-maintained file gives. Supplying both
+    is a full override and touches no file at all. Deriving the omitted one here
+    cannot be the first thing to notice the sidecar is missing: the
+    motion_metadata join this function already performs requires it.
+    """
+    from data_loaders.truebones.truebones_utils import dataset_pipeline
+    from utils import validate_anytop_dataset
+
+    rows = [
+        {"clip": "Wolf_Walk", "action_group": "locomotion", "action_label": "walk"},
+        {"clip": "Wolf_Die", "action_group": "transition", "action_label": "die"},
+    ]
+    (tmp_path / 'action_labels.jsonl').write_text(
+        os.linesep.join(json.dumps(row) for row in rows), encoding='utf-8'
+    )
+
+    reads = []
+    real_load_action_labels = dataset_pipeline.load_action_labels
+
+    def counting_load_action_labels(dataset_dir):
+        reads.append(dataset_dir)
+        return real_load_action_labels(dataset_dir)
+
+    monkeypatch.setattr(dataset_pipeline, 'load_action_labels', counting_load_action_labels)
+
+    def run(**gates):
+        # An empty motions dir ends the call at its own first check; the gate
+        # guard runs before that, so any sidecar read happens either way.
+        validate_anytop_dataset.validate_motion_files(
+            tmp_path / 'motions', tmp_path / 'bvhs', {}, 1, 0.1, **gates
+        )
+
+    run(locomotion_clips={'Wolf_Walk'}, transition_clips={'Wolf_Die'})
+    assert reads == []
+
+    run(locomotion_clips={'Wolf_Walk'})
+    assert reads == [tmp_path]
 
 
 # ── a curve is travel too, and the heading follows it ─────────────────────
@@ -1100,11 +1231,11 @@ def test_the_locomotion_bound_leaves_a_small_gait_bit_for_bit_alone():
 
 
 def test_the_locomotion_bound_applies_even_when_nothing_was_flattened():
-    """The bound is a property of BEING locomotion, not of having travelled.
+    """The bound is a property of BEING selected, not of having travelled.
 
     An in-place gait authored with a wide excursion never trips the drift gate,
     so no detrend runs -- and it is still held to the group's limit, which is
-    what lets the validator state one extent invariant for every locomotion clip.
+    what lets the validator state one extent invariant for every selected clip.
     """
     n_frames = 40
     path = _closed_excursion(n_frames, 0.30)
@@ -1237,7 +1368,7 @@ def test_validator_accepts_a_locomotion_clip_the_scale_bounded(capsys):
 
 
 def test_validator_checks_the_ceiling_on_every_clip_not_just_gaits(capsys):
-    """The drift check is gated on the locomotion label; this one is not.
+    """The drift check is gated by group/verdict policy; this one is not.
 
     A death that ends face down is allowed to drift and is still not allowed to
     reach past the ceiling, because nothing preprocessing produces ever does.
@@ -1248,5 +1379,5 @@ def test_validator_checks_the_ceiling_on_every_clip_not_just_gaits(capsys):
 
     source = inspect.getsource(validate_anytop_dataset.validate_motion_files)
     ceiling_at = source.index('_validate_root_xz_ceiling(')
-    gate_at = source.index('if motion_path.name in locomotion_clips:')
+    gate_at = source.index('if uses_locomotion_root_xz_policy:')
     assert ceiling_at < gate_at

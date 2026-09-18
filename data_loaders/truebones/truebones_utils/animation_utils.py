@@ -81,9 +81,10 @@ ROOT_XZ_SOFT_CLAMP_KNEE = 0.6
 ROOT_XZ_SOFT_CLAMP_LIMIT = 0.8
 
 # Locomotion's own extent bound, tighter than the soft clamp above and applied to
-# EVERY locomotion clip, not only the ones that travelled -- that is what makes it
-# an invariant of the group rather than of whether a clip happened to move. The
-# knee sits inside a normal gait's range (post-detrend extent runs p50 0.013,
+# EVERY clip the root-XZ policy selects -- all locomotion plus transition clips
+# whose is_loop is true -- not only the ones that travelled. That is what makes it
+# an invariant of the selected set rather than of whether a clip happened to move.
+# The knee sits inside a normal gait's range (post-detrend extent runs p50 0.013,
 # p90 0.110, p95 0.159), so unlike the 0.6 ceiling it is touched routinely and must
 # leave the cycle's shape alone: it scales the whole clip by ONE factor, not each
 # frame's radius (see ``scale_root_xz_extent``).
@@ -1172,10 +1173,11 @@ def scale_root_xz_extent(traj, knee=ROOT_XZ_LOCOMOTION_KNEE,
                          limit=ROOT_XZ_LOCOMOTION_LIMIT):
     """Return a ``(T, 2)`` root XZ path scaled by ONE factor into ``[0, limit)``.
 
-    The bound every locomotion clip is held to, applied after the detrend. It
-    reuses the hyperbola of ``soft_clamp_extent`` -- identity below the knee, a
-    strict asymptote at the limit, order-preserving in between -- but evaluates it
-    once on the clip's own extent and scales the whole path by that ratio.
+    The bound every selected clip is held to -- all locomotion, plus transition
+    clips marked loop -- applied after the detrend. It reuses the hyperbola of
+    ``soft_clamp_extent`` -- identity below the knee, a strict asymptote at the
+    limit, order-preserving in between -- but evaluates it once on the clip's own
+    extent and scales the whole path by that ratio.
 
     The single factor is the deliberate difference from ``soft_clamp_root_xz``.
     What a detrend leaves behind IS the gait cycle, spread over the whole clip, so

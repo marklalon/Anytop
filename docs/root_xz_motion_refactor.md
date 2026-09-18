@@ -1,7 +1,8 @@
 # root XZ 运动处理规则
 
-预处理保留小范围的原地 root XZ 运动（模型学会"脚在动、root 微移"），把真正走出去的步态
-拉回原地，并给所有位移封顶；生成期一视同仁地积分重建 root motion。
+预处理保留小范围的原地 root XZ 运动（模型学会"脚在动、root 微移"），保持 locomotion
+原有的去趋势和 extent 限制，并让标记为 loop 的 transition 动作执行同一套处理；
+stationary 不进入这套处理。所有位移仍会封顶，生成期一视同仁地积分重建 root motion。
 `CKPT_VERSION = 6`，v5 及更早的 checkpoint 会被明确拒绝。
 
 ---
@@ -27,12 +28,14 @@ tile 接缝天然连续。
 
 ### 2.1 漂移扁平化（朝向帧运输量）
 
-**判据：`locomotion 标签` AND `朝向帧净运输量 > 0.08`，缺一不可。**
+**判据：`(locomotion OR (transition AND is_loop))` AND `朝向帧净运输量 > 0.08`。**
 
-- **标签**（`load_locomotion_clip_names` 读 `action_labels.jsonl` 的 `action_group == 'locomotion'`）
-  只给"许可"：姿态闭合 + 结束时位移，单周期步态 take 和扑击在几何上无法区分，
-  纯测量判据在真实数据上不成立。数据集未标注时集合为空 ⇒ 一条都不改，并打印显式警告。
-- **测量**：作者本来就烘成原地的 locomotion 不少，对它们施加算子只会引入浮点噪声。
+- **分组/标签门控**来自 `action_labels.jsonl`：locomotion 全部保持历史行为；transition 仅在
+  人工复核的 `is_loop == true` 时进入；stationary 永不进入。这样
+  `MB_TigerDrago_RunJump`、`MB_TigerDrago_DogdeRightG` 等 transition loop 会去掉持续运输量，
+  同时不会误伤 stationary loop 或改变 non-loop locomotion 的既有行为。被选中的 transition
+  loop 也与 locomotion 一样应用 0.2 extent 限制。
+- **测量**：已经烘成原地的动作不少，对它们施加算子只会引入浮点噪声。
 
 阈值 `ROOT_XZ_DRIFT_THRESHOLD = 0.08`（≈ 5.8% body span）。drift 分布平滑无谷，
 这是政策选择而非数据分界。
@@ -103,19 +106,20 @@ tile 接缝天然连续。
 
 | 界限 | 范围 | 膝盖 / 天花板 | 算子 |
 |---|---|---|---|
-| **locomotion 界限** | 每一条 locomotion clip | 0.1 / 0.2 | `scale_root_xz_extent`（整段**统一缩放**） |
+| **locomotion 界限** | 每一条 locomotion clip，以及 `is_loop` 的 transition clip | 0.1 / 0.2 | `scale_root_xz_extent`（整段**统一缩放**） |
 | **全局天花板** | 每一条 clip | 0.6 / 0.8 | `soft_clamp_root_xz`（**逐帧**按半径） |
 
-**locomotion 界限**对**所有** locomotion clip 生效，而不只是真扁平化过的那些 ——
-这样"一条步态的 root XZ 不超过 0.2"才是这个组的**不变式**，而不是"碰巧走过路的才算"，
-校验器也就能直接从张量上读出来，不需要解码器和朝向。实测扁平化后的 locomotion extent
-分布 p50 0.013 / p90 0.110 / p95 0.159，所以约 90% 的 clip 落在膝盖以内、逐位不动。
+**locomotion 界限**对门控选中的**每一条** clip 生效（全部 locomotion，加上 `is_loop` 的
+transition），而不只是真扁平化过的那些 —— 这样"被选中的 clip root XZ 不超过 0.2"才是
+它们共同的不变式，而不是"碰巧走过路的才算"，校验器也就能直接从张量上读出来，不需要
+解码器和朝向。实测扁平化后的 locomotion extent 分布 p50 0.013 / p90 0.110 / p95 0.159，
+所以约 90% 的 clip 落在膝盖以内、逐位不动。
 
-它按**一个系数**缩整条轨迹，而不是逐帧压半径。去趋势之后剩下的东西**就是步态周期本身**，
-均匀铺在整条 clip 上，逐帧映射会把每一步的远端压得比近端狠，改变的是涌动的**形状**而不只是
-大小；而这个膝盖不同于 0.6 天花板，是会被**经常**触到的，形状被改就成了模型能学到的东西。
-统一缩放只改大小。`MB_Unka_GroundDodgeLeft` 去趋势后残差 0.210 → 缩到 0.152 ——
-只比 0.2 的界限高 5%，这正是它需要这道界限的原因。
+它按**一个系数**缩整条轨迹，而不是逐帧压半径。去趋势之后剩下的东西**就是这条 clip 的
+周期内运动**，均匀铺在整条 clip 上，逐帧映射会把远端的帧压得比近端狠，改变的是涌动的
+**形状**而不只是大小；而这个膝盖不同于 0.6 天花板，是会被**经常**触到的，形状被改就成了
+模型能学到的东西。统一缩放只改大小。`MB_Unka_GroundDodgeLeft` 去趋势后残差 0.210 →
+缩到 0.152 —— 只比 0.2 的界限高 5%，这正是它需要这道界限的原因。
 
 **全局天花板**兜住其余一切：表示层扛不住 `Oscafish_Atk` 冲出 4.79（3.4 个 body span）
 这类量级。locomotion clip 早已远在它以内，它实际处理的是 lunge、dodge、死亡滑行。
@@ -125,11 +129,12 @@ tile 接缝天然连续。
 抽特征（recovery、retarget、resample 的第二遍）会压第二次，所以两道都挂在
 `clamp_root_xz_extent` 这个 opt-in 之下，而不是无条件执行。
 
-在这个 opt-in 之内，两道的门并不相同：**locomotion 界限还额外要求 `flatten_root_travel`**，
-而全局天花板只要求 `clamp_root_xz_extent`。`flatten_root_travel` 就是"这条 clip 是不是
-locomotion"的判定（`dataset_pipeline.py` 用 `locomotion_clips` 算出来），所以是**两者合取**
-才给出那个组的不变式 —— 只开 `clamp_root_xz_extent` 不足以建立它。校验器那一侧读的是同一个
-`locomotion_clips`，两侧口径一致。
+在这个 opt-in 之内，两道的门并不相同：**locomotion 界限还额外要求
+`flatten_root_travel`**，而全局天花板只要求 `clamp_root_xz_extent`。
+`dataset_pipeline.py` 令 `flatten_root_travel` 取 `locomotion OR (transition AND is_loop)`，
+所以这一个门同时决定 detrend 和 0.2 extent 限制。**stationary 只是不进这两道，不是不受
+任何约束**：全局天花板仍然照常作用于它（见上表）。校验器使用相同门控检查残余 drift 和
+tighter extent。
 
 **0.6 以内完全不动，0.6 往上软压，0.8 是渐近的天花板**
 （`soft_clamp_extent` / `soft_clamp_root_xz`）：
@@ -283,8 +288,8 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
 
 | 检查 | 范围 | 判据 |
 |---|---|---|
-| `_validate_root_motion_drift` | 仅 locomotion clip | 用与管线**完全相同**的算术（解码器重建轨迹 + 同一朝向信号），扁平化后净运输量 ≤ `ROOT_XZ_DRIFT_THRESHOLD`。帧只由朝向的**净转角**决定，恢复动画的朝向常量偏移让首末两端同幅平移、精确抵消，所以管线与校验器选帧一致 |
-| `_validate_root_xz_ceiling`（对 locomotion 再调一次） | 仅 locomotion clip | root XZ extent ≤ `ROOT_XZ_LOCOMOTION_LIMIT` + `1e-3`。比 drift 检查更强也更便宜：不需要解码器、不需要朝向，直接读 extent |
+| `_validate_root_motion_drift` | locomotion clip + `is_loop` 的 transition clip | 用与管线**完全相同**的算术（解码器重建轨迹 + 同一朝向信号），扁平化后净运输量 ≤ `ROOT_XZ_DRIFT_THRESHOLD`。帧只由朝向的**净转角**决定，恢复动画的朝向常量偏移让首末两端同幅平移、精确抵消，所以管线与校验器选帧一致 |
+| `_validate_root_xz_ceiling`（对门控选中的 clip 再调一次） | locomotion clip + `is_loop` 的 transition clip | root XZ extent ≤ `ROOT_XZ_LOCOMOTION_LIMIT` + `1e-3`。比 drift 检查更强也更便宜：不需要解码器、不需要朝向，直接读 extent |
 | `_validate_root_xz_ceiling` | **每一条** clip | root XZ extent ≤ `ROOT_XZ_SOFT_CLAMP_LIMIT` + `1e-3`。超了说明 tensor 来自 clamp 之前 |
 | `_validate_root_transport_carrier` | 每一条 clip | 逐帧取非 root 关节 RIC 位移的最小值 = 刚性整体平移的下界；超过天花板 0.8 且 root 自己轨迹不到它的一半 ⇒ 报警（位移被写在了物种根看不见的关节上） |
 
@@ -304,7 +309,7 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
 |---|---|---|
 | `ROOT_XZ_DRIFT_THRESHOLD` | 0.08 | 扁平化门限（≈ 5.8% body span），= loop 闭合容差 |
 | `ROOT_XZ_LOCOMOTION_KNEE` | 0.1 | locomotion 统一缩放的不动区上限（≈ 扁平化后 extent 的 p90） |
-| `ROOT_XZ_LOCOMOTION_LIMIT` | 0.2 | locomotion 渐近界限；每一条 locomotion clip 都在此以内 |
+| `ROOT_XZ_LOCOMOTION_LIMIT` | 0.2 | locomotion 渐近界限；门控选中的每一条 clip（locomotion + `is_loop` 的 transition）都在此以内 |
 | `ROOT_XZ_SOFT_CLAMP_KNEE` | 0.6 | 全局软 clamp 不动区上限 |
 | `ROOT_XZ_SOFT_CLAMP_LIMIT` | 0.8 | 软 clamp 渐近天花板 |
 | `ROOT_TRANSPORT_CARRIER_SHARE` | 0.5 | carrier 须达本 clip 链上峰值的 50% |
@@ -321,7 +326,7 @@ metadata 里 `root_xz_flattened` 是纯人读的溯源字段，不进模型。
 | 文件 | 职责 |
 |---|---|
 | [animation_utils.py](../data_loaders/truebones/truebones_utils/animation_utils.py) | 全部 root XZ 算子：`flatten_root_xz_drift` / `_detrend_frame`、`scale_root_xz_extent`、`soft_clamp_*`、`select_transport_carrier`、`set_translation_root_xz`、`promote_translation_root_to_hierarchy_root` |
-| [dataset_pipeline.py](../data_loaders/truebones/truebones_utils/dataset_pipeline.py) | 两遍收敛、carrier 物种根、locomotion 门控、`root_promote_depth` 持久化 |
+| [dataset_pipeline.py](../data_loaders/truebones/truebones_utils/dataset_pipeline.py) | 两遍收敛、carrier 物种根、分组 + loop detrend / locomotion extent 双门控、`root_promote_depth` 持久化 |
 | [features.py](../data_loaders/truebones/truebones_utils/features.py) | `extract_motion_features_from_aligned_anims(flatten_root_travel=, clamp_root_xz_extent=)` |
 | [root_collapse.py](../motion_lib/root_collapse.py) | `promote_root_once`（旋转/offset/orient 复合） |
 | [validate_anytop_dataset.py](../utils/validate_anytop_dataset.py) | 三条不变量 |

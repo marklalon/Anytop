@@ -324,6 +324,7 @@ def _encode_prepared_motion_file(
     translation_root_index,
     locomotion_clips=frozenset(),
     loop_verdicts=None,
+    transition_clips=frozenset(),
 ):
     """Phase 2: encode a phase-1 payload with the frozen species root."""
     file_path = prepared['file_path']
@@ -334,18 +335,22 @@ def _encode_prepared_motion_file(
     file_results = []
     file_motion_errors = []
 
-    # Resolved here rather than after extraction: only a gait's root travel may
-    # be removed, and the clip name is what the action_labels sidecar is keyed on.
+    # Resolve the locomotion-style root-XZ policy before extraction. Locomotion
+    # always receives detrend + the tighter extent bound; transition receives
+    # both only with a true loop verdict; stationary receives neither. Both
+    # annotations live in the clip-keyed sidecar.
     _, _file_name = os.path.split(file_path)
     clip_action = normalize_action_name(object_type, _file_name.split('.')[0])
     clip_file_name = f'{object_type}_{clip_action}.npy'
     # The sidecar is keyed by the extension-less clip name.
     clip_key_name = clip_file_name[:-4]
-    flatten_root_travel = clip_key_name in locomotion_clips
+    is_locomotion = clip_key_name in locomotion_clips
+    is_transition = clip_key_name in transition_clips
     # The sidecar's is_loop annotation. A dataset build always has one here
     # (_require_loop_verdicts refuses to start otherwise); None is the
     # prefill tool's own call, which asks the detector for a proposal.
     loop_verdict = (loop_verdicts or {}).get(clip_key_name)
+    flatten_root_travel = is_locomotion or (is_transition and bool(loop_verdict))
 
     try:
         detected_root = int(prepared['translation_root_index'])
@@ -434,21 +439,42 @@ def _attach_orientation_reference_metadata(
     object_cond['forward_base_joint_index'] = int(forward_base_joint_index) if forward_base_joint_index is not None else None
 
 
-def load_locomotion_clip_names(dataset_dir):
-    """Return the clip names the action_labels sidecar marks as locomotion.
+def load_root_xz_gate_clip_names(dataset_dir):
+    """``(locomotion, transition)`` clip names, from ONE sidecar read.
+
+    The root-XZ policy asks the hand-maintained action_labels sidecar two
+    questions -- which clips are gaits, and which are transitions -- and both
+    callers that need the policy (preprocessing, the validator) need both
+    answers, so the file is parsed once here rather than once per question.
 
     Preprocessing has to know which clips are gaits before it writes their
-    features, and that answer is only in the hand-maintained sidecar. The
-    sidecar is a preprocessing prerequisite (verified up front in
-    _create_data_samples): it must exist and be valid before any clip is
-    encoded, so a missing file fails fast here instead of silently flattening
-    nothing.
+    features, and that answer is only in the sidecar. The sidecar is a
+    preprocessing prerequisite (verified up front in _create_data_samples): it
+    must exist and be valid before any clip is encoded, so a missing file fails
+    fast here instead of silently detrending nothing.
     """
     labels = load_action_labels(dataset_dir)
-    return frozenset(
-        clip for clip, row in labels.items()
-        if str(row.get('action_group') or '') == 'locomotion'
-    )
+    locomotion = set()
+    transition = set()
+    for clip, row in labels.items():
+        action_group = str(row.get('action_group') or '')
+        if action_group == 'locomotion':
+            locomotion.add(clip)
+        elif action_group == 'transition':
+            transition.add(clip)
+    return frozenset(locomotion), frozenset(transition)
+
+
+def load_locomotion_clip_names(dataset_dir):
+    """Return the clip names the action_labels sidecar marks as locomotion."""
+    locomotion, _transition = load_root_xz_gate_clip_names(dataset_dir)
+    return locomotion
+
+
+def load_transition_clip_names(dataset_dir):
+    """Return clip names whose action group is ``transition``."""
+    _locomotion, transition = load_root_xz_gate_clip_names(dataset_dir)
+    return transition
 
 
 def load_loop_verdicts(dataset_dir):
@@ -567,7 +593,7 @@ def _build_motion_metadata_entry(result, motion_file_name):
     # Bookkeeping for humans and for dataset triage: True if this pipeline
     # removed the clip's sustained root XZ travel. It is NOT fed to the model --
     # nothing is fabricated any more, so there is no fabricated value to warn
-    # about, and the flag would only restate what the action already implies.
+    # about, and the flag would only restate preprocessing's detrend decision.
     motion_labels['root_xz_flattened'] = bool(result.get('root_xz_flattened', False))
 
     source_fbx_path = result.get('source_fbx_path')
@@ -719,7 +745,7 @@ already produced clips on disk. Matching files are dropped from this run so only
 added source files are (re)processed. The rest-pose reference carrier is still selected
 from the full file list, so the per-object cond stays stable regardless of which clips
 are new. Returns None when no source files remain to process (object fully up to date)."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, crop_enabled=True, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None):
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, crop_enabled=True, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None, transition_clips=frozenset()):
     object_cond = dict()
     if fbxs_dir is None:
         fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
@@ -948,6 +974,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             translation_root_index,
             locomotion_clips,
             loop_verdicts,
+            transition_clips,
         ))
         # Drop raw/aligned phase-1 data as soon as its encoded result exists.
         prepared_motion_files[prepared_index] = None
@@ -1166,7 +1193,7 @@ def _resolve_preprocessing_workers(objects, object_workers=8):
     return min(object_count, max(1, int(object_workers)))
 
 
-def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None):
+def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None, transition_clips=frozenset()):
     # ── Install a local warning collector inside the worker process ──────
     # The parent's _WarnCollector monkey-patches do NOT propagate into
     # ProcessPoolExecutor children.  Capture _warn() / degenerate-facing
@@ -1193,6 +1220,7 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, fi
             frozen_promote_root_depth=frozen_promote_root_depth,
             locomotion_clips=locomotion_clips,
             loop_verdicts=loop_verdicts,
+            transition_clips=transition_clips,
         )
         if payload is not None:
             payload['_warn_messages'] = _warn_messages
@@ -1205,6 +1233,7 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, fi
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes rest-pose/tpos-compatible conditioning, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
 def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, existing_clip_sources=None, crop_enabled=True):
+    locomotion_clips, transition_clips = load_root_xz_gate_clip_names(save_dir)
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
@@ -1214,8 +1243,9 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         max_files=max_files,
         raw_data_dir=raw_data_dir,
         crop_enabled=crop_enabled,
-        locomotion_clips=load_locomotion_clip_names(save_dir),
+        locomotion_clips=locomotion_clips,
         loop_verdicts=load_loop_verdicts(save_dir),
+        transition_clips=transition_clips,
     )
     if object_payload is None:
         return files_counter, frames_counter, max_joints, None, {}, None
@@ -1302,10 +1332,10 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
                 per_object_frozen_roots[object_type] = frozen_root
                 per_object_promote_depth[object_type] = promote_depth
 
-    # Only a gait's root travel may be removed, and which clips are gaits is
-    # the hand-maintained action_labels sidecar's answer, not something the
-    # geometry can tell us (see extract_motion_features_from_aligned_anims).
-    locomotion_clips = load_locomotion_clip_names(target_dataset_dir)
+    # Locomotion keeps its original detrend + tighter extent behavior. Transition
+    # clips receive the same complete policy only when their hand-reviewed
+    # verdict is loop; stationary clips never enter that path.
+    locomotion_clips, transition_clips = load_root_xz_gate_clip_names(target_dataset_dir)
     # The loop verdict is the sidecar's answer too, and a prerequisite like
     # the labels: proposed ahead of this run by tools/prefill_loop_flags.py,
     # verified by hand, read here and never written back. Every clip about to
@@ -1337,6 +1367,7 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
                 frozen_promote_root_depth=per_object_promote_depth.get(object_type),
                 locomotion_clips=locomotion_clips,
                 loop_verdicts=loop_verdicts,
+                transition_clips=transition_clips,
             )
     else:
         with ProcessPoolExecutor(
@@ -1357,6 +1388,7 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
                     per_object_promote_depth.get(object_type),
                     locomotion_clips,
                     loop_verdicts,
+                    transition_clips,
                 ): idx
                 for idx, object_type in enumerate(objects)
             }

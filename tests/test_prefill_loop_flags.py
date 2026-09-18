@@ -116,7 +116,8 @@ def _fake_prepare(clips_by_object, calls):
     def fake(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None,
              max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20,
              skip_source_paths=None, frozen_translation_root_index=None,
-             frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None):
+             frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None,
+             transition_clips=frozenset()):
         calls.append({
             "object_type": object_type,
             "skip_source_paths": set(skip_source_paths or ()),

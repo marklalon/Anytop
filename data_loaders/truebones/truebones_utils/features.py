@@ -672,9 +672,10 @@ def extract_motion_features_from_aligned_anims(
     source_global_positions = positions_global(new_anim)
 
     # The root XZ trajectory is decided here in two steps and applied once, so
-    # the skeleton is put through FK a single time: remove a gait's travel, then
-    # bound whatever excursion is left. Both steps are opt-in and either can be
-    # a no-op; the anims are only rebuilt if the target ended up different.
+    # the skeleton is put through FK a single time: remove the travel the policy
+    # selects, then bound whatever excursion is left. Both steps are opt-in and
+    # either can be a no-op; the anims are only rebuilt if the target ended up
+    # different.
     source_root_xz = np.asarray(
         source_global_positions[:, feature_translation_root_index][:, [0, 2]],
         dtype=np.float64,
@@ -683,15 +684,17 @@ def extract_motion_features_from_aligned_anims(
 
     # Step one takes two conditions, and both are needed.
     #
-    # ``flatten_root_travel`` is the caller's verdict that this clip is a gait --
-    # in practice its action group. No measurement can stand in for it: a gait
-    # take and a lunging attack are both one closed cycle that ends displaced,
-    # and on the shipped datasets a pure drift test would have flattened 393
-    # death and knockdown clips (Monkey_Die drifts 0.91, TNR_Archer_DeathA 0.82)
-    # whose displacement IS the action.
+    # ``flatten_root_travel`` is the caller's policy decision that this clip
+    # takes the locomotion root-XZ policy: remove its travel, then bound what
+    # the detrend leaves behind. A dataset build enables it for every locomotion
+    # clip (the historical behavior) and also for transition clips whose
+    # hand-reviewed ``is_loop`` annotation is true; stationary clips never enter
+    # either path. That extra transition branch is needed for clips such as
+    # MB_TigerDrago_RunJump, whose authored transport has to come off for the
+    # loop seam to close.
     #
-    # The measurement then says whether this particular gait take actually
-    # travels, so a clip already authored in place is left untouched rather than
+    # The measurement then says whether this particular clip actually travels,
+    # so a clip already authored in place is left untouched rather than
     # passed through an operator that would only add float noise. It is the only
     # thing the flatten is gated on: what the detrend leaves behind is BOUNDED
     # below, not exempted here.
@@ -717,11 +720,12 @@ def extract_motion_features_from_aligned_anims(
         # second pass) would compress the excursion a second time. Only a fresh
         # pass over source animation asks for it.
         if flatten_root_travel:
-            # Locomotion's own bound, on EVERY locomotion clip and not only the
-            # ones that travelled, so the group's limit holds by construction and
-            # the validator can read it straight off the tensor. One factor for the
-            # whole clip: what a detrend leaves behind IS the gait cycle, and a
-            # per-frame map would reshape the surge instead of only sizing it.
+            # The locomotion bound applies to EVERY clip the gate above admits,
+            # not only the ones where the drift measurement actually triggered,
+            # so the group's limit holds by construction and the validator can
+            # read it straight off the tensor. One factor for the whole clip: a
+            # per-frame map would reshape the remaining motion instead of only
+            # sizing it.
             target_root_xz = scale_root_xz_extent(target_root_xz)
         # The dataset-wide ceiling, on every clip. A lunge, a death slide or an
         # attack reaches this one; a locomotion clip is already far inside it.
