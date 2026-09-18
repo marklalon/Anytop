@@ -1,12 +1,18 @@
 @echo off
+REM setlocal scopes the environment vcvars64 builds (PATH/INCLUDE/LIB) to this
+REM script. Without it every chained call through train_all.bat appends another
+REM ~1.5 KB to PATH, and the third one overflows cmd.exe's 8191-character
+REM variable limit ("input line too long / syntax is incorrect").
+setlocal
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
 set RUN_NAME=merged_stationary_v20
 set TORCH_LOGS=recompiles,graph_breaks
 
-REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize
-REM the VS 2022 x64 dev env pinned to 14.41.
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" -vcvars_ver=14.41
+REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize the
+REM VS 2022 x64 dev env pinned to 14.41, unless an x64 VS dev env is already
+REM active (re-initializing it only lengthens PATH and can abort the script).
+if /i not "%VSCMD_ARG_TGT_ARCH%"=="x64" call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" -vcvars_ver=14.41
 
 pushd "%SCRIPT_DIR%"
 
