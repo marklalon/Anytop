@@ -177,10 +177,10 @@
 {"clip": "KI_Archer_Walk01Right", "action_group": "locomotion", "action_label": "walk, right, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_CasterMage_Attack01", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "KI_CasterMage_Attack02", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Attack03", "action_group": "stationary", "action_label": "attack, cast", "is_loop": false, "reviewed": true}
+{"clip": "KI_CasterMage_Attack03", "action_group": "stationary", "action_label": "attack, crouch, cast", "is_loop": false, "reviewed": true}
 {"clip": "KI_CasterMage_Attack04Support01", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "KI_CasterMage_Attack04Support02", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
-{"clip": "KI_CasterMage_Attack05A", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
+{"clip": "KI_CasterMage_Attack05A", "action_group": "stationary", "action_label": "attack, crouch, cast", "is_loop": true, "reviewed": true}
 {"clip": "KI_CasterMage_Attack06", "action_group": "stationary", "action_label": "attack, hover, cast", "is_loop": true, "reviewed": true}
 {"clip": "KI_CasterMage_Block01Hit", "action_group": "stationary", "action_label": "hurt, block", "is_loop": true, "reviewed": true}
 {"clip": "KI_CasterMage_Block01", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
@@ -224,8 +224,8 @@
 {"clip": "KI_Human_Exclamation03", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Fall01", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_FallOnGround01A", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
-{"clip": "KI_Human_HandWave01", "action_group": "stationary", "action_label": "idle, wave", "is_loop": true, "reviewed": true}
-{"clip": "KI_Human_HandWave02", "action_group": "stationary", "action_label": "idle, wave", "is_loop": true, "reviewed": true}
+{"clip": "KI_Human_HandWave01", "action_group": "stationary", "action_label": "idle, right, wave", "is_loop": true, "reviewed": true}
+{"clip": "KI_Human_HandWave02", "action_group": "stationary", "action_label": "idle, left, wave", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Horror01A", "action_group": "stationary", "action_label": "idle, cry", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Idle01", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Idle02", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
@@ -451,7 +451,7 @@
 {"clip": "KI_Villager_Run01", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_SackIdle01", "action_group": "stationary", "action_label": "idle, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_SackPlantingSeeds01", "action_group": "stationary", "action_label": "work, hand1", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_SackPlantingSeeds02", "action_group": "stationary", "action_label": "putdown", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_SackPlantingSeeds02", "action_group": "stationary", "action_label": "putdown, crouch", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_SackRun01", "action_group": "locomotion", "action_label": "run, forward, carry, hand1", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_SackWalk01", "action_group": "locomotion", "action_label": "walk, forward, carry, hand1", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Sawing01", "action_group": "stationary", "action_label": "work, saw, hand2", "is_loop": true, "reviewed": true}
@@ -504,7 +504,7 @@
 {"clip": "KI_Warrior_Walk01ForwardRight2HLong", "action_group": "locomotion", "action_label": "walk, forward, right, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Walk01Left2HLong", "action_group": "locomotion", "action_label": "walk, left, hand2", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Walk01Right2HLong", "action_group": "locomotion", "action_label": "walk, right, hand2", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_CastSpell02", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_CastSpell02", "action_group": "stationary", "action_label": "attack, jump, cast", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_CastSpell", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_ChopTree", "action_group": "stationary", "action_label": "attack, slash, hand1", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Clapping", "action_group": "stationary", "action_label": "idle, clap", "is_loop": true, "reviewed": true}
@@ -649,7 +649,7 @@
 {"clip": "LH_Hero_Victory", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_WalkBackward", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_WaveHand", "action_group": "stationary", "action_label": "idle, wave", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_WaveHand", "action_group": "stationary", "action_label": "idle, right, wave", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Angry", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_AttackBiteL", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_AttackBiteR", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
@@ -709,7 +709,7 @@
 {"clip": "MB_TigerDrago_IdleSmell", "action_group": "stationary", "action_label": "idle, sniff", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_IdleYaw", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_JumpForward", "action_group": "transition", "action_label": "jump, forward", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_JumpForward", "action_group": "transition", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_JumpUp", "action_group": "transition", "action_label": "jump", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_No", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_PetVR", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
@@ -718,7 +718,7 @@
 {"clip": "MB_TigerDrago_RunRight", "action_group": "locomotion", "action_label": "run, turn, right", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Sad", "action_group": "stationary", "action_label": "idle, cry", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_Scared", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
+{"clip": "MB_TigerDrago_Scared", "action_group": "stationary", "action_label": "idle, taunt, crouch", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_SleepEnter", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_SleepExit", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_Sleep", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
@@ -737,7 +737,7 @@
 {"clip": "MB_TigerDrago_SwimUnderWaterIdle", "action_group": "locomotion", "action_label": "swim", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_SwimUnderWaterVertical", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_TDFire", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
+{"clip": "MB_TigerDrago_TDFire", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Talk", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_TrotLeft", "action_group": "locomotion", "action_label": "walk, turn, left, trot", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_TrotRight", "action_group": "locomotion", "action_label": "walk, turn, right, trot", "is_loop": false, "reviewed": true}
@@ -915,7 +915,7 @@
 {"clip": "MLS_Druid_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Druid_Victory", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Druid_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "MLS_Dryad_Attack01", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
+{"clip": "MLS_Dryad_Attack01", "action_group": "stationary", "action_label": "attack, slash", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Dryad_Attack02", "action_group": "stationary", "action_label": "attack, stab", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Dryad_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "MLS_Dryad_GetHit", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
@@ -1558,7 +1558,7 @@
 {"clip": "MU06_Icicle_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Icicle_SpinAttack", "action_group": "stationary", "action_label": "attack, spin", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Icicle_StabAttack", "action_group": "stationary", "action_label": "attack, stab", "is_loop": true, "reviewed": true}
-{"clip": "MU06_Icicle_StabGroundAttack", "action_group": "stationary", "action_label": "attack, stab", "is_loop": true, "reviewed": true}
+{"clip": "MU06_Icicle_StabGroundAttack", "action_group": "stationary", "action_label": "attack, smash", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Icicle_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Icicle_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Icicle_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
@@ -1715,7 +1715,7 @@
 {"clip": "PC_PolygonalTreant_WalkBackward", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalTreant_WalkForward", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_BiteAttack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
-{"clip": "PC_PolygonalWolf_BreathAttack", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
+{"clip": "PC_PolygonalWolf_BreathAttack", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "PC_PolygonalWolf_Eating", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_Howl", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
