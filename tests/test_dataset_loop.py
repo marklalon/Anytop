@@ -821,6 +821,47 @@ def test_motion_speed_sampler_rejects_bad_settings() -> None:
             raise AssertionError(f"ratio={ratio} prob={prob} should be rejected")
 
 
+class _TileOpt:
+    def __init__(self, single_prob):
+        self.loop_tile_single_prob = single_prob
+
+
+def _tile_sampler(single_prob):
+    sampler = dataset_module.MotionDataset.__new__(dataset_module.MotionDataset)
+    sampler.opt = _TileOpt(single_prob)
+    return sampler
+
+
+def test_loop_tile_sampler_floor_lifts_single_cycle_and_zero_is_uniform() -> None:
+    rng = random.Random(3)
+    draws = 30000
+    with patch.object(dataset_module.random, 'random', rng.random),             patch.object(dataset_module.random, 'randint', rng.randint):
+        # 20-frame loop in a 120-frame budget: 6 tile counts. 0.0 is the
+        # plain uniform draw, one cycle 1 time in 6.
+        counts = [0] * 7
+        for _ in range(draws):
+            counts[_tile_sampler(0.0)._sample_loop_tile_count(20, BUDGET_FRAMES)] += 1
+        assert counts[0] == 0
+        for k in range(1, 7):
+            assert abs(counts[k] / draws - 1 / 6) < 0.01, counts
+        # A 0.5 floor: one cycle half the time, the rest still uniform over 2..6.
+        counts = [0] * 7
+        for _ in range(draws):
+            counts[_tile_sampler(0.5)._sample_loop_tile_count(20, BUDGET_FRAMES)] += 1
+        assert abs(counts[1] / draws - 0.5) < 0.01, counts
+        for k in range(2, 7):
+            assert abs(counts[k] / draws - 0.1) < 0.01, counts
+        # A floor below the uniform share changes nothing: it is a floor.
+        counts = [0] * 3
+        for _ in range(draws):
+            counts[_tile_sampler(0.2)._sample_loop_tile_count(60, BUDGET_FRAMES)] += 1
+        assert abs(counts[1] / draws - 0.5) < 0.01, counts
+    # No draw at all when the clip cannot tile.
+    with patch.object(dataset_module.random, 'random', side_effect=AssertionError("must not draw")),             patch.object(dataset_module.random, 'randint', side_effect=AssertionError("must not draw")):
+        assert _tile_sampler(0.5)._sample_loop_tile_count(BUDGET_FRAMES + 1, BUDGET_FRAMES) == 1
+        assert _tile_sampler(0.5)._sample_loop_tile_count(61, BUDGET_FRAMES) == 1
+
+
 def main() -> None:
     test_loop_padding_updates_effective_length()
     print("loop padding regression: ok")

@@ -690,8 +690,17 @@ class AnyTop(nn.Module):
         least one frame at the start or end unmasked so seam detection never
         triggers on a clip-span boundary.  ``temporal_span_mask_max_frames``
         is therefore capped at ``min(config_max, nframes - 1)`` at runtime.
-        Every real joint in the sample shares the same contiguous masked frame
-        interval, while padded joints stay False throughout.
+        Every real joint in the sample shares the same masked frames, while
+        padded joints stay False throughout.
+
+        A k-tiled loop window (``y['loop_tile_count']``, from the loader's
+        ``_tile_loop_motion``) is k copies of one cycle, so one span drawn
+        anywhere in it has a clean twin one period away and the model could
+        fill it by copying. For those samples the span is drawn within one
+        period and repeated at every period -- the same phase is re-drawn in
+        every copy -- and capped at ``period - 1`` so each cycle keeps an
+        unmasked frame. An untiled window has ``period == nframes`` and gets
+        the single contiguous span as before.
         """
         if (not self.training) or self.temporal_span_mask_prob <= 0.0:
             return None
@@ -719,17 +728,40 @@ class AnyTop(nn.Module):
         valid_joints = n_joints_t.clamp(min=0, max=njoints)                       # [B]
         active = (torch.rand(batch_size, device=device) < self.temporal_span_mask_prob) \
             & (valid_joints > 0)                                                  # [B]
-        # randint(min_span, max_span + 1) per sample
-        span_length = torch.randint(min_span, max_span + 1, (batch_size,), device=device)  # [B]
-        start_hi = (nframes - span_length).clamp(min=0)                           # [B]
-        # randint(0, start_hi + 1): scale [0,1) by (start_hi+1) then floor,
-        # clamping guards the rare rand()==~1.0 rounding to start_hi+1.
-        span_start = (torch.rand(batch_size, device=device) * (start_hi + 1).float()).long()
+        # Period of the window's content in frames: nframes / tile count. Float
+        # on purpose -- a tile count that does not divide nframes makes copies
+        # that are interpolated rather than bit-identical, and the mask must
+        # still land on the same phase of each one.
+        tile_count = y.get('loop_tile_count')
+        if tile_count is None:
+            period = torch.full((batch_size,), float(nframes), device=device)
+        else:
+            tile_count = torch.as_tensor(tile_count, device=device).reshape(-1)
+            period = float(nframes) / tile_count.clamp(min=1).to(torch.float32)  # [B]
+        # Per-sample span range: the configured one, capped so each period
+        # keeps at least one unmasked frame (period - 1, which for an untiled
+        # window is the nframes - 1 cap above).
+        span_hi = torch.minimum(
+            torch.full_like(period, float(max_span)), period.floor() - 1.0
+        ).clamp(min=1.0)                                                          # [B]
+        span_lo = torch.minimum(torch.full_like(period, float(min_span)), span_hi)  # [B]
+        # randint(lo, hi + 1) per sample: scale [0,1) by (hi-lo+1) then floor,
+        # clamping guards the rare rand()==~1.0 rounding past hi.
+        span_length = (
+            span_lo + torch.rand(batch_size, device=device) * (span_hi - span_lo + 1.0)
+        ).floor()
+        span_length = torch.minimum(span_length, span_hi)                         # [B]
+        # Start inside the first period, so every repeat lies inside its own.
+        start_hi = (period - span_length).clamp(min=0.0).floor()                  # [B]
+        span_start = (torch.rand(batch_size, device=device) * (start_hi + 1.0)).floor()
         span_start = torch.minimum(span_start, start_hi)                          # [B]
 
-        frame_idx = torch.arange(nframes, device=device)                         # [T]
-        frame_mask = (frame_idx[None, :] >= span_start[:, None]) & \
-            (frame_idx[None, :] < (span_start + span_length)[:, None])           # [B, T]
+        frame_idx = torch.arange(nframes, device=device, dtype=torch.float32)    # [T]
+        # Frame t is masked when its phase past the span start, taken modulo
+        # the period, falls inside the span. Frames before the start in the
+        # first period wrap to >= period - start >= span length: never masked.
+        phase = torch.remainder(frame_idx[None, :] - span_start[:, None], period[:, None])  # [B, T]
+        frame_mask = phase < span_length[:, None]                                # [B, T]
         joint_idx = torch.arange(njoints, device=device)                         # [J]
         joint_mask = joint_idx[None, :] < valid_joints[:, None]                   # [B, J]
 

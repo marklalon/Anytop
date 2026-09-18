@@ -288,6 +288,9 @@ Loop 不是单一布尔 token，而是模型、数据和损失共同组成的一
 
 真实 loop clip 会做随机 circular roll 和随机 tile，然后统一 resample 到内部窗口。tile count
 和 phase offset 只用于诊断，不直接喂给模型。
+k 份 tile 经周期重采样后是 k 份逐位相同的拷贝（周期 T/k 帧），是 loop 任务里容易的一侧；
+`--loop_tile_single_prob` 给单周期窗口（推理 `--loop` + 自动长度所在的 regime）的概率设一个下限，
+其余质量在 2..max 上仍均匀，默认 0.5；0 即原来的均匀抽签。
 
 真实 loop clip 总是以 `is_loop=True` 喂给模型；唯一的降级是超出源帧预算被裁剪的 clip（环被裁开，
 按非 loop 告知）。曾有的 `loop_cond_prob`（随机把 loop 标成非 loop）已删除：它没有 null 态，只是把
@@ -310,7 +313,8 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 严重局部损坏。两支都不早于 `t`。
 
 - subtree joint perturbation：随机选择预算内的非根子树；
-- temporal-span perturbation：随机选择连续帧，并覆盖该样本的全部真实关节；
+- temporal-span perturbation：随机选择连续帧，并覆盖该样本的全部真实关节；对 k 份 tile 的 loop 窗口，
+  同一相位的 span 在每一份拷贝里都重画（`y['loop_tile_count']`），否则被重加噪的段在一个周期之外有干净副本可抄；
 - 两者可以取并集；
 - supervision target 不变，被扰动单元仍参与 loss 和 attention；
 - `cross_limb_unreliable_mask` 把位置告知整个 trunk（`unreliable_embedding`）和 cross-limb

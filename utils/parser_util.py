@@ -249,6 +249,13 @@ def add_model_options(parser):
                        help="Per-sample probability of applying --motion_speed_aug (default 1.0 = every clip). "
                             "The recorded tempo is one point of the continuum, so leaving a mass at exactly "
                             "1.0 only keeps part of the length spike; lower this only to compare against it.")
+    group.add_argument("--loop_tile_single_prob", default=0.5, type=float,
+                       help="Floor on the probability that a loop training window holds ONE cycle "
+                            "(loop tile count 1); the rest of the mass stays uniform over 2..max tiles. "
+                            "0.0 is the plain uniform draw over 1..max, which for a 20-frame loop makes "
+                            "the single-cycle window -- the regime --loop with the auto length generates "
+                            "in -- 1 draw in 6, while every other draw is k bit-identical copies of the "
+                            "cycle. Loader-only, like --motion_speed_aug: no regen, no bump.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")

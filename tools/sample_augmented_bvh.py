@@ -39,6 +39,7 @@ Arguments
   --loop-only         Sample only motions marked as loop clips
   --motion-speed-aug  Motion-speed augmentation range R, log-uniform in [1/R, R] (default: 1.0 = off)
   --motion-speed-aug-prob  Per-clip probability of applying it (default: 1.0)
+  --loop-tile-single-prob  Floor on P(loop tile count == 1) (default: 0.5; 0.0 = uniform)
   --real-time         Export at resample_speed_cond * num-frames frames (real 30 fps tempo)
   --objects-subset    Subset name or single species name (default: "all")
   --action-group      Single action group to keep: locomotion | stationary | transition (default: "" = all)
@@ -160,6 +161,8 @@ def parse_args() -> argparse.Namespace:
                    help="Motion-speed augmentation range R (1.0 = off). Match --motion_speed_aug.")
     p.add_argument("--motion-speed-aug-prob", type=float, default=1.0,
                    help="Per-clip probability of applying the motion-speed augmentation. Match --motion_speed_aug_prob.")
+    p.add_argument("--loop-tile-single-prob", type=float, default=0.5,
+                   help="Floor on the probability that a loop window holds one cycle. Match --loop_tile_single_prob.")
     p.add_argument("--real-time", action="store_true",
                    help="Stretch the exported window back to resample_speed_cond * num-frames frames, as "
                         "sample/generate.py does with its output, so the BVH plays at the real 30 fps tempo. "
@@ -219,6 +222,7 @@ def main() -> int:
     # Augmentation settings
     opt.motion_speed_aug = args.motion_speed_aug
     opt.motion_speed_aug_prob = args.motion_speed_aug_prob
+    opt.loop_tile_single_prob = args.loop_tile_single_prob
     opt.motion_cache_size = 0  # no cache needed for sampling
 
     output_dir = Path(args.output_dir).resolve()

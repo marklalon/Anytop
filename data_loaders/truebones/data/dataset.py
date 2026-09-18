@@ -997,8 +997,18 @@ class MotionDataset(data.Dataset):
         tiled length stays within ``[length, max_source_length]``.
 
         Returns ``1`` (no tiling) when the single-cycle length already
-        exceeds the budget (``length > max_source_length``).  Otherwise
-        picks uniformly from ``{1, …, max_source_length // length}``.
+        exceeds the budget (``length > max_source_length``).  Otherwise the
+        single cycle is drawn with probability
+        ``max(opt.loop_tile_single_prob, 1 / max_tile_count)`` and the rest
+        of the mass is uniform over ``{2, …, max_tile_count}``; at 0.0 that
+        is the plain uniform draw over ``{1, …, max}``.
+
+        A k-tiled window is k bit-identical copies of one cycle (the periodic
+        window resample lands every copy on the same interpolation weights),
+        the easy side of the loop task: k views of every frame. The floor
+        keeps the single-cycle window -- what ``--loop`` with the auto length
+        asks for at inference -- from being the minority regime for short
+        clips (uniform gives a 20-frame loop one cycle 1 time in 6).
         """
         length = int(length)
         max_source_length = int(max_source_length)
@@ -1007,7 +1017,10 @@ class MotionDataset(data.Dataset):
         max_tile_count = max_source_length // length
         if max_tile_count <= 1:
             return 1
-        return int(random.randint(1, max_tile_count))
+        single_prob = float(getattr(self.opt, 'loop_tile_single_prob', 0.5))
+        if random.random() < max(single_prob, 1.0 / max_tile_count):
+            return 1
+        return int(random.randint(2, max_tile_count))
 
     def _sample_motion_speed_target_length(self, length, is_loop, max_source_length):
         """Pick the frame count a clip is time-scaled to before any other
@@ -1383,6 +1396,11 @@ class Truebones(data.Dataset):
 
         self.opt.motion_speed_aug = float(kwargs.get('motion_speed_aug', 1.0))
         self.opt.motion_speed_aug_prob = float(kwargs.get('motion_speed_aug_prob', 1.0))
+        self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
+        if not 0.0 <= self.opt.loop_tile_single_prob <= 1.0:
+            raise ValueError(
+                f"loop_tile_single_prob must be in [0, 1], got {self.opt.loop_tile_single_prob}."
+            )
         cond_dict = load_cond(opt.cond_file)
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
         # Support both predefined subsets and single species names. A species
