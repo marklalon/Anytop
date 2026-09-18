@@ -91,8 +91,8 @@ loop 样本的训练语义，放在同一次消融里会和 action 调制的效�
   `|geo(R[-1], R[0]) − ½·(geo(R[-2], R[-1]) + geo(R[0], R[1]))|`。量纲仍是弧度，`--lambda_loop_wrap 0.04`
   不用改。训练日志里不再有 `loop_wrap_pose`。
 - 第 3 项实际改了三处，缺一处周期都不均匀：
-  - 窗口重采样 `resample_motion_features(periodic=True)`，只用于 `loop_condition_active` 的窗口。被告知“非 loop”的
-    loop 片段仍按端点重采样；
+  - 窗口重采样 `resample_motion_features(periodic=True)`，只用于 `loop_condition_active` 的窗口（loop 片段被裁剪
+    降级为非 loop 时仍按端点重采样）；
   - loop 片段的速度增广 `time_scale_motion_features(periodic=True)`。否则平铺后窗口内部仍有不均匀的接缝；
   - `_physical_velocity_step_scale` 按 `y['is_loop']` 取 `L/T`，非 loop 仍是 `(L-1)/(T-1)`。
 - 生成端同步。`--loop` 是“这个窗口是一个环”的声明，和 reference 本身是不是 loop 无关。窗口 ↔ 输出之间只有

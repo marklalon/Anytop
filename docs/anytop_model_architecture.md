@@ -289,9 +289,10 @@ Loop 不是单一布尔 token，而是模型、数据和损失共同组成的一
 真实 loop clip 会做随机 circular roll 和随机 tile，然后统一 resample 到内部窗口。tile count
 和 phase offset 只用于诊断，不直接喂给模型。
 
-`loop_cond_prob` 是“真实 loop 在训练时保留显式 loop 条件的概率”，不是循环强度。当它小于 1
-时，一部分 loop-shaped 样本仍执行 roll/tile，但对模型隐藏 `is_loop`，以训练无显式条件下识别
-循环结构的能力。
+真实 loop clip 总是以 `is_loop=True` 喂给模型；唯一的降级是超出源帧预算被裁剪的 clip（环被裁开，
+按非 loop 告知）。曾有的 `loop_cond_prob`（随机把 loop 标成非 loop）已删除：它没有 null 态，只是把
+同一段内容按两种标签训练，稀释 `is_loop=0` 的 one-shot 语义并砍掉 loop 分支 30% 的样本，推理端
+也没有任何消费者。
 
 ### 6.3 损失侧
 

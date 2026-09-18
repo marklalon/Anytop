@@ -16,7 +16,7 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 14
+CKPT_VERSION = 15
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -234,11 +234,6 @@ def add_model_options(parser):
                             "l_simple under-weights and which stretch most on novel skeletons) get proportionally "
                             "larger gradient. Anchoring on GT (not rest) preserves genuinely animated bone-length "
                             "deformation. Computed on denormalized outputs; recommended range ~0.1-0.3.")
-    group.add_argument("--loop_cond_prob", default=1.0, type=float,
-                       help="Probability that a loop training clip stays loop-conditioned "
-                            "(periodic resampling, circular phase, and loop-condition embedding)."
-                            " 0.0 = all loop clips treated as non-loop; 1.0 = always keep loop path."
-                            " Controls both the model loop-condition projection and dataset loop processing.")
     group.add_argument("--motion_speed_aug", default=1.0, type=float,
                        help="Motion-speed augmentation range R (1.0 = off). Each training clip is first "
                             "time-scaled by a log-uniform ratio in [1/R, R] -- played faster (fewer frames) "

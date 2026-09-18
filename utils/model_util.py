@@ -208,7 +208,6 @@ def get_gmdm_args(args):
             # object to the loader and to the model. Absent at inference: there
             # the checkpoint's own buffers are the word table.
             'action_conditioning': getattr(args, 'action_conditioning', None),
-            'loop_cond_prob': getattr(args, 'loop_cond_prob', 1.0),
             'root_input_feats': 12}
 
 def create_gaussian_diffusion(args):

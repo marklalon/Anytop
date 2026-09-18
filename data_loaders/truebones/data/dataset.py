@@ -1081,32 +1081,13 @@ class MotionDataset(data.Dataset):
         # same filename, and this value is what training logs report.
         motion_metadata['motion_name'] = name
         is_loop = bool(motion_metadata.get('is_loop'))
-        loop_cond_prob = float(getattr(self.opt, 'loop_cond_prob', 1.0))
-        if not 0.0 <= loop_cond_prob <= 1.0:
-            raise ValueError(f"loop_cond_prob must be in [0, 1], got {loop_cond_prob}.")
-        # loop_cond_prob: probability that a loop clip STAYS loop-conditioned.
-        # When the random draw succeeds, loop_uncond is False (loop path active).
-        # When it fails, loop_uncond is True — the motion is still physically a
-        # loop, but the model is *told* it is not (is_loop=False in metadata,
-        # no circular temporal mask).
-        #
-        # IMPORTANT: loop_uncond only controls the *label / conditioning*
-        # exposed to the model.  The data-level augmentations below (circular
-        # roll + tile for diverse phase coverage) apply to **all** is_loop
-        # motions regardless of loop_uncond.  This keeps training-data
-        # diversity high while the loop_uncond path trains the model to
-        # denoise loop-shaped data WITHOUT explicit loop priors.
-        loop_uncond = bool(
-            is_loop
-            and loop_offset is None
-            and loop_cond_prob < 1.0
-            and random.random() >= loop_cond_prob
-        )
 
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
         loop_phase_offset = 0
         loop_tile_count = 1
-        loop_condition_active = bool(is_loop) and not loop_uncond
+        # A loop clip is always told it is one (the window is closed below);
+        # the only downgrade is the over-long crop, which breaks the cycle.
+        loop_condition_active = bool(is_loop)
 
         # ── Closing-key drop (applies to ALL is_loop motions) ──
         # A loop authored with its last frame repeating frame 0 is the loop
@@ -1166,8 +1147,6 @@ class MotionDataset(data.Dataset):
             # to the target length below at resample_speed MAX_SOURCE_FRAMES_MULT --
             # while the window POSITION stays random so repeated epochs still
             # see the whole clip.
-            if loop_condition_active:
-                loop_uncond = True
             loop_condition_active = False
             ind = random.randint(0, m_length - max_source_length)
             motion = motion[ind: ind + max_source_length]
@@ -1222,7 +1201,6 @@ class MotionDataset(data.Dataset):
                 'loop_phase_offset': int(loop_phase_offset),
                 'loop_tile_count': int(loop_tile_count),
                 'resample_speed_cond': float(resample_speed_cond),
-                'loop_uncond': bool(loop_uncond),
                 'motion_speed_applied': float(motion_speed_applied),
             }
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
@@ -1403,7 +1381,6 @@ class Truebones(data.Dataset):
         self.opt.motion_cache_size = self.motion_cache_size
         self.opt.min_length = int(kwargs.get('min_length', getattr(self.opt, 'min_length', 20)))
 
-        self.opt.loop_cond_prob = kwargs.get('loop_cond_prob', 1.0)
         self.opt.motion_speed_aug = float(kwargs.get('motion_speed_aug', 1.0))
         self.opt.motion_speed_aug_prob = float(kwargs.get('motion_speed_aug_prob', 1.0))
         cond_dict = load_cond(opt.cond_file)

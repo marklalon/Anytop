@@ -99,7 +99,6 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"joint_name_drop_prob must be in [0, 1], got {self.joint_name_drop_prob}"
             )
-        self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
         # Action-label conditioning: a single pathway -- the frozen T5 vectors of
         # the label's WORDS, pooled into one channel per slot (head /
         # direction / modifier / hands) and concatenated. A channel reads its own slot
@@ -148,14 +147,13 @@ class AnyTop(nn.Module):
         # inpainting and temporal spans were invisible. Zero-init, so the
         # path starts as a no-op.
         self.unreliable_embedding = nn.Parameter(torch.zeros(self.latent_dim))
-        if self.loop_cond_prob > 0.0:
-            self.loop_condition_projection = nn.Sequential(
-                nn.Linear(1, self.latent_dim),
-                nn.GELU(),
-                nn.Linear(self.latent_dim, self.latent_dim),
-            )
-        else:
-            self.loop_condition_projection = None
+        # y['is_loop'] (0/1): whether the window is a closed cycle. Always on --
+        # the loader tells the model exactly what it did to the window.
+        self.loop_condition_projection = nn.Sequential(
+            nn.Linear(1, self.latent_dim),
+            nn.GELU(),
+            nn.Linear(self.latent_dim, self.latent_dim),
+        )
         self.resample_speed_projection = nn.Sequential(
             nn.Linear(1, self.latent_dim),
             nn.GELU(),
@@ -909,15 +907,14 @@ class AnyTop(nn.Module):
             self.resample_speed_projection, resample_speed_condition)
         timesteps_emb = timesteps_emb + self._build_canonical_frame_token(
             y, bs, x.device, x.dtype)
-        if self.loop_cond_prob > 0.0 and self.loop_condition_projection is not None:
-            loop_condition = self._coerce_loop_condition(
-                y.get('is_loop'),
-                batch_size=bs,
-                device=x.device,
-                dtype=x.dtype,
-            )
-            timesteps_emb = timesteps_emb + run_in_fp32(
-                self.loop_condition_projection, loop_condition)
+        loop_condition = self._coerce_loop_condition(
+            y.get('is_loop'),
+            batch_size=bs,
+            device=x.device,
+            dtype=x.dtype,
+        )
+        timesteps_emb = timesteps_emb + run_in_fp32(
+            self.loop_condition_projection, loop_condition)
         action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype)
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token
