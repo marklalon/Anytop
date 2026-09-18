@@ -1717,28 +1717,28 @@ def main():
               % (i, len(jobs), label, result["mode"], result["frames"],
                  result["src_frames"], result["bytes"] / 1024.0), flush=True)
 
-    if workers == 1:
-        for i, job in enumerate(jobs, 1):
-            _report(i, _run_job(job))
-    else:
-        context = multiprocessing.get_context("spawn")
-        restore_output = _filtered_worker_output()
-        try:
-            with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
-                futures = {pool.submit(_run_job, job): job for job in jobs}
-                for i, future in enumerate(as_completed(futures), 1):
-                    job = futures[future]
-                    try:
-                        result = future.result()
-                    except Exception as exc:      # noqa: BLE001
-                        result = {"dataset": job[0], "clip": job[1],
-                                  "species": job[2], "mode": job[5]["mode"],
-                                  "frames": 0, "src_frames": 0, "bytes": 0,
-                                  "error": "worker crashed: %s: %s"
-                                           % (type(exc).__name__, exc)}
-                    _report(i, result)
-        finally:
-            restore_output()
+    # Always isolate bpy in spawned children, even for a single job.  Blender
+    # can terminate the interpreter below Python's exception boundary; running
+    # _run_job in the parent would then make the command disappear without a
+    # [FAIL] line or summary instead of reporting a broken worker here.
+    context = multiprocessing.get_context("spawn")
+    restore_output = _filtered_worker_output()
+    try:
+        with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
+            futures = {pool.submit(_run_job, job): job for job in jobs}
+            for i, future in enumerate(as_completed(futures), 1):
+                job = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:      # noqa: BLE001
+                    result = {"dataset": job[0], "clip": job[1],
+                              "species": job[2], "mode": job[5]["mode"],
+                              "frames": 0, "src_frames": 0, "bytes": 0,
+                              "error": "worker crashed: %s: %s"
+                                       % (type(exc).__name__, exc)}
+                _report(i, result)
+    finally:
+        restore_output()
 
     print("\ndone: %d ok, %d failed, %d up to date, %d frames, %.1f MB in %.0fs"
           % (ok, fail, skipped, frames, written / 1048576.0, time.time() - started))
