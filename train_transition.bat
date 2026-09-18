@@ -35,7 +35,7 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
 	--batch_size 24 ^
-	--lr 1.2e-4 ^
+	--lr 1e-4 ^
 	--weight_decay 0.01 ^
 	--use_ema ^
 	--ema_rate 0.999 ^
