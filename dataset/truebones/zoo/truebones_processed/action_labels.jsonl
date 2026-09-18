@@ -318,7 +318,7 @@
 {"clip": "Dragon_WyvernFly3", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": false, "reviewed": true}
 {"clip": "Dragon_WyvernIdle2", "action_group": "locomotion", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Dragon_WyvernIdle3", "action_group": "locomotion", "action_label": "hover", "is_loop": false, "reviewed": true}
-{"clip": "Dragon_WyvernIdle", "action_group": "locomotion", "action_label": "hover, roar", "is_loop": true, "reviewed": true}
+{"clip": "Dragon_WyvernIdle", "action_group": "stationary", "action_label": "attack, hover, cast", "is_loop": false, "reviewed": true}
 {"clip": "Dragon_WyvernSlowFly1", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
 {"clip": "Dragon_WyvernSlowFly2", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
 {"clip": "Eagle_EggSteal", "action_group": "stationary", "action_label": "attack, hover, catch", "is_loop": true, "reviewed": true}
@@ -462,7 +462,7 @@
 {"clip": "Horse_Rearing", "action_group": "stationary", "action_label": "idle, rear", "is_loop": false, "reviewed": true}
 {"clip": "Horse_Restless3", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true}
 {"clip": "Horse_Restless", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
-{"clip": "Horse_RunJump", "action_group": "transition", "action_label": "jump, up", "is_loop": false, "reviewed": true}
+{"clip": "Horse_RunJump", "action_group": "transition", "action_label": "jump, forward", "is_loop": false, "reviewed": true}
 {"clip": "Horse_RunLoop", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Horse_RunToStop", "action_group": "transition", "action_label": "stop", "is_loop": false, "reviewed": true}
 {"clip": "Horse_SlowIdle", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
@@ -642,12 +642,12 @@
 {"clip": "PolarBear_Idle", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
 {"clip": "PolarBear_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "PolarBear_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "Pteranodon_Death2", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
-{"clip": "Pteranodon_Death", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
-{"clip": "Pteranodon_Flapergasted", "action_group": "stationary", "action_label": "hurt, hover", "is_loop": false, "reviewed": true}
+{"clip": "Pteranodon_Death2", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true, "pending_delete": true}
+{"clip": "Pteranodon_Death", "action_group": "transition", "action_label": "die, hover", "is_loop": false, "reviewed": true}
+{"clip": "Pteranodon_Flapergasted", "action_group": "stationary", "action_label": "hurt, hover", "is_loop": false, "reviewed": true, "pending_delete": true}
 {"clip": "Pteranodon_FlyLoop", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
-{"clip": "Pteranodon_Hit2", "action_group": "stationary", "action_label": "hurt, hover", "is_loop": false, "reviewed": true}
-{"clip": "Pteranodon_Hit", "action_group": "stationary", "action_label": "hurt, hover", "is_loop": true, "reviewed": true}
+{"clip": "Pteranodon_Hit2", "action_group": "stationary", "action_label": "hurt, hover", "is_loop": false, "reviewed": true, "pending_delete": true}
+{"clip": "Pteranodon_Hit", "action_group": "stationary", "action_label": "hurt, hover", "is_loop": true, "reviewed": true, "pending_delete": true}
 {"clip": "Pteranodon_ScreamFly", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
 {"clip": "Puppy_IdleEnergetic", "action_group": "stationary", "action_label": "idle, look", "is_loop": false, "reviewed": true}
 {"clip": "Puppy_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
@@ -845,7 +845,7 @@
 {"clip": "Spider_Landing", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
 {"clip": "Spider_RetreatInjured", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Retreat", "action_group": "locomotion", "action_label": "walk, backward, retreat", "is_loop": true, "reviewed": true}
-{"clip": "Spider_Riser", "action_group": "transition", "action_label": "jump, up", "is_loop": false, "reviewed": true}
+{"clip": "Spider_Riser", "action_group": "transition", "action_label": "jump, up", "is_loop": false, "reviewed": true, "pending_delete": true}
 {"clip": "Spider_Rising", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Runleft", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Scary", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
