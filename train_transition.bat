@@ -6,7 +6,7 @@ REM variable limit ("input line too long / syntax is incorrect").
 setlocal
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_transition_v20
+set RUN_NAME=merged_transition_v21
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize the
@@ -47,6 +47,10 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 	--num_steps 200000 ^
 	--dropout_prob 0.1 ^
 	--action_label_cfg_drop_prob 0.3 ^
+	--aux_group_mass 0.08 ^
+	--aux_label_mode aug ^
+	--head_aug_words jump ^
+	--head_aug_prob 0.25 ^
 	--joint_mask_prob 0.3 ^
 	--joint_mask_budget 0.15 ^
 	--unreliable_mask_drop_prob 0.2 ^

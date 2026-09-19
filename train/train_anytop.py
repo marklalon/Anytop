@@ -258,6 +258,7 @@ def create_training_data_loader(args):
         sample_limit=args.sample_limit,
         drop_last=True,
         action_group=getattr(args, 'action_group', ''),
+        aux_group_mass=getattr(args, 'aux_group_mass', 0.0),
         action_label_cond=getattr(args, 'action_label_cond', False),
         action_conditioning=getattr(args, 'action_conditioning', None),
         motion_cache_size=getattr(args, 'motion_cache_size', 0),

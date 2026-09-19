@@ -205,6 +205,11 @@ def get_gmdm_args(args):
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
             'direction_slot_drop_prob': getattr(args, 'direction_slot_drop_prob', 0.0),
+            # Training-only label augmentation. Absent from args.json on an
+            # older checkpoint, where the defaults are the no-op.
+            'head_aug_words': getattr(args, 'head_aug_words', ''),
+            'head_aug_prob': getattr(args, 'head_aug_prob', 0.0),
+            'aux_label_mode': getattr(args, 'aux_label_mode', 'aug'),
             # The training entry point builds one bundle and hands the same
             # object to the loader and to the model. Absent at inference: there
             # the checkpoint's own buffers are the word table.

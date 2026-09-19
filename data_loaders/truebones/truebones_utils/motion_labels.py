@@ -26,7 +26,19 @@ AUTOFILL_KEY = "autofill"
 
 # 7: ``is_loop`` left motion_metadata.json for action_labels.jsonl, where it is an
 #    annotation -- auto-filled by preprocessing, verified and corrected by hand.
-MOTION_METADATA_SCHEMA_VERSION = 7
+# 8: ``aux_action_groups`` -- the OPTIONAL list of groups a clip additionally
+#    trains as supplementary data. ``action_group`` remains the clip's single
+#    identity (which model owns it, its split, its length-prior key); an aux
+#    group only adds the clip to another group's TRAIN pool at a bounded
+#    sampling mass. See docs/aux_group_and_head_word_augmentation.md.
+MOTION_METADATA_SCHEMA_VERSION = 8
+
+# The per-clip auxiliary-group list's key in action_labels.jsonl. Optional per
+# row, like LOOP_FLAG_KEY: a row that has it (even as []) marks a sidecar that
+# has been through the aux migration, and that distinction is what tells a
+# stale sidecar apart from a group that legitimately has no aux clips
+# (see aux_key_present_in).
+AUX_ACTION_GROUPS_KEY = "aux_action_groups"
 
 # ---------------------------------------------------------------------------
 # Action groups + controlled label vocabulary  (action_labels.jsonl)
@@ -529,6 +541,68 @@ def _validate_action_label_entry(
         )
 
 
+def _validate_aux_action_groups(
+    raw, group: str, clip: str, line_number: int
+) -> tuple[str, ...]:
+    """Hard-fail on a bad ``aux_action_groups`` value; return it normalized.
+
+    An aux group is a TRAINING-ONLY supplement: the clip joins that group's
+    train pool, but ``action_group`` stays its sole identity. So the list may
+    not name the clip's own group (that would be a no-op dressed up as an
+    entry, and would double-count it in the mass budget) and may not repeat a
+    group (same reason). ``null`` and ``[]`` are both "no aux groups"; the
+    difference between them and an ABSENT key is not spelled here -- absence is
+    what marks a sidecar that predates the migration, and only
+    :func:`aux_key_present_in` cares.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        _fail_action_labels(
+            line_number,
+            f"clip '{clip}' has {AUX_ACTION_GROUPS_KEY} {raw!r}; it must be a JSON "
+            f"list of groups (or absent / [] for none)",
+        )
+    normalized: list[str] = []
+    for item in raw:
+        value = normalize_action_group(item)
+        if value not in ACTION_GROUPS:
+            _fail_action_labels(
+                line_number,
+                f"clip '{clip}' lists invalid {AUX_ACTION_GROUPS_KEY} entry {item!r}. "
+                f"Valid groups are: {list(ACTION_GROUPS)}",
+            )
+        if value == group:
+            _fail_action_labels(
+                line_number,
+                f"clip '{clip}' lists its own action_group {value!r} in "
+                f"{AUX_ACTION_GROUPS_KEY}. The primary group is not an auxiliary "
+                f"one -- drop it from the list.",
+            )
+        if value in normalized:
+            _fail_action_labels(
+                line_number,
+                f"clip '{clip}' repeats {value!r} in {AUX_ACTION_GROUPS_KEY}.",
+            )
+        normalized.append(value)
+    return tuple(normalized)
+
+
+def aux_key_present_in(motion_metadata_lookup) -> bool:
+    """Has this corpus been through the ``aux_action_groups`` migration?
+
+    True when ANY joined entry carries the key, empty list included. This is
+    the only correct test for "the sidecar is current": a group whose aux pool
+    is empty is an ordinary, legal state (the shipped rule sends aux clips to
+    transition only, so locomotion and stationary both receive none), so "this
+    group matched nothing" must never be read as "the sidecar is stale".
+    """
+    return any(
+        isinstance(entry, dict) and AUX_ACTION_GROUPS_KEY in entry
+        for entry in (motion_metadata_lookup or {}).values()
+    )
+
+
 def _validate_head_order_consistency(rows) -> None:
     """Within a group, one word set has one head order.
 
@@ -668,6 +742,12 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
                 "action_group": group,
                 "action_label": label,
             }
+            if AUX_ACTION_GROUPS_KEY in entry:
+                # Kept even when empty: presence of the key is what distinguishes
+                # a migrated sidecar from one that predates aux groups.
+                row[AUX_ACTION_GROUPS_KEY] = _validate_aux_action_groups(
+                    entry[AUX_ACTION_GROUPS_KEY], group, str(clip), line_number
+                )
             if LOOP_FLAG_KEY in entry:
                 is_loop = entry[LOOP_FLAG_KEY]
                 # JSON true/false only. "true", 1 or null would each read as a
@@ -742,8 +822,11 @@ def load_motion_metadata(
         # metadata is stale the moment the row is edited, so it never survives
         # the join (write_motion_metadata strips it on the way out too).
         entry.pop(LOOP_FLAG_KEY, None)
+        entry.pop(AUX_ACTION_GROUPS_KEY, None)
         entry["action_group"] = action["action_group"]
         entry["action_label"] = action["action_label"]
+        if AUX_ACTION_GROUPS_KEY in action:
+            entry[AUX_ACTION_GROUPS_KEY] = tuple(action[AUX_ACTION_GROUPS_KEY])
         if LOOP_FLAG_KEY in action:
             entry[LOOP_FLAG_KEY] = bool(action[LOOP_FLAG_KEY])
         elif require_loop_flag:
@@ -793,12 +876,20 @@ def write_motion_metadata(
     Persisting them would leave a second copy that silently diverges the moment
     ``action_labels.jsonl`` is edited -- the sidecar is the single source of truth,
     so the joined fields are dropped on the way out. ``is_loop`` moved into the
-    sidecar with schema 7 and is dropped for the same reason. (``action_tags`` and
+    sidecar with schema 7 and ``aux_action_groups`` arrived there with schema 8;
+    both are dropped for the same reason. (``action_tags`` and
     ``species_label`` are removed predecessors -- stripping them clears the stale
     copies earlier rebuilds baked in.)
     """
     output_path = Path(save_dir) / MOTION_METADATA_FILE
-    dropped_keys = ("action_group", "action_label", LOOP_FLAG_KEY, "action_tags", "species_label")
+    dropped_keys = (
+        "action_group",
+        "action_label",
+        LOOP_FLAG_KEY,
+        AUX_ACTION_GROUPS_KEY,
+        "action_tags",
+        "species_label",
+    )
     sanitized_entries = {
         motion_name: {
             key: value for key, value in metadata.items() if key not in dropped_keys

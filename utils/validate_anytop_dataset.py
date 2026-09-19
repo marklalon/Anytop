@@ -35,6 +35,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_GROUPS,
+    AUX_ACTION_GROUPS_KEY,
     load_motion_metadata,
     load_action_labels,
     action_words_in,
@@ -1121,6 +1122,28 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
             action_group = (action_entry or {}).get("action_group", "")
             action_label = (action_entry or {}).get("action_label", "")
             require_valid(action_group in ACTION_GROUPS, f"action_group {action_group!r} invalid in {ACTION_LABELS_FILE} for {motion_name}")
+            # aux_action_groups is optional per row; load_action_labels has
+            # already hard-failed on a malformed one, so this only restates the
+            # shape for a caller that built the mapping some other way. A row
+            # WITHOUT the key is not an error -- absence is how a pre-migration
+            # sidecar is recognised (motion_labels.aux_key_present_in).
+            if AUX_ACTION_GROUPS_KEY in (action_entry or {}):
+                aux_groups = (action_entry or {}).get(AUX_ACTION_GROUPS_KEY) or ()
+                require_valid(
+                    all(value in ACTION_GROUPS for value in aux_groups),
+                    f"{AUX_ACTION_GROUPS_KEY} {list(aux_groups)!r} invalid in "
+                    f"{ACTION_LABELS_FILE} for {motion_name}",
+                )
+                require_valid(
+                    action_group not in aux_groups,
+                    f"{AUX_ACTION_GROUPS_KEY} for {motion_name} repeats its own "
+                    f"action_group {action_group!r}; the primary group is not an "
+                    f"auxiliary one",
+                )
+                require_valid(
+                    len(set(aux_groups)) == len(tuple(aux_groups)),
+                    f"{AUX_ACTION_GROUPS_KEY} for {motion_name} repeats a group",
+                )
             # An empty label is legal (it means "no condition"), but every empty one
             # is a clip the text-to-motion path can never retrieve, so say so.
             # Naming no ACTION word (a direction-only label) is legal too but is
