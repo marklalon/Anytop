@@ -31,6 +31,8 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     head_words_in,
     parse_action_label,
     vocab_t5_text,
+    SYNTHETIC_CODE_VOCAB,
+    T5_ENCODED_VOCAB,
     vocab_words_in,
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
@@ -175,18 +177,31 @@ class ActionLabelVocabularyTest(unittest.TestCase):
     def test_t5_text_map_is_one_to_one_on_the_expanded_table(self):
         # The constraint is on the EXPANDED table, not on the override dict:
         # an override colliding with an identity token would share its vector.
-        effective = [vocab_t5_text(word) for word in CONTROLLED_VOCAB]
-        self.assertEqual(len(set(effective)), len(CONTROLLED_VOCAB))
+        effective = [vocab_t5_text(word) for word in T5_ENCODED_VOCAB]
+        self.assertEqual(len(set(effective)), len(T5_ENCODED_VOCAB))
         # A token with no override encodes as itself.
         self.assertEqual(vocab_t5_text('walk'), 'walk')
         # The measured overrides: the bare token lands on a different referent.
         self.assertEqual(vocab_t5_text('land'), 'touching down')
         self.assertEqual(vocab_t5_text('bow'), 'archery bow')
         self.assertEqual(vocab_t5_text('fishing'), 'fishing')
-        # The hands axis is spelled as a bare count: two points, no shared
-        # anchor phrase for them to collide on.
-        self.assertEqual(vocab_t5_text('hand1'), 'one hand')
-        self.assertEqual(vocab_t5_text('hand2'), 'both hands')
+
+    def test_synthetic_code_tokens_have_no_t5_text(self):
+        # The direction and hands axes are not encoded at all, so asking for
+        # their text is a caller that forgot to split the vocabulary -- it
+        # raises rather than handing T5 a token whose vector it does not own.
+        # 'hand1'/'hand2' in particular used to carry "one hand"/"both hands".
+        self.assertEqual(
+            SYNTHETIC_CODE_VOCAB, DIRECTION_VOCAB + HANDS_VOCAB
+        )
+        self.assertEqual(
+            set(CONTROLLED_VOCAB),
+            set(T5_ENCODED_VOCAB) | set(SYNTHETIC_CODE_VOCAB),
+        )
+        self.assertFalse(set(T5_ENCODED_VOCAB) & set(SYNTHETIC_CODE_VOCAB))
+        for word in SYNTHETIC_CODE_VOCAB:
+            with self.assertRaises(ValueError):
+                vocab_t5_text(word)
 
     def test_vocab_words_in_is_exact_token_matching(self):
         # Synonym translation is gone: a label is exact tokens, and free text

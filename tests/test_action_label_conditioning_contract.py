@@ -15,13 +15,24 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     slot_member_weights,
     conditioning_contract_payload,
     embedding_contract_payload,
+    ordered_token_sources,
     fingerprint,
     slot_channel_representation,
     slot_source_rank_report,
+    ActionConditioningError,
+    SYNTHETIC_CODE_SCHEME,
+    build_action_conditioning_bundle,
+    scatter_synthetic_code_rows,
+    synthetic_code_axis,
+    synthetic_code_rows,
+    word_table_sha256,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
     CONTROLLED_VOCAB,
+    DIRECTION_VOCAB,
     HANDS_VOCAB,
+    SYNTHETIC_CODE_VOCAB,
+    T5_ENCODED_VOCAB,
     vocab_t5_text,
 )
 
@@ -208,7 +219,7 @@ def test_slot_channel_representation_is_pinned_in_the_conditioning_fingerprint()
 
 def _embedding_payload():
     return embedding_contract_payload(
-        token_to_text={token: vocab_t5_text(token) for token in CONTROLLED_VOCAB},
+        token_sources=ordered_token_sources(),
         t5_name="t5-base",
         t5_artifact_sha256="a" * 64,
         tokenizer_class="T5Tokenizer",
@@ -261,3 +272,119 @@ def test_representation_layout_is_part_of_conditioning_fingerprint():
         representation={"kind": "k_token", "max_tokens": 8}, **common
     )
     assert fingerprint(slots) != fingerprint(tokenized)
+
+
+# --------------------------------------------------------------------------
+# The synthetic code rows
+# --------------------------------------------------------------------------
+def _encoded_rows(dim=768, seed=20260919):
+    """Stand-in rows for the T5-encoded half, unit norm like the real ones."""
+    rows = np.random.default_rng(seed).standard_normal((len(T5_ENCODED_VOCAB), dim))
+    return (rows / np.linalg.norm(rows, axis=1, keepdims=True)).astype(np.float32)
+
+
+def test_the_code_rows_are_orthonormal_within_every_slot_they_feed():
+    """The whole point of the code: no member correlates with another.
+
+    T5 put every one of these next to its own antonym (left/right +0.461,
+    hand1/hand2 +0.529, against a vocabulary-wide |cos| p95 of 0.19), which is
+    the correlation the first Linear had to spend capacity undoing.
+    """
+    table = scatter_synthetic_code_rows(_encoded_rows())
+    index = {word: position for position, word in enumerate(CONTROLLED_VOCAB)}
+    for axis_words in (DIRECTION_VOCAB, HANDS_VOCAB):
+        block = table[[index[word] for word in axis_words]]
+        gram = block @ block.T
+        assert np.allclose(gram, np.eye(len(axis_words)), atol=1e-6), axis_words
+
+
+def test_the_code_blocks_are_exactly_conditioned():
+    """Full rank is not enough -- these blocks are perfectly conditioned."""
+    report = slot_source_rank_report(scatter_synthetic_code_rows(_encoded_rows()), 256)
+    for name in ("direction", "hands"):
+        assert report["slots"][name]["full_rank"]
+        assert report["slots"][name]["relative_min_singular"] == pytest.approx(1.0)
+
+
+def test_scatter_puts_every_row_where_its_word_id_points():
+    """A word id is a position in CONTROLLED_VOCAB, for both halves of the table."""
+    encoded = _encoded_rows()
+    table = scatter_synthetic_code_rows(encoded)
+    assert table.shape == (len(CONTROLLED_VOCAB), encoded.shape[1])
+    code = synthetic_code_rows(encoded.shape[1])
+    for position, word in enumerate(CONTROLLED_VOCAB):
+        if word in SYNTHETIC_CODE_VOCAB:
+            expected = code[synthetic_code_axis(word)]
+        else:
+            expected = encoded[T5_ENCODED_VOCAB.index(word)]
+        assert np.array_equal(table[position], expected), word
+
+
+def _code_bundle_contract(table):
+    return embedding_contract_payload(
+        token_sources=ordered_token_sources(),
+        t5_name="t5-base",
+        t5_artifact_sha256="a" * 64,
+        tokenizer_class="T5Tokenizer",
+        tokenizer_version="5.5.4",
+        pooling="masked_mean",
+        eos_policy="keep",
+        vector_postprocess="center_l2",
+        embedding_dim=int(table.shape[1]),
+        dtype="float32",
+        word_table_sha256=word_table_sha256(table),
+    )
+
+
+def test_an_edited_code_row_is_refused_and_named():
+    """word_table_sha256 cannot catch this: it hashes whatever table it was given.
+
+    A builder that scattered the code block wrong writes a contract from that
+    same table, so the hash agrees with itself. The code rows are therefore
+    checked against what this version writes, by value.
+    """
+    table = scatter_synthetic_code_rows(_encoded_rows())
+    tampered = table.copy()
+    tampered[CONTROLLED_VOCAB.index("left")] = tampered[CONTROLLED_VOCAB.index("right")]
+    # A contract that fully describes the tampered table, so the code check is
+    # the only thing left that can refuse it.
+    contract = _code_bundle_contract(tampered)
+    with pytest.raises(ActionConditioningError, match="left"):
+        build_action_conditioning_bundle(tampered, contract, source="tampered")
+    # The untampered table of the same shape and recipe passes.
+    build_action_conditioning_bundle(table, _code_bundle_contract(table), source="ok")
+
+
+def test_a_checkpoint_table_is_not_held_to_the_current_code_layout():
+    """Old weights were fitted against their own rows, not against this version's."""
+    table = scatter_synthetic_code_rows(_encoded_rows())
+    table[CONTROLLED_VOCAB.index("up")] = table[CONTROLLED_VOCAB.index("down")]
+    build_action_conditioning_bundle(
+        table, _code_bundle_contract(table), source="ckpt", check_token_sources=False,
+    )
+
+
+def test_the_code_axis_is_part_of_the_embedding_fingerprint():
+    """Moving a token between axes has to invalidate every bound checkpoint."""
+    table = scatter_synthetic_code_rows(_encoded_rows())
+    approved = _code_bundle_contract(table)
+    swapped = [dict(entry) for entry in ordered_token_sources()]
+    for entry in swapped:
+        if entry.get("token") == "left":
+            entry["axis"] = 99
+    altered = dict(approved, ordered_token_sources=swapped)
+    assert fingerprint(approved) != fingerprint(altered)
+
+
+def test_a_synthetic_token_records_its_code_not_a_text():
+    sources = {entry["token"]: entry for entry in ordered_token_sources()}
+    assert [entry["token"] for entry in ordered_token_sources()] == list(CONTROLLED_VOCAB)
+    for word in SYNTHETIC_CODE_VOCAB:
+        assert sources[word] == {
+            "token": word,
+            "code": SYNTHETIC_CODE_SCHEME,
+            "axis": SYNTHETIC_CODE_VOCAB.index(word),
+        }
+        assert "text" not in sources[word]
+    for word in T5_ENCODED_VOCAB:
+        assert sources[word] == {"token": word, "text": vocab_t5_text(word)}

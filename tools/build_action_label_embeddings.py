@@ -7,9 +7,14 @@ assembled at runtime from these vectors. Encoding them on the fly would mean a
 resident T5 in every training process for vectors that never change, so they are
 baked once into ``dataset/action_word_embeddings.npy``.
 
-One vector per ``CONTROLLED_VOCAB`` token, in vocabulary order, encoded from
-``vocab_t5_text(token)`` -- not from the token spelling, which reads as the drink
-for "punch" and as terrain for "land".
+One vector per ``CONTROLLED_VOCAB`` token, in vocabulary order. A
+``T5_ENCODED_VOCAB`` token is encoded from ``vocab_t5_text(token)`` -- not from
+the token spelling, which reads as the drink for "punch" and as terrain for
+"land". A ``SYNTHETIC_CODE_VOCAB`` token (the direction and hands axes) is not
+encoded at all: its row is an orthonormal code written by
+``synthetic_code_rows``, because T5's geometry on those two closed axes put every
+member next to its own antonym. The two halves are stitched into one table by
+``scatter_synthetic_code_rows``.
 
 Keyed by WORD, not by label string. The old label-keyed sidecar had to be rebuilt
 whenever anyone edited a label and could not represent an unseen combination at
@@ -64,10 +69,14 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     build_action_conditioning_bundle,
     embedding_contract_payload,
     load_action_conditioning_bundle,
+    ordered_token_sources,
+    scatter_synthetic_code_rows,
     word_table_sha256,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     CONTROLLED_VOCAB,
+    SYNTHETIC_CODE_VOCAB,
+    T5_ENCODED_VOCAB,
     vocab_t5_text,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
@@ -154,7 +163,14 @@ def _pool_masked_mean(tokenizer, encoder, device, texts, batch_size) -> np.ndarr
 
 
 def _postprocess_atoms(vectors: np.ndarray, mode: str) -> np.ndarray:
-    """``center`` subtracts the table mean, ``l2`` puts every row on the sphere."""
+    """``center`` subtracts the mean, ``l2`` puts every row on the sphere.
+
+    Applied to the T5-encoded rows ONLY. The synthetic code rows are already
+    unit vectors on their own axes and are added afterwards: centring them would
+    destroy the orthogonality they exist for, and including them in the mean
+    would make every encoded vector depend on how many synthetic tokens the
+    vocabulary happens to hold.
+    """
     result = vectors.astype(np.float64, copy=True)
     if mode.startswith("center"):
         result -= result.mean(axis=0, keepdims=True)
@@ -184,13 +200,13 @@ def _encode_vocabulary(t5_dir, t5_hash: str, t5_model: str, batch_size: int):
         encoder = T5EncoderModel.from_pretrained(str(t5_dir), local_files_only=True)
     encoder = encoder.eval().to(device)
 
-    texts = [vocab_t5_text(token) for token in CONTROLLED_VOCAB]
+    texts = [vocab_t5_text(token) for token in T5_ENCODED_VOCAB]
     pooled = _pool_masked_mean(tokenizer, encoder, device, texts, batch_size)
-    table = _postprocess_atoms(pooled, ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS)
-    table = np.asarray(table, dtype=np.float32)
+    encoded = _postprocess_atoms(pooled, ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS)
+    table = scatter_synthetic_code_rows(np.asarray(encoded, dtype=np.float32))
 
     contract = embedding_contract_payload(
-        token_to_text={token: vocab_t5_text(token) for token in CONTROLLED_VOCAB},
+        token_sources=ordered_token_sources(),
         t5_name=t5_model,
         t5_artifact_sha256=t5_hash,
         tokenizer_class=type(tokenizer).__name__,
@@ -249,8 +265,9 @@ def build_word_table(out_path: Path, t5_model: str, t5_path: str | None,
             return out_path
         print(f"[rebuild] {out_path}: {'; '.join(stale)}")
 
-    print(f"encoding {len(CONTROLLED_VOCAB)} vocabulary token(s) with '{t5_model}' "
-          f"from {t5_dir} ...")
+    print(f"encoding {len(T5_ENCODED_VOCAB)} vocabulary token(s) with '{t5_model}' "
+          f"from {t5_dir}; {len(SYNTHETIC_CODE_VOCAB)} more take orthonormal code "
+          f"rows ...")
     table, contract = _encode_vocabulary(t5_dir, t5_hash, t5_model, batch_size)
     # Validate before writing: a table that the loader would refuse must never
     # reach the dataset directory, where it would fail at the start of training
@@ -262,7 +279,8 @@ def build_word_table(out_path: Path, t5_model: str, t5_path: str | None,
             f"ERROR: the encoded word table does not have full slot-source rank "
             f"({rank['slots']}). Slot channels would not be separable for every legal "
             "label; a vocabulary token whose T5 text collides with another's is the "
-            "usual cause -- change it in _VOCAB_T5_TEXT and re-encode."
+            "usual cause -- change it in _VOCAB_T5_TEXT and re-encode. The direction "
+            "and hands blocks are orthonormal by construction and cannot be the cause."
         )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(out_path, action_word_embedding_payload(table, contract), allow_pickle=True)
@@ -270,7 +288,8 @@ def build_word_table(out_path: Path, t5_model: str, t5_path: str | None,
         f"[OK] wrote {out_path} ({table.shape[0]} words x {table.shape[1]}d, "
         f"pooling={ACTION_WORD_EMBEDDING_POOLING}, "
         f"eos={ACTION_WORD_EMBEDDING_EOS_POLICY}, "
-        f"postprocess={ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS})"
+        f"postprocess={ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS}; "
+        f"{len(SYNTHETIC_CODE_VOCAB)} of them orthonormal code rows)"
     )
     print(f"     embedding_fingerprint         {bundle.embedding_fingerprint}")
     print(f"     conditioning_contract_finger. {bundle.conditioning_contract_fingerprint}")

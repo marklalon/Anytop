@@ -20,7 +20,15 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 #     weighted above the rest (HEAD_SLOT_PRIMARY_WEIGHT), and the training-only
 #     --head_aug_words / --head_aug_prob promotion that used to stand in for
 #     that is gone. Auxiliary rows carry their label like any other row.
-CKPT_VERSION = 17
+# 18: the direction and hands word vectors stopped being T5 encodings and became
+#     a synthetic orthonormal code (SYNTHETIC_CODE_VOCAB). Those two axes are
+#     closed sets whose members T5 placed next to their own antonyms -- left /
+#     right +0.461, hand1 / hand2 +0.529 against a vocabulary-wide |cos| p95 of
+#     0.19 -- for no semantic return, since an unknown token is refused and every
+#     member is heavily attested. Same shapes, different meaning behind them; the
+#     embedding_fingerprint refuses an --action_label_cond checkpoint by itself,
+#     this stamp covers the rest.
+CKPT_VERSION = 18
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise

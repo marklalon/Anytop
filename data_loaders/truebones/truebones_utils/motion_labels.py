@@ -9,35 +9,27 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     ACTION_LABELS_FILE,
 )
 
-# The per-clip loop verdict's key in action_labels.jsonl. An annotation, not a
-# measurement: preprocessing proposes it for a row that has none, a person
-# verifies or flips it in dataset/review, and nothing downstream re-derives it.
+# Key in action_labels.jsonl holding the per-clip loop verdict. An annotation,
+# not a measurement: preprocessing proposes it, a person verifies or flips it
+# in dataset/review, and nothing downstream re-derives it.
 LOOP_FLAG_KEY = "is_loop"
 
-# The flag a prefill tool sets on a row whose label IT wrote (``tools/prefill_*``,
-# through ``tools/action_label_sidecar.autofill_action_label``). Deliberately
-# just ``true``: what the measurement was and what the label said before belong
-# to that run's console output and --report CSV, not to a sidecar that a person
-# reads clip by clip. The row's ``reviewed`` goes to false at the same time, so
-# the review UI lists it as unverified while the file still shows it was once
-# signed off.
+# Flag a prefill tool sets on a row whose label IT wrote (``tools/prefill_*``).
+# Just ``true``: what the label said before and what the measurement was live
+# in the run's output, not in the sidecar. The row's ``reviewed`` goes to false
+# at the same time, so the review UI lists it as unverified although it was
+# once signed off.
 AUTOFILL_KEY = "autofill"
 
 
-# 7: ``is_loop`` left motion_metadata.json for action_labels.jsonl, where it is an
-#    annotation -- auto-filled by preprocessing, verified and corrected by hand.
-# 8: ``aux_action_groups`` -- the OPTIONAL list of groups a clip additionally
-#    trains as supplementary data. ``action_group`` remains the clip's single
-#    identity (which model owns it, its split, its length-prior key); an aux
-#    group only adds the clip to another group's TRAIN pool at a bounded
-#    sampling mass. See docs/aux_group_and_head_word_augmentation.md.
+# Bump when the on-disk shape of motion_metadata.json changes: a field is
+# added, dropped, or moves between this file and action_labels.jsonl.
 MOTION_METADATA_SCHEMA_VERSION = 8
 
-# The per-clip auxiliary-group list's key in action_labels.jsonl. Optional per
-# row, like LOOP_FLAG_KEY: a row that has it (even as []) marks a sidecar that
-# has been through the aux migration, and that distinction is what tells a
-# stale sidecar apart from a group that legitimately has no aux clips
-# (see aux_key_present_in).
+# Per-clip auxiliary-group list's key in action_labels.jsonl. Optional per row:
+# presence of the key (even as []) marks a sidecar that has been through the
+# aux migration -- that is what tells a stale sidecar apart from a group with
+# no aux clips (see aux_key_present_in).
 AUX_ACTION_GROUPS_KEY = "aux_action_groups"
 
 # ---------------------------------------------------------------------------
@@ -45,51 +37,43 @@ AUX_ACTION_GROUPS_KEY = "aux_action_groups"
 # ---------------------------------------------------------------------------
 # Two fields carry the action signal:
 #
-#   action_group  -- one of ACTION_GROUPS. Partitions the dataset; each group
+#   action_group  -- one of ACTION_GROUPS; partitions the dataset, each group
 #                    trains its own model.
 #   action_label  -- CONTROLLED KEYWORDS from the vocabulary below, in canonical
-#                    order, comma-separated ("run, forward, left, fast").
-#                    Conditions the model through T5. May be empty (= no
+#                    order ("run, forward, left, fast"); may be empty (= no
 #                    condition, routed to the learned null embedding).
 #
-# The vocabulary is a CONTROLLED VOCABULARY, *not* a set of mutually exclusive
-# classes: a label names as many words as apply ("idle, roar"), and naming only
-# part of what a clip does is legal ("run" with no direction = the marginal over
-# directions, a defined state and not a defect).
+# The vocabulary is CONTROLLED, not mutually exclusive classes: a label names
+# as many words as apply ("idle, roar"), and naming only part of what a clip
+# does is legal ("run" with no direction = the marginal over directions).
 #
-# Labels are keywords, not prose: mean-pooled T5 dilutes a modifier in proportion
-# to how much other text surrounds it, and under prose a direction word was the
-# least separable signal in the vector. Keywords keep each word's signal intact,
-# so direction stays as distinct as the action axis.
+# Labels are keywords, not prose: mean-pooled T5 dilutes a modifier in
+# proportion to the surrounding text; keywords keep each word's signal intact.
 
 ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 
 # The action vocabulary (flat -- no core/detail split). Every word reaches the
-# model through the same frozen-T5 embedding of the label text, so a rare word
-# is just a point next to its pretrained neighbours.
+# model through the same frozen-T5 embedding, so a rare word is just a point
+# next to its pretrained neighbours.
 #
 # ADMISSION RULE: a word stays in only if the corpus shows variation
-# attributable to it after species, group and base action are held fixed; the
-# table is a maintained controlled set, not a fixed list.
+# attributable to it after species, group and base action are held fixed; a
+# maintained controlled set, not a fixed list.
 #
-# The vocabulary is two tuples. HEAD_VOCAB is the closed set of HEAD words --
-# the words a label can be ABOUT: a state the body is in (idle, run, hover,
-# rear ...) or an event that is the whole clip (die, getup, land, draw,
-# sheathe, stop ...). Their tuple position decides nothing; they are spelled
-# in WRITTEN order. Every head word feeds the head slot; the FIRST has weight
-# 1.5 and a later one has weight 1.0 ("land, hover" = a landing out of flight,
-# "attack, hover" an attack in the air). The weighting is defined by
-# action_label_conditioning_contract.slot_member_weights, so head order IS the
-# condition: "attack, hover" and "hover, attack" are two labels. Hence one word
-# set may have only one head order per group
-# (_validate_head_order_consistency) and nothing may reorder head words. Head
-# order still carries no DIRECTION. At most ACTION_LABEL_MAX_HEADS heads per
-# label ("block" is deliberately OUT: "idle, hover, block" would hold three).
+# HEAD_VOCAB is the closed set of words a label can be ABOUT: a state the body
+# is in (idle, run, hover, rear ...) or an event that is the whole clip (die,
+# getup, land, draw, sheathe, stop ...). Words are spelled in WRITTEN order;
+# tuple position decides nothing. Every head word feeds the head slot, the
+# FIRST weighted above the later ones (see slot_member_weights), so head order
+# IS the condition: "attack, hover" and "hover, attack" are two labels, and one
+# word set has only one head order per group
+# (_validate_head_order_consistency). Head order carries no DIRECTION. At most
+# ACTION_LABEL_MAX_HEADS heads per label.
 #
 # MODIFIER_VOCAB is every other action word; ITS ORDER IS THE CANONICAL
 # SPELLING ORDER: direction words bind after a ``turn`` head (or the last head),
-# the modifiers follow in tuple order -- one combination, exactly one spelling.
-# See canonical_action_label. DIRECTION_VOCAB and HANDS_VOCAB are separate axes.
+# the modifiers follow in tuple order -- one combination, exactly one spelling
+# (see canonical_action_label).
 HEAD_VOCAB: tuple[str, ...] = (
     "attack", "burrow", "crawl", "dance", "die", "draw", "fall",
     "fly", "getup", "hover", "hurt", "idle", "jump", "kneel", "land", "laydown",
@@ -124,38 +108,71 @@ MODIFIER_VOCAB: tuple[str, ...] = (
 
 ACTION_VOCAB: tuple[str, ...] = HEAD_VOCAB + MODIFIER_VOCAB
 
-# The direction axis -- travel / facing direction, a separate vocabulary from
-# the action words. Directions bind after a ``turn`` head (or the last head),
-# before the remaining modifiers, spelled BARE ("forward", not "leftward": the
-# derived adjectives collapse to nearly the same T5 point). up/down are
-# DIRECTIONS (where the net travel goes), not actions -- dive stays an action;
-# the vertical word is spelled LAST after the planar ones, at most one per label.
+# The direction axis -- travel / facing direction. Directions bind after a
+# ``turn`` head (or the last head), before the remaining modifiers, spelled
+# BARE ("forward", not "leftward": the derived adjectives collapse to nearly
+# the same T5 point). up/down are directions, not actions (dive stays an
+# action); the vertical word is spelled LAST after the planar ones, at most
+# one per label.
 DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right", "up", "down")
 
 # The hands axis -- how many hands are OCCUPIED (holding something):
 #   hand1 one hand holds, the other free |
 #   hand2 both hold: a two-handed grip OR one item per hand (sword + shield).
-# It is an occupancy count, not a weapon class: sword + shield is hand2 (neither
-# arm is free), a dagger and a torch are both hand1. Which implement is used
-# (bow / gun / hammer / shield) stays a modifier (MODIFIER_VOCAB block G):
-# ``attack, bow, hand2``.
+# An occupancy count, not a weapon class (a dagger and a torch are both
+# hand1). Which implement is used (bow / gun / hammer / shield) stays a
+# modifier: ``attack, bow, hand2``.
 #
-# The two tokens are MUTUALLY EXCLUSIVE (at most one per label). An EMPTY slot
-# MEANS EMPTY HANDS -- it is the content default, not "unspecified": a clip
-# whose character holds anything must say so, and a bare prompt (``idle``)
-# asks for the unarmed motion. This is the opposite of the direction axis,
-# whose empty slot is the marginal because training drops direction words at
-# random (``--direction_slot_drop_prob``); nothing drops a hand word, so the
-# model never sees an armed clip under an empty slot. The former explicit
-# ``hand0`` ("empty hands", 2026-09-11) was retired 2026-09-18 for exactly that
-# reason: inference only ever asks with bare labels, and what a bare label
-# should mean is empty hands, which left ``hand0`` nothing to say.
-# Species that never hold anything (and anything without hands) leave the
-# axis empty; ``tools/prefill_hand_words.py`` proposes the word for a
-# hand-bearing species' unlabelled rows from the holding pose.
+# The two tokens are MUTUALLY EXCLUSIVE. An EMPTY slot MEANS EMPTY HANDS --
+# the content default, not "unspecified". Unlike the direction axis (whose
+# empty slot is the marginal because training drops direction words,
+# ``--direction_slot_drop_prob``), nothing drops a hand word, so the model
+# never sees an armed clip under an empty slot. The former explicit ``hand0``
+# ("empty hands") was retired 2026-09-18 for exactly that reason. Species that
+# never hold anything leave the axis empty; ``tools/prefill_hand_words.py``
+# proposes the word from the holding pose.
 HANDS_VOCAB: tuple[str, ...] = ("hand1", "hand2")
 
 CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB + DIRECTION_VOCAB + HANDS_VOCAB
+
+# The two closed axes whose table rows are NOT T5 encodings but a synthetic
+# orthonormal code (one unit axis per token; see the contract module's
+# ``synthetic_code_rows``).
+#
+# T5 has nothing to offer these slots: the vocabulary is closed (an unknown
+# token raises in ``action_label_slots``), so there is no unseen word to place
+# and no data-sparse token to borrow from a neighbour. On these axes T5's
+# geometry ran BACKWARDS -- measured on the old t5-base table (768d, after
+# center_l2, vocabulary-wide |cos| p95 of 0.19),
+#
+#     left / right        +0.461      forward / backward  +0.384
+#     hand1 / hand2       +0.529      up / down           +0.348
+#
+# the pairs a prompt most needs kept apart were the closest pairs in the table.
+# The replacement is the geometry those axes actually want: mutually orthogonal
+# unit rows, i.e. a one-hot in a rotated basis.
+#
+# This is a table change and not a learned ``nn.Embedding``: the slot channel
+# feeds a learned Linear already, and a learned table followed by a learned
+# Linear is just a learned Linear on a one-hot -- the embedding would buy no
+# reachable geometry, at the cost of splitting ``assemble_slot_channels``
+# across numpy and torch.
+#
+# The slots stay SEPARATE: the channel rule is a mean followed by an L2
+# normalisation, which is non-linear in the member count, so pooling the two
+# axes into one channel would make ``left``'s gain depend on whether an
+# unrelated hand or vertical word was also spelled.
+SYNTHETIC_CODE_VOCAB: tuple[str, ...] = DIRECTION_VOCAB + HANDS_VOCAB
+_SYNTHETIC_CODE_SET: frozenset[str] = frozenset(SYNTHETIC_CODE_VOCAB)
+
+# The complement: the tokens the sidecar builder actually hands to T5, in
+# vocabulary order. Only these take part in the ``center`` half of ``center_l2``
+# -- centring a synthetic row would destroy its orthonormality, and letting the
+# code rows drag the T5 mean would make the encoder's output depend on the
+# vocabulary's composition.
+T5_ENCODED_VOCAB: tuple[str, ...] = tuple(
+    word for word in CONTROLLED_VOCAB if word not in _SYNTHETIC_CODE_SET
+)
 
 _CONTROLLED_VOCAB_ORDER: dict[str, int] = {
     word: index for index, word in enumerate(CONTROLLED_VOCAB)
@@ -195,22 +212,19 @@ ACTION_LABEL_MAX_HEADS = 2
 # A token is the canonical ID (what the annotation writes, what keys the
 # embedding sidecar); the T5 TEXT is what is actually encoded. A missing key
 # means "encode the token itself". The entries below are the tokens whose bare
-# spelling lands in the WRONG T5 neighbourhood, chosen by measurement
-# (mean-centred t5-base cosines): only tokens where the wrong sense WON as a
-# different referent, not a near synonym, are overridden. Glued compounds are
-# FINE; the hand tokens need the override for the trailing numeral, not the
-# fragmentation.
+# spelling lands in the WRONG T5 neighbourhood (chosen by measurement: only
+# tokens where the wrong sense WON as a different referent). An override
+# carries only what the token itself contributes, not what a co-occurring
+# token already spells.
 #
-# An override carries only what the token itself contributes, NOT what a
-# co-occurring token already spells: the hands axis is a bare count ("one
-# hand" / "both hands") -- the two are exclusive members of their own slot
-# channel, so what the model needs is two well-separated points (and a zero
-# row for empty hands), and phrasing them around a shared anchor makes them
-# collide.
+# Only T5-encoded tokens may appear here: a SYNTHETIC_CODE_VOCAB token is
+# never encoded, so text for one would be dead weight. (``hand1`` / ``hand2``
+# once carried "one hand" / "both hands" overrides; they went with the rest of
+# the T5 side of that axis.)
 #
 # Constraints, all asserted below: one-to-one on the EXPANDED table, no
-# whitespace in a token, every key a real vocabulary word. No reverse lookup --
-# this is not a synonym table; text never resolves back to a token.
+# whitespace in a token, every key a T5-encoded vocabulary word. No reverse
+# lookup -- this is not a synonym table.
 _VOCAB_T5_TEXT: dict[str, str] = {
     "aim": "aiming a weapon",            # bare "aim" is a goal or an ambition
     "block": "raising a guard",          # bare "block" is a brick or a city block
@@ -222,8 +236,6 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "draw": "drawing a weapon",          # bare "draw" is pulling a line or a card
     "cry": "weeping",                    # bare "cry" reads as shouting out
     "flip": "somersault",                # bare "flip" is a coin or a switch
-    "hand1": "one hand",                 # bare form reads as "hand one"
-    "hand2": "both hands",               # bare form reads as "hand two"
     "land": "touching down",             # bare "land" is terrain -- overwhelmingly
     "punch": "punching",                 # bare "punch" is the drink
     "rear": "rearing up",                # bare "rear" is the back side
@@ -235,22 +247,33 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "wave": "waving a hand",             # bare "wave" is an ocean wave
 }
 
-assert set(_VOCAB_T5_TEXT) <= set(CONTROLLED_VOCAB), (
-    "_VOCAB_T5_TEXT has keys that are not vocabulary tokens: "
-    + str(sorted(set(_VOCAB_T5_TEXT) - set(CONTROLLED_VOCAB)))
+assert set(_VOCAB_T5_TEXT) <= set(T5_ENCODED_VOCAB), (
+    "_VOCAB_T5_TEXT has keys that are not T5-encoded vocabulary tokens: "
+    + str(sorted(set(_VOCAB_T5_TEXT) - set(T5_ENCODED_VOCAB)))
 )
 
 
 def vocab_t5_text(word: str) -> str:
-    """The text *word* is T5-encoded from. Identity unless overridden above."""
+    """The text *word* is T5-encoded from. Identity unless overridden above.
+
+    Raises on a :data:`SYNTHETIC_CODE_VOCAB` token: those rows come from
+    ``synthetic_code_rows`` and are never encoded, so a caller that reaches one
+    here has forgotten to split the vocabulary.
+    """
+    if word in _SYNTHETIC_CODE_SET:
+        raise ValueError(
+            f"{word!r} carries a synthetic orthonormal code, not a T5 encoding; it "
+            "has no T5 text. Iterate T5_ENCODED_VOCAB instead of CONTROLLED_VOCAB."
+        )
     return _VOCAB_T5_TEXT.get(word, word)
 
 
-# One-to-one on the EXPANDED table, not on the override dict: checking the
+# One-to-one on the EXPANDED table, not the override dict: checking the
 # overrides against each other would miss a collision with an identity token
-# (an override reading "run" would silently share a vector with the run token).
-_EFFECTIVE_T5_TEXT: dict[str, str] = {w: vocab_t5_text(w) for w in CONTROLLED_VOCAB}
-assert len(set(_EFFECTIVE_T5_TEXT.values())) == len(CONTROLLED_VOCAB), (
+# (an override reading "run" would share a vector with the run token).
+# Synthetic-code tokens have no text to collide.
+_EFFECTIVE_T5_TEXT: dict[str, str] = {w: vocab_t5_text(w) for w in T5_ENCODED_VOCAB}
+assert len(set(_EFFECTIVE_T5_TEXT.values())) == len(T5_ENCODED_VOCAB), (
     "two tokens resolve to the same T5 text: "
     + str(sorted(
         text for text in set(_EFFECTIVE_T5_TEXT.values())
@@ -266,13 +289,12 @@ class ActionLabelError(ValueError):
 def vocab_words_in(text: str) -> list[str]:
     """Controlled-vocabulary tokens present in *text*, in canonical vocab order.
 
-    Exact token matching: *text* is split on commas and whitespace, each piece
-    must be a vocabulary token verbatim, anything else is ignored -- no synonym
-    translation; inference offers an autocomplete over the vocabulary.
+    Exact token matching: split on commas and whitespace, each piece must be a
+    vocabulary token verbatim, anything else is ignored -- no synonym
+    translation.
 
-    Returns a SET in vocab order, not a spelling: do not feed it to
-    :func:`canonical_action_label`, which needs the written head order -- use
-    :func:`parse_action_label` for that.
+    Returns a SET in vocab order, not a spelling: use :func:`parse_action_label`
+    for the written head order.
     """
     if not text:
         return []
@@ -316,10 +338,9 @@ def parse_action_label(label: str) -> list[str]:
     """Split a label into its tokens IN WRITTEN ORDER, enforcing the contract.
 
     Every comma-separated piece must be a vocabulary token verbatim: no empty
-    segment, no repeat, at most :data:`ACTION_LABEL_MAX_WORDS` tokens, between 1
-    and :data:`ACTION_LABEL_MAX_HEADS` head words, at most one
-    :data:`HANDS_VOCAB` word. An empty label is legal and parses to ``[]`` (= no
-    condition).
+    segment, no repeat, at most :data:`ACTION_LABEL_MAX_WORDS` tokens, 1..
+    :data:`ACTION_LABEL_MAX_HEADS` head words, at most one :data:`HANDS_VOCAB`
+    word. An empty label parses to ``[]`` (= no condition).
 
     Raises :class:`ActionLabelError` rather than dropping anything: a silently
     dropped token is a silently changed condition.
@@ -373,13 +394,12 @@ def canonical_action_label(words) -> str:
     """Spell *words* with stable head order and canonical modifier placement.
 
     HEAD ORDER IS NEVER TOUCHED -- it is the written order (primary word first),
-    and the first head word is the one weighted above the rest in the head slot;
-    re-sorting here would change the condition, not just the spelling. Directions bind after a ``turn``
-    head (or the last head) and precede other modifiers, so they qualify the
-    motion rather than a trailing word (``walk, right, hand1``). Other modifiers are sorted by
-    :data:`CONTROLLED_VOCAB` index: one combination, exactly one spelling. The
-    hands word sorts last by construction (:data:`HANDS_VOCAB` closes the
-    vocabulary), so a label reads action, direction, manner, implement, hands.
+    and the first head word is weighted above the rest in the head slot, so
+    re-sorting here would change the condition, not just the spelling.
+    Directions bind after a ``turn`` head (or the last head) and precede other
+    modifiers; the rest are sorted by :data:`CONTROLLED_VOCAB` index: one
+    combination, exactly one spelling. The hands word sorts last by
+    construction (:data:`HANDS_VOCAB` closes the vocabulary).
 
     Repeats are dropped (first occurrence wins); an out-of-vocabulary word
     raises -- dropping it would quietly delete part of the condition.
@@ -469,7 +489,7 @@ def build_motion_labels(
 
 # Hard cap on tokens per label: a label is a compact prompt, not a caption --
 # past this the T5 mean-pool dilutes the words that carry the action. Total
-# across head, direction and modifier slots, not a per-slot allowance.
+# across slots, not a per-slot allowance.
 ACTION_LABEL_MAX_WORDS = 8
 
 
@@ -499,17 +519,13 @@ def _validate_action_label_entry(
     The group must be one of the three closed values (it selects which model the
     clip trains). A non-empty label must parse under :func:`parse_action_label`
     and must already be spelled the way :func:`canonical_action_label` would
-    spell it.
+    spell it. THESE ARE GATES, NOT HINTS: the vocabulary is closed and the
+    corpus is spelled to match, so a warning could only buy a silent regression.
 
-    THESE ARE GATES, NOT HINTS: the vocabulary is closed and the corpus is
-    spelled to match, so a warning could only buy a silent regression.
-
-    An *empty* label is legal and means "no condition" -- it is routed to the
-    learned null embedding, never encoded as an empty string, which would
-    otherwise teach the model that empty text means any motion at all and poison
-    the CFG unconditional branch. Naming only SOME of what a clip does is legal
-    too ("run" with no direction): the model learns the marginal over the
-    directions, which is the right answer to a query that did not ask for one.
+    An *empty* label is legal and means "no condition" -- routed to the learned
+    null embedding, never encoded as an empty string (which would poison the CFG
+    unconditional branch). Naming only SOME of what a clip does is legal too:
+    the model learns the marginal.
     """
     if group not in ACTION_GROUPS:
         _fail_action_labels(
@@ -547,12 +563,10 @@ def _validate_aux_action_groups(
 
     An aux group is a TRAINING-ONLY supplement: the clip joins that group's
     train pool, but ``action_group`` stays its sole identity. So the list may
-    not name the clip's own group (that would be a no-op dressed up as an
-    entry, and would double-count it in the mass budget) and may not repeat a
-    group (same reason). ``null`` and ``[]`` are both "no aux groups"; the
-    difference between them and an ABSENT key is not spelled here -- absence is
-    what marks a sidecar that predates the migration, and only
-    :func:`aux_key_present_in` cares.
+    not name the clip's own group (a no-op that would double-count the mass
+    budget) and may not repeat a group. ``null`` and ``[]`` are both "no aux
+    groups"; an ABSENT key is what marks a sidecar that predates the migration,
+    and only :func:`aux_key_present_in` cares.
     """
     if raw is None:
         return ()
@@ -592,9 +606,8 @@ def aux_key_present_in(motion_metadata_lookup) -> bool:
 
     True when ANY joined entry carries the key, empty list included. This is
     the only correct test for "the sidecar is current": a group whose aux pool
-    is empty is an ordinary, legal state (the shipped rule sends aux clips to
-    transition only, so locomotion and stationary both receive none), so "this
-    group matched nothing" must never be read as "the sidecar is stale".
+    is empty is an ordinary, legal state, and must never be read as "the
+    sidecar is stale".
     """
     return any(
         isinstance(entry, dict) and AUX_ACTION_GROUPS_KEY in entry
@@ -605,12 +618,10 @@ def aux_key_present_in(motion_metadata_lookup) -> bool:
 def _validate_head_order_consistency(rows) -> None:
     """Within a group, one word set has one head order.
 
-    Every head word feeds the head slot, but the first one is weighted above
-    the rest, so two head orders of one word set are two DIFFERENT conditions. Two
-    spellings of the same word set inside one group would therefore be the
-    corpus contradicting itself about what those clips are about; the
-    annotation has to decide once. Applies to every group alike: head order
-    carries no direction anywhere.
+    The first head word is weighted above the rest, so two head orders of one
+    word set are two DIFFERENT conditions; two spellings of the same word set
+    inside one group would be the corpus contradicting itself. Applies to every
+    group alike: head order carries no direction anywhere.
 
     *rows* is an iterable of ``(line_number, group, clip, tokens)``.
     """
@@ -649,12 +660,11 @@ def clip_key(name: str) -> str:
 def set_loop_flag(entry: dict, verdict: bool) -> dict:
     """Return a copy of *entry* carrying ``is_loop`` = *verdict*, in its place.
 
-    A row that already has the key keeps it where it is; a FIRST verdict goes
-    in right after ``action_label``, so every row reads clip / group / label /
-    is_loop / review marks whoever wrote it -- the prefill tool
-    (``tools/prefill_loop_flags.py``) or a person in ``dataset/review``. Which
-    rows get a verdict, and whether an existing one may be replaced, is the
-    annotating tool's policy; this is only where the key sits, defined once.
+    A row that already has the key keeps it where it is; a FIRST verdict goes in
+    right after ``action_label``, so every row reads clip / group / label /
+    is_loop whoever wrote it. Which rows get a verdict, and whether an existing
+    one may be replaced, is the annotating tool's policy; this only defines
+    where the key sits.
     """
     verdict = bool(verdict)
     if LOOP_FLAG_KEY in entry:
@@ -673,21 +683,17 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
 
     Each line is a JSON object
     ``{"clip": "<name>", "action_group": "...", "action_label": "...", "is_loop": true}``,
-    where ``<name>`` is the clip's file name without its ``.npy`` extension (a row
-    that still carries the extension is normalized to the same key).
-    Returns a mapping ``clip -> {"action_group": ..., "action_label": ..., ["is_loop": ...]}``.
-    The keys are ALWAYS extension-less, so callers join against ``motions/`` file
-    names via :func:`clip_key`.
-    Raises ``FileNotFoundError`` if the file is absent so callers fail fast rather
-    than silently training without action conditioning.
+    where ``<name>`` is the file name without its ``.npy`` extension (a row that
+    still carries it is normalized to the same key). Returns a mapping
+    ``clip -> {"action_group": ..., "action_label": ..., ["is_loop": ...]}``;
+    the keys are ALWAYS extension-less. Raises ``FileNotFoundError`` if the file
+    is absent so callers fail fast rather than silently training without action
+    conditioning.
 
-    ``is_loop`` is the clip's loop verdict and is OPTIONAL per row:
-    ``tools/prefill_loop_flags.py`` fills it in for a clip nobody has annotated
-    yet (the detector's proposal, computed from the source animation), and a
-    value already there is never overwritten. It is returned only when the row
-    has it, so a caller can tell "annotated" from "not yet" --
-    :func:`load_motion_metadata` is the strict join that requires it for every
-    clip on disk, and preprocessing refuses to build a clip whose row has none.
+    ``is_loop`` is OPTIONAL per row: ``tools/prefill_loop_flags.py`` fills it in
+    for a clip nobody has annotated yet, and a value already there is never
+    overwritten. It is returned only when the row has it, so a caller can tell
+    "annotated" from "not yet".
     """
     labels_path = Path(dataset_dir) / ACTION_LABELS_FILE
     if not labels_path.exists():
@@ -775,21 +781,17 @@ def load_motion_metadata(
     """Load ``motion_metadata.json`` joined with per-clip action group/label/loop.
 
     A clip present in the metadata but absent from ``action_labels.jsonl`` is a
-    fatal error (the group decides which model the clip trains, so there is no
-    safe default): clips are hand-labeled before they enter the dataset, so a
-    missing entry is always an incomplete sidecar, never a clip that is
-    "labeled later". Bookkeeping-only reads that need no action fields use
-    ``_load_motion_metadata_raw`` (dataset_pipeline) instead.
+    fatal error: the group decides which model the clip trains, so there is no
+    safe default -- a missing entry is always an incomplete sidecar, never a
+    clip that is "labeled later". Bookkeeping-only reads that need no action
+    fields use ``_load_motion_metadata_raw`` (dataset_pipeline) instead.
 
-    ``is_loop`` is joined the same way and is just as fatal when a row lacks
-    it: a default would train every unannotated loop as a one-shot clip without
-    a word. The flag is a prerequisite annotation -- ``tools/prefill_loop_flags.py``
-    proposes it from the source animation and preprocessing refuses a clip
-    without one -- so a clip on disk with no flag means its row was edited (the
-    key deleted) after the build. ``require_loop_flag=False`` is for a
-    bookkeeping read that must not fail on such a row (capturing the untouched
-    species of a filtered rebuild): the joined entry then simply has no
-    ``is_loop`` key.
+    ``is_loop`` is joined the same way and is just as fatal when a row lacks it:
+    the flag is a prerequisite annotation (proposed by
+    ``tools/prefill_loop_flags.py``, and preprocessing refuses a clip without
+    one), so a clip on disk with no flag means its row was edited after the
+    build. ``require_loop_flag=False`` is for a bookkeeping read that must not
+    fail on such a row: the joined entry then simply has no ``is_loop`` key.
     """
     metadata_path = Path(dataset_dir) / MOTION_METADATA_FILE
     if not metadata_path.exists():
@@ -873,12 +875,11 @@ def write_motion_metadata(
     ``load_motion_metadata`` joins ``action_group`` / ``action_label`` in from the
     sidecar, and every rebuild path round-trips loaded entries back through here.
     Persisting them would leave a second copy that silently diverges the moment
-    ``action_labels.jsonl`` is edited -- the sidecar is the single source of truth,
-    so the joined fields are dropped on the way out. ``is_loop`` moved into the
-    sidecar with schema 7 and ``aux_action_groups`` arrived there with schema 8;
-    both are dropped for the same reason. (``action_tags`` and
-    ``species_label`` are removed predecessors -- stripping them clears the stale
-    copies earlier rebuilds baked in.)
+    ``action_labels.jsonl`` is edited -- the sidecar is the single source of
+    truth, so the joined fields (including ``is_loop`` from schema 7 and
+    ``aux_action_groups`` from schema 8) are dropped on the way out. Stripping
+    ``action_tags`` and ``species_label`` clears the stale copies earlier
+    rebuilds baked in.
     """
     output_path = Path(save_dir) / MOTION_METADATA_FILE
     dropped_keys = (

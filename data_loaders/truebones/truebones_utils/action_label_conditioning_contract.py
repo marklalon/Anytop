@@ -23,11 +23,13 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     DIRECTION_VOCAB,
     HANDS_VOCAB,
     HEAD_VOCAB,
+    SYNTHETIC_CODE_VOCAB,
+    T5_ENCODED_VOCAB,
     head_words_in,
 )
 
 
-ACTION_WORD_EMBEDDING_SCHEMA_VERSION = 3
+ACTION_WORD_EMBEDDING_SCHEMA_VERSION = 4
 ACTION_CONDITIONING_CONTRACT_SCHEMA_VERSION = 1
 # 5: hand0 retired -- an empty hands slot means empty hands (the content
 #    default), hand1 / hand2 are the only members; the direction slot gained
@@ -312,9 +314,103 @@ def slot_channel_representation() -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Synthetic code rows
+# ---------------------------------------------------------------------------
+# The direction and hands rows are not encoded from anything: they are a
+# one-hot written into the same (V, D) table, so downstream -- pooling, the
+# rank report, ``word_table_sha256`` -- treats them like any other row.
+#
+# Axis-aligned, not a seeded random orthonormal set: a one-hot is what the
+# axis means, and a deterministic table is what a rebuild must reproduce byte
+# for byte.  The axis is the token's position in SYNTHETIC_CODE_VOCAB, so
+# direction takes e0..e5 and hands e6..e7.
+#
+# The two slots keep disjoint axes so no two rows of the table are equal --
+# a row swap would otherwise be invisible to anything that reads by value.
+#
+# The (D - 8) unused columns of those two blocks are inert: zero input for
+# every legal label, so they take no gradient.
+SYNTHETIC_CODE_SCHEME = "axis_orthonormal"
+
+
+def synthetic_code_axis(word: str) -> int:
+    """The coordinate :data:`SYNTHETIC_CODE_VOCAB` token *word* occupies."""
+    try:
+        return SYNTHETIC_CODE_VOCAB.index(word)
+    except ValueError:
+        raise ValueError(f"{word!r} does not carry a synthetic code row") from None
+
+
+def synthetic_code_rows(embedding_dim: int) -> np.ndarray:
+    """The ``(len(SYNTHETIC_CODE_VOCAB), embedding_dim)`` code block.
+
+    Row *k* is the unit vector on axis *k*, so the rows are orthonormal: every
+    within-slot cosine is exactly 0 and every block is exactly conditioned.
+    """
+    dim = int(embedding_dim)
+    if dim < len(SYNTHETIC_CODE_VOCAB):
+        raise ValueError(
+            f"embedding_dim {dim} cannot hold {len(SYNTHETIC_CODE_VOCAB)} orthonormal "
+            "code rows"
+        )
+    rows = np.zeros((len(SYNTHETIC_CODE_VOCAB), dim), dtype=np.float32)
+    for index in range(len(SYNTHETIC_CODE_VOCAB)):
+        rows[index, index] = 1.0
+    return rows
+
+
+def scatter_synthetic_code_rows(t5_rows: np.ndarray) -> np.ndarray:
+    """Interleave encoded rows and code rows into one ``(V, D)`` table.
+
+    *t5_rows* is in :data:`T5_ENCODED_VOCAB` order; the result is in
+    ``CONTROLLED_VOCAB`` order, which is what a word id indexes.  One
+    implementation so the builder cannot lay the table out one way and a test
+    check it another.
+    """
+    encoded = np.asarray(t5_rows, dtype=np.float32)
+    if encoded.ndim != 2 or encoded.shape[0] != len(T5_ENCODED_VOCAB):
+        raise ValueError(
+            f"t5_rows must be ({len(T5_ENCODED_VOCAB)}, D), got {tuple(encoded.shape)}"
+        )
+    dim = int(encoded.shape[1])
+    table = np.zeros((len(CONTROLLED_VOCAB), dim), dtype=np.float32)
+    code = synthetic_code_rows(dim)
+    encoded_index = {word: index for index, word in enumerate(T5_ENCODED_VOCAB)}
+    for row, word in enumerate(CONTROLLED_VOCAB):
+        if word in encoded_index:
+            table[row] = encoded[encoded_index[word]]
+        else:
+            table[row] = code[synthetic_code_axis(word)]
+    return table
+
+
+def ordered_token_sources() -> list[dict[str, Any]]:
+    """Where each vocabulary row comes from, in vocabulary order.
+
+    A T5 token records the text it was encoded from; a synthetic token records
+    the scheme and the axis instead.  Both are in the fingerprint, so a token
+    that changed sides -- or a code row that moved axis -- invalidates every
+    checkpoint bound to the old table, which is what it should do.
+    """
+    from data_loaders.truebones.truebones_utils.motion_labels import vocab_t5_text
+
+    entries: list[dict[str, Any]] = []
+    for token in CONTROLLED_VOCAB:
+        if token in SYNTHETIC_CODE_VOCAB:
+            entries.append({
+                "token": token,
+                "code": SYNTHETIC_CODE_SCHEME,
+                "axis": synthetic_code_axis(token),
+            })
+        else:
+            entries.append({"token": token, "text": vocab_t5_text(token)})
+    return entries
+
+
 def embedding_contract_payload(
     *,
-    token_to_text: Mapping[str, str],
+    token_sources: Iterable[Mapping[str, Any]],
     t5_name: str,
     t5_artifact_sha256: str,
     tokenizer_class: str,
@@ -334,14 +430,15 @@ def embedding_contract_payload(
     contract that could be built without it would go back to fingerprinting
     metadata alone.
     """
-    ordered_mapping = [
-        {"token": token, "text": token_to_text[token]} for token in CONTROLLED_VOCAB
-    ]
-    if set(token_to_text) != set(CONTROLLED_VOCAB):
-        raise ValueError("token_to_text must cover CONTROLLED_VOCAB exactly")
+    ordered_sources = [dict(entry) for entry in token_sources]
+    if [entry.get("token") for entry in ordered_sources] != list(CONTROLLED_VOCAB):
+        raise ValueError(
+            "token_sources must hold one entry per CONTROLLED_VOCAB token, in "
+            "vocabulary order"
+        )
     return {
         "schema_version": ACTION_WORD_EMBEDDING_SCHEMA_VERSION,
-        "ordered_token_text": ordered_mapping,
+        "ordered_token_sources": ordered_sources,
         "word_table_sha256": str(word_table_sha256),
         "t5_name": t5_name,
         "t5_artifact_sha256": t5_artifact_sha256,
@@ -568,15 +665,16 @@ def build_action_conditioning_bundle(
     embedding_contract: Mapping[str, Any],
     *,
     source: str,
-    check_token_text: bool = True,
+    check_token_sources: bool = True,
 ) -> ActionConditioningBundle:
     """Validate a frozen word table and pair it with the runtime contract.
 
-    ``check_token_text`` is on for anything built from a data directory: a table
-    whose ``ordered_token_text`` no longer matches this code's ``_VOCAB_T5_TEXT``
-    was encoded from different text and is stale.  It is off for a table that
-    came out of a checkpoint, where the stored vectors -- not the current text
-    table -- are what those weights were fitted against.
+    ``check_token_sources`` is on for anything built from a data directory: a
+    table whose ``ordered_token_sources`` no longer matches this code was built
+    from different text (or a different code layout) and is stale, and its
+    synthetic rows have to BE the code this version writes.  It is off for a
+    table that came out of a checkpoint, where the stored vectors -- not the
+    current source table -- are what those weights were fitted against.
     """
     table = np.asarray(word_embeddings)
     if table.ndim != 2 or table.shape[0] != len(CONTROLLED_VOCAB):
@@ -618,17 +716,33 @@ def build_action_conditioning_bundle(
             "contract was written; rebuild it with "
             "tools/build_action_label_embeddings.py --force."
         )
-    if check_token_text:
-        from data_loaders.truebones.truebones_utils.motion_labels import vocab_t5_text
-
-        expected_text = [
-            {"token": token, "text": vocab_t5_text(token)} for token in CONTROLLED_VOCAB
-        ]
-        if contract.get("ordered_token_text") != expected_text:
+    if check_token_sources:
+        if contract.get("ordered_token_sources") != ordered_token_sources():
             raise ActionConditioningError(
-                f"{source}: the token -> T5 text table moved since this word sidecar "
-                "was built, so its vectors were encoded from different text. Rebuild "
-                "it with tools/build_action_label_embeddings.py --force."
+                f"{source}: the token -> row source table moved since this word sidecar "
+                "was built, so its vectors came from different text or a different code "
+                "layout. Rebuild it with tools/build_action_label_embeddings.py --force."
+            )
+        # The contract says which rows are code; this checks that they ARE.
+        # word_table_sha256 cannot: it is computed from the same table the
+        # contract was written for, so a builder that scattered the code block
+        # wrong would agree with itself. Compared by value rather than by hash
+        # because the failure worth naming is WHICH token drifted.
+        expected_code = synthetic_code_rows(int(table.shape[1]))
+        vocab_index = {word: index for index, word in enumerate(CONTROLLED_VOCAB)}
+        actual_code = np.asarray(
+            table[[vocab_index[word] for word in SYNTHETIC_CODE_VOCAB]],
+            dtype=np.float32,
+        )
+        if not np.array_equal(actual_code, expected_code):
+            drifted = [
+                word for row, word in enumerate(SYNTHETIC_CODE_VOCAB)
+                if not np.array_equal(actual_code[row], expected_code[row])
+            ]
+            raise ActionConditioningError(
+                f"{source}: the rows of {drifted} are not the synthetic "
+                f"{SYNTHETIC_CODE_SCHEME} code this version writes. Rebuild the table "
+                "with tools/build_action_label_embeddings.py --force."
             )
 
     conditioning_contract = conditioning_contract_payload(

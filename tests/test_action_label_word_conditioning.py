@@ -29,6 +29,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     assemble_slot_channels,
     assert_bundle_matches_metadata,
     build_action_conditioning_bundle,
+    scatter_synthetic_code_rows,
     fingerprint,
     load_action_conditioning_bundle,
     action_word_embedding_payload,
@@ -38,6 +39,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_LABEL_MAX_WORDS,
     CONTROLLED_VOCAB,
+    T5_ENCODED_VOCAB,
     parse_action_label,
 )
 from model.anytop import AnyTop  # noqa: E402
@@ -318,7 +320,7 @@ def test_a_rank_deficient_word_table_is_refused_at_construction():
         word_table_sha256=word_table_sha256(flat),
     )
     bundle = build_action_conditioning_bundle(
-        flat, contract, source='flat', check_token_text=False,
+        flat, contract, source='flat', check_token_sources=False,
     )
     with pytest.raises(ValueError, match="full slot-source rank"):
         AnyTop(
@@ -535,10 +537,16 @@ def _other_vectors(bundle, seed=4242):
     Deliberately not ``make_test_bundle(seed=...)``, which also moves
     ``t5_artifact_sha256`` -- that would prove the old metadata-only fingerprint
     still works, not that the fingerprint follows the table.
+
+    Only the ENCODED rows move: the synthetic code rows are fixed by the
+    contract and are checked by value, so randomising them would be refused as a
+    broken code block long before the fingerprint had anything to say.
     """
-    table = np.random.default_rng(seed).standard_normal(
-        bundle.word_embeddings.shape
-    ).astype(np.float32)
+    table = scatter_synthetic_code_rows(
+        np.random.default_rng(seed).standard_normal(
+            (len(T5_ENCODED_VOCAB), bundle.word_embeddings.shape[1])
+        ).astype(np.float32)
+    )
     contract = dict(
         bundle.embedding_contract, word_table_sha256=word_table_sha256(table)
     )
