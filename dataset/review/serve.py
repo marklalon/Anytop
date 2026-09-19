@@ -68,6 +68,12 @@ after the next preprocess. Every source move is appended to
 ``<trash>/soft_deleted.jsonl`` so it can be traced back and undone by hand.
 
     python serve.py [--port 8765] [--datasets ../datasets.jsonl] [--no-browser]
+
+``/api/labels`` accepts optional ``q``, ``field=label|clip|both``, and
+``whole_word=1`` query parameters. Without them it returns every row, as the
+review page needs for its local filters and counts. For labels, ``whole_word``
+requires the entire action label to equal the query; for clips, it matches a
+word bounded by non-alphanumerics.
 """
 import argparse
 import difflib
@@ -175,6 +181,42 @@ def normalize_action_label(value):
 def clip_stem(clip):
     """``Alligator_Bite1.npy`` -> ``Alligator_Bite1`` (the GIF / BVH basename)."""
     return clip[:-4] if clip.lower().endswith(".npy") else clip
+
+
+def _contains_search_term(value, query, whole_word=False):
+    """Case-insensitive search; whole words are bounded by non-alphanumerics.
+
+    Underscores and punctuation separate words, so ``walk`` matches
+    ``Bear_Walk`` but not ``walking`` or ``Walk1``.
+    """
+    value = str(value or "").lower()
+    query = query.strip().lower()
+    if not query:
+        return True
+    if not whole_word:
+        return query in value
+    start = 0
+    while (start := value.find(query, start)) != -1:
+        end = start + len(query)
+        if (start == 0 or not value[start - 1].isalnum()) and (
+            end == len(value) or not value[end].isalnum()
+        ):
+            return True
+        start += 1
+    return False
+
+
+def _row_matches_search(row, query, field="label", whole_word=False):
+    fields = ("action_label", "clip") if field == "both" else (
+        "clip" if field == "clip" else "action_label",
+    )
+    for key in fields:
+        if key == "action_label" and whole_word:
+            if str(row.get(key) or "").strip().lower() == query.strip().lower():
+                return True
+        elif _contains_search_term(row.get(key), query, whole_word):
+            return True
+    return False
 
 
 def _archive_target(src):
@@ -558,7 +600,8 @@ class Handler(BaseHTTPRequestHandler):
                                          "trash_root": str(TRASH_ROOT)})
 
         if path == "/api/labels":
-            requested = self._query().get("ds")
+            params = self._query()
+            requested = params.get("ds")
             selected = self.datasets if requested == "all" else []
             if not selected:
                 ds, store = self._store_and_dataset(requested)
@@ -579,6 +622,12 @@ class Handler(BaseHTTPRequestHandler):
                     row["_dataset"] = selected_ds["id"]
                     row["bvhview"] = _bvhview_href(selected_ds, row["clip"])
                     rows.append(row)
+
+            query = params.get("q", "").strip()
+            if query:
+                field = params.get("field", "label")
+                whole_word = params.get("whole_word", "").lower() in ("1", "true", "on")
+                rows = [row for row in rows if _row_matches_search(row, query, field, whole_word)]
 
             aggregate = requested == "all"
             ds = selected[0]

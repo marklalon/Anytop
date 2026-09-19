@@ -139,3 +139,57 @@ def test_all_dataset_view_keeps_the_owner_on_duplicate_clip_names(tmp_path):
     assert payload["id"] == "all"
     assert [row["clip"] for row in payload["rows"]] == ["shared.npy", "shared.npy"]
     assert [row["_dataset"] for row in payload["rows"]] == ["one", "two"]
+
+
+def test_review_search_matches_whole_words_and_keeps_substring_default():
+    match = review._contains_search_term
+    assert match("Bear_Walk", "walk", True)
+    assert match("walk, forward", "WALK", True)
+    assert not match("walking", "walk", True)
+    assert not match("Walk1", "walk", True)
+    assert match("walking", "walk")
+    assert match("walk (left)", "(left)", True)
+    assert review._row_matches_search({"action_label": "idle"}, "IDLE", whole_word=True)
+    assert not review._row_matches_search({"action_label": "idle, fast"}, "idle", whole_word=True)
+    assert review._row_matches_search({"action_label": "idle, fast"}, "idle")
+
+
+def test_labels_api_can_filter_by_field_and_whole_word(tmp_path):
+    processed = tmp_path / "sample"
+    processed.mkdir()
+    labels = processed / "action_labels.jsonl"
+    labels.write_text("".join(json.dumps(row) + "\n" for row in [
+        {"clip": "Bear_Walk", "action_group": "locomotion", "action_label": "walk, forward"},
+        {"clip": "Bear_Walking", "action_group": "locomotion", "action_label": "run, forward"},
+        {"clip": "Bear_Idle", "action_group": "stationary", "action_label": "idle"},
+        {"clip": "Bear_IdleFast", "action_group": "stationary", "action_label": "idle, fast"},
+    ]), encoding="utf-8")
+    dataset = {
+        "id": "sample", "name": "sample", "processed": str(processed),
+        "labels": labels, "gif_dir": processed / "review" / "gif",
+    }
+    handler = object.__new__(review.Handler)
+    handler.datasets = [dataset]
+    handler.stores = {"sample": review.LabelStore(labels)}
+    handler._send_json = lambda status, payload: (status, payload)
+
+    handler.path = "/api/labels?ds=sample&q=walk&field=clip"
+    status, payload = handler.do_GET()
+    assert status == 200
+    assert [row["clip"] for row in payload["rows"]] == ["Bear_Walk", "Bear_Walking"]
+
+    handler.path = "/api/labels?ds=sample&q=walk&field=clip&whole_word=1"
+    _, payload = handler.do_GET()
+    assert [row["clip"] for row in payload["rows"]] == ["Bear_Walk"]
+
+    handler.path = "/api/labels?ds=sample&q=walk&field=both&whole_word=1"
+    _, payload = handler.do_GET()
+    assert [row["clip"] for row in payload["rows"]] == ["Bear_Walk"]
+
+    handler.path = "/api/labels?ds=sample&q=idle&field=label"
+    _, payload = handler.do_GET()
+    assert [row["clip"] for row in payload["rows"]] == ["Bear_Idle", "Bear_IdleFast"]
+
+    handler.path = "/api/labels?ds=sample&q=idle&field=label&whole_word=1"
+    _, payload = handler.do_GET()
+    assert [row["clip"] for row in payload["rows"]] == ["Bear_Idle"]
