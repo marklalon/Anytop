@@ -642,12 +642,8 @@
 {"clip": "PolarBear_Idle", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
 {"clip": "PolarBear_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "PolarBear_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "Pteranodon_Death2", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true, "pending_delete": true}
 {"clip": "Pteranodon_Death", "action_group": "transition", "action_label": "die, hover", "is_loop": false, "reviewed": true}
-{"clip": "Pteranodon_Flapergasted", "action_group": "stationary", "action_label": "hurt, hover", "is_loop": false, "reviewed": true, "pending_delete": true}
 {"clip": "Pteranodon_FlyLoop", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
-{"clip": "Pteranodon_Hit2", "action_group": "stationary", "action_label": "hurt, hover", "is_loop": false, "reviewed": true, "pending_delete": true}
-{"clip": "Pteranodon_Hit", "action_group": "stationary", "action_label": "hurt, hover", "is_loop": true, "reviewed": true, "pending_delete": true}
 {"clip": "Pteranodon_ScreamFly", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
 {"clip": "Puppy_IdleEnergetic", "action_group": "stationary", "action_label": "idle, look", "is_loop": false, "reviewed": true}
 {"clip": "Puppy_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
@@ -768,7 +764,6 @@
 {"clip": "Scorpion-2_BackingCrazy", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "Scorpion-2_BellyDeath1", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "Scorpion-2_BiteAttack", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
-{"clip": "Scorpion-2_BlastedDeath", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": false, "pending_delete": true}
 {"clip": "Scorpion-2_Death2", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "Scorpion-2_Flipped", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "Scorpion-2_Guns", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
@@ -838,14 +833,12 @@
 {"clip": "Spider_AttackLeft", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Attackright", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "Spider_BackRear", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
-{"clip": "Spider_Barking", "action_group": "transition", "action_label": "jump, backward", "is_loop": false, "reviewed": true, "pending_delete": true}
 {"clip": "Spider_Injuredwalk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Jump", "action_group": "transition", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Spider_LandinHAir", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Landing", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
 {"clip": "Spider_RetreatInjured", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Retreat", "action_group": "locomotion", "action_label": "walk, backward, retreat", "is_loop": true, "reviewed": true}
-{"clip": "Spider_Riser", "action_group": "transition", "action_label": "jump, up", "is_loop": false, "reviewed": true, "pending_delete": true}
 {"clip": "Spider_Rising", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Runleft", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Scary", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
@@ -868,7 +861,6 @@
 {"clip": "Trex_ChaseBite", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
 {"clip": "Trex_ChaseHeadButtLeft", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "Trex_ChaseRoar", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
-{"clip": "Trex_Death", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": false, "pending_delete": true}
 {"clip": "Trex_HeadButtLeft", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": false, "reviewed": true}
 {"clip": "Trex_HitHead3", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "Trex_HitTorsoLeft", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
