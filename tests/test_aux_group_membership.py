@@ -36,6 +36,7 @@ from data_loaders.truebones.data.dataset import (  # noqa: E402
     filter_motion_names_by_aux_action_group,
     load_aux_motion_names_for_train,
     load_motion_names_for_split_with_action_group,
+    require_aux_group_sidecars_migrated,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     AUX_ACTION_GROUPS_KEY,
@@ -268,6 +269,17 @@ def test_aux_key_presence_distinguishes_a_stale_sidecar_from_an_empty_pool(tmp_p
     assert aux_key_present_in(migrated_meta) is True
     # Never migrated: no row has the key at all.
     assert aux_key_present_in(stale_meta) is False
+
+
+def test_every_source_must_have_a_migrated_aux_sidecar(tmp_path):
+    _, _, migrated = _write_corpus(tmp_path / "migrated", aux_for=None)
+    _, _, stale = _write_corpus(tmp_path / "stale", with_aux_key=False)
+
+    require_aux_group_sidecars_migrated({"first": migrated}, 0.08)
+    with pytest.raises(RuntimeError, match="stale"):
+        require_aux_group_sidecars_migrated(
+            {"first": migrated, "stale": stale}, 0.08
+        )
 
 
 def test_a_row_may_not_list_its_own_group(tmp_path):

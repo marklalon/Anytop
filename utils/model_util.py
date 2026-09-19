@@ -209,7 +209,6 @@ def get_gmdm_args(args):
             # older checkpoint, where the defaults are the no-op.
             'head_aug_words': getattr(args, 'head_aug_words', ''),
             'head_aug_prob': getattr(args, 'head_aug_prob', 0.0),
-            'aux_label_mode': getattr(args, 'aux_label_mode', 'aug'),
             # The training entry point builds one bundle and hands the same
             # object to the loader and to the model. Absent at inference: there
             # the checkpoint's own buffers are the word table.

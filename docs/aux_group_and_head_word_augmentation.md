@@ -5,7 +5,7 @@
 > **本轮落规则 J + F，规则 L 已屏蔽**（用户 2026-09-19，见 §7）：aux 池 **68** 条
 > （J 的 44 条 `jump` + F 的 24 条 `fall`），全部取值 `["transition"]`；
 > stationary / locomotion 两组的 aux 池因此都是空的。
-> `train_transition.bat` 已改名 `merged_transition_v21` 并带上四个新旗标
+> `train_transition.bat` 已改名 `merged_transition_v21` 并带上三个新旗标
 > （`--aux_group_mass` 随 aux 池大小重算，0.25 → **0.08**，算式见 §4.2）。
 > 用户自行启动 transition 组重训，另两组暂不重训。
 > 触发：`merged_transition_v20` 对四足 `--action_label jump` 的外推明显差于 `merged_stationary_v18`；
@@ -44,7 +44,7 @@ Buffalo 那条在 stationary 里够不着。合起来才**超过** v18 的监督
 > **摘掉规则 L、加上规则 F 之后这张表一个数字都不变**（2026-09-19 在真实语料上重测：
 > 113 条 / 23 个四足物种 / 含 Buffalo = 本组原生 head=jump 的 54 条 + 本组可提升的 15 条
 > + aux 里带 `jump` 的 44 条）。规则 F 的 24 条 `fall` clip 走的是 null 分支，不进这张表。
-> 原因见 §6.4：L 带进来的 918 条 `walk` / `run` / `fly` 在 `aug` 模式下**全部**走 null 分支，
+> 原因见 §6.4：L 带进来的 918 条 `walk` / `run` / `fly` 按固定规则**全部**走 null 分支，
 > 对 head 槽的 jump 监督贡献恰好为 **0**。L 买到的只有"通用步态 / 振翅动力学"这一条
 > null 分支先验，代价是把 aux 池撑到 962 条并顶替掉 CFG 无条件分支 —— 本轮不做这笔交易（§7.4）。
 
@@ -129,7 +129,7 @@ root 末端误差更差，turn 滑步 0.675 vs 0.540；只在 jerk 和多样性�
 | 覆盖面 | 全量三组无条件合并 | **按规则选入的子集**，逐条可审 |
 | 采样质量 | 组权重 1:1:1，本组只占 1/3 | **本组恒占 `1 - aux_group_mass`（本轮 95%）** |
 | 模型数 | 1 个 | **仍是 3 个**，每组风格一致性由主质量保证 |
-| 组标记 | 加了 `--action_group_cond` 嵌入 | **不加**（§6.4 用 `--aux_label_mode` 处理外来条件，不靠标记隔离） |
+| 组标记 | 加了 `--action_group_cond` 嵌入 | **不加**（§6.4 固定处理外来条件，不靠标记隔离） |
 | 切分 | 在合并集上 | **按首组算，aux 只进 train**（§4.3） |
 
 ---
@@ -292,7 +292,7 @@ eval / inference 永不增广（与 direction drop 同一条 `self.training` 判
 
 ---
 
-## 6. aux clip 的条件处理 `--aux_label_mode`（A 与 B 的耦合点）
+## 6. aux clip 的条件处理（A 与 B 的耦合点）
 
 > 起因：未触发主词增广时，从 stationary 带进 transition 的 `attack, jump, charge`
 > （首词 `attack`）对 transition 模型是零贡献还是负贡献？
@@ -321,7 +321,7 @@ transition 的 aux 池 68 条 -> 68 条（100%）带来本组原生不存在的�
 stationary / locomotion 的 aux 池：0 条
 ```
 
-其中 **J 的 44 条**在 modifier 槽里带 `jump`，`aug` 模式下全部被提升为 head=jump；
+其中 **J 的 44 条**在 modifier 槽里带 `jump`，训练时全部被提升为 head=jump；
 **F 的 24 条**（首词 `fall` 22 + `hurt, fall` 2）不含 `--head_aug_words` 里的词，
 全部退化为 null 分支（§6.4）。
 
@@ -363,17 +363,12 @@ Buffalo 的 null 分支从"三种倒地"变成"倒地/起身/腾空/走/跑"，�
 方向上这是好事 —— 原先 CFG 是从"躺着"往一个模型不认识的方向推，现在是从"一般的水牛运动"
 往 jump 推。
 
-### 6.4 结论：加旋钮 `--aux_label_mode`，默认 `aug`
+### 6.4 固定规则：可提升则保留标签，否则走 null
 
-既然条件路径 ≈ 零而其余两路才是收益，就不该让 aux clip 白带一个无人查询的首词进来：
-
-| 模式 | 行为 | 适用 |
-|---|---|---|
-| `label` | 原样用 aux clip 的 label | 仅作逃生舱；本次不训对照 run（§8.1），**没有实测支撑** |
-| `null` | 该 clip **永远**走 CFG null 分支，动作条件完全不参与 | 纯物种先验补充 |
-| **`aug`（默认）** | 首词可按 `--head_aug_words` 提升 → **100% 提升**（而非本组 clip 的 `--head_aug_prob`）；不可提升 → 退化为 `null` | 目标配置 |
-
-`aug` 模式下：
+既然条件路径 ≈ 零而其余两路才是收益，就不该让 aux clip 白带一个无人查询的首词进来。
+训练时，若标签里有可按 `--head_aug_words` 提升的词，辅助行 **100% 提升**，
+不受本组 clip 的 `--head_aug_prob` 影响；否则该行走 CFG null 分支。
+推理时不执行这项处理。
 
 - `attack, jump, charge` → **100% head=jump**，modifier={attack, charge}。
   推理问裸 `jump` 时 modifier 为空槽（零行），这是 transition 组大量存在的常见状态
@@ -386,9 +381,6 @@ Buffalo 的 null 分支从"三种倒地"变成"倒地/起身/腾空/走/跑"，�
   **只补腾空/坠落的身体动力学与物种先验，不往 transition 的 head 通道塞一个 `fall`**。
   规则 F 与规则 L 在这一点上是同一个机制，只是体量从 918 降到 24 ——
   CFG 无条件分支被 aux 主导的风险随之从"半个池子"降到 2.8% 的抽样质量（§4.2）。
-  （`aug` 与 `label` 仍然不同：`label` 下 J 的 44 条只按 `--head_aug_prob` 的 25% 概率
-  提升，另外 75% 会把 `attack` / `run` / `swim` 写进 transition 的 head 通道，
-  F 的 24 条则会把 `fall` / `hurt` 写进去。）
 
 被否决的第四种模式：把 head 槽置为缺席（零行）而保留 direction / modifier。
 `parse_action_label` 要求每条 label 至少一个主词，训练语料里 head=∅ 从不出现；
@@ -453,7 +445,7 @@ locomotion 959 / stationary 2925 / transition 1720。
 
 - **L 对决定性指标的贡献是 0。** §0 的 113 条 / 23 个四足物种 / 含 Buffalo，
   不上 L 时一字不差 —— 因为 L 的 918 条首词是 `walk`/`run`/`fly`，
-  不在 `--head_aug_words` 里，`aug` 模式下全部走 null 分支，head 槽拿不到任何 jump。
+  不在 `--head_aug_words` 里，按固定规则全部走 null 分支，head 槽拿不到任何 jump。
 - **L 的收益只有一条 null 分支先验**（"这副骨架会走会跑会振翅"），
   而代价是把 aux 池从 68 撑到 986：`--aux_group_mass` 是整池配额，
   这 918 条会**顶替**掉 44 条真正带 jump 的 clip 的抽样质量（同样的 m 下，
@@ -500,7 +492,7 @@ locomotion 959 / stationary 2925 / transition 1720。
 数据侧：**启用规则 J + F，规则 L 屏蔽**（§7）。训练侧：
 
 ```
---aux_group_mass 0.08 --aux_label_mode aug --head_aug_words jump --head_aug_prob 0.25
+--aux_group_mass 0.08 --head_aug_words jump --head_aug_prob 0.25
 ```
 
 三组都要重训，同一套旗标。注意**只上规则 J + F 时，locomotion 与 stationary 两组的
@@ -510,7 +502,7 @@ aux 池都是空的**（两条规则都只往 transition 送），`--aux_group_m
 `roll, jump` 的提升。
 
 代价是：若 v21 没修好，无法从训练结果本身分辨是三个部件（aux 质量预算 /
-`aux_label_mode` / 主词增广）里哪一个没起作用。**§8.2 的探针把这份诊断能力绝大部分
+辅助标签分流 / 主词增广）里哪一个没起作用。**§8.2 的探针把这份诊断能力绝大部分
 挪到了同一个 run 的采样上和训练前的单元测试上，零额外训练成本** —— 只有在探针也指不明时，
 才需要回头补训练侧的对照。
 
@@ -518,7 +510,7 @@ aux 池都是空的**（两条规则都只往 transition 送），`--aux_group_m
 
 | 探针 | 怎么做 | 回答什么 |
 |---|---|---|
-| **训练前数据断言** | 单元测试（§9 步骤 8），不是 run | `Buffalo_Jump` 确实进了 transition 的 **train** 集，且其 `slot_ids` 在 `aug` 模式下被提升为 head=`jump`。**这一条拦住绝大多数"配置没生效"的失败。** |
+| **训练前数据断言** | 单元测试（§9 步骤 8），不是 run | `Buffalo_Jump` 确实进了 transition 的 **train** 集，且其 `slot_ids` 按固定规则被提升为 head=`jump`。**这一条拦住绝大多数"配置没生效"的失败。** |
 | **空标签 = 直接看 null 分支** | `--object_type Buffalo`，**不传** `--action_label`（`_resolve_action_condition` 返回 `None` → 走学到的 null 嵌入） | aux 有没有把 Buffalo 的物种先验从"三种倒地"救回来 —— **不用再单训一个不带主词增广的 run，免费问到。** |
 | **head 通道 vs modifier 通道** | 同一物种对比 `jump` / `jump, attack` / `attack, jump` | 腾空是谁带来的。若 `attack, jump`（在 transition 是 OOD 首词）反而更像扑击，说明主词提升没真正生效 |
 | **有原生样本的对照物种** | `--object_type Horse --action_label jump`（Horse 在 transition 有原生 head=jump 的 `Horse_RunJump`） | Horse 好而 Buffalo 差 ⇒ 跨物种迁移不足；两者都好 ⇒ 成了 |
@@ -532,7 +524,7 @@ aux 池都是空的**（两条规则都只往 transition 送），`--aux_group_m
    查主词提升是否生效（数据断言应已拦住），再考虑把 `--head_aug_prob` 提到 0.5。
 3. **两者都正常但 `jump` 偏"扑击"而非中性跳跃** ⇒ 不是 bug，是语料事实（§10 第一条）。
 4. **transition 自身的 die / getup 退化** ⇒ 降 `--aux_group_mass`（0.08 → 0.03），
-   仍不行再把 `--head_aug_prob` 降到 0.1；不要改 `--aux_label_mode`（§10 第四条）。
+   仍不行再把 `--head_aug_prob` 降到 0.1（§10 第四条）。
    规则 L 不在场，所以归因只在 68 条 aux 与主词增广之间二选一（§7.4）。
    若退化集中在 `die`，先看规则 F 的 2 条 `hurt, fall` 与 transition 自己的
    `die, fall` 是否把 null 分支往"坠地"带偏。
@@ -546,14 +538,13 @@ aux 池都是空的**（两条规则都只往 transition 送），`--aux_group_m
 2. `dataset.py`：`load_motion_names_for_split_with_action_group` 按 §4.3 拆成
    "首组算 split" + "aux 只并 train"；`Truebones` 记录 `aux_mask`。
 3. `TruebonesSampler` + `get_data.py`：§4.4 的两池质量预算与 `use_weighted_sampler` 条件。
-4. `parser_util.py`：`--aux_group_mass`（默认 0.0）、`--aux_label_mode`
-   （`label` / `null` / `aug`，默认 `aug`）、`--head_aug_words`（默认空）、
-   `--head_aug_prob`（默认 0.0）；四者进 args.json。
+4. `parser_util.py`：`--aux_group_mass`（默认 0.0）、`--head_aug_words`（默认空）、
+   `--head_aug_prob`（默认 0.0）；三者进 args.json。辅助标签分流固定按 §6.4 执行。
 5. `model/anytop.py`：`head_aug_word` (V,) bool buffer + `_promote_head_slot()`，
    紧挨 `_drop_direction_slot` 放，按 §5.1 的顺序调用。**数据侧不动一行。**
-   collate 需多带一个 `y['is_aux']` (B,) bool，供 §6.4 三模式分流：
-   `aug` = 对 aux 行把提升概率钉成 1.0、不可提升的行并入 `action_label_active=False`；
-   `null` = 直接并入 `action_label_active=False`。两者都是既有掩码通路，不加新分支结构。
+   collate 需多带一个 `y['is_aux']` (B,) bool，按 §6.4 对 aux 行把可提升词的
+   提升概率钉成 1.0、不可提升的行并入 `action_label_active=False`。
+   使用既有掩码通路，不加新分支结构。
 6. **一次性迁移** `action_labels.jsonl` ×3：按 §7.1 的**规则 J**与 §7.2 的**规则 F**
    写入 `aux_action_groups`（规则 L 屏蔽，不写），先出 dry-run 清单交人工过目，
    确认后落盘并留 `.bak`。脚本用完即弃，不进 `tools/`。
@@ -652,11 +643,9 @@ aux 池都是空的**（两条规则都只往 transition 送），`--aux_group_m
   **本轮不做**，记在这里以免日后重新论证。
 - **§6.2 的正交性只测了词向量，没测训练后的模型。** 冻结 T5 表里 `attack` 与
   `jump` 不相关，不等于模型内部的 head 投影之后仍不相关（投影是学出来的，可能把两者
-  拉近）。验证它需要一个 `aux_label_mode=label` 的对照 run，**本次不训**（§8.1）。
-  所以"外来首词零干扰"始终是**基于几何的推断，不是实测结论** —— 在默认的 `aug` 模式下
-  这条推断其实用不上（外来首词要么被提升成 `jump`，要么整条走 null，根本不进 head 通道），
-  它只在有人把 `--aux_label_mode` 改成 `label` 时才成为前提。
-- **`aug` 模式下 aux 的 null 分支占比本轮是 24 / 68**：规则 L 屏蔽后剩规则 F 的
+  拉近）。当前辅助标签固定按 §6.4 分流：外来首词要么被提升成 `jump`，要么整条走 null，
+  不会原样进入 head 通道。
+- **aux 的 null 分支占比本轮是 24 / 68**：规则 L 屏蔽后剩规则 F 的
   `fall` clip 走这条路（§6.4）。它只占 2.82% 的抽样质量，远不到 J+L 时"无条件分支被
   aux 主导"的程度，但也不再是零。要留意的是 `--aux_group_mass` 现在按
   `m × 44 / 68` 换算成 head 通道里 jump 的占比 —— **改规则集就要重算 m**（§4.2）。

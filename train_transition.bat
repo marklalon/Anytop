@@ -48,7 +48,6 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 	--dropout_prob 0.1 ^
 	--action_label_cfg_drop_prob 0.3 ^
 	--aux_group_mass 0.08 ^
-	--aux_label_mode aug ^
 	--head_aug_words jump ^
 	--head_aug_prob 0.25 ^
 	--joint_mask_prob 0.3 ^

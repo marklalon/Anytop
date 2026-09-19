@@ -133,6 +133,21 @@ def aux_action_groups_of(motion_metadata) -> tuple[str, ...]:
     return tuple(normalize_action_group(value) for value in raw)
 
 
+def require_aux_group_sidecars_migrated(metadata_by_namespace, aux_group_mass):
+    """Reject any source whose sidecar predates auxiliary groups."""
+    stale_sources = [
+        namespace for namespace, lookup in metadata_by_namespace.items()
+        if not aux_key_present_in(lookup)
+    ]
+    if stale_sources:
+        raise RuntimeError(
+            f"--aux_group_mass {aux_group_mass} was passed, but "
+            f"action_labels.jsonl has no '{AUX_ACTION_GROUPS_KEY}' key in "
+            f"source(s) {stale_sources}. Migrate each sidecar "
+            "(docs/aux_group_and_head_word_augmentation.md §7) or drop the flag."
+        )
+
+
 def filter_motion_names_by_aux_action_group(
     motion_names,
     raw_action_group,
@@ -1276,8 +1291,8 @@ class MotionDataset(data.Dataset):
         # The composite clip id, not the bare filename: two sources may hold the
         # same filename, and this value is what training logs report.
         motion_metadata['motion_name'] = name
-        # Borrowed from another action group: the model uses it to decide how
-        # this row's label is presented (--aux_label_mode), nothing else.
+        # Borrowed from another action group: the model promotes an eligible
+        # head word or routes this row's label to the unconditional branch.
         motion_metadata['is_aux'] = bool(data.get('is_aux', False))
         is_loop = bool(motion_metadata.get('is_loop'))
 
@@ -1662,21 +1677,12 @@ class Truebones(data.Dataset):
         )
         aux_motion_names = {}
         if self.aux_group_mass > 0.0:
-            # Two different "empty"s, and conflating them is the trap. A corpus
-            # where NO row carries the key is a sidecar that predates the aux
-            # migration -- the flag would then be silently doing nothing, so it
-            # is a hard error. A group that simply matched no aux clip is an
-            # ordinary state (the shipped rule sends aux to transition only, so
-            # locomotion and stationary both receive none)
-            # and only warrants a line of output.
-            if not any(aux_key_present_in(lookup) for lookup in motion_metadata_lookup.values()):
-                raise RuntimeError(
-                    f"--aux_group_mass {self.aux_group_mass} was passed, but no row in any "
-                    f"action_labels.jsonl carries '{AUX_ACTION_GROUPS_KEY}'. The sidecar "
-                    "predates auxiliary groups, so the flag would train nothing extra. "
-                    "Migrate the sidecars (docs/aux_group_and_head_word_augmentation.md §7) "
-                    "or drop the flag."
-                )
+            # A migrated source may have no aux clips for this group; an
+            # unmigrated source has no aux key at all. Check every source so a
+            # migrated one cannot hide an older sidecar in a merged corpus.
+            require_aux_group_sidecars_migrated(
+                motion_metadata_lookup, self.aux_group_mass
+            )
             aux_motion_names = load_aux_motion_names_per_source(
                 split,
                 opt.sources,

@@ -42,8 +42,7 @@ from tests.action_label_test_utils import (  # noqa: E402
 )
 
 
-def _model(bundle, *, head_aug_words='', head_aug_prob=0.0, aux_label_mode='aug',
-           eval_mode=False):
+def _model(bundle, *, head_aug_words='', head_aug_prob=0.0, eval_mode=False):
     model = AnyTop(
         max_joints=4,
         feature_len=12,
@@ -58,7 +57,6 @@ def _model(bundle, *, head_aug_words='', head_aug_prob=0.0, aux_label_mode='aug'
         action_label_cfg_drop_prob=0.0,
         head_aug_words=head_aug_words,
         head_aug_prob=head_aug_prob,
-        aux_label_mode=aux_label_mode,
         action_conditioning=bundle,
     )
     if eval_mode:
@@ -175,53 +173,26 @@ def test_only_head_vocab_words_may_be_listed():
 
 
 # --------------------------------------------------------------------------
-# Auxiliary routing (--aux_label_mode)
+# Auxiliary label routing
 # --------------------------------------------------------------------------
-def _keep(model, labels, groups, is_aux, slots=None, word_ids=None):
-    fields = action_cond_fields(labels, groups)
-    batch = fields['action_word_ids'].shape[0]
-    y = dict(fields)
-    y['is_aux'] = torch.tensor(is_aux, dtype=torch.bool)
-    return model._keep_aux_label(
-        y,
-        fields['action_word_ids'] if word_ids is None else word_ids,
-        fields['action_slot_ids'] if slots is None else slots,
-        batch,
-        torch.device('cpu'),
-    )
-
-
-def test_aux_mode_null_sends_every_borrowed_row_to_the_unconditional_branch():
+def test_aux_keeps_promoted_rows_and_nulls_the_rest():
+    """A borrowed clip trains the queried head or contributes species prior."""
     bundle = make_test_bundle()
-    model = _model(bundle, aux_label_mode='null')
-    keep = _keep(model, ['attack, jump, charge', 'die'], ['stationary', 'transition'],
-                 [True, False])
-    assert keep.tolist() == [False, True]
-
-
-def test_aux_mode_label_keeps_everything():
-    bundle = make_test_bundle()
-    model = _model(bundle, aux_label_mode='label')
-    keep = _keep(model, ['attack, jump, charge', 'die'], ['stationary', 'transition'],
-                 [True, False])
-    assert keep.tolist() == [True, True]
-
-
-def test_aux_mode_aug_keeps_promoted_rows_and_nulls_the_rest():
-    """The point of 'aug': a borrowed clip either arrives as a word this group
-    is queried for, or contributes species prior only."""
-    bundle = make_test_bundle()
-    model = _model(bundle, head_aug_words='jump', head_aug_prob=0.0, aux_label_mode='aug')
+    model = _model(bundle, head_aug_words='jump', head_aug_prob=0.0)
     labels = ['attack, jump, charge', 'walk, forward', 'die']
     groups = ['stationary', 'locomotion', 'transition']
     fields = action_cond_fields(labels, groups)
-    is_aux = torch.tensor([True, True, False])
-    promoted = _promote(model, fields, force=is_aux)
-    keep = _keep(model, labels, groups, [True, True, False], slots=promoted)
+    fields['is_aux'] = torch.tensor([True, True, False])
+    _, active = model._action_condition(fields, 3, torch.device('cpu'), torch.float32)
     # jump was promotable -> the row keeps its (now head=jump) label.
     # 'walk, forward' has no promotable word -> unconditional.
     # the non-aux row is untouched.
-    assert keep.tolist() == [True, False, True]
+    assert active.tolist() == [True, False, True]
+    model.eval()
+    _, eval_active = model._action_condition(
+        fields, 3, torch.device('cpu'), torch.float32
+    )
+    assert eval_active.tolist() == [True, True, True]
 
 
 def test_aux_force_promotes_regardless_of_head_aug_prob():
@@ -264,8 +235,7 @@ def test_aux_flags_survive_full_collate_and_control_label_routing():
     assert cond['y']['is_aux'].tolist() == [True, True, False]
 
     bundle = make_test_bundle()
-    model = _model(bundle, head_aug_words='jump', head_aug_prob=0.0,
-                   aux_label_mode='aug')
+    model = _model(bundle, head_aug_words='jump', head_aug_prob=0.0)
     channels, active = model._action_condition(
         cond['y'], 3, torch.device('cpu'), torch.float64
     )

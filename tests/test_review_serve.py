@@ -11,6 +11,8 @@ review = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(review)
 
+from data_loaders.truebones.truebones_utils.motion_labels import load_action_labels  # noqa: E402
+
 
 def test_review_normalizer_validates_and_uses_canonical_order():
     assert review.normalize_action_label(" FAST；right, WALK, right ") == (
@@ -101,6 +103,28 @@ def test_a_hand_edit_drops_the_prefill_flag_but_signing_it_off_keeps_it(tmp_path
     assert corrected["action_label"] == "attack, right, swat"
     assert "autofill" not in corrected
     assert "autofill" not in json.loads(labels.read_text(encoding="utf-8").splitlines()[0])
+
+
+@pytest.mark.parametrize("aux_groups, expected", [
+    (["transition"], []),
+    (["transition", "locomotion"], ["locomotion"]),
+])
+def test_changing_owner_group_removes_that_group_from_aux_list(
+    tmp_path, aux_groups, expected
+):
+    labels = tmp_path / "action_labels.jsonl"
+    labels.write_text(json.dumps({
+        "clip": "Bear_Jump", "action_group": "stationary",
+        "action_label": "jump", "aux_action_groups": aux_groups,
+        "is_loop": False,
+    }) + "\n", encoding="utf-8")
+
+    saved = review.LabelStore(labels).update("Bear_Jump", action_group="transition")
+    assert saved["aux_action_groups"] == expected
+    assert json.loads(labels.read_text(encoding="utf-8"))["aux_action_groups"] == expected
+    # The saved sidecar must still pass the loader's primary/aux disjointness
+    # rule, and the empty key must continue to mark the sidecar as migrated.
+    assert load_action_labels(tmp_path)["Bear_Jump"]["aux_action_groups"] == tuple(expected)
 
 
 def test_all_dataset_view_keeps_the_owner_on_duplicate_clip_names(tmp_path):

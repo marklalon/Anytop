@@ -108,6 +108,7 @@ from data_loaders.truebones.truebones_utils.loop_verdict import (  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_LABEL_MAX_HEADS,
     ACTION_LABEL_MAX_WORDS,
+    AUX_ACTION_GROUPS_KEY,
     AUTOFILL_KEY,
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
@@ -476,6 +477,15 @@ class LabelStore:
                 if not action_group:
                     raise ValueError("action_group must not be empty")
                 row["action_group"] = action_group
+                # A group cannot be both the clip's owner and a supplement.
+                # Keep the key even if the list becomes empty: its presence
+                # marks a sidecar that has been migrated to the aux schema.
+                aux_groups = row.get(AUX_ACTION_GROUPS_KEY)
+                if isinstance(aux_groups, list) and action_group in aux_groups:
+                    row[AUX_ACTION_GROUPS_KEY] = [
+                        group for group in aux_groups
+                        if group != action_group
+                    ]
             if reviewed is not None:
                 if reviewed:
                     row["reviewed"] = True

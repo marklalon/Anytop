@@ -356,18 +356,6 @@ def add_data_options(parser, training=False):
                                 "Passing > 0 against sidecars that carry no aux_action_groups key "
                                 "is a hard error. Default 0.0. "
                                 "See docs/aux_group_and_head_word_augmentation.md.")
-        group.add_argument("--aux_label_mode", default='aug', type=str,
-                           choices=['label', 'null', 'aug'],
-                           help="How an auxiliary clip's action_label is presented while training "
-                                "this group. 'aug' (default): promote a --head_aug_words head word "
-                                "into the head slot with probability 1 for aux rows, and route the "
-                                "rows that cannot be promoted to the unconditional branch -- so a "
-                                "borrowed clip either arrives as a word this group is actually "
-                                "queried for, or contributes species prior only. 'null': every aux "
-                                "row goes to the unconditional branch. 'label': use the label "
-                                "as-written (an escape hatch; every group's native head words are "
-                                "disjoint, so this trains head regions nobody queries). Only "
-                                "meaningful with --aux_group_mass > 0.")
         group.add_argument("--head_aug_words", default='', type=str,
                            help="Comma-separated HEAD_VOCAB words that may be promoted from the "
                                 "modifier slot into the head slot during training, when the label "
@@ -379,8 +367,9 @@ def add_data_options(parser, training=False):
                                 "(hover / rear / crouch) that should NOT become the head.")
         group.add_argument("--head_aug_prob", default=0.0, type=float,
                            help="Probability of applying the --head_aug_words promotion to an "
-                                "eligible row of this group's OWN clips. Auxiliary rows under "
-                                "--aux_label_mode aug are always promoted regardless of this value. "
+                                "eligible row of this group's OWN clips. Auxiliary rows are "
+                                "always promoted when eligible, regardless of this value; "
+                                "other auxiliary rows use the unconditional label branch. "
                                 "Default 0.0.")
 
 def add_training_options(parser):

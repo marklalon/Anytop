@@ -136,11 +136,6 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"head_aug_prob must be in [0, 1], got {self.head_aug_prob}"
             )
-        self.aux_label_mode = str(kargs.get('aux_label_mode', 'aug') or 'aug').strip().lower()
-        if self.aux_label_mode not in ('label', 'null', 'aug'):
-            raise ValueError(
-                f"aux_label_mode must be one of 'label', 'null', 'aug'; got {self.aux_label_mode!r}"
-            )
         self._init_head_aug_words(kargs.get('head_aug_words', ''))
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
@@ -588,8 +583,8 @@ class AnyTop(nn.Module):
         compiles the same way.
 
         ``force`` is a per-row bool that promotes regardless of
-        ``head_aug_prob`` -- auxiliary rows under ``aux_label_mode='aug'`` use
-        it, since a borrowed clip is worth nothing to this group's head channel
+        ``head_aug_prob`` -- auxiliary rows use it, since a borrowed clip is
+        worth nothing to this group's head channel
         unless it arrives as a word the group is queried for.
 
         ``word_mask`` gates the lookup: padding columns carry word id 0, which
@@ -624,39 +619,6 @@ class AnyTop(nn.Module):
                 slot_ids,
             ),
         )
-
-    def _keep_aux_label(self, y, word_ids, slot_ids, batch_size, device):
-        """Which rows keep their action label, under ``aux_label_mode``.
-
-        Only auxiliary rows are affected, and only while training:
-
-        * ``'label'`` -- keep everything, the escape hatch.
-        * ``'null'``  -- every aux row goes to the unconditional branch, so the
-          borrowed clip contributes species prior and body dynamics without
-          writing a foreign head word into this group's head channel.
-        * ``'aug'``   -- keep the rows ``_promote_head_slot`` actually promoted
-          (their head slot now holds a word this group IS queried for) and null
-          the rest. Detected from the slot ids after promotion rather than
-          recomputed: whatever the promotion did is what the channels hold.
-
-        Every group's native head words are disjoint from every other group's,
-        so an unpromoted aux label would train a head region nothing ever asks
-        for. Nulling it is not throwing the clip away -- the unconditional
-        branch is where the species prior lives.
-        """
-        keep = torch.ones(batch_size, device=device, dtype=torch.bool)
-        if not self.training or self.aux_label_mode == 'label':
-            return keep
-        is_aux = self._resolve_aux_rows(y, batch_size, device)
-        if is_aux is None:
-            return keep
-        if self.aux_label_mode == 'null' or slot_ids is None or word_ids is None:
-            return keep & ~is_aux
-        promoted = (
-            self.head_aug_word_table.to(device=word_ids.device)[word_ids]
-            & (slot_ids == SLOT_HEAD)
-        ).any(dim=1)
-        return keep & (~is_aux | promoted)
 
     def _resolve_aux_rows(self, y, batch_size, device):
         """``y['is_aux']`` as a (B,) bool, or ``None`` when the batch carries none."""
@@ -743,6 +705,7 @@ class AnyTop(nn.Module):
         """
         if not self.action_label_cond:
             return None
+        is_aux = self._resolve_aux_rows(y, batch_size, device)
         resolved = self._action_slot_inputs(y, batch_size, device)
         if resolved is None:
             channels = torch.zeros(
@@ -752,14 +715,9 @@ class AnyTop(nn.Module):
             word_mask = None
         else:
             word_ids, slot_ids, word_mask = resolved
-            is_aux = self._resolve_aux_rows(y, batch_size, device)
-            aux_aug = (
-                is_aux
-                if (is_aux is not None and self.training and self.aux_label_mode == 'aug')
-                else None
-            )
             slot_ids = self._promote_head_slot(
-                word_ids, slot_ids, word_mask, batch_size, device, force=aux_aug
+                word_ids, slot_ids, word_mask, batch_size, device,
+                force=is_aux if self.training else None,
             )
             word_mask = self._drop_direction_slot(word_mask, slot_ids, batch_size, device)
             channels = self._assemble_action_slot_channels(
@@ -771,13 +729,17 @@ class AnyTop(nn.Module):
         active = active & self._resolve_action_label_valid(
             y, batch_size, device, word_mask
         )
-        active = active & self._keep_aux_label(
-            y,
-            word_ids if resolved is not None else None,
-            slot_ids if resolved is not None else None,
-            batch_size,
-            device,
-        )
+        if self.training and is_aux is not None:
+            # Borrowed labels train this group's head only when a configured
+            # word reached that slot. All other aux rows train the null path.
+            if resolved is None:
+                active = active & ~is_aux
+            else:
+                promoted = (
+                    self.head_aug_word_table.to(device=word_ids.device)[word_ids]
+                    & (slot_ids == SLOT_HEAD)
+                ).any(dim=1)
+                active = active & (~is_aux | promoted)
         return channels, active
 
     def _build_action_label_token(self, y, batch_size, device, dtype):
