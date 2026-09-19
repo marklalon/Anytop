@@ -57,12 +57,6 @@ DEFAULT_REPORT_PATH = _ANYTOP_DIR / "dataset" / "review" / "audit_action_labels.
 # audit_action_labels.py are the authority; these say what the operator has to
 # decide, which is the part the docstrings do not spell out.
 RULE_INFO = {
-    "R1": {
-        "name": "标签桶离散度",
-        "text": "同一 (物种, action_group, 标签) 桶里，最远的一对动作不得超过该物种自己的"
-                "中位成对距离。共享标签本身不是缺陷 —— 要判断的是这个标签能不能同时描述"
-                "桶里的每一条 clip；不能，就把描述不到的那条改掉。",
-    },
     "R3": {
         "name": "镜像一致性",
         "text": "只靠名字配上的左右两条 clip，标签必须互为镜像、各自带自己的方向词，而且"
@@ -146,7 +140,7 @@ def _case_key(rule, species, subject) -> str:
 
     Deliberately built from what the finding is ABOUT (rule, species, and the
     label / mirror base / clip it concerns) rather than its position in the
-    list: a re-run with different thresholds reorders the findings, and an
+    list: a re-run over a changed corpus reorders the findings, and an
     index-based key would hand every verdict to the wrong case.
     """
     return "%s|%s|%s" % (rule, species, subject)
@@ -157,8 +151,8 @@ def build_cases(findings, clips) -> list[dict]:
 
     A case is one panel on the page: a headline, the problems, the metrics that
     produced it, and the clips it concerns with their GIFs. The rules disagree
-    about what a finding looks like (a bucket, a mirror pair, a single clip), so
-    the normalisation happens here and the page only ever sees a case.
+    about what a finding looks like (a mirror pair, a single clip), so the
+    normalisation happens here and the page only ever sees a case.
     """
     index = {(item["species"], item["clip"]): item for item in clips}
     cases = []
@@ -168,34 +162,7 @@ def build_cases(findings, clips) -> list[dict]:
         metrics = []
         note_hint = ""
 
-        if rule == "R1":
-            label = finding["label"]
-            worst = list(finding.get("worst_pair", []))
-            members = []
-            for name in finding.get("clips", []):
-                record = _lookup(index, species, name,
-                                 {"label": label,
-                                  "group": finding.get("action_group", "")})
-                members.append(_clip_payload(record, "最远一对" if name in worst else ""))
-            # The distance is the reason the pair is on the page; printing it
-            # keeps the operator from re-deriving how bad "bad" was.
-            metrics = [
-                {"k": "ratio", "v": "%.2f×" % finding["ratio"]},
-                {"k": "最远距离", "v": "%.2f" % finding["max_distance"]},
-                {"k": "种内中位", "v": "%.2f" % finding["species_spread"]},
-            ]
-            subject = label or "(空标签)"
-            headline = ("标签 %s 覆盖了 %d 条动作，其中最远的一对相距种内中位距的 %.2f 倍"
-                        % (json.dumps(label, ensure_ascii=False), len(members),
-                           finding["ratio"]))
-            problems = []
-            if len(worst) == 2:
-                problems.append("最远的一对：%s ↔ %s" % (worst[0], worst[1]))
-            problems.append("这个标签描述不了的那条，改成它自己的标签；两条都对就标"
-                            "「无需修改」。")
-            note_hint = "例如：两条其实是同一个动作的两次录制，保持不变"
-
-        elif rule == "R3":
+        if rule == "R3":
             subject = finding.get("base", "")
             members = []
             for side, role in (("left", "L"), ("right", "R")):
@@ -407,7 +374,6 @@ _TEMPLATE = r"""<!DOCTYPE html>
     font-weight: 600;
     letter-spacing: .5px;
   }
-  .badge.R1 { background: #3a3f52; color: #a9c2ff; }
   .badge.R3 { background: #4a3a2f; color: #ffb79c; }
   .badge.R4 { background: #33413a; color: #9fd8b4; }
   .badge.R5 { background: #4a2f3d; color: #ffa9c8; }
@@ -626,8 +592,8 @@ function canonical(text) {
 }
 
 // ── per-clip edit state ─────────────────────────────────────────────────────
-// A clip can appear in more than one case (an R1 bucket member that also trips
-// R4); the edit belongs to the CLIP, so every card showing it stays in sync.
+// A clip can appear in more than one case (a mirror half that also trips R4);
+// the edit belongs to the CLIP, so every card showing it stays in sync.
 const cardsByClip = new Map();
 
 function currentOf(clip) {
@@ -689,26 +655,9 @@ function metaBlock() {
   const dl = [
     ['cond', m.cond_path],
     ['范围', m.action_group + '（' + m.clip_count + ' clips / ' + m.species_count + ' 物种）'],
-    // The R1 thresholds only explain findings R1 produced; printing them for a
-    // run that did not ask for R1 reads as a setting that did something.
-    ['规则', (m.rules || []).join(', ') +
-             ((m.rules || []).includes('R1')
-               ? '　R1 阈值 ratio>' + m.thresholds.ratio + '、最小距离 ' +
-                 m.thresholds.min_distance + '、' + m.thresholds.frames + ' 帧'
-               : '')],
+    ['规则', (m.rules || []).join(', ')],
     ['生成', m.generated + '　' + (m.command || '')],
   ];
-  if ((m.rules || []).includes('R1')) {
-    dl.push(['R1 豁免', (m.r1_exempt && m.r1_exempt.length)
-             ? m.r1_exempt.join(' / ') + ' —— 这类标签桶直接跳过'
-             : '无']);
-  }
-  if (m.ignore_path && (m.ignored_buckets || m.ignored_clips)) {
-    const parts = [];
-    if (m.ignored_buckets) parts.push(m.ignored_buckets + ' 个桶');
-    if (m.ignored_clips) parts.push(m.ignored_clips + ' 条 clip');
-    dl.push(['已确认忽略', m.ignore_path + '（' + parts.join(' · ') + '）']);
-  }
   const rows = dl.map(([k, v]) =>
     '<dt>' + esc(k) + '</dt><dd><code>' + esc(v) + '</code></dd>').join('');
   const legend = Object.keys(DATA.rule_info).map((rule) => {
@@ -1132,41 +1081,9 @@ function buildPrompt() {
   }
   out.push('```');
 
-  // "无需修改" on ANY rule means the case is confirmed fine, and all of them
-  // go to the SAME ignore list -- nothing distinguishes R1 from the others. R1
-  // entries are bucket keys (species/group/label); R3/R4/R5 are suppressed per
-  // clip, so a confirmed mirror pair emits one line for each half.
-  const ignoreLines = [];
-  for (const c of skipped) {
-    if (c.rule === 'R1') {
-      ignoreLines.push(JSON.stringify({
-        species: c.species,
-        action_group: c.group,
-        action_label: c.subject,
-      }));
-    } else {
-      const seen = new Set();
-      for (const clip of c.clips) {
-        if (!clip.clip) continue;
-        const key = clip.species + '\u0000' + clip.clip;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        ignoreLines.push(JSON.stringify({ species: clip.species, clip: clip.clip }));
-      }
-    }
-  }
-  if (ignoreLines.length) {
-    out.push('');
-    out.push('## 已核验「无需修改」—— 追加到忽略名单（R1 桶 + 单条 clip，不区分规则）');
-    out.push('');
-    out.push('下面这些我看过 GIF，标签是对的，不用改。把每行原样追加到：');
-    out.push('   ' + (META.ignore_path || '(报告 meta 的忽略文件)'));
-    out.push('（文件不存在就新建；追加，不要覆盖已有行；已存在的行可跳过。' +
-             '下次跑审计会自动读这个文件，这些桶 / clip 就不再报。）');
-    out.push('```jsonl');
-    for (const line of ignoreLines) out.push(line);
-    out.push('```');
-  }
+  // "无需修改" is a verdict about THIS page: the three rules are deterministic,
+  // so a case marked fine here comes back next run unless the label itself
+  // changes. The mark stays in localStorage and only the tally below reports it.
   if (invalid.length) {
     out.push('');
     out.push('## 注意：以下 clip 我填的新标签没通过词表校验，没有包含在上面的清单里');
@@ -1216,7 +1133,6 @@ $('copy').onclick = async () => {
   const ok = await copyText(built.text);
   if (ok) {
     notice('已复制 ' + built.valid.length + ' 条修改' +
-      (built.skipped.length ? '（另附 ' + built.skipped.length + ' 条「无需修改」）' : '') +
       (built.invalid.length ? '；' + built.invalid.length + ' 条标签无效被跳过' : '') +
       ' —— 直接粘给 LLM 即可。', built.invalid.length > 0);
   } else {

@@ -76,6 +76,33 @@ def test_store_sorts_valid_startup_labels_and_exposes_invalid_ones(tmp_path):
     assert "label_error" not in store.snapshot()[1]
 
 
+def test_a_hand_edit_drops_the_prefill_flag_but_signing_it_off_keeps_it(tmp_path):
+    """The ``autofill`` flag says the label on the row was written by a tool.
+
+    Confirming that label (reviewed) leaves the flag as provenance; typing a
+    different one makes the label a person's, so the flag goes.
+    """
+    labels = tmp_path / "action_labels.jsonl"
+    row = {
+        "clip": "Wolf_AtkL.npy", "action_group": "stationary",
+        "action_label": "attack, left, swat", "reviewed": False,
+        "autofill": True,
+    }
+    labels.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    store = review.LabelStore(labels)
+
+    confirmed = store.update("Wolf_AtkL.npy", reviewed=True)
+    assert confirmed["reviewed"] is True and "autofill" in confirmed
+    # Re-saving the very same label is not a correction either.
+    same = store.update("Wolf_AtkL.npy", action_label="attack, left, swat")
+    assert "autofill" in same
+
+    corrected = store.update("Wolf_AtkL.npy", action_label="attack, right, swat")
+    assert corrected["action_label"] == "attack, right, swat"
+    assert "autofill" not in corrected
+    assert "autofill" not in json.loads(labels.read_text(encoding="utf-8").splitlines()[0])
+
+
 def test_all_dataset_view_keeps_the_owner_on_duplicate_clip_names(tmp_path):
     datasets = []
     stores = {}

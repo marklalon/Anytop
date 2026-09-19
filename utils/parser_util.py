@@ -16,7 +16,7 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 15
+CKPT_VERSION = 16
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -310,6 +310,15 @@ def add_model_options(parser):
                        help="Per-sample probability of hard-dropping the action condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
                             "guidance at sampling time via --action_label_cfg_scale. Default 0.2.")
+    group.add_argument("--direction_slot_drop_prob", default=0.3, type=float,
+                       help="Per-sample probability of blanking the label's DIRECTION words during "
+                            "training while the rest of the label stays. Trains the empty direction "
+                            "slot as 'any direction', so a prompt that names none draws one side "
+                            "or heading instead of a blend. Stacks with --action_label_cfg_drop_prob, "
+                            "which drops the WHOLE label: a row contributes explicit direction "
+                            "supervision with probability (1 - cfg_drop) * (1 - this), so 0.3 against "
+                            "the training scripts' 0.3 cfg drop leaves 49%%. Lower it if direction "
+                            "control comes out weak. Never applied at inference. Default 0.3.")
 
 def add_data_options(parser, training=False):
     """Dataset selection. ``training=True`` adds the training-only options.
@@ -570,11 +579,11 @@ def add_generate_options(parser):
                             "recognizable prompt written out of canonical order is rewritten to it "
                             "(with a printed note); head-word order is kept as given, since it "
                             "carries no meaning to the model. Naming no direction is legal and means "
-                            "'any' (the model answers with the marginal over directions); the same "
-                            "holds for the hands axis -- write 'hand0' for empty hands, 'hand1' / "
-                            "'hand2' for one / both hands holding something, or nothing for 'any' "
-                            "('idle, hand0' is an unarmed idle; 'idle' alone may draw an armed "
-                            "one where that species mostly holds a weapon). Empty = "
+                            "'any' (the model answers with the marginal over directions, which "
+                            "training drops direction words at random to teach). The hands axis is "
+                            "the opposite: nothing there means EMPTY HANDS, so write 'hand1' / "
+                            "'hand2' for one / both hands holding something ('idle' is an unarmed "
+                            "idle; 'idle, hand2' a two-handed armed one). Empty = "
                             "unconditional (the learned null embedding). Requires a checkpoint "
                             "trained with --action_label_cond.")
     group.add_argument("--action_label_cfg_scale", default=1.0, type=float,

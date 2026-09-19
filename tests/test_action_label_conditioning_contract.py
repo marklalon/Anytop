@@ -15,13 +15,13 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     embedding_contract_payload,
     fingerprint,
     slot_channel_representation,
+    slot_source_rank_report,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
     CONTROLLED_VOCAB,
     HANDS_VOCAB,
     vocab_t5_text,
 )
-from tools.evaluate_action_label_geometry import _slot_source_rank_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,19 +29,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_slot_source_rank_covers_the_full_domain_and_projection_width():
     table = _word_table()
-    report = _slot_source_rank_report(table, latent_dim=256)
+    report = slot_source_rank_report(table, latent_dim=256)
     assert report["full_rank"]
     assert report["fits_projection"]
     # A head word is a modifier source too (any head word after the first), so
-    # the modifier slot draws on the whole action vocabulary: 65 + 32.
-    assert report["total_rank"] == 138
+    # the modifier slot draws on the whole action vocabulary: 65 + 32. The
+    # hands slot has two members since hand0 was retired (empty hands is the
+    # zero row, not a vector).
+    assert report["total_rank"] == 137
     assert {name: item["rank"] for name, item in report["slots"].items()} == {
         "head": 32,
         "direction": 6,
         "modifier": 97,
-        "hands": 3,
+        "hands": 2,
     }
-    assert not _slot_source_rank_report(table, latent_dim=137)["fits_projection"]
+    assert not slot_source_rank_report(table, latent_dim=136)["fits_projection"]
 
 
 def test_slot_assignment_carries_ids_masks_and_slots_only():
@@ -75,7 +77,7 @@ def test_slot_ids_partition_the_label_by_slot():
 
 def test_hands_axis_admits_one_member():
     with pytest.raises(ValueError, match="hand-state words"):
-        action_label_slots(("idle", "hand0", "hand2"))
+        action_label_slots(("idle", "hand1", "hand2"))
 
 
 def test_hands_channel_is_the_token_vector_and_leaves_the_modifier_channel_alone():
@@ -89,8 +91,10 @@ def test_hands_channel_is_the_token_vector_and_leaves_the_modifier_channel_alone
     assert not bare_present[SLOT_HANDS] and armed_present[SLOT_HANDS]
     hand2 = table[CONTROLLED_VOCAB.index("hand2")]
     assert np.allclose(armed[SLOT_HANDS], hand2 / np.linalg.norm(hand2))
-    # Three exclusive members, so the channel's domain is exactly three points.
+    # Two exclusive members plus the zero row for empty hands, so the channel's
+    # domain is exactly three points.
     assert all(word in CONTROLLED_VOCAB for word in HANDS_VOCAB)
+    assert "hand0" not in CONTROLLED_VOCAB
 
 
 def test_head_and_direction_channels_ignore_added_modifiers():
@@ -187,7 +191,8 @@ def test_conditioning_contract_carries_no_role_material():
     assert not any("role" in key for key in payload)
     assert not any("role" in key for key in payload["representation"])
     # 4: the first head word is the head slot, later head words are modifiers.
-    assert payload["parser_contract_version"] == 4
+    # 5: hand0 retired (an empty hands slot is empty hands), direction dropout.
+    assert payload["parser_contract_version"] == 5
 
 
 def test_embedding_change_propagates_into_conditioning_fingerprint():

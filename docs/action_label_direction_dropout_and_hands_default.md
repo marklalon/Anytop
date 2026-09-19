@@ -1,10 +1,9 @@
 # action_label：方向槽 dropout 与 hands 槽「空手默认」
 
-> 状态：**方案，未实施**（2026-09-18 整理；含对原始草案的审核修正，见 §5；同日复核修订见 §5.9–§5.13）
+> 状态：**已实施**（2026-09-18；方案本体见下，实际落地与方案的出入记在 §6）
 > 触发：裸 `attack, swat` 出双臂混合而非单侧；裸 `idle` 在持械物种上出持械姿势
-> 影响：`ACTION_LABEL_PARSER_CONTRACT_VERSION` 4 → 5、`CKPT_VERSION` 14 → 15（若在飞的 `--loop_cond_prob`
-> 移除先落地占掉 15，本改动取 16），**需从头重训**，不需 cond regen
-> 相关：[`action_label_per_word_pooling.md`](action_label_per_word_pooling.md)、[`action_label_geometry_preflight.md`](action_label_geometry_preflight.md)、[`tools/audit_action_labels.py`](../tools/audit_action_labels.py)
+> 影响：`ACTION_LABEL_PARSER_CONTRACT_VERSION` 4 → 5、`CKPT_VERSION` 15 → **16**，**需从头重训**，不需 cond regen
+> 相关：[`action_label_per_word_pooling.md`](action_label_per_word_pooling.md)、[`tools/audit_action_labels.py`](../tools/audit_action_labels.py)
 
 ## 0. 先固定语义（两条改动都依赖它）
 
@@ -19,6 +18,9 @@
 
 - **方向**：内容有单一主导侧向或平面朝向 → 写方向词；对称、交替、旋转、原地 → ∅。
   stationary 只补 `left` / `right`（stationary 按定义无净位移，`forward` / `backward` 不补）。
+  **例外：本身不指向任何方向的动作一律不写平面方向词**（2026-09-19，见 §7）——
+  `hurt` / `getup` / `idle` / `rest` / `stop` / `draw` / `sheathe` / `headbutt` / `bite`。
+  竖直词 `up` / `down` 不在豁免内（`idle, up, aim, bow` 保留）。
 - **hands**：有手物种凡持物 → 写 hand 词；无手物种 → ∅。
 
 不变量（两个补标脚本共同遵守）：
@@ -122,16 +124,21 @@ Mage / Spearman、TTR_Crossbowman / HeavyCavalry / Mage / MountedKnight / Mounte
 - R3：**不扩展**名字解析。`clip_side` 只认尾缀是有意的（`LeftFoot` / `FlyLeftWing` 是部位名，前缀匹配就是误报），
   `PunchA / PunchB` 也不是侧向标记。这 8 对由 §A 的内容镜像检测直接给出，不需要 R3 再找一遍。
 - `dataset/review/action_label_audit_ignore.jsonl` 里 11 条 hands 迁移后失效的旧拼写更新。
+  （**这份忽略名单已删，见 §8**。）
 
 **写回（两个脚本共用）**
 
-- 就地按行重写，沿用 `motion_labels.fill_missing_loop_flags` 的方式（读 bytes、保留换行风格、只重写变化的行、
+- 就地按行重写，沿用 `fill_missing_loop_flags` 的方式（读 bytes、保留换行风格、只重写变化的行、
   tmp + `os.replace`）。抽成共用的行级重写 helper，别复制一份。
+  （**出处已移**：共用的 `read_action_label_rows` / `rewrite_action_label_rows` / `autofill_action_label`
+  现在在 `tools/action_label_sidecar.py`，不在 `motion_labels`。）
 - 改 `action_label`；写 `"reviewed": false`（现在 3714 行全是 true；review UI 按 truthy 判断，false 等价未审，
   且比删 key 多保留「曾审过、被自动改动」的信息；serve.py 自己取消审核是删 key，两种拼法并存无碍）。
-- 加 `"autofill": {"slot", "from", "evidence"}` 记录旧值和判据。`load_action_labels` 只读
-  clip / action_group / action_label / is_loop，行级额外字段已被容忍（`pending_delete` 就是先例）。
+- 加 `"autofill"` 标记。`load_action_labels` 只读 clip / action_group / action_label / is_loop，
+  行级额外字段已被容忍（`pending_delete` 就是先例）。
+  （原方案记 `{"slot", "from", "evidence"}`，**已收缩成 `true`，见 §8**。）
 - 默认 `--dry-run` 输出清单（CSV + 复用 `audit_report_html.py` 出带 GIF 的页面），`--apply` 才写。
+  （**页面已删，见 §8**。）
 
 ## 2. hands 槽
 
@@ -141,16 +148,15 @@ Mage / Spearman、TTR_Crossbowman / HeavyCavalry / Mage / MountedKnight / Mounte
   `_VOCAB_T5_TEXT` 去掉 `"hand0": "empty hands"`，hands 注释块按 §0 重写；「至多一个」校验不变。
 - `ACTION_LABEL_PARSER_CONTRACT_VERSION` 4 → 5、`CKPT_VERSION` +1（见文首）；
   `tools/build_action_label_embeddings.py --force` 重建词表 sidecar（CUDA 上算指纹）；
-  `tools/evaluate_action_label_geometry.py` 预检：hands 槽秩 3 → 2，**总槽源秩 138 → 137**（swipe 合并已把
-  139 降到 138）；`latent_dim` 下限 137。
+  hands 槽秩 3 → 2，**总槽源秩 138 → 137**（swipe 合并已把 139 降到 138）；`latent_dim` 下限 137。
 - **rank 触点不止两个 pin**：`test_action_label_conditioning_contract.py` 里 `report["total_rank"] == 138 → 137`、
-  每槽 rank 字典 `"hands": 3 → 2`、负向探针 `_slot_source_rank_report(table, latent_dim=137)` 要下移到 **136**
+  每槽 rank 字典 `"hands": 3 → 2`、负向探针 `slot_source_rank_report(table, latent_dim=137)` 要下移到 **136**
   （137 变合法后那条断言会失效）；`test_action_label_word_conditioning.py` 的 `total_rank` pin 同步
   （同文件的 `latent_dim=total_rank - 1` 是派生的，自动跟）；`tests/action_label_test_utils.py` 的
   `TEST_LATENT_DIM` 注释 `3 hands = 138` → `2 hands = 137`（140 这个宽度仍够）。
 - 其它触点：`parser_util.py` 的 `--action_label` 帮助文本（现在写着 `hand0` = 空手）、
   `dataset/review/relabel_actions_llm.py` 的 `"load"` 词元组与 transition prompt（两处都含 `hand0`）、
-  两份 docs（`action_label_per_word_pooling.md` / `action_label_geometry_preflight.md`）。
+  docs `action_label_per_word_pooling.md`。
   `dataset/review/audit_action_labels.html` 是生成产物（下次跑审计自动重写），不用手改。
 - tests 里除 rank 之外还有：`test_action_label_cond.py` 的 `HANDS_VOCAB` pin、`vocab_t5_text('hand0')` 断言、
   含 `hand0` 的 round-trip 列表，以及「两个 hands 词」报错用例 —— `idle, hand0, hand1` 要改成 `idle, hand1, hand2`
@@ -180,8 +186,7 @@ GIF 不含道具网格，内容上只能看持物姿势，所以走参考集 + k
 
 1. 两个脚本 `--dry-run`，看标定准确率，定阈值。
 2. `prefill_hand_words --apply` → 2.1 词表改动 + 49 行删 `hand0` → `prefill_direction_words --apply` → 1.1 代码。
-3. 预检：`audit_action_labels.py --cond-path dataset/merged/cond.npy --action-group all`（R1 / R3 / R4 / R5）、
-   几何预检、tests。
+3. 预检：`audit_action_labels.py --cond-path dataset/merged/cond.npy --action-group all`（R3 / R4 / R5）、tests。
 4. 人工：review UI 过滤 `reviewed=false` 行逐条看 GIF。
 5. 同步 `relabel_actions_llm.py` 的 prompt（方向规则「单一主导侧向 → 写方向词」、hands 规则「持物必写」），
    `dataset/readme.txt` 的预填那一步（现在只有 `prefill_loop_flags.py`）加两个 prefill 工具；
@@ -226,7 +231,10 @@ GIF 不含道具网格，内容上只能看持物姿势，所以走参考集 + k
 4. **R3 不扩展前缀 / A-B 匹配**。`clip_side` 只认尾缀是防部位名误报的既定设计；8 对镜像由内容检测给出。
 5. **`eval_tasks_stationary.json` 没有 `hand0`**，从触点列表删掉；补上 `_VOCAB_T5_TEXT["hand0"]`。
    （原草案还列了 `audit_action_labels.html` —— 那是审计生成产物，重跑自动重写，不算手改触点。）
-6. **写回 helper 的出处**是 `motion_labels.fill_missing_loop_flags`，不在 `prefill_loop_flags.py`；抽共用而不是复制。
+6. **写回 helper 的出处**是 `fill_missing_loop_flags`；抽共用而不是复制。
+   （后续调整：行级读写搬到 `tools/action_label_sidecar.py`；`fill_missing_loop_flags` 本身搬回
+   `prefill_loop_flags.py`——`--rejudge` 与「`reviewed` 不被覆盖」是那个工具的策略；
+   `motion_labels` 只留键位规则 `set_loop_flag`，review UI 也走它。「抽共用而不是复制」这条不变。）
 7. **hands 语义翻转要连注释块一起改**：`motion_labels.py` 现在的注释论证的是相反语义。
 8. 补充：stationary 只补 left / right 的边界；根 XZ detrend 的代码出处与实测数字（§1.2 B）；
    LLM 标注 prompt 与 readme 要同步，否则下一批数据又按旧规则标。
@@ -243,3 +251,134 @@ GIF 不含道具网格，内容上只能看持物姿势，所以走参考集 + k
 13. **审计工具不认 `pending_delete`**：`tools/audit_action_labels.py`（R1 / R3 / R4 / R5）不过滤 pending 行，
     而 `relabel_actions_llm.py` 会跳过。74 条待删 clip 仍会被 R1 的桶离散度当作正式数据报出来 —— 要么给审计加
     同样的过滤，要么先 retire 再审计。
+
+
+## 6. 落地记录（2026-09-18）
+
+代码与数据都已改完，**只差重训和人工过 GIF**。与方案的出入，按发现顺序：
+
+### 6.1 标定结果与实际写入
+
+三条判据都在已标行上标定过，门槛写在工具里（`--side-gate` / `--heading-gate` / `--jump-gate`）：
+
+| 判据 | 标定 | 门槛 | 结果 |
+|---|---|---|---|
+| 侧向（自镜像分解 + 左右肢体能量比） | 60/63 = 95.2%（62 条判不了） | 90% | 开，写 183 stationary + 44 transition |
+| locomotion 朝向（支撑脚相对速度） | 455/467 = 97.4%（197 条判不了） | 95% | 开，写 5 条（`run, jump` 类） |
+| jump 方向（腾空根位移） | 13/13 = 100%（2 条判不了） | 90% | 开，35 条 `jump` → `jump, up`，其余按位移写平面词 |
+| hands（同物种上肢姿势 k-NN，留一法） | hand1 96.6% / hand2 97.8% | 90% | 开，14 条 k-NN + 32 条物种默认 |
+
+- **方向**共写 232 行（unitybundles 177 / zoo 43 / zoo_upgrade 12），804 行进复核清单
+  （`dataset/review/prefill_direction_words.{csv,html}`）。
+- **hands** 共写 46 行（`dataset/review/prefill_hand_words.{csv,html}`），165 行进清单；随后
+  `--drop-hand0` 删掉 49 行的 `hand0`。
+- 6 行两个槽都补了，当时 `autofill` 里用 `earlier` 叠着记（**记法已作废，见 §8**）。
+
+### 6.2 与方案不同的地方
+
+1. **`turn` 行整体退出方向工具**（不只退出标定集）。方案只说 transition 的 200 条 `turn` 不进肢体能量
+   标定集；实际上 locomotion 的 `walk/run, turn, left` 也一样——那个 left 是偏航方向，支撑脚法量的是
+   行进方向，两者在转弯 clip 上本就不同（实测把 turn 行算进去，朝向标定从 97.4% 掉到 90.1%）。
+   所有带 `turn` 的行现在既不参与标定也不接受补标。
+2. **hands k-NN 只用同物种参考，不用同骨架**。方案说 KI / TNR / TTR 各自共享参考集；实测跨物种匹配的是
+   「放松的手臂姿势」而不是持物状态（村民的 idle 匹配到士兵举枪的 death），hand1 精度只有 89%。改成
+   只跟本物种的已标行比之后，两类都过 96%。代价是参考不足 3 条的物种不判（留给物种默认表）。
+3. **物种默认表只填 4 个物种**，不是方案列的 7 个：Mini Legion 的武器是烘进网格的，GIF 里看得见——
+   MLH_Footman（长矛+盾 hand2）、MLH_Mage（法杖 hand1）、MLS_DemonHunter（双刀 hand2）、
+   MLS_Druid（法杖 hand1）。KI_Human / KI_Performer 是空手（Basic Motions / Dance），
+   KI_Slinger 只在投掷瞬间持物、按 clip 判，TTR_LightInfantry 已有 hand 词走 k-NN。
+4. **距离阈值按同类最近邻中位数自动定**（不是固定常数），可用 `--distance-max` 覆盖。
+5. **R1/R3/R4/R5 现在过滤 `pending_delete`**（§5.13 的两个选项里取了「给审计加同样的过滤」）。
+6. **审计新增「失效 ignore 条目」告警**：`action_label_audit_ignore.jsonl` 的 11 条旧拼写已按新标签重写，
+   剩下 14 条（clip 已退役 / 标签改到认不出）每次跑审计都会列出来，不再静默烂掉。
+   （**告警连同忽略名单已删，见 §8**。）
+7. **review UI 加了 `自动补` 角标**：鼠标悬停显示补了哪个槽、原标签和判据；在页面上手改标签会删掉
+   `autofill` 记录（工具的提议已被推翻），只点 OK 核验则保留（提议被确认）。
+8. **全程持械物种从 14 个变成 23 个**（补标之后），验收时的零样本项按新表记，见
+   [`action_label_per_word_pooling.md`](action_label_per_word_pooling.md) §8。
+
+### 6.3 复核之后还剩什么
+
+- 方向 804 行 + hands 165 行的复核清单（两张 html 页面并排放着 GIF 和候选值）。
+- 审计仍报的 29 条：R1 15（多数是 KI_Villager 的 `work, hammer` 桶，补标前就在）、R3 1
+  （Elephant AtkL/R 这对镜像，能量比判不出主导侧）、R4 11（`swim` / `fly, roll` 无触地帧）、R5 2
+  （`die, fall`）。这些工具都判不了，等人看。
+- 重训（契约变了，旧 checkpoint 会被指纹拒绝）。
+
+## 7. 不指向方向的动作：平面方向词豁免（2026-09-19）
+
+补标跑完之后定的规则：**有一类动作根本没有平面方向可写**，它们的标注一律不带
+`left` / `right` / `forward` / `backward`——**已经人工 reviewed 过的行也一样改**。
+
+| 词 | 为什么没有平面方向 |
+|---|---|
+| `hurt` / `getup` / `idle` / `rest` / `stop` | 受击反应或身体状态，不是朝哪儿发力；身体偏向哪边是附带的 |
+| `draw` / `sheathe` | 那个侧向是刀鞘的位置，不是动作的方向 |
+| `headbutt` / `bite` | 用头部发起，头是 center 关节；侧能量读到的是身体转向，不是这一击 |
+
+常量：`tools/audit_action_labels.py` 的 **`NO_PLANAR_DIRECTION_WORDS`**（`takes_planar_direction()`），
+词必须在 `ACTION_VOCAB` 里，否则 import 就报错（豁免一个不存在的词等于什么都没豁免）。
+**匹配位置不限于头词**：`idle, right, look` → `idle, look`、`attack, left, bite` → `attack, bite`。
+LLM 标注侧的 `reset`（回到中立起始姿势，`relabel_actions_llm.py` 的 transition 词表里有、
+`ACTION_VOCAB` 里没有）是同一类，落到 sidecar 时写作 `rest`，两边都已豁免。
+
+**竖直轴不在豁免内**：`up` / `down` 说的是动作真的向上 / 向下，和平面方向不是一回事——
+`idle, up, aim, bow`（朝上瞄）、`idle, up, look` 原样保留，transition 的跳仍然按腾空位移判 `jump, up`。
+
+三处落地（数据、工具、审计，缺一就会漂回去）：
+
+1. **数据**：三个 sidecar 共 **93 行**去掉平面方向词。其中 54 行是这次 `prefill_direction_words --apply`
+   自己补的（记录连同 `autofill` 一起删掉，`reviewed` 恢复成补标前的值；`MLH_Mage_GetHit` 还叠着一条
+   hands 补标记录，那条保留、`reviewed` 仍为 false），另外 39 行是人工标的真值
+   （`Trex_BiteLeft/Right`、`Dog_LookLeft/Right`、`hurt, left/right` 等，`reviewed` 不动——
+   剩下的词仍然是人核过的，只是少了一个规则不再允许的词）。
+2. **补标工具**：`prefill_direction_words.py` 的 `kind_of()` 直接把这些行判为「不在范围内」，
+   既不判也不进标定集；transition 的跳仍然留在范围内，只是平面那一半的结论改成进清单。
+3. **审计**：R3 的「两边各自要带侧词」对这些行不成立——**两边拼成同一个标签就是镜像**
+   （`Trex_BiteLeft` 和 `Trex_BiteRight` 都是 `attack, bite`），控制台按对数报出来；
+   R4 的朝向要求同样豁免，且**不受 `--r4-exempt-words` 控制**（那个开关只替换 `hover` 那张表，
+   这条是语料级规则，不是旋钮）。`not_mirror` / `crossed` 两项照查不误。
+
+`tests/test_direction_exemption.py` 把三处都钉住了，其中一条直接读真实 sidecar：
+任何一次改标只要把平面方向词写回这些动作上，测试就红。
+
+**副作用**：镜像对合并成同一个标签后（`Dog_LookLeft` / `LookRight` 现在同为 `idle, look`），
+原本会被 R1 的桶离散度当成双峰桶报出来。R1 已在 §8 删除，这条不再存在。
+
+## 8. 简化（2026-09-19）
+
+前面几节留下的三样东西都删了：它们要么在判「可能有问题」，要么把一次性的判据写进了长期数据。
+
+**审计只剩三条确定性文本规则**：`tools/audit_action_labels.py` 现在是 R3 / R4 / R5。
+删掉的是 **R1（标签桶离散度）**——它按物种中位成对距离判桶内离散度，要解码每条 clip 的 npy、
+要 `--ratio-threshold` / `--min-distance` / `--frames` 三个阈值、要 `--r1-exempt-labels` 白名单，
+报出来的是「这个桶看着不像一个动作」而不是「这条标签写错了」；§6.3 里它报的 15 条正是这种。
+连带删掉：距离度量（`load_trajectory` / `scale_blocks` / `pairwise_distances`）、
+feature-space 警告、`--labels` 覆盖输入，以及 `audit_report_html.py` 的 R1 面板。
+
+**忽略名单整套删除**：`dataset/review/action_label_audit_ignore.jsonl`、`--ignore` /
+`--no-default-ignore`、§6.2.6 的「失效 ignore 条目」告警、报告页「无需修改」生成 ignore 行的那段。
+76 条里 51 条是 R1 的桶，随 R1 一起失去意义；剩下 25 条 clip 条目多数是 §7 的豁免已经从规则上
+盖掉的镜像对（bite / roar / death / hurt / getup）。三条规则都是确定性的，报出来就是真错，
+不需要一份「看过了，不用改」的名单来压。
+
+**prefill 不再出页面**：`prefill_hand_words.py` / `prefill_direction_words.py` 的 `--html` 与两张
+`dataset/review/prefill_*.html` 都删了，`prefill_common.write_html` 一并删除。补标写出来的行本来就是
+`reviewed:false`，`dataset/review/serve.py` + `index.html` 已经按这个过滤，GIF 在那儿看就行，
+不需要第二套页面。判据看控制台汇总和 `--report` 的 CSV。
+
+**`autofill` 收缩成一个布尔**：`{"slot", "from", "evidence"}` 和 `earlier` 叠加链都去掉了，
+现在就是 `"autofill": true`（§1「写回」与 §6.1 的那两条记法作废，`action_label_sidecar.autofill_action_label`
+的签名同步简化为 `(entry, new_label)`）。理由：sidecar 是长期数据、要逐行给人读，
+而 `left_share 0.253` 这种数只对写它的那一次运行有意义；语义只需要「这条是工具写的、还没人核」，
+`reviewed:false` 加一个标记就够。已有的 219 行记录已就地改写。review UI 的角标同步改成「自动补标」，
+不再展开判据；手改标签仍然删掉这个标记，只点 OK 核验则保留。
+
+**几何预检删除**：`tools/evaluate_action_label_geometry.py` 与
+`docs/action_label_geometry_preflight.md` 都删了。预检当时要回答的是「词级槽表示能不能用」，
+那个结论已经落进契约和代码：槽源满秩 + `latent_dim` 宽度这两条硬门在
+`model/anytop.py` 建模型时就断言，词表指纹在 load / resume 时 gate，
+`tests/test_action_label_conditioning_contract.py` 钉住秩的具体值。
+工具里唯一还有人用的是 T5 编码那几个 helper（`_resolve_t5_dir` / `_sha256_files` /
+masked-mean pooling / `_postprocess_atoms`），已经搬进 `tools/build_action_label_embeddings.py`
+——那是它们唯一的调用者。

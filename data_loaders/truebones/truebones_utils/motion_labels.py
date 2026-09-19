@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -14,6 +13,15 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 # measurement: preprocessing proposes it for a row that has none, a person
 # verifies or flips it in dataset/review, and nothing downstream re-derives it.
 LOOP_FLAG_KEY = "is_loop"
+
+# The flag a prefill tool sets on a row whose label IT wrote (``tools/prefill_*``,
+# through ``tools/action_label_sidecar.autofill_action_label``). Deliberately
+# just ``true``: what the measurement was and what the label said before belong
+# to that run's console output and --report CSV, not to a sidecar that a person
+# reads clip by clip. The row's ``reviewed`` goes to false at the same time, so
+# the review UI lists it as unverified while the file still shows it was once
+# signed off.
+AUTOFILL_KEY = "autofill"
 
 
 # 7: ``is_loop`` left motion_metadata.json for action_labels.jsonl, where it is an
@@ -114,21 +122,27 @@ ACTION_VOCAB: tuple[str, ...] = HEAD_VOCAB + MODIFIER_VOCAB
 DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right", "up", "down")
 
 # The hands axis -- how many hands are OCCUPIED (holding something):
-#   hand0 both empty | hand1 one hand holds, the other free |
+#   hand1 one hand holds, the other free |
 #   hand2 both hold: a two-handed grip OR one item per hand (sword + shield).
 # It is an occupancy count, not a weapon class: sword + shield is hand2 (neither
 # arm is free), a dagger and a torch are both hand1. Which implement is used
 # (bow / gun / hammer / shield) stays a modifier (MODIFIER_VOCAB block G):
 # ``attack, bow, hand2``.
 #
-# The three tokens are MUTUALLY EXCLUSIVE (at most one per label); absent means
-# "unspecified" (the marginal over hand states), so ``hand0`` is a real
-# statement, not the default -- it is what lets a prompt ask for an unarmed
-# idle in a corpus where most idles hold a weapon. Annotate the axis for every
-# clip of a species that holds something in at least one clip; species that
-# never hold anything (and anything without hands) leave it empty. Replaced
-# ``weapon`` + ``1hand``/``2hand`` (2026-09-11), which could not say "unarmed".
-HANDS_VOCAB: tuple[str, ...] = ("hand0", "hand1", "hand2")
+# The two tokens are MUTUALLY EXCLUSIVE (at most one per label). An EMPTY slot
+# MEANS EMPTY HANDS -- it is the content default, not "unspecified": a clip
+# whose character holds anything must say so, and a bare prompt (``idle``)
+# asks for the unarmed motion. This is the opposite of the direction axis,
+# whose empty slot is the marginal because training drops direction words at
+# random (``--direction_slot_drop_prob``); nothing drops a hand word, so the
+# model never sees an armed clip under an empty slot. The former explicit
+# ``hand0`` ("empty hands", 2026-09-11) was retired 2026-09-18 for exactly that
+# reason: inference only ever asks with bare labels, and what a bare label
+# should mean is empty hands, which left ``hand0`` nothing to say.
+# Species that never hold anything (and anything without hands) leave the
+# axis empty; ``tools/prefill_hand_words.py`` proposes the word for a
+# hand-bearing species' unlabelled rows from the holding pose.
+HANDS_VOCAB: tuple[str, ...] = ("hand1", "hand2")
 
 CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB + DIRECTION_VOCAB + HANDS_VOCAB
 
@@ -177,10 +191,11 @@ ACTION_LABEL_MAX_HEADS = 2
 # fragmentation.
 #
 # An override carries only what the token itself contributes, NOT what a
-# co-occurring token already spells: the hands axis is a bare count ("empty
-# hands" / "one hand" / "both hands") -- the three are exclusive members of
-# their own slot channel, so what the model needs is three well-separated
-# points, and phrasing them around a shared anchor makes them collide.
+# co-occurring token already spells: the hands axis is a bare count ("one
+# hand" / "both hands") -- the two are exclusive members of their own slot
+# channel, so what the model needs is two well-separated points (and a zero
+# row for empty hands), and phrasing them around a shared anchor makes them
+# collide.
 #
 # Constraints, all asserted below: one-to-one on the EXPANDED table, no
 # whitespace in a token, every key a real vocabulary word. No reverse lookup --
@@ -196,7 +211,6 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "draw": "drawing a weapon",          # bare "draw" is pulling a line or a card
     "cry": "weeping",                    # bare "cry" reads as shouting out
     "flip": "somersault",                # bare "flip" is a coin or a switch
-    "hand0": "empty hands",              # bare form is "hand" + the numeral zero
     "hand1": "one hand",                 # bare form reads as "hand one"
     "hand2": "both hands",               # bare form reads as "hand two"
     "land": "touching down",             # bare "land" is terrain -- overwhelmingly
@@ -340,7 +354,7 @@ def parse_action_label(label: str) -> list[str]:
         raise ActionLabelError(
             f"action_label {label!r} names {len(hands)} hand-state words {hands}. "
             f"{list(HANDS_VOCAB)} are one exclusive axis (how many hands hold "
-            f"something); write at most one, or none for 'unspecified'."
+            f"something); write at most one, or none for empty hands."
         )
     return tokens
 
@@ -560,6 +574,28 @@ def clip_key(name: str) -> str:
     return name[:-4] if name.endswith(".npy") else name
 
 
+def set_loop_flag(entry: dict, verdict: bool) -> dict:
+    """Return a copy of *entry* carrying ``is_loop`` = *verdict*, in its place.
+
+    A row that already has the key keeps it where it is; a FIRST verdict goes
+    in right after ``action_label``, so every row reads clip / group / label /
+    is_loop / review marks whoever wrote it -- the prefill tool
+    (``tools/prefill_loop_flags.py``) or a person in ``dataset/review``. Which
+    rows get a verdict, and whether an existing one may be replaced, is the
+    annotating tool's policy; this is only where the key sits, defined once.
+    """
+    verdict = bool(verdict)
+    if LOOP_FLAG_KEY in entry:
+        return {**entry, LOOP_FLAG_KEY: verdict}
+    rebuilt: dict[str, object] = {}
+    for key, value in entry.items():
+        rebuilt[key] = value
+        if key == "action_label":
+            rebuilt[LOOP_FLAG_KEY] = verdict
+    rebuilt.setdefault(LOOP_FLAG_KEY, verdict)
+    return rebuilt
+
+
 def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
     """Load the hand-maintained ``action_labels.jsonl`` sidecar.
 
@@ -744,74 +780,6 @@ def load_motion_metadata(
         print(msg, file=sys.stderr, flush=True)
         sys.exit(1)
     return normalized
-
-
-def fill_missing_loop_flags(
-    dataset_dir: str | Path,
-    verdicts: dict[str, bool],
-    *,
-    overwrite: bool = False,
-) -> int:
-    """Write ``is_loop`` into the sidecar rows that do not have one yet.
-
-    *verdicts* maps clip -> bool, under either the extension-less clip name
-    or the motions/ file name -- both are normalized to the sidecar key before
-    matching. By default only a row WITHOUT the key is filled: an existing
-    value is an annotation (the detector's earlier proposal or a hand
-    correction) and is never overridden -- delete the key from a row to have
-    it re-judged. ``overwrite=True`` (``prefill_loop_flags.py --rejudge``)
-    also replaces an existing value, except on a row marked ``"reviewed":
-    true``: a person has signed that row off, and a re-run of the detector
-    does not outrank them. Rows are rewritten in place: line order, every
-    other key and the file's newline style are kept, and a line that changes
-    nothing is copied byte for byte. Returns the number of rows whose value
-    changed.
-    """
-    labels_path = Path(dataset_dir) / ACTION_LABELS_FILE
-    if not verdicts or not labels_path.exists():
-        return 0
-    verdicts = {clip_key(clip): bool(ok) for clip, ok in verdicts.items()}
-    raw = labels_path.read_bytes()
-    newline = "\r\n" if b"\r\n" in raw else "\n"
-    lines = raw.decode("utf-8").splitlines()
-    filled = 0
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        entry = json.loads(stripped)
-        if not isinstance(entry, dict):
-            continue
-        clip = clip_key(entry.get("clip", ""))
-        if clip not in verdicts:
-            continue
-        verdict = bool(verdicts[clip])
-        if LOOP_FLAG_KEY in entry:
-            if not overwrite or entry.get("reviewed") is True:
-                continue
-            if entry[LOOP_FLAG_KEY] is verdict:
-                continue  # same verdict: the line stays byte for byte
-            entry[LOOP_FLAG_KEY] = verdict
-            lines[index] = json.dumps(entry, ensure_ascii=False)
-            filled += 1
-            continue
-        # Keep the key next to the label it annotates, so a row reads
-        # clip / group / label / is_loop / review marks.
-        rebuilt: dict[str, object] = {}
-        for key, value in entry.items():
-            rebuilt[key] = value
-            if key == "action_label":
-                rebuilt[LOOP_FLAG_KEY] = verdict
-        rebuilt.setdefault(LOOP_FLAG_KEY, verdict)
-        lines[index] = json.dumps(rebuilt, ensure_ascii=False)
-        filled += 1
-    if not filled:
-        return 0
-    tmp_path = labels_path.with_name(labels_path.name + ".tmp")
-    with open(tmp_path, "w", encoding="utf-8", newline=newline) as handle:
-        handle.write("\n".join(lines) + "\n")
-    os.replace(tmp_path, labels_path)
-    return filled
 
 
 def write_motion_metadata(

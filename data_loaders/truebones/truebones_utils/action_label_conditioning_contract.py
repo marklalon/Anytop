@@ -29,7 +29,10 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
 
 ACTION_WORD_EMBEDDING_SCHEMA_VERSION = 3
 ACTION_CONDITIONING_CONTRACT_SCHEMA_VERSION = 1
-ACTION_LABEL_PARSER_CONTRACT_VERSION = 4
+# 5: hand0 retired -- an empty hands slot means empty hands (the content
+#    default), hand1 / hand2 are the only members; the direction slot gained
+#    a training dropout so ITS empty state is the marginal (2026-09-18).
+ACTION_LABEL_PARSER_CONTRACT_VERSION = 5
 
 # Slots.  The approved representation gives each slot its own conditioning
 # channel, so a word's contribution depends on ITS slot only -- appending
@@ -43,7 +46,7 @@ ACTION_LABEL_PARSER_CONTRACT_VERSION = 4
 # "attack, slash" would no longer read the same with and without a hand state.
 # In its own channel the other three are bit-identical either way, and the
 # channel is the token's own vector (the axis admits one member), so the model
-# only has to tell three points apart.
+# only has to tell two points and the zero row (empty hands) apart.
 SLOT_HEAD = 0
 SLOT_DIRECTION = 1
 SLOT_MODIFIER = 2

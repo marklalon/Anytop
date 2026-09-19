@@ -78,13 +78,17 @@ from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     LOOP_FLAG_KEY,
     clip_key,
-    fill_missing_loop_flags,
     load_action_labels,
+    set_loop_flag,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     ACTION_LABELS_FILE,
     get_dataset_dir,
     get_raw_data_dir,
+)
+from tools.action_label_sidecar import (  # noqa: E402
+    read_action_label_rows,
+    rewrite_action_label_rows,
 )
 
 
@@ -138,15 +142,8 @@ def discover_objects(raw_data_dir: str | None, object_filter: str = "") -> tuple
 
 def _reviewed_clips(dataset_dir: Path) -> set[str]:
     """Clips whose row carries ``"reviewed": true`` (load_action_labels drops the mark)."""
-    reviewed = set()
-    for line in (dataset_dir / ACTION_LABELS_FILE).read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        row = json.loads(line)
-        if isinstance(row, dict) and row.get("reviewed") is True:
-            reviewed.add(clip_key(row.get("clip", "")))
-    return reviewed
+    return {clip_key(row.get("clip", "")) for row in read_action_label_rows(dataset_dir)
+            if row.get("reviewed") is True}
 
 
 def plan_objects(
@@ -343,6 +340,46 @@ def collect_verdicts(
             else:
                 unjudged.append(clip)
     return verdicts, unjudged
+
+
+def fill_missing_loop_flags(
+    dataset_dir: str | Path,
+    verdicts: dict[str, bool],
+    *,
+    overwrite: bool = False,
+) -> int:
+    """Write ``is_loop`` into the sidecar rows that do not have one yet.
+
+    *verdicts* maps clip -> bool, under either the extension-less clip name
+    or the motions/ file name -- both are normalized to the sidecar key before
+    matching. By default only a row WITHOUT the key is filled: an existing
+    value is an annotation (an earlier run's proposal or a hand correction)
+    and is never overridden -- delete the key from a row to have it re-judged.
+    ``overwrite=True`` (``--rejudge``) also replaces an existing value, except
+    on a row marked ``"reviewed": true``: a person has signed that row off,
+    and a re-run of the detector does not outrank them. Rows are rewritten in
+    place through :func:`rewrite_action_label_rows`, and where a first verdict
+    lands in the row is ``motion_labels.set_loop_flag``'s business -- the
+    review UI writes its own verdicts through the same rule. Returns the
+    number of rows whose value changed.
+    """
+    if not verdicts:
+        return 0
+    verdicts = {clip_key(clip): bool(ok) for clip, ok in verdicts.items()}
+
+    def edit(entry: dict):
+        clip = clip_key(entry.get("clip", ""))
+        if clip not in verdicts:
+            return None
+        verdict = verdicts[clip]
+        if LOOP_FLAG_KEY in entry:
+            if not overwrite or entry.get("reviewed") is True:
+                return None
+            if entry[LOOP_FLAG_KEY] is verdict:
+                return None  # same verdict: the line stays byte for byte
+        return set_loop_flag(entry, verdict)
+
+    return rewrite_action_label_rows(dataset_dir, edit)
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────

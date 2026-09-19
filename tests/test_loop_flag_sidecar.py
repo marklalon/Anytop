@@ -37,11 +37,11 @@ from data_loaders.truebones.truebones_utils.loop_verdict import (
 from data_loaders.truebones.truebones_utils.motion_labels import (
     LOOP_FLAG_KEY,
     MOTION_METADATA_SCHEMA_VERSION,
-    fill_missing_loop_flags,
     load_action_labels,
     load_motion_metadata,
     write_motion_metadata,
 )
+from tools.prefill_loop_flags import fill_missing_loop_flags
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────

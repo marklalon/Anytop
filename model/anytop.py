@@ -9,6 +9,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (
 )
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_LABEL_SLOTS,
+    SLOT_DIRECTION,
     ActionConditioningError,
     slot_source_rank_report,
     validate_action_conditioning_metadata,
@@ -110,6 +111,16 @@ class AnyTop(nn.Module):
         if not 0.0 <= self.action_label_cfg_drop_prob <= 1.0:
             raise ValueError(
                 f"action_label_cfg_drop_prob must be in [0, 1], got {self.action_label_cfg_drop_prob}"
+            )
+        # Direction-slot dropout: with this probability a training sample keeps
+        # its label but loses its direction words, so an empty direction slot
+        # is trained as "any direction" (the marginal) and a bare "attack, swat"
+        # at inference draws one side rather than a blend of both. The hands
+        # slot has NO such dropout on purpose -- empty there means empty hands.
+        self.direction_slot_drop_prob = float(kargs.get('direction_slot_drop_prob', 0.0))
+        if not 0.0 <= self.direction_slot_drop_prob <= 1.0:
+            raise ValueError(
+                f"direction_slot_drop_prob must be in [0, 1], got {self.direction_slot_drop_prob}"
             )
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
@@ -342,17 +353,16 @@ class AnyTop(nn.Module):
                     "than cond.npy's joints_names_embs; rebuild it with --t5-model "
                     "matching cond.npy."
                 )
-            # The gate the geometry preflight cannot enforce on its own: the
-            # first Linear has to be wide enough to stay injective on the direct
-            # sum of the slot source spaces, or labels that differ only in
+            # The first Linear has to be wide enough to stay injective on the
+            # direct sum of the slot source spaces, or labels that differ only in
             # slot membership can collide before any weight is trained.
             report = bundle.slot_source_rank_report(self.latent_dim)
             if not report['full_rank']:
                 raise ValueError(
                     f"{bundle.source}: the frozen word table does not have full "
                     f"slot-source rank ({report['slots']}), so distinct labels are not "
-                    "guaranteed to reach distinct conditions. Rebuild it and re-run "
-                    "tools/evaluate_action_label_geometry.py."
+                    "guaranteed to reach distinct conditions. Rebuild it with "
+                    "tools/build_action_label_embeddings.py --force."
                 )
             if not report['fits_projection']:
                 raise ValueError(
@@ -511,6 +521,21 @@ class AnyTop(nn.Module):
             channels.append(torch.where(count > 0, mean / norm.clamp(min=1e-9), mean * 0.0))
         return torch.cat(channels, dim=-1)
 
+    def _drop_direction_slot(self, word_mask, slot_ids, batch_size, device):
+        """Training-only: blank the direction words of a random subset of rows.
+
+        A pure mask operation, written like the CFG keep mask so it compiles
+        the same way: a dropped row's direction members leave ``word_mask``,
+        the direction channel pools to its zero row, and every other slot is
+        untouched. Rows without a direction word are unaffected, and the label
+        stays valid (a direction word is never a label's only word, so
+        ``action_label_valid`` cannot flip). Eval and inference never drop.
+        """
+        if not self.training or self.direction_slot_drop_prob <= 0.0:
+            return word_mask
+        drop = torch.rand(batch_size, device=device) < self.direction_slot_drop_prob
+        return word_mask & ~(drop[:, None] & (slot_ids == SLOT_DIRECTION))
+
     def _resolve_action_label_active(self, raw_action_label_active, batch_size, device):
         """Per-sample CFG mask for the action condition (True == conditional).
 
@@ -575,6 +600,7 @@ class AnyTop(nn.Module):
             word_mask = None
         else:
             word_ids, slot_ids, word_mask = resolved
+            word_mask = self._drop_direction_slot(word_mask, slot_ids, batch_size, device)
             channels = self._assemble_action_slot_channels(
                 word_ids, slot_ids, word_mask, dtype
             )

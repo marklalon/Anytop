@@ -1,6 +1,6 @@
 {"clip": "antilope_Atk", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}
 {"clip": "antilope_Atk2", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
-{"clip": "antilope_Atk3", "action_group": "stationary", "action_label": "attack, left, headbutt", "is_loop": true, "reviewed": true}
+{"clip": "antilope_Atk3", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}
 {"clip": "antilope_Death", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "antilope_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "antilope_IdleToAmbush", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
@@ -18,9 +18,9 @@
 {"clip": "bat_demon_Start", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "bat_demon_Taunt", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
 {"clip": "bat_demon_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
-{"clip": "Bear_AtkRun", "action_group": "locomotion", "action_label": "run, jump", "is_loop": true, "reviewed": true}
+{"clip": "Bear_AtkRun", "action_group": "locomotion", "action_label": "run, jump, forward", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "Bear_AtkStand", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
-{"clip": "Bear_AtkStand2", "action_group": "stationary", "action_label": "attack, rear, swat", "is_loop": true, "reviewed": true}
+{"clip": "Bear_AtkStand2", "action_group": "stationary", "action_label": "attack, rear, right, swat", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "Bear_Hind", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
 {"clip": "Bear_HindBreathing", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
 {"clip": "Bear_HindToStand", "action_group": "transition", "action_label": "rear, down", "is_loop": false, "reviewed": true}
@@ -70,8 +70,8 @@
 {"clip": "Cobra_Sprint", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": false, "reviewed": true}
 {"clip": "Cobra_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
 {"clip": "Crocodile_Atk", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
-{"clip": "Crocodile_AtkLeft", "action_group": "stationary", "action_label": "attack, left, bite", "is_loop": true, "reviewed": true}
-{"clip": "Crocodile_AtkRight", "action_group": "stationary", "action_label": "attack, right, bite", "is_loop": true, "reviewed": true}
+{"clip": "Crocodile_AtkLeft", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
+{"clip": "Crocodile_AtkRight", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "Crocodile_AtkSpecial", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "Crocodile_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Crocodile_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
@@ -82,7 +82,7 @@
 {"clip": "Crow_Fly", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
 {"clip": "Crow_Glide", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
 {"clip": "Crow_Look", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
-{"clip": "Crow_RunJump", "action_group": "locomotion", "action_label": "run, jump", "is_loop": true, "reviewed": true}
+{"clip": "Crow_RunJump", "action_group": "locomotion", "action_label": "run, jump, forward", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "Crow_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
 {"clip": "Deer_Buck_Grazing", "action_group": "stationary", "action_label": "idle, eat", "is_loop": false, "reviewed": true}
 {"clip": "Deer_Buck_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
@@ -147,8 +147,8 @@
 {"clip": "Hyena_Taunt", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
 {"clip": "Hyena_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
 {"clip": "impman_Hit", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
-{"clip": "impman_HitL", "action_group": "stationary", "action_label": "hurt, left", "is_loop": true, "reviewed": true}
-{"clip": "impman_HitR", "action_group": "stationary", "action_label": "hurt, right", "is_loop": false, "reviewed": true}
+{"clip": "impman_HitL", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
+{"clip": "impman_HitR", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "impman_Jog", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "impman_Roar", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
 {"clip": "impman_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
@@ -176,7 +176,7 @@
 {"clip": "Oscafish_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
 {"clip": "Ostrich_AtkCharge", "action_group": "stationary", "action_label": "attack, charge", "is_loop": true, "reviewed": true}
 {"clip": "Ostrich_AtkL", "action_group": "stationary", "action_label": "attack, left", "is_loop": true, "reviewed": true}
-{"clip": "Ostrich_AtkMid", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
+{"clip": "Ostrich_AtkMid", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "Ostrich_AtkR", "action_group": "stationary", "action_label": "attack, right", "is_loop": true, "reviewed": true}
 {"clip": "Ostrich_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Ostrich_Roar", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
@@ -192,12 +192,12 @@
 {"clip": "Rabbit_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Rabbit2_Death", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "Rabbit2_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "Rabbit2_Jog", "action_group": "locomotion", "action_label": "run, jump", "is_loop": false, "reviewed": true}
+{"clip": "Rabbit2_Jog", "action_group": "locomotion", "action_label": "run, jump, forward", "is_loop": false, "reviewed": true, "autofill": true}
 {"clip": "Rabbit2_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
 {"clip": "rhino_AtkCharge", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
-{"clip": "rhino_AtkL", "action_group": "stationary", "action_label": "attack, left, headbutt", "is_loop": true, "reviewed": true}
+{"clip": "rhino_AtkL", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}
 {"clip": "rhino_AtkM", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}
-{"clip": "rhino_AtkR", "action_group": "stationary", "action_label": "attack, right, headbutt", "is_loop": true, "reviewed": true}
+{"clip": "rhino_AtkR", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}
 {"clip": "rhino_Death", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "rhino_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "rhino_Jog", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
@@ -219,7 +219,7 @@
 {"clip": "Seagull_Look", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "Seagull_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Seagull_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "serpent_man_AtkCharge", "action_group": "stationary", "action_label": "attack, jump, punch", "is_loop": false, "reviewed": true}
+{"clip": "serpent_man_AtkCharge", "action_group": "stationary", "action_label": "attack, jump, right, punch", "is_loop": false, "reviewed": true, "autofill": true}
 {"clip": "serpent_man_AtkL", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}
 {"clip": "serpent_man_AtkR", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "serpent_man_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}

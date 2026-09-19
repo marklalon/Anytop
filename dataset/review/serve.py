@@ -40,6 +40,14 @@ already on disk also rewrites that one row in place
 step without a re-preprocess; a clip not built yet simply takes the flag
 when it is.
 
+``autofill`` marks a row whose label a prefill tool wrote
+(``tools/prefill_direction_words.py``, ``prefill_hand_words.py``): a proposal
+measured from the motion, with ``"reviewed": false`` beside it. The card shows
+it as a 自动补标 badge and the header filters on it, so a review pass can take
+the tool's proposals as one batch. Typing a different label clears the mark --
+the label is then a person's -- while signing the proposal off unchanged keeps
+it as provenance.
+
 ``action_label`` edits are normalized and validated before being written.
 Tokens are lowercased, repeated words are dropped (first occurrence kept),
 checked against the training pipeline's controlled vocabulary, and put in its
@@ -94,6 +102,7 @@ from data_loaders.truebones.truebones_utils.loop_verdict import (  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_LABEL_MAX_HEADS,
     ACTION_LABEL_MAX_WORDS,
+    AUTOFILL_KEY,
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
     LOOP_FLAG_KEY,
@@ -102,6 +111,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ActionLabelError,
     canonical_action_label,
     parse_action_label,
+    set_loop_flag,
 )
 
 # Where "clean" parks the source file of a retired clip (--trash overrides it).
@@ -398,24 +408,26 @@ class LabelStore:
             if is_loop is not None:
                 # Always written, never popped: a verdict, once made, stays a
                 # verdict (a row WITHOUT the key means "not judged yet" and
-                # preprocessing would propose one again). A first verdict goes
-                # in right after the label, where preprocessing's own fill
-                # puts it, so the file reads the same whoever judged the clip.
-                if LOOP_FLAG_KEY in row:
-                    row[LOOP_FLAG_KEY] = bool(is_loop)
-                else:
-                    ordered = {}
-                    for key, value in row.items():
-                        ordered[key] = value
-                        if key == "action_label":
-                            ordered[LOOP_FLAG_KEY] = bool(is_loop)
-                    ordered.setdefault(LOOP_FLAG_KEY, bool(is_loop))
-                    row.clear()
-                    row.update(ordered)
+                # tools/prefill_loop_flags.py would propose one again). Where
+                # a first verdict lands is set_loop_flag's rule, shared with
+                # that tool, so the file reads the same whoever judged the
+                # clip. The row is edited in place: it is the one this store
+                # holds and indexes, rebuilt so a FIRST verdict keeps the
+                # place set_loop_flag gives it instead of landing last.
+                ordered = set_loop_flag(row, is_loop)
+                row.clear()
+                row.update(ordered)
             if action_label is not None:
                 action_label = normalize_action_label(action_label)
                 if not action_label:
                     raise ActionLabelError("action_label must not be empty")
+                if action_label != row.get("action_label"):
+                    # The flag says a prefill tool wrote the label that is on
+                    # the row (tools/prefill_direction_words.py,
+                    # prefill_hand_words.py). Typing a different one makes it
+                    # a person's label, so the flag goes; signing the proposal
+                    # off unchanged (reviewed) keeps it as provenance.
+                    row.pop(AUTOFILL_KEY, None)
                 row["action_label"] = action_label
                 self.label_errors.pop(clip, None)
             if action_group is not None:
@@ -538,6 +550,7 @@ class Handler(BaseHTTPRequestHandler):
                     "reviewed": sum(1 for r in rows if r.get("reviewed")),
                     "pending": sum(1 for r in rows if r.get("pending_delete")),
                     "invalid_labels": sum(1 for r in rows if r.get("label_error")),
+                    "autofill": sum(1 for r in rows if r.get(AUTOFILL_KEY)),
                     "loops": sum(1 for r in rows if r.get(LOOP_FLAG_KEY) is True),
                     "unflagged_loops": sum(1 for r in rows if LOOP_FLAG_KEY not in r),
                 })
@@ -869,13 +882,15 @@ def main():
         done = sum(1 for r in rows if r.get("reviewed"))
         pending = sum(1 for r in rows if r.get("pending_delete"))
         invalid = sum(1 for r in rows if r.get("label_error"))
+        autofill = sum(1 for r in rows if r.get(AUTOFILL_KEY))
         loops = sum(1 for r in rows if r.get(LOOP_FLAG_KEY) is True)
         unflagged = sum(1 for r in rows if LOOP_FLAG_KEY not in r)
         gifs = len(list(d["gif_dir"].glob("*.gif"))) if d["gif_dir"].is_dir() else 0
         print(
             f"  {d['id']:<28} {done}/{len(rows)} reviewed, {pending} pending, "
             f"{invalid} invalid labels, {loops} loop"
-            f"{f' ({unflagged} unjudged)' if unflagged else ''}, {gifs} gifs"
+            f"{f' ({unflagged} unjudged)' if unflagged else ''}"
+            f"{f', {autofill} autofill' if autofill else ''}, {gifs} gifs"
         )
     print(f"labels manifest : {Path(args.datasets).resolve()}")
     print(f"clean trash dir : {TRASH_ROOT}")
