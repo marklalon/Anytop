@@ -1,5 +1,6 @@
 import importlib.util
 import json
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -125,6 +126,51 @@ def test_changing_owner_group_removes_that_group_from_aux_list(
     # The saved sidecar must still pass the loader's primary/aux disjointness
     # rule, and the empty key must continue to mark the sidecar as migrated.
     assert load_action_labels(tmp_path)["Bear_Jump"]["aux_action_groups"] == tuple(expected)
+
+
+def test_update_api_removes_only_requested_aux_group(tmp_path):
+    labels = tmp_path / "action_labels.jsonl"
+    labels.write_text("".join(json.dumps(row) + "\n" for row in [
+        {"clip": "Bear_Jump", "action_group": "stationary", "action_label": "jump",
+         "aux_action_groups": ["transition", "locomotion"]},
+        {"clip": "Bear_Walk", "action_group": "locomotion", "action_label": "walk",
+         "aux_action_groups": ["transition"]},
+    ]), encoding="utf-8")
+    dataset = {
+        "id": "sample", "name": "sample", "processed": str(tmp_path),
+        "labels": labels, "gif_dir": tmp_path / "review" / "gif",
+    }
+    handler = object.__new__(review.Handler)
+    handler.path = "/api/update"
+    handler.datasets = [dataset]
+    handler.stores = {"sample": review.LabelStore(labels)}
+    handler._send_json = lambda status, payload: (status, payload)
+
+    def remove(group):
+        body = json.dumps({
+            "dataset": "sample", "clip": "Bear_Jump",
+            "remove_aux_action_group": group,
+        }).encode()
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = BytesIO(body)
+        return handler.do_POST()
+
+    status, payload = remove("transition")
+    assert status == 200
+    assert payload["row"]["action_group"] == "stationary"
+    assert payload["row"]["aux_action_groups"] == ["locomotion"]
+
+    status, payload = remove("locomotion")
+    assert status == 200
+    assert payload["row"]["aux_action_groups"] == []
+    saved = [json.loads(line) for line in labels.read_text(encoding="utf-8").splitlines()]
+    assert saved[0]["aux_action_groups"] == []
+    assert saved[1]["aux_action_groups"] == ["transition"]
+    assert load_action_labels(tmp_path)["Bear_Jump"]["aux_action_groups"] == ()
+
+    status, payload = remove("")
+    assert status == 400
+    assert "remove_aux_action_group" in payload["error"]
 
 
 def test_all_dataset_view_keeps_the_owner_on_duplicate_clip_names(tmp_path):

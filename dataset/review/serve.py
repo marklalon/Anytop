@@ -2,7 +2,7 @@
 """Local multi-dataset review server for action_labels.jsonl.
 
 Serves review/index.html (a GIF grid) and applies label / loop / reviewed /
-pending_delete edits straight back into each dataset's action_labels.jsonl so
+pending_delete / aux-group edits straight back into each dataset's action_labels.jsonl so
 the page and the file never drift apart.  A dropdown in the header picks which
 dataset is on screen.
 
@@ -462,7 +462,7 @@ class LabelStore:
             return result
 
     def update(self, clip, action_label=None, action_group=None, reviewed=None,
-               pending_delete=None, is_loop=None):
+               pending_delete=None, is_loop=None, remove_aux_action_group=None):
         with self.lock:
             self._reload_if_stale()
             row = self.index.get(clip)
@@ -505,6 +505,17 @@ class LabelStore:
                     row[AUX_ACTION_GROUPS_KEY] = [
                         group for group in aux_groups
                         if group != action_group
+                    ]
+            if remove_aux_action_group is not None:
+                if not isinstance(remove_aux_action_group, str) or not remove_aux_action_group:
+                    raise ValueError("remove_aux_action_group must be a nonempty group name")
+                aux_groups = row.get(AUX_ACTION_GROUPS_KEY)
+                if isinstance(aux_groups, list):
+                    # Keep the key, including when this was the last aux group:
+                    # its presence marks a sidecar migrated to the aux schema.
+                    row[AUX_ACTION_GROUPS_KEY] = [
+                        group for group in aux_groups
+                        if group != remove_aux_action_group
                     ]
             if reviewed is not None:
                 if reviewed:
@@ -745,6 +756,13 @@ class Handler(BaseHTTPRequestHandler):
         is_loop = payload.get(LOOP_FLAG_KEY)
         if is_loop is not None and not isinstance(is_loop, bool):
             return self._send_json(400, {"error": f"{LOOP_FLAG_KEY} must be true or false"})
+        remove_aux_group = payload.get("remove_aux_action_group")
+        if "remove_aux_action_group" in payload:
+            if not isinstance(remove_aux_group, str) or not remove_aux_group.strip():
+                return self._send_json(400, {
+                    "error": "remove_aux_action_group must be a nonempty group name"
+                })
+            remove_aux_group = remove_aux_group.strip()
         try:
             row = store.update(
                 clip,
@@ -753,6 +771,7 @@ class Handler(BaseHTTPRequestHandler):
                 reviewed=payload.get("reviewed"),
                 pending_delete=payload.get("pending_delete"),
                 is_loop=is_loop,
+                remove_aux_action_group=remove_aux_group,
             )
         except KeyError:
             return self._send_json(404, {"error": f"clip not in labels file: {clip}"})

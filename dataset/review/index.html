@@ -807,7 +807,9 @@ function card(row) {
   // 否则 aux 筛选下看不出这一行到底属于谁。
   const auxOf = Array.isArray(row.aux_action_groups) ? row.aux_action_groups : [];
   grp.title = 'action group：' + row.action_group +
-    (auxOf.length ? '（aux：' + auxOf.join('、') + '）' : '') + '（点击修改）';
+    (auxOf.length ? '（aux：' + auxOf.join('、') + '）' : '') +
+    ($('auxOnly').getAttribute('aria-pressed') === 'true'
+      ? '（点击修改或移除 aux group）' : '（点击修改）');
   grp.onclick = () => openGroupMenu(grp, row, el);
   const loop = document.createElement('div');
   const ls = loopState(row);
@@ -948,6 +950,31 @@ function openGroupMenu(anchor, row, cardEl) {
     menu.appendChild(empty);
   }
 
+  if ($('auxOnly').getAttribute('aria-pressed') === 'true') {
+    const selected = $('group').value;
+    const auxGroups = Array.isArray(row.aux_action_groups) ? row.aux_action_groups : [];
+    const removable = selected === 'all'
+      ? auxGroups : auxGroups.filter(g => g === selected);
+    if (removable.length) {
+      const auxSep = document.createElement('div');
+      auxSep.className = 'gm-sep';
+      menu.appendChild(auxSep);
+      for (const g of removable) {
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'gm-del';
+        remove.textContent = selected === 'all' ? '移除 aux group：' + g : '移除 aux group';
+        remove.title = '把该 clip 从 ' + g + ' 的 aux group 中移除；所属 action group 不变';
+        remove.onclick = () => {
+          const el = _gmEl;
+          closeGroupMenu();
+          save(el, row, { remove_aux_action_group: g });
+        };
+        menu.appendChild(remove);
+      }
+    }
+  }
+
   // Separator + the retire action. It sets pending_delete rather than blanking
   // action_group: a row without a group makes load_action_labels exit, which
   // takes the sidecar and every tool reading it offline. The group stays valid,
@@ -1025,9 +1052,10 @@ async function save(el, row, patch) {
     // A loop flip saves silently like a label edit; the server only sends a
     // note when the tensor could not follow the flag (no NPY on disk).
     for (const n of (data.notes || [])) toast(n);
-    if (patch.action_group !== undefined || patch.pending_delete !== undefined ||
+    if (patch.action_group !== undefined || patch.remove_aux_action_group !== undefined ||
+        patch.pending_delete !== undefined ||
         patch.is_loop !== undefined) {
-      // A group change can move the clip into/out of the current filter, and
+      // A group or aux membership change can move the clip into/out of the filter, and
       // may add a new group option — rebuild the list and re-run the filter.
       // pending_delete moves it into/out of the 待删除 filter the same way,
       // and is_loop into/out of the loop filter.
