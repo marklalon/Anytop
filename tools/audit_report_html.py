@@ -59,9 +59,10 @@ DEFAULT_REPORT_PATH = _ANYTOP_DIR / "dataset" / "review" / "audit_action_labels.
 RULE_INFO = {
     "R3": {
         "name": "镜像一致性",
-        "text": "只靠名字配上的左右两条 clip，标签必须互为镜像、各自带自己的方向词，而且"
-                "不能左右写反。名字是关于动作最弱的证据 —— 页面给出的候选值是从名字读的，"
-                "改哪一边看 GIF 决定。",
+        "text": "只靠名字配上的左右两条 clip，两条标签必须互为镜像。这条规则不从 clip 名字"
+                "读方向：它只说这一对自己和自己不一致，不说哪一边错、也不说哪个侧词该"
+                "落在哪个名字上（MB_Unka_DeathLeft 确实是向角色右边倒的）。改哪一边、"
+                "方向是什么，看 GIF 或者由 tools/prefill_direction_words.py 从动作量出来。",
     },
     "R4": {
         "name": "方向拼写",
@@ -81,10 +82,7 @@ RULE_INFO = {
 # ``problem_codes`` rather than on its prose so a reworded rule falls back to
 # the English sentence instead of quietly losing the translation.
 R3_PROBLEMS = {
-    "crossed": "左右写反了：名字带 Left 的那条标签写着 right，带 Right 的那条写着 left"
-               "（这样的一对自己和自己是自洽的，只有显式检查才抓得到）",
     "not_mirror": "两条标签不是彼此的镜像",
-    "no_side_word": "有一侧没写方向词，L/R 这根轴就丢了",
 }
 
 
@@ -112,7 +110,6 @@ def _clip_payload(record, role="") -> dict:
         "bvh": record.get("bvhview", ""),
         "labels_path": record.get("labels_path", ""),
         "role": role,
-        "suggest": record.get("suggest", ""),
     }
 
 
@@ -171,17 +168,16 @@ def build_cases(findings, clips) -> list[dict]:
                                  {"label": entry["label"],
                                   "group": finding.get("action_group", ""),
                                   "gif_path": entry.get("gif", "")})
-                record = dict(record)
-                candidate = finding.get("candidate_%s" % side, "")
-                if candidate and candidate != entry["label"]:
-                    record["suggest"] = candidate
-                members.append(_clip_payload(record, role))
+                members.append(_clip_payload(dict(record), role))
             headline = "左右镜像对 %s 的两条标签不一致" % subject
             codes = finding.get("problem_codes") or []
             raw = list(finding.get("problems", []))
             problems = [R3_PROBLEMS.get(code, text) for code, text
                         in zip(codes, raw)] or raw
-            problems.append("候选值是从 clip 名字读的，没有确认过 —— 以 GIF 为准。")
+            # No candidate label: it could only come from the clip name, and a
+            # name is not evidence about the motion. Which half to change is
+            # read off the GIFs on this page.
+            problems.append("哪一边要改，看下面两段 GIF —— clip 名字不作为依据。")
             note_hint = "例如：名字反了，动作本身是对的"
 
         elif rule == "R4":
@@ -440,11 +436,6 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .status { font-size: 11px; color: var(--dim); min-height: 15px; word-break: break-word; }
   .status.bad { color: var(--warn); }
   .status.good { color: #7fd08a; }
-  .suggest {
-    font-size: 11px; color: var(--accent);
-    background: none; border: none; padding: 0; text-align: left; cursor: pointer;
-  }
-  .suggest:hover { text-decoration: underline; }
 
   .note { margin-top: 8px; display: flex; align-items: center; gap: 6px; }
   .note input { flex: 1; min-width: 0; }
@@ -760,16 +751,6 @@ function card(clip) {
   const status = document.createElement('div');
   status.className = 'status';
   edit.append(line, status);
-
-  if (clip.suggest) {
-    const suggest = document.createElement('button');
-    suggest.type = 'button';
-    suggest.className = 'suggest';
-    suggest.textContent = '候选（来自 clip 名字，未确认）：' + clip.suggest;
-    suggest.title = '点击填入输入框';
-    suggest.onclick = () => { input.value = clip.suggest; commit(clip, input, group); };
-    edit.appendChild(suggest);
-  }
 
   input.oninput = () => commit(clip, input, group);
   group.onchange = () => commit(clip, input, group);

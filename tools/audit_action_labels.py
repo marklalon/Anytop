@@ -15,14 +15,22 @@ the motion, guesses at a threshold, or reports a case that "looks unusual" --
 a finding here is a defect, not a candidate.
 
   R3  mirror consistency.  Clips whose names differ only by Left/Right (or a
-      trailing L/R) must carry mirrored labels, each side must carry its own
-      side word, and the two side words must not be crossed -- a crossed pair is
-      still a valid mirror of itself, so only an explicit check catches it.
-      The side-word demand is lifted for an action with no planar direction to
-      name (``NO_PLANAR_DIRECTION_WORDS`` -- hurt, getup, idle, rest, stop,
-      draw, sheathe, headbutt, bite): those spell no side at all, so the two
-      halves are mirrors by carrying the SAME label ("Trex_BiteLeft" and
-      "Trex_BiteRight" are both "attack, bite").
+      trailing L/R) must carry labels that are mirrors of each other.  That is
+      the whole rule, and it is deliberately the only thing a name can settle:
+      the verdict is SYMMETRIC -- it says the pair disagrees with itself, never
+      which half is wrong and never which side word belongs on which name.
+      NOTHING HERE READS A DIRECTION OFF A CLIP NAME.  Two checks that used to
+      are gone, because both were wrong in this corpus:
+        * "the side words are crossed" (the clip named Left says 'right').
+          ``MB_Unka_DeathLeft`` really does fall to the character's right, so
+          its 'die, right' is correct and the NAME is what lies.  A
+          crossed-looking pair is a valid mirror of itself; this rule passes it.
+        * "each side must carry its own side word".  Whether two identically
+          spelled clips are mirror takes at all -- and which way each one goes
+          -- is a fact about the MOTION.  ``tools/prefill_direction_words.py``
+          settles it there (mirror detection on the positions, then side
+          energy); the console here counts the identically spelled pairs and
+          points at that tool instead of calling them violations.
 
   R4  direction spelling.  Every ``locomotion`` label must name a heading:
       a planar one, or a vertical one for a clip that travels out of the ground
@@ -32,10 +40,10 @@ a finding here is a defect, not a candidate.
       dropped out at random in training, so a bare ``jump`` is the marginal over
       jumps and a vertical one is spelled ``jump, up``; a locomotion
       ``run, jump`` names where the run goes like any run.  The actions with no
-      planar direction at all (``NO_PLANAR_DIRECTION_WORDS``, shared with R3)
-      are exempt here too.  Corpus-wide a plain forward walk is spelled "walk"
-      87 times and "walk, forward" 30 times, which makes "forward" noise in a
-      condition shared across every species.
+      planar direction at all (``NO_PLANAR_DIRECTION_WORDS``) are exempt here
+      too.  Corpus-wide a plain forward walk is spelled "walk" 87 times and
+      "walk, forward" 30 times, which makes "forward" noise in a condition
+      shared across every species.
 
   R5  gait-word conflicts.  ``die`` + ``fall``, ``die`` + ``idle``, ``walk`` +
       ``run`` (should be ``walk, trot``), ``glide`` + ``flap``, and ``slow`` +
@@ -45,9 +53,11 @@ a finding here is a defect, not a candidate.
 Every finding carries the paths of the review GIFs it concerns, and none of them
 prescribes a fix.  A clip NAME is the weakest evidence there is about what a clip
 does -- it is good enough to pair two clips up and to notice that the pair
-disagrees with itself, and not good enough to decide which half is wrong.  That
-is settled from the render: ``dataset/review/relabel_actions_llm.py`` feeds those
-same GIFs to the vision model for exactly this purpose.
+disagrees with itself, and not good enough to decide which half is wrong, which
+is why no rule here proposes a corrected label.  What a clip actually does is
+settled from the render (``dataset/review/relabel_actions_llm.py`` feeds those
+same GIFs to the vision model) or measured off the motion
+(``tools/prefill_direction_words.py``).
 
 Output is an HTML review page (``tools/audit_report_html.py``), because acting
 on a finding means watching a GIF and the console cannot show one.  Every
@@ -328,9 +338,15 @@ def collect_clips(cond_dict, sources, action_group=None, verbose=False):
 
 # ───────────────────────────────── the rules ────────────────────────────────
 def check_r3(clips):
-    """Mirror pairs whose labels are not mirrors of each other."""
+    """Mirror pairs whose labels are not mirrors of each other.
+
+    Name-paired, but the verdict never reads a direction off a name: it is
+    symmetric under swapping the two halves, so it can say the pair disagrees
+    and nothing about which half, or which side word belongs where. See the
+    module docstring for the two checks that broke that and were removed.
+    """
     findings = []
-    stats = {"pairs_checked": 0, "directionless": 0}
+    stats = {"pairs_checked": 0, "same_label": 0, "same_label_aimed": 0}
     groups = defaultdict(dict)
     for clip in clips:
         side = clip_side(clip["clip"])
@@ -348,40 +364,32 @@ def check_r3(clips):
         stats["pairs_checked"] += 1
         left, right = sides["L"], sides["R"]
         left_label, right_label = left["label"], right["label"]
-        left_words, right_words = set(label_words(left_label)), set(label_words(right_label))
+        left_words = set(label_words(left_label))
         problems = []
         # A stable code beside each sentence: the HTML report words these in
         # Chinese, and keying that off the English prose would silently fall
         # back to the prose the day someone rewords it.
         codes = []
 
-        # Labels that ARE mirrors of each other but mirrored the wrong way round
-        # pass the mirror test, so nothing but naming the swap explains the pair.
-        # This is a real failure mode -- Scorpion-2_StrafeLeft carrying 'right'
-        # and StrafeRight carrying 'left' is self-consistent and still backwards.
-        swapped = ("right" in left_words and "left" not in left_words
-                   and "left" in right_words and "right" not in right_words)
-        if swapped:
-            problems.append("the side words are crossed: the clip named Left says "
-                            "'right' and the clip named Right says 'left'")
-            codes.append("crossed")
-            candidate = {"left": mirror_label(left_label),
-                         "right": mirror_label(right_label)}
-        else:
-            if mirror_label(left_label) != right_label:
-                problems.append("labels are not mirrors of each other")
-                codes.append("not_mirror")
-            # An action with no planar direction to name (hurt, idle, bite ...)
-            # carries no side word by rule, so the pair is mirrored by being
-            # spelled the same; demanding one here would flag every such pair.
-            directionless = not (takes_planar_direction(left_words)
-                                 and takes_planar_direction(right_words))
-            if directionless:
-                stats["directionless"] += 1
-            elif "left" not in left_words or "right" not in right_words:
-                problems.append("a side carries no side word, so the L/R axis is lost")
-                codes.append("no_side_word")
-            candidate = {"left": left_label, "right": mirror_label(left_label)}
+        # Two halves spelled the SAME are mirrors of each other, so the rule
+        # passes them. For an action with no planar direction to name (hurt,
+        # idle, bite ...) that is the correct spelling and the end of it; for an
+        # aimed one it may instead be a lost L/R axis -- but only the motion can
+        # say whether the two clips are mirror takes at all, so this is counted
+        # for the console rather than reported as a violation.
+        if left_label == right_label:
+            stats["same_label"] += 1
+            if takes_planar_direction(left_words):
+                stats["same_label_aimed"] += 1
+
+        # The one thing the names can settle: the pair disagrees with itself.
+        # Which half is wrong is not decided here -- and neither is the case
+        # where the two side words look swapped relative to the names, because
+        # a name is not evidence about the motion (MB_Unka_DeathLeft falls to
+        # the character's right, and its label says so).
+        if mirror_label(left_label) != right_label:
+            problems.append("labels are not mirrors of each other")
+            codes.append("not_mirror")
 
         if not problems:
             continue
@@ -396,14 +404,6 @@ def check_r3(clips):
                      "gif": left.get("gif_path", "")},
             "right": {"clip": right["clip"], "label": right_label,
                       "gif": right.get("gif_path", "")},
-            # NAME-DERIVED and unconfirmed: this rule pairs clips by their name
-            # and can therefore say the pair disagrees, but a clip name is the
-            # weakest evidence there is about what the clip does -- a clip called
-            # StrafeLeft may well strafe right. Which side to rewrite is decided
-            # from the review GIF, not from here.
-            "candidate_left": candidate["left"],
-            "candidate_right": candidate["right"],
-            "candidate_basis": "clip name (unconfirmed -- watch the GIFs)",
         })
     return findings, stats
 
@@ -491,9 +491,12 @@ def check_r5(clips):
 def report_r3(findings, stats, detail=True):
     print("\n== R3  mirror consistency ==")
     print(f"   {stats['pairs_checked']} left/right pair(s) found")
-    if stats.get("directionless"):
-        print(f"   {stats['directionless']} pair(s) take no side word "
-              f"({', '.join(NO_PLANAR_DIRECTION_WORDS)}) -- mirrored by being spelled the same")
+    if stats.get("same_label"):
+        print(f"   {stats['same_label']} pair(s) spelled identically, which IS a mirror "
+              f"({stats.get('same_label_aimed', 0)} of them on an aimed action)")
+        print("     whether those lost an L/R axis is a question about the MOTION, not "
+              "about the names:")
+        print("     tools/prefill_direction_words.py measures it")
     if not findings:
         print("   OK -- every mirror pair carries mirrored labels")
         return
@@ -507,17 +510,6 @@ def report_r3(findings, stats, detail=True):
             print(f"     ! {problem}")
         print(f"     L: {item['left']['label']!r}   ({item['left']['clip']})")
         print(f"     R: {item['right']['label']!r}   ({item['right']['clip']})")
-        # A candidate, not a verdict: it is read off the clip NAME, and the name
-        # is the weakest evidence about the motion. Only the sides that would
-        # actually change are shown -- echoing a side's current value back at it
-        # reads as a tool bug rather than a finding.
-        changes = [(side, item[f"candidate_{side}"])
-                   for side in ("left", "right")
-                   if item[f"candidate_{side}"] != item[side]["label"]]
-        if changes:
-            print("     candidate (from the clip name, NOT confirmed):")
-            for side, value in changes:
-                print(f"       {side[0].upper()}: {value!r}")
         gifs = [item[side]["gif"] for side in ("left", "right") if item[side]["gif"]]
         for gif in gifs:
             print(f"     watch: {gif}")
@@ -647,8 +639,10 @@ def main() -> int:
     print(f"rules     : {', '.join(requested)}")
     print(f"exempt    : R4 skips a locomotion label carrying "
           f"{', '.join(NO_HEADING_WORDS)} (no heading of travel to name)")
-    print(f"exempt    : R3/R4 ask no planar direction of "
+    print(f"exempt    : R4 asks no planar direction of "
           f"{', '.join(NO_PLANAR_DIRECTION_WORDS)} (aimed nowhere)")
+    print("note      : no rule reads a direction off a clip name -- R3's verdict is "
+          "symmetric")
 
     # The HTML page shows every finding beside its GIF, which is what the text
     # dump was standing in for; keep the text when there is no page to read.

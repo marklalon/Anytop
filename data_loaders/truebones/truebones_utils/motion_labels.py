@@ -102,7 +102,7 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     "happy", "talk", "clap", "wave", "cry", "salute",
     # -- block E: activity and object handling --
     "clean", "aim", "carry", "fishing", "cook", "reload",
-    "saw", "shovel", "water", "pull", "push",
+    "saw", "shovel", "pull", "push",
     # -- block F: which body part leads a dance --
     "footwork", "fullbody", "armwork", "sway",
     # -- block G: the implement an action is performed with (never the asset
@@ -221,7 +221,6 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "shake": "shaking",                  # bare "shake" is a milkshake
     "shield": "shield bash",             # bare "shield" is the verb "to protect"
     "stop": "run to stop",               # bare "stop" is ceasing in general, or a bus stop
-    "water": "watering",                 # bare "water" is the substance
     "wave": "waving a hand",             # bare "wave" is an ocean wave
 }
 

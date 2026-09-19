@@ -6,13 +6,20 @@ so an empty slot means "the marginal over directions" and nothing else. That
 makes every row whose content HAS one dominant heading or side and spells none
 a mislabel: the model learns that ``attack, swat`` is a right swat, and a bare
 prompt gets a right swat instead of either. This tool finds those rows and
-fills them, under three rules that never bend:
+fills them, under four rules that never bend:
 
 * Only an EMPTY slot is filled. A direction word already on a row is a
   hand-verified truth; the tool calibrates its own sign and thresholds against
   those rows and never rewrites one. A row filled here is marked
   ``"reviewed": false`` and flagged ``"autofill": true``, so the review UI
   lists it for a person.
+* A ``reviewed: true`` row is left alone. A person watched that GIF and
+  settled the label, so its empty slot says "this clip is aimed nowhere" and
+  is not a gap to fill. The row keeps every other job it had -- it calibrates,
+  it is a mirror partner, it is a labelled reference -- and only stops being a
+  target. ``--include-reviewed`` judges those rows too, which is what to pass
+  when a rule change (a new exemption, a re-measured axis) makes the old
+  sign-offs stale.
 * The verdict comes from the MOTION only. The clip name is the weakest
   evidence there is and is not consulted; it is not even written as evidence.
 * Nothing is written until the measurement has been checked against the rows
@@ -29,7 +36,7 @@ rows are neither judged nor used to calibrate. Their VERTICAL word is
 untouched ("idle, up, aim, bow" keeps it), and a transition jump is still
 judged for ``up``.
 
-Three measurements, one per kind of row:
+Four measurements, one per kind of row:
 
   SIDE  (stationary and transition rows, ``left`` / ``right``)
       The clip's positions are split into their mirror-symmetric and
@@ -41,8 +48,10 @@ Three measurements, one per kind of row:
       listed. Rigs with no mirror pairs (``cond.is_symmetric`` false) and
       joints without a partner (a one-armed rig's arm) are left out of both
       measurements. A ``turn`` row is out of scope: its side word is the yaw
-      direction, not a limb. Stationary rows only ever receive a side word --
-      a stationary clip has no travel to spell ``forward`` for.
+      direction, not a limb, and so is a ``die`` row: a death is delivered
+      with no limb at all and its word names where the BODY goes (TOPPLE
+      below). Stationary rows only ever receive a side word -- a stationary
+      clip has no travel to spell ``forward`` for.
 
   HEADING  (locomotion rows, ``forward`` / ``backward`` / ``left`` / ``right``)
       Preprocessing detrends every locomotion clip's root XZ, so the net travel
@@ -62,21 +71,55 @@ Three measurements, one per kind of row:
       is used only as a cross-check (a contradiction lists the row). ``land``
       rows keep their spelling -- ``land`` carries the vertical itself.
 
+  TOPPLE  (``die`` rows, one of ``forward`` / ``backward`` / ``left`` / ``right``)
+      A death's direction is the way the body goes down. It is not a side --
+      the hand-labelled deaths spell ``forward`` and ``backward`` as often as
+      ``left`` and ``right``, which the side measurement cannot even produce
+      -- and it is not a limb: the side measurement would read it off the
+      twitch of a corpse's arms. It is the horizontal travel of the joint
+      CENTROID, the clip's first tenth against its last, in body lengths. The
+      centroid rather than the root, because a quadruped that keels over where
+      it stands moves its root by nothing (BrownBear_Twitching: root 0.00,
+      centroid 0.60). Its dominant axis names the fall with ONE word, the way
+      every labelled death is spelled, and reproduces all 41 of them.
+
+      A death only HAS that direction when the body topples onto the ground,
+      and four things say it did not. None of them is a proposal: the empty
+      slot is correct, so they are ``keep``.
+        * the label already says the death happens in the air -- ``hover``,
+          ``fall``, ``fly`` (``AIRBORNE_DEATH_WORDS``). A creature that dies in
+          flight falls, and what its body does in the ground plane on the way
+          down is the last of its flight momentum plus the arc of the fall:
+          ``MLS_BattleOwl_Die`` drifts 2.21 body lengths and topples toward
+          nothing. This is ``NO_HEADING_WORDS``' own argument about ``hover``,
+          and the first version of this measurement overrode it, wrongly.
+        * the body starts off the ground although the label does not say so
+          (``--topple-start-clearance-max``): the same fall, unspelled.
+        * the body never descends (``--topple-min-drop``): nothing toppled, it
+          slid or settled where it stood. ``Cobra_Death`` travels 0.80 body
+          lengths and drops 0.21.
+        * the body barely moves in the plane (``--topple-min-travel``): it
+          collapsed in place, which is aimed nowhere.
+      Every threshold sits outside the whole hand-labelled set, so not one of
+      the 41 falls foul of one.
+
 Calibration (printed first, always): the side measurement's sign and margin on
 the rows that already have ``left`` / ``right``, the heading measurement on the
-labelled ground gaits, the jump measurement on the labelled jumps. Each has a
-gate (``--side-gate`` 0.90, ``--heading-gate`` 0.95, ``--jump-gate`` 0.90); a
+labelled ground gaits, the jump measurement on the labelled jumps, the topple
+measurement on the labelled deaths. Each has a gate (``--side-gate`` 0.90,
+``--heading-gate`` 0.95, ``--jump-gate`` 0.90, ``--topple-gate`` 0.90); a
 measurement under its gate never writes.
 
 Output: the console summary and ``--report`` (CSV, one line per judged row).
 ``--apply`` writes the ``write`` rows into their sidecars, skipping any row a
-person filled since the run started; a written row comes back as
+person filled or reviewed since the run started; a written row comes back as
 ``reviewed:false`` and is reviewed in ``dataset/review/serve.py`` with the rest.
 
 Usage:
     python tools/prefill_direction_words.py                       # dry run, all groups
     python tools/prefill_direction_words.py --action-group stationary
     python tools/prefill_direction_words.py --apply
+    python tools/prefill_direction_words.py --include-reviewed  # reviewed rows too
 """
 
 from __future__ import annotations
@@ -95,6 +138,7 @@ for _candidate in (str(ANYTOP_DIR), str(ANYTOP_DIR.parent)):
         sys.path.insert(0, _candidate)
 
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
+    ACTION_VOCAB,
     DIRECTION_VOCAB,
 )
 from tools.audit_action_labels import (  # noqa: E402
@@ -108,8 +152,10 @@ from tools.audit_action_labels import (  # noqa: E402
 from tools.prefill_common import (  # noqa: E402
     DecodedClip,
     Proposal,
+    add_reviewed_flag,
     apply_proposals,
     check_head_order,
+    drop_reviewed,
     head_of,
     load_corpus,
     spell_with,
@@ -148,6 +194,58 @@ JUMP_AIR_SHARE = 0.60         # airborne = root above this share of its height r
 JUMP_UP_MAX = 0.05            # airborne XZ displacement (body lengths) at most -> up
 JUMP_PLANAR_MIN = 0.15        # ... at least -> planar word(s)
 JUMP_NET_MIN = 0.30           # non-loop cross-check: net root travel that contradicts "up"
+
+# ── topple (a death's own travel) ──
+# The words whose direction names where the BODY ends up rather than which limb
+# delivers the action.  A death is the only one in the corpus, and it is the
+# reason this measurement exists: routed to SIDE (which is where every
+# non-locomotion row went before), a death could only ever come out ``left`` or
+# ``right``, while 30 of the 41 hand-labelled ones say ``forward`` or
+# ``backward``.  Matched anywhere in the label, like NO_PLANAR_DIRECTION_WORDS.
+BODY_TRAVEL_WORDS = ("die",)
+# Ends of the clip averaged for the travel: first frames // this against last.
+TOPPLE_END_SHARE = 10
+# Centroid travel (body lengths) under which the body collapsed in place and
+# has no planar direction to name.  The smallest labelled death travels 0.46.
+TOPPLE_MIN_TRAVEL = 0.40
+# Off-axis share (weaker axis / stronger) over which the fall is a diagonal
+# with no dominant axis.  Deliberately loose: a person picked the dominant axis
+# at 0.81 (KI_Warrior_Death01A, "left"), so only a near-tie is listed.  A death
+# is spelled with ONE word -- none of the 41 labelled ones carries two.
+TOPPLE_TIE_SHARE = 0.85
+# Words that say the death happens IN THE AIR, so there is no topple to name a
+# direction of: the horizontal component is the fall's, not the body's aim.
+# Matched anywhere in the label.  No hand-labelled death carries one of these,
+# so nothing a person spelled is rejected by it.
+AIRBORNE_DEATH_WORDS = ("hover", "fall", "fly")
+# ... and the same fall with nothing in the label to say so: the lowest joint's
+# clearance above the clip's floor, over the first tenth, in body lengths.  The
+# gate sits just above the highest a hand-labelled death has -- LH_Hero_FlyDie
+# at 1.00, a flying death a person DID spell -- so it rejects only what starts
+# higher still (MU01_Bird_Die, 1.05).  The margin is thin on purpose: the
+# clearance axis does not separate those two clips, a person's judgement did,
+# and this errs on the side of the person.
+TOPPLE_START_CLEARANCE_MAX = 1.00
+# Centroid drop under which nothing toppled -- the body slid or settled where
+# it stood (Cobra_Death: travels 0.80, drops 0.21).  The smallest hand-labelled
+# death drops 0.36.
+TOPPLE_MIN_DROP = 0.35
+
+_unknown_body_travel = set(BODY_TRAVEL_WORDS) - set(ACTION_VOCAB)
+if _unknown_body_travel:
+    raise RuntimeError(
+        "BODY_TRAVEL_WORDS names %s, which ACTION_VOCAB does not have: a word "
+        "nothing can spell routes nothing" % ", ".join(sorted(_unknown_body_travel))
+    )
+# kind_of() tests the exemption FIRST, so a word on both lists would be dead
+# here and the topple measurement would silently never run for it.
+_both_lists = set(BODY_TRAVEL_WORDS) & set(NO_PLANAR_DIRECTION_WORDS)
+if _both_lists:
+    raise RuntimeError(
+        "%s is in BODY_TRAVEL_WORDS and NO_PLANAR_DIRECTION_WORDS at once; an "
+        "action either has a planar direction or it does not"
+        % ", ".join(sorted(_both_lists))
+    )
 
 PLANAR_AXES = {
     "forward": np.array([0.0, 1.0]),
@@ -262,6 +360,71 @@ def jump_measure(decoded: DecodedClip) -> dict:
     return {"rise": rise, "air_frames": int(in_air.sum()), "air_disp": air_disp, "net": net}
 
 
+def topple_measure(decoded: DecodedClip) -> dict:
+    """Where the body goes as it falls: travel, drop and start clearance.
+
+    The centroid and not the root: a death drops the body onto the ground and a
+    rig whose root is a hip barely moves it (BrownBear_Twitching travels 0.00 at
+    the root and 0.60 at the centroid). The clip's first tenth against its last
+    rather than the endpoints, so one jittering frame cannot name the fall.
+
+    ``drop`` and ``start_clearance`` are what say the fall was a topple at all:
+    a body that never descends did not topple, and one that starts in the air
+    fell rather than toppled. The floor is the lowest any joint gets in this
+    clip, which is what the clip itself offers -- there is no ground plane in
+    the tensor.
+    """
+    n = max(1, decoded.frames // TOPPLE_END_SHARE)
+    world = decoded.world
+    centroid = world.mean(axis=1)
+    travel = ((centroid[-n:][:, [0, 2]].mean(axis=0)
+               - centroid[:n][:, [0, 2]].mean(axis=0)) / decoded.L)
+    strong, weak = float(np.abs(travel).max()), float(np.abs(travel).min())
+    floor = float(world[..., 1].min())
+    return {"travel": travel, "distance": float(np.linalg.norm(travel)),
+            "tie_share": weak / strong if strong > 1e-9 else 1.0,
+            "drop": float(centroid[:n, 1].mean() - centroid[-n:, 1].mean()) / decoded.L,
+            "start_clearance": float(world[:n, :, 1].min() - floor) / decoded.L}
+
+
+def dominant_word(vector) -> str:
+    """The single planar word of *vector*'s dominant axis."""
+    dots = {word: float(axis @ vector) for word, axis in PLANAR_AXES.items()}
+    return max(dots, key=dots.get)
+
+
+def topple_verdict(measure, clip, args):
+    """``(status, words, reason)`` for a death.
+
+    The four ``keep`` cases come first: a death that did not topple onto the
+    ground has no planar direction to name, whatever its horizontal travel
+    reads (MLS_BattleOwl_Die drifts 2.21 body lengths out of a hover, which is
+    more than the median hand-labelled death, and topples toward nothing).
+    """
+    travel = np.round(measure["travel"], 2).tolist()
+    airborne = [word for word in label_words(clip["label"])
+                if word in AIRBORNE_DEATH_WORDS]
+    if airborne:
+        return ("keep", [], f"'{', '.join(airborne)}' on the label: a death in the air "
+                            f"falls, and its {measure['distance']:.2f} body lengths in "
+                            f"the ground plane are the fall's, not a direction")
+    if measure["start_clearance"] > args.topple_start_clearance_max:
+        return ("keep", [], f"the body starts {measure['start_clearance']:.2f} body "
+                            f"lengths off the ground: this death falls, it does not topple")
+    if measure["drop"] < args.topple_min_drop:
+        return ("keep", [], f"the body descends {measure['drop']:.2f} body lengths: "
+                            f"nothing toppled, it slid or settled where it stood")
+    if measure["distance"] < args.topple_min_travel:
+        return ("keep", [], f"the body travels {measure['distance']:.2f} body lengths: "
+                            f"a collapse in place, aimed nowhere")
+    if measure["tie_share"] > TOPPLE_TIE_SHARE:
+        return ("review", [], f"body travel {travel} is a diagonal with no dominant "
+                              f"axis (off-axis share {measure['tie_share']:.2f})")
+    word = dominant_word(measure["travel"])
+    return ("write", [word], f"{word}: the body topples {travel} body lengths, "
+                             f"descending {measure['drop']:.2f}")
+
+
 def mirror_pairs(decoded_by_key: dict, symmetry: Symmetry, keys: list[str]) -> dict[str, tuple[str, float]]:
     """``key -> (partner key, distance)`` for clips that are mirror takes of each other."""
     if len(keys) < 2:
@@ -324,6 +487,11 @@ def kind_of(clip) -> str | None:
     # incidental, so neither measurement runs and neither calibrates on them.
     if not takes_planar_direction(words):
         return None
+    # A death is not delivered with a limb, so its word is not a side: it names
+    # where the body ends up, on all four planar axes. Ahead of the group
+    # dispatch, which would otherwise hand it to the side measurement.
+    if set(words) & set(BODY_TRAVEL_WORDS):
+        return "topple"
     if group == "locomotion":
         return "heading"
     return "side"
@@ -361,7 +529,8 @@ def run(args) -> int:
     side_cal = {"decided": 0, "agree": 0, "undecided": 0, "disagree": []}
     heading_cal = {"decided": 0, "agree": 0, "undecided": 0, "disagree": []}
     jump_cal = {"decided": 0, "agree": 0, "undecided": 0, "disagree": []}
-    side_scope, heading_scope, jump_scope = [], [], []
+    topple_cal = {"decided": 0, "agree": 0, "undecided": 0, "disagree": []}
+    side_scope, heading_scope, jump_scope, topple_scope = [], [], [], []
     for clip in clips:
         kind = kind_of(clip)
         if kind is None:
@@ -411,6 +580,21 @@ def run(args) -> int:
                     heading_cal["disagree"].append((clip, verdict, heading))
             elif heading_slot_empty(clip["label"]):
                 heading_scope.append((clip, heading))
+        elif kind == "topple":
+            measure = topple_measure(decode(clip))
+            verdict = topple_verdict(measure, clip, args)
+            planar = [w for w in present if w in PLANAR_DIRECTIONS]
+            if planar:
+                if verdict[0] != "write":
+                    topple_cal["undecided"] += 1
+                    continue
+                topple_cal["decided"] += 1
+                if set(verdict[1]) == set(planar):
+                    topple_cal["agree"] += 1
+                else:
+                    topple_cal["disagree"].append((clip, verdict[1], measure))
+            elif not present:
+                topple_scope.append((clip, measure, verdict))
         else:  # jump
             measure = jump_measure(decode(clip))
             verdict = jump_verdict(measure, clip, args)
@@ -435,6 +619,7 @@ def run(args) -> int:
     side_open = rate(side_cal) >= args.side_gate and side_cal["decided"] > 0
     heading_open = rate(heading_cal) >= args.heading_gate and heading_cal["decided"] > 0
     jump_open = rate(jump_cal) >= args.jump_gate and jump_cal["decided"] > 0
+    topple_open = rate(topple_cal) >= args.topple_gate and topple_cal["decided"] > 0
 
     print()
     print("=" * 72)
@@ -442,7 +627,8 @@ def run(args) -> int:
     print("=" * 72)
     for name, cal, gate, is_open in (("side (left/right energy share)", side_cal, args.side_gate, side_open),
                                      ("heading (support foot)", heading_cal, args.heading_gate, heading_open),
-                                     ("jump (airborne root travel)", jump_cal, args.jump_gate, jump_open)):
+                                     ("jump (airborne root travel)", jump_cal, args.jump_gate, jump_open),
+                                     ("topple (centroid travel)", topple_cal, args.topple_gate, topple_open)):
         print(f"  {name}: {cal['agree']}/{cal['decided']} agree ({rate(cal):.1%}), "
               f"{cal['undecided']} undecided; gate {gate:.0%} -> {'OPEN' if is_open else 'CLOSED (list only)'}")
         for clip, verdict, measure in cal["disagree"]:
@@ -451,6 +637,8 @@ def run(args) -> int:
                 detail = f"left_share={measure['left_share']:.2f}"
             elif isinstance(measure, dict) and "air_disp" in measure:
                 detail = f"air_disp={np.round(measure['air_disp'], 2).tolist()} net={np.round(measure['net'], 2).tolist()}"
+            elif isinstance(measure, dict) and "travel" in measure:
+                detail = f"travel={np.round(measure['travel'], 2).tolist()}"
             elif measure is not None:
                 detail = f"h={np.round(measure, 2).tolist()}"
             print(f"      disagree: {clip['clip']:48s} label={clip['label']!r} measured={verdict} {detail}")
@@ -574,7 +762,28 @@ def run(args) -> int:
         else:
             proposals.append(Proposal(clip, "review", reason, metrics=metrics))
 
+    # topple
+    for clip, measure, verdict in topple_scope:
+        metrics = {"travel_x": round(float(measure["travel"][0]), 3),
+                   "travel_z": round(float(measure["travel"][1]), 3),
+                   "distance": round(measure["distance"], 3),
+                   "tie_share": round(measure["tie_share"], 3),
+                   "drop": round(measure["drop"], 3),
+                   "start_clearance": round(measure["start_clearance"], 3)}
+        status, words, reason = verdict
+        if status == "write":
+            proposals.append(Proposal(
+                clip, "write" if topple_open else "review", reason,
+                spell_with(clip["label"], words), {"measure": "body_travel", **metrics}, metrics))
+        else:
+            proposals.append(Proposal(clip, status, reason, metrics=metrics))
+
     # ── report ──
+    # Every cross-check above (mirror pairing, the two-takes-one-side rule) has
+    # already run with the reviewed rows in place; they drop out here, as the
+    # last step before anything is counted, printed or written.
+    proposals = drop_reviewed(proposals, args.include_reviewed)
+
     print()
     print("=" * 72)
     print("  PROPOSALS")
@@ -605,7 +814,8 @@ def run(args) -> int:
         print("\n[OK] nothing to write")
         return 0
     check_head_order(sources, writes)
-    written = apply_proposals(sources, writes, slot="direction", slot_vocab=set(DIRECTION_VOCAB))
+    written = apply_proposals(sources, writes, slot="direction", slot_vocab=set(DIRECTION_VOCAB),
+                              include_reviewed=args.include_reviewed)
     for root, count in written.items():
         print(f"[OK] {root}: {count} row(s) written (reviewed:false + autofill)")
     return 0
@@ -642,12 +852,14 @@ def parse_args(argv=None):
                         choices=["all", "locomotion", "stationary", "transition"])
     parser.add_argument("--apply", action="store_true", help="Write the 'write' rows (default: dry run).")
     parser.add_argument("--dry-run", dest="apply", action="store_false", help="Judge and report only (the default).")
+    add_reviewed_flag(parser)
     parser.add_argument("--report", default="", help="CSV of every judged row.")
     parser.add_argument("--json", dest="json_path", default="", help="Also dump the proposals as JSON.")
     parser.add_argument("--verbose", action="store_true", help="Print every proposal and include 'keep' rows in the CSV.")
     parser.add_argument("--side-gate", type=float, default=0.90)
     parser.add_argument("--heading-gate", type=float, default=0.95)
     parser.add_argument("--jump-gate", type=float, default=0.90)
+    parser.add_argument("--topple-gate", type=float, default=0.90)
     parser.add_argument("--side-amp-floor", type=float, default=SIDE_AMP_FLOOR)
     parser.add_argument("--side-sym-max", type=float, default=SIDE_SYM_MAX)
     parser.add_argument("--side-asym-min", type=float, default=SIDE_ASYM_MIN)
@@ -655,6 +867,10 @@ def parse_args(argv=None):
     parser.add_argument("--heading-min-speed", type=float, default=HEADING_MIN_SPEED)
     parser.add_argument("--jump-up-max", type=float, default=JUMP_UP_MAX)
     parser.add_argument("--jump-planar-min", type=float, default=JUMP_PLANAR_MIN)
+    parser.add_argument("--topple-min-travel", type=float, default=TOPPLE_MIN_TRAVEL)
+    parser.add_argument("--topple-min-drop", type=float, default=TOPPLE_MIN_DROP)
+    parser.add_argument("--topple-start-clearance-max", type=float,
+                        default=TOPPLE_START_CLEARANCE_MAX)
     args = parser.parse_args(argv)
     if args.cond_path is None:
         from data_loaders.truebones.truebones_utils.get_opt import DEFAULT_COND_PATH

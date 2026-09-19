@@ -338,6 +338,7 @@ LLM 标注侧的 `reset`（回到中立起始姿势，`relabel_actions_llm.py` �
    （`Trex_BiteLeft` 和 `Trex_BiteRight` 都是 `attack, bite`），控制台按对数报出来；
    R4 的朝向要求同样豁免，且**不受 `--r4-exempt-words` 控制**（那个开关只替换 `hover` 那张表，
    这条是语料级规则，不是旋钮）。`not_mirror` / `crossed` 两项照查不误。
+   （`crossed` 与「两边各自要带侧词」这两项已于 §9 删除：它们从 clip 名字读方向。）
 
 `tests/test_direction_exemption.py` 把三处都钉住了，其中一条直接读真实 sidecar：
 任何一次改标只要把平面方向词写回这些动作上，测试就红。
@@ -382,3 +383,119 @@ feature-space 警告、`--labels` 覆盖输入，以及 `audit_report_html.py` �
 工具里唯一还有人用的是 T5 编码那几个 helper（`_resolve_t5_dir` / `_sha256_files` /
 masked-mean pooling / `_postprocess_atoms`），已经搬进 `tools/build_action_label_embeddings.py`
 ——那是它们唯一的调用者。
+
+
+## 9. 死亡的朝向，与「不从 clip 名字读方向」（2026-09-19）
+
+起因：`action_labels.jsonl` 里还有 254 行裸 `die`，而人工标过的 41 行死亡里
+`forward` / `backward` 占 30 行。补标工具一条都没补上——不是阈值太严，是**量错了东西**。
+
+### 9.1 死亡的方向不是「侧」，是身体倒向哪边
+
+`prefill_direction_words.kind_of()` 原来把所有非 locomotion、非 jump、非 turn、非豁免的行
+都交给 SIDE 测量（左右肢速度能量份额）。对一次死亡这是两重错：
+
+* SIDE **只能吐出 `left` / `right`**，`forward` / `backward` 它根本拼不出来。所以 30 行
+  `die, forward` / `die, backward` 连标定都进不去（`if present and not sides: continue` 静默跳过），
+  剩下 11 行 `die, left/right` 反过来还在用尸体四肢的抽动给 SIDE 的阈值背书。
+* 一次死亡**不是用某条肢体发出的**。倒地时左右肢的能量差是余波，不是朝向。
+
+新增第四种测量 **TOPPLE**，只管带 `die` 的行（`BODY_TRAVEL_WORDS`，匹配位置不限于头词）：
+
+    关节质心的水平位移，clip 前 1/10 段对后 1/10 段，单位是体长；取占优轴，写一个词。
+
+用质心而不是 root：四足原地倒下时 root 几乎不动（`BrownBear_Twitching` root 走 0.00、
+质心走 0.60）。前后 1/10 取均值而不是取端点，免得一帧抖动定朝向。
+
+**一次死亡只写一个词**——41 行真值里没有一行带两个方向词，所以 TOPPLE 不像 HEADING 那样
+出对角双词。标定结果：**41/41 一致（100%）**，门槛 `--topple-gate` 0.90。
+
+### 9.1.1 「没有明确朝向」比「走得不够远」更重要
+
+第一版只有位移下限，结果把一批**根本不是倒地**的死亡硬标了朝向。关键在于：
+**这不是阈值高低的问题**——`MLS_BattleOwl_Die` 水平飘了 2.21 体长，比 41 行真值的中位数
+（1.93）还大，任何位移阈值都拦不住它。一次死亡有朝向的前提是**身体朝那个方向倒到地上**。
+四种情况说明它没倒，全部判 `keep`（空槽就是对的，不进 review 清单）：
+
+| 判据 | 常量 / 值 | 依据（41 行真值的边界） |
+| --- | --- | --- |
+| 标签自己写着死在空中：`hover` / `fall` / `fly` | `AIRBORNE_DEATH_WORDS` | 真值里**没有一行**带这三个词。飞行生物死了是往下掉，水平那一截是飞行残余动量 + 下落弧线，不是它「倒向」哪边 |
+| 起始离地（前 1/10 段最低关节高出本 clip 地板多少） | `TOPPLE_START_CLEARANCE_MAX` = 1.00 体长 | 真值最高的一条正好是 1.00（`LH_Hero_FlyDie`，一次人工标了朝向的飞行死亡），次高 0.68。门槛卡在真值上界之上，只挡比它更高的（`MU01_Bird_Die` = 1.05）。余量很薄是有意的：这根轴分不开这两条 clip，分开它们的是人的判断，这里让着人 |
+| 质心下降量 | `TOPPLE_MIN_DROP` = 0.35 体长 | 真值最小 0.36。不下降就没倒：`Cobra_Death` 走了 0.80 只降 0.21，是滑不是倒；`Pirrana_DeadFloat` / `Jaws_SharkDeadLoop` 的质心反而**上升**（死鱼浮起来），负值自然被挡 |
+| 水平位移 | `TOPPLE_MIN_TRAVEL` = 0.40 体长 | 真值最小 0.46。原地瘫倒，哪边都不指 |
+
+再加一条 `TOPPLE_TIE_SHARE` = 0.85：偏轴比（弱轴 / 强轴）超过它算没有占优轴，判 `review`。
+故意放得松，因为人在 0.81 上照样只写占优轴（`KI_Warrior_Death01A` = `left`）。
+
+第一版把 `hover` 的豁免推翻了（理由是「飘也是真的在动」），那是错的：`NO_HEADING_WORDS`
+关于 `hover` 的论证本来就成立，只是它当时只挂在 R4 上。这里把它补回来。
+**注意一个联动**：R5 要求 `die, fall` 写成 `die`（死亡本来就会倒）。真按 R5 改了，
+`MB_TigerDrago_FlyDeath` 就失去 `fall` 这个空中标记，而它的起始离地只有 0.12、下降 1.04，
+会重新被判出一个朝向——那一条改完之后要人工看 GIF 定朝向，别让工具补。
+
+### 9.1.2 落地
+
+`--apply` 写了 **154 行**（truebones 51 / zoo_upgrade 10 / unitybundles 93），全是 `die`；
+`backward` 59、`forward` 41、`right` 33、`left` 21。剩下 100 行仍然空：
+**95 行 `keep`**（12 行标签写着死在空中 = 10 `hover` + 2 `fall`、48 行起始离地超限、
+26 行不下降或反向上升、9 行原地瘫倒）、**5 行 `review`**（接近 45° 的对角，
+进 `dataset/review/serve.py` 看 GIF）。
+写出来的行都是 `reviewed:false` + `autofill`。
+
+### 9.2 审计不再从 clip 名字读方向
+
+R3 之前有两项判据是拿 clip 名字当方向证据的，两项在本语料里都是错的：
+
+* **`crossed`**（「名字带 Left 的那条写着 right」）。`MB_Unka_DeathLeft` **确实**向角色右边倒，
+  标签 `die, right` 是对的，**说谎的是名字**。这一项报了 4 条，4 条全是对的标签
+  （`MB_Unka_Death` / `MB_Unka_DeathDramatic` / `MB_TigerDrago_Fly` / `Scorpion-2_Strafe`）。
+* **「两边各自要带侧词」**。两条同名 clip 到底是不是互为镜像的两条 take、各自又朝哪边，
+  是**动作**的事实。`prefill_direction_words.py` 在那里量（位置上的镜像检测 + 侧能量），
+  R3 手里只有名字，两个问题一个都答不了。
+
+现在 R3 只剩一条：**名字配成的左右一对，两条标签必须互为镜像**。这条判据是**对称的**——
+它只说这一对自己和自己不一致，不说哪一边错、也不说哪个侧词该落在哪个名字上。
+名字继续用来**配对**（配对不是方向结论），这一点没变。
+
+连带删掉：`candidate_left` / `candidate_right` / `candidate_basis`（唯一的来源就是名字），
+报告页上那颗「候选（来自 clip 名字，未确认）」按钮和它的样式、`_clip_payload` 的 `suggest` 字段，
+以及 `R3_PROBLEMS` 里 `crossed` / `no_side_word` 两句。控制台改成按对数报「两边拼成同一个标签」
+（同时给出其中有几对是指向性动作）并指向 `prefill_direction_words.py`，不再当违规。
+
+结果：全语料 R3 从 **6 条**（其中 4 条是假的）降到 **0 条**。R4 6 条、R5 2 条不动。
+
+### 9.3 未做的部分
+
+**jump 的朝向不在这次范围内**（用户人工标）。已知情况记在这里：`jump` 头词的 51 行里
+只剩 2 行没有方向词——`KI_Archer_CombatJump01`、`KI_Soldier_CombatJump01Rifle`——
+两条都掉进 `JUMP_UP_MAX`(0.05) 与 `JUMP_PLANAR_MIN`(0.15) 之间的死区（腾空水平位移
+0.061 / 0.095 体长）。量过一轮：改成「腾空水平位移 / 起跳高度」的比值能把第一条判成 `up`
+（0.015，而 `up` 真值全部 ≤0.014），但第二条 0.031 和人工标成 `jump, forward` 的
+`MU01_Chick_JumpForward`（0.033，且 net 位移同为 0.00）在**任何**已有测量上都分不开，
+所以工具补不了它。
+
+### 9.4 下游
+
+154 行标签变了 ⇒ **需要重新生成 action_label 侧产物**
+（`preprocess_and_validate.py --regenerate-side-artifacts`，会重写 cond 里的 action_label 向量
+和词表指纹）**并重训**。不需要重新预处理 motion。
+
+
+## 10. 两个 prefill 默认跳过已核验的行（2026-09-19）
+
+`reviewed: true` 是人看完 GIF 之后签的字，所以那一行的空槽是**判断**，不是漏标。
+之前两个补词工具每次跑都把这些行重新量一遍、重新列进清单（也会在 `--apply` 时写进去），
+复核过的东西又回到清单里。`tools/prefill_loop_flags.py` 早就是「reviewed 行不动」
+（连 `--rejudge` 都保留它们），这次把两个补词工具对齐。
+
+- **默认**：`reviewed: true` 的行整行跳过——不判、不进控制台计数、不进 `--report` 的 CSV、不写。
+  `--include-reviewed` 才连它们一起判，`--skip-reviewed` 是显式写出默认值。
+- **reviewed 行仍然是证据**，只是不再是写入目标：标定集、`prefill_hand_words` 的 k-NN 参考集、
+  `prefill_direction_words` 的镜像伙伴与「两条镜像取不能同侧」互检都照旧。丢弃发生在所有互检
+  **之后**、计数/CSV/写入之前（`prefill_common.drop_reviewed`），所以判据本身一个字没变。
+- **写时再查一次**：`prefill_common.apply_proposals(include_reviewed=False)` 按磁盘上的行再读一遍
+  `reviewed`，和「槽已被人填上」那条 SKIP 并列，所以干跑之后才被签字的行同样不写。
+- 什么时候该加 `--include-reviewed`：规则变了让旧签字过期的时候（新豁免、换了测量的轴、词表改动）。
+- 实测（`--action-group stationary`，truebones zoo cond）：119 行（60 keep + 59 review）现在直接跳过；
+  加 `--include-reviewed` 的输出与改动前逐条相同。
+- 下游：只改工具行为，不动任何标签，**不需要重新生成侧产物、不需要重训**。

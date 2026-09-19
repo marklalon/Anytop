@@ -41,8 +41,8 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
 # the same full-rank property the real T5 table has and the model checks for.
 # 768 is t5-base's width, the one the real sidecar is encoded at.
 TEST_T5_DIM = 768
-# At least the total slot source rank (32 heads + 6 directions + (65 + 32)
-# modifier sources + 2 hands = 137; a head word after the first is a modifier),
+# At least the total slot source rank (32 heads + 6 directions + (64 + 32)
+# modifier sources + 2 hands = 136; a head word after the first is a modifier),
 # which model construction refuses to go under: below it the first Linear
 # cannot separate every label. 140 is a width at or above the rank that the
 # test models' attention can split evenly (num_heads=2).

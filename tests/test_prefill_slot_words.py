@@ -3,9 +3,14 @@
 ``prefill_direction_words.py`` and ``prefill_hand_words.py`` measure different
 things, but they hand their verdicts to one writer, and everything that can
 damage the sidecar lives there: only an EMPTY slot is ever filled, a row a
-person filled between the dry run and ``--apply`` wins, the row is flagged as
+person filled between the dry run and ``--apply`` wins, a ``reviewed: true``
+row is not touched at all unless the run asks for it, the row is flagged as
 tool-written and unverified, and a proposal set that would put two head orders
 on one word set is refused before anything is written.
+
+Every row of the fixture is ``reviewed: true`` -- they are hand-labelled rows
+-- so the tests that exercise the rest of the writer pass
+``include_reviewed=True``, and the default is tested on its own below.
 """
 
 import json
@@ -57,10 +62,10 @@ def dataset(tmp_path):
     return tmp_path
 
 
-def _clip(root, name, label, group="stationary"):
+def _clip(root, name, label, group="stationary", reviewed=True):
     return {"clip": name + ".npy", "key": name, "root": str(root), "species": "zoo/Wolf",
             "group": group, "label": label, "gif_path": "", "motion_path": "",
-            "labels_path": str(Path(root) / ACTION_LABELS_FILE), "reviewed": True,
+            "labels_path": str(Path(root) / ACTION_LABELS_FILE), "reviewed": reviewed,
             "is_loop": True}
 
 
@@ -75,6 +80,7 @@ def test_a_written_row_carries_the_word_and_the_marks(dataset):
     )
     written = prefill_common.apply_proposals(
         [_Source(dataset)], [proposal], slot="direction", slot_vocab=set(DIRECTION_VOCAB),
+        include_reviewed=True,
     )
     assert written[str(dataset)] == 1
     row = _rows_by_clip(dataset)["Wolf_AtkL"]
@@ -109,6 +115,7 @@ def test_a_slot_filled_since_the_dry_run_is_left_alone(dataset, capsys):
     )
     assert prefill_common.apply_proposals(
         [_Source(dataset)], [proposal], slot="direction", slot_vocab=set(DIRECTION_VOCAB),
+        include_reviewed=True,
     ) == {str(dataset): 0}
     row = _rows_by_clip(dataset)["Wolf_Walk"]
     assert row["action_label"] == "walk, left"
@@ -130,10 +137,53 @@ def test_an_edit_in_another_slot_survives_the_write(dataset):
     )
     prefill_common.apply_proposals(
         [_Source(dataset)], [proposal], slot="hands", slot_vocab=set(HANDS_VOCAB),
+        include_reviewed=True,
     )
     row = _rows_by_clip(dataset)["Wolf_AtkL"]
     assert row["action_label"] == "attack, left, swat, hand1"
     assert row[AUTOFILL_KEY] is True
+
+
+def test_a_reviewed_row_is_not_written_unless_the_run_asks(dataset, capsys):
+    """An empty slot on a signed-off row is that person's verdict, not a gap."""
+    proposal = prefill_common.Proposal(
+        _clip(dataset, "Wolf_AtkL", "attack, swat"), "write", "left side energy 0.88",
+        "attack, left, swat", {"measure": "side_energy"},
+    )
+    assert prefill_common.apply_proposals(
+        [_Source(dataset)], [proposal], slot="direction", slot_vocab=set(DIRECTION_VOCAB),
+    ) == {str(dataset): 0}
+    row = _rows_by_clip(dataset)["Wolf_AtkL"]
+    assert row["action_label"] == "attack, swat"
+    assert AUTOFILL_KEY not in row and row["reviewed"] is True
+    assert "reviewed:true" in capsys.readouterr().out
+    # The mark is read off the row on disk, not off the proposal's snapshot, so
+    # a row reviewed between the dry run and --apply is spared as well.
+    stale = prefill_common.Proposal(
+        _clip(dataset, "Wolf_AtkL", "attack, swat", reviewed=False), "write", "left",
+        "attack, left, swat", {"measure": "side_energy"},
+    )
+    assert prefill_common.apply_proposals(
+        [_Source(dataset)], [stale], slot="direction", slot_vocab=set(DIRECTION_VOCAB),
+    ) == {str(dataset): 0}
+    assert _rows_by_clip(dataset)["Wolf_AtkL"]["action_label"] == "attack, swat"
+
+
+def test_reviewed_rows_are_dropped_from_the_proposals(dataset, capsys):
+    """What the dry run reports: the counts and the CSV never mention them."""
+    proposals = [
+        prefill_common.Proposal(_clip(dataset, "Wolf_AtkL", "attack, swat"), "write",
+                                "left", "attack, left, swat"),
+        prefill_common.Proposal(_clip(dataset, "Wolf_AtkR", "attack, swat", reviewed=False),
+                                "write", "right", "attack, right, swat"),
+        prefill_common.Proposal(_clip(dataset, "Wolf_Walk", "walk", reviewed=True),
+                                "keep", "symmetric"),
+    ]
+    kept = prefill_common.drop_reviewed(proposals, False)
+    assert [p.clip["key"] for p in kept] == ["Wolf_AtkR"]
+    assert "2 reviewed row(s) left alone" in capsys.readouterr().out
+    # ... and with the flag the tool judges them like any other row.
+    assert prefill_common.drop_reviewed(proposals, True) == proposals
 
 
 def test_a_retiring_row_is_neither_written_nor_loaded_as_a_clip(dataset):

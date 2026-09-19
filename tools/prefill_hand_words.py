@@ -12,6 +12,10 @@ those rows, under the same rules as the direction prefill:
   truth and calibrates the tool. A row filled here is marked
   ``"reviewed": false`` and flagged ``"autofill": true``, so it comes back in
   the review UI with the GIFs.
+* A ``reviewed: true`` row is skipped: its empty slot is a person's verdict
+  that the hands are empty, not a gap. It still calibrates and still serves as
+  a k-NN reference. ``--include-reviewed`` judges those rows too, which is
+  what to pass after a vocabulary change that invalidates old sign-offs.
 * The verdict comes from the MOTION: the review GIFs of the KI / LH packs do
   not render the props, so what can be seen is the holding POSE. The clip
   name is not consulted.
@@ -37,13 +41,15 @@ Two layers:
       DemonHunter twin blades (hand2), Druid staff (hand1). ``DEFAULT_SPECIES``
       lists those four; pass ``--species-default`` to add or override. Every
       empty-slot row of such a species gets the word (a row that already has
-      one keeps it). KI_Human / KI_Performer (Basic Motions / Dance) are
-      unarmed and stay empty; KI_Slinger (Throwing) holds its projectile only
-      during a throw, which is a per-clip judgement and is left to the review.
+      one, or one a person already reviewed, keeps what it has).
+      KI_Human / KI_Performer (Basic Motions / Dance) are unarmed and stay
+      empty; KI_Slinger (Throwing) holds its projectile only during a throw,
+      which is a per-clip judgement and is left to the review.
 
 Usage:
     python tools/prefill_hand_words.py                      # dry run
     python tools/prefill_hand_words.py --apply
+    python tools/prefill_hand_words.py --include-reviewed   # reviewed rows too
 """
 
 from __future__ import annotations
@@ -68,8 +74,10 @@ from tools.audit_action_labels import label_words  # noqa: E402
 from tools.prefill_common import (  # noqa: E402
     DecodedClip,
     Proposal,
+    add_reviewed_flag,
     apply_proposals,
     check_head_order,
+    drop_reviewed,
     load_corpus,
     species_name,
     spell_with,
@@ -307,6 +315,8 @@ def run(args) -> int:
                 spell_with(clip["label"], [winner]),
                 {"measure": "arm_pose_knn", **metrics}, metrics))
 
+    proposals = drop_reviewed(proposals, args.include_reviewed)
+
     print()
     print("=" * 72)
     print("  PROPOSALS")
@@ -336,7 +346,8 @@ def run(args) -> int:
         print("\n[OK] nothing to write")
         return 0
     check_head_order(sources, writes)
-    written = apply_proposals(sources, writes, slot="hands", slot_vocab=set(HANDS_VOCAB))
+    written = apply_proposals(sources, writes, slot="hands", slot_vocab=set(HANDS_VOCAB),
+                              include_reviewed=args.include_reviewed)
     for root, count in written.items():
         print(f"[OK] {root}: {count} row(s) written (reviewed:false + autofill)")
     return 0
@@ -349,6 +360,7 @@ def parse_args(argv=None):
     parser.add_argument("--cond-path", "--cond_path", dest="cond_path", default=None)
     parser.add_argument("--apply", action="store_true", help="Write the 'write' rows (default: dry run).")
     parser.add_argument("--dry-run", dest="apply", action="store_false")
+    add_reviewed_flag(parser)
     parser.add_argument("--species-default", action="append", default=[], metavar="NAME=hand1|hand2",
                         help="Hand word every empty-slot row of NAME receives (repeatable; adds to the built-in table).")
     parser.add_argument("--gate", type=float, default=0.90, help="Per-class leave-one-out precision needed to write (default 0.90).")

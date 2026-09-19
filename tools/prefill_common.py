@@ -6,11 +6,19 @@ empty, and write it back as a proposal. The corpus walk, the decode of a
 clip into world positions, the proposal record, the CSV and the write are
 the same in both, so they live here rather than twice.
 
-Two rules every proposal obeys, enforced here so neither tool can forget:
+Three rules every proposal obeys, enforced here so neither tool can forget:
 
 * A row is only ever FILLED, never rewritten: the edit re-reads the row at
   write time and skips it if the slot is no longer empty, so a word a person
   put there between the dry run and ``--apply`` wins.
+* A ``reviewed: true`` row is left alone unless the run explicitly asks for it
+  (``--include-reviewed``). That mark means a person watched the GIF and
+  settled the label, so an empty slot on such a row is their verdict, not a
+  gap. Like the rule above, this is checked again at write time against the
+  row as it is on disk, so a row reviewed between the dry run and ``--apply``
+  is still spared. A reviewed row remains full evidence: it calibrates and it
+  serves as a reference or a mirror partner exactly as before -- it is only
+  never the target of a write.
 * A written row is marked ``"reviewed": false`` and flagged ``"autofill": true``
   (see ``action_label_sidecar.autofill_action_label``), so the review UI lists it as a
   proposal nobody has signed off yet. The flag says only that a tool wrote the
@@ -176,6 +184,41 @@ def spell_with(label: str, words) -> str:
     return canonical_action_label(list(parse_action_label(label)) + list(words))
 
 
+# ── the reviewed rule ───────────────────────────────────────────────────────
+
+def add_reviewed_flag(parser) -> None:
+    """The ``--include-reviewed`` / ``--skip-reviewed`` pair both tools take."""
+    parser.add_argument(
+        "--include-reviewed", "--include_reviewed", dest="include_reviewed",
+        action="store_true",
+        help="Also judge and fill rows marked reviewed:true. Off by default: a "
+             "person watched that clip and settled its label, so its empty slot "
+             "is their verdict rather than a gap.")
+    parser.add_argument(
+        "--skip-reviewed", "--skip_reviewed", dest="include_reviewed",
+        action="store_false", help="Leave reviewed:true rows alone (the default).")
+    parser.set_defaults(include_reviewed=False)
+
+
+def drop_reviewed(proposals, include_reviewed):
+    """*proposals*, minus the ones aimed at a row a person has already signed off.
+
+    Dropped rather than demoted to ``review``: the point of the mark is that
+    the clip has BEEN reviewed, so listing it again is noise. Only the target
+    of a write is affected -- a reviewed row still calibrates the measurement
+    and still serves as a reference or a mirror partner, because that is where
+    a hand-checked row is worth most.
+    """
+    if include_reviewed:
+        return list(proposals)
+    kept = [p for p in proposals if not p.clip.get("reviewed")]
+    dropped = len(proposals) - len(kept)
+    if dropped:
+        print(f"[OK] {dropped} reviewed row(s) left alone "
+              "(pass --include-reviewed to judge and fill them too)")
+    return kept
+
+
 # ── reports ─────────────────────────────────────────────────────────────────
 
 def write_csv(path, proposals) -> int:
@@ -222,12 +265,17 @@ def check_head_order(sources, proposals) -> None:
     _validate_head_order_consistency(rows)
 
 
-def apply_proposals(sources, proposals, *, slot, slot_vocab) -> dict[str, int]:
+def apply_proposals(sources, proposals, *, slot, slot_vocab,
+                    include_reviewed: bool = False) -> dict[str, int]:
     """Write every ``write`` proposal whose row is STILL empty in *slot*.
 
     Returns ``{dataset_root: rows written}``. A row that acquired a word in the
     slot since the proposal was computed is skipped and reported: the person
-    who put it there outranks the measurement.
+    who put it there outranks the measurement. So is a row marked
+    ``reviewed: true`` unless *include_reviewed* -- the tools already drop
+    those proposals (``drop_reviewed``), and this second check, on the row as
+    it is on disk, catches the one a person reviewed while the run was being
+    read.
     """
     by_root: dict[str, dict[str, Proposal]] = {}
     for proposal in proposals:
@@ -246,9 +294,13 @@ def apply_proposals(sources, proposals, *, slot, slot_vocab) -> dict[str, int]:
             proposal = pending.get(key)
             if proposal is None or entry.get("pending_delete"):
                 return None
+            if entry.get("reviewed") is True and not include_reviewed:
+                skipped.append(f"{key}: reviewed:true "
+                               "(pass --include-reviewed to fill it anyway)")
+                return None
             current = str(entry.get("action_label", ""))
             if _slot_words_of(current, slot_vocab):
-                skipped.append(f"{key}: now {current!r}")
+                skipped.append(f"{key}: now {current!r} (filled by hand since the dry run)")
                 return None
             if current != proposal.label:
                 # The label changed under us in some other slot: re-spell the
@@ -261,7 +313,7 @@ def apply_proposals(sources, proposals, *, slot, slot_vocab) -> dict[str, int]:
 
         written[source.root] = rewrite_action_label_rows(source.root, edit)
         for line in skipped:
-            print(f"[SKIP] {source.root}/{ACTION_LABELS_FILE}: {line} (filled by hand since the dry run)")
+            print(f"[SKIP] {source.root}/{ACTION_LABELS_FILE}: {line}")
     return written
 
 
