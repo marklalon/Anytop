@@ -452,7 +452,7 @@
 {"clip": "Horse_Idle3", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Horse_IdleEars", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Horse_Idle", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
-{"clip": "Horse_InAir", "action_group": "locomotion", "action_label": "fall", "aux_action_groups": ["transition"], "is_loop": true, "reviewed": true}
+{"clip": "Horse_InAir", "action_group": "transition", "action_label": "jump, fall", "aux_action_groups": ["locomotion"], "is_loop": true, "reviewed": true}
 {"clip": "Horse_JumpLand", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
 {"clip": "Horse_Jumping", "action_group": "stationary", "action_label": "attack, jump, smash", "aux_action_groups": ["transition"], "is_loop": false, "reviewed": true}
 {"clip": "Horse_LandRun", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
