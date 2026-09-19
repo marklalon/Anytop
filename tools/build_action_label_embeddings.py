@@ -257,6 +257,24 @@ def build_word_table(out_path: Path, t5_model: str, t5_path: str | None,
                 f"encoder artifact {str(contract.get('t5_artifact_sha256'))[:12]}..., "
                 f"{t5_dir} hashes to {t5_hash[:12]}..."
             )
+        # The vocabulary LIST is already checked on load (ordered_vocab), but the
+        # TEXT each row was encoded from is not: editing _VOCAB_T5_TEXT, or moving
+        # a token onto the synthetic-code side, leaves a table that loads cleanly
+        # and holds the wrong vectors. Compare the sources so an unattended caller
+        # (regenerate_dataset_artifacts) rebuilds on that edit instead of skipping.
+        wanted_sources = ordered_token_sources()
+        stored_sources = [dict(entry) for entry in (contract.get("ordered_token_sources") or ())]
+        if stored_sources != wanted_sources:
+            changed = [
+                str(wanted.get("token"))
+                for stored, wanted in zip(stored_sources, wanted_sources)
+                if stored != wanted
+            ]
+            stale.append(
+                "token sources changed"
+                + (f" ({', '.join(changed[:6])}{' ...' if len(changed) > 6 else ''})"
+                   if changed else "")
+            )
         if not stale:
             print(
                 f"[skip] {out_path} already holds {len(CONTROLLED_VOCAB)} word vector(s) "

@@ -15,7 +15,7 @@ Usage:
 
 Options:
     --validate-only                      Skip preprocessing, only validate existing dataset
-    --regenerate-side-artifacts          Regenerate cond.npy, joint-name encodings and other side artifacts without re-preprocessing motions
+    --regenerate-side-artifacts          Regenerate cond.npy, joint-name encodings, the action-word table (only if the vocabulary or encoder changed) and other side artifacts without re-preprocessing motions
     --skip-validate                      Skip validation step (faster for CI)
     --overwrite                          Reprocess every targeted object, deleting existing outputs first (a full wipe when no --filter is set). Without it, already-processed objects are skipped.
     --yes, --assume-yes, -y              Auto-confirm the overwrite deletion prompt (no interactive input; for scripts/CI).
@@ -1102,7 +1102,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--regenerate-side-artifacts",
         action="store_true",
-        help="Regenerate cond.npy, joint-name encodings and other side artifacts without re-preprocessing motions.",
+        help="Regenerate cond.npy, joint-name encodings, the action-word table "
+             "(re-encoded only when the vocabulary or the encoder changed) and other "
+             "side artifacts without re-preprocessing motions.",
     )
     parser.add_argument(
         "--skip-validate",

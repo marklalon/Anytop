@@ -25,6 +25,16 @@ from tools import regenerate_dataset_artifacts as regenerate_dataset_artifacts_m
 import preprocess_and_validate as preprocess_and_validate_module
 
 
+@pytest.fixture
+def stub_action_word_table(monkeypatch):
+    """Synthetic regeneration tests use fake-t5, with no local model weights."""
+    monkeypatch.setattr(
+        regenerate_dataset_artifacts_module,
+        "build_word_table",
+        lambda *_args, **_kwargs: None,
+    )
+
+
 def _make_cond_entry(object_type: str) -> dict[str, object]:
     return {
         "object_type": object_type,
@@ -176,7 +186,9 @@ def test_load_motion_metadata_fast_fails_when_label_missing(tmp_path):
         load_motion_metadata(dataset_dir)
 
 
-def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(monkeypatch, tmp_path):
+def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
+    monkeypatch, tmp_path, stub_action_word_table
+):
     dataset_dir = tmp_path / "dataset"
     motions_dir = dataset_dir / "motions"
     inspection_dir = dataset_dir / "joint_name_inspection"
@@ -320,7 +332,9 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     assert "Dog: 1" in metadata_summary
 
 
-def test_regenerate_dataset_artifacts_rejects_inconsistent_translation_roots(monkeypatch, tmp_path):
+def test_regenerate_dataset_artifacts_rejects_inconsistent_translation_roots(
+    monkeypatch, tmp_path, stub_action_word_table
+):
     dataset_dir = tmp_path / "dataset"
     motions_dir = dataset_dir / "motions"
     motions_dir.mkdir(parents=True)
@@ -696,7 +710,9 @@ def test_incremental_prepare_accepts_a_new_source_rooted_above_the_frozen_joint(
     ) is None  # the fake encoder intentionally emits no motion result
 
 
-def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_missing(monkeypatch, tmp_path):
+def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_missing(
+    monkeypatch, tmp_path, stub_action_word_table
+):
     dataset_dir = tmp_path / "dataset"
     motions_dir = dataset_dir / "motions"
     motions_dir.mkdir(parents=True)
@@ -748,7 +764,9 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
     assert motion_metadata["Cat_Run_001.npy"]["translation_root_index"] == 2
 
 
-def test_regenerate_dataset_artifacts_backfills_missing_cond_root_from_unanimous_clips(monkeypatch, tmp_path):
+def test_regenerate_dataset_artifacts_backfills_missing_cond_root_from_unanimous_clips(
+    monkeypatch, tmp_path, stub_action_word_table
+):
     dataset_dir = tmp_path / "dataset"
     motions_dir = dataset_dir / "motions"
     motions_dir.mkdir(parents=True)
@@ -799,7 +817,9 @@ def test_regenerate_dataset_artifacts_backfills_missing_cond_root_from_unanimous
     assert all(entry["translation_root_index"] == 1 for entry in motion_metadata.values())
 
 
-def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_inference(monkeypatch, tmp_path):
+def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_inference(
+    monkeypatch, tmp_path, stub_action_word_table
+):
     dataset_dir = tmp_path / "dataset"
     motions_dir = dataset_dir / "motions"
     motions_dir.mkdir(parents=True)

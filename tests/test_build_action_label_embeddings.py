@@ -91,6 +91,35 @@ def test_a_table_from_other_weights_is_re_encoded(tmp_path, monkeypatch):
     )
 
 
+def test_a_changed_token_source_is_re_encoded(tmp_path, monkeypatch):
+    """Same vocabulary, same weights, different text a row was encoded from.
+
+    ``ordered_vocab`` still matches, so the table loads cleanly -- an edit to
+    ``vocab_t5_text`` (or a token moving onto the synthetic-code side) would
+    otherwise be skipped and leave the wrong vectors in place. It matters most
+    for the unattended caller: regenerate_dataset_artifacts never passes --force.
+    """
+    stale = make_test_bundle(seed=1)
+    fresh = make_test_bundle(seed=2)
+    path = _write_table(tmp_path, stale)
+    # Same encoder identity on both sides: the token sources are the only
+    # difference left for the skip check to find.
+    _stub_material(monkeypatch, stale.embedding_contract['t5_artifact_sha256'])
+    retexted = [dict(entry) for entry in stale.embedding_contract['ordered_token_sources']]
+    changed = next(entry for entry in retexted if 'text' in entry)
+    changed['text'] = changed['text'] + ' (respelled)'
+    monkeypatch.setattr(builder, 'ordered_token_sources', lambda: retexted)
+    monkeypatch.setattr(
+        builder, '_encode_vocabulary',
+        lambda *_args, **_kwargs: (fresh.word_embeddings, fresh.embedding_contract),
+    )
+
+    builder.build_word_table(path, stale.embedding_contract['t5_name'], None, force=False)
+    assert load_action_conditioning_bundle(path).embedding_fingerprint == (
+        fresh.embedding_fingerprint
+    )
+
+
 def test_a_missing_t5_directory_is_reported_even_on_the_skip_path(tmp_path):
     """The encoder is resolved before anything decides to skip."""
     path = _write_table(tmp_path, make_test_bundle())

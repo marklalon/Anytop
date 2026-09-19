@@ -78,8 +78,10 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     MOTION_DIR,
     MOTION_METADATA_FILE,
     ACTION_LABELS_FILE,
+    get_action_word_embeddings_path,
     get_dataset_dir,
 )
+from tools.build_action_label_embeddings import build_word_table  # noqa: E402
 from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  # noqa: E402
     build_semantic_metadata,
@@ -576,6 +578,11 @@ def _regenerate_dataset_artifacts(
     motion_files = sorted(motions_dir.glob("*.npy"))
     if not motion_files:
         raise RuntimeError(f"no motion files found under {motions_dir}")
+
+    # The action-word table is repo-global and depends on the vocabulary and the
+    # encoder, not on this dataset, so this is a sub-second no-op unless one of
+    # those changed. Non-forcing on purpose: relabelling clips never stales it.
+    build_word_table(Path(get_action_word_embeddings_path(None)), t5_model, None, force=False)
 
     # Fast-fail: motion_metadata.json must exist.  Without it, load_motion_metadata
     # returns {} and the rebuilt metadata will be missing source_file,
