@@ -9,9 +9,9 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (
 )
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_LABEL_SLOTS,
+    HEAD_SLOT_PRIMARY_WEIGHT,
     SLOT_DIRECTION,
     SLOT_HEAD,
-    SLOT_MODIFIER,
     ActionConditioningError,
     slot_source_rank_report,
     validate_action_conditioning_metadata,
@@ -20,7 +20,6 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
 from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_LABEL_MAX_WORDS,
     CONTROLLED_VOCAB,
-    HEAD_VOCAB,
 )
 
 
@@ -125,18 +124,6 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"direction_slot_drop_prob must be in [0, 1], got {self.direction_slot_drop_prob}"
             )
-        # Head-word augmentation. A label spelling its main body event after
-        # another head word ("attack, jump, charge") gives the head slot no
-        # share of that word at all, because the head slot takes the FIRST head
-        # word only. Promoting it during training restores the supervision
-        # without touching the inference contract: the model reads word_ids and
-        # slot_ids, so this is a slot_ids swap and nothing else.
-        self.head_aug_prob = float(kargs.get('head_aug_prob', 0.0))
-        if not 0.0 <= self.head_aug_prob <= 1.0:
-            raise ValueError(
-                f"head_aug_prob must be in [0, 1], got {self.head_aug_prob}"
-            )
-        self._init_head_aug_words(kargs.get('head_aug_words', ''))
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if not 0.0 <= self.joint_mask_budget <= 1.0:
@@ -513,127 +500,53 @@ class AnyTop(nn.Module):
                 )
         return word_ids, fields['action_slot_ids'], fields['action_word_mask']
 
+    def _action_slot_member_weights(self, slot_ids, word_mask, dtype):
+        """Tensor mirror of ``slot_member_weights``: ``[B, W]``.
+
+        Every word weighs 1.0 except the head slot's first member, which weighs
+        ``HEAD_SLOT_PRIMARY_WEIGHT``. "First" is the earliest live column of the
+        row assigned to the head slot, found with a cumulative sum rather than a
+        search so the shapes stay static for compile/cudagraph, and read off the
+        same written order the numpy side uses.
+        """
+        head_member = word_mask & (slot_ids == SLOT_HEAD)
+        first_head = head_member & (head_member.to(torch.int32).cumsum(dim=1) == 1)
+        return torch.where(
+            first_head,
+            torch.full_like(first_head, HEAD_SLOT_PRIMARY_WEIGHT, dtype=dtype),
+            torch.ones_like(first_head, dtype=dtype),
+        )
+
     def _assemble_action_slot_channels(self, word_ids, slot_ids, word_mask, dtype):
         """Tensor mirror of ``assemble_slot_channels``: ``[B, S * D]``.
 
-        Same rule, same slot ids, one channel per slot: the mean of that slot's
-        member word vectors (a set within the slot; which head word leads is
-        already decided by the slot ids), L2-normalised, and a zero row for an
-        absent slot. Because a channel is a
-        function of its own slot's members only, appending modifiers moves the
-        head and direction channels by exactly zero.
+        Same rule, same slot ids, one channel per slot: the weighted mean of
+        that slot's member word vectors, L2-normalised, and a zero row for an
+        absent slot. Only the head slot has a weight other than 1.0, and only on
+        its first member, so the other three are plain means of a set. Because a
+        channel is a function of its own slot's members only, appending a
+        non-head word moves the head and direction channels by exactly zero.
         """
         vectors = self.action_word_embeddings.to(dtype)[word_ids]
+        weights = self._action_slot_member_weights(slot_ids, word_mask, dtype)
         channels = []
         for slot in range(len(ACTION_LABEL_SLOTS)):
-            member = (word_mask & (slot_ids == slot)).unsqueeze(-1).to(dtype)
-            count = member.sum(dim=1)
-            mean = (vectors * member).sum(dim=1) / count.clamp(min=1.0)
+            member = (
+                (word_mask & (slot_ids == slot)).to(dtype) * weights
+            ).unsqueeze(-1)
+            total = member.sum(dim=1)
+            # min=1.0 rather than an epsilon: every weight is >= 1.0, so a
+            # non-empty slot's total is never below it and the clamp only ever
+            # bites on the empty one -- whose numerator is the zero vector. An
+            # epsilon divisor would underflow to zero under fp16 autocast and
+            # make an absent slot NaN in BOTH branches of the where below.
+            mean = (vectors * member).sum(dim=1) / total.clamp(min=1.0)
             norm = torch.linalg.vector_norm(mean, dim=-1, keepdim=True)
             # An absent slot is a zero row, never a renormalisation of the others:
             # "this label spells no direction" has to stay distinguishable from
             # "this label spells one".
-            channels.append(torch.where(count > 0, mean / norm.clamp(min=1e-9), mean * 0.0))
+            channels.append(torch.where(total > 0, mean / norm.clamp(min=1e-9), mean * 0.0))
         return torch.cat(channels, dim=-1)
-
-    def _init_head_aug_words(self, raw_head_aug_words):
-        """Register the promotable-word lookup as a buffer, keyed by word id.
-
-        A (V,) bool buffer rather than a list of ids kept on the host: the
-        promotion is a tensor op on ``word_ids``, so it has to be indexable on
-        device, and a buffer keeps the shape static for compile/cudagraph the
-        way the other masks here do. It is NOT a state_dict entry that changes
-        the checkpoint contract -- it is derived wholly from the CLI flag, so it
-        is registered non-persistent.
-        """
-        words = [
-            piece.strip().lower()
-            for piece in str(raw_head_aug_words or '').split(',')
-            if piece.strip()
-        ]
-        table = torch.zeros(len(CONTROLLED_VOCAB), dtype=torch.bool)
-        if words:
-            vocab_index = {word: index for index, word in enumerate(CONTROLLED_VOCAB)}
-            unknown = [word for word in words if word not in vocab_index]
-            if unknown:
-                raise ValueError(
-                    f"head_aug_words names {unknown}, which are not controlled-vocabulary "
-                    f"tokens. Valid tokens: {list(CONTROLLED_VOCAB)}"
-                )
-            not_head = [word for word in words if word not in HEAD_VOCAB]
-            if not_head:
-                raise ValueError(
-                    f"head_aug_words names {not_head}, which are not HEAD_VOCAB words. "
-                    "Only a head word can occupy the head slot, so only a head word can "
-                    "be promoted into it."
-                )
-            for word in words:
-                table[vocab_index[word]] = True
-        self.head_aug_words = tuple(words)
-        self.register_buffer('head_aug_word_table', table, persistent=False)
-
-    def _promote_head_slot(self, word_ids, slot_ids, word_mask, batch_size, device, force=None):
-        """Training-only: move a listed head word into the head slot.
-
-        The label's first head word holds ``SLOT_HEAD`` and any later one sits
-        with the modifiers. When the later one is what the clip is actually
-        about, this swaps the two slot ids for that row, so the head channel
-        becomes the promoted word's own vector and the demoted word joins the
-        modifier mean. Written as a mask op like ``_drop_direction_slot`` so it
-        compiles the same way.
-
-        ``force`` is a per-row bool that promotes regardless of
-        ``head_aug_prob`` -- auxiliary rows use it, since a borrowed clip is
-        worth nothing to this group's head channel
-        unless it arrives as a word the group is queried for.
-
-        ``word_mask`` gates the lookup: padding columns carry word id 0, which
-        is a REAL vocabulary word, so an ungated ``head_aug_word_table[word_ids]``
-        would fire on every padded position.
-        """
-        if not self.training:
-            return slot_ids
-        # The word list is fixed at construction. Branching on the buffer's
-        # tensor value would sync CUDA and break torch.compile on every batch.
-        if not self.head_aug_words:
-            return slot_ids
-        promotable = (
-            self.head_aug_word_table.to(device=word_ids.device)[word_ids]
-            & (slot_ids == SLOT_MODIFIER)
-            & word_mask
-        )
-        eligible = promotable.any(dim=1)
-        if self.head_aug_prob > 0.0:
-            do = eligible & (torch.rand(batch_size, device=device) < self.head_aug_prob)
-        else:
-            do = torch.zeros(batch_size, device=device, dtype=torch.bool)
-        if force is not None:
-            do = do | (eligible & force)
-        row = do[:, None]
-        return torch.where(
-            row & promotable,
-            torch.full_like(slot_ids, SLOT_HEAD),
-            torch.where(
-                row & (slot_ids == SLOT_HEAD),
-                torch.full_like(slot_ids, SLOT_MODIFIER),
-                slot_ids,
-            ),
-        )
-
-    def _resolve_aux_rows(self, y, batch_size, device):
-        """``y['is_aux']`` as a (B,) bool, or ``None`` when the batch carries none."""
-        raw = y.get('is_aux')
-        if raw is None:
-            return None
-        is_aux = torch.as_tensor(raw, device=device, dtype=torch.bool).reshape(-1)
-        if is_aux.numel() == 1 and batch_size != 1:
-            is_aux = is_aux.expand(batch_size)
-        elif is_aux.numel() != batch_size:
-            raise ValueError(
-                "is_aux batch dimension must match the motion batch size, got "
-                f"{is_aux.numel()} for batch {batch_size}"
-            )
-        return is_aux
 
     def _drop_direction_slot(self, word_mask, slot_ids, batch_size, device):
         """Training-only: blank the direction words of a random subset of rows.
@@ -702,10 +615,17 @@ class AnyTop(nn.Module):
         routing it through the same unconditional path as a dropped row is what
         makes omitting ``--action_label`` at inference land on the learned
         unconditional mode automatically.
+
+        An auxiliary row (``y['is_aux']``, a clip borrowed from another group by
+        ``--aux_group_mass``) is conditioned exactly like an own row. It used to
+        be routed by whether a ``--head_aug_words`` promotion had reached its
+        head slot, because a borrowed "attack, jump, charge" put no jump in the
+        head channel at all; with every head word pooled into that channel it
+        does, so the label is worth carrying as written and the special case is
+        gone.
         """
         if not self.action_label_cond:
             return None
-        is_aux = self._resolve_aux_rows(y, batch_size, device)
         resolved = self._action_slot_inputs(y, batch_size, device)
         if resolved is None:
             channels = torch.zeros(
@@ -715,10 +635,6 @@ class AnyTop(nn.Module):
             word_mask = None
         else:
             word_ids, slot_ids, word_mask = resolved
-            slot_ids = self._promote_head_slot(
-                word_ids, slot_ids, word_mask, batch_size, device,
-                force=is_aux if self.training else None,
-            )
             word_mask = self._drop_direction_slot(word_mask, slot_ids, batch_size, device)
             channels = self._assemble_action_slot_channels(
                 word_ids, slot_ids, word_mask, dtype
@@ -729,17 +645,6 @@ class AnyTop(nn.Module):
         active = active & self._resolve_action_label_valid(
             y, batch_size, device, word_mask
         )
-        if self.training and is_aux is not None:
-            # Borrowed labels train this group's head only when a configured
-            # word reached that slot. All other aux rows train the null path.
-            if resolved is None:
-                active = active & ~is_aux
-            else:
-                promoted = (
-                    self.head_aug_word_table.to(device=word_ids.device)[word_ids]
-                    & (slot_ids == SLOT_HEAD)
-                ).any(dim=1)
-                active = active & (~is_aux | promoted)
         return channels, active
 
     def _build_action_label_token(self, y, batch_size, device, dtype):

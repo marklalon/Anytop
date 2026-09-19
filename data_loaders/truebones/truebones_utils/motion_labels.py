@@ -76,13 +76,12 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # the words a label can be ABOUT: a state the body is in (idle, run, hover,
 # rear ...) or an event that is the whole clip (die, getup, land, draw,
 # sheathe, stop ...). Their tuple position decides nothing; they are spelled
-# in WRITTEN order. Only the FIRST head word feeds the head slot; a second head
-# QUALIFIES it ("land, hover" = a landing out of flight, "attack, hover" an
-# attack in the air) and is routed to the modifier slot
-# (action_label_conditioning_contract.label_slot_ids), so the head channel is
-# always one undiluted word. Because a later head reaches the model as a
-# modifier, head order IS the condition: "attack, hover" and "hover, attack"
-# are two labels -- hence one word set may have only one head order per group
+# in WRITTEN order. Every head word feeds the head slot; the FIRST has weight
+# 1.5 and a later one has weight 1.0 ("land, hover" = a landing out of flight,
+# "attack, hover" an attack in the air). The weighting is defined by
+# action_label_conditioning_contract.slot_member_weights, so head order IS the
+# condition: "attack, hover" and "hover, attack" are two labels. Hence one word
+# set may have only one head order per group
 # (_validate_head_order_consistency) and nothing may reorder head words. Head
 # order still carries no DIRECTION. At most ACTION_LABEL_MAX_HEADS heads per
 # label ("block" is deliberately OUT: "idle, hover, block" would hold three).
@@ -374,8 +373,8 @@ def canonical_action_label(words) -> str:
     """Spell *words* with stable head order and canonical modifier placement.
 
     HEAD ORDER IS NEVER TOUCHED -- it is the written order (primary word first),
-    and the first head word is the one that feeds the head slot; re-sorting
-    here would change the condition, not just the spelling. Directions bind after a ``turn``
+    and the first head word is the one weighted above the rest in the head slot;
+    re-sorting here would change the condition, not just the spelling. Directions bind after a ``turn``
     head (or the last head) and precede other modifiers, so they qualify the
     motion rather than a trailing word (``walk, right, hand1``). Other modifiers are sorted by
     :data:`CONTROLLED_VOCAB` index: one combination, exactly one spelling. The
@@ -606,8 +605,8 @@ def aux_key_present_in(motion_metadata_lookup) -> bool:
 def _validate_head_order_consistency(rows) -> None:
     """Within a group, one word set has one head order.
 
-    The first head word feeds the head slot and any later one the modifier
-    slot, so two head orders of one word set are two DIFFERENT conditions. Two
+    Every head word feeds the head slot, but the first one is weighted above
+    the rest, so two head orders of one word set are two DIFFERENT conditions. Two
     spellings of the same word set inside one group would therefore be the
     corpus contradicting itself about what those clips are about; the
     annotation has to decide once. Applies to every group alike: head order
@@ -632,8 +631,8 @@ def _validate_head_order_consistency(rows) -> None:
                 f"clip '{clip}' spells the head words of {sorted(key[1])} as "
                 f"{list(heads)}, but {ACTION_LABELS_FILE}:{first_line} "
                 f"('{first_clip}') spells the same word set as "
-                f"{list(first_heads)}. The first head word is the head slot, "
-                f"the second a modifier, so these are two different conditions; "
+                f"{list(first_heads)}. The first head word outweighs the second "
+                f"in the head slot, so these are two different conditions; "
                 f"within {group} one word set must have one spelling.",
             )
 

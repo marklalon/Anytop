@@ -1,5 +1,47 @@
 # 跨组训练补充（aux_action_groups）与主词增广（head-word augmentation）
 
+> ## ⚠️ 2026-09-19 修订：机制 B 已被**加权主词池化**取代，本文 §5 / §6.4 作废
+>
+> 用户决定：删掉 `--head_aug_words` / `--head_aug_prob`，改为在**契约层**把
+> 标签的**每一个**主词都池化进 head 通道，首主词权重 `HEAD_SLOT_PRIMARY_WEIGHT = 1.5`，
+> 其余词权重 1.0（见 [`action_label_per_word_pooling.md`](action_label_per_word_pooling.md) §2）。
+> 第二主词**同时退出 modifier 槽**——一个词只喂一个通道。
+>
+> **本文仍然有效的部分**：§1（根因）、§3（为什么不是 `--action_group all`）、§4（机制 A
+> `aux_action_groups` 的全部内容）、§7（aux 规则表）。
+> **本文已作废的部分**：§2（论证"不回退平均池化"——结论被"加权≠平均"推翻，见下）、
+> §5（机制 B 的实现）、§6.4（aux 条件分流的固定规则）、§8.1/§9 里的两个旗标。
+>
+> **三条决定性改变**：
+> 1. **§2 的否决理由被绕开，不是被推翻。** §2 否的是**平均**池化（r=1），它的致命缺陷是
+>    `attack, hover` 与 `hover, attack` 的 head 通道**逐位相同**（实测 cos=1.00），词序不再进条件。
+>    r=1.5 不存在这个缺陷：源行线性无关时 (r,1) 与 (1,r) 不成比例，**任何 r≠1 都是单射**。
+>    §2 理由 1（"救不了 transition"）也不再成立——机制 A 已经把跨组的墙拆了。
+> 2. **aux 行不再分流**，原样带 label 训练（用户 2026-09-19）。§6.4 的前提
+>    "外来 label 对本组 head 通道零贡献"已经不成立：`attack, jump, charge` 的 head 通道
+>    现在**天然含 jump**（实测 cos 0.61）。**"三组原生首词互不相交"（§6.1）对 aux 行明确豁免。**
+> 3. **监督形态变了，要认账**：机制 B 给的是"25% 抽样下**精确**的纯 `jump` 条件"，
+>    加权池化给的是"每次都是 `1.5·attack+jump` 这个**混合点**（cos 0.61）"。
+>    拿精确性换稠密性与组合泛化。若 v21a 的纯 `jump` 外推反而不如 v21，机制就在这里。
+>
+> **实测（真实词表 + 三份 sidecar，2026-09-19）**：transition 模型 head 通道带 jump 的 clip
+> **110 条** = 51 条满权重（本组原生首词 `jump`）+ 59 条 cos≈0.5–0.6
+> （本组 15 条 `land, jump` + aux 44 条），**含 `Buffalo_Jump`（cos 0.61）**。
+> 与 A+B 的 113 条同量级。全库 3635 条 label 里只有 **289 条**双主词的 head 通道变化，
+> 其中 **172 条**的 modifier 通道变成零行；单主词的 3346 条**逐位不变**。
+>
+> **版本影响**：`ACTION_LABEL_PARSER_CONTRACT_VERSION` 5 → **6**、`CKPT_VERSION` 16 → **17**、
+> `slot_channel_representation()` 的 `per_word_weights` 由 `None` 变成真值 ⇒ conditioning 指纹变化，
+> 旧 checkpoint 被明确拒绝加载。`MOTION_METADATA_SCHEMA_VERSION` 不变（8）、
+> `ACTION_WORD_EMBEDDING_SCHEMA_VERSION` 不变（3）。
+> **不需要** cond regen / 重建 word sidecar / 重新预处理 / 改 `action_labels.jsonl`。**需要重训**
+> （`train_transition.bat` 已改名 `merged_transition_v21a`）。
+> 槽源秩 **136 → 104**（modifier 源行 96→64，因为主词不再是 modifier 源）——只**放松** `latent_dim` 下限。
+>
+> 以下正文保持 v21 落地时的原样，作为决策记录。
+
+---
+
 > 状态：**§9 步骤 1–8 已实施，待重训**（2026-09-19，分支 `train/v21`）。
 > 三份 `action_labels.jsonl` 已完成一次性迁移（`.bak` 保留）；
 > **本轮落规则 J + F，规则 L 已屏蔽**（用户 2026-09-19，见 §7）：aux 池 **68** 条
@@ -96,7 +138,11 @@ transition 模型的 head 通道现在只够到其中 **54 / 5 / 5**。
 
 ---
 
-## 2. 为什么不回退到"主词平均池化"
+## 2. 为什么不回退到"主词平均池化"（**结论被 2026-09-19 修订绕开**）
+
+> 本节否的是 **r=1 的平均**池化，那个结论仍然成立（r=1 下词序逐位消失）。
+> 但它没有覆盖 **r≠1 的加权**池化，后者既拿回了 head 通道的第二主词，又保住了词序。
+> 理由 1（"救不了 transition"）也已被机制 A 解决。见文首修订。
 
 用户提问：是否退回 CKPT 12 的 head 槽平均？**不建议**，三条理由：
 
@@ -236,7 +282,11 @@ v18/v20 都是 `--balanced False`，此时
 
 ---
 
-## 5. 机制 B：主词增广 `--head_aug_words` / `--head_aug_prob`
+## 5. 机制 B：主词增广 `--head_aug_words` / `--head_aug_prob`（**已作废，见文首修订**）
+
+> 2026-09-19 取代为契约层的加权主词池化（`HEAD_SLOT_PRIMARY_WEIGHT = 1.5`）。
+> 两个旗标、`head_aug_word_table` buffer 与 `_promote_head_slot()` 均已从代码里删除，
+> `tests/test_head_word_augmentation.py` 已删除。本节保留为决策记录。
 
 ### 5.1 规则：一次 `slot_ids` 交换，落在模型里
 
@@ -363,7 +413,13 @@ Buffalo 的 null 分支从"三种倒地"变成"倒地/起身/腾空/走/跑"，�
 方向上这是好事 —— 原先 CFG 是从"躺着"往一个模型不认识的方向推，现在是从"一般的水牛运动"
 往 jump 推。
 
-### 6.4 固定规则：可提升则保留标签，否则走 null
+### 6.4 固定规则：可提升则保留标签，否则走 null（**已作废，见文首修订**）
+
+> 2026-09-19 起 **aux 行原样带 label 训练，不再分流**。本节的前提（外来 label 对本组 head 通道零贡献）
+> 被加权池化推翻：`attack, jump, charge` 的 head 通道现在含 jump（cos 0.61）。
+> 代价是规则 F 的 24 条 `fall` 会往 transition 的 head 通道写 `fall`——
+> **§6.1「三组原生首词互不相交」对 aux 行明确豁免**（用户 2026-09-19）。
+> 退化时的回退顺序变为：降 `--aux_group_mass`（0.08 → 0.03）→ 从 sidecar 摘掉规则 F 的 24 行。
 
 既然条件路径 ≈ 零而其余两路才是收益，就不该让 aux clip 白带一个无人查询的首词进来。
 训练时，若标签里有可按 `--head_aug_words` 提升的词，辅助行 **100% 提升**，
@@ -494,6 +550,12 @@ locomotion 959 / stationary 2925 / transition 1720。
 ```
 --aux_group_mass 0.08 --head_aug_words jump --head_aug_prob 0.25
 ```
+
+> **2026-09-19 起**：后两个旗标已删除，本轮训练侧只剩 `--aux_group_mass 0.08`；
+> 主词池化的权重是契约常量 `HEAD_SLOT_PRIMARY_WEIGHT = 1.5`，不是旗标。
+> §8.0 守卫 2 改为：`--action_label attack` 在 stationary 上不得被稀释
+> ——现在稀释的来源不是 25% 的随机提升，而是 33 条 `attack, jump, *` 的 head 通道
+> 恒定含有 jump（cos 0.61），**这是一个系统性偏移而不是一个抽样比例**，更需要看。
 
 三组都要重训，同一套旗标。注意**只上规则 J + F 时，locomotion 与 stationary 两组的
 aux 池都是空的**（两条规则都只往 transition 送），`--aux_group_mass` 对它们退化为空操作（§4.2 的守卫

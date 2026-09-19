@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (  # noqa: E402
     ACTION_CHECKPOINT_VERSION,
     ACTION_LABEL_SLOTS,
+    SLOT_HEAD,
     SLOT_PAD_ID,
     ActionConditioningError,
     action_label_slots,
@@ -195,24 +196,34 @@ def test_absent_slot_is_a_zero_row_and_leaves_the_others_alone():
 
 
 def test_first_head_word_leads_in_every_group():
-    """The first head word is the head channel; a second one is a modifier.
+    """The first head word leads the head channel; a second one joins it below.
 
     So "land, hover" and "hover, land" are two conditions in every group alike
     (the loader's head-order consistency gate keeps the corpus from spelling
-    one kind of clip both ways), and the head channel of "land, hover" is the
-    head channel of "land" itself.
+    one kind of clip both ways), and the head channel of "land, hover" leans
+    towards "land" without being it.
     """
     model = _model(make_test_bundle())
     width = model.action_word_embeddings.shape[1]
+    table = model.action_word_embeddings.to(torch.float64)
     for group in ('transition', 'stationary', 'locomotion'):
         first = _channels(model, ['land, hover'], [group])
         second = _channels(model, ['hover, land'], [group])
         assert not torch.equal(first[:, :width], second[:, :width])
         alone = _channels(model, ['land'], [group])
-        assert torch.equal(first[:, :width], alone[:, :width])
-        # The second head word is in the modifier block, which "land" alone leaves empty.
+        assert not torch.equal(first[:, :width], alone[:, :width])
+        # It leans towards the word that leads: closer to "land" than "hover",
+        # and closer to "land" than the other spelling is.
+        head = first[0, :width]
+        land = table[CONTROLLED_VOCAB.index('land')]
+        hover = table[CONTROLLED_VOCAB.index('hover')]
+        land, hover = land / land.norm(), hover / hover.norm()
+        assert float(head @ land) > float(head @ hover)
+        assert float(head @ land) > float(second[0, :width] @ land)
+        # Both head words left the modifier block, which stays empty for either
+        # spelling -- a word feeds exactly one channel.
         assert torch.count_nonzero(alone[:, 2 * width:3 * width]) == 0
-        assert torch.count_nonzero(first[:, 2 * width:3 * width]) > 0
+        assert torch.count_nonzero(first[:, 2 * width:3 * width]) == 0
     # The group itself is not part of the condition: one label is the same
     # channel vector whichever checkpoint it is fed to.
     assert torch.equal(
@@ -277,9 +288,9 @@ def test_loader_emits_exactly_the_three_slot_fields():
 def test_latent_dim_below_the_slot_source_rank_fails_at_construction():
     bundle = make_test_bundle()
     total_rank = bundle.slot_source_rank_report(TEST_LATENT_DIM)['total_rank']
-    # 32 head words, 6 directions, 64 + 32 modifier sources (a head word after
-    # the first is a modifier), 2 hands.
-    assert total_rank == 136
+    # 32 head words, 6 directions, 64 modifier sources, 2 hands: the slots
+    # partition the vocabulary, so the ranks add to its size.
+    assert total_rank == 104
     with pytest.raises(ValueError, match="smaller than the total slot source rank"):
         _model(bundle, latent_dim=total_rank - 1)
     _model(bundle, latent_dim=TEST_LATENT_DIM)  # a width at or above it
@@ -487,6 +498,32 @@ def test_slot_assembly_has_exactly_one_definition():
     assert torch.allclose(
         torch_channels[0], torch.as_tensor(numpy_channels.reshape(-1)), atol=1e-12
     )
+
+
+def test_two_head_pooling_agrees_between_the_numpy_and_tensor_paths():
+    """The weight is positional on both sides, so the two must not disagree.
+
+    The numpy path walks the label's tokens in written order; the tensor path
+    finds the primary head word with a cumulative sum over the padded row. A
+    two-head label is the only place those two readings could come apart, and a
+    disagreement would mean training and the sidecar/preflight conditioned on
+    different vectors for the same string.
+    """
+    bundle = make_test_bundle()
+    model = _model(bundle)
+    for label in ('attack, jump, charge', 'land, jump', 'jump, land'):
+        slots = action_label_slots(parse_action_label(label))
+        assert slots['slot_ids'].count(SLOT_HEAD) == 2
+        numpy_channels, _ = assemble_slot_channels(bundle.word_embeddings, slots)
+        torch_channels = _channels(model, [label], ['transition'])
+        assert torch.allclose(
+            torch_channels[0], torch.as_tensor(numpy_channels.reshape(-1)), atol=1e-12
+        ), label
+    # ...and the padded columns of a SHORT row in the same batch cannot steal
+    # the primary weight from a long one: word id 0 is a real vocabulary word,
+    # so only the mask keeps padding out of the head slot.
+    batched = _channels(model, ['land, jump', 'jump'], ['transition', 'transition'])
+    assert torch.allclose(batched[1], _channels(model, ['jump'], ['transition'])[0])
 
 
 # --------------------------------------------------------------------------

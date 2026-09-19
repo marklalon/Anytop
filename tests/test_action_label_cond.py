@@ -328,7 +328,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         from data_loaders.truebones.truebones_utils import motion_labels
 
         # One word set, one head order -- the transition group included: the
-        # first head word is the head slot and the second a modifier, so two
+        # first head word outweighs the second in the head slot, so two
         # spellings would be two conditions for what the corpus treats as one
         # kind of clip, never a transition and its reverse.
         for group in ('transition', 'stationary', 'locomotion'):

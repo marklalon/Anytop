@@ -16,7 +16,11 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 16
+# 17: every head word of a label now pools into the head channel, the first one
+#     weighted above the rest (HEAD_SLOT_PRIMARY_WEIGHT), and the training-only
+#     --head_aug_words / --head_aug_prob promotion that used to stand in for
+#     that is gone. Auxiliary rows carry their label like any other row.
+CKPT_VERSION = 17
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -354,23 +358,9 @@ def add_data_options(parser, training=False):
                                 "never affect the species split (train/val/test.txt stay "
                                 "byte-identical). 0 = off, the aux clips are not loaded at all. "
                                 "Passing > 0 against sidecars that carry no aux_action_groups key "
-                                "is a hard error. Default 0.0. "
+                                "is a hard error. An aux clip is conditioned on its own label "
+                                "exactly like an own clip. Default 0.0. "
                                 "See docs/aux_group_and_head_word_augmentation.md.")
-        group.add_argument("--head_aug_words", default='', type=str,
-                           help="Comma-separated HEAD_VOCAB words that may be promoted from the "
-                                "modifier slot into the head slot during training, when the label "
-                                "spells them after another head word ('attack, jump, charge' -> "
-                                "head=jump). A training-only slot_ids swap: the sidecar, the "
-                                "canonical spelling and the inference contract are untouched. "
-                                "Empty (default) = off. Deliberately a word list and not a global "
-                                "switch: a second head word is usually a posture qualifier "
-                                "(hover / rear / crouch) that should NOT become the head.")
-        group.add_argument("--head_aug_prob", default=0.0, type=float,
-                           help="Probability of applying the --head_aug_words promotion to an "
-                                "eligible row of this group's OWN clips. Auxiliary rows are "
-                                "always promoted when eligible, regardless of this value; "
-                                "other auxiliary rows use the unconditional label branch. "
-                                "Default 0.0.")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')

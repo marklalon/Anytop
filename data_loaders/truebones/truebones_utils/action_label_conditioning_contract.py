@@ -32,12 +32,19 @@ ACTION_CONDITIONING_CONTRACT_SCHEMA_VERSION = 1
 # 5: hand0 retired -- an empty hands slot means empty hands (the content
 #    default), hand1 / hand2 are the only members; the direction slot gained
 #    a training dropout so ITS empty state is the marginal (2026-09-18).
-ACTION_LABEL_PARSER_CONTRACT_VERSION = 5
+# 6: a label's later head word rejoined the head slot, weighted below the
+#    first one (HEAD_SLOT_PRIMARY_WEIGHT), instead of sitting with the
+#    modifiers.  "attack, jump" now puts jump into the head channel at every
+#    step, which is what the retired --head_aug_words promotion bought a
+#    fraction of the time (2026-09-19).
+ACTION_LABEL_PARSER_CONTRACT_VERSION = 6
 
 # Slots.  The approved representation gives each slot its own conditioning
-# channel, so a word's contribution depends on ITS slot only -- appending
-# modifiers cannot shrink the head or direction axis, which is the property the
-# one-vector weighted mean could not have at any weight setting.
+# channel, so a word's contribution depends on ITS slot only -- appending a
+# NON-HEAD word cannot shrink the head or direction axis, which is the property
+# the one-vector weighted mean could not have at any weight setting.  A second
+# head word is the one exception, and a deliberate one: see
+# HEAD_SLOT_PRIMARY_WEIGHT.
 #
 # The hands axis has its own channel rather than riding in the modifier slot
 # because, once annotated, it sits on nearly every clip of every hand-bearing
@@ -52,6 +59,37 @@ SLOT_DIRECTION = 1
 SLOT_MODIFIER = 2
 SLOT_HANDS = 3
 ACTION_LABEL_SLOTS: tuple[str, ...] = ("head", "direction", "modifier", "hands")
+
+# Within the head slot, how much more the label's FIRST head word weighs than a
+# later one.  Every other slot pools its members evenly.
+#
+# A label's later head word ("attack, JUMP, charge", "land, JUMP") names the
+# body event the clip is largely about, and for one contract revision it sat
+# with the modifiers, which left the head channel -- the channel inference
+# queries -- with no share of it at all.  Pooling the two evenly is the other
+# extreme and is the one setting that is NOT allowed: at weight 1:1 the head
+# channel of "a, b" and "b, a" is literally the same vector, so written head
+# order stops being part of the condition.  Any ratio other than 1 keeps the
+# two apart (the source rows are independent, and (r, 1) is not a multiple of
+# (1, r) unless r == 1), so the choice is only about how much of the axis the
+# first word keeps.
+#
+# 1.5 was measured on the frozen table (dim 768, all rows unit norm) against
+# the two costs that matter, with the word-pair null band |cos| p95 = 0.19 for
+# scale:
+#
+#   cos(head channel, first word alone)        "attack, hover"  0.83
+#   cos(head channel, later word alone)        "attack, jump"   0.61
+#   cos("idle, hover", "attack, hover")                         0.36
+#   cos("attack, jump", "land, jump")                           0.24
+#   cos("attack, hover", "hover, attack")                       0.92
+#
+# Raising it sharpens the first three and softens the last; 1.0 collapses the
+# last to 1.00 and is rejected above.  It is a constant and not a flag on
+# purpose: it is part of the condition's meaning, so inference has to reproduce
+# it, and the conditioning fingerprint below is what refuses a checkpoint
+# trained under a different value.
+HEAD_SLOT_PRIMARY_WEIGHT = 1.5
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -137,14 +175,14 @@ def action_label_slots(tokens: Iterable[str]) -> dict[str, tuple]:
 def word_slots(word: str) -> tuple[int, ...]:
     """Every conditioning channel one vocabulary word can feed.
 
-    A direction, hands or modifier word has one slot.  A head word has two: the
-    head slot when it leads the label, the modifier slot when another head word
-    does (:func:`label_slot_ids`).  The rank report certifies every slot over
-    all the words that can reach it, so a head word counts as a modifier source
-    too.
+    Exactly one each: the slots partition a label's words.  A head word feeds
+    the head slot whether it leads the label or follows another head word --
+    following only costs it weight, not its channel (:func:`label_slot_ids`,
+    :data:`HEAD_SLOT_PRIMARY_WEIGHT`).  That is what keeps the rank report a
+    sum over disjoint blocks: no vector is a source of two channels.
     """
     if word in HEAD_VOCAB:
-        return (SLOT_HEAD, SLOT_MODIFIER)
+        return (SLOT_HEAD,)
     if word in DIRECTION_VOCAB:
         return (SLOT_DIRECTION,)
     if word in HANDS_VOCAB:
@@ -157,24 +195,45 @@ def word_slots(word: str) -> tuple[int, ...]:
 def label_slot_ids(ordered_tokens: Iterable[str]) -> tuple[int, ...]:
     """The slot each token of one label feeds, in the label's written order.
 
-    The FIRST head word is what the label is about and is the head slot's only
-    member; a later head word qualifies it (the posture or medium it happens
-    in: "attack, hover", "walk, crouch", "land, jump") and is pooled with the
-    modifiers.  So the head channel is always one undiluted word vector, and
-    which head word is written first decides the condition -- the corpus
-    spells one word set one way per group for exactly that reason
-    (motion_labels._validate_head_order_consistency).
+    Every head word feeds the head slot.  Written order still decides the
+    condition, but through weight rather than through the channel: the first
+    head word is what the label is about and carries
+    :data:`HEAD_SLOT_PRIMARY_WEIGHT`, a later one qualifies it (the posture or
+    medium it happens in: "attack, hover", "land, jump") and carries 1.0.  So
+    "a, b" and "b, a" stay two conditions -- the corpus spells one word set one
+    way per group for exactly that reason
+    (motion_labels._validate_head_order_consistency) -- while the head channel
+    keeps a real share of the later word, which is the whole point of pooling
+    it here instead of with the modifiers.
+
+    Which head word is "first" is a matter of position, so it is read off this
+    tuple rather than stored: see :func:`slot_member_weights`.
     """
-    slots = []
+    return tuple(word_slots(word)[0] for word in ordered_tokens)
+
+
+def slot_member_weights(slot_ids: Iterable[int]) -> tuple[float, ...]:
+    """The pooling weight of each of one label's words, in written order.
+
+    The head slot's FIRST member takes :data:`HEAD_SLOT_PRIMARY_WEIGHT` and
+    every other word takes 1.0.  "First" is positional -- the earliest column
+    of this row assigned to the head slot -- because a label's words reach the
+    model in written order and the slot ids alone do not say which head word
+    led.  The model mirrors this on tensors with a cumulative sum over the same
+    order, so the two cannot disagree about which word is the primary one.
+
+    Only the RATIO reaches the condition: each channel is L2-normalised after
+    pooling, so scaling every weight of a slot is a no-op.
+    """
+    weights = []
     head_seen = False
-    for word in ordered_tokens:
-        own = word_slots(word)[0]
-        if own == SLOT_HEAD:
-            slots.append(SLOT_MODIFIER if head_seen else SLOT_HEAD)
+    for slot in slot_ids:
+        if slot == SLOT_HEAD and not head_seen:
+            weights.append(float(HEAD_SLOT_PRIMARY_WEIGHT))
             head_seen = True
         else:
-            slots.append(own)
-    return tuple(slots)
+            weights.append(1.0)
+    return tuple(weights)
 
 
 def assemble_slot_channels(
@@ -188,12 +247,13 @@ def assemble_slot_channels(
     model mirrors it on tensors, against the same slot ids) so a channel cannot
     acquire two definitions.
 
-    Each slot holds the mean of its member word vectors, L2-normalised: a set
-    within the slot, so the order words were written in does not reach the
-    model beyond what the slot ids already encode (which head word leads).
-    Normalising per slot is what makes the head axis independent of how many
-    modifiers the label spells; an absent slot is a zero row flagged in the
-    returned mask, never a renormalisation of the others.
+    Each slot holds the weighted mean of its member word vectors,
+    L2-normalised.  Every weight is 1.0 except the head slot's first member
+    (:func:`slot_member_weights`), so three of the four slots are plain means
+    of a set and written order reaches the model only as "which head word
+    leads".  Normalising per slot is what makes the head axis independent of
+    how many MODIFIERS the label spells; an absent slot is a zero row flagged
+    in the returned mask, never a renormalisation of the others.
     """
     vectors = np.asarray(word_vectors, dtype=np.float64)
     if vectors.ndim != 2:
@@ -201,17 +261,21 @@ def assemble_slot_channels(
 
     word_ids = tuple(slots["word_ids"])
     slot_ids = tuple(slots["slot_ids"])
+    weights = slot_member_weights(slot_ids)
     channels = np.zeros((len(ACTION_LABEL_SLOTS), vectors.shape[1]), dtype=np.float64)
     present = np.zeros(len(ACTION_LABEL_SLOTS), dtype=bool)
     for slot in range(len(ACTION_LABEL_SLOTS)):
         members = [
-            vectors[word_id]
-            for word_id, assigned in zip(word_ids, slot_ids)
+            (weight, vectors[word_id])
+            for word_id, assigned, weight in zip(word_ids, slot_ids, weights)
             if assigned == slot
         ]
         if not members:
             continue
-        mean = np.mean(np.stack(members), axis=0)
+        member_weights = np.asarray([weight for weight, _ in members], dtype=np.float64)
+        mean = (
+            np.stack([vector for _, vector in members]) * member_weights[:, None]
+        ).sum(axis=0) / member_weights.sum()
         norm = float(np.linalg.norm(mean))
         if norm <= 1e-9:
             raise ValueError(
@@ -229,16 +293,22 @@ def slot_channel_representation() -> dict[str, Any]:
         "kind": "slot_channels",
         "slots": list(ACTION_LABEL_SLOTS),
         "slot_assignment": (
-            "head = the label's first HEAD_VOCAB word (exactly one member); "
+            "head = every HEAD_VOCAB word of the label (at most ACTION_LABEL_MAX_HEADS); "
             "direction = DIRECTION_VOCAB member; "
             "hands = HANDS_VOCAB member (at most one); "
-            "modifier = every other vocabulary word, including every HEAD_VOCAB "
-            "word after the first"
+            "modifier = every other vocabulary word"
         ),
-        "slot_aggregation": "mean of member word vectors (a set within the slot), then L2 normalisation",
+        "slot_aggregation": "weighted mean of member word vectors, then L2 normalisation",
         "absent_slot": "zero row, reported in slot_mask; never renormalises the other slots",
         "channel_layout": "concatenated in ACTION_LABEL_SLOTS order",
-        "per_word_weights": None,
+        "per_word_weights": {
+            "head_first": float(HEAD_SLOT_PRIMARY_WEIGHT),
+            "default": 1.0,
+            "rule": (
+                "the head slot's first member by written order takes head_first; "
+                "every other word of every slot takes default"
+            ),
+        },
     }
 
 
@@ -299,7 +369,7 @@ def conditioning_contract_payload(
         "head_vocab": list(HEAD_VOCAB),
         "max_words": ACTION_LABEL_MAX_WORDS,
         "max_heads": ACTION_LABEL_MAX_HEADS,
-        "canonicalization": "preserve written head order (one head order per word set and group; the first head word is the head slot, later head words are modifier-slot members, so the order is the condition); bind directions after turn or final head; sort remaining modifiers by ordered_vocab",
+        "canonicalization": "preserve written head order (one head order per word set and group; every head word is a head-slot member but the first one is weighted above the rest, so the order is the condition); bind directions after turn or final head; sort remaining modifiers by ordered_vocab",
         "slot_fields": ["word_ids", "word_mask", "slot_ids"],
         "slot_names": list(ACTION_LABEL_SLOTS),
         "group_is_checkpoint_local": True,
@@ -328,10 +398,8 @@ def numerical_rank(vectors: np.ndarray) -> tuple[int, float]:
 def slot_source_vectors(word_vectors: np.ndarray) -> dict[str, np.ndarray]:
     """The source rows each slot channel can be a normalised sum of.
 
-    A head word is a source of the modifier slot as well as the head slot
-    (:func:`word_slots`), so the modifier rows are the modifier vocabulary plus
-    the whole head vocabulary.  The same vector in two slots is fine for the
-    proof: the slots are disjoint blocks, so each block's rank is its own.
+    The slots partition the vocabulary (:func:`word_slots`), so every word is a
+    source of exactly one block and the blocks' ranks simply add.
     """
     vectors = np.asarray(word_vectors, dtype=np.float64)
     vocab_index = {word: index for index, word in enumerate(CONTROLLED_VOCAB)}
@@ -348,12 +416,17 @@ def slot_source_vectors(word_vectors: np.ndarray) -> dict[str, np.ndarray]:
 def slot_source_rank_report(word_vectors: np.ndarray, latent_dim: int) -> dict[str, Any]:
     """Whether the slot channels stay separable and fit the first projection.
 
-    If a slot's source rows are independent, two different 0/1 membership vectors
+    If a slot's source rows are independent, two different membership vectors
     cannot produce proportional sums, so L2-normalising those sums creates
     neither a collision nor a loss of linear membership readability -- for every
     non-empty subset, not just the ones the corpus happens to spell.  Slots
     occupy disjoint blocks of the concatenation, so their ranks add, and a first
     Linear at least that wide can be injective on the whole reachable space.
+
+    The coefficients are drawn from {0, 1, HEAD_SLOT_PRIMARY_WEIGHT} rather than
+    {0, 1}, which changes nothing here and rules out one more collision: the
+    only way two labels over the same words could share a head channel is the
+    swap (r, 1) vs (1, r), and those are proportional only at r == 1.
     """
     if latent_dim <= 0:
         raise ValueError(f"latent_dim must be positive, got {latent_dim}")

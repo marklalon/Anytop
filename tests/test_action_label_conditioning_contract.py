@@ -7,10 +7,12 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     ACTION_LABEL_SLOTS,
     SLOT_DIRECTION,
     SLOT_HANDS,
+    HEAD_SLOT_PRIMARY_WEIGHT,
     SLOT_HEAD,
     SLOT_MODIFIER,
     action_label_slots,
     assemble_slot_channels,
+    slot_member_weights,
     conditioning_contract_payload,
     embedding_contract_payload,
     fingerprint,
@@ -32,18 +34,21 @@ def test_slot_source_rank_covers_the_full_domain_and_projection_width():
     report = slot_source_rank_report(table, latent_dim=256)
     assert report["full_rank"]
     assert report["fits_projection"]
-    # A head word is a modifier source too (any head word after the first), so
-    # the modifier slot draws on the whole action vocabulary: 64 + 32. The
-    # hands slot has two members since hand0 was retired (empty hands is the
-    # zero row, not a vector).
-    assert report["total_rank"] == 136
+    # The slots partition the vocabulary -- a head word is a head source and
+    # nothing else, however late in the label it is spelled -- so the ranks add
+    # to the vocabulary size. The hands slot has two members since hand0 was
+    # retired (empty hands is the zero row, not a vector).
+    assert report["total_rank"] == 104
     assert {name: item["rank"] for name, item in report["slots"].items()} == {
         "head": 32,
         "direction": 6,
-        "modifier": 96,
+        "modifier": 64,
         "hands": 2,
     }
-    assert not slot_source_rank_report(table, latent_dim=135)["fits_projection"]
+    assert sum(report["slots"][name]["rank"] for name in report["slots"]) == len(
+        CONTROLLED_VOCAB
+    )
+    assert not slot_source_rank_report(table, latent_dim=103)["fits_projection"]
 
 
 def test_slot_assignment_carries_ids_masks_and_slots_only():
@@ -51,11 +56,13 @@ def test_slot_assignment_carries_ids_masks_and_slots_only():
     slots = action_label_slots(("idle", "attack"))
     assert set(slots) == {"word_ids", "word_mask", "slot_ids"}
     assert slots["word_mask"] == (True, True)
-    # Only the first head word is the head; the second is a modifier-slot member.
-    assert slots["slot_ids"] == (SLOT_HEAD, SLOT_MODIFIER)
-    assert action_label_slots(("attack", "idle"))["slot_ids"] == (SLOT_HEAD, SLOT_MODIFIER)
+    # Both head words feed the head slot; which of them leads is positional,
+    # and reaches the condition as a weight (slot_member_weights).
+    assert slots["slot_ids"] == (SLOT_HEAD, SLOT_HEAD)
+    assert slot_member_weights(slots["slot_ids"]) == (HEAD_SLOT_PRIMARY_WEIGHT, 1.0)
+    assert action_label_slots(("attack", "idle"))["slot_ids"] == (SLOT_HEAD, SLOT_HEAD)
     assert action_label_slots(("run", "turn", "left", "fast", "hand1"))["slot_ids"] == (
-        SLOT_HEAD, SLOT_MODIFIER, SLOT_DIRECTION, SLOT_MODIFIER, SLOT_HANDS,
+        SLOT_HEAD, SLOT_HEAD, SLOT_DIRECTION, SLOT_MODIFIER, SLOT_HANDS,
     )
 
 
@@ -128,32 +135,66 @@ def test_absent_slot_does_not_renormalise_the_others():
             assert np.linalg.norm(without[slot]) == pytest.approx(1.0)
 
 
-def test_first_head_word_is_the_head_and_later_ones_are_modifiers():
-    """"a, b" and "b, a" are two conditions: the first head word is the head.
+def test_every_head_word_pools_into_the_head_channel_first_one_weighted():
+    """The head channel is every head word, the first one weighted above the rest.
 
-    The head channel is that one word's vector, undiluted by a second head
-    word, which lands in the modifier channel instead. The data contract's
-    one-head-order-per-word-set rule (motion_labels._validate_head_order_consistency)
-    is what keeps the corpus from spelling one kind of clip as two conditions.
+    A later head word ("attack, JUMP") names a body event the head channel has
+    to carry, so it pools there rather than with the modifiers -- at weight 1.0
+    against HEAD_SLOT_PRIMARY_WEIGHT for the word that leads.
     """
     table = _word_table()
-    first, first_present = _channels(("attack", "hover"), table)
+    attack = table[CONTROLLED_VOCAB.index("attack")]
+    hover = table[CONTROLLED_VOCAB.index("hover")]
+    expected = HEAD_SLOT_PRIMARY_WEIGHT * attack + hover
+    expected = expected / np.linalg.norm(expected)
+    channels, present = _channels(("attack", "hover"), table)
+    assert np.allclose(channels[SLOT_HEAD], expected)
+    # The later head word left the modifier slot entirely: a word feeds exactly
+    # one channel, which is what keeps the rank report a sum over disjoint blocks.
+    assert not present[SLOT_MODIFIER]
+    # A true modifier still pools on its own, unweighted, and does not touch the
+    # head channel.
+    with_bite, bite_present = _channels(("attack", "hover", "bite"), table)
+    assert np.allclose(with_bite[SLOT_HEAD], expected)
+    assert bite_present[SLOT_MODIFIER]
+    bite = table[CONTROLLED_VOCAB.index("bite")]
+    assert np.allclose(with_bite[SLOT_MODIFIER], bite / np.linalg.norm(bite))
+
+
+def test_written_head_order_still_decides_the_condition():
+    """"a, b" and "b, a" are two conditions -- by weight now, not by channel.
+
+    This is the property that makes the weighted pool admissible at all: at
+    weight 1:1 the two would be the same vector and written order would stop
+    reaching the model. The data contract's one-head-order-per-word-set rule
+    (motion_labels._validate_head_order_consistency) keeps the corpus from
+    spelling one kind of clip as two conditions.
+    """
+    assert HEAD_SLOT_PRIMARY_WEIGHT != 1.0
+    table = _word_table()
+    first, _ = _channels(("attack", "hover"), table)
     second, _ = _channels(("hover", "attack"), table)
     assert not np.allclose(first[SLOT_HEAD], second[SLOT_HEAD])
-    # The head channel of "attack, hover" is exactly the head channel of "attack".
-    alone, alone_present = _channels(("attack",), table)
-    assert np.array_equal(first[SLOT_HEAD], alone[SLOT_HEAD])
-    assert not alone_present[SLOT_MODIFIER] and first_present[SLOT_MODIFIER]
-    # ...and the second head word pools with the modifiers: "attack, hover, bite"
-    # has the modifier channel of the {hover, bite} set, while its head channel
-    # is still "attack" alone.
-    with_bite, _ = _channels(("attack", "hover", "bite"), table)
-    assert np.array_equal(with_bite[SLOT_HEAD], alone[SLOT_HEAD])
-    hover_id = CONTROLLED_VOCAB.index("hover")
-    bite_id = CONTROLLED_VOCAB.index("bite")
-    expected = (table[hover_id] + table[bite_id]) / 2.0
-    expected = expected / np.linalg.norm(expected)
-    assert np.allclose(with_bite[SLOT_MODIFIER], expected)
+    # A single-head label is unchanged by the weight: one member, and the
+    # channel is L2-normalised, so only the ratio between members can reach it.
+    alone, _ = _channels(("attack",), table)
+    attack = table[CONTROLLED_VOCAB.index("attack")]
+    assert np.allclose(alone[SLOT_HEAD], attack / np.linalg.norm(attack))
+
+
+def test_only_the_weight_ratio_reaches_the_channel():
+    """Scaling every weight of a slot is a no-op, so the constant is a ratio."""
+    table = _word_table()
+    slots = action_label_slots(("attack", "hover"))
+    weights = slot_member_weights(slots["slot_ids"])
+    assert weights == (HEAD_SLOT_PRIMARY_WEIGHT, 1.0)
+    channels, _ = assemble_slot_channels(table, slots)
+    scaled = (table * 1.0)
+    doubled = np.stack(
+        [HEAD_SLOT_PRIMARY_WEIGHT * 2 * scaled[CONTROLLED_VOCAB.index("attack")]
+         + 2 * scaled[CONTROLLED_VOCAB.index("hover")]]
+    )[0]
+    assert np.allclose(channels[SLOT_HEAD], doubled / np.linalg.norm(doubled))
 
 
 def test_slot_channel_representation_is_pinned_in_the_conditioning_fingerprint():
@@ -192,7 +233,8 @@ def test_conditioning_contract_carries_no_role_material():
     assert not any("role" in key for key in payload["representation"])
     # 4: the first head word is the head slot, later head words are modifiers.
     # 5: hand0 retired (an empty hands slot is empty hands), direction dropout.
-    assert payload["parser_contract_version"] == 5
+    # 6: later head words rejoined the head slot, weighted below the first.
+    assert payload["parser_contract_version"] == 6
 
 
 def test_embedding_change_propagates_into_conditioning_fingerprint():
