@@ -69,11 +69,15 @@ after the next preprocess. Every source move is appended to
 
     python serve.py [--port 8765] [--datasets ../datasets.jsonl] [--no-browser]
 
-``/api/labels`` accepts optional ``q``, ``field=label|clip|both``, and
-``whole_word=1`` query parameters. Without them it returns every row, as the
-review page needs for its local filters and counts. For labels, ``whole_word``
-requires the entire action label to equal the query; for clips, it matches a
-word bounded by non-alphanumerics.
+``/api/labels`` accepts optional ``q``, ``field=label|clip|both``,
+``whole_word=1``, ``group=<action group>`` and ``aux=1`` query parameters.
+Without them it returns every row, as the review page needs for its local
+filters and counts. For labels, ``whole_word`` requires the entire action
+label to equal the query; for clips, it matches a word bounded by
+non-alphanumerics. ``group`` keeps the rows that group owns; adding ``aux=1``
+keeps instead the rows that merely *supplement* it (the group is listed in
+their ``aux_action_groups``), and ``aux=1`` on its own keeps every row that
+supplements some group.
 """
 import argparse
 import difflib
@@ -218,6 +222,22 @@ def _row_matches_search(row, query, field="label", whole_word=False):
         elif _contains_search_term(row.get(key), query, whole_word):
             return True
     return False
+
+
+def _row_matches_group(row, group, aux_only=False):
+    """Action-group filter, shared in spirit with the page's header controls.
+
+    ``aux_only`` swaps the primary-group test for the auxiliary one: with a
+    group named, the row must list it in ``aux_action_groups``; with no group
+    (or ``all``), any row that supplements some group qualifies.  A group is
+    never both a row's owner and one of its supplements, so the two views of
+    one group never overlap.
+    """
+    if aux_only:
+        aux = row.get(AUX_ACTION_GROUPS_KEY)
+        aux = list(aux) if isinstance(aux, (list, tuple)) else []
+        return bool(aux) if group in ("", "all") else group in aux
+    return group in ("", "all") or row.get("action_group") == group
 
 
 def _archive_target(src):
@@ -632,6 +652,11 @@ class Handler(BaseHTTPRequestHandler):
                     row["_dataset"] = selected_ds["id"]
                     row["bvhview"] = _bvhview_href(selected_ds, row["clip"])
                     rows.append(row)
+
+            group = params.get("group", "").strip()
+            aux_only = params.get("aux", "").lower() in ("1", "true", "on")
+            if group or aux_only:
+                rows = [row for row in rows if _row_matches_group(row, group, aux_only)]
 
             query = params.get("q", "").strip()
             if query:

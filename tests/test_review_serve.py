@@ -178,6 +178,47 @@ def test_review_search_matches_whole_words_and_keeps_substring_default():
     assert review._row_matches_search({"action_label": "idle, fast"}, "idle")
 
 
+def test_labels_api_can_filter_by_group_and_aux_membership(tmp_path):
+    processed = tmp_path / "sample"
+    processed.mkdir()
+    labels = processed / "action_labels.jsonl"
+    labels.write_text("".join(json.dumps(row) + "\n" for row in [
+        {"clip": "Bear_Walk", "action_group": "locomotion", "action_label": "walk"},
+        {"clip": "Bear_Stop", "action_group": "transition", "action_label": "stop",
+         "aux_action_groups": ["locomotion"]},
+        {"clip": "Bear_Idle", "action_group": "stationary", "action_label": "idle",
+         "aux_action_groups": []},
+    ]), encoding="utf-8")
+    dataset = {
+        "id": "sample", "name": "sample", "processed": str(processed),
+        "labels": labels, "gif_dir": processed / "review" / "gif",
+    }
+    handler = object.__new__(review.Handler)
+    handler.datasets = [dataset]
+    handler.stores = {"sample": review.LabelStore(labels)}
+    handler._send_json = lambda status, payload: (status, payload)
+
+    handler.path = "/api/labels?ds=sample&group=locomotion"
+    status, payload = handler.do_GET()
+    assert status == 200
+    assert [row["clip"] for row in payload["rows"]] == ["Bear_Walk"]
+
+    # aux=1 swaps "owned by locomotion" for "supplements locomotion".
+    handler.path = "/api/labels?ds=sample&group=locomotion&aux=1"
+    _, payload = handler.do_GET()
+    assert [row["clip"] for row in payload["rows"]] == ["Bear_Stop"]
+
+    # Without a group it is every row that supplements something; an empty
+    # list marks a migrated sidecar, not a membership.
+    handler.path = "/api/labels?ds=sample&aux=1"
+    _, payload = handler.do_GET()
+    assert [row["clip"] for row in payload["rows"]] == ["Bear_Stop"]
+
+    handler.path = "/api/labels?ds=sample"
+    _, payload = handler.do_GET()
+    assert len(payload["rows"]) == 3
+
+
 def test_labels_api_can_filter_by_field_and_whole_word(tmp_path):
     processed = tmp_path / "sample"
     processed.mkdir()

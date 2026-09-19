@@ -328,11 +328,17 @@
       <text x="16" y="14.5" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700" font-family="sans-serif">ab</text>
     </svg>
   </button>
+  <button id="auxOnly" class="search-toggle" type="button" title="只看 aux（当前 action group 的 aux_action_groups 成员：本组不拥有、只是补充引用的动作；group = all 时列出所有带 aux 的动作）" aria-label="Aux groups only" aria-pressed="false">
+    <svg viewBox="0 0 32 20" aria-hidden="true" focusable="false">
+      <rect x="3.5" y="3.5" width="11" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2.4"/>
+      <text x="23" y="14.5" text-anchor="middle" fill="currentColor" font-size="11" font-weight="700" font-family="sans-serif">ax</text>
+    </svg>
+  </button>
 
   <span class="counts" id="counts"></span>
   <span class="spacer"></span>
 
-  <button id="refresh" title="重新读取数据（保留当前数据集 / action group / 状态 / loop / 搜索筛选、页码与滚动位置）">刷新</button>
+  <button id="refresh" title="重新读取数据（保留当前数据集 / action group / aux / 状态 / loop / 搜索筛选、页码与滚动位置）">刷新</button>
   <button id="clean" disabled title="清理当前数据集所有标记为待删除的动作">清理待删除</button>
 
   <div class="pager">
@@ -679,8 +685,15 @@ function applyFilters(keepPage, keepScroll) {
   const searchField = $('searchField').value;
   const q = $('q').value.trim().toLowerCase();
   const wholeWord = $('wholeWord').getAttribute('aria-pressed') === 'true';
+  const auxOnly = $('auxOnly').getAttribute('aria-pressed') === 'true';
   view = rows.filter(r => {
-    if (g !== 'all' && r.action_group !== g) return false;
+    // aux 模式：本组「拥有」的动作换成本组只是补充引用的动作（g=all 时为所有
+    // 带 aux 的动作）。一个 group 不会同时是某行的 owner 和它的 aux，两个视图
+    // 互不重叠，所以这里直接取代 action_group 的判断。
+    if (auxOnly) {
+      const aux = Array.isArray(r.aux_action_groups) ? r.aux_action_groups : [];
+      if (g === 'all' ? aux.length === 0 : !aux.includes(g)) return false;
+    } else if (g !== 'all' && r.action_group !== g) return false;
     if (s === 'todo' && isReviewed(r)) return false;
     if (s === 'done' && !isReviewed(r)) return false;
     if (s === 'pending' && !isPending(r)) return false;
@@ -790,7 +803,11 @@ function card(row) {
   const grp = document.createElement('div');
   grp.className = 'group';
   grp.textContent = row.action_group;
-  grp.title = 'action group：' + row.action_group + '（点击修改）';
+  // 卡片上的 chip 始终是这一行的 owner group；aux 只在 tooltip 里列出，
+  // 否则 aux 筛选下看不出这一行到底属于谁。
+  const auxOf = Array.isArray(row.aux_action_groups) ? row.aux_action_groups : [];
+  grp.title = 'action group：' + row.action_group +
+    (auxOf.length ? '（aux：' + auxOf.join('、') + '）' : '') + '（点击修改）';
   grp.onclick = () => openGroupMenu(grp, row, el);
   const loop = document.createElement('div');
   const ls = loopState(row);
@@ -1107,6 +1124,7 @@ function onDatasetChange() {
   $('loop').value = 'all';
   $('q').value = '';
   $('wholeWord').setAttribute('aria-pressed', 'false');
+  $('auxOnly').setAttribute('aria-pressed', 'false');
   page = 1;
   $('notice').hidden = true;   // the report belongs to the dataset that produced it
   window.scrollTo({ top: 0 });
@@ -1128,6 +1146,11 @@ $('q').oninput = () => {                 // debounce: a keystroke must not rebui
 };
 $('wholeWord').onclick = () => {
   const button = $('wholeWord');
+  button.setAttribute('aria-pressed', button.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+  applyFilters();
+};
+$('auxOnly').onclick = () => {
+  const button = $('auxOnly');
   button.setAttribute('aria-pressed', button.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
   applyFilters();
 };
