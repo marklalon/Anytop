@@ -28,37 +28,49 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     action_label_slots,
     build_action_conditioning_bundle,
     embedding_contract_payload,
+    ordered_token_sources,
+    scatter_synthetic_code_rows,
     word_table_sha256,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     CONTROLLED_VOCAB,
+    T5_ENCODED_VOCAB,
     parse_action_label,
-    vocab_t5_text,
 )
 
 
-# The stand-in table is dense random, so every slot's sources are independent --
-# the same full-rank property the real T5 table has and the model checks for.
+# The stand-in table's encoded half is dense random, so every slot's sources are
+# independent -- the same full-rank property the real T5 table has and the model
+# checks for. Its direction and hands blocks are the real orthonormal code, which
+# is full rank by construction.
 # 768 is t5-base's width, the one the real sidecar is encoded at.
 TEST_T5_DIM = 768
-# At least the total slot source rank (32 heads + 6 directions + (65 + 32)
-# modifier sources + 3 hands = 138; a head word after the first is a modifier),
-# which model construction refuses to go under: below it the first Linear
+# At least the total slot source rank (32 heads + 6 directions + 64 modifiers
+# + 2 hands = 104; the slots partition the vocabulary, so the ranks add to its
+# size), which model construction refuses to go under: below it the first Linear
 # cannot separate every label. 140 is a width at or above the rank that the
 # test models' attention can split evenly (num_heads=2).
 TEST_LATENT_DIM = 140
 
 
 def make_test_bundle(dim: int = TEST_T5_DIM, seed: int = 20260906, t5_name: str = "t5-test"):
-    """A deterministic stand-in bundle, built and validated like a real one."""
-    table = np.random.default_rng(seed).standard_normal(
-        (len(CONTROLLED_VOCAB), dim)
-    ).astype(np.float32)
+    """A deterministic stand-in bundle, built and validated like a real one.
+
+    Random rows stand in for the encoded half only. The synthetic half has to be
+    the real orthonormal code, because that is what the bundle validator checks
+    by value -- a fixture with random direction rows could not stand in for a
+    sidecar at all.
+    """
+    table = scatter_synthetic_code_rows(
+        np.random.default_rng(seed).standard_normal(
+            (len(T5_ENCODED_VOCAB), dim)
+        ).astype(np.float32)
+    )
     contract = embedding_contract_payload(
-        # The real token -> T5 text map: a fixture that used bare spellings would
-        # not survive the loader's staleness check, so it could not stand in for
-        # a sidecar in a round-trip test.
-        token_to_text={token: vocab_t5_text(token) for token in CONTROLLED_VOCAB},
+        # The real token -> row source table: a fixture that used bare spellings
+        # would not survive the loader's staleness check, so it could not stand
+        # in for a sidecar in a round-trip test.
+        token_sources=ordered_token_sources(),
         t5_name=t5_name,
         t5_artifact_sha256=f"test-artifact-{seed}",
         tokenizer_class="T5Tokenizer",

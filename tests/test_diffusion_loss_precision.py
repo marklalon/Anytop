@@ -993,6 +993,59 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             self.assertEqual(len(frame_indices), 2)
             self.assertEqual(int(frame_indices[-1] - frame_indices[0]), 1)
 
+    def test_anytop_sample_temporal_span_mask_train_repeats_span_at_every_tile_period(self):
+        """A k-tiled loop window gets the same span in every one of its k copies.
+
+        Otherwise the re-noised span has a clean twin one period away and the
+        model can fill it by copying. Each period keeps at least one unmasked
+        frame, and an untiled window (tile count 1) is the single span it was.
+        """
+        model = AnyTop(
+            max_joints=3,
+            feature_len=12,
+            latent_dim=8,
+            ff_size=32,
+            num_layers=1,
+            num_heads=2,
+            dropout=0.0,
+            cross_limb=False,
+            temporal_span_mask_prob=1.0,
+            temporal_span_mask_min_frames=2,
+            temporal_span_mask_max_frames=2,
+        )
+        model.train()
+        nframes = 12
+        tile_counts = (3, 1, 2, 6)
+        y = {
+            "n_joints": torch.tensor([3, 3, 2, 3], dtype=torch.int64),
+            "loop_tile_count": torch.tensor(tile_counts, dtype=torch.int64),
+        }
+
+        torch.manual_seed(5)
+        for _ in range(50):
+            temporal_mask = model.sample_temporal_span_mask_train(
+                y, njoints=3, nframes=nframes, device=torch.device("cpu")
+            )
+            self.assertEqual(temporal_mask.shape, (4, 3, nframes))
+            for sample_index, tile_count in enumerate(tile_counts):
+                frames = temporal_mask[sample_index, 0]
+                period = nframes // tile_count
+                # tile 6 has a 2-frame period: the span is capped to 1 frame so
+                # the period keeps an unmasked one; the others take the full 2.
+                span = min(2, period - 1)
+                cycles = frames.view(tile_count, period)
+                # Same phase in every copy ...
+                self.assertTrue(torch.equal(cycles, cycles[0:1].expand(tile_count, -1)), frames)
+                # ... one contiguous span of the expected length per copy ...
+                masked = torch.nonzero(cycles[0], as_tuple=False).flatten()
+                self.assertEqual(len(masked), span, frames)
+                self.assertEqual(int(masked[-1] - masked[0]), span - 1, frames)
+                # ... and an unmasked frame left in every period.
+                self.assertLess(int(cycles[0].sum()), period)
+            # Padded joints stay clear, real joints share the frames.
+            self.assertFalse(temporal_mask[2, 2].any())
+            self.assertTrue(torch.equal(temporal_mask[2, 0], temporal_mask[2, 1]))
+
     def _empty_draw_model(self, **mask_kwargs):
         model = AnyTop(
             max_joints=4,

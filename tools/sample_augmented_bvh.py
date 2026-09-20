@@ -37,9 +37,9 @@ Arguments
   --n                 Number of samples to export  (default: 10)
   --num-frames        Window length in frames, must match --num_frames in training (default: 60)
   --loop-only         Sample only motions marked as loop clips
-  --loop-cond-prob    Probability that a loop clip follows the loop-conditioned path (default: 0.0)
   --motion-speed-aug  Motion-speed augmentation range R, log-uniform in [1/R, R] (default: 1.0 = off)
   --motion-speed-aug-prob  Per-clip probability of applying it (default: 1.0)
+  --loop-tile-single-prob  Floor on P(loop tile count == 1) (default: 0.5; 0.0 = uniform)
   --real-time         Export at resample_speed_cond * num-frames frames (real 30 fps tempo)
   --objects-subset    Subset name or single species name (default: "all")
   --action-group      Single action group to keep: locomotion | stationary | transition (default: "" = all)
@@ -157,12 +157,12 @@ def parse_args() -> argparse.Namespace:
                    help="Temporal window length in frames (must match --num_frames in training).")
     p.add_argument("--loop-only", action="store_true",
                    help="Only sample/export motions whose metadata marks them as loop clips.")
-    p.add_argument("--loop-cond-prob", type=float, default=1.0,
-                   help="Probability that a loop clip follows the loop-conditioned path. Match --loop_cond_prob.")
     p.add_argument("--motion-speed-aug", type=float, default=1.0,
                    help="Motion-speed augmentation range R (1.0 = off). Match --motion_speed_aug.")
     p.add_argument("--motion-speed-aug-prob", type=float, default=1.0,
                    help="Per-clip probability of applying the motion-speed augmentation. Match --motion_speed_aug_prob.")
+    p.add_argument("--loop-tile-single-prob", type=float, default=0.5,
+                   help="Floor on the probability that a loop window holds one cycle. Match --loop_tile_single_prob.")
     p.add_argument("--real-time", action="store_true",
                    help="Stretch the exported window back to resample_speed_cond * num-frames frames, as "
                         "sample/generate.py does with its output, so the BVH plays at the real 30 fps tempo. "
@@ -220,9 +220,9 @@ def main() -> int:
     source = opt.sources[0]
 
     # Augmentation settings
-    opt.loop_cond_prob = args.loop_cond_prob
     opt.motion_speed_aug = args.motion_speed_aug
     opt.motion_speed_aug_prob = args.motion_speed_aug_prob
+    opt.loop_tile_single_prob = args.loop_tile_single_prob
     opt.motion_cache_size = 0  # no cache needed for sampling
 
     output_dir = Path(args.output_dir).resolve()
@@ -311,7 +311,7 @@ def main() -> int:
                 motion_metadata,
                 _name,
                 _candidate_roots_info,
-                aug_info,     # dict: loop_applied, resample_speed_cond, loop_uncond
+                aug_info,     # dict: loop_applied, resample_speed_cond, ...
             ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 
             # ----------------------------------------------------------------

@@ -16,7 +16,19 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 14
+# 17: every head word of a label now pools into the head channel, the first one
+#     weighted above the rest (HEAD_SLOT_PRIMARY_WEIGHT), and the training-only
+#     --head_aug_words / --head_aug_prob promotion that used to stand in for
+#     that is gone. Auxiliary rows carry their label like any other row.
+# 18: the direction and hands word vectors stopped being T5 encodings and became
+#     a synthetic orthonormal code (SYNTHETIC_CODE_VOCAB). Those two axes are
+#     closed sets whose members T5 placed next to their own antonyms -- left /
+#     right +0.461, hand1 / hand2 +0.529 against a vocabulary-wide |cos| p95 of
+#     0.19 -- for no semantic return, since an unknown token is refused and every
+#     member is heavily attested. Same shapes, different meaning behind them; the
+#     embedding_fingerprint refuses an --action_label_cond checkpoint by itself,
+#     this stamp covers the rest.
+CKPT_VERSION = 18
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -234,11 +246,6 @@ def add_model_options(parser):
                             "l_simple under-weights and which stretch most on novel skeletons) get proportionally "
                             "larger gradient. Anchoring on GT (not rest) preserves genuinely animated bone-length "
                             "deformation. Computed on denormalized outputs; recommended range ~0.1-0.3.")
-    group.add_argument("--loop_cond_prob", default=1.0, type=float,
-                       help="Probability that a loop training clip stays loop-conditioned "
-                            "(periodic resampling, circular phase, and loop-condition embedding)."
-                            " 0.0 = all loop clips treated as non-loop; 1.0 = always keep loop path."
-                            " Controls both the model loop-condition projection and dataset loop processing.")
     group.add_argument("--motion_speed_aug", default=1.0, type=float,
                        help="Motion-speed augmentation range R (1.0 = off). Each training clip is first "
                             "time-scaled by a log-uniform ratio in [1/R, R] -- played faster (fewer frames) "
@@ -254,6 +261,13 @@ def add_model_options(parser):
                        help="Per-sample probability of applying --motion_speed_aug (default 1.0 = every clip). "
                             "The recorded tempo is one point of the continuum, so leaving a mass at exactly "
                             "1.0 only keeps part of the length spike; lower this only to compare against it.")
+    group.add_argument("--loop_tile_single_prob", default=0.5, type=float,
+                       help="Floor on the probability that a loop training window holds ONE cycle "
+                            "(loop tile count 1); the rest of the mass stays uniform over 2..max tiles. "
+                            "0.0 is the plain uniform draw over 1..max, which for a 20-frame loop makes "
+                            "the single-cycle window -- the regime --loop with the auto length generates "
+                            "in -- 1 draw in 6, while every other draw is k bit-identical copies of the "
+                            "cycle. Loader-only, like --motion_speed_aug: no regen, no bump.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
@@ -308,6 +322,15 @@ def add_model_options(parser):
                        help="Per-sample probability of hard-dropping the action condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
                             "guidance at sampling time via --action_label_cfg_scale. Default 0.2.")
+    group.add_argument("--direction_slot_drop_prob", default=0.3, type=float,
+                       help="Per-sample probability of blanking the label's DIRECTION words during "
+                            "training while the rest of the label stays. Trains the empty direction "
+                            "slot as 'any direction', so a prompt that names none draws one side "
+                            "or heading instead of a blend. Stacks with --action_label_cfg_drop_prob, "
+                            "which drops the WHOLE label: a row contributes explicit direction "
+                            "supervision with probability (1 - cfg_drop) * (1 - this), so 0.3 against "
+                            "the training scripts' 0.3 cfg drop leaves 49%%. Lower it if direction "
+                            "control comes out weak. Never applied at inference. Default 0.3.")
 
 def add_data_options(parser, training=False):
     """Dataset selection. ``training=True`` adds the training-only options.
@@ -334,6 +357,18 @@ def add_data_options(parser, training=False):
                                 "in the checkpoint's args.json and is the only source generation "
                                 "reads it from (there is no --action_group at generation), so a "
                                 "checkpoint can only ever be sampled as the group it was trained on.")
+        group.add_argument("--aux_group_mass", default=0.0, type=float,
+                           help="Share of this group's TRAINING sampling mass given to auxiliary "
+                                "clips -- clips whose action_group is another group but whose "
+                                "aux_action_groups names this one. A budget, not a per-clip weight: "
+                                "however many aux clips there are, this group's own clips keep "
+                                "1 - this. Aux clips join the train split only, never val/test, and "
+                                "never affect the species split (train/val/test.txt stay "
+                                "byte-identical). 0 = off, the aux clips are not loaded at all. "
+                                "Passing > 0 against sidecars that carry no aux_action_groups key "
+                                "is a hard error. An aux clip is conditioned on its own label "
+                                "exactly like an own clip. Default 0.0. "
+                                "See docs/aux_group_and_head_word_augmentation.md.")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -568,11 +603,11 @@ def add_generate_options(parser):
                             "recognizable prompt written out of canonical order is rewritten to it "
                             "(with a printed note); head-word order is kept as given, since it "
                             "carries no meaning to the model. Naming no direction is legal and means "
-                            "'any' (the model answers with the marginal over directions); the same "
-                            "holds for the hands axis -- write 'hand0' for empty hands, 'hand1' / "
-                            "'hand2' for one / both hands holding something, or nothing for 'any' "
-                            "('idle, hand0' is an unarmed idle; 'idle' alone may draw an armed "
-                            "one where that species mostly holds a weapon). Empty = "
+                            "'any' (the model answers with the marginal over directions, which "
+                            "training drops direction words at random to teach). The hands axis is "
+                            "the opposite: nothing there means EMPTY HANDS, so write 'hand1' / "
+                            "'hand2' for one / both hands holding something ('idle' is an unarmed "
+                            "idle; 'idle, hand2' a two-handed armed one). Empty = "
                             "unconditional (the learned null embedding). Requires a checkpoint "
                             "trained with --action_label_cond.")
     group.add_argument("--action_label_cfg_scale", default=1.0, type=float,

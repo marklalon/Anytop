@@ -248,7 +248,7 @@ def _resolve_action_condition(args, model):
     # the string the model fitted, and the one recorded next to the sample -- but
     # the rewrite may only reorder NON-HEAD words: directions bind next to their
     # head, then the remaining modifiers follow. Head-word order is kept as
-    # given: the first head word is the head slot and any later one a modifier,
+    # given: the first head word outweighs any later one in the head slot,
     # so reordering them would change the condition; the corpus spells one
     # word set one way per group, and the prompt's order is the caller's call.
     try:

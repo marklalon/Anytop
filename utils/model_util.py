@@ -204,11 +204,11 @@ def get_gmdm_args(args):
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
+            'direction_slot_drop_prob': getattr(args, 'direction_slot_drop_prob', 0.0),
             # The training entry point builds one bundle and hands the same
             # object to the loader and to the model. Absent at inference: there
             # the checkpoint's own buffers are the word table.
             'action_conditioning': getattr(args, 'action_conditioning', None),
-            'loop_cond_prob': getattr(args, 'loop_cond_prob', 1.0),
             'root_input_feats': 12}
 
 def create_gaussian_diffusion(args):

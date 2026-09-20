@@ -7,7 +7,7 @@
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "die"] },
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "getup"] },
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "turn, left", "--action_label_cfg_scale", "2"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "jump"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "jump", "--num_frames", "30", "--action_label_cfg_scale", "2"] },
 
     { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "die"] },
     { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "getup"] },

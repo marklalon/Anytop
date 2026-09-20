@@ -66,13 +66,14 @@ def get_dataset(
     objects_subset="all",
     sample_limit=0,
     action_group='',
+    aux_group_mass=0.0,
     action_label_cond=False,
     action_conditioning=None,
     motion_cache_size=0,
     min_length=20,
-    loop_cond_prob=1.0,
     motion_speed_aug=1.0,
     motion_speed_aug_prob=1.0,
+    loop_tile_single_prob=0.5,
     cond_path=None,
 ):
     dataset = Truebones(
@@ -82,13 +83,14 @@ def get_dataset(
         objects_subset=objects_subset,
         sample_limit=sample_limit,
         action_group=action_group,
+        aux_group_mass=aux_group_mass,
         action_label_cond=action_label_cond,
         action_conditioning=action_conditioning,
         motion_cache_size=motion_cache_size,
         min_length=min_length,
-        loop_cond_prob=loop_cond_prob,
         motion_speed_aug=motion_speed_aug,
         motion_speed_aug_prob=motion_speed_aug_prob,
+        loop_tile_single_prob=loop_tile_single_prob,
         cond_path=cond_path,
     )
     return dataset
@@ -105,15 +107,16 @@ def get_dataset_loader(
     shuffle=True,
     drop_last=True,
     action_group='',
+    aux_group_mass=0.0,
     action_label_cond=False,
     action_conditioning=None,
     motion_cache_size=0,
     min_length=20,
     main_process_prefetch_batches=0,
     batch_transform=None,
-    loop_cond_prob=1.0,
     motion_speed_aug=1.0,
     motion_speed_aug_prob=1.0,
+    loop_tile_single_prob=0.5,
     cond_path=None,
     joint_buckets=JOINT_BUCKETS,
 ):
@@ -129,18 +132,21 @@ def get_dataset_loader(
         objects_subset=objects_subset,
         sample_limit=sample_limit,
         action_group=action_group,
+        aux_group_mass=aux_group_mass,
         action_label_cond=action_label_cond,
         action_conditioning=action_conditioning,
         motion_cache_size=motion_cache_size,
         min_length=min_length,
-        loop_cond_prob=loop_cond_prob,
         motion_speed_aug=motion_speed_aug,
         motion_speed_aug_prob=motion_speed_aug_prob,
+        loop_tile_single_prob=loop_tile_single_prob,
         cond_path=cond_path,
     )
     collate = truebones_batch_collate
     sampler = None
-    # A weighted sampler is needed for species balancing (--balanced).
+    # A weighted sampler is needed for species balancing (--balanced) and for
+    # holding auxiliary clips to their --aux_group_mass share; the dataset owns
+    # that decision so both callers agree on it.
     if dataset.motion_dataset.use_weighted_sampler:
         from data_loaders.truebones.data.dataset import TruebonesSampler
         sampler = TruebonesSampler(dataset)

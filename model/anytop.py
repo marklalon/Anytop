@@ -9,6 +9,9 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (
 )
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_LABEL_SLOTS,
+    HEAD_SLOT_PRIMARY_WEIGHT,
+    SLOT_DIRECTION,
+    SLOT_HEAD,
     ActionConditioningError,
     slot_source_rank_report,
     validate_action_conditioning_metadata,
@@ -99,7 +102,6 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"joint_name_drop_prob must be in [0, 1], got {self.joint_name_drop_prob}"
             )
-        self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
         # Action-label conditioning: a single pathway -- the frozen T5 vectors of
         # the label's WORDS, pooled into one channel per slot (head /
         # direction / modifier / hands) and concatenated. A channel reads its own slot
@@ -111,6 +113,16 @@ class AnyTop(nn.Module):
         if not 0.0 <= self.action_label_cfg_drop_prob <= 1.0:
             raise ValueError(
                 f"action_label_cfg_drop_prob must be in [0, 1], got {self.action_label_cfg_drop_prob}"
+            )
+        # Direction-slot dropout: with this probability a training sample keeps
+        # its label but loses its direction words, so an empty direction slot
+        # is trained as "any direction" (the marginal) and a bare "attack, swat"
+        # at inference draws one side rather than a blend of both. The hands
+        # slot has NO such dropout on purpose -- empty there means empty hands.
+        self.direction_slot_drop_prob = float(kargs.get('direction_slot_drop_prob', 0.0))
+        if not 0.0 <= self.direction_slot_drop_prob <= 1.0:
+            raise ValueError(
+                f"direction_slot_drop_prob must be in [0, 1], got {self.direction_slot_drop_prob}"
             )
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
@@ -148,14 +160,13 @@ class AnyTop(nn.Module):
         # inpainting and temporal spans were invisible. Zero-init, so the
         # path starts as a no-op.
         self.unreliable_embedding = nn.Parameter(torch.zeros(self.latent_dim))
-        if self.loop_cond_prob > 0.0:
-            self.loop_condition_projection = nn.Sequential(
-                nn.Linear(1, self.latent_dim),
-                nn.GELU(),
-                nn.Linear(self.latent_dim, self.latent_dim),
-            )
-        else:
-            self.loop_condition_projection = None
+        # y['is_loop'] (0/1): whether the window is a closed cycle. Always on --
+        # the loader tells the model exactly what it did to the window.
+        self.loop_condition_projection = nn.Sequential(
+            nn.Linear(1, self.latent_dim),
+            nn.GELU(),
+            nn.Linear(self.latent_dim, self.latent_dim),
+        )
         self.resample_speed_projection = nn.Sequential(
             nn.Linear(1, self.latent_dim),
             nn.GELU(),
@@ -344,17 +355,16 @@ class AnyTop(nn.Module):
                     "than cond.npy's joints_names_embs; rebuild it with --t5-model "
                     "matching cond.npy."
                 )
-            # The gate the geometry preflight cannot enforce on its own: the
-            # first Linear has to be wide enough to stay injective on the direct
-            # sum of the slot source spaces, or labels that differ only in
+            # The first Linear has to be wide enough to stay injective on the
+            # direct sum of the slot source spaces, or labels that differ only in
             # slot membership can collide before any weight is trained.
             report = bundle.slot_source_rank_report(self.latent_dim)
             if not report['full_rank']:
                 raise ValueError(
                     f"{bundle.source}: the frozen word table does not have full "
                     f"slot-source rank ({report['slots']}), so distinct labels are not "
-                    "guaranteed to reach distinct conditions. Rebuild it and re-run "
-                    "tools/evaluate_action_label_geometry.py."
+                    "guaranteed to reach distinct conditions. Rebuild it with "
+                    "tools/build_action_label_embeddings.py --force."
                 )
             if not report['fits_projection']:
                 raise ValueError(
@@ -490,28 +500,68 @@ class AnyTop(nn.Module):
                 )
         return word_ids, fields['action_slot_ids'], fields['action_word_mask']
 
+    def _action_slot_member_weights(self, slot_ids, word_mask, dtype):
+        """Tensor mirror of ``slot_member_weights``: ``[B, W]``.
+
+        Every word weighs 1.0 except the head slot's first member, which weighs
+        ``HEAD_SLOT_PRIMARY_WEIGHT``. "First" is the earliest live column of the
+        row assigned to the head slot, found with a cumulative sum rather than a
+        search so the shapes stay static for compile/cudagraph, and read off the
+        same written order the numpy side uses.
+        """
+        head_member = word_mask & (slot_ids == SLOT_HEAD)
+        first_head = head_member & (head_member.to(torch.int32).cumsum(dim=1) == 1)
+        return torch.where(
+            first_head,
+            torch.full_like(first_head, HEAD_SLOT_PRIMARY_WEIGHT, dtype=dtype),
+            torch.ones_like(first_head, dtype=dtype),
+        )
+
     def _assemble_action_slot_channels(self, word_ids, slot_ids, word_mask, dtype):
         """Tensor mirror of ``assemble_slot_channels``: ``[B, S * D]``.
 
-        Same rule, same slot ids, one channel per slot: the mean of that slot's
-        member word vectors (a set within the slot; which head word leads is
-        already decided by the slot ids), L2-normalised, and a zero row for an
-        absent slot. Because a channel is a
-        function of its own slot's members only, appending modifiers moves the
-        head and direction channels by exactly zero.
+        Same rule, same slot ids, one channel per slot: the weighted mean of
+        that slot's member word vectors, L2-normalised, and a zero row for an
+        absent slot. Only the head slot has a weight other than 1.0, and only on
+        its first member, so the other three are plain means of a set. Because a
+        channel is a function of its own slot's members only, appending a
+        non-head word moves the head and direction channels by exactly zero.
         """
         vectors = self.action_word_embeddings.to(dtype)[word_ids]
+        weights = self._action_slot_member_weights(slot_ids, word_mask, dtype)
         channels = []
         for slot in range(len(ACTION_LABEL_SLOTS)):
-            member = (word_mask & (slot_ids == slot)).unsqueeze(-1).to(dtype)
-            count = member.sum(dim=1)
-            mean = (vectors * member).sum(dim=1) / count.clamp(min=1.0)
+            member = (
+                (word_mask & (slot_ids == slot)).to(dtype) * weights
+            ).unsqueeze(-1)
+            total = member.sum(dim=1)
+            # min=1.0 rather than an epsilon: every weight is >= 1.0, so a
+            # non-empty slot's total is never below it and the clamp only ever
+            # bites on the empty one -- whose numerator is the zero vector. An
+            # epsilon divisor would underflow to zero under fp16 autocast and
+            # make an absent slot NaN in BOTH branches of the where below.
+            mean = (vectors * member).sum(dim=1) / total.clamp(min=1.0)
             norm = torch.linalg.vector_norm(mean, dim=-1, keepdim=True)
             # An absent slot is a zero row, never a renormalisation of the others:
             # "this label spells no direction" has to stay distinguishable from
             # "this label spells one".
-            channels.append(torch.where(count > 0, mean / norm.clamp(min=1e-9), mean * 0.0))
+            channels.append(torch.where(total > 0, mean / norm.clamp(min=1e-9), mean * 0.0))
         return torch.cat(channels, dim=-1)
+
+    def _drop_direction_slot(self, word_mask, slot_ids, batch_size, device):
+        """Training-only: blank the direction words of a random subset of rows.
+
+        A pure mask operation, written like the CFG keep mask so it compiles
+        the same way: a dropped row's direction members leave ``word_mask``,
+        the direction channel pools to its zero row, and every other slot is
+        untouched. Rows without a direction word are unaffected, and the label
+        stays valid (a direction word is never a label's only word, so
+        ``action_label_valid`` cannot flip). Eval and inference never drop.
+        """
+        if not self.training or self.direction_slot_drop_prob <= 0.0:
+            return word_mask
+        drop = torch.rand(batch_size, device=device) < self.direction_slot_drop_prob
+        return word_mask & ~(drop[:, None] & (slot_ids == SLOT_DIRECTION))
 
     def _resolve_action_label_active(self, raw_action_label_active, batch_size, device):
         """Per-sample CFG mask for the action condition (True == conditional).
@@ -565,6 +615,14 @@ class AnyTop(nn.Module):
         routing it through the same unconditional path as a dropped row is what
         makes omitting ``--action_label`` at inference land on the learned
         unconditional mode automatically.
+
+        An auxiliary row (``y['is_aux']``, a clip borrowed from another group by
+        ``--aux_group_mass``) is conditioned exactly like an own row. It used to
+        be routed by whether a ``--head_aug_words`` promotion had reached its
+        head slot, because a borrowed "attack, jump, charge" put no jump in the
+        head channel at all; with every head word pooled into that channel it
+        does, so the label is worth carrying as written and the special case is
+        gone.
         """
         if not self.action_label_cond:
             return None
@@ -577,6 +635,7 @@ class AnyTop(nn.Module):
             word_mask = None
         else:
             word_ids, slot_ids, word_mask = resolved
+            word_mask = self._drop_direction_slot(word_mask, slot_ids, batch_size, device)
             channels = self._assemble_action_slot_channels(
                 word_ids, slot_ids, word_mask, dtype
             )
@@ -692,8 +751,17 @@ class AnyTop(nn.Module):
         least one frame at the start or end unmasked so seam detection never
         triggers on a clip-span boundary.  ``temporal_span_mask_max_frames``
         is therefore capped at ``min(config_max, nframes - 1)`` at runtime.
-        Every real joint in the sample shares the same contiguous masked frame
-        interval, while padded joints stay False throughout.
+        Every real joint in the sample shares the same masked frames, while
+        padded joints stay False throughout.
+
+        A k-tiled loop window (``y['loop_tile_count']``, from the loader's
+        ``_tile_loop_motion``) is k copies of one cycle, so one span drawn
+        anywhere in it has a clean twin one period away and the model could
+        fill it by copying. For those samples the span is drawn within one
+        period and repeated at every period -- the same phase is re-drawn in
+        every copy -- and capped at ``period - 1`` so each cycle keeps an
+        unmasked frame. An untiled window has ``period == nframes`` and gets
+        the single contiguous span as before.
         """
         if (not self.training) or self.temporal_span_mask_prob <= 0.0:
             return None
@@ -721,17 +789,40 @@ class AnyTop(nn.Module):
         valid_joints = n_joints_t.clamp(min=0, max=njoints)                       # [B]
         active = (torch.rand(batch_size, device=device) < self.temporal_span_mask_prob) \
             & (valid_joints > 0)                                                  # [B]
-        # randint(min_span, max_span + 1) per sample
-        span_length = torch.randint(min_span, max_span + 1, (batch_size,), device=device)  # [B]
-        start_hi = (nframes - span_length).clamp(min=0)                           # [B]
-        # randint(0, start_hi + 1): scale [0,1) by (start_hi+1) then floor,
-        # clamping guards the rare rand()==~1.0 rounding to start_hi+1.
-        span_start = (torch.rand(batch_size, device=device) * (start_hi + 1).float()).long()
+        # Period of the window's content in frames: nframes / tile count. Float
+        # on purpose -- a tile count that does not divide nframes makes copies
+        # that are interpolated rather than bit-identical, and the mask must
+        # still land on the same phase of each one.
+        tile_count = y.get('loop_tile_count')
+        if tile_count is None:
+            period = torch.full((batch_size,), float(nframes), device=device)
+        else:
+            tile_count = torch.as_tensor(tile_count, device=device).reshape(-1)
+            period = float(nframes) / tile_count.clamp(min=1).to(torch.float32)  # [B]
+        # Per-sample span range: the configured one, capped so each period
+        # keeps at least one unmasked frame (period - 1, which for an untiled
+        # window is the nframes - 1 cap above).
+        span_hi = torch.minimum(
+            torch.full_like(period, float(max_span)), period.floor() - 1.0
+        ).clamp(min=1.0)                                                          # [B]
+        span_lo = torch.minimum(torch.full_like(period, float(min_span)), span_hi)  # [B]
+        # randint(lo, hi + 1) per sample: scale [0,1) by (hi-lo+1) then floor,
+        # clamping guards the rare rand()==~1.0 rounding past hi.
+        span_length = (
+            span_lo + torch.rand(batch_size, device=device) * (span_hi - span_lo + 1.0)
+        ).floor()
+        span_length = torch.minimum(span_length, span_hi)                         # [B]
+        # Start inside the first period, so every repeat lies inside its own.
+        start_hi = (period - span_length).clamp(min=0.0).floor()                  # [B]
+        span_start = (torch.rand(batch_size, device=device) * (start_hi + 1.0)).floor()
         span_start = torch.minimum(span_start, start_hi)                          # [B]
 
-        frame_idx = torch.arange(nframes, device=device)                         # [T]
-        frame_mask = (frame_idx[None, :] >= span_start[:, None]) & \
-            (frame_idx[None, :] < (span_start + span_length)[:, None])           # [B, T]
+        frame_idx = torch.arange(nframes, device=device, dtype=torch.float32)    # [T]
+        # Frame t is masked when its phase past the span start, taken modulo
+        # the period, falls inside the span. Frames before the start in the
+        # first period wrap to >= period - start >= span length: never masked.
+        phase = torch.remainder(frame_idx[None, :] - span_start[:, None], period[:, None])  # [B, T]
+        frame_mask = phase < span_length[:, None]                                # [B, T]
         joint_idx = torch.arange(njoints, device=device)                         # [J]
         joint_mask = joint_idx[None, :] < valid_joints[:, None]                   # [B, J]
 
@@ -909,15 +1000,14 @@ class AnyTop(nn.Module):
             self.resample_speed_projection, resample_speed_condition)
         timesteps_emb = timesteps_emb + self._build_canonical_frame_token(
             y, bs, x.device, x.dtype)
-        if self.loop_cond_prob > 0.0 and self.loop_condition_projection is not None:
-            loop_condition = self._coerce_loop_condition(
-                y.get('is_loop'),
-                batch_size=bs,
-                device=x.device,
-                dtype=x.dtype,
-            )
-            timesteps_emb = timesteps_emb + run_in_fp32(
-                self.loop_condition_projection, loop_condition)
+        loop_condition = self._coerce_loop_condition(
+            y.get('is_loop'),
+            batch_size=bs,
+            device=x.device,
+            dtype=x.dtype,
+        )
+        timesteps_emb = timesteps_emb + run_in_fp32(
+            self.loop_condition_projection, loop_condition)
         action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype)
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token

@@ -22,12 +22,14 @@ if str(REPO_ROOT) not in sys.path:
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (  # noqa: E402
     ACTION_CHECKPOINT_VERSION,
     ACTION_LABEL_SLOTS,
+    SLOT_HEAD,
     SLOT_PAD_ID,
     ActionConditioningError,
     action_label_slots,
     assemble_slot_channels,
     assert_bundle_matches_metadata,
     build_action_conditioning_bundle,
+    scatter_synthetic_code_rows,
     fingerprint,
     load_action_conditioning_bundle,
     action_word_embedding_payload,
@@ -37,6 +39,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_LABEL_MAX_WORDS,
     CONTROLLED_VOCAB,
+    T5_ENCODED_VOCAB,
     parse_action_label,
 )
 from model.anytop import AnyTop  # noqa: E402
@@ -56,7 +59,7 @@ from tests.action_label_test_utils import (  # noqa: E402
 
 
 def _model(bundle=None, latent_dim=TEST_LATENT_DIM, drop_prob=0.0,
-           action_label_cond=True, eval_mode=True):
+           action_label_cond=True, eval_mode=True, direction_drop_prob=0.0):
     # AnyTop.train() drops nn.Module.train's return value, so .eval() cannot be
     # chained onto the constructor here.
     model = AnyTop(
@@ -71,6 +74,7 @@ def _model(bundle=None, latent_dim=TEST_LATENT_DIM, drop_prob=0.0,
         t5_out_dim=TEST_T5_DIM,
         action_label_cond=action_label_cond,
         action_label_cfg_drop_prob=drop_prob,
+        direction_slot_drop_prob=direction_drop_prob,
         action_conditioning=bundle if action_label_cond else None,
     )
     if eval_mode:
@@ -94,11 +98,68 @@ def _channels(model, labels, groups, dtype=torch.float64):
 def test_model_channels_equal_the_numpy_contract():
     bundle = make_test_bundle()
     model = _model(bundle)
-    labels = ['land, fly', 'draw', 'walk, forward, hand1', 'idle, hand0']
+    labels = ['land, fly', 'draw', 'walk, forward, hand1', 'idle, hand2']
     groups = ['transition', 'transition', 'locomotion', 'stationary']
     got = _channels(model, labels, groups)
     expected = reference_channels(bundle, labels, groups)
     assert torch.allclose(got, expected, atol=1e-12)
+
+
+# --------------------------------------------------------------------------
+# Direction-slot dropout: a training-only mask on the direction words
+# --------------------------------------------------------------------------
+def _direction_dropped_channels(model, labels, groups, dtype=torch.float64):
+    fields = action_cond_fields(labels, groups)
+    batch = fields['action_word_ids'].shape[0]
+    word_mask = model._drop_direction_slot(
+        fields['action_word_mask'], fields['action_slot_ids'], batch, torch.device('cpu'),
+    )
+    channels = model._assemble_action_slot_channels(
+        fields['action_word_ids'], fields['action_slot_ids'], word_mask, dtype,
+    )
+    return channels, word_mask
+
+
+def test_direction_slot_dropout_zeroes_only_the_direction_channel_in_training():
+    bundle = make_test_bundle()
+    model = _model(bundle, direction_drop_prob=1.0, eval_mode=False)
+    labels = ['walk, forward, fast, hand1', 'attack, left, swat', 'idle']
+    groups = ['locomotion', 'stationary', 'stationary']
+    reference = _channels(model, labels, groups)
+    dropped, word_mask = _direction_dropped_channels(model, labels, groups)
+    width = TEST_T5_DIM
+    # The direction channel is the zero row on every row ...
+    assert torch.count_nonzero(dropped[:, width:2 * width]) == 0
+    # ... and the head, modifier and hands channels are bit-identical.
+    assert torch.equal(dropped[:, :width], reference[:, :width])
+    assert torch.equal(dropped[:, 2 * width:], reference[:, 2 * width:])
+    # A dropped row keeps its other words, so it is still a labelled row
+    # (never a CFG null): every row still has a live word.
+    assert bool(word_mask.any(dim=-1).all())
+
+
+def test_direction_slot_dropout_is_off_in_eval_and_at_zero_probability():
+    bundle = make_test_bundle()
+    labels = ['walk, forward', 'run, backward, left']
+    groups = ['locomotion', 'locomotion']
+    reference = _channels(_model(bundle), labels, groups)
+    for model in (_model(bundle, direction_drop_prob=1.0, eval_mode=True),
+                  _model(bundle, direction_drop_prob=0.0, eval_mode=False)):
+        dropped, word_mask = _direction_dropped_channels(model, labels, groups)
+        assert torch.equal(dropped, reference)
+        assert torch.equal(word_mask, action_cond_fields(labels, groups)['action_word_mask'])
+
+
+def test_direction_slot_dropout_is_per_row():
+    bundle = make_test_bundle()
+    model = _model(bundle, direction_drop_prob=0.5, eval_mode=False)
+    labels = ['walk, forward'] * 64
+    groups = ['locomotion'] * 64
+    torch.manual_seed(0)
+    _dropped, word_mask = _direction_dropped_channels(model, labels, groups)
+    kept = word_mask[:, 1]          # the direction word is token 1 of 'walk, forward'
+    assert 0 < int(kept.sum()) < 64  # some rows dropped, some kept
+    assert bool(word_mask[:, 0].all())
 
 
 def test_projection_consumes_one_block_per_slot():
@@ -137,24 +198,34 @@ def test_absent_slot_is_a_zero_row_and_leaves_the_others_alone():
 
 
 def test_first_head_word_leads_in_every_group():
-    """The first head word is the head channel; a second one is a modifier.
+    """The first head word leads the head channel; a second one joins it below.
 
     So "land, hover" and "hover, land" are two conditions in every group alike
     (the loader's head-order consistency gate keeps the corpus from spelling
-    one kind of clip both ways), and the head channel of "land, hover" is the
-    head channel of "land" itself.
+    one kind of clip both ways), and the head channel of "land, hover" leans
+    towards "land" without being it.
     """
     model = _model(make_test_bundle())
     width = model.action_word_embeddings.shape[1]
+    table = model.action_word_embeddings.to(torch.float64)
     for group in ('transition', 'stationary', 'locomotion'):
         first = _channels(model, ['land, hover'], [group])
         second = _channels(model, ['hover, land'], [group])
         assert not torch.equal(first[:, :width], second[:, :width])
         alone = _channels(model, ['land'], [group])
-        assert torch.equal(first[:, :width], alone[:, :width])
-        # The second head word is in the modifier block, which "land" alone leaves empty.
+        assert not torch.equal(first[:, :width], alone[:, :width])
+        # It leans towards the word that leads: closer to "land" than "hover",
+        # and closer to "land" than the other spelling is.
+        head = first[0, :width]
+        land = table[CONTROLLED_VOCAB.index('land')]
+        hover = table[CONTROLLED_VOCAB.index('hover')]
+        land, hover = land / land.norm(), hover / hover.norm()
+        assert float(head @ land) > float(head @ hover)
+        assert float(head @ land) > float(second[0, :width] @ land)
+        # Both head words left the modifier block, which stays empty for either
+        # spelling -- a word feeds exactly one channel.
         assert torch.count_nonzero(alone[:, 2 * width:3 * width]) == 0
-        assert torch.count_nonzero(first[:, 2 * width:3 * width]) > 0
+        assert torch.count_nonzero(first[:, 2 * width:3 * width]) == 0
     # The group itself is not part of the condition: one label is the same
     # channel vector whichever checkpoint it is fed to.
     assert torch.equal(
@@ -219,9 +290,9 @@ def test_loader_emits_exactly_the_three_slot_fields():
 def test_latent_dim_below_the_slot_source_rank_fails_at_construction():
     bundle = make_test_bundle()
     total_rank = bundle.slot_source_rank_report(TEST_LATENT_DIM)['total_rank']
-    # 32 head words, 6 directions, 65 + 32 modifier sources (a head word after
-    # the first is a modifier), 3 hands.
-    assert total_rank == 138
+    # 32 head words, 6 directions, 64 modifier sources, 2 hands: the slots
+    # partition the vocabulary, so the ranks add to its size.
+    assert total_rank == 104
     with pytest.raises(ValueError, match="smaller than the total slot source rank"):
         _model(bundle, latent_dim=total_rank - 1)
     _model(bundle, latent_dim=TEST_LATENT_DIM)  # a width at or above it
@@ -249,7 +320,7 @@ def test_a_rank_deficient_word_table_is_refused_at_construction():
         word_table_sha256=word_table_sha256(flat),
     )
     bundle = build_action_conditioning_bundle(
-        flat, contract, source='flat', check_token_text=False,
+        flat, contract, source='flat', check_token_sources=False,
     )
     with pytest.raises(ValueError, match="full slot-source rank"):
         AnyTop(
@@ -431,6 +502,32 @@ def test_slot_assembly_has_exactly_one_definition():
     )
 
 
+def test_two_head_pooling_agrees_between_the_numpy_and_tensor_paths():
+    """The weight is positional on both sides, so the two must not disagree.
+
+    The numpy path walks the label's tokens in written order; the tensor path
+    finds the primary head word with a cumulative sum over the padded row. A
+    two-head label is the only place those two readings could come apart, and a
+    disagreement would mean training and the sidecar/preflight conditioned on
+    different vectors for the same string.
+    """
+    bundle = make_test_bundle()
+    model = _model(bundle)
+    for label in ('attack, jump, charge', 'land, jump', 'jump, land'):
+        slots = action_label_slots(parse_action_label(label))
+        assert slots['slot_ids'].count(SLOT_HEAD) == 2
+        numpy_channels, _ = assemble_slot_channels(bundle.word_embeddings, slots)
+        torch_channels = _channels(model, [label], ['transition'])
+        assert torch.allclose(
+            torch_channels[0], torch.as_tensor(numpy_channels.reshape(-1)), atol=1e-12
+        ), label
+    # ...and the padded columns of a SHORT row in the same batch cannot steal
+    # the primary weight from a long one: word id 0 is a real vocabulary word,
+    # so only the mask keeps padding out of the head slot.
+    batched = _channels(model, ['land, jump', 'jump'], ['transition', 'transition'])
+    assert torch.allclose(batched[1], _channels(model, ['jump'], ['transition'])[0])
+
+
 # --------------------------------------------------------------------------
 # The fingerprint covers the VECTORS, not only the recipe that made them
 # --------------------------------------------------------------------------
@@ -440,10 +537,16 @@ def _other_vectors(bundle, seed=4242):
     Deliberately not ``make_test_bundle(seed=...)``, which also moves
     ``t5_artifact_sha256`` -- that would prove the old metadata-only fingerprint
     still works, not that the fingerprint follows the table.
+
+    Only the ENCODED rows move: the synthetic code rows are fixed by the
+    contract and are checked by value, so randomising them would be refused as a
+    broken code block long before the fingerprint had anything to say.
     """
-    table = np.random.default_rng(seed).standard_normal(
-        bundle.word_embeddings.shape
-    ).astype(np.float32)
+    table = scatter_synthetic_code_rows(
+        np.random.default_rng(seed).standard_normal(
+            (len(T5_ENCODED_VOCAB), bundle.word_embeddings.shape[1])
+        ).astype(np.float32)
+    )
     contract = dict(
         bundle.embedding_contract, word_table_sha256=word_table_sha256(table)
     )

@@ -267,7 +267,6 @@ class TrainLoop:
         self.inference_diffusion = None
         self.scorer = None
         if self.args.eval_during_training:
-            eval_loop_cond_prob = getattr(self.args, 'loop_cond_prob', 1.0)
             self.eval_data = get_dataset_loader(
                 cond_path=self.args.cond_path,
                 batch_size=self.args.eval_batch_size,
@@ -284,11 +283,12 @@ class TrainLoop:
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
                 min_length=getattr(self.args, 'min_length', 20),
                 main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
-                loop_cond_prob=eval_loop_cond_prob,
                 # Evaluation sees the clips at their recorded tempo regardless
                 # of --motion_speed_aug, so eval losses stay comparable across
-                # runs that differ only in the augmentation.
+                # runs that differ only in the augmentation. The loop tile draw
+                # stays uniform for the same reason.
                 motion_speed_aug=1.0,
+                loop_tile_single_prob=0.0,
                 # Same reason: keep the eval set and its batch composition fixed
                 # (per-bucket drop_last would drop different clips), so eval
                 # scores stay comparable across runs with different buckets.

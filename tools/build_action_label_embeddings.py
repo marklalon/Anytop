@@ -7,9 +7,14 @@ assembled at runtime from these vectors. Encoding them on the fly would mean a
 resident T5 in every training process for vectors that never change, so they are
 baked once into ``dataset/action_word_embeddings.npy``.
 
-One vector per ``CONTROLLED_VOCAB`` token, in vocabulary order, encoded from
-``vocab_t5_text(token)`` -- not from the token spelling, which reads as the drink
-for "punch" and as terrain for "land".
+One vector per ``CONTROLLED_VOCAB`` token, in vocabulary order. A
+``T5_ENCODED_VOCAB`` token is encoded from ``vocab_t5_text(token)`` -- not from
+the token spelling, which reads as the drink for "punch" and as terrain for
+"land". A ``SYNTHETIC_CODE_VOCAB`` token (the direction and hands axes) is not
+encoded at all: its row is an orthonormal code written by
+``synthetic_code_rows``, because T5's geometry on those two closed axes put every
+member next to its own antonym. The two halves are stitched into one table by
+``scatter_synthetic_code_rows``.
 
 Keyed by WORD, not by label string. The old label-keyed sidecar had to be rebuilt
 whenever anyone edited a label and could not represent an unseen combination at
@@ -17,7 +22,7 @@ all; this table depends on the vocabulary alone, so it is one global file and
 relabelling never stales it.
 
 The encoder settings are not options: pooling, EOS policy and vector
-postprocessing are fixed by the geometry preflight's selected variant
+postprocessing are fixed by the conditioning contract
 (``slot/eos_keep/center_l2``) and recorded in ``embedding_contract``, whose hash
 is the ``embedding_fingerprint`` a checkpoint is bound to.
 
@@ -30,16 +35,17 @@ Options:
                       model that built cond.npy's joints_names_embs, or the word
                       vectors land in a different space than the model's
                       t5_out_dim expects and construction fails.
-    --t5-path DIR     Local model directory (default: the sibling t5 cache the
-                      geometry preflight resolves). Its files are hashed into
-                      the contract, so pointing this at different weights
-                      re-encodes the table even when --t5-model is unchanged.
+    --t5-path DIR     Local model directory (default: ``Anytop/.models/<name>``).
+                      Its files are hashed into the contract, so pointing this at
+                      different weights re-encodes the table even when
+                      --t5-model is unchanged.
     --force           Re-encode even when the table is already current.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.metadata
 import sys
 from pathlib import Path
@@ -63,10 +69,14 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     build_action_conditioning_bundle,
     embedding_contract_payload,
     load_action_conditioning_bundle,
+    ordered_token_sources,
+    scatter_synthetic_code_rows,
     word_table_sha256,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     CONTROLLED_VOCAB,
+    SYNTHETIC_CODE_VOCAB,
+    T5_ENCODED_VOCAB,
     vocab_t5_text,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
@@ -81,6 +91,32 @@ _T5_HASHED_FILES = (
 )
 
 
+def _sha256_files(root: Path, names) -> str:
+    """One digest over *names* under *root*, order-independent and name-tagged."""
+    digest = hashlib.sha256()
+    for name in sorted(names):
+        path = root / name
+        if not path.is_file():
+            continue
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _resolve_t5_dir(t5_path: str | None, t5_name: str) -> Path:
+    path = Path(t5_path) if t5_path else ANYTOP_DIR / ".models" / t5_name
+    path = path.resolve()
+    if not path.is_dir():
+        raise FileNotFoundError(
+            f"local T5 directory not found: {path}. Pass --t5-path explicitly."
+        )
+    return path
+
+
 def _resolve_t5_material(t5_model: str, t5_path: str | None):
     """``(directory, artifact hash)`` for the encoder this run was asked for.
 
@@ -89,25 +125,63 @@ def _resolve_t5_material(t5_model: str, t5_path: str | None):
     identify those -- two directories both called t5-base can hold different
     bytes, which is exactly what an explicit --t5-path is for.
     """
-    from evaluate_action_label_geometry import _resolve_t5_dir, _sha256_files
-
     t5_dir = _resolve_t5_dir(t5_path, t5_model)
     return t5_dir, _sha256_files(t5_dir, _T5_HASHED_FILES)
 
 
-def _encode_vocabulary(t5_dir, t5_hash: str, t5_model: str, batch_size: int):
-    """Encode every token under the contract's pooling / EOS / postprocess.
+def _pool_masked_mean(tokenizer, encoder, device, texts, batch_size) -> np.ndarray:
+    """Mean of the encoder's hidden states over the kept tokens, per text.
 
-    Deliberately calls the geometry preflight's own encoder helpers rather than
-    re-implementing masked mean pooling: those are the functions that produced
-    the vectors the representation was selected on, so the table shipped here is
-    the table that was measured.
+    ``ACTION_WORD_EMBEDDING_EOS_POLICY`` decides whether the EOS token is one of
+    them; it is part of the contract the fingerprint covers, not an option here.
     """
-    from evaluate_action_label_geometry import (
-        _encode_both_eos_policies,
-        _postprocess_atoms,
-    )
+    import torch
 
+    eos_id = tokenizer.eos_token_id
+    if eos_id is None:
+        raise ValueError("the tokenizer has no eos_token_id")
+    keep_eos = ACTION_WORD_EMBEDDING_EOS_POLICY == "keep"
+    chunks: list[np.ndarray] = []
+    with torch.no_grad():
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            inputs = tokenizer(batch, return_tensors="pt", padding=True)
+            inputs = {key: value.to(device) for key, value in inputs.items()}
+            hidden = encoder(**inputs).last_hidden_state.float()
+            mask = inputs["attention_mask"].bool()
+            if not keep_eos:
+                mask = mask & inputs["input_ids"].ne(eos_id)
+            counts = mask.sum(dim=-1, keepdim=True)
+            if torch.any(counts == 0):
+                raise ValueError(
+                    f"EOS policy {ACTION_WORD_EMBEDDING_EOS_POLICY!r} produced an "
+                    "empty token sequence"
+                )
+            pooled = (hidden * mask.unsqueeze(-1)).sum(dim=-2) / counts
+            chunks.append(pooled.cpu().numpy().astype(np.float32, copy=False))
+    return np.concatenate(chunks, axis=0)
+
+
+def _postprocess_atoms(vectors: np.ndarray, mode: str) -> np.ndarray:
+    """``center`` subtracts the mean, ``l2`` puts every row on the sphere.
+
+    Applied to the T5-encoded rows ONLY. The synthetic code rows are already
+    unit vectors on their own axes and are added afterwards: centring them would
+    destroy the orthogonality they exist for, and including them in the mean
+    would make every encoded vector depend on how many synthetic tokens the
+    vocabulary happens to hold.
+    """
+    result = vectors.astype(np.float64, copy=True)
+    if mode.startswith("center"):
+        result -= result.mean(axis=0, keepdims=True)
+    if mode.endswith("l2"):
+        norm = np.linalg.norm(result, axis=1, keepdims=True)
+        result = result / np.maximum(norm, 1e-12)
+    return result
+
+
+def _encode_vocabulary(t5_dir, t5_hash: str, t5_model: str, batch_size: int):
+    """Encode every token under the contract's pooling / EOS / postprocess."""
     import torch
     from transformers import T5Config, T5EncoderModel, T5Tokenizer
 
@@ -126,15 +200,13 @@ def _encode_vocabulary(t5_dir, t5_hash: str, t5_model: str, batch_size: int):
         encoder = T5EncoderModel.from_pretrained(str(t5_dir), local_files_only=True)
     encoder = encoder.eval().to(device)
 
-    texts = [vocab_t5_text(token) for token in CONTROLLED_VOCAB]
-    pooled = _encode_both_eos_policies(
-        tokenizer, encoder, device, texts, batch_size
-    )[ACTION_WORD_EMBEDDING_EOS_POLICY]
-    table = _postprocess_atoms(pooled, ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS)
-    table = np.asarray(table, dtype=np.float32)
+    texts = [vocab_t5_text(token) for token in T5_ENCODED_VOCAB]
+    pooled = _pool_masked_mean(tokenizer, encoder, device, texts, batch_size)
+    encoded = _postprocess_atoms(pooled, ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS)
+    table = scatter_synthetic_code_rows(np.asarray(encoded, dtype=np.float32))
 
     contract = embedding_contract_payload(
-        token_to_text={token: vocab_t5_text(token) for token in CONTROLLED_VOCAB},
+        token_sources=ordered_token_sources(),
         t5_name=t5_model,
         t5_artifact_sha256=t5_hash,
         tokenizer_class=type(tokenizer).__name__,
@@ -185,6 +257,24 @@ def build_word_table(out_path: Path, t5_model: str, t5_path: str | None,
                 f"encoder artifact {str(contract.get('t5_artifact_sha256'))[:12]}..., "
                 f"{t5_dir} hashes to {t5_hash[:12]}..."
             )
+        # The vocabulary LIST is already checked on load (ordered_vocab), but the
+        # TEXT each row was encoded from is not: editing _VOCAB_T5_TEXT, or moving
+        # a token onto the synthetic-code side, leaves a table that loads cleanly
+        # and holds the wrong vectors. Compare the sources so an unattended caller
+        # (regenerate_dataset_artifacts) rebuilds on that edit instead of skipping.
+        wanted_sources = ordered_token_sources()
+        stored_sources = [dict(entry) for entry in (contract.get("ordered_token_sources") or ())]
+        if stored_sources != wanted_sources:
+            changed = [
+                str(wanted.get("token"))
+                for stored, wanted in zip(stored_sources, wanted_sources)
+                if stored != wanted
+            ]
+            stale.append(
+                "token sources changed"
+                + (f" ({', '.join(changed[:6])}{' ...' if len(changed) > 6 else ''})"
+                   if changed else "")
+            )
         if not stale:
             print(
                 f"[skip] {out_path} already holds {len(CONTROLLED_VOCAB)} word vector(s) "
@@ -193,8 +283,9 @@ def build_word_table(out_path: Path, t5_model: str, t5_path: str | None,
             return out_path
         print(f"[rebuild] {out_path}: {'; '.join(stale)}")
 
-    print(f"encoding {len(CONTROLLED_VOCAB)} vocabulary token(s) with '{t5_model}' "
-          f"from {t5_dir} ...")
+    print(f"encoding {len(T5_ENCODED_VOCAB)} vocabulary token(s) with '{t5_model}' "
+          f"from {t5_dir}; {len(SYNTHETIC_CODE_VOCAB)} more take orthonormal code "
+          f"rows ...")
     table, contract = _encode_vocabulary(t5_dir, t5_hash, t5_model, batch_size)
     # Validate before writing: a table that the loader would refuse must never
     # reach the dataset directory, where it would fail at the start of training
@@ -205,7 +296,9 @@ def build_word_table(out_path: Path, t5_model: str, t5_path: str | None,
         raise SystemExit(
             f"ERROR: the encoded word table does not have full slot-source rank "
             f"({rank['slots']}). Slot channels would not be separable for every legal "
-            "label; re-run tools/evaluate_action_label_geometry.py before using it."
+            "label; a vocabulary token whose T5 text collides with another's is the "
+            "usual cause -- change it in _VOCAB_T5_TEXT and re-encode. The direction "
+            "and hands blocks are orthonormal by construction and cannot be the cause."
         )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(out_path, action_word_embedding_payload(table, contract), allow_pickle=True)
@@ -213,7 +306,8 @@ def build_word_table(out_path: Path, t5_model: str, t5_path: str | None,
         f"[OK] wrote {out_path} ({table.shape[0]} words x {table.shape[1]}d, "
         f"pooling={ACTION_WORD_EMBEDDING_POOLING}, "
         f"eos={ACTION_WORD_EMBEDDING_EOS_POLICY}, "
-        f"postprocess={ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS})"
+        f"postprocess={ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS}; "
+        f"{len(SYNTHETIC_CODE_VOCAB)} of them orthonormal code rows)"
     )
     print(f"     embedding_fingerprint         {bundle.embedding_fingerprint}")
     print(f"     conditioning_contract_finger. {bundle.conditioning_contract_fingerprint}")

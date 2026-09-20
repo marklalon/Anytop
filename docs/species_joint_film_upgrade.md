@@ -199,7 +199,7 @@ base 相对 parser 默认值的全部非默认项：
 --joint_mask_prob 0.3 --temporal_span_mask_prob 0.3
 --temporal_span_seam_loss_weight 0.2 --temporal_window 41
 --lambda_geo 0.1 --lambda_loop_wrap 0.04 --lambda_vel 0.2
---loop_cond_prob 0.5 --weight_decay 0.01
+--weight_decay 0.01
 --main_process_prefetch_batches 64 --motion_cache_size 32768
 --ml_platform_type TensorboardPlatform
 --num_steps 200000 --save_interval 5000

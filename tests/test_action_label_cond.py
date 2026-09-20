@@ -31,6 +31,8 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     head_words_in,
     parse_action_label,
     vocab_t5_text,
+    SYNTHETIC_CODE_VOCAB,
+    T5_ENCODED_VOCAB,
     vocab_words_in,
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
@@ -109,11 +111,12 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         self.assertEqual(len(set(CONTROLLED_VOCAB)), len(CONTROLLED_VOCAB))
         self.assertEqual(DIRECTION_VOCAB, ("forward", "backward", "left", "right", "up", "down"))
         # The hands axis closes the vocabulary so it sorts last among modifiers.
-        self.assertEqual(HANDS_VOCAB, ("hand0", "hand1", "hand2"))
-        self.assertEqual(CONTROLLED_VOCAB[-3:], HANDS_VOCAB)
+        self.assertEqual(HANDS_VOCAB, ("hand1", "hand2"))
+        self.assertEqual(CONTROLLED_VOCAB[-2:], HANDS_VOCAB)
         # The two-token spelling it replaced is gone: 'weapon, 1hand' would now
-        # be a hard error, not a silently different condition.
-        for absent in ("weapon", "1hand", "2hand"):
+        # be a hard error, not a silently different condition -- and so is
+        # 'hand0': an empty hands slot IS empty hands.
+        for absent in ("weapon", "1hand", "2hand", "hand0"):
             self.assertNotIn(absent, CONTROLLED_VOCAB)
         # Derived adjectives are deliberately absent -- T5 presses "leftward" and
         # "rightward" to near-synonyms -- and so is the mushy "sideways".
@@ -141,7 +144,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
                        'haste'):
             self.assertNotIn(absent, CONTROLLED_VOCAB, absent)
         # ...and the words the corpus actually uses are all in.
-        for present in ('hand0', 'cast', 'projectile', 'swat', 'spawn', 'hand2',
+        for present in ('hand1', 'cast', 'projectile', 'swat', 'spawn', 'hand2',
                         'spin', 'headbutt', 'hover', 'work', 'dead', 'clean',
                         'fast', 'fishing', 'bow', 'shield'):
             self.assertIn(present, CONTROLLED_VOCAB, present)
@@ -174,19 +177,31 @@ class ActionLabelVocabularyTest(unittest.TestCase):
     def test_t5_text_map_is_one_to_one_on_the_expanded_table(self):
         # The constraint is on the EXPANDED table, not on the override dict:
         # an override colliding with an identity token would share its vector.
-        effective = [vocab_t5_text(word) for word in CONTROLLED_VOCAB]
-        self.assertEqual(len(set(effective)), len(CONTROLLED_VOCAB))
+        effective = [vocab_t5_text(word) for word in T5_ENCODED_VOCAB]
+        self.assertEqual(len(set(effective)), len(T5_ENCODED_VOCAB))
         # A token with no override encodes as itself.
         self.assertEqual(vocab_t5_text('walk'), 'walk')
         # The measured overrides: the bare token lands on a different referent.
         self.assertEqual(vocab_t5_text('land'), 'touching down')
         self.assertEqual(vocab_t5_text('bow'), 'archery bow')
         self.assertEqual(vocab_t5_text('fishing'), 'fishing')
-        # The hands axis is spelled as a bare count: three points, no shared
-        # anchor phrase for them to collide on.
-        self.assertEqual(vocab_t5_text('hand0'), 'empty hands')
-        self.assertEqual(vocab_t5_text('hand1'), 'one hand')
-        self.assertEqual(vocab_t5_text('hand2'), 'both hands')
+
+    def test_synthetic_code_tokens_have_no_t5_text(self):
+        # The direction and hands axes are not encoded at all, so asking for
+        # their text is a caller that forgot to split the vocabulary -- it
+        # raises rather than handing T5 a token whose vector it does not own.
+        # 'hand1'/'hand2' in particular used to carry "one hand"/"both hands".
+        self.assertEqual(
+            SYNTHETIC_CODE_VOCAB, DIRECTION_VOCAB + HANDS_VOCAB
+        )
+        self.assertEqual(
+            set(CONTROLLED_VOCAB),
+            set(T5_ENCODED_VOCAB) | set(SYNTHETIC_CODE_VOCAB),
+        )
+        self.assertFalse(set(T5_ENCODED_VOCAB) & set(SYNTHETIC_CODE_VOCAB))
+        for word in SYNTHETIC_CODE_VOCAB:
+            with self.assertRaises(ValueError):
+                vocab_t5_text(word)
 
     def test_vocab_words_in_is_exact_token_matching(self):
         # Synonym translation is gone: a label is exact tokens, and free text
@@ -267,7 +282,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
                       'land, fly', 'getup, crouch, hand2', 'draw', 'sheathe', 'stop',
                       'walk, forward, hand1', 'idle, rear, roar',
                       'run, turn, right, fast, hand1', 'turn, left, hover',
-                      'attack, bow, hand2', 'idle, hand0'):
+                      'attack, bow, hand2', 'idle, hand1'):
             self.assertEqual(canonical_action_label(parse_action_label(label)), label)
 
     def test_parser_enforces_the_spelling_contract(self):
@@ -279,7 +294,8 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             ('walk, walk', 'repeated token'),
             ('hand1', 'no head word'),
             ('idle, hover, rear', 'three head words'),
-            ('idle, hand0, hand1', 'two hand-state words on one exclusive axis'),
+            ('idle, hand1, hand2', 'two hand-state words on one exclusive axis'),
+            ('idle, hand0', 'the retired explicit empty-hands token'),
             ('walk, forward, hand2, hand1', 'two hand-state words on one exclusive axis'),
             (', '.join(['idle'] + list(DIRECTION_VOCAB) + ['bow', 'gun']),
              'over the token cap'),
@@ -327,7 +343,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         from data_loaders.truebones.truebones_utils import motion_labels
 
         # One word set, one head order -- the transition group included: the
-        # first head word is the head slot and the second a modifier, so two
+        # first head word outweighs the second in the head slot, so two
         # spellings would be two conditions for what the corpus treats as one
         # kind of clip, never a transition and its reverse.
         for group in ('transition', 'stationary', 'locomotion'):

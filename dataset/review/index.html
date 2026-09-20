@@ -48,6 +48,10 @@
   }
   select#dataset { border-color: var(--accent); max-width: 260px; }
   input[type=search] { width: 200px; }
+  button.search-toggle { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 29px; padding: 3px; color: var(--dim); }
+  button.search-toggle svg { width: 23px; height: 18px; }
+  button.search-toggle[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: #28405e; }
+  button.search-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   button { cursor: pointer; }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .4; cursor: default; }
@@ -87,6 +91,17 @@
     color: #fff;
     font-size: 10px;
     letter-spacing: .3px;
+  }
+  /* A row a prefill tool filled: the label is a proposal measured from the
+     motion, not an annotation, until somebody signs it off here. */
+  .autofill-tag {
+    position: absolute; top: 0; left: 0;
+    padding: 3px 6px;
+    background: rgba(63,110,170,.92);
+    color: #fff;
+    font-size: 10px;
+    letter-spacing: .3px;
+    cursor: help;
   }
 
   .thumb { position: relative; width: 224px; height: 224px; background: #202020; }
@@ -285,11 +300,12 @@
   <select id="group"><option value="all">all</option></select>
 
   <label class="f" for="state">状态</label>
-  <select id="state">
+  <select id="state" title="核验状态。自动补标 = 标签由 tools/prefill_*.py 预填、还没人核；改标签即清除该标记，只点 OK 核验则保留">
     <option value="all">all</option>
     <option value="todo">未核验</option>
     <option value="done">已核验</option>
     <option value="pending">待删除</option>
+    <option value="autofill">自动补标</option>
   </select>
 
   <label class="f" for="loop">loop</label>
@@ -306,11 +322,23 @@
     <option value="both">both</option>
   </select>
   <input type="search" id="q" placeholder="搜索 label">
+  <button id="wholeWord" class="search-toggle" type="button" title="Match whole word（label 完全匹配；clip 按单词匹配）" aria-label="Match whole word" aria-pressed="false">
+    <svg viewBox="0 0 32 20" aria-hidden="true" focusable="false">
+      <path d="M2 2v16M30 2v16" fill="none" stroke="currentColor" stroke-width="2"/>
+      <text x="16" y="14.5" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700" font-family="sans-serif">ab</text>
+    </svg>
+  </button>
+  <button id="auxOnly" class="search-toggle" type="button" title="只看 aux（当前 action group 的 aux_action_groups 成员：本组不拥有、只是补充引用的动作；group = all 时列出所有带 aux 的动作）" aria-label="Aux groups only" aria-pressed="false">
+    <svg viewBox="0 0 32 20" aria-hidden="true" focusable="false">
+      <rect x="3.5" y="3.5" width="11" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2.4"/>
+      <text x="23" y="14.5" text-anchor="middle" fill="currentColor" font-size="11" font-weight="700" font-family="sans-serif">ax</text>
+    </svg>
+  </button>
 
   <span class="counts" id="counts"></span>
   <span class="spacer"></span>
 
-  <button id="refresh" title="重新读取数据（保留当前数据集 / action group / 状态 / 搜索筛选、页码与滚动位置）">刷新</button>
+  <button id="refresh" title="重新读取数据（保留当前数据集 / action group / aux / 状态 / loop / 搜索筛选、页码与滚动位置）">刷新</button>
   <button id="clean" disabled title="清理当前数据集所有标记为待删除的动作">清理待删除</button>
 
   <div class="pager">
@@ -367,6 +395,9 @@ function dropImgs(root) {
 
 const isReviewed = (r) => r.reviewed === true;
 const isPending = (r) => r.pending_delete === true;
+// A label a prefill tool wrote; serve.py drops the mark when a person retypes
+// the label, so this is "still as the tool left it", reviewed or not.
+const isAutofill = (r) => r.autofill === true;
 // is_loop is tri-state on a row: true / false are verdicts (proposed by
 // tools/prefill_loop_flags.py or set here); a row without the key has not been
 // judged yet.
@@ -479,11 +510,13 @@ function counts() {
   const done = rows.filter(isReviewed).length;
   const pending = rows.filter(isPending).length;
   const invalid = rows.filter(r => !!r.label_error).length;
+  const autofill = rows.filter(isAutofill).length;
   const loops = rows.filter(r => loopState(r) === 'yes').length;
   const unjudged = rows.filter(r => loopState(r) === 'none').length;
   $('counts').innerHTML = '已核验 <b>' + done + '</b> / ' + rows.length +
     ' &nbsp;·&nbsp; 循环 <b>' + loops + '</b>' +
     (unjudged ? ' <span style="color:#ffcf8f">(未判定 <b>' + unjudged + '</b>)</span>' : '') +
+    (autofill ? ' &nbsp;·&nbsp; 自动补标 <b>' + autofill + '</b>' : '') +
     (pending ? ' &nbsp;·&nbsp; 待删除 <b>' + pending + '</b>' : '') +
     (invalid ? ' &nbsp;·&nbsp; <span style="color:#ff8a80">非法 label <b>' + invalid + '</b></span>' : '') +
     ' &nbsp;·&nbsp; 当前筛选 <b>' + view.length + '</b>';
@@ -535,7 +568,8 @@ const datasetCountText = (d) => {
 
 const dsOptionText = (d) => d.name + '（' + datasetCountText(d) +
   (d.invalid_labels ? '，非法label ' + d.invalid_labels : '') +
-  (d.unflagged_loops ? '，loop未判定 ' + d.unflagged_loops : '') + '）';
+  (d.unflagged_loops ? '，loop未判定 ' + d.unflagged_loops : '') +
+  (d.autofill ? '，自动补标 ' + d.autofill : '') + '）';
 
 const allOptionText = (list) => {
   const sum = (key) => list.reduce((n, d) => n + (Number(d[key]) || 0), 0);
@@ -545,6 +579,7 @@ const allOptionText = (list) => {
     gif_count: sum('gif_count'),
     invalid_labels: sum('invalid_labels'),
     unflagged_loops: sum('unflagged_loops'),
+    autofill: sum('autofill'),
   });
 };
 
@@ -629,21 +664,46 @@ function refreshGroups() {
   $('group').value = groups.includes(prev) ? prev : 'all';
 }
 
+function containsSearchTerm(value, query, wholeWord) {
+  const text = String(value || '').toLowerCase();
+  if (!wholeWord) return text.includes(query);
+  const isWordChar = (char) => /[\p{L}\p{N}]/u.test(char);
+  let start = 0;
+  while ((start = text.indexOf(query, start)) !== -1) {
+    const end = start + query.length;
+    if ((start === 0 || !isWordChar(text[start - 1])) &&
+        (end === text.length || !isWordChar(text[end]))) return true;
+    start++;
+  }
+  return false;
+}
+
 function applyFilters(keepPage, keepScroll) {
   const g = $('group').value;
   const s = $('state').value;
   const l = $('loop').value;
   const searchField = $('searchField').value;
   const q = $('q').value.trim().toLowerCase();
+  const wholeWord = $('wholeWord').getAttribute('aria-pressed') === 'true';
+  const auxOnly = $('auxOnly').getAttribute('aria-pressed') === 'true';
   view = rows.filter(r => {
-    if (g !== 'all' && r.action_group !== g) return false;
+    // aux 模式：本组「拥有」的动作换成本组只是补充引用的动作（g=all 时为所有
+    // 带 aux 的动作）。一个 group 不会同时是某行的 owner 和它的 aux，两个视图
+    // 互不重叠，所以这里直接取代 action_group 的判断。
+    if (auxOnly) {
+      const aux = Array.isArray(r.aux_action_groups) ? r.aux_action_groups : [];
+      if (g === 'all' ? aux.length === 0 : !aux.includes(g)) return false;
+    } else if (g !== 'all' && r.action_group !== g) return false;
     if (s === 'todo' && isReviewed(r)) return false;
     if (s === 'done' && !isReviewed(r)) return false;
     if (s === 'pending' && !isPending(r)) return false;
+    if (s === 'autofill' && !isAutofill(r)) return false;
     if (l !== 'all' && loopState(r) !== l) return false;
     if (q) {
-      const inLabel = (r.action_label || '').toLowerCase().includes(q);
-      const inClip = (r.clip || '').toLowerCase().includes(q);
+      const inLabel = wholeWord
+        ? String(r.action_label || '').trim().toLowerCase() === q
+        : containsSearchTerm(r.action_label, q, false);
+      const inClip = containsSearchTerm(r.clip, q, wholeWord);
       if (searchField === 'label' && !inLabel) return false;
       if (searchField === 'clip' && !inClip) return false;
       if (searchField === 'both' && !inLabel && !inClip) return false;
@@ -743,7 +803,13 @@ function card(row) {
   const grp = document.createElement('div');
   grp.className = 'group';
   grp.textContent = row.action_group;
-  grp.title = 'action group：' + row.action_group + '（点击修改）';
+  // 卡片上的 chip 始终是这一行的 owner group；aux 只在 tooltip 里列出，
+  // 否则 aux 筛选下看不出这一行到底属于谁。
+  const auxOf = Array.isArray(row.aux_action_groups) ? row.aux_action_groups : [];
+  grp.title = 'action group：' + row.action_group +
+    (auxOf.length ? '（aux：' + auxOf.join('、') + '）' : '') +
+    ($('auxOnly').getAttribute('aria-pressed') === 'true'
+      ? '（点击修改或移除 aux group）' : '（点击修改）');
   grp.onclick = () => openGroupMenu(grp, row, el);
   const loop = document.createElement('div');
   const ls = loopState(row);
@@ -763,6 +829,18 @@ function card(row) {
     tag.className = 'pending-tag';
     tag.textContent = '待删除';
     tag.title = '已标记 pending_delete；下次清理数据集时移除';
+    thumb.appendChild(tag);
+  }
+  if (row.autofill) {
+    // tools/prefill_direction_words.py and tools/prefill_hand_words.py fill an
+    // EMPTY slot from the motion and set reviewed:false. The flag says only
+    // that a tool wrote this label, not why: the measurement stays in that
+    // run's output, and what settles it here is the GIF.
+    const tag = document.createElement('div');
+    tag.className = 'autofill-tag';
+    tag.textContent = '自动补标';
+    tag.title = '这条标签是预填脚本写的，没人核验过。'
+      + '\n看 GIF 确认；不对就点标签改，对就点 OK 核验。';
     thumb.appendChild(tag);
   }
 
@@ -872,6 +950,31 @@ function openGroupMenu(anchor, row, cardEl) {
     menu.appendChild(empty);
   }
 
+  if ($('auxOnly').getAttribute('aria-pressed') === 'true') {
+    const selected = $('group').value;
+    const auxGroups = Array.isArray(row.aux_action_groups) ? row.aux_action_groups : [];
+    const removable = selected === 'all'
+      ? auxGroups : auxGroups.filter(g => g === selected);
+    if (removable.length) {
+      const auxSep = document.createElement('div');
+      auxSep.className = 'gm-sep';
+      menu.appendChild(auxSep);
+      for (const g of removable) {
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'gm-del';
+        remove.textContent = selected === 'all' ? '移除 aux group：' + g : '移除 aux group';
+        remove.title = '把该 clip 从 ' + g + ' 的 aux group 中移除；所属 action group 不变';
+        remove.onclick = () => {
+          const el = _gmEl;
+          closeGroupMenu();
+          save(el, row, { remove_aux_action_group: g });
+        };
+        menu.appendChild(remove);
+      }
+    }
+  }
+
   // Separator + the retire action. It sets pending_delete rather than blanking
   // action_group: a row without a group makes load_action_labels exit, which
   // takes the sidecar and every tool reading it offline. The group stays valid,
@@ -949,9 +1052,10 @@ async function save(el, row, patch) {
     // A loop flip saves silently like a label edit; the server only sends a
     // note when the tensor could not follow the flag (no NPY on disk).
     for (const n of (data.notes || [])) toast(n);
-    if (patch.action_group !== undefined || patch.pending_delete !== undefined ||
+    if (patch.action_group !== undefined || patch.remove_aux_action_group !== undefined ||
+        patch.pending_delete !== undefined ||
         patch.is_loop !== undefined) {
-      // A group change can move the clip into/out of the current filter, and
+      // A group or aux membership change can move the clip into/out of the filter, and
       // may add a new group option — rebuild the list and re-run the filter.
       // pending_delete moves it into/out of the 待删除 filter the same way,
       // and is_loop into/out of the loop filter.
@@ -1047,6 +1151,8 @@ function onDatasetChange() {
   $('state').value = 'all';
   $('loop').value = 'all';
   $('q').value = '';
+  $('wholeWord').setAttribute('aria-pressed', 'false');
+  $('auxOnly').setAttribute('aria-pressed', 'false');
   page = 1;
   $('notice').hidden = true;   // the report belongs to the dataset that produced it
   window.scrollTo({ top: 0 });
@@ -1065,6 +1171,16 @@ $('searchField').onchange = () => {
 $('q').oninput = () => {                 // debounce: a keystroke must not rebuild 100 cards
   clearTimeout($('q')._t);
   $('q')._t = setTimeout(() => applyFilters(), 200);
+};
+$('wholeWord').onclick = () => {
+  const button = $('wholeWord');
+  button.setAttribute('aria-pressed', button.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+  applyFilters();
+};
+$('auxOnly').onclick = () => {
+  const button = $('auxOnly');
+  button.setAttribute('aria-pressed', button.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+  applyFilters();
 };
 $('prev').onclick = () => { page--; render(); };
 $('next').onclick = () => { page++; render(); };
