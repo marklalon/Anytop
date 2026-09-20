@@ -69,6 +69,12 @@ ALL_SPLIT_NAME = "all"
 # clips against stop 5 and sheathe 1 -- and the one the model is asked to follow
 # at inference.  (AnyTop balanced species here instead; that mode is gone.)
 #
+# sqrt alone still lets a one-clip group draw its clip ~40x as often as uniform
+# sampling would (1/sqrt(1) against 1/sqrt(891)); a group smaller than this
+# floor is weighted as if it had this many clips, so per-clip probability stops
+# growing below it.  --balanced_group_floor overrides it.
+BALANCED_GROUP_FLOOR_DEFAULT = 10
+#
 # The group a clip with no action_label lands in.  Every LABELLED clip has a head
 # word by contract (parse_action_label rejects one that does not), so this is
 # the unannotated corner only.
@@ -890,7 +896,7 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None):
+    def __init__(self, opt, cond_dict, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, balanced_group_floor=BALANCED_GROUP_FLOOR_DEFAULT):
         self.opt = opt
         # None means the caller does not want label conditioning, so no word ids
         # are attached at all. The bundle is the model's bundle: the loader emits
@@ -918,6 +924,7 @@ class MotionDataset(data.Dataset):
             for object_key, entry in cond_dict.items()
         }
         self.balanced = balanced
+        self.balanced_group_floor = max(1, int(balanced_group_floor))
         # A weighted sampler drives indexing when the action head words are
         # balanced; it yields absolute name_list indices, so __getitem__ must
         # skip the pointer offset in that case.
@@ -1373,7 +1380,11 @@ class TruebonesSampler(WeightedRandomSampler):
     Clips are grouped by their action_label's FIRST head word, each group's
     total sampling mass is proportional to the square root of its clip count,
     normalized across all non-empty groups; within a group the mass is split
-    uniformly across its clips.
+    uniformly across its clips.  A group smaller than
+    ``motion_dataset.balanced_group_floor`` clips is weighted as if it had that
+    many (mass n / sqrt(floor)), which caps the per-clip probability of the
+    tail: without it a lone sheathe clip is drawn ~40x as often as uniform
+    sampling would, with floor 10 ~14x, the same as any clip of a 10-clip group.
 
     The corpus is far more lopsided on this axis than on any other -- 891 attack
     clips and 732 idle ones against 5 stop and 1 sheathe -- and per-clip uniform
@@ -1406,6 +1417,7 @@ class TruebonesSampler(WeightedRandomSampler):
         # namespaces with two sidecars behind it.
         data_dict = motion_dataset.data_dict
         balanced = bool(getattr(motion_dataset, 'balanced', False))
+        group_floor = max(1, int(getattr(motion_dataset, 'balanced_group_floor', BALANCED_GROUP_FLOOR_DEFAULT)))
 
         # A fixed group order (the head vocabulary) keeps the weights
         # bit-identical across runs.
@@ -1450,8 +1462,12 @@ class TruebonesSampler(WeightedRandomSampler):
             if not non_empty:
                 return []
             if balanced:
-                # Per-group mass ~ sqrt(clip count over this filtered subset).
-                group_shares = [np.sqrt(len(group_indices)) for _, group_indices in non_empty]
+                # Per-group mass ~ sqrt(clip count over this filtered subset);
+                # per clip that is 1/sqrt(n), frozen at 1/sqrt(floor) below it.
+                group_shares = [
+                    len(group_indices) / np.sqrt(max(len(group_indices), group_floor))
+                    for _, group_indices in non_empty
+                ]
             else:
                 group_shares = [float(len(group_indices)) for _, group_indices in non_empty]
             total_share = float(np.sum(group_shares))
@@ -1481,7 +1497,7 @@ class TruebonesSampler(WeightedRandomSampler):
                     own_summary, key=lambda row: row[2], reverse=True
                 )
             )
-            print(f"[sampler] --balanced by action head word ({len(own_summary)} groups): {shown}")
+            print(f"[sampler] --balanced by action head word ({len(own_summary)} groups, group floor {group_floor}): {shown}")
 
         super().__init__(num_samples=num_samples, weights=weights)
     
@@ -1495,6 +1511,7 @@ class Truebones(data.Dataset):
         opt = get_opt(device, kwargs.get('cond_path'))
         self.opt = opt
         self.balanced = kwargs['balanced']
+        self.balanced_group_floor = int(kwargs.get('balanced_group_floor', BALANCED_GROUP_FLOOR_DEFAULT))
         self.objects_subset = kwargs['objects_subset']
         self.action_group = kwargs.get('action_group', '')
         self.action_label_cond = bool(kwargs.get('action_label_cond', False))
@@ -1568,6 +1585,7 @@ class Truebones(data.Dataset):
             allowed_motion_names=allowed_motion_names,
             motion_metadata_lookup=motion_metadata_lookup,
             action_conditioning=self.action_conditioning,
+            balanced_group_floor=self.balanced_group_floor,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \

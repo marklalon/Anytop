@@ -10,7 +10,7 @@ from data_loaders.joint_buckets import (
     resolve_joint_buckets,
 )
 from data_loaders.tensors import truebones_batch_collate
-from data_loaders.truebones.data.dataset import Truebones
+from data_loaders.truebones.data.dataset import BALANCED_GROUP_FLOOR_DEFAULT, Truebones
 from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
 
 
@@ -63,6 +63,7 @@ def get_dataset(
     num_frames,
     split='train',
     balanced=False,
+    balanced_group_floor=BALANCED_GROUP_FLOOR_DEFAULT,
     objects_subset="all",
     sample_limit=0,
     action_group='',
@@ -79,6 +80,7 @@ def get_dataset(
         split=split,
         num_frames=num_frames,
         balanced=balanced,
+        balanced_group_floor=balanced_group_floor,
         objects_subset=objects_subset,
         sample_limit=sample_limit,
         action_group=action_group,
@@ -98,6 +100,7 @@ def get_dataset_loader(
     num_frames,
     split='train',
     balanced=True,
+    balanced_group_floor=BALANCED_GROUP_FLOOR_DEFAULT,
     objects_subset="all",
     num_workers=None,
     prefetch_factor=2,
@@ -126,6 +129,7 @@ def get_dataset_loader(
         num_frames=num_frames,
         split=split,
         balanced=balanced,
+        balanced_group_floor=balanced_group_floor,
         objects_subset=objects_subset,
         sample_limit=sample_limit,
         action_group=action_group,

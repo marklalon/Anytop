@@ -255,6 +255,7 @@ def create_training_data_loader(args):
         num_frames=args.num_frames,
         split=getattr(args, 'train_split', 'train'),
         balanced=args.balanced,
+        balanced_group_floor=args.balanced_group_floor,
         objects_subset=args.objects_subset,
         sample_limit=args.sample_limit,
         drop_last=True,

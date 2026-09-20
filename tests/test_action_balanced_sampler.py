@@ -10,7 +10,12 @@ pin the properties of the fix:
 * the group is the label's FIRST head word, multi-head labels included;
 * species are deliberately NOT balanced (AnyTop's original sampler balanced
   them and nothing else -- that mode is gone);
+* a group below ``balanced_group_floor`` clips is weighted as if it had that
+  many, so the per-clip probability of the tail is capped;
 * the unbalanced (uniform) path is untouched.
+
+The sqrt-rule tests pin ``balanced_group_floor=1`` (no floor) so their closed
+forms stay exact; the floor has its own section.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data_loaders.truebones.data.dataset import (  # noqa: E402
+    BALANCED_GROUP_FLOOR_DEFAULT,
     UNLABELED_ACTION_GROUP,
     TruebonesSampler,
     clip_action_head_word,
@@ -40,6 +46,7 @@ class _FakeMotionDataset:
         labels,
         object_types=None,
         balanced=True,
+        balanced_group_floor=1,
     ):
         object_types = list(object_types or ["A"] * len(labels))
         self.name_list = [f"clip{index}" for index in range(len(labels))]
@@ -53,6 +60,7 @@ class _FakeMotionDataset:
         }
         self.cond_dict = {object_type: {} for object_type in dict.fromkeys(object_types)}
         self.balanced = balanced
+        self.balanced_group_floor = balanced_group_floor
         self.pointer = 0
 
     def __len__(self):
@@ -145,6 +153,49 @@ def test_weights_stay_a_distribution_over_many_groups():
     sheathe_mass = _mass(weights, [len(labels) - 1])
     assert attack_mass < 891 * uniform
     assert sheathe_mass > 20 * uniform
+
+
+# --------------------------------------------------------------------------
+# The group floor
+# --------------------------------------------------------------------------
+def test_default_floor_is_ten():
+    assert BALANCED_GROUP_FLOOR_DEFAULT == 10
+
+
+def test_a_group_below_the_floor_weighs_its_clips_like_a_floor_sized_group():
+    # 100 attack, 10 stop, 1 sheathe, floor 10: the sheathe clip is drawn
+    # exactly as often as any stop clip (1/sqrt(10) each), not sqrt(10)x more.
+    labels = ["attack"] * 100 + ["stop"] * 10 + ["sheathe"]
+    weights = _weights(labels, balanced_group_floor=10)
+    assert weights[-1] == pytest.approx(weights[100])
+    assert weights[100] / weights[0] == pytest.approx(np.sqrt(10))
+    assert weights.sum() == pytest.approx(1.0)
+
+
+def test_groups_at_or_above_the_floor_keep_the_sqrt_rule():
+    labels = ["attack"] * 100 + ["stop"] * 10
+    with_floor = _weights(labels, balanced_group_floor=10)
+    without = _weights(labels, balanced_group_floor=1)
+    assert np.allclose(with_floor, without)
+
+
+def test_floor_one_is_the_plain_sqrt_rule():
+    labels = ["attack"] * 100 + ["sheathe"]
+    assert np.allclose(
+        _weights(labels, balanced_group_floor=1),
+        _weights(labels),
+    )
+
+
+def test_floor_caps_the_per_clip_ratio_over_the_real_corpus_shape():
+    labels = ["attack"] * 891 + ["idle"] * 732 + ["stop"] * 5 + ["sheathe"]
+    weights = _weights(labels, balanced_group_floor=10)
+    uniform = 1.0 / len(labels)
+    # Every tail clip runs at the 10-clip rate: below sqrt(891/10) ~ 9.4x
+    # attack's per-clip weight, well under the ~30x sqrt alone gives.
+    assert weights[-1] == pytest.approx(weights[-2])
+    assert weights[-1] / weights[0] == pytest.approx(np.sqrt(891 / 10))
+    assert weights[-1] < 15 * uniform
 
 
 # --------------------------------------------------------------------------

@@ -503,6 +503,12 @@ def add_training_options(parser):
                             "over the groups (sqrt of each group's clip count) instead of over "
                             "the clips, so attack/idle stop outweighing stop/sheathe by their "
                             "raw clip counts. Species are not balanced.")
+    # 10 mirrors dataset.BALANCED_GROUP_FLOOR_DEFAULT; this module stays import-light.
+    group.add_argument("--balanced_group_floor", default=10, type=int,
+                       help="With --balanced: a head-word group with fewer clips than this is "
+                            "weighted as if it had this many, so a clip of a 1- or 2-clip "
+                            "group is drawn no more often than a clip of a group this size "
+                            "(sqrt alone lets a lone clip run ~40x uniform). 1 disables the floor.")
 
 
 def add_sampling_options(parser):
