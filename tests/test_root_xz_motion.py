@@ -1086,11 +1086,11 @@ def test_the_clamp_bounds_any_reach_strictly_under_the_ceiling(amplitude):
 
 
 def test_the_clamp_has_no_step_in_value_or_speed_at_the_knee():
-    """A kink at 0.6 would be a property of the dataset, not of any motion.
+    """A kink at the knee would be a property of the dataset, not of any motion.
 
     The old hard gate had the worst version of this: everything past the
     threshold fell to zero. A clamp with a slope discontinuity is milder and
-    still teaches the model that 0.6 is a real place.
+    still teaches the model that the knee is a real place.
     """
     knee = ROOT_XZ_SOFT_CLAMP_KNEE
     eps = 1e-5

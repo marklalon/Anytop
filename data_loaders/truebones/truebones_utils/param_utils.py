@@ -87,24 +87,24 @@ TPOSE_REFERENCE_SIDECAR = "tpose_reference_paths.jsonl"
 # it sizes an nn.Embedding.
 MAX_PATH_LEN = 5
 # Vertical clamp band, expressed as a ratio of the character's reference body
-# length (measured from the processed skeleton's rest-pose joint span). The two
-# are the knee and the asymptote of the shared hyperbola (``soft_clamp_extent``):
+# length (measured from the processed skeleton's rest-pose joint span). Applied
+# only to the ``winged`` and ``aquatic`` subsets (see
+# ``animation_utils.clamp_vertical_height_track``); ground and drifting species
+# skip the band and get only the root-Y lower bound below. The two values are
+# the knee and the asymptote of the shared hyperbola (``soft_clamp_extent``):
 # motion within VERTICAL_CLAMP_MIN_RATIO is left unchanged, and the excursion
 # above it is scaled -- by ONE factor for the whole clip, so a climb keeps its
-# shape -- until its peak approaches VERTICAL_CLAMP_MAX_RATIO without reaching it.
-#
-# MAX_RATIO used to be the target rather than the asymptote, so every clip that
-# reached it reported exactly that height: 304 of the 582 shipped winged clips
-# peaked at 0.5 body lengths, which made a bird's hop and a dragon's climb the
-# same number. See ``animation_utils._compress_positive_excursion``.
-VERTICAL_CLAMP_MIN_RATIO = 0.3
-VERTICAL_CLAMP_MAX_RATIO = 0.5
-# Lower bound for the processed translation-root Y height, in the same normalized
-# units as the exported motion features. Applied to EVERY species, on top of the
-# subset bands above, and bounded the same way the root-XZ extent is: identity
-# above the knee, the excess compressed smoothly below it, and the bound an
-# asymptote the descent approaches but never reaches (see
-# ``animation_utils.soft_clamp_extent``).
+# shape -- until its peak approaches VERTICAL_CLAMP_MAX_RATIO without reaching
+# it (aquatic clips get the same band mirrored onto swim depth).
+VERTICAL_CLAMP_MIN_RATIO = 0.4
+VERTICAL_CLAMP_MAX_RATIO = 0.6
+# Soft lower bound on the translation root's world Y height, in HML-normalised
+# units -- the same units the exported motion features use. It sits a fraction of
+# a body span below the floor. Applied to EVERY species, on top of the subset
+# bands above, and bounded the same way the
+# root-XZ extent is: identity above the knee, the excess compressed smoothly
+# below it, and the bound an asymptote the descent approaches but never reaches
+# (see ``animation_utils._soft_clamp_min_height``).
 ROOT_Y_SOFT_CLAMP_KNEE = -0.1
 ROOT_Y_MIN_HEIGHT = -0.3
 

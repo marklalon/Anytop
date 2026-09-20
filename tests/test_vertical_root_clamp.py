@@ -247,9 +247,9 @@ def test_aquatic_vertical_ratios_apply_as_negative_swim_depth_limit():
     clamped = clamp_vertical_trajectory(anim, "Pirrana")
     root_y = positions_global(clamped)[:, 0, 1]
 
-    # min_h = 0.12, max_h = 0.2. The deepest frame approaches the band edge and is
-    # then held by the root-Y soft clamp (the band edge now sits past the knee);
-    # the frame above the knee is left alone.
+    # The deepest frame approaches the band edge and is then held by the root-Y
+    # soft clamp (the band edge sits past the knee); the frame above the knee is
+    # left alone.
     min_h, max_h = 0.4 * VERTICAL_CLAMP_MIN_RATIO, 0.4 * VERTICAL_CLAMP_MAX_RATIO
     scale = _expected_band_scale(0.4, min_h, max_h)
     assert root_y.min() == pytest.approx(
@@ -392,7 +392,7 @@ def test_a_clip_that_never_clears_the_knee_is_untouched():
 
 
 def test_clearing_the_knee_by_a_hair_barely_moves_the_clip():
-    """Value and slope are continuous at the knee, so there is no step at 0.3L."""
+    """Value and slope are continuous at the knee, so there is no step at the band edge."""
     min_h = 0.4 * VERTICAL_CLAMP_MIN_RATIO
     anim = _animated_root_y_with_body_length([0.0, min_h + 1e-9], body_length=0.4)
 

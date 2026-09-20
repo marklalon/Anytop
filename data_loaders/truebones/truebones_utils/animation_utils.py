@@ -70,35 +70,20 @@ def _warn(msg: str):
 # position before this is evaluated.
 ROOT_XZ_DRIFT_THRESHOLD = 0.08
 
-# Net VERTICAL displacement of the translation root, same HML-normalised units,
-# above which the detrend is extended from the XZ plane to all three axes.
+# Net VERTICAL displacement of the translation root (same HML-normalised units)
+# above which the detrend extends from the XZ plane to all three axes.
 #
-# A gait's job is to run in place, and for a ground species the XZ detrend alone
-# achieves that because nothing else travels. A climb, a dive or a swim ascent is
-# the same motion turned on its side: the cycle is there, riding on transport
-# that happens to be vertical, and leaving it in gives the flying species the
-# very artifact the XZ detrend exists to remove. So the vertical channel is
-# detrended too -- but only once the travel is unmistakable, because Y is not
-# like XZ. The XZ origin is arbitrary (clips are centred on it), while the Y
-# origin is the FLOOR: a clip's absolute height is a real, meaningful quantity
-# that the vertical clamp has already shaped, a crouch or a hop reads directly
-# off it, and removing a ramp from it moves the character relative to the
-# ground. The threshold is therefore several times looser than the XZ
-# one -- 0.25 is 18% of a body span -- so that it selects the deliberate climbs
-# and nothing else. Below it the vertical channel is left exactly as authored
-# and only XZ is detrended.
+# Y is not like XZ: the XZ origin is arbitrary (clips are centred on it), but the
+# Y origin is the FLOOR, so a clip's absolute height is meaningful and removing a
+# ramp moves the character relative to the ground. The threshold is therefore
+# several times looser than the XZ one, selecting only deliberate climbs. It sits
+# between one rig's vertical gaits so they answer alike: MB_TigerDrago's FlyDown
+# nets well above it while FlyUp barely clears it, and a threshold between them
+# would flatten the dive but keep the climb on the same skeleton.
 #
-# It sits at 0.25 rather than higher so that ONE RIG'S vertical gaits answer
-# alike. MB_TigerDrago's FlyDown nets 0.92 and its FlyUp nets 0.26: a threshold
-# between them flattens the dive and keeps the climb on the same skeleton, which
-# is a worse artifact than either answer applied consistently. The four shipped
-# clips that sit between 0.25 and 0.50 are all of that shape -- FlyUp,
-# FlyUPFoward, FlyFallRecover, FlyDeathRecover.
-#
-# Measured on the net endpoint offset, for the same reason the XZ threshold is
-# measured on net transport: a hop or a jump that comes back down nets out and
-# keeps its arc verbatim, however high it reached, while a clip that ENDS
-# somewhere else went there and stayed.
+# Measured on the net endpoint offset, like the XZ threshold: a hop or jump that
+# comes back down nets out and keeps its arc, while a clip that ends elsewhere
+# went there and stayed.
 ROOT_Y_DRIFT_THRESHOLD = 0.25
 
 # Root XZ soft clamp, in HML-normalised units (a body span is 1.389).
@@ -108,7 +93,7 @@ ROOT_Y_DRIFT_THRESHOLD = 0.25
 # approaches but never reaches. This is what keeps a lunge, a dodge or a death
 # slide recognisable at a magnitude the representation can carry -- the old
 # extent gate answered the same question by zeroing the whole trajectory.
-ROOT_XZ_SOFT_CLAMP_KNEE = 0.4
+ROOT_XZ_SOFT_CLAMP_KNEE = 0.3
 ROOT_XZ_SOFT_CLAMP_LIMIT = 0.5
 
 # Locomotion's own extent bound, tighter than the soft clamp above and applied to
