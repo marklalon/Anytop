@@ -74,9 +74,9 @@ class ActionGroupIsBoundToTheCheckpoint(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 _generate_args(model_path, '--action_group', 'locomotion')
 
-    def test_checkpoint_predating_the_flag_generates_without_a_group(self):
-        # Unconditional generation still works; sample/generate.py is what refuses
-        # --action_label for such a checkpoint.
+    def test_a_group_less_checkpoint_generates_without_a_group(self):
+        # A run predating the flag, and an --action_group all run: both leave the
+        # generation group empty, which every consumer reads as "any group".
         for recorded in ({}, {'action_group': ''}, {'action_group': 'all'}):
             with self.subTest(recorded=recorded):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -93,7 +93,7 @@ class ActionGroupIsBoundToTheCheckpoint(unittest.TestCase):
             self.assertEqual(args.objects_subset, 'quadruped')
 
 
-class TrainingMustNameExactlyOneGroup(unittest.TestCase):
+class TrainingMustNameOneGroupOrTheWholeCorpus(unittest.TestCase):
 
     @staticmethod
     def _training_parser():
@@ -111,11 +111,17 @@ class TrainingMustNameExactlyOneGroup(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._training_parser().parse_args([])
 
-    def test_all_and_empty_and_lists_are_refused(self):
-        for value in ('all', '', 'locomotion,stationary', 'Locomotion'):
+    def test_empty_and_lists_are_refused(self):
+        for value in ('', 'locomotion,stationary', 'Locomotion'):
             with self.subTest(value=value):
                 with self.assertRaises(SystemExit):
                     self._training_parser().parse_args(['--action_group', value])
+
+    def test_all_names_the_whole_corpus(self):
+        # 'all' is a corpus selector, not a fourth group: it trains one model
+        # over every group and carries no group condition.
+        args = self._training_parser().parse_args(['--action_group', 'all'])
+        self.assertEqual(args.action_group, 'all')
 
 
 class ResumeCannotRewriteTheRecordedGroup(unittest.TestCase):
@@ -139,11 +145,20 @@ class ResumeCannotRewriteTheRecordedGroup(unittest.TestCase):
             self._assert_resume('locomotion', 'stationary')
 
     def test_resuming_a_group_less_run_is_refused(self):
-        # Nothing to continue it as -- 'all' is no longer a group.
-        for recorded in ('', 'all'):
-            with self.subTest(recorded=recorded):
-                with self.assertRaises(SystemExit):
-                    self._assert_resume(recorded, 'locomotion')
+        # A run predating the flag has no group to continue as.
+        with self.assertRaises(SystemExit):
+            self._assert_resume('', 'locomotion')
+
+    def test_resuming_an_all_run_as_one_group_is_refused(self):
+        # 'all' and a single group are different corpora, so the recorded value
+        # may not be rewritten into the other in either direction.
+        with self.assertRaises(SystemExit):
+            self._assert_resume('all', 'locomotion')
+        with self.assertRaises(SystemExit):
+            self._assert_resume('locomotion', 'all')
+
+    def test_resuming_an_all_run_as_all_is_allowed(self):
+        self._assert_resume('all', 'all')
 
     def test_fresh_run_is_not_checked(self):
         # No resume: the existing args.json is about to be replaced wholesale.

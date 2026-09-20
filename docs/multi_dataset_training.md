@@ -301,7 +301,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 | [utils/validate_anytop_dataset.py](../utils/validate_anytop_dataset.py) | 新增 `--datasets`，逐源循环校验（单源行为不变） |
 | `utils/retarget_pipeline.py`（原 `auto_retarget.py`） | `auto_retarget_pipeline` / `rank_donors` 已移除，donor 读 `motions/` 的依赖随之消失 —— 无需改动 |
 | `data_bridge/restore_glb_from_anytop.py` | 离线工具，读 `tpose_reference_paths.jsonl` + 原始 mesh，仍按单数据集目录运行，不改 |
-| 训练脚本（现为 `train_locomotion.bat` / `train_stationary.bat` / `train_transition.bat`） | 增加 `--cond_path` |
+| 训练脚本（现为 `train_all.bat`） | 增加 `--cond_path` |
 
 ---
 

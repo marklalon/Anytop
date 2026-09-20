@@ -4,7 +4,12 @@
 
 `--balanced` 的分组键从**物种**改成 **`action_label` 的首个主词**：采样质量先按
 `sqrt(该首词的 clip 数)` 分给各首词组，再在组内逐条均分。AnyTop 原来的按物种分组
-**已删除**，没有开关可以切回去；sqrt 质量规则、组内均分规则、aux 池预算都沿用原样。
+**已删除**，没有开关可以切回去；sqrt 质量规则与组内均分规则沿用原样。
+
+> 2026-09-20：`--action_group all` 下这个开关是**必需的**——首词是 group 的函数，
+> 所以首词平衡顺带把三个 group 拉到 27.9 / 37.6 / 34.5，不开则 stationary 拿走 52.9%。
+> 见 [unified_action_group_training.md](unified_action_group_training.md) §3。
+> 同日 aux 池机制整体删除，本文中它的痕迹一并清掉。
 
 ## 1. 为什么换轴
 
@@ -24,8 +29,7 @@ attack 891   idle 732   walk 369   run 340   die 293 ...   stop 5   crawl 1   sh
 
 ## 2. 规则
 
-对每个池（本组 clip / aux clip 各自一池，见
-[aux_group_and_head_word_augmentation.md](aux_group_and_head_word_augmentation.md) §4.2）：
+整个训练池一次分完：
 
 ```
 组 = parse_action_label(label) 的第一个 HEAD_VOCAB 词
@@ -44,7 +48,7 @@ attack 891   idle 732   walk 369   run 340   die 293 ...   stop 5   crawl 1   sh
 - 计数只统计**已经过 split / `--action_group` 过滤后的 `name_list`**，所以每个
   训练组看到的是它自己的分布（见下表）。
 - `--balanced` 不开时一切照旧：整池一组、逐条均分，**完全不读标签**（坏标签不会让
-  非平衡的 run 挂掉），`aux_group_mass` 仍按原样生效。
+  非平衡的 run 挂掉）。
 
 ## 3. 实测（三个训练组，全量 sidecar）
 
@@ -126,4 +130,4 @@ train/train_anytop.py ... --balanced     # 按 action_label 首词分组
 |---|---|
 | [`data_loaders/truebones/data/dataset.py`](../data_loaders/truebones/data/dataset.py) | `clip_action_head_word()`、`TruebonesSampler` 的分组与质量计算 |
 | [`utils/parser_util.py`](../utils/parser_util.py) | `--balanced` |
-| [`tests/test_action_balanced_sampler.py`](../tests/test_action_balanced_sampler.py) | sqrt 质量、首词归组、物种不参与平衡、aux 预算不变 |
+| [`tests/test_action_balanced_sampler.py`](../tests/test_action_balanced_sampler.py) | sqrt 质量、首词归组、物种不参与平衡 |

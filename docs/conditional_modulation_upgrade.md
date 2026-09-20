@@ -1,6 +1,8 @@
 # AnyTop 条件注入改造：loop 相位周期修正 + action 条件强度
 
-> 状态：§2 loop 修正**已实施（CKPT 12），待重训**，见 2.6；§3 action 仍是**方案，尚未实施**，改注入方式是否有效需训练消融判定。
+> 状态：§2 loop 修正**已实施（CKPT 12），待重训**，见 2.6；§3 action AdaLN
+> **已实施（2026-09-20，`--action_label_adaln`）**，见 3.5 —— 但 §3.3 的消融**没有跑**，
+> 所以"改注入方式是否有效"至今**未被验证**。
 > 范围：`is_loop`、`action_label`。其余条件经实测现状机制无需改造，已从本方案移除（证据见附录）。
 > 证据来源：2026-09-14 在 `save/merged_locomotion_v14_fp16/model000200000.pt`（用该 run 自带的
 > `cond.npy` 快照）上做的 teacher-forced 探针与生成探针。只测了 locomotion 组。
@@ -12,7 +14,7 @@
 | 条件 | 实测问题 | 改造 | 需要 |
 |---|---|---|---|
 | `is_loop` | 生成的 loop 首尾几乎重合（接缝处停一帧），训练数据从不如此 | 环形相位表周期 `motion_frames-1 → motion_frames`；`loop_wrap_loss` 的 pose/rot 项改为接缝连续性 | CKPT bump + 重训 |
-| `action_label` | 未见过的 物种×方向 组合在 cfg=1 下不跟随标签；靠 cfg=3 才能跟随，但骨长误差、jerk 都变差约 20% | action 条件加一路逐层 AdaLN（temporal / FFN 分支输入），identity 初始化 | flag + 三组消融 |
+| `action_label` | 未见过的 物种×方向 组合在 cfg=1 下不跟随标签；靠 cfg=3 才能跟随，但骨长误差、jerk 都变差约 20% | action 条件加一路逐层 AdaLN（temporal / FFN 分支输入），identity 初始化 | flag（已落地）+ 三组消融（未跑） |
 
 顺序：**先做 loop 修正并重训，得到新 baseline，再在它上面做 action 消融**。loop 修正改变的是所有
 loop 样本的训练语义，放在同一次消融里会和 action 调制的效果混在一起。
@@ -171,6 +173,8 @@ x_ff_in = (1 + γ_l^ffn(action_repr))      * x + β_l^ffn(action_repr)        # 
 - **开关**：`--action_label_adaln`，默认关。关闭时不创建任何参数，旧 checkpoint 按原路径加载，
   不需要 CKPT bump。不要用 `strict=False` 吞掉新 key。
 
+（2026-09-20 已实施，见 §3.5。`feat/all_group` 的 group token 那句已作废：`train/v22` 不再有 group token。）
+
 ### 3.3 消融
 
 以 §2 修正后重训的模型作为 baseline，同一数据、同样的 step 数：
@@ -193,6 +197,34 @@ x_ff_in = (1 + γ_l^ffn(action_repr))      * x + β_l^ffn(action_repr)        # 
 6. 推理时把 head 置零后，上述提升消失。
 
 回退条件：A1 与 A0 或 A2 无法区分。此时 action 条件强度问题的现实解法就是提高 cfg，代价见 §3.1 表格。
+
+### 3.5 实施记录（2026-09-20，分支 `train/v22`）
+
+按 §3.2 落地，开关名 `--action_label_adaln`，默认关。与设计稿的出入只有一处：**没有实现 A2 臂**
+（γ≡0 的 β-only 变体），因为本轮不跑 baseline 对照 —— 用户决定直接带着这个改动重训
+（见 [unified_action_group_training.md](unified_action_group_training.md)）。§3.3 / §3.4 因此**未执行**，
+留作日后要做归因时的方案。
+
+代码位置：
+
+- head 在 [`GraphMotionDecoder`](../model/motion_transformer.py)（`self.action_adaln`），
+  不在 layer 上：**一个** head 一次 matmul 出全部 8 层的 (γ,β)，切片喂给每层。
+  参数量 `d² + 4·L·d²` 与"每层一个 head"完全相同，但 kernel launch 从 2L 次降到 1 次 ——
+  这一步部分是 launch 绑定的。实测 256: 2.17M / 384: 4.88M。
+- 施加点在 [`GraphMotionDecoderLayer.forward`](../model/motion_transformer.py) 的 `_modulate`：
+  只改 temporal 与 FFN 的**分支输入**，残差流保持未调制的 post-norm 值，所以逐层增益不会相乘。
+  spatial 分支不碰（它的输入已带 `embed_timesteps` 的加性偏移）。
+- temporal 的 γ/β 在 `_temporal_mha_block_sin_joint` **之外**施加，而环形相位是在该函数内部加的，
+  所以 loop 样本的相位不会被 label 缩放 —— §3.2 那条要求由调用顺序自动满足。
+- 驱动向量就是加性路径用的那个 `action_label_token`（`_build_action_label_token` 的返回值），
+  一次 Bernoulli、一个 `action_repr`。CFG 的无条件分支只把 `action_label_active` 置 False，
+  调制随之走 null 嵌入，**不存在绕过 head 的路径**（被退役的 global_energy null 就是栽在这里）。
+- 精度按 §3.2 用 `run_in_fp32`；该 helper 已从 `model/anytop.py` 移到
+  `model/motion_transformer.py`（decoder 自己要用，而 anytop 导入 motion_transformer），
+  `model.anytop.run_in_fp32` 仍然可用，是同一个函数。
+- 零初始化的回归测试在 [`tests/test_action_label_adaln.py`](../tests/test_action_label_adaln.py)：
+  拷贝权重后两个模型逐位一致（head 会消耗 RNG，光靠同 seed 不够）。
+- **CKPT_VERSION 不 bump**：默认关，关闭时不创建参数，state_dict 不变。
 
 ## 4. 探针方法（复现用）
 

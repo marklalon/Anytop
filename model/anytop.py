@@ -1,7 +1,11 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
+from model.motion_transformer import (
+    GraphMotionDecoderLayer,
+    GraphMotionDecoder,
+    run_in_fp32,
+)
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
 from utils.device_transfer import host_to_device
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
@@ -21,21 +25,6 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_LABEL_MAX_WORDS,
     CONTROLLED_VOCAB,
 )
-
-
-def run_in_fp32(module, tensor, *rest):
-    """Run a broadcast conditioning head outside autocast, on fp32 input.
-
-    These heads emit one vector per sample (or per joint) that is then added to
-    every one of ~1e6 tokens, so their backward sums over all of those tokens and
-    their weight gradients are the largest in the network -- they are the first
-    tensors to overflow fp16 as the loss scale rises. They are also tiny, so
-    fp32 costs under 1% of a training step (inside measurement noise) and cuts
-    the global parameter-gradient error by ~37%.
-    See docs/fp16_vs_bf16_precision.md.
-    """
-    with torch.autocast(device_type=tensor.device.type, enabled=False):
-        return module(tensor.float(), *rest)
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -123,6 +112,16 @@ class AnyTop(nn.Module):
         if not 0.0 <= self.direction_slot_drop_prob <= 1.0:
             raise ValueError(
                 f"direction_slot_drop_prob must be in [0, 1], got {self.direction_slot_drop_prob}"
+            )
+        # --action_label_adaln: give the action token a multiplicative pathway
+        # through the decoder on top of the additive one (GraphMotionDecoder
+        # owns the head). Meaningless without a label to drive it.
+        self.action_label_adaln = bool(kargs.get('action_label_adaln', False))
+        if self.action_label_adaln and not self.action_label_cond:
+            raise ValueError(
+                "action_label_adaln needs action_label_cond: the head is driven by "
+                "the action token, and without a label there is no token to drive "
+                "it -- the modulation would be one learned constant."
             )
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
@@ -255,7 +254,8 @@ class AnyTop(nn.Module):
                                                         cross_limb=self.cross_limb,
                                                         cross_limb_latents=self.cross_limb_latents,
                                                         cross_limb_dim=self.cross_limb_dim,
-                                                        cross_limb_last_n=self.cross_limb_last_n)
+                                                        cross_limb_last_n=self.cross_limb_last_n,
+                                                        action_label_adaln=self.action_label_adaln)
             
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
@@ -616,13 +616,9 @@ class AnyTop(nn.Module):
         makes omitting ``--action_label`` at inference land on the learned
         unconditional mode automatically.
 
-        An auxiliary row (``y['is_aux']``, a clip borrowed from another group by
-        ``--aux_group_mass``) is conditioned exactly like an own row. It used to
-        be routed by whether a ``--head_aug_words`` promotion had reached its
-        head slot, because a borrowed "attack, jump, charge" put no jump in the
-        head channel at all; with every head word pooled into that channel it
-        does, so the label is worth carrying as written and the special case is
-        gone.
+        Every row is conditioned on its label as written; there is no longer a
+        class of borrowed rows to route differently (auxiliary groups are
+        retired -- with --action_group all every clip is simply in the corpus).
         """
         if not self.action_label_cond:
             return None
@@ -1061,6 +1057,9 @@ class AnyTop(nn.Module):
             y=y,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
             loop_phase_mask=y.get('is_loop'),
+            # Same token the additive path summed in above, so a CFG-dropped row
+            # modulates by the null embedding rather than skipping the head.
+            action_adaln_cond=action_label_token if self.action_label_adaln else None,
         )
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
         return output

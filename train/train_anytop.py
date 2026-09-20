@@ -125,9 +125,8 @@ def prepare_save_dir(args):
     return save_dir
 
 def _normalized_action_group(raw):
-    """Read a recorded action_group. '' and the retired 'all' both mean "none"."""
-    group = str(raw or '').strip().lower()
-    return '' if group == 'all' else group
+    """Read a recorded action_group. 'all' is a corpus of its own, not "none"."""
+    return str(raw or '').strip().lower()
 
 
 def assert_resume_keeps_action_group(args, save_dir):
@@ -156,6 +155,8 @@ def assert_resume_keeps_action_group(args, save_dir):
         recorded = f"'{previous_group}'"
         remedy = (f"Pass --action_group {previous_group} to continue this run, or "
                   f"train '{current_group}' in its own --save_dir.")
+        # 'all' and a single group are different corpora, so this catches
+        # resuming a unified run as one group and the reverse.
     else:
         recorded = "no group (it predates the mandatory --action_group)"
         remedy = (f"There is no group to continue it as -- train '{current_group}' "
@@ -258,7 +259,6 @@ def create_training_data_loader(args):
         sample_limit=args.sample_limit,
         drop_last=True,
         action_group=getattr(args, 'action_group', ''),
-        aux_group_mass=getattr(args, 'aux_group_mass', 0.0),
         action_label_cond=getattr(args, 'action_label_cond', False),
         action_conditioning=getattr(args, 'action_conditioning', None),
         motion_cache_size=getattr(args, 'motion_cache_size', 0),

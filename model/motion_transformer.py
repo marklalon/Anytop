@@ -12,6 +12,25 @@ import torch.nn.functional as F
 CUDA_LAUNCH_BLOCKING=1
 
 
+def run_in_fp32(module, tensor, *rest):
+    """Run a broadcast conditioning head outside autocast, on fp32 input.
+
+    These heads emit one vector per sample (or per joint) that is then added to
+    every one of ~1e6 tokens, so their backward sums over all of those tokens and
+    their weight gradients are the largest in the network -- they are the first
+    tensors to overflow fp16 as the loss scale rises. They are also tiny, so
+    fp32 costs under 1% of a training step (inside measurement noise) and cuts
+    the global parameter-gradient error by ~37%.
+    See docs/fp16_vs_bf16_precision.md.
+
+    Defined here rather than in model.anytop because the decoder's own
+    conditioning heads need it too and anytop imports this module, not the
+    other way round; ``model.anytop.run_in_fp32`` re-exports this function.
+    """
+    with torch.autocast(device_type=tensor.device.type, enabled=False):
+        return module(tensor.float(), *rest)
+
+
 class QKNorm(nn.Module):
     """Per-head RMS normalization of query/key vectors before the attention
     dot product.
@@ -990,17 +1009,62 @@ class GraphMultiHeadAttention(nn.Module):
         assert x.size() == orig_q_size
         return x
 
+# The two branch inputs the action AdaLN modulates, each with a scale and a
+# shift: the temporal block's input and the feed-forward block's input
+# (docs/conditional_modulation_upgrade.md section 3.2). The SPATIAL branch is
+# deliberately left alone -- its input already carries embed_timesteps' additive
+# offset, so a second injection there would be redundant.
+ACTION_ADALN_BRANCHES = 2
+ACTION_ADALN_PARAMS_PER_LAYER = 2 * ACTION_ADALN_BRANCHES
+ADALN_TEMPORAL, ADALN_FF = 0, 1
+
+
+def _modulate(x: Tensor, adaln: Optional[Tensor], branch: int) -> Tensor:
+    """Scale and shift ONE branch's input: ``(1 + gamma) * x + beta``.
+
+    ``adaln`` is this layer's (B, 4, d_model) slice, or None when the run has no
+    action AdaLN (then this is the identity and costs nothing). ``x`` is
+    (frames, B, njoints, d_model), so the modulation broadcasts over frames and
+    joints: a per-sample, per-channel gain, which is the authority the purely
+    additive condition token lacks.
+
+    This feeds the BRANCH only. The residual stream stays the unmodulated
+    post-norm activation, so the identity path through the stack is untouched
+    and the gains cannot compound layer over layer.
+
+    The head is zero-initialised, so gamma = 0 and beta = 0 on a fresh model and
+    this reproduces the unmodulated layer exactly.
+    """
+    if adaln is None:
+        return x
+    gamma = adaln[:, 2 * branch].to(x.dtype).view(1, -1, 1, x.shape[-1])
+    beta = adaln[:, 2 * branch + 1].to(x.dtype).view(1, -1, 1, x.shape[-1])
+    return x * (1.0 + gamma) + beta
+
+
 class GraphMotionDecoder(nn.TransformerDecoder):
     def __init__(self, decoder_layer, num_layers, norm=None,
                  num_topology_codes=NUM_TOPOLOGY_CODES, num_edge_codes=NUM_EDGE_CODES,
                  value_emb=False,
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
-                 cross_limb_last_n=0):
+                 cross_limb_last_n=0, action_label_adaln=False):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
 
         self.d_model = decoder_layer.d_model
         self.nheads = decoder_layer.heads
+        # Table sizes come from ``topology_relations`` rather than being written
+        # here: the dataset emits those indices, and a mismatch surfaces only as an
+        # out-of-bounds gather deep inside the attention bias.
+        self.topology_key_emb = nn.Embedding(num_topology_codes, self.d_model)
+        self.edge_key_emb = nn.Embedding(num_edge_codes, self.d_model)
+        self.topology_query_emb = nn.Embedding(num_topology_codes, self.d_model)
+        self.edge_query_emb = nn.Embedding(num_edge_codes, self.d_model)
+        self.value_emb_flag = value_emb
+        if value_emb:
+            self.topology_value_emb = nn.Embedding(num_topology_codes, self.d_model)
+            self.edge_value_emb = nn.Embedding(num_edge_codes, self.d_model)
+
         # 0 -> apply at every layer; N>0 -> only the last N layers. Each active
         # layer gets its own independent block, so this also scales the
         # cross-limb parameter count.
@@ -1020,17 +1084,39 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             ])
         else:
             self.cross_limb_blocks = None
-        # Table sizes come from ``topology_relations`` rather than being written
-        # here: the dataset emits those indices, and a mismatch surfaces only as an
-        # out-of-bounds gather deep inside the attention bias.
-        self.topology_key_emb = nn.Embedding(num_topology_codes, self.d_model)
-        self.edge_key_emb = nn.Embedding(num_edge_codes, self.d_model)
-        self.topology_query_emb = nn.Embedding(num_topology_codes, self.d_model)
-        self.edge_query_emb = nn.Embedding(num_edge_codes, self.d_model)
-        self.value_emb_flag = value_emb
-        if value_emb:
-            self.topology_value_emb = nn.Embedding(num_topology_codes, self.d_model)
-            self.edge_value_emb = nn.Embedding(num_edge_codes, self.d_model)
+
+        # --action_label_adaln: the action condition gets a MULTIPLICATIVE
+        # pathway on top of the additive token summed into timesteps_emb
+        # (docs/conditional_modulation_upgrade.md section 3.2). The additive one
+        # can only translate the residual stream, and every sublayer output is
+        # LayerNormed right after its residual add, which pushes a uniform
+        # translation back down; a per-channel gain is what lets the label
+        # amplify a small input difference (two labels sharing a slot sit at
+        # cosine ~0.84 by construction, e.g. 'turn, left' against
+        # 'run, turn, left') into a large behavioural one, instead of leaving
+        # that entirely to --action_label_cfg_scale and its quality cost.
+        #
+        # Allocated after the decoder's other parameters so the flag does not
+        # reorder their initialisation; it does still consume RNG, so a seeded
+        # with/without comparison has to copy weights rather than trust the seed
+        # (tests/test_action_label_adaln.py does).
+        #
+        # ONE head for every layer, not one per layer: same parameter count
+        # (d^2 + 4*L*d^2 against L*(d^2 + 4*d^2)) for one matmul instead of 2L,
+        # which matters on a step that is partly kernel-launch bound.
+        if action_label_adaln:
+            self.action_adaln = nn.Sequential(
+                nn.Linear(self.d_model, self.d_model),
+                nn.SiLU(),
+                nn.Linear(self.d_model, num_layers * ACTION_ADALN_PARAMS_PER_LAYER * self.d_model),
+            )
+            # Zero-init: gamma = beta = 0 on a fresh model, so training starts
+            # from exactly the unmodulated architecture and the head only ever
+            # has to learn a departure from it. No residual gate.
+            nn.init.zeros_(self.action_adaln[-1].weight)
+            nn.init.zeros_(self.action_adaln[-1].bias)
+        else:
+            self.action_adaln = None
 
     def _expand_relation_heads(self, relation: Tensor) -> Tensor:
         if relation.dim() == 3:
@@ -1048,7 +1134,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 tgt_key_padding_mask: Optional[Tensor] = None,
             memory_key_padding_mask: Optional[Tensor] = None, y=None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
-            loop_phase_mask: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            loop_phase_mask: Optional[Tensor] = None,
+            action_adaln_cond: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._expand_relation_heads(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
         output = tgt
@@ -1092,6 +1179,17 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             self.num_layers - self.cross_limb_last_n
             if self.cross_limb_last_n > 0 else 0
         )
+        # (B, L, 4, d_model), built once and sliced per layer. The driver is the
+        # SAME token the additive path uses -- one Bernoulli draw, one
+        # action_repr -- which is what keeps classifier-free guidance honest: a
+        # hard-dropped row carries action_label_null_emb, so its modulation is
+        # the null token's modulation rather than a bypass of the head (the
+        # failure mode of the retired global_energy null).
+        action_adaln = None
+        if self.action_adaln is not None and action_adaln_cond is not None:
+            action_adaln = run_in_fp32(self.action_adaln, action_adaln_cond).view(
+                B, self.num_layers, ACTION_ADALN_PARAMS_PER_LAYER, self.d_model
+            )
         for layer_ind, mod in enumerate(self.layers):
             edge_value_emb = None
             topology_value_emb = None
@@ -1108,7 +1206,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     cross_limb_block=cl_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     loop_phase_embedding=loop_phase_embedding,
-                    cross_limb_time_embedding=cross_limb_time_embedding)
+                    cross_limb_time_embedding=cross_limb_time_embedding,
+                    action_adaln=None if action_adaln is None else action_adaln[:, layer_ind])
         if self.norm is not None:
             output = self.norm(output)
         return output
@@ -1130,7 +1229,10 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.temporal_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
         # The cross-limb pathway is owned by GraphMotionDecoder (one block per
-        # active layer) and passed into forward(), not held here.
+        # active layer) and passed into forward(), not held here. The action
+        # AdaLN head is owned there too: one head emits every layer's
+        # modulation in a single matmul, and each layer is handed its own
+        # (B, 4, d_model) slice.
         self.temporal_phase_scale = nn.Parameter(torch.zeros(1))
 
     # spatial attention block
@@ -1196,14 +1298,20 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         cross_limb_block: Optional[nn.Module] = None,
         cross_limb_unreliable_mask: Optional[Tensor] = None,
         loop_phase_embedding: Optional[Tensor] = None,
-        cross_limb_time_embedding: Optional[Tensor] = None) -> Tensor:
+        cross_limb_time_embedding: Optional[Tensor] = None,
+        action_adaln: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
         bs = x.shape[1]
         x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
         spatial_attn_output = self._spatial_mha_block(x, topology_rel, edge_rel, edge_key_emb, edge_query_emb, edge_value_emb,
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
-        x = self.norm2(x + self._temporal_mha_block_sin_joint(x, None, loop_phase_embedding=loop_phase_embedding))
+        # Branch input only; the residual adds to the unmodulated x. The
+        # modulation lands BEFORE the circular phase, which _temporal_mha_block
+        # sums in, so a loop sample's phase is never scaled by the label.
+        x = self.norm2(x + self._temporal_mha_block_sin_joint(
+            _modulate(x, action_adaln, ADALN_TEMPORAL), None,
+            loop_phase_embedding=loop_phase_embedding))
         if cross_limb_block is not None:
             x = cross_limb_block(
                 x,
@@ -1211,5 +1319,5 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 unreliable_mask=cross_limb_unreliable_mask,
                 time_embedding=cross_limb_time_embedding,
             )
-        x = self.norm3(x + self._ff_block(x))
+        x = self.norm3(x + self._ff_block(_modulate(x, action_adaln, ADALN_FF)))
         return x

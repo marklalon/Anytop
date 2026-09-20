@@ -63,10 +63,11 @@ _SIMILAR_SPECIES_LIMIT = 16
 def label_key(action_group, action_label) -> str:
     """The table key for one (group, canonical label) pair.
 
-    The group is part of the key because a label is only ever sampled by the
-    checkpoint trained on its group, and the same head word carries a different
-    duration in another group (a stationary "walk" in place is not a locomotion
-    "walk, forward").
+    The group is part of the key because a single-group checkpoint only ever
+    samples its own group's labels, and the same head word could carry a
+    different duration in another group. A request with an EMPTY group (an
+    ``--action_group all`` checkpoint) matches the label part across every
+    group; see :func:`_group_matches`.
     """
     group = str(action_group or "").strip().lower()
     label = str(action_label or "").strip()
@@ -199,13 +200,33 @@ def _lengths_for(cond_entry, matches, loop_only: bool) -> list[int]:
     return lengths
 
 
+def _group_matches(key_group, wanted_group) -> bool:
+    """Does a table key's group satisfy the request's?
+
+    An EMPTY ``wanted_group`` means "any group". That is what an
+    ``--action_group all`` checkpoint asks for: it was trained on the whole
+    corpus, so it has no group of its own to restrict the pool by. Nothing is
+    lost by the wildcard -- the label's first head word determines the group on
+    its own across the corpus, so at most one group can hold a given label
+    anyway, and the wildcard just saves having to say which.
+    """
+    return not wanted_group or key_group == wanted_group
+
+
 def _exact_matcher(action_group, action_label):
-    wanted = label_key(action_group, action_label)
-    return lambda key: key == wanted
+    group = str(action_group or "").strip().lower()
+    wanted = label_key("", action_label).lstrip("|")
+
+    def matches(key):
+        key_group, key_label = split_label_key(key)
+        return key_label == wanted and _group_matches(key_group, group)
+
+    return matches
 
 
 def _head_word_matcher(action_group, action_label):
-    """Same group and same action head words, whatever the modifiers.
+    """Same group (or any, when none is asked for) and same action head words,
+    whatever the modifiers.
 
     'walk, forward, fast' falls back to every 'walk' clip of the group: the head
     word is what sets the duration, a direction or a hands token does not.
@@ -218,7 +239,7 @@ def _head_word_matcher(action_group, action_label):
     def matches(key):
         key_group, key_label = split_label_key(key)
         candidate = tuple(head_words_in(vocab_words_in(key_label)))
-        return key_group == group and candidate == wanted
+        return candidate == wanted and _group_matches(key_group, group)
 
     return matches
 

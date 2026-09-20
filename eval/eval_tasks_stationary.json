@@ -1,7 +1,7 @@
 {
   "_comment": "Evaluation task battery for eval_checkpoint.py. checkpoint.RUN_NAME is required; checkpoint.MODEL_FILE is optional and defaults to the newest model*.pt. Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task.",
   "checkpoint": {
-    "RUN_NAME": "merged_stationary_v20"
+    "RUN_NAME": "merged_all_v22"
   },
   "tasks": [    
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "idle", "--loop"] },

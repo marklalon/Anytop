@@ -200,10 +200,12 @@ def _resolve_action_condition(args, model):
 
     ``args.action_group`` is the group this checkpoint was trained on, read out of
     its args.json by parser_util.apply_checkpoint_action_group. There is no
-    ``--action_group`` flag at generation: each group trains its own model, so the
-    group is a property of the weights and a foreign one would describe a
-    different checkpoint. It is empty only for a checkpoint that predates the
-    mandatory training flag.
+    ``--action_group`` flag at generation: a single-group checkpoint IS its
+    group, and a foreign one would describe a different checkpoint. It is empty
+    for a checkpoint trained with ``--action_group all`` (and for one predating
+    the mandatory training flag), which is not an error: the label carries the
+    group already, and the value only ever reaches the clip-length prior, whose
+    matchers read an empty group as "any group".
     """
     label = str(getattr(args, 'action_label', '') or '').strip()
     group = str(getattr(args, 'action_group', '') or '').strip().lower()
@@ -214,7 +216,6 @@ def _resolve_action_condition(args, model):
         action_label_slots,
     )
     from data_loaders.truebones.truebones_utils.motion_labels import (
-        ACTION_GROUPS,
         ActionLabelError,
         canonical_action_label,
         parse_action_label,
@@ -226,18 +227,10 @@ def _resolve_action_condition(args, model):
             'ERROR: --action_label was passed but this checkpoint was trained '
             'without --action_label_cond. The label would have no effect.'
         )
-    if not group:
-        sys.exit(
-            "ERROR: --action_label needs an action group, and this checkpoint's "
-            "args.json records none (it predates the mandatory --action_group). "
-            "Each group trains its own model, so the group is a property of the "
-            "checkpoint -- there is no --action_group at generation to supply it. "
-            "Sample a checkpoint trained with --action_group (one of "
-            f"{', '.join(ACTION_GROUPS)}) instead."
-        )
     # No group-validity check here: apply_checkpoint_action_group already
-    # normalizes anything but ''/a legal group to '' at load time, so past the
-    # guard above ``group`` is always one of ACTION_GROUPS.
+    # normalizes anything but ''/a legal group to '' at load time, so ``group``
+    # is either one of ACTION_GROUPS or '' (an --action_group all checkpoint,
+    # meaning "any group").
     #
     # Labels are exact controlled tokens. An unrecognized one is a HARD ERROR,
     # not a pass-through: there is no synonym translation any more, and letting
@@ -250,7 +243,7 @@ def _resolve_action_condition(args, model):
     # head, then the remaining modifiers follow. Head-word order is kept as
     # given: the first head word outweighs any later one in the head slot,
     # so reordering them would change the condition; the corpus spells one
-    # word set one way per group, and the prompt's order is the caller's call.
+    # word set one way, and the prompt's order is the caller's call.
     try:
         tokens = parse_action_label(label)
     except ActionLabelError as exc:

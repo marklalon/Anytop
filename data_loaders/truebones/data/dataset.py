@@ -22,10 +22,8 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_GROUPS,
-    AUX_ACTION_GROUPS_KEY,
     ActionLabelError,
     HEAD_VOCAB,
-    aux_key_present_in,
     head_words_in,
     load_motion_metadata,
     normalize_action_group,
@@ -125,9 +123,8 @@ def resolve_requested_action_group(raw_action_group) -> str:
     comma list is a stale ``--action_tags`` invocation and is rejected rather than
     silently taking the first entry.
 
-    The unfiltered ``''`` is for callers that train no per-group model and just
-    want every clip (video2pose). AnyTop's own ``--action_group`` is mandatory and
-    three-valued, so it never reaches this function empty.
+    The unfiltered ``''`` is what ``--action_group all`` resolves to, and what
+    callers that train no per-group model at all pass (video2pose).
     """
     requested = normalize_action_group(raw_action_group)
     if not requested or requested == "all":
@@ -153,58 +150,6 @@ def filter_motion_names_by_action_group(
     for motion_name in motion_names:
         motion_metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
         if normalize_action_group(motion_metadata.get('action_group')) == requested_action_group:
-            filtered.add(motion_name)
-    return filtered
-
-
-def aux_action_groups_of(motion_metadata) -> tuple[str, ...]:
-    """The groups this clip trains as a SUPPLEMENT, never as its identity.
-
-    ``action_group`` alone decides which model owns the clip, which split it
-    lands in and which length-prior bucket it fills. An aux group only adds it
-    to another group's train pool (see
-    docs/aux_group_and_head_word_augmentation.md).
-    """
-    raw = (motion_metadata or {}).get(AUX_ACTION_GROUPS_KEY) or ()
-    return tuple(normalize_action_group(value) for value in raw)
-
-
-def require_aux_group_sidecars_migrated(metadata_by_namespace, aux_group_mass):
-    """Reject any source whose sidecar predates auxiliary groups."""
-    stale_sources = [
-        namespace for namespace, lookup in metadata_by_namespace.items()
-        if not aux_key_present_in(lookup)
-    ]
-    if stale_sources:
-        raise RuntimeError(
-            f"--aux_group_mass {aux_group_mass} was passed, but "
-            f"action_labels.jsonl has no '{AUX_ACTION_GROUPS_KEY}' key in "
-            f"source(s) {stale_sources}. Migrate each sidecar "
-            "(docs/aux_group_and_head_word_augmentation.md §7) or drop the flag."
-        )
-
-
-def filter_motion_names_by_aux_action_group(
-    motion_names,
-    raw_action_group,
-    motion_metadata_lookup,
-):
-    """Names whose AUX list names *raw_action_group*.
-
-    Disjoint from :func:`filter_motion_names_by_action_group` by construction:
-    a row may not list its own group as auxiliary
-    (``motion_labels._validate_aux_action_groups``), so no clip can be counted
-    both as a member and as a supplement -- which is what keeps the two mass
-    pools in :class:`TruebonesSampler` from double-counting it.
-    """
-    requested_action_group = resolve_requested_action_group(raw_action_group)
-    if not requested_action_group:
-        return set()
-
-    filtered = set()
-    for motion_name in motion_names:
-        motion_metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
-        if requested_action_group in aux_action_groups_of(motion_metadata):
             filtered.add(motion_name)
     return filtered
 
@@ -720,13 +665,11 @@ def _primary_split_results(
 ) -> dict[str, set[str]]:
     """Assign this group's OWN clips to train/val/test, species held out whole.
 
-    Membership here is ``action_group`` only. Auxiliary clips must never reach
-    this function: it shuffles the object types that the group filter left and
-    slices them by count, so one extra species would re-deal every later
-    species into a different split -- silently making every earlier run
-    incomparable, and letting a species held out for evaluation reappear in
-    train through its aux clips. Aux clips are added afterwards, to the train
-    set only, by :func:`load_aux_motion_names_for_train`.
+    Membership here is ``action_group`` only: it shuffles the object types that
+    the group filter left and slices them by count, so one extra species would
+    re-deal every later species into a different split -- silently making every
+    earlier run incomparable, and letting a species held out for evaluation
+    reappear in train.
     """
     all_motion_names = set(_list_motion_files(motion_dir))
     filtered_motion_names = filter_motion_names_by_action_group(
@@ -796,66 +739,6 @@ def load_motion_names_for_split_with_action_group(
     return selected_motion_names
 
 
-def load_aux_motion_names_for_train(
-    split: str,
-    motion_dir: str,
-    raw_action_group,
-    motion_metadata_lookup,
-) -> set[str]:
-    """Auxiliary clips this group may train on, for the TRAIN split only.
-
-    Two rules, both about not corrupting evaluation:
-
-    * Only the train split receives them. Val and test stay exactly the
-      group's own clips, so a metric computed on them keeps meaning what it
-      meant before aux groups existed.
-    * A clip whose species the primary split holds out **for this group** is
-      dropped, however the aux list is written -- otherwise a held-out species
-      would walk back into train through the side door. A species with no
-      primary verdict at all (it has no clip in this group) is NOT held out and
-      is kept: that case is the whole point, and it cannot leak because the
-      species is absent from this group's val/test as well.
-
-    The manifests on disk are untouched: they are written from primary
-    membership alone, so they stay byte-identical whether or not aux is on.
-    """
-    requested_action_group = resolve_requested_action_group(raw_action_group)
-    if not requested_action_group:
-        return set()
-
-    aux_names = filter_motion_names_by_aux_action_group(
-        set(_list_motion_files(motion_dir)),
-        raw_action_group,
-        motion_metadata_lookup,
-    )
-    if not aux_names:
-        return set()
-    if split == ALL_SPLIT_NAME:
-        # 'all' holds nothing out, so there is nothing to protect.
-        return aux_names
-    if split != 'train':
-        return set()
-
-    all_split_results = _primary_split_results(
-        motion_dir, raw_action_group, motion_metadata_lookup
-    )
-    held_out_object_types: set[str] = set()
-    for split_name in SUPPORTED_SPLITS:
-        if split_name == 'train':
-            continue
-        for motion_name in all_split_results[split_name]:
-            metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
-            held_out_object_types.add(str(metadata.get('object_type')))
-
-    kept = set()
-    for motion_name in aux_names:
-        metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
-        if str(metadata.get('object_type')) in held_out_object_types:
-            continue
-        kept.add(motion_name)
-    return kept
-
-
 def clip_id(namespace: str, motion_name: str) -> str:
     """Composite clip key ``"<namespace>/<file>.npy"``.
 
@@ -886,30 +769,6 @@ def load_allowed_motion_names_per_source(
         source.namespace: load_motion_names_for_split_with_action_group(
             split,
             source.root,
-            source.motion_dir,
-            raw_action_group,
-            metadata_by_namespace[source.namespace],
-        )
-        for source in sources
-    }
-
-
-def load_aux_motion_names_per_source(
-    split: str,
-    sources,
-    raw_action_group,
-    metadata_by_namespace: dict[str, dict[str, dict[str, object]]],
-) -> dict[str, set[str]]:
-    """Per-source auxiliary clips, resolved the same way as the primary split.
-
-    Separate from :func:`load_allowed_motion_names_per_source` rather than
-    folded into its return value: that one has a caller outside training
-    (``tools/sample_augmented_bvh.py``) which wants the group's own clips and
-    nothing else.
-    """
-    return {
-        source.namespace: load_aux_motion_names_for_train(
-            split,
             source.motion_dir,
             raw_action_group,
             metadata_by_namespace[source.namespace],
@@ -1031,7 +890,7 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, aux_motion_names: Optional[dict[str, set[str]]] = None, aux_group_mass: float = 0.0):
+    def __init__(self, opt, cond_dict, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None):
         self.opt = opt
         # None means the caller does not want label conditioning, so no word ids
         # are attached at all. The bundle is the model's bundle: the loader emits
@@ -1059,29 +918,10 @@ class MotionDataset(data.Dataset):
             for object_key, entry in cond_dict.items()
         }
         self.balanced = balanced
-        # Auxiliary clips: borrowed from another group, present only in train,
-        # and held to a fixed share of the sampling mass so this group's own
-        # distribution keeps the rest (docs/aux_group_and_head_word_augmentation.md).
-        self.aux_motion_names = aux_motion_names or {}
-        self.aux_group_mass = float(aux_group_mass or 0.0)
-        if not 0.0 <= self.aux_group_mass < 1.0:
-            raise ValueError(
-                f"aux_group_mass must be in [0, 1), got {self.aux_group_mass}. "
-                "It is the share of sampling mass the borrowed clips receive; "
-                "1.0 would leave this group's own clips none."
-            )
-        if self.aux_group_mass <= 0.0:
-            # Off means ABSENT, not zero-weighted: a zero-weight row would still
-            # sit in name_list and shift the joint-bucket population, the length
-            # statistics and the dataset size.
-            self.aux_motion_names = {}
-        # A weighted sampler drives indexing when species are balanced OR when
-        # auxiliary clips have to be held to their mass budget; it yields
-        # absolute name_list indices, so __getitem__ must skip the pointer offset
-        # in that case.
-        self.use_weighted_sampler = bool(self.balanced) or bool(
-            self.aux_group_mass > 0.0 and any(self.aux_motion_names.values())
-        )
+        # A weighted sampler drives indexing when the action head words are
+        # balanced; it yields absolute name_list indices, so __getitem__ must
+        # skip the pointer offset in that case.
+        self.use_weighted_sampler = bool(self.balanced)
         self.sample_limit = max(0, int(sample_limit))
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
         self.motion_cache = OrderedDict()
@@ -1115,10 +955,9 @@ class MotionDataset(data.Dataset):
             cache_dirty = False
 
             all_motion_files = [name for name in os.listdir(source.motion_dir) if name.endswith('.npy')]
-            aux_for_source = set(self.aux_motion_names.get(namespace, set()))
             allowed_for_source = (
                 None if allowed_motion_names is None
-                else (allowed_motion_names.get(namespace, set()) | aux_for_source)
+                else allowed_motion_names.get(namespace, set())
             )
             if allowed_for_source is not None:
                 all_motion_files = [name for name in all_motion_files if name in allowed_for_source]
@@ -1189,20 +1028,6 @@ class MotionDataset(data.Dataset):
         self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
         self.name_list = name_list
-        # Aligned with name_list, so the sampler can split the mass without
-        # re-deriving membership from the metadata a second time.
-        self.aux_mask = np.array(
-            [
-                data_dict[name]['motion_name']
-                in self.aux_motion_names.get(data_dict[name]['source_namespace'], ())
-                for name in name_list
-            ],
-            dtype=bool,
-        )
-        # Also on the entry, so a sample prepared BY NAME (eval, tools) carries
-        # the flag without the caller having to know its name_list position.
-        for name, is_aux in zip(name_list, self.aux_mask):
-            data_dict[name]['is_aux'] = bool(is_aux)
         self.reset_min_len(self.min_length)
 
     def reset_min_len(self, length):
@@ -1327,9 +1152,6 @@ class MotionDataset(data.Dataset):
         # The composite clip id, not the bare filename: two sources may hold the
         # same filename, and this value is what training logs report.
         motion_metadata['motion_name'] = name
-        # Borrowed from another action group: the model promotes an eligible
-        # head word or routes this row's label to the unconditional branch.
-        motion_metadata['is_aux'] = bool(data.get('is_aux', False))
         is_loop = bool(motion_metadata.get('is_loop'))
 
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
@@ -1583,8 +1405,6 @@ class TruebonesSampler(WeightedRandomSampler):
         # file name: after merging, 'Horse_Idle_1.npy' exists under two
         # namespaces with two sidecars behind it.
         data_dict = motion_dataset.data_dict
-        aux_mask = getattr(motion_dataset, 'aux_mask', None)
-        aux_group_mass = float(getattr(motion_dataset, 'aux_group_mass', 0.0) or 0.0)
         balanced = bool(getattr(motion_dataset, 'balanced', False))
 
         # A fixed group order (the head vocabulary) keeps the weights
@@ -1602,22 +1422,17 @@ class TruebonesSampler(WeightedRandomSampler):
                 entry.get('motion_metadata'), entry.get('motion_name', name_list[index])
             )
 
-        def _pool_indices(want_aux: bool) -> dict[str, list[int]]:
+        def _pool_indices() -> dict[str, list[int]]:
             indices_by_group: dict[str, list[int]] = defaultdict(list)
             for i in range(pointer, len(name_list)):
-                is_aux = bool(aux_mask[i]) if aux_mask is not None else False
-                if is_aux != want_aux:
-                    continue
                 indices_by_group[_group_of(i)].append(i)
             return indices_by_group
 
         def _fill(indices_by_group: dict[str, list[int]], pool_mass: float) -> list[tuple[str, int, float]]:
-            """Spread *pool_mass* over one pool, group-fairly, in place.
+            """Spread *pool_mass* over the pool, group-fairly, in place.
 
             Unbalanced runs put the whole pool in one group, so this
             weights every clip alike -- what a plain RandomSampler already did.
-            Turning the weighted sampler on for the aux budget alone does not
-            silently start balancing anything.
             """
             non_empty = [
                 (group, indices_by_group[group])
@@ -1649,24 +1464,12 @@ class TruebonesSampler(WeightedRandomSampler):
                 summary.append((group, n, group_mass))
             return summary
 
-        own_pool = _pool_indices(want_aux=False)
-        aux_pool = _pool_indices(want_aux=True) if aux_mask is not None else {}
-        has_aux = any(aux_pool.values())
-
-        if not own_pool and not has_aux:
+        own_pool = _pool_indices()
+        if not own_pool:
             raise RuntimeError(f"No samples found in split with pointer={pointer}. "
                              f"Available samples: {[name_list[i] for i in range(pointer, min(pointer+5, len(name_list)))]}")
 
-        # The budget is a share of the TOTAL mass, not a per-clip factor: however
-        # many clips the aux pool holds, this group's own clips keep 1 - m of the
-        # draws. That is the one property that makes a large aux pool safe.
-        mass = aux_group_mass if has_aux else 0.0
-        if not own_pool:
-            # Degenerate but legal (every clip in this split is borrowed):
-            # give the aux pool everything rather than emitting all-zero weights.
-            mass = 1.0
-        own_summary = _fill(own_pool, 1.0 - mass)
-        _fill(aux_pool, mass)
+        own_summary = _fill(own_pool, 1.0)
 
         if balanced and own_summary and os.environ.get("LOCAL_RANK", "0") == "0":
             # One line, once per node (rank 0 only): the sampled action mix is
@@ -1694,7 +1497,6 @@ class Truebones(data.Dataset):
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
         self.action_group = kwargs.get('action_group', '')
-        self.aux_group_mass = float(kwargs.get('aux_group_mass', 0.0) or 0.0)
         self.action_label_cond = bool(kwargs.get('action_label_cond', False))
         # One bundle per run: the training entry point builds it and hands the
         # same object to the model, so loader-side word ids and model-side word
@@ -1757,32 +1559,6 @@ class Truebones(data.Dataset):
             self.action_group,
             motion_metadata_lookup,
         )
-        aux_motion_names = {}
-        if self.aux_group_mass > 0.0:
-            # A migrated source may have no aux clips for this group; an
-            # unmigrated source has no aux key at all. Check every source so a
-            # migrated one cannot hide an older sidecar in a merged corpus.
-            require_aux_group_sidecars_migrated(
-                motion_metadata_lookup, self.aux_group_mass
-            )
-            aux_motion_names = load_aux_motion_names_per_source(
-                split,
-                opt.sources,
-                self.action_group,
-                motion_metadata_lookup,
-            )
-            aux_total = sum(len(names) for names in aux_motion_names.values())
-            if aux_total == 0:
-                print(
-                    f"[dataset] action_group={self.action_group!r} split={split!r}: no auxiliary "
-                    f"clips match, --aux_group_mass {self.aux_group_mass} is a no-op for this group."
-                )
-            else:
-                print(
-                    f"[dataset] action_group={self.action_group!r} split={split!r}: {aux_total} "
-                    f"auxiliary clip(s) borrowed from other groups, holding "
-                    f"{self.aux_group_mass:.0%} of the sampling mass."
-                )
         self.motion_dataset = MotionDataset(
             self.opt,
             cond_dict,
@@ -1792,8 +1568,6 @@ class Truebones(data.Dataset):
             allowed_motion_names=allowed_motion_names,
             motion_metadata_lookup=motion_metadata_lookup,
             action_conditioning=self.action_conditioning,
-            aux_motion_names=aux_motion_names,
-            aux_group_mass=self.aux_group_mass,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \

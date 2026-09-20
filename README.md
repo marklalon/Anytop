@@ -35,7 +35,7 @@ under `docs/` may describe superseded intermediate states.
 
 ### Evaluation
 - **Distribution-Based Motion Quality Scorer** — Low-shot weighted-reference evaluation without autoencoders or discriminators. Scores macro distribution fidelity and local joint naturalness.
-- **Action Group Split** — Train one model per action group: `--action_group locomotion|stationary|transition` is required at training and takes exactly one of the three (no `all`, no list). The group is recorded in the checkpoint's `args.json`, and generation has no `--action_group` flag at all — it reads the group from there, so a checkpoint can only ever be sampled as the group it was trained on.
+- **Action Group Split** — `--action_group` is required at training and selects the corpus: one of `locomotion|stationary|transition`, or `all` for one model over every group (no lists). The value is recorded in the checkpoint's `args.json`, and generation has no `--action_group` flag at all — it reads the group from there, so a single-group checkpoint can only ever be sampled as the group it was trained on. An `all` checkpoint carries no group condition: the action label's first head word already determines the group across the whole corpus. See [docs/unified_action_group_training.md](docs/unified_action_group_training.md).
 - **Text-to-Motion Conditioning** — `--action_label_cond` looks up frozen T5 embeddings per controlled-vocabulary word, pools them into four separate role slots (head/action, direction, modifier, hands; every head word of the label feeds the head slot, the first one weighted above the rest), and projects the concatenated channels into the timestep condition. Use `--action_label "run, forward"` at generation time and `--action_label_cfg_scale` for classifier-free guidance.
 - **Semantic Joint Groups** — Automatic root/axial/limbs grouping from skeleton metadata for per-group evaluation.
 
@@ -158,12 +158,14 @@ Horse --loop --action_label "run, forward"`).
 train_all.bat
 ```
 
-Training is split by action group: `--action_group` is mandatory and each group
-trains its own model, so there is no single training script. `train_all.bat`
-just calls `train_locomotion.bat`, `train_stationary.bat` and
-`train_transition.bat` in sequence; run one of those directly to train a single
-group. The full argument set of the current runs lives in those three scripts;
-every flag is a plain CLI option of `python train/train_anytop.py --help`.
+`train_all.bat` trains ONE model over every group (`--action_group all`, no
+group condition, `--balanced`) and is the only training script — see
+[docs/unified_action_group_training.md](docs/unified_action_group_training.md).
+The per-group scripts (`train_locomotion.bat` / `train_stationary.bat` /
+`train_transition.bat`) are gone; to train a single group, run the same command
+with `--action_group locomotion|stationary|transition`. The full argument set of
+the current run lives in that script; every flag is a plain CLI option of
+`python train/train_anytop.py --help`.
 
 ## Acknowledgments
 We want to thank the following contributors that our code is based on:

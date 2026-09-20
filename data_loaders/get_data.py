@@ -66,7 +66,6 @@ def get_dataset(
     objects_subset="all",
     sample_limit=0,
     action_group='',
-    aux_group_mass=0.0,
     action_label_cond=False,
     action_conditioning=None,
     motion_cache_size=0,
@@ -83,7 +82,6 @@ def get_dataset(
         objects_subset=objects_subset,
         sample_limit=sample_limit,
         action_group=action_group,
-        aux_group_mass=aux_group_mass,
         action_label_cond=action_label_cond,
         action_conditioning=action_conditioning,
         motion_cache_size=motion_cache_size,
@@ -107,7 +105,6 @@ def get_dataset_loader(
     shuffle=True,
     drop_last=True,
     action_group='',
-    aux_group_mass=0.0,
     action_label_cond=False,
     action_conditioning=None,
     motion_cache_size=0,
@@ -132,7 +129,6 @@ def get_dataset_loader(
         objects_subset=objects_subset,
         sample_limit=sample_limit,
         action_group=action_group,
-        aux_group_mass=aux_group_mass,
         action_label_cond=action_label_cond,
         action_conditioning=action_conditioning,
         motion_cache_size=motion_cache_size,
@@ -144,8 +140,7 @@ def get_dataset_loader(
     )
     collate = truebones_batch_collate
     sampler = None
-    # A weighted sampler is needed for action balancing (--balanced) and for
-    # holding auxiliary clips to their --aux_group_mass share; the dataset owns
+    # A weighted sampler is needed for action balancing (--balanced); the dataset owns
     # that decision so both callers agree on it.
     if dataset.motion_dataset.use_weighted_sampler:
         from data_loaders.truebones.data.dataset import TruebonesSampler

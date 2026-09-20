@@ -146,9 +146,10 @@ checkpoint 里是**不同的条件向量**，标签失去「跨 group 同义」�
 2. **位置路由（契约 5，CKPT 14–16）**：head 槽只装首词，后续主词进 modifier 槽。修掉了上面两条，
    但**整体删除了第二主词对 head 通道的贡献**——全库 3635 条里 289 条双主词，它们的
    `jump` / `turn` / `roll` 在 head 通道上一点份额都没有。这在 transition 组上直接表现为
-   `--action_label jump` 的监督塌陷（54 条 / 5 个四足物种，见
-   [`aux_group_and_head_word_augmentation.md`](aux_group_and_head_word_augmentation.md) §1），
-   曾用训练期的 `--head_aug_words` / `--head_aug_prob` 随机提升来补，**现已删除**。
+   `--action_label jump` 的监督塌陷（54 条 / 5 个四足物种），
+   曾用训练期的 `--head_aug_words` / `--head_aug_prob` 随机提升和 aux group 借 clip 来补，
+   **两者现已删除**（aux 机制于 2026-09-20 随 `--action_group all` 一并退役，见
+   [`unified_action_group_training.md`](unified_action_group_training.md) §4）。
 3. **加权池化（契约 6，CKPT 17 起，2026-09-19，当前）**：全部主词回到 head 槽，首词权重 1.5。
    它同时拿回 1 的组合泛化和 2 的词序可分性——**r≠1 是单射的充要条件**，1.5 只是在
    「首词纯度」与「第二主词份额」之间选的一个点（数值见 §2）。

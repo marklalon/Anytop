@@ -10,7 +10,7 @@ pin the properties of the fix:
 * the group is the label's FIRST head word, multi-head labels included;
 * species are deliberately NOT balanced (AnyTop's original sampler balanced
   them and nothing else -- that mode is gone);
-* the aux-pool budget and the unbalanced (uniform) path are untouched.
+* the unbalanced (uniform) path is untouched.
 """
 
 from __future__ import annotations
@@ -40,8 +40,6 @@ class _FakeMotionDataset:
         labels,
         object_types=None,
         balanced=True,
-        aux_flags=None,
-        aux_group_mass=0.0,
     ):
         object_types = list(object_types or ["A"] * len(labels))
         self.name_list = [f"clip{index}" for index in range(len(labels))]
@@ -54,8 +52,6 @@ class _FakeMotionDataset:
             for name, label, object_type in zip(self.name_list, labels, object_types)
         }
         self.cond_dict = {object_type: {} for object_type in dict.fromkeys(object_types)}
-        self.aux_mask = None if aux_flags is None else np.asarray(aux_flags, dtype=bool)
-        self.aux_group_mass = aux_group_mass
         self.balanced = balanced
         self.pointer = 0
 
@@ -162,12 +158,7 @@ def test_species_are_not_balanced():
 
 
 def test_unbalanced_runs_stay_uniform_per_clip():
-    weights = _weights(
-        ["attack"] * 3 + ["stop"],
-        balanced=False,
-        aux_flags=[False] * 4,
-        aux_group_mass=0.0,
-    )
+    weights = _weights(["attack"] * 3 + ["stop"], balanced=False)
     assert np.allclose(weights, weights[0])
 
 
@@ -183,11 +174,3 @@ def test_unlabelled_clips_form_their_own_group():
     assert _mass(weights, [4, 5]) == pytest.approx(np.sqrt(2) / (2 + np.sqrt(2)))
     assert weights[4] == pytest.approx(weights[5])
 
-
-def test_aux_budget_holds_under_action_balancing():
-    labels = ["attack"] * 2 + ["stop"] * 20
-    aux_flags = [False] * 2 + [True] * 20
-    weights = _weights(labels, aux_flags=aux_flags, aux_group_mass=0.25)
-    aux_mask = np.asarray(aux_flags, dtype=bool)
-    assert _mass(weights, np.flatnonzero(~aux_mask)) == pytest.approx(0.75)
-    assert _mass(weights, np.flatnonzero(aux_mask)) == pytest.approx(0.25)

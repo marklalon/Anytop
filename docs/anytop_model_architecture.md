@@ -177,6 +177,12 @@ Action label 使用受控词表，不接收自由文本。每个词先查 checkp
 `action_label_cfg_drop_prob` 把部分样本送到 learned null embedding；推理时
 `action_label_cfg_scale>1` 用 conditional/unconditional 两次 forward 做 CFG。
 
+`--action_label_adaln`（2026-09-20 起，默认关）给同一个 action token 再加一路**乘性**通路：
+`GraphMotionDecoder.action_adaln` 一次 matmul 出全部层的 (γ, β)，每层拿自己的
+(B, 4, d) 切片，在 temporal 与 FFN 的**分支输入**上做 `(1+γ)·x + β`；残差流和 spatial 分支不碰。
+零初始化，驱动向量与加性路径共用，所以 CFG 的无条件分支自动走 null。
+设计与实测见 [conditional_modulation_upgrade.md](conditional_modulation_upgrade.md) §3。
+
 ### 4.3 Canonical frame 与 resample speed
 
 `canonical_feature_mean/std` 定义模型写入的输出坐标/标准化空间。这两组向量经
@@ -193,10 +199,12 @@ zero-init MLP 投影并始终注入，不可 CFG-drop；缺失时 forward 直接
 ```text
 x + embedded timestep/conditions
   → Graph Spatial Attention + residual + norm
-  → Full Temporal Attention + residual + norm
+  → [action AdaLN on the branch input] → Full Temporal Attention + residual + norm
   → Cross-Limb Block（若本层启用）
-  → FFN + residual + norm
+  → [action AdaLN on the branch input] → FFN + residual + norm
 ```
+
+方括号里的两处只在 `--action_label_adaln` 下存在，见 §4.2。
 
 该层沿用了 `nn.TransformerDecoderLayer` 的外形，但不含 encoder-decoder memory attention：
 `self_attn` 位置换成 graph/temporal 两条路径，`multihead_attn` 不使用。

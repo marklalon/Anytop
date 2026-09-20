@@ -106,73 +106,6 @@ def test_a_hand_edit_drops_the_prefill_flag_but_signing_it_off_keeps_it(tmp_path
     assert "autofill" not in json.loads(labels.read_text(encoding="utf-8").splitlines()[0])
 
 
-@pytest.mark.parametrize("aux_groups, expected", [
-    (["transition"], []),
-    (["transition", "locomotion"], ["locomotion"]),
-])
-def test_changing_owner_group_removes_that_group_from_aux_list(
-    tmp_path, aux_groups, expected
-):
-    labels = tmp_path / "action_labels.jsonl"
-    labels.write_text(json.dumps({
-        "clip": "Bear_Jump", "action_group": "stationary",
-        "action_label": "jump", "aux_action_groups": aux_groups,
-        "is_loop": False,
-    }) + "\n", encoding="utf-8")
-
-    saved = review.LabelStore(labels).update("Bear_Jump", action_group="transition")
-    assert saved["aux_action_groups"] == expected
-    assert json.loads(labels.read_text(encoding="utf-8"))["aux_action_groups"] == expected
-    # The saved sidecar must still pass the loader's primary/aux disjointness
-    # rule, and the empty key must continue to mark the sidecar as migrated.
-    assert load_action_labels(tmp_path)["Bear_Jump"]["aux_action_groups"] == tuple(expected)
-
-
-def test_update_api_removes_only_requested_aux_group(tmp_path):
-    labels = tmp_path / "action_labels.jsonl"
-    labels.write_text("".join(json.dumps(row) + "\n" for row in [
-        {"clip": "Bear_Jump", "action_group": "stationary", "action_label": "jump",
-         "aux_action_groups": ["transition", "locomotion"]},
-        {"clip": "Bear_Walk", "action_group": "locomotion", "action_label": "walk",
-         "aux_action_groups": ["transition"]},
-    ]), encoding="utf-8")
-    dataset = {
-        "id": "sample", "name": "sample", "processed": str(tmp_path),
-        "labels": labels, "gif_dir": tmp_path / "review" / "gif",
-    }
-    handler = object.__new__(review.Handler)
-    handler.path = "/api/update"
-    handler.datasets = [dataset]
-    handler.stores = {"sample": review.LabelStore(labels)}
-    handler._send_json = lambda status, payload: (status, payload)
-
-    def remove(group):
-        body = json.dumps({
-            "dataset": "sample", "clip": "Bear_Jump",
-            "remove_aux_action_group": group,
-        }).encode()
-        handler.headers = {"Content-Length": str(len(body))}
-        handler.rfile = BytesIO(body)
-        return handler.do_POST()
-
-    status, payload = remove("transition")
-    assert status == 200
-    assert payload["row"]["action_group"] == "stationary"
-    assert payload["row"]["aux_action_groups"] == ["locomotion"]
-
-    status, payload = remove("locomotion")
-    assert status == 200
-    assert payload["row"]["aux_action_groups"] == []
-    saved = [json.loads(line) for line in labels.read_text(encoding="utf-8").splitlines()]
-    assert saved[0]["aux_action_groups"] == []
-    assert saved[1]["aux_action_groups"] == ["transition"]
-    assert load_action_labels(tmp_path)["Bear_Jump"]["aux_action_groups"] == ()
-
-    status, payload = remove("")
-    assert status == 400
-    assert "remove_aux_action_group" in payload["error"]
-
-
 def test_all_dataset_view_keeps_the_owner_on_duplicate_clip_names(tmp_path):
     datasets = []
     stores = {}
@@ -224,16 +157,14 @@ def test_review_search_matches_whole_words_and_keeps_substring_default():
     assert review._row_matches_search({"action_label": "idle, fast"}, "idle")
 
 
-def test_labels_api_can_filter_by_group_and_aux_membership(tmp_path):
+def test_labels_api_can_filter_by_group(tmp_path):
     processed = tmp_path / "sample"
     processed.mkdir()
     labels = processed / "action_labels.jsonl"
     labels.write_text("".join(json.dumps(row) + "\n" for row in [
         {"clip": "Bear_Walk", "action_group": "locomotion", "action_label": "walk"},
-        {"clip": "Bear_Stop", "action_group": "transition", "action_label": "stop",
-         "aux_action_groups": ["locomotion"]},
-        {"clip": "Bear_Idle", "action_group": "stationary", "action_label": "idle",
-         "aux_action_groups": []},
+        {"clip": "Bear_Stop", "action_group": "transition", "action_label": "stop"},
+        {"clip": "Bear_Idle", "action_group": "stationary", "action_label": "idle"},
     ]), encoding="utf-8")
     dataset = {
         "id": "sample", "name": "sample", "processed": str(processed),
@@ -248,17 +179,6 @@ def test_labels_api_can_filter_by_group_and_aux_membership(tmp_path):
     status, payload = handler.do_GET()
     assert status == 200
     assert [row["clip"] for row in payload["rows"]] == ["Bear_Walk"]
-
-    # aux=1 swaps "owned by locomotion" for "supplements locomotion".
-    handler.path = "/api/labels?ds=sample&group=locomotion&aux=1"
-    _, payload = handler.do_GET()
-    assert [row["clip"] for row in payload["rows"]] == ["Bear_Stop"]
-
-    # Without a group it is every row that supplements something; an empty
-    # list marks a migrated sidecar, not a membership.
-    handler.path = "/api/labels?ds=sample&aux=1"
-    _, payload = handler.do_GET()
-    assert [row["clip"] for row in payload["rows"]] == ["Bear_Stop"]
 
     handler.path = "/api/labels?ds=sample"
     _, payload = handler.do_GET()
