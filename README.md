@@ -147,10 +147,15 @@ generate.bat --object_type <skeleton_name>
 
 The full argument set of the current run lives in `generate.bat`; every flag is
 a plain CLI option of `python sample/generate.py --help`. It resolves the latest
-checkpoint under `save/merged_locomotion_v3/` (the `RUN_NAME` set in the script)
+checkpoint of the run named by `RUN_NAME` in the script
 automatically and passes the target skeleton plus any extra flags through to
 `sample/generate.py` (e.g. `generate.bat --object_type
-Horse --loop --action_label "run, forward"`).
+Horse --loop --action_label "run, forward"`). `--loop` takes `auto` / `on` /
+`off` (a bare `--loop` is `on`); omitted it is `auto`: with a
+`--reference_motion` the window closes when the reference does (its stored loop
+verdict, else the endpoint detector); with an `--action_label` alone it closes
+when the training clips carrying that label are mostly loops -- the same corpus
+lookup that picks an unset `--num_frames`; with neither it stays open.
 
 ## Train AnyTop 
 

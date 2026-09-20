@@ -97,8 +97,11 @@ loop 样本的训练语义，放在同一次消融里会和 action 调制的效�
     降级为非 loop 时仍按端点重采样）；
   - loop 片段的速度增广 `time_scale_motion_features(periodic=True)`。否则平铺后窗口内部仍有不均匀的接缝；
   - `_physical_velocity_step_scale` 按 `y['is_loop']` 取 `L/T`，非 loop 仍是 `(L-1)/(T-1)`。
-- 生成端同步。`--loop` 是“这个窗口是一个环”的声明，和 reference 本身是不是 loop 无关。窗口 ↔ 输出之间只有
-  一个映射（`_resample_window_to_output`，`periodic=--loop`），三处都走它：
+- 生成端同步。显式 `--loop on` / `--loop off` 是“这个窗口是一个环”的声明，和 reference 本身是不是 loop
+  无关；默认的 `--loop auto` 相反，有 `--reference_motion` 时按 reference 自己的闭合判决解析
+  （`loop_verdict` 的存储判决行，没有则用端点检测器），只有 `--action_label` 时按该 label 训练片段里
+  loop 的多数，两者都没有时取 `off`。窗口 ↔ 输出之间只有
+  一个映射（`_resample_window_to_output`，`periodic` 取解析后的 loop 条件），三处都走它：
   - 纯 loop 生成（没有 reference）导出到 M ≠ T 帧时按环形重采样，否则导出结果的接缝步长又会不均匀；
   - 带 reference 时同样按环形重采样，并且 reference 本身也按环形放进窗口（`_prepare_img2img_reference_bundle`）：
     先丢 closing key（如果它带），再按 `t·L/T` 重采样。这样窗口第 t 帧在两个方向上都对应 reference 源时刻

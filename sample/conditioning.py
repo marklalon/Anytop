@@ -319,23 +319,59 @@ def _wrap_action_label_cfg(model, args, action_condition):
     return ClassifierFreeActionModel(model, scale)
 
 
+def _coerce_loop_flag(flag):
+    """One ``is_loop`` bool from a batch-level or per-species ``loop`` value.
+
+    ``create_condition`` takes the RESOLVED condition, so the ``--loop`` mode
+    strings are refused rather than read as truthiness -- ``bool('off')`` is
+    ``True``, which would silently turn an explicit open window into a loop.
+    ``'auto'`` is refused too: it is a request to resolve the mode against the
+    reference/corpus first (``sample.output_lengths.resolve_loop_condition``).
+    """
+    if isinstance(flag, bool):
+        return flag
+    if isinstance(flag, str):
+        mode = flag.strip().lower()
+        if mode in ('on', 'true', '1', 'yes'):
+            return True
+        if mode in ('off', 'false', '0', 'no', ''):
+            return False
+        if mode == 'auto':
+            raise ValueError(
+                "create_condition: loop='auto' is unresolved -- resolve it with "
+                "sample.output_lengths.resolve_loop_condition and pass the bool."
+            )
+        raise ValueError(f"create_condition: loop={flag!r} is not 'on'/'off' or a bool")
+    raise TypeError(f"create_condition: loop must be a bool or one of 'on'/'off', got {type(flag).__name__}")
+
+
 def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len, loop=False, action_condition=None, species_emb_override=None):
     """Build model_kwargs for a batch of object_types.
 
     action_condition: {'action_group', 'action_label', 'action_slots'} applied
         to every object in the batch, or None for unconditional generation.
     species_emb_override: [t5_out_dim] vector replacing baked species_emb for all objects.
-    loop: ask for a closed window. It is the whole loop condition -- how many
-        gait cycles the window holds is the model's to decide from resample_speed
-        and the species/action prior, so nothing here needs a period table.
+    loop: ask for a closed window -- one bool for the whole batch, or one per
+        object_type (--object_type all resolves --loop auto per species). It is
+        the whole loop condition -- how many gait cycles the window holds is the
+        model's to decide from resample_speed and the species/action prior, so
+        nothing here needs a period table.
     """
+    if isinstance(loop, (list, tuple)):
+        if len(loop) != len(object_types):
+            raise ValueError(
+                f"create_condition: {len(loop)} loop flags for {len(object_types)} object_types"
+            )
+        loop_flags = [_coerce_loop_flag(flag) for flag in loop]
+    else:
+        loop_flags = [_coerce_loop_flag(loop)] * len(object_types)
     batches = list()
     # One entry per species, not per sample: the structural descriptors are a pure
     # function of the cond entry, and this is the same builder the dataset caches
     # at construction -- a second implementation here would silently condition
     # generation on something training never saw.
     joint_struct_by_object = {}
-    for object_type in object_types:
+    for object_type, is_loop in zip(object_types, loop_flags):
         if object_type not in cond_dict:
             available = ', '.join(sorted(cond_dict.keys()))
             raise KeyError(
@@ -361,7 +397,7 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         batch.append(joints_names_embs)
         batch.append(max_joints)
         metadata = {
-            'is_loop': bool(loop),
+            'is_loop': is_loop,
             'translation_root_index': cond_dict[object_type].get('translation_root_index', 0),
         }
         if 'species_emb' in cond_dict[object_type]:

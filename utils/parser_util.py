@@ -244,10 +244,10 @@ def add_model_options(parser):
                             "only in ch9/ch11 and every loop target sums to exactly zero there; l_simple "
                             "cannot see the DC bias that integrates into a seam pop, and loop_wrap masks "
                             "the root's XZ. Linear in the output, so the weight carries no bias cost, but "
-                            "it is one scalar per sample pushing T*2 elements: on a converged model 0.1 "
-                            "already matches l_simple's gradient norm at low t and 1.0 is ~10x it, so stay "
-                            "around 0.05-0.2. loop_root_xz_drift (the per-cycle seam pop in physical "
-                            "units) is logged whenever this or --lambda_loop_wrap is on.")
+                            "it is one scalar per sample pushing T*2 elements: on a converged model a "
+                            "weight well below 1 already matches l_simple's gradient norm at low t, and "
+                            "1.0 is an order of magnitude above it. loop_root_xz_drift (the per-cycle "
+                            "seam pop in physical units) is logged whenever this or --lambda_loop_wrap is on.")
     group.add_argument("--lambda_bone", default=0.0, type=float,
                        help="Weight for the target-relative, rest-length-normalized bone-length loss (0.0=off). "
                             "Penalizes each predicted bone length's deviation from the GROUND-TRUTH bone length "
@@ -262,7 +262,7 @@ def add_model_options(parser):
                             "source clip: loop roll/tile, crop, the window resample and resample_speed_cond "
                             "all see the scaled length, and the model is told nothing. Loader-only: no cond "
                             "regen, no model change, no CKPT_VERSION bump. Spreads the clustered clip lengths "
-                            "(45%% of the corpus sits on five exact frame counts) so an inference num_frames "
+                            "(the corpus piles up on a few exact frame counts) so an inference num_frames "
                             "between the clusters is in distribution. The range is narrowed per clip so the "
                             "scaled clip stays >= min_length and a loop that fits the source budget still "
                             "fits (never downgraded to non-loop by slowing down). 1.2 is the intended value.")
@@ -273,10 +273,10 @@ def add_model_options(parser):
     group.add_argument("--loop_tile_single_prob", default=0.5, type=float,
                        help="Floor on the probability that a loop training window holds ONE cycle "
                             "(loop tile count 1); the rest of the mass stays uniform over 2..max tiles. "
-                            "0.0 is the plain uniform draw over 1..max, which for a 20-frame loop makes "
-                            "the single-cycle window -- the regime --loop with the auto length generates "
-                            "in -- 1 draw in 6, while every other draw is k bit-identical copies of the "
-                            "cycle. Loader-only, like --motion_speed_aug: no regen, no bump.")
+                            "0.0 is the plain uniform draw over 1..max, which for a short loop makes the "
+                            "single-cycle window -- the regime --loop with the auto length generates in -- "
+                            "a small minority of draws, while every other draw is k bit-identical copies "
+                            "of the cycle. Loader-only, like --motion_speed_aug: no regen, no bump.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
@@ -338,11 +338,10 @@ def add_model_options(parser):
                             "residual stream is left unmodulated, and the spatial branch already "
                             "carries the additive timestep offset). The additive action token stays; "
                             "this adds the gain the additive path cannot express, which is what two "
-                            "labels sharing a slot (cosine ~0.84 by construction, e.g. 'turn, left' "
-                            "and 'run, turn, left') need to produce different motion without leaning "
-                            "on --action_label_cfg_scale and paying its quality cost. Requires "
-                            "--action_label_cond. Costs d^2 + 4*layers*d^2 parameters (+2.2M at "
-                            "latent_dim 256, +4.9M at 384, layers 8). "
+                            "labels sharing a slot (whose vectors are near-parallel by construction, "
+                            "e.g. 'turn, left' and 'run, turn, left') need to produce different motion "
+                            "without leaning on --action_label_cfg_scale and paying its quality cost. "
+                            "Requires --action_label_cond. Costs d^2 + 4*layers*d^2 parameters. "
                             "See docs/conditional_modulation_upgrade.md section 3.")
     group.add_argument("--direction_slot_drop_prob", default=0.3, type=float,
                        help="Per-sample probability of blanking the label's DIRECTION words during "
@@ -350,9 +349,8 @@ def add_model_options(parser):
                             "slot as 'any direction', so a prompt that names none draws one side "
                             "or heading instead of a blend. Stacks with --action_label_cfg_drop_prob, "
                             "which drops the WHOLE label: a row contributes explicit direction "
-                            "supervision with probability (1 - cfg_drop) * (1 - this), so 0.3 against "
-                            "the training scripts' 0.3 cfg drop leaves 49%%. Lower it if direction "
-                            "control comes out weak. Never applied at inference. Default 0.3.")
+                            "supervision with probability (1 - cfg_drop) * (1 - this). Lower it if "
+                            "direction control comes out weak. Never applied at inference. Default 0.3.")
 
 def add_data_options(parser, training=False):
     """Dataset selection. ``training=True`` adds the training-only options.
@@ -379,7 +377,7 @@ def add_data_options(parser, training=False):
                                 "word already determines the group (a property of the corpus, "
                                 "verified by tools/audit_action_labels.py), so a group token would "
                                 "add no information the label does not already carry. Pair 'all' "
-                                "with --balanced: without it stationary takes ~53%% of the draws. "
+                                "with --balanced: without it the in-place group dominates the draws. "
                                 "Recorded in the checkpoint's args.json, where generation reads it "
                                 "back -- a single-group checkpoint can only ever be sampled as that "
                                 "group. See docs/unified_action_group_training.md.")
@@ -462,7 +460,7 @@ def add_training_options(parser):
                        help="Cap each sample's l_simple gradient at that of a sample whose l_simple is this many "
                             "times the running geometric mean at its diffusion timestep (a per-sample Huber on the "
                             "RMS error; see train/sample_loss_limit.py). Stops one outlier clip from owning the "
-                            "clipped batch gradient. 8 leaves ~0.3%% of locomotion samples touched. 0 disables it.")
+                            "clipped batch gradient, touching only the far tail of the samples. 0 disables it.")
     group.add_argument("--joint_mask_prob", default=0.5, type=float,
                        help="Per-sample probability of applying a training-time subtree joint perturbation. "
                            "Selected joints keep their supervision loss and remain visible to attention, but their x_t "
@@ -518,19 +516,21 @@ def add_sampling_options(parser):
                        help="provide cond.py path in case you wish to generate motion for skeleton not included in Truebones dataset.")
     group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'bf16'], type=str,
                        help="Autocast precision for inference. fp32 = full precision with TF32 matmuls on CUDA "
-                            "(default; ~5%% slower than bf16). "
+                            "(default; slightly slower than bf16). "
                             "bf16 = selective autocast on linear / attention / conv modules; "
                             "softmax stays fp32. Requires a CUDA device with bf16 support (Ampere+). "
                             "bf16 rounding adds frame-to-frame noise that inflates jerk/snap scores "
                             "(docs/bf16_precision_issues.md).")
-    group.add_argument("--loop", action='store_true',
-                       help="Generate a closed window (loop conditioning + loop-aware temporal masks) when supported "
-                            "by the checkpoint. The whole pipeline then treats the window as periodic: its last "
-                            "frame is one step before frame 0 and the frame after it wraps to the first (the window "
-                            "is one period of length T, whatever number of gait cycles it holds). A "
-                            "--reference_motion is placed into it the same way (a closing key is dropped, the "
-                            "reference is resampled periodically at step L/T) and the sampled window is rescaled to "
-                            "--num_frames the same way, so the output is a loop whatever the reference is.")
+    group.add_argument("--loop", nargs='?', const='on', default='auto', choices=['auto', 'on', 'off'],
+                       help="Whether to generate a closed window (loop conditioning + loop-aware temporal masks). "
+                            "'on' (also a bare --loop): the window is periodic -- its last frame is one step "
+                            "before frame 0, whatever number of cycles it holds. A --reference_motion is placed "
+                            "into it the same way and the sampled window is rescaled to --num_frames the same "
+                            "way, so the output is a loop whatever the reference is. "
+                            "'off': an open window. 'auto' (default): with a --reference_motion, follow its own "
+                            "loop verdict; else, with --action_label and no reference, 'on' when most of that "
+                            "label's training clips are loops (the model only saw each label paired with "
+                            "is_loop the way its clips were authored); else 'off'.")
     group.add_argument("--fullbody_ik", action='store_true',
                        help="Decode the BVH preview with the same full-body IK as restore_glb_from_npy --fullbody-ik: "
                             "rotations are re-solved on the rigid cond skeleton so the position channels are honoured "
