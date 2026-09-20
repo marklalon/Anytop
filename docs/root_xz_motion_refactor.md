@@ -107,7 +107,7 @@ tile 接缝天然连续。
 | 界限 | 范围 | 膝盖 / 天花板 | 算子 |
 |---|---|---|---|
 | **locomotion 界限** | 每一条 locomotion clip，以及 `is_loop` 的 transition clip | 0.1 / 0.2 | `scale_root_xz_extent`（整段**统一缩放**） |
-| **全局天花板** | 每一条 clip | 0.6 / 0.8 | `soft_clamp_root_xz`（**逐帧**按半径） |
+| **全局天花板** | 每一条 clip | 0.4 / 0.5 | `soft_clamp_root_xz`（**逐帧**按半径） |
 
 **locomotion 界限**对门控选中的**每一条** clip 生效（全部 locomotion，加上 `is_loop` 的
 transition），而不只是真扁平化过的那些 —— 这样"被选中的 clip root XZ 不超过 0.2"才是
@@ -117,7 +117,7 @@ transition），而不只是真扁平化过的那些 —— 这样"被选中的 
 
 它按**一个系数**缩整条轨迹，而不是逐帧压半径。去趋势之后剩下的东西**就是这条 clip 的
 周期内运动**，均匀铺在整条 clip 上，逐帧映射会把远端的帧压得比近端狠，改变的是涌动的
-**形状**而不只是大小；而这个膝盖不同于 0.6 天花板，是会被**经常**触到的，形状被改就成了
+**形状**而不只是大小；而这个膝盖不同于 0.4 天花板，是会被**经常**触到的，形状被改就成了
 模型能学到的东西。统一缩放只改大小。`MB_Unka_GroundDodgeLeft` 去趋势后残差 0.210 →
 缩到 0.152 —— 只比 0.2 的界限高 5%，这正是它需要这道界限的原因。
 
@@ -127,21 +127,21 @@ transition），而不只是真扁平化过的那些 —— 这样"被选中的 
 **两道界限都在 `features.py` 里，不在 `flatten_root_xz_drift` 内部** —— 校验器调用那个算子
 是为了**测量**一条已存 clip，不能让它改变自己正在读的东西。封顶不幂等：对已封顶的 clip 重新
 抽特征（recovery、retarget、resample 的第二遍）会压第二次，所以两道都挂在
-`clamp_root_xz_extent` 这个 opt-in 之下，而不是无条件执行。
+`clamp_root_extent` 这个 opt-in 之下，而不是无条件执行。
 
 在这个 opt-in 之内，两道的门并不相同：**locomotion 界限还额外要求
-`flatten_root_travel`**，而全局天花板只要求 `clamp_root_xz_extent`。
+`flatten_root_travel`**，而全局天花板只要求 `clamp_root_extent`。
 `dataset_pipeline.py` 令 `flatten_root_travel` 取 `locomotion OR (transition AND is_loop)`，
 所以这一个门同时决定 detrend 和 0.2 extent 限制。**stationary 只是不进这两道，不是不受
 任何约束**：全局天花板仍然照常作用于它（见上表）。校验器使用相同门控检查残余 drift 和
 tighter extent。
 
-**0.6 以内完全不动，0.6 往上软压，0.8 是渐近的天花板**
+**0.4 以内完全不动，0.4 往上软压，0.5 是渐近的天花板**
 （`soft_clamp_extent` / `soft_clamp_root_xz`）：
 
 ```
-g(r) = r                            r ≤ 0.6
-g(r) = L - w² / (r - k + w)         r > 0.6      k=0.6, L=0.8, w=0.2
+g(r) = r                            r ≤ 0.4
+g(r) = L - w² / (r - k + w)         r > 0.4      k=0.4, L=0.5, w=0.1
 ```
 
 四条性质缺一不可（这个双曲线是同时满足它们的最简形式）：
@@ -149,11 +149,11 @@ g(r) = L - w² / (r - k + w)         r > 0.6      k=0.6, L=0.8, w=0.2
 | 性质 | 为什么 |
 |---|---|
 | knee 以下是恒等映射 | 停在原点附近的 clip 逐位不变，不引入浮点噪声 |
-| knee 处值和斜率都连续 | 否则 0.6 处出现速度台阶，模型会把它当成数据特征学走 |
+| knee 处值和斜率都连续 | 否则 0.4 处出现速度台阶，模型会把它当成数据特征学走 |
 | 严格单调 | 硬 clamp 把所有超限位移压成同一个值，1.0 的扑击和 10.0 的摔落变得不可区分 |
 | L 是渐近线而非取值 | 远端平滑减速而不是撞墙 |
 
-不用指数 knee：float64 下超过约 34 个 knee 宽度后它精确等于 0.8，最深处的一批位移
+不用指数 knee：float64 下超过约 26 个 knee 宽度后它精确等于 0.5，最深处的一批位移
 （1.5~4.79）会挤进 1e-3 带子里互相分不开；双曲线按 `1/r` 衰减把它们撑开。
 
 **按帧作用在半径上**，不是整条轨迹乘系数：全局缩放会让"别处的一次扑击"按同一比例压掉
@@ -162,7 +162,7 @@ g(r) = L - w² / (r - k + w)         r > 0.6      k=0.6, L=0.8, w=0.2
 **顺序：先扁平化再 clamp，两步合并成一次 FK。** 先 clamp 会把步态每一步都压进天花板，
 交到扁平化手里时已经不像步态了。
 
-**显式 opt-in（`clamp_root_xz_extent`），因为它不幂等**：对已 clamp 过的 clip 再跑会二次压缩 ——
+**显式 opt-in（`clamp_root_extent`），因为它不幂等**：对已 clamp 过的 clip 再跑会二次压缩 ——
 retarget、重采样第二遍、NPy 往返都会重新提特征，只有从源动画出发的那一遍才打开它。
 
 ### 2.3 物种根：取最深 transport carrier
@@ -197,11 +197,33 @@ R != 0 且祖先携带位移的骨架（Dog / Dog-2 / KI_*），只安放 R 会�
 凭空制造相对运动。carrier 下面的一切（含 R）刚性平移，R 依然精确落在目标上。
 R == 0 与"静止 wrapper"两种情况都退化回原行为。
 
-### 2.4 垂直 clamp 读冻结根
+### 2.4 垂直 clamp 读冻结根，且跑在去趋势之后
 
 `clamp_vertical_trajectory` 接收 `process_anim` 传下来的 `translation_root_index` ——
 高度和轨迹读在**同一个冻结关节**上。不传时回落到逐 clip 检测：裸 rest pose 和 retarget
 的源动画没有物种根可用，回落是对的。
+
+**时机**：竖直 clamp 原先在 `process_anim` 里、也就是一切之前跑。这在去趋势只管 XZ 的年代
+没问题；§2.6 的竖直去趋势加进来之后就不行了，因为 band 是一个在 `min_ratio` 处有折点的
+**逐值非线性映射**，作用在还带着爬升的轨迹上，去趋势之后留下的是"爬升在哪里穿过折点"的
+伪影，不是运动。实测飞行 clip 的残差被这个伪影搞成真值的 0.42x ~ 2.43x，两个方向都有。
+
+所以对**一次新鲜的 motion 预处理**，clamp 挪到了
+`extract_motion_features_from_aligned_anims` 里、竖直去趋势之后，和 XZ 那两道界限并列，
+挂同一个 `clamp_root_extent` opt-in（这个开关原名 `clamp_root_xz_extent`）。两半是一个决定：
+`clamp_root_extent=True` 的调用方同时传 `clamp_vertical=False` 给 `get_hml_aligned_anim`，
+**只被界限一次**。rest pose 条件化、recovery、retarget 源没有去趋势可等，照旧在
+`process_anim` 里 clamp，几何空间不变。
+
+算子按这个切分：`clamp_vertical_height_track` 是纯轨迹函数（band + 下界），
+`vertical_band_inputs` 给出 `(object_subset, body_length)`，`clamp_vertical_trajectory`
+是 rest pose 用的 anim 包装。
+
+**实测**（MB_TigerDrago 98 条 clip 全量重建，对照组只差本次改动）：83 条逐比特不变（≤1.2e-15），
+4 条是 §2.6 预期的竖直去趋势目标，余下 11 条只在 root-Y 通道（ch1）和它的速度（ch10）上
+偏 ≤5.7e-3 —— 因为 clamp 现在看到的是**求解后、重采样后**的轨迹，而不是求解前的中间量。
+换句话说下界现在管的是真正出库的数据；旧顺序里 t-pose 对齐的求解残差和短 clip 的重采样
+插值都能从界限里漏出去。
 
 ### 2.5 无效根骨：wrapper 折叠，real root 恒为骨骼 0
 
@@ -249,6 +271,44 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
 `collapse_translation_root_chain`、`set_translation_root_xz` 的祖先分支、phase 2 的少数派重新对齐、
 冻结根的祖先校验，以及 cond / metadata / 验证器里的 `translation_root_index`。
 
+### 2.6 竖直去趋势（同一门控，自己的阈值）
+
+**判据：`(locomotion OR (transition AND is_loop))` AND `|root Y 末帧 − 首帧| > 0.25`。**
+
+XZ 去趋势让步态原地跑；爬升 / 俯冲 / 上浮是同一件事把运输量转到了竖直方向，留着它
+就等于在同一条 clip 上违背 XZ 去趋势刚立下的不变量。所以竖直通道走同一个门控、同一个
+算子，只是阈值宽一个量级：
+
+- **阈值 `ROOT_Y_DRIFT_THRESHOLD = 0.25`**（≈ 18% body span，是 XZ 那道 0.08 的三倍多）。
+  Y 和 XZ 不对称：XZ 原点是任意的（clip 本来就被居中），Y 原点是**地面**，绝对高度是有
+  意义的量，已经被 §2.4 的垂直 clamp 整过形，蹲伏、起跳都直接读它。所以阈值比 XZ 宽，
+  只选中"明确的爬升"，阈值以内竖直通道逐比特不动。
+  定在 0.25 而不是更高，是为了让**同一副骨架**的上下行为一致（另见 §2.4：band 与下界
+  跑在去趋势之后）：`MB_TigerDrago_FlyDown`
+  净值 0.92、`FlyUp` 只有 0.26，阈值卡在两者之间就会在同一个 rig 上拉平俯冲、保留爬升。
+  0.25 也正落在数据的空隙里——现库门控内 0.10 ~ 0.25 之间一条 clip 都没有。
+- **按净端点偏移测量**，和 XZ 用净运输量同理：跳起又落回的弧线净值为 0，无论跳多高都
+  原样保留；只有**结束在别处**的 clip 才算走了。
+- **算子**（`flatten_root_y_drift`）比 XZ 简单一层：Y 不需要朝向帧，因为"上"不随角色转动。
+  要减的就是首末两端点之间那条直线 —— 与 `_detrend_frame` 读端点的理由相同：只有端点能
+  分开"爬升"和"扑翼上下"。frame 0 的高度保持不变，扑翼、起伏、surge 全部留下。
+- **两条通道各自门控**：一条 clip 可以只去 XZ、只去 Y、两条都去、或都不去。
+- **落点按轴分别求解**：`_transport_carrier_index(axes=)` 对 XZ 和 Y 分别回答一次。
+  一个在 XZ 静止、却随角色爬升的 wrapper 不能吃下水平修正，反之亦然；两条修正各自
+  `set_translation_root_xz` / `set_translation_root_y` 施加一次。
+
+metadata 多一个人读字段 `root_y_flattened`，与 `root_xz_flattened` 并列，不进模型。
+
+**实测受影响范围**（现库 3635 条 clip）：门控内 11 条越过 0.25，全部是竖直 locomotion
+——`KI_Human_Swim01Upwards/Downwards`、`MB_Unka_FlyUP/FlyUpForward/FlyDown/FallDownFoward/FlyDeathRecover`、
+`MB_TigerDrago_FlyDown/FlyUp/FlyUPFoward/FlyFallRecover`。另有 334 条越过 0.25 但属
+transition/stationary（Spawn、Die、DiveIntoGround、各种跳摔），不在门控内，原样保留——
+它们的竖直位移就是动作本身。
+
+`ROOT_Y_MIN_HEIGHT` 不再会被去趋势走穿：§2.4 把下界挪到了去趋势之后，所以它按构造成立。
+（挪之前 `MB_TigerDrago_FlyFallRecover` 去趋势后会落到 −0.301，比渐近线低 0.001；
+现在是 −0.230。）
+
 ---
 
 ## 3. 生成期
@@ -288,10 +348,10 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
 
 | 检查 | 范围 | 判据 |
 |---|---|---|
-| `_validate_root_motion_drift` | locomotion clip + `is_loop` 的 transition clip | 用与管线**完全相同**的算术（解码器重建轨迹 + 同一朝向信号），扁平化后净运输量 ≤ `ROOT_XZ_DRIFT_THRESHOLD`。帧只由朝向的**净转角**决定，恢复动画的朝向常量偏移让首末两端同幅平移、精确抵消，所以管线与校验器选帧一致 |
+| `_validate_root_motion_drift` | locomotion clip + `is_loop` 的 transition clip | 两条通道各查一遍，判据与管线**完全相同**的算术：水平（解码器重建轨迹 + 同一朝向信号）扁平化后净运输量 ≤ `ROOT_XZ_DRIFT_THRESHOLD`；竖直（root 高度直接读出）净端点偏移 ≤ `ROOT_Y_DRIFT_THRESHOLD`。帧只由朝向的**净转角**决定，恢复动画的朝向常量偏移让首末两端同幅平移、精确抵消，所以管线与校验器选帧一致 |
 | `_validate_root_xz_ceiling`（对门控选中的 clip 再调一次） | locomotion clip + `is_loop` 的 transition clip | root XZ extent ≤ `ROOT_XZ_LOCOMOTION_LIMIT` + `1e-3`。比 drift 检查更强也更便宜：不需要解码器、不需要朝向，直接读 extent |
 | `_validate_root_xz_ceiling` | **每一条** clip | root XZ extent ≤ `ROOT_XZ_SOFT_CLAMP_LIMIT` + `1e-3`。超了说明 tensor 来自 clamp 之前 |
-| `_validate_root_transport_carrier` | 每一条 clip | 逐帧取非 root 关节 RIC 位移的最小值 = 刚性整体平移的下界；超过天花板 0.8 且 root 自己轨迹不到它的一半 ⇒ 报警（位移被写在了物种根看不见的关节上） |
+| `_validate_root_transport_carrier` | 每一条 clip | 逐帧取非 root 关节 RIC 位移的最小值 = 刚性整体平移的下界；超过天花板 0.5 且 root 自己轨迹不到它的一半 ⇒ 报警（位移被写在了物种根看不见的关节上） |
 
 `--root-motion-threshold` 默认值 = `ROOT_XZ_DRIFT_THRESHOLD`（0.08）。
 
@@ -308,16 +368,19 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
 | 常量 | 值 | 含义 |
 |---|---|---|
 | `ROOT_XZ_DRIFT_THRESHOLD` | 0.08 | 扁平化门限（≈ 5.8% body span），= loop 闭合容差 |
+| `ROOT_Y_DRIFT_THRESHOLD` | 0.25 | 竖直去趋势门限（≈ 18% body span），按净端点偏移测 |
 | `ROOT_XZ_LOCOMOTION_KNEE` | 0.1 | locomotion 统一缩放的不动区上限（≈ 扁平化后 extent 的 p90） |
 | `ROOT_XZ_LOCOMOTION_LIMIT` | 0.2 | locomotion 渐近界限；门控选中的每一条 clip（locomotion + `is_loop` 的 transition）都在此以内 |
-| `ROOT_XZ_SOFT_CLAMP_KNEE` | 0.6 | 全局软 clamp 不动区上限 |
-| `ROOT_XZ_SOFT_CLAMP_LIMIT` | 0.8 | 软 clamp 渐近天花板 |
+| `ROOT_XZ_SOFT_CLAMP_KNEE` | 0.4 | 全局软 clamp 不动区上限 |
+| `ROOT_XZ_SOFT_CLAMP_LIMIT` | 0.5 | 软 clamp 渐近天花板 |
+| `ROOT_Y_SOFT_CLAMP_KNEE` | -0.1 | 竖直下界软 clamp 不动区下限（深度 0.1 以内不动） |
+| `ROOT_Y_MIN_HEIGHT` | -0.3 | 竖直下界渐近天花板（去趋势之后按构造成立） |
 | `ROOT_TRANSPORT_CARRIER_SHARE` | 0.5 | carrier 须达本 clip 链上峰值的 50% |
 | `ROOT_TRANSPORT_MIN_TRAVEL` | 0.08 | carrier 绝对下限（低于它下游不会对这点位移做任何事） |
 | `ROOT_XZ_CEILING_TOLERANCE` | 1e-3 | 天花板检查容差 |
 | `CKPT_VERSION` | 6 | v5 及更早 checkpoint 被拒绝 |
 
-metadata 里 `root_xz_flattened` 是纯人读的溯源字段，不进模型。
+metadata 里 `root_xz_flattened` / `root_y_flattened` 是纯人读的溯源字段，不进模型。
 
 ---
 
@@ -325,9 +388,9 @@ metadata 里 `root_xz_flattened` 是纯人读的溯源字段，不进模型。
 
 | 文件 | 职责 |
 |---|---|
-| [animation_utils.py](../data_loaders/truebones/truebones_utils/animation_utils.py) | 全部 root XZ 算子：`flatten_root_xz_drift` / `_detrend_frame`、`scale_root_xz_extent`、`soft_clamp_*`、`select_transport_carrier`、`set_translation_root_xz`、`promote_translation_root_to_hierarchy_root` |
+| [animation_utils.py](../data_loaders/truebones/truebones_utils/animation_utils.py) | 全部 root 轨迹算子：`flatten_root_xz_drift` / `_detrend_frame`、`flatten_root_y_drift`、`scale_root_xz_extent`、`soft_clamp_*`、`select_transport_carrier`、`set_translation_root_xz` / `set_translation_root_y`、`promote_translation_root_to_hierarchy_root` |
 | [dataset_pipeline.py](../data_loaders/truebones/truebones_utils/dataset_pipeline.py) | 两遍收敛、carrier 物种根、分组 + loop detrend / locomotion extent 双门控、`root_promote_depth` 持久化 |
-| [features.py](../data_loaders/truebones/truebones_utils/features.py) | `extract_motion_features_from_aligned_anims(flatten_root_travel=, clamp_root_xz_extent=)` |
+| [features.py](../data_loaders/truebones/truebones_utils/features.py) | `extract_motion_features_from_aligned_anims(flatten_root_travel=, clamp_root_extent=)`、`process_anim(clamp_vertical=)` |
 | [root_collapse.py](../motion_lib/root_collapse.py) | `promote_root_once`（旋转/offset/orient 复合） |
 | [validate_anytop_dataset.py](../utils/validate_anytop_dataset.py) | 三条不变量 |
 | [generate.py](../sample/generate.py) | 无条件 `_zero_root_ric_xz` |

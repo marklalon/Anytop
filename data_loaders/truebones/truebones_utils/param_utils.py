@@ -104,12 +104,9 @@ VERTICAL_CLAMP_MAX_RATIO = 0.5
 # subset bands above, and bounded the same way the root-XZ extent is: identity
 # above the knee, the excess compressed smoothly below it, and the bound an
 # asymptote the descent approaches but never reaches (see
-# ``animation_utils.soft_clamp_extent``). It used to be a hard ``np.maximum``
-# floor, which mapped every frame past -0.5 onto -0.5 -- 86 clips carried a
-# pinned plateau where their descent was, and Pirrana_MidSwim was a constant
-# -0.5 for all 97 of its frames.
-ROOT_Y_SOFT_CLAMP_KNEE = -0.3
-ROOT_Y_MIN_HEIGHT = -0.5
+# ``animation_utils.soft_clamp_extent``).
+ROOT_Y_SOFT_CLAMP_KNEE = -0.1
+ROOT_Y_MIN_HEIGHT = -0.3
 
 
 MAX_JOINTS=100

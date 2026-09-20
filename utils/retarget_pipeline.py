@@ -615,7 +615,7 @@ def retarget_animation_file_to_target(
 
     if target_source_basis_available:
         squared_positions_error = {}
-        source_features, *_unused, source_effective_root_index, _source_root_xz, _source_flattened = get_motion(
+        source_features, *_unused, source_effective_root_index, _source_root_xz, _source_flattened, _source_y_flattened = get_motion(
             source_motion_path,
             target_object_type,
             max_joints,
@@ -692,7 +692,7 @@ def retarget_animation_file_to_target(
     }
 
     squared_positions_error = {}
-    source_features, *_unused, source_effective_root_index, _source_root_xz, _source_flattened = get_motion(
+    source_features, *_unused, source_effective_root_index, _source_root_xz, _source_flattened, _source_y_flattened = get_motion(
         source_motion_path,
         _SRC_FACE_HINT,
         max_joints,

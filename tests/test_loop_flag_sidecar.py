@@ -73,7 +73,7 @@ def _open_anim(n_frames: int = 24) -> Animation:
 
 
 def _extract(anim: Animation, **kwargs):
-    features, _max_joints, _anim, _export, is_loop, _flattened = (
+    features, _max_joints, _anim, _export, is_loop, _flattened, _y_flattened = (
         extract_motion_features_from_aligned_anims(
             anim,
             anim,

@@ -293,7 +293,9 @@ def _run_test_glb_npy_glb_roundtrip(
         print(f"Frames: {len(source_anim)}, Joints: {source_anim.shape[1]}, FPS: {source_fps:.1f}")
 
         squared_positions_error: dict[str, float] = {}
-        features, feature_parents, _max_joints, feature_anim, _baseline_export_anim, _is_loop, _motion_translation_root_index, motion_root_translation_xz, _root_xz_flattened = get_motion(
+        (features, feature_parents, _max_joints, feature_anim, _baseline_export_anim,
+         _is_loop, _motion_translation_root_index, motion_root_translation_xz,
+         _root_xz_flattened, _root_y_flattened) = get_motion(
             anim_glb,
             object_type,
             preprocess_max_joints,

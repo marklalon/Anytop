@@ -70,6 +70,37 @@ def _warn(msg: str):
 # position before this is evaluated.
 ROOT_XZ_DRIFT_THRESHOLD = 0.08
 
+# Net VERTICAL displacement of the translation root, same HML-normalised units,
+# above which the detrend is extended from the XZ plane to all three axes.
+#
+# A gait's job is to run in place, and for a ground species the XZ detrend alone
+# achieves that because nothing else travels. A climb, a dive or a swim ascent is
+# the same motion turned on its side: the cycle is there, riding on transport
+# that happens to be vertical, and leaving it in gives the flying species the
+# very artifact the XZ detrend exists to remove. So the vertical channel is
+# detrended too -- but only once the travel is unmistakable, because Y is not
+# like XZ. The XZ origin is arbitrary (clips are centred on it), while the Y
+# origin is the FLOOR: a clip's absolute height is a real, meaningful quantity
+# that the vertical clamp has already shaped, a crouch or a hop reads directly
+# off it, and removing a ramp from it moves the character relative to the
+# ground. The threshold is therefore several times looser than the XZ
+# one -- 0.25 is 18% of a body span -- so that it selects the deliberate climbs
+# and nothing else. Below it the vertical channel is left exactly as authored
+# and only XZ is detrended.
+#
+# It sits at 0.25 rather than higher so that ONE RIG'S vertical gaits answer
+# alike. MB_TigerDrago's FlyDown nets 0.92 and its FlyUp nets 0.26: a threshold
+# between them flattens the dive and keeps the climb on the same skeleton, which
+# is a worse artifact than either answer applied consistently. The four shipped
+# clips that sit between 0.25 and 0.50 are all of that shape -- FlyUp,
+# FlyUPFoward, FlyFallRecover, FlyDeathRecover.
+#
+# Measured on the net endpoint offset, for the same reason the XZ threshold is
+# measured on net transport: a hop or a jump that comes back down nets out and
+# keeps its arc verbatim, however high it reached, while a clip that ENDS
+# somewhere else went there and stayed.
+ROOT_Y_DRIFT_THRESHOLD = 0.25
+
 # Root XZ soft clamp, in HML-normalised units (a body span is 1.389).
 #
 # Travel is bounded, not gated: inside the knee nothing is touched at all, past
@@ -77,8 +108,8 @@ ROOT_XZ_DRIFT_THRESHOLD = 0.08
 # approaches but never reaches. This is what keeps a lunge, a dodge or a death
 # slide recognisable at a magnitude the representation can carry -- the old
 # extent gate answered the same question by zeroing the whole trajectory.
-ROOT_XZ_SOFT_CLAMP_KNEE = 0.6
-ROOT_XZ_SOFT_CLAMP_LIMIT = 0.8
+ROOT_XZ_SOFT_CLAMP_KNEE = 0.4
+ROOT_XZ_SOFT_CLAMP_LIMIT = 0.5
 
 # Locomotion's own extent bound, tighter than the soft clamp above and applied to
 # EVERY clip the root-XZ policy selects -- all locomotion plus transition clips
@@ -818,6 +849,90 @@ def _soft_clamp_min_height(values, knee, min_height):
     return -soft_clamp_extent(-values, knee_depth, abs(float(min_height))), True
 
 
+# The object_subsets whose vertical band needs the character's size. Everything
+# else takes the root-Y lower bound alone, which is an absolute height.
+_VERTICAL_BAND_SUBSETS = ('winged', 'aquatic')
+
+
+def vertical_band_inputs(anim, object_type):
+    """Return ``(object_subset, body_length)`` for the vertical clamp.
+
+    ``body_length`` is ``None`` for the subsets whose band does not need it, so
+    the rest-pose FK behind :func:`_get_reference_body_length` is only paid by the
+    species that use it -- the same laziness the single-function version had.
+
+    Split out so the two callers agree by construction: preprocessing reads these
+    off the pre-detrend anim and clamps the trajectory afterwards, while a rest
+    pose clamps the anim in place (:func:`clamp_vertical_trajectory`).
+    """
+    # object_subset_for accepts a bare species name or a canonical
+    # '<namespace>/<species>' key, unlike a raw subset_members membership test.
+    object_subset = dataset_tags().object_subset_for(object_type)
+    body_length = (
+        _get_reference_body_length(anim)
+        if object_subset in _VERTICAL_BAND_SUBSETS else None
+    )
+    return object_subset, body_length
+
+
+def clamp_vertical_height_track(
+    world_y,
+    object_subset,
+    body_length,
+    min_ratio=VERTICAL_CLAMP_MIN_RATIO,
+    max_ratio=VERTICAL_CLAMP_MAX_RATIO,
+    root_y_min_height=ROOT_Y_MIN_HEIGHT,
+    root_y_soft_clamp_knee=ROOT_Y_SOFT_CLAMP_KNEE,
+):
+    """Return ``(clamped_height, changed)`` for a ``(T,)`` root height track.
+
+    The whole vertical policy as a function of the track alone, so it can be
+    applied at the point in the pipeline where the track is final. That point is
+    AFTER the vertical detrend, and the order matters more than it looks: the
+    bands are a per-value map with a kink at ``min_ratio``, so running them on a
+    trajectory that still carries transport leaves behind an artifact of where
+    the climb crossed that kink rather than the motion. Measured on the shipped
+    flight clips the residual came out anywhere between 0.42x and 2.43x of the
+    true one, in both directions. Once the transport is gone the band is idle for
+    nearly every one of them, and the root-Y lower bound -- which runs last --
+    becomes a bound on what actually ships instead of on an intermediate.
+
+    ``object_subset`` and ``body_length`` come from :func:`vertical_band_inputs`.
+    """
+    world_y = np.asarray(world_y, dtype=np.float64).reshape(-1)
+    clamped_world_y = world_y.copy()
+    changed = False
+    if object_subset == 'winged':
+        min_h = body_length * min_ratio
+        max_h = body_length * max_ratio
+        clamped_world_y, changed = _compress_positive_excursion(clamped_world_y, min_h, max_h)
+    elif object_subset == 'aquatic':
+        positive_min_h = body_length * min_ratio
+        positive_max_h = body_length * max_ratio
+        clamped_world_y, changed_pos = _compress_positive_excursion(
+            clamped_world_y,
+            positive_min_h,
+            positive_max_h,
+        )
+        negative_min_h = -positive_min_h
+        negative_max_h = -positive_max_h
+        clamped_world_y, changed_neg = _compress_below_negative_band(
+            clamped_world_y,
+            negative_min_h,
+            negative_max_h,
+        )
+        changed = changed_pos or changed_neg
+    else:
+        clamped_world_y = world_y.copy()
+
+    clamped_world_y, changed_floor = _soft_clamp_min_height(
+        clamped_world_y,
+        root_y_soft_clamp_knee,
+        root_y_min_height,
+    )
+    return clamped_world_y, bool(changed or changed_floor)
+
+
 def clamp_vertical_trajectory(
     processed_anim,
     object_type,
@@ -868,42 +983,16 @@ def clamp_vertical_trajectory(
     global_pos = positions_global(processed_anim)
     world_y = global_pos[:, trans_root, 1]
 
-    clamped_world_y = world_y.copy()
-    changed = False
-    # object_subset_for accepts a bare species name or a canonical
-    # '<namespace>/<species>' key, unlike a raw subset_members membership test.
-    object_subset = dataset_tags().object_subset_for(object_type)
-    if object_subset == 'winged':
-        body_length = _get_reference_body_length(processed_anim)
-        min_h = body_length * min_ratio
-        max_h = body_length * max_ratio
-        clamped_world_y, changed = _compress_positive_excursion(clamped_world_y, min_h, max_h)
-    elif object_subset == 'aquatic':
-        body_length = _get_reference_body_length(processed_anim)
-        positive_min_h = body_length * min_ratio
-        positive_max_h = body_length * max_ratio
-        clamped_world_y, changed_pos = _compress_positive_excursion(
-            clamped_world_y,
-            positive_min_h,
-            positive_max_h,
-        )
-        negative_min_h = -positive_min_h
-        negative_max_h = -positive_max_h
-        clamped_world_y, changed_neg = _compress_below_negative_band(
-            clamped_world_y,
-            negative_min_h,
-            negative_max_h,
-        )
-        changed = changed_pos or changed_neg
-    else:
-        clamped_world_y = world_y.copy()
-
-    clamped_world_y, changed_floor = _soft_clamp_min_height(
-        clamped_world_y,
-        root_y_soft_clamp_knee,
-        root_y_min_height,
+    object_subset, body_length = vertical_band_inputs(processed_anim, object_type)
+    clamped_world_y, changed = clamp_vertical_height_track(
+        world_y,
+        object_subset,
+        body_length,
+        min_ratio=min_ratio,
+        max_ratio=max_ratio,
+        root_y_min_height=root_y_min_height,
+        root_y_soft_clamp_knee=root_y_soft_clamp_knee,
     )
-    changed = changed or changed_floor
 
     if not changed:
         return processed_anim
@@ -1109,6 +1198,48 @@ def flatten_root_xz_drift(traj, heading):
     return np.asarray(traj, dtype=np.float64) - correction, drift
 
 
+def root_y_drift_correction(traj_y):
+    """Return ``(correction, drift)`` for a ``(T,)`` root height track.
+
+    The vertical counterpart of :func:`root_xz_drift_correction`, and simpler
+    than it for one reason: there is no frame to rotate into. The XZ detrend has
+    to work in the root's heading frame because a turning gait's travel
+    direction rotates with the body; "up" does not rotate, so the transport is
+    already expressed on its own axis and removing it is removing a straight
+    ramp.
+
+    That ramp is the mean per-frame step re-integrated, which is exactly the line
+    through the track's two ENDPOINTS -- the same quantity ``_detrend_frame``
+    reads off the heading, and the same reason: only the endpoints separate a
+    climb from a flap that goes up and comes back. A statistic over time cannot,
+    because both spend the clip away from where they started.
+
+    ``correction`` starts at zero, so ``traj_y - correction`` keeps frame 0 at
+    its authored height -- the height the vertical clamp and the floor bound
+    already agreed on -- and keeps every wingbeat, bob and surge that the
+    transport could not explain. ``drift`` is the signed travel's magnitude.
+    """
+    traj_y = np.asarray(traj_y, dtype=np.float64).reshape(-1)
+    n_frames = traj_y.shape[0]
+    if n_frames < 2:
+        return np.zeros_like(traj_y), 0.0
+    net = float(traj_y[-1] - traj_y[0])
+    steps = np.arange(n_frames, dtype=np.float64) / (n_frames - 1)
+    return net * steps, abs(net)
+
+
+def flatten_root_y_drift(traj_y):
+    """Return ``(flattened_height, drift)`` for a root height track.
+
+    The entry point preprocessing and the dataset validator share for the
+    vertical channel, mirroring :func:`flatten_root_xz_drift`. It removes the
+    travel and nothing else; bounding what is left is the caller's business (the
+    vertical clamp has already run by the time preprocessing gets here).
+    """
+    correction, drift = root_y_drift_correction(traj_y)
+    return np.asarray(traj_y, dtype=np.float64).reshape(-1) - correction, drift
+
+
 def soft_clamp_extent(radius, knee=ROOT_XZ_SOFT_CLAMP_KNEE,
                       limit=ROOT_XZ_SOFT_CLAMP_LIMIT):
     """Return ``radius`` compressed into ``[0, limit)`` past ``knee``.
@@ -1286,14 +1417,22 @@ def collapse_translation_root_chain(anim, translation_root_index):
 
 
 def _transport_carrier_index(anim, translation_root_index, global_pos=None,
-                             eps=TRANSPORT_CARRIER_EPS):
-    """Return the joint a root XZ correction has to be applied to.
+                             eps=TRANSPORT_CARRIER_EPS, axes=(0, 2)):
+    """Return the joint a root correction on ``axes`` has to be applied to.
 
     The highest joint on the hierarchy-root-to-translation-root chain that is not
-    static in world XZ. Everything below it -- the translation root included --
-    then moves rigidly with it, so the correction lands exactly on the
-    translation root without inventing relative motion between joints that
+    static on those world axes. Everything below it -- the translation root
+    included -- then moves rigidly with it, so the correction lands exactly on
+    the translation root without inventing relative motion between joints that
     travelled together in the source.
+
+    ``axes`` is asked per correction rather than once for the whole edit, because
+    a chain can be static on one axis and not another: a wrapper that holds a
+    flier at a fixed spot while the root climbs away from it must not absorb the
+    vertical correction, and a wrapper that carries the walk must absorb the
+    horizontal one. Answering both with one carrier would apply at least one of
+    them to a joint that does not move on that axis, which is the exact failure
+    the per-axis test below exists to avoid.
 
     Both shapes occur in the data and they need opposite answers:
 
@@ -1312,39 +1451,46 @@ def _transport_carrier_index(anim, translation_root_index, global_pos=None,
         return int(translation_root_index)
     if global_pos is None:
         global_pos = positions_global(anim)
+    axes = list(axes)
     for joint in chain:
-        xz = np.asarray(global_pos[:, joint][:, [0, 2]], dtype=np.float64)
-        if float(np.ptp(xz, axis=0).max()) > eps:
+        track = np.asarray(global_pos[:, joint][:, axes], dtype=np.float64)
+        if float(np.ptp(track, axis=0).max()) > eps:
             return int(joint)
     return int(translation_root_index)
 
 
-def set_translation_root_xz(anim, translation_root_index, target_xz):
-    """Return the animation with the effective root's world XZ set to ``target_xz``.
+def _set_translation_root_axes(anim, translation_root_index, target, axes,
+                               target_name='target'):
+    """Return the animation with the root's world ``axes`` set to ``target``.
 
-    The edit is applied to whichever joint actually carries the transport (see
+    The shared body of :func:`set_translation_root_xz` and
+    :func:`set_translation_root_y`. The edit is applied to whichever joint
+    actually carries the transport on those axes (see
     :func:`_transport_carrier_index`), never unconditionally to joint 0 and never
     unconditionally to the translation root. Pushing every rig's correction up to
     joint 0 would make a static wrapper slide backwards; keeping every rig's on
     the translation root tears a travelling ancestor away from it.
     """
-    target_xz = np.asarray(target_xz, dtype=np.float64)
+    axes = list(axes)
+    target = np.asarray(target, dtype=np.float64)
     global_pos = positions_global(anim)
-    root_xz = np.asarray(global_pos[:, translation_root_index][:, [0, 2]], dtype=np.float64)
-    if target_xz.shape != root_xz.shape:
+    root_track = np.asarray(global_pos[:, translation_root_index][:, axes], dtype=np.float64)
+    if target.shape != root_track.shape:
         raise ValueError(
-            f"target_xz must have shape {root_xz.shape}, got {target_xz.shape}"
+            f"{target_name} must have shape {root_track.shape}, got {target.shape}"
         )
-    delta = target_xz - root_xz
+    delta = target - root_track
     if np.max(np.abs(delta)) <= 1e-8:
         return anim
 
-    carrier = _transport_carrier_index(anim, translation_root_index, global_pos=global_pos)
+    carrier = _transport_carrier_index(
+        anim, translation_root_index, global_pos=global_pos, axes=axes,
+    )
 
     new_positions = anim.positions.copy()
     if anim.parents[carrier] < 0:
-        new_positions[:, carrier, 0] += delta[:, 0]
-        new_positions[:, carrier, 2] += delta[:, 1]
+        for column, axis in enumerate(axes):
+            new_positions[:, carrier, axis] += delta[:, column]
     else:
         global_rots = rotations_global(anim)
         parent_index = anim.parents[carrier]
@@ -1353,8 +1499,8 @@ def set_translation_root_xz(anim, translation_root_index, target_xz):
         # The carrier takes the same delta the translation root needs, so the
         # root lands on the target exactly and the two stay rigidly linked.
         desired_global = global_pos[:, carrier].copy()
-        desired_global[:, 0] += delta[:, 0]
-        desired_global[:, 2] += delta[:, 1]
+        for column, axis in enumerate(axes):
+            desired_global[:, axis] += delta[:, column]
         new_positions[:, carrier] = (-parent_global_rots) * (desired_global - parent_global_pos)
 
     return Animation(
@@ -1363,6 +1509,28 @@ def set_translation_root_xz(anim, translation_root_index, target_xz):
         anim.orients.copy(),
         anim.offsets.copy(),
         anim.parents.copy(),
+    )
+
+
+def set_translation_root_xz(anim, translation_root_index, target_xz):
+    """Return the animation with the effective root's world XZ set to ``target_xz``."""
+    return _set_translation_root_axes(
+        anim, translation_root_index, target_xz, (0, 2), target_name='target_xz',
+    )
+
+
+def set_translation_root_y(anim, translation_root_index, target_y):
+    """Return the animation with the effective root's world height set to ``target_y``.
+
+    The vertical twin of :func:`set_translation_root_xz`, kept a separate call
+    rather than folded into a single XYZ setter so each correction reaches the
+    joint that carries it on ITS axes (see :func:`_transport_carrier_index`) --
+    a rig whose wrapper walks but does not climb needs two different answers.
+    ``target_y`` is a ``(T,)`` track.
+    """
+    target_y = np.asarray(target_y, dtype=np.float64).reshape(-1, 1)
+    return _set_translation_root_axes(
+        anim, translation_root_index, target_y, (1,), target_name='target_y',
     )
 
 

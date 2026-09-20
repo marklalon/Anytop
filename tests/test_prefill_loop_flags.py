@@ -58,7 +58,7 @@ def _open_anim(n_frames: int = 24) -> Animation:
 
 def _encoded(anim: Animation) -> dict:
     """What _encode_prepared_motion_file produces for a clip with no verdict."""
-    features, _max_joints, _anim, _export, is_loop, _flattened = (
+    features, _max_joints, _anim, _export, is_loop, _flattened, _y_flattened = (
         extract_motion_features_from_aligned_anims(
             anim,
             anim,

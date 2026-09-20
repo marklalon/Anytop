@@ -35,18 +35,23 @@ from .ignore_warnings import skip_orientation_detection
 
 from .animation_utils import (
     ROOT_XZ_DRIFT_THRESHOLD,
+    ROOT_Y_DRIFT_THRESHOLD,
     detect_motion_loop,
     find_translation_root,
     clamp_vertical_trajectory,
+    clamp_vertical_height_track,
+    vertical_band_inputs,
     collapse_translation_root_chain,
     promote_translation_root_to_hierarchy_root,
     move_xz_to_origin,
     root_xz_trajectory,
     root_xz_heading,
     flatten_root_xz_drift,
+    flatten_root_y_drift,
     soft_clamp_root_xz,
     scale_root_xz_extent,
     set_translation_root_xz,
+    set_translation_root_y,
     resolve_detected_translation_root_index,
     needs_bvh_position_channels,
     crop_animation_to_max_joints,
@@ -164,6 +169,7 @@ def process_anim(
     *,
     scale_factor,
     translation_root_index=None,
+    clamp_vertical=True,
 ):
     rotated = rotate_to_hml_orientation(anim, orientation_quat)
     centered, root_xz_center_ = move_xz_to_origin(
@@ -172,9 +178,15 @@ def process_anim(
         translation_root_index=translation_root_index,
     )
     scaled = scale_anim(centered, scale_factor)
-    # Keep rest-pose conditioning and motion clips on the same normalized
-    # geometry.  Both paths pass through process_anim, while only raw motion
-    # files continue through the loading branch in get_hml_aligned_anim.
+    if not clamp_vertical:
+        # A fresh motion pass bounds its own height AFTER the vertical detrend
+        # (see extract_motion_features_from_aligned_anims): the bands are a
+        # per-value map with a kink, so running them on a trajectory that still
+        # carries a climb leaves an artifact of that climb behind. Every other
+        # caller -- rest-pose conditioning, recovery, a raw retarget source --
+        # has no detrend to wait for and clamps here, which keeps it on the same
+        # normalized geometry the motion clips end up on.
+        return scaled, root_xz_center_, scale_factor
     processed = clamp_vertical_trajectory(
         scaled,
         object_type,
@@ -655,7 +667,7 @@ def extract_motion_features_from_aligned_anims(
     translation_root_index,
     *,
     flatten_root_travel=False,
-    clamp_root_xz_extent=False,
+    clamp_root_extent=False,
     is_loop=None,
 ):
     feature_translation_root_index = int(translation_root_index)
@@ -671,8 +683,8 @@ def extract_motion_features_from_aligned_anims(
     # source was AUTHORED with, so it is read once here, ahead of any of them.
     source_global_positions = positions_global(new_anim)
 
-    # The root XZ trajectory is decided here in two steps and applied once, so
-    # the skeleton is put through FK a single time: remove the travel the policy
+    # The root trajectory is decided here in two steps and applied once, so the
+    # skeleton is put through FK a single time: remove the travel the policy
     # selects, then bound whatever excursion is left. Both steps are opt-in and
     # either can be a no-op; the anims are only rebuilt if the target ended up
     # different.
@@ -680,7 +692,12 @@ def extract_motion_features_from_aligned_anims(
         source_global_positions[:, feature_translation_root_index][:, [0, 2]],
         dtype=np.float64,
     )
+    source_root_y = np.asarray(
+        source_global_positions[:, feature_translation_root_index][:, 1],
+        dtype=np.float64,
+    )
     target_root_xz = source_root_xz
+    target_root_y = source_root_y
 
     # Step one takes two conditions, and both are needed.
     #
@@ -699,6 +716,7 @@ def extract_motion_features_from_aligned_anims(
     # thing the flatten is gated on: what the detrend leaves behind is BOUNDED
     # below, not exempted here.
     root_xz_flattened = False
+    root_y_flattened = False
     if flatten_root_travel:
         flattened_root_xz, root_xz_drift = flatten_root_xz_drift(
             source_root_xz,
@@ -710,7 +728,20 @@ def extract_motion_features_from_aligned_anims(
             # the travel underneath them is removed.
             target_root_xz = flattened_root_xz
 
-    if clamp_root_xz_extent:
+        # The vertical channel, under the SAME policy gate and its own, much
+        # looser threshold. A clip that climbs or dives past it is a gait whose
+        # transport happens to point up -- a swim ascent, a fly-down -- and
+        # leaving that travel in contradicts the very invariant the XZ detrend
+        # establishes for the same clip. Below the threshold the height is left
+        # exactly as the vertical clamp shaped it, so an ordinary gait's bob,
+        # and every hop that comes back down, are untouched: the two channels
+        # are gated separately and a clip can take either, both or neither.
+        flattened_root_y, root_y_drift = flatten_root_y_drift(source_root_y)
+        root_y_flattened = bool(root_y_drift > ROOT_Y_DRIFT_THRESHOLD)
+        if root_y_flattened:
+            target_root_y = flattened_root_y
+
+    if clamp_root_extent:
         # Second and last, on whatever the first step left. Both bounds live here
         # rather than inside the detrend, because the validator calls that
         # operator to MEASURE a stored clip and must not reshape what it reads.
@@ -731,6 +762,22 @@ def extract_motion_features_from_aligned_anims(
         # attack reaches this one; a locomotion clip is already far inside it.
         target_root_xz = soft_clamp_root_xz(target_root_xz)
 
+        # The vertical policy -- the subset band, then the root-Y lower bound --
+        # on whatever the vertical detrend left. It used to run on the way in,
+        # inside process_anim, which was correct only while the detrend could not
+        # touch Y: the band is a per-value map with a kink at its knee, so
+        # applied to a trajectory that still carried a climb it left behind an
+        # artifact of where that climb crossed the kink. On the shipped flight
+        # clips the residual came out 0.42x to 2.43x of the true one, in both
+        # directions. Run here it sees the in-place motion, the band is idle for
+        # nearly all of them, and ROOT_Y_MIN_HEIGHT becomes a bound on what
+        # actually ships. ``export_anim`` is the same anim process_anim used to
+        # produce, so the band's boundaries are unchanged.
+        object_subset, body_length = vertical_band_inputs(export_anim, object_type)
+        target_root_y, _vertical_clamped = clamp_vertical_height_track(
+            target_root_y, object_subset, body_length,
+        )
+
     motion_anim = new_anim
     motion_export_anim = export_anim
     if not np.array_equal(target_root_xz, source_root_xz):
@@ -738,11 +785,27 @@ def extract_motion_features_from_aligned_anims(
         # away from the features.
         correction = source_root_xz - target_root_xz
         motion_anim = set_translation_root_xz(
-            new_anim, feature_translation_root_index, target_root_xz,
+            motion_anim, feature_translation_root_index, target_root_xz,
         )
         export_root_xz = root_xz_trajectory(export_anim, feature_translation_root_index)
         motion_export_anim = set_translation_root_xz(
-            export_anim, feature_translation_root_index, export_root_xz - correction,
+            motion_export_anim, feature_translation_root_index, export_root_xz - correction,
+        )
+    if not np.array_equal(target_root_y, source_root_y):
+        # Applied as its own edit rather than folded into the XZ one: the joint
+        # that carries a rig's horizontal transport is not always the joint that
+        # carries its vertical transport, and each correction has to land on the
+        # one that does (see _transport_carrier_index).
+        y_correction = source_root_y - target_root_y
+        motion_anim = set_translation_root_y(
+            motion_anim, feature_translation_root_index, target_root_y,
+        )
+        export_root_y = positions_global(motion_export_anim)[
+            :, feature_translation_root_index, 1
+        ]
+        motion_export_anim = set_translation_root_y(
+            motion_export_anim, feature_translation_root_index,
+            np.asarray(export_root_y, dtype=np.float64) - y_correction,
         )
 
     cont_6d_params, r_velocity, velocity, r_rot, global_positions = get_bvh_cont6d_params(
@@ -783,11 +846,12 @@ def extract_motion_features_from_aligned_anims(
         terminal_local_vel,
         max_joints,
     )
-    return features, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_flattened
+    return (features, max_joints, motion_anim, motion_export_anim, is_loop,
+            root_xz_flattened, root_y_flattened)
 
 
 """ processes animation, and returns a new animation that aligns with humanML3D in terms of orientation and scale"""
-def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True, translation_root_index=None):
+def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True, translation_root_index=None, clamp_vertical=True):
     if not isinstance(fbx_path_or_anim, Animation):
         if preloaded is not None:
             raw_anim, names = preloaded
@@ -805,6 +869,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
             orientation_quat,
             scale_factor=scale_factor,
             translation_root_index=translation_root_index,
+            clamp_vertical=clamp_vertical,
         )
     else:
         names = list()
@@ -854,7 +919,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
 
 
 """ get motion feature representation"""
-def get_motion(fbx_path_or_anim, object_type, max_joints, offsets, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True, translation_root_index=None, flatten_root_travel=False, clamp_root_xz_extent=False):
+def get_motion(fbx_path_or_anim, object_type, max_joints, offsets, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True, translation_root_index=None, flatten_root_travel=False, clamp_root_extent=False):
     try:
         new_anim, export_anim, names, root_translation_xz = get_hml_aligned_anim(
             fbx_path_or_anim,
@@ -868,6 +933,9 @@ def get_motion(fbx_path_or_anim, object_type, max_joints, offsets, tpos_rots, sq
             preloaded=preloaded,
             animation_input_is_tpose_aligned=animation_input_is_tpose_aligned,
             translation_root_index=translation_root_index,
+            # The two halves of one decision: a caller that asks to be bounded
+            # here is bounded ONCE, after the detrend, never also on the way in.
+            clamp_vertical=not clamp_root_extent,
         )
         if translation_root_index is None:
             translation_root_index = resolve_detected_translation_root_index(
@@ -881,7 +949,8 @@ def get_motion(fbx_path_or_anim, object_type, max_joints, offsets, tpos_rots, sq
                 joint_count=new_anim.positions.shape[1],
                 context=f"{object_type} motion",
             )
-        features, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_flattened = extract_motion_features_from_aligned_anims(
+        (features, max_joints, motion_anim, motion_export_anim, is_loop,
+         root_xz_flattened, root_y_flattened) = extract_motion_features_from_aligned_anims(
             new_anim,
             export_anim,
             object_type,
@@ -889,12 +958,12 @@ def get_motion(fbx_path_or_anim, object_type, max_joints, offsets, tpos_rots, sq
             orientation_quat,
             translation_root_index=translation_root_index,
             flatten_root_travel=flatten_root_travel,
-            clamp_root_xz_extent=clamp_root_xz_extent,
+            clamp_root_extent=clamp_root_extent,
         )
-        return features, motion_anim.parents, max_joints, motion_anim, motion_export_anim, is_loop, translation_root_index, root_translation_xz, root_xz_flattened
+        return features, motion_anim.parents, max_joints, motion_anim, motion_export_anim, is_loop, translation_root_index, root_translation_xz, root_xz_flattened, root_y_flattened
     except Exception as err:
         print(err)
-        return None, None, max_joints, None, None, False, None, None, False
+        return None, None, max_joints, None, None, False, None, None, False, False
 
 
 ################## Motion Recovery #####################

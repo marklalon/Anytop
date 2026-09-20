@@ -108,7 +108,8 @@ def _turning_path(n_frames: int, radius: float, turn_deg: float) -> np.ndarray:
 
 
 def _extract(anim, locomotion=True, clamp=False):
-    features, _max_joints, motion_anim, _e, is_loop, flattened = extract_motion_features_from_aligned_anims(
+    (features, _max_joints, motion_anim, _e, is_loop, flattened,
+     _y_flattened) = extract_motion_features_from_aligned_anims(
         anim,
         anim,
         object_type='TestSkeleton',
@@ -116,7 +117,7 @@ def _extract(anim, locomotion=True, clamp=False):
         orientation_quat=Quaternions.id(1).qs[0],
         translation_root_index=0,
         flatten_root_travel=locomotion,
-        clamp_root_xz_extent=clamp,
+        clamp_root_extent=clamp,
     )
     return features, is_loop, flattened, motion_anim
 
@@ -764,7 +765,8 @@ def test_resampling_the_source_and_reextracting_agrees_with_the_first_pass():
     from data_loaders.truebones.truebones_utils.dataset_pipeline import _resample_animation
 
     source = _intermediate_root_anim(18, _travelling_path(18))
-    first, _mj, _m, _e, _loop, first_flattened = extract_motion_features_from_aligned_anims(
+    (first, _mj, _m, _e, _loop, first_flattened,
+     _first_y) = extract_motion_features_from_aligned_anims(
         source, source, 'TestSkeleton', 8,
         Quaternions.id(1).qs[0], translation_root_index=1,
         flatten_root_travel=True,
@@ -772,7 +774,8 @@ def test_resampling_the_source_and_reextracting_agrees_with_the_first_pass():
     assert first_flattened is True
 
     resampled = _resample_animation(source, 20)
-    second, _mj, _m, _e, _loop2, second_flattened = extract_motion_features_from_aligned_anims(
+    (second, _mj, _m, _e, _loop2, second_flattened,
+     _second_y) = extract_motion_features_from_aligned_anims(
         resampled, resampled, 'TestSkeleton', 8,
         Quaternions.id(1).qs[0], translation_root_index=1,
         flatten_root_travel=True,
@@ -803,7 +806,8 @@ def test_a_riding_ancestor_does_not_accumulate_the_removed_travel():
     n_frames = 40
     anim = _riding_root_anim(n_frames, _travelling_path(n_frames, distance=4.0))
 
-    features, _mj, _m, _e, _loop, flattened = extract_motion_features_from_aligned_anims(
+    (features, _mj, _m, _e, _loop, flattened,
+     _y_flat) = extract_motion_features_from_aligned_anims(
         anim, anim, 'TestSkeleton', 8,
         Quaternions.id(1).qs[0], translation_root_index=1,
         flatten_root_travel=True,
@@ -973,7 +977,8 @@ def test_the_wrapper_ric_no_longer_depends_on_where_the_clip_was_authored():
         # Centre on the effective root the way process_anim does.
         centred, _ = move_xz_to_origin(anim, translation_root_index=1)
 
-        features, _mj, _m, _e, _loop, _flat = extract_motion_features_from_aligned_anims(
+        (features, _mj, _m, _e, _loop, _flat,
+         _y_flat) = extract_motion_features_from_aligned_anims(
             centred, centred, 'TestSkeleton', 8,
             Quaternions.id(1).qs[0], translation_root_index=1,
         )
