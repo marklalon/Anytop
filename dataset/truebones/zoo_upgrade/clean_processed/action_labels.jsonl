@@ -33,7 +33,7 @@
 {"clip": "Bear_Sneak", "action_group": "locomotion", "action_label": "walk, forward, slow", "is_loop": true, "reviewed": true}
 {"clip": "Bear_SneakL", "action_group": "locomotion", "action_label": "walk, left, slow", "is_loop": false, "reviewed": true}
 {"clip": "Bear_Sprint", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
-{"clip": "Bear_Stand", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Bear_Stand", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "Bear_StandAngryBreathing", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
 {"clip": "Bear_StandBreathing", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Bear_StandEating", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
@@ -104,7 +104,7 @@
 {"clip": "Donkey_Call", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Donkey_FrontLegKick", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
 {"clip": "Donkey_Grazing", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
-{"clip": "Donkey_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Donkey_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "Donkey_Laydown", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
 {"clip": "Donkey_RearLegKick", "action_group": "stationary", "action_label": "attack, kick", "is_loop": true, "reviewed": true}
 {"clip": "Donkey_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
