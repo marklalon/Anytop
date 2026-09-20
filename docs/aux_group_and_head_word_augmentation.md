@@ -210,7 +210,8 @@ root 末端误差更差，turn 滑步 0.675 vs 0.540；只在 jerk 和多样性�
 m = --aux_group_mass     # 默认 0.0 = 特性关闭
 本组 clip 合计拿 (1 - m) 的采样质量
 aux  clip 合计拿   m    的采样质量
-两池内部各自按现有规则再分：--balanced 时 sqrt(物种 clip 数) 再组内均分，否则逐条均分
+两池内部各自按现有规则再分：--balanced 时按 action_label 首词分组，sqrt(组 clip 数)
+再组内均分，否则逐条均分（见 docs/action_balanced_sampling.md）
 ```
 
 - `m = 0` 时 aux clip **直接不进 `name_list`**（而不是权重置零）：否则它们仍会影响

@@ -144,7 +144,7 @@ def get_dataset_loader(
     )
     collate = truebones_batch_collate
     sampler = None
-    # A weighted sampler is needed for species balancing (--balanced) and for
+    # A weighted sampler is needed for action balancing (--balanced) and for
     # holding auxiliary clips to their --aux_group_mass share; the dataset owns
     # that decision so both callers agree on it.
     if dataset.motion_dataset.use_weighted_sampler:

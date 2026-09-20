@@ -24,7 +24,9 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_GROUPS,
     AUX_ACTION_GROUPS_KEY,
     ActionLabelError,
+    HEAD_VOCAB,
     aux_key_present_in,
+    head_words_in,
     load_motion_metadata,
     normalize_action_group,
     parse_action_label,
@@ -62,6 +64,40 @@ DEFAULT_SPLIT_RATIOS = {"train": 1.0, "val": 0.0, "test": 0.0}
 DEFAULT_SPLIT_SEED = 3407
 SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 ALL_SPLIT_NAME = "all"
+
+# --balanced groups the clips by the action_label's FIRST head word and spreads
+# the sampling mass over the GROUPS (sqrt of each group's clip count) instead of
+# over the clips.  That is the axis the corpus is most lopsided on -- attack 891
+# clips against stop 5 and sheathe 1 -- and the one the model is asked to follow
+# at inference.  (AnyTop balanced species here instead; that mode is gone.)
+#
+# The group a clip with no action_label lands in.  Every LABELLED clip has a head
+# word by contract (parse_action_label rejects one that does not), so this is
+# the unannotated corner only.
+UNLABELED_ACTION_GROUP = "<unlabeled>"
+# The single group an unbalanced run uses: no label is read, every clip in a
+# pool weighs the same, which is what a plain RandomSampler already did.
+UNBALANCED_GROUP = "<all>"
+
+
+def clip_action_head_word(motion_metadata, clip_name: str = "?") -> str:
+    """The label's first head word -- the key --balanced groups on.
+
+    A label may name several head words ("attack, jump, charge"); the first one
+    is the one the head channel weights above the rest
+    (HEAD_SLOT_PRIMARY_WEIGHT), so it is also what the clip counts as here.
+    """
+    label = str((motion_metadata or {}).get("action_label") or "")
+    if not label:
+        return UNLABELED_ACTION_GROUP
+    try:
+        heads = head_words_in(parse_action_label(label))
+    except ActionLabelError as exc:
+        raise RuntimeError(
+            f"clip {clip_name!r} carries action_label {label!r}, which cannot be "
+            f"parsed, so --balanced cannot group it: {exc}"
+        ) from exc
+    return heads[0]
 
 
 def _copy_required_motion_metadata(motion_name: str, motion_metadata) -> dict[str, object]:
@@ -1510,24 +1546,30 @@ class MotionDataset(data.Dataset):
         return self.prepare_sample_by_name(name)
 
 class TruebonesSampler(WeightedRandomSampler):
-    """Sub-balanced weighted sampler for species fairness.
+    """Sub-balanced weighted sampler for action fairness.
 
-    Each species' total sampling mass is proportional to the square root of its
-    clip count, then normalized across all non-empty species; within a species
-    the mass is split uniformly across its clips.
+    Clips are grouped by their action_label's FIRST head word, each group's
+    total sampling mass is proportional to the square root of its clip count,
+    normalized across all non-empty groups; within a group the mass is split
+    uniformly across its clips.
 
-    Species identity is the canonical cond key, so two datasets' ``Horse``
-    entries count as two species and each gets its own sqrt-mass -- the intended
-    reading, since they are different skeletons (79 vs 39 joints). There is no
-    per-dataset weighting: a species' mass depends only on how many clips it
-    contributes to this training subset, never on which dataset it came from.
+    The corpus is far more lopsided on this axis than on any other -- 891 attack
+    clips and 732 idle ones against 5 stop and 1 sheathe -- and per-clip uniform
+    draws hand that ratio straight to the model, which then answers "stop" with
+    something that looks like an idle. sqrt softens 891:1 to ~30:1 of group
+    mass: a lone sheathe clip is drawn ~30x as often as any one attack clip,
+    while attack as a whole still outweighs sheathe ~30x. A label naming several
+    head words ("attack, jump, charge") counts under the first, which is also
+    the word the head channel weights above the rest.
 
-    This is a softer middle ground
-    than full per-species balancing: a species with 9 clips is sampled 3x
-    (=sqrt(9)) as often as a single-clip species, rather than equally (full
-    balance) or 9x (uniform per-clip). The clip count is taken over the already
-    split/action_group-filtered ``name_list``, so it reflects only the clips
-    actually present in this training subset.
+    Species are NOT balanced (AnyTop's original sampler balanced them and
+    nothing else): inside a head word every clip is equally likely, so a species
+    contributes in proportion to how many clips of that action it has.
+
+    The counts are taken over the already split/action_group-filtered
+    ``name_list``, so they reflect only the clips actually present in this
+    training subset, and an unbalanced run (``--balanced`` off) weights every
+    clip in a pool alike without reading a label at all.
     """
     def __init__(self, data_source):
         motion_dataset = data_source.motion_dataset
@@ -1537,54 +1579,82 @@ class TruebonesSampler(WeightedRandomSampler):
         pointer = motion_dataset.pointer
         weights = np.zeros(total_samples, dtype=np.float64)
 
-        # Species membership comes from the loaded entry, not a filename prefix:
-        # after merging, 'Horse_Idle_1.npy' exists under two namespaces and a
-        # prefix test would assign it to both.
+        # The group comes from the loaded entry's own metadata, never from the
+        # file name: after merging, 'Horse_Idle_1.npy' exists under two
+        # namespaces with two sidecars behind it.
         data_dict = motion_dataset.data_dict
         aux_mask = getattr(motion_dataset, 'aux_mask', None)
         aux_group_mass = float(getattr(motion_dataset, 'aux_group_mass', 0.0) or 0.0)
         balanced = bool(getattr(motion_dataset, 'balanced', False))
 
+        # A fixed group order (the head vocabulary) keeps the weights
+        # bit-identical across runs.
+        group_order = (
+            tuple(HEAD_VOCAB) + (UNLABELED_ACTION_GROUP,) if balanced
+            else (UNBALANCED_GROUP,)
+        )
+
+        def _group_of(index: int) -> str:
+            if not balanced:
+                return UNBALANCED_GROUP
+            entry = data_dict[name_list[index]]
+            return clip_action_head_word(
+                entry.get('motion_metadata'), entry.get('motion_name', name_list[index])
+            )
+
         def _pool_indices(want_aux: bool) -> dict[str, list[int]]:
-            indices_by_object_type: dict[str, list[int]] = defaultdict(list)
+            indices_by_group: dict[str, list[int]] = defaultdict(list)
             for i in range(pointer, len(name_list)):
                 is_aux = bool(aux_mask[i]) if aux_mask is not None else False
                 if is_aux != want_aux:
                     continue
-                indices_by_object_type[data_dict[name_list[i]]['object_type']].append(i)
-            return indices_by_object_type
+                indices_by_group[_group_of(i)].append(i)
+            return indices_by_group
 
-        def _fill(indices_by_object_type: dict[str, list[int]], pool_mass: float) -> None:
-            """Spread *pool_mass* over one pool, species-fairly, in place.
+        def _fill(indices_by_group: dict[str, list[int]], pool_mass: float) -> list[tuple[str, int, float]]:
+            """Spread *pool_mass* over one pool, group-fairly, in place.
 
-            Unbalanced runs weight every clip alike, which is what a plain
-            RandomSampler already did -- so turning the weighted sampler on for
-            the aux budget alone does not silently start balancing species.
+            Unbalanced runs put the whole pool in one group, so this
+            weights every clip alike -- what a plain RandomSampler already did.
+            Turning the weighted sampler on for the aux budget alone does not
+            silently start balancing anything.
             """
-            non_empty_types = [
-                (object_type, indices_by_object_type[object_type])
-                for object_type in motion_dataset.cond_dict
-                if indices_by_object_type.get(object_type)
+            non_empty = [
+                (group, indices_by_group[group])
+                for group in group_order
+                if indices_by_group.get(group)
             ]
-            if not non_empty_types:
-                return
+            # _group_of only ever returns a name in group_order, so every
+            # group with clips is sampled; assert it so a future edit that
+            # breaks the invariant fails loudly instead of silently zeroing
+            # a group's weight.
+            assert set(indices_by_group) <= set(group_order), (
+                f"sampling produced group(s) {sorted(set(indices_by_group) - set(group_order))} "
+                f"that the known group order does not name; they would be dropped from sampling."
+            )
+            if not non_empty:
+                return []
             if balanced:
-                # Per-species mass ~ sqrt(clip count over this filtered subset).
-                species_shares = [np.sqrt(len(object_indices)) for _, object_indices in non_empty_types]
+                # Per-group mass ~ sqrt(clip count over this filtered subset).
+                group_shares = [np.sqrt(len(group_indices)) for _, group_indices in non_empty]
             else:
-                species_shares = [float(len(object_indices)) for _, object_indices in non_empty_types]
-            total_share = float(np.sum(species_shares))
-            for (object_type, object_indices), share in zip(non_empty_types, species_shares):
-                indices = np.asarray(object_indices)
+                group_shares = [float(len(group_indices)) for _, group_indices in non_empty]
+            total_share = float(np.sum(group_shares))
+            summary = []
+            for (group, group_indices), share in zip(non_empty, group_shares):
+                indices = np.asarray(group_indices)
                 n = len(indices)
-                weights[indices] = pool_mass * (share / total_share) / n
+                group_mass = pool_mass * (share / total_share)
+                weights[indices] = group_mass / n
+                summary.append((group, n, group_mass))
+            return summary
 
         own_pool = _pool_indices(want_aux=False)
         aux_pool = _pool_indices(want_aux=True) if aux_mask is not None else {}
         has_aux = any(aux_pool.values())
 
         if not own_pool and not has_aux:
-            raise RuntimeError(f"No samples found for any object type in split with pointer={pointer}. "
+            raise RuntimeError(f"No samples found in split with pointer={pointer}. "
                              f"Available samples: {[name_list[i] for i in range(pointer, min(pointer+5, len(name_list)))]}")
 
         # The budget is a share of the TOTAL mass, not a per-clip factor: however
@@ -1595,8 +1665,20 @@ class TruebonesSampler(WeightedRandomSampler):
             # Degenerate but legal (every clip in this split is borrowed):
             # give the aux pool everything rather than emitting all-zero weights.
             mass = 1.0
-        _fill(own_pool, 1.0 - mass)
+        own_summary = _fill(own_pool, 1.0 - mass)
         _fill(aux_pool, mass)
+
+        if balanced and own_summary and os.environ.get("LOCAL_RANK", "0") == "0":
+            # One line, once per node (rank 0 only): the sampled action mix is
+            # what this mode exists to change, so it should be readable from the
+            # training log without one copy per DDP rank.
+            shown = ", ".join(
+                f"{group} {count}->{group_mass:.1%}"
+                for group, count, group_mass in sorted(
+                    own_summary, key=lambda row: row[2], reverse=True
+                )
+            )
+            print(f"[sampler] --balanced by action head word ({len(own_summary)} groups): {shown}")
 
         super().__init__(num_samples=num_samples, weights=weights)
     

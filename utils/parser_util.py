@@ -486,7 +486,11 @@ def add_training_options(parser):
     group.add_argument("--ema_rate", default=0.99, type=float,
                        help="EMA decay rate (closer to 1 = slower updates). Default 0.99.")
     group.add_argument("--balanced", action='store_true',
-                       help="Use balancing sampler for fairness between topologies")
+                       help="Balance the sampler over ACTIONS: clips are grouped by their "
+                            "action_label's first head word and the sampling mass is spread "
+                            "over the groups (sqrt of each group's clip count) instead of over "
+                            "the clips, so attack/idle stop outweighing stop/sheathe by their "
+                            "raw clip counts. Species are not balanced.")
 
 
 def add_sampling_options(parser):
