@@ -1,27 +1,28 @@
 {
-  "_comment": "Evaluation task battery for eval_checkpoint.py. checkpoint.RUN_NAME is required; checkpoint.MODEL_FILE is optional and defaults to the newest model*.pt. Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task.",
+  "_comment": "Evaluation task battery for eval_checkpoint.py. checkpoint.RUN_NAME is required; checkpoint.MODEL_FILE is optional and defaults to the newest model*.pt; checkpoint.OUTPUT_DIR is optional and names the run folder the results are written under (a bare name goes under outputs/eval_checkpoint/, default RUN_NAME; <MODEL_NAME> is appended either way). Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task.",
   "checkpoint": {
-    "RUN_NAME": "merged_all_v22"
+    "RUN_NAME": "merged_all_v22",
+    "OUTPUT_DIR": "merged_all_v22_stationary"
   },
   "tasks": [    
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "idle", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "idle"] },
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "attack, rear"] },
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "rest"] },
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "hurt"] },
 
-    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "idle", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "attack, bite", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "idle"] },
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "attack, bite"] },
     { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "rest"] },
     { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "hurt"] },
 
-    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "idle, look", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "idle, look"] },
     { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "attack, swat"] },
-    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "attack, hover", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "attack, hover"] },
     { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "rest"] },
-    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "hurt, hover", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "hurt, hover"] },
 
-    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "idle, look", "--loop", "--action_label_cfg_scale", "2"] },
-    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "work, hammer, hand2", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "idle, look"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "work, hammer, hand2"] },
     { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "pickup"] },
     { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "hurt"] },
 

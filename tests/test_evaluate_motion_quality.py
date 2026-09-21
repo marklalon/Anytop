@@ -189,3 +189,42 @@ def test_shipped_task_configs_all_carry_a_scoring_label() -> None:
     for name in ("eval_tasks_locomotion.json", "eval_tasks_stationary.json", "eval_tasks_transition.json"):
         _checkpoint, tasks = eval_checkpoint._load_task_config(eval_checkpoint._SCRIPT_DIR / name)
         assert all(score_label for _category, _args, score_label in tasks), name
+
+
+def test_eval_checkpoint_output_dir_overrides_the_run_folder(tmp_path) -> None:
+    from eval import eval_checkpoint
+
+    resolve = eval_checkpoint._resolve_output_root
+    eval_root = eval_checkpoint._ANYTOP_DIR / "outputs" / "eval_checkpoint"
+
+    # Default: the run name, with one subdir per checkpoint file.
+    assert resolve({}, "merged_all_v22", "model000400000") == (
+        eval_root / "merged_all_v22" / "model000400000"
+    ).resolve()
+    # A bare name is a sibling run folder, so one checkpoint's batteries keep
+    # their own task dirs (Basic / NewSkeleton) and their own report.
+    assert resolve({"OUTPUT_DIR": "merged_all_v22_transition"}, "merged_all_v22", "m") == (
+        eval_root / "merged_all_v22_transition" / "m"
+    ).resolve()
+    # A value with a separator is a path relative to the Anytop dir, so it is
+    # not nested under outputs/eval_checkpoint a second time.
+    assert resolve({"OUTPUT_DIR": "outputs/eval_checkpoint/foo"}, "run", "m") == (
+        eval_root / "foo" / "m"
+    ).resolve()
+    # An absolute value is taken as-is.
+    assert resolve({"OUTPUT_DIR": str(tmp_path / "abs")}, "run", "m") == (
+        tmp_path / "abs" / "m"
+    ).resolve()
+
+
+def test_eval_checkpoint_config_rejects_an_empty_output_dir(tmp_path) -> None:
+    from eval import eval_checkpoint
+
+    config = {
+        "checkpoint": {"RUN_NAME": "run", "OUTPUT_DIR": "   "},
+        "tasks": [{"category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "run"]}],
+    }
+    config_path = tmp_path / "tasks.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match="checkpoint.OUTPUT_DIR must be a non-empty string"):
+        eval_checkpoint._load_task_config(config_path)
