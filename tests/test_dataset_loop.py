@@ -264,7 +264,6 @@ def test_loop_with_closing_key_is_augmented_as_its_clean_period() -> None:
     dataset = _build_truebones(
         split="train",
         num_frames=NUM_FRAMES,
-        balanced=False,
         objects_subset=CLOSING_KEY_LOOP_SUBSET,
         motion_cache_size=2,
     )
@@ -383,7 +382,6 @@ def test_loop_padding_updates_effective_length() -> None:
     dataset = _build_truebones(
         split="train",
         num_frames=NUM_FRAMES,
-        balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
     )
@@ -416,7 +414,6 @@ def test_loop_padding_can_tile_multiple_cycles_before_resample() -> None:
     dataset = _build_truebones(
         split="train",
         num_frames=NUM_FRAMES,
-        balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
     )
@@ -448,7 +445,6 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     dataset = _build_truebones(
         split="train",
         num_frames=NUM_FRAMES,
-        balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
     )
@@ -484,7 +480,6 @@ def test_long_motion_crops_fixed_length_random_window() -> None:
     dataset = _build_truebones(
         split="train",
         num_frames=NUM_FRAMES,
-        balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=0,
     )
@@ -539,7 +534,6 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
     dataset = _build_truebones(
         split="train",
         num_frames=NUM_FRAMES,
-        balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
     )
@@ -570,7 +564,6 @@ def test_loop_uncond_keeps_loop_augmentation_but_hands_over_an_open_window() -> 
     dataset = _build_truebones(
         split="train",
         num_frames=NUM_FRAMES,
-        balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
         loop_cond_prob=0.0,
@@ -611,7 +604,6 @@ def test_loop_uncond_never_flips_an_explicit_loop_offset() -> None:
     dataset = _build_truebones(
         split="train",
         num_frames=NUM_FRAMES,
-        balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
         loop_cond_prob=0.0,
@@ -641,7 +633,6 @@ def test_loop_cond_prob_out_of_range_is_refused() -> None:
         _build_truebones(
             split="train",
             num_frames=NUM_FRAMES,
-            balanced=False,
             objects_subset=LOOP_SUBSET,
             motion_cache_size=0,
             loop_cond_prob=1.5,
@@ -652,7 +643,6 @@ def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
     dataset = _build_truebones(
         split="train",
         num_frames=NUM_FRAMES,
-        balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=0,
     )
@@ -702,7 +692,6 @@ def test_batch_collate_preserves_translation_root_index() -> None:
     dataset = _build_truebones(
         split="train",
         num_frames=NUM_FRAMES,
-        balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
     )
@@ -792,7 +781,6 @@ def test_motion_speed_aug_is_transparent_to_roll_tile_crop_and_resample() -> Non
     dataset = _build_truebones(
         split="train",
         num_frames=NUM_FRAMES,
-        balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
     )

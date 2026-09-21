@@ -15,6 +15,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     ACTION_LABEL_SLOTS,
     HEAD_SLOT_PRIMARY_WEIGHT,
     SLOT_DIRECTION,
+    SLOT_MODIFIER,
     SLOT_HEAD,
     ActionConditioningError,
     slot_source_rank_report,
@@ -103,15 +104,25 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"action_label_cfg_drop_prob must be in [0, 1], got {self.action_label_cfg_drop_prob}"
             )
-        # Direction-slot dropout: with this probability a training sample keeps
-        # its label but loses its direction words, so an empty direction slot
-        # is trained as "any direction" (the marginal) and a bare "attack, swat"
-        # at inference draws one side rather than a blend of both. The hands
-        # slot has NO such dropout on purpose -- empty there means empty hands.
+        # Slot dropout: with these probabilities a training sample keeps its
+        # label but loses the words of ONE slot, so that slot's empty row is
+        # trained as the marginal over its words rather than as a content key.
+        #   direction: a bare "attack, swat" at inference draws one side rather
+        #              than a blend of both.
+        #   modifier:  a bare "attack" draws SOME attack (bite, cast, swat ...)
+        #              rather than the handful of clips annotated without a
+        #              modifier, which is what an undropped empty slot learns.
+        # The two draws are independent per row. The hands slot has NO such
+        # dropout on purpose -- empty there means empty hands.
         self.direction_slot_drop_prob = float(kargs.get('direction_slot_drop_prob', 0.0))
         if not 0.0 <= self.direction_slot_drop_prob <= 1.0:
             raise ValueError(
                 f"direction_slot_drop_prob must be in [0, 1], got {self.direction_slot_drop_prob}"
+            )
+        self.modifier_slot_drop_prob = float(kargs.get('modifier_slot_drop_prob', 0.0))
+        if not 0.0 <= self.modifier_slot_drop_prob <= 1.0:
+            raise ValueError(
+                f"modifier_slot_drop_prob must be in [0, 1], got {self.modifier_slot_drop_prob}"
             )
         # --action_label_adaln: give the action token a multiplicative pathway
         # through the decoder on top of the additive one (GraphMotionDecoder
@@ -535,20 +546,30 @@ class AnyTop(nn.Module):
             channels.append(torch.where(total > 0, mean / norm.clamp(min=1e-9), mean * 0.0))
         return torch.cat(channels, dim=-1)
 
-    def _drop_direction_slot(self, word_mask, slot_ids, batch_size, device):
-        """Training-only: blank the direction words of a random subset of rows.
+    def _drop_slot_words(self, word_mask, slot_ids, slot, prob, batch_size, device):
+        """Training-only: blank the words of *slot* on a random subset of rows.
 
         A pure mask operation, written like the CFG keep mask so it compiles
-        the same way: a dropped row's direction members leave ``word_mask``,
-        the direction channel pools to its zero row, and every other slot is
-        untouched. Rows without a direction word are unaffected, and the label
-        stays valid (a direction word is never a label's only word, so
-        ``action_label_valid`` cannot flip). Eval and inference never drop.
+        the same way: a dropped row's members of that slot leave ``word_mask``,
+        the slot's channel pools to its zero row, and every other slot is
+        untouched. Rows with no word in the slot are unaffected, and the label
+        stays valid (a head word is never dropped and every label carries one,
+        so ``action_label_valid`` cannot flip). Eval and inference never drop.
         """
-        if not self.training or self.direction_slot_drop_prob <= 0.0:
+        if not self.training or prob <= 0.0:
             return word_mask
-        drop = torch.rand(batch_size, device=device) < self.direction_slot_drop_prob
-        return word_mask & ~(drop[:, None] & (slot_ids == SLOT_DIRECTION))
+        drop = torch.rand(batch_size, device=device) < prob
+        return word_mask & ~(drop[:, None] & (slot_ids == slot))
+
+    def _drop_direction_slot(self, word_mask, slot_ids, batch_size, device):
+        return self._drop_slot_words(
+            word_mask, slot_ids, SLOT_DIRECTION, self.direction_slot_drop_prob, batch_size, device
+        )
+
+    def _drop_modifier_slot(self, word_mask, slot_ids, batch_size, device):
+        return self._drop_slot_words(
+            word_mask, slot_ids, SLOT_MODIFIER, self.modifier_slot_drop_prob, batch_size, device
+        )
 
     def _resolve_action_label_active(self, raw_action_label_active, batch_size, device):
         """Per-sample CFG mask for the action condition (True == conditional).
@@ -619,6 +640,7 @@ class AnyTop(nn.Module):
         else:
             word_ids, slot_ids, word_mask = resolved
             word_mask = self._drop_direction_slot(word_mask, slot_ids, batch_size, device)
+            word_mask = self._drop_modifier_slot(word_mask, slot_ids, batch_size, device)
             channels = self._assemble_action_slot_channels(
                 word_ids, slot_ids, word_mask, dtype
             )

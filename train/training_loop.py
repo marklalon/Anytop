@@ -272,7 +272,6 @@ class TrainLoop:
                 batch_size=self.args.eval_batch_size,
                 num_frames=self.args.num_frames,
                 split=self.args.eval_split,
-                balanced=False,
                 objects_subset=self.args.objects_subset,
                 sample_limit=self.args.sample_limit,
                 shuffle=False,

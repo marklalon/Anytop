@@ -125,10 +125,11 @@ DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right", "up"
 # modifier: ``attack, bow, hand2``.
 #
 # The two tokens are MUTUALLY EXCLUSIVE. An EMPTY slot MEANS EMPTY HANDS --
-# the content default, not "unspecified". Unlike the direction axis (whose
-# empty slot is the marginal because training drops direction words,
-# ``--direction_slot_drop_prob``), nothing drops a hand word, so the model
-# never sees an armed clip under an empty slot. The former explicit ``hand0``
+# the content default, not "unspecified". Unlike the direction and modifier
+# axes (whose empty slots are marginals because training drops their words,
+# ``--direction_slot_drop_prob`` / ``--modifier_slot_drop_prob``), nothing
+# drops a hand word, so the model never sees an armed clip under an empty
+# slot. The former explicit ``hand0``
 # ("empty hands") was retired 2026-09-18 for exactly that reason. Species that
 # never hold anything leave the axis empty; ``tools/prefill_hand_words.py``
 # proposes the word from the holding pose.

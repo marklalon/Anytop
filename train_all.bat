@@ -23,7 +23,8 @@ pushd "%SCRIPT_DIR%"
 	--ml_platform_type TensorboardPlatform ^
 	--objects_subset all ^
 	--action_group all ^
-	--balanced ^
+	--rare_head_word_floor 20 ^
+	--rare_head_word_max_boost 4 ^
 	--train_split train ^
 	--latent_dim 384 ^
 	--ff_size 2048 ^
@@ -52,6 +53,7 @@ pushd "%SCRIPT_DIR%"
 	--renoise_same_level_prob 0.8 ^
 	--joint_name_drop_prob 0.15 ^
 	--direction_slot_drop_prob 0.15 ^
+	--modifier_slot_drop_prob 0.15 ^
 	--temporal_span_mask_prob 0.3 ^
 	--temporal_span_seam_loss_weight 0.2 ^
 	--lambda_loop_wrap 0.04 ^

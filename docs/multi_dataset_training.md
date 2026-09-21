@@ -221,6 +221,8 @@ opt.sources   = tuple[DatasetSource]   # 由 cond entry 的 dataset_root 去重�
 
 ### 5.4 采样权重
 
+> 历史：下文的按物种 `sqrt(clip数)` 采样已删除（先改为按动作首词，2026-09-21 起逐 clip 均匀 + `--rare_head_word_floor`，见 [head_word_weights_and_modifier_dropout.md](head_word_weights_and_modifier_dropout.md)）。本节只记录当时的决策。
+
 qualified 之后 `truebones/zoo/Horse` 与 `truebones/zoo_upgrade/Horse` 是两个独立物种，`TruebonesSampler` 各给一份 `sqrt(clip数)` 质量 —— 这符合「两个不同骨架就是两个物种」的语义（实测 zoo Horse 79 关节 / upgrade Horse 39 关节，`scale_factor` 差近一倍）。
 
 **不引入任何按数据集的权重调节**：采样权重只由每个物种在当前训练集中的 clip 数决定，与它来自哪个数据集无关。`TruebonesSampler` 的现有 `sqrt(clip数)` 逻辑不变，只是物种身份从裸名换成规范键。

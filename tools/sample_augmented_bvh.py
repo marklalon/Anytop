@@ -255,7 +255,6 @@ def main() -> int:
     dataset = MotionDataset(
         opt=opt,
         cond_dict=cond_dict,
-        balanced=False,
         num_frames=args.num_frames,
         sample_limit=0,
         allowed_motion_names=allowed_motion_names,

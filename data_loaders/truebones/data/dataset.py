@@ -63,29 +63,35 @@ DEFAULT_SPLIT_SEED = 3407
 SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 ALL_SPLIT_NAME = "all"
 
-# --balanced groups the clips by the action_label's FIRST head word and spreads
-# the sampling mass over the GROUPS (sqrt of each group's clip count) instead of
-# over the clips.  That is the axis the corpus is most lopsided on -- attack 891
-# clips against stop 5 and sheathe 1 -- and the one the model is asked to follow
-# at inference.  (AnyTop balanced species here instead; that mode is gone.)
+# Sampling is uniform over clips, with two deviations, both keyed on the
+# action_label's FIRST head word and both aimed at the tail of the corpus
+# (stop, sheathe, crawl: 1 clip each) whose clips would otherwise be drawn
+# once per ~3600 samples:
 #
-# sqrt alone still lets a one-clip group draw its clip ~40x as often as uniform
-# sampling would (1/sqrt(1) against 1/sqrt(891)); a group smaller than this
-# floor is weighted as if it had this many clips, so per-clip probability stops
-# growing below it.  --balanced_group_floor overrides it.
-BALANCED_GROUP_FLOOR_DEFAULT = 10
+#   --rare_head_word_floor N: a head word with fewer than N clips in the
+#       training subset is weighted as if it had N, i.e. each of its clips
+#       carries N / count, capped at --rare_head_word_max_boost.  One rule for
+#       the whole tail, so a new rare word is covered without being listed.
+#   --head_word_weights word=w,...: an explicit per-word multiplier on top of
+#       that, for the case where one word needs a hand-set weight.
 #
-# The group a clip with no action_label lands in.  Every LABELLED clip has a head
+# There is no other balancing rule: the sqrt-of-group-count scheme this
+# replaced (2026-09-21) halved the exposure of every attack clip -- 891 clips,
+# but spread over 110 labels -- to lift a tail that mostly needs data, not
+# mass.  Both deviations are arithmetic: a clip of weight w is drawn w times
+# as often as any clip of weight 1.
+#
+# --rare_head_word_floor at or below this is off (every word has >= 1 clip).
+RARE_HEAD_WORD_FLOOR_OFF = 1
+#
+# The key a clip with no action_label carries.  Every LABELLED clip has a head
 # word by contract (parse_action_label rejects one that does not), so this is
-# the unannotated corner only.
+# the unannotated corner only; it cannot be weighted.
 UNLABELED_ACTION_GROUP = "<unlabeled>"
-# The single group an unbalanced run uses: no label is read, every clip in a
-# pool weighs the same, which is what a plain RandomSampler already did.
-UNBALANCED_GROUP = "<all>"
 
 
 def clip_action_head_word(motion_metadata, clip_name: str = "?") -> str:
-    """The label's first head word -- the key --balanced groups on.
+    """The label's first head word -- the key --head_word_weights is applied on.
 
     A label may name several head words ("attack, jump, charge"); the first one
     is the one the head channel weights above the rest
@@ -99,9 +105,84 @@ def clip_action_head_word(motion_metadata, clip_name: str = "?") -> str:
     except ActionLabelError as exc:
         raise RuntimeError(
             f"clip {clip_name!r} carries action_label {label!r}, which cannot be "
-            f"parsed, so --balanced cannot group it: {exc}"
+            f"parsed, so --head_word_weights cannot key it: {exc}"
         ) from exc
     return heads[0]
+
+
+def parse_rare_head_word_floor(floor, max_boost) -> tuple[int, float]:
+    """Validate ``(--rare_head_word_floor, --rare_head_word_max_boost)``.
+
+    ``floor`` is a clip count (``None``/0/1 = off); ``max_boost`` is the cap on
+    the per-clip multiplier the floor may hand a word and must be >= 1 (a cap
+    below 1 would turn a lift into a cut).
+    """
+    floor = int(floor or 0)
+    if floor < 0:
+        raise ValueError(f"--rare_head_word_floor must be >= 0, got {floor}")
+    max_boost = float(max_boost if max_boost is not None else 4.0)
+    if not np.isfinite(max_boost) or max_boost < 1.0:
+        raise ValueError(
+            f"--rare_head_word_max_boost must be a finite number >= 1, got {max_boost}"
+        )
+    return floor, max_boost
+
+
+def rare_head_word_boost(count: int, floor: int, max_boost: float) -> float:
+    """Per-clip multiplier the floor gives a word with ``count`` clips."""
+    if floor <= RARE_HEAD_WORD_FLOOR_OFF or count >= floor:
+        return 1.0
+    return min(float(floor) / float(count), max_boost)
+
+
+def parse_head_word_weights(spec) -> dict[str, float]:
+    """``"stop=3,sheathe=4"`` -> ``{"stop": 3.0, "sheathe": 4.0}``.
+
+    Accepts the CLI string, an already-parsed mapping, or nothing.  Every key
+    must be a HEAD_VOCAB word (a typo would silently weight nothing) and every
+    weight a finite number > 0; a word listed twice is rejected rather than
+    letting the last spelling win.  Weight 1.0 is legal and inert.
+    """
+    if spec is None:
+        return {}
+    if isinstance(spec, dict):
+        items = [(str(k), v) for k, v in spec.items()]
+    else:
+        text = str(spec).strip()
+        if not text:
+            return {}
+        items = []
+        for chunk in text.split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            word, sep, value = chunk.partition("=")
+            if not sep:
+                raise ValueError(
+                    f"--head_word_weights entry {chunk!r} is not 'word=weight'"
+                )
+            items.append((word.strip(), value.strip()))
+    weights: dict[str, float] = {}
+    for word, value in items:
+        if word not in HEAD_VOCAB:
+            raise ValueError(
+                f"--head_word_weights names {word!r}, which is not a head word; "
+                f"head words are {list(HEAD_VOCAB)}"
+            )
+        if word in weights:
+            raise ValueError(f"--head_word_weights lists {word!r} twice")
+        try:
+            weight = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"--head_word_weights weight for {word!r} is not a number: {value!r}"
+            ) from exc
+        if not np.isfinite(weight) or weight <= 0.0:
+            raise ValueError(
+                f"--head_word_weights weight for {word!r} must be a finite number > 0, got {weight}"
+            )
+        weights[word] = weight
+    return weights
 
 
 def _copy_required_motion_metadata(motion_name: str, motion_metadata) -> dict[str, object]:
@@ -896,7 +977,7 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, balanced_group_floor=BALANCED_GROUP_FLOOR_DEFAULT):
+    def __init__(self, opt, cond_dict, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, head_word_weights: Optional[dict[str, float]] = None, rare_head_word_floor: int = 0, rare_head_word_max_boost: float = 4.0):
         self.opt = opt
         # None means the caller does not want label conditioning, so no word ids
         # are attached at all. The bundle is the model's bundle: the loader emits
@@ -923,12 +1004,16 @@ class MotionDataset(data.Dataset):
             object_key: build_joint_struct_features(entry, source=str(object_key))
             for object_key, entry in cond_dict.items()
         }
-        self.balanced = balanced
-        self.balanced_group_floor = max(1, int(balanced_group_floor))
-        # A weighted sampler drives indexing when the action head words are
-        # balanced; it yields absolute name_list indices, so __getitem__ must
-        # skip the pointer offset in that case.
-        self.use_weighted_sampler = bool(self.balanced)
+        self.head_word_weights = parse_head_word_weights(head_word_weights)
+        self.rare_head_word_floor, self.rare_head_word_max_boost = parse_rare_head_word_floor(
+            rare_head_word_floor, rare_head_word_max_boost
+        )
+        # A weighted sampler drives indexing when any head word can be
+        # weighted (a floor or an explicit list); it yields absolute name_list
+        # indices, so __getitem__ must skip the pointer offset in that case.
+        self.use_weighted_sampler = bool(self.head_word_weights) or (
+            self.rare_head_word_floor > RARE_HEAD_WORD_FLOOR_OFF
+        )
         self.sample_limit = max(0, int(sample_limit))
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
         self.motion_cache = OrderedDict()
@@ -1396,132 +1481,101 @@ class MotionDataset(data.Dataset):
         return self.prepare_sample_by_name(name)
 
 class TruebonesSampler(WeightedRandomSampler):
-    """Sub-balanced weighted sampler for action fairness.
+    """Uniform-over-clips sampler with per-head-word multipliers.
 
-    Clips are grouped by their action_label's FIRST head word, each group's
-    total sampling mass is proportional to the square root of its clip count,
-    normalized across all non-empty groups; within a group the mass is split
-    uniformly across its clips.  A group smaller than
-    ``motion_dataset.balanced_group_floor`` clips is weighted as if it had that
-    many (mass n / sqrt(floor)), which caps the per-clip probability of the
-    tail: without it a lone sheathe clip is drawn ~40x as often as uniform
-    sampling would, with floor 10 ~14x, the same as any clip of a 10-clip group.
+    Every clip in the pool starts at weight 1 and is keyed on its
+    action_label's FIRST head word.  Two multipliers stack on that key:
 
-    The corpus is far more lopsided on this axis than on any other -- 891 attack
-    clips and 732 idle ones against 5 stop and 1 sheathe -- and per-clip uniform
-    draws hand that ratio straight to the model, which then answers "stop" with
-    something that looks like an idle. sqrt softens 891:1 to ~30:1 of group
-    mass: a lone sheathe clip is drawn ~30x as often as any one attack clip,
-    while attack as a whole still outweighs sheathe ~30x. A label naming several
-    head words ("attack, jump, charge") counts under the first, which is also
-    the word the head channel weights above the rest.
+    * ``motion_dataset.rare_head_word_floor``: a word with fewer clips than
+      the floor is weighted as if it had that many, so each of its clips
+      carries ``floor / count`` (capped at ``rare_head_word_max_boost``).  A
+      word at or above the floor is untouched.  This is the guarantee for the
+      tail of the corpus (stop, sheathe, crawl: 1 clip each) -- one rule, no
+      list to keep in step with the corpus.
+    * ``motion_dataset.head_word_weights``: an explicit per-word multiplier
+      applied on top, for a word that needs a hand-set weight.
 
-    Species are NOT balanced (AnyTop's original sampler balanced them and
-    nothing else): inside a head word every clip is equally likely, so a species
-    contributes in proportion to how many clips of that action it has.
+    A clip of final weight w is drawn w times as often as a weight-1 clip.
+    Nothing else moves: species are not balanced, and the words neither rule
+    touches keep the corpus's own proportions.  A multiplier on a common word
+    is legal but pointless -- with uniform draws every one of the 891 attack
+    clips already sees the same number of exposures as every idle clip.
 
-    The counts are taken over the already split/action_group-filtered
-    ``name_list``, so they reflect only the clips actually present in this
-    training subset, and an unbalanced run (``--balanced`` off) weights every
-    clip in a pool alike without reading a label at all.
+    A label naming several head words ("attack, jump, charge") is keyed under
+    the first, which is also the word the head channel weights above the
+    rest.  The pool is the already split/action_group-filtered ``name_list``
+    from ``pointer`` on; entries below it carry weight 0 (the plain sampler
+    never yields them either).
     """
     def __init__(self, data_source):
         motion_dataset = data_source.motion_dataset
         num_samples = len(data_source)
         name_list = motion_dataset.name_list
-        total_samples = len(name_list)
         pointer = motion_dataset.pointer
-        weights = np.zeros(total_samples, dtype=np.float64)
+        head_word_weights = dict(getattr(motion_dataset, 'head_word_weights', {}) or {})
+        floor, max_boost = parse_rare_head_word_floor(
+            getattr(motion_dataset, 'rare_head_word_floor', 0),
+            getattr(motion_dataset, 'rare_head_word_max_boost', 4.0),
+        )
+        weights = np.zeros(len(name_list), dtype=np.float64)
 
-        # The group comes from the loaded entry's own metadata, never from the
-        # file name: after merging, 'Horse_Idle_1.npy' exists under two
+        # The head word comes from the loaded entry's own metadata, never from
+        # the file name: after merging, 'Horse_Idle_1.npy' exists under two
         # namespaces with two sidecars behind it.
         data_dict = motion_dataset.data_dict
-        balanced = bool(getattr(motion_dataset, 'balanced', False))
-        group_floor = max(1, int(getattr(motion_dataset, 'balanced_group_floor', BALANCED_GROUP_FLOOR_DEFAULT)))
-
-        # A fixed group order (the head vocabulary) keeps the weights
-        # bit-identical across runs.
-        group_order = (
-            tuple(HEAD_VOCAB) + (UNLABELED_ACTION_GROUP,) if balanced
-            else (UNBALANCED_GROUP,)
-        )
-
-        def _group_of(index: int) -> str:
-            if not balanced:
-                return UNBALANCED_GROUP
+        counts: dict[str, int] = defaultdict(int)
+        head_of_index: dict[int, str] = {}
+        for index in range(pointer, len(name_list)):
             entry = data_dict[name_list[index]]
-            return clip_action_head_word(
+            head = clip_action_head_word(
                 entry.get('motion_metadata'), entry.get('motion_name', name_list[index])
             )
+            counts[head] += 1
+            head_of_index[index] = head
 
-        def _pool_indices() -> dict[str, list[int]]:
-            indices_by_group: dict[str, list[int]] = defaultdict(list)
-            for i in range(pointer, len(name_list)):
-                indices_by_group[_group_of(i)].append(i)
-            return indices_by_group
-
-        def _fill(indices_by_group: dict[str, list[int]], pool_mass: float) -> list[tuple[str, int, float]]:
-            """Spread *pool_mass* over the pool, group-fairly, in place.
-
-            Unbalanced runs put the whole pool in one group, so this
-            weights every clip alike -- what a plain RandomSampler already did.
-            """
-            non_empty = [
-                (group, indices_by_group[group])
-                for group in group_order
-                if indices_by_group.get(group)
-            ]
-            # _group_of only ever returns a name in group_order, so every
-            # group with clips is sampled; assert it so a future edit that
-            # breaks the invariant fails loudly instead of silently zeroing
-            # a group's weight.
-            assert set(indices_by_group) <= set(group_order), (
-                f"sampling produced group(s) {sorted(set(indices_by_group) - set(group_order))} "
-                f"that the known group order does not name; they would be dropped from sampling."
-            )
-            if not non_empty:
-                return []
-            if balanced:
-                # Per-group mass ~ sqrt(clip count over this filtered subset);
-                # per clip that is 1/sqrt(n), frozen at 1/sqrt(floor) below it.
-                group_shares = [
-                    len(group_indices) / np.sqrt(max(len(group_indices), group_floor))
-                    for _, group_indices in non_empty
-                ]
-            else:
-                group_shares = [float(len(group_indices)) for _, group_indices in non_empty]
-            total_share = float(np.sum(group_shares))
-            summary = []
-            for (group, group_indices), share in zip(non_empty, group_shares):
-                indices = np.asarray(group_indices)
-                n = len(indices)
-                group_mass = pool_mass * (share / total_share)
-                weights[indices] = group_mass / n
-                summary.append((group, n, group_mass))
-            return summary
-
-        own_pool = _pool_indices()
-        if not own_pool:
+        pool = len(name_list) - pointer
+        if pool <= 0:
             raise RuntimeError(f"No samples found in split with pointer={pointer}. "
                              f"Available samples: {[name_list[i] for i in range(pointer, min(pointer+5, len(name_list)))]}")
 
-        own_summary = _fill(own_pool, 1.0)
+        # Per-word multiplier = floor boost x explicit weight.  The unlabelled
+        # key is not a rare word: it never gets the floor and cannot be listed.
+        multiplier: dict[str, float] = {}
+        for head, count in counts.items():
+            boost = 1.0 if head == UNLABELED_ACTION_GROUP else rare_head_word_boost(count, floor, max_boost)
+            multiplier[head] = boost * head_word_weights.get(head, 1.0)
+        for index, head in head_of_index.items():
+            weights[index] = multiplier[head]
+        total = float(weights.sum())
+        weights /= total
 
-        if balanced and own_summary and os.environ.get("LOCAL_RANK", "0") == "0":
-            # One line, once per node (rank 0 only): the sampled action mix is
-            # what this mode exists to change, so it should be readable from the
-            # training log without one copy per DDP rank.
-            shown = ", ".join(
-                f"{group} {count}->{group_mass:.1%}"
-                for group, count, group_mass in sorted(
-                    own_summary, key=lambda row: row[2], reverse=True
-                )
+        absent = sorted(set(head_word_weights) - set(counts))
+        if absent:
+            raise RuntimeError(
+                f"--head_word_weights names {absent}, but no clip of this training "
+                f"subset carries {'that' if len(absent) == 1 else 'those'} head "
+                f"word{'s' if len(absent) > 1 else ''} (present: {sorted(counts)}). "
+                f"A weight on a word with no clips changes nothing; fix the list or "
+                f"the corpus filter."
             )
-            print(f"[sampler] --balanced by action head word ({len(own_summary)} groups, group floor {group_floor}): {shown}")
+        lifted = sorted((w for w, m in multiplier.items() if m != 1.0), key=lambda w: counts[w])
+        if lifted and os.environ.get("LOCAL_RANK", "0") == "0":
+            # One line, once per node (rank 0 only): what the multipliers did
+            # to the draw, readable from the training log. Uniform share is
+            # n / pool; the weighted share is n * m / total.
+            shown = ", ".join(
+                f"{word} {counts[word]}x{multiplier[word]:.3g} "
+                f"{counts[word] / pool:.2%}->{counts[word] * multiplier[word] / total:.2%}"
+                for word in lifted
+            )
+            rule = (
+                f"floor {floor} (max boost {max_boost:g})" if floor > RARE_HEAD_WORD_FLOOR_OFF else "no floor"
+            ) + (f", {len(head_word_weights)} explicit" if head_word_weights else "")
+            print(f"[sampler] head-word weights over {pool} clips, {rule}: {shown}")
 
         super().__init__(num_samples=num_samples, weights=weights)
-    
+
+
 class Truebones(data.Dataset):
     def __init__(self, split="train", **kwargs):
         if split not in SUPPORTED_SPLITS and split != ALL_SPLIT_NAME:
@@ -1531,8 +1585,12 @@ class Truebones(data.Dataset):
         # each entry's namespace/root, the dataset directories holding the clips.
         opt = get_opt(device, kwargs.get('cond_path'))
         self.opt = opt
-        self.balanced = kwargs['balanced']
-        self.balanced_group_floor = int(kwargs.get('balanced_group_floor', BALANCED_GROUP_FLOOR_DEFAULT))
+        # Parsed here so a typo in --head_word_weights (or a bad floor) fails
+        # before any clip is loaded, not when the sampler is built.
+        self.head_word_weights = parse_head_word_weights(kwargs.get('head_word_weights'))
+        self.rare_head_word_floor, self.rare_head_word_max_boost = parse_rare_head_word_floor(
+            kwargs.get('rare_head_word_floor', 0), kwargs.get('rare_head_word_max_boost', 4.0)
+        )
         self.objects_subset = kwargs['objects_subset']
         self.action_group = kwargs.get('action_group', '')
         self.action_label_cond = bool(kwargs.get('action_label_cond', False))
@@ -1605,13 +1663,14 @@ class Truebones(data.Dataset):
         self.motion_dataset = MotionDataset(
             self.opt,
             cond_dict,
-            self.balanced,
             num_frames=kwargs['num_frames'],
             sample_limit=self.sample_limit,
             allowed_motion_names=allowed_motion_names,
             motion_metadata_lookup=motion_metadata_lookup,
             action_conditioning=self.action_conditioning,
-            balanced_group_floor=self.balanced_group_floor,
+            head_word_weights=self.head_word_weights,
+            rare_head_word_floor=self.rare_head_word_floor,
+            rare_head_word_max_boost=self.rare_head_word_max_boost,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \

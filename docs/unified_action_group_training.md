@@ -54,19 +54,25 @@ group token 因此不携带 label 之外的任何信息。
 需要盯的是**物理伪影**而不是语义邻接：原地 turn 的足部滑步（`feat/all_group` 上
 turn skate 从 0.540 涨到 0.675）要按伪影验收，不能因为"turn 本来就像 run-turn"而豁免。
 
-## 3. 采样质量：`--balanced` 取代组质量参数
+## 3. 采样质量：逐 clip 均匀 + 稀有首词下限
 
-`feat/all_group` 有一个 `--action_group_weights`，用来避免 stationary 压倒其余两组。本轮**不要**
-这个参数：`--balanced` 现在按 label 首词分组（[action_balanced_sampling.md](action_balanced_sampling.md)），
-而首词就是 group 的函数，所以组间质量是首词平衡的副产品。
+> 2026-09-21 改：`--balanced`（首词 sqrt 平衡）**已删除**。v22 用它把三组拉到
+> 27.9 / 37.6 / 34.5，代价是 attack 每条 clip 的曝光被砍半（891 条 clip 摊在 110 个标签上，
+> "样本最多"在标签层面是假象），生成的 attack 明显差于单组 v20。分析与替代方案见
+> [head_word_weights_and_modifier_dropout.md](head_word_weights_and_modifier_dropout.md)。
+
+`feat/all_group` 有一个 `--action_group_weights`，用来避免 stationary 压倒其余两组。本轮仍然
+**不要**这个参数：采样逐 clip 均匀（每条 clip 8M 次抽样里约 2200 次曝光，与单组 v20 的
+attack 2494 次同量级），组间比例就是语料本身的比例：
 
 | 采样方式 | locomotion | stationary | transition |
 |---|---:|---:|---:|
-| 逐 clip 均匀 | 25.8% | 52.9% | 21.3% |
-| `--balanced`（首词 sqrt） | 27.9% | **37.6%** | 34.5% |
+| 逐 clip 均匀（现状） | 25.8% | 52.9% | 21.3% |
+| ~~`--balanced`（首词 sqrt，v22）~~ | 27.9% | 37.6% | 34.5% |
 
-已经接近 1:1:1，再加一层组质量只会和首词质量互相抵消。**`--balanced` 对 `--action_group all`
-是必需的**，不是可选项——三个 `train_*.bat` 历史上都没传过它。
+唯一的偏离是 `--rare_head_word_floor 20 --rare_head_word_max_boost 4`：clip 数不足 20 的首词
+（stop 5 条、sheathe 1 条……）按 20 条当量采样、逐 clip 倍率封顶 4×，总质量偏移约 3.7%，
+attack / idle 不动。`--head_word_weights` 保留为显式逐词乘数，当前不传。
 
 ## 4. 删除 aux group
 
@@ -135,7 +141,7 @@ group，下游一律理解为"任意 group"：
 ## 9. CKPT_VERSION
 
 **不 bump**（仍是 18）。`--action_label_adaln` 默认关，关闭时不创建任何参数，state_dict 与之前
-逐键相同；`--action_group all` 与 `--balanced` 改的是语料和采样分布，不改张量含义。
+逐键相同；`--action_group all` 与采样器改的是语料和采样分布，不改张量含义。
 
 代价是**没有守卫会提醒你前后两段分布不同**，所以必须换 `RUN_NAME`（`merged_all_v22`），
 不要在旧 run 上 `--auto_resume`。

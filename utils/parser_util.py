@@ -20,23 +20,6 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-# 17: every head word of a label now pools into the head channel, the first one
-#     weighted above the rest (HEAD_SLOT_PRIMARY_WEIGHT), and the training-only
-#     --head_aug_words / --head_aug_prob promotion that used to stand in for
-#     that is gone. Auxiliary rows carry their label like any other row.
-# 18: the direction and hands word vectors stopped being T5 encodings and became
-#     a synthetic orthonormal code (SYNTHETIC_CODE_VOCAB). Those two axes are
-#     closed sets whose members T5 placed next to their own antonyms -- left /
-#     right +0.461, hand1 / hand2 +0.529 against a vocabulary-wide |cos| p95 of
-#     0.19 -- for no semantic return, since an unknown token is refused and every
-#     member is heavily attested. Same shapes, different meaning behind them; the
-#     embedding_fingerprint refuses an --action_label_cond checkpoint by itself,
-#     this stamp covers the rest.
-# 19: the is_loop token (loop_condition_projection, summed into the condition
-#     embedding) is gone; is_loop now reaches the model only through the
-#     decoder's circular time table. Fewer state_dict keys, and a different
-#     meaning behind --loop: a v18 checkpoint's loop mode had learned the
-#     token as a content key (docs/anytop_model_architecture.md §6.1).
 CKPT_VERSION = 19
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
@@ -359,14 +342,22 @@ def add_model_options(parser):
                             "without leaning on --action_label_cfg_scale and paying its quality cost. "
                             "Requires --action_label_cond. Costs d^2 + 4*layers*d^2 parameters. "
                             "See docs/conditional_modulation_upgrade.md section 3.")
-    group.add_argument("--direction_slot_drop_prob", default=0.3, type=float,
+    group.add_argument("--direction_slot_drop_prob", default=0.15, type=float,
                        help="Per-sample probability of blanking the label's DIRECTION words during "
                             "training while the rest of the label stays. Trains the empty direction "
                             "slot as 'any direction', so a prompt that names none draws one side "
                             "or heading instead of a blend. Stacks with --action_label_cfg_drop_prob, "
                             "which drops the WHOLE label: a row contributes explicit direction "
                             "supervision with probability (1 - cfg_drop) * (1 - this). Lower it if "
-                            "direction control comes out weak. Never applied at inference. Default 0.3.")
+                            "direction control comes out weak. Never applied at inference. Default 0.15.")
+    group.add_argument("--modifier_slot_drop_prob", default=0.15, type=float,
+                       help="Per-sample probability of blanking the label's MODIFIER words during "
+                            "training while the head, direction and hands words stay. Trains the "
+                            "empty modifier slot as the marginal over modifiers, so a bare 'attack' "
+                            "at inference draws some attack (bite, cast, swat ...) instead of the "
+                            "few clips annotated with no modifier. Independent of "
+                            "--direction_slot_drop_prob per row; the hands slot is never dropped "
+                            "(empty there means empty hands). Never applied at inference. Default 0.15.")
 
 def add_data_options(parser, training=False):
     """Dataset selection. ``training=True`` adds the training-only options.
@@ -392,8 +383,9 @@ def add_data_options(parser, training=False):
                                 "'all' carries NO group condition; the action label's first head "
                                 "word already determines the group (a property of the corpus, "
                                 "verified by tools/audit_action_labels.py), so a group token would "
-                                "add no information the label does not already carry. Pair 'all' "
-                                "with --balanced: without it the in-place group dominates the draws. "
+                                "add no information the label does not already carry. Draws are "
+                                "uniform over clips, so the group mix is the corpus's own "
+                                "(stationary ~53%); see --rare_head_word_floor for the tail. "
                                 "Recorded in the checkpoint's args.json, where generation reads it "
                                 "back -- a single-group checkpoint can only ever be sampled as that "
                                 "group. See docs/unified_action_group_training.md.")
@@ -513,18 +505,34 @@ def add_training_options(parser):
                        help="If True, will use EMA model averaging.")
     group.add_argument("--ema_rate", default=0.99, type=float,
                        help="EMA decay rate (closer to 1 = slower updates). Default 0.99.")
-    group.add_argument("--balanced", action='store_true',
-                       help="Balance the sampler over ACTIONS: clips are grouped by their "
-                            "action_label's first head word and the sampling mass is spread "
-                            "over the groups (sqrt of each group's clip count) instead of over "
-                            "the clips, so attack/idle stop outweighing stop/sheathe by their "
-                            "raw clip counts. Species are not balanced.")
-    # 10 mirrors dataset.BALANCED_GROUP_FLOOR_DEFAULT; this module stays import-light.
-    group.add_argument("--balanced_group_floor", default=10, type=int,
-                       help="With --balanced: a head-word group with fewer clips than this is "
-                            "weighted as if it had this many, so a clip of a 1- or 2-clip "
-                            "group is drawn no more often than a clip of a group this size "
-                            "(sqrt alone lets a lone clip run ~40x uniform). 1 disables the floor.")
+    group.add_argument("--rare_head_word_floor", default=0, type=int,
+                       help="Minimum sampling mass for RARE head words: a head word (the "
+                            "action_label's first head word) with fewer than this many clips in "
+                            "the training subset is weighted as if it had this many, so each of "
+                            "its clips is drawn floor/count times as often as a clip of a common "
+                            "word (capped by --rare_head_word_max_boost). Words at or above the "
+                            "floor are untouched; draws are otherwise uniform over clips and "
+                            "species are not balanced. One rule for the whole tail, so a new rare "
+                            "word needs no entry in --head_word_weights. 0 or 1 disables it. "
+                            "Changes the training distribution: start a new run rather than "
+                            "resuming an old one with a different floor. Default 0 (off).")
+    group.add_argument("--rare_head_word_max_boost", default=4.0, type=float,
+                       help="Cap on the per-clip multiplier --rare_head_word_floor may give a "
+                            "word, so a 1-clip word is not drawn floor times as often (the tail "
+                            "mostly needs data, not mass; past ~4x the model just memorises the "
+                            "clip). With floor 20 and cap 4: 1-5 clips x4, 6 x3.3, 10 x2, 16 "
+                            "x1.25, >=20 x1. Must be >= 1; 1 turns the floor off. Default 4.")
+    group.add_argument("--head_word_weights", default="", type=str,
+                       help="Explicit per-clip sampling multipliers keyed on the action_label's "
+                            "first head word, as 'word=weight,word=weight' (e.g. 'stop=3,sheathe=4'), "
+                            "applied ON TOP of --rare_head_word_floor. A clip of weight w is drawn "
+                            "w times as often as an unlisted clip (weight 1). For the case where "
+                            "one word needs a hand-set weight; the floor covers the tail in general, "
+                            "so this is normally left empty. A multiplier on attack/idle only takes "
+                            "exposure from everything else. Words must be HEAD_VOCAB entries present "
+                            "in the training subset. Changes the training distribution: start a "
+                            "new run rather than resuming an old one with a different list. "
+                            "Default: none.")
 
 
 def add_sampling_options(parser):

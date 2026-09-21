@@ -31,7 +31,7 @@ under `docs/` may describe superseded intermediate states.
 ### Training Enhancements
 - **EMA Model Averaging** — `--use_ema` for improved generalization.
 - **StepLR Scheduler** — Configurable learning rate decay (`--lr_scheduler_step_size`, `--lr_scheduler_gamma`).
-- **Balanced Sampler** — `--balanced` for fair sampling across topologies.
+- **Rare head-word floor** — `--rare_head_word_floor 20 --rare_head_word_max_boost 4` gives every rare action word a minimum sampling share; `--head_word_weights stop=3` is an explicit per-word multiplier on top. Draws are otherwise uniform over clips.
 
 ### Evaluation
 - **Distribution-Based Motion Quality Scorer** — Low-shot weighted-reference evaluation without autoencoders or discriminators. Scores macro distribution fidelity and local joint naturalness.
@@ -164,7 +164,7 @@ train_all.bat
 ```
 
 `train_all.bat` trains ONE model over every group (`--action_group all`, no
-group condition, `--balanced`) and is the only training script — see
+group condition, uniform draws + `--rare_head_word_floor` for the tail) and is the only training script — see
 [docs/unified_action_group_training.md](docs/unified_action_group_training.md).
 The per-group scripts (`train_locomotion.bat` / `train_stationary.bat` /
 `train_transition.bat`) are gone; to train a single group, run the same command

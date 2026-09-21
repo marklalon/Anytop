@@ -10,7 +10,7 @@ from data_loaders.joint_buckets import (
     resolve_joint_buckets,
 )
 from data_loaders.tensors import truebones_batch_collate
-from data_loaders.truebones.data.dataset import BALANCED_GROUP_FLOOR_DEFAULT, Truebones
+from data_loaders.truebones.data.dataset import Truebones
 from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
 
 
@@ -62,8 +62,9 @@ def get_dataset_class(name):
 def get_dataset(
     num_frames,
     split='train',
-    balanced=False,
-    balanced_group_floor=BALANCED_GROUP_FLOOR_DEFAULT,
+    head_word_weights=None,
+    rare_head_word_floor=0,
+    rare_head_word_max_boost=4.0,
     objects_subset="all",
     sample_limit=0,
     action_group='',
@@ -80,8 +81,9 @@ def get_dataset(
     dataset = Truebones(
         split=split,
         num_frames=num_frames,
-        balanced=balanced,
-        balanced_group_floor=balanced_group_floor,
+        head_word_weights=head_word_weights,
+        rare_head_word_floor=rare_head_word_floor,
+        rare_head_word_max_boost=rare_head_word_max_boost,
         objects_subset=objects_subset,
         sample_limit=sample_limit,
         action_group=action_group,
@@ -101,8 +103,9 @@ def get_dataset_loader(
     batch_size,
     num_frames,
     split='train',
-    balanced=True,
-    balanced_group_floor=BALANCED_GROUP_FLOOR_DEFAULT,
+    head_word_weights=None,
+    rare_head_word_floor=0,
+    rare_head_word_max_boost=4.0,
     objects_subset="all",
     num_workers=None,
     prefetch_factor=2,
@@ -131,8 +134,9 @@ def get_dataset_loader(
     dataset = get_dataset(
         num_frames=num_frames,
         split=split,
-        balanced=balanced,
-        balanced_group_floor=balanced_group_floor,
+        head_word_weights=head_word_weights,
+        rare_head_word_floor=rare_head_word_floor,
+        rare_head_word_max_boost=rare_head_word_max_boost,
         objects_subset=objects_subset,
         sample_limit=sample_limit,
         action_group=action_group,
@@ -148,8 +152,9 @@ def get_dataset_loader(
     )
     collate = truebones_batch_collate
     sampler = None
-    # A weighted sampler is needed for action balancing (--balanced); the dataset owns
-    # that decision so both callers agree on it.
+    # A weighted sampler is needed once any head word can be weighted
+    # (--rare_head_word_floor / --head_word_weights); the dataset owns that
+    # decision so both callers agree on it.
     if dataset.motion_dataset.use_weighted_sampler:
         from data_loaders.truebones.data.dataset import TruebonesSampler
         sampler = TruebonesSampler(dataset)

@@ -4,6 +4,8 @@
 > 触发：裸 `attack, swat` 出双臂混合而非单侧；裸 `idle` 在持械物种上出持械姿势
 > 影响：`ACTION_LABEL_PARSER_CONTRACT_VERSION` 4 → 5、`CKPT_VERSION` 15 → **16**，**需从头重训**，不需 cond regen
 > 相关：[`action_label_per_word_pooling.md`](action_label_per_word_pooling.md)、[`tools/audit_action_labels.py`](../tools/audit_action_labels.py)
+> 后续：2026-09-21 modifier 槽也加了同构的 dropout（`--modifier_slot_drop_prob`），∅ 同样是边缘；
+> 见 [`head_word_weights_and_modifier_dropout.md`](head_word_weights_and_modifier_dropout.md) §3。hands 槽语义不变。
 
 ## 0. 先固定语义（两条改动都依赖它）
 
@@ -55,7 +57,8 @@ Mage / Spearman、TTR_Crossbowman / HeavyCavalry / Mage / MountedKnight / Mounte
   纯 mask 运算，和现有 `_resolve_action_label_active` 的 CFG 抽样同一写法，不影响 compile。
   没有方向词的样本天然不受影响。
 - 参数：`--direction_slot_drop_prob`，放在 [`parser_util.py`](../utils/parser_util.py) `--action_label_cfg_drop_prob`
-  同组，写进 `args.json`；推理侧永远不 drop。默认 **0.3**（推理只用 ∅，边际条件比单侧条件更重要；可调）。
+  同组，写进 `args.json`；推理侧永远不 drop。默认 **0.15**（2026-09-21 由 0.3 改为 0.15，与
+  `train_all.bat` 一致；下面"0.3 的来由"记录当时的推导）。
 - **监督预算（0.3 的来由）**：`--action_label_cfg_drop_prob`（0.2）是按样本丢掉**整条**标签，方向 dropout 只在
   留下来的行上再抹方向词，所以带方向词的行实际只有 `(1 − 0.2) × (1 − p)` 的 batch 贡献显式方向监督：
   p = 0.5 → **40%**、p = 0.3 → 56%、p = 0.2 → 64%。验收项「left 与 right 可辨」直接吃这个比例，故默认取 0.3；

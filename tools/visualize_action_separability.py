@@ -316,7 +316,6 @@ def main():
     ds = get_dataset(
         num_frames=int(getattr(model_args, "num_frames", 60)),
         split=args.split,
-        balanced=False,
         objects_subset=args.objects_subset,
     )
     all_names = list(ds.motion_dataset.name_list)

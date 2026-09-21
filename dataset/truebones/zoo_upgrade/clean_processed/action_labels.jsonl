@@ -203,8 +203,8 @@
 {"clip": "rhino_Jog", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "rhino_Sprint", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": false, "reviewed": true}
 {"clip": "rhino_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "scorpion_AtkDown", "action_group": "stationary", "action_label": "attack", "is_loop": true, "reviewed": true}
-{"clip": "scorpion_AtkMid", "action_group": "stationary", "action_label": "attack", "is_loop": true, "reviewed": true}
+{"clip": "scorpion_AtkDown", "action_group": "stationary", "action_label": "attack, punch", "is_loop": true, "reviewed": true}
+{"clip": "scorpion_AtkMid", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "scorpion_AtkSpecial", "action_group": "stationary", "action_label": "attack, swat", "is_loop": true, "reviewed": true}
 {"clip": "scorpion_AtkUp", "action_group": "stationary", "action_label": "attack, sting", "is_loop": true, "reviewed": true}
 {"clip": "scorpion_Death", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
