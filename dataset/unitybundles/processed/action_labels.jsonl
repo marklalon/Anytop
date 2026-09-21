@@ -250,16 +250,16 @@
 {"clip": "KI_Human_RunTurn02Right", "action_group": "locomotion", "action_label": "run, turn, right", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_ShuffleLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_ShuffleRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
-{"clip": "KI_Human_SitGround01AEnd", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
+{"clip": "KI_Human_SitGround01AEnd", "action_group": "transition", "action_label": "getup, sit", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_SitGround01ALoop", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_SitGround01AStart", "action_group": "transition", "action_label": "sitdown", "is_loop": false, "reviewed": true}
-{"clip": "KI_Human_SitHigh01AEnd", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
+{"clip": "KI_Human_SitHigh01AEnd", "action_group": "transition", "action_label": "getup, sit", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_SitHigh01ALoop", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_SitHigh01AStart", "action_group": "transition", "action_label": "sitdown", "is_loop": false, "reviewed": true}
-{"clip": "KI_Human_SitLow01AEnd", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
+{"clip": "KI_Human_SitLow01AEnd", "action_group": "transition", "action_label": "getup, sit", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_SitLow01ALoop", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_SitLow01AStart", "action_group": "transition", "action_label": "sitdown", "is_loop": false, "reviewed": true}
-{"clip": "KI_Human_SitMed01AEnd", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
+{"clip": "KI_Human_SitMed01AEnd", "action_group": "transition", "action_label": "getup, sit", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_SitMed01ALoop", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_SitMed01AStart", "action_group": "transition", "action_label": "sitdown", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_SkidStop01", "action_group": "transition", "action_label": "stop", "is_loop": false, "reviewed": true}
@@ -268,7 +268,7 @@
 {"clip": "KI_Human_Sprint01Forwards", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Sprint01Left", "action_group": "locomotion", "action_label": "run, left, fast", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Sprint01Right", "action_group": "locomotion", "action_label": "run, right, fast", "is_loop": true, "reviewed": true}
-{"clip": "KI_Human_StandUp01A", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
+{"clip": "KI_Human_StandUp01A", "action_group": "transition", "action_label": "getup, flip", "is_loop": false, "reviewed": true}
 {"clip": "KI_Human_Strafe01Left", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Strafe01Right", "action_group": "locomotion", "action_label": "walk, right", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Stunned01A", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
