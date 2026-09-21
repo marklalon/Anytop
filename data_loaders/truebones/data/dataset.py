@@ -136,7 +136,18 @@ def rare_head_word_boost(count: int, floor: int, max_boost: float) -> float:
 
 
 def parse_head_word_weights(spec) -> dict[str, float]:
-    """``"stop=3,sheathe=4"`` -> ``{"stop": 3.0, "sheathe": 4.0}``.
+    """Parse explicit per-head-word sampling multipliers.
+
+    Both the original per-word form and a right-anchored group shorthand are
+    accepted::
+
+        stop=3,sheathe=4
+        attack,idle,hurt,turn=0.6
+
+    In the shorthand, every bare word immediately preceding ``word=weight``
+    shares that weight.  This also permits mixed groups such as
+    ``attack,idle=0.6,walk,run=0.8``.  A trailing bare word is rejected because
+    it has no weight to inherit.
 
     Accepts the CLI string, an already-parsed mapping, or nothing.  Every key
     must be a HEAD_VOCAB word (a typo would silently weight nothing) and every
@@ -152,16 +163,23 @@ def parse_head_word_weights(spec) -> dict[str, float]:
         if not text:
             return {}
         items = []
+        pending_words = []
         for chunk in text.split(","):
             chunk = chunk.strip()
             if not chunk:
                 continue
             word, sep, value = chunk.partition("=")
             if not sep:
-                raise ValueError(
-                    f"--head_word_weights entry {chunk!r} is not 'word=weight'"
-                )
-            items.append((word.strip(), value.strip()))
+                pending_words.append(word.strip())
+                continue
+            group_words = pending_words + [word.strip()]
+            items.extend((group_word, value.strip()) for group_word in group_words)
+            pending_words.clear()
+        if pending_words:
+            raise ValueError(
+                f"--head_word_weights entries {pending_words!r} have no weight; "
+                "use 'word=weight' or the grouped form 'word,word=weight'"
+            )
     weights: dict[str, float] = {}
     for word, value in items:
         if word not in HEAD_VOCAB:

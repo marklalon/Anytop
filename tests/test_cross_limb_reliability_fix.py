@@ -248,7 +248,6 @@ class OptimizerParamGroupTests(unittest.TestCase):
                 for i in range(2)
                 for leaf in (
                     "reliability_bias",
-                    "time_emb_scale",
                     "temporal_reliability_bias",
                     "cross_k_scale",
                     "cross_k_norm.weight",

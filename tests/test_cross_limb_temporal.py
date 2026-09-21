@@ -123,7 +123,6 @@ def test_reliability_path_is_exact_noop_at_init():
     out_without_mask = blk(x, kpm, None)
     out_with_mask = blk(x, kpm, unreliable)
 
-    assert blk.time_emb_scale.item() == 0.0
     assert blk.reliability_bias.item() == 0.0
     assert blk.temporal_reliability_bias.item() == 0.0
     assert blk.cross_k_scale.item() == 0.0
@@ -515,7 +514,7 @@ def test_decoder_reuses_precomputed_loop_phase_embeddings(monkeypatch):
     seen = []
 
     def stub(output, *a, **kw):
-        seen.append((kw["loop_phase_embedding"], kw["cross_limb_time_embedding"]))
+        seen.append(kw["loop_phase_embedding"])
         return output
 
     for decoder_layer in dec.layers:
@@ -533,9 +532,11 @@ def test_decoder_reuses_precomputed_loop_phase_embeddings(monkeypatch):
         loop_phase_mask=torch.tensor([True, False]),
     )
 
-    assert calls == [(T, D), (T, 8)]
-    assert len({id(pair[0]) for pair in seen}) == 1
-    assert len({id(pair[1]) for pair in seen}) == 1
+    # One circular table at d_model, shared by every layer. The cross-limb
+    # blocks take no table of their own (their latents inherit the frame PE
+    # through cross-in), so no second call at the bottleneck width.
+    assert calls == [(T, D)]
+    assert len({id(phase) for phase in seen}) == 1
 
 
 if __name__ == "__main__":

@@ -41,9 +41,9 @@ loop 样本的训练语义，放在同一次消融里会和 action 调制的效�
 
 1. [`circular_phase_embedding`](../model/motion_transformer.py) 用 `period = motion_frames - 1`，
    首、末两帧的相位编码完全相同。主干每层 temporal attention 前加的相位
-   （`GraphMotionDecoderLayer.temporal_phase_scale`）和 cross-limb 的 loop 时间表
-   （[`_loop_aware_time_embedding`](../model/motion_transformer.py)）都用这张表。函数 docstring 里
-   "the closing key every stored loop keeps"已经过时。
+   （`GraphMotionDecoderLayer.temporal_phase_scale`）用这张表（cross-limb 曾经的 loop 时间表
+   `_loop_aware_time_embedding` 已于 2026-09-21 删除，见 anytop_model_architecture.md §5.3）。
+   函数 docstring 里 "the closing key every stored loop keeps"已经过时。
 2. [`loop_wrap_loss`](../diffusion/gaussian_diffusion.py) 的 pose 项和 rot 项把首帧和末帧往**相等**拉；
    同一个函数里的 terminal velocity 项要求 `首帧 − 末帧 = 末帧速度 × step`，符合新约定。两类项互相矛盾。
 

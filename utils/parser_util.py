@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 19
+CKPT_VERSION = 20
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -213,6 +213,18 @@ def add_model_options(parser):
                        help="Feed-forward hidden dimension in each decoder layer. "
                             "Controls the bottleneck size of the two-layer FFN "
                             "inside each GraphMotionDecoderLayer.")
+    group.add_argument("--last_layer_ff", default=0, type=int,
+                       help="Feed-forward hidden width of the LAST decoder layer only "
+                            "(0 = same as --ff_size). That layer feeds a single linear "
+                            "readout, and in a full run ~3/4 of its FFN units went dead; "
+                            "512 recovers those parameters for the trunk.")
+    group.add_argument("--action_adaln_bottleneck", default=0, type=int,
+                       help="Hidden width of the --action_label_adaln head (0 = latent_dim). "
+                            "The action label set has slot-source rank ~137, so ~192 "
+                            "loses nothing and halves the model's largest matrix.")
+    group.add_argument("--species_film_bottleneck", default=0, type=int,
+                       help="Hidden width of the --species_cond FiLM head (0 = latent_dim). "
+                            "The species descriptors span rank 94; 128 is enough.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     group.add_argument("--lambda_vel", default=0.0, type=float,
                        help="Weight for velocity-position consistency loss (0.0=off)."

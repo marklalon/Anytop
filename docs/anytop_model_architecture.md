@@ -182,6 +182,11 @@ Action label 使用受控词表，不接收自由文本。每个词先查 checkp
 零初始化，驱动向量与加性路径共用，所以 CFG 的无条件分支自动走 null。
 设计与实测见 [conditional_modulation_upgrade.md](conditional_modulation_upgrade.md) §3。
 
+`--action_adaln_bottleneck`（2026-09-21 起，0 = 隐层宽 = latent_dim，旧行为）设这个头的隐层宽。
+它的输入是 action token，而标签集的 slot-source 秩只有 ~137，头再宽也用不满：v22（d=384）
+训完后输出矩阵有效秩 130。192 不损失表达力，把模型里最大的单个矩阵（384→12288）减半。
+见 §11。
+
 ### 4.3 Canonical frame 与 resample speed
 
 `canonical_feature_mean/std` 定义模型写入的输出坐标/标准化空间。这两组向量经
@@ -254,6 +259,11 @@ mask。
 该路径在窄 bottleneck `cross_limb_dim` 中运行，只在部分层启用，每个启用的层有独立 block；
 latent 数量与维度由配置决定。
 
+latent **没有自己的时间表**。每帧所有关节 token 都带着 InputProcess 写入的同一个绝对帧 PE，
+`proj_in` 是线性的、cross-in 的输出是 value 的凸组合，所以 `proj_in(PE_t)` 原样穿到 latent。
+曾经有一张零门控（`time_emb_scale`）后的 per-block 正弦/圆周表，与此冗余；v22 训满 400k 步后
+四个 block 的门都停在 |scale| < 0.01，2026-09-21 删除（CKPT 20）。
+
 完整的 block 顺序（`CrossLimbTemporalBlock.forward`）：
 
 ```text
@@ -291,11 +301,12 @@ Loop 不是单一布尔 token，而是模型、数据和损失共同组成的一
   坏先验 100% 来自 token，只开 circular PE 一样闭合（接缝 rot gap 0.42 步）且步态正确。
   一个闭合窗口是时间拓扑的陈述，phase table 是唯一能表达它的地方；
 - 主 temporal path 使用 absolute PE，并在 loop 样本上额外加入 circular phase embedding；
-- cross-limb latents 自己没有输入级 absolute PE，因此 loop 样本选择 circular table，非 loop
-  样本选择 absolute table；
+- cross-limb latents 通过 cross-in 继承关节 token 里的帧 PE（§5.3），不再有自己的
+  loop/absolute 时间表；
 - circular table 在窗口的第一个和最后一个动作帧闭合；第 0 行 rest-pose token 为零。
 
-两处 phase scale 都是 learned scalar，并以 0 初始化。
+每层的 phase scale（`temporal_phase_scale`）是 learned scalar，以 0 初始化。v22 训完后只有
+第 0–2 层非零（0.19 / 0.30 / −0.06），第 3 层起 ≈0：圆周相位在前三层就被消费完。
 
 ### 6.2 数据侧
 
@@ -307,7 +318,7 @@ k 份 tile 经周期重采样后是 k 份逐位相同的拷贝（周期 T/k 帧�
 
 真实 loop clip 以概率 `--loop_cond_prob`（默认 1.0 = 总是）被告知它是 loop；其余的抽签
 （`loop_uncond`）仍做全部 loop 增广（closing-key drop、周期变速、circular roll、tile），但按开放
-clip 重采样窗口、以 `is_loop=False` 交给模型（absolute time table、开放速度步长、无 wrap 损失）。
+clip 重采样窗口、以 `is_loop=False` 交给模型（零 circular phase、开放速度步长、无 wrap 损失）。
 这是有意的标签噪声，目的与删 loop token 相同：flag 与内容相关时模型会把它当内容键，而一个
 不可信的 flag 只能被当作时间拓扑来读。它不是 CFG（没有 null 态、推理端不消费），
 eval loader 固定 1.0。另一处降级是超出源帧预算被裁剪的 clip（环被裁开，按非 loop 告知）。
@@ -376,3 +387,32 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 | refined topology codes | `data_loaders/truebones/truebones_utils/topology_relations.py` |
 | loop roll/tile/resample | `data_loaders/truebones/data/dataset.py` |
 | reference/inpainting/outpainting | `sample/generate.py` |
+
+## 11. 参数预算（2026-09-21 普查）
+
+`train_all.bat` v24 配置（d=384 / ff=2048 / 8 层 / cross-limb 后 4 层 d_cl=128）共 29.5M。
+v22 同主干、头全宽是 33.5M；v23 把主干砍到 d=320 是 25.8M。
+
+| 模块 | v22 (d=384，全宽头) | v24 | 依据 |
+|---|---|---|---|
+| 8 层 decoder 主干 | 23.3M | 22.1M | 末层 FFN 2048→512（`--last_layer_ff`） |
+| `action_adaln` 头 | 4.9M | 2.4M | 隐层 384→192（`--action_adaln_bottleneck`） |
+| `species_film` | 0.6M | 0.2M | 隐层 384→128（`--species_film_bottleneck`） |
+| `species_film_j` | 1.2M | 1.2M | 输入是 关节名×物种，高秩，不动 |
+| cross-limb ×4 | 1.4M | 1.4M | proj 有效秩 108–116/128，用满 |
+| action_label_projection | 1.2M | 1.2M | |
+
+对 v22 训满权重的实测，作为这三个开关的依据：
+
+- **中间层是饱和的**：第 1–6 层 FFN 的 2048 个隐单元参与率 1850–1990，注意力 q/k/v/o 有效秩
+  225–300 / 384。宽度没有余量，参数要省应该从头上省，不从主干省。
+- **末层 FFN 坍缩**：单元增益中位数 0.014（其余层 0.7–0.9），参与率 464/2048，而且是渐进的
+  （100k 步 1111 → 400k 步 464；v23 120k 步已是 1025）。末层之后只有 `LayerNorm → Linear(d→12)`
+  的线性读出，它不需要 2048 个隐单元。
+- **AdaLN 头有效秩 130**，被标签集的秩（~137）封顶。
+- **species 描述子**：259 个物种向量秩 94、有效秩 52。
+- 各块 gate：cross-limb `time_emb_scale` 全 ≈0（已删）；`cross_k_scale` −0.05~−0.08；
+  `temporal_phase_scale` 只在前三层非零。
+
+三个开关默认 0 = 旧全宽布局，老 checkpoint 形状不变地重建；但 `time_emb_scale` 的删除让
+CKPT ≤19 的 state_dict 多出四个键，所以版本升到 20，之前的权重只能作历史结果读。

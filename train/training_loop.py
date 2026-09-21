@@ -107,8 +107,8 @@ def _tile_eval_cond(cond, repeat):
 
 # Parameters AdamW must NOT weight-decay, by ``named_parameters()`` name
 # suffix: the zero-init gates a residual or bias path is opened with
-# (cross-limb ``reliability_bias`` / ``time_emb_scale`` /
-# ``temporal_reliability_bias`` / ``cross_k_scale``, the decoder layer's
+# (cross-limb ``reliability_bias`` / ``temporal_reliability_bias`` /
+# ``cross_k_scale``, the decoder layer's
 # ``temporal_phase_scale``, the global ``unreliable_embedding``) plus the
 # cross-K LayerNorm gain/bias. Decay pulls each of them back toward its init,
 # i.e. toward closing the path it was learned to open. A name rule, not
@@ -117,7 +117,6 @@ def _tile_eval_cond(cond, repeat):
 NO_WEIGHT_DECAY_PARAM_SUFFIXES = (
     'unreliable_embedding',
     '.reliability_bias',
-    '.time_emb_scale',
     '.temporal_reliability_bias',
     '.cross_k_scale',
     '.cross_k_norm.weight',
@@ -872,10 +871,9 @@ class TrainLoop:
         .parameters(), so these running stats would otherwise stay at their
         init values in the EMA checkpoint.  state_dict() keys select exactly
         parameters + persistent buffers, so subtracting the parameter names
-        leaves the persistent buffers.  Non-persistent buffers (e.g.
-        _cached_time_emb) are absent from state_dict and must NOT be copied:
-        the EMA model is never forwarded, so its cache shape would mismatch the
-        live model's and copy_ would raise.
+        leaves the persistent buffers.  Non-persistent buffers are absent from
+        state_dict and must NOT be copied: the EMA model is never forwarded, so
+        a cache's shape would mismatch the live model's and copy_ would raise.
         """
         # The name list is fixed once the model is built; rebuilding a full
         # state_dict() every step just to find it cost ~2 ms of host time.

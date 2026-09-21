@@ -175,6 +175,25 @@ def test_parse_accepts_the_cli_string_a_mapping_and_nothing():
     assert parse_head_word_weights(" , ") == {}
 
 
+def test_parse_accepts_right_anchored_group_shorthand():
+    assert parse_head_word_weights("attack,idle,hurt,turn=0.6") == {
+        "attack": 0.6,
+        "idle": 0.6,
+        "hurt": 0.6,
+        "turn": 0.6,
+    }
+
+
+def test_parse_accepts_mixed_group_shorthand_and_per_word_entries():
+    assert parse_head_word_weights("attack,idle=0.6,walk=0.8,run,fly=0.5") == {
+        "attack": 0.6,
+        "idle": 0.6,
+        "walk": 0.8,
+        "run": 0.5,
+        "fly": 0.5,
+    }
+
+
 @pytest.mark.parametrize("spec, message", [
     ("attack=2,notaword=3", "not a head word"),
     ("swat=2", "not a head word"),          # a modifier, not a head
@@ -183,7 +202,9 @@ def test_parse_accepts_the_cli_string_a_mapping_and_nothing():
     ("stop=nan", "> 0"),
     ("stop=three", "not a number"),
     ("stop", "word=weight"),
+    ("attack=0.6,idle", "word=weight"),
     ("stop=2,stop=3", "twice"),
+    ("attack,attack=0.6", "twice"),
 ])
 def test_parse_rejects_bad_spellings(spec, message):
     with pytest.raises(ValueError, match=message):

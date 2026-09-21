@@ -72,6 +72,16 @@ class AnyTop(nn.Module):
         self.cross_limb_latents=kargs.get('cross_limb_latents', 8)
         self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
+        # Hidden widths of three parameter-heavy heads, 0 == the old full-width
+        # behaviour (bit-identical rebuild of an older checkpoint). See the
+        # GraphMotionDecoder docstrings and species_film below.
+        self.action_adaln_bottleneck=int(kargs.get('action_adaln_bottleneck', 0))
+        self.species_film_bottleneck=int(kargs.get('species_film_bottleneck', 0))
+        self.last_layer_ff=int(kargs.get('last_layer_ff', 0))
+        if self.species_film_bottleneck < 0:
+            raise ValueError(
+                f"species_film_bottleneck must be >= 0, got {self.species_film_bottleneck}"
+            )
         self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.5))
         self.joint_mask_budget=float(kargs.get('joint_mask_budget', 0.15))
         self.temporal_span_mask_prob=float(kargs.get('temporal_span_mask_prob', 0.0))
@@ -223,11 +233,17 @@ class AnyTop(nn.Module):
         # even when --species_joint_cond also injects the descriptor per joint.
         # CFG-droppable: hard-dropped samples bypass to identity (NOT a running-mean
         # substitute), so the model learns a true unconditional mode for guidance.
+        # --species_film_bottleneck: the hidden width. The input is one T5
+        # vector per species and the corpus' 259 species vectors span rank 94
+        # (effective rank 52), so a hidden of ~128 loses nothing; 0 keeps the
+        # old latent_dim hidden. species_film_j in InputProcess is NOT on this
+        # knob: its input is joint-name (x) species, which is high-rank.
         if self.species_cond:
+            species_hidden = self.species_film_bottleneck or self.latent_dim
             self.species_film = nn.Sequential(
-                nn.Linear(t5_out_dim, self.latent_dim),
+                nn.Linear(t5_out_dim, species_hidden),
                 nn.GELU(),
-                nn.Linear(self.latent_dim, 2 * self.latent_dim),
+                nn.Linear(species_hidden, 2 * self.latent_dim),
             )
             nn.init.zeros_(self.species_film[-1].weight)
             nn.init.zeros_(self.species_film[-1].bias)
@@ -271,7 +287,9 @@ class AnyTop(nn.Module):
                                                         cross_limb_latents=self.cross_limb_latents,
                                                         cross_limb_dim=self.cross_limb_dim,
                                                         cross_limb_last_n=self.cross_limb_last_n,
-                                                        action_label_adaln=self.action_label_adaln)
+                                                        action_label_adaln=self.action_label_adaln,
+                                                        action_adaln_bottleneck=self.action_adaln_bottleneck,
+                                                        last_layer_ff=self.last_layer_ff)
             
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
@@ -1071,7 +1089,9 @@ class AnyTop(nn.Module):
 
 
     def train(self, *args, **kwargs):
-        super().train(*args, **kwargs)
+        # Return self like nn.Module does: eval() is `return self.train(False)`,
+        # so dropping the value made `model.eval()` evaluate to None.
+        return super().train(*args, **kwargs)
 
 # Per-element std of the t5-base joint-name embeddings in cond.npy (row L2 ~ 3.92
 # over 2828 rows). The `unknown_joint_name` substitute is initialized at this scale
