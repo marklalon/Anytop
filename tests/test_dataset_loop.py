@@ -16,6 +16,7 @@ import tempfile
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -565,6 +566,88 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
     assert np.isclose(float(aug_info["resample_speed_cond"]), float(motion_dataset.data_dict[LOOP_MOTION]["length"]) / float(NUM_FRAMES))
 
 
+def test_loop_uncond_keeps_loop_augmentation_but_hands_over_an_open_window() -> None:
+    dataset = _build_truebones(
+        split="train",
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=2,
+        loop_cond_prob=0.0,
+    )
+
+    motion_dataset = dataset.motion_dataset
+
+    with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=1),             patch.object(dataset_module.random, 'randint', return_value=0):
+        sample = motion_dataset._prepare_sample(
+            LOOP_MOTION,
+            motion_dataset.data_dict[LOOP_MOTION],
+            target_num_frames=NUM_FRAMES,
+            return_aug_info=True,
+        )
+    motion, m_length, *_rest, motion_metadata, name, _joint_mask_dict, aug_info = sample
+
+    data = motion_dataset.data_dict[LOOP_MOTION]
+    cond = motion_dataset.cond_dict[data["object_type"]]
+    raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
+    # The clip is still physically a loop (roll + tile applied above), but the
+    # window resample runs in the open mode because the model is told it is
+    # not one: absolute time table, open velocity step, no wrap losses.
+    expected = _resample_raw_then_normalize(raw, cond, NUM_FRAMES, periodic=False)
+
+    assert name == LOOP_MOTION, f"unexpected sample: {name}"
+    assert motion.shape[0] == NUM_FRAMES
+    assert m_length == NUM_FRAMES
+    assert motion_metadata["is_loop"] is False
+    assert motion_metadata["loop_data_aug_applied"] is True
+    assert motion_metadata["loop_uncond"] is True
+    assert aug_info["loop_applied"] is False
+    assert aug_info["loop_uncond"] is True
+    assert np.isclose(float(aug_info["resample_speed_cond"]), float(raw.shape[0]) / float(NUM_FRAMES))
+    assert_close("loop uncond resample", motion, expected, atol=3e-5)
+
+
+def test_loop_uncond_never_flips_an_explicit_loop_offset() -> None:
+    dataset = _build_truebones(
+        split="train",
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=2,
+        loop_cond_prob=0.0,
+    )
+
+    motion_dataset = dataset.motion_dataset
+    with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=1):
+        sample = motion_dataset._prepare_sample(
+            LOOP_MOTION,
+            motion_dataset.data_dict[LOOP_MOTION],
+            target_num_frames=NUM_FRAMES,
+            loop_offset=0,
+            return_aug_info=True,
+        )
+    motion_metadata, aug_info = sample[10], sample[-1]
+
+    # The diagnostics path (prepare_sample_by_name) asks for one specific
+    # phase of the loop; it gets the loop, whatever the training-time draw.
+    assert motion_metadata["is_loop"] is True
+    assert motion_metadata["loop_uncond"] is False
+    assert aug_info["loop_applied"] is True
+    assert aug_info["loop_uncond"] is False
+
+
+def test_loop_cond_prob_out_of_range_is_refused() -> None:
+    with pytest.raises(ValueError, match="loop_cond_prob"):
+        _build_truebones(
+            split="train",
+            num_frames=NUM_FRAMES,
+            balanced=False,
+            objects_subset=LOOP_SUBSET,
+            motion_cache_size=0,
+            loop_cond_prob=1.5,
+        )
+
+
 def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
     dataset = _build_truebones(
         split="train",
@@ -610,6 +693,7 @@ def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
     assert m_length == NUM_FRAMES
     assert motion_metadata["is_loop"] is False
     assert aug_info["loop_applied"] is False
+    assert aug_info["loop_uncond"] is True
     assert np.isclose(float(aug_info["resample_speed_cond"]), MAX_SOURCE_FRAMES_MULT)
     assert_close("conditioned long loop downgraded crop", motion, expected)
 

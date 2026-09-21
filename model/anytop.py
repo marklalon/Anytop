@@ -159,13 +159,18 @@ class AnyTop(nn.Module):
         # inpainting and temporal spans were invisible. Zero-init, so the
         # path starts as a no-op.
         self.unreliable_embedding = nn.Parameter(torch.zeros(self.latent_dim))
-        # y['is_loop'] (0/1): whether the window is a closed cycle. Always on --
-        # the loader tells the model exactly what it did to the window.
-        self.loop_condition_projection = nn.Sequential(
-            nn.Linear(1, self.latent_dim),
-            nn.GELU(),
-            nn.Linear(self.latent_dim, self.latent_dim),
-        )
+        # y['is_loop'] (0/1, whether the window is a closed cycle) is NOT summed
+        # into the condition embedding. It only selects the circular time table
+        # in the decoder (see seqTransDecoder's loop_phase_mask): a closed
+        # window is a statement about time topology, and the phase table is
+        # the one place that can express it. A global 0/1 token was tried and
+        # removed: in the corpus the flag is confounded with content (two in
+        # three loop clips are stationary idles, and within a species-tag
+        # cluster the loop-authored gaits differ from the one-shot ones), so
+        # the token became a content key -- a loop-conditioned run borrowed
+        # the low-lift, phase-scrambled gait of the cluster's other loops
+        # instead of the species' own one-shot runs, while the phase table
+        # alone closed the window just as well (docs/anytop_model_architecture.md §6).
         self.resample_speed_projection = nn.Sequential(
             nn.Linear(1, self.latent_dim),
             nn.GELU(),
@@ -292,24 +297,6 @@ class AnyTop(nn.Module):
         attention masks. Only structurally padded joints are masked here.
         """
         return torch.arange(njoints, device=device)[None, :] >= n_joints[:, None]
-
-    def _coerce_loop_condition(self, raw_loop_cond, batch_size, device, dtype, field_name='is_loop'):
-        if raw_loop_cond is None:
-            raw_loop_cond = torch.zeros(batch_size, device=device, dtype=dtype)
-        elif not torch.is_tensor(raw_loop_cond):
-            raw_loop_cond = torch.as_tensor(raw_loop_cond, device=device)
-        raw_loop_cond = raw_loop_cond.to(device=device)
-        if raw_loop_cond.dim() == 0:
-            raw_loop_cond = raw_loop_cond.reshape(1)
-        raw_loop_cond = raw_loop_cond.reshape(-1)
-        if raw_loop_cond.numel() == 1 and batch_size != 1:
-            raw_loop_cond = raw_loop_cond.expand(batch_size)
-        elif raw_loop_cond.numel() != batch_size:
-            raise ValueError(
-                f"{field_name} batch dimension must match the motion batch size, got "
-                f"{raw_loop_cond.numel()} for batch {batch_size}"
-            )
-        return raw_loop_cond.to(dtype=dtype).view(batch_size, 1)
 
     def _coerce_resample_speed_cond(self, raw_resample_speed_cond, batch_size, device, dtype):
         if raw_resample_speed_cond is None:
@@ -996,14 +983,6 @@ class AnyTop(nn.Module):
             self.resample_speed_projection, resample_speed_condition)
         timesteps_emb = timesteps_emb + self._build_canonical_frame_token(
             y, bs, x.device, x.dtype)
-        loop_condition = self._coerce_loop_condition(
-            y.get('is_loop'),
-            batch_size=bs,
-            device=x.device,
-            dtype=x.dtype,
-        )
-        timesteps_emb = timesteps_emb + run_in_fp32(
-            self.loop_condition_projection, loop_condition)
         action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype)
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token

@@ -1160,13 +1160,30 @@ class MotionDataset(data.Dataset):
         # same filename, and this value is what training logs report.
         motion_metadata['motion_name'] = name
         is_loop = bool(motion_metadata.get('is_loop'))
+        # loop_cond_prob: probability that a loop clip is TOLD it is one. When
+        # the draw fails (loop_uncond) the clip is still physically a loop and
+        # gets every loop augmentation below (closing-key drop, periodic time
+        # scale, circular roll, tiling), but the window is then resampled as an
+        # open clip and handed over with is_loop=False -- absolute time table,
+        # open velocity step, no wrap losses. That is deliberate label noise:
+        # the flag is confounded with content in the corpus (see the model's
+        # is_loop note), and a flag the model cannot trust as a content key is
+        # one it has to read as time topology only. An explicit loop_offset
+        # (prepare_sample_by_name, the diagnostics path) always keeps the flag.
+        loop_cond_prob = float(getattr(self.opt, 'loop_cond_prob', 1.0))
+        loop_uncond = bool(
+            is_loop
+            and loop_offset is None
+            and loop_cond_prob < 1.0
+            and random.random() >= loop_cond_prob
+        )
 
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
         loop_phase_offset = 0
         loop_tile_count = 1
-        # A loop clip is always told it is one (the window is closed below);
-        # the only downgrade is the over-long crop, which breaks the cycle.
-        loop_condition_active = bool(is_loop)
+        # Besides loop_uncond, the only downgrade is the over-long crop below,
+        # which breaks the cycle.
+        loop_condition_active = bool(is_loop) and not loop_uncond
 
         # ── Closing-key drop (applies to ALL is_loop motions) ──
         # A loop authored with its last frame repeating frame 0 is the loop
@@ -1226,6 +1243,8 @@ class MotionDataset(data.Dataset):
             # to the target length below at resample_speed MAX_SOURCE_FRAMES_MULT --
             # while the window POSITION stays random so repeated epochs still
             # see the whole clip.
+            if loop_condition_active:
+                loop_uncond = True
             loop_condition_active = False
             ind = random.randint(0, m_length - max_source_length)
             motion = motion[ind: ind + max_source_length]
@@ -1259,6 +1278,7 @@ class MotionDataset(data.Dataset):
         motion_metadata['is_loop'] = bool(loop_condition_active)
         motion_metadata['resample_speed_cond'] = float(resample_speed_cond)
         motion_metadata['loop_data_aug_applied'] = bool(is_loop)
+        motion_metadata['loop_uncond'] = bool(loop_uncond)
         motion_metadata['loop_phase_offset'] = int(loop_phase_offset)
         motion_metadata['loop_tile_count'] = int(loop_tile_count)
         # Diagnostics only (training logs), never a model input.
@@ -1280,6 +1300,7 @@ class MotionDataset(data.Dataset):
                 'loop_phase_offset': int(loop_phase_offset),
                 'loop_tile_count': int(loop_tile_count),
                 'resample_speed_cond': float(resample_speed_cond),
+                'loop_uncond': bool(loop_uncond),
                 'motion_speed_applied': float(motion_speed_applied),
             }
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
@@ -1532,6 +1553,11 @@ class Truebones(data.Dataset):
 
         self.opt.motion_speed_aug = float(kwargs.get('motion_speed_aug', 1.0))
         self.opt.motion_speed_aug_prob = float(kwargs.get('motion_speed_aug_prob', 1.0))
+        self.opt.loop_cond_prob = float(kwargs.get('loop_cond_prob', 1.0))
+        if not 0.0 <= self.opt.loop_cond_prob <= 1.0:
+            raise ValueError(
+                f"loop_cond_prob must be in [0, 1], got {self.opt.loop_cond_prob}."
+            )
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
         if not 0.0 <= self.opt.loop_tile_single_prob <= 1.0:
             raise ValueError(

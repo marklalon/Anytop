@@ -88,8 +88,8 @@ tokens [T+1, B, J, D]
   │      → species FiLM
   │      + resample-speed token
   │      + canonical-frame token
-  │      + loop token
   │      + action-label token
+  │    (is_loop 不进这条总线，见 §6.1)
   │
   ▼
 GraphMotionDecoder × L
@@ -147,7 +147,6 @@ timestep
   → species FiLM
   + resample_speed
   + canonical_feature_mean/std
-  + is_loop
   + action_label
 ```
 
@@ -284,7 +283,13 @@ Loop 不是单一布尔 token，而是模型、数据和损失共同组成的一
 
 ### 6.1 模型内
 
-- `is_loop` 经 MLP 加到 timestep condition；
+- `is_loop` **不**进 timestep condition。曾有的全局 loop token（`loop_condition_projection`，
+  0/1 标量经 MLP 加到 condition bus）已删除：语料里这个 flag 与内容强相关（loop 类 2/3 是
+  stationary idle；同一 species-tag 簇里 loop 标注的步态与 one-shot 标注的步态不同），模型把
+  token 学成了内容键——推理时 `--loop on` 的 Buffalo/Bear run 借了同簇其它 loop 的小幅度、
+  相位散乱步态，而不是本物种 one-shot run 的步态；推理端把 token 与 circular PE 拆开验证，
+  坏先验 100% 来自 token，只开 circular PE 一样闭合（接缝 rot gap 0.42 步）且步态正确。
+  一个闭合窗口是时间拓扑的陈述，phase table 是唯一能表达它的地方；
 - 主 temporal path 使用 absolute PE，并在 loop 样本上额外加入 circular phase embedding；
 - cross-limb latents 自己没有输入级 absolute PE，因此 loop 样本选择 circular table，非 loop
   样本选择 absolute table；
@@ -300,10 +305,12 @@ k 份 tile 经周期重采样后是 k 份逐位相同的拷贝（周期 T/k 帧�
 `--loop_tile_single_prob` 给单周期窗口（推理端 loop 条件为真、又用自动长度时所在的 regime）的概率设一个下限，
 其余质量在 2..max 上仍均匀，默认 0.5；0 即原来的均匀抽签。
 
-真实 loop clip 总是以 `is_loop=True` 喂给模型；唯一的降级是超出源帧预算被裁剪的 clip（环被裁开，
-按非 loop 告知）。曾有的 `loop_cond_prob`（随机把 loop 标成非 loop）已删除：它没有 null 态，只是把
-同一段内容按两种标签训练，稀释 `is_loop=0` 的 one-shot 语义并砍掉 loop 分支 30% 的样本，推理端
-也没有任何消费者。
+真实 loop clip 以概率 `--loop_cond_prob`（默认 1.0 = 总是）被告知它是 loop；其余的抽签
+（`loop_uncond`）仍做全部 loop 增广（closing-key drop、周期变速、circular roll、tile），但按开放
+clip 重采样窗口、以 `is_loop=False` 交给模型（absolute time table、开放速度步长、无 wrap 损失）。
+这是有意的标签噪声，目的与删 loop token 相同：flag 与内容相关时模型会把它当内容键，而一个
+不可信的 flag 只能被当作时间拓扑来读。它不是 CFG（没有 null 态、推理端不消费），
+eval loader 固定 1.0。另一处降级是超出源帧预算被裁剪的 clip（环被裁开，按非 loop 告知）。
 
 ### 6.3 损失侧
 

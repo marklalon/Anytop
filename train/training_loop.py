@@ -286,9 +286,12 @@ class TrainLoop:
                 # Evaluation sees the clips at their recorded tempo regardless
                 # of --motion_speed_aug, so eval losses stay comparable across
                 # runs that differ only in the augmentation. The loop tile draw
-                # stays uniform for the same reason.
+                # stays uniform for the same reason, and a loop clip is scored
+                # under the flag it was authored with: --loop_cond_prob is
+                # training-time label noise, not part of the eval set.
                 motion_speed_aug=1.0,
                 loop_tile_single_prob=0.0,
+                loop_cond_prob=1.0,
                 # Same reason: keep the eval set and its batch composition fixed
                 # (per-bucket drop_last would drop different clips), so eval
                 # scores stay comparable across runs with different buckets.

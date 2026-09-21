@@ -32,7 +32,12 @@ ACTION_GROUP_ALL = 'all'
 #     member is heavily attested. Same shapes, different meaning behind them; the
 #     embedding_fingerprint refuses an --action_label_cond checkpoint by itself,
 #     this stamp covers the rest.
-CKPT_VERSION = 18
+# 19: the is_loop token (loop_condition_projection, summed into the condition
+#     embedding) is gone; is_loop now reaches the model only through the
+#     decoder's circular time table. Fewer state_dict keys, and a different
+#     meaning behind --loop: a v18 checkpoint's loop mode had learned the
+#     token as a content key (docs/anytop_model_architecture.md §6.1).
+CKPT_VERSION = 19
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -277,6 +282,17 @@ def add_model_options(parser):
                             "single-cycle window -- the regime --loop with the auto length generates in -- "
                             "a small minority of draws, while every other draw is k bit-identical copies "
                             "of the cycle. Loader-only, like --motion_speed_aug: no regen, no bump.")
+    group.add_argument("--loop_cond_prob", default=1.0, type=float,
+                       help="Probability that a loop training clip is TOLD it is a loop (is_loop=1: "
+                            "circular time table, periodic window resample, wrap losses). The rest of "
+                            "the loop clips keep every loop augmentation (closing-key drop, circular "
+                            "roll, tiling) but are resampled as open clips and handed over with "
+                            "is_loop=0. Deliberate label noise: the flag is confounded with content in "
+                            "the corpus (most loops are stationary idles; within a species-tag cluster "
+                            "the loop-authored gaits differ from the one-shot ones), and a flag the "
+                            "model cannot trust as a content key is one it has to read as time "
+                            "topology only. 1.0 = off. Loader-only, like --motion_speed_aug: no regen, "
+                            "no bump. The eval loader always uses 1.0.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
