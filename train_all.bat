@@ -41,6 +41,8 @@ pushd "%SCRIPT_DIR%"
 	--num_frames 60 ^
 	--batch_size 20 ^
 	--lr 1e-4 ^
+	--lr_final 1e-5 ^
+	--lr_decay_start 300000 ^
 	--weight_decay 0.01 ^
 	--use_ema ^
 	--ema_rate 0.999 ^

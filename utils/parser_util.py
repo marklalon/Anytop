@@ -419,13 +419,14 @@ def add_training_options(parser):
                             "cost; shapes are static so no recompile thrashing afterward "
                             "(one graph per JOINT_BUCKETS joint bucket).")
     group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
-    group.add_argument("--lr_scheduler_step_size", default=10000, type=int,
-                       help="StepLR step size: decay LR every N optimizer steps.")
-    group.add_argument("--lr_scheduler_gamma", default=0.99, type=float,
-                       help="StepLR gamma: multiplicative factor for LR decay.")
+    group.add_argument("--lr_decay_start", default=None, type=int,
+                       help="Optimizer step at which the LR starts a cosine decay from --lr "
+                            "to --lr_final, reaching --lr_final at --num_steps. Omitted: the "
+                            "LR stays constant for the whole run.")
+    group.add_argument("--lr_final", default=1e-5, type=float,
+                       help="LR at the end of the cosine decay (only with --lr_decay_start).")
 
     group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")
-    group.add_argument("--lr_anneal_steps", default=0, type=int, help="Number of learning rate anneal steps.")
     group.add_argument("--eval_batch_size", default=16, type=int,
                        help="Batch size during evaluation loop. Do not change this unless you know what you are doing. "
                             "T2m precision calculation is based on fixed batch size 16.")

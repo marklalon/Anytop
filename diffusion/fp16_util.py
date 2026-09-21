@@ -361,7 +361,7 @@ class MixedPrecisionTrainer:
         else:
             loss.backward()
 
-    def optimize(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
+    def optimize(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.LRScheduler):
         if not self.use_fp16:
             self._restore_skipped_grads()
         if self.amp_enabled:
@@ -413,7 +413,7 @@ class MixedPrecisionTrainer:
             self.scaler.update(float(GRAD_SCALER_MAX_SCALE))
             scale = float(GRAD_SCALER_MAX_SCALE)
 
-    def _optimize_amp(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
+    def _optimize_amp(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.LRScheduler):
         if self.scaler.is_enabled():
             self.scaler.unscale_(opt)
 
@@ -451,7 +451,7 @@ class MixedPrecisionTrainer:
         logger.logkv_mean("lr", scheduler.get_last_lr()[0])
         return True
 
-    def _optimize_fp16(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
+    def _optimize_fp16(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.LRScheduler):
         if self.log_norms:
             logger.logkv_mean("lg_loss_scale", self.lg_loss_scale)
         model_grads_to_master_grads(self.param_groups_and_shapes, self.master_params)
@@ -478,7 +478,7 @@ class MixedPrecisionTrainer:
         self.lg_loss_scale += self.fp16_scale_growth
         return True
 
-    def _optimize_normal(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
+    def _optimize_normal(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.LRScheduler):
         clipped_norm = self._clip_gradients_and_check_nonfinite(
             self.model_params,
             max_norm=1.0,

@@ -1,4 +1,5 @@
 import functools
+import math
 import os
 import re
 import json
@@ -142,6 +143,27 @@ def build_optimizer_param_groups(named_params, weight_decay: float):
     return groups
 
 
+def cosine_decay_lr_lambda(lr, lr_final, decay_start, num_steps):
+    """LambdaLR multiplier: constant 1.0 up to ``decay_start``, then a cosine
+    decay reaching ``lr_final / lr`` at ``num_steps``. ``decay_start=None`` keeps
+    the LR constant for the whole run (WSD without the decay phase)."""
+    if decay_start is None:
+        return lambda step: 1.0
+    if not 0 <= decay_start < num_steps:
+        raise ValueError(f"--lr_decay_start {decay_start} must lie in [0, num_steps={num_steps})")
+    if not 0 <= lr_final <= lr:
+        raise ValueError(f"--lr_final {lr_final} must lie in [0, lr={lr}]")
+    floor = lr_final / lr
+    span = num_steps - decay_start
+
+    def multiplier(step):
+        if step < decay_start:
+            return 1.0
+        t = min((step - decay_start) / span, 1.0)
+        return floor + 0.5 * (1.0 - floor) * (1.0 + math.cos(math.pi * t))
+    return multiplier
+
+
 class TrainLoop:
     def __init__(self, args, train_platform, model, diffusion, data):
         self.args = args
@@ -163,7 +185,6 @@ class TrainLoop:
         self.use_fp16 = self.amp_dtype == 'fp16'
         self.fp16_scale_growth = 1e-3  # deprecating this option
         self.weight_decay = args.weight_decay
-        self.lr_anneal_steps = args.lr_anneal_steps
 
         self.step = 0
         self.resume_step = 0
@@ -251,14 +272,28 @@ class TrainLoop:
             lr=self.lr, weight_decay=self.weight_decay, fused=True,
         )
         self._optimizer_param_names = {id(param): name for name, param in self.model.named_parameters()}
-        self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.opt,
-                                                step_size=getattr(self.args, 'lr_scheduler_step_size', 10000),
-                                                gamma=getattr(self.args, 'lr_scheduler_gamma', 0.99))
+        # The LR is a pure function of the optimizer step (see cosine_decay_lr_lambda),
+        # so a resume seeks the scheduler to the checkpoint step instead of restoring
+        # scheduler state: the schedule stays consistent when --lr / --lr_decay_start
+        # / --lr_final change on resume, and old opt checkpoints need no migration.
+        self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+            self.opt,
+            cosine_decay_lr_lambda(
+                lr=self.lr, lr_final=self.args.lr_final,
+                decay_start=self.args.lr_decay_start, num_steps=self.num_steps,
+            ),
+        )
 
+        # Model was resumed, either due to a restart or a checkpoint
+        # being specified at the command line.
         if self.resume_step and bool(getattr(self.args, 'load_optimizer_state', True)):
             self._load_optimizer_state()
-            # Model was resumed, either due to a restart or a checkpoint
-            # being specified at the command line.
+        if self.resume_step:
+            # After the optimizer restore, which also restores the stale param-group LR.
+            # resume_step is the last step already TAKEN, and the seek takes the
+            # number of COMPLETED steps (see total_step, which adds the same 1),
+            # so an uninterrupted run's LR curve is reproduced exactly.
+            self._seek_lr_scheduler(self.resume_step + 1)
 
         self.schedule_sampler_type = 'uniform'
         self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
@@ -472,29 +507,7 @@ class TrainLoop:
                 "Sanitized non-finite optimizer state after restore "
                 f"({format_nonfinite_stats(optimizer_state_stats)})"
             )
-        
-        # Restore LR scheduler state to continue from the correct step
-        if isinstance(checkpoint_data, dict) and 'scheduler' in checkpoint_data:
-            try:
-                self.lr_scheduler.load_state_dict(checkpoint_data['scheduler'])
-                logger.log("LR scheduler state restored")
-            except Exception as exc:
-                logger.log(f"LR scheduler state restore skipped: {exc}")
-        elif self.resume_checkpoint:
-            try:
-                checkpoint_number = parse_checkpoint_number_from_filename(self.resume_checkpoint)
-                numbering_mode = self._get_checkpoint_step_numbering(self.resume_checkpoint)
-                if numbering_mode == 'completed_steps':
-                    inferred_last_epoch = checkpoint_number
-                else:
-                    inferred_last_epoch = max(checkpoint_number, 0)
-                self.lr_scheduler.last_epoch = inferred_last_epoch
-                self.lr_scheduler._step_count = inferred_last_epoch + 1
-                self.lr_scheduler._last_lr = [group['lr'] for group in self.opt.param_groups]
-                logger.log(f"LR scheduler state inferred from resume checkpoint step {inferred_last_epoch}")
-            except Exception as exc:
-                logger.log(f"LR scheduler inference skipped: {exc}")
-        
+
         self._restore_rng_states(checkpoint_data)
 
         limiter_state = checkpoint_data.get('sample_loss_limiter') if isinstance(checkpoint_data, dict) else None
@@ -513,9 +526,6 @@ class TrainLoop:
                 try:
                     motion, cond = next(data_iter)
                 except StopIteration:
-                    break
-
-                if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
                     break
 
                 motion = self._move_batch_to_device(motion)
@@ -551,9 +561,6 @@ class TrainLoop:
 
                 if completed_step == self.num_steps:
                     break
-
-            if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
-                break
 
     def _move_batch_to_device(self, batch):
         return batch.to(self.device, non_blocking=self.non_blocking)
@@ -897,7 +904,6 @@ class TrainLoop:
             # .parameters()).  Sync persistent buffers (running statistics) so
             # they are available in the EMA checkpoint at inference time.
             self._sync_ema_persistent_buffers()
-        self._anneal_lr()
         self.log_step()
 
     def forward_backward(self, batch, cond, epoch):
@@ -1147,13 +1153,22 @@ class TrainLoop:
         return torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype)
 
 
-    def _anneal_lr(self):
-        if not self.lr_anneal_steps:
-            return
-        frac_done = (self.step + self.resume_step) / self.lr_anneal_steps
-        lr = self.lr * (1 - frac_done)
-        for param_group in self.opt.param_groups:
-            param_group["lr"] = lr
+    def _seek_lr_scheduler(self, step):
+        """Move the LambdaLR to ``step`` COMPLETED steps and apply the LR that
+        step uses to the optimizer.
+
+        LambdaLR indexes the multiplier by completed steps -- the LR applied at
+        completed step k is ``fn(k - 1)`` -- so ``step`` is a count, not an
+        index, and a resume passes ``resume_step + 1``.
+        """
+        self.lr_scheduler.last_epoch = step
+        self.lr_scheduler._step_count = step + 1
+        lrs = [base_lr * fn(step) for base_lr, fn in
+               zip(self.lr_scheduler.base_lrs, self.lr_scheduler.lr_lambdas)]
+        for param_group, lr in zip(self.opt.param_groups, lrs):
+            param_group['lr'] = lr
+        self.lr_scheduler._last_lr = lrs
+        logger.log(f"LR scheduler seeked to step {step}: lr={lrs[0]:.3e}")
 
     def log_step(self):
         logger.logkv("step", self.step + self.resume_step)
@@ -1223,9 +1238,7 @@ class TrainLoop:
                     }
                 else:
                     opt_state = {'opt': opt_state}
-                
-                # Save LR scheduler state for proper resumption
-                opt_state['scheduler'] = self.lr_scheduler.state_dict()
+
                 if self.sample_loss_limiter is not None:
                     opt_state['sample_loss_limiter'] = self.sample_loss_limiter.state_dict()
                 
