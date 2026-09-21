@@ -26,7 +26,7 @@ pushd "%SCRIPT_DIR%"
 	--rare_head_word_floor 20 ^
 	--rare_head_word_max_boost 4 ^
 	--train_split train ^
-	--latent_dim 384 ^
+	--latent_dim 320 ^
 	--ff_size 2048 ^
 	--layers 8 ^
 	--action_label_cond ^
