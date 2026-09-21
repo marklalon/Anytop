@@ -3,7 +3,7 @@ import math
 import os
 import re
 import json
-import copy as pycopy
+import contextlib
 import numpy as np
 from os.path import join as pjoin
 from typing import Optional
@@ -26,19 +26,13 @@ from utils.model_util import load_model
 from utils.model_util import (
     bind_checkpoint_action_conditioning,
     build_checkpoint_payload,
-    create_model_and_diffusion_general_skeleton,
     load_checkpoint_weights,
     unwrap_anytop_model,
 )
 import random
 from data_loaders.get_data import get_dataset_loader
+from data_loaders.truebones.data.dataset import EmptySplitError
 from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
-from data_loaders.truebones.truebones_utils.canonical_features import (
-    REST_LENGTH_SCALE_KEY,
-    canonical_to_physical_hml,
-)
-from eval.motion_quality import DistributionMotionQualityScorer
-from eval.motion_quality.reference_bank import reference_prior_words
 from train.sample_loss_limit import SampleLossLimiter
 
 INITIAL_LOG_LOSS_SCALE = 20.0
@@ -68,42 +62,31 @@ def classify_grad_event(grad_norm, scaler_enabled, spike_threshold):
     return 'spike' if grad_norm > spike_threshold else None
 
 
-def _per_sample_decode_cond(y, index, n_joints):
-    """Slice a collated ``y`` down to one sample's decode cond.
+# Seed of the RNG streams the validation pass runs under (see
+# ``_fixed_validation_rng``). Any fixed value works; it is only ever compared
+# against itself.
+VALIDATION_RNG_SEED = 20260921
 
-    ``rest_pos_ric_hml`` is cut to the sample's real joints (the collate pads it
-    to max_joints), the per-sample canonical stats and rest length scale are
-    taken at ``index``; a stat the collate did not emit stays absent so the
-    decoder raises instead of silently skipping the de-standardization.
+
+@contextlib.contextmanager
+def _fixed_validation_rng(device):
+    """Run the body under fixed python / torch RNG streams, then restore them.
+
+    A val loss is only comparable across steps if each pass sees the same
+    draws: the same frame windows and tile counts (python ``random`` in the
+    dataset), the same timesteps ``t`` and the same noise (torch). Training's
+    streams are restored afterwards so a run with validation on is
+    step-for-step the run without it.
     """
-    decode_cond = {
-        'rest_pos_ric_hml': y['rest_pos_ric_hml'][index:index + 1, :n_joints],
-    }
-    for key in ('canonical_feature_mean', 'canonical_feature_std', REST_LENGTH_SCALE_KEY):
-        value = y.get(key)
-        if value is not None:
-            decode_cond[key] = value[index]
-    return decode_cond
-
-
-def _tile_eval_cond(cond, repeat):
-    """Repeat each sample in a cond dict ``repeat`` times for batched DDIM sampling.
-
-    All tensors in ``cond['y']`` are repeated along the batch axis;
-    python lists (object_type, parents, action_label, etc.) are
-    element-replicated.
-    """
-    if repeat <= 1:
-        return cond
-    y = {}
-    for key, val in cond['y'].items():
-        if isinstance(val, torch.Tensor):
-            y[key] = torch.cat([val] * repeat, dim=0)
-        elif isinstance(val, list):
-            y[key] = val * repeat
-        else:
-            y[key] = val
-    return {'y': y}
+    py_state = random.getstate()
+    devices = [device] if device.type == 'cuda' else []
+    with torch.random.fork_rng(devices=devices, enabled=True):
+        random.seed(VALIDATION_RNG_SEED)
+        torch.manual_seed(VALIDATION_RNG_SEED)
+        try:
+            yield
+        finally:
+            random.setstate(py_state)
 
 # Parameters AdamW must NOT weight-decay, by ``named_parameters()`` name
 # suffix: the zero-init gates a residual or bias path is opened with
@@ -297,48 +280,9 @@ class TrainLoop:
         self.schedule_sampler_type = 'uniform'
         self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
         
-        self.eval_wrapper, self.eval_data, self.eval_gt_data = None, None, None
-        self.inference_diffusion = None
-        self.scorer = None
-        if self.args.eval_during_training:
-            self.eval_data = get_dataset_loader(
-                cond_path=self.args.cond_path,
-                batch_size=self.args.eval_batch_size,
-                num_frames=self.args.num_frames,
-                split=self.args.eval_split,
-                objects_subset=self.args.objects_subset,
-                sample_limit=self.args.sample_limit,
-                shuffle=False,
-                drop_last=True,
-                action_group=getattr(self.args, 'action_group', ''),
-                action_label_cond=getattr(self.args, 'action_label_cond', False),
-                action_conditioning=getattr(self.args, 'action_conditioning', None),
-                motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
-                min_length=getattr(self.args, 'min_length', 20),
-                main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
-                # Evaluation sees the clips at their recorded tempo regardless
-                # of --motion_speed_aug, so eval losses stay comparable across
-                # runs that differ only in the augmentation. The loop tile draw
-                # stays uniform for the same reason, and a loop clip is scored
-                # under the flag it was authored with: --loop_cond_prob is
-                # training-time label noise, not part of the eval set.
-                motion_speed_aug=1.0,
-                loop_tile_single_prob=0.0,
-                loop_cond_prob=1.0,
-                # Same reason: keep the eval set and its batch composition fixed
-                # (per-bucket drop_last would drop different clips), so eval
-                # scores stay comparable across runs with different buckets.
-                joint_buckets=None,
-            )
-            sampling_steps = int(getattr(self.args, 'sampling_steps', 100))
-            infer_args = pycopy.deepcopy(self.args)
-            infer_args.timestep_respacing = f'ddim{sampling_steps}' if sampling_steps > 0 else ''
-            _, self.inference_diffusion = create_model_and_diffusion_general_skeleton(infer_args)
-            # The scorer's reference distribution must come from real clips, so
-            # it reuses the same dataset sources the training cond derives.
-            self.scorer = DistributionMotionQualityScorer(
-                dataset_root=data.dataset.opt.sources
-            )
+        self.eval_data = None
+        if self.eval_interval > 0:
+            self.eval_data = self._build_val_loader()
         self.use_ddp = False
         self.ddp_model = self.model
         self.forward_model = self.ddp_model
@@ -348,6 +292,47 @@ class TrainLoop:
         self._interval_loss_sums = {}
         self._interval_loss_counts = {}
         self._ema_persistent_buffer_names = None
+
+    def _build_val_loader(self):
+        """The val-split loader, or ``None`` (validation off) when the split is
+        empty: with VAL_BUCKET_MIN_CLIPS gating what may leave train, a small
+        --action_group can legitimately have no val clip."""
+        try:
+            return get_dataset_loader(
+                cond_path=self.args.cond_path,
+                batch_size=self.batch_size,
+                num_frames=self.args.num_frames,
+                split='val',
+                objects_subset=self.args.objects_subset,
+                sample_limit=self.args.sample_limit,
+                shuffle=False,
+                drop_last=False,
+                action_group=getattr(self.args, 'action_group', ''),
+                action_label_cond=getattr(self.args, 'action_label_cond', False),
+                action_conditioning=getattr(self.args, 'action_conditioning', None),
+                motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
+                min_length=getattr(self.args, 'min_length', 20),
+                # Loaded on the calling thread: the val pass fixes python's RNG
+                # for the dataset's window / tile draws, and a prefetch thread
+                # would draw them outside that window.
+                main_process_prefetch_batches=0,
+                # Validation sees the clips at their recorded tempo regardless
+                # of --motion_speed_aug, so val losses stay comparable across
+                # runs that differ only in the augmentation. The loop tile draw
+                # stays uniform for the same reason, and a loop clip is scored
+                # under the flag it was authored with: --loop_cond_prob is
+                # training-time label noise, not part of the val set.
+                motion_speed_aug=1.0,
+                loop_tile_single_prob=0.0,
+                loop_cond_prob=1.0,
+                # Same reason: keep the val set and its batch composition fixed
+                # (per-bucket batching would regroup the clips), so val losses
+                # stay comparable across runs with different buckets.
+                joint_buckets=None,
+            )
+        except EmptySplitError as exc:
+            tqdm.write(f'[val] validation disabled: {exc}')
+            return None
 
     def _compile_forward_model(self, mode='default'):
         """Wrap the training forward path with torch.compile.
@@ -546,9 +531,7 @@ class TrainLoop:
                         self.train_platform.report_scalar(name=k, value=v, iteration=completed_step, group_name='Loss')
 
                 if self._should_validate(completed_step):
-                    self.model.eval()
                     self.evaluate()
-                    self.model.train()
 
                 if self._should_save(completed_step):
                     self.save(completed_step)
@@ -592,7 +575,7 @@ class TrainLoop:
         return completed_step % self.save_interval == 0 or completed_step == self.num_steps
 
     def _should_validate(self, completed_step):
-        if not self.args.eval_during_training or self.eval_data is None or self.eval_interval <= 0:
+        if self.eval_data is None:
             return False
         return completed_step % self.eval_interval == 0 or completed_step == self.num_steps
 
@@ -705,22 +688,26 @@ class TrainLoop:
         self._interval_loss_counts.clear()
         return metrics
 
-    def _compute_eval_losses(self, batch, cond):
-        t, weights = self.schedule_sampler.sample(batch.shape[0], dist_util.dev())
+    def _validation_losses(self, model, batch, cond):
+        """Per-key loss means of one val batch, the same terms training logs.
+
+        Same ``training_losses`` and the same autocast as a training step, so
+        ``Val/loss`` is directly comparable with ``Loss/loss``; raw (the
+        --sample_loss_limit reweighting is a gradient policy, not a metric).
+        """
+        t, weights = self.schedule_sampler.sample(batch.shape[0], batch.device)
         with torch.no_grad(), self._autocast_context():
             losses = self.diffusion.training_losses(
-                self.model,
+                model,
                 batch,
                 t,
                 model_kwargs=self._with_train_step(cond, self.total_step()),
             )
-
-        reduced = {}
-        for key, value in losses.items():
-            if not torch.is_tensor(value):
-                continue
-            reduced[key] = float((value.detach() * weights).mean().item())
-        return reduced
+        return {
+            key: (value.detach().float() * weights).mean()
+            for key, value in losses.items()
+            if torch.is_tensor(value)
+        }
 
     def total_step(self):
         total_step = self.step
@@ -731,137 +718,52 @@ class TrainLoop:
         return total_step
 
     def evaluate(self):
-        if not self.args.eval_during_training or self.eval_data is None:
+        """Log the loss over the whole val split, for the online model and (with
+        --use_ema) the EMA copy the checkpoints are used through.
+
+        ``model.eval()`` turns off every training-time stochastic path (dropout,
+        CFG label drop, joint / temporal masks), so this is the fully conditioned
+        loss; the RNG draws that remain (frame window, timestep, noise) are fixed
+        per pass so the curve is comparable across steps and runs.
+        """
+        if self.eval_data is None:
             return
-        infer_model = self.model  # use raw model (not EMA) to observe real val performance
-        motion_groups = {}
-        missing_action_label_count = 0
-        target_batch = int(self.args.eval_batch_size)
+        models = {'': self.model}
+        if self.model_avg is not None:
+            models['ema_'] = self.model_avg
+        was_training = {prefix: model.training for prefix, model in models.items()}
+        for model in models.values():
+            model.eval()
 
-        infer_model.eval()
-        # Sampling is fp32 whatever --amp_dtype trains with: bf16 rounding of the
-        # x0 prediction is frame-independent noise that inflates the Jerk / Snap /
-        # SpectralFlatness terms scored below (docs/bf16_precision_issues.md), so
-        # bf16 scores would not be comparable across checkpoints or with
-        # eval_checkpoint.py. TF32 stays whatever training set (on under --compile).
-        with torch.no_grad(), torch.autocast(device_type=self.device.type, enabled=False):
-            # Iterate the whole eval split so every unique motion is sampled
-            # at least once. The loader batches by eval_batch_size, so full
-            # batches sample each motion once; a smaller trailing batch is
-            # tiled up to fill eval_batch_size (each motion sampled repeat
-            # times, may overshoot slightly when it doesn't divide evenly).
-            for motion, cond in self.eval_data:
-                motion = self._move_batch_to_device(motion)
-                cond = self._move_cond_to_device(cond)
-                native_batch = motion.shape[0]
-                if native_batch < target_batch:
-                    repeat = (target_batch + native_batch - 1) // native_batch
-                    motion = torch.cat([motion] * repeat, dim=0)
-                    cond = _tile_eval_cond(cond, repeat)
+        sums = {}
+        sample_count = 0
+        try:
+            with _fixed_validation_rng(self.device):
+                for motion, cond in self.eval_data:
+                    motion = self._move_batch_to_device(motion)
+                    cond = self._move_cond_to_device(cond)
+                    batch_size = motion.shape[0]
+                    for prefix, model in models.items():
+                        for key, value in self._validation_losses(model, motion, cond).items():
+                            name = prefix + key
+                            sums[name] = sums.get(name, 0.0) + value * batch_size
+                    sample_count += batch_size
+        finally:
+            for prefix, model in models.items():
+                model.train(was_training[prefix])
 
-                batch_size = motion.shape[0]
-                max_joints = motion.shape[1]
-                n_frames = motion.shape[3]
-
-                sample_shape = (batch_size, max_joints, infer_model.feature_len, n_frames)
-                noise = torch.randn(sample_shape, device=dist_util.dev())
-                sample = self.inference_diffusion.ddim_sample_loop(
-                    model=infer_model,
-                    shape=sample_shape,
-                    noise=noise,
-                    init_image=motion,
-                    skip_timesteps=5,
-                    clip_denoised=False,
-                    model_kwargs=cond,
-                    device=dist_util.dev(),
-                    progress=False,
-                    eta=0.0,
-                )
-
-                for i in range(batch_size):
-                    object_type = cond['y']['object_type'][i]
-                    # Grouped by the label's prior words, not its spelling: the
-                    # two directions of one transition share a reference prior.
-                    #
-                    # This call RAISES on a label that breaks the vocabulary
-                    # contract (unknown token, no head word, repeats, too many
-                    # words) and takes validation down with it -- deliberately,
-                    # and unlike the empty label handled just below: a typo must
-                    # fail loudly rather than silently narrow the prior to the
-                    # words it happened to hit and report a confident score for
-                    # it. An empty label is legal (no condition), so it only
-                    # skips this clip.
-                    prior_words = reference_prior_words(
-                        cond['y'].get('action_label', [None] * batch_size)[i]
-                    )
-                    if not prior_words:
-                        missing_action_label_count += 1
-                        continue
-                    n_joints = cond['y']['n_joints'][i].item()
-                    motion_sample = sample[i][:n_joints]
-                    # Every per-sample field is sliced to row i: the canonical stats
-                    # are per object_subset, and the whole [B, F] stack does not fit
-                    # a one-sample feature (the decoder rejects it).
-                    motion_physical = canonical_to_physical_hml(
-                        motion_sample.unsqueeze(0),
-                        _per_sample_decode_cond(cond['y'], i, n_joints),
-                    )[0]
-                    motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
-                    group_key = (object_type, prior_words)
-                    motion_groups.setdefault(group_key, []).append(motion_np.astype(np.float32))
-
-        infer_model.train()
-
-        if missing_action_label_count:
-            tqdm.write(f'Validation skipped {missing_action_label_count} motion(s) with no action_label.')
-
-        if not motion_groups:
-            tqdm.write('Validation skipped: eval split returned no samples.')
+        if sample_count == 0:
+            tqdm.write('Validation skipped: val split returned no samples.')
             return
 
-        scores = []
-        score_weights = []
-        jerk_scores = []
-        snap_scores = []
-        sf_scores = []
-        bl_scores = []
-        for (object_type, prior_words), motions in motion_groups.items():
-            action_label = ', '.join(prior_words)
-            try:
-                report = self.scorer.evaluate(
-                    motions=motions,
-                    object_type=object_type,
-                    action_label=action_label,
-                )
-            except Exception as exc:
-                tqdm.write(f"[eval] Scoring failed for {object_type} ({action_label}): {exc}")
-                continue
-            scores.append(report.overall_score)
-            jerk_scores.append(report.jerk_score)
-            snap_scores.append(report.snap_score)
-            sf_scores.append(report.spectral_flatness_score)
-            bl_scores.append(report.bone_length_score)
-            score_weights.append(len(motions))
-
-        if not scores:
-            return
-
-        w = np.array(score_weights)
         completed_step = self.total_step() + 1
-        avg_score = float(np.average(scores, weights=w))
-        avg_jerk = float(np.average(jerk_scores, weights=w))
-        avg_snap = float(np.average(snap_scores, weights=w))
-        avg_sf = float(np.average(sf_scores, weights=w))
-        avg_bl = float(np.average(bl_scores, weights=w))
-        tqdm.write('val_step[{}]: Score[{:.4f}] Jerk[{:.4f}] Snap[{:.4f}] SF[{:.4f}] BL[{:.4f}]'.format(
-            completed_step, avg_score, avg_jerk, avg_snap, avg_sf, avg_bl))
-        self.train_platform.report_scalar(name='Score', value=avg_score, iteration=completed_step, group_name='Val')
-        self.train_platform.report_scalar(name='Jerk', value=avg_jerk, iteration=completed_step, group_name='Val')
-        self.train_platform.report_scalar(name='Snap', value=avg_snap, iteration=completed_step, group_name='Val')
-        self.train_platform.report_scalar(name='SpectralFlatness', value=avg_sf, iteration=completed_step, group_name='Val')
-        self.train_platform.report_scalar(name='BoneLength', value=avg_bl, iteration=completed_step, group_name='Val')
-
-
+        metrics = {name: float((total / sample_count).item()) for name, total in sums.items()}
+        summary = ' '.join(
+            f'{name}[{metrics[name]:.5f}]' for name in ('loss', 'ema_loss') if name in metrics
+        )
+        tqdm.write(f'val_step[{completed_step}]: {summary} ({sample_count} clips)')
+        for name, value in metrics.items():
+            self.train_platform.report_scalar(name=name, value=value, iteration=completed_step, group_name='Val')
 
 
     def _sync_ema_persistent_buffers(self):

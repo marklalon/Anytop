@@ -176,7 +176,7 @@ bf16 的指数位与 fp32 相同，不会溢出，所以不需要 loss scaling�
 **A. 推理与评估改 fp32+TF32**
 
 - 把 `generate.bat` 和 `eval_checkpoint.py` 两处的 `--amp_dtype bf16` 改为 `fp32`。
-- `TrainLoop.evaluate()` 的采样不再复用训练的 `_autocast_context()`，固定用 `torch.autocast(device_type, enabled=False)`。`_compute_eval_losses` 可以保持现状。
+- 训练中的验证（`TrainLoop.evaluate()`）现在只算 val loss、不采样，沿用训练的 `_autocast_context()` 即可（与 `Loss/loss` 同精度才可比）。
 - fp32 推理要显式开 TF32（`torch.set_float32_matmul_precision('high')`）。目前只有 `--compile` 训练路径在 `_compile_forward_model` 里设置了它，`generate.py` 没有设置；上面 +5% 的数字是开了 TF32 测得的。
 - TF32 的误差（t=0 位置 p99 0.062% L，jerk 能量 0.02%）远低于可感知和打分器敏感的量级。
 

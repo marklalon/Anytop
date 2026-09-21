@@ -46,7 +46,7 @@ pushd "%SCRIPT_DIR%"
 	--batch_size 20 ^
 	--lr 1e-4 ^
 	--lr_final 1e-5 ^
-	--lr_decay_start 300000 ^
+	--lr_decay_start 0 ^
 	--weight_decay 0.01 ^
 	--use_ema ^
 	--ema_rate 0.999 ^

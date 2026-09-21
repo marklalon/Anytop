@@ -439,15 +439,9 @@ def add_training_options(parser):
                        help="LR at the end of the cosine decay (only with --lr_decay_start).")
 
     group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")
-    group.add_argument("--eval_batch_size", default=16, type=int,
-                       help="Batch size during evaluation loop. Do not change this unless you know what you are doing. "
-                            "T2m precision calculation is based on fixed batch size 16.")
-    group.add_argument("--eval_split", default='val', choices=['val', 'test'], type=str,
-                       help="Which held-out split to evaluate on during training.")
-    group.add_argument("--eval_during_training", action='store_true',
-                       help="If True, will run evaluation during training.")
     group.add_argument("--eval_interval", default=1_000, type=int,
-                       help="Run validation loss every N training steps when eval_during_training is enabled.")
+                       help="Compute the loss over the val split every N training steps (and at the "
+                            "last step), logged under Val/. 0 disables validation.")
     group.add_argument("--log_interval", default=100, type=int,
                        help="Log losses each N steps")
     group.add_argument("--save_interval", default=10_000, type=int,
