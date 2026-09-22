@@ -18,6 +18,7 @@ manifest, so ``dataset_tags`` can import it without a cycle.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,8 +54,34 @@ def anytop_root() -> Path:
 
 
 def resolve_anytop_path(path_value) -> Path:
-    """Resolve an Anytop-root-relative (or absolute) path to an absolute one."""
+    """Resolve an Anytop-root-relative (or absolute) path to an absolute one.
+
+    Touches the filesystem: ``_resolve_project_path`` tries the path under the
+    cwd first and takes it *if it exists*, falling back to the Anytop root.  Use
+    :func:`resolve_anytop_path_lexical` where that probe is not allowed.
+    """
     return _resolve_project_path(path_value)
+
+
+def resolve_anytop_path_lexical(path_value) -> Path:
+    """Same resolution, decided on the string alone -- no filesystem access.
+
+    A relative path always resolves against the Anytop root, which is the form
+    ``to_anytop_relative`` writes and therefore what a stored ``dataset_root``
+    means.  ``resolve_anytop_path`` would first ask whether the same relative
+    path exists under the cwd and prefer that one; this refuses to ask.
+
+    Two reasons that matters on the inference path.  The obvious one is the
+    contract: generation must not touch a dataset directory, and ``exists()`` is
+    touching it.  The quieter one is that a probe makes the ANSWER depend on the
+    disk -- run generation from a directory that happens to hold its own
+    ``dataset/...`` tree and the same cond resolves to a different root.
+    """
+    candidate = Path(path_value)
+    if candidate.is_absolute():
+        return candidate
+    # normpath, not resolve(): purely lexical, and it must stay that way.
+    return Path(os.path.normpath(_ANYTOP_ROOT / candidate))
 
 
 def to_anytop_relative(path_value) -> str:
@@ -238,19 +265,39 @@ def load_datasets_manifest(manifest_path) -> list[DatasetSource]:
     return enabled
 
 
-def sources_from_cond(cond_dict: Mapping[str, Mapping], cond_path=None) -> tuple[DatasetSource, ...]:
+def sources_from_cond(
+    cond_dict: Mapping[str, Mapping],
+    cond_path=None,
+    *,
+    probe_filesystem: bool = True,
+) -> tuple[DatasetSource, ...]:
     """Derive the training sources from a v4 cond dict.
 
     Entries are grouped by ``dataset_namespace``; a ``dataset_root`` of ``None``
     means "the directory holding this cond.npy", which is what a single-dataset
     cond stores so it stays portable.
+
+    ``probe_filesystem=False`` resolves every path lexically (see
+    :func:`resolve_anytop_path_lexical`), so deriving the sources reads nothing
+    and stats nothing.  Generation passes it: a stored ``dataset_root`` is
+    almost always the portable relative form, and resolving that the ordinary
+    way stats the dataset directory to decide between the cwd and the Anytop
+    root.
     """
-    fallback_root = str(Path(cond_path).resolve().parent) if cond_path else None
+    resolve = resolve_anytop_path_lexical if not probe_filesystem else resolve_anytop_path
+    if not cond_path:
+        fallback_root = None
+    elif probe_filesystem:
+        fallback_root = str(Path(cond_path).resolve().parent)
+    else:
+        # abspath is lexical on every platform; resolve() would open the file to
+        # chase symlinks, which is exactly the access this mode rules out.
+        fallback_root = os.path.dirname(os.path.abspath(cond_path))
     ordered: dict[str, DatasetSource] = {}
     for entry in cond_dict.values():
         namespace = normalize_namespace(entry["dataset_namespace"])
         stored_root = entry.get("dataset_root")
-        root = str(resolve_anytop_path(stored_root)) if stored_root else fallback_root
+        root = str(resolve(stored_root)) if stored_root else fallback_root
         if root is None:
             raise ValueError(
                 f"cond entry for namespace {namespace!r} has dataset_root=None and no "

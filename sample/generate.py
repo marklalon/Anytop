@@ -276,7 +276,9 @@ def main(args=None, cond_dict=None, runtime=None):
                 expected_embedding_dim=args.t5_out_dim,
                 cond_source=task_cond,
             )
-            new_opt = get_opt(runtime.device, task_cond, cond_dict=new_cond_dict)
+            new_opt = get_opt(
+                runtime.device, task_cond, cond_dict=new_cond_dict, inference=True
+            )
             _raise_opt_max_joints_for_cond(new_opt, new_cond_dict)
             runtime.opt = new_opt
             runtime.cond_dict = new_cond_dict
