@@ -1,8 +1,8 @@
 {
   "_comment": "Evaluation task battery for eval_checkpoint.py. checkpoint.RUN_NAME is required; checkpoint.MODEL_FILE is optional and defaults to the newest model*.pt; checkpoint.OUTPUT_DIR is optional and names the run folder the results are written under (a bare name goes under outputs/eval_checkpoint/, default RUN_NAME; <MODEL_NAME> is appended either way). Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task. A task without --action_label must set eval_label (the action of its reference clip); it is only used to pick the reference prior the clips are scored against.",
   "checkpoint": {
-    "RUN_NAME": "merged_all_v22",
-    "OUTPUT_DIR": "merged_all_v22_locomotion"
+    "RUN_NAME": "merged_all_v24",
+    "OUTPUT_DIR": "merged_all_v24_locomotion"
   },
   "tasks": [
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "walk, forward"] },
