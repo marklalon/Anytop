@@ -3,6 +3,8 @@ Helpers to train with 16-bit precision.
 """
 
 import numpy as np
+import warnings
+
 import torch as th
 import torch.nn as nn
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
@@ -362,14 +364,35 @@ class MixedPrecisionTrainer:
             loss.backward()
 
     def optimize(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.LRScheduler):
+        """Take one optimizer step from the accumulated gradients; False when
+        the step was skipped over non-finite gradients.
+
+        The LR schedule advances on every call, skipped or not: the LR is a
+        function of the training-step (batch) count, which is what a resume
+        seeks it by (TrainLoop._seek_lr_scheduler) and what --num_steps
+        counts, and neither knows how many steps were skipped. Stepping only
+        on taken steps put the in-run schedule one notch behind the seek per
+        skipped step.
+        """
         if not self.use_fp16:
             self._restore_skipped_grads()
         if self.amp_enabled:
-            return self._optimize_amp(opt, scheduler)
-        if self.use_fp16:
-            return self._optimize_fp16(opt, scheduler)
+            took_step = self._optimize_amp(opt)
+        elif self.use_fp16:
+            took_step = self._optimize_fp16(opt)
         else:
-            return self._optimize_normal(opt, scheduler)
+            took_step = self._optimize_normal(opt)
+        with warnings.catch_warnings():
+            # When the first batch of a run is skipped (a GradScaler starting
+            # at 2**16 overflows it routinely) torch warns, once, that the
+            # scheduler stepped before the optimizer. Here that order is the
+            # point, so the warning would only mislead.
+            warnings.filterwarnings(
+                "ignore", message=r"Detected call of `lr_scheduler\.step\(\)` before",
+                category=UserWarning)
+            scheduler.step()
+        logger.logkv_mean("lr", scheduler.get_last_lr()[0])
+        return took_step
 
     def _clip_gradients_and_check_nonfinite(self, parameters, *, max_norm):
         try:
@@ -413,7 +436,7 @@ class MixedPrecisionTrainer:
             self.scaler.update(float(GRAD_SCALER_MAX_SCALE))
             scale = float(GRAD_SCALER_MAX_SCALE)
 
-    def _optimize_amp(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.LRScheduler):
+    def _optimize_amp(self, opt: th.optim.Optimizer):
         if self.scaler.is_enabled():
             self.scaler.unscale_(opt)
 
@@ -447,11 +470,9 @@ class MixedPrecisionTrainer:
         self.scaler.step(opt)
         self.scaler.update()
         self._cap_loss_scale()
-        scheduler.step()
-        logger.logkv_mean("lr", scheduler.get_last_lr()[0])
         return True
 
-    def _optimize_fp16(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.LRScheduler):
+    def _optimize_fp16(self, opt: th.optim.Optimizer):
         if self.log_norms:
             logger.logkv_mean("lg_loss_scale", self.lg_loss_scale)
         model_grads_to_master_grads(self.param_groups_and_shapes, self.master_params)
@@ -472,13 +493,12 @@ class MixedPrecisionTrainer:
 
         self.master_params[0].grad.mul_(1.0 / (2 ** self.lg_loss_scale))
         opt.step()
-        scheduler.step()
         zero_master_grads(self.master_params)
         master_params_to_model_params(self.param_groups_and_shapes, self.master_params)
         self.lg_loss_scale += self.fp16_scale_growth
         return True
 
-    def _optimize_normal(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.LRScheduler):
+    def _optimize_normal(self, opt: th.optim.Optimizer):
         clipped_norm = self._clip_gradients_and_check_nonfinite(
             self.model_params,
             max_norm=1.0,
@@ -499,8 +519,6 @@ class MixedPrecisionTrainer:
             logger.logkv_mean("grad_norm", clipped_norm)
 
         opt.step()
-        scheduler.step()
-        logger.logkv_mean("lr", scheduler.get_last_lr()[0])
         return True
 
     def _compute_norms(self, grad_scale=1.0):

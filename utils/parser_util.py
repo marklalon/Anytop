@@ -442,6 +442,10 @@ def add_training_options(parser):
     group.add_argument("--eval_interval", default=1_000, type=int,
                        help="Compute the loss over the val split every N training steps (and at the "
                             "last step), logged under Val/. 0 disables validation.")
+    group.add_argument("--val_t_strata", default=4, type=int,
+                       help="Timesteps scored per val clip, one per equal-width stratum of "
+                            "[0, T) (1 = a single uniform draw). More strata cut the variance "
+                            "of Val/ losses; the mean stays the uniform-t objective.")
     group.add_argument("--log_interval", default=100, type=int,
                        help="Log losses each N steps")
     group.add_argument("--save_interval", default=10_000, type=int,

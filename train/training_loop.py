@@ -70,13 +70,13 @@ VALIDATION_RNG_SEED = 20260921
 
 @contextlib.contextmanager
 def _fixed_validation_rng(device):
-    """Run the body under fixed python / torch RNG streams, then restore them.
+    """Temporarily seed python / torch RNG streams for a lower-variance val pass.
 
-    A val loss is only comparable across steps if each pass sees the same
-    draws: the same frame windows and tile counts (python ``random`` in the
-    dataset), the same timesteps ``t`` and the same noise (torch). Training's
-    streams are restored afterwards so a run with validation on is
-    step-for-step the run without it.
+    Reusing a seed makes the frame-window, timestep and noise draws more stable
+    across passes, and the caller's captured RNG states are restored afterwards.
+    This is variance reduction, not a bit-for-bit reproducibility guarantee:
+    background-prefetch threads share the process RNGs, and their scheduling
+    may change the exact order in which random values are consumed.
     """
     py_state = random.getstate()
     devices = [device] if device.type == 'cuda' else []
@@ -254,10 +254,12 @@ class TrainLoop:
             lr=self.lr, weight_decay=self.weight_decay, fused=True,
         )
         self._optimizer_param_names = {id(param): name for name, param in self.model.named_parameters()}
-        # The LR is a pure function of the optimizer step (see cosine_decay_lr_lambda),
-        # so a resume seeks the scheduler to the checkpoint step instead of restoring
-        # scheduler state: the schedule stays consistent when --lr / --lr_decay_start
-        # / --lr_final change on resume, and old opt checkpoints need no migration.
+        # The LR is a pure function of the training-step (batch) count (see
+        # cosine_decay_lr_lambda; MixedPrecisionTrainer.optimize advances the
+        # scheduler on skipped steps too), so a resume seeks the scheduler to the
+        # checkpoint step instead of restoring scheduler state: the schedule stays
+        # consistent when --lr / --lr_decay_start / --lr_final change on resume,
+        # and old opt checkpoints need no migration.
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.opt,
             cosine_decay_lr_lambda(
@@ -312,9 +314,10 @@ class TrainLoop:
                 action_conditioning=getattr(self.args, 'action_conditioning', None),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
                 min_length=getattr(self.args, 'min_length', 20),
-                # Loaded on the calling thread: the val pass fixes python's RNG
-                # for the dataset's window / tile draws, and a prefetch thread
-                # would draw them outside that window.
+                # Keep the loader's default background prefetch (0 selects its
+                # default queue depth). The validation seed reduces variation in
+                # window / tile draws, but prefetch scheduling means those draws
+                # are not promised to be bit-for-bit identical across passes.
                 main_process_prefetch_batches=0,
                 # Validation sees the clips at their recorded tempo regardless
                 # of --motion_speed_aug, so val losses stay comparable across
@@ -688,23 +691,26 @@ class TrainLoop:
         self._interval_loss_counts.clear()
         return metrics
 
-    def _validation_losses(self, model, batch, cond):
-        """Per-key loss means of one val batch, the same terms training logs.
+    def _validation_losses(self, model, batch, cond, t, noise):
+        """Per-key loss means of one val batch at timesteps ``t`` with the
+        given ``noise``, the same terms training logs.
 
         Same ``training_losses`` and the same autocast as a training step, so
         ``Val/loss`` is directly comparable with ``Loss/loss``; raw (the
-        --sample_loss_limit reweighting is a gradient policy, not a metric).
+        --sample_loss_limit reweighting is a gradient policy, not a metric)
+        and unweighted (the caller draws ``t`` stratified-uniform, which needs
+        no importance weights).
         """
-        t, weights = self.schedule_sampler.sample(batch.shape[0], batch.device)
         with torch.no_grad(), self._autocast_context():
             losses = self.diffusion.training_losses(
                 model,
                 batch,
                 t,
                 model_kwargs=self._with_train_step(cond, self.total_step()),
+                noise=noise,
             )
         return {
-            key: (value.detach().float() * weights).mean()
+            key: value.detach().float().mean()
             for key, value in losses.items()
             if torch.is_tensor(value)
         }
@@ -723,8 +729,19 @@ class TrainLoop:
 
         ``model.eval()`` turns off every training-time stochastic path (dropout,
         CFG label drop, joint / temporal masks), so this is the fully conditioned
-        loss; the RNG draws that remain (frame window, timestep, noise) are fixed
-        per pass so the curve is comparable across steps and runs.
+        loss. The remaining RNG draws (frame window, timestep, noise) are seeded
+        consistently to reduce validation noise; background prefetch scheduling
+        means exact reproducibility across passes or runs is not guaranteed.
+
+        Each clip is scored at --val_t_strata timesteps, one per equal-width
+        stratum of [0, T), instead of one uniform draw: with ~70 val clips a
+        single draw per clip left the mean at the mercy of which clips landed
+        on a high t, and the curve swung 0.05 -> 0.3 between evaluations while
+        the train loss was flat.  The strata have equal width, so the plain
+        mean over them is still an unbiased estimate of the uniform-t
+        objective, i.e. the same quantity as ``Loss/loss``.  The live and EMA
+        models see identical (t, noise) draws, so their curves are a paired
+        comparison.
         """
         if self.eval_data is None:
             return
@@ -735,6 +752,8 @@ class TrainLoop:
         for model in models.values():
             model.eval()
 
+        num_strata = max(int(getattr(self.args, 'val_t_strata', 1)), 1)
+        num_timesteps = self.diffusion.num_timesteps
         sums = {}
         sample_count = 0
         try:
@@ -743,10 +762,21 @@ class TrainLoop:
                     motion = self._move_batch_to_device(motion)
                     cond = self._move_cond_to_device(cond)
                     batch_size = motion.shape[0]
+                    # One fixed offset per clip places its timestep inside
+                    # each stratum, so every t in [0, T) is reachable across
+                    # the split rather than only the stratum midpoints.
+                    offsets = torch.rand(batch_size, device=motion.device)
+                    draws = []
+                    for stratum in range(num_strata):
+                        t = ((stratum + offsets) * (num_timesteps / num_strata)).long()
+                        t = t.clamp_(max=num_timesteps - 1)
+                        draws.append((t, torch.randn_like(motion)))
                     for prefix, model in models.items():
-                        for key, value in self._validation_losses(model, motion, cond).items():
-                            name = prefix + key
-                            sums[name] = sums.get(name, 0.0) + value * batch_size
+                        for t, noise in draws:
+                            for key, value in self._validation_losses(
+                                    model, motion, cond, t, noise).items():
+                                name = prefix + key
+                                sums[name] = sums.get(name, 0.0) + value * (batch_size / num_strata)
                     sample_count += batch_size
         finally:
             for prefix, model in models.items():
@@ -1228,5 +1258,4 @@ def get_blob_logdir():
     # a blobstore or some external drive.
     return logger.get_dir()
             
-
 
