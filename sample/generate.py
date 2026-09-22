@@ -66,6 +66,7 @@ from sample.output_lengths import (
     _finalize_output_lengths,
     _resample_window_to_output,
     _resolve_auto_output_lengths,
+    resolve_loop_condition,
 )
 from sample.reference_motion import (
     _REFERENCE_MOTION_PREPROCESS_SUFFIXES,
@@ -111,12 +112,13 @@ def _generate_all_species(
     skeleton.
 
     ``species_output_lengths`` is ``{species: (target_output_frames,
-    resample_speed_cond)}``. Length is per species for the same reason the
-    conditioning is: a Pigeon's walk cycle is not a Horse's, so one shared
+    resample_speed_cond, is_loop)}``. Length is per species for the same reason
+    the conditioning is: a Pigeon's walk cycle is not a Horse's, so one shared
     number would put every species but the average one off its training
-    distribution. Both values are already per-sample in the batch (the speed is
-    a conditioning channel, the frame count only affects the export resample),
-    so nothing about the shared forward pass changes.
+    distribution. All three values are already per-sample in the batch (the
+    speed and the loop flag are conditioning channels, the frame count only
+    affects the export resample), so nothing about the shared forward pass
+    changes.
     """
     all_species = sorted(cond_dict.keys())
     # Canonical keys carry '/', so output filenames use the file token instead.
@@ -125,9 +127,6 @@ def _generate_all_species(
     species_batches = [all_species[i:i + batch_size] for i in range(0, len(all_species), batch_size)]
 
     output_frame_count = int(n_frames)
-    # Same meaning as in main(): the window is a closed loop, so every temporal
-    # resample of it is periodic.
-    loop_condition = bool(getattr(args, 'loop', False))
     total_species = len(all_species)
     print(f'\n### Multi-species generation: {total_species} species, '
           f'{len(species_batches)} batch(es) of batch_size={batch_size}')
@@ -149,7 +148,9 @@ def _generate_all_species(
                 )
 
             batch_roster = ", ".join(
-                f'{sp}({species_output_lengths[sp][0]}f)' for sp in batch_species
+                f'{sp}({species_output_lengths[sp][0]}f'
+                f'{", loop" if species_output_lengths[sp][2] else ""})'
+                for sp in batch_species
             )
             print(f'\n--- Batch {batch_idx}/{len(species_batches)} ({actual_bs} species, '
                   f'max_joints={batch_max_joints}): {batch_roster} ---')
@@ -160,7 +161,9 @@ def _generate_all_species(
                 output_frame_count,
                 max_joints=batch_max_joints,
                 feature_len=opt.feature_len,
-                loop=loop_condition,
+                # Same meaning as in main(), per sample: a closed window, so
+                # every temporal resample of it is periodic.
+                loop=[species_output_lengths[sp][2] for sp in batch_species],
                 action_condition=action_condition,
             )
             model_kwargs['y']['resample_speed_cond'] = torch.tensor(
@@ -194,7 +197,8 @@ def _generate_all_species(
                 motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
 
                 motion_np = _resample_window_to_output(
-                    motion_np, species_output_lengths[sp][0], output_frame_count, loop_condition,
+                    motion_np, species_output_lengths[sp][0], output_frame_count,
+                    species_output_lengths[sp][2],
                 )
 
                 translation_root_index = _get_batch_translation_root_index(
@@ -343,8 +347,10 @@ def main(args=None, cond_dict=None, runtime=None):
     # --loop is the whole loop condition: the model is asked for a closed window
     # (y['is_loop'], the circular phase table, the loader's periodic window
     # resample). Every temporal resample of a reference or of the sampled window
-    # must therefore be periodic, or the round trip stops closing.
-    loop_condition = bool(getattr(args, 'loop', False))
+    # must therefore be periodic, or the round trip stops closing. 'auto' needs
+    # the action label and the target species (resolve_loop_condition), so the
+    # bool is fixed further down, right before the length that depends on it.
+    loop_mode = getattr(args, 'loop', 'auto')
 
     # ── Resolve --object_type ───────────────────────────────────────────────
     # --object_type: look up directly in cond (user-provided first, then default).
@@ -407,7 +413,7 @@ def main(args=None, cond_dict=None, runtime=None):
             min_length=min_length,
             internal_num_frames=internal_num_frames,
             default_frames=_ckpt_num_frames,
-            loop=loop_condition,
+            loop_mode=loop_mode,
             fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file),
         )
         _generate_all_species(
@@ -531,8 +537,20 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # Resolved here, ahead of every reference/retarget step, because
     # an unset ``--num_frames`` needs the label -- and because a bad label should
-    # fail before minutes of retargeting, not after.
+    # fail before minutes of retargeting, not after. The loop condition comes
+    # first: the auto length only pools loop clips when the window is a loop.
+    # With a reference both wait for the clip itself (further down): its length
+    # is the window, and --loop auto reads whether it closes off the tensor.
     _action_condition = _resolve_action_condition(args, model)
+    loop_condition = None
+    if not reference_motion_path:
+        loop_condition = resolve_loop_condition(
+            loop_mode,
+            cond_dict,
+            object_type,
+            _action_condition,
+            fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file),
+        )
     if requested_output_frames is None and not reference_motion_path:
         # A reference outranks the label: with one present the length is its own
         # R, finalized from the loaded reference further down.
@@ -601,6 +619,17 @@ def main(args=None, cond_dict=None, runtime=None):
                 f"Reference motion must have shape (T, J, F), got {ref_features_full.shape}"
             )
         R = int(ref_features_full.shape[0])
+
+        # The loop condition, off the reference as it will fill the window:
+        # retargeted onto the target skeleton, so the target's root indexes it.
+        loop_condition = resolve_loop_condition(
+            loop_mode,
+            cond_dict,
+            object_type,
+            _action_condition,
+            reference_features=ref_features_full,
+            translation_root_index=int(cond_dict[object_type].get('translation_root_index', 0)),
+        )
 
         # Finalize output lengths from R (if --num_frames not specified).
         if requested_output_frames is None:

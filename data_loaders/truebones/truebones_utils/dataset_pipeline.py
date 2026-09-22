@@ -257,6 +257,11 @@ def _prepare_motion_file_for_root_detection(
             scale_factor=scale_factor,
             orientation_quat=orientation_quat,
             preloaded=(raw_anim, names),
+            # These anims are handed to extract_motion_features_from_aligned_anims
+            # with clamp_root_extent=True, which bounds the height there, after
+            # the vertical detrend. Clamping on the way in as well would apply
+            # the band twice.
+            clamp_vertical=False,
         )
         detected_root = resolve_detected_translation_root_index(
             find_translation_root(new_anim),
@@ -372,8 +377,11 @@ def _encode_prepared_motion_file(
                 orientation_quat=orientation_quat,
                 preloaded=(raw_anim, names),
                 translation_root_index=translation_root_index,
+                # Bounded once, in extract, after the detrend -- as in phase 1.
+                clamp_vertical=False,
             )
-        motion, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_flattened = extract_motion_features_from_aligned_anims(
+        (motion, max_joints, motion_anim, motion_export_anim, is_loop,
+         root_xz_flattened, root_y_flattened) = extract_motion_features_from_aligned_anims(
             new_anim,
             export_anim,
             object_type,
@@ -381,7 +389,7 @@ def _encode_prepared_motion_file(
             orientation_quat,
             translation_root_index,
             flatten_root_travel=flatten_root_travel,
-            clamp_root_xz_extent=True,
+            clamp_root_extent=True,
             is_loop=loop_verdict,
         )
     except Exception as err:
@@ -402,6 +410,7 @@ def _encode_prepared_motion_file(
             # question the first pass did instead of feeding its answer back in.
             'loop_verdict': loop_verdict,
             'root_xz_flattened': root_xz_flattened,
+            'root_y_flattened': root_y_flattened,
             'flatten_root_travel': flatten_root_travel,
             # The anims BEFORE the root XZ was flattened. Re-extraction after a
             # resample runs from these, so the flattening is decided once on the
@@ -595,6 +604,7 @@ def _build_motion_metadata_entry(result, motion_file_name):
     # nothing is fabricated any more, so there is no fabricated value to warn
     # about, and the flag would only restate preprocessing's detrend decision.
     motion_labels['root_xz_flattened'] = bool(result.get('root_xz_flattened', False))
+    motion_labels['root_y_flattened'] = bool(result.get('root_y_flattened', False))
 
     source_fbx_path = result.get('source_fbx_path')
     if source_fbx_path:
@@ -624,7 +634,9 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
         raw_load_cache=raw_load_cache,
     )
     character_scale_factor = float(tp.scale_factor)
-    rest_pose_motion, parents, max_joints, new_anim, _export_anim, _rest_is_loop, _rest_translation_root_index, _rest_root_translation_xz, _rest_root_xz_flattened = get_motion(
+    (rest_pose_motion, parents, max_joints, new_anim, _export_anim, _rest_is_loop,
+     _rest_translation_root_index, _rest_root_translation_xz,
+     _rest_root_xz_flattened, _rest_root_y_flattened) = get_motion(
         tp.tpos_anim,
         object_type,
         max_joints,
@@ -1006,7 +1018,8 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 # anims and verdict consistent by construction.
                 result['source_new_anim'] = _resample_animation(result['source_new_anim'], resample_min_length)
                 result['source_export_anim'] = _resample_animation(result['source_export_anim'], resample_min_length)
-                motion, _, motion_anim, motion_export_anim, is_loop, root_xz_flattened = extract_motion_features_from_aligned_anims(
+                (motion, _, motion_anim, motion_export_anim, is_loop,
+                 root_xz_flattened, root_y_flattened) = extract_motion_features_from_aligned_anims(
                     result['source_new_anim'],
                     result['source_export_anim'],
                     object_type,
@@ -1014,7 +1027,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                     tp.orientation_quat,
                     result['translation_root_index'],
                     flatten_root_travel=bool(result.get('flatten_root_travel')),
-                    clamp_root_xz_extent=True,
+                    clamp_root_extent=True,
                     is_loop=result.get('loop_verdict'),
                 )
                 result['motion'] = motion
@@ -1024,6 +1037,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 result['export_anim'] = motion_export_anim
                 result['is_loop'] = is_loop
                 result['root_xz_flattened'] = bool(root_xz_flattened)
+                result['root_y_flattened'] = bool(root_y_flattened)
             result['canonical_names'] = list(object_cond['canonical_bvh_joint_names'])
             # The pre-flatten anims exist only for the resample re-extraction just
             # above. Dropping them here keeps them out of the payload that gets

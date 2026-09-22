@@ -351,3 +351,182 @@ def test_auto_output_lengths_falls_back_to_the_checkpoint_cond(capsys):
         fallback_cond_loader=loader,
     )
     assert calls == []
+
+
+# -- --loop auto ---------------------------------------------------------------
+def _ask_loop(cond, target, label, *, group="transition"):
+    from utils.clip_length_prior import auto_loop
+
+    return auto_loop(cond, target, action_group=group, action_label=label)
+
+
+def test_auto_loop_follows_the_majority_of_the_labels_clips():
+    """The verdict is the majority of the label's clips, so an unflagged
+    request never pairs a label the corpus authors as loops with is_loop False."""
+    cond = {"ns/Horse": _entry(
+        [("transition", "jump, up", True, 20)] * 4
+        + [("transition", "jump, up", False, 40)]
+    )}
+    is_loop, why = _ask_loop(cond, "ns/Horse", "jump, up")
+    assert is_loop is True
+    assert why.startswith("4 of 5 ns/Horse clip(s) matching exact label")
+
+    cond = {"ns/Horse": _entry([("transition", "die", False, 40)] * 3)}
+    assert _ask_loop(cond, "ns/Horse", "die") == (
+        False, "0 of 3 ns/Horse clip(s) matching exact label are loops",
+    )
+
+
+def test_auto_loop_tie_keeps_the_open_window():
+    cond = {"ns/Horse": _entry([
+        ("transition", "jump, up", True, 20), ("transition", "jump, up", False, 40),
+    ])}
+    assert _ask_loop(cond, "ns/Horse", "jump, up")[0] is False
+
+
+def test_auto_loop_walks_the_same_ladder_as_the_length():
+    """Own species before neighbours, exact label before head words, and the
+    verdict is read off the same clips the auto length is."""
+    cond = {
+        "ns/Horse": _entry([("transition", "jump, forward", False, 40)]),
+        "ns/Deer": _entry([("transition", "jump, up", True, 20)] * 3),
+    }
+    # Own head-word clip outranks a neighbour's exact label.
+    is_loop, why = _ask_loop(cond, "ns/Horse", "jump, up")
+    assert is_loop is False and "ns/Horse" in why and "head word(s) 'jump'" in why
+    # A species with no jump at all borrows from the neighbour.
+    is_loop, why = _ask_loop(cond, "ns/Cow", "jump, up")
+    assert is_loop is True and "ns/Deer" in why
+    # Nothing in the corpus -> caller's default.
+    assert _ask_loop(cond, "ns/Horse", "swim") is None
+    assert _ask_loop(cond, "ns/Horse", "") is None
+
+
+def test_resolve_loop_condition_modes(capsys):
+    from sample.output_lengths import resolve_loop_condition
+
+    cond = {"ns/Horse": _entry([("transition", "jump, up", True, 20)] * 3)}
+    label = {"action_group": "transition", "action_label": "jump, up"}
+    common = {}
+    # Explicit modes never consult the corpus.
+    assert resolve_loop_condition("on", {}, "ns/Horse", None, **common) is True
+    assert resolve_loop_condition("off", cond, "ns/Horse", label, **common) is False
+    assert resolve_loop_condition(True, {}, "ns/Horse", None, **common) is True
+    # auto follows the label's clips...
+    assert resolve_loop_condition("auto", cond, "ns/Horse", label, **common) is True
+    assert "loop (auto) -> on (3 of 3" in capsys.readouterr().out
+    # ...follows a reference over the label...
+    open_clip = _clip_with_verdict(False)
+    assert resolve_loop_condition(
+        "auto", cond, "ns/Horse", label, reference_features=open_clip, translation_root_index=0,
+    ) is False
+    assert "stored loop verdict" in capsys.readouterr().out
+    # ...and is off with nothing to key on.
+    assert resolve_loop_condition("auto", cond, "ns/Horse", None, **common) is False
+    assert "no --action_label" in capsys.readouterr().out
+    assert resolve_loop_condition(
+        "auto", cond, "ns/Horse", {"action_group": "locomotion", "action_label": "swim"}, **common,
+    ) is False
+    assert "no training clip matches 'swim'" in capsys.readouterr().out
+    with pytest.raises(ValueError):
+        resolve_loop_condition("maybe", cond, "ns/Horse", label, **common)
+
+
+def test_resolve_loop_condition_borrows_the_checkpoint_cond(capsys):
+    from sample.output_lengths import resolve_loop_condition
+
+    narrow = {"ns/NewRig": {}}
+    full = {"ns/Horse": _entry([("transition", "jump, up", True, 20)] * 2)}
+    label = {"action_group": "transition", "action_label": "jump, up"}
+    assert resolve_loop_condition(
+        "auto", narrow, "ns/NewRig", label, fallback_cond_loader=lambda: full,
+    ) is True
+    assert "from the checkpoint's cond" in capsys.readouterr().out
+
+
+def _clip_with_verdict(is_loop, frames=40, joints=4, seed=0):
+    """A random (T, J, 12) clip whose terminal row was written under ``is_loop``,
+    the way preprocessing (or a review-UI flip) leaves a stored clip."""
+    from data_loaders.truebones.truebones_utils.loop_verdict import apply_loop_verdict
+
+    rng = np.random.default_rng(seed)
+    clip = rng.normal(size=(frames, joints, 12)).astype(np.float32) * 0.1
+    return apply_loop_verdict(clip, is_loop, 0)
+
+
+def test_reference_loop_verdict_reads_the_stored_row_first():
+    """A stored clip's terminal row IS its verdict (hand-verified for a dataset
+    clip), so an open-looking loop annotated as one still reads as a loop."""
+    from data_loaders.truebones.truebones_utils.loop_verdict import stored_loop_verdict
+    from sample.output_lengths import reference_loop_verdict
+
+    for verdict in (True, False):
+        clip = _clip_with_verdict(verdict)
+        assert stored_loop_verdict(clip, 0) is verdict
+        is_loop, why = reference_loop_verdict(clip, 0)
+        assert is_loop is verdict and "stored loop verdict" in why
+
+
+def test_reference_loop_verdict_falls_back_to_the_detector():
+    """A tensor nobody wrote a verdict into (a generated sample) is judged on
+    its geometry: a closed clip is a loop, an open one is not."""
+    from data_loaders.truebones.truebones_utils.loop_verdict import stored_loop_verdict
+    from sample.output_lengths import reference_loop_verdict
+
+    frames, joints = 40, 4
+    phase = np.linspace(0.0, 2.0 * np.pi, frames, endpoint=False)
+    closed = np.zeros((frames, joints, 12), dtype=np.float32)
+    # A small circular orbit: its per-frame steps sit at the detector's physical scale.
+    closed[..., 0] = 0.2 * np.sin(phase)[:, None]
+    closed[..., 1] = 0.2 * np.cos(phase)[:, None] + np.arange(joints)[None, :]
+    # The last velocity row is model output, not a verdict: scribble on it.
+    closed[-1, :, 9:12] = 0.37
+    assert stored_loop_verdict(closed, 0) is None
+    is_loop, why = reference_loop_verdict(closed, 0)
+    assert is_loop is True and "no stored verdict" in why
+
+    open_clip = closed.copy()
+    open_clip[..., 1] += np.linspace(0.0, 1.0, frames)[:, None]  # drifts away
+    assert stored_loop_verdict(open_clip, 0) is None
+    is_loop, why = reference_loop_verdict(open_clip, 0)
+    assert is_loop is False and "do not close" in why
+
+
+def test_loop_flag_spellings():
+    """A bare --loop still means on; omitted is auto; on/off are explicit."""
+    import argparse
+
+    from utils.parser_util import add_sampling_options
+
+    parser = argparse.ArgumentParser()
+    add_sampling_options(parser)
+    base = ["--model_path", "x"]
+    assert parser.parse_args(base).loop == "auto"
+    assert parser.parse_args(base + ["--loop"]).loop == "on"
+    assert parser.parse_args(base + ["--loop", "--fullbody_ik"]).loop == "on"
+    assert parser.parse_args(base + ["--loop", "off"]).loop == "off"
+    assert parser.parse_args(base + ["--loop", "auto"]).loop == "auto"
+
+
+def test_all_species_lengths_resolve_loop_per_species(capsys):
+    from sample.output_lengths import _all_species_output_lengths
+
+    cond = {
+        "ns/Horse": _entry([("transition", "jump, up", True, 20)] * 2),
+        "ns/Frog": _entry([("transition", "jump, up", False, 40)] * 2),
+    }
+    lengths = _all_species_output_lengths(
+        cond, {"action_group": "transition", "action_label": "jump, up"},
+        explicit=None, min_length=10, internal_num_frames=60, default_frames=60,
+        loop_mode="auto",
+    )
+    assert lengths["ns/Horse"] == (20, pytest.approx(20 / 60), True)
+    assert lengths["ns/Frog"] == (40, pytest.approx(40 / 60), False)
+    assert "loop (auto): 1 of 2 species closed" in capsys.readouterr().out
+    # An explicit length still gets its own loop verdict per species.
+    lengths = _all_species_output_lengths(
+        cond, {"action_group": "transition", "action_label": "jump, up"},
+        explicit=(30, 0.5), min_length=10, internal_num_frames=60, default_frames=60,
+        loop_mode="on",
+    )
+    assert lengths == {"ns/Horse": (30, 0.5, True), "ns/Frog": (30, 0.5, True)}

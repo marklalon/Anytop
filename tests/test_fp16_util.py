@@ -141,7 +141,9 @@ class MixedPrecisionTrainerTests(unittest.TestCase):
         self.assertFalse(took_step)
         self.assertTrue(torch.equal(before_weight, model.weight.detach()))
         self.assertEqual(len(opt.state), 0)
-        self.assertEqual(scheduler.last_epoch, 0)
+        # A skipped step still consumes one step of the LR schedule (the
+        # schedule runs on the batch count, which a resume seeks it by).
+        self.assertEqual(scheduler.last_epoch, 1)
 
     def test_optimize_normal_raises_on_large_finite_gradients(self):
         model = torch.nn.Linear(4, 2)
@@ -257,6 +259,37 @@ class MixedPrecisionTrainerTests(unittest.TestCase):
         for before_param, parameter in zip(before_params, model.parameters()):
             self.assertTrue(torch.equal(before_param, parameter.detach()))
 
+    def test_lr_after_skipped_step_matches_resume_seek(self):
+        # A resume seeks the LambdaLR by the checkpoint's batch count, which
+        # does not know how many steps were skipped, so the in-run schedule
+        # must advance on skipped steps too or the LR jumps on resume.
+        from train.training_loop import TrainLoop, cosine_decay_lr_lambda
+
+        lr_lambda = cosine_decay_lr_lambda(lr=1e-3, lr_final=1e-5, decay_start=0, num_steps=10)
+
+        model = torch.nn.Linear(4, 2)
+        trainer = MixedPrecisionTrainer(
+            model=model, use_fp16=False, amp_dtype="bf16", amp_enabled=True,
+            device_type="cpu", log_norms=False,
+        )
+        opt = AdamW(trainer.master_params, lr=1e-3)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
+        took = []
+        for grad_value in (1.0, float("inf"), 1.0):
+            trainer.zero_grad()
+            model.weight.grad = torch.full_like(model.weight, grad_value)
+            model.bias.grad = torch.zeros_like(model.bias)
+            took.append(trainer.optimize(opt, scheduler))
+        self.assertEqual(took, [True, False, True])
+        in_run_lr = opt.param_groups[0]["lr"]
+
+        resumed = TrainLoop.__new__(TrainLoop)
+        resumed.opt = AdamW(torch.nn.Linear(4, 2).parameters(), lr=1e-3)
+        resumed.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(resumed.opt, lr_lambda)
+        resumed._seek_lr_scheduler(len(took))  # resume_step + 1 == batches completed
+        self.assertAlmostEqual(resumed.opt.param_groups[0]["lr"], in_run_lr, places=12)
+        self.assertEqual(resumed.lr_scheduler.last_epoch, scheduler.last_epoch)
+
     def test_optimize_fp16_skips_nonfinite_gradients_when_log_norms_disabled(self):
         model = _MinimalFP16Model()
         trainer = MixedPrecisionTrainer(
@@ -276,7 +309,7 @@ class MixedPrecisionTrainerTests(unittest.TestCase):
         took_step = trainer.optimize(opt, scheduler)
 
         self.assertFalse(took_step)
-        self.assertEqual(scheduler.last_epoch, 0)
+        self.assertEqual(scheduler.last_epoch, 1)
         self.assertEqual(len(opt.state), 0)
         self.assertLess(trainer.lg_loss_scale, 20.0)
         for before_param, parameter in zip(before_params, model.parameters()):

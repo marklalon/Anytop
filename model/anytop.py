@@ -1,7 +1,11 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
+from model.motion_transformer import (
+    GraphMotionDecoderLayer,
+    GraphMotionDecoder,
+    run_in_fp32,
+)
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
 from utils.device_transfer import host_to_device
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
@@ -11,6 +15,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     ACTION_LABEL_SLOTS,
     HEAD_SLOT_PRIMARY_WEIGHT,
     SLOT_DIRECTION,
+    SLOT_MODIFIER,
     SLOT_HEAD,
     ActionConditioningError,
     slot_source_rank_report,
@@ -21,21 +26,6 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_LABEL_MAX_WORDS,
     CONTROLLED_VOCAB,
 )
-
-
-def run_in_fp32(module, tensor, *rest):
-    """Run a broadcast conditioning head outside autocast, on fp32 input.
-
-    These heads emit one vector per sample (or per joint) that is then added to
-    every one of ~1e6 tokens, so their backward sums over all of those tokens and
-    their weight gradients are the largest in the network -- they are the first
-    tensors to overflow fp16 as the loss scale rises. They are also tiny, so
-    fp32 costs under 1% of a training step (inside measurement noise) and cuts
-    the global parameter-gradient error by ~37%.
-    See docs/fp16_vs_bf16_precision.md.
-    """
-    with torch.autocast(device_type=tensor.device.type, enabled=False):
-        return module(tensor.float(), *rest)
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -82,6 +72,16 @@ class AnyTop(nn.Module):
         self.cross_limb_latents=kargs.get('cross_limb_latents', 8)
         self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
+        # Hidden widths of three parameter-heavy heads, 0 == the old full-width
+        # behaviour (bit-identical rebuild of an older checkpoint). See the
+        # GraphMotionDecoder docstrings and species_film below.
+        self.action_adaln_bottleneck=int(kargs.get('action_adaln_bottleneck', 0))
+        self.species_film_bottleneck=int(kargs.get('species_film_bottleneck', 0))
+        self.last_layer_ff=int(kargs.get('last_layer_ff', 0))
+        if self.species_film_bottleneck < 0:
+            raise ValueError(
+                f"species_film_bottleneck must be >= 0, got {self.species_film_bottleneck}"
+            )
         self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.5))
         self.joint_mask_budget=float(kargs.get('joint_mask_budget', 0.15))
         self.temporal_span_mask_prob=float(kargs.get('temporal_span_mask_prob', 0.0))
@@ -114,15 +114,35 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"action_label_cfg_drop_prob must be in [0, 1], got {self.action_label_cfg_drop_prob}"
             )
-        # Direction-slot dropout: with this probability a training sample keeps
-        # its label but loses its direction words, so an empty direction slot
-        # is trained as "any direction" (the marginal) and a bare "attack, swat"
-        # at inference draws one side rather than a blend of both. The hands
-        # slot has NO such dropout on purpose -- empty there means empty hands.
+        # Slot dropout: with these probabilities a training sample keeps its
+        # label but loses the words of ONE slot, so that slot's empty row is
+        # trained as the marginal over its words rather than as a content key.
+        #   direction: a bare "attack, swat" at inference draws one side rather
+        #              than a blend of both.
+        #   modifier:  a bare "attack" draws SOME attack (bite, cast, swat ...)
+        #              rather than the handful of clips annotated without a
+        #              modifier, which is what an undropped empty slot learns.
+        # The two draws are independent per row. The hands slot has NO such
+        # dropout on purpose -- empty there means empty hands.
         self.direction_slot_drop_prob = float(kargs.get('direction_slot_drop_prob', 0.0))
         if not 0.0 <= self.direction_slot_drop_prob <= 1.0:
             raise ValueError(
                 f"direction_slot_drop_prob must be in [0, 1], got {self.direction_slot_drop_prob}"
+            )
+        self.modifier_slot_drop_prob = float(kargs.get('modifier_slot_drop_prob', 0.0))
+        if not 0.0 <= self.modifier_slot_drop_prob <= 1.0:
+            raise ValueError(
+                f"modifier_slot_drop_prob must be in [0, 1], got {self.modifier_slot_drop_prob}"
+            )
+        # --action_label_adaln: give the action token a multiplicative pathway
+        # through the decoder on top of the additive one (GraphMotionDecoder
+        # owns the head). Meaningless without a label to drive it.
+        self.action_label_adaln = bool(kargs.get('action_label_adaln', False))
+        if self.action_label_adaln and not self.action_label_cond:
+            raise ValueError(
+                "action_label_adaln needs action_label_cond: the head is driven by "
+                "the action token, and without a label there is no token to drive "
+                "it -- the modulation would be one learned constant."
             )
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
@@ -160,13 +180,18 @@ class AnyTop(nn.Module):
         # inpainting and temporal spans were invisible. Zero-init, so the
         # path starts as a no-op.
         self.unreliable_embedding = nn.Parameter(torch.zeros(self.latent_dim))
-        # y['is_loop'] (0/1): whether the window is a closed cycle. Always on --
-        # the loader tells the model exactly what it did to the window.
-        self.loop_condition_projection = nn.Sequential(
-            nn.Linear(1, self.latent_dim),
-            nn.GELU(),
-            nn.Linear(self.latent_dim, self.latent_dim),
-        )
+        # y['is_loop'] (0/1, whether the window is a closed cycle) is NOT summed
+        # into the condition embedding. It only selects the circular time table
+        # in the decoder (see seqTransDecoder's loop_phase_mask): a closed
+        # window is a statement about time topology, and the phase table is
+        # the one place that can express it. A global 0/1 token was tried and
+        # removed: in the corpus the flag is confounded with content (two in
+        # three loop clips are stationary idles, and within a species-tag
+        # cluster the loop-authored gaits differ from the one-shot ones), so
+        # the token became a content key -- a loop-conditioned run borrowed
+        # the low-lift, phase-scrambled gait of the cluster's other loops
+        # instead of the species' own one-shot runs, while the phase table
+        # alone closed the window just as well (docs/anytop_model_architecture.md §6).
         self.resample_speed_projection = nn.Sequential(
             nn.Linear(1, self.latent_dim),
             nn.GELU(),
@@ -208,11 +233,17 @@ class AnyTop(nn.Module):
         # even when --species_joint_cond also injects the descriptor per joint.
         # CFG-droppable: hard-dropped samples bypass to identity (NOT a running-mean
         # substitute), so the model learns a true unconditional mode for guidance.
+        # --species_film_bottleneck: the hidden width. The input is one T5
+        # vector per species and the corpus' 259 species vectors span rank 94
+        # (effective rank 52), so a hidden of ~128 loses nothing; 0 keeps the
+        # old latent_dim hidden. species_film_j in InputProcess is NOT on this
+        # knob: its input is joint-name (x) species, which is high-rank.
         if self.species_cond:
+            species_hidden = self.species_film_bottleneck or self.latent_dim
             self.species_film = nn.Sequential(
-                nn.Linear(t5_out_dim, self.latent_dim),
+                nn.Linear(t5_out_dim, species_hidden),
                 nn.GELU(),
-                nn.Linear(self.latent_dim, 2 * self.latent_dim),
+                nn.Linear(species_hidden, 2 * self.latent_dim),
             )
             nn.init.zeros_(self.species_film[-1].weight)
             nn.init.zeros_(self.species_film[-1].bias)
@@ -255,7 +286,10 @@ class AnyTop(nn.Module):
                                                         cross_limb=self.cross_limb,
                                                         cross_limb_latents=self.cross_limb_latents,
                                                         cross_limb_dim=self.cross_limb_dim,
-                                                        cross_limb_last_n=self.cross_limb_last_n)
+                                                        cross_limb_last_n=self.cross_limb_last_n,
+                                                        action_label_adaln=self.action_label_adaln,
+                                                        action_adaln_bottleneck=self.action_adaln_bottleneck,
+                                                        last_layer_ff=self.last_layer_ff)
             
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
@@ -292,24 +326,6 @@ class AnyTop(nn.Module):
         attention masks. Only structurally padded joints are masked here.
         """
         return torch.arange(njoints, device=device)[None, :] >= n_joints[:, None]
-
-    def _coerce_loop_condition(self, raw_loop_cond, batch_size, device, dtype, field_name='is_loop'):
-        if raw_loop_cond is None:
-            raw_loop_cond = torch.zeros(batch_size, device=device, dtype=dtype)
-        elif not torch.is_tensor(raw_loop_cond):
-            raw_loop_cond = torch.as_tensor(raw_loop_cond, device=device)
-        raw_loop_cond = raw_loop_cond.to(device=device)
-        if raw_loop_cond.dim() == 0:
-            raw_loop_cond = raw_loop_cond.reshape(1)
-        raw_loop_cond = raw_loop_cond.reshape(-1)
-        if raw_loop_cond.numel() == 1 and batch_size != 1:
-            raw_loop_cond = raw_loop_cond.expand(batch_size)
-        elif raw_loop_cond.numel() != batch_size:
-            raise ValueError(
-                f"{field_name} batch dimension must match the motion batch size, got "
-                f"{raw_loop_cond.numel()} for batch {batch_size}"
-            )
-        return raw_loop_cond.to(dtype=dtype).view(batch_size, 1)
 
     def _coerce_resample_speed_cond(self, raw_resample_speed_cond, batch_size, device, dtype):
         if raw_resample_speed_cond is None:
@@ -548,20 +564,30 @@ class AnyTop(nn.Module):
             channels.append(torch.where(total > 0, mean / norm.clamp(min=1e-9), mean * 0.0))
         return torch.cat(channels, dim=-1)
 
-    def _drop_direction_slot(self, word_mask, slot_ids, batch_size, device):
-        """Training-only: blank the direction words of a random subset of rows.
+    def _drop_slot_words(self, word_mask, slot_ids, slot, prob, batch_size, device):
+        """Training-only: blank the words of *slot* on a random subset of rows.
 
         A pure mask operation, written like the CFG keep mask so it compiles
-        the same way: a dropped row's direction members leave ``word_mask``,
-        the direction channel pools to its zero row, and every other slot is
-        untouched. Rows without a direction word are unaffected, and the label
-        stays valid (a direction word is never a label's only word, so
-        ``action_label_valid`` cannot flip). Eval and inference never drop.
+        the same way: a dropped row's members of that slot leave ``word_mask``,
+        the slot's channel pools to its zero row, and every other slot is
+        untouched. Rows with no word in the slot are unaffected, and the label
+        stays valid (a head word is never dropped and every label carries one,
+        so ``action_label_valid`` cannot flip). Eval and inference never drop.
         """
-        if not self.training or self.direction_slot_drop_prob <= 0.0:
+        if not self.training or prob <= 0.0:
             return word_mask
-        drop = torch.rand(batch_size, device=device) < self.direction_slot_drop_prob
-        return word_mask & ~(drop[:, None] & (slot_ids == SLOT_DIRECTION))
+        drop = torch.rand(batch_size, device=device) < prob
+        return word_mask & ~(drop[:, None] & (slot_ids == slot))
+
+    def _drop_direction_slot(self, word_mask, slot_ids, batch_size, device):
+        return self._drop_slot_words(
+            word_mask, slot_ids, SLOT_DIRECTION, self.direction_slot_drop_prob, batch_size, device
+        )
+
+    def _drop_modifier_slot(self, word_mask, slot_ids, batch_size, device):
+        return self._drop_slot_words(
+            word_mask, slot_ids, SLOT_MODIFIER, self.modifier_slot_drop_prob, batch_size, device
+        )
 
     def _resolve_action_label_active(self, raw_action_label_active, batch_size, device):
         """Per-sample CFG mask for the action condition (True == conditional).
@@ -616,13 +642,9 @@ class AnyTop(nn.Module):
         makes omitting ``--action_label`` at inference land on the learned
         unconditional mode automatically.
 
-        An auxiliary row (``y['is_aux']``, a clip borrowed from another group by
-        ``--aux_group_mass``) is conditioned exactly like an own row. It used to
-        be routed by whether a ``--head_aug_words`` promotion had reached its
-        head slot, because a borrowed "attack, jump, charge" put no jump in the
-        head channel at all; with every head word pooled into that channel it
-        does, so the label is worth carrying as written and the special case is
-        gone.
+        Every row is conditioned on its label as written; there is no longer a
+        class of borrowed rows to route differently (auxiliary groups are
+        retired -- with --action_group all every clip is simply in the corpus).
         """
         if not self.action_label_cond:
             return None
@@ -636,6 +658,7 @@ class AnyTop(nn.Module):
         else:
             word_ids, slot_ids, word_mask = resolved
             word_mask = self._drop_direction_slot(word_mask, slot_ids, batch_size, device)
+            word_mask = self._drop_modifier_slot(word_mask, slot_ids, batch_size, device)
             channels = self._assemble_action_slot_channels(
                 word_ids, slot_ids, word_mask, dtype
             )
@@ -1000,14 +1023,6 @@ class AnyTop(nn.Module):
             self.resample_speed_projection, resample_speed_condition)
         timesteps_emb = timesteps_emb + self._build_canonical_frame_token(
             y, bs, x.device, x.dtype)
-        loop_condition = self._coerce_loop_condition(
-            y.get('is_loop'),
-            batch_size=bs,
-            device=x.device,
-            dtype=x.dtype,
-        )
-        timesteps_emb = timesteps_emb + run_in_fp32(
-            self.loop_condition_projection, loop_condition)
         action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype)
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token
@@ -1061,6 +1076,9 @@ class AnyTop(nn.Module):
             y=y,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
             loop_phase_mask=y.get('is_loop'),
+            # Same token the additive path summed in above, so a CFG-dropped row
+            # modulates by the null embedding rather than skipping the head.
+            action_adaln_cond=action_label_token if self.action_label_adaln else None,
         )
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
         return output
@@ -1071,7 +1089,9 @@ class AnyTop(nn.Module):
 
 
     def train(self, *args, **kwargs):
-        super().train(*args, **kwargs)
+        # Return self like nn.Module does: eval() is `return self.train(False)`,
+        # so dropping the value made `model.eval()` evaluate to None.
+        return super().train(*args, **kwargs)
 
 # Per-element std of the t5-base joint-name embeddings in cond.npy (row L2 ~ 3.92
 # over 2828 rows). The `unknown_joint_name` substitute is initialized at this scale

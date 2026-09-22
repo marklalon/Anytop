@@ -189,7 +189,8 @@ def test_get_motion_honors_fixed_species_translation_root():
             (1, len(parents), 1),
         )
     )
-    features, _parents, _max_joints, _motion_anim, _export_anim, _is_loop, root, _root_xz, _stripped = get_motion(
+    (features, _parents, _max_joints, _motion_anim, _export_anim, _is_loop, root,
+     _root_xz, _stripped, _y_flattened) = get_motion(
         anim,
         'Synthetic',
         len(parents),
@@ -472,7 +473,9 @@ def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, m
     # Rest-pose features come straight from cond (no T-pose mesh access).
     tp = tpose_features_from_cond(cond, object_type)
     squared_positions_error: dict[str, float] = {}
-    rebuilt, _parents, _max_joints, _feature_anim, _export_anim, _is_loop, _translation_root_index, _root_translation_xz, _root_xz_flattened = get_motion(
+    (rebuilt, _parents, _max_joints, _feature_anim, _export_anim, _is_loop,
+     _translation_root_index, _root_translation_xz, _root_xz_flattened,
+     _root_y_flattened) = get_motion(
         anim,
         object_type,
         len(cond['parents']),

@@ -204,27 +204,27 @@ def test_process_anim_hands_the_frozen_root_to_the_vertical_clamp():
 
 
 def test_non_aquatic_root_y_descent_is_compressed_not_floored():
-    anim = _animated_root_y([0.2, -0.25, -0.75, -1.2])
+    anim = _animated_root_y([0.2, -0.05, -0.75, -1.2])
 
     clamped = clamp_vertical_trajectory(anim, "Pteranodon")
     root_y = positions_global(clamped)[:, 0, 1]
 
     # Above the knee, bit-for-bit; below it, two frames that a hard floor would
     # have collapsed onto one height stay apart and stay ordered.
-    np.testing.assert_allclose(root_y[:2], [0.2, -0.25], atol=1e-8)
+    np.testing.assert_allclose(root_y[:2], [0.2, -0.05], atol=1e-8)
     np.testing.assert_allclose(root_y[2:], _expected_soft_floor([-0.75, -1.2]), atol=1e-12)
     assert root_y[3] < root_y[2]
     assert root_y.min() > ROOT_Y_MIN_HEIGHT
 
 
 def test_non_aquatic_descendant_translation_root_y_is_bounded_the_same_way():
-    anim = _animated_descendant_root_y([0.2, -0.25, -0.75, -1.2])
+    anim = _animated_descendant_root_y([0.2, -0.05, -0.75, -1.2])
 
     clamped = clamp_vertical_trajectory(anim, "Pteranodon")
     translation_root_y = positions_global(clamped)[:, 1, 1]
 
     assert translation_root_y.min() > ROOT_Y_MIN_HEIGHT
-    np.testing.assert_allclose(translation_root_y[:2], [0.2, -0.25], atol=1e-8)
+    np.testing.assert_allclose(translation_root_y[:2], [0.2, -0.05], atol=1e-8)
     np.testing.assert_allclose(
         translation_root_y[2:],
         _expected_soft_floor([-0.75, -1.2]),
@@ -247,11 +247,14 @@ def test_aquatic_vertical_ratios_apply_as_negative_swim_depth_limit():
     clamped = clamp_vertical_trajectory(anim, "Pirrana")
     root_y = positions_global(clamped)[:, 0, 1]
 
-    # min_h = 0.12, max_h = 0.2. The deepest frame no longer lands ON the band
-    # edge -- it approaches it -- and the frame above the knee is left alone.
+    # The deepest frame approaches the band edge and is then held by the root-Y
+    # soft clamp (the band edge sits past the knee); the frame above the knee is
+    # left alone.
     min_h, max_h = 0.4 * VERTICAL_CLAMP_MIN_RATIO, 0.4 * VERTICAL_CLAMP_MAX_RATIO
     scale = _expected_band_scale(0.4, min_h, max_h)
-    assert root_y.min() == pytest.approx(-(min_h + (0.4 - min_h) * scale))
+    assert root_y.min() == pytest.approx(
+        float(_expected_soft_floor(-(min_h + (0.4 - min_h) * scale)))
+    )
     assert -max_h < root_y.min() < -min_h
     np.testing.assert_allclose(root_y[:2], [0.0, -0.1], atol=1e-8)
 
@@ -315,7 +318,7 @@ def test_the_bound_is_an_asymptote_and_the_knee_is_seamless():
 
 
 def test_a_clip_that_stays_above_the_knee_is_untouched():
-    anim = _animated_root_y([0.4, 0.1, -0.2, -0.3, 0.0])
+    anim = _animated_root_y([0.4, 0.1, -0.05, -0.09, 0.0])
 
     clamped = clamp_vertical_trajectory(anim, "Pteranodon")
 
@@ -389,7 +392,7 @@ def test_a_clip_that_never_clears_the_knee_is_untouched():
 
 
 def test_clearing_the_knee_by_a_hair_barely_moves_the_clip():
-    """Value and slope are continuous at the knee, so there is no step at 0.3L."""
+    """Value and slope are continuous at the knee, so there is no step at the band edge."""
     min_h = 0.4 * VERTICAL_CLAMP_MIN_RATIO
     anim = _animated_root_y_with_body_length([0.0, min_h + 1e-9], body_length=0.4)
 

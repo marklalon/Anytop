@@ -35,7 +35,6 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_GROUPS,
-    AUX_ACTION_GROUPS_KEY,
     load_motion_metadata,
     load_action_labels,
     action_words_in,
@@ -43,6 +42,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     ROOT_XZ_DRIFT_THRESHOLD,
+    ROOT_Y_DRIFT_THRESHOLD,
     ROOT_XZ_SOFT_CLAMP_LIMIT,
     ROOT_XZ_LOCOMOTION_LIMIT,
 )
@@ -508,12 +508,18 @@ def _validate_root_motion_drift(
     parents=None,
     offsets=None,
 ) -> None:
-    """Warn when a root-XZ-detrended clip still carries sustained travel.
+    """Warn when a detrended clip still carries sustained travel.
 
     The invariant preprocessing establishes, checked with the same arithmetic
     that establishes it. Every locomotion clip enters this path; transition
     clips enter only when their hand-reviewed ``is_loop`` flag is true;
     stationary clips never enter. Raw extent is deliberately not the measure.
+
+    Both channels are checked, each against the threshold that gates it: the
+    horizontal one always detrends past ``ROOT_XZ_DRIFT_THRESHOLD``, the
+    vertical one past the looser ``ROOT_Y_DRIFT_THRESHOLD``. A clip left
+    with vertical travel above that is one whose climb came back on some
+    channel after preprocessing removed it.
 
     The same selected clips are checked against the tighter
     ``ROOT_XZ_LOCOMOTION_LIMIT`` extent invariant.
@@ -523,6 +529,7 @@ def _validate_root_motion_drift(
     try:
         from data_loaders.truebones.truebones_utils.motion_process import (
             flatten_root_xz_drift,
+            flatten_root_y_drift,
             recover_from_bvh_rot_np,
             recover_root_quat_and_pos_np,
             root_xz_heading,
@@ -553,6 +560,10 @@ def _validate_root_motion_drift(
         _flattened, drift = flatten_root_xz_drift(
             r_pos[:, [0, 2]], root_xz_heading(recovered, translation_root_index)
         )
+        # The vertical channel needs no frame and no recovered anim: the root's
+        # height is stored outright, so this reads it back exactly as
+        # preprocessing measured it.
+        _flattened_y, y_drift = flatten_root_y_drift(r_pos[:, 1])
     except Exception as exc:
         print_warn(f"{motion_name}: failed to inspect root motion drift from NPy: {exc}")
         return
@@ -562,6 +573,14 @@ def _validate_root_motion_drift(
             f"{motion_name}: detrended clip's root XZ still carries {drift:.3f} of transport "
             f"across the clip, past the flatten threshold ({threshold:.2f}) -- translation root "
             f"index {translation_root_index}"
+        )
+
+    if y_drift > ROOT_Y_DRIFT_THRESHOLD:
+        print_warn(
+            f"{motion_name}: detrended clip's root height still climbs {y_drift:.3f} "
+            f"across the clip, past the vertical flatten threshold "
+            f"({ROOT_Y_DRIFT_THRESHOLD:.2f}) -- translation root index "
+            f"{translation_root_index}"
         )
 
 
@@ -1122,28 +1141,6 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
             action_group = (action_entry or {}).get("action_group", "")
             action_label = (action_entry or {}).get("action_label", "")
             require_valid(action_group in ACTION_GROUPS, f"action_group {action_group!r} invalid in {ACTION_LABELS_FILE} for {motion_name}")
-            # aux_action_groups is optional per row; load_action_labels has
-            # already hard-failed on a malformed one, so this only restates the
-            # shape for a caller that built the mapping some other way. A row
-            # WITHOUT the key is not an error -- absence is how a pre-migration
-            # sidecar is recognised (motion_labels.aux_key_present_in).
-            if AUX_ACTION_GROUPS_KEY in (action_entry or {}):
-                aux_groups = (action_entry or {}).get(AUX_ACTION_GROUPS_KEY) or ()
-                require_valid(
-                    all(value in ACTION_GROUPS for value in aux_groups),
-                    f"{AUX_ACTION_GROUPS_KEY} {list(aux_groups)!r} invalid in "
-                    f"{ACTION_LABELS_FILE} for {motion_name}",
-                )
-                require_valid(
-                    action_group not in aux_groups,
-                    f"{AUX_ACTION_GROUPS_KEY} for {motion_name} repeats its own "
-                    f"action_group {action_group!r}; the primary group is not an "
-                    f"auxiliary one",
-                )
-                require_valid(
-                    len(set(aux_groups)) == len(tuple(aux_groups)),
-                    f"{AUX_ACTION_GROUPS_KEY} for {motion_name} repeats a group",
-                )
             # An empty label is legal (it means "no condition"), but every empty one
             # is a clip the text-to-motion path can never retrieve, so say so.
             # Naming no ACTION word (a direction-only label) is legal too but is

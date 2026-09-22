@@ -211,8 +211,8 @@ opt.sources   = tuple[DatasetSource]   # 由 cond entry 的 dataset_root 去重�
    `data_dict` / `name_list` 的 key 改为 `f"{namespace}/{filename}"`，例如 `truebones/zoo/Horse_Idle_1.npy`。
    entry 内保留 `motion_path`（绝对路径）、`object_type`（规范键）、`source`。
 2. **去掉文件名前缀匹配**。[dataset.py](../data_loaders/truebones/data/dataset.py) 里两处 `name.startswith(f'{object_type}_')`（枚举与归属各一处）在合并后会让 `Horse_Idle_1.npy` 同时归属两个 Horse。改为：枚举时按 `source` + `species_name` 前缀，归属时直接读 `data_dict[name]['object_type']`。
-3. **split 按源各自划分再取并集**。AnyTop 的 split 是「按物种整体留出」，若在并集上全局重算，zoo 现有的 val/test 留出物种会全部改变、历史实验不可比。逐源调用 `ensure_split_manifests(source.root, source.motion_dir)`，结果并集后转成复合 clip id。
-   > 注意：只要传了 `--action_group`（三个 `train_*.bat` 都传了），[dataset.py](../data_loaders/truebones/data/dataset.py) 会无视 `train.txt` 现算 split 并覆写该文件 —— 这条路径同样按源独立执行。
+3. **split 按源各自划分再取并集**。split 是逐 clip 按名字哈希（加盐 SHA-1，见 `assign_clips_to_splits`）分配的：一个 clip 的 split 只取决于它自己的名字，与加载了哪些源无关，所以逐源调用 `load_motion_names_for_split_with_action_group` 得到的 manifest 与单源运行逐字节一致；唯一例外是 val 资格门槛（`VAL_BUCKET_MIN_CLIPS`）的桶计数取所有源的并集（`val_eligible_motion_names`）。结果并集后转成复合 clip id。
+   > 注意：每次加载都会按当前 clip 集合现算 split 并覆写 `train.txt` / `val.txt` / `test.txt`（`write_split_manifests`），不读取旧 manifest。
 4. `cache/motion_lengths.npy` 保持**每源一份**，key 仍是裸文件名（源内唯一）。
 5. `motion_metadata.json` / `action_labels.jsonl` 按源分别加载，join 时用裸文件名。
    动作词表 `dataset/action_word_embeddings.npy` **只有一份**：它按受控词表的**词**索引，
@@ -220,6 +220,8 @@ opt.sources   = tuple[DatasetSource]   # 由 cond entry 的 dataset_root 去重�
    （[action_label_per_word_pooling.md](action_label_per_word_pooling.md) §7）。
 
 ### 5.4 采样权重
+
+> 历史：下文的按物种 `sqrt(clip数)` 采样已删除（先改为按动作首词，2026-09-21 起逐 clip 均匀 + `--rare_head_word_floor`，见 [head_word_weights_and_modifier_dropout.md](head_word_weights_and_modifier_dropout.md)）。本节只记录当时的决策。
 
 qualified 之后 `truebones/zoo/Horse` 与 `truebones/zoo_upgrade/Horse` 是两个独立物种，`TruebonesSampler` 各给一份 `sqrt(clip数)` 质量 —— 这符合「两个不同骨架就是两个物种」的语义（实测 zoo Horse 79 关节 / upgrade Horse 39 关节，`scale_factor` 差近一倍）。
 
@@ -285,7 +287,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 - `DistributionMotionQualityScorer(dataset_root=...)` 内部统一转成 `sources` 列表
 - [offline_reference_dataset.py](../data_loaders/truebones/offline_reference_dataset.py) 提供多源版本；`_matches_object_subset` 的文件名前缀匹配改为读 `motion_metadata`
 - [reference_bank.py](../eval/motion_quality/reference_bank.py) 参考池 = 各源并集，clip id 复合化，缓存 key 含全部源路径
-- `--eval_during_training` 直接复用训练 cond 派生的 `opt.sources`，不需额外传参
+- 训练中的验证（`--eval_interval`）只算 val split 上的 loss，不采样、不打分，因此不依赖参考分布；打分只在 `eval_checkpoint.py` / `evaluate_motion_quality.py` 离线做
 
 > 参考分布必须从真实 clip 现算，这是**唯一无法用 cond 快照替代**的数据集依赖。
 
@@ -301,7 +303,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 | [utils/validate_anytop_dataset.py](../utils/validate_anytop_dataset.py) | 新增 `--datasets`，逐源循环校验（单源行为不变） |
 | `utils/retarget_pipeline.py`（原 `auto_retarget.py`） | `auto_retarget_pipeline` / `rank_donors` 已移除，donor 读 `motions/` 的依赖随之消失 —— 无需改动 |
 | `data_bridge/restore_glb_from_anytop.py` | 离线工具，读 `tpose_reference_paths.jsonl` + 原始 mesh，仍按单数据集目录运行，不改 |
-| 训练脚本（现为 `train_locomotion.bat` / `train_stationary.bat` / `train_transition.bat`） | 增加 `--cond_path` |
+| 训练脚本（现为 `train_all.bat`） | 增加 `--cond_path` |
 
 ---
 

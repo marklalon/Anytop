@@ -9,7 +9,9 @@ REM   eval_checkpoint.bat eval\eval_tasks_locomotion.json --overwrite
 REM
 REM The task config must define checkpoint.RUN_NAME. checkpoint.MODEL_FILE is
 REM optional; when omitted, eval_checkpoint.py selects the newest model*.pt
-REM under save\<RUN_NAME>.
+REM under save\<RUN_NAME>. checkpoint.OUTPUT_DIR is optional; it names the run
+REM folder the results are written under (default: RUN_NAME), which lets several
+REM batteries of one checkpoint keep separate outputs.
 REM ----------------------------------------------------------------------
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"

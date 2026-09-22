@@ -9,6 +9,10 @@ import copy
 # module stays import-light (that one reaches numpy through param_utils).
 # tests/test_action_group_checkpoint_binding.py pins the two together.
 ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
+# The training value for one model over the whole corpus
+# (docs/unified_action_group_training.md). Recorded in args.json in a group's
+# place; generation then reads the group off the label instead of the weights.
+ACTION_GROUP_ALL = 'all'
 
 # Checkpoint compatibility stamp, written into every save_dir's args.json by
 # train_anytop and required back by extract_args. Bump it for ANY change that
@@ -16,19 +20,7 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-# 17: every head word of a label now pools into the head channel, the first one
-#     weighted above the rest (HEAD_SLOT_PRIMARY_WEIGHT), and the training-only
-#     --head_aug_words / --head_aug_prob promotion that used to stand in for
-#     that is gone. Auxiliary rows carry their label like any other row.
-# 18: the direction and hands word vectors stopped being T5 encodings and became
-#     a synthetic orthonormal code (SYNTHETIC_CODE_VOCAB). Those two axes are
-#     closed sets whose members T5 placed next to their own antonyms -- left /
-#     right +0.461, hand1 / hand2 +0.529 against a vocabulary-wide |cos| p95 of
-#     0.19 -- for no semantic return, since an unknown token is refused and every
-#     member is heavily attested. Same shapes, different meaning behind them; the
-#     embedding_fingerprint refuses an --action_label_cond checkpoint by itself,
-#     this stamp covers the rest.
-CKPT_VERSION = 18
+CKPT_VERSION = 20
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -132,22 +124,27 @@ def assert_checkpoint_version(model_args, args_path):
 def apply_checkpoint_action_group(args, model_args, args_path):
     """Set this generation's action group from the checkpoint being sampled.
 
-    Each checkpoint is trained on exactly one group -- the group partitions the
-    corpus, so the group is a property of the weights. Generation therefore has
-    no ``--action_group`` flag at all: the value comes out of args.json and
-    nowhere else, which is why a checkpoint can only ever be sampled as the group
-    it was trained on. Asking for another group means sampling that group's
-    checkpoint.
+    A single-group checkpoint was trained on that group's corpus alone, so the
+    group is a property of the weights and generation has no ``--action_group``
+    flag to contradict it: the value comes out of args.json and nowhere else.
 
-    A run predating the mandatory flag records no group (or the retired 'all').
+    An ``all`` checkpoint was trained on the whole corpus and carries no group
+    condition. It leaves the group EMPTY, which every consumer reads as "any
+    group": the label's first head word determines the group by itself, so
+    nothing downstream needs the value except the clip-length prior, which
+    matches across groups when it is empty (utils/clip_length_prior).
+
+    A run predating the mandatory flag also records no group.
     """
     recorded_group = str(model_args.get('action_group', '') or '').strip().lower()
-    if recorded_group and recorded_group not in ACTION_GROUPS:
+    if recorded_group == ACTION_GROUP_ALL:
+        recorded_group = ''
+    elif recorded_group and recorded_group not in ACTION_GROUPS:
         print(
             f"[parser_util] WARNING: {args_path} records action_group "
-            f"'{recorded_group}', which is not one of {', '.join(ACTION_GROUPS)}. "
-            f"Treating this checkpoint as group-less: action-label conditioning "
-            f"is unavailable, unconditional generation is unaffected."
+            f"'{recorded_group}', which is not one of {', '.join(ACTION_GROUPS)} "
+            f"or '{ACTION_GROUP_ALL}'. Treating this checkpoint as group-less: "
+            f"the clip-length prior will match a label across every group."
         )
         recorded_group = ''
     args.action_group = recorded_group
@@ -216,6 +213,18 @@ def add_model_options(parser):
                        help="Feed-forward hidden dimension in each decoder layer. "
                             "Controls the bottleneck size of the two-layer FFN "
                             "inside each GraphMotionDecoderLayer.")
+    group.add_argument("--last_layer_ff", default=0, type=int,
+                       help="Feed-forward hidden width of the LAST decoder layer only "
+                            "(0 = same as --ff_size). That layer feeds a single linear "
+                            "readout, and in a full run ~3/4 of its FFN units went dead; "
+                            "512 recovers those parameters for the trunk.")
+    group.add_argument("--action_adaln_bottleneck", default=0, type=int,
+                       help="Hidden width of the --action_label_adaln head (0 = latent_dim). "
+                            "The action label set has slot-source rank ~137, so ~192 "
+                            "loses nothing and halves the model's largest matrix.")
+    group.add_argument("--species_film_bottleneck", default=0, type=int,
+                       help="Hidden width of the --species_cond FiLM head (0 = latent_dim). "
+                            "The species descriptors span rank 94; 128 is enough.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     group.add_argument("--lambda_vel", default=0.0, type=float,
                        help="Weight for velocity-position consistency loss (0.0=off)."
@@ -235,10 +244,10 @@ def add_model_options(parser):
                             "only in ch9/ch11 and every loop target sums to exactly zero there; l_simple "
                             "cannot see the DC bias that integrates into a seam pop, and loop_wrap masks "
                             "the root's XZ. Linear in the output, so the weight carries no bias cost, but "
-                            "it is one scalar per sample pushing T*2 elements: on a converged model 0.1 "
-                            "already matches l_simple's gradient norm at low t and 1.0 is ~10x it, so stay "
-                            "around 0.05-0.2. loop_root_xz_drift (the per-cycle seam pop in physical "
-                            "units) is logged whenever this or --lambda_loop_wrap is on.")
+                            "it is one scalar per sample pushing T*2 elements: on a converged model a "
+                            "weight well below 1 already matches l_simple's gradient norm at low t, and "
+                            "1.0 is an order of magnitude above it. loop_root_xz_drift (the per-cycle "
+                            "seam pop in physical units) is logged whenever this or --lambda_loop_wrap is on.")
     group.add_argument("--lambda_bone", default=0.0, type=float,
                        help="Weight for the target-relative, rest-length-normalized bone-length loss (0.0=off). "
                             "Penalizes each predicted bone length's deviation from the GROUND-TRUTH bone length "
@@ -253,7 +262,7 @@ def add_model_options(parser):
                             "source clip: loop roll/tile, crop, the window resample and resample_speed_cond "
                             "all see the scaled length, and the model is told nothing. Loader-only: no cond "
                             "regen, no model change, no CKPT_VERSION bump. Spreads the clustered clip lengths "
-                            "(45%% of the corpus sits on five exact frame counts) so an inference num_frames "
+                            "(the corpus piles up on a few exact frame counts) so an inference num_frames "
                             "between the clusters is in distribution. The range is narrowed per clip so the "
                             "scaled clip stays >= min_length and a loop that fits the source budget still "
                             "fits (never downgraded to non-loop by slowing down). 1.2 is the intended value.")
@@ -264,10 +273,21 @@ def add_model_options(parser):
     group.add_argument("--loop_tile_single_prob", default=0.5, type=float,
                        help="Floor on the probability that a loop training window holds ONE cycle "
                             "(loop tile count 1); the rest of the mass stays uniform over 2..max tiles. "
-                            "0.0 is the plain uniform draw over 1..max, which for a 20-frame loop makes "
-                            "the single-cycle window -- the regime --loop with the auto length generates "
-                            "in -- 1 draw in 6, while every other draw is k bit-identical copies of the "
-                            "cycle. Loader-only, like --motion_speed_aug: no regen, no bump.")
+                            "0.0 is the plain uniform draw over 1..max, which for a short loop makes the "
+                            "single-cycle window -- the regime --loop with the auto length generates in -- "
+                            "a small minority of draws, while every other draw is k bit-identical copies "
+                            "of the cycle. Loader-only, like --motion_speed_aug: no regen, no bump.")
+    group.add_argument("--loop_cond_prob", default=1.0, type=float,
+                       help="Probability that a loop training clip is TOLD it is a loop (is_loop=1: "
+                            "circular time table, periodic window resample, wrap losses). The rest of "
+                            "the loop clips keep every loop augmentation (closing-key drop, circular "
+                            "roll, tiling) but are resampled as open clips and handed over with "
+                            "is_loop=0. Deliberate label noise: the flag is confounded with content in "
+                            "the corpus (most loops are stationary idles; within a species-tag cluster "
+                            "the loop-authored gaits differ from the one-shot ones), and a flag the "
+                            "model cannot trust as a content key is one it has to read as time "
+                            "topology only. 1.0 = off. Loader-only, like --motion_speed_aug: no regen, "
+                            "no bump. The eval loader always uses 1.0.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
@@ -322,15 +342,34 @@ def add_model_options(parser):
                        help="Per-sample probability of hard-dropping the action condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
                             "guidance at sampling time via --action_label_cfg_scale. Default 0.2.")
-    group.add_argument("--direction_slot_drop_prob", default=0.3, type=float,
+    group.add_argument("--action_label_adaln", action='store_true',
+                       help="Give the action label a MULTIPLICATIVE pathway: a zero-initialised head "
+                            "turns the action token into a per-channel scale and shift on the "
+                            "temporal and feed-forward BRANCH INPUTS of every decoder layer (the "
+                            "residual stream is left unmodulated, and the spatial branch already "
+                            "carries the additive timestep offset). The additive action token stays; "
+                            "this adds the gain the additive path cannot express, which is what two "
+                            "labels sharing a slot (whose vectors are near-parallel by construction, "
+                            "e.g. 'turn, left' and 'run, turn, left') need to produce different motion "
+                            "without leaning on --action_label_cfg_scale and paying its quality cost. "
+                            "Requires --action_label_cond. Costs d^2 + 4*layers*d^2 parameters. "
+                            "See docs/conditional_modulation_upgrade.md section 3.")
+    group.add_argument("--direction_slot_drop_prob", default=0.15, type=float,
                        help="Per-sample probability of blanking the label's DIRECTION words during "
                             "training while the rest of the label stays. Trains the empty direction "
                             "slot as 'any direction', so a prompt that names none draws one side "
                             "or heading instead of a blend. Stacks with --action_label_cfg_drop_prob, "
                             "which drops the WHOLE label: a row contributes explicit direction "
-                            "supervision with probability (1 - cfg_drop) * (1 - this), so 0.3 against "
-                            "the training scripts' 0.3 cfg drop leaves 49%%. Lower it if direction "
-                            "control comes out weak. Never applied at inference. Default 0.3.")
+                            "supervision with probability (1 - cfg_drop) * (1 - this). Lower it if "
+                            "direction control comes out weak. Never applied at inference. Default 0.15.")
+    group.add_argument("--modifier_slot_drop_prob", default=0.15, type=float,
+                       help="Per-sample probability of blanking the label's MODIFIER words during "
+                            "training while the head, direction and hands words stay. Trains the "
+                            "empty modifier slot as the marginal over modifiers, so a bare 'attack' "
+                            "at inference draws some attack (bite, cast, swat ...) instead of the "
+                            "few clips annotated with no modifier. Independent of "
+                            "--direction_slot_drop_prob per row; the hands slot is never dropped "
+                            "(empty there means empty hands). Never applied at inference. Default 0.15.")
 
 def add_data_options(parser, training=False):
     """Dataset selection. ``training=True`` adds the training-only options.
@@ -348,27 +387,20 @@ def add_data_options(parser, training=False):
                        help="Object subset. Can be a predefined category (e.g. 'all', 'quadruped', 'winged', 'biped', 'multiped', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
     if training:
         group.add_argument("--action_group", required=True, type=str,
-                           choices=list(ACTION_GROUPS),
-                           help="REQUIRED. The single action group to train on: 'locomotion' "
-                                "(sustained displacement), 'stationary' (in-place / interactive) "
-                                "or 'transition' (pose changes). Exclusive and single-valued -- "
-                                "each clip belongs to exactly one group and each group trains its "
-                                "own model, so there is no 'all' and no list. The value is recorded "
-                                "in the checkpoint's args.json and is the only source generation "
-                                "reads it from (there is no --action_group at generation), so a "
-                                "checkpoint can only ever be sampled as the group it was trained on.")
-        group.add_argument("--aux_group_mass", default=0.0, type=float,
-                           help="Share of this group's TRAINING sampling mass given to auxiliary "
-                                "clips -- clips whose action_group is another group but whose "
-                                "aux_action_groups names this one. A budget, not a per-clip weight: "
-                                "however many aux clips there are, this group's own clips keep "
-                                "1 - this. Aux clips join the train split only, never val/test, and "
-                                "never affect the species split (train/val/test.txt stay "
-                                "byte-identical). 0 = off, the aux clips are not loaded at all. "
-                                "Passing > 0 against sidecars that carry no aux_action_groups key "
-                                "is a hard error. An aux clip is conditioned on its own label "
-                                "exactly like an own clip. Default 0.0. "
-                                "See docs/aux_group_and_head_word_augmentation.md.")
+                           choices=list(ACTION_GROUPS) + [ACTION_GROUP_ALL],
+                           help="REQUIRED. The corpus to train on: one group -- 'locomotion' "
+                                "(sustained displacement), 'stationary' (in-place / interactive), "
+                                "'transition' (pose changes) -- or 'all' for one model over the "
+                                "whole corpus. No lists: each clip belongs to exactly one group. "
+                                "'all' carries NO group condition; the action label's first head "
+                                "word already determines the group (a property of the corpus, "
+                                "verified by tools/audit_action_labels.py), so a group token would "
+                                "add no information the label does not already carry. Draws are "
+                                "uniform over clips, so the group mix is the corpus's own "
+                                "(stationary ~53%); see --rare_head_word_floor for the tail. "
+                                "Recorded in the checkpoint's args.json, where generation reads it "
+                                "back -- a single-group checkpoint can only ever be sampled as that "
+                                "group. See docs/unified_action_group_training.md.")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -399,22 +431,21 @@ def add_training_options(parser):
                             "cost; shapes are static so no recompile thrashing afterward "
                             "(one graph per JOINT_BUCKETS joint bucket).")
     group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
-    group.add_argument("--lr_scheduler_step_size", default=10000, type=int,
-                       help="StepLR step size: decay LR every N optimizer steps.")
-    group.add_argument("--lr_scheduler_gamma", default=0.99, type=float,
-                       help="StepLR gamma: multiplicative factor for LR decay.")
+    group.add_argument("--lr_decay_start", default=None, type=int,
+                       help="Optimizer step at which the LR starts a cosine decay from --lr "
+                            "to --lr_final, reaching --lr_final at --num_steps. Omitted: the "
+                            "LR stays constant for the whole run.")
+    group.add_argument("--lr_final", default=1e-5, type=float,
+                       help="LR at the end of the cosine decay (only with --lr_decay_start).")
 
     group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")
-    group.add_argument("--lr_anneal_steps", default=0, type=int, help="Number of learning rate anneal steps.")
-    group.add_argument("--eval_batch_size", default=16, type=int,
-                       help="Batch size during evaluation loop. Do not change this unless you know what you are doing. "
-                            "T2m precision calculation is based on fixed batch size 16.")
-    group.add_argument("--eval_split", default='val', choices=['val', 'test'], type=str,
-                       help="Which held-out split to evaluate on during training.")
-    group.add_argument("--eval_during_training", action='store_true',
-                       help="If True, will run evaluation during training.")
     group.add_argument("--eval_interval", default=1_000, type=int,
-                       help="Run validation loss every N training steps when eval_during_training is enabled.")
+                       help="Compute the loss over the val split every N training steps (and at the "
+                            "last step), logged under Val/. 0 disables validation.")
+    group.add_argument("--val_t_strata", default=4, type=int,
+                       help="Timesteps scored per val clip, one per equal-width stratum of "
+                            "[0, T) (1 = a single uniform draw). More strata cut the variance "
+                            "of Val/ losses; the mean stays the uniform-t objective.")
     group.add_argument("--log_interval", default=100, type=int,
                        help="Log losses each N steps")
     group.add_argument("--save_interval", default=10_000, type=int,
@@ -448,7 +479,7 @@ def add_training_options(parser):
                        help="Cap each sample's l_simple gradient at that of a sample whose l_simple is this many "
                             "times the running geometric mean at its diffusion timestep (a per-sample Huber on the "
                             "RMS error; see train/sample_loss_limit.py). Stops one outlier clip from owning the "
-                            "clipped batch gradient. 8 leaves ~0.3%% of locomotion samples touched. 0 disables it.")
+                            "clipped batch gradient, touching only the far tail of the samples. 0 disables it.")
     group.add_argument("--joint_mask_prob", default=0.5, type=float,
                        help="Per-sample probability of applying a training-time subtree joint perturbation. "
                            "Selected joints keep their supervision loss and remain visible to attention, but their x_t "
@@ -485,8 +516,34 @@ def add_training_options(parser):
                        help="If True, will use EMA model averaging.")
     group.add_argument("--ema_rate", default=0.99, type=float,
                        help="EMA decay rate (closer to 1 = slower updates). Default 0.99.")
-    group.add_argument("--balanced", action='store_true',
-                       help="Use balancing sampler for fairness between topologies")
+    group.add_argument("--rare_head_word_floor", default=0, type=int,
+                       help="Minimum sampling mass for RARE head words: a head word (the "
+                            "action_label's first head word) with fewer than this many clips in "
+                            "the training subset is weighted as if it had this many, so each of "
+                            "its clips is drawn floor/count times as often as a clip of a common "
+                            "word (capped by --rare_head_word_max_boost). Words at or above the "
+                            "floor are untouched; draws are otherwise uniform over clips and "
+                            "species are not balanced. One rule for the whole tail, so a new rare "
+                            "word needs no entry in --head_word_weights. 0 or 1 disables it. "
+                            "Changes the training distribution: start a new run rather than "
+                            "resuming an old one with a different floor. Default 0 (off).")
+    group.add_argument("--rare_head_word_max_boost", default=4.0, type=float,
+                       help="Cap on the per-clip multiplier --rare_head_word_floor may give a "
+                            "word, so a 1-clip word is not drawn floor times as often (the tail "
+                            "mostly needs data, not mass; past ~4x the model just memorises the "
+                            "clip). With floor 20 and cap 4: 1-5 clips x4, 6 x3.3, 10 x2, 16 "
+                            "x1.25, >=20 x1. Must be >= 1; 1 turns the floor off. Default 4.")
+    group.add_argument("--head_word_weights", default="", type=str,
+                       help="Explicit per-clip sampling multipliers keyed on the action_label's "
+                            "first head word, as 'word=weight,word=weight' (e.g. 'stop=3,sheathe=4'), "
+                            "applied ON TOP of --rare_head_word_floor. A clip of weight w is drawn "
+                            "w times as often as an unlisted clip (weight 1). For the case where "
+                            "one word needs a hand-set weight; the floor covers the tail in general, "
+                            "so this is normally left empty. A multiplier on attack/idle only takes "
+                            "exposure from everything else. Words must be HEAD_VOCAB entries present "
+                            "in the training subset. Changes the training distribution: start a "
+                            "new run rather than resuming an old one with a different list. "
+                            "Default: none.")
 
 
 def add_sampling_options(parser):
@@ -500,19 +557,21 @@ def add_sampling_options(parser):
                        help="provide cond.py path in case you wish to generate motion for skeleton not included in Truebones dataset.")
     group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'bf16'], type=str,
                        help="Autocast precision for inference. fp32 = full precision with TF32 matmuls on CUDA "
-                            "(default; ~5%% slower than bf16). "
+                            "(default; slightly slower than bf16). "
                             "bf16 = selective autocast on linear / attention / conv modules; "
                             "softmax stays fp32. Requires a CUDA device with bf16 support (Ampere+). "
                             "bf16 rounding adds frame-to-frame noise that inflates jerk/snap scores "
                             "(docs/bf16_precision_issues.md).")
-    group.add_argument("--loop", action='store_true',
-                       help="Generate a closed window (loop conditioning + loop-aware temporal masks) when supported "
-                            "by the checkpoint. The whole pipeline then treats the window as periodic: its last "
-                            "frame is one step before frame 0 and the frame after it wraps to the first (the window "
-                            "is one period of length T, whatever number of gait cycles it holds). A "
-                            "--reference_motion is placed into it the same way (a closing key is dropped, the "
-                            "reference is resampled periodically at step L/T) and the sampled window is rescaled to "
-                            "--num_frames the same way, so the output is a loop whatever the reference is.")
+    group.add_argument("--loop", nargs='?', const='on', default='auto', choices=['auto', 'on', 'off'],
+                       help="Whether to generate a closed window (loop conditioning + loop-aware temporal masks). "
+                            "'on' (also a bare --loop): the window is periodic -- its last frame is one step "
+                            "before frame 0, whatever number of cycles it holds. A --reference_motion is placed "
+                            "into it the same way and the sampled window is rescaled to --num_frames the same "
+                            "way, so the output is a loop whatever the reference is. "
+                            "'off': an open window. 'auto' (default): with a --reference_motion, follow its own "
+                            "loop verdict; else, with --action_label and no reference, 'on' when most of that "
+                            "label's training clips are loops (the model only saw each label paired with "
+                            "is_loop the way its clips were authored); else 'off'.")
     group.add_argument("--fullbody_ik", action='store_true',
                        help="Decode the BVH preview with the same full-body IK as restore_glb_from_npy --fullbody-ik: "
                             "rotations are re-solved on the rigid cond skeleton so the position channels are honoured "

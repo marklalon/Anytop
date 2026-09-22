@@ -6,6 +6,7 @@ import os
 from collections import OrderedDict, defaultdict
 from os.path import join as pjoin
 from pathlib import Path
+import hashlib
 import math
 import random
 import re
@@ -22,9 +23,9 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_GROUPS,
-    AUX_ACTION_GROUPS_KEY,
     ActionLabelError,
-    aux_key_present_in,
+    HEAD_VOCAB,
+    head_words_in,
     load_motion_metadata,
     normalize_action_group,
     parse_action_label,
@@ -58,10 +59,161 @@ from data_loaders.truebones.truebones_utils.dataset_tags import assert_species_t
 
 
 
-DEFAULT_SPLIT_RATIOS = {"train": 1.0, "val": 0.0, "test": 0.0}
+# Clips are dealt into splits individually, by a hash of the clip name (see
+# assign_clips_to_splits), NOT species-by-species: val is a held-out sample of
+# the same species/action mix train sees, which is what a val loss is for.
+# Holding out whole species measured cross-species generalization instead, and
+# with one species per 2% it was a noisy, single-rig measurement.  The hash
+# keeps a clip's split fixed across dataset regens, so val curves stay
+# comparable when clips are added or removed.
+DEFAULT_SPLIT_RATIOS = {"train": 0.98, "val": 0.02, "test": 0.0}
+# Salt of the split hash.  Changing it re-deals EVERY clip.
 DEFAULT_SPLIT_SEED = 3407
+# A clip may leave train for val only if its action_label bucket (its head
+# words, see action_label_split_bucket) holds MORE than this many clips over
+# the whole training population.  Rare buckets stay whole in train.
+VAL_BUCKET_MIN_CLIPS = 30
 SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 ALL_SPLIT_NAME = "all"
+
+# Sampling is uniform over clips, with two deviations, both keyed on the
+# action_label's FIRST head word and both aimed at the tail of the corpus
+# (stop, sheathe, crawl: 1 clip each) whose clips would otherwise be drawn
+# once per ~3600 samples:
+#
+#   --rare_head_word_floor N: a head word with fewer than N clips in the
+#       training subset is weighted as if it had N, i.e. each of its clips
+#       carries N / count, capped at --rare_head_word_max_boost.  One rule for
+#       the whole tail, so a new rare word is covered without being listed.
+#   --head_word_weights word=w,...: an explicit per-word multiplier on top of
+#       that, for the case where one word needs a hand-set weight.
+#
+# There is no other balancing rule: the sqrt-of-group-count scheme this
+# replaced (2026-09-21) halved the exposure of every attack clip -- 891 clips,
+# but spread over 110 labels -- to lift a tail that mostly needs data, not
+# mass.  Both deviations are arithmetic: a clip of weight w is drawn w times
+# as often as any clip of weight 1.
+#
+# --rare_head_word_floor at or below this is off (every word has >= 1 clip).
+RARE_HEAD_WORD_FLOOR_OFF = 1
+#
+# The key a clip with no action_label carries.  Every LABELLED clip has a head
+# word by contract (parse_action_label rejects one that does not), so this is
+# the unannotated corner only; it cannot be weighted.
+UNLABELED_ACTION_GROUP = "<unlabeled>"
+
+
+def clip_action_head_word(motion_metadata, clip_name: str = "?") -> str:
+    """The label's first head word -- the key --head_word_weights is applied on.
+
+    A label may name several head words ("attack, jump, charge"); the first one
+    is the one the head channel weights above the rest
+    (HEAD_SLOT_PRIMARY_WEIGHT), so it is also what the clip counts as here.
+    """
+    label = str((motion_metadata or {}).get("action_label") or "")
+    if not label:
+        return UNLABELED_ACTION_GROUP
+    try:
+        heads = head_words_in(parse_action_label(label))
+    except ActionLabelError as exc:
+        raise RuntimeError(
+            f"clip {clip_name!r} carries action_label {label!r}, which cannot be "
+            f"parsed, so --head_word_weights cannot key it: {exc}"
+        ) from exc
+    return heads[0]
+
+
+def parse_rare_head_word_floor(floor, max_boost) -> tuple[int, float]:
+    """Validate ``(--rare_head_word_floor, --rare_head_word_max_boost)``.
+
+    ``floor`` is a clip count (``None``/0/1 = off); ``max_boost`` is the cap on
+    the per-clip multiplier the floor may hand a word and must be >= 1 (a cap
+    below 1 would turn a lift into a cut).
+    """
+    floor = int(floor or 0)
+    if floor < 0:
+        raise ValueError(f"--rare_head_word_floor must be >= 0, got {floor}")
+    max_boost = float(max_boost if max_boost is not None else 4.0)
+    if not np.isfinite(max_boost) or max_boost < 1.0:
+        raise ValueError(
+            f"--rare_head_word_max_boost must be a finite number >= 1, got {max_boost}"
+        )
+    return floor, max_boost
+
+
+def rare_head_word_boost(count: int, floor: int, max_boost: float) -> float:
+    """Per-clip multiplier the floor gives a word with ``count`` clips."""
+    if floor <= RARE_HEAD_WORD_FLOOR_OFF or count >= floor:
+        return 1.0
+    return min(float(floor) / float(count), max_boost)
+
+
+def parse_head_word_weights(spec) -> dict[str, float]:
+    """Parse explicit per-head-word sampling multipliers.
+
+    Both the original per-word form and a right-anchored group shorthand are
+    accepted::
+
+        stop=3,sheathe=4
+        attack,idle,hurt,turn=0.6
+
+    In the shorthand, every bare word immediately preceding ``word=weight``
+    shares that weight.  This also permits mixed groups such as
+    ``attack,idle=0.6,walk,run=0.8``.  A trailing bare word is rejected because
+    it has no weight to inherit.
+
+    Accepts the CLI string, an already-parsed mapping, or nothing.  Every key
+    must be a HEAD_VOCAB word (a typo would silently weight nothing) and every
+    weight a finite number > 0; a word listed twice is rejected rather than
+    letting the last spelling win.  Weight 1.0 is legal and inert.
+    """
+    if spec is None:
+        return {}
+    if isinstance(spec, dict):
+        items = [(str(k), v) for k, v in spec.items()]
+    else:
+        text = str(spec).strip()
+        if not text:
+            return {}
+        items = []
+        pending_words = []
+        for chunk in text.split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            word, sep, value = chunk.partition("=")
+            if not sep:
+                pending_words.append(word.strip())
+                continue
+            group_words = pending_words + [word.strip()]
+            items.extend((group_word, value.strip()) for group_word in group_words)
+            pending_words.clear()
+        if pending_words:
+            raise ValueError(
+                f"--head_word_weights entries {pending_words!r} have no weight; "
+                "use 'word=weight' or the grouped form 'word,word=weight'"
+            )
+    weights: dict[str, float] = {}
+    for word, value in items:
+        if word not in HEAD_VOCAB:
+            raise ValueError(
+                f"--head_word_weights names {word!r}, which is not a head word; "
+                f"head words are {list(HEAD_VOCAB)}"
+            )
+        if word in weights:
+            raise ValueError(f"--head_word_weights lists {word!r} twice")
+        try:
+            weight = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"--head_word_weights weight for {word!r} is not a number: {value!r}"
+            ) from exc
+        if not np.isfinite(weight) or weight <= 0.0:
+            raise ValueError(
+                f"--head_word_weights weight for {word!r} must be a finite number > 0, got {weight}"
+            )
+        weights[word] = weight
+    return weights
 
 
 def _copy_required_motion_metadata(motion_name: str, motion_metadata) -> dict[str, object]:
@@ -89,9 +241,8 @@ def resolve_requested_action_group(raw_action_group) -> str:
     comma list is a stale ``--action_tags`` invocation and is rejected rather than
     silently taking the first entry.
 
-    The unfiltered ``''`` is for callers that train no per-group model and just
-    want every clip (video2pose). AnyTop's own ``--action_group`` is mandatory and
-    three-valued, so it never reaches this function empty.
+    The unfiltered ``''`` is what ``--action_group all`` resolves to, and what
+    callers that train no per-group model at all pass (video2pose).
     """
     requested = normalize_action_group(raw_action_group)
     if not requested or requested == "all":
@@ -117,58 +268,6 @@ def filter_motion_names_by_action_group(
     for motion_name in motion_names:
         motion_metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
         if normalize_action_group(motion_metadata.get('action_group')) == requested_action_group:
-            filtered.add(motion_name)
-    return filtered
-
-
-def aux_action_groups_of(motion_metadata) -> tuple[str, ...]:
-    """The groups this clip trains as a SUPPLEMENT, never as its identity.
-
-    ``action_group`` alone decides which model owns the clip, which split it
-    lands in and which length-prior bucket it fills. An aux group only adds it
-    to another group's train pool (see
-    docs/aux_group_and_head_word_augmentation.md).
-    """
-    raw = (motion_metadata or {}).get(AUX_ACTION_GROUPS_KEY) or ()
-    return tuple(normalize_action_group(value) for value in raw)
-
-
-def require_aux_group_sidecars_migrated(metadata_by_namespace, aux_group_mass):
-    """Reject any source whose sidecar predates auxiliary groups."""
-    stale_sources = [
-        namespace for namespace, lookup in metadata_by_namespace.items()
-        if not aux_key_present_in(lookup)
-    ]
-    if stale_sources:
-        raise RuntimeError(
-            f"--aux_group_mass {aux_group_mass} was passed, but "
-            f"action_labels.jsonl has no '{AUX_ACTION_GROUPS_KEY}' key in "
-            f"source(s) {stale_sources}. Migrate each sidecar "
-            "(docs/aux_group_and_head_word_augmentation.md §7) or drop the flag."
-        )
-
-
-def filter_motion_names_by_aux_action_group(
-    motion_names,
-    raw_action_group,
-    motion_metadata_lookup,
-):
-    """Names whose AUX list names *raw_action_group*.
-
-    Disjoint from :func:`filter_motion_names_by_action_group` by construction:
-    a row may not list its own group as auxiliary
-    (``motion_labels._validate_aux_action_groups``), so no clip can be counted
-    both as a member and as a supplement -- which is what keeps the two mass
-    pools in :class:`TruebonesSampler` from double-counting it.
-    """
-    requested_action_group = resolve_requested_action_group(raw_action_group)
-    if not requested_action_group:
-        return set()
-
-    filtered = set()
-    for motion_name in motion_names:
-        motion_metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
-        if requested_action_group in aux_action_groups_of(motion_metadata):
             filtered.add(motion_name)
     return filtered
 
@@ -532,51 +631,109 @@ def _list_motion_files(motion_dir: str) -> list[str]:
     return sorted(path.name for path in Path(motion_dir).glob("*.npy"))
 
 
-def _compute_split_counts(num_items: int) -> dict[str, int]:
-    if num_items <= 0:
-        return {split: 0 for split in SUPPORTED_SPLITS}
-    if num_items == 1:
-        return {"train": 1, "val": 0, "test": 0}
-    if num_items == 2:
-        return {"train": 1, "val": 1, "test": 0}
-    if num_items == 3:
-        return {"train": 1, "val": 1, "test": 1}
+def action_label_split_bucket(motion_metadata, clip_name: str = "?"):
+    """The head-word bucket a clip's label falls in: its HEAD_VOCAB words in
+    written order (``attack, jump, spin, right, hand1`` -> ``("attack",
+    "jump")``).
 
-    raw_counts = {split: DEFAULT_SPLIT_RATIOS[split] * num_items for split in SUPPORTED_SPLITS}
-    counts = {split: int(np.floor(raw_counts[split])) for split in SUPPORTED_SPLITS}
-    # Minimums respect the split ratios - if a split has 0.0 ratio, it should have 0 minimum
-    minimums = {split: (1 if DEFAULT_SPLIT_RATIOS[split] > 0 else 0) for split in SUPPORTED_SPLITS}
-
-    for split, minimum in minimums.items():
-        counts[split] = max(counts[split], minimum)
-
-    while sum(counts.values()) > num_items:
-        removable = [
-            split for split in SUPPORTED_SPLITS
-            if counts[split] > minimums[split]
-        ]
-        if not removable:
-            break
-        split_to_reduce = max(removable, key=lambda split: counts[split] - raw_counts[split])
-        counts[split_to_reduce] -= 1
-
-    while sum(counts.values()) < num_items:
-        split_to_increase = max(SUPPORTED_SPLITS, key=lambda split: raw_counts[split] - counts[split])
-        counts[split_to_increase] += 1
-
-    return counts
+    The key the val gate counts on.  Modifier, direction and hands words are
+    left out: they refine how the head is performed, and counting them would
+    fragment one action into buckets too small to ever clear the gate.  A clip
+    with no label has no bucket (``None``) and is never val-eligible.
+    """
+    label = str((motion_metadata or {}).get("action_label") or "")
+    if not label:
+        return None
+    try:
+        words = parse_action_label(label)
+    except ActionLabelError as exc:
+        raise RuntimeError(
+            f"clip {clip_name!r} carries action_label {label!r}, which cannot be "
+            f"parsed, so it cannot be bucketed for the split: {exc}"
+        ) from exc
+    return tuple(head_words_in(words))
 
 
-def _compute_filtered_split_counts(num_items: int) -> dict[str, int]:
-    if num_items <= 0:
-        return {split: 0 for split in SUPPORTED_SPLITS}
-    if num_items <= 2:
-        return {"train": num_items, "val": 0, "test": 0}
-    if num_items == 3:
-        return {"train": 2, "val": 1, "test": 0}
-    if num_items == 4:
-        return {"train": 3, "val": 1, "test": 0}
-    return _compute_split_counts(num_items)
+def val_eligible_motion_names(
+    motion_names_by_namespace: dict[str, set[str]],
+    metadata_by_namespace: dict[str, dict[str, dict[str, object]]],
+) -> dict[str, set[str]]:
+    """Per source, the clips whose label bucket holds more than
+    VAL_BUCKET_MIN_CLIPS clips ACROSS ALL SOURCES -- the only ones the split
+    may hand to val.
+
+    Counted over the whole training population, not per source: training sees
+    the union, and a bucket of 60 clips spread over three sources is one
+    bucket of 60.  A rare bucket is kept whole in train because the model
+    needs every clip of it, and a val loss over one or two clips of a label
+    measures nothing.
+    """
+    bucket_counts: dict[tuple, int] = defaultdict(int)
+    bucket_of: dict[str, dict[str, tuple | None]] = {}
+    for namespace, motion_names in motion_names_by_namespace.items():
+        lookup = metadata_by_namespace[namespace]
+        bucket_of[namespace] = {}
+        for motion_name in motion_names:
+            bucket = action_label_split_bucket(lookup.get(motion_name), motion_name)
+            bucket_of[namespace][motion_name] = bucket
+            if bucket is not None:
+                bucket_counts[bucket] += 1
+    return {
+        namespace: {
+            motion_name
+            for motion_name, bucket in buckets.items()
+            if bucket is not None and bucket_counts[bucket] > VAL_BUCKET_MIN_CLIPS
+        }
+        for namespace, buckets in bucket_of.items()
+    }
+
+
+def clip_split_coordinate(motion_name: str) -> float:
+    """Where in [0, 1) a clip falls, a pure function of its name.
+
+    A salted SHA-1 of the bare filename, so the value is the same on every
+    machine and every regen; the split ratios are cut points on this axis.
+    """
+    digest = hashlib.sha1(f"{DEFAULT_SPLIT_SEED}:{motion_name}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") / float(1 << 64)
+
+
+def assign_clips_to_splits(motion_names, val_eligible=None) -> dict[str, list[str]]:
+    """Deal ``motion_names`` into train/val/test clip by clip, by name hash.
+
+    Each clip's split depends on its own name only (clip_split_coordinate
+    against the DEFAULT_SPLIT_RATIOS cut points), so adding or removing clips
+    in a regen never moves any other clip between splits; the exact split
+    sizes are therefore binomial around the ratios rather than exact.
+
+    ``val_eligible`` (see val_eligible_motion_names) is the set of clips the
+    hash may take out of train; every other clip stays in train whatever its
+    coordinate.  ``None`` means every clip is eligible.  A split with a
+    non-zero ratio that the hash left empty is handed the lowest-coordinate
+    eligible clip, so a tiny group still has a val clip if it has any
+    eligible one; with no eligible clip at all the split stays empty.
+    """
+    nonzero_splits = [split for split in SUPPORTED_SPLITS if DEFAULT_SPLIT_RATIOS[split] > 0]
+    upper_cuts = list(np.cumsum([DEFAULT_SPLIT_RATIOS[split] for split in nonzero_splits]))
+    upper_cuts[-1] = float("inf")  # the last split absorbs rounding slack at 1.0
+
+    def split_of(coordinate: float) -> str:
+        return next(split for split, hi in zip(nonzero_splits, upper_cuts) if coordinate < hi)
+
+    manifests: dict[str, list[str]] = {split: [] for split in SUPPORTED_SPLITS}
+    eligible_in_train: list[str] = []  # in coordinate order
+    for name in sorted(motion_names, key=lambda name: (clip_split_coordinate(name), name)):
+        eligible = val_eligible is None or name in val_eligible
+        split = split_of(clip_split_coordinate(name)) if eligible else "train"
+        manifests[split].append(name)
+        if eligible and split == "train":
+            eligible_in_train.append(name)
+    for split in nonzero_splits:
+        if split != "train" and not manifests[split] and eligible_in_train and len(manifests["train"]) > 1:
+            moved = eligible_in_train.pop(0)
+            manifests["train"].remove(moved)
+            manifests[split].append(moved)
+    return {split: sorted(names) for split, names in manifests.items()}
 
 
 def resolve_motion_object_type(
@@ -618,106 +775,23 @@ def resolve_motion_object_type(
     )
 
 
-def ensure_split_manifests(
-    data_root: str,
-    motion_dir: str,
-    motion_metadata_lookup=None,
-) -> dict[str, Path]:
+class EmptySplitError(RuntimeError):
+    """A requested split holds no clip in any source.
+
+    For ``val`` this is a legal outcome of the VAL_BUCKET_MIN_CLIPS gate (no
+    label bucket large enough to spare a clip), which is why it is its own
+    type: a caller can turn validation off instead of dying.
+    """
+
+
+def write_split_manifests(data_root: str, manifests: dict[str, list[str]]) -> dict[str, Path]:
+    """Write ``<split>.txt`` under ``data_root`` for manual verification."""
     data_root_path = Path(data_root)
     split_paths = {split: data_root_path / f"{split}.txt" for split in SUPPORTED_SPLITS}
-
-    # Group motion names by object_type (animal character). Splits are held out
-    # per species, so the grouping key must be the full species name.
-    grouped_motion_names: dict[str, list[str]] = defaultdict(list)
-    species_lookup = species_lookup_map_for_dataset_dir(data_root_path)
-    for motion_name in _list_motion_files(motion_dir):
-        object_type = resolve_motion_object_type(
-            motion_name, str(data_root_path), motion_metadata_lookup, species_lookup
-        )
-        grouped_motion_names[object_type].append(motion_name)
-
-    # Shuffle object types and assign all their motions to the same split
-    manifests = {split: [] for split in SUPPORTED_SPLITS}
-    rng = random.Random(DEFAULT_SPLIT_SEED)
-    object_types = sorted(grouped_motion_names.keys())
-    rng.shuffle(object_types)
-    split_counts = _compute_split_counts(len(object_types))
-    start_index = 0
-    for split in SUPPORTED_SPLITS:
-        end_index = start_index + split_counts[split]
-        for object_type in object_types[start_index:end_index]:
-            manifests[split].extend(grouped_motion_names[object_type])
-        start_index = end_index
-
     for split, split_path in split_paths.items():
         split_path.write_text("\n".join(sorted(manifests[split])) + "\n", encoding="utf-8")
-
     print(f"Generated dataset split manifests under {data_root_path}")
     return split_paths
-
-
-def load_motion_names_for_split(
-    split: str,
-    data_root: str,
-    motion_dir: str,
-    motion_metadata_lookup=None,
-) -> set[str]:
-    if split == ALL_SPLIT_NAME:
-        motion_names = set(_list_motion_files(motion_dir))
-        if not motion_names:
-            raise RuntimeError(f"Split '{split}' is empty: {motion_dir}")
-        return motion_names
-    split_paths = ensure_split_manifests(data_root, motion_dir, motion_metadata_lookup)
-    split_path = split_paths[split]
-    motion_names = {
-        line.strip() for line in split_path.read_text(encoding="utf-8").splitlines() if line.strip()
-    }
-    if not motion_names:
-        raise RuntimeError(f"Split '{split}' is empty: {split_path}")
-    return motion_names
-
-
-def _primary_split_results(
-    motion_dir: str,
-    raw_action_group,
-    motion_metadata_lookup,
-) -> dict[str, set[str]]:
-    """Assign this group's OWN clips to train/val/test, species held out whole.
-
-    Membership here is ``action_group`` only. Auxiliary clips must never reach
-    this function: it shuffles the object types that the group filter left and
-    slices them by count, so one extra species would re-deal every later
-    species into a different split -- silently making every earlier run
-    incomparable, and letting a species held out for evaluation reappear in
-    train through its aux clips. Aux clips are added afterwards, to the train
-    set only, by :func:`load_aux_motion_names_for_train`.
-    """
-    all_motion_names = set(_list_motion_files(motion_dir))
-    filtered_motion_names = filter_motion_names_by_action_group(
-        all_motion_names,
-        raw_action_group,
-        motion_metadata_lookup,
-    )
-
-    grouped_motion_names: dict[str, list[str]] = defaultdict(list)
-    for motion_name in sorted(filtered_motion_names):
-        motion_metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
-        object_type = str(motion_metadata.get('object_type'))
-        grouped_motion_names[object_type].append(motion_name)
-
-    # Shuffle object types and assign all their motions to the same split
-    all_split_results: dict[str, set[str]] = {s: set() for s in SUPPORTED_SPLITS}
-    rng = random.Random(DEFAULT_SPLIT_SEED)
-    object_types_list = sorted(grouped_motion_names.keys())
-    rng.shuffle(object_types_list)
-    split_counts = _compute_filtered_split_counts(len(object_types_list))
-    start_index = 0
-    for current_split in SUPPORTED_SPLITS:
-        end_index = start_index + split_counts[current_split]
-        for object_type in object_types_list[start_index:end_index]:
-            all_split_results[current_split].update(grouped_motion_names[object_type])
-        start_index = end_index
-    return all_split_results
 
 
 def load_motion_names_for_split_with_action_group(
@@ -726,98 +800,35 @@ def load_motion_names_for_split_with_action_group(
     motion_dir: str,
     raw_action_group,
     motion_metadata_lookup,
+    val_eligible=None,
 ) -> set[str]:
-    requested_action_group = resolve_requested_action_group(raw_action_group)
-    if not requested_action_group:
-        return load_motion_names_for_split(
-            split, data_root, motion_dir, motion_metadata_lookup
-        )
-
-    if split == ALL_SPLIT_NAME:
-        return filter_motion_names_by_action_group(
-            set(_list_motion_files(motion_dir)),
-            raw_action_group,
-            motion_metadata_lookup,
-        )
-
-    all_split_results = _primary_split_results(
-        motion_dir, raw_action_group, motion_metadata_lookup
-    )
-    selected_motion_names = all_split_results[split]
-
-    if not selected_motion_names:
-        raise RuntimeError(
-            f"Split '{split}' is empty after filtering action_group={requested_action_group!r}"
-        )
-
-    # Generate split manifest files for manual verification
-    data_root_path = Path(data_root)
-    for split_name in SUPPORTED_SPLITS:
-        split_path = data_root_path / f"{split_name}.txt"
-        if all_split_results[split_name]:
-            split_path.write_text("\n".join(sorted(all_split_results[split_name])) + "\n", encoding="utf-8")
-
-    return selected_motion_names
-
-
-def load_aux_motion_names_for_train(
-    split: str,
-    motion_dir: str,
-    raw_action_group,
-    motion_metadata_lookup,
-) -> set[str]:
-    """Auxiliary clips this group may train on, for the TRAIN split only.
-
-    Two rules, both about not corrupting evaluation:
-
-    * Only the train split receives them. Val and test stay exactly the
-      group's own clips, so a metric computed on them keeps meaning what it
-      meant before aux groups existed.
-    * A clip whose species the primary split holds out **for this group** is
-      dropped, however the aux list is written -- otherwise a held-out species
-      would walk back into train through the side door. A species with no
-      primary verdict at all (it has no clip in this group) is NOT held out and
-      is kept: that case is the whole point, and it cannot leak because the
-      species is absent from this group's val/test as well.
-
-    The manifests on disk are untouched: they are written from primary
-    membership alone, so they stay byte-identical whether or not aux is on.
-    """
-    requested_action_group = resolve_requested_action_group(raw_action_group)
-    if not requested_action_group:
-        return set()
-
-    aux_names = filter_motion_names_by_aux_action_group(
+    """One source's clips in ``split``: the ``action_group`` filter picks the
+    population, assign_clips_to_splits deals it (``val_eligible`` gating what
+    may leave train), and the manifests are rewritten alongside."""
+    filtered_motion_names = filter_motion_names_by_action_group(
         set(_list_motion_files(motion_dir)),
         raw_action_group,
         motion_metadata_lookup,
     )
-    if not aux_names:
-        return set()
     if split == ALL_SPLIT_NAME:
-        # 'all' holds nothing out, so there is nothing to protect.
-        return aux_names
-    if split != 'train':
-        return set()
+        if not filtered_motion_names:
+            raise RuntimeError(f"Split '{split}' is empty: {motion_dir}")
+        return filtered_motion_names
 
-    all_split_results = _primary_split_results(
-        motion_dir, raw_action_group, motion_metadata_lookup
-    )
-    held_out_object_types: set[str] = set()
-    for split_name in SUPPORTED_SPLITS:
-        if split_name == 'train':
-            continue
-        for motion_name in all_split_results[split_name]:
-            metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
-            held_out_object_types.add(str(metadata.get('object_type')))
-
-    kept = set()
-    for motion_name in aux_names:
-        metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
-        if str(metadata.get('object_type')) in held_out_object_types:
-            continue
-        kept.add(motion_name)
-    return kept
+    manifests = assign_clips_to_splits(filtered_motion_names, val_eligible)
+    write_split_manifests(data_root, manifests)
+    selected_motion_names = set(manifests[split])
+    if not selected_motion_names:
+        requested_action_group = resolve_requested_action_group(raw_action_group)
+        suffix = f" after filtering action_group={requested_action_group!r}" if requested_action_group else ""
+        # A val empty here is the legal outcome of the VAL_BUCKET_MIN_CLIPS
+        # gate (a small --action_group can have no eligible clip), so it is
+        # EmptySplitError -- catchable by type, no message matching -- while
+        # train/test empty means the corpus itself is missing and stays a
+        # plain RuntimeError.
+        exc_type = EmptySplitError if split == "val" else RuntimeError
+        raise exc_type(f"Split '{split}' is empty under {Path(data_root)}{suffix}")
+    return selected_motion_names
 
 
 def clip_id(namespace: str, motion_name: str) -> str:
@@ -838,48 +849,49 @@ def load_allowed_motion_names_per_source(
     raw_action_group,
     metadata_by_namespace: dict[str, dict[str, dict[str, object]]],
 ) -> dict[str, set[str]]:
-    """Resolve the split independently for each source, then union the results.
+    """Resolve the split for each source, then union the results.
 
-    AnyTop holds out whole *species*, so recomputing the split over the union
-    would reshuffle which species land in val/test and make every earlier
-    experiment incomparable.  Running the existing per-dataset logic once per
-    source and unioning keeps each dataset's manifests byte-identical to what a
-    single-dataset run produces.
+    The clip-name hash keeps a clip's split fixed whatever other sources are
+    loaded, so each dataset's manifests come out byte-identical to a
+    single-dataset run's -- except for the val gate, whose label-bucket counts
+    are taken over the union of the sources (val_eligible_motion_names): a
+    clip that is val-eligible only alongside the other sources' clips of its
+    bucket goes to train when its source is loaded alone.  A source with no
+    val clip is fine as long as some source has one.
     """
-    return {
-        source.namespace: load_motion_names_for_split_with_action_group(
-            split,
-            source.root,
-            source.motion_dir,
+    filtered_by_namespace = {
+        source.namespace: filter_motion_names_by_action_group(
+            set(_list_motion_files(source.motion_dir)),
             raw_action_group,
             metadata_by_namespace[source.namespace],
         )
         for source in sources
     }
-
-
-def load_aux_motion_names_per_source(
-    split: str,
-    sources,
-    raw_action_group,
-    metadata_by_namespace: dict[str, dict[str, dict[str, object]]],
-) -> dict[str, set[str]]:
-    """Per-source auxiliary clips, resolved the same way as the primary split.
-
-    Separate from :func:`load_allowed_motion_names_per_source` rather than
-    folded into its return value: that one has a caller outside training
-    (``tools/sample_augmented_bvh.py``) which wants the group's own clips and
-    nothing else.
-    """
-    return {
-        source.namespace: load_aux_motion_names_for_train(
-            split,
-            source.motion_dir,
-            raw_action_group,
-            metadata_by_namespace[source.namespace],
+    eligible_by_namespace = val_eligible_motion_names(filtered_by_namespace, metadata_by_namespace)
+    allowed: dict[str, set[str]] = {}
+    for source in sources:
+        try:
+            allowed[source.namespace] = load_motion_names_for_split_with_action_group(
+                split,
+                source.root,
+                source.motion_dir,
+                raw_action_group,
+                metadata_by_namespace[source.namespace],
+                eligible_by_namespace[source.namespace],
+            )
+        except EmptySplitError:
+            # One source may legitimately have no val clip (its label buckets
+            # all under the gate); some other source may still have one.
+            allowed[source.namespace] = set()
+    if not any(allowed.values()):
+        raise EmptySplitError(
+            f"Split '{split}' is empty across every source"
+            + (
+                f": no action_label bucket holds more than {VAL_BUCKET_MIN_CLIPS} clips"
+                if split == "val" else ""
+            )
         )
-        for source in sources
-    }
+    return allowed
 
 
 def load_action_conditioning(action_word_embeddings_path=None):
@@ -995,7 +1007,7 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, aux_motion_names: Optional[dict[str, set[str]]] = None, aux_group_mass: float = 0.0):
+    def __init__(self, opt, cond_dict, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, head_word_weights: Optional[dict[str, float]] = None, rare_head_word_floor: int = 0, rare_head_word_max_boost: float = 4.0):
         self.opt = opt
         # None means the caller does not want label conditioning, so no word ids
         # are attached at all. The bundle is the model's bundle: the loader emits
@@ -1022,29 +1034,15 @@ class MotionDataset(data.Dataset):
             object_key: build_joint_struct_features(entry, source=str(object_key))
             for object_key, entry in cond_dict.items()
         }
-        self.balanced = balanced
-        # Auxiliary clips: borrowed from another group, present only in train,
-        # and held to a fixed share of the sampling mass so this group's own
-        # distribution keeps the rest (docs/aux_group_and_head_word_augmentation.md).
-        self.aux_motion_names = aux_motion_names or {}
-        self.aux_group_mass = float(aux_group_mass or 0.0)
-        if not 0.0 <= self.aux_group_mass < 1.0:
-            raise ValueError(
-                f"aux_group_mass must be in [0, 1), got {self.aux_group_mass}. "
-                "It is the share of sampling mass the borrowed clips receive; "
-                "1.0 would leave this group's own clips none."
-            )
-        if self.aux_group_mass <= 0.0:
-            # Off means ABSENT, not zero-weighted: a zero-weight row would still
-            # sit in name_list and shift the joint-bucket population, the length
-            # statistics and the dataset size.
-            self.aux_motion_names = {}
-        # A weighted sampler drives indexing when species are balanced OR when
-        # auxiliary clips have to be held to their mass budget; it yields
-        # absolute name_list indices, so __getitem__ must skip the pointer offset
-        # in that case.
-        self.use_weighted_sampler = bool(self.balanced) or bool(
-            self.aux_group_mass > 0.0 and any(self.aux_motion_names.values())
+        self.head_word_weights = parse_head_word_weights(head_word_weights)
+        self.rare_head_word_floor, self.rare_head_word_max_boost = parse_rare_head_word_floor(
+            rare_head_word_floor, rare_head_word_max_boost
+        )
+        # A weighted sampler drives indexing when any head word can be
+        # weighted (a floor or an explicit list); it yields absolute name_list
+        # indices, so __getitem__ must skip the pointer offset in that case.
+        self.use_weighted_sampler = bool(self.head_word_weights) or (
+            self.rare_head_word_floor > RARE_HEAD_WORD_FLOOR_OFF
         )
         self.sample_limit = max(0, int(sample_limit))
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
@@ -1079,10 +1077,9 @@ class MotionDataset(data.Dataset):
             cache_dirty = False
 
             all_motion_files = [name for name in os.listdir(source.motion_dir) if name.endswith('.npy')]
-            aux_for_source = set(self.aux_motion_names.get(namespace, set()))
             allowed_for_source = (
                 None if allowed_motion_names is None
-                else (allowed_motion_names.get(namespace, set()) | aux_for_source)
+                else allowed_motion_names.get(namespace, set())
             )
             if allowed_for_source is not None:
                 all_motion_files = [name for name in all_motion_files if name in allowed_for_source]
@@ -1153,20 +1150,6 @@ class MotionDataset(data.Dataset):
         self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
         self.name_list = name_list
-        # Aligned with name_list, so the sampler can split the mass without
-        # re-deriving membership from the metadata a second time.
-        self.aux_mask = np.array(
-            [
-                data_dict[name]['motion_name']
-                in self.aux_motion_names.get(data_dict[name]['source_namespace'], ())
-                for name in name_list
-            ],
-            dtype=bool,
-        )
-        # Also on the entry, so a sample prepared BY NAME (eval, tools) carries
-        # the flag without the caller having to know its name_list position.
-        for name, is_aux in zip(name_list, self.aux_mask):
-            data_dict[name]['is_aux'] = bool(is_aux)
         self.reset_min_len(self.min_length)
 
     def reset_min_len(self, length):
@@ -1291,17 +1274,31 @@ class MotionDataset(data.Dataset):
         # The composite clip id, not the bare filename: two sources may hold the
         # same filename, and this value is what training logs report.
         motion_metadata['motion_name'] = name
-        # Borrowed from another action group: the model promotes an eligible
-        # head word or routes this row's label to the unconditional branch.
-        motion_metadata['is_aux'] = bool(data.get('is_aux', False))
         is_loop = bool(motion_metadata.get('is_loop'))
+        # loop_cond_prob: probability that a loop clip is TOLD it is one. When
+        # the draw fails (loop_uncond) the clip is still physically a loop and
+        # gets every loop augmentation below (closing-key drop, periodic time
+        # scale, circular roll, tiling), but the window is then resampled as an
+        # open clip and handed over with is_loop=False -- absolute time table,
+        # open velocity step, no wrap losses. That is deliberate label noise:
+        # the flag is confounded with content in the corpus (see the model's
+        # is_loop note), and a flag the model cannot trust as a content key is
+        # one it has to read as time topology only. An explicit loop_offset
+        # (prepare_sample_by_name, the diagnostics path) always keeps the flag.
+        loop_cond_prob = float(getattr(self.opt, 'loop_cond_prob', 1.0))
+        loop_uncond = bool(
+            is_loop
+            and loop_offset is None
+            and loop_cond_prob < 1.0
+            and random.random() >= loop_cond_prob
+        )
 
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
         loop_phase_offset = 0
         loop_tile_count = 1
-        # A loop clip is always told it is one (the window is closed below);
-        # the only downgrade is the over-long crop, which breaks the cycle.
-        loop_condition_active = bool(is_loop)
+        # Besides loop_uncond, the only downgrade is the over-long crop below,
+        # which breaks the cycle.
+        loop_condition_active = bool(is_loop) and not loop_uncond
 
         # ── Closing-key drop (applies to ALL is_loop motions) ──
         # A loop authored with its last frame repeating frame 0 is the loop
@@ -1361,6 +1358,8 @@ class MotionDataset(data.Dataset):
             # to the target length below at resample_speed MAX_SOURCE_FRAMES_MULT --
             # while the window POSITION stays random so repeated epochs still
             # see the whole clip.
+            if loop_condition_active:
+                loop_uncond = True
             loop_condition_active = False
             ind = random.randint(0, m_length - max_source_length)
             motion = motion[ind: ind + max_source_length]
@@ -1394,6 +1393,7 @@ class MotionDataset(data.Dataset):
         motion_metadata['is_loop'] = bool(loop_condition_active)
         motion_metadata['resample_speed_cond'] = float(resample_speed_cond)
         motion_metadata['loop_data_aug_applied'] = bool(is_loop)
+        motion_metadata['loop_uncond'] = bool(loop_uncond)
         motion_metadata['loop_phase_offset'] = int(loop_phase_offset)
         motion_metadata['loop_tile_count'] = int(loop_tile_count)
         # Diagnostics only (training logs), never a model input.
@@ -1415,6 +1415,7 @@ class MotionDataset(data.Dataset):
                 'loop_phase_offset': int(loop_phase_offset),
                 'loop_tile_count': int(loop_tile_count),
                 'resample_speed_cond': float(resample_speed_cond),
+                'loop_uncond': bool(loop_uncond),
                 'motion_speed_applied': float(motion_speed_applied),
             }
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
@@ -1510,96 +1511,101 @@ class MotionDataset(data.Dataset):
         return self.prepare_sample_by_name(name)
 
 class TruebonesSampler(WeightedRandomSampler):
-    """Sub-balanced weighted sampler for species fairness.
+    """Uniform-over-clips sampler with per-head-word multipliers.
 
-    Each species' total sampling mass is proportional to the square root of its
-    clip count, then normalized across all non-empty species; within a species
-    the mass is split uniformly across its clips.
+    Every clip in the pool starts at weight 1 and is keyed on its
+    action_label's FIRST head word.  Two multipliers stack on that key:
 
-    Species identity is the canonical cond key, so two datasets' ``Horse``
-    entries count as two species and each gets its own sqrt-mass -- the intended
-    reading, since they are different skeletons (79 vs 39 joints). There is no
-    per-dataset weighting: a species' mass depends only on how many clips it
-    contributes to this training subset, never on which dataset it came from.
+    * ``motion_dataset.rare_head_word_floor``: a word with fewer clips than
+      the floor is weighted as if it had that many, so each of its clips
+      carries ``floor / count`` (capped at ``rare_head_word_max_boost``).  A
+      word at or above the floor is untouched.  This is the guarantee for the
+      tail of the corpus (stop, sheathe, crawl: 1 clip each) -- one rule, no
+      list to keep in step with the corpus.
+    * ``motion_dataset.head_word_weights``: an explicit per-word multiplier
+      applied on top, for a word that needs a hand-set weight.
 
-    This is a softer middle ground
-    than full per-species balancing: a species with 9 clips is sampled 3x
-    (=sqrt(9)) as often as a single-clip species, rather than equally (full
-    balance) or 9x (uniform per-clip). The clip count is taken over the already
-    split/action_group-filtered ``name_list``, so it reflects only the clips
-    actually present in this training subset.
+    A clip of final weight w is drawn w times as often as a weight-1 clip.
+    Nothing else moves: species are not balanced, and the words neither rule
+    touches keep the corpus's own proportions.  A multiplier on a common word
+    is legal but pointless -- with uniform draws every one of the 891 attack
+    clips already sees the same number of exposures as every idle clip.
+
+    A label naming several head words ("attack, jump, charge") is keyed under
+    the first, which is also the word the head channel weights above the
+    rest.  The pool is the already split/action_group-filtered ``name_list``
+    from ``pointer`` on; entries below it carry weight 0 (the plain sampler
+    never yields them either).
     """
     def __init__(self, data_source):
         motion_dataset = data_source.motion_dataset
         num_samples = len(data_source)
         name_list = motion_dataset.name_list
-        total_samples = len(name_list)
         pointer = motion_dataset.pointer
-        weights = np.zeros(total_samples, dtype=np.float64)
+        head_word_weights = dict(getattr(motion_dataset, 'head_word_weights', {}) or {})
+        floor, max_boost = parse_rare_head_word_floor(
+            getattr(motion_dataset, 'rare_head_word_floor', 0),
+            getattr(motion_dataset, 'rare_head_word_max_boost', 4.0),
+        )
+        weights = np.zeros(len(name_list), dtype=np.float64)
 
-        # Species membership comes from the loaded entry, not a filename prefix:
-        # after merging, 'Horse_Idle_1.npy' exists under two namespaces and a
-        # prefix test would assign it to both.
+        # The head word comes from the loaded entry's own metadata, never from
+        # the file name: after merging, 'Horse_Idle_1.npy' exists under two
+        # namespaces with two sidecars behind it.
         data_dict = motion_dataset.data_dict
-        aux_mask = getattr(motion_dataset, 'aux_mask', None)
-        aux_group_mass = float(getattr(motion_dataset, 'aux_group_mass', 0.0) or 0.0)
-        balanced = bool(getattr(motion_dataset, 'balanced', False))
+        counts: dict[str, int] = defaultdict(int)
+        head_of_index: dict[int, str] = {}
+        for index in range(pointer, len(name_list)):
+            entry = data_dict[name_list[index]]
+            head = clip_action_head_word(
+                entry.get('motion_metadata'), entry.get('motion_name', name_list[index])
+            )
+            counts[head] += 1
+            head_of_index[index] = head
 
-        def _pool_indices(want_aux: bool) -> dict[str, list[int]]:
-            indices_by_object_type: dict[str, list[int]] = defaultdict(list)
-            for i in range(pointer, len(name_list)):
-                is_aux = bool(aux_mask[i]) if aux_mask is not None else False
-                if is_aux != want_aux:
-                    continue
-                indices_by_object_type[data_dict[name_list[i]]['object_type']].append(i)
-            return indices_by_object_type
-
-        def _fill(indices_by_object_type: dict[str, list[int]], pool_mass: float) -> None:
-            """Spread *pool_mass* over one pool, species-fairly, in place.
-
-            Unbalanced runs weight every clip alike, which is what a plain
-            RandomSampler already did -- so turning the weighted sampler on for
-            the aux budget alone does not silently start balancing species.
-            """
-            non_empty_types = [
-                (object_type, indices_by_object_type[object_type])
-                for object_type in motion_dataset.cond_dict
-                if indices_by_object_type.get(object_type)
-            ]
-            if not non_empty_types:
-                return
-            if balanced:
-                # Per-species mass ~ sqrt(clip count over this filtered subset).
-                species_shares = [np.sqrt(len(object_indices)) for _, object_indices in non_empty_types]
-            else:
-                species_shares = [float(len(object_indices)) for _, object_indices in non_empty_types]
-            total_share = float(np.sum(species_shares))
-            for (object_type, object_indices), share in zip(non_empty_types, species_shares):
-                indices = np.asarray(object_indices)
-                n = len(indices)
-                weights[indices] = pool_mass * (share / total_share) / n
-
-        own_pool = _pool_indices(want_aux=False)
-        aux_pool = _pool_indices(want_aux=True) if aux_mask is not None else {}
-        has_aux = any(aux_pool.values())
-
-        if not own_pool and not has_aux:
-            raise RuntimeError(f"No samples found for any object type in split with pointer={pointer}. "
+        pool = len(name_list) - pointer
+        if pool <= 0:
+            raise RuntimeError(f"No samples found in split with pointer={pointer}. "
                              f"Available samples: {[name_list[i] for i in range(pointer, min(pointer+5, len(name_list)))]}")
 
-        # The budget is a share of the TOTAL mass, not a per-clip factor: however
-        # many clips the aux pool holds, this group's own clips keep 1 - m of the
-        # draws. That is the one property that makes a large aux pool safe.
-        mass = aux_group_mass if has_aux else 0.0
-        if not own_pool:
-            # Degenerate but legal (every clip in this split is borrowed):
-            # give the aux pool everything rather than emitting all-zero weights.
-            mass = 1.0
-        _fill(own_pool, 1.0 - mass)
-        _fill(aux_pool, mass)
+        # Per-word multiplier = floor boost x explicit weight.  The unlabelled
+        # key is not a rare word: it never gets the floor and cannot be listed.
+        multiplier: dict[str, float] = {}
+        for head, count in counts.items():
+            boost = 1.0 if head == UNLABELED_ACTION_GROUP else rare_head_word_boost(count, floor, max_boost)
+            multiplier[head] = boost * head_word_weights.get(head, 1.0)
+        for index, head in head_of_index.items():
+            weights[index] = multiplier[head]
+        total = float(weights.sum())
+        weights /= total
+
+        absent = sorted(set(head_word_weights) - set(counts))
+        if absent:
+            raise RuntimeError(
+                f"--head_word_weights names {absent}, but no clip of this training "
+                f"subset carries {'that' if len(absent) == 1 else 'those'} head "
+                f"word{'s' if len(absent) > 1 else ''} (present: {sorted(counts)}). "
+                f"A weight on a word with no clips changes nothing; fix the list or "
+                f"the corpus filter."
+            )
+        lifted = sorted((w for w, m in multiplier.items() if m != 1.0), key=lambda w: counts[w])
+        if lifted and os.environ.get("LOCAL_RANK", "0") == "0":
+            # One line, once per node (rank 0 only): what the multipliers did
+            # to the draw, readable from the training log. Uniform share is
+            # n / pool; the weighted share is n * m / total.
+            shown = ", ".join(
+                f"{word} {counts[word]}x{multiplier[word]:.3g} "
+                f"{counts[word] / pool:.2%}->{counts[word] * multiplier[word] / total:.2%}"
+                for word in lifted
+            )
+            rule = (
+                f"floor {floor} (max boost {max_boost:g})" if floor > RARE_HEAD_WORD_FLOOR_OFF else "no floor"
+            ) + (f", {len(head_word_weights)} explicit" if head_word_weights else "")
+            print(f"[sampler] head-word weights over {pool} clips, {rule}: {shown}")
 
         super().__init__(num_samples=num_samples, weights=weights)
-    
+
+
 class Truebones(data.Dataset):
     def __init__(self, split="train", **kwargs):
         if split not in SUPPORTED_SPLITS and split != ALL_SPLIT_NAME:
@@ -1609,10 +1615,14 @@ class Truebones(data.Dataset):
         # each entry's namespace/root, the dataset directories holding the clips.
         opt = get_opt(device, kwargs.get('cond_path'))
         self.opt = opt
-        self.balanced = kwargs['balanced']
+        # Parsed here so a typo in --head_word_weights (or a bad floor) fails
+        # before any clip is loaded, not when the sampler is built.
+        self.head_word_weights = parse_head_word_weights(kwargs.get('head_word_weights'))
+        self.rare_head_word_floor, self.rare_head_word_max_boost = parse_rare_head_word_floor(
+            kwargs.get('rare_head_word_floor', 0), kwargs.get('rare_head_word_max_boost', 4.0)
+        )
         self.objects_subset = kwargs['objects_subset']
         self.action_group = kwargs.get('action_group', '')
-        self.aux_group_mass = float(kwargs.get('aux_group_mass', 0.0) or 0.0)
         self.action_label_cond = bool(kwargs.get('action_label_cond', False))
         # One bundle per run: the training entry point builds it and hands the
         # same object to the model, so loader-side word ids and model-side word
@@ -1631,6 +1641,11 @@ class Truebones(data.Dataset):
 
         self.opt.motion_speed_aug = float(kwargs.get('motion_speed_aug', 1.0))
         self.opt.motion_speed_aug_prob = float(kwargs.get('motion_speed_aug_prob', 1.0))
+        self.opt.loop_cond_prob = float(kwargs.get('loop_cond_prob', 1.0))
+        if not 0.0 <= self.opt.loop_cond_prob <= 1.0:
+            raise ValueError(
+                f"loop_cond_prob must be in [0, 1], got {self.opt.loop_cond_prob}."
+            )
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
         if not 0.0 <= self.opt.loop_tile_single_prob <= 1.0:
             raise ValueError(
@@ -1675,43 +1690,17 @@ class Truebones(data.Dataset):
             self.action_group,
             motion_metadata_lookup,
         )
-        aux_motion_names = {}
-        if self.aux_group_mass > 0.0:
-            # A migrated source may have no aux clips for this group; an
-            # unmigrated source has no aux key at all. Check every source so a
-            # migrated one cannot hide an older sidecar in a merged corpus.
-            require_aux_group_sidecars_migrated(
-                motion_metadata_lookup, self.aux_group_mass
-            )
-            aux_motion_names = load_aux_motion_names_per_source(
-                split,
-                opt.sources,
-                self.action_group,
-                motion_metadata_lookup,
-            )
-            aux_total = sum(len(names) for names in aux_motion_names.values())
-            if aux_total == 0:
-                print(
-                    f"[dataset] action_group={self.action_group!r} split={split!r}: no auxiliary "
-                    f"clips match, --aux_group_mass {self.aux_group_mass} is a no-op for this group."
-                )
-            else:
-                print(
-                    f"[dataset] action_group={self.action_group!r} split={split!r}: {aux_total} "
-                    f"auxiliary clip(s) borrowed from other groups, holding "
-                    f"{self.aux_group_mass:.0%} of the sampling mass."
-                )
         self.motion_dataset = MotionDataset(
             self.opt,
             cond_dict,
-            self.balanced,
             num_frames=kwargs['num_frames'],
             sample_limit=self.sample_limit,
             allowed_motion_names=allowed_motion_names,
             motion_metadata_lookup=motion_metadata_lookup,
             action_conditioning=self.action_conditioning,
-            aux_motion_names=aux_motion_names,
-            aux_group_mass=self.aux_group_mass,
+            head_word_weights=self.head_word_weights,
+            rare_head_word_floor=self.rare_head_word_floor,
+            rare_head_word_max_boost=self.rare_head_word_max_boost,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \

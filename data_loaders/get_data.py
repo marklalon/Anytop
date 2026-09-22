@@ -62,15 +62,17 @@ def get_dataset_class(name):
 def get_dataset(
     num_frames,
     split='train',
-    balanced=False,
+    head_word_weights=None,
+    rare_head_word_floor=0,
+    rare_head_word_max_boost=4.0,
     objects_subset="all",
     sample_limit=0,
     action_group='',
-    aux_group_mass=0.0,
     action_label_cond=False,
     action_conditioning=None,
     motion_cache_size=0,
     min_length=20,
+    loop_cond_prob=1.0,
     motion_speed_aug=1.0,
     motion_speed_aug_prob=1.0,
     loop_tile_single_prob=0.5,
@@ -79,15 +81,17 @@ def get_dataset(
     dataset = Truebones(
         split=split,
         num_frames=num_frames,
-        balanced=balanced,
+        head_word_weights=head_word_weights,
+        rare_head_word_floor=rare_head_word_floor,
+        rare_head_word_max_boost=rare_head_word_max_boost,
         objects_subset=objects_subset,
         sample_limit=sample_limit,
         action_group=action_group,
-        aux_group_mass=aux_group_mass,
         action_label_cond=action_label_cond,
         action_conditioning=action_conditioning,
         motion_cache_size=motion_cache_size,
         min_length=min_length,
+        loop_cond_prob=loop_cond_prob,
         motion_speed_aug=motion_speed_aug,
         motion_speed_aug_prob=motion_speed_aug_prob,
         loop_tile_single_prob=loop_tile_single_prob,
@@ -99,7 +103,9 @@ def get_dataset_loader(
     batch_size,
     num_frames,
     split='train',
-    balanced=True,
+    head_word_weights=None,
+    rare_head_word_floor=0,
+    rare_head_word_max_boost=4.0,
     objects_subset="all",
     num_workers=None,
     prefetch_factor=2,
@@ -107,13 +113,13 @@ def get_dataset_loader(
     shuffle=True,
     drop_last=True,
     action_group='',
-    aux_group_mass=0.0,
     action_label_cond=False,
     action_conditioning=None,
     motion_cache_size=0,
     min_length=20,
     main_process_prefetch_batches=0,
     batch_transform=None,
+    loop_cond_prob=1.0,
     motion_speed_aug=1.0,
     motion_speed_aug_prob=1.0,
     loop_tile_single_prob=0.5,
@@ -128,15 +134,17 @@ def get_dataset_loader(
     dataset = get_dataset(
         num_frames=num_frames,
         split=split,
-        balanced=balanced,
+        head_word_weights=head_word_weights,
+        rare_head_word_floor=rare_head_word_floor,
+        rare_head_word_max_boost=rare_head_word_max_boost,
         objects_subset=objects_subset,
         sample_limit=sample_limit,
         action_group=action_group,
-        aux_group_mass=aux_group_mass,
         action_label_cond=action_label_cond,
         action_conditioning=action_conditioning,
         motion_cache_size=motion_cache_size,
         min_length=min_length,
+        loop_cond_prob=loop_cond_prob,
         motion_speed_aug=motion_speed_aug,
         motion_speed_aug_prob=motion_speed_aug_prob,
         loop_tile_single_prob=loop_tile_single_prob,
@@ -144,9 +152,9 @@ def get_dataset_loader(
     )
     collate = truebones_batch_collate
     sampler = None
-    # A weighted sampler is needed for species balancing (--balanced) and for
-    # holding auxiliary clips to their --aux_group_mass share; the dataset owns
-    # that decision so both callers agree on it.
+    # A weighted sampler is needed once any head word can be weighted
+    # (--rare_head_word_floor / --head_word_weights); the dataset owns that
+    # decision so both callers agree on it.
     if dataset.motion_dataset.use_weighted_sampler:
         from data_loaders.truebones.data.dataset import TruebonesSampler
         sampler = TruebonesSampler(dataset)

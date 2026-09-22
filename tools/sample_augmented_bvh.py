@@ -37,6 +37,7 @@ Arguments
   --n                 Number of samples to export  (default: 10)
   --num-frames        Window length in frames, must match --num_frames in training (default: 60)
   --loop-only         Sample only motions marked as loop clips
+  --loop-cond-prob    Probability that a loop clip is told it is one (default: 1.0 = always)
   --motion-speed-aug  Motion-speed augmentation range R, log-uniform in [1/R, R] (default: 1.0 = off)
   --motion-speed-aug-prob  Per-clip probability of applying it (default: 1.0)
   --loop-tile-single-prob  Floor on P(loop tile count == 1) (default: 0.5; 0.0 = uniform)
@@ -157,6 +158,8 @@ def parse_args() -> argparse.Namespace:
                    help="Temporal window length in frames (must match --num_frames in training).")
     p.add_argument("--loop-only", action="store_true",
                    help="Only sample/export motions whose metadata marks them as loop clips.")
+    p.add_argument("--loop-cond-prob", type=float, default=1.0,
+                   help="Probability that a loop clip is told it is one. Match --loop_cond_prob.")
     p.add_argument("--motion-speed-aug", type=float, default=1.0,
                    help="Motion-speed augmentation range R (1.0 = off). Match --motion_speed_aug.")
     p.add_argument("--motion-speed-aug-prob", type=float, default=1.0,
@@ -220,6 +223,7 @@ def main() -> int:
     source = opt.sources[0]
 
     # Augmentation settings
+    opt.loop_cond_prob = args.loop_cond_prob
     opt.motion_speed_aug = args.motion_speed_aug
     opt.motion_speed_aug_prob = args.motion_speed_aug_prob
     opt.loop_tile_single_prob = args.loop_tile_single_prob
@@ -251,7 +255,6 @@ def main() -> int:
     dataset = MotionDataset(
         opt=opt,
         cond_dict=cond_dict,
-        balanced=False,
         num_frames=args.num_frames,
         sample_limit=0,
         allowed_motion_names=allowed_motion_names,
@@ -387,6 +390,7 @@ def main() -> int:
                 if is_source_loop:
                     loop_note = (
                         f", loop_applied={bool(aug_info.get('loop_applied'))}"
+                        f", loop_uncond={bool(aug_info.get('loop_uncond'))}"
                         f", tiles={loop_tile_count}"
                         f", source={source_length}f"
                     )

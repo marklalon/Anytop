@@ -30,6 +30,13 @@ Output layout::
             scores.json            # machine-readable per-clip scores
         eval_report.html
 
+The run folder defaults to ``<RUN_NAME>`` and can be overridden with
+``checkpoint.OUTPUT_DIR`` in the task config, so several batteries of one
+checkpoint (locomotion / stationary / transition) can each keep their own
+``<Category>`` dirs and report instead of colliding on the shared ``Basic`` /
+``NewSkeleton`` categories. ``--output_root`` overrides both with a verbatim
+root. See :func:`_resolve_output_root`.
+
 By default the evaluation runs *incrementally*: existing task outputs are
 kept and re-scored, and only newly-added tasks are generated.  Each task's
 generate.py flags — and the contents of any referenced motion/cond files — are
@@ -41,7 +48,8 @@ in place), the stale output is wiped and the task is regenerated.  Pass
 The checkpoint and task battery are loaded from a JSON config (``--task_config``,
 default ``eval/eval_tasks_locomotion.json``) so they can be tuned without
 editing code. The config must define ``checkpoint.RUN_NAME`` and may define
-``checkpoint.MODEL_FILE``. Each task is
+``checkpoint.MODEL_FILE`` and ``checkpoint.OUTPUT_DIR`` (the run folder, see
+above). Each task is
 ``{"category": str, "args": [<generate.py flags>], "eval_label": str?}``;
 path-valued flags accept absolute paths or paths relative to the Anytop dir.
 
@@ -55,6 +63,10 @@ Usage::
     python eval/eval_checkpoint.py --task_config my_tasks.json --output_root <dir>
     python eval/eval_checkpoint.py --task_config my_tasks.json --overwrite
     python eval/eval_checkpoint.py --model_path .../model.pt --task_config my_tasks.json
+
+Set ``checkpoint.OUTPUT_DIR`` in the task config to send a battery to its own
+run folder, e.g. ``"OUTPUT_DIR": "merged_all_v22_transition"`` for the
+transition battery of the ``merged_all_v22`` checkpoint.
 """
 
 from __future__ import annotations
@@ -139,9 +151,10 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
     """Load checkpoint metadata and the evaluation task battery.
 
     The config is an object with a ``checkpoint`` object and a ``tasks`` list.
-    ``checkpoint.RUN_NAME`` is required and ``checkpoint.MODEL_FILE`` is
-    optional. Each task is ``{"category": str, "args": [str, ...]}`` plus an
-    optional ``"eval_label"``; every task resolves to a scoring label
+    ``checkpoint.RUN_NAME`` is required and ``checkpoint.MODEL_FILE`` and
+    ``checkpoint.OUTPUT_DIR`` are optional. Each task is
+    ``{"category": str, "args": [str, ...]}`` plus an optional
+    ``"eval_label"``; every task resolves to a scoring label
     (see :func:`_task_score_label`) or the whole config is rejected here,
     before any generation. Path-valued flag arguments are resolved relative to
     the Anytop dir unless absolute. Returns ``(checkpoint, [(category, args,
@@ -169,6 +182,11 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
     if model_file is not None and (not isinstance(model_file, str) or not model_file.strip()):
         raise ValueError(
             f"Task config {config_path}: checkpoint.MODEL_FILE must be a non-empty string when set"
+        )
+    output_dir = checkpoint.get("OUTPUT_DIR")
+    if output_dir is not None and (not isinstance(output_dir, str) or not output_dir.strip()):
+        raise ValueError(
+            f"Task config {config_path}: checkpoint.OUTPUT_DIR must be a non-empty string when set"
         )
 
     raw_tasks = data.get("tasks", [])
@@ -209,6 +227,37 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
     if not tasks:
         raise ValueError(f"No tasks found in config: {config_path}")
     return checkpoint, tasks
+
+
+def _resolve_output_root(checkpoint: dict, run_name: str, model_name: str) -> Path:
+    """Resolve the report root a battery's output is written under.
+
+    Without ``checkpoint.OUTPUT_DIR`` this is the default
+    ``outputs/eval_checkpoint/<RUN_NAME>/<MODEL_NAME>``. The config value
+    replaces the run folder, so one checkpoint can be evaluated under several
+    batteries without their ``<Category>`` dirs (and their report) colliding:
+
+    * a bare name -- no path separator -- names a sibling run folder under
+      ``outputs/eval_checkpoint/``; the default is exactly this form with
+      ``OUTPUT_DIR = RUN_NAME``;
+    * anything else is a path: absolute as-is, relative against the Anytop dir.
+
+    ``<MODEL_NAME>`` is appended in both cases, so a root holds one subdir per
+    checkpoint file and an incremental run targets the model it was recorded
+    against. ``--output_root`` is the escape hatch for a verbatim root (it also
+    lets the CLI override the config).
+    """
+    value = checkpoint.get("OUTPUT_DIR")
+    if value is None:
+        base = _ANYTOP_DIR / "outputs" / "eval_checkpoint" / run_name
+    else:
+        base = Path(os.path.expanduser(os.path.expandvars(value.strip())))
+        if not base.is_absolute():
+            if base.parent == Path("."):
+                base = _ANYTOP_DIR / "outputs" / "eval_checkpoint" / base
+            else:
+                base = _ANYTOP_DIR / base
+    return (base / model_name).resolve()
 
 
 def _resolve_checkpoint(checkpoint: dict) -> Path:
@@ -944,7 +993,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--output_root", "--output-root", default=None,
-        help="Override the output root (default: Anytop/outputs/eval_checkpoint/<RUN_NAME>/<MODEL_NAME>).",
+        help="Override the output root (default: Anytop/outputs/eval_checkpoint/"
+             "<RUN_NAME>/<MODEL_NAME>, or checkpoint.OUTPUT_DIR in the task config).",
     )
     parser.add_argument(
         "--overwrite", action="store_true",
@@ -1008,7 +1058,7 @@ def main() -> int:
     if args.output_root:
         root = Path(args.output_root).resolve()
     else:
-        root = _ANYTOP_DIR / "outputs" / "eval_checkpoint" / run_name / model_name
+        root = _resolve_output_root(checkpoint, run_name, model_name)
 
     # Default is incremental (keep existing outputs). --overwrite wipes everything.
     if args.overwrite:

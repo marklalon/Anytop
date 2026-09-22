@@ -192,6 +192,9 @@ def get_gmdm_args(args):
             'cross_limb': True, 'cross_limb_latents': args.cross_limb_latents,
             'cross_limb_dim': getattr(args, 'cross_limb_dim', 64),
             'cross_limb_last_n': getattr(args, 'cross_limb_last_n', 0),
+            'action_adaln_bottleneck': getattr(args, 'action_adaln_bottleneck', 0),
+            'species_film_bottleneck': getattr(args, 'species_film_bottleneck', 0),
+            'last_layer_ff': getattr(args, 'last_layer_ff', 0),
             'joint_mask_prob': getattr(args, 'joint_mask_prob', 0.5),
             'joint_mask_budget': getattr(args, 'joint_mask_budget', 0.15),
             'unreliable_mask_drop_prob': getattr(args, 'unreliable_mask_drop_prob', 0.0),
@@ -204,7 +207,9 @@ def get_gmdm_args(args):
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
+            'action_label_adaln': getattr(args, 'action_label_adaln', False),
             'direction_slot_drop_prob': getattr(args, 'direction_slot_drop_prob', 0.0),
+            'modifier_slot_drop_prob': getattr(args, 'modifier_slot_drop_prob', 0.0),
             # The training entry point builds one bundle and hands the same
             # object to the loader and to the model. Absent at inference: there
             # the checkpoint's own buffers are the word table.

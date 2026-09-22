@@ -707,7 +707,9 @@ cfg∈{2,3} 的均值，R0 → R1（括号是同一格的语料 circvar）：
 
 唯一的回归是 `NewSkeleton/task1`（dragon + `--action_label fly --loop`，域外骨架）：
 0.788 → 0.533，`jerk_norm` 0.725 → **0.166**。拆分探针显示是**三者叠加**才炸
-（`fly` 不带 `--loop` → jerk 0.995；`walk --loop` → 0.720；`fly --loop` → 0.166），
+（`fly` 不带 `--loop` → jerk 0.995；`walk --loop` → 0.720；`fly --loop` → 0.166。
+其中“不带 `--loop`”是当时的语义：省略即开放窗口；`--loop` 现在默认 `auto`，省略时按
+reference / 语料解析，复现该探针要显式写 `--loop off`），
 语料内的 6 个 loop 任务全部正常。**这一项归到全注意力那一 arm 的 §6 判读**，
 详见 [temporal_window_full_attention.md §6.1](temporal_window_full_attention.md)。
 

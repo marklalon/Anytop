@@ -12,6 +12,25 @@ import torch.nn.functional as F
 CUDA_LAUNCH_BLOCKING=1
 
 
+def run_in_fp32(module, tensor, *rest):
+    """Run a broadcast conditioning head outside autocast, on fp32 input.
+
+    These heads emit one vector per sample (or per joint) that is then added to
+    every one of ~1e6 tokens, so their backward sums over all of those tokens and
+    their weight gradients are the largest in the network -- they are the first
+    tensors to overflow fp16 as the loss scale rises. They are also tiny, so
+    fp32 costs under 1% of a training step (inside measurement noise) and cuts
+    the global parameter-gradient error by ~37%.
+    See docs/fp16_vs_bf16_precision.md.
+
+    Defined here rather than in model.anytop because the decoder's own
+    conditioning heads need it too and anytop imports this module, not the
+    other way round; ``model.anytop.run_in_fp32`` re-exports this function.
+    """
+    with torch.autocast(device_type=tensor.device.type, enabled=False):
+        return module(tensor.float(), *rest)
+
+
 class QKNorm(nn.Module):
     """Per-head RMS normalization of query/key vectors before the attention
     dot product.
@@ -291,33 +310,6 @@ class SelectiveMultiheadAttention(nn.Module):
         return attn_output, attn_weights_fp32
 
 
-def _sin_time_embedding(
-    length: int,
-    dim: int,
-    device: torch.device,
-    dtype: torch.dtype,
-    max_period: float = 10000.0,
-) -> Tensor:
-    """Return a standard sinusoidal time table with shape ``(length, dim)``."""
-    if length <= 0:
-        raise ValueError(f"length must be positive, got {length}")
-    if dim <= 0:
-        raise ValueError(f"dim must be positive, got {dim}")
-
-    positions = torch.arange(length, device=device, dtype=dtype).unsqueeze(1)
-    half_dim = dim // 2
-    if half_dim == 0:
-        return torch.zeros((length, dim), device=device, dtype=dtype)
-
-    scales = torch.arange(half_dim, device=device, dtype=dtype).unsqueeze(0)
-    max_period_tensor = torch.full((), max_period, device=device, dtype=dtype)
-    phase = positions / (max_period_tensor ** (scales / max(half_dim - 1, 1)))
-    emb = torch.cat([torch.cos(phase), torch.sin(phase)], dim=1)
-    if emb.shape[1] < dim:
-        emb = F.pad(emb, (0, dim - emb.shape[1]))
-    return emb
-
-
 def circular_phase_embedding(
     length: int,
     dim: int,
@@ -378,28 +370,6 @@ def circular_phase_embedding(
         motion_emb = F.pad(motion_emb, (0, dim - motion_emb.shape[-1]))
     emb[1:] = motion_emb
     return emb
-
-
-def _loop_aware_time_embedding(
-    length: int,
-    dim: int,
-    batch_size: int,
-    device: torch.device,
-    dtype: torch.dtype,
-    loop_phase_mask: Tensor,
-) -> Tensor:
-    """Per-sample time table: circular for loop samples, absolute otherwise.
-
-    ``loop_phase_mask`` is a ``(batch_size,)`` bool tensor; returns
-    ``(length, batch_size, dim)``.
-
-    Selects rather than adds (unlike the main path, which sums the circular
-    phase onto the absolute PE ``InputProcess`` already wrote into ``tgt``):
-    the cross-limb latents carry no input-level frame embedding of their own.
-    """
-    absolute = _sin_time_embedding(length, dim, device, dtype).unsqueeze(1).expand(-1, batch_size, -1)
-    circular = circular_phase_embedding(length, dim, device, dtype).unsqueeze(1)
-    return torch.where(loop_phase_mask.view(1, batch_size, 1), circular, absolute)
 
 
 class CrossLimbTemporalBlock(nn.Module):
@@ -478,46 +448,19 @@ class CrossLimbTemporalBlock(nn.Module):
         self.cross_k_norm = nn.LayerNorm(d_cl)
         self.cross_k_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         self.cross_out_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
-        self.time_emb_scale = nn.Parameter(torch.zeros(1))
         self.reliability_bias = nn.Parameter(torch.zeros(1))
         self.temporal_reliability_bias = nn.Parameter(torch.zeros(1))
         self.cross_k_scale = nn.Parameter(torch.zeros(1))
         self.norm_cl = nn.LayerNorm(d_model)
-        self.register_buffer('_cached_time_emb', torch.empty(0), persistent=False)
-
-    def _get_cached_time_embedding(
-        self,
-        length: int,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> Tensor:
-        if torch.compiler.is_compiling():
-            # Avoid persisting tensors created inside a compiled forward.
-            return _sin_time_embedding(length, self.latent_dim, device, dtype)
-
-        cached = self._cached_time_emb
-        if (
-            cached.ndim == 2
-            and cached.shape == (length, self.latent_dim)
-            and cached.device == device
-            and cached.dtype == dtype
-        ):
-            return cached
-
-        cached = _sin_time_embedding(length, self.latent_dim, device, dtype)
-        self._cached_time_emb = cached
-        return cached
 
     def forward(
         self,
         x: Tensor,
         joints_key_padding_mask: Tensor,
         unreliable_mask: Optional[Tensor] = None,
-        time_embedding: Optional[Tensor] = None,
     ) -> Tensor:
         # x: (T, B, J, d_model); joints_key_padding_mask: (B, J) bool,
-        # True == padded joint. time_embedding: the decoder's per-batch
-        # (loop-aware) time table, (T, d) or (T, B, d); None == absolute time.
+        # True == padded joint.
         T, B, J, _ = x.shape
         K, d = self.num_latents, self.latent_dim
 
@@ -563,20 +506,13 @@ class CrossLimbTemporalBlock(nn.Module):
         # --- Latent temporal self-attention across T, unmasked (every latent
         # token sees the whole window). attention batch = B*K, index (b*K + k).
         zt_in = bz.permute(1, 2, 0, 3).reshape(T, B * K, d)               # (T, B*K, d_cl)
-        if time_embedding is not None:
-            time_embedding = time_embedding.to(device=zt_in.device, dtype=zt_in.dtype)
-            if time_embedding.shape == (T, d):
-                time_emb = time_embedding.unsqueeze(1)
-            elif time_embedding.shape == (T, B, d):
-                time_emb = time_embedding.unsqueeze(2).expand(T, B, K, d).reshape(T, B * K, d)
-            else:
-                raise ValueError(
-                    "time_embedding must have shape "
-                    f"{(T, d)} or {(T, B, d)}, got {tuple(time_embedding.shape)}"
-                )
-        else:
-            time_emb = self._get_cached_time_embedding(T, zt_in.device, zt_in.dtype).unsqueeze(1)
-        zt_in = zt_in + self.time_emb_scale * time_emb
+        # No time table of its own. The latents inherit the frame's absolute PE
+        # through cross-in: every joint token of frame t carries the same PE_t
+        # from InputProcess, proj_in is linear and the attention output is a
+        # convex combination, so proj_in(PE_t) passes through unchanged. A
+        # per-block sinusoidal/circular table behind a zero-init gate was
+        # redundant with that and the gate stayed at |scale| < 0.01 through a
+        # full 400k-step run on every block (docs/anytop_model_architecture.md).
         zt_resid = zt_in
         # A float key_padding_mask is an ADDITIVE key bias in
         # SelectiveMultiheadAttention (both the SDPA and the need_weights
@@ -990,17 +926,84 @@ class GraphMultiHeadAttention(nn.Module):
         assert x.size() == orig_q_size
         return x
 
+# The two branch inputs the action AdaLN modulates, each with a scale and a
+# shift: the temporal block's input and the feed-forward block's input
+# (docs/conditional_modulation_upgrade.md section 3.2). The SPATIAL branch is
+# deliberately left alone -- its input already carries embed_timesteps' additive
+# offset, so a second injection there would be redundant.
+ACTION_ADALN_BRANCHES = 2
+ACTION_ADALN_PARAMS_PER_LAYER = 2 * ACTION_ADALN_BRANCHES
+ADALN_TEMPORAL, ADALN_FF = 0, 1
+
+
+def _modulate(x: Tensor, adaln: Optional[Tensor], branch: int) -> Tensor:
+    """Scale and shift ONE branch's input: ``(1 + gamma) * x + beta``.
+
+    ``adaln`` is this layer's (B, 4, d_model) slice, or None when the run has no
+    action AdaLN (then this is the identity and costs nothing). ``x`` is
+    (frames, B, njoints, d_model), so the modulation broadcasts over frames and
+    joints: a per-sample, per-channel gain, which is the authority the purely
+    additive condition token lacks.
+
+    This feeds the BRANCH only. The residual stream stays the unmodulated
+    post-norm activation, so the identity path through the stack is untouched
+    and the gains cannot compound layer over layer.
+
+    The head is zero-initialised, so gamma = 0 and beta = 0 on a fresh model and
+    this reproduces the unmodulated layer exactly.
+    """
+    if adaln is None:
+        return x
+    gamma = adaln[:, 2 * branch].to(x.dtype).view(1, -1, 1, x.shape[-1])
+    beta = adaln[:, 2 * branch + 1].to(x.dtype).view(1, -1, 1, x.shape[-1])
+    return x * (1.0 + gamma) + beta
+
+
 class GraphMotionDecoder(nn.TransformerDecoder):
     def __init__(self, decoder_layer, num_layers, norm=None,
                  num_topology_codes=NUM_TOPOLOGY_CODES, num_edge_codes=NUM_EDGE_CODES,
                  value_emb=False,
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
-                 cross_limb_last_n=0):
+                 cross_limb_last_n=0, action_label_adaln=False,
+                 action_adaln_bottleneck=0, last_layer_ff=0):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
 
         self.d_model = decoder_layer.d_model
         self.nheads = decoder_layer.heads
+        # --last_layer_ff: a narrower feed-forward in the LAST layer only. That
+        # layer's output goes through norm3 straight into OutputProcess, a
+        # single Linear(d_model -> 12) per joint, so its FFN only has to shape
+        # a ~12-dim-readable signal: in a full 400k-step run three quarters of
+        # its 2048 hidden units decayed to a gain 50x below the other layers'
+        # (participation ratio 464/2048 against ~1950 elsewhere), and the
+        # collapse was progressive. The parameters are better spent on width.
+        # 0 keeps dim_feedforward everywhere (old behaviour, bit-identical).
+        self.last_layer_ff = int(last_layer_ff)
+        if self.last_layer_ff < 0:
+            raise ValueError(f"last_layer_ff must be >= 0, got {last_layer_ff}")
+        if self.last_layer_ff and self.last_layer_ff != decoder_layer.linear1.out_features:
+            # A fresh layer of the narrower width in the clone's place. It draws
+            # its own init RNG, so a seeded with/without comparison has to copy
+            # weights rather than trust the seed (same caveat as action_adaln).
+            self.layers[-1] = type(decoder_layer)(
+                d_model=self.d_model, nhead=self.nheads,
+                dim_feedforward=self.last_layer_ff,
+                dropout=decoder_layer.dropout1.p,
+                activation=decoder_layer.activation,
+            )
+        # Table sizes come from ``topology_relations`` rather than being written
+        # here: the dataset emits those indices, and a mismatch surfaces only as an
+        # out-of-bounds gather deep inside the attention bias.
+        self.topology_key_emb = nn.Embedding(num_topology_codes, self.d_model)
+        self.edge_key_emb = nn.Embedding(num_edge_codes, self.d_model)
+        self.topology_query_emb = nn.Embedding(num_topology_codes, self.d_model)
+        self.edge_query_emb = nn.Embedding(num_edge_codes, self.d_model)
+        self.value_emb_flag = value_emb
+        if value_emb:
+            self.topology_value_emb = nn.Embedding(num_topology_codes, self.d_model)
+            self.edge_value_emb = nn.Embedding(num_edge_codes, self.d_model)
+
         # 0 -> apply at every layer; N>0 -> only the last N layers. Each active
         # layer gets its own independent block, so this also scales the
         # cross-limb parameter count.
@@ -1020,17 +1023,53 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             ])
         else:
             self.cross_limb_blocks = None
-        # Table sizes come from ``topology_relations`` rather than being written
-        # here: the dataset emits those indices, and a mismatch surfaces only as an
-        # out-of-bounds gather deep inside the attention bias.
-        self.topology_key_emb = nn.Embedding(num_topology_codes, self.d_model)
-        self.edge_key_emb = nn.Embedding(num_edge_codes, self.d_model)
-        self.topology_query_emb = nn.Embedding(num_topology_codes, self.d_model)
-        self.edge_query_emb = nn.Embedding(num_edge_codes, self.d_model)
-        self.value_emb_flag = value_emb
-        if value_emb:
-            self.topology_value_emb = nn.Embedding(num_topology_codes, self.d_model)
-            self.edge_value_emb = nn.Embedding(num_edge_codes, self.d_model)
+
+        # --action_label_adaln: the action condition gets a MULTIPLICATIVE
+        # pathway on top of the additive token summed into timesteps_emb
+        # (docs/conditional_modulation_upgrade.md section 3.2). The additive one
+        # can only translate the residual stream, and every sublayer output is
+        # LayerNormed right after its residual add, which pushes a uniform
+        # translation back down; a per-channel gain is what lets the label
+        # amplify a small input difference (two labels sharing a slot sit at
+        # cosine ~0.84 by construction, e.g. 'turn, left' against
+        # 'run, turn, left') into a large behavioural one, instead of leaving
+        # that entirely to --action_label_cfg_scale and its quality cost.
+        #
+        # Allocated after the decoder's other parameters so the flag does not
+        # reorder their initialisation; it does still consume RNG, so a seeded
+        # with/without comparison has to copy weights rather than trust the seed
+        # (tests/test_action_label_adaln.py does).
+        #
+        # ONE head for every layer, not one per layer: same parameter count
+        # (d^2 + 4*L*d^2 against L*(d^2 + 4*d^2)) for one matmul instead of 2L,
+        # which matters on a step that is partly kernel-launch bound.
+        #
+        # --action_adaln_bottleneck: the hidden width of that head. Its input is
+        # the action token, and the label set the token is drawn from has a
+        # slot-source rank of ~137, so the head cannot use more than that many
+        # directions whatever its width: at d_model=384 the trained output
+        # Linear had effective rank 130. 0 keeps the hidden at d_model (old
+        # behaviour); ~192 loses nothing measurable and halves the head, whose
+        # output Linear is the largest single matrix in the model.
+        self.action_adaln_bottleneck = int(action_adaln_bottleneck)
+        if self.action_adaln_bottleneck < 0:
+            raise ValueError(
+                f"action_adaln_bottleneck must be >= 0, got {action_adaln_bottleneck}"
+            )
+        if action_label_adaln:
+            hidden = self.action_adaln_bottleneck or self.d_model
+            self.action_adaln = nn.Sequential(
+                nn.Linear(self.d_model, hidden),
+                nn.SiLU(),
+                nn.Linear(hidden, num_layers * ACTION_ADALN_PARAMS_PER_LAYER * self.d_model),
+            )
+            # Zero-init: gamma = beta = 0 on a fresh model, so training starts
+            # from exactly the unmodulated architecture and the head only ever
+            # has to learn a departure from it. No residual gate.
+            nn.init.zeros_(self.action_adaln[-1].weight)
+            nn.init.zeros_(self.action_adaln[-1].bias)
+        else:
+            self.action_adaln = None
 
     def _expand_relation_heads(self, relation: Tensor) -> Tensor:
         if relation.dim() == 3:
@@ -1048,19 +1087,19 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 tgt_key_padding_mask: Optional[Tensor] = None,
             memory_key_padding_mask: Optional[Tensor] = None, y=None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
-            loop_phase_mask: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            loop_phase_mask: Optional[Tensor] = None,
+            action_adaln_cond: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._expand_relation_heads(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
         output = tgt
         T, B = tgt.shape[0], tgt.shape[1]
-        # Both loop time tables are built once here and shared by every layer:
-        # the circular phase added before temporal attention (zeroed for
-        # non-loop samples) and the cross-limb block's per-sample time table.
-        # Neither replaces the absolute PE InputProcess already put in `tgt`:
-        # the main path adds the phase on top (loop samples only); the
-        # cross-limb table selects instead, its latents having no PE of their own.
+        # The loop phase table is built once here and shared by every layer:
+        # the circular phase added before temporal attention, zeroed for
+        # non-loop samples. It does not replace the absolute PE InputProcess
+        # already put in `tgt`; the main path adds the phase on top (loop
+        # samples only). The cross-limb blocks take no table: their latents
+        # inherit the frame PE through cross-in (see CrossLimbTemporalBlock).
         loop_phase_embedding = None
-        cross_limb_time_embedding = None
         if loop_phase_mask is not None:
             loop_phase_mask = torch.as_tensor(loop_phase_mask, device=tgt.device, dtype=torch.bool).reshape(-1)
             if loop_phase_mask.numel() == 1 and B != 1:
@@ -1071,27 +1110,28 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     f"{loop_phase_mask.numel()} for batch {B}"
                 )
             # `bool(.any())` is an all-False fast path. Under torch.compile it
-            # forces a graph break, so always build the mask-zeroed tables there:
-            # all-False zeroes the phase and selects the absolute table, so the
-            # result is identical.
+            # forces a graph break, so always build the mask-zeroed table there:
+            # all-False zeroes the phase, so the result is identical.
             if torch.compiler.is_compiling() or bool(loop_phase_mask.any()):
                 loop_phase_embedding = (
                     circular_phase_embedding(T, self.d_model, tgt.device, tgt.dtype).unsqueeze(1)
                     * loop_phase_mask.view(1, B, 1)
                 )
-                if self.cross_limb_blocks is not None and len(self.cross_limb_blocks) > 0:
-                    cross_limb_time_embedding = _loop_aware_time_embedding(
-                        T,
-                        self.cross_limb_blocks[0].latent_dim,
-                        B,
-                        tgt.device,
-                        tgt.dtype,
-                        loop_phase_mask,
-                    )
         first_cl_layer = (
             self.num_layers - self.cross_limb_last_n
             if self.cross_limb_last_n > 0 else 0
         )
+        # (B, L, 4, d_model), built once and sliced per layer. The driver is the
+        # SAME token the additive path uses -- one Bernoulli draw, one
+        # action_repr -- which is what keeps classifier-free guidance honest: a
+        # hard-dropped row carries action_label_null_emb, so its modulation is
+        # the null token's modulation rather than a bypass of the head (the
+        # failure mode of the retired global_energy null).
+        action_adaln = None
+        if self.action_adaln is not None and action_adaln_cond is not None:
+            action_adaln = run_in_fp32(self.action_adaln, action_adaln_cond).view(
+                B, self.num_layers, ACTION_ADALN_PARAMS_PER_LAYER, self.d_model
+            )
         for layer_ind, mod in enumerate(self.layers):
             edge_value_emb = None
             topology_value_emb = None
@@ -1108,7 +1148,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     cross_limb_block=cl_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     loop_phase_embedding=loop_phase_embedding,
-                    cross_limb_time_embedding=cross_limb_time_embedding)
+                    action_adaln=None if action_adaln is None else action_adaln[:, layer_ind])
         if self.norm is not None:
             output = self.norm(output)
         return output
@@ -1130,7 +1170,10 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.temporal_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
         # The cross-limb pathway is owned by GraphMotionDecoder (one block per
-        # active layer) and passed into forward(), not held here.
+        # active layer) and passed into forward(), not held here. The action
+        # AdaLN head is owned there too: one head emits every layer's
+        # modulation in a single matmul, and each layer is handed its own
+        # (B, 4, d_model) slice.
         self.temporal_phase_scale = nn.Parameter(torch.zeros(1))
 
     # spatial attention block
@@ -1196,20 +1239,24 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         cross_limb_block: Optional[nn.Module] = None,
         cross_limb_unreliable_mask: Optional[Tensor] = None,
         loop_phase_embedding: Optional[Tensor] = None,
-        cross_limb_time_embedding: Optional[Tensor] = None) -> Tensor:
+        action_adaln: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
         bs = x.shape[1]
         x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
         spatial_attn_output = self._spatial_mha_block(x, topology_rel, edge_rel, edge_key_emb, edge_query_emb, edge_value_emb,
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
-        x = self.norm2(x + self._temporal_mha_block_sin_joint(x, None, loop_phase_embedding=loop_phase_embedding))
+        # Branch input only; the residual adds to the unmodulated x. The
+        # modulation lands BEFORE the circular phase, which _temporal_mha_block
+        # sums in, so a loop sample's phase is never scaled by the label.
+        x = self.norm2(x + self._temporal_mha_block_sin_joint(
+            _modulate(x, action_adaln, ADALN_TEMPORAL), None,
+            loop_phase_embedding=loop_phase_embedding))
         if cross_limb_block is not None:
             x = cross_limb_block(
                 x,
                 tgt_key_padding_mask,
                 unreliable_mask=cross_limb_unreliable_mask,
-                time_embedding=cross_limb_time_embedding,
             )
-        x = self.norm3(x + self._ff_block(x))
+        x = self.norm3(x + self._ff_block(_modulate(x, action_adaln, ADALN_FF)))
         return x

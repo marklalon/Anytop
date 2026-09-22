@@ -1,8 +1,9 @@
 import functools
+import math
 import os
 import re
 import json
-import copy as pycopy
+import contextlib
 import numpy as np
 from os.path import join as pjoin
 from typing import Optional
@@ -25,19 +26,13 @@ from utils.model_util import load_model
 from utils.model_util import (
     bind_checkpoint_action_conditioning,
     build_checkpoint_payload,
-    create_model_and_diffusion_general_skeleton,
     load_checkpoint_weights,
     unwrap_anytop_model,
 )
 import random
 from data_loaders.get_data import get_dataset_loader
+from data_loaders.truebones.data.dataset import EmptySplitError
 from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
-from data_loaders.truebones.truebones_utils.canonical_features import (
-    REST_LENGTH_SCALE_KEY,
-    canonical_to_physical_hml,
-)
-from eval.motion_quality import DistributionMotionQualityScorer
-from eval.motion_quality.reference_bank import reference_prior_words
 from train.sample_loss_limit import SampleLossLimiter
 
 INITIAL_LOG_LOSS_SCALE = 20.0
@@ -67,47 +62,36 @@ def classify_grad_event(grad_norm, scaler_enabled, spike_threshold):
     return 'spike' if grad_norm > spike_threshold else None
 
 
-def _per_sample_decode_cond(y, index, n_joints):
-    """Slice a collated ``y`` down to one sample's decode cond.
+# Seed of the RNG streams the validation pass runs under (see
+# ``_fixed_validation_rng``). Any fixed value works; it is only ever compared
+# against itself.
+VALIDATION_RNG_SEED = 20260921
 
-    ``rest_pos_ric_hml`` is cut to the sample's real joints (the collate pads it
-    to max_joints), the per-sample canonical stats and rest length scale are
-    taken at ``index``; a stat the collate did not emit stays absent so the
-    decoder raises instead of silently skipping the de-standardization.
+
+@contextlib.contextmanager
+def _fixed_validation_rng(device):
+    """Temporarily seed python / torch RNG streams for a lower-variance val pass.
+
+    Reusing a seed makes the frame-window, timestep and noise draws more stable
+    across passes, and the caller's captured RNG states are restored afterwards.
+    This is variance reduction, not a bit-for-bit reproducibility guarantee:
+    background-prefetch threads share the process RNGs, and their scheduling
+    may change the exact order in which random values are consumed.
     """
-    decode_cond = {
-        'rest_pos_ric_hml': y['rest_pos_ric_hml'][index:index + 1, :n_joints],
-    }
-    for key in ('canonical_feature_mean', 'canonical_feature_std', REST_LENGTH_SCALE_KEY):
-        value = y.get(key)
-        if value is not None:
-            decode_cond[key] = value[index]
-    return decode_cond
-
-
-def _tile_eval_cond(cond, repeat):
-    """Repeat each sample in a cond dict ``repeat`` times for batched DDIM sampling.
-
-    All tensors in ``cond['y']`` are repeated along the batch axis;
-    python lists (object_type, parents, action_label, etc.) are
-    element-replicated.
-    """
-    if repeat <= 1:
-        return cond
-    y = {}
-    for key, val in cond['y'].items():
-        if isinstance(val, torch.Tensor):
-            y[key] = torch.cat([val] * repeat, dim=0)
-        elif isinstance(val, list):
-            y[key] = val * repeat
-        else:
-            y[key] = val
-    return {'y': y}
+    py_state = random.getstate()
+    devices = [device] if device.type == 'cuda' else []
+    with torch.random.fork_rng(devices=devices, enabled=True):
+        random.seed(VALIDATION_RNG_SEED)
+        torch.manual_seed(VALIDATION_RNG_SEED)
+        try:
+            yield
+        finally:
+            random.setstate(py_state)
 
 # Parameters AdamW must NOT weight-decay, by ``named_parameters()`` name
 # suffix: the zero-init gates a residual or bias path is opened with
-# (cross-limb ``reliability_bias`` / ``time_emb_scale`` /
-# ``temporal_reliability_bias`` / ``cross_k_scale``, the decoder layer's
+# (cross-limb ``reliability_bias`` / ``temporal_reliability_bias`` /
+# ``cross_k_scale``, the decoder layer's
 # ``temporal_phase_scale``, the global ``unreliable_embedding``) plus the
 # cross-K LayerNorm gain/bias. Decay pulls each of them back toward its init,
 # i.e. toward closing the path it was learned to open. A name rule, not
@@ -116,7 +100,6 @@ def _tile_eval_cond(cond, repeat):
 NO_WEIGHT_DECAY_PARAM_SUFFIXES = (
     'unreliable_embedding',
     '.reliability_bias',
-    '.time_emb_scale',
     '.temporal_reliability_bias',
     '.cross_k_scale',
     '.cross_k_norm.weight',
@@ -142,6 +125,27 @@ def build_optimizer_param_groups(named_params, weight_decay: float):
     return groups
 
 
+def cosine_decay_lr_lambda(lr, lr_final, decay_start, num_steps):
+    """LambdaLR multiplier: constant 1.0 up to ``decay_start``, then a cosine
+    decay reaching ``lr_final / lr`` at ``num_steps``. ``decay_start=None`` keeps
+    the LR constant for the whole run (WSD without the decay phase)."""
+    if decay_start is None:
+        return lambda step: 1.0
+    if not 0 <= decay_start < num_steps:
+        raise ValueError(f"--lr_decay_start {decay_start} must lie in [0, num_steps={num_steps})")
+    if not 0 <= lr_final <= lr:
+        raise ValueError(f"--lr_final {lr_final} must lie in [0, lr={lr}]")
+    floor = lr_final / lr
+    span = num_steps - decay_start
+
+    def multiplier(step):
+        if step < decay_start:
+            return 1.0
+        t = min((step - decay_start) / span, 1.0)
+        return floor + 0.5 * (1.0 - floor) * (1.0 + math.cos(math.pi * t))
+    return multiplier
+
+
 class TrainLoop:
     def __init__(self, args, train_platform, model, diffusion, data):
         self.args = args
@@ -163,7 +167,6 @@ class TrainLoop:
         self.use_fp16 = self.amp_dtype == 'fp16'
         self.fp16_scale_growth = 1e-3  # deprecating this option
         self.weight_decay = args.weight_decay
-        self.lr_anneal_steps = args.lr_anneal_steps
 
         self.step = 0
         self.resume_step = 0
@@ -251,58 +254,37 @@ class TrainLoop:
             lr=self.lr, weight_decay=self.weight_decay, fused=True,
         )
         self._optimizer_param_names = {id(param): name for name, param in self.model.named_parameters()}
-        self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.opt,
-                                                step_size=getattr(self.args, 'lr_scheduler_step_size', 10000),
-                                                gamma=getattr(self.args, 'lr_scheduler_gamma', 0.99))
+        # The LR is a pure function of the training-step (batch) count (see
+        # cosine_decay_lr_lambda; MixedPrecisionTrainer.optimize advances the
+        # scheduler on skipped steps too), so a resume seeks the scheduler to the
+        # checkpoint step instead of restoring scheduler state: the schedule stays
+        # consistent when --lr / --lr_decay_start / --lr_final change on resume,
+        # and old opt checkpoints need no migration.
+        self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+            self.opt,
+            cosine_decay_lr_lambda(
+                lr=self.lr, lr_final=self.args.lr_final,
+                decay_start=self.args.lr_decay_start, num_steps=self.num_steps,
+            ),
+        )
 
+        # Model was resumed, either due to a restart or a checkpoint
+        # being specified at the command line.
         if self.resume_step and bool(getattr(self.args, 'load_optimizer_state', True)):
             self._load_optimizer_state()
-            # Model was resumed, either due to a restart or a checkpoint
-            # being specified at the command line.
+        if self.resume_step:
+            # After the optimizer restore, which also restores the stale param-group LR.
+            # resume_step is the last step already TAKEN, and the seek takes the
+            # number of COMPLETED steps (see total_step, which adds the same 1),
+            # so an uninterrupted run's LR curve is reproduced exactly.
+            self._seek_lr_scheduler(self.resume_step + 1)
 
         self.schedule_sampler_type = 'uniform'
         self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
         
-        self.eval_wrapper, self.eval_data, self.eval_gt_data = None, None, None
-        self.inference_diffusion = None
-        self.scorer = None
-        if self.args.eval_during_training:
-            self.eval_data = get_dataset_loader(
-                cond_path=self.args.cond_path,
-                batch_size=self.args.eval_batch_size,
-                num_frames=self.args.num_frames,
-                split=self.args.eval_split,
-                balanced=False,
-                objects_subset=self.args.objects_subset,
-                sample_limit=self.args.sample_limit,
-                shuffle=False,
-                drop_last=True,
-                action_group=getattr(self.args, 'action_group', ''),
-                action_label_cond=getattr(self.args, 'action_label_cond', False),
-                action_conditioning=getattr(self.args, 'action_conditioning', None),
-                motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
-                min_length=getattr(self.args, 'min_length', 20),
-                main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
-                # Evaluation sees the clips at their recorded tempo regardless
-                # of --motion_speed_aug, so eval losses stay comparable across
-                # runs that differ only in the augmentation. The loop tile draw
-                # stays uniform for the same reason.
-                motion_speed_aug=1.0,
-                loop_tile_single_prob=0.0,
-                # Same reason: keep the eval set and its batch composition fixed
-                # (per-bucket drop_last would drop different clips), so eval
-                # scores stay comparable across runs with different buckets.
-                joint_buckets=None,
-            )
-            sampling_steps = int(getattr(self.args, 'sampling_steps', 100))
-            infer_args = pycopy.deepcopy(self.args)
-            infer_args.timestep_respacing = f'ddim{sampling_steps}' if sampling_steps > 0 else ''
-            _, self.inference_diffusion = create_model_and_diffusion_general_skeleton(infer_args)
-            # The scorer's reference distribution must come from real clips, so
-            # it reuses the same dataset sources the training cond derives.
-            self.scorer = DistributionMotionQualityScorer(
-                dataset_root=data.dataset.opt.sources
-            )
+        self.eval_data = None
+        if self.eval_interval > 0:
+            self.eval_data = self._build_val_loader()
         self.use_ddp = False
         self.ddp_model = self.model
         self.forward_model = self.ddp_model
@@ -312,6 +294,48 @@ class TrainLoop:
         self._interval_loss_sums = {}
         self._interval_loss_counts = {}
         self._ema_persistent_buffer_names = None
+
+    def _build_val_loader(self):
+        """The val-split loader, or ``None`` (validation off) when the split is
+        empty: with VAL_BUCKET_MIN_CLIPS gating what may leave train, a small
+        --action_group can legitimately have no val clip."""
+        try:
+            return get_dataset_loader(
+                cond_path=self.args.cond_path,
+                batch_size=self.batch_size,
+                num_frames=self.args.num_frames,
+                split='val',
+                objects_subset=self.args.objects_subset,
+                sample_limit=self.args.sample_limit,
+                shuffle=False,
+                drop_last=False,
+                action_group=getattr(self.args, 'action_group', ''),
+                action_label_cond=getattr(self.args, 'action_label_cond', False),
+                action_conditioning=getattr(self.args, 'action_conditioning', None),
+                motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
+                min_length=getattr(self.args, 'min_length', 20),
+                # Keep the loader's default background prefetch (0 selects its
+                # default queue depth). The validation seed reduces variation in
+                # window / tile draws, but prefetch scheduling means those draws
+                # are not promised to be bit-for-bit identical across passes.
+                main_process_prefetch_batches=0,
+                # Validation sees the clips at their recorded tempo regardless
+                # of --motion_speed_aug, so val losses stay comparable across
+                # runs that differ only in the augmentation. The loop tile draw
+                # stays uniform for the same reason, and a loop clip is scored
+                # under the flag it was authored with: --loop_cond_prob is
+                # training-time label noise, not part of the val set.
+                motion_speed_aug=1.0,
+                loop_tile_single_prob=0.0,
+                loop_cond_prob=1.0,
+                # Same reason: keep the val set and its batch composition fixed
+                # (per-bucket batching would regroup the clips), so val losses
+                # stay comparable across runs with different buckets.
+                joint_buckets=None,
+            )
+        except EmptySplitError as exc:
+            tqdm.write(f'[val] validation disabled: {exc}')
+            return None
 
     def _compile_forward_model(self, mode='default'):
         """Wrap the training forward path with torch.compile.
@@ -470,29 +494,7 @@ class TrainLoop:
                 "Sanitized non-finite optimizer state after restore "
                 f"({format_nonfinite_stats(optimizer_state_stats)})"
             )
-        
-        # Restore LR scheduler state to continue from the correct step
-        if isinstance(checkpoint_data, dict) and 'scheduler' in checkpoint_data:
-            try:
-                self.lr_scheduler.load_state_dict(checkpoint_data['scheduler'])
-                logger.log("LR scheduler state restored")
-            except Exception as exc:
-                logger.log(f"LR scheduler state restore skipped: {exc}")
-        elif self.resume_checkpoint:
-            try:
-                checkpoint_number = parse_checkpoint_number_from_filename(self.resume_checkpoint)
-                numbering_mode = self._get_checkpoint_step_numbering(self.resume_checkpoint)
-                if numbering_mode == 'completed_steps':
-                    inferred_last_epoch = checkpoint_number
-                else:
-                    inferred_last_epoch = max(checkpoint_number, 0)
-                self.lr_scheduler.last_epoch = inferred_last_epoch
-                self.lr_scheduler._step_count = inferred_last_epoch + 1
-                self.lr_scheduler._last_lr = [group['lr'] for group in self.opt.param_groups]
-                logger.log(f"LR scheduler state inferred from resume checkpoint step {inferred_last_epoch}")
-            except Exception as exc:
-                logger.log(f"LR scheduler inference skipped: {exc}")
-        
+
         self._restore_rng_states(checkpoint_data)
 
         limiter_state = checkpoint_data.get('sample_loss_limiter') if isinstance(checkpoint_data, dict) else None
@@ -511,9 +513,6 @@ class TrainLoop:
                 try:
                     motion, cond = next(data_iter)
                 except StopIteration:
-                    break
-
-                if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
                     break
 
                 motion = self._move_batch_to_device(motion)
@@ -535,9 +534,7 @@ class TrainLoop:
                         self.train_platform.report_scalar(name=k, value=v, iteration=completed_step, group_name='Loss')
 
                 if self._should_validate(completed_step):
-                    self.model.eval()
                     self.evaluate()
-                    self.model.train()
 
                 if self._should_save(completed_step):
                     self.save(completed_step)
@@ -549,9 +546,6 @@ class TrainLoop:
 
                 if completed_step == self.num_steps:
                     break
-
-            if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
-                break
 
     def _move_batch_to_device(self, batch):
         return batch.to(self.device, non_blocking=self.non_blocking)
@@ -584,7 +578,7 @@ class TrainLoop:
         return completed_step % self.save_interval == 0 or completed_step == self.num_steps
 
     def _should_validate(self, completed_step):
-        if not self.args.eval_during_training or self.eval_data is None or self.eval_interval <= 0:
+        if self.eval_data is None:
             return False
         return completed_step % self.eval_interval == 0 or completed_step == self.num_steps
 
@@ -697,22 +691,29 @@ class TrainLoop:
         self._interval_loss_counts.clear()
         return metrics
 
-    def _compute_eval_losses(self, batch, cond):
-        t, weights = self.schedule_sampler.sample(batch.shape[0], dist_util.dev())
+    def _validation_losses(self, model, batch, cond, t, noise):
+        """Per-key loss means of one val batch at timesteps ``t`` with the
+        given ``noise``, the same terms training logs.
+
+        Same ``training_losses`` and the same autocast as a training step, so
+        ``Val/loss`` is directly comparable with ``Loss/loss``; raw (the
+        --sample_loss_limit reweighting is a gradient policy, not a metric)
+        and unweighted (the caller draws ``t`` stratified-uniform, which needs
+        no importance weights).
+        """
         with torch.no_grad(), self._autocast_context():
             losses = self.diffusion.training_losses(
-                self.model,
+                model,
                 batch,
                 t,
                 model_kwargs=self._with_train_step(cond, self.total_step()),
+                noise=noise,
             )
-
-        reduced = {}
-        for key, value in losses.items():
-            if not torch.is_tensor(value):
-                continue
-            reduced[key] = float((value.detach() * weights).mean().item())
-        return reduced
+        return {
+            key: value.detach().float().mean()
+            for key, value in losses.items()
+            if torch.is_tensor(value)
+        }
 
     def total_step(self):
         total_step = self.step
@@ -723,137 +724,76 @@ class TrainLoop:
         return total_step
 
     def evaluate(self):
-        if not self.args.eval_during_training or self.eval_data is None:
+        """Log the loss over the whole val split, for the online model and (with
+        --use_ema) the EMA copy the checkpoints are used through.
+
+        ``model.eval()`` turns off every training-time stochastic path (dropout,
+        CFG label drop, joint / temporal masks), so this is the fully conditioned
+        loss. The remaining RNG draws (frame window, timestep, noise) are seeded
+        consistently to reduce validation noise; background prefetch scheduling
+        means exact reproducibility across passes or runs is not guaranteed.
+
+        Each clip is scored at --val_t_strata timesteps, one per equal-width
+        stratum of [0, T), instead of one uniform draw: with ~70 val clips a
+        single draw per clip left the mean at the mercy of which clips landed
+        on a high t, and the curve swung 0.05 -> 0.3 between evaluations while
+        the train loss was flat.  The strata have equal width, so the plain
+        mean over them is still an unbiased estimate of the uniform-t
+        objective, i.e. the same quantity as ``Loss/loss``.  The live and EMA
+        models see identical (t, noise) draws, so their curves are a paired
+        comparison.
+        """
+        if self.eval_data is None:
             return
-        infer_model = self.model  # use raw model (not EMA) to observe real val performance
-        motion_groups = {}
-        missing_action_label_count = 0
-        target_batch = int(self.args.eval_batch_size)
+        models = {'': self.model}
+        if self.model_avg is not None:
+            models['ema_'] = self.model_avg
+        was_training = {prefix: model.training for prefix, model in models.items()}
+        for model in models.values():
+            model.eval()
 
-        infer_model.eval()
-        # Sampling is fp32 whatever --amp_dtype trains with: bf16 rounding of the
-        # x0 prediction is frame-independent noise that inflates the Jerk / Snap /
-        # SpectralFlatness terms scored below (docs/bf16_precision_issues.md), so
-        # bf16 scores would not be comparable across checkpoints or with
-        # eval_checkpoint.py. TF32 stays whatever training set (on under --compile).
-        with torch.no_grad(), torch.autocast(device_type=self.device.type, enabled=False):
-            # Iterate the whole eval split so every unique motion is sampled
-            # at least once. The loader batches by eval_batch_size, so full
-            # batches sample each motion once; a smaller trailing batch is
-            # tiled up to fill eval_batch_size (each motion sampled repeat
-            # times, may overshoot slightly when it doesn't divide evenly).
-            for motion, cond in self.eval_data:
-                motion = self._move_batch_to_device(motion)
-                cond = self._move_cond_to_device(cond)
-                native_batch = motion.shape[0]
-                if native_batch < target_batch:
-                    repeat = (target_batch + native_batch - 1) // native_batch
-                    motion = torch.cat([motion] * repeat, dim=0)
-                    cond = _tile_eval_cond(cond, repeat)
+        num_strata = max(int(getattr(self.args, 'val_t_strata', 1)), 1)
+        num_timesteps = self.diffusion.num_timesteps
+        sums = {}
+        sample_count = 0
+        try:
+            with _fixed_validation_rng(self.device):
+                for motion, cond in self.eval_data:
+                    motion = self._move_batch_to_device(motion)
+                    cond = self._move_cond_to_device(cond)
+                    batch_size = motion.shape[0]
+                    # One fixed offset per clip places its timestep inside
+                    # each stratum, so every t in [0, T) is reachable across
+                    # the split rather than only the stratum midpoints.
+                    offsets = torch.rand(batch_size, device=motion.device)
+                    draws = []
+                    for stratum in range(num_strata):
+                        t = ((stratum + offsets) * (num_timesteps / num_strata)).long()
+                        t = t.clamp_(max=num_timesteps - 1)
+                        draws.append((t, torch.randn_like(motion)))
+                    for prefix, model in models.items():
+                        for t, noise in draws:
+                            for key, value in self._validation_losses(
+                                    model, motion, cond, t, noise).items():
+                                name = prefix + key
+                                sums[name] = sums.get(name, 0.0) + value * (batch_size / num_strata)
+                    sample_count += batch_size
+        finally:
+            for prefix, model in models.items():
+                model.train(was_training[prefix])
 
-                batch_size = motion.shape[0]
-                max_joints = motion.shape[1]
-                n_frames = motion.shape[3]
-
-                sample_shape = (batch_size, max_joints, infer_model.feature_len, n_frames)
-                noise = torch.randn(sample_shape, device=dist_util.dev())
-                sample = self.inference_diffusion.ddim_sample_loop(
-                    model=infer_model,
-                    shape=sample_shape,
-                    noise=noise,
-                    init_image=motion,
-                    skip_timesteps=5,
-                    clip_denoised=False,
-                    model_kwargs=cond,
-                    device=dist_util.dev(),
-                    progress=False,
-                    eta=0.0,
-                )
-
-                for i in range(batch_size):
-                    object_type = cond['y']['object_type'][i]
-                    # Grouped by the label's prior words, not its spelling: the
-                    # two directions of one transition share a reference prior.
-                    #
-                    # This call RAISES on a label that breaks the vocabulary
-                    # contract (unknown token, no head word, repeats, too many
-                    # words) and takes validation down with it -- deliberately,
-                    # and unlike the empty label handled just below: a typo must
-                    # fail loudly rather than silently narrow the prior to the
-                    # words it happened to hit and report a confident score for
-                    # it. An empty label is legal (no condition), so it only
-                    # skips this clip.
-                    prior_words = reference_prior_words(
-                        cond['y'].get('action_label', [None] * batch_size)[i]
-                    )
-                    if not prior_words:
-                        missing_action_label_count += 1
-                        continue
-                    n_joints = cond['y']['n_joints'][i].item()
-                    motion_sample = sample[i][:n_joints]
-                    # Every per-sample field is sliced to row i: the canonical stats
-                    # are per object_subset, and the whole [B, F] stack does not fit
-                    # a one-sample feature (the decoder rejects it).
-                    motion_physical = canonical_to_physical_hml(
-                        motion_sample.unsqueeze(0),
-                        _per_sample_decode_cond(cond['y'], i, n_joints),
-                    )[0]
-                    motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
-                    group_key = (object_type, prior_words)
-                    motion_groups.setdefault(group_key, []).append(motion_np.astype(np.float32))
-
-        infer_model.train()
-
-        if missing_action_label_count:
-            tqdm.write(f'Validation skipped {missing_action_label_count} motion(s) with no action_label.')
-
-        if not motion_groups:
-            tqdm.write('Validation skipped: eval split returned no samples.')
+        if sample_count == 0:
+            tqdm.write('Validation skipped: val split returned no samples.')
             return
 
-        scores = []
-        score_weights = []
-        jerk_scores = []
-        snap_scores = []
-        sf_scores = []
-        bl_scores = []
-        for (object_type, prior_words), motions in motion_groups.items():
-            action_label = ', '.join(prior_words)
-            try:
-                report = self.scorer.evaluate(
-                    motions=motions,
-                    object_type=object_type,
-                    action_label=action_label,
-                )
-            except Exception as exc:
-                tqdm.write(f"[eval] Scoring failed for {object_type} ({action_label}): {exc}")
-                continue
-            scores.append(report.overall_score)
-            jerk_scores.append(report.jerk_score)
-            snap_scores.append(report.snap_score)
-            sf_scores.append(report.spectral_flatness_score)
-            bl_scores.append(report.bone_length_score)
-            score_weights.append(len(motions))
-
-        if not scores:
-            return
-
-        w = np.array(score_weights)
         completed_step = self.total_step() + 1
-        avg_score = float(np.average(scores, weights=w))
-        avg_jerk = float(np.average(jerk_scores, weights=w))
-        avg_snap = float(np.average(snap_scores, weights=w))
-        avg_sf = float(np.average(sf_scores, weights=w))
-        avg_bl = float(np.average(bl_scores, weights=w))
-        tqdm.write('val_step[{}]: Score[{:.4f}] Jerk[{:.4f}] Snap[{:.4f}] SF[{:.4f}] BL[{:.4f}]'.format(
-            completed_step, avg_score, avg_jerk, avg_snap, avg_sf, avg_bl))
-        self.train_platform.report_scalar(name='Score', value=avg_score, iteration=completed_step, group_name='Val')
-        self.train_platform.report_scalar(name='Jerk', value=avg_jerk, iteration=completed_step, group_name='Val')
-        self.train_platform.report_scalar(name='Snap', value=avg_snap, iteration=completed_step, group_name='Val')
-        self.train_platform.report_scalar(name='SpectralFlatness', value=avg_sf, iteration=completed_step, group_name='Val')
-        self.train_platform.report_scalar(name='BoneLength', value=avg_bl, iteration=completed_step, group_name='Val')
-
-
+        metrics = {name: float((total / sample_count).item()) for name, total in sums.items()}
+        summary = ' '.join(
+            f'{name}[{metrics[name]:.5f}]' for name in ('loss', 'ema_loss') if name in metrics
+        )
+        tqdm.write(f'val_step[{completed_step}]: {summary} ({sample_count} clips)')
+        for name, value in metrics.items():
+            self.train_platform.report_scalar(name=name, value=value, iteration=completed_step, group_name='Val')
 
 
     def _sync_ema_persistent_buffers(self):
@@ -863,10 +803,9 @@ class TrainLoop:
         .parameters(), so these running stats would otherwise stay at their
         init values in the EMA checkpoint.  state_dict() keys select exactly
         parameters + persistent buffers, so subtracting the parameter names
-        leaves the persistent buffers.  Non-persistent buffers (e.g.
-        _cached_time_emb) are absent from state_dict and must NOT be copied:
-        the EMA model is never forwarded, so its cache shape would mismatch the
-        live model's and copy_ would raise.
+        leaves the persistent buffers.  Non-persistent buffers are absent from
+        state_dict and must NOT be copied: the EMA model is never forwarded, so
+        a cache's shape would mismatch the live model's and copy_ would raise.
         """
         # The name list is fixed once the model is built; rebuilding a full
         # state_dict() every step just to find it cost ~2 ms of host time.
@@ -895,7 +834,6 @@ class TrainLoop:
             # .parameters()).  Sync persistent buffers (running statistics) so
             # they are available in the EMA checkpoint at inference time.
             self._sync_ema_persistent_buffers()
-        self._anneal_lr()
         self.log_step()
 
     def forward_backward(self, batch, cond, epoch):
@@ -1145,13 +1083,22 @@ class TrainLoop:
         return torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype)
 
 
-    def _anneal_lr(self):
-        if not self.lr_anneal_steps:
-            return
-        frac_done = (self.step + self.resume_step) / self.lr_anneal_steps
-        lr = self.lr * (1 - frac_done)
-        for param_group in self.opt.param_groups:
-            param_group["lr"] = lr
+    def _seek_lr_scheduler(self, step):
+        """Move the LambdaLR to ``step`` COMPLETED steps and apply the LR that
+        step uses to the optimizer.
+
+        LambdaLR indexes the multiplier by completed steps -- the LR applied at
+        completed step k is ``fn(k - 1)`` -- so ``step`` is a count, not an
+        index, and a resume passes ``resume_step + 1``.
+        """
+        self.lr_scheduler.last_epoch = step
+        self.lr_scheduler._step_count = step + 1
+        lrs = [base_lr * fn(step) for base_lr, fn in
+               zip(self.lr_scheduler.base_lrs, self.lr_scheduler.lr_lambdas)]
+        for param_group, lr in zip(self.opt.param_groups, lrs):
+            param_group['lr'] = lr
+        self.lr_scheduler._last_lr = lrs
+        logger.log(f"LR scheduler seeked to step {step}: lr={lrs[0]:.3e}")
 
     def log_step(self):
         logger.logkv("step", self.step + self.resume_step)
@@ -1221,9 +1168,7 @@ class TrainLoop:
                     }
                 else:
                     opt_state = {'opt': opt_state}
-                
-                # Save LR scheduler state for proper resumption
-                opt_state['scheduler'] = self.lr_scheduler.state_dict()
+
                 if self.sample_loss_limiter is not None:
                     opt_state['sample_loss_limiter'] = self.sample_loss_limiter.state_dict()
                 
@@ -1313,5 +1258,4 @@ def get_blob_logdir():
     # a blobstore or some external drive.
     return logger.get_dir()
             
-
 

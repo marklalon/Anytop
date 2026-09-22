@@ -14,9 +14,10 @@ It has two halves that share one on-disk contract:
   ``tools/regenerate_dataset_artifacts.py``) walks the dataset's clips and
   writes a per-species table of clip lengths, split by action group + canonical
   action label and by whether the clip is a loop.
-* **Lookup** (``auto_num_frames``, run by ``sample/generate.py``) reads that
-  table back out of ``cond.npy`` and returns the median length for the
-  requested label.
+* **Lookup** (``auto_num_frames`` and ``auto_loop``, run by
+  ``sample/generate.py``) reads that table back out of ``cond.npy`` and returns
+  the median length for the requested label, or whether the corpus animates
+  that label as a loop.
 
 The table lives in ``cond.npy`` and nowhere else, because cond.npy is the whole
 inference contract: generation reads no dataset directory. (The retired
@@ -63,10 +64,11 @@ _SIMILAR_SPECIES_LIMIT = 16
 def label_key(action_group, action_label) -> str:
     """The table key for one (group, canonical label) pair.
 
-    The group is part of the key because a label is only ever sampled by the
-    checkpoint trained on its group, and the same head word carries a different
-    duration in another group (a stationary "walk" in place is not a locomotion
-    "walk, forward").
+    The group is part of the key because a single-group checkpoint only ever
+    samples its own group's labels, and the same head word could carry a
+    different duration in another group. A request with an EMPTY group (an
+    ``--action_group all`` checkpoint) matches the label part across every
+    group; see :func:`_group_matches`.
     """
     group = str(action_group or "").strip().lower()
     label = str(action_label or "").strip()
@@ -187,25 +189,58 @@ def merge_prior_pool(primary, fallback) -> dict:
     return pool
 
 
-def _lengths_for(cond_entry, matches, loop_only: bool) -> list[int]:
-    """Every recorded length of one species under the labels ``matches`` accepts."""
-    lengths: list[int] = []
+def _buckets_for(cond_entry, matches):
+    """The ``(loop_lengths, oneshot_lengths)`` of one species under the labels
+    ``matches`` accepts, pooled across those labels."""
+    loops: list[int] = []
+    oneshots: list[int] = []
     for key, buckets in _table_for(cond_entry).items():
         if not matches(key) or not isinstance(buckets, Mapping):
             continue
-        lengths.extend(int(value) for value in (buckets.get(LOOP_BUCKET) or ()))
-        if not loop_only:
-            lengths.extend(int(value) for value in (buckets.get(ONESHOT_BUCKET) or ()))
-    return lengths
+        loops.extend(int(value) for value in (buckets.get(LOOP_BUCKET) or ()))
+        oneshots.extend(int(value) for value in (buckets.get(ONESHOT_BUCKET) or ()))
+    return loops, oneshots
+
+
+def _lengths_for(cond_entry, matches, loop_only: bool) -> list[int]:
+    """Every recorded length of one species under the labels ``matches`` accepts."""
+    loops, oneshots = _buckets_for(cond_entry, matches)
+    return loops if loop_only else loops + oneshots
+
+
+def _loop_flags_for(cond_entry, matches) -> list[bool]:
+    """One ``is_loop`` per recorded clip of one species under ``matches``."""
+    loops, oneshots = _buckets_for(cond_entry, matches)
+    return [True] * len(loops) + [False] * len(oneshots)
+
+
+def _group_matches(key_group, wanted_group) -> bool:
+    """Does a table key's group satisfy the request's?
+
+    An EMPTY ``wanted_group`` means "any group". That is what an
+    ``--action_group all`` checkpoint asks for: it was trained on the whole
+    corpus, so it has no group of its own to restrict the pool by. Nothing is
+    lost by the wildcard -- the label's first head word determines the group on
+    its own across the corpus, so at most one group can hold a given label
+    anyway, and the wildcard just saves having to say which.
+    """
+    return not wanted_group or key_group == wanted_group
 
 
 def _exact_matcher(action_group, action_label):
-    wanted = label_key(action_group, action_label)
-    return lambda key: key == wanted
+    group = str(action_group or "").strip().lower()
+    wanted = label_key("", action_label).lstrip("|")
+
+    def matches(key):
+        key_group, key_label = split_label_key(key)
+        return key_label == wanted and _group_matches(key_group, group)
+
+    return matches
 
 
 def _head_word_matcher(action_group, action_label):
-    """Same group and same action head words, whatever the modifiers.
+    """Same group (or any, when none is asked for) and same action head words,
+    whatever the modifiers.
 
     'walk, forward, fast' falls back to every 'walk' clip of the group: the head
     word is what sets the duration, a direction or a hands token does not.
@@ -218,7 +253,7 @@ def _head_word_matcher(action_group, action_label):
     def matches(key):
         key_group, key_label = split_label_key(key)
         candidate = tuple(head_words_in(vocab_words_in(key_label)))
-        return key_group == group and candidate == wanted
+        return candidate == wanted and _group_matches(key_group, group)
 
     return matches
 
@@ -263,78 +298,61 @@ def _ranked_neighbours(cond_dict, target_type, candidates):
         return list(candidates)
 
 
-def auto_num_frames(
-    cond_dict: Mapping[str, Mapping[str, object]],
-    target_type: Optional[str],
-    *,
-    action_group: str,
-    action_label: str,
-    loop: bool,
-    min_frames: int,
-    max_frames: int,
-) -> Optional[tuple[int, str]]:
-    """Median training clip length for ``action_label``, or ``None``.
+def _matchers_for(action_group, action_label):
+    """The label matchers in the order the ladder tries them, or ``[]`` for an
+    empty label (nothing to look up)."""
+    label = str(action_label or "").strip()
+    if not label:
+        return []
+    matchers = [("exact label", _exact_matcher(action_group, label))]
+    head_words = _head_word_matcher(action_group, label)
+    if head_words is not None:
+        words = ", ".join(head_words_in(vocab_words_in(label)))
+        matchers.append((f"head word(s) '{words}'", head_words))
+    return matchers
 
-    Returns ``(frames, explanation)`` with ``frames`` clamped into
-    ``[min_frames, max_frames]``; ``None`` means the corpus says nothing about
-    this label and the caller should keep its own default.
 
-    ``target_type`` ``None`` asks for the corpus-wide answer (``--object_type
-    all``, which generates one length for every species at once).
+def _first_pool(cond_dict, target_type, matchers, collect):
+    """The first non-empty pool the ladder finds, as ``(values, explanation)``.
 
-    The ladder, first non-empty pool wins:
+    ``collect(cond_entry, matches)`` lists one species' values under one
+    matcher. The ladder, first non-empty pool wins:
 
     1. the target species' own clips with exactly this label,
     2. its clips with the same action head words,
     3. the most similar species' clips with exactly this label,
     4. the most similar species' clips with the same head words.
 
-    The target species comes first because its own clip IS the length the model
+    The target species comes first because its own clip IS what the model
     fitted for it; neighbours are borrowed only for a species that was never
     animated doing this, and then nearest-first, so a quadruped's walk is not
     timed by a bird's.
 
-    ``loop`` restricts every tier to loop clips, whose recorded length is one
-    period: a one-shot clip's length is not a period and would hand ``--loop`` a
-    window several cycles long (or a fraction of one).
+    ``target_type`` ``None`` asks for the corpus-wide answer (``--object_type
+    all``, which generates one answer for every species at once).
     """
-    label = str(action_label or "").strip()
-    if not label:
-        return None
-
-    matchers = [("exact label", _exact_matcher(action_group, label))]
-    head_words = _head_word_matcher(action_group, label)
-    if head_words is not None:
-        words = ", ".join(head_words_in(vocab_words_in(label)))
-        matchers.append((f"head word(s) '{words}'", head_words))
-
-    loop_only = bool(loop)
-
     # Every label matcher is tried on the target species BEFORE any neighbour is
     # consulted. Duration is set more by the body than by the modifier: a
     # Horse's own "walk, left" cycle times its "walk, forward" far better than a
     # Pigeon's exact "walk, forward" does.
     if target_type is not None:
         for matcher_name, matches in matchers:
-            own = _lengths_for(cond_dict.get(target_type, {}), matches, loop_only)
+            own = collect(cond_dict.get(target_type, {}), matches)
             if own:
-                return (
-                    _pooled_median(own, min_frames, max_frames),
-                    f"median of {len(own)} {target_type} clip(s) matching {matcher_name}",
-                )
+                return own, f"{len(own)} {target_type} clip(s) matching {matcher_name}"
 
     for matcher_name, matches in matchers:
         candidates = [
             name
             for name in cond_dict
-            if name != target_type and _lengths_for(cond_dict[name], matches, loop_only)
+            if name != target_type and collect(cond_dict[name], matches)
         ]
         if not candidates:
             continue
-        pooled: list[int] = []
+        pooled = []
         used: list[str] = []
         for name in _ranked_neighbours(cond_dict, target_type, candidates):
-            pooled.extend(_lengths_for(cond_dict[name], matches, loop_only))
+            pooled.extend(collect(cond_dict[name], matches))
             used.append(name)
             # Stop early only while walking a similarity ranking, where the next
             # species is always further away than the last. With no target to
@@ -349,8 +367,75 @@ def auto_num_frames(
             scope = "all species" if target_type is None else f"{len(used)} similar species"
             preview = ", ".join(used[:4]) + ("..." if len(used) > 4 else "")
             return (
-                _pooled_median(pooled, min_frames, max_frames),
-                f"median of {len(pooled)} clip(s) from {scope} ({preview}) "
-                f"matching {matcher_name}",
+                pooled,
+                f"{len(pooled)} clip(s) from {scope} ({preview}) matching {matcher_name}",
             )
     return None
+
+
+def auto_num_frames(
+    cond_dict: Mapping[str, Mapping[str, object]],
+    target_type: Optional[str],
+    *,
+    action_group: str,
+    action_label: str,
+    loop: bool,
+    min_frames: int,
+    max_frames: int,
+) -> Optional[tuple[int, str]]:
+    """Median training clip length for ``action_label``, or ``None``.
+
+    Returns ``(frames, explanation)`` with ``frames`` clamped into
+    ``[min_frames, max_frames]``; ``None`` means the corpus says nothing about
+    this label and the caller should keep its own default. The pool is the
+    first rung of :func:`_first_pool`'s ladder that holds a clip.
+
+    ``loop`` restricts every tier to loop clips, whose recorded length is one
+    period: a one-shot clip's length is not a period and would hand ``--loop`` a
+    window several cycles long (or a fraction of one).
+    """
+    matchers = _matchers_for(action_group, action_label)
+    if not matchers:
+        return None
+    loop_only = bool(loop)
+    found = _first_pool(
+        cond_dict, target_type, matchers,
+        lambda entry, matches: _lengths_for(entry, matches, loop_only),
+    )
+    if found is None:
+        return None
+    lengths, explanation = found
+    return _pooled_median(lengths, min_frames, max_frames), f"median of {explanation}"
+
+
+def auto_loop(
+    cond_dict: Mapping[str, Mapping[str, object]],
+    target_type: Optional[str],
+    *,
+    action_group: str,
+    action_label: str,
+) -> Optional[tuple[bool, str]]:
+    """Whether the corpus animates ``action_label`` as a loop, or ``None``.
+
+    Returns ``(is_loop, explanation)``; ``None`` means no training clip carries
+    this label (or a label sharing its head words) and the caller keeps its own
+    default. Same ladder and same pool as :func:`auto_num_frames`, so the loop
+    verdict and the length it then gates are read off the same clips.
+
+    The verdict is the pool's majority. ``is_loop`` is a conditioning input the
+    model only ever saw paired with the label the way the corpus authored it --
+    every loop clip is trained as a loop, every one-shot as open -- so a label
+    the corpus holds only as loops (``"jump, up"``, say) has nothing behind the
+    open-window pairing and samples off-distribution there. A tie keeps the
+    open window, the convention every earlier run defaulted to.
+    """
+    matchers = _matchers_for(action_group, action_label)
+    if not matchers:
+        return None
+    found = _first_pool(cond_dict, target_type, matchers, _loop_flags_for)
+    if found is None:
+        return None
+    flags, explanation = found
+    loops = sum(1 for flag in flags if flag)
+    is_loop = loops * 2 > len(flags)
+    return is_loop, f"{loops} of {explanation} are loops"

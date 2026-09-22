@@ -200,10 +200,12 @@ def _resolve_action_condition(args, model):
 
     ``args.action_group`` is the group this checkpoint was trained on, read out of
     its args.json by parser_util.apply_checkpoint_action_group. There is no
-    ``--action_group`` flag at generation: each group trains its own model, so the
-    group is a property of the weights and a foreign one would describe a
-    different checkpoint. It is empty only for a checkpoint that predates the
-    mandatory training flag.
+    ``--action_group`` flag at generation: a single-group checkpoint IS its
+    group, and a foreign one would describe a different checkpoint. It is empty
+    for a checkpoint trained with ``--action_group all`` (and for one predating
+    the mandatory training flag), which is not an error: the label carries the
+    group already, and the value only ever reaches the clip-length prior, whose
+    matchers read an empty group as "any group".
     """
     label = str(getattr(args, 'action_label', '') or '').strip()
     group = str(getattr(args, 'action_group', '') or '').strip().lower()
@@ -214,7 +216,6 @@ def _resolve_action_condition(args, model):
         action_label_slots,
     )
     from data_loaders.truebones.truebones_utils.motion_labels import (
-        ACTION_GROUPS,
         ActionLabelError,
         canonical_action_label,
         parse_action_label,
@@ -226,18 +227,10 @@ def _resolve_action_condition(args, model):
             'ERROR: --action_label was passed but this checkpoint was trained '
             'without --action_label_cond. The label would have no effect.'
         )
-    if not group:
-        sys.exit(
-            "ERROR: --action_label needs an action group, and this checkpoint's "
-            "args.json records none (it predates the mandatory --action_group). "
-            "Each group trains its own model, so the group is a property of the "
-            "checkpoint -- there is no --action_group at generation to supply it. "
-            "Sample a checkpoint trained with --action_group (one of "
-            f"{', '.join(ACTION_GROUPS)}) instead."
-        )
     # No group-validity check here: apply_checkpoint_action_group already
-    # normalizes anything but ''/a legal group to '' at load time, so past the
-    # guard above ``group`` is always one of ACTION_GROUPS.
+    # normalizes anything but ''/a legal group to '' at load time, so ``group``
+    # is either one of ACTION_GROUPS or '' (an --action_group all checkpoint,
+    # meaning "any group").
     #
     # Labels are exact controlled tokens. An unrecognized one is a HARD ERROR,
     # not a pass-through: there is no synonym translation any more, and letting
@@ -250,7 +243,7 @@ def _resolve_action_condition(args, model):
     # head, then the remaining modifiers follow. Head-word order is kept as
     # given: the first head word outweighs any later one in the head slot,
     # so reordering them would change the condition; the corpus spells one
-    # word set one way per group, and the prompt's order is the caller's call.
+    # word set one way, and the prompt's order is the caller's call.
     try:
         tokens = parse_action_label(label)
     except ActionLabelError as exc:
@@ -326,23 +319,59 @@ def _wrap_action_label_cfg(model, args, action_condition):
     return ClassifierFreeActionModel(model, scale)
 
 
+def _coerce_loop_flag(flag):
+    """One ``is_loop`` bool from a batch-level or per-species ``loop`` value.
+
+    ``create_condition`` takes the RESOLVED condition, so the ``--loop`` mode
+    strings are refused rather than read as truthiness -- ``bool('off')`` is
+    ``True``, which would silently turn an explicit open window into a loop.
+    ``'auto'`` is refused too: it is a request to resolve the mode against the
+    reference/corpus first (``sample.output_lengths.resolve_loop_condition``).
+    """
+    if isinstance(flag, bool):
+        return flag
+    if isinstance(flag, str):
+        mode = flag.strip().lower()
+        if mode in ('on', 'true', '1', 'yes'):
+            return True
+        if mode in ('off', 'false', '0', 'no', ''):
+            return False
+        if mode == 'auto':
+            raise ValueError(
+                "create_condition: loop='auto' is unresolved -- resolve it with "
+                "sample.output_lengths.resolve_loop_condition and pass the bool."
+            )
+        raise ValueError(f"create_condition: loop={flag!r} is not 'on'/'off' or a bool")
+    raise TypeError(f"create_condition: loop must be a bool or one of 'on'/'off', got {type(flag).__name__}")
+
+
 def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len, loop=False, action_condition=None, species_emb_override=None):
     """Build model_kwargs for a batch of object_types.
 
     action_condition: {'action_group', 'action_label', 'action_slots'} applied
         to every object in the batch, or None for unconditional generation.
     species_emb_override: [t5_out_dim] vector replacing baked species_emb for all objects.
-    loop: ask for a closed window. It is the whole loop condition -- how many
-        gait cycles the window holds is the model's to decide from resample_speed
-        and the species/action prior, so nothing here needs a period table.
+    loop: ask for a closed window -- one bool for the whole batch, or one per
+        object_type (--object_type all resolves --loop auto per species). It is
+        the whole loop condition -- how many gait cycles the window holds is the
+        model's to decide from resample_speed and the species/action prior, so
+        nothing here needs a period table.
     """
+    if isinstance(loop, (list, tuple)):
+        if len(loop) != len(object_types):
+            raise ValueError(
+                f"create_condition: {len(loop)} loop flags for {len(object_types)} object_types"
+            )
+        loop_flags = [_coerce_loop_flag(flag) for flag in loop]
+    else:
+        loop_flags = [_coerce_loop_flag(loop)] * len(object_types)
     batches = list()
     # One entry per species, not per sample: the structural descriptors are a pure
     # function of the cond entry, and this is the same builder the dataset caches
     # at construction -- a second implementation here would silently condition
     # generation on something training never saw.
     joint_struct_by_object = {}
-    for object_type in object_types:
+    for object_type, is_loop in zip(object_types, loop_flags):
         if object_type not in cond_dict:
             available = ', '.join(sorted(cond_dict.keys()))
             raise KeyError(
@@ -368,7 +397,7 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         batch.append(joints_names_embs)
         batch.append(max_joints)
         metadata = {
-            'is_loop': bool(loop),
+            'is_loop': is_loop,
             'translation_root_index': cond_dict[object_type].get('translation_root_index', 0),
         }
         if 'species_emb' in cond_dict[object_type]:

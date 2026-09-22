@@ -9,6 +9,7 @@ from motion_lib.Animation import positions_global
 # ── animation_utils (animation processing & joint metadata) ─────────────
 from .animation_utils import (
     ROOT_XZ_DRIFT_THRESHOLD,
+    ROOT_Y_DRIFT_THRESHOLD,
     ROOT_XZ_SOFT_CLAMP_KNEE,
     ROOT_XZ_SOFT_CLAMP_LIMIT,
     ROOT_XZ_LOCOMOTION_KNEE,
@@ -29,6 +30,7 @@ from .animation_utils import (
     root_xz_trajectory,
     root_xz_heading,
     flatten_root_xz_drift,
+    flatten_root_y_drift,
     soft_clamp_extent,
     soft_clamp_root_xz,
     scale_root_xz_extent,

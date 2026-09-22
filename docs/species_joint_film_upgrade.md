@@ -191,7 +191,7 @@ base 相对 parser 默认值的全部非默认项：
 
 ```
 --action_group locomotion --action_label_cond --action_label_coarse_prob 0.3
---amp_dtype bf16 --auto_resume --balanced --compile default
+--amp_dtype bf16 --auto_resume --balanced --compile default   # 注意：--balanced 已于 2026-09-21 删除，见 head_word_weights_and_modifier_dropout.md
 --cond_path dataset/merged/cond.npy
 --cross_limb_dim 128 --cross_limb_last_n 4
 --ema_rate 0.995 --use_ema --ff_size 2048 --layers 8 --latent_dim 256

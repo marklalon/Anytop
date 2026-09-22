@@ -1,17 +1,18 @@
 {
-  "_comment": "Evaluation task battery for eval_checkpoint.py. checkpoint.RUN_NAME is required; checkpoint.MODEL_FILE is optional and defaults to the newest model*.pt. Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task. A task without --action_label must set eval_label (the action of its reference clip); it is only used to pick the reference prior the clips are scored against.",
+  "_comment": "Evaluation task battery for eval_checkpoint.py. checkpoint.RUN_NAME is required; checkpoint.MODEL_FILE is optional and defaults to the newest model*.pt; checkpoint.OUTPUT_DIR is optional and names the run folder the results are written under (a bare name goes under outputs/eval_checkpoint/, default RUN_NAME; <MODEL_NAME> is appended either way). Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task. A task without --action_label must set eval_label (the action of its reference clip); it is only used to pick the reference prior the clips are scored against.",
   "checkpoint": {
-    "RUN_NAME": "merged_locomotion_v20"
+    "RUN_NAME": "merged_all_v24",
+    "OUTPUT_DIR": "merged_all_v24_locomotion"
   },
   "tasks": [
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "walk, forward", "--loop", "--action_label_cfg_scale", "2"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "run, forward", "--loop", "--action_label_cfg_scale", "2"] },
-    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "run, forward", "--loop", "--action_label_cfg_scale", "2"] },
-    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "fall", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Parrot", "--action_label", "fly, forward", "--loop", "--action_label_cfg_scale", "2"] },
-    { "category": "Basic", "args": ["--object_type", "Parrot", "--action_label", "hover", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "run, forward", "--loop", "--action_label_cfg_scale", "2"] },
-    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "swim, forward", "--loop", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "walk, forward"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "run, forward"] },
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "run, forward"] },
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "fall"] },
+    { "category": "Basic", "args": ["--object_type", "Parrot", "--action_label", "fly, forward"] },
+    { "category": "Basic", "args": ["--object_type", "Parrot", "--action_label", "hover"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "run, forward"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "swim, forward"] },
 
     { "category": "ConvertLoop", "args": ["--reference_motion", "outputs/test/Buffalo_Run_Noloop.npy", "--skip_timesteps", "80", "--loop"], "eval_label": "run" },
 
@@ -20,11 +21,11 @@
 
     { "category": "InpaintFrames", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop.npy", "--inpaint_frames", "20-30"], "eval_label": "run" },
 
-    { "category": "InpaintJoints", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop.npy", "--inpaint_joints", "RightThigh,LeftThigh", "--loop"], "eval_label": "run" },
+    { "category": "InpaintJoints", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop.npy", "--inpaint_joints", "RightThigh,LeftThigh"], "eval_label": "run" },
 
     { "category": "Outpaint", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop.npy", "--num_frames", "120", "--skip_timesteps", "99", "--action_label", "run"] },
 
-    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--loop", "--action_label", "fly, forward", "--action_label_cfg_scale", "2"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--action_label", "fly, forward"] },
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "outputs/test/dragon_walk.glb", "--inpaint_joints", "RightThigh,LeftThigh,RightClavicle,LeftClavicle", "--skip_timesteps", "20"], "eval_label": "walk" }
   ]
 }

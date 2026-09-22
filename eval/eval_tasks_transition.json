@@ -1,30 +1,31 @@
 {
-  "_comment": "Evaluation task battery for eval_checkpoint.py. checkpoint.RUN_NAME is required; checkpoint.MODEL_FILE is optional and defaults to the newest model*.pt. Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task.",
+  "_comment": "Evaluation task battery for eval_checkpoint.py. checkpoint.RUN_NAME is required; checkpoint.MODEL_FILE is optional and defaults to the newest model*.pt; checkpoint.OUTPUT_DIR is optional and names the run folder the results are written under (a bare name goes under outputs/eval_checkpoint/, default RUN_NAME; <MODEL_NAME> is appended either way). Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task.",
   "checkpoint": {
-    "RUN_NAME": "merged_transition_v20"
+    "RUN_NAME": "merged_all_v24",
+    "OUTPUT_DIR": "merged_all_v24_transition"
   },
   "tasks": [    
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "die"] },
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "getup"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "turn, left", "--action_label_cfg_scale", "2"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "jump", "--num_frames", "30", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "turn, left"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "jump", "--num_frames", "30"] },
 
     { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "die"] },
     { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "getup"] },
-    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "turn, right", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "turn, right"] },
     { "category": "Basic", "args": ["--object_type", "Spider", "--action_label", "burrow"] },
     
     { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "die"] },
     { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "getup"] },
     { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "jump"] },
-    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "land, hover", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "land, hover"] },
     
     { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "die"] },
     { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "getup"] },
-    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "turn, flip", "--action_label_cfg_scale", "2"] },
-    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "jump, forward", "--action_label_cfg_scale", "2"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "laydown"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "jump, forward"] },
     
-    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_reddragon/cond.npy", "--action_label", "die", "--action_label_cfg_scale", "2"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_reddragon/cond.npy", "--action_label", "die"] },
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_reddragon/cond.npy", "--action_label", "jump"] },
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_elephant/cond.npy", "--action_label", "die"] },
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_elephant/cond.npy", "--action_label", "getup"] },

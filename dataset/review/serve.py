@@ -2,7 +2,7 @@
 """Local multi-dataset review server for action_labels.jsonl.
 
 Serves review/index.html (a GIF grid) and applies label / loop / reviewed /
-pending_delete / aux-group edits straight back into each dataset's action_labels.jsonl so
+pending_delete edits straight back into each dataset's action_labels.jsonl so
 the page and the file never drift apart.  A dropdown in the header picks which
 dataset is on screen.
 
@@ -70,14 +70,11 @@ after the next preprocess. Every source move is appended to
     python serve.py [--port 8765] [--datasets ../datasets.jsonl] [--no-browser]
 
 ``/api/labels`` accepts optional ``q``, ``field=label|clip|both``,
-``whole_word=1``, ``group=<action group>`` and ``aux=1`` query parameters.
-Without them it returns every row, as the review page needs for its local
-filters and counts. For labels, ``whole_word`` requires the entire action
-label to equal the query; for clips, it matches a word bounded by
-non-alphanumerics. ``group`` keeps the rows that group owns; adding ``aux=1``
-keeps instead the rows that merely *supplement* it (the group is listed in
-their ``aux_action_groups``), and ``aux=1`` on its own keeps every row that
-supplements some group.
+``whole_word=1`` and ``group=<action group>`` query parameters. Without them it
+returns every row, as the review page needs for its local filters and counts.
+For labels, ``whole_word`` requires the entire action label to equal the query;
+for clips, it matches a word bounded by non-alphanumerics. ``group`` keeps the
+rows that group owns.
 """
 import argparse
 import difflib
@@ -112,7 +109,6 @@ from data_loaders.truebones.truebones_utils.loop_verdict import (  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_LABEL_MAX_HEADS,
     ACTION_LABEL_MAX_WORDS,
-    AUX_ACTION_GROUPS_KEY,
     AUTOFILL_KEY,
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
@@ -224,19 +220,8 @@ def _row_matches_search(row, query, field="label", whole_word=False):
     return False
 
 
-def _row_matches_group(row, group, aux_only=False):
-    """Action-group filter, shared in spirit with the page's header controls.
-
-    ``aux_only`` swaps the primary-group test for the auxiliary one: with a
-    group named, the row must list it in ``aux_action_groups``; with no group
-    (or ``all``), any row that supplements some group qualifies.  A group is
-    never both a row's owner and one of its supplements, so the two views of
-    one group never overlap.
-    """
-    if aux_only:
-        aux = row.get(AUX_ACTION_GROUPS_KEY)
-        aux = list(aux) if isinstance(aux, (list, tuple)) else []
-        return bool(aux) if group in ("", "all") else group in aux
+def _row_matches_group(row, group):
+    """Action-group filter, shared in spirit with the page's header controls."""
     return group in ("", "all") or row.get("action_group") == group
 
 
@@ -462,7 +447,7 @@ class LabelStore:
             return result
 
     def update(self, clip, action_label=None, action_group=None, reviewed=None,
-               pending_delete=None, is_loop=None, remove_aux_action_group=None):
+               pending_delete=None, is_loop=None):
         with self.lock:
             self._reload_if_stale()
             row = self.index.get(clip)
@@ -497,26 +482,6 @@ class LabelStore:
                 if not action_group:
                     raise ValueError("action_group must not be empty")
                 row["action_group"] = action_group
-                # A group cannot be both the clip's owner and a supplement.
-                # Keep the key even if the list becomes empty: its presence
-                # marks a sidecar that has been migrated to the aux schema.
-                aux_groups = row.get(AUX_ACTION_GROUPS_KEY)
-                if isinstance(aux_groups, list) and action_group in aux_groups:
-                    row[AUX_ACTION_GROUPS_KEY] = [
-                        group for group in aux_groups
-                        if group != action_group
-                    ]
-            if remove_aux_action_group is not None:
-                if not isinstance(remove_aux_action_group, str) or not remove_aux_action_group:
-                    raise ValueError("remove_aux_action_group must be a nonempty group name")
-                aux_groups = row.get(AUX_ACTION_GROUPS_KEY)
-                if isinstance(aux_groups, list):
-                    # Keep the key, including when this was the last aux group:
-                    # its presence marks a sidecar migrated to the aux schema.
-                    row[AUX_ACTION_GROUPS_KEY] = [
-                        group for group in aux_groups
-                        if group != remove_aux_action_group
-                    ]
             if reviewed is not None:
                 if reviewed:
                     row["reviewed"] = True
@@ -665,9 +630,8 @@ class Handler(BaseHTTPRequestHandler):
                     rows.append(row)
 
             group = params.get("group", "").strip()
-            aux_only = params.get("aux", "").lower() in ("1", "true", "on")
-            if group or aux_only:
-                rows = [row for row in rows if _row_matches_group(row, group, aux_only)]
+            if group:
+                rows = [row for row in rows if _row_matches_group(row, group)]
 
             query = params.get("q", "").strip()
             if query:
@@ -756,13 +720,6 @@ class Handler(BaseHTTPRequestHandler):
         is_loop = payload.get(LOOP_FLAG_KEY)
         if is_loop is not None and not isinstance(is_loop, bool):
             return self._send_json(400, {"error": f"{LOOP_FLAG_KEY} must be true or false"})
-        remove_aux_group = payload.get("remove_aux_action_group")
-        if "remove_aux_action_group" in payload:
-            if not isinstance(remove_aux_group, str) or not remove_aux_group.strip():
-                return self._send_json(400, {
-                    "error": "remove_aux_action_group must be a nonempty group name"
-                })
-            remove_aux_group = remove_aux_group.strip()
         try:
             row = store.update(
                 clip,
@@ -771,7 +728,6 @@ class Handler(BaseHTTPRequestHandler):
                 reviewed=payload.get("reviewed"),
                 pending_delete=payload.get("pending_delete"),
                 is_loop=is_loop,
-                remove_aux_action_group=remove_aux_group,
             )
         except KeyError:
             return self._send_json(404, {"error": f"clip not in labels file: {clip}"})

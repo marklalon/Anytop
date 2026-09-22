@@ -601,13 +601,12 @@ class NativeLoopTests(unittest.TestCase):
         self.assertNotIn('lengths', capture_decoder.last_kwargs)
 
     def test_decoder_loop_tables_are_per_sample_and_period_free(self):
-        """Loop samples get the circular table, one wrap per window; non-loop
-        samples get a zero phase and the absolute table. No per-sample period
-        exists any more, so the picture is the same for every batch."""
+        """Loop samples get the circular phase, one wrap per window; non-loop
+        samples get a zero phase. No per-sample period exists any more, so the
+        picture is the same for every batch."""
         from model.motion_transformer import (
             GraphMotionDecoder,
             GraphMotionDecoderLayer,
-            _sin_time_embedding,
         )
 
         D, H, J, T = 8, 2, 3, 6
@@ -617,7 +616,7 @@ class NativeLoopTests(unittest.TestCase):
 
         def stub(output, *a, **kw):
             seen['phase'] = kw['loop_phase_embedding']
-            seen['cross_limb'] = kw['cross_limb_time_embedding']
+            seen['kwargs'] = kw
             return output
 
         dec.layers[0].forward = stub
@@ -638,14 +637,8 @@ class NativeLoopTests(unittest.TestCase):
         self.assertEqual(tuple(seen['phase'].shape), (T, 2, D))
         self.assertTrue(torch.equal(seen['phase'][:, 0], circular))
         self.assertTrue(torch.equal(seen['phase'][:, 1], torch.zeros(T, D)))
-        cl_dim = dec.cross_limb_blocks[0].latent_dim
-        self.assertEqual(tuple(seen['cross_limb'].shape), (T, 2, cl_dim))
-        self.assertTrue(torch.equal(
-            seen['cross_limb'][:, 0], circular_phase_embedding(T, cl_dim, cpu, torch.float32)
-        ))
-        self.assertTrue(torch.equal(
-            seen['cross_limb'][:, 1], _sin_time_embedding(T, cl_dim, cpu, torch.float32)
-        ))
+        # The cross-limb blocks get no time table of their own any more.
+        self.assertNotIn('cross_limb_time_embedding', seen['kwargs'])
 
 
 if __name__ == '__main__':

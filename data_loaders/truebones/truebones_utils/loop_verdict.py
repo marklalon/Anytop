@@ -65,6 +65,39 @@ def terminal_velocity_for_verdict(features, is_loop, translation_root_index):
     return terminal.astype(features.dtype)
 
 
+def stored_loop_verdict(features, translation_root_index, *, rtol=1e-3, atol=1e-5):
+    """The verdict a stored clip's terminal row was written under, or ``None``.
+
+    Reads the contract above backwards: the row is compared with what
+    :func:`terminal_velocity_for_verdict` writes for a loop and for a one-shot,
+    and the verdict whose row it matches is returned. ``None`` when it matches
+    neither -- a tensor nobody wrote a verdict into, such as a generated sample
+    whose last row is model output -- or both, which only a near-static clip
+    can do (a zero wrap delta and a zero step are the same row).
+
+    The tolerance is loose enough to survive the float32 cast every clip goes
+    through on load and far below any real velocity, so a hand-flipped verdict
+    reads back exactly as flipped.
+    """
+    features = np.asarray(features)
+    if features.ndim != 3 or features.shape[0] < 2 or features.shape[-1] < 12:
+        return None
+    row = np.asarray(features[-1, :, _VEL], dtype=np.float64)
+    hits = [
+        verdict
+        for verdict in (True, False)
+        if np.allclose(
+            row,
+            np.asarray(
+                terminal_velocity_for_verdict(features, verdict, translation_root_index),
+                dtype=np.float64,
+            ),
+            rtol=rtol, atol=atol,
+        )
+    ]
+    return hits[0] if len(hits) == 1 else None
+
+
 def apply_loop_verdict(features, is_loop, translation_root_index):
     """A copy of ``features`` whose terminal velocity row matches ``is_loop``."""
     features = np.asarray(features)
