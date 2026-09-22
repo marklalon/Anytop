@@ -58,12 +58,12 @@ pushd "%SCRIPT_DIR%"
 	--unreliable_mask_drop_prob 0.2 ^
 	--renoise_same_level_prob 0.8 ^
 	--joint_name_drop_prob 0.15 ^
-	--direction_slot_drop_prob 0.1 ^
-	--modifier_slot_drop_prob 0.05 ^
+	--direction_slot_drop_prob 0.15 ^
+	--modifier_slot_drop_prob 0.15 ^
 	--temporal_span_mask_prob 0.3 ^
 	--temporal_span_seam_loss_weight 0.2 ^
 	--lambda_loop_wrap 0.04 ^
-	--lambda_loop_root_closure 0.05 ^
+	--lambda_loop_root_closure 0.04 ^
 	--lambda_vel 0.2 ^
 	--lambda_geo 0.1 ^
 	--motion_cache_size 32768 ^
