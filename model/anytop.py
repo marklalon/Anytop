@@ -106,7 +106,7 @@ class AnyTop(nn.Module):
             )
         # Action-label conditioning: a single pathway -- the frozen T5 vectors of
         # the label's WORDS, pooled into one channel per slot (head /
-        # direction / modifier / hands) and concatenated. A channel reads its own slot
+        # direction / modifier) and concatenated. A channel reads its own slot
         # only, so a label's head and direction axes are literally unchanged by
         # however many modifiers it also spells, and unseen (action x direction)
         # combinations compose out of word vectors the model has already seen.
@@ -124,8 +124,7 @@ class AnyTop(nn.Module):
         #   modifier:  a bare "attack" draws SOME attack (bite, cast, swat ...)
         #              rather than the handful of clips annotated without a
         #              modifier, which is what an undropped empty slot learns.
-        # The two draws are independent per row. The hands slot has NO such
-        # dropout on purpose -- empty there means empty hands.
+        # The two draws are independent per row.
         self.direction_slot_drop_prob = float(kargs.get('direction_slot_drop_prob', 0.0))
         if not 0.0 <= self.direction_slot_drop_prob <= 1.0:
             raise ValueError(
@@ -208,7 +207,7 @@ class AnyTop(nn.Module):
             # direction is linearly readable out of the T5 vectors. If a trained
             # model still under-follows the prompt, raise --action_label_cfg_scale
             # (no retrain needed).
-            # The two code slots (direction, hands) are read on their
+            # The direction slot is a code slot and is read on its
             # SYNTHETIC_CODE_DIM axes only: see compact_slot_channels.
             self._init_action_conditioning(kargs.get('action_conditioning'), t5_out_dim)
             self.action_label_projection = nn.Sequential(

@@ -47,7 +47,7 @@ def reference_prior_words(action_label) -> tuple[str, ...]:
     label a clip was generated with is the label it is scored with, and a typo
     fails instead of silently narrowing the prior. Only the head words (the
     HEAD_VOCAB members: walk, run, idle, attack, ...) select reference clips;
-    direction, hands and secondary words do not. A direction word is shared by
+    direction and secondary words do not. A direction word is shared by
     every travelling action, so letting it match made ``walk, forward`` and
     ``run, forward`` select the same bank. The words are returned in vocabulary
     order, so the prior is keyed by the head SET, as the model's head slot is.

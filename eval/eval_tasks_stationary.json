@@ -22,12 +22,12 @@
     { "category": "Basic", "args": ["--object_type", "MB_Unka", "--action_label", "hurt, hover"] },
 
     { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "idle, look"] },
-    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "work, hammer, hand2"] },
+    { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "work, hammer"] },
     { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "pickup"] },
     { "category": "Basic", "args": ["--object_type", "KI_Human", "--action_label", "hurt"] },
 
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_reddragon/cond.npy", "--action_label", "attack, rear"] },
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_elephant/cond.npy", "--action_label", "attack, headbutt"] },
-    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_human/cond.npy", "--action_label", "attack, slash, hand2"] }
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton_human/cond.npy", "--action_label", "attack, slash"] }
   ]
 }

@@ -10,9 +10,9 @@ baked once into ``dataset/action_word_embeddings.npy``.
 One vector per ``CONTROLLED_VOCAB`` token, in vocabulary order. A
 ``T5_ENCODED_VOCAB`` token is encoded from ``vocab_t5_text(token)`` -- not from
 the token spelling, which reads as the drink for "punch" and as terrain for
-"land". A ``SYNTHETIC_CODE_VOCAB`` token (the direction and hands axes) is not
+"land". A ``SYNTHETIC_CODE_VOCAB`` token (the direction axis) is not
 encoded at all: its row is an orthonormal code written by
-``synthetic_code_rows``, because T5's geometry on those two closed axes put every
+``synthetic_code_rows``, because T5's geometry on that closed axis put every
 member next to its own antonym. The two halves are stitched into one table by
 ``scatter_synthetic_code_rows``.
 
@@ -298,7 +298,7 @@ def build_word_table(out_path: Path, t5_model: str, t5_path: str | None,
             f"({rank['slots']}). Slot channels would not be separable for every legal "
             "label; a vocabulary token whose T5 text collides with another's is the "
             "usual cause -- change it in _VOCAB_T5_TEXT and re-encode. The direction "
-            "and hands blocks are orthonormal by construction and cannot be the cause."
+            "block is orthonormal by construction and cannot be the cause."
         )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(out_path, action_word_embedding_payload(table, contract), allow_pickle=True)

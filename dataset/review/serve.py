@@ -41,7 +41,7 @@ step without a re-preprocess; a clip not built yet simply takes the flag
 when it is.
 
 ``autofill`` marks a row whose label a prefill tool wrote
-(``tools/prefill_direction_words.py``, ``prefill_hand_words.py``): a proposal
+(``tools/prefill_direction_words.py``): a proposal
 measured from the motion, with ``"reviewed": false`` beside it. The card shows
 it as a 自动补标 badge and the header filters on it, so a review pass can take
 the tool's proposals as one batch. Typing a different label clears the mark --
@@ -545,8 +545,8 @@ class LabelStore:
                     raise ActionLabelError("action_label must not be empty")
                 if action_label != row.get("action_label"):
                     # The flag says a prefill tool wrote the label that is on
-                    # the row (tools/prefill_direction_words.py,
-                    # prefill_hand_words.py). Typing a different one makes it
+                    # the row (tools/prefill_direction_words.py). Typing a
+                    # different one makes it
                     # a person's label, so the flag goes; signing the proposal
                     # off unchanged (reviewed) keeps it as provenance.
                     row.pop(AUTOFILL_KEY, None)

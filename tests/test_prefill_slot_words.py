@@ -1,8 +1,9 @@
-"""The write-back the two slot-prefill tools share (``tools/prefill_common``).
+"""The write-back the slot-prefill tools share (``tools/prefill_common``).
 
-``prefill_direction_words.py`` and ``prefill_hand_words.py`` measure different
-things, but they hand their verdicts to one writer, and everything that can
-damage the sidecar lives there: only an EMPTY slot is ever filled, a row a
+``prefill_direction_words.py`` is the one slot tool left (the hands prefill
+went with its axis), and it hands its verdicts to this writer, where
+everything that can damage the sidecar lives: only an EMPTY slot is ever
+filled, a row a
 person filled between the dry run and ``--apply`` wins, a ``reviewed: true``
 row is not touched at all unless the run asks for it, the row is flagged as
 tool-written and unverified, and a proposal set that would put two head orders
@@ -25,7 +26,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data_loaders.truebones.truebones_utils.motion_labels import (
     AUTOFILL_KEY,
     DIRECTION_VOCAB,
-    HANDS_VOCAB,
     load_action_labels,
 )
 from data_loaders.truebones.truebones_utils.param_utils import ACTION_LABELS_FILE
@@ -126,21 +126,21 @@ def test_a_slot_filled_since_the_dry_run_is_left_alone(dataset, capsys):
 def test_an_edit_in_another_slot_survives_the_write(dataset):
     """The proposal is re-spelled onto the row as it is now, not onto the snapshot."""
     proposal = prefill_common.Proposal(
-        _clip(dataset, "Wolf_AtkL", "attack, swat"), "write", "hand1",
-        "attack, swat, hand1", {"measure": "arm_pose_knn"},
+        _clip(dataset, "Wolf_AtkL", "attack, swat"), "write", "left",
+        "attack, left, swat", {"measure": "support_foot"},
     )
     # somebody adds a modifier to the row in the meantime
     prefill_common.rewrite_action_label_rows(
         dataset,
-        lambda entry: {**entry, "action_label": "attack, left, swat"}
+        lambda entry: {**entry, "action_label": "attack, spin, swat"}
         if entry["clip"] == "Wolf_AtkL" else None,
     )
     prefill_common.apply_proposals(
-        [_Source(dataset)], [proposal], slot="hands", slot_vocab=set(HANDS_VOCAB),
-        include_reviewed=True,
+        [_Source(dataset)], [proposal], slot="direction",
+        slot_vocab=set(DIRECTION_VOCAB), include_reviewed=True,
     )
     row = _rows_by_clip(dataset)["Wolf_AtkL"]
-    assert row["action_label"] == "attack, left, swat, hand1"
+    assert row["action_label"] == "attack, left, spin, swat"
     assert row[AUTOFILL_KEY] is True
 
 
@@ -235,5 +235,5 @@ def test_the_corpus_loader_drops_retiring_rows_and_carries_the_review_marks(data
 
 def test_spell_with_puts_the_word_where_the_contract_wants_it():
     assert prefill_common.spell_with("attack, swat", ["left"]) == "attack, left, swat"
-    assert prefill_common.spell_with("walk, forward", ["hand2"]) == "walk, forward, hand2"
+    assert prefill_common.spell_with("walk, fast", ["forward"]) == "walk, forward, fast"
     assert prefill_common.spell_with("jump", ["up"]) == "jump, up"

@@ -425,7 +425,7 @@ proj 110–118/128，都用满），浪费集中在四处，合计 1.75M（5.9%�
 
 | 模块 | v24 | v25 | 依据 |
 |---|---|---|---|
-| `action_label_projection` | 1.33M | 0.74M | direction / hands 槽的正交码只占 8 个轴，其余 2×760 列的输入恒为 0，Adam 二阶矩全程为 0（结构性死参数）。投影改读 `compact_slot_channels`：768+8+768+8 = 1552 |
+| `action_label_projection` | 1.33M | 0.74M | direction 槽的正交码只占 6 个轴，其余 762 列的输入恒为 0，Adam 二阶矩全程为 0（结构性死参数）。投影改读 `compact_slot_channels`：768+6+768 = 1542 |
 | `canonical_frame_projection` | 0.157M | 0.010M | 输入只有 7 个不同取值（object_subset），24→384→384 的第二层 erank 25、r90 = 5。改成单层 Linear(24→384) |
 | `action_adaln` | 2.45M | 1.63M | 输出层 erank 78、r90 = 19 / 192，`--action_adaln_bottleneck` 192→128（erank 78 之上留余量；权重秩不等于函数秩） |
 | 末层 FFN | 512 | 256 | 512 单元参与率仍渐进坍缩：390→269→207（100k→200k→300k），`--last_layer_ff` 512→256 |

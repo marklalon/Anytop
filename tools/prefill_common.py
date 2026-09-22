@@ -1,6 +1,6 @@
 """What the two label-prefill tools share.
 
-``prefill_direction_words.py`` and ``prefill_hand_words.py`` both walk the
+``prefill_direction_words.py`` walks the
 corpus the way the audit does, decide something about a row whose slot is
 empty, and write it back as a proposal. The corpus walk, the decode of a
 clip into world positions, the proposal record, the CSV and the write are

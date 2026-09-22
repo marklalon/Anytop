@@ -104,7 +104,7 @@ def _channels(model, labels, groups, dtype=torch.float64):
 def test_model_channels_equal_the_numpy_contract():
     bundle = make_test_bundle()
     model = _model(bundle)
-    labels = ['land, fly', 'draw', 'walk, forward, hand1', 'idle, hand2']
+    labels = ['land, fly', 'draw', 'walk, forward, slow', 'idle, roar']
     groups = ['transition', 'transition', 'locomotion', 'stationary']
     got = _channels(model, labels, groups)
     expected = reference_channels(bundle, labels, groups)
@@ -129,14 +129,14 @@ def _direction_dropped_channels(model, labels, groups, dtype=torch.float64):
 def test_direction_slot_dropout_zeroes_only_the_direction_channel_in_training():
     bundle = make_test_bundle()
     model = _model(bundle, direction_drop_prob=1.0, eval_mode=False)
-    labels = ['walk, forward, fast, hand1', 'attack, left, swat', 'idle']
+    labels = ['walk, forward, fast', 'attack, left, swat', 'idle']
     groups = ['locomotion', 'stationary', 'stationary']
     reference = _channels(model, labels, groups)
     dropped, word_mask = _direction_dropped_channels(model, labels, groups)
     width = TEST_T5_DIM
     # The direction channel is the zero row on every row ...
     assert torch.count_nonzero(dropped[:, width:2 * width]) == 0
-    # ... and the head, modifier and hands channels are bit-identical.
+    # ... and the head and modifier channels are bit-identical.
     assert torch.equal(dropped[:, :width], reference[:, :width])
     assert torch.equal(dropped[:, 2 * width:], reference[:, 2 * width:])
     # A dropped row keeps its other words, so it is still a labelled row
@@ -186,17 +186,16 @@ def _modifier_dropped_channels(model, labels, groups, dtype=torch.float64):
 def test_modifier_slot_dropout_zeroes_only_the_modifier_channel_in_training():
     bundle = make_test_bundle()
     model = _model(bundle, modifier_drop_prob=1.0, eval_mode=False)
-    labels = ['walk, forward, fast, hand1', 'attack, left, swat', 'idle, roar', 'attack, jump, charge']
+    labels = ['walk, forward, fast', 'attack, left, swat', 'idle, roar', 'attack, jump, charge']
     groups = ['locomotion', 'stationary', 'stationary', 'stationary']
     reference = _channels(model, labels, groups)
     dropped, word_mask = _modifier_dropped_channels(model, labels, groups)
     width = TEST_T5_DIM
     # The modifier channel is the zero row on every row ...
     assert torch.count_nonzero(dropped[:, 2 * width:3 * width]) == 0
-    # ... and the head, direction and hands channels are bit-identical: a
-    # second HEAD word ("attack, jump") is not a modifier and survives.
+    # ... and the head and direction channels are bit-identical: a second HEAD
+    # word ("attack, jump") is not a modifier and survives.
     assert torch.equal(dropped[:, :2 * width], reference[:, :2 * width])
-    assert torch.equal(dropped[:, 3 * width:], reference[:, 3 * width:])
     # A dropped row keeps its head word, so it is still a labelled row.
     assert bool(word_mask.any(dim=-1).all())
 
@@ -232,18 +231,18 @@ def test_modifier_and_direction_dropout_are_independent_per_row():
 
 def test_projection_consumes_one_block_per_slot():
     model = _model(make_test_bundle())
-    # A T5 slot's block is the full embedding; a code slot's block is its
+    # A T5 slot's block is the full embedding; the code slot's block is its
     # SYNTHETIC_CODE_DIM axes, the only columns a legal label can light up.
     assert slot_channel_widths(TEST_T5_DIM) == (
-        TEST_T5_DIM, SYNTHETIC_CODE_DIM, TEST_T5_DIM, SYNTHETIC_CODE_DIM)
+        TEST_T5_DIM, SYNTHETIC_CODE_DIM, TEST_T5_DIM)
     assert model.action_label_projection[0].in_features == projection_input_dim(TEST_T5_DIM)
-    assert model.action_label_projection[0].in_features == 2 * TEST_T5_DIM + 2 * SYNTHETIC_CODE_DIM
+    assert model.action_label_projection[0].in_features == 2 * TEST_T5_DIM + SYNTHETIC_CODE_DIM
 
 
 def test_compacted_channels_match_numpy_and_lose_nothing():
     bundle = make_test_bundle()
     model = _model(bundle)
-    labels = ['attack, left, fast, hand1', 'walk, forward', 'idle, hand2', 'draw']
+    labels = ['attack, left, fast', 'walk, forward', 'idle, roar', 'draw']
     groups = ['stationary', 'locomotion', 'stationary', 'transition']
     full = _channels(model, labels, groups)
     compact = model._compact_action_slot_channels(full)
@@ -263,17 +262,16 @@ def test_head_and_direction_channels_do_not_move_when_modifiers_are_added():
     """Long-label axis retention as an equality, not a tuned constant."""
     model = _model(make_test_bundle())
     short = _channels(model, ['walk, forward'], ['locomotion'])
-    longer = _channels(model, ['walk, forward, fast, hand1'], ['locomotion'])
+    longer = _channels(model, ['walk, forward, fast'], ['locomotion'])
     width = TEST_T5_DIM
     assert torch.equal(short[:, :2 * width], longer[:, :2 * width])
-    # ...and the modifier and hands channels are exactly what moved.
-    assert not torch.equal(short[:, 2 * width:3 * width], longer[:, 2 * width:3 * width])
-    assert not torch.equal(short[:, 3 * width:], longer[:, 3 * width:])
-    # The hands word moves ONLY its own channel: the modifier channel of an
-    # armed label equals that of the same label unarmed.
-    unarmed = _channels(model, ['walk, forward, fast'], ['locomotion'])
-    assert torch.equal(unarmed[:, :3 * width], longer[:, :3 * width])
-    assert torch.count_nonzero(unarmed[:, 3 * width:]) == 0
+    # ...and the modifier channel is exactly what moved.
+    assert not torch.equal(short[:, 2 * width:], longer[:, 2 * width:])
+    assert torch.count_nonzero(short[:, 2 * width:]) == 0
+    # A second modifier pools into the same channel and moves nothing else.
+    two = _channels(model, ['walk, forward, fast, bow'], ['locomotion'])
+    assert torch.equal(two[:, :2 * width], longer[:, :2 * width])
+    assert not torch.equal(two[:, 2 * width:], longer[:, 2 * width:])
 
 
 def test_absent_slot_is_a_zero_row_and_leaves_the_others_alone():
@@ -382,9 +380,9 @@ def test_loader_emits_exactly_the_three_slot_fields():
 def test_latent_dim_below_the_slot_source_rank_fails_at_construction():
     bundle = make_test_bundle()
     total_rank = bundle.slot_source_rank_report(TEST_LATENT_DIM)['total_rank']
-    # 32 head words, 6 directions, 64 modifier sources, 2 hands: the slots
-    # partition the vocabulary, so the ranks add to its size.
-    assert total_rank == 104
+    # 32 head words, 6 directions, 64 modifier sources: the slots partition
+    # the vocabulary, so the ranks add to its size.
+    assert total_rank == 102
     with pytest.raises(ValueError, match="smaller than the total slot source rank"):
         _model(bundle, latent_dim=total_rank - 1)
     _model(bundle, latent_dim=TEST_LATENT_DIM)  # a width at or above it
@@ -474,7 +472,7 @@ def test_checkpoint_carries_both_fingerprints():
     model = _model(bundle)
     payload = build_checkpoint_payload(model.state_dict(), None, model)
     metadata = payload['metadata']
-    assert ACTION_CHECKPOINT_VERSION == 4
+    assert ACTION_CHECKPOINT_VERSION == 5
     assert metadata['checkpoint_version'] == ACTION_CHECKPOINT_VERSION
     action = metadata['action_conditioning']
     assert action['embedding_fingerprint'] == bundle.embedding_fingerprint
@@ -584,10 +582,10 @@ def test_slot_assembly_has_exactly_one_definition():
     """The tensor path reads the contract's slot ids; it does not re-derive them."""
     bundle = make_test_bundle()
     model = _model(bundle)
-    label, group = 'walk, forward, hand1', 'locomotion'
+    label, group = 'walk, forward', 'locomotion'
     slots = action_label_slots(parse_action_label(label))
     numpy_channels, present = assemble_slot_channels(bundle.word_embeddings, slots)
-    assert present.tolist() == [True, True, False, True]
+    assert present.tolist() == [True, True, False]
     torch_channels = _channels(model, [label], [group])
     assert torch.allclose(
         torch_channels[0], torch.as_tensor(numpy_channels.reshape(-1)), atol=1e-12

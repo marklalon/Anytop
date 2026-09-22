@@ -141,10 +141,10 @@ def test_compute_features_batch_matches_single_for_mixed_shapes() -> None:
 def test_reference_prior_words_are_the_head_words_of_the_action_label() -> None:
     derive = reference_bank_mod.reference_prior_words
 
-    # Direction / hands / secondary words do not select reference clips: a
+    # Direction and secondary words do not select reference clips: a
     # direction is shared by every travelling action.
     assert derive("fly, forward") == ("fly",)
-    assert derive("attack, bite, hand1") == ("attack",)
+    assert derive("attack, bite, left") == ("attack",)
     assert derive("walk, run") == ("run", "walk")
     # Head order is spelling, not a different prior: the words come back in
     # vocabulary order (HEAD_VOCAB is alphabetical), whichever way they were written.

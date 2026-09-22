@@ -21,7 +21,6 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_LABEL_MAX_WORDS,
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
-    HANDS_VOCAB,
     HEAD_VOCAB,
     SYNTHETIC_CODE_VOCAB,
     T5_ENCODED_VOCAB,
@@ -29,8 +28,12 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
 )
 
 
-ACTION_WORD_EMBEDDING_SCHEMA_VERSION = 4
+# The on-disk shape of the word sidecar.
+# 5: the hands axis left the vocabulary, so the table is two rows shorter and
+#    the code block two axes narrower (2026-09-22).
+ACTION_WORD_EMBEDDING_SCHEMA_VERSION = 5
 ACTION_CONDITIONING_CONTRACT_SCHEMA_VERSION = 1
+# How a parsed label becomes slots.
 # 5: hand0 retired -- an empty hands slot means empty hands (the content
 #    default), hand1 / hand2 are the only members; the direction slot gained
 #    a training dropout so ITS empty state is the marginal (2026-09-18).
@@ -39,7 +42,11 @@ ACTION_CONDITIONING_CONTRACT_SCHEMA_VERSION = 1
 #    modifiers.  "attack, jump" now puts jump into the head channel at every
 #    step, which is what the retired --head_aug_words promotion bought a
 #    fraction of the time (2026-09-19).
-ACTION_LABEL_PARSER_CONTRACT_VERSION = 6
+# 7: the hands axis is gone entirely -- hand1 / hand2 left the vocabulary and
+#    the fourth slot with them, so the label no longer says anything about
+#    held equipment and an armed clip is the same condition as an unarmed one
+#    (2026-09-22).
+ACTION_LABEL_PARSER_CONTRACT_VERSION = 7
 
 # Slots.  The approved representation gives each slot its own conditioning
 # channel, so a word's contribution depends on ITS slot only -- appending a
@@ -48,19 +55,13 @@ ACTION_LABEL_PARSER_CONTRACT_VERSION = 6
 # head word is the one exception, and a deliberate one: see
 # HEAD_SLOT_PRIMARY_WEIGHT.
 #
-# The hands axis has its own channel rather than riding in the modifier slot
-# because, once annotated, it sits on nearly every clip of every hand-bearing
-# species: pooled into the modifier mean it would halve the signal of every
-# real modifier (slash, punch, fast, cast ...) on exactly those species, and
-# "attack, slash" would no longer read the same with and without a hand state.
-# In its own channel the other three are bit-identical either way, and the
-# channel is the token's own vector (the axis admits one member), so the model
-# only has to tell two points and the zero row (empty hands) apart.
+# Three slots and no more: what the character HOLDS is not part of the label
+# (motion_labels, under DIRECTION_VOCAB), so no channel carries a hand state.
+# An implement that IS the action arrives as a modifier instead.
 SLOT_HEAD = 0
 SLOT_DIRECTION = 1
 SLOT_MODIFIER = 2
-SLOT_HANDS = 3
-ACTION_LABEL_SLOTS: tuple[str, ...] = ("head", "direction", "modifier", "hands")
+ACTION_LABEL_SLOTS: tuple[str, ...] = ("head", "direction", "modifier")
 
 # Within the head slot, how much more the label's FIRST head word weighs than a
 # later one.  Every other slot pools its members evenly.
@@ -160,13 +161,6 @@ def action_label_slots(tokens: Iterable[str]) -> dict[str, tuple]:
             f"action label must have 1..{ACTION_LABEL_MAX_HEADS} head words; "
             f"got {heads}"
         )
-    hands = tuple(word for word in ordered_tokens if word in HANDS_VOCAB)
-    if len(hands) > 1:
-        raise ValueError(
-            f"action label names {len(hands)} hand-state words {hands}; the hands "
-            "axis admits at most one"
-        )
-
     return {
         "word_ids": tuple(vocab_index[word] for word in ordered_tokens),
         "word_mask": tuple(True for _ in ordered_tokens),
@@ -187,8 +181,6 @@ def word_slots(word: str) -> tuple[int, ...]:
         return (SLOT_HEAD,)
     if word in DIRECTION_VOCAB:
         return (SLOT_DIRECTION,)
-    if word in HANDS_VOCAB:
-        return (SLOT_HANDS,)
     if word not in CONTROLLED_VOCAB:
         raise ValueError(f"unknown action-label token: {word!r}")
     return (SLOT_MODIFIER,)
@@ -251,9 +243,9 @@ def assemble_slot_channels(
 
     Each slot holds the weighted mean of its member word vectors,
     L2-normalised.  Every weight is 1.0 except the head slot's first member
-    (:func:`slot_member_weights`), so three of the four slots are plain means
-    of a set and written order reaches the model only as "which head word
-    leads".  Normalising per slot is what makes the head axis independent of
+    (:func:`slot_member_weights`), so the direction and modifier slots are
+    plain means of a set and written order reaches the model only as "which
+    head word leads".  Normalising per slot is what makes the head axis independent of
     how many MODIFIERS the label spells; an absent slot is a zero row flagged
     in the returned mask, never a renormalisation of the others.
     """
@@ -297,7 +289,6 @@ def slot_channel_representation() -> dict[str, Any]:
         "slot_assignment": (
             "head = every HEAD_VOCAB word of the label (at most ACTION_LABEL_MAX_HEADS); "
             "direction = DIRECTION_VOCAB member; "
-            "hands = HANDS_VOCAB member (at most one); "
             "modifier = every other vocabulary word"
         ),
         "slot_aggregation": "weighted mean of member word vectors, then L2 normalisation",
@@ -305,7 +296,7 @@ def slot_channel_representation() -> dict[str, Any]:
         "channel_layout": "concatenated in ACTION_LABEL_SLOTS order",
         "projection_input": (
             "each slot's channel cut to slot_channel_widths: the full embedding "
-            "for a T5-encoded slot, the SYNTHETIC_CODE_DIM code axes for a code slot"
+            "for a T5-encoded slot, the SYNTHETIC_CODE_DIM code axes for the code slot"
         ),
         "per_word_weights": {
             "head_first": float(HEAD_SLOT_PRIMARY_WEIGHT),
@@ -321,30 +312,27 @@ def slot_channel_representation() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Synthetic code rows
 # ---------------------------------------------------------------------------
-# The direction and hands rows are not encoded from anything: they are a
-# one-hot written into the same (V, D) table, so downstream -- pooling, the
-# rank report, ``word_table_sha256`` -- treats them like any other row.
+# The direction rows are not encoded from anything: they are a one-hot
+# written into the same (V, D) table, so downstream -- pooling, the rank
+# report, ``word_table_sha256`` -- treats them like any other row.
 #
 # Axis-aligned, not a seeded random orthonormal set: a one-hot is what the
 # axis means, and a deterministic table is what a rebuild must reproduce byte
 # for byte.  The axis is the token's position in SYNTHETIC_CODE_VOCAB, so
-# direction takes e0..e5 and hands e6..e7.
+# direction takes e0..e5.
 #
-# The two slots keep disjoint axes so no two rows of the table are equal --
-# a row swap would otherwise be invisible to anything that reads by value.
-#
-# The (D - 8) unused columns of those two blocks are inert: zero input for
-# every legal label, so they take no gradient.
+# The (D - 6) unused columns of the block are inert: zero input for every legal
+# label, so they take no gradient.
 SYNTHETIC_CODE_SCHEME = "axis_orthonormal"
-# Every code row lives on axes 0..len(SYNTHETIC_CODE_VOCAB)-1, so a code
+# Every code row lives on axes 0..len(SYNTHETIC_CODE_VOCAB)-1, so the code
 # slot's pooled channel (a mean of code rows, renormalised) is zero outside
 # those axes for every legal label.  The model's projection therefore reads
-# only that prefix of the two code slots: (D - SYNTHETIC_CODE_DIM) columns per
-# code slot would otherwise be weights that never see a nonzero input and
-# never take a gradient (2 x 760 x latent_dim of them at D = 768 -- 2% of the
-# v24 model, measured dead in its Adam state).
+# only that prefix of the code slot: the (D - SYNTHETIC_CODE_DIM) remaining
+# columns would otherwise be weights that never see a nonzero input and never
+# take a gradient (762 x latent_dim of them at D = 768 -- measured dead in the
+# v24 model's Adam state).
 SYNTHETIC_CODE_DIM = len(SYNTHETIC_CODE_VOCAB)
-CODE_SLOTS: tuple[int, ...] = (SLOT_DIRECTION, SLOT_HANDS)
+CODE_SLOTS: tuple[int, ...] = (SLOT_DIRECTION,)
 
 
 def slot_channel_widths(embedding_dim: int) -> tuple[int, ...]:
@@ -618,7 +606,9 @@ SLOT_PAD_ID = -1
 # 4: action_label_projection reads the compacted slot channels (code slots cut
 #    to their SYNTHETIC_CODE_DIM axes), so its first Linear is narrower;
 #    canonical_frame_projection is one Linear instead of a two-layer MLP.
-ACTION_CHECKPOINT_VERSION = 4
+# 5: the hands slot is gone, so the word table has two fewer rows and
+#    action_label_projection's first Linear loses that slot's 2 code columns.
+ACTION_CHECKPOINT_VERSION = 5
 
 
 class ActionConditioningError(RuntimeError):

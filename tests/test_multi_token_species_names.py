@@ -142,20 +142,20 @@ def test_val_gate_keeps_rare_label_buckets_whole_in_train():
 def test_val_eligibility_counts_label_buckets_across_sources(monkeypatch):
     monkeypatch.setattr(dataset_module, "VAL_BUCKET_MIN_CLIPS", 3)
     # Bucket = head words only. ("attack", "jump") has 4 clips over two sources
-    # (> 3, eligible) whatever modifier / direction / hands words ride along;
+    # (> 3, eligible) whatever modifier / direction words ride along;
     # ("attack",) alone is a different bucket with 2 clips; ("walk",) 1 clip;
     # unlabeled never eligible.
     meta = {
         "a": {
             "x1.npy": {"action_label": "attack, jump"},
-            "x2.npy": {"action_label": "attack, jump, spin, right, hand1"},
+            "x2.npy": {"action_label": "attack, jump, spin, right"},
             "x3.npy": {"action_label": "attack"},
             "x4.npy": {"action_label": "walk, fast"},
             "x5.npy": {},
         },
         "b": {
             "y1.npy": {"action_label": "attack, jump, left"},
-            "y2.npy": {"action_label": "attack, jump, hand2"},
+            "y2.npy": {"action_label": "attack, jump, charge"},
             "y3.npy": {"action_label": "attack, bite"},
         },
     }
@@ -165,7 +165,7 @@ def test_val_eligibility_counts_label_buckets_across_sources(monkeypatch):
     # Per source alone, ("attack", "jump") has only 2 clips: not eligible.
     assert dataset_module.val_eligible_motion_names({"a": names["a"]}, meta) == {"a": set()}
     bucket = dataset_module.action_label_split_bucket
-    assert bucket({"action_label": "attack, jump, spin, right, hand1"}) == ("attack", "jump")
+    assert bucket({"action_label": "attack, jump, spin, right"}) == ("attack", "jump")
     assert bucket({"action_label": "walk, fast, left"}) == ("walk",)
     assert bucket({}) is None
 
