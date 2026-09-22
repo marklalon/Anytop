@@ -688,7 +688,6 @@
 {"clip": "MB_Unka_AttackStump", "action_group": "stationary", "action_label": "attack, smash", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_AttackTailR", "action_group": "stationary", "action_label": "attack, spin, whip", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackWindHigh", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
-{"clip": "MB_Unka_AttackWindLow", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackWingL", "action_group": "stationary", "action_label": "attack, left, punch", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackWingsR", "action_group": "stationary", "action_label": "attack, right, punch", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_Attack", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
