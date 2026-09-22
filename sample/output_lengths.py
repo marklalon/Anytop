@@ -9,7 +9,12 @@ dictates.
 """
 import sys
 
-from data_loaders.truebones.data.dataset import resample_motion_features
+import numpy as np
+
+from data_loaders.truebones.data.dataset import (
+    _drop_loop_closing_frame,
+    resample_motion_features,
+)
 from data_loaders.truebones.truebones_utils.animation_utils import detect_loop_from_features
 from data_loaders.truebones.truebones_utils.loop_verdict import stored_loop_verdict
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
@@ -155,6 +160,79 @@ def resolve_loop_condition(
     if verbose:
         print(f'  loop (auto) -> off ({_no_prior_reason(pool, action_condition)})')
     return False
+
+
+def reference_period_frames(reference_features, loop):
+    """The reference clip as its own source, and the frame count R to read off it.
+
+    A loop's length is its PERIOD.  A clip that ships a closing key (last frame
+    == frame 0) is one frame longer than the cycle it holds, and that frame is
+    redundant everywhere it matters: the loader drops it before training
+    (``_drop_loop_closing_frame``), the bake records the dropped length
+    (``clip_length_prior.source_clip_length``), and the reference bundle drops
+    it again when it fills the window.  Taking R off the untrimmed array would
+    therefore ask for ``period + 1`` frames and hand the model
+    ``resample_speed_cond = (period + 1) / n`` where that very clip trained at
+    ``period / n``, stretching the exported cycle by ``M / (M - 1)``.
+
+    Dropped here, ahead of R, so the crop/outpaint comparison against M sees one
+    period too and the bundle's own drop is a no-op.  An open window keeps every
+    frame it shipped: a one-shot clip's last frame is motion, not a repeat.
+
+    Returns ``(features, R)``.
+    """
+    if not loop:
+        return reference_features, int(reference_features.shape[0])
+    trimmed = _drop_loop_closing_frame(reference_features)
+    return trimmed, int(trimmed.shape[0])
+
+
+def fit_reference_to_output(reference_features, requested_frames, loop):
+    """The reference as the window will be filled from it, for an output of M
+    frames.  Returns ``(features, outpaint_range, note)``.
+
+    A ONE-SHOT clip covers exactly the R frames it holds, so R against M is a
+    coverage question: R > M crops the tail off, R < M leaves [R, M) with no
+    reference behind it and the caller outpaints it from noise
+    (``outpaint_range`` names those frames).
+
+    A LOOP covers every output length there is -- it is a cycle, and the window
+    is filled from the whole period and rescaled periodically in both
+    directions (``_prepare_img2img_reference_bundle`` in, this module's
+    ``_resample_window_to_output`` out).  So it is exempt from both:
+
+    * cropping one would export a fraction of the cycle as though it were the
+      whole one (half a gait cycle, sold as a loop);
+    * outpainting one would invent a tail for a window that HAS no tail -- its
+      last frame wraps to its first -- and seed it by repeating the last frame,
+      which is the very one-frame stall ``reference_period_frames`` drops the
+      closing key to remove.
+
+    The length M still reaches the model, as ``resample_speed_cond``, and still
+    sets the exported frame count; it just no longer changes which motion the
+    reference supplies.
+    """
+    R = int(reference_features.shape[0])
+    M = int(requested_frames)
+    if loop:
+        if R != M:
+            return reference_features, None, (
+                f'  Reference loop: R={R} (one period) -> M={M} by periodic '
+                f'resample, no crop/outpaint'
+            )
+        return reference_features, None, None
+    if R > M:
+        return reference_features[:M], None, (
+            f'  Reference cropped: R={R} > M={M} -> using first {M} frames'
+        )
+    if R < M:
+        pad = np.repeat(reference_features[-1:], M - R, axis=0)
+        return (
+            np.concatenate([reference_features, pad], axis=0),
+            f'{R}-{M - 1}',
+            f'  Reference outpaint: R={R} < M={M} -> appended frames [{R}, {M - 1}]',
+        )
+    return reference_features, None, None
 
 
 def _finalize_output_lengths(requested_frames, min_length, internal_num_frames):

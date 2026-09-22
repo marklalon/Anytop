@@ -66,6 +66,8 @@ from sample.output_lengths import (
     _finalize_output_lengths,
     _resample_window_to_output,
     _resolve_auto_output_lengths,
+    fit_reference_to_output,
+    reference_period_frames,
     resolve_loop_condition,
 )
 from sample.reference_motion import (
@@ -311,9 +313,11 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # Output length, in priority order:
     #   1. --num_frames itself. An explicit number is the user's decision and
-    #      outranks everything, reference included (R < M outpaints the tail,
-    #      R > M crops): it is finalized right here, and every fallback below is
-    #      guarded on requested_output_frames still being None.
+    #      outranks everything, reference included (a one-shot reference is
+    #      outpainted when R < M and cropped when R > M; a loop is rescaled
+    #      periodically instead -- fit_reference_to_output): it is finalized
+    #      right here, and every fallback below is guarded on
+    #      requested_output_frames still being None.
     #   2. a --reference_motion's own frame count R -- with no number given, the
     #      reference IS the requested length.
     #   3. the training-length prior for --action_label, resolved once
@@ -620,10 +624,12 @@ def main(args=None, cond_dict=None, runtime=None):
             raise ValueError(
                 f"Reference motion must have shape (T, J, F), got {ref_features_full.shape}"
             )
-        R = int(ref_features_full.shape[0])
+        ref_loaded_frame_count = R = int(ref_features_full.shape[0])
 
         # The loop condition, off the reference as it will fill the window:
         # retargeted onto the target skeleton, so the target's root indexes it.
+        # Judged on the UNTRIMMED clip: the verdict lives in its terminal
+        # velocity row, which the trim below would take away.
         loop_condition = resolve_loop_condition(
             loop_mode,
             cond_dict,
@@ -632,6 +638,19 @@ def main(args=None, cond_dict=None, runtime=None):
             reference_features=ref_features_full,
             translation_root_index=int(cond_dict[object_type].get('translation_root_index', 0)),
         )
+
+        # A loop's length is its period, so a closing key goes before R is read
+        # off the clip (reference_period_frames).  R is then the length in BOTH
+        # senses the code below needs -- the length asked for when --num_frames
+        # is unset, and the motion the reference supplies -- because a loop is
+        # exempt from the crop/outpaint fit (fit_reference_to_output): the
+        # trimmed frame must not read as one frame of missing coverage.
+        ref_features_full, R = reference_period_frames(ref_features_full, loop_condition)
+        if R != int(ref_loaded_frame_count):
+            print(
+                f'  Reference loop closing key dropped: {ref_loaded_frame_count} '
+                f'frames -> period R={R}'
+            )
 
         # Finalize output lengths from R (if --num_frames not specified).
         if requested_output_frames is None:
@@ -649,16 +668,15 @@ def main(args=None, cond_dict=None, runtime=None):
                 )
         M = int(requested_output_frames)
 
-        # Crop (R > M) or outpaint-pad (R < M) reference to exactly M frames.
-        if R > M:
-            ref_features_full = ref_features_full[:M]
-            print(f'  Reference cropped: R={R} > M={M} -> using first {M} frames')
-        elif R < M:
-            outpaint_active = True
-            pad = np.repeat(ref_features_full[-1:], M - R, axis=0)
-            ref_features_full = np.concatenate([ref_features_full, pad], axis=0)
-            auto_outpaint_range = f'{R}-{M - 1}'
-            print(f'  Reference outpaint: R={R} < M={M} -> appended frames [{R}, {M - 1}]')
+        # Fit the reference to M: crop (R > M) or outpaint-pad (R < M) a
+        # one-shot clip, leave a loop alone (a cycle covers every M, and the
+        # window is filled from it periodically either way).
+        ref_features_full, auto_outpaint_range, fit_note = fit_reference_to_output(
+            ref_features_full, M, loop_condition,
+        )
+        outpaint_active = auto_outpaint_range is not None
+        if fit_note:
+            print(fit_note)
 
         # Appended [R, M) frames need a pure-noise start (full schedule), which
         # conflicts with skip_timesteps/explicit inpaint. When both are present,
@@ -676,7 +694,8 @@ def main(args=None, cond_dict=None, runtime=None):
             sys.exit(
                 "ERROR: --skip_timesteps is required when using --reference_motion "
                 "without --inpaint_joints/--inpaint_frames and without a length "
-                "extension (R < num_frames).\n"
+                "extension (R < num_frames; a loop reference never extends -- a "
+                "cycle covers every length, so --num_frames only rescales it).\n"
                 "  Higher values (e.g. 80-100) produce motion more faithful to the reference;\n"
                 "  lower values (e.g. 20-40) allow more model-driven variation."
             )
