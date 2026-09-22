@@ -224,3 +224,54 @@ def test_labels_api_can_filter_by_field_and_whole_word(tmp_path):
     handler.path = "/api/labels?ds=sample&q=idle&field=label&whole_word=1"
     _, payload = handler.do_GET()
     assert [row["clip"] for row in payload["rows"]] == ["Bear_Idle"]
+
+
+def _mark_pending_handler(tmp_path):
+    labels = tmp_path / "action_labels.jsonl"
+    rows = [
+        {"clip": "Bear_Walk.npy", "action_group": "locomotion", "action_label": "walk"},
+        {"clip": "Bear_Idle.npy", "action_group": "stationary", "action_label": "idle",
+         "pending_delete": True},
+    ]
+    labels.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    dataset = {
+        "id": "sample", "name": "sample", "processed": str(tmp_path),
+        "labels": labels, "gif_dir": tmp_path / "review" / "gif",
+    }
+    handler = object.__new__(review.Handler)
+    handler.datasets = [dataset]
+    handler.stores = {"sample": review.LabelStore(labels)}
+    handler._send_json = lambda status, payload: (status, payload)
+    return handler, labels
+
+
+def test_mark_pending_marks_an_explicit_filtered_subset_once(tmp_path):
+    handler, labels = _mark_pending_handler(tmp_path)
+
+    status, payload = handler._mark_pending({
+        "dataset": "sample",
+        "clips": ["Bear_Walk.npy", "Bear_Walk.npy", "Bear_Idle.npy"],
+    })
+
+    assert status == 200
+    assert payload == {
+        "dataset": "sample", "requested": 2, "marked": 1, "already_marked": 1,
+    }
+    saved = [json.loads(line) for line in labels.read_text(encoding="utf-8").splitlines()]
+    assert all(row["pending_delete"] is True for row in saved)
+
+
+def test_mark_pending_rejects_a_stale_subset_atomically(tmp_path):
+    handler, labels = _mark_pending_handler(tmp_path)
+    original_labels = labels.read_bytes()
+
+    status, payload = handler._mark_pending({
+        "dataset": "sample",
+        "clips": ["Bear_Walk.npy", "Already_Gone.npy"],
+    })
+
+    assert status == 409
+    assert "刷新后重试" in payload["error"]
+    assert labels.read_bytes() == original_labels

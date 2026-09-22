@@ -57,6 +57,8 @@ modifiers are sorted by the shared conditioning contract.  Existing valid labels
 canonicalization when a dataset is loaded.  Existing invalid labels are kept
 verbatim and exposed to the page with an error so they can be repaired there.
 
+The page can mark every row matched by its current filters in one request; this
+only writes ``pending_delete`` and does not touch any source or processed file.
 The header's "clean" button turns those marks into a real removal: every
 ``pending_delete`` row of the active dataset has its source file (looked up in
 ``motion_metadata.json``) *moved* -- never unlinked -- under ``--trash``
@@ -516,6 +518,29 @@ class LabelStore:
                 self._write()
             return removed
 
+    def mark_pending(self, clips):
+        """Set ``pending_delete`` on an explicit clip list in one rewrite.
+
+        All names are checked before any row is changed, which keeps this batch
+        operation atomic when the browser is showing a stale filtered view.
+        Returns the number of rows whose mark was newly added.
+        """
+        with self.lock:
+            self._reload_if_stale()
+            requested = list(dict.fromkeys(clips))
+            missing = [clip for clip in requested if clip not in self.index]
+            if missing:
+                raise KeyError(missing[0])
+            changed = 0
+            for clip in requested:
+                row = self.index[clip]
+                if not row.get("pending_delete"):
+                    row["pending_delete"] = True
+                    changed += 1
+            if changed:
+                self._write()
+            return changed
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -685,7 +710,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = urlparse(self.path).path
-        if route not in ("/api/update", "/api/clean"):
+        if route not in ("/api/update", "/api/mark-pending", "/api/clean"):
             return self._send_json(404, {"error": "not found"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -694,6 +719,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"error": f"bad request: {exc}"})
         if route == "/api/clean":
             return self._clean(payload)
+        if route == "/api/mark-pending":
+            return self._mark_pending(payload)
 
         ds, store = self._store_and_dataset(payload.get("dataset") or payload.get("ds"))
         if ds is None:
@@ -749,6 +776,34 @@ class Handler(BaseHTTPRequestHandler):
         out["_dataset"] = ds["id"]
         out["bvhview"] = _bvhview_href(ds, out["clip"])
         return self._send_json(200, {"row": out, "dataset": ds["id"], "notes": notes})
+
+    def _mark_pending(self, payload):
+        """Mark the page's current filtered clip list for later cleanup."""
+        requested_ds = payload.get("dataset") or payload.get("ds")
+        if requested_ds and self._dataset(requested_ds) is None:
+            return self._send_json(404, {"error": f"unknown dataset: {requested_ds}"})
+        ds, store = self._store_and_dataset(requested_ds)
+        if ds is None:
+            return self._send_json(400, {"error": "no datasets configured"})
+        clips = payload.get("clips")
+        if (not isinstance(clips, list) or
+                any(not isinstance(clip, str) or not clip for clip in clips)):
+            return self._send_json(400, {"error": "clips must be a list of non-empty strings"})
+        unique_clips = list(dict.fromkeys(clips))
+        try:
+            marked = store.mark_pending(unique_clips)
+        except KeyError as exc:
+            return self._send_json(409, {
+                "error": f"筛选结果已过期，请刷新后重试；找不到 clip：{exc.args[0]}"
+            })
+        except OSError as exc:
+            return self._send_json(500, {"error": f"write failed: {exc}"})
+        return self._send_json(200, {
+            "dataset": ds["id"],
+            "requested": len(unique_clips),
+            "marked": marked,
+            "already_marked": len(unique_clips) - marked,
+        })
 
     @staticmethod
     def _sync_terminal_row(ds, clip, is_loop):
