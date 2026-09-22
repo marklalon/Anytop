@@ -96,29 +96,29 @@
 {"species": "RMW_Slime", "species_tags": ["Drifting", "Small", "Chibi Hopping"]}
 {"species": "RMW_Spider", "species_tags": ["Multiped", "Medium", "Chibi Scuttling"]}
 {"species": "RMW_TurtleShell", "species_tags": ["Drifting", "Medium", "Chibi Crawling"]}
-{"species": "RU01_BallRobot", "species_tags": ["Drifting", "Small", "Robotic Hovering"]}
-{"species": "RU01_BlastRobot", "species_tags": ["Quadruped", "Medium", "Robotic Scuttling"]}
-{"species": "RU01_BotRobot", "species_tags": ["Drifting", "Medium", "Robotic Hovering"]}
-{"species": "RU01_BoxyRobot", "species_tags": ["Drifting", "Medium", "Robotic Hovering"]}
-{"species": "RU01_DeliveryRobot", "species_tags": ["Drifting", "Small", "Robotic Hovering"]}
-{"species": "RU01_GridRobot", "species_tags": ["Drifting", "Small", "Robotic Hovering"]}
-{"species": "RU01_GripperRobot", "species_tags": ["Drifting", "Medium", "Robotic Hovering"]}
-{"species": "RU01_HermitRobot", "species_tags": ["Quadruped", "Medium", "Robotic Scuttling"]}
-{"species": "RU01_JellyfishRobot", "species_tags": ["Drifting", "Medium", "Robotic Undulating"]}
-{"species": "RU01_MetalRobot", "species_tags": ["Biped", "Large", "Robotic Striding"]}
-{"species": "RU01_NexusRobot", "species_tags": ["Drifting", "Large", "Robotic Hovering"]}
-{"species": "RU01_TankerRobot", "species_tags": ["Biped", "Large", "Robotic Striding"]}
-{"species": "RU01_TechRobot", "species_tags": ["Biped", "Medium", "Robotic Striding"]}
-{"species": "RU01_TentaclesRobot", "species_tags": ["Drifting", "Large", "Robotic Undulating"]}
-{"species": "RU02_DragonBot", "species_tags": ["Winged", "Medium", "Robotic Flapping"]}
-{"species": "RU02_DragonPredatorRobot", "species_tags": ["Winged", "Heavy", "Robotic Flapping"]}
-{"species": "RU02_DragonRobot", "species_tags": ["Winged", "Large", "Robotic Flapping"]}
-{"species": "RU02_GalaxyRobot", "species_tags": ["Drifting", "Large", "Robotic Hovering"]}
-{"species": "RU02_NoseRobot", "species_tags": ["Biped", "Medium", "Robotic Striding"]}
-{"species": "RU02_RazorRobot", "species_tags": ["Multiped", "Small", "Robotic Scuttling"]}
-{"species": "RU02_SpiderQueenRobot", "species_tags": ["Multiped", "Medium", "Robotic Scuttling"]}
-{"species": "RU02_SpiderRobot", "species_tags": ["Multiped", "Small", "Robotic Scuttling"]}
-{"species": "RU02_SpiderlingRobot", "species_tags": ["Multiped", "Small", "Robotic Scuttling"]}
+{"species": "RU01_BallRobot", "species_tags": ["Drifting", "Small", "Hovering"]}
+{"species": "RU01_BlastRobot", "species_tags": ["Quadruped", "Medium", "Scuttling"]}
+{"species": "RU01_BotRobot", "species_tags": ["Drifting", "Medium", "Hovering"]}
+{"species": "RU01_BoxyRobot", "species_tags": ["Drifting", "Medium", "Hovering"]}
+{"species": "RU01_DeliveryRobot", "species_tags": ["Drifting", "Small", "Hovering"]}
+{"species": "RU01_GridRobot", "species_tags": ["Drifting", "Small", "Hovering"]}
+{"species": "RU01_GripperRobot", "species_tags": ["Drifting", "Medium", "Hovering"]}
+{"species": "RU01_HermitRobot", "species_tags": ["Quadruped", "Medium", "Scuttling"]}
+{"species": "RU01_JellyfishRobot", "species_tags": ["Drifting", "Medium", "Undulating"]}
+{"species": "RU01_MetalRobot", "species_tags": ["Biped", "Large", "Striding"]}
+{"species": "RU01_NexusRobot", "species_tags": ["Drifting", "Large", "Hovering"]}
+{"species": "RU01_TankerRobot", "species_tags": ["Biped", "Large", "Striding"]}
+{"species": "RU01_TechRobot", "species_tags": ["Biped", "Medium", "Striding"]}
+{"species": "RU01_TentaclesRobot", "species_tags": ["Drifting", "Large", "Undulating"]}
+{"species": "RU02_DragonBot", "species_tags": ["Winged", "Medium", "Flapping"]}
+{"species": "RU02_DragonPredatorRobot", "species_tags": ["Winged", "Heavy", "Flapping"]}
+{"species": "RU02_DragonRobot", "species_tags": ["Winged", "Large", "Flapping"]}
+{"species": "RU02_GalaxyRobot", "species_tags": ["Drifting", "Large", "Hovering"]}
+{"species": "RU02_NoseRobot", "species_tags": ["Biped", "Medium", "Striding"]}
+{"species": "RU02_RazorRobot", "species_tags": ["Multiped", "Small", "Scuttling"]}
+{"species": "RU02_SpiderQueenRobot", "species_tags": ["Multiped", "Medium", "Scuttling"]}
+{"species": "RU02_SpiderRobot", "species_tags": ["Multiped", "Small", "Scuttling"]}
+{"species": "RU02_SpiderlingRobot", "species_tags": ["Multiped", "Small", "Scuttling"]}
 {"species": "TNR_Archer", "species_tags": ["Biped", "Medium", "Striding"]}
 {"species": "TNR_Cavalry", "species_tags": ["Quadruped", "Large", "Galloping"]}
 {"species": "TNR_CavalryArcher", "species_tags": ["Quadruped", "Large", "Galloping"]}
