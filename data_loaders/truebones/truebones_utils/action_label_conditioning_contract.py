@@ -303,6 +303,10 @@ def slot_channel_representation() -> dict[str, Any]:
         "slot_aggregation": "weighted mean of member word vectors, then L2 normalisation",
         "absent_slot": "zero row, reported in slot_mask; never renormalises the other slots",
         "channel_layout": "concatenated in ACTION_LABEL_SLOTS order",
+        "projection_input": (
+            "each slot's channel cut to slot_channel_widths: the full embedding "
+            "for a T5-encoded slot, the SYNTHETIC_CODE_DIM code axes for a code slot"
+        ),
         "per_word_weights": {
             "head_first": float(HEAD_SLOT_PRIMARY_WEIGHT),
             "default": 1.0,
@@ -332,6 +336,47 @@ def slot_channel_representation() -> dict[str, Any]:
 # The (D - 8) unused columns of those two blocks are inert: zero input for
 # every legal label, so they take no gradient.
 SYNTHETIC_CODE_SCHEME = "axis_orthonormal"
+# Every code row lives on axes 0..len(SYNTHETIC_CODE_VOCAB)-1, so a code
+# slot's pooled channel (a mean of code rows, renormalised) is zero outside
+# those axes for every legal label.  The model's projection therefore reads
+# only that prefix of the two code slots: (D - SYNTHETIC_CODE_DIM) columns per
+# code slot would otherwise be weights that never see a nonzero input and
+# never take a gradient (2 x 760 x latent_dim of them at D = 768 -- 2% of the
+# v24 model, measured dead in its Adam state).
+SYNTHETIC_CODE_DIM = len(SYNTHETIC_CODE_VOCAB)
+CODE_SLOTS: tuple[int, ...] = (SLOT_DIRECTION, SLOT_HANDS)
+
+
+def slot_channel_widths(embedding_dim: int) -> tuple[int, ...]:
+    """Columns of each slot's channel the projection consumes, in
+    ACTION_LABEL_SLOTS order: the full ``embedding_dim`` for a T5-encoded slot,
+    :data:`SYNTHETIC_CODE_DIM` for a code slot."""
+    return tuple(
+        SYNTHETIC_CODE_DIM if slot in CODE_SLOTS else int(embedding_dim)
+        for slot in range(len(ACTION_LABEL_SLOTS))
+    )
+
+
+def projection_input_dim(embedding_dim: int) -> int:
+    """Width of the compacted channel vector ``action_label_projection`` reads."""
+    return sum(slot_channel_widths(embedding_dim))
+
+
+def compact_slot_channels(channels: np.ndarray) -> np.ndarray:
+    """``(S, D)`` channels -> the ``(projection_input_dim(D),)`` vector the model
+    projects: each slot's channel cut to :func:`slot_channel_widths`, concatenated
+    in slot order.  The numpy definition the model's tensor slicing mirrors."""
+    channels = np.asarray(channels)
+    if channels.ndim != 2 or channels.shape[0] != len(ACTION_LABEL_SLOTS):
+        raise ValueError(f"channels must be ({len(ACTION_LABEL_SLOTS)}, D), got {channels.shape}")
+    widths = slot_channel_widths(channels.shape[1])
+    for slot in CODE_SLOTS:
+        if np.any(channels[slot][SYNTHETIC_CODE_DIM:] != 0):
+            raise ValueError(
+                f"slot {ACTION_LABEL_SLOTS[slot]!r} has energy outside the "
+                f"{SYNTHETIC_CODE_DIM} code axes; its rows are not code rows"
+            )
+    return np.concatenate([channels[slot][:width] for slot, width in enumerate(widths)])
 
 
 def synthetic_code_axis(word: str) -> int:
@@ -570,7 +615,10 @@ SLOT_PAD_ID = -1
 # Distinct from utils.parser_util.CKPT_VERSION, which versions args.json and the
 # training semantics: this one versions the .pt layout itself.
 # 3: removed the persistent action_role_b_perm/action_role_b_sign buffers.
-ACTION_CHECKPOINT_VERSION = 3
+# 4: action_label_projection reads the compacted slot channels (code slots cut
+#    to their SYNTHETIC_CODE_DIM axes), so its first Linear is narrower;
+#    canonical_frame_projection is one Linear instead of a two-layer MLP.
+ACTION_CHECKPOINT_VERSION = 4
 
 
 class ActionConditioningError(RuntimeError):

@@ -28,6 +28,10 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     action_label_slots,
     assemble_slot_channels,
     assert_bundle_matches_metadata,
+    compact_slot_channels,
+    projection_input_dim,
+    slot_channel_widths,
+    SYNTHETIC_CODE_DIM,
     build_action_conditioning_bundle,
     scatter_synthetic_code_rows,
     fingerprint,
@@ -228,7 +232,31 @@ def test_modifier_and_direction_dropout_are_independent_per_row():
 
 def test_projection_consumes_one_block_per_slot():
     model = _model(make_test_bundle())
-    assert model.action_label_projection[0].in_features == len(ACTION_LABEL_SLOTS) * TEST_T5_DIM
+    # A T5 slot's block is the full embedding; a code slot's block is its
+    # SYNTHETIC_CODE_DIM axes, the only columns a legal label can light up.
+    assert slot_channel_widths(TEST_T5_DIM) == (
+        TEST_T5_DIM, SYNTHETIC_CODE_DIM, TEST_T5_DIM, SYNTHETIC_CODE_DIM)
+    assert model.action_label_projection[0].in_features == projection_input_dim(TEST_T5_DIM)
+    assert model.action_label_projection[0].in_features == 2 * TEST_T5_DIM + 2 * SYNTHETIC_CODE_DIM
+
+
+def test_compacted_channels_match_numpy_and_lose_nothing():
+    bundle = make_test_bundle()
+    model = _model(bundle)
+    labels = ['attack, left, fast, hand1', 'walk, forward', 'idle, hand2', 'draw']
+    groups = ['stationary', 'locomotion', 'stationary', 'transition']
+    full = _channels(model, labels, groups)
+    compact = model._compact_action_slot_channels(full)
+    assert compact.shape == (len(labels), projection_input_dim(TEST_T5_DIM))
+    for row, label in enumerate(labels):
+        slots = action_label_slots(parse_action_label(label))
+        numpy_channels, _ = assemble_slot_channels(bundle.word_embeddings, slots)
+        expected = compact_slot_channels(numpy_channels)
+        np.testing.assert_allclose(compact[row].numpy(), expected, rtol=1e-9, atol=1e-12)
+        # Nothing outside the kept columns was nonzero: the compaction is lossless.
+        assert np.count_nonzero(numpy_channels) == np.count_nonzero(expected)
+    # The projection consumes exactly the compacted vector.
+    assert model.action_label_projection[0].in_features == compact.shape[1]
 
 
 def test_head_and_direction_channels_do_not_move_when_modifiers_are_added():
@@ -446,7 +474,7 @@ def test_checkpoint_carries_both_fingerprints():
     model = _model(bundle)
     payload = build_checkpoint_payload(model.state_dict(), None, model)
     metadata = payload['metadata']
-    assert ACTION_CHECKPOINT_VERSION == 3
+    assert ACTION_CHECKPOINT_VERSION == 4
     assert metadata['checkpoint_version'] == ACTION_CHECKPOINT_VERSION
     action = metadata['action_conditioning']
     assert action['embedding_fingerprint'] == bundle.embedding_fingerprint
