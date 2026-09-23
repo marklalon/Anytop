@@ -26,7 +26,10 @@ per-species facing and size corrections, but a missing cond only costs those.
 
 A run is incremental: a clip is rendered when its GIF is missing or when its
 source GLB has been modified since the GIF was written (:func:`_gif_state`),
-and ``--overwrite`` renders everything selected regardless.
+and ``--overwrite`` renders everything selected regardless.  ``--prune``
+deletes, before rendering, the GIFs that no longer have a source to be a
+picture of (:func:`_prune_plan`): a clip the index has dropped, or one whose
+source GLB is gone from disk.
 
 The scene is shared by every dataset, so the galleries read the same way: a
 fixed 1x1 see-through grid at ``z = 0`` under a shadow-casting sun, a 50mm lens
@@ -72,6 +75,7 @@ Run with the project venv so ``bpy`` resolves::
     .venv/Scripts/python.exe .../render_gifs.py --dataset unitybundles --filter 'IAC_*'
     .venv/Scripts/python.exe .../render_gifs.py --dataset 'truebones/*' --clip 'Horse_*' -j 4 --dry-run
     .venv/Scripts/python.exe .../render_gifs.py --mode skeleton --overwrite --filter Dog
+    .venv/Scripts/python.exe .../render_gifs.py --prune --dry-run
 """
 from __future__ import annotations
 
@@ -369,6 +373,45 @@ def _gif_state(gif_path, source):
     return None
 
 
+def _gif_root(args, dataset):
+    """Where one dataset's GIFs live: its own ``review/gif``, or the dataset's
+    namespace under ``--gif-root``."""
+    if args.gif_root:
+        return os.path.join(args.gif_root, *dataset["namespace"].split("/"))
+    return dataset["gif_dir"]
+
+
+def _prune_plan(args, datasets):
+    """``[(namespace, gif path, why)]`` -- the GIFs ``--prune`` deletes.
+
+    A GIF is orphaned when its stem is not a clip of the dataset's
+    ``motion_metadata.json`` any more (``"no clip"``: renamed, merged or
+    dropped by a later preprocess) or when the clip's recorded source GLB is
+    gone from disk (``"no source"``).  ``--clip`` narrows the scan; ``--filter``
+    does not, because an orphan has no index entry to read its species from.
+    """
+    doomed = []
+    for dataset in datasets:
+        gif_root = _gif_root(args, dataset)
+        if not os.path.isdir(gif_root):
+            continue
+        clips = {os.path.normcase(stem): source for stem, (_species, source)
+                 in _load_clip_sources(dataset["metadata"]).items()}
+        for name in sorted(os.listdir(gif_root)):
+            stem, ext = os.path.splitext(name)
+            if ext.lower() != ".gif" or not fnmatch.fnmatch(stem, args.clip):
+                continue
+            source = clips.get(os.path.normcase(stem))
+            if source is None:
+                why = "no clip"
+            elif not os.path.isfile(source):
+                why = "no source"
+            else:
+                continue
+            doomed.append((dataset["namespace"], os.path.join(gif_root, name), why))
+    return doomed
+
+
 def _plan(args, datasets):
     """``(jobs, skipped)`` -- one job per selected clip whose GIF is missing or
     stale (see :func:`_gif_state`), or every selected clip under ``--overwrite``.
@@ -393,8 +436,7 @@ def _plan(args, datasets):
             else {}
         facing = _load_facing(cond) if args.facing else {}
         scales = _load_scales(cond) if args.canonical_scale else {}
-        gif_root = os.path.join(args.gif_root, *namespace.split("/")) \
-            if args.gif_root else dataset["gif_dir"]
+        gif_root = _gif_root(args, dataset)
         for clip in sorted(clips):
             species, source = clips[clip]
             if not fnmatch.fnmatch(species, args.filter):
@@ -1585,6 +1627,10 @@ def main():
     ap.add_argument("--overwrite", action="store_true",
                     help="re-render everything selected (default: only GIFs "
                          "that are missing or older than their source GLB)")
+    ap.add_argument("--prune", action="store_true",
+                    help="first delete GIFs whose clip has left the index or "
+                         "whose source GLB is gone (honours --clip and "
+                         "--dry-run, not --filter)")
     ap.add_argument("--engine", default="eevee", choices=("eevee", "cycles"))
     ap.add_argument("--size", type=int, default=GIF_SIZE,
                     help="GIF edge in pixels (default: %(default)s)")
@@ -1658,6 +1704,19 @@ def main():
                   % (dataset["namespace"], dataset["metadata"]))
     if not ready:
         raise SystemExit("no dataset has a clip index to render from")
+
+    doomed = _prune_plan(args, ready) if args.prune else []
+    if doomed:
+        for namespace, gif_path, why in doomed:
+            print("%-22s %-42s %-9s %s"
+                  % (namespace, os.path.splitext(os.path.basename(gif_path))[0],
+                     why, "would prune" if args.dry_run else "pruned"))
+            if not args.dry_run:
+                os.remove(gif_path)
+        print("%d orphaned GIF(s) %s\n"
+              % (len(doomed), "to prune" if args.dry_run else "pruned"))
+    elif args.prune:
+        print("[OK] no orphaned GIFs to prune\n")
 
     jobs, skipped = _plan(args, ready)
     if args.limit:
