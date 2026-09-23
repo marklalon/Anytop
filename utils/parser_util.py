@@ -265,7 +265,10 @@ def add_model_options(parser):
                             "(the corpus piles up on a few exact frame counts) so an inference num_frames "
                             "between the clusters is in distribution. The range is narrowed per clip so the "
                             "scaled clip stays >= min_length and a loop that fits the source budget still "
-                            "fits (never downgraded to non-loop by slowing down). 1.2 is the intended value.")
+                            "fits (never downgraded to non-loop by slowing down). A phase-anchored clip (label not "
+                            "loop_is_phase_free) over the source budget is additionally sped up by at least "
+                            "min(L/budget, MAX_FIT_SPEEDUP) -- even with this flag at 1.0 -- so it enters the "
+                            "window whole instead of being cropped. 1.2 is the intended value.")
     group.add_argument("--motion_speed_aug_prob", default=1.0, type=float,
                        help="Per-sample probability of applying --motion_speed_aug (default 1.0 = every clip). "
                             "The recorded tempo is one point of the continuum, so leaving a mass at exactly "

@@ -18,6 +18,7 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     load_action_conditioning_bundle,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (
+    MAX_FIT_SPEEDUP,
     MAX_SOURCE_FRAMES_MULT,
     get_action_word_embeddings_path,
 )
@@ -1204,7 +1205,7 @@ class MotionDataset(data.Dataset):
             return 1
         return int(random.randint(2, max_tile_count))
 
-    def _sample_motion_speed_target_length(self, length, is_loop, max_source_length):
+    def _sample_motion_speed_target_length(self, length, is_loop, max_source_length, *, fit_budget=False):
         """Pick the frame count a clip is time-scaled to before any other
         augmentation, or ``length`` for no change.
 
@@ -1223,36 +1224,60 @@ class MotionDataset(data.Dataset):
           so slowing it down cannot push it into the crop branch that
           downgrades it to non-loop.
 
+        ``fit_budget`` marks a phase-anchored clip (the caller passes
+        ``not loop_is_phase_free(label)``): one whose crop loses part of the
+        event rather than some cycles of it. Such a clip gets a speed FLOOR,
+        ``min(L / budget, MAX_FIT_SPEEDUP)``, applied whether or not the
+        augmentation draws -- a clip within ``MAX_FIT_SPEEDUP`` of the budget
+        is played just fast enough to enter the window whole (and, like a
+        fitting loop, is never slowed back out of it), a longer one is played
+        ``MAX_FIT_SPEEDUP`` faster so the crop keeps as much of the event as
+        it can. The augmentation then draws in ``[floor, max(R, floor)]``, so
+        the speed-up and the augmentation are one time-scale, not two.
+
         The narrowed interval is sampled directly rather than clipped into,
         so no probability mass piles up at the bounds (which would just be a
         new spike).
         """
         length = int(length)
+        budget = int(max_source_length)
         ratio = float(getattr(self.opt, 'motion_speed_aug', 1.0))
         prob = float(getattr(self.opt, 'motion_speed_aug_prob', 1.0))
         if ratio < 1.0:
             raise ValueError(f"motion_speed_aug must be >= 1.0 (1.0 = off), got {ratio}.")
         if not 0.0 <= prob <= 1.0:
             raise ValueError(f"motion_speed_aug_prob must be in [0, 1], got {prob}.")
-        if ratio == 1.0 or length < 2 or random.random() >= prob:
+        if length < 2:
             return length
         floor_length = max(2, min(int(self.min_length), length))
+        # The speed floor; below 1 (a clip that already fits) it binds only
+        # through the ceiling.
+        fit_speed = 0.0
         ceil_length = None
-        if is_loop and length <= int(max_source_length):
-            ceil_length = int(max_source_length)
+        if fit_budget:
+            fit_speed = min(float(length) / float(budget), float(MAX_FIT_SPEEDUP))
+            if length <= MAX_FIT_SPEEDUP * budget:
+                ceil_length = budget
+        elif is_loop and length <= budget:
+            ceil_length = budget
+
+        def scaled_length(speed):
+            target_length = max(int(round(float(length) / speed)), floor_length)
+            if ceil_length is not None:
+                target_length = min(target_length, ceil_length)
+            return target_length
+
+        fitted_length = scaled_length(fit_speed) if fit_speed > 1.0 else length
+        if ratio == 1.0 or random.random() >= prob:
+            return fitted_length
         # speed > 1 shortens the clip.
-        speed_lo = 1.0 / ratio
-        speed_hi = min(ratio, float(length) / float(floor_length))
+        speed_lo = max(1.0 / ratio, fit_speed)
+        speed_hi = max(min(ratio, float(length) / float(floor_length)), fit_speed)
         if ceil_length is not None:
             speed_lo = max(speed_lo, float(length) / float(ceil_length))
         if speed_lo >= speed_hi:
-            return length
-        speed = math.exp(random.uniform(math.log(speed_lo), math.log(speed_hi)))
-        target_length = int(round(float(length) / speed))
-        target_length = max(target_length, floor_length)
-        if ceil_length is not None:
-            target_length = min(target_length, ceil_length)
-        return target_length
+            return fitted_length
+        return scaled_length(math.exp(random.uniform(math.log(speed_lo), math.log(speed_hi))))
 
     def prepare_sample_by_name(self, name, target_num_frames=None, loop_offset=None):
         if name not in self.data_dict:
@@ -1325,9 +1350,13 @@ class MotionDataset(data.Dataset):
         # resample_speed is a comb and an inference num_frames between the
         # teeth is out of distribution. A loop clip is time-scaled with its
         # terminal wrap velocity intact, so it is still a closed cycle.
+        # A phase-anchored clip (any label loop_is_phase_free rejects, loop or
+        # not) is also sped up toward the budget here, so it enters the window
+        # whole instead of being cropped mid-event (see the sampler).
+        label_phase_free = loop_is_phase_free(motion_metadata.get('action_label'))
         motion_speed_applied = 1.0
         time_scaled_length = self._sample_motion_speed_target_length(
-            m_length, is_loop, max_source_length
+            m_length, is_loop, max_source_length, fit_budget=not label_phase_free
         )
         if time_scaled_length != m_length:
             motion, motion_speed_applied = time_scale_motion_features(
@@ -1348,7 +1377,7 @@ class MotionDataset(data.Dataset):
         # table its phase 0 IS the wind-up, and on the loop_uncond path it
         # stays an ordinary one-shot clip instead of a strike at a random
         # phase.  An explicit loop_offset (diagnostics) is still honoured.
-        loop_phase_free = bool(is_loop) and loop_is_phase_free(motion_metadata.get('action_label'))
+        loop_phase_free = bool(is_loop) and label_phase_free
         if is_loop:
             if loop_phase_free or loop_offset is not None:
                 loop_phase_offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
@@ -1360,7 +1389,9 @@ class MotionDataset(data.Dataset):
             m_length = int(motion.shape[0])
 
         if m_length > max_source_length:
-            # A clip longer than the n*MAX_SOURCE_FRAMES_MULT budget is cropped,
+            # A clip longer than the n*MAX_SOURCE_FRAMES_MULT budget is cropped
+            # (a phase-anchored one only past MAX_FIT_SPEEDUP of it: below that
+            # the speed sampler already fitted it),
             # which breaks the closed loop, so a loop is downgraded to non-loop here
             # and told so.
             # The crop LENGTH is fixed at the full budget -- every over-long

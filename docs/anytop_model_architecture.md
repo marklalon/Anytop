@@ -328,6 +328,13 @@ clip 重采样窗口、以 `is_loop=False` 交给模型（零 circular phase、�
 不可信的 flag 只能被当作时间拓扑来读。它不是 CFG（没有 null 态、推理端不消费），
 eval loader 固定 1.0。另一处降级是超出源帧预算被裁剪的 clip（环被裁开，按非 loop 告知）。
 
+超预算的**有固定相位** clip（label 不满足 `loop_is_phase_free`，loop 与否都算）在变速一步里有一个
+速度下限 `min(L/budget, MAX_FIT_SPEEDUP)`：`MAX_FIT_SPEEDUP` 倍预算以内的被加速到恰好放进窗口、
+整段进入训练（loop 因此保住 `is_loop`），也不会被 `motion_speed_aug` 再放慢出去；更长的先加速到
+`MAX_FIT_SPEEDUP` 倍再裁剪，让窗口尽量多地保留事件。`motion_speed_aug` 在 `[下限, max(R, 下限)]`
+里抽，两者是同一次变速。这个下限是数据准备而不是增广，eval loader 同样生效。无固定相位的 clip
+（步态、呼吸等，任意一段仍是同一动作）按录制速度裁剪，不受影响。
+
 ### 6.3 损失侧
 
 - `loop_wrap_loss`：loop 首尾的 position、rotation 和 terminal velocity 闭合；
