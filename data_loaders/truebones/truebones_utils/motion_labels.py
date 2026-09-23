@@ -680,6 +680,7 @@ def load_motion_metadata(
     dataset_dir: str | Path,
     *,
     require_loop_flag: bool = True,
+    only: set[str] | None = None,
 ) -> dict[str, dict[str, object]]:
     """Load ``motion_metadata.json`` joined with per-clip action group/label/loop.
 
@@ -695,6 +696,9 @@ def load_motion_metadata(
     one), so a clip on disk with no flag means its row was edited after the
     build. ``require_loop_flag=False`` is for a bookkeeping read that must not
     fail on such a row: the joined entry then simply has no ``is_loop`` key.
+
+    ``only`` restricts the join (and its checks) to those motion names, for a
+    caller that is about to rebuild the rest and must not trip over their rows.
     """
     metadata_path = Path(dataset_dir) / MOTION_METADATA_FILE
     if not metadata_path.exists():
@@ -714,6 +718,8 @@ def load_motion_metadata(
     missing_loop_flags: list[str] = []
     for motion_name, metadata in motions.items():
         if not isinstance(metadata, dict):
+            continue
+        if only is not None and motion_name not in only:
             continue
         # metadata keys are the motions/ file names ("<name>.npy"); the sidecar
         # is keyed by the extension-less clip name.
