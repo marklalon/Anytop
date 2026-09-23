@@ -13,10 +13,7 @@ import os
 import numpy as np
 import torch
 
-from data_loaders.truebones.data.dataset import (
-    _drop_loop_closing_frame,
-    resample_motion_features,
-)
+from data_loaders.truebones.data.dataset import resample_motion_features
 from data_loaders.truebones.truebones_utils.canonical_features import (
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
@@ -299,7 +296,6 @@ def _prepare_img2img_reference_bundle(
     requested_visible_frame_count=None,
     min_length=20,
     preloaded_features=None,
-    loop=False,
 ):
     if preloaded_features is not None:
         ref_raw = np.asarray(preloaded_features, dtype=np.float32)
@@ -320,27 +316,15 @@ def _prepare_img2img_reference_bundle(
         visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
         source_frames = min(max_source_frames, max(int(min_length), visible_frames))
         ref_raw = ref_raw[:source_frames]
-    if loop:
-        # --loop asks for a closed window, so the reference fills it periodically,
-        # exactly as the loader prepares a loop clip (dataset._prepare_sample):
-        # drop a closing key if the clip ships one, then resample periodically
-        # at step L/T.
-        #
-        # The generated window is exported with the SAME mapping (periodic when
-        # --loop), so window frame t is reference source time t*L/T in both
-        # directions: the round trip is the identity, a --inpaint_frames range
-        # lands on the reference poses it names, and the step the model is told
-        # about (resample_speed_cond = L/T) is the step the reference actually
-        # moves at. Endpoint (open) resampling would instead pin the
-        # reference's ends and leave the window's wrap step at 1 source frame
-        # against (L-1)/(T-1) inside -- the uneven seam this convention exists
-        # to remove, and under a clamp it lands in the output.
-        ref_raw = _drop_loop_closing_frame(ref_raw)
+    # The reference is a one-shot clip, --loop or not: every frame it ships is
+    # motion, and it fills the window end to end (endpoint resampling), so
+    # reference frame 0 is window frame 0 and reference frame L-1 is window
+    # frame T-1. --loop says the WINDOW is a cycle -- it is the model's is_loop
+    # condition and it picks the export mapping -- but it is the model, not this
+    # fill, that has to close the cycle over the frames it is given.
     reference_source_frame_count = int(ref_raw.shape[0])
     if ref_raw.shape[0] != output_frame_count:
-        ref_raw = resample_motion_features(
-            ref_raw, output_frame_count, periodic=bool(loop),
-        )
+        ref_raw = resample_motion_features(ref_raw, output_frame_count)
 
     mark_canonical_cond_entry(target_cond)
     ref_canonical = np.nan_to_num(

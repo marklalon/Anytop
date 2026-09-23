@@ -67,7 +67,6 @@ from sample.output_lengths import (
     _resample_window_to_output,
     _resolve_auto_output_lengths,
     fit_reference_to_output,
-    reference_period_frames,
     resolve_loop_condition,
 )
 from sample.reference_motion import (
@@ -313,11 +312,10 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # Output length, in priority order:
     #   1. --num_frames itself. An explicit number is the user's decision and
-    #      outranks everything, reference included (a one-shot reference is
-    #      outpainted when R < M and cropped when R > M; a loop is rescaled
-    #      periodically instead -- fit_reference_to_output): it is finalized
-    #      right here, and every fallback below is guarded on
-    #      requested_output_frames still being None.
+    #      outranks everything, reference included (the reference is outpainted
+    #      when R < M and cropped when R > M, loop or not --
+    #      fit_reference_to_output): it is finalized right here, and every
+    #      fallback below is guarded on requested_output_frames still being None.
     #   2. a --reference_motion's own frame count R -- with no number given, the
     #      reference IS the requested length.
     #   3. the training-length prior for --action_label, resolved once
@@ -352,10 +350,12 @@ def main(args=None, cond_dict=None, runtime=None):
     inpaint_include_subtree = bool(getattr(args, 'inpaint_include_subtree', True))
     # --loop is the whole loop condition: the model is asked for a closed window
     # (y['is_loop'], the circular phase table, the loader's periodic window
-    # resample). Every temporal resample of a reference or of the sampled window
-    # must therefore be periodic, or the round trip stops closing. 'auto' needs
-    # the action label and the target species (resolve_loop_condition), so the
-    # bool is fixed further down, right before the length that depends on it.
+    # resample), and the sampled window is exported with the matching periodic
+    # resample so nothing downstream breaks the cycle open. A reference is not
+    # part of that: it only supplies the verdict under 'auto' and is otherwise a
+    # one-shot clip. 'auto' needs the action label and the target species
+    # (resolve_loop_condition), so the bool is fixed further down, right before
+    # the length that depends on it.
     loop_mode = getattr(args, 'loop', 'auto')
 
     # ── Resolve --object_type ───────────────────────────────────────────────
@@ -624,12 +624,15 @@ def main(args=None, cond_dict=None, runtime=None):
             raise ValueError(
                 f"Reference motion must have shape (T, J, F), got {ref_features_full.shape}"
             )
-        ref_loaded_frame_count = R = int(ref_features_full.shape[0])
+        R = int(ref_features_full.shape[0])
 
         # The loop condition, off the reference as it will fill the window:
         # retargeted onto the target skeleton, so the target's root indexes it.
-        # Judged on the UNTRIMMED clip: the verdict lives in its terminal
-        # velocity row, which the trim below would take away.
+        # This verdict is the ONLY thing the reference's loopiness decides: it
+        # becomes the model's is_loop condition, and with it the export mapping.
+        # Nothing below reads the clip as a cycle -- it is fitted, filled and
+        # clamped as a one-shot, every frame it ships kept, and closing the
+        # cycle is the model's job.
         loop_condition = resolve_loop_condition(
             loop_mode,
             cond_dict,
@@ -638,19 +641,6 @@ def main(args=None, cond_dict=None, runtime=None):
             reference_features=ref_features_full,
             translation_root_index=int(cond_dict[object_type].get('translation_root_index', 0)),
         )
-
-        # A loop's length is its period, so a closing key goes before R is read
-        # off the clip (reference_period_frames).  R is then the length in BOTH
-        # senses the code below needs -- the length asked for when --num_frames
-        # is unset, and the motion the reference supplies -- because a loop is
-        # exempt from the crop/outpaint fit (fit_reference_to_output): the
-        # trimmed frame must not read as one frame of missing coverage.
-        ref_features_full, R = reference_period_frames(ref_features_full, loop_condition)
-        if R != int(ref_loaded_frame_count):
-            print(
-                f'  Reference loop closing key dropped: {ref_loaded_frame_count} '
-                f'frames -> period R={R}'
-            )
 
         # Finalize output lengths from R (if --num_frames not specified).
         if requested_output_frames is None:
@@ -668,11 +658,11 @@ def main(args=None, cond_dict=None, runtime=None):
                 )
         M = int(requested_output_frames)
 
-        # Fit the reference to M: crop (R > M) or outpaint-pad (R < M) a
-        # one-shot clip, leave a loop alone (a cycle covers every M, and the
-        # window is filled from it periodically either way).
+        # Fit the reference to M: crop (R > M) or outpaint-pad (R < M). A loop
+        # reference is no exception -- R < M appends frames from noise, which
+        # under is_loop is exactly where the model gets to close the cycle.
         ref_features_full, auto_outpaint_range, fit_note = fit_reference_to_output(
-            ref_features_full, M, loop_condition,
+            ref_features_full, M,
         )
         outpaint_active = auto_outpaint_range is not None
         if fit_note:
@@ -694,8 +684,7 @@ def main(args=None, cond_dict=None, runtime=None):
             sys.exit(
                 "ERROR: --skip_timesteps is required when using --reference_motion "
                 "without --inpaint_joints/--inpaint_frames and without a length "
-                "extension (R < num_frames; a loop reference never extends -- a "
-                "cycle covers every length, so --num_frames only rescales it).\n"
+                "extension (R < num_frames).\n"
                 "  Higher values (e.g. 80-100) produce motion more faithful to the reference;\n"
                 "  lower values (e.g. 20-40) allow more model-driven variation."
             )
@@ -711,7 +700,6 @@ def main(args=None, cond_dict=None, runtime=None):
             requested_visible_frame_count=target_output_frames,
             preloaded_features=ref_features_full,
             min_length=min_length,
-            loop=loop_condition,
         )
         ref_motion = reference_bundle['reference_motion']
         output_frame_count = reference_bundle['output_frame_count']
@@ -795,12 +783,14 @@ def main(args=None, cond_dict=None, runtime=None):
     )
 
     def _build_inpaint_mask_for(frames_arg, joints_arg, warn_remap=False):
+        # Output frames name REFERENCE frames (a mask only exists where a
+        # reference does), so they map the way the reference fills the window:
+        # end to end, one-shot, --loop or not.
         internal_frames = _map_frame_ranges_to_internal(
             frames_arg,
             source_frames=target_output_frames,
             target_frames=output_frame_count,
             warn_remap=warn_remap,
-            periodic=loop_condition,
         )
         return build_inpaint_mask(
             cond_dict[object_type],

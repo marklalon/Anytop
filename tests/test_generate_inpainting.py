@@ -32,6 +32,7 @@ from sample.inpaint import (  # noqa: E402
 from sample.output_lengths import (  # noqa: E402
     _finalize_output_lengths,
     _resample_window_to_output,
+    fit_reference_to_output,
 )
 from sample.reference_motion import (  # noqa: E402
     _prepare_img2img_reference_bundle,
@@ -115,14 +116,12 @@ def test_map_frame_ranges_to_internal_preserves_contiguous_spans() -> None:
     assert _map_frame_ranges_to_internal("0-119", 120, 60) == "0-59"
 
 
-def test_map_frame_ranges_to_internal_uses_the_cycle_map_for_loops() -> None:
-    # A loop window is a cycle: output frame s sits at window time s*T/M, the
-    # same map the reference bundle and the export apply in the two directions,
-    # so the range names the reference poses it names. The open map is
-    # (T-1)/(M-1) instead, which drifts by a frame at the end of the range.
-    assert _map_frame_ranges_to_internal("0-44", 45, 60, periodic=True) == "0-59"
-    assert _map_frame_ranges_to_internal("44-44", 45, 60, periodic=True) == "58-59"
+def test_map_frame_ranges_to_internal_maps_the_reference_end_to_end() -> None:
+    # A range names REFERENCE frames and the reference fills the window end to
+    # end, loop or not: the last output frame is the last window frame, not a
+    # cycle step short of it.
     assert _map_frame_ranges_to_internal("44-44", 45, 60) == "59"
+    assert _map_frame_ranges_to_internal("0-44", 45, 60) == "0-59"
 
 
 def test_finalize_output_lengths_returns_frames_and_resample_speed() -> None:
@@ -235,7 +234,7 @@ def _seam_ratio(window: np.ndarray) -> float:
     return step(0, -1) / (0.5 * (step(-1, -2) + step(1, 0)))
 
 
-def _reference_window(cond, clip, *, loop, output_frame_count=60):
+def _reference_window(cond, clip, output_frame_count=60):
     """The reference as it is placed into the model window, in physical space."""
     bundle = _prepare_img2img_reference_bundle(
         reference_motion_path="/nonexistent/should_not_be_loaded.npy",
@@ -246,48 +245,72 @@ def _reference_window(cond, clip, *, loop, output_frame_count=60):
         batch_size=1,
         requested_output_frame_count=output_frame_count,
         preloaded_features=clip,
-        loop=loop,
     )
     window = bundle["reference_motion"][0].permute(2, 0, 1).numpy()  # [J, F, T] -> [T, J, F]
     return canonical_to_physical_hml(window, cond)
 
 
-def test_reference_bundle_places_a_loop_reference_as_a_cycle() -> None:
-    # --loop declares the window a cycle, so the reference fills it as one: the
-    # seam is then an ordinary step. Endpoint resampling pins the reference's
-    # ends instead, leaving a stall at the seam -- and under an inpaint clamp
-    # that stall is in the output.
+def test_reference_bundle_fills_the_window_end_to_end() -> None:
+    # The reference is a one-shot clip whatever the loop verdict says, so it is
+    # stretched end to end: window frame 0 and frame T-1 are the clip's own
+    # first and last poses, and the wrap is left as the seam it is. --loop is a
+    # statement about the WINDOW -- the model's is_loop condition -- and closing
+    # the cycle is the model's job, not the fill's.
     n_joints, feat = 3, 12
     cond = _make_full_cond_entry(n_joints, feature_len=feat)
     clip = _synthetic_cycle(45)
 
-    loop_window = _reference_window(cond, clip, loop=True)
-    open_window = _reference_window(cond, clip, loop=False)
+    window = _reference_window(cond, clip)
 
-    assert abs(_seam_ratio(loop_window) - 1.0) < 0.05, _seam_ratio(loop_window)
-    assert abs(_seam_ratio(open_window) - 1.0) > 0.25, _seam_ratio(open_window)
+    # Pose channels only: the resample rescales the velocity rows with the step.
+    np.testing.assert_allclose(window[0, :, :9], clip[0, :, :9], atol=1e-6)
+    np.testing.assert_allclose(window[-1, :, :9], clip[-1, :, :9], atol=1e-6)
+    assert abs(_seam_ratio(window) - 1.0) > 0.25, _seam_ratio(window)
 
 
-def test_reference_bundle_drops_a_loop_reference_closing_key() -> None:
-    # A stored loop whose last frame repeats frame 0 is one cycle plus a frame.
-    # The loader drops it for every loop clip, so the reference must lose it
-    # too under --loop, or the clamp forces that stall into the output.
+def test_reference_bundle_keeps_a_closing_key() -> None:
+    # Nothing on the reference path reads the clip as a period any more, so a
+    # stored loop whose last frame repeats frame 0 hands the window one frame
+    # more of motion than the bare cycle does. It is the user's data.
     n_joints, feat = 3, 12
     cond = _make_full_cond_entry(n_joints, feature_len=feat)
     clean = _synthetic_cycle(45)
     with_key = _synthetic_cycle(45, closing_key=True)
 
-    np.testing.assert_allclose(
-        _reference_window(cond, with_key, loop=True),
-        _reference_window(cond, clean, loop=True),
-        atol=1e-6,
-    )
-    # Without --loop the frame is the user's data and stays.
     assert not np.allclose(
-        _reference_window(cond, with_key, loop=False),
-        _reference_window(cond, clean, loop=False),
+        _reference_window(cond, with_key),
+        _reference_window(cond, clean),
         atol=1e-6,
     )
+
+
+def test_outpaint_mask_lands_on_the_appended_frames() -> None:
+    # The two ends of the R < M path have to agree: fit_reference_to_output pads
+    # [R, M) with a repeat of the last pose and names that span in OUTPUT
+    # frames, the bundle then stretches the padded array end to end, and the
+    # mask is mapped with that same end-to-end convention. So every window
+    # frame the mask frees must be pad -- nothing behind it to be faithful to --
+    # and it must not free more than a frame or two of real reference.
+    n_joints, feat = 3, 12
+    cond = _make_full_cond_entry(n_joints, feature_len=feat)
+    clip = _synthetic_cycle(30)
+
+    fitted, outpaint_range, _ = fit_reference_to_output(clip, 45)
+    assert outpaint_range == "30-44"
+
+    window = _reference_window(cond, fitted)
+    internal = _map_frame_ranges_to_internal(outpaint_range, 45, 60)
+    lo, hi = (int(bound) for bound in internal.split("-"))
+    assert hi == 59
+
+    pad_pose = window[-1]
+    np.testing.assert_allclose(
+        window[lo:], np.repeat(pad_pose[None], 60 - lo, axis=0), atol=1e-6,
+    )
+    first_pad = next(
+        t for t in range(60) if np.allclose(window[t], pad_pose, atol=1e-6)
+    )
+    assert 0 <= lo - first_pad <= 2, (lo, first_pad)
 
 
 def test_window_to_output_keeps_a_loop_a_cycle() -> None:
@@ -310,19 +333,31 @@ def test_window_to_output_keeps_a_loop_a_cycle() -> None:
     assert _resample_window_to_output(window, 60, 60, False) is window
 
 
-def test_loop_reference_and_output_resamples_are_inverse() -> None:
-    # Both directions use the same cycle mapping, so the reference pose the
-    # clamp (and _reground_inpaint_joint_y) sees at output frame s is the pose
-    # --inpaint_frames names at frame s. The node sets align when the reference
-    # length divides the window, which makes the round trip exact.
+def test_loop_export_map_is_the_windows_own() -> None:
+    # The reference goes in end to end and the sampled window comes out
+    # periodically under --loop, because it is the WINDOW that is declared a
+    # cycle. The two are therefore not inverse: a clamped reference pose is
+    # exported a frame or two from where it was placed (the drift
+    # _map_frame_ranges_to_internal already warns about), and in exchange the
+    # exported seam stays an ordinary step instead of a stall.
     n_joints, feat = 3, 12
     cond = _make_full_cond_entry(n_joints, feature_len=feat)
     clip = _synthetic_cycle(30)
 
-    window = _reference_window(cond, clip, loop=True)
+    window = _reference_window(cond, clip)
     exported = _resample_window_to_output(window, 30, 60, True)
 
-    np.testing.assert_allclose(exported, clip, atol=1e-6)
+    assert exported.shape == clip.shape
+    # Same motion, at most ~2 frames of drift: every exported frame matches the
+    # reference within that neighbourhood.
+    pose = lambda a: a[:, :, :9].astype(np.float64)
+    scale = float(np.abs(np.diff(pose(clip), axis=0)).mean())
+    for s_idx in range(30):
+        drift = min(
+            float(np.abs(pose(exported)[s_idx] - pose(clip)[r]).mean())
+            for r in range(max(0, s_idx - 2), min(30, s_idx + 3))
+        )
+        assert drift < 0.5 * scale, (s_idx, drift, scale)
 
 
 def test_build_inpaint_mask_uses_all_real_joints_for_selected_frames() -> None:

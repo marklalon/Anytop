@@ -3,18 +3,15 @@
 The model samples a fixed native window (the checkpoint's ``num_frames``); the
 requested output length M only sets the ``resample_speed`` condition and the
 final temporal resample of the window. These helpers pick M (explicit flag,
-reference length, ``--action_label`` training prior, native window) and apply
-the window -> output resample with the periodic/open convention ``--loop``
-dictates.
+reference length, ``--action_label`` training prior, native window), fit a
+reference to it as the one-shot clip it is, and apply the window -> output
+resample with the periodic/open convention ``--loop`` dictates.
 """
 import sys
 
 import numpy as np
 
-from data_loaders.truebones.data.dataset import (
-    _drop_loop_closing_frame,
-    resample_motion_features,
-)
+from data_loaders.truebones.data.dataset import resample_motion_features
 from data_loaders.truebones.truebones_utils.animation_utils import detect_loop_from_features
 from data_loaders.truebones.truebones_utils.loop_verdict import stored_loop_verdict
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
@@ -162,65 +159,25 @@ def resolve_loop_condition(
     return False
 
 
-def reference_period_frames(reference_features, loop):
-    """The reference clip as its own source, and the frame count R to read off it.
-
-    A loop's length is its PERIOD.  A clip that ships a closing key (last frame
-    == frame 0) is one frame longer than the cycle it holds, and that frame is
-    redundant everywhere it matters: the loader drops it before training
-    (``_drop_loop_closing_frame``), the bake records the dropped length
-    (``clip_length_prior.source_clip_length``), and the reference bundle drops
-    it again when it fills the window.  Taking R off the untrimmed array would
-    therefore ask for ``period + 1`` frames and hand the model
-    ``resample_speed_cond = (period + 1) / n`` where that very clip trained at
-    ``period / n``, stretching the exported cycle by ``M / (M - 1)``.
-
-    Dropped here, ahead of R, so the crop/outpaint comparison against M sees one
-    period too and the bundle's own drop is a no-op.  An open window keeps every
-    frame it shipped: a one-shot clip's last frame is motion, not a repeat.
-
-    Returns ``(features, R)``.
-    """
-    if not loop:
-        return reference_features, int(reference_features.shape[0])
-    trimmed = _drop_loop_closing_frame(reference_features)
-    return trimmed, int(trimmed.shape[0])
-
-
-def fit_reference_to_output(reference_features, requested_frames, loop):
+def fit_reference_to_output(reference_features, requested_frames):
     """The reference as the window will be filled from it, for an output of M
     frames.  Returns ``(features, outpaint_range, note)``.
 
-    A ONE-SHOT clip covers exactly the R frames it holds, so R against M is a
-    coverage question: R > M crops the tail off, R < M leaves [R, M) with no
-    reference behind it and the caller outpaints it from noise
-    (``outpaint_range`` names those frames).
+    The reference is a ONE-SHOT clip whatever the loop condition says: it covers
+    exactly the R frames it holds, so R against M is a coverage question.  R > M
+    crops the tail off; R < M leaves ``[R, M)`` with no reference behind it and
+    the caller outpaints that span from noise (``outpaint_range`` names those
+    frames).
 
-    A LOOP covers every output length there is -- it is a cycle, and the window
-    is filled from the whole period and rescaled periodically in both
-    directions (``_prepare_img2img_reference_bundle`` in, this module's
-    ``_resample_window_to_output`` out).  So it is exempt from both:
-
-    * cropping one would export a fraction of the cycle as though it were the
-      whole one (half a gait cycle, sold as a loop);
-    * outpainting one would invent a tail for a window that HAS no tail -- its
-      last frame wraps to its first -- and seed it by repeating the last frame,
-      which is the very one-frame stall ``reference_period_frames`` drops the
-      closing key to remove.
-
-    The length M still reaches the model, as ``resample_speed_cond``, and still
-    sets the exported frame count; it just no longer changes which motion the
-    reference supplies.
+    ``--loop`` is a statement about the WINDOW, not about the reference.  It
+    reaches the model as ``is_loop`` -- its circular phase table, the wrap loss
+    it trained under -- and it decides how the sampled window is exported
+    (``_resample_window_to_output``).  Closing the cycle is then the model's own
+    job, and appended frames are the room it has to do it in.  Nothing here
+    reads the reference as a period.
     """
     R = int(reference_features.shape[0])
     M = int(requested_frames)
-    if loop:
-        if R != M:
-            return reference_features, None, (
-                f'  Reference loop: R={R} (one period) -> M={M} by periodic '
-                f'resample, no crop/outpaint'
-            )
-        return reference_features, None, None
     if R > M:
         return reference_features[:M], None, (
             f'  Reference cropped: R={R} > M={M} -> using first {M} frames'
@@ -374,10 +331,13 @@ def _resample_window_to_output(motion_np, target_output_frames, output_frame_cou
     the exported clip's wrap step at 1 source frame against ``(T-1)/(M-1)``
     inside: a stall at every seam, i.e. a ``--loop`` run that is not a loop.
 
-    The reference bundle (``_prepare_img2img_reference_bundle``) fills the
-    window with the same mapping in the other direction, so the round trip is
-    the identity and the frames a clamp or ``--inpaint_frames`` names are the
-    reference poses they name.
+    The reference goes in the other way as a one-shot clip
+    (``_prepare_img2img_reference_bundle``, endpoint resampling), so the two
+    directions are not inverse once ``M != T``: a clamped reference pose comes
+    out up to ``|M/T - 1|`` output frames from the frame it went in at (2 frames
+    at the ``M = 3T`` limit, well under one at ``M < T``).
+    Frame ranges keep the reference's own convention
+    (``_map_frame_ranges_to_internal``) because what they name is the reference.
     """
     target_output_frames = int(target_output_frames)
     if target_output_frames == int(output_frame_count):

@@ -41,14 +41,16 @@ def _parse_frame_ranges(spec, n_frames):
     return frames
 
 
-def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap=False, periodic=False):
+def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap=False):
     """Map a frame range given in OUTPUT frames onto the sampler's window.
 
-    ``periodic`` picks the mapping the rest of the pipeline uses for a loop
-    window (``--loop``): output frame ``s`` is window time ``s*T/M``, the same
-    map ``_prepare_img2img_reference_bundle`` and ``_resample_window_to_output``
-    apply in the two directions, so a range names the reference poses it names.
-    Otherwise the window is an open clip and its frames span ``M-1`` steps.
+    A range names frames of the REFERENCE -- a mask only exists where a
+    reference does -- so it is mapped the way the reference fills the window
+    (``_prepare_img2img_reference_bundle``): end to end, output frame ``s`` at
+    window time ``s*(T-1)/(M-1)``, whatever the loop condition says. The export
+    mapping (``_resample_window_to_output``) is the window's own and is periodic
+    under ``--loop``, so the region actually regenerated sits about a frame off
+    in the export, on top of the floor/ceil widening ``warn_remap`` reports.
     """
     if not spec or int(source_frames) == int(target_frames):
         return spec
@@ -58,10 +60,7 @@ def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap
         raise ValueError(
             f"Cannot map frame ranges with source_frames={source_frames}, target_frames={target_frames}"
         )
-    if periodic:
-        scale = float(target_frames) / float(source_frames)
-    else:
-        scale = float(target_frames - 1) / float(source_frames - 1) if source_frames > 1 else 0.0
+    scale = float(target_frames - 1) / float(source_frames - 1) if source_frames > 1 else 0.0
     mapped_frames = set()
     for chunk in spec.split(','):
         chunk = chunk.strip()

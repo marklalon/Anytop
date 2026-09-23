@@ -506,92 +506,48 @@ def _loop_clip_with_closing_key(period=40, joints=4):
     return closed, cycle
 
 
-def test_reference_period_frames_drops_a_loops_closing_key_before_R():
-    """R is the PERIOD.  A reference shipping a closing key is one frame longer
-    than the cycle it holds, and asking for that extra frame would hand the
-    model resample_speed_cond = (period+1)/n where the clip trained at period/n."""
-    from sample.output_lengths import reference_period_frames
-
-    closed, cycle = _loop_clip_with_closing_key(period=40)
-    assert closed.shape[0] == 41
-
-    trimmed, frames = reference_period_frames(closed, True)
-    assert frames == 40
-    assert np.array_equal(trimmed, cycle)
-
-
-def test_reference_period_frames_keeps_every_frame_of_an_open_window():
-    """Without --loop the clip is not a cycle: its last frame is motion, not a
-    repeat, and the length the model is told about is the file's own."""
-    from sample.output_lengths import reference_period_frames
-
-    closed, _ = _loop_clip_with_closing_key(period=40)
-    kept, frames = reference_period_frames(closed, False)
-    assert frames == 41
-    assert kept is closed
-
-
-def test_reference_period_frames_leaves_the_bundles_own_drop_a_no_op():
-    """The reference bundle drops a closing key again when it fills the window.
-    Trimming ahead of R must not cost a second frame there, or the window would
-    be filled from period-1 frames."""
-    from data_loaders.truebones.data.dataset import _drop_loop_closing_frame
-    from sample.output_lengths import reference_period_frames
-
-    closed, _ = _loop_clip_with_closing_key(period=40)
-    trimmed, frames = reference_period_frames(closed, True)
-    assert _drop_loop_closing_frame(trimmed).shape[0] == frames
-
-
-def test_reference_period_frames_leaves_a_clip_without_a_closing_key_alone():
-    """A loop authored without the redundant frame already IS one period."""
-    from sample.output_lengths import reference_period_frames
-
-    _, cycle = _loop_clip_with_closing_key(period=40)
-    trimmed, frames = reference_period_frames(cycle, True)
-    assert frames == 40
-    assert np.array_equal(trimmed, cycle)
-
-
 # -- fitting the reference to M ------------------------------------------------
-def _fit(features, M, loop):
+def _fit(features, M):
     from sample.output_lengths import fit_reference_to_output
 
-    fitted, outpaint_range, _ = fit_reference_to_output(features, M, loop)
+    fitted, outpaint_range, _ = fit_reference_to_output(features, M)
     return fitted, outpaint_range
 
 
-def test_explicit_num_frames_over_a_closing_key_is_not_an_outpaint():
-    """The regression this pair of helpers exists to prevent: a 45-frame cycle
-    shipping a closing key, asked for M=46.  R is the PERIOD (45) once the key
-    is dropped, so a coverage test against M would read one frame short and
-    silently switch a plain loop img2img into an outpaint -- appending a REPEAT
-    of the last frame (a stall the bundle can no longer recognise as a closing
-    key) and taking the run down the pure-noise tail schedule, past the
-    --skip_timesteps fast-fail."""
-    from data_loaders.truebones.data.dataset import _drop_loop_closing_frame
-    from sample.output_lengths import reference_period_frames
-
-    closed, cycle = _loop_clip_with_closing_key(period=45)
-    period, R = reference_period_frames(closed, True)
-    assert R == 45
-
-    fitted, outpaint_range = _fit(period, 46, True)
-    assert outpaint_range is None
-    assert np.array_equal(fitted, cycle)
-    # What the bundle then fills the window from is one clean period.
-    assert _drop_loop_closing_frame(fitted).shape[0] == 45
-
-
 @pytest.mark.parametrize("M", [20, 45, 46, 90])
-def test_a_loop_is_never_cropped_or_outpainted(M):
-    """A cycle covers every output length: the window is filled from the whole
-    period and rescaled periodically, so M only sets resample_speed_cond and the
-    exported frame count."""
+def test_a_loop_reference_is_fitted_like_a_one_shot(M):
+    """The loop verdict is taken off the reference and handed to the model as
+    is_loop; it buys the reference itself nothing. A cycle is cropped when it
+    overruns M and outpainted when it falls short, exactly like an open clip,
+    and closing the cycle over the appended frames is left to the model."""
     _, cycle = _loop_clip_with_closing_key(period=45)
-    fitted, outpaint_range = _fit(cycle, M, True)
-    assert outpaint_range is None
-    assert fitted is cycle
+    fitted, outpaint_range = _fit(cycle, M)
+
+    assert fitted.shape[0] == M
+    if M < 45:
+        assert outpaint_range is None
+        assert np.array_equal(fitted, cycle[:M])
+    elif M == 45:
+        assert outpaint_range is None and fitted is cycle
+    else:
+        assert outpaint_range == f"45-{M - 1}"
+        assert np.array_equal(fitted[:45], cycle)
+
+
+def test_a_loop_references_closing_key_is_its_own_frame():
+    """Nothing trims the reference any more, so a clip shipping a closing key is
+    R = period + 1 frames of reference: the fit reads that length and the extra
+    frame stays in the motion the window is filled from."""
+    closed, cycle = _loop_clip_with_closing_key(period=45)
+    assert closed.shape[0] == 46
+
+    fitted, outpaint_range = _fit(closed, 46)
+    assert outpaint_range is None and fitted is closed
+    assert np.array_equal(fitted[:45], cycle)
+
+    fitted, outpaint_range = _fit(closed, 50)
+    assert outpaint_range == "46-49"
+    assert np.array_equal(fitted[:46], closed)
 
 
 def test_a_one_shot_is_still_cropped_and_outpainted():
@@ -599,16 +555,16 @@ def test_a_one_shot_is_still_cropped_and_outpainted():
     stands: the tail past R has no reference behind it."""
     _, clip = _loop_clip_with_closing_key(period=45)
 
-    fitted, outpaint_range = _fit(clip, 30, False)
+    fitted, outpaint_range = _fit(clip, 30)
     assert outpaint_range is None and fitted.shape[0] == 30
     assert np.array_equal(fitted, clip[:30])
 
-    fitted, outpaint_range = _fit(clip, 50, False)
+    fitted, outpaint_range = _fit(clip, 50)
     assert outpaint_range == "45-49" and fitted.shape[0] == 50
     assert np.array_equal(fitted[:45], clip)
     assert np.array_equal(fitted[45:], np.repeat(clip[-1:], 5, axis=0))
 
-    fitted, outpaint_range = _fit(clip, 45, False)
+    fitted, outpaint_range = _fit(clip, 45)
     assert outpaint_range is None and fitted is clip
 
 
