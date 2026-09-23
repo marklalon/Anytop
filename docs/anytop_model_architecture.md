@@ -312,12 +312,17 @@ Loop 不是单一布尔 token，而是模型、数据和损失共同组成的一
 
 真实 loop clip 会做随机 circular roll 和随机 tile，然后统一 resample 到内部窗口。tile count
 和 phase offset 只用于诊断，不直接喂给模型。
+roll 和 tile 只作用于**无固定相位**的 loop：label 的每个 head 都在 `PHASE_FREE_LOOP_HEADS`
+（步态、振翅、呼吸、保持姿态）里。其余 loop 是**有固定相位**的（attack、roar、hurt、jump 这类
+从备战姿态出发又回到备战姿态的事件）：仍然闭合、仍用 circular table 和 wrap 损失，但 offset
+固定为 0、tile 固定为 1——窗口第 0 帧是备战姿态、窗口里只有一次事件，这正是推理端对这类动作
+开 `--loop` 时要生成的东西。白名单外的 head 默认按有固定相位处理。
 k 份 tile 经周期重采样后是 k 份逐位相同的拷贝（周期 T/k 帧），是 loop 任务里容易的一侧；
 `--loop_tile_single_prob` 给单周期窗口（推理端 loop 条件为真、又用自动长度时所在的 regime）的概率设一个下限，
 其余质量在 2..max 上仍均匀，默认 0.5；0 即原来的均匀抽签。
 
 真实 loop clip 以概率 `--loop_cond_prob`（默认 1.0 = 总是）被告知它是 loop；其余的抽签
-（`loop_uncond`）仍做全部 loop 增广（closing-key drop、周期变速、circular roll、tile），但按开放
+（`loop_uncond`）仍做它本该有的全部 loop 增广（closing-key drop、周期变速，无固定相位的再加 circular roll、tile），但按开放
 clip 重采样窗口、以 `is_loop=False` 交给模型（零 circular phase、开放速度步长、无 wrap 损失）。
 这是有意的标签噪声，目的与删 loop token 相同：flag 与内容相关时模型会把它当内容键，而一个
 不可信的 flag 只能被当作时间拓扑来读。它不是 CFG（没有 null 态、推理端不消费），

@@ -190,6 +190,37 @@ assert len(_HEAD_VOCAB_SET) == len(HEAD_VOCAB), "HEAD_VOCAB has a repeat"
 # one more. Three would have no defined reading.
 ACTION_LABEL_MAX_HEADS = 2
 
+# The heads whose loops are PHASE-FREE: a periodic state with no distinguished
+# frame (a gait cycle, a wingbeat, breathing, a held pose), so any frame may
+# start the window. Only a loop whose every head is listed here gets the
+# circular roll and the tiling in the dataset. Every other loop is
+# PHASE-ANCHORED -- an event (strike, flinch, roar, jump ...) that leaves a ready
+# pose and returns to it: closed, but its frame 0 is the ready pose and the
+# window holds exactly one event, which is what ``--loop`` must reproduce at
+# inference. A whitelist, so a new head defaults to anchored: anchoring a
+# phase-free loop only forgoes augmentation, while rolling an anchored one
+# scrambles the event's timing.
+PHASE_FREE_LOOP_HEADS: tuple[str, ...] = (
+    "crawl", "fall", "fly", "hover", "idle", "rest", "roll", "run", "swim", "walk",
+)
+_PHASE_FREE_LOOP_HEAD_SET: frozenset[str] = frozenset(PHASE_FREE_LOOP_HEADS)
+assert _PHASE_FREE_LOOP_HEAD_SET <= _HEAD_VOCAB_SET, (
+    "PHASE_FREE_LOOP_HEADS names non-head words: "
+    + str(sorted(_PHASE_FREE_LOOP_HEAD_SET - _HEAD_VOCAB_SET))
+)
+
+
+def loop_is_phase_free(label) -> bool:
+    """Whether a loop clip carrying *label* may be circularly rolled and tiled.
+
+    True only when every head word of the label is in
+    :data:`PHASE_FREE_LOOP_HEADS`; one anchored head ("idle, rear",
+    "attack, hover") anchors the clip. An empty label has no evidence either
+    way and is anchored.
+    """
+    heads = head_words_in(parse_action_label(label))
+    return bool(heads) and all(head in _PHASE_FREE_LOOP_HEAD_SET for head in heads)
+
 
 # ---------------------------------------------------------------------------
 # token -> T5 text

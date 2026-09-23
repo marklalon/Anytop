@@ -32,6 +32,7 @@ from data_loaders.truebones.data.dataset import (
     _tile_loop_motion,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
+from data_loaders.truebones.truebones_utils.motion_labels import loop_is_phase_free
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
 from data_loaders.truebones.truebones_utils.canonical_features import (
@@ -60,10 +61,11 @@ def _find_motion(pattern: str) -> str:
 
 LOOP_MOTION = _find_motion("Ostrich_Run.npy")
 LOOP_SUBSET = "biped"
-# A loop authored WITH its closing key: frame 45 repeats frame 0 (wrap gap
-# 1.3e-5 of a frame step, wrap velocity row ~0), so the loader drops it and the
-# cycle it augments is 45 frames long.  Ostrich_Run above ends 0.6 of a step
-# short of frame 0 and keeps all its frames.
+# A PHASE-FREE loop authored WITH its closing key: its last frame repeats frame
+# 0, so the loader drops it and the cycle it augments is one frame shorter.
+# Ostrich_Run above ends 0.6 of a step short of frame 0 and keeps all its
+# frames.  It must stay phase-free (loop_is_phase_free) -- the test tiles it,
+# and a phase-anchored loop is never tiled.
 #
 # The two halves of that premise come from different places, which is why this
 # fixture drifts.  The repeated frame is in the motion, but the wrap terminal
@@ -73,8 +75,11 @@ LOOP_SUBSET = "biped"
 # repeat-the-last-step row instead, and ``_drop_loop_closing_frame`` then
 # correctly refuses it -- so the assertion below is also the tripwire for that
 # drift.  Re-point the fixture; do not relax the drop.
-CLOSING_KEY_LOOP_MOTION = _find_motion("Spider_Attack2.npy")
-CLOSING_KEY_LOOP_SUBSET = "multiped"
+CLOSING_KEY_LOOP_MOTION = _find_motion("Deer_WalkForward.npy")
+CLOSING_KEY_LOOP_SUBSET = "quadruped"
+# A PHASE-ANCHORED loop (an attack: closed, but frame 0 is the ready pose).
+ANCHORED_LOOP_MOTION = _find_motion("Spider_Attack2.npy")
+ANCHORED_LOOP_SUBSET = "multiped"
 NUM_FRAMES = 60
 # The n*MAX_SOURCE_FRAMES_MULT source-frame budget the dataset crops over-long
 # clips to (see _prepare_sample); over-long clips resample down at exactly
@@ -309,6 +314,55 @@ def test_loop_with_closing_key_is_augmented_as_its_clean_period() -> None:
 
     # Idempotent: the period itself has no closing key to give.
     assert _drop_loop_closing_frame(period) is period
+
+
+def test_loop_is_phase_free_needs_every_head_phase_free() -> None:
+    assert loop_is_phase_free("walk, forward")
+    assert loop_is_phase_free("idle, sleep")
+    assert loop_is_phase_free("fly, hover")
+    assert not loop_is_phase_free("attack, spit")
+    assert not loop_is_phase_free("roar")
+    # One anchored head anchors the clip, in either position.
+    assert not loop_is_phase_free("idle, rear")
+    assert not loop_is_phase_free("attack, hover")
+    assert not loop_is_phase_free("")
+    assert not loop_is_phase_free(None)
+
+
+@pytest.mark.parametrize("loop_cond_prob", [1.0, 0.0])
+def test_phase_anchored_loop_is_never_rolled_or_tiled(loop_cond_prob) -> None:
+    dataset = _build_truebones(
+        split="train",
+        num_frames=NUM_FRAMES,
+        objects_subset=ANCHORED_LOOP_SUBSET,
+        motion_cache_size=2,
+        loop_cond_prob=loop_cond_prob,
+    )
+    motion_dataset = dataset.motion_dataset
+    data = motion_dataset.data_dict[ANCHORED_LOOP_MOTION]
+    assert data["motion_metadata"]["is_loop"] is True and not loop_is_phase_free(
+        data["motion_metadata"]["action_label"]
+    ), f"fixture clip {ANCHORED_LOOP_MOTION} is no longer a phase-anchored loop -- re-point it"
+    cond = motion_dataset.cond_dict[data["object_type"]]
+    period = _drop_loop_closing_frame(np.load(data["motion_path"]).astype(np.float32, copy=False))
+
+    with patch.object(motion_dataset, '_sample_loop_offset', side_effect=AssertionError("rolled")), \
+            patch.object(motion_dataset, '_sample_loop_tile_count', side_effect=AssertionError("tiled")):
+        sample = motion_dataset._prepare_sample(
+            ANCHORED_LOOP_MOTION, data, target_num_frames=NUM_FRAMES, return_aug_info=True,
+        )
+    motion, _m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
+
+    told_loop = loop_cond_prob == 1.0
+    assert aug_info["loop_phase_offset"] == 0
+    assert aug_info["loop_tile_count"] == 1
+    assert aug_info["loop_phase_free"] is False
+    assert motion_metadata["is_loop"] is told_loop
+    assert np.isclose(float(aug_info["resample_speed_cond"]), float(period.shape[0]) / float(NUM_FRAMES))
+    # Frame 0 stays the ready pose: the window is the unrolled single event,
+    # periodic when the model is told it is a loop, an ordinary one-shot otherwise.
+    expected = _resample_raw_then_normalize(period, cond, NUM_FRAMES, periodic=told_loop)
+    assert_close("phase-anchored loop window", motion, expected, atol=3e-5)
 
 
 def test_speed_resample_preserves_velocity() -> None:

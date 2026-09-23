@@ -27,6 +27,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     HEAD_VOCAB,
     head_words_in,
     load_motion_metadata,
+    loop_is_phase_free,
     normalize_action_group,
     parse_action_label,
 )
@@ -1333,7 +1334,7 @@ class MotionDataset(data.Dataset):
                 motion, time_scaled_length, periodic=bool(is_loop)
             )
             m_length = int(motion.shape[0])
-        # ── Loop-aware data augmentation (applies to ALL is_loop motions) ──
+        # ── Loop-aware data augmentation (PHASE-FREE is_loop motions only) ──
         # Circular roll shifts the temporal phase so the model sees every loop
         # from a random starting frame.  Random tiling repeats the clip up to
         # 2× target length so the subsequent resample has enough source frames
@@ -1341,11 +1342,20 @@ class MotionDataset(data.Dataset):
         # distortion.  Both are pure temporal operations on feature arrays —
         # they preserve per-frame feature semantics (see _tile_loop_motion and
         # _circular_roll_motion for consistency guarantees).
+        # A phase-anchored loop (loop_is_phase_free: an attack, a roar -- an
+        # event that leaves a ready pose and returns to it) keeps frame 0 at
+        # the ready pose and one event per window: under the circular time
+        # table its phase 0 IS the wind-up, and on the loop_uncond path it
+        # stays an ordinary one-shot clip instead of a strike at a random
+        # phase.  An explicit loop_offset (diagnostics) is still honoured.
+        loop_phase_free = bool(is_loop) and loop_is_phase_free(motion_metadata.get('action_label'))
         if is_loop:
-            loop_phase_offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
+            if loop_phase_free or loop_offset is not None:
+                loop_phase_offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
             if loop_phase_offset != 0:
                 motion = _circular_roll_motion(motion, loop_phase_offset)
-            loop_tile_count = self._sample_loop_tile_count(m_length, max_source_length)
+            if loop_phase_free:
+                loop_tile_count = self._sample_loop_tile_count(m_length, max_source_length)
             motion = _tile_loop_motion(motion, loop_tile_count)
             m_length = int(motion.shape[0])
 
@@ -1393,6 +1403,8 @@ class MotionDataset(data.Dataset):
         motion_metadata['is_loop'] = bool(loop_condition_active)
         motion_metadata['resample_speed_cond'] = float(resample_speed_cond)
         motion_metadata['loop_data_aug_applied'] = bool(is_loop)
+        # Diagnostics only: whether the roll/tile draws ran for this loop.
+        motion_metadata['loop_phase_free'] = bool(loop_phase_free)
         motion_metadata['loop_uncond'] = bool(loop_uncond)
         motion_metadata['loop_phase_offset'] = int(loop_phase_offset)
         motion_metadata['loop_tile_count'] = int(loop_tile_count)
@@ -1414,6 +1426,7 @@ class MotionDataset(data.Dataset):
                 'loop_applied': bool(loop_condition_active),
                 'loop_phase_offset': int(loop_phase_offset),
                 'loop_tile_count': int(loop_tile_count),
+                'loop_phase_free': bool(loop_phase_free),
                 'resample_speed_cond': float(resample_speed_cond),
                 'loop_uncond': bool(loop_uncond),
                 'motion_speed_applied': float(motion_speed_applied),
