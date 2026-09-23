@@ -69,7 +69,7 @@ class CanonicalFrameCondTest(unittest.TestCase):
     def test_token_separates_two_coordinate_frames(self):
         model = _make_model()
         model.eval()
-        torch.nn.init.normal_(model.canonical_frame_projection[-1].weight, std=0.5)
+        torch.nn.init.normal_(model.canonical_frame_projection.weight, std=0.5)
         y = _stats(batch=2)
         # Row 1 gets a different subset's gain -- the two rows must not collapse.
         y['canonical_feature_std'] = y['canonical_feature_std'].clone()
@@ -81,8 +81,8 @@ class CanonicalFrameCondTest(unittest.TestCase):
         # The frame is the definition of the output space, not a semantic
         # condition: there is no keep mask and training must not zero it.
         model = _make_model()
-        torch.nn.init.normal_(model.canonical_frame_projection[-1].weight, std=0.5)
-        torch.nn.init.normal_(model.canonical_frame_projection[-1].bias, std=0.5)
+        torch.nn.init.normal_(model.canonical_frame_projection.weight, std=0.5)
+        torch.nn.init.normal_(model.canonical_frame_projection.bias, std=0.5)
         y = _stats()
         model.train()
         train_token = model._build_canonical_frame_token(
@@ -95,7 +95,7 @@ class CanonicalFrameCondTest(unittest.TestCase):
 
     def test_bare_vector_broadcasts_over_batch(self):
         model = _make_model()
-        torch.nn.init.normal_(model.canonical_frame_projection[-1].weight, std=0.5)
+        torch.nn.init.normal_(model.canonical_frame_projection.weight, std=0.5)
         y = {'canonical_feature_mean': torch.zeros(12), 'canonical_feature_std': torch.ones(12)}
         token = model._build_canonical_frame_token(y, 3, torch.device('cpu'), torch.float32)
         self.assertEqual(tuple(token.shape), (3, LATENT))

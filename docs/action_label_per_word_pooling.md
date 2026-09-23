@@ -24,20 +24,19 @@
 
 ## 2. 定稿表示：每个角色槽一个独立条件通道
 
-四个槽，各占一个条件通道；缺席槽为零行（不重新归一化其它槽）；四通道按固定顺序拼接进 timestep 条件。
+三个槽，各占一个条件通道；缺席槽为零行（不重新归一化其它槽）；三通道按固定顺序拼接进 timestep 条件。
 
 | 槽 | 成员 | 说明 |
 |---|---|---|
 | head | 标签的**全部**主词（1～2 个） | 首词权重 **1.5**、后续主词权重 1.0，加权均值 + L2 |
 | direction | 方向词（至多一个垂直词） | 槽内均值 |
 | modifier | 其余修饰词（**不含**任何主词） | 槽内均值 |
-| hands | `hand1` / `hand2`（至多一个） | 通道 = 该词向量本身；不写 = 零行 = 空手 |
 
 槽内聚合 = 成员词向量**加权**均值 + L2 归一化；除 head 槽首词外所有权重都是 1.0，所以
-direction / modifier / hands 三个槽**是集合**（词序不进条件）。**四个槽划分标签的词——一个词只喂一个通道**。
+direction / modifier 两个槽**是集合**（词序不进条件）。**三个槽划分标签的词——一个词只喂一个通道**。
 词序只通过 head 槽的权重进条件（哪个主词排第一）。
 
-> **词向量来源不是一律 T5**：direction 与 hands 两轴（`SYNTHETIC_CODE_VOCAB`，8 个 token）
+> **词向量来源不是一律 T5**：direction 轴（`SYNTHETIC_CODE_VOCAB`，6 个 token）
 > 的行是合成的正交码，不经过 T5；head / modifier 仍是 T5 编码。槽位布局和上面这套聚合规则不受影响。
 
 **为什么权重是 1.5 而不是 1.0**：L2 归一化让**只有比值**到达模型，所以这是一个纯比值参数。
@@ -67,10 +66,10 @@ r=1（平均）是唯一**不允许**的取值——`a, b` 与 `b, a` 的 head �
 - **主词顺序 = 条件**：同一 group 内同一词集只允许一种主词顺序（两种顺序是两个条件，语料必须对同一类
   clip 只决定一次它「关于什么」）。跨 group 允许不同顺序（各 group 是各自的 checkpoint）。
 - 方向词紧跟 `turn`（否则紧跟最后一个主词），其余修饰词按词表序。
-- **hands 轴**：`hand1` / `hand2` 互斥、至多一个；**不写 = 空手**（内容默认，不是边缘分布）——
-  持物必须写。语义是手部**占用数**，不是武器类别：剑 + 盾 = hand2（与步枪
-  相同），匕首 / 火把都是 hand1；动作用什么器具（`bow` / `gun` / `hammer` / `shield`）留在 modifier。
-- **direction 轴**：**不写 = 任一方向**（边缘分布）——与 hands 轴相反。这个语义由训练侧
+- **标签只描述动作本身，不描述手里有什么**：持械与空手的同一个动作是**同一个条件**，
+  标签里没有任何手部状态词，可见的道具也不改标签。器具本身就是这个动作时（`bow` / `gun` /
+  `hammer` / `shield`）作为 modifier 写。
+- **direction 轴**：**不写 = 任一方向**（边缘分布）。这个语义由训练侧
   `--direction_slot_drop_prob` 随机抹掉方向词来教；内容上有单一主导侧向 / 朝向就必须写。
 - 空标签 = 无条件分支，走 null embedding，不编码空文本。
 
@@ -102,33 +101,18 @@ r=1（平均）是唯一**不允许**的取值——`a, b` 与 `b, a` 的 head �
 
 ## 6. 决策历史（只留「为什么」和不变量，去掉实现细节）
 
-### hands 轴：`weapon` + `1hand/2hand` → `hand1 / hand2`（2026-09-11 起，含当时的 `hand0`）
+### direction 的 ∅ = 边缘分布，靠训练侧 dropout 教（2026-09-18）
 
-旧轴没有「空手」这个值，且标注不一致（combat idle 写 weapon、attack / hurt / die 不写），「没写 weapon 的
-clip」其实是持械与空手的混合。当时的解法是补一个显式的 `hand0`（「空手」）；2026-09-18 改成让空槽本身
-承担这个语义后 `hand0` 被删除（见下一条），但「旧轴分不开空手与漏标」这个动机不变。
-改成互斥占用数 + 独立第四槽：单独成槽是因为 hands 词会出现在有手物种几乎
-每条 clip 上，塞进 modifier 会让每个真修饰词的份额减半（`attack, slash, hand2` 里 slash 被稀释），且
-「带不带 hand 词」读数不同。独立槽下其它三通道逐位相同，模型只需分开两个点和一个零行（空手）。
+方向轴原本的规则是「不写 = 未指定」，但推理只用裸标签，而裸 `attack, swat` 出双臂混合：语料里绝大多数
+单侧攻击也不写方向词，模型学到的是「空方向槽 = 这个物种攻击的样子」而不是「任一侧」。要让空槽真的是
+边缘分布，得让模型见到**同一条 clip 在带方向词和不带方向词两种条件下**，于是加训练侧 dropout：
+`--direction_slot_drop_prob`（默认 0.15，原 0.3）按样本抹掉方向词、其余词不动。与
+`--action_label_cfg_drop_prob`（整条标签丢掉，训练脚本里是 0.3）叠加后，带方向词的行有
+(1−0.3)×(1−0.3) = 49% 的 batch 贡献显式方向监督；左右可辨性不够就降这个值。推理永不 drop。
 
-### 两根轴的 ∅ 语义分道：direction = 边缘，hands = 空手（2026-09-18）
-
-两根轴原本共用一条规则「不写 = 未指定」，但推理只用裸标签，两边想要的默认不是同一个东西：
-
-- **direction**：裸 `attack, swat` 出双臂混合，因为语料里绝大多数单侧攻击也不写方向词，模型学到
-  「空方向槽 = 这个物种攻击的样子」而不是「任一侧」。要让空槽真的是边缘分布，得让模型见到**同一条 clip
-  在带方向词和不带方向词两种条件下**，于是加训练侧 dropout：`--direction_slot_drop_prob`（默认 0.15，原 0.3）
-  按样本抹掉方向词、其余词不动。与 `--action_label_cfg_drop_prob`（整条标签丢掉，训练脚本里是 0.3）
-  叠加后，带方向词的行有 (1−0.3)×(1−0.3) = 49% 的 batch 贡献显式方向监督；左右可辨性不够就降这个值。
-  推理永不 drop。
-- **hands**：裸 `idle` 在持械物种上出持械姿势。这里想要的默认恰恰**不是**边缘——用户要的就是空手。所以
-  反过来：不给 hands 加 dropout，把 ∅ 直接定义成「空手」，`hand0`（显式空手）随之删除，词表 106 → 105、
-  槽源秩 138 → 137。被否决的对称方案是「保留 hand0 + 给 hands 也加 dropout」：边缘在 hands 轴上没有用处。
-
-两边都要求标注侧配合，且**只补不改**（已有的方向词 / hand 词是人工核验过的真值）：
+这要求标注侧配合，且**只补不改**（已有的方向词是人工核验过的真值）：
 `tools/prefill_direction_words.py` 用自镜像分解 + 左右肢体能量比（侧向）、支撑脚相对速度（locomotion 朝向）、
-腾空根位移（transition 的 `jump, up` vs `jump, forward`）；`tools/prefill_hand_words.py` 用同物种已标行的
-上肢姿势做 k-NN，加一张「模型自带武器」的物种默认表。两者都先在已标行上标定，达不到门槛就只出清单。
+腾空根位移（transition 的 `jump, up` vs `jump, forward`），先在已标行上标定，达不到门槛就只出清单。
 `jump` 也因此从 R4 的 `NO_HEADING_WORDS` 里去掉：∅ 只能是边缘，竖直跳要自己写 `up`。
 
 ### 去掉 transition 的方向机制
@@ -190,12 +174,8 @@ T5 提升了多少」——本文任何地方都不声称这个数。
 
 - 改条件语义的每次改动都要求重训；旧 checkpoint 被两层指纹拒绝（不需要 regen cond）。
 - 训出 transition checkpoint 后，验收 `draw` / `sheathe` / `stop` 生成的动作朝向正确端点。
-- 训出后验收裸 `attack, swat` 出单侧而非双臂混合，`attack, left, swat` 与 `right` 可辨；裸 `idle` 空手、
-  `idle, hand2` 持械。**23 个物种全程持械**（MLH_Footman / Mage、MLS_DemonHunter / Druid、RMW_Orc /
-  Skeleton、TNR_Cavalry / CavalryMage / CavalrySpear / Infantry / Mage / Spearman、TTR_Crossbowman /
-  Halberdier / HeavyCavalry / HeavySwordman / LightCavalry / LightInfantry / Mage / MountedKnight /
-  MountedMage / Spearman / Swordman），没有一条空 hands 行，它们的裸 `idle` 是零样本外推，单独记录。
-  `dance` / `sway` / `fullbody` / `footwork` / `armwork` 五个词退役后同样没有训练样本，一并单独记录。
+- 训出后验收裸 `attack, swat` 出单侧而非双臂混合，`attack, left, swat` 与 `right` 可辨。
+  `dance` / `sway` / `fullbody` / `footwork` / `armwork` 五个词退役后没有训练样本，单独记录。
 - 训出后验收 `attack, hover` vs `idle, hover`（契约 6 下 head 通道 cos 0.36，**不再完全分开**，
   这是本次改动最需要盯的退化点）、`attack, hover, bite` 的打击类型是否仍可辨。
 - 训出后验收第二主词是否真的进了 head 通道：同物种对比 `jump` / `land, jump` / `attack, jump`，

@@ -416,3 +416,22 @@ v22 同主干、头全宽是 33.5M；v23 把主干砍到 d=320 是 25.8M。
 
 三个开关默认 0 = 旧全宽布局，老 checkpoint 形状不变地重建；但 `time_emb_scale` 的删除让
 CKPT ≤19 的 state_dict 多出四个键，所以版本升到 20，之前的权重只能作历史结果读。
+
+### v25（2026-09-22，对 v24 300k 步权重 + Adam 状态的复查）
+
+v24 主干结论不变（L0–L5 FFN 参与率 1975–2000/2048，注意力 erank 253–298/384，cross-limb
+proj 110–118/128，都用满），浪费集中在四处，合计 1.75M（5.9%），`train_all.bat` = merged_all_v25，
+27.77M，CKPT 21 / ACTION_CHECKPOINT_VERSION 4：
+
+| 模块 | v24 | v25 | 依据 |
+|---|---|---|---|
+| `action_label_projection` | 1.33M | 0.74M | direction 槽的正交码只占 6 个轴，其余 762 列的输入恒为 0，Adam 二阶矩全程为 0（结构性死参数）。投影改读 `compact_slot_channels`：768+6+768 = 1542 |
+| `canonical_frame_projection` | 0.157M | 0.010M | 输入只有 7 个不同取值（object_subset），24→384→384 的第二层 erank 25、r90 = 5。改成单层 Linear(24→384) |
+| `action_adaln` | 2.45M | 1.63M | 输出层 erank 78、r90 = 19 / 192，`--action_adaln_bottleneck` 192→128（erank 78 之上留余量；权重秩不等于函数秩） |
+| 末层 FFN | 512 | 256 | 512 单元参与率仍渐进坍缩：390→269→207（100k→200k→300k），`--last_layer_ff` 512→256 |
+
+同一次复查的训练动态：train loss −24%/100k 而 val −5%/100k（EMA ≈ 0），train（带 dropout /
+mask）已低于干净的 val 25%，即 ~150k 步后在记忆训练集（300k×20/3.6k clip ≈ 1670 epoch）；
+grad clip 1.0 从未触发（max 0.28），fp16 0 次 overflow。容量不是瓶颈，数据是。v25 因此把
+`--weight_decay` 0.01→0.05（v24 全程 lr·wd 累积只有 ≈0.2，几乎没有正则作用）、`--ema_rate`
+0.999→0.9995（val 在 150k 后只是游走，2000 步窗口多平均掉一些）。

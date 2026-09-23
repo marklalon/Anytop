@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 20
+CKPT_VERSION = 22
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -329,8 +329,8 @@ def add_model_options(parser):
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the clip's action_label ('run, forward, "
                             "left, fast' -- controlled keywords, not prose) is split into words, pooled "
-                            "into one frozen-T5 channel per role slot (head / direction / modifier / "
-                            "hands), "
+                            "into one frozen-T5 channel per role slot (head / direction / "
+                            "modifier), "
                             "projected and added to the timestep token. Requires the word table "
                             "dataset/action_word_embeddings.npy "
                             "(tools/build_action_label_embeddings.py).")
@@ -364,12 +364,12 @@ def add_model_options(parser):
                             "direction control comes out weak. Never applied at inference. Default 0.15.")
     group.add_argument("--modifier_slot_drop_prob", default=0.15, type=float,
                        help="Per-sample probability of blanking the label's MODIFIER words during "
-                            "training while the head, direction and hands words stay. Trains the "
+                            "training while the head and direction words stay. Trains the "
                             "empty modifier slot as the marginal over modifiers, so a bare 'attack' "
                             "at inference draws some attack (bite, cast, swat ...) instead of the "
                             "few clips annotated with no modifier. Independent of "
-                            "--direction_slot_drop_prob per row; the hands slot is never dropped "
-                            "(empty there means empty hands). Never applied at inference. Default 0.15.")
+                            "--direction_slot_drop_prob per row. Never applied at inference. "
+                            "Default 0.15.")
 
 def add_data_options(parser, training=False):
     """Dataset selection. ``training=True`` adds the training-only options.
@@ -568,6 +568,9 @@ def add_sampling_options(parser):
                             "before frame 0, whatever number of cycles it holds. A --reference_motion is placed "
                             "into it the same way and the sampled window is rescaled to --num_frames the same "
                             "way, so the output is a loop whatever the reference is. "
+                            "An --inpaint_frames range that, mapped onto the window, keeps both window ends "
+                            "clamped overrides this to 'off': there is no closure for the model to make, and "
+                            "a periodic export would resample those clamped ends. "
                             "'off': an open window. 'auto' (default): with a --reference_motion, follow its own "
                             "loop verdict; else, with --action_label and no reference, 'on' when most of that "
                             "label's training clips are loops (the model only saw each label paired with "
@@ -650,7 +653,16 @@ def add_generate_options(parser):
                        help="Motion inpainting frame ranges to REGENERATE, e.g. '40-90' or '0-20,150-180' "
                             "(inclusive, clipped to the reference length). Empty = all frames. Combined with "
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
-                            "everything else is clamped to --reference_motion. Requires --reference_motion.")
+                            "everything else is clamped to --reference_motion. Requires --reference_motion. "
+                            "The range is mapped onto the model's window and whether it reaches a clip end is "
+                            "judged on THAT mapped span, since the remap widens it: a range naming neither "
+                            "end of the output can still free window frame 0 or the last window frame. A span "
+                            "leaving both window ends clamped exports the run open and forces --loop off -- "
+                            "there is no closure to make, and a periodic export would resample those clamped "
+                            "ends. A span reaching a window end keeps --loop's verdict, so the model can "
+                            "close the cycle. A span freeing every window frame over every joint is rejected: "
+                            "nothing is left clamped and the reference is discarded -- use --skip_timesteps "
+                            "for whole-clip img2img instead.")
     group.add_argument("--action_label", default="", type=str,
                        help="Text-to-motion prompt for this generation. Controlled-vocabulary "
                             "tokens ONLY, comma-separated, in the canonical order the labels use: "
@@ -663,10 +675,11 @@ def add_generate_options(parser):
                             "(with a printed note); head-word order is kept as given, since it "
                             "carries no meaning to the model. Naming no direction is legal and means "
                             "'any' (the model answers with the marginal over directions, which "
-                            "training drops direction words at random to teach). The hands axis is "
-                            "the opposite: nothing there means EMPTY HANDS, so write 'hand1' / "
-                            "'hand2' for one / both hands holding something ('idle' is an unarmed "
-                            "idle; 'idle, hand2' a two-handed armed one). Empty = "
+                            "training drops direction words at random to teach). A label names "
+                            "the MOTION only and says nothing about what the character holds, so "
+                            "'attack, slash' covers the armed and the unarmed strike alike; name an "
+                            "implement as a modifier ('attack, slash, shield') when the implement "
+                            "IS the motion. Empty = "
                             "unconditional (the learned null embedding). Requires a checkpoint "
                             "trained with --action_label_cond.")
     group.add_argument("--action_label_cfg_scale", default=1.0, type=float,

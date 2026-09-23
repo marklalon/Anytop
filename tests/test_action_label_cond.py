@@ -21,13 +21,11 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_VOCAB,
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
-    HANDS_VOCAB,
     HEAD_VOCAB,
     ActionLabelError,
     action_words_in,
     canonical_action_label,
     direction_words_in,
-    hands_words_in,
     head_words_in,
     parse_action_label,
     vocab_t5_text,
@@ -104,19 +102,18 @@ def _label_cond(labels, groups):
 
 
 class ActionLabelVocabularyTest(unittest.TestCase):
-    def test_vocabulary_is_flat_and_the_axes_come_last(self):
-        # One flat action vocabulary plus two separate axes (direction, hands):
+    def test_vocabulary_is_flat_and_the_direction_axis_comes_last(self):
+        # One flat action vocabulary plus the one separate axis (direction):
         # no core / detail split survives the removal of the multi-hot.
-        self.assertEqual(CONTROLLED_VOCAB, ACTION_VOCAB + DIRECTION_VOCAB + HANDS_VOCAB)
+        self.assertEqual(CONTROLLED_VOCAB, ACTION_VOCAB + DIRECTION_VOCAB)
         self.assertEqual(len(set(CONTROLLED_VOCAB)), len(CONTROLLED_VOCAB))
         self.assertEqual(DIRECTION_VOCAB, ("forward", "backward", "left", "right", "up", "down"))
-        # The hands axis closes the vocabulary so it sorts last among modifiers.
-        self.assertEqual(HANDS_VOCAB, ("hand1", "hand2"))
-        self.assertEqual(CONTROLLED_VOCAB[-2:], HANDS_VOCAB)
-        # The two-token spelling it replaced is gone: 'weapon, 1hand' would now
-        # be a hard error, not a silently different condition -- and so is
-        # 'hand0': an empty hands slot IS empty hands.
-        for absent in ("weapon", "1hand", "2hand", "hand0"):
+        # The direction axis closes the vocabulary.
+        self.assertEqual(CONTROLLED_VOCAB[-len(DIRECTION_VOCAB):], DIRECTION_VOCAB)
+        # The label says nothing about what the character holds, so every
+        # spelling of a hand state is a hard error rather than a silently
+        # different condition.
+        for absent in ("weapon", "1hand", "2hand", "hand0", "hand1", "hand2"):
             self.assertNotIn(absent, CONTROLLED_VOCAB)
         # Derived adjectives are deliberately absent -- T5 presses "leftward" and
         # "rightward" to near-synonyms -- and so is the mushy "sideways".
@@ -144,7 +141,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
                        'haste'):
             self.assertNotIn(absent, CONTROLLED_VOCAB, absent)
         # ...and the words the corpus actually uses are all in.
-        for present in ('hand1', 'cast', 'projectile', 'swat', 'spawn', 'hand2',
+        for present in ('cast', 'projectile', 'swat', 'spawn',
                         'spin', 'headbutt', 'hover', 'work', 'dead', 'clean',
                         'fast', 'fishing', 'bow', 'shield'):
             self.assertIn(present, CONTROLLED_VOCAB, present)
@@ -161,9 +158,9 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # nothing), then the modifiers in canonical spelling order.
         self.assertEqual(ACTION_VOCAB, HEAD_VOCAB + MODIFIER_VOCAB)
         self.assertTrue(set(HEAD_VOCAB).isdisjoint(MODIFIER_VOCAB))
-        # Equipment, direction and manner words can never be head words: the
+        # Implement, direction and manner words can never be head words: the
         # head slot is "what the label is about", not "the important word".
-        for absent in ('hand1', 'bow', 'forward', 'cast', 'spin', 'block'):
+        for absent in ('bow', 'forward', 'cast', 'spin', 'block'):
             self.assertNotIn(absent, HEAD_VOCAB, absent)
         # Posture states that only ever qualified a head (crouch / dead / sit /
         # sleep) are modifiers: a label is never ABOUT them.
@@ -187,13 +184,10 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         self.assertEqual(vocab_t5_text('fishing'), 'fishing')
 
     def test_synthetic_code_tokens_have_no_t5_text(self):
-        # The direction and hands axes are not encoded at all, so asking for
-        # their text is a caller that forgot to split the vocabulary -- it
-        # raises rather than handing T5 a token whose vector it does not own.
-        # 'hand1'/'hand2' in particular used to carry "one hand"/"both hands".
-        self.assertEqual(
-            SYNTHETIC_CODE_VOCAB, DIRECTION_VOCAB + HANDS_VOCAB
-        )
+        # The direction axis is not encoded at all, so asking for its text is a
+        # caller that forgot to split the vocabulary -- it raises rather than
+        # handing T5 a token whose vector it does not own.
+        self.assertEqual(SYNTHETIC_CODE_VOCAB, DIRECTION_VOCAB)
         self.assertEqual(
             set(CONTROLLED_VOCAB),
             set(T5_ENCODED_VOCAB) | set(SYNTHETIC_CODE_VOCAB),
@@ -215,53 +209,51 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # not be fed to canonical_action_label.
         self.assertEqual(vocab_words_in('forward, walk'), ['walk', 'forward'])
 
-    def test_action_direction_and_hands_views_partition_the_hits(self):
-        text = 'run, forward, left, fast, hand1'
+    def test_action_and_direction_views_partition_the_hits(self):
+        text = 'run, forward, left, fast'
         self.assertEqual(action_words_in(text), ['run', 'fast'])
         self.assertEqual(direction_words_in(text), ['forward', 'left'])
-        self.assertEqual(hands_words_in(text), ['hand1'])
         self.assertEqual(
-            action_words_in(text) + direction_words_in(text) + hands_words_in(text),
+            action_words_in(text) + direction_words_in(text),
             vocab_words_in(text),
         )
-        # The hands word is not an ACTION word: loop periods are bucketed per
-        # action word, and "one hand" has no gait period of its own.
-        self.assertEqual(action_words_in('walk, hand2'), ['walk'])
+        # The two views are the whole vocabulary between them, so a hand-state
+        # word is in neither -- it is not a token at all.
+        self.assertEqual(vocab_words_in('walk, hand2'), ['walk'])
 
     def test_head_words_keep_the_written_order(self):
         self.assertEqual(head_words_in(['idle', 'attack']), ['idle', 'attack'])
         self.assertEqual(head_words_in(['attack', 'idle']), ['attack', 'idle'])
-        self.assertEqual(head_words_in(['walk', 'hand1', 'forward']), ['walk'])
+        self.assertEqual(head_words_in(['walk', 'fast', 'forward']), ['walk'])
 
     def test_canonical_label_sorts_modifiers_but_never_heads(self):
         # Modifiers are sorted, so one combination has exactly one spelling.
         self.assertEqual(
-            canonical_action_label(['walk', 'forward', 'fast', 'hand1']),
-            'walk, forward, fast, hand1',
+            canonical_action_label(['walk', 'forward', 'fast']),
+            'walk, forward, fast',
         )
         self.assertEqual(
-            canonical_action_label(['walk', 'hand1', 'forward', 'fast']),
-            'walk, forward, fast, hand1',
+            canonical_action_label(['walk', 'fast', 'forward']),
+            'walk, forward, fast',
         )
         self.assertEqual(
-            canonical_action_label(['walk', 'hand1', 'right']),
-            'walk, right, hand1',
+            canonical_action_label(['walk', 'slow', 'right']),
+            'walk, right, slow',
         )
-        # The implement precedes the hand state: action, direction, manner,
-        # implement, hands.
+        # Manner precedes the implement: action, direction, manner, implement.
         self.assertEqual(
-            canonical_action_label(['attack', 'hand2', 'bow']),
-            'attack, bow, hand2',
+            canonical_action_label(['attack', 'bow', 'spin']),
+            'attack, spin, bow',
         )
-        # Directions qualify the head sequence, so unrelated qualifiers and
-        # equipment must not split them from it.
+        # Directions qualify the head sequence, so unrelated qualifiers must
+        # not split them from it.
         self.assertEqual(
-            canonical_action_label(['run', 'turn', 'fast', 'hand1', 'right']),
-            'run, turn, right, fast, hand1',
+            canonical_action_label(['run', 'turn', 'fast', 'right']),
+            'run, turn, right, fast',
         )
         self.assertEqual(
-            canonical_action_label(['run', 'right', 'hand1', 'turn', 'fast']),
-            'run, turn, right, fast, hand1',
+            canonical_action_label(['run', 'right', 'turn', 'fast']),
+            'run, turn, right, fast',
         )
         # Filtering the result back to head words still preserves their order.
         self.assertEqual(
@@ -279,10 +271,10 @@ class ActionLabelVocabularyTest(unittest.TestCase):
 
     def test_canonical_label_round_trips_through_the_parser(self):
         for label in ('walk, forward', 'run, forward, left, fast', 'attack, bite',
-                      'land, fly', 'getup, crouch, hand2', 'draw', 'sheathe', 'stop',
-                      'walk, forward, hand1', 'idle, rear, roar',
-                      'run, turn, right, fast, hand1', 'turn, left, hover',
-                      'attack, bow, hand2', 'idle, hand1'):
+                      'land, fly', 'getup, crouch', 'draw', 'sheathe', 'stop',
+                      'walk, forward, slow', 'idle, rear, roar',
+                      'run, turn, right, fast', 'turn, left, hover',
+                      'attack, spin, bow', 'idle, roar'):
             self.assertEqual(canonical_action_label(parse_action_label(label)), label)
 
     def test_parser_enforces_the_spelling_contract(self):
@@ -292,11 +284,11 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             ('walk, jogging', 'out-of-vocabulary token'),
             ('walk, , forward', 'empty comma segment'),
             ('walk, walk', 'repeated token'),
-            ('hand1', 'no head word'),
+            ('forward', 'no head word'),
             ('idle, hover, rear', 'three head words'),
-            ('idle, hand1, hand2', 'two hand-state words on one exclusive axis'),
-            ('idle, hand0', 'the retired explicit empty-hands token'),
-            ('walk, forward, hand2, hand1', 'two hand-state words on one exclusive axis'),
+            ('idle, hand1', 'a hand-state token, which is not vocabulary'),
+            ('idle, hand0', 'a hand-state token, which is not vocabulary'),
+            ('walk, forward, hand2', 'a hand-state token, which is not vocabulary'),
             (', '.join(['idle'] + list(DIRECTION_VOCAB) + ['bow', 'gun']),
              'over the token cap'),
         ):
@@ -327,8 +319,8 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # used to be advisory is now a gate -- a warning here could only buy a
         # silent regression.
         for bad in ('walk, strides forward with arms swinging',
-                    'walk, hand1, forward',    # modifier before direction
-                    'idle, hand2, bow',        # hands before the implement
+                    'walk, fast, forward',     # modifier before direction
+                    'idle, bow, spin',         # implement before the manner
                     'walk, walk'):
             with self.assertRaises(SystemExit):
                 _validate(bad)

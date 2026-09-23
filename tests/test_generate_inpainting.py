@@ -28,10 +28,15 @@ from sample.inpaint import (  # noqa: E402
     _reground_inpaint_joint_y,
     _resolve_inpaint_joint_indices,
     build_inpaint_mask,
+    check_full_coverage_inpaint_early,
+    inpaint_span_role,
+    inpaint_y_anchor_spans,
+    resolve_inpaint_policy,
 )
 from sample.output_lengths import (  # noqa: E402
     _finalize_output_lengths,
     _resample_window_to_output,
+    fit_reference_to_output,
 )
 from sample.reference_motion import (  # noqa: E402
     _prepare_img2img_reference_bundle,
@@ -115,14 +120,227 @@ def test_map_frame_ranges_to_internal_preserves_contiguous_spans() -> None:
     assert _map_frame_ranges_to_internal("0-119", 120, 60) == "0-59"
 
 
-def test_map_frame_ranges_to_internal_uses_the_cycle_map_for_loops() -> None:
-    # A loop window is a cycle: output frame s sits at window time s*T/M, the
-    # same map the reference bundle and the export apply in the two directions,
-    # so the range names the reference poses it names. The open map is
-    # (T-1)/(M-1) instead, which drifts by a frame at the end of the range.
-    assert _map_frame_ranges_to_internal("0-44", 45, 60, periodic=True) == "0-59"
-    assert _map_frame_ranges_to_internal("44-44", 45, 60, periodic=True) == "58-59"
+def test_map_frame_ranges_to_internal_maps_the_reference_end_to_end() -> None:
+    # An open export puts output frame s at window time s*(T-1)/(M-1), the same
+    # place the reference was filled in from, so the last output frame is the
+    # last window frame.
     assert _map_frame_ranges_to_internal("44-44", 45, 60) == "59"
+    assert _map_frame_ranges_to_internal("0-44", 45, 60) == "0-59"
+
+
+# Cached per (M, T, loop): the basis export is a pure function of the three.
+_EXPORT_SUPPORT_CACHE: dict[tuple[int, int, bool], np.ndarray] = {}
+
+# A frame is READ when its weight is at least this. The resampler samples with
+# np.linspace, whose step is not exact in binary, so an output frame that lands
+# on a window frame mathematically can still pick up a last-bit weight on the
+# next one; no real read is anywhere near this small, and a mask could not be
+# widened for one anyway.
+_EXPORT_WEIGHT_EPS = 1e-9
+
+
+def _export_support(output_frames: int, window_frames: int, loop: bool) -> np.ndarray:
+    """``[M, T]`` weights of each window frame in each exported output frame.
+
+    Read off the REAL export path (``_resample_window_to_output`` ->
+    ``resample_motion_features``) rather than a hand-copied mapping: window
+    frame ``t`` is handed a one-hot basis vector, so a non-zero cell in the
+    exported result means the export read that window frame. If the export
+    mapping ever moves, these tests move with it.
+    """
+    key = (int(output_frames), int(window_frames), bool(loop))
+    weights = _EXPORT_SUPPORT_CACHE.get(key)
+    if weights is None:
+        basis = np.zeros((window_frames, window_frames, 12), dtype=np.float32)
+        basis[np.arange(window_frames), np.arange(window_frames), 0] = 1.0
+        exported = _resample_window_to_output(basis, output_frames, window_frames, loop)
+        weights = np.abs(np.asarray(exported, dtype=np.float64)[:, :, 0])
+        _EXPORT_SUPPORT_CACHE[key] = weights
+    return weights
+
+
+def _export_preimage(output_frame, output_frames, window_frames, loop):
+    """The window frames the export reads for one OUTPUT frame."""
+    weights = _export_support(output_frames, window_frames, loop)
+    return {
+        t for t in range(int(window_frames))
+        if weights[int(output_frame), t] > _EXPORT_WEIGHT_EPS
+    }
+
+
+def test_loop_mask_unions_the_periodic_export_preimage() -> None:
+    # Under --loop the export reads window time s*T/M, not s*(T-1)/(M-1), so a
+    # mask built only from the reference's own mapping leaves the requested
+    # output frame blending a clamped neighbour. M=45, T=60, frame 44: the
+    # export samples 58.667, so window 58 has to be freed too.
+    assert _map_frame_ranges_to_internal("44", 45, 60) == "59"
+    assert _map_frame_ranges_to_internal("44", 45, 60, loop=True) == "58-59"
+
+    for M in (24, 36, 45, 90, 150):
+        for frame in range(M):
+            freed = _parse_frame_ranges(
+                _map_frame_ranges_to_internal(str(frame), M, 60, loop=True), 60
+            )
+            missing = _export_preimage(frame, M, 60, True) - freed
+            # Only the wrap partner may be missing (see the next test).
+            assert missing in ({}, set(), {0}), (M, frame, missing)
+
+
+def test_loop_mask_leaves_the_wrap_partner_clamped() -> None:
+    # The last output frame of a periodic export straddles window T-1 -> window
+    # 0, and window 0 is the clamped opening pose the cycle closes ONTO. Freeing
+    # it because the request named the last frame would remove the anchor, so it
+    # is freed only when the request names output frame 0 as well.
+    tail_only = _parse_frame_ranges(
+        _map_frame_ranges_to_internal("110-119", 120, 60, loop=True), 60
+    )
+    assert 0 not in tail_only
+    assert _export_preimage(119, 120, 60, True) - tail_only == {0}
+
+    both_ends = _parse_frame_ranges(
+        _map_frame_ranges_to_internal("0,110-119", 120, 60, loop=True), 60
+    )
+    assert _export_preimage(119, 120, 60, True) <= both_ends
+
+
+def test_interior_mask_and_open_export_are_the_same_mapping() -> None:
+    # An interior inpaint is exported open (generate.py forces the loop
+    # condition off), which is what makes the requested frames exactly the
+    # frames regenerated and leaves the clamped ends untouched.
+    freed = _parse_frame_ranges(
+        _map_frame_ranges_to_internal("20-25", 45, 60, loop=False), 60
+    )
+    for frame in range(20, 26):
+        assert _export_preimage(frame, 45, 60, False) <= freed
+    for end in (0, 44):
+        assert not (_export_preimage(end, 45, 60, False) & freed)
+
+
+def _policy(frames: str, *, joints: str = "", outpaint: str | None = None,
+            M: int = 45, T: int = 60, loop: bool = True) -> bool:
+    return resolve_inpaint_policy(
+        _make_cond_entry(),
+        frames_arg=frames,
+        joints_arg=joints,
+        include_subtree=True,
+        outpaint_range=outpaint,
+        user_inpaint_active=bool(frames or joints),
+        output_frames=M,
+        window_frames=T,
+        loop=loop,
+    )
+
+
+def test_policy_forces_loop_off_only_for_an_interior_range() -> None:
+    # Both clip ends clamped: nothing for --loop to close, and a periodic export
+    # would resample those clamped ends. Either end freed: closure is the whole
+    # point, so the verdict stands.
+    assert _policy("20-25") is False
+    assert _policy("0-5") is True
+    assert _policy("40-44") is True
+    # An outpaint range names the last output frame, so a two-pass run that
+    # pairs it with an interior inpaint still has a tail to close.
+    assert _policy("20-25", outpaint="30-44") is True
+    # A resolved loop=off is never turned back on.
+    assert _policy("0-5", loop=False) is False
+
+
+def test_policy_judges_the_ends_on_window_frames_not_output_frames() -> None:
+    # '1-58' of M=61 names neither clip end, but the remap widens it onto window
+    # frame 0, so output frame 0 IS regenerated and the loop verdict stands.
+    assert inpaint_span_role("1-58", 61) == "interior"
+    assert _policy("1-58", joints="LeftHip", M=61) is True
+
+
+def test_policy_rejects_a_mask_that_frees_everything() -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        _policy("0-44")
+    assert "not an inpaint" in str(excinfo.value)
+
+    # The widening must not smuggle one past: '1-118' of M=120 names neither
+    # clip end yet covers all 60 window frames.
+    with pytest.raises(SystemExit):
+        _policy("1-118", M=120)
+
+    # Narrowing either axis is a real inpaint again.
+    assert _policy("0-44", joints="LeftHip") is True
+    assert _policy("1-118", joints="LeftHip", M=120) is True
+
+
+def test_early_full_coverage_check_needs_an_explicit_length_and_no_joints() -> None:
+    with pytest.raises(SystemExit):
+        check_full_coverage_inpaint_early("0-44", "", 45)
+    # Deferred to resolve_inpaint_policy, which sees the resolved values.
+    check_full_coverage_inpaint_early("0-44", "LeftHip", 45)
+    check_full_coverage_inpaint_early("0-44", "", None)
+    check_full_coverage_inpaint_early("20-25", "", 45)
+
+
+def test_inpaint_y_anchor_spans_are_output_frame_runs() -> None:
+    assert inpaint_y_anchor_spans("", 45) is None
+    assert inpaint_y_anchor_spans("20-25", 45) == [(20, 25)]
+    assert inpaint_y_anchor_spans("5,20-25", 45) == [(5, 5), (20, 25)]
+
+
+def test_build_inpaint_mask_maps_output_frames_when_asked() -> None:
+    # The caller hands it output frames; the window mapping happens inside.
+    cond = _make_cond_entry()
+    kwargs = dict(
+        cond_entry=cond,
+        inpaint_joints_arg="",
+        inpaint_include_subtree=True,
+        batch_size=1,
+        max_joints=3,
+    )
+    mapped = build_inpaint_mask(
+        inpaint_frames_arg="44", n_frames=60, output_frames=45, loop=True, **kwargs,
+    )
+    assert mapped[0, 0, 0].nonzero().flatten().tolist() == [58, 59]
+    # Without output_frames the spec is already in window frames.
+    direct = build_inpaint_mask(inpaint_frames_arg="58-59", n_frames=60, **kwargs)
+    assert torch.equal(mapped, direct)
+
+
+def test_span_role_is_judged_on_the_mapped_window_frames() -> None:
+    # generate.py classifies the range AFTER the M -> T remap, because that is
+    # the span the mask frees. Judging the requested output range instead lets
+    # the floor/ceil widening through: at M > T a range naming neither clip end
+    # can still cover the whole window, which would be an all-ones mask waved
+    # past the full-coverage check and a wrong "both ends stay clamped" verdict.
+    def window_role(spec: str, output_frames: int, window_frames: int) -> str:
+        return inpaint_span_role(
+            _map_frame_ranges_to_internal(spec, output_frames, window_frames),
+            window_frames,
+        )
+
+    assert inpaint_span_role("1-118", 120) == "interior"
+    assert window_role("1-118", 120, 60) == "full"
+
+    assert inpaint_span_role("1-58", 61) == "interior"
+    assert window_role("1-58", 61, 60) == "boundary"
+
+    # Interior in both spaces: the window ends really are held.
+    assert window_role("20-25", 45, 60) == "interior"
+
+    # No range at M > T that maps to the whole window may still read interior.
+    for output_frames in (61, 90, 120, 180):
+        for lo in range(1, output_frames - 1):
+            spec = f"{lo}-{output_frames - 2}"
+            if window_role(spec, output_frames, 60) == "full":
+                assert _parse_frame_ranges(
+                    _map_frame_ranges_to_internal(spec, output_frames, 60), 60
+                ) == set(range(60)), (output_frames, spec)
+
+
+def test_inpaint_span_role_classifies_the_clip_ends() -> None:
+    assert inpaint_span_role("20-25", 45) == "interior"
+    assert inpaint_span_role("0-5", 45) == "boundary"
+    assert inpaint_span_role("40-44", 45) == "boundary"
+    assert inpaint_span_role("0-20,40-44", 45) == "boundary"
+    assert inpaint_span_role("0-44", 45) == "full"
+    # No --inpaint_frames means every frame, which over every joint is the
+    # degenerate mask generate.py rejects.
+    assert inpaint_span_role("", 45) == "full"
 
 
 def test_finalize_output_lengths_returns_frames_and_resample_speed() -> None:
@@ -235,7 +453,7 @@ def _seam_ratio(window: np.ndarray) -> float:
     return step(0, -1) / (0.5 * (step(-1, -2) + step(1, 0)))
 
 
-def _reference_window(cond, clip, *, loop, output_frame_count=60):
+def _reference_window(cond, clip, output_frame_count=60):
     """The reference as it is placed into the model window, in physical space."""
     bundle = _prepare_img2img_reference_bundle(
         reference_motion_path="/nonexistent/should_not_be_loaded.npy",
@@ -246,48 +464,92 @@ def _reference_window(cond, clip, *, loop, output_frame_count=60):
         batch_size=1,
         requested_output_frame_count=output_frame_count,
         preloaded_features=clip,
-        loop=loop,
     )
     window = bundle["reference_motion"][0].permute(2, 0, 1).numpy()  # [J, F, T] -> [T, J, F]
     return canonical_to_physical_hml(window, cond)
 
 
-def test_reference_bundle_places_a_loop_reference_as_a_cycle() -> None:
-    # --loop declares the window a cycle, so the reference fills it as one: the
-    # seam is then an ordinary step. Endpoint resampling pins the reference's
-    # ends instead, leaving a stall at the seam -- and under an inpaint clamp
-    # that stall is in the output.
+def test_reference_bundle_fills_the_window_end_to_end() -> None:
+    # The reference is a one-shot clip whatever the loop verdict says, so it is
+    # stretched end to end: window frame 0 and frame T-1 are the clip's own
+    # first and last poses, and the wrap is left as the seam it is. --loop is a
+    # statement about the WINDOW -- the model's is_loop condition -- and closing
+    # the cycle is the model's job, not the fill's.
     n_joints, feat = 3, 12
     cond = _make_full_cond_entry(n_joints, feature_len=feat)
     clip = _synthetic_cycle(45)
 
-    loop_window = _reference_window(cond, clip, loop=True)
-    open_window = _reference_window(cond, clip, loop=False)
+    window = _reference_window(cond, clip)
 
-    assert abs(_seam_ratio(loop_window) - 1.0) < 0.05, _seam_ratio(loop_window)
-    assert abs(_seam_ratio(open_window) - 1.0) > 0.25, _seam_ratio(open_window)
+    # Pose channels only: the resample rescales the velocity rows with the step.
+    np.testing.assert_allclose(window[0, :, :9], clip[0, :, :9], atol=1e-6)
+    np.testing.assert_allclose(window[-1, :, :9], clip[-1, :, :9], atol=1e-6)
+    assert abs(_seam_ratio(window) - 1.0) > 0.25, _seam_ratio(window)
 
 
-def test_reference_bundle_drops_a_loop_reference_closing_key() -> None:
-    # A stored loop whose last frame repeats frame 0 is one cycle plus a frame.
-    # The loader drops it for every loop clip, so the reference must lose it
-    # too under --loop, or the clamp forces that stall into the output.
+def test_reference_bundle_keeps_a_closing_key() -> None:
+    # Nothing on the reference path reads the clip as a period any more, so a
+    # stored loop whose last frame repeats frame 0 hands the window one frame
+    # more of motion than the bare cycle does. It is the user's data.
     n_joints, feat = 3, 12
     cond = _make_full_cond_entry(n_joints, feature_len=feat)
     clean = _synthetic_cycle(45)
     with_key = _synthetic_cycle(45, closing_key=True)
 
-    np.testing.assert_allclose(
-        _reference_window(cond, with_key, loop=True),
-        _reference_window(cond, clean, loop=True),
-        atol=1e-6,
-    )
-    # Without --loop the frame is the user's data and stays.
     assert not np.allclose(
-        _reference_window(cond, with_key, loop=False),
-        _reference_window(cond, clean, loop=False),
+        _reference_window(cond, with_key),
+        _reference_window(cond, clean),
         atol=1e-6,
     )
+
+
+def test_outpaint_mask_lands_on_the_appended_frames() -> None:
+    # The two ends of the R < M path have to agree: fit_reference_to_output pads
+    # [R, M) with a repeat of the last pose and names that span in OUTPUT
+    # frames, the bundle then stretches the padded array end to end, and the
+    # mask is mapped with that same end-to-end convention. So every window
+    # frame the mask frees must be pad -- nothing behind it to be faithful to --
+    # and it must not free more than a frame or two of real reference.
+    n_joints, feat = 3, 12
+    cond = _make_full_cond_entry(n_joints, feature_len=feat)
+    clip = _synthetic_cycle(30)
+
+    fitted, outpaint_range, _ = fit_reference_to_output(clip, 45)
+    assert outpaint_range == "30-44"
+
+    window = _reference_window(cond, fitted)
+    internal = _map_frame_ranges_to_internal(outpaint_range, 45, 60)
+    lo, hi = (int(bound) for bound in internal.split("-"))
+    assert hi == 59
+
+    pad_pose = window[-1]
+    np.testing.assert_allclose(
+        window[lo:], np.repeat(pad_pose[None], 60 - lo, axis=0), atol=1e-6,
+    )
+    first_pad = next(
+        t for t in range(60) if np.allclose(window[t], pad_pose, atol=1e-6)
+    )
+    assert 0 <= lo - first_pad <= 2, (lo, first_pad)
+
+
+def test_outpaint_mask_still_covers_the_pad_under_loop() -> None:
+    # An outpaint range names the last output frame, so it is a closure request
+    # and keeps the loop condition. The union mapping must not pull the mask's
+    # start past the pad boundary: a clamped frozen pose inside the appended
+    # span would be exported as motion the model never generated. Every
+    # appended frame must also come out regenerated, bar the wrap partner.
+    for M, R in ((45, 30), (45, 21), (120, 60), (180, 40)):
+        _, outpaint_range, _ = fit_reference_to_output(_synthetic_cycle(R), M)
+        assert outpaint_range == f"{R}-{M - 1}"
+        freed = _parse_frame_ranges(
+            _map_frame_ranges_to_internal(outpaint_range, M, 60, loop=True), 60
+        )
+        pad_boundary = R * (60 - 1) / (M - 1)
+        assert {t for t in range(60) if t >= pad_boundary} <= freed, (M, R)
+        for frame in range(R, M):
+            assert _export_preimage(frame, M, 60, True) - freed in (set(), {0}), (
+                M, R, frame,
+            )
 
 
 def test_window_to_output_keeps_a_loop_a_cycle() -> None:
@@ -310,19 +572,32 @@ def test_window_to_output_keeps_a_loop_a_cycle() -> None:
     assert _resample_window_to_output(window, 60, 60, False) is window
 
 
-def test_loop_reference_and_output_resamples_are_inverse() -> None:
-    # Both directions use the same cycle mapping, so the reference pose the
-    # clamp (and _reground_inpaint_joint_y) sees at output frame s is the pose
-    # --inpaint_frames names at frame s. The node sets align when the reference
-    # length divides the window, which makes the round trip exact.
+def test_loop_export_map_is_the_windows_own() -> None:
+    # The reference goes in end to end and the sampled window comes out
+    # periodically under --loop, because it is the WINDOW that is declared a
+    # cycle. The two are therefore not inverse: a clamped reference pose is
+    # exported a frame or two from where it was placed (the drift
+    # _resample_window_to_output documents, which the mask's union mapping
+    # covers), and in exchange the exported seam stays an ordinary step
+    # instead of a stall.
     n_joints, feat = 3, 12
     cond = _make_full_cond_entry(n_joints, feature_len=feat)
     clip = _synthetic_cycle(30)
 
-    window = _reference_window(cond, clip, loop=True)
+    window = _reference_window(cond, clip)
     exported = _resample_window_to_output(window, 30, 60, True)
 
-    np.testing.assert_allclose(exported, clip, atol=1e-6)
+    assert exported.shape == clip.shape
+    # Same motion, at most ~2 frames of drift: every exported frame matches the
+    # reference within that neighbourhood.
+    pose = lambda a: a[:, :, :9].astype(np.float64)
+    scale = float(np.abs(np.diff(pose(clip), axis=0)).mean())
+    for s_idx in range(30):
+        drift = min(
+            float(np.abs(pose(exported)[s_idx] - pose(clip)[r]).mean())
+            for r in range(max(0, s_idx - 2), min(30, s_idx + 3))
+        )
+        assert drift < 0.5 * scale, (s_idx, drift, scale)
 
 
 def test_build_inpaint_mask_uses_all_real_joints_for_selected_frames() -> None:

@@ -100,16 +100,18 @@ loop 样本的训练语义，放在同一次消融里会和 action 调制的效�
 - 生成端同步。显式 `--loop on` / `--loop off` 是“这个窗口是一个环”的声明，和 reference 本身是不是 loop
   无关；默认的 `--loop auto` 相反，有 `--reference_motion` 时按 reference 自己的闭合判决解析
   （`loop_verdict` 的存储判决行，没有则用端点检测器），只有 `--action_label` 时按该 label 训练片段里
-  loop 的多数，两者都没有时取 `off`。窗口 ↔ 输出之间只有
-  一个映射（`_resample_window_to_output`，`periodic` 取解析后的 loop 条件），三处都走它：
+  loop 的多数，两者都没有时取 `off`。**reference 只贡献这个判决**：标记取到之后，reference 一律按 one-shot
+  处理，按 loop 分叉的只有窗口 → 输出的导出映射（`_resample_window_to_output`，`periodic` 取解析后的 loop
+  条件）：
   - 纯 loop 生成（没有 reference）导出到 M ≠ T 帧时按环形重采样，否则导出结果的接缝步长又会不均匀；
-  - 带 reference 时同样按环形重采样，并且 reference 本身也按环形放进窗口（`_prepare_img2img_reference_bundle`）：
-    先丢 closing key（如果它带），再按 `t·L/T` 重采样。这样窗口第 t 帧在两个方向上都对应 reference 源时刻
-    `t·L/T`，往返是恒等映射，`--inpaint_frames` 的范围落在它指名的 reference 姿态上，模型读到的
-    `resample_speed_cond = L/T` 也正是 reference 实际的步长。反过来（reference 端点重采样 + 导出端点重采样）
-    虽然自洽，但接缝步长是 1 个源帧、窗口内是 `(L-1)/(T-1)`，对 clamp 来说这个不均匀接缝会直接进入输出；
+  - 带 reference 时导出同样按环形重采样，但 reference 自己不按环形处理：closing key 是它自己的一帧，
+    R > M 裁掉尾巴、R < M 追加 `[R, M)` 让模型从噪声填（`fit_reference_to_output`），再按端点映射
+    `t·(L-1)/(T-1)` 放进窗口（`_prepare_img2img_reference_bundle`）。代价是两个方向不再互为恒等：clamp 住的
+    reference 姿态导出时会漂 `|M/T − 1|` 帧（M = 3T 上限处 2 帧，M < T 时不到 1 帧）；换来的是 loop 化由模型自己做——`is_loop` 条件、环形相位表、
+    以及 R < M 时那段追加帧给它的空间，而不是由 pipeline 把 reference 摆成一个环；
   - `_reground_inpaint_joint_y` 用的 reference 必须和导出用同一个映射（它逐帧配对两者），否则竖直 reseat 的
-    均值取在错位的帧上。`_map_frame_ranges_to_internal` 同理，`--loop` 时用 `T/M` 而不是 `(T-1)/(M-1)`。
+    均值取在错位的帧上。`_map_frame_ranges_to_internal` 走的是 reference 那条端点映射 `(T-1)/(M-1)`：范围
+    指名的是 reference 的帧，而 mask 只在有 reference 时存在。
   这样导出结果**结构上**一定是 loop：接缝是一步普通步长，不再有停一帧。内容闭合得多好仍取决于模型，而
   `--skip_timesteps` 越高输出越贴着 reference——`--loop` 不强制内容闭合，它只保证不再由导出环节把环破坏掉。
 - `tools/sample_augmented_bvh.py --real-time` 没有 reference，按 `loop_applied` 选重采样方式。

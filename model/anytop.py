@@ -18,6 +18,8 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     SLOT_MODIFIER,
     SLOT_HEAD,
     ActionConditioningError,
+    projection_input_dim,
+    slot_channel_widths,
     slot_source_rank_report,
     validate_action_conditioning_metadata,
     word_table_sha256,
@@ -104,7 +106,7 @@ class AnyTop(nn.Module):
             )
         # Action-label conditioning: a single pathway -- the frozen T5 vectors of
         # the label's WORDS, pooled into one channel per slot (head /
-        # direction / modifier / hands) and concatenated. A channel reads its own slot
+        # direction / modifier) and concatenated. A channel reads its own slot
         # only, so a label's head and direction axes are literally unchanged by
         # however many modifiers it also spells, and unseen (action x direction)
         # combinations compose out of word vectors the model has already seen.
@@ -122,8 +124,7 @@ class AnyTop(nn.Module):
         #   modifier:  a bare "attack" draws SOME attack (bite, cast, swat ...)
         #              rather than the handful of clips annotated without a
         #              modifier, which is what an undropped empty slot learns.
-        # The two draws are independent per row. The hands slot has NO such
-        # dropout on purpose -- empty there means empty hands.
+        # The two draws are independent per row.
         self.direction_slot_drop_prob = float(kargs.get('direction_slot_drop_prob', 0.0))
         if not 0.0 <= self.direction_slot_drop_prob <= 1.0:
             raise ValueError(
@@ -206,9 +207,11 @@ class AnyTop(nn.Module):
             # direction is linearly readable out of the T5 vectors. If a trained
             # model still under-follows the prompt, raise --action_label_cfg_scale
             # (no retrain needed).
+            # The direction slot is a code slot and is read on its
+            # SYNTHETIC_CODE_DIM axes only: see compact_slot_channels.
             self._init_action_conditioning(kargs.get('action_conditioning'), t5_out_dim)
             self.action_label_projection = nn.Sequential(
-                nn.Linear(len(ACTION_LABEL_SLOTS) * t5_out_dim, self.latent_dim),
+                nn.Linear(projection_input_dim(t5_out_dim), self.latent_dim),
                 nn.GELU(),
                 nn.Linear(self.latent_dim, self.latent_dim),
             )
@@ -268,13 +271,14 @@ class AnyTop(nn.Module):
         # a semantic condition to guide toward or away from, it is the definition
         # of the output space. Zero-initialized final linear, so the condition
         # starts at exact identity (contributes 0 to the timestep token).
-        self.canonical_frame_projection = nn.Sequential(
-            nn.Linear(2 * self.feature_len, self.latent_dim),
-            nn.GELU(),
-            nn.Linear(self.latent_dim, self.latent_dim),
-        )
-        nn.init.zeros_(self.canonical_frame_projection[-1].weight)
-        nn.init.zeros_(self.canonical_frame_projection[-1].bias)
+        #
+        # One Linear, not an MLP: the input takes one value per object_subset
+        # (seven in the corpus), so any map of it has rank <= 7 and the hidden
+        # layer bought nothing -- v24's 384x384 second Linear measured erank 25
+        # with 90% of its energy in 5 directions, on 147k parameters.
+        self.canonical_frame_projection = nn.Linear(2 * self.feature_len, self.latent_dim)
+        nn.init.zeros_(self.canonical_frame_projection.weight)
+        nn.init.zeros_(self.canonical_frame_projection.bias)
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
@@ -564,6 +568,22 @@ class AnyTop(nn.Module):
             channels.append(torch.where(total > 0, mean / norm.clamp(min=1e-9), mean * 0.0))
         return torch.cat(channels, dim=-1)
 
+    def _compact_action_slot_channels(self, channels):
+        """Tensor mirror of ``compact_slot_channels``: ``[B, S * D]`` ->
+        ``[B, projection_input_dim(D)]``.
+
+        A code slot's channel is a renormalised mean of one-hot code rows, so
+        outside its SYNTHETIC_CODE_DIM axes it is zero for every legal label;
+        the projection reads only that prefix. Static slices, so the graph is
+        the same for every batch.
+        """
+        dim = self.action_word_embeddings.shape[1]
+        blocks = []
+        for slot, width in enumerate(slot_channel_widths(dim)):
+            start = slot * dim
+            blocks.append(channels[:, start:start + width])
+        return torch.cat(blocks, dim=-1)
+
     def _drop_slot_words(self, word_mask, slot_ids, slot, prob, batch_size, device):
         """Training-only: blank the words of *slot* on a random subset of rows.
 
@@ -659,8 +679,8 @@ class AnyTop(nn.Module):
             word_ids, slot_ids, word_mask = resolved
             word_mask = self._drop_direction_slot(word_mask, slot_ids, batch_size, device)
             word_mask = self._drop_modifier_slot(word_mask, slot_ids, batch_size, device)
-            channels = self._assemble_action_slot_channels(
-                word_ids, slot_ids, word_mask, dtype
+            channels = self._compact_action_slot_channels(
+                self._assemble_action_slot_channels(word_ids, slot_ids, word_mask, dtype)
             )
         active = self._resolve_action_label_active(
             y.get('action_label_active'), batch_size, device

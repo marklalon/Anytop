@@ -42,7 +42,7 @@ def is_number(numStr):
 DEFAULT_COND_PATH = str(Path(DEFAULT_DATASET_DIR) / COND_FILE)
 
 
-def get_opt(device, cond_path=None, cond_dict=None):
+def get_opt(device, cond_path=None, cond_dict=None, *, inference=False):
     """Build the run options from one ``cond.npy``.
 
     ``cond.npy`` is the single entry point: it names the species, and (through
@@ -52,30 +52,50 @@ def get_opt(device, cond_path=None, cond_dict=None):
     simply the ``len(sources) == 1`` case.
 
     Configuring ``dataset_tags`` happens here because ``opt.subsets_dict`` is
-    read from it immediately: a real dataset dir carries its own
-    ``species_tags.jsonl`` and is read from it; a standalone inference cond
-    (``dataset_root=None``, no sidecar) falls back to the cond's own baked tags
-    (the inference contract).  There is no fallback to the default dataset's
-    tags -- a missing sidecar never borrows from another species.
+    read from it immediately, and ``inference`` picks which of the two contracts
+    supplies it:
+
+    * ``inference=False`` (training, preprocessing, dataset tools) -- the
+      dataset directories are the live source of truth and their
+      ``species_tags.jsonl`` is read.  A dataset dir that carries no sidecar
+      falls back to the cond's baked tags; there is no fallback to the *default*
+      dataset's tags, so a missing sidecar never borrows from another species.
+    * ``inference=True`` (generation) -- the cond's own baked tags, always, and
+      the dataset directories are not touched at all, not even to ask whether
+      they exist.  A checkpoint's cond.npy is a snapshot of what the weights
+      were trained against; the dataset it came from is re-preprocessed and
+      re-tagged between runs, so reading it back here would silently describe
+      the checkpoint's species with tags it never saw.  This is what makes a
+      checkpoint directory self-contained: model + args.json + cond.npy and
+      nothing else.
     """
     cond_path = str(resolve_anytop_path(cond_path or DEFAULT_COND_PATH))
     if cond_dict is None:
         cond_dict = load_cond(cond_path)
 
-    sources = sources_from_cond(cond_dict, cond_path)
-    # A real dataset dir carries its own species_tags.jsonl; a standalone
-    # inference cond (dataset_root=None) does not. Use the sidecars when present,
-    # otherwise the cond's own baked tags -- never borrow from the default
-    # dataset.
-    sidecars_present = all(
-        (Path(source.root) / SPECIES_TAGS_FILE).is_file() for source in sources
-    )
-    if sidecars_present:
-        _dataset_tags.configure(sources=sources)
-    else:
+    # probe_filesystem=False under inference: a stored ``dataset_root`` is
+    # normally the portable Anytop-relative form, and resolving one the ordinary
+    # way stats the dataset directory to choose between the cwd and the Anytop
+    # root. Lexical resolution both keeps the contract and makes opt.sources a
+    # function of the cond alone rather than of where generation was launched.
+    sources = sources_from_cond(cond_dict, cond_path, probe_filesystem=not inference)
+    if inference:
+        # No ``.is_file()`` probe either: the point is that generation runs with
+        # the dataset directories absent, renamed or stale, so nothing here may
+        # depend on what is at ``source.root``. ``opt.sources`` keeps the roots
+        # the cond names for diagnostics only.
         _dataset_tags.configure_from_cond(cond_dict)
+    else:
+        sidecars_present = all(
+            (Path(source.root) / SPECIES_TAGS_FILE).is_file() for source in sources
+        )
+        if sidecars_present:
+            _dataset_tags.configure(sources=sources)
+        else:
+            _dataset_tags.configure_from_cond(cond_dict)
 
     opt = Namespace()
+    opt.inference = bool(inference)
     opt.cond_file = cond_path
     opt.sources = sources
     opt.max_joints = MAX_JOINTS

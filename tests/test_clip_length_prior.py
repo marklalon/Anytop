@@ -492,6 +492,82 @@ def test_reference_loop_verdict_falls_back_to_the_detector():
     assert is_loop is False and "do not close" in why
 
 
+def _loop_clip_with_closing_key(period=40, joints=4):
+    """One cycle of a circular orbit, plus the redundant frame repeating frame 0."""
+    phase = np.linspace(0.0, 2.0 * np.pi, period, endpoint=False)
+    cycle = np.zeros((period, joints, 12), dtype=np.float32)
+    cycle[..., 0] = 0.2 * np.sin(phase)[:, None]
+    cycle[..., 1] = 0.2 * np.cos(phase)[:, None] + np.arange(joints)[None, :]
+    cycle[..., 3] = 0.2 * np.cos(phase)[:, None]
+    cycle[..., 4] = 0.2 * np.sin(phase)[:, None]
+    closed = np.concatenate([cycle, cycle[:1]], axis=0)
+    # The closing key's wrap delta is zero: it IS frame 0.
+    closed[-1, :, 9:12] = 0.0
+    return closed, cycle
+
+
+# -- fitting the reference to M ------------------------------------------------
+def _fit(features, M):
+    from sample.output_lengths import fit_reference_to_output
+
+    fitted, outpaint_range, _ = fit_reference_to_output(features, M)
+    return fitted, outpaint_range
+
+
+@pytest.mark.parametrize("M", [20, 45, 46, 90])
+def test_a_loop_reference_is_fitted_like_a_one_shot(M):
+    """The loop verdict is taken off the reference and handed to the model as
+    is_loop; it buys the reference itself nothing. A cycle is cropped when it
+    overruns M and outpainted when it falls short, exactly like an open clip,
+    and closing the cycle over the appended frames is left to the model."""
+    _, cycle = _loop_clip_with_closing_key(period=45)
+    fitted, outpaint_range = _fit(cycle, M)
+
+    assert fitted.shape[0] == M
+    if M < 45:
+        assert outpaint_range is None
+        assert np.array_equal(fitted, cycle[:M])
+    elif M == 45:
+        assert outpaint_range is None and fitted is cycle
+    else:
+        assert outpaint_range == f"45-{M - 1}"
+        assert np.array_equal(fitted[:45], cycle)
+
+
+def test_a_loop_references_closing_key_is_its_own_frame():
+    """Nothing trims the reference any more, so a clip shipping a closing key is
+    R = period + 1 frames of reference: the fit reads that length and the extra
+    frame stays in the motion the window is filled from."""
+    closed, cycle = _loop_clip_with_closing_key(period=45)
+    assert closed.shape[0] == 46
+
+    fitted, outpaint_range = _fit(closed, 46)
+    assert outpaint_range is None and fitted is closed
+    assert np.array_equal(fitted[:45], cycle)
+
+    fitted, outpaint_range = _fit(closed, 50)
+    assert outpaint_range == "46-49"
+    assert np.array_equal(fitted[:46], closed)
+
+
+def test_a_one_shot_is_still_cropped_and_outpainted():
+    """An open clip covers exactly the R frames it holds, so the coverage test
+    stands: the tail past R has no reference behind it."""
+    _, clip = _loop_clip_with_closing_key(period=45)
+
+    fitted, outpaint_range = _fit(clip, 30)
+    assert outpaint_range is None and fitted.shape[0] == 30
+    assert np.array_equal(fitted, clip[:30])
+
+    fitted, outpaint_range = _fit(clip, 50)
+    assert outpaint_range == "45-49" and fitted.shape[0] == 50
+    assert np.array_equal(fitted[:45], clip)
+    assert np.array_equal(fitted[45:], np.repeat(clip[-1:], 5, axis=0))
+
+    fitted, outpaint_range = _fit(clip, 45)
+    assert outpaint_range is None and fitted is clip
+
+
 def test_loop_flag_spellings():
     """A bare --loop still means on; omitted is auto; on/off are explicit."""
     import argparse

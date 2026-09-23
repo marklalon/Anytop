@@ -102,8 +102,9 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     # -- block F: which body part leads a dance --
     "footwork", "fullbody", "armwork", "sway",
     # -- block G: the implement an action is performed with (never the asset
-    # itself): archery, shooting, tool work, shield bash. What the hands HOLD is
-    # not here -- that is the separate HANDS_VOCAB axis below.
+    # itself): archery, shooting, tool work, shield bash. The word names the
+    # MOTION the implement produces, never the fact of holding one -- see the
+    # note under DIRECTION_VOCAB.
     "bow", "gun", "hammer", "shield",
 )
 
@@ -117,38 +118,26 @@ ACTION_VOCAB: tuple[str, ...] = HEAD_VOCAB + MODIFIER_VOCAB
 # one per label.
 DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right", "up", "down")
 
-# The hands axis -- how many hands are OCCUPIED (holding something):
-#   hand1 one hand holds, the other free |
-#   hand2 both hold: a two-handed grip OR one item per hand (sword + shield).
-# An occupancy count, not a weapon class (a dagger and a torch are both
-# hand1). Which implement is used (bow / gun / hammer / shield) stays a
-# modifier: ``attack, bow, hand2``.
-#
-# The two tokens are MUTUALLY EXCLUSIVE. An EMPTY slot MEANS EMPTY HANDS --
-# the content default, not "unspecified". Unlike the direction and modifier
-# axes (whose empty slots are marginals because training drops their words,
-# ``--direction_slot_drop_prob`` / ``--modifier_slot_drop_prob``), nothing
-# drops a hand word, so the model never sees an armed clip under an empty
-# slot. The former explicit ``hand0``
-# ("empty hands") was retired 2026-09-18 for exactly that reason. Species that
-# never hold anything leave the axis empty; ``tools/prefill_hand_words.py``
-# proposes the word from the holding pose.
-HANDS_VOCAB: tuple[str, ...] = ("hand1", "hand2")
+# WHAT THE CHARACTER HOLDS IS NOT PART OF THE LABEL. There is no hand-state
+# word and no hand slot: an armed and an unarmed clip of the same strike are
+# ONE condition, and the annotation says only what the body does. A visible
+# prop never changes a label. Where an implement IS the motion it reaches the
+# model as a modifier (``bow`` / ``gun`` / ``hammer`` / ``shield``) -- that
+# word names the strike, not the grip.
+CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB + DIRECTION_VOCAB
 
-CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB + DIRECTION_VOCAB + HANDS_VOCAB
-
-# The two closed axes whose table rows are NOT T5 encodings but a synthetic
+# The closed axis whose table rows are NOT T5 encodings but a synthetic
 # orthonormal code (one unit axis per token; see the contract module's
 # ``synthetic_code_rows``).
 #
-# T5 has nothing to offer these slots: the vocabulary is closed (an unknown
+# T5 has nothing to offer this slot: the vocabulary is closed (an unknown
 # token raises in ``action_label_slots``), so there is no unseen word to place
 # and no data-sparse token to borrow from a neighbour. On these axes T5's
 # geometry ran BACKWARDS -- measured on the old t5-base table (768d, after
 # center_l2, vocabulary-wide |cos| p95 of 0.19),
 #
 #     left / right        +0.461      forward / backward  +0.384
-#     hand1 / hand2       +0.529      up / down           +0.348
+#     up / down           +0.348
 #
 # the pairs a prompt most needs kept apart were the closest pairs in the table.
 # The replacement is the geometry those axes actually want: mutually orthogonal
@@ -160,11 +149,7 @@ CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB + DIRECTION_VOCAB + HANDS_VOCAB
 # reachable geometry, at the cost of splitting ``assemble_slot_channels``
 # across numpy and torch.
 #
-# The slots stay SEPARATE: the channel rule is a mean followed by an L2
-# normalisation, which is non-linear in the member count, so pooling the two
-# axes into one channel would make ``left``'s gain depend on whether an
-# unrelated hand or vertical word was also spelled.
-SYNTHETIC_CODE_VOCAB: tuple[str, ...] = DIRECTION_VOCAB + HANDS_VOCAB
+SYNTHETIC_CODE_VOCAB: tuple[str, ...] = DIRECTION_VOCAB
 _SYNTHETIC_CODE_SET: frozenset[str] = frozenset(SYNTHETIC_CODE_VOCAB)
 
 # The complement: the tokens the sidecar builder actually hands to T5, in
@@ -181,7 +166,7 @@ _CONTROLLED_VOCAB_ORDER: dict[str, int] = {
 }
 
 assert len(_CONTROLLED_VOCAB_ORDER) == len(CONTROLLED_VOCAB), (
-    "a word may appear only once across ACTION_VOCAB + DIRECTION_VOCAB + HANDS_VOCAB: "
+    "a word may appear only once across ACTION_VOCAB + DIRECTION_VOCAB: "
     + str(sorted({w for w in CONTROLLED_VOCAB if CONTROLLED_VOCAB.count(w) > 1}))
 )
 assert not any(char.isspace() for word in CONTROLLED_VOCAB for char in word), (
@@ -192,11 +177,11 @@ assert not any(char.isspace() for word in CONTROLLED_VOCAB for char in word), (
 
 
 _HEAD_VOCAB_SET: frozenset[str] = frozenset(HEAD_VOCAB)
-_HANDS_VOCAB_SET: frozenset[str] = frozenset(HANDS_VOCAB)
 
-assert _HANDS_VOCAB_SET.isdisjoint(_HEAD_VOCAB_SET) and _HANDS_VOCAB_SET.isdisjoint(
-    DIRECTION_VOCAB
-), "a hand-state word is neither a head nor a direction"
+assert _HEAD_VOCAB_SET.isdisjoint(DIRECTION_VOCAB), (
+    "a direction word is not a head: "
+    + str(sorted(_HEAD_VOCAB_SET & set(DIRECTION_VOCAB)))
+)
 assert _HEAD_VOCAB_SET.isdisjoint(MODIFIER_VOCAB), (
     "a word is a head or a modifier, never both: "
     + str(sorted(_HEAD_VOCAB_SET & set(MODIFIER_VOCAB)))
@@ -220,9 +205,7 @@ ACTION_LABEL_MAX_HEADS = 2
 # token already spells.
 #
 # Only T5-encoded tokens may appear here: a SYNTHETIC_CODE_VOCAB token is
-# never encoded, so text for one would be dead weight. (``hand1`` / ``hand2``
-# once carried "one hand" / "both hands" overrides; they went with the rest of
-# the T5 side of that axis.)
+# never encoded, so text for one would be dead weight.
 #
 # Constraints, all asserted below: one-to-one on the EXPANDED table, no
 # whitespace in a token, every key a T5-encoded vocabulary word. No reverse
@@ -321,15 +304,6 @@ def direction_words_in(text: str) -> list[str]:
     return [word for word in vocab_words_in(text) if word in direction]
 
 
-def hands_words_in(text: str) -> list[str]:
-    """The :data:`HANDS_VOCAB` subset of :func:`vocab_words_in`, in vocab order.
-
-    A valid label holds at most one; the list form is so an audit can SEE a
-    violation instead of having it collapsed away.
-    """
-    return [word for word in vocab_words_in(text) if word in _HANDS_VOCAB_SET]
-
-
 def head_words_in(words) -> list[str]:
     """The :data:`HEAD_VOCAB` members of *words*, in the order given (the
     written order: primary word first)."""
@@ -341,8 +315,8 @@ def parse_action_label(label: str) -> list[str]:
 
     Every comma-separated piece must be a vocabulary token verbatim: no empty
     segment, no repeat, at most :data:`ACTION_LABEL_MAX_WORDS` tokens, 1..
-    :data:`ACTION_LABEL_MAX_HEADS` head words, at most one :data:`HANDS_VOCAB`
-    word. An empty label parses to ``[]`` (= no condition).
+    :data:`ACTION_LABEL_MAX_HEADS` head words. An empty label parses to ``[]``
+    (= no condition).
 
     Raises :class:`ActionLabelError` rather than dropping anything: a silently
     dropped token is a silently changed condition.
@@ -382,13 +356,6 @@ def parse_action_label(label: str) -> list[str]:
             f"{ACTION_LABEL_MAX_HEADS}). A label names a state, optionally "
             f"qualified by one more, and nothing longer has a defined reading."
         )
-    hands = [token for token in tokens if token in _HANDS_VOCAB_SET]
-    if len(hands) > 1:
-        raise ActionLabelError(
-            f"action_label {label!r} names {len(hands)} hand-state words {hands}. "
-            f"{list(HANDS_VOCAB)} are one exclusive axis (how many hands hold "
-            f"something); write at most one, or none for empty hands."
-        )
     return tokens
 
 
@@ -400,8 +367,7 @@ def canonical_action_label(words) -> str:
     re-sorting here would change the condition, not just the spelling.
     Directions bind after a ``turn`` head (or the last head) and precede other
     modifiers; the rest are sorted by :data:`CONTROLLED_VOCAB` index: one
-    combination, exactly one spelling. The hands word sorts last by
-    construction (:data:`HANDS_VOCAB` closes the vocabulary).
+    combination, exactly one spelling.
 
     Repeats are dropped (first occurrence wins); an out-of-vocabulary word
     raises -- dropping it would quietly delete part of the condition.

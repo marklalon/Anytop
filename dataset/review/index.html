@@ -55,8 +55,45 @@
   button { cursor: pointer; }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .4; cursor: default; }
-  button#clean:not(:disabled) { border-color: var(--warn); color: #ffb79c; }
-  button#clean:hover:not(:disabled) { background: #4a2f2a; }
+  button#markFiltered:not(:disabled), button#clean:not(:disabled) {
+    border-color: var(--warn); color: #ffb79c;
+  }
+  button#markFiltered:hover:not(:disabled), button#clean:hover:not(:disabled) {
+    background: #4a2f2a;
+  }
+  details.more-menu { position: relative; }
+  details.more-menu > summary {
+    list-style: none;
+    background: #3d3d3d;
+    color: var(--text);
+    border: 1px solid var(--card-edge);
+    border-radius: 4px;
+    padding: 4px 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+  details.more-menu > summary::-webkit-details-marker { display: none; }
+  details.more-menu > summary::after { content: ' ▾'; color: var(--dim); }
+  details.more-menu[open] > summary,
+  details.more-menu > summary:hover { border-color: var(--accent); }
+  .more-panel {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 30;
+    min-width: 250px;
+    padding: 5px;
+    background: #2c2c2c;
+    border: 1px solid var(--card-edge);
+    border-radius: 5px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.55);
+  }
+  .more-panel button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    white-space: nowrap;
+  }
   .counts { color: var(--dim); font-size: 12px; }
   .counts b { color: var(--text); font-weight: 600; }
 
@@ -333,6 +370,12 @@
   <span class="spacer"></span>
 
   <button id="refresh" title="重新读取数据（保留当前数据集 / action group / 状态 / loop / 搜索筛选、页码与滚动位置）">刷新</button>
+  <details id="moreMenu" class="more-menu">
+    <summary>更多</summary>
+    <div class="more-panel">
+      <button id="markFiltered" disabled title="将当前筛选中尚未标记的动作批量标记为待删除（覆盖所有分页）">标记当前筛选为待删除</button>
+    </div>
+  </details>
   <button id="clean" disabled title="清理当前数据集所有标记为待删除的动作">清理待删除</button>
 
   <div class="pager">
@@ -515,11 +558,24 @@ function counts() {
     (invalid ? ' &nbsp;·&nbsp; <span style="color:#ff8a80">非法 label <b>' + invalid + '</b></span>' : '') +
     ' &nbsp;·&nbsp; 当前筛选 <b>' + view.length + '</b>';
   const clean = $('clean');
-  clean.disabled = ds === ALL_DATASETS || pending === 0 || clean.dataset.busy === '1';
+  const markFiltered = $('markFiltered');
+  const markable = view.filter(r => !isPending(r)).length;
+  const hasTextSearch = $('q').value.trim().length > 0;
+  const busy = clean.dataset.busy === '1' || markFiltered.dataset.busy === '1';
+  clean.disabled = ds === ALL_DATASETS || pending === 0 || busy;
   clean.textContent = pending ? '清理待删除 (' + pending + ')' : '清理待删除';
   clean.title = ds === ALL_DATASETS
     ? 'all 视图只用于筛选和编辑；请切换到具体数据集后清理待删除动作'
     : '清理当前数据集所有标记为待删除的动作';
+  markFiltered.disabled = ds === ALL_DATASETS || !hasTextSearch || markable === 0 || busy;
+  markFiltered.textContent = markable
+    ? '标记当前筛选为待删除 (' + markable + ')'
+    : '标记当前筛选为待删除';
+  markFiltered.title = ds === ALL_DATASETS
+    ? '请先切换到具体数据集，再批量标记当前筛选'
+    : !hasTextSearch
+      ? '请先在文本搜索框中输入内容'
+      : '将当前筛选中尚未标记的 ' + markable + ' 个动作批量标记为待删除（覆盖所有分页）';
 }
 
 // A sticky report bar. Unlike the toast it stays until dismissed, so the
@@ -813,7 +869,7 @@ function card(row) {
     thumb.appendChild(tag);
   }
   if (row.autofill) {
-    // tools/prefill_direction_words.py and tools/prefill_hand_words.py fill an
+    // tools/prefill_direction_words.py fills an
     // EMPTY slot from the motion and set reviewed:false. The flag says only
     // that a tool wrote this label, not why: the measurement stays in that
     // run's output, and what settles it here is the GIF.
@@ -1030,6 +1086,57 @@ async function save(el, row, patch) {
   }
 }
 
+// Mark every not-yet-pending row in the current filtered view in one server
+// rewrite. `view` spans every page, so this is deliberately not limited to the
+// 100 cards currently rendered. No files are moved or deleted here; the
+// separate "清理待删除" action remains the only destructive step.
+async function markFilteredPending() {
+  if (ds === ALL_DATASETS) {
+    toast('请先切换到具体数据集，再批量标记当前筛选');
+    return;
+  }
+  if (!$('q').value.trim()) {
+    toast('请先在文本搜索框中输入内容');
+    return;
+  }
+  const targets = view.filter(r => !isPending(r));
+  if (!targets.length) return;
+  const shown = targets.slice(0, 12).map(r => '  · ' + stripNpy(r.clip));
+  if (targets.length > shown.length) {
+    shown.push('  … 其余 ' + (targets.length - shown.length) + ' 个');
+  }
+  const ok = confirm(
+    '将 ' + ds + ' 当前筛选中的 ' + targets.length + ' 个动作标记为待删除（覆盖所有分页）：\n\n' +
+    shown.join('\n') + '\n\n' +
+    '这一步只写入 pending_delete 标记，不会移动或删除文件。\n' +
+    '之后仍需点击“清理待删除”才会真正清理。\n\n继续？');
+  if (!ok) return;
+
+  $('moreMenu').open = false;
+  const btn = $('markFiltered');
+  btn.dataset.busy = '1';
+  counts();
+  btn.textContent = '标记中…';
+  let data;
+  try {
+    const res = await fetch('api/mark-pending', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataset: ds, clips: targets.map(r => r.clip) })
+    });
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+  } catch (err) {
+    toast('批量标记失败：' + err.message);
+    return;
+  } finally {
+    delete btn.dataset.busy;
+    await load(true);
+  }
+  toast('已将 ' + data.marked + ' 个动作标记为待删除' +
+    (data.already_marked ? '（另有 ' + data.already_marked + ' 个原已标记）' : ''));
+}
+
 // Turn every pending_delete mark of the active dataset into a real removal:
 // the source file is moved into the trash dir, the clip's motion NPY and its
 // BVH are deleted outright, the review GIF is deleted, the row leaves
@@ -1057,7 +1164,7 @@ async function clean() {
 
   const btn = $('clean');
   btn.dataset.busy = '1';
-  btn.disabled = true;
+  counts();                 // also disables the batch-mark button while cleaning
   btn.textContent = '清理中…';
   let data;
   try {
@@ -1099,6 +1206,7 @@ async function clean() {
 function onDatasetChange() {
   const next = $('dataset').value;
   if (!next || next === ds) return;
+  $('moreMenu').open = false;
   ds = next;
   localStorage.setItem(DS_KEY, ds);
   rows = [];
@@ -1136,7 +1244,15 @@ $('prev').onclick = () => { page--; render(); };
 $('next').onclick = () => { page++; render(); };
 $('jump').onchange = () => { page = parseInt($('jump').value, 10) || 1; render(); };
 $('refresh').onclick = () => load(true);
+$('markFiltered').onclick = markFilteredPending;
 $('clean').onclick = clean;
+document.addEventListener('mousedown', (event) => {
+  const menu = $('moreMenu');
+  if (menu.open && !menu.contains(event.target)) menu.open = false;
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') $('moreMenu').open = false;
+});
 
 load();
 </script>

@@ -53,19 +53,20 @@ from sample.generation_runtime import (
     prepare_generation_runtime,
 )
 from sample.inpaint import (
-    _contiguous_frame_runs,
-    _map_frame_ranges_to_internal,
-    _parse_frame_ranges,
     _reanchor_inpaint_root_y_via_velocity,
     _reground_inpaint_joint_y,
     _resolve_inpaint_joint_indices,
     build_inpaint_mask,
+    check_full_coverage_inpaint_early,
+    inpaint_y_anchor_spans,
+    resolve_inpaint_policy,
 )
 from sample.output_lengths import (
     _all_species_output_lengths,
     _finalize_output_lengths,
     _resample_window_to_output,
     _resolve_auto_output_lengths,
+    fit_reference_to_output,
     resolve_loop_condition,
 )
 from sample.reference_motion import (
@@ -252,6 +253,13 @@ def main(args=None, cond_dict=None, runtime=None):
             "flags for plain generation."
         )
 
+    if _inpaint_early:
+        check_full_coverage_inpaint_early(
+            str(getattr(args, 'inpaint_frames', '') or '').strip(),
+            str(getattr(args, 'inpaint_joints', '') or '').strip(),
+            getattr(args, 'num_frames', None),
+        )
+
     if _inpaint_early and skip_timesteps_raw is None:
         skip_timesteps_raw = 0  # inpaint without skip: denoise full schedule
 
@@ -276,7 +284,9 @@ def main(args=None, cond_dict=None, runtime=None):
                 expected_embedding_dim=args.t5_out_dim,
                 cond_source=task_cond,
             )
-            new_opt = get_opt(runtime.device, task_cond, cond_dict=new_cond_dict)
+            new_opt = get_opt(
+                runtime.device, task_cond, cond_dict=new_cond_dict, inference=True
+            )
             _raise_opt_max_joints_for_cond(new_opt, new_cond_dict)
             runtime.opt = new_opt
             runtime.cond_dict = new_cond_dict
@@ -309,9 +319,10 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # Output length, in priority order:
     #   1. --num_frames itself. An explicit number is the user's decision and
-    #      outranks everything, reference included (R < M outpaints the tail,
-    #      R > M crops): it is finalized right here, and every fallback below is
-    #      guarded on requested_output_frames still being None.
+    #      outranks everything, reference included (the reference is outpainted
+    #      when R < M and cropped when R > M, loop or not --
+    #      fit_reference_to_output): it is finalized right here, and every
+    #      fallback below is guarded on requested_output_frames still being None.
     #   2. a --reference_motion's own frame count R -- with no number given, the
     #      reference IS the requested length.
     #   3. the training-length prior for --action_label, resolved once
@@ -346,10 +357,12 @@ def main(args=None, cond_dict=None, runtime=None):
     inpaint_include_subtree = bool(getattr(args, 'inpaint_include_subtree', True))
     # --loop is the whole loop condition: the model is asked for a closed window
     # (y['is_loop'], the circular phase table, the loader's periodic window
-    # resample). Every temporal resample of a reference or of the sampled window
-    # must therefore be periodic, or the round trip stops closing. 'auto' needs
-    # the action label and the target species (resolve_loop_condition), so the
-    # bool is fixed further down, right before the length that depends on it.
+    # resample), and the sampled window is exported with the matching periodic
+    # resample so nothing downstream breaks the cycle open. A reference is not
+    # part of that: it only supplies the verdict under 'auto' and is otherwise a
+    # one-shot clip. 'auto' needs the action label and the target species
+    # (resolve_loop_condition), so the bool is fixed further down, right before
+    # the length that depends on it.
     loop_mode = getattr(args, 'loop', 'auto')
 
     # ── Resolve --object_type ───────────────────────────────────────────────
@@ -622,6 +635,11 @@ def main(args=None, cond_dict=None, runtime=None):
 
         # The loop condition, off the reference as it will fill the window:
         # retargeted onto the target skeleton, so the target's root indexes it.
+        # This verdict is the ONLY thing the reference's loopiness decides: it
+        # becomes the model's is_loop condition, and with it the export mapping.
+        # Nothing below reads the clip as a cycle -- it is fitted, filled and
+        # clamped as a one-shot, every frame it ships kept, and closing the
+        # cycle is the model's job.
         loop_condition = resolve_loop_condition(
             loop_mode,
             cond_dict,
@@ -647,16 +665,30 @@ def main(args=None, cond_dict=None, runtime=None):
                 )
         M = int(requested_output_frames)
 
-        # Crop (R > M) or outpaint-pad (R < M) reference to exactly M frames.
-        if R > M:
-            ref_features_full = ref_features_full[:M]
-            print(f'  Reference cropped: R={R} > M={M} -> using first {M} frames')
-        elif R < M:
-            outpaint_active = True
-            pad = np.repeat(ref_features_full[-1:], M - R, axis=0)
-            ref_features_full = np.concatenate([ref_features_full, pad], axis=0)
-            auto_outpaint_range = f'{R}-{M - 1}'
-            print(f'  Reference outpaint: R={R} < M={M} -> appended frames [{R}, {M - 1}]')
+        # Fit the reference to M: crop (R > M) or outpaint-pad (R < M). A loop
+        # reference is no exception -- R < M appends frames from noise, which
+        # under is_loop is exactly where the model gets to close the cycle.
+        ref_features_full, auto_outpaint_range, fit_note = fit_reference_to_output(
+            ref_features_full, M,
+        )
+        outpaint_active = auto_outpaint_range is not None
+        if fit_note:
+            print(fit_note)
+
+        # Settles what the range means for the run -- which clip ends stay
+        # clamped, hence whether --loop has a closure to make -- and rejects a
+        # mask that would free everything.
+        loop_condition = resolve_inpaint_policy(
+            cond_dict[object_type],
+            frames_arg=inpaint_frames_arg,
+            joints_arg=inpaint_joints_arg,
+            include_subtree=inpaint_include_subtree,
+            outpaint_range=auto_outpaint_range if outpaint_active else None,
+            user_inpaint_active=user_inpaint_active,
+            output_frames=M,
+            window_frames=n_frames,
+            loop=loop_condition,
+        )
 
         # Appended [R, M) frames need a pure-noise start (full schedule), which
         # conflicts with skip_timesteps/explicit inpaint. When both are present,
@@ -690,7 +722,6 @@ def main(args=None, cond_dict=None, runtime=None):
             requested_visible_frame_count=target_output_frames,
             preloaded_features=ref_features_full,
             min_length=min_length,
-            loop=loop_condition,
         )
         ref_motion = reference_bundle['reference_motion']
         output_frame_count = reference_bundle['output_frame_count']
@@ -773,22 +804,17 @@ def main(args=None, cond_dict=None, runtime=None):
         device=dist_util.dev(),
     )
 
-    def _build_inpaint_mask_for(frames_arg, joints_arg, warn_remap=False):
-        internal_frames = _map_frame_ranges_to_internal(
-            frames_arg,
-            source_frames=target_output_frames,
-            target_frames=output_frame_count,
-            warn_remap=warn_remap,
-            periodic=loop_condition,
-        )
+    def _build_inpaint_mask_for(frames_arg, joints_arg):
         return build_inpaint_mask(
             cond_dict[object_type],
             joints_arg,
             inpaint_include_subtree,
-            internal_frames,
+            frames_arg,
             args.batch_size,
             max_joints,
             output_frame_count,
+            output_frames=target_output_frames,
+            loop=bool(loop_condition),
         )
 
     def _run_sample(reference_motion, skip_ts, inpaint_mask):
@@ -816,7 +842,7 @@ def main(args=None, cond_dict=None, runtime=None):
         # Pass 2: apply the requested skip / inpaint to the completed reference.
         print('  [two-pass] pass 2/2: applying requested skip/inpaint to the completed reference')
         pass2_mask = (
-            _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg, warn_remap=True)
+            _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg)
             if user_inpaint_active else None
         )
         sample = _run_sample(completed_reference, skip_timesteps, pass2_mask)
@@ -824,7 +850,7 @@ def main(args=None, cond_dict=None, runtime=None):
         outpaint_mask = _build_inpaint_mask_for(auto_outpaint_range, '')
         sample = _run_sample(ref_motion, 0, outpaint_mask)
     elif user_inpaint_active:
-        user_mask = _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg, warn_remap=True)
+        user_mask = _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg)
         sample = _run_sample(ref_motion, skip_timesteps, user_mask)
     else:
         # Plain img2img (reference present) or plain generation (ref_motion None).
@@ -859,15 +885,12 @@ def main(args=None, cond_dict=None, runtime=None):
         cond_dict[object_type]['joints_names'],
     ))
     preview_options = _bvh_preview_options(args)
-    # Inpaint Y-anchor: parse user --inpaint_frames into contiguous spans
-    # (user-frame indexing, already aligned with the post-trim motion_np
-    # frame axis). The correction is applied per joint via vel_y
-    # integration with dual-end ramp anchoring.
-    inpaint_y_spans = None
-    if user_inpaint_active and inpaint_frames_arg:
-        inpaint_y_spans = _contiguous_frame_runs(
-            _parse_frame_ranges(inpaint_frames_arg, target_output_frames)
-        )
+    # Inpaint Y-anchor spans, applied per joint via vel_y integration with
+    # dual-end ramp anchoring once the motion is back in output frames.
+    inpaint_y_spans = (
+        inpaint_y_anchor_spans(inpaint_frames_arg, target_output_frames)
+        if user_inpaint_active else None
+    )
     export_tasks = []
     mark_canonical_cond_entry(cond_dict[object_type])
     for sample_idx, motion in enumerate(sample):

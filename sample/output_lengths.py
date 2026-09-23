@@ -3,11 +3,13 @@
 The model samples a fixed native window (the checkpoint's ``num_frames``); the
 requested output length M only sets the ``resample_speed`` condition and the
 final temporal resample of the window. These helpers pick M (explicit flag,
-reference length, ``--action_label`` training prior, native window) and apply
-the window -> output resample with the periodic/open convention ``--loop``
-dictates.
+reference length, ``--action_label`` training prior, native window), fit a
+reference to it as the one-shot clip it is, and apply the window -> output
+resample with the periodic/open convention ``--loop`` dictates.
 """
 import sys
+
+import numpy as np
 
 from data_loaders.truebones.data.dataset import resample_motion_features
 from data_loaders.truebones.truebones_utils.animation_utils import detect_loop_from_features
@@ -157,6 +159,39 @@ def resolve_loop_condition(
     return False
 
 
+def fit_reference_to_output(reference_features, requested_frames):
+    """The reference as the window will be filled from it, for an output of M
+    frames.  Returns ``(features, outpaint_range, note)``.
+
+    The reference is a ONE-SHOT clip whatever the loop condition says: it covers
+    exactly the R frames it holds, so R against M is a coverage question.  R > M
+    crops the tail off; R < M leaves ``[R, M)`` with no reference behind it and
+    the caller outpaints that span from noise (``outpaint_range`` names those
+    frames).
+
+    ``--loop`` is a statement about the WINDOW, not about the reference.  It
+    reaches the model as ``is_loop`` -- its circular phase table, the wrap loss
+    it trained under -- and it decides how the sampled window is exported
+    (``_resample_window_to_output``).  Closing the cycle is then the model's own
+    job, and appended frames are the room it has to do it in.  Nothing here
+    reads the reference as a period.
+    """
+    R = int(reference_features.shape[0])
+    M = int(requested_frames)
+    if R > M:
+        return reference_features[:M], None, (
+            f'  Reference cropped: R={R} > M={M} -> using first {M} frames'
+        )
+    if R < M:
+        pad = np.repeat(reference_features[-1:], M - R, axis=0)
+        return (
+            np.concatenate([reference_features, pad], axis=0),
+            f'{R}-{M - 1}',
+            f'  Reference outpaint: R={R} < M={M} -> appended frames [{R}, {M - 1}]',
+        )
+    return reference_features, None, None
+
+
 def _finalize_output_lengths(requested_frames, min_length, internal_num_frames):
     """Validate the requested output frame count M and derive the resample_speed
     conditioning value. Returns ``(requested_output_frames, target_output_frames,
@@ -296,10 +331,14 @@ def _resample_window_to_output(motion_np, target_output_frames, output_frame_cou
     the exported clip's wrap step at 1 source frame against ``(T-1)/(M-1)``
     inside: a stall at every seam, i.e. a ``--loop`` run that is not a loop.
 
-    The reference bundle (``_prepare_img2img_reference_bundle``) fills the
-    window with the same mapping in the other direction, so the round trip is
-    the identity and the frames a clamp or ``--inpaint_frames`` names are the
-    reference poses they name.
+    The reference goes in the other way as a one-shot clip
+    (``_prepare_img2img_reference_bundle``, endpoint resampling), so the two
+    directions are not inverse once ``M != T``: a clamped reference pose comes
+    out up to ``|M/T - 1|`` output frames from the frame it went in at (1 frame
+    at the ``M = MAX_SOURCE_FRAMES_MULT * T`` ceiling, under one below it). An
+    inpaint mask is therefore built over the union of both preimages
+    (``_map_frame_ranges_to_internal``), and an inpaint holding both clip ends
+    forces the export open so the clamped region is not resampled at all.
     """
     target_output_frames = int(target_output_frames)
     if target_output_frames == int(output_frame_count):

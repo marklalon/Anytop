@@ -6,7 +6,6 @@ import pytest
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_LABEL_SLOTS,
     SLOT_DIRECTION,
-    SLOT_HANDS,
     HEAD_SLOT_PRIMARY_WEIGHT,
     SLOT_HEAD,
     SLOT_MODIFIER,
@@ -30,7 +29,6 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
 from data_loaders.truebones.truebones_utils.motion_labels import (
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
-    HANDS_VOCAB,
     SYNTHETIC_CODE_VOCAB,
     T5_ENCODED_VOCAB,
     vocab_t5_text,
@@ -47,19 +45,17 @@ def test_slot_source_rank_covers_the_full_domain_and_projection_width():
     assert report["fits_projection"]
     # The slots partition the vocabulary -- a head word is a head source and
     # nothing else, however late in the label it is spelled -- so the ranks add
-    # to the vocabulary size. The hands slot has two members since hand0 was
-    # retired (empty hands is the zero row, not a vector).
-    assert report["total_rank"] == 104
+    # to the vocabulary size.
+    assert report["total_rank"] == 102
     assert {name: item["rank"] for name, item in report["slots"].items()} == {
         "head": 32,
         "direction": 6,
         "modifier": 64,
-        "hands": 2,
     }
     assert sum(report["slots"][name]["rank"] for name in report["slots"]) == len(
         CONTROLLED_VOCAB
     )
-    assert not slot_source_rank_report(table, latent_dim=103)["fits_projection"]
+    assert not slot_source_rank_report(table, latent_dim=101)["fits_projection"]
 
 
 def test_slot_assignment_carries_ids_masks_and_slots_only():
@@ -72,8 +68,8 @@ def test_slot_assignment_carries_ids_masks_and_slots_only():
     assert slots["slot_ids"] == (SLOT_HEAD, SLOT_HEAD)
     assert slot_member_weights(slots["slot_ids"]) == (HEAD_SLOT_PRIMARY_WEIGHT, 1.0)
     assert action_label_slots(("attack", "idle"))["slot_ids"] == (SLOT_HEAD, SLOT_HEAD)
-    assert action_label_slots(("run", "turn", "left", "fast", "hand1"))["slot_ids"] == (
-        SLOT_HEAD, SLOT_HEAD, SLOT_DIRECTION, SLOT_MODIFIER, SLOT_HANDS,
+    assert action_label_slots(("run", "turn", "left", "fast"))["slot_ids"] == (
+        SLOT_HEAD, SLOT_HEAD, SLOT_DIRECTION, SLOT_MODIFIER,
     )
 
 
@@ -88,31 +84,23 @@ def _channels(tokens, table):
 
 
 def test_slot_ids_partition_the_label_by_slot():
-    slots = action_label_slots(("walk", "forward", "fast", "hand1"))
-    assert slots["slot_ids"] == (SLOT_HEAD, SLOT_DIRECTION, SLOT_MODIFIER, SLOT_HANDS)
-    assert ACTION_LABEL_SLOTS == ("head", "direction", "modifier", "hands")
+    slots = action_label_slots(("walk", "forward", "fast"))
+    assert slots["slot_ids"] == (SLOT_HEAD, SLOT_DIRECTION, SLOT_MODIFIER)
+    assert ACTION_LABEL_SLOTS == ("head", "direction", "modifier")
 
 
-def test_hands_axis_admits_one_member():
-    with pytest.raises(ValueError, match="hand-state words"):
-        action_label_slots(("idle", "hand1", "hand2"))
+def test_hand_state_is_neither_a_slot_nor_a_token():
+    """Hand occupancy is not part of the condition.
 
-
-def test_hands_channel_is_the_token_vector_and_leaves_the_modifier_channel_alone():
-    """The reason the axis has its own channel: annotating hand state on nearly
-    every clip of a species must not dilute that species' real modifiers."""
-    table = _word_table()
-    bare, bare_present = _channels(("attack", "slash"), table)
-    armed, armed_present = _channels(("attack", "slash", "hand2"), table)
-    assert np.array_equal(bare[SLOT_MODIFIER], armed[SLOT_MODIFIER])
-    assert np.array_equal(bare[SLOT_HEAD], armed[SLOT_HEAD])
-    assert not bare_present[SLOT_HANDS] and armed_present[SLOT_HANDS]
-    hand2 = table[CONTROLLED_VOCAB.index("hand2")]
-    assert np.allclose(armed[SLOT_HANDS], hand2 / np.linalg.norm(hand2))
-    # Two exclusive members plus the zero row for empty hands, so the channel's
-    # domain is exactly three points.
-    assert all(word in CONTROLLED_VOCAB for word in HANDS_VOCAB)
-    assert "hand0" not in CONTROLLED_VOCAB
+    An armed and an unarmed clip of the same strike are ONE label, so there is
+    no channel for a hand state and no token to feed one -- a label naming one
+    is a hard error rather than a silently different condition.
+    """
+    assert "hands" not in ACTION_LABEL_SLOTS
+    for hand_word in ("hand0", "hand1", "hand2"):
+        assert hand_word not in CONTROLLED_VOCAB
+        with pytest.raises(ValueError, match="unknown action-label token"):
+            action_label_slots(("attack", "slash", hand_word))
 
 
 def test_head_and_direction_channels_ignore_added_modifiers():
@@ -125,14 +113,12 @@ def test_head_and_direction_channels_ignore_added_modifiers():
     table = _word_table()
     short, short_present = _channels(("walk", "forward"), table)
     long, long_present = _channels(
-        ("walk", "forward", "fast", "bow", "shield", "hand2"), table
+        ("walk", "forward", "fast", "bow", "shield"), table
     )
     assert np.array_equal(short[SLOT_HEAD], long[SLOT_HEAD])
     assert np.array_equal(short[SLOT_DIRECTION], long[SLOT_DIRECTION])
     assert not short_present[SLOT_MODIFIER] and long_present[SLOT_MODIFIER]
-    assert not short_present[SLOT_HANDS] and long_present[SLOT_HANDS]
     assert np.array_equal(short[SLOT_MODIFIER], np.zeros(table.shape[1]))
-    assert np.array_equal(short[SLOT_HANDS], np.zeros(table.shape[1]))
 
 
 def test_absent_slot_does_not_renormalise_the_others():
@@ -245,7 +231,8 @@ def test_conditioning_contract_carries_no_role_material():
     # 4: the first head word is the head slot, later head words are modifiers.
     # 5: hand0 retired (an empty hands slot is empty hands), direction dropout.
     # 6: later head words rejoined the head slot, weighted below the first.
-    assert payload["parser_contract_version"] == 6
+    # 7: the hands axis retired outright -- no hand words, no fourth slot.
+    assert payload["parser_contract_version"] == 7
 
 
 def test_embedding_change_propagates_into_conditioning_fingerprint():
@@ -287,12 +274,12 @@ def test_the_code_rows_are_orthonormal_within_every_slot_they_feed():
     """The whole point of the code: no member correlates with another.
 
     T5 put every one of these next to its own antonym (left/right +0.461,
-    hand1/hand2 +0.529, against a vocabulary-wide |cos| p95 of 0.19), which is
-    the correlation the first Linear had to spend capacity undoing.
+    forward/backward +0.384, against a vocabulary-wide |cos| p95 of 0.19),
+    which is the correlation the first Linear had to spend capacity undoing.
     """
     table = scatter_synthetic_code_rows(_encoded_rows())
     index = {word: position for position, word in enumerate(CONTROLLED_VOCAB)}
-    for axis_words in (DIRECTION_VOCAB, HANDS_VOCAB):
+    for axis_words in (DIRECTION_VOCAB,):
         block = table[[index[word] for word in axis_words]]
         gram = block @ block.T
         assert np.allclose(gram, np.eye(len(axis_words)), atol=1e-6), axis_words
@@ -301,7 +288,7 @@ def test_the_code_rows_are_orthonormal_within_every_slot_they_feed():
 def test_the_code_blocks_are_exactly_conditioned():
     """Full rank is not enough -- these blocks are perfectly conditioned."""
     report = slot_source_rank_report(scatter_synthetic_code_rows(_encoded_rows()), 256)
-    for name in ("direction", "hands"):
+    for name in ("direction",):
         assert report["slots"][name]["full_rank"]
         assert report["slots"][name]["relative_min_singular"] == pytest.approx(1.0)
 

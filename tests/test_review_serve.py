@@ -224,3 +224,116 @@ def test_labels_api_can_filter_by_field_and_whole_word(tmp_path):
     handler.path = "/api/labels?ds=sample&q=idle&field=label&whole_word=1"
     _, payload = handler.do_GET()
     assert [row["clip"] for row in payload["rows"]] == ["Bear_Idle"]
+
+
+def _mark_pending_handler(tmp_path):
+    labels = tmp_path / "action_labels.jsonl"
+    rows = [
+        {"clip": "Bear_Walk.npy", "action_group": "locomotion", "action_label": "walk"},
+        {"clip": "Bear_Idle.npy", "action_group": "stationary", "action_label": "idle",
+         "pending_delete": True},
+    ]
+    labels.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    dataset = {
+        "id": "sample", "name": "sample", "processed": str(tmp_path),
+        "labels": labels, "gif_dir": tmp_path / "review" / "gif",
+    }
+    handler = object.__new__(review.Handler)
+    handler.datasets = [dataset]
+    handler.stores = {"sample": review.LabelStore(labels)}
+    handler._send_json = lambda status, payload: (status, payload)
+    return handler, labels
+
+
+def test_mark_pending_marks_an_explicit_filtered_subset_once(tmp_path):
+    handler, labels = _mark_pending_handler(tmp_path)
+
+    status, payload = handler._mark_pending({
+        "dataset": "sample",
+        "clips": ["Bear_Walk.npy", "Bear_Walk.npy", "Bear_Idle.npy"],
+    })
+
+    assert status == 200
+    assert payload == {
+        "dataset": "sample", "requested": 2, "marked": 1, "already_marked": 1,
+    }
+    saved = [json.loads(line) for line in labels.read_text(encoding="utf-8").splitlines()]
+    assert all(row["pending_delete"] is True for row in saved)
+
+
+def test_mark_pending_rejects_a_stale_subset_atomically(tmp_path):
+    handler, labels = _mark_pending_handler(tmp_path)
+    original_labels = labels.read_bytes()
+
+    status, payload = handler._mark_pending({
+        "dataset": "sample",
+        "clips": ["Bear_Walk.npy", "Already_Gone.npy"],
+    })
+
+    assert status == 409
+    assert "刷新后重试" in payload["error"]
+    assert labels.read_bytes() == original_labels
+
+
+def test_prune_stale_species_tags_uses_metadata_object_type_and_preserves_rows(tmp_path):
+    tags = tmp_path / "species_tags.jsonl"
+    cat_line = '{"species": "Big_Cat", "species_tags": ["Quadruped", "Large"]}'
+    tags.write_bytes((
+        cat_line + "\r\n" +
+        '{"species": "Dog", "species_tags": ["Quadruped", "Medium"]}\r\n'
+    ).encode("utf-8"))
+    motions = {
+        # The filename deliberately does not contain the multi-token species;
+        # object_type, not filename guessing, is the ownership source of truth.
+        "take_001.npy": {"object_type": "namespace/Big_Cat"},
+    }
+
+    removed = review._prune_stale_species_tags(tags, motions)
+
+    assert removed == ["Dog"]
+    assert tags.read_bytes() == (cat_line + "\r\n").encode("utf-8")
+
+
+def test_clean_removes_species_tags_after_its_last_motion_is_deleted(tmp_path):
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    labels = processed / "action_labels.jsonl"
+    labels.write_text("".join(json.dumps(row) + "\n" for row in [
+        {"clip": "Cat_Walk.npy", "action_group": "locomotion",
+         "action_label": "walk", "pending_delete": True},
+        {"clip": "Dog_Idle.npy", "action_group": "stationary", "action_label": "idle"},
+    ]), encoding="utf-8")
+    metadata = processed / "motion_metadata.json"
+    metadata.write_text(json.dumps({
+        "schema_version": review.MOTION_METADATA_SCHEMA_VERSION,
+        "total_clips": 2,
+        "motions": {
+            "Cat_Walk.npy": {"object_type": "Cat"},
+            "Dog_Idle.npy": {"object_type": "Dog"},
+        },
+    }), encoding="utf-8")
+    species_tags = processed / "species_tags.jsonl"
+    species_tags.write_text("".join(json.dumps(row) + "\n" for row in [
+        {"species": "Cat", "species_tags": ["Quadruped", "Small"]},
+        {"species": "Dog", "species_tags": ["Quadruped", "Medium"]},
+        {"species": "Already_Stale", "species_tags": ["Biped", "Medium"]},
+    ]), encoding="utf-8")
+    dataset = {
+        "id": "sample", "name": "sample", "processed": str(processed),
+        "labels": labels, "metadata": metadata, "species_tags": species_tags,
+        "gif_dir": processed / "review" / "gif",
+    }
+    handler = object.__new__(review.Handler)
+    handler.datasets = [dataset]
+    handler.stores = {"sample": review.LabelStore(labels)}
+    handler._send_json = lambda status, payload: (status, payload)
+
+    status, payload = handler._clean({"dataset": "sample"})
+
+    assert status == 200
+    assert payload["removed"] == 1
+    assert any("Cat, Already_Stale" in note for note in payload["notes"])
+    saved_tags = [json.loads(line) for line in species_tags.read_text(encoding="utf-8").splitlines()]
+    assert [row["species"] for row in saved_tags] == ["Dog"]

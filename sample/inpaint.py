@@ -7,9 +7,43 @@ list the cond carries (``_resolve_inpaint_joint_indices``). After sampling,
 the regenerated region is put back on the reference's vertical frame, either
 by re-integrating vel-Y across a frame span or by re-seating a freed joint
 subtree at its clamped boundary.
+
+Where a range sits decides what ``--loop`` may do (``inpaint_span_role``, which
+``resolve_inpaint_policy`` applies to the WINDOW span the range maps onto, not
+to the range as written). A span keeping both window ends clamped is INTERIOR:
+the run is exported open whatever the loop verdict was, since a periodic export
+resamples those clamped ends too and would hand back frames the reference never
+had. A span reaching window frame 0 or the last window frame is a closure
+request and keeps the loop condition. A span covering every window frame over
+every joint is not an inpaint at all and ``resolve_inpaint_policy`` rejects it.
 """
+import sys
+
 import numpy as np
 import torch
+
+
+def _iter_frame_range_bounds(spec, n_frames):
+    """Yield inclusive ``(lo, hi)`` pairs from '40-90' / '0-20,150-180' / '30',
+    normalized so ``lo <= hi`` and clipped to ``[0, n_frames - 1]``. Chunks
+    falling entirely outside the clip are skipped.
+    """
+    for chunk in spec.split(','):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if '-' in chunk:
+            lo_str, hi_str = chunk.split('-', 1)
+            lo, hi = int(lo_str), int(hi_str)
+        else:
+            lo = hi = int(chunk)
+        if lo > hi:
+            lo, hi = hi, lo
+        lo = max(0, lo)
+        hi = min(int(n_frames) - 1, hi)
+        if lo > hi:
+            continue
+        yield lo, hi
 
 
 def _parse_frame_ranges(spec, n_frames):
@@ -19,19 +53,7 @@ def _parse_frame_ranges(spec, n_frames):
     if not spec:
         return set(range(n_frames))
     frames = set()
-    for chunk in spec.split(','):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if '-' in chunk:
-            lo_str, hi_str = chunk.split('-', 1)
-            lo, hi = int(lo_str), int(hi_str)
-        else:
-            lo = hi = int(chunk)
-        if lo > hi:
-            lo, hi = hi, lo
-        lo = max(0, lo)
-        hi = min(n_frames - 1, hi)
+    for lo, hi in _iter_frame_range_bounds(spec, n_frames):
         frames.update(range(lo, hi + 1))
     if not frames:
         raise ValueError(
@@ -41,14 +63,169 @@ def _parse_frame_ranges(spec, n_frames):
     return frames
 
 
-def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap=False, periodic=False):
+def inpaint_span_role(spec, output_frames):
+    """Where a range given in OUTPUT frames sits relative to the clip's ends.
+
+    ``'full'``: every output frame. ``'boundary'``: touches frame 0 or frame
+    ``output_frames - 1``, so one end of the clip is regenerated and ``--loop``
+    is a closure request the model can act on. ``'interior'``: neither end, so
+    both stay clamped to the reference and the loop verdict has nothing to
+    decide. An empty spec means every frame.
+    """
+    output_frames = int(output_frames)
+    frames = _parse_frame_ranges(spec, output_frames)
+    if len(frames) >= output_frames:
+        return 'full'
+    if 0 in frames or output_frames - 1 in frames:
+        return 'boundary'
+    return 'interior'
+
+
+_FULL_COVERAGE_INPAINT_ERROR = (
+    "ERROR: the inpaint mask would free every joint on every window frame, "
+    "which is not an inpaint: nothing is left clamped, the reference is "
+    "discarded entirely, and the model is handed an all-ones reliability map "
+    "(cross_limb_unreliable_mask) far outside the spans it trained on.\n"
+    "  To regenerate the whole clip FROM the reference: drop the inpaint flags "
+    "and pass --skip_timesteps (higher = more faithful to the reference).\n"
+    "  To regenerate the whole clip ignoring the reference: drop "
+    "--reference_motion as well.\n"
+    "  To regenerate part of it: name fewer frames in --inpaint_frames, or "
+    "fewer joints in --inpaint_joints."
+)
+
+
+def check_full_coverage_inpaint_early(frames_arg, joints_arg, num_frames):
+    """Reject a whole-mask inpaint before the model is loaded, when it can be
+    seen that early: an explicit ``--num_frames`` and no ``--inpaint_joints`` to
+    narrow the joint axis. Everything else waits for
+    :func:`resolve_inpaint_policy`, which sees the resolved length, the resolved
+    joint set and the mapped window frames.
+    """
+    if joints_arg or not frames_arg:
+        return
+    if int(num_frames or 0) <= 0:
+        return
+    if inpaint_span_role(frames_arg, int(num_frames)) == 'full':
+        sys.exit(_FULL_COVERAGE_INPAINT_ERROR)
+
+
+def resolve_inpaint_policy(
+    cond_entry,
+    *,
+    frames_arg,
+    joints_arg,
+    include_subtree,
+    outpaint_range,
+    user_inpaint_active,
+    output_frames,
+    window_frames,
+    loop,
+):
+    """Settle what the requested inpaint means for the run, and return the loop
+    condition it is sampled and exported under.
+
+    Both judgements are made on the WINDOW frames the mask will actually free,
+    never on the requested output range: the floor/ceil widening of the M -> T
+    remap stretches that range, and at M > T it can stretch one naming neither
+    clip end into the whole window ('1-118' of M=120 covers all 60 window
+    frames of a T=60 checkpoint).
+
+    ``--loop`` is a statement about the WINDOW and it reaches the export as a
+    periodic resample of the WHOLE clip, clamped frames included. An inpaint
+    that holds both window ends therefore has no use for it: the model only
+    regenerates interior frames, and a periodic export would resample the
+    clamped head and tail to window times the reference was never placed at
+    (|T-M|/M window frames of drift at the tail, and for M > T the last output
+    frame blends the reference's OPENING pose). Such a run is exported open,
+    which also collapses the mask mapping and the export mapping onto the same
+    one: the requested frames are then exactly the frames regenerated.
+
+    The verdict is taken against the open mapping, which is the one a forced-off
+    loop then uses; ``--loop`` only ever widens the span, so a range reaching a
+    window end under the open mapping reaches it either way and the two agree.
+
+    A mask that frees every joint on every window frame leaves no known region,
+    so there is nothing to inpaint against and the run is rejected -- on the
+    resolved joint set, so a subtree covering the whole skeleton is caught too.
+    That joint set is resolved only once the frame axis is already known to
+    cover the window: a span that holds an end cannot free everything whatever
+    the joints are, and the caller resolves them again for the mask itself.
+    """
+    def window_span_role(spec, spec_loop):
+        return inpaint_span_role(
+            _map_frame_ranges_to_internal(
+                spec, output_frames, window_frames, loop=bool(spec_loop),
+            ),
+            window_frames,
+        )
+
+    specs = [
+        spec for spec in (
+            outpaint_range,
+            frames_arg if user_inpaint_active else None,
+        ) if spec is not None
+    ]
+    if specs and loop and all(
+        window_span_role(spec, False) == 'interior' for spec in specs
+    ):
+        print(
+            f'  loop: forced off -- the inpaint range keeps both clip ends '
+            f'clamped to the reference (window frames 0 and {window_frames - 1}), '
+            f'so there is no closure to make and the clamped ends are exported '
+            f'unresampled'
+        )
+        loop = False
+
+    if (
+        user_inpaint_active
+        and window_span_role(frames_arg, loop) == 'full'
+    ):
+        freed_joints, real_joint_count = _resolve_inpaint_joint_indices(
+            cond_entry, joints_arg, include_subtree,
+        )
+        if len(freed_joints) >= real_joint_count:
+            sys.exit(_FULL_COVERAGE_INPAINT_ERROR)
+    return loop
+
+
+def inpaint_y_anchor_spans(frames_arg, output_frames):
+    """Contiguous ``[(a, b)]`` runs of the user's ``--inpaint_frames``, in OUTPUT
+    frames -- already the axis ``_reanchor_inpaint_root_y_via_velocity`` walks,
+    since it runs on the exported motion. Empty when no range was given.
+    """
+    if not frames_arg:
+        return None
+    return _contiguous_frame_runs(_parse_frame_ranges(frames_arg, output_frames))
+
+
+def _map_frame_ranges_to_internal(spec, source_frames, target_frames, loop=False):
     """Map a frame range given in OUTPUT frames onto the sampler's window.
 
-    ``periodic`` picks the mapping the rest of the pipeline uses for a loop
-    window (``--loop``): output frame ``s`` is window time ``s*T/M``, the same
-    map ``_prepare_img2img_reference_bundle`` and ``_resample_window_to_output``
-    apply in the two directions, so a range names the reference poses it names.
-    Otherwise the window is an open clip and its frames span ``M-1`` steps.
+    Two mappings put content at an output frame, so the freed window span is the
+    UNION of both preimages:
+
+    * the reference fills the window end to end
+      (``_prepare_img2img_reference_bundle``), output frame ``s`` at window time
+      ``s*(T-1)/(M-1)``. Freeing that preimage releases the reference content --
+      and the appended pad of an outpaint range -- sitting under the request.
+    * the window is exported from window time ``s*T/M`` once ``--loop`` makes it
+      periodic (``_resample_window_to_output``). Freeing that preimage is what
+      makes the requested EXPORT frames regenerate instead of blending in a
+      neighbour that stayed clamped.
+
+    The two coincide when the export is open, so the union only widens a loop
+    run. Its wrap partner is deliberately left out: under ``is_loop`` the last
+    export frame straddles window ``T-1`` -> window ``0``, and window ``0`` is
+    the clamped opening pose the cycle closes onto -- it is freed when the
+    request names output frame 0, not because it names the last one.
+
+    One window frame feeds several export frames whenever ``M != T``, so freeing
+    a request's preimage necessarily touches its neighbours: a one-frame request
+    regenerates one or two output frames around it as well. That spill is
+    inherent to the resolution change and only ``M == T`` removes it, which is
+    not something a reference run should be asked to arrange, so it is not
+    reported -- the seam simply lands a frame or two outside the request.
     """
     if not spec or int(source_frames) == int(target_frames):
         return spec
@@ -58,64 +235,23 @@ def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap
         raise ValueError(
             f"Cannot map frame ranges with source_frames={source_frames}, target_frames={target_frames}"
         )
-    if periodic:
-        scale = float(target_frames) / float(source_frames)
-    else:
-        scale = float(target_frames - 1) / float(source_frames - 1) if source_frames > 1 else 0.0
+    scales = [
+        float(target_frames - 1) / float(source_frames - 1) if source_frames > 1 else 0.0
+    ]
+    if loop:
+        scales.append(float(target_frames) / float(source_frames))
     mapped_frames = set()
-    for chunk in spec.split(','):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if '-' in chunk:
-            lo_str, hi_str = chunk.split('-', 1)
-            lo, hi = int(lo_str), int(hi_str)
-        else:
-            lo = hi = int(chunk)
-        if lo > hi:
-            lo, hi = hi, lo
-        lo = max(0, lo)
-        hi = min(source_frames - 1, hi)
-        if lo > hi:
-            continue
-        start = max(0, min(target_frames - 1, int(np.floor(float(lo) * scale))))
-        end = max(0, min(target_frames - 1, int(np.ceil(float(hi) * scale))))
-        mapped_frames.update(range(start, end + 1))
+    for lo, hi in _iter_frame_range_bounds(spec, source_frames):
+        for scale in scales:
+            start = max(0, min(target_frames - 1, int(np.floor(float(lo) * scale))))
+            end = max(0, min(target_frames - 1, int(np.ceil(float(hi) * scale))))
+            mapped_frames.update(range(start, end + 1))
     if not mapped_frames:
         raise ValueError(
             f"--inpaint_frames '{spec}' selected no valid frames "
             f"(motion has {source_frames} frames, indices 0..{source_frames - 1})"
         )
-    internal_runs = _contiguous_frame_runs(mapped_frames)
-    internal_spec = ','.join(
-        f'{start}-{end}' if start != end else str(start)
-        for start, end in internal_runs
-    )
-
-    # Frame range remapped from visible to internal length; floor/ceil widening
-    # causes ~1-2 frame drift. To inpaint exact frames, set --num_frames to match the model's
-    # num_frames so visible == internal and no remapping happens.
-    if warn_remap:
-        inv_scale = 1.0 / scale if scale > 0.0 else 0.0
-        effective_runs = [
-            (
-                int(np.floor(float(start) * inv_scale)),
-                int(np.ceil(float(end) * inv_scale)),
-            )
-            for start, end in internal_runs
-        ]
-        effective_spec = ','.join(
-            f'{a}-{b}' if a != b else str(a) for a, b in effective_runs
-        )
-        print(
-            f'\033[33m  [WARN] --inpaint_frames remapped: requested visible frames '
-            f"'{spec}' (output length {source_frames}) -> internal frames "
-            f"'{internal_spec}' (sampler length {target_frames}). "
-            f'Effective regenerated visible region is ~{effective_spec}, not the '
-            f'exact frames requested (boundaries drift ~1-2 frames from floor/ceil '
-            f'widening and the {source_frames}->{target_frames} resolution change).\033[0m'
-        )
-    return internal_spec
+    return _frame_runs_to_spec(_contiguous_frame_runs(mapped_frames))
 
 
 def _contiguous_frame_runs(frame_set):
@@ -135,6 +271,13 @@ def _contiguous_frame_runs(frame_set):
         start = prev = f
     runs.append((start, prev))
     return runs
+
+
+def _frame_runs_to_spec(runs):
+    """Render ``[(start, end), ...]`` back as a '0-19,40' frame spec."""
+    return ','.join(
+        f'{start}-{end}' if start != end else str(start) for start, end in runs
+    )
 
 
 def _reanchor_inpaint_root_y_via_velocity(motion_np, spans):
@@ -279,6 +422,9 @@ def build_inpaint_mask(
     batch_size,
     max_joints,
     n_frames,
+    *,
+    output_frames=None,
+    loop=False,
 ):
     """Build the inpainting mask tensor [B, max_joints, 1, n_frames].
 
@@ -286,10 +432,18 @@ def build_inpaint_mask(
     Padding joints (index >= n_joints) stay 0.0. The regenerated region is
     selected-joints x selected-frames; everything else is held to the
     reference during sampling.
+
+    ``output_frames`` says the frame spec is written in OUTPUT frames and has to
+    be mapped onto the window first (``_map_frame_ranges_to_internal``, which
+    ``loop`` steers); without it the spec is already in window frames.
     """
     joint_indices, n_joints = _resolve_inpaint_joint_indices(
         cond_entry, inpaint_joints_arg, inpaint_include_subtree
     )
+    if output_frames is not None:
+        inpaint_frames_arg = _map_frame_ranges_to_internal(
+            inpaint_frames_arg, output_frames, n_frames, loop=loop,
+        )
     frame_indices = _parse_frame_ranges(inpaint_frames_arg, n_frames)
     if not joint_indices:
         raise ValueError("--inpaint_joints resolved to an empty joint set")

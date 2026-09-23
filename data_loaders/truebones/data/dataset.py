@@ -633,10 +633,10 @@ def _list_motion_files(motion_dir: str) -> list[str]:
 
 def action_label_split_bucket(motion_metadata, clip_name: str = "?"):
     """The head-word bucket a clip's label falls in: its HEAD_VOCAB words in
-    written order (``attack, jump, spin, right, hand1`` -> ``("attack",
+    written order (``attack, jump, spin, right`` -> ``("attack",
     "jump")``).
 
-    The key the val gate counts on.  Modifier, direction and hands words are
+    The key the val gate counts on.  Modifier and direction words are
     left out: they refine how the head is performed, and counting them would
     fragment one action into buckets too small to ever clear the gate.  A clip
     with no label has no bucket (``None``) and is never val-eligible.

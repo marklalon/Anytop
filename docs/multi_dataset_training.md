@@ -238,6 +238,21 @@ qualified 之后 `truebones/zoo/Horse` 与 `truebones/zoo_upgrade/Horse` 是两�
 - `worker_initargs()` 改为多源形式
 - `using_dataset_dir()` 保留（单源 = N=1），预处理链路不受影响
 
+由 `get_opt` 二选一，`inference` 参数就是 §0 两个契约的分界：
+
+| | 标签来源 | `dataset_root` 解析 | 是否碰数据集目录 |
+|---|---|---|---|
+| `inference=False`（训练/预处理/数据集工具） | 各源 `species_tags.jsonl`，缺 sidecar 时退回 cond 烘焙值 | `resolve_anytop_path`：相对路径先试 cwd，存在则用 cwd，否则 Anytop root | 是 |
+| `inference=True`（`generate.py`、`server/`） | cond 烘焙的 `species_tags`，**始终** | `resolve_anytop_path_lexical`：相对路径一律按 Anytop root，纯字符串 | 否，`.is_file()` 探测和路径 stat 都不做 |
+
+两处都要断，因为它们是两个不同的泄漏：
+
+- **sidecar 优先级**：只要留着「目录在就优先读目录」，训练后重新打标的数据集就会悄悄用 checkpoint 没见过的 tags 去描述它的物种。
+- **路径解析**：cond 里存的 `dataset_root` 正是可移植的相对形式（`dataset/truebones/zoo/truebones_processed`），而 `_resolve_project_path` 是「cwd 下存在就用 cwd」——它不只是 stat 了数据集目录，更让 `opt.sources` 的取值取决于**从哪个目录启动**。
+
+两者都是本机跑得好好的、换台机器才暴露的那类。注意 `os.stat` 在 CPython 里不是审计事件，所以 `sys.addaudithook` 抓不到第二种泄漏；回归测试因此用 `os` 层 monkeypatch，并自带负对照。见
+[tests/test_get_opt_inference_isolation.py](../tests/test_get_opt_inference_isolation.py)。
+
 ### 5.6 训练启动
 
 `run_training()` 中：

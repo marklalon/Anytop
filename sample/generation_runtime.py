@@ -174,10 +174,16 @@ def prepare_generation_runtime(args=None, cond_dict=None):
         args = generate_args()
 
     dist_util.setup_dist(args.device)
-    # cond.npy is the whole inference contract, so it is resolved before opt:
-    # get_opt derives the dataset sources from it and configures dataset_tags,
-    # falling back to the cond's baked species tags when no dataset dir exists.
-    opt = get_opt(args.device, _resolve_generation_cond_path(args), cond_dict=cond_dict)
+    # cond.npy is the whole inference contract, so it is resolved before opt.
+    # ``inference=True``: dataset_tags comes from the cond's own baked species
+    # tags and no dataset directory is touched, so a checkpoint generates the
+    # same motion on a machine that has never held the training data.
+    opt = get_opt(
+        args.device,
+        _resolve_generation_cond_path(args),
+        cond_dict=cond_dict,
+        inference=True,
+    )
     cond_dict, actual_cond_file = _load_generation_cond(args, opt, cond_dict)
     _raise_opt_max_joints_for_cond(opt, cond_dict)
 

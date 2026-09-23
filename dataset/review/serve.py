@@ -41,7 +41,7 @@ step without a re-preprocess; a clip not built yet simply takes the flag
 when it is.
 
 ``autofill`` marks a row whose label a prefill tool wrote
-(``tools/prefill_direction_words.py``, ``prefill_hand_words.py``): a proposal
+(``tools/prefill_direction_words.py``): a proposal
 measured from the motion, with ``"reviewed": false`` beside it. The card shows
 it as a 自动补标 badge and the header filters on it, so a review pass can take
 the tool's proposals as one batch. Typing a different label clears the mark --
@@ -57,14 +57,18 @@ modifiers are sorted by the shared conditioning contract.  Existing valid labels
 canonicalization when a dataset is loaded.  Existing invalid labels are kept
 verbatim and exposed to the page with an error so they can be repaired there.
 
+The page can mark every row matched by its current filters in one request; this
+only writes ``pending_delete`` and does not touch any source or processed file.
 The header's "clean" button turns those marks into a real removal: every
 ``pending_delete`` row of the active dataset has its source file (looked up in
 ``motion_metadata.json``) *moved* -- never unlinked -- under ``--trash``
 (default ``E:\\Dataset\\Temp``), its processed ``motions/`` NPY and ``bvhs/`` BVH
 deleted outright, its review GIF deleted, its row dropped from
 ``action_labels.jsonl``, and its entry dropped from ``motion_metadata.json``
-(``total_clips`` updated) -- so the dataset is loadable immediately, not just
-after the next preprocess. Every source move is appended to
+(``total_clips`` updated). If that was a species' last motion, its stale row is
+also dropped from ``species_tags.jsonl``. The same stale-species check runs for
+every configured dataset when this server starts. This keeps the dataset
+loadable immediately, not just after the next preprocess. Every source move is appended to
 ``<trash>/soft_deleted.jsonl`` so it can be traced back and undone by hand.
 
     python serve.py [--port 8765] [--datasets ../datasets.jsonl] [--no-browser]
@@ -323,6 +327,75 @@ def _write_metadata(path, payload):
     os.replace(tmp, path)
 
 
+def _prune_stale_species_tags(path, motions):
+    """Drop species-tag rows that own no remaining motion metadata entries.
+
+    ``motion_metadata.json`` is authoritative for clip -> species membership;
+    guessing from a clip filename would truncate multi-token names such as
+    ``FEP_MagmaDemon``. The sidecar's original row text, order, newline style,
+    and final-newline convention are preserved for every surviving row.
+    Returns removed species names in their sidecar order.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return []
+    if not isinstance(motions, dict):
+        raise ValueError("motion_metadata.json 缺少 motions 字段")
+
+    active = set()
+    missing_object_type = []
+    for clip, entry in motions.items():
+        species = str((entry or {}).get("object_type") or "").strip() if isinstance(entry, dict) else ""
+        if not species:
+            missing_object_type.append(clip)
+            continue
+        # Sidecars use bare names; tolerate a canonical namespace/name value in
+        # metadata without letting it make a live row look stale.
+        active.add(species.rsplit("/", 1)[-1].casefold())
+    if missing_object_type:
+        sample = ", ".join(str(name) for name in missing_object_type[:3])
+        raise ValueError(f"motion metadata 缺少 object_type：{sample}")
+
+    raw = path.read_bytes()
+    newline = "\r\n" if b"\r\n" in raw else "\n"
+    had_final_newline = raw.endswith((b"\n", b"\r"))
+    kept_lines = []
+    removed = []
+    for line_number, line in enumerate(raw.decode("utf-8").splitlines(), start=1):
+        if not line.strip():
+            kept_lines.append(line)
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError as exc:
+            raise ValueError(f"{path.name} line {line_number}: {exc}") from exc
+        species = str(row.get("species") or "").strip() if isinstance(row, dict) else ""
+        if not species:
+            raise ValueError(f"{path.name} line {line_number}: missing species")
+        if species.rsplit("/", 1)[-1].casefold() in active:
+            kept_lines.append(line)
+        else:
+            removed.append(species)
+
+    if removed:
+        text = newline.join(kept_lines)
+        if kept_lines and had_final_newline:
+            text += newline
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8", newline="")
+        os.replace(tmp, path)
+    return removed
+
+
+def _prune_dataset_species_tags(ds):
+    """Load one dataset's metadata and remove stale species-tag rows."""
+    payload = json.loads(ds["metadata"].read_text(encoding="utf-8"))
+    motions = payload.get("motions")
+    if not isinstance(motions, dict):
+        raise ValueError(f"{ds['metadata']} 缺少 motions 字段")
+    return _prune_stale_species_tags(ds["species_tags"], motions)
+
+
 def discover_datasets(datasets_file):
     """Read datasets.jsonl into dataset descriptors (labels file must exist)."""
     out = []
@@ -353,6 +426,7 @@ def discover_datasets(datasets_file):
             "labels": labels,
             "gif_dir": gif_dir,
             "metadata": processed / "motion_metadata.json",
+            "species_tags": processed / "species_tags.jsonl",
         })
     return out
 
@@ -471,8 +545,8 @@ class LabelStore:
                     raise ActionLabelError("action_label must not be empty")
                 if action_label != row.get("action_label"):
                     # The flag says a prefill tool wrote the label that is on
-                    # the row (tools/prefill_direction_words.py,
-                    # prefill_hand_words.py). Typing a different one makes it
+                    # the row (tools/prefill_direction_words.py). Typing a
+                    # different one makes it
                     # a person's label, so the flag goes; signing the proposal
                     # off unchanged (reviewed) keeps it as provenance.
                     row.pop(AUTOFILL_KEY, None)
@@ -515,6 +589,29 @@ class LabelStore:
                 }
                 self._write()
             return removed
+
+    def mark_pending(self, clips):
+        """Set ``pending_delete`` on an explicit clip list in one rewrite.
+
+        All names are checked before any row is changed, which keeps this batch
+        operation atomic when the browser is showing a stale filtered view.
+        Returns the number of rows whose mark was newly added.
+        """
+        with self.lock:
+            self._reload_if_stale()
+            requested = list(dict.fromkeys(clips))
+            missing = [clip for clip in requested if clip not in self.index]
+            if missing:
+                raise KeyError(missing[0])
+            changed = 0
+            for clip in requested:
+                row = self.index[clip]
+                if not row.get("pending_delete"):
+                    row["pending_delete"] = True
+                    changed += 1
+            if changed:
+                self._write()
+            return changed
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -685,7 +782,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = urlparse(self.path).path
-        if route not in ("/api/update", "/api/clean"):
+        if route not in ("/api/update", "/api/mark-pending", "/api/clean"):
             return self._send_json(404, {"error": "not found"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -694,6 +791,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"error": f"bad request: {exc}"})
         if route == "/api/clean":
             return self._clean(payload)
+        if route == "/api/mark-pending":
+            return self._mark_pending(payload)
 
         ds, store = self._store_and_dataset(payload.get("dataset") or payload.get("ds"))
         if ds is None:
@@ -750,6 +849,34 @@ class Handler(BaseHTTPRequestHandler):
         out["bvhview"] = _bvhview_href(ds, out["clip"])
         return self._send_json(200, {"row": out, "dataset": ds["id"], "notes": notes})
 
+    def _mark_pending(self, payload):
+        """Mark the page's current filtered clip list for later cleanup."""
+        requested_ds = payload.get("dataset") or payload.get("ds")
+        if requested_ds and self._dataset(requested_ds) is None:
+            return self._send_json(404, {"error": f"unknown dataset: {requested_ds}"})
+        ds, store = self._store_and_dataset(requested_ds)
+        if ds is None:
+            return self._send_json(400, {"error": "no datasets configured"})
+        clips = payload.get("clips")
+        if (not isinstance(clips, list) or
+                any(not isinstance(clip, str) or not clip for clip in clips)):
+            return self._send_json(400, {"error": "clips must be a list of non-empty strings"})
+        unique_clips = list(dict.fromkeys(clips))
+        try:
+            marked = store.mark_pending(unique_clips)
+        except KeyError as exc:
+            return self._send_json(409, {
+                "error": f"筛选结果已过期，请刷新后重试；找不到 clip：{exc.args[0]}"
+            })
+        except OSError as exc:
+            return self._send_json(500, {"error": f"write failed: {exc}"})
+        return self._send_json(200, {
+            "dataset": ds["id"],
+            "requested": len(unique_clips),
+            "marked": marked,
+            "already_marked": len(unique_clips) - marked,
+        })
+
     @staticmethod
     def _sync_terminal_row(ds, clip, is_loop):
         """Rewrite ``motions/<clip>``'s terminal velocity row for ``is_loop``.
@@ -786,9 +913,10 @@ class Handler(BaseHTTPRequestHandler):
         ``bvhs/`` BVH outright (they are named by the clip's stem, so each is
         unique to that clip and needs no sharing check), delete its review GIF,
         drop its row from action_labels.jsonl (one rewrite for the whole batch),
-        and drop its entry from motion_metadata.json (``total_clips`` updated) --
-        so the dataset is loadable immediately, not just after the next
-        preprocess. A clip whose source is still shared with a clip that is
+        and drop its entry from motion_metadata.json (``total_clips`` updated).
+        A species with no remaining motion entries is also dropped from
+        species_tags.jsonl, so the dataset is loadable immediately, not just
+        after the next preprocess. A clip whose source is still shared with a clip that is
         staying is skipped with a reason and keeps its mark -- dropping the row
         while leaving the source in place would only resurrect the clip on the
         next preprocess. A clip whose source cannot be located (no
@@ -905,6 +1033,15 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as exc:
                 return self._send_json(500, {"error": f"写入 {ds['metadata']} 失败：{exc}"})
             result["metadata_clips"] = len(motions)
+            try:
+                removed_species = _prune_stale_species_tags(ds["species_tags"], motions)
+            except (OSError, ValueError) as exc:
+                result["notes"].append(f"清理 species_tags.jsonl 失败：{exc}")
+            else:
+                if removed_species:
+                    result["notes"].append(
+                        "species_tags.jsonl 移除无剩余动作的物种：" + ", ".join(removed_species)
+                    )
 
         try:
             result["removed"] = store.delete(result["cleaned"])
@@ -932,6 +1069,15 @@ def main():
         print(f"no datasets found in {args.datasets} -- check the manifest", file=os.sys.stderr)
         raise SystemExit(1)
     for d in Handler.datasets:
+        try:
+            removed_species = _prune_dataset_species_tags(d)
+        except (OSError, ValueError) as exc:
+            print(f"warning: {d['id']} stale species check failed: {exc}", file=os.sys.stderr)
+        else:
+            if removed_species:
+                print(
+                    f"  {d['id']}: removed stale species tags: " + ", ".join(removed_species)
+                )
         Handler.stores[d["id"]] = LabelStore(d["labels"])
 
     url = f"http://{args.host}:{args.port}/"
