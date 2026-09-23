@@ -53,13 +53,13 @@ from sample.generation_runtime import (
     prepare_generation_runtime,
 )
 from sample.inpaint import (
-    _contiguous_frame_runs,
-    _map_frame_ranges_to_internal,
-    _parse_frame_ranges,
     _reanchor_inpaint_root_y_via_velocity,
     _reground_inpaint_joint_y,
     _resolve_inpaint_joint_indices,
     build_inpaint_mask,
+    check_full_coverage_inpaint_early,
+    inpaint_y_anchor_spans,
+    resolve_inpaint_policy,
 )
 from sample.output_lengths import (
     _all_species_output_lengths,
@@ -251,6 +251,13 @@ def main(args=None, cond_dict=None, runtime=None):
             "(the reference is the known region held fixed while the masked region "
             "is regenerated). Pass --reference_motion <path>, or drop the inpaint "
             "flags for plain generation."
+        )
+
+    if _inpaint_early:
+        check_full_coverage_inpaint_early(
+            str(getattr(args, 'inpaint_frames', '') or '').strip(),
+            str(getattr(args, 'inpaint_joints', '') or '').strip(),
+            getattr(args, 'num_frames', None),
         )
 
     if _inpaint_early and skip_timesteps_raw is None:
@@ -668,6 +675,21 @@ def main(args=None, cond_dict=None, runtime=None):
         if fit_note:
             print(fit_note)
 
+        # Settles what the range means for the run -- which clip ends stay
+        # clamped, hence whether --loop has a closure to make -- and rejects a
+        # mask that would free everything.
+        loop_condition = resolve_inpaint_policy(
+            cond_dict[object_type],
+            frames_arg=inpaint_frames_arg,
+            joints_arg=inpaint_joints_arg,
+            include_subtree=inpaint_include_subtree,
+            outpaint_range=auto_outpaint_range if outpaint_active else None,
+            user_inpaint_active=user_inpaint_active,
+            output_frames=M,
+            window_frames=n_frames,
+            loop=loop_condition,
+        )
+
         # Appended [R, M) frames need a pure-noise start (full schedule), which
         # conflicts with skip_timesteps/explicit inpaint. When both are present,
         # split into two passes: pass 1 outpaints the tail from noise, pass 2
@@ -782,24 +804,17 @@ def main(args=None, cond_dict=None, runtime=None):
         device=dist_util.dev(),
     )
 
-    def _build_inpaint_mask_for(frames_arg, joints_arg, warn_remap=False):
-        # Output frames name REFERENCE frames (a mask only exists where a
-        # reference does), so they map the way the reference fills the window:
-        # end to end, one-shot, --loop or not.
-        internal_frames = _map_frame_ranges_to_internal(
-            frames_arg,
-            source_frames=target_output_frames,
-            target_frames=output_frame_count,
-            warn_remap=warn_remap,
-        )
+    def _build_inpaint_mask_for(frames_arg, joints_arg):
         return build_inpaint_mask(
             cond_dict[object_type],
             joints_arg,
             inpaint_include_subtree,
-            internal_frames,
+            frames_arg,
             args.batch_size,
             max_joints,
             output_frame_count,
+            output_frames=target_output_frames,
+            loop=bool(loop_condition),
         )
 
     def _run_sample(reference_motion, skip_ts, inpaint_mask):
@@ -827,7 +842,7 @@ def main(args=None, cond_dict=None, runtime=None):
         # Pass 2: apply the requested skip / inpaint to the completed reference.
         print('  [two-pass] pass 2/2: applying requested skip/inpaint to the completed reference')
         pass2_mask = (
-            _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg, warn_remap=True)
+            _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg)
             if user_inpaint_active else None
         )
         sample = _run_sample(completed_reference, skip_timesteps, pass2_mask)
@@ -835,7 +850,7 @@ def main(args=None, cond_dict=None, runtime=None):
         outpaint_mask = _build_inpaint_mask_for(auto_outpaint_range, '')
         sample = _run_sample(ref_motion, 0, outpaint_mask)
     elif user_inpaint_active:
-        user_mask = _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg, warn_remap=True)
+        user_mask = _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg)
         sample = _run_sample(ref_motion, skip_timesteps, user_mask)
     else:
         # Plain img2img (reference present) or plain generation (ref_motion None).
@@ -870,15 +885,12 @@ def main(args=None, cond_dict=None, runtime=None):
         cond_dict[object_type]['joints_names'],
     ))
     preview_options = _bvh_preview_options(args)
-    # Inpaint Y-anchor: parse user --inpaint_frames into contiguous spans
-    # (user-frame indexing, already aligned with the post-trim motion_np
-    # frame axis). The correction is applied per joint via vel_y
-    # integration with dual-end ramp anchoring.
-    inpaint_y_spans = None
-    if user_inpaint_active and inpaint_frames_arg:
-        inpaint_y_spans = _contiguous_frame_runs(
-            _parse_frame_ranges(inpaint_frames_arg, target_output_frames)
-        )
+    # Inpaint Y-anchor spans, applied per joint via vel_y integration with
+    # dual-end ramp anchoring once the motion is back in output frames.
+    inpaint_y_spans = (
+        inpaint_y_anchor_spans(inpaint_frames_arg, target_output_frames)
+        if user_inpaint_active else None
+    )
     export_tasks = []
     mark_canonical_cond_entry(cond_dict[object_type])
     for sample_idx, motion in enumerate(sample):

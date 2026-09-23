@@ -334,10 +334,11 @@ def _resample_window_to_output(motion_np, target_output_frames, output_frame_cou
     The reference goes in the other way as a one-shot clip
     (``_prepare_img2img_reference_bundle``, endpoint resampling), so the two
     directions are not inverse once ``M != T``: a clamped reference pose comes
-    out up to ``|M/T - 1|`` output frames from the frame it went in at (2 frames
-    at the ``M = 3T`` limit, well under one at ``M < T``).
-    Frame ranges keep the reference's own convention
-    (``_map_frame_ranges_to_internal``) because what they name is the reference.
+    out up to ``|M/T - 1|`` output frames from the frame it went in at (1 frame
+    at the ``M = MAX_SOURCE_FRAMES_MULT * T`` ceiling, under one below it). An
+    inpaint mask is therefore built over the union of both preimages
+    (``_map_frame_ranges_to_internal``), and an inpaint holding both clip ends
+    forces the export open so the clamped region is not resampled at all.
     """
     target_output_frames = int(target_output_frames)
     if target_output_frames == int(output_frame_count):

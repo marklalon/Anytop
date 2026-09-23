@@ -568,6 +568,9 @@ def add_sampling_options(parser):
                             "before frame 0, whatever number of cycles it holds. A --reference_motion is placed "
                             "into it the same way and the sampled window is rescaled to --num_frames the same "
                             "way, so the output is a loop whatever the reference is. "
+                            "An --inpaint_frames range that, mapped onto the window, keeps both window ends "
+                            "clamped overrides this to 'off': there is no closure for the model to make, and "
+                            "a periodic export would resample those clamped ends. "
                             "'off': an open window. 'auto' (default): with a --reference_motion, follow its own "
                             "loop verdict; else, with --action_label and no reference, 'on' when most of that "
                             "label's training clips are loops (the model only saw each label paired with "
@@ -650,7 +653,16 @@ def add_generate_options(parser):
                        help="Motion inpainting frame ranges to REGENERATE, e.g. '40-90' or '0-20,150-180' "
                             "(inclusive, clipped to the reference length). Empty = all frames. Combined with "
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
-                            "everything else is clamped to --reference_motion. Requires --reference_motion.")
+                            "everything else is clamped to --reference_motion. Requires --reference_motion. "
+                            "The range is mapped onto the model's window and whether it reaches a clip end is "
+                            "judged on THAT mapped span, since the remap widens it: a range naming neither "
+                            "end of the output can still free window frame 0 or the last window frame. A span "
+                            "leaving both window ends clamped exports the run open and forces --loop off -- "
+                            "there is no closure to make, and a periodic export would resample those clamped "
+                            "ends. A span reaching a window end keeps --loop's verdict, so the model can "
+                            "close the cycle. A span freeing every window frame over every joint is rejected: "
+                            "nothing is left clamped and the reference is discarded -- use --skip_timesteps "
+                            "for whole-clip img2img instead.")
     group.add_argument("--action_label", default="", type=str,
                        help="Text-to-motion prompt for this generation. Controlled-vocabulary "
                             "tokens ONLY, comma-separated, in the canonical order the labels use: "
