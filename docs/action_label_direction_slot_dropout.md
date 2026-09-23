@@ -155,12 +155,6 @@
 | transition 无方向 `jump*` | 37；`jump, up` 2；`jump, forward` 10 |
 | locomotion `run, jump` / `swim, jump` | 5 / 5 |
 
-> **dance 已确认全部退役**（2026-09-18，与本次 `pending_delete` 一起落地）：unitybundles 的 68 条 `*_Dance*`
-> （KI_Performer 34 + LH_Hero 34）全部标 `pending_delete`，zoo 另有 5 条（4 条重复的 Pteranodon hit/death +
-> `Spider_Riser`）。退役后 `dance` 在三个数据集里**一条不剩**，而 `sway` / `fullbody` / `footwork` / `armwork`
-> 只出现在 dance 行上，同样归零 —— 词表与 embedding fingerprint 都不变（不会报错、也不会拒绝 resume），
-> 但这 5 个词从此只有 T5 文本嵌入、没有动作样本，推理时是纯零样本外推，验收时单独记录。
-
 ## 5. 对原始草案的审核修正
 
 原草案整体成立：dropout 位置与写法、∅ 语义、内容优先于名字、根位移不可用 → 支撑脚法、先标定再写、
@@ -182,11 +176,9 @@
    `NO_HEADING_WORDS`、`--action_label` 帮助文本、`"load"` 词元组与 transition prompt 这样的符号引用。
 8. **方向 dropout 与 CFG drop 的监督稀释**（§1.1）：两者叠加后带方向词的行只有 `(1 − 0.2) × (1 − p)` 的 batch
    贡献显式方向监督，p = 0.5 时只剩 40%，故默认从 0.5 改为 0.3。
-9. **dance 全部退役**（§4）：`dance` / `sway` / `fullbody` / `footwork` / `armwork` 五个词条失去全部训练样本，
-   验收时单独记录。
-10. **审计工具不认 `pending_delete`**：`tools/audit_action_labels.py`（R1 / R3 / R4 / R5）不过滤 pending 行，
-    而 `relabel_actions_llm.py` 会跳过。74 条待删 clip 仍会被 R1 的桶离散度当作正式数据报出来 —— 要么给审计加
-    同样的过滤，要么先 retire 再审计。
+9. **审计工具不认 `pending_delete`**：`tools/audit_action_labels.py`（R1 / R3 / R4 / R5）不过滤 pending 行，
+   而 `relabel_actions_llm.py` 会跳过。74 条待删 clip 仍会被 R1 的桶离散度当作正式数据报出来 —— 要么给审计加
+   同样的过滤，要么先 retire 再审计。
 
 
 ## 6. 落地记录（2026-09-18）

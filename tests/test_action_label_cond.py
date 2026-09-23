@@ -138,11 +138,11 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # scalar would sit at its prior forever.
         for absent in ('climb', 'gallop', 'shuffle', 'sneak', 'flap', 'stand',
                        'stretch', 'dig', 'peck', 'drag', 'drink', 'graze',
-                       'haste'):
+                       'haste', 'clean'):
             self.assertNotIn(absent, CONTROLLED_VOCAB, absent)
         # ...and the words the corpus actually uses are all in.
         for present in ('cast', 'projectile', 'swat', 'spawn',
-                        'spin', 'headbutt', 'hover', 'work', 'dead', 'clean',
+                        'spin', 'headbutt', 'hover', 'work', 'dead', 'scratch',
                         'fast', 'fishing', 'bow', 'shield'):
             self.assertIn(present, CONTROLLED_VOCAB, present)
 

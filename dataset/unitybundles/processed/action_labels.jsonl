@@ -282,7 +282,7 @@
 {"clip": "KI_Human_Swim01Left", "action_group": "locomotion", "action_label": "swim, left", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Swim01Right", "action_group": "locomotion", "action_label": "swim, right", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Swim01Upwards", "action_group": "locomotion", "action_label": "swim, up", "is_loop": true, "reviewed": true}
-{"clip": "KI_Human_SwimIdle01", "action_group": "locomotion", "action_label": "swim", "is_loop": true, "reviewed": true}
+{"clip": "KI_Human_SwimIdle01", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Talk01", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Talk02", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Talk03", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
@@ -575,7 +575,7 @@
 {"clip": "LH_Hero_TorchStrafeRight", "action_group": "locomotion", "action_label": "walk, right, carry", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_TorchWalkBackward", "action_group": "locomotion", "action_label": "walk, backward, carry", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_TorchWalkForward", "action_group": "locomotion", "action_label": "walk, forward, carry", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_TreadWater", "action_group": "locomotion", "action_label": "swim", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_TreadWater", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Victory", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_WalkBackward", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
@@ -586,7 +586,7 @@
 {"clip": "MB_TigerDrago_AttackHead", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_AttackPawL", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_AttackPawR", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_AttackTail", "action_group": "stationary", "action_label": "attack, spin, whip", "is_loop": true, "reviewed": true}
+{"clip": "MB_TigerDrago_AttackTail", "action_group": "stationary", "action_label": "attack, whip", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Attack", "action_group": "stationary", "action_label": "attack, rear", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_Confused", "action_group": "stationary", "action_label": "idle, rear, look", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Death1Recover", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
@@ -653,18 +653,17 @@
 {"clip": "MB_TigerDrago_Sleep", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Stun", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_SwimBack", "action_group": "locomotion", "action_label": "swim, backward", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_SwimIdle", "action_group": "locomotion", "action_label": "swim", "is_loop": true, "reviewed": true}
+{"clip": "MB_TigerDrago_SwimIdle", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_SwimJump", "action_group": "locomotion", "action_label": "swim, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_SwimL", "action_group": "locomotion", "action_label": "swim, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_SwimR", "action_group": "locomotion", "action_label": "swim, turn, right", "is_loop": false, "reviewed": true}
-{"clip": "MB_TigerDrago_SwimSprintL", "action_group": "locomotion", "action_label": "swim, left", "is_loop": false, "reviewed": true}
-{"clip": "MB_TigerDrago_SwimSprintR", "action_group": "locomotion", "action_label": "swim, right", "is_loop": false, "reviewed": true}
-{"clip": "MB_TigerDrago_SwimSprint", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
+{"clip": "MB_TigerDrago_SwimSprintL", "action_group": "locomotion", "action_label": "swim, left, fast", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_SwimSprintR", "action_group": "locomotion", "action_label": "swim, right, fast", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_SwimSprint", "action_group": "locomotion", "action_label": "swim, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_SwimTurnL", "action_group": "locomotion", "action_label": "swim, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_SwimTurnR", "action_group": "locomotion", "action_label": "swim, turn, right", "is_loop": false, "reviewed": true}
-{"clip": "MB_TigerDrago_SwimUnderWaterHorizontal", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_SwimUnderWaterIdle", "action_group": "locomotion", "action_label": "swim", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_SwimUnderWaterVertical", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
+{"clip": "MB_TigerDrago_SwimUnderWaterIdle", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
+{"clip": "MB_TigerDrago_SwimUnderWaterVertical", "action_group": "locomotion", "action_label": "swim, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_TDFire", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Talk", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
@@ -686,7 +685,7 @@
 {"clip": "MB_Unka_AttackSpecial1Middle", "action_group": "stationary", "action_label": "attack, hover, projectile", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackSpecial1Start", "action_group": "transition", "action_label": "takeoff, spin", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_AttackStump", "action_group": "stationary", "action_label": "attack, smash", "is_loop": false, "reviewed": true}
-{"clip": "MB_Unka_AttackTailR", "action_group": "stationary", "action_label": "attack, spin, whip", "is_loop": true, "reviewed": true}
+{"clip": "MB_Unka_AttackTailR", "action_group": "stationary", "action_label": "attack, whip", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackWindHigh", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackWingL", "action_group": "stationary", "action_label": "attack, left, punch", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackWingsR", "action_group": "stationary", "action_label": "attack, right, punch", "is_loop": true, "reviewed": true}
@@ -738,19 +737,19 @@
 {"clip": "MB_Unka_SleepEnd", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_SleepIdle", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_SleepStart", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
-{"clip": "MB_Unka_Spinning", "action_group": "stationary", "action_label": "attack, spin, whip", "is_loop": true, "reviewed": true}
+{"clip": "MB_Unka_Spinning", "action_group": "stationary", "action_label": "attack, whip", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_Stun", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_SwimBack", "action_group": "locomotion", "action_label": "swim, backward", "is_loop": true, "reviewed": true}
-{"clip": "MB_Unka_SwimFastLeft", "action_group": "locomotion", "action_label": "swim, left", "is_loop": false, "reviewed": true}
-{"clip": "MB_Unka_SwimFastRight", "action_group": "locomotion", "action_label": "swim, right", "is_loop": false, "reviewed": true}
-{"clip": "MB_Unka_SwimFast", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
+{"clip": "MB_Unka_SwimFastLeft", "action_group": "locomotion", "action_label": "swim, left, fast", "is_loop": false, "reviewed": true}
+{"clip": "MB_Unka_SwimFastRight", "action_group": "locomotion", "action_label": "swim, right, fast", "is_loop": false, "reviewed": true}
+{"clip": "MB_Unka_SwimFast", "action_group": "locomotion", "action_label": "swim, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_SwimForwardLeft", "action_group": "locomotion", "action_label": "swim, left", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_SwimForwardRight", "action_group": "locomotion", "action_label": "swim, right", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_SwimForward", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
-{"clip": "MB_Unka_SwimIdle", "action_group": "locomotion", "action_label": "swim", "is_loop": true, "reviewed": true}
+{"clip": "MB_Unka_SwimIdle", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_SwimTurnLeft", "action_group": "locomotion", "action_label": "swim, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_SwimTurnRight", "action_group": "locomotion", "action_label": "swim, turn, right", "is_loop": false, "reviewed": true}
-{"clip": "MB_Unka_SwimVertical", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
+{"clip": "MB_Unka_SwimVertical", "action_group": "locomotion", "action_label": "swim, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_SwimWaterEnter", "action_group": "locomotion", "action_label": "swim, jump, forward", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_TrotLeft", "action_group": "locomotion", "action_label": "walk, turn, left, trot", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_TrotRight", "action_group": "locomotion", "action_label": "walk, turn, right, trot", "is_loop": false, "reviewed": true}
@@ -1326,7 +1325,7 @@
 {"clip": "MU06_Archangel_ProjectileAttack02", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Archangel_ProjectileAttack03", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Archangel_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
-{"clip": "MU06_Archangel_TailAttack", "action_group": "stationary", "action_label": "attack, roll, whip", "is_loop": true, "reviewed": true}
+{"clip": "MU06_Archangel_TailAttack", "action_group": "stationary", "action_label": "attack, roll", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Archangel_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Archangel_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Archangel_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
@@ -1547,7 +1546,7 @@
 {"clip": "PC_PolygonalKingCobra_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalKingCobra_SlitherForward", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalKingCobra_SpitPoisonAttack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
-{"clip": "PC_PolygonalKingCobra_TailAttack", "action_group": "stationary", "action_label": "attack, whip", "is_loop": true, "reviewed": true}
+{"clip": "PC_PolygonalKingCobra_TailAttack", "action_group": "stationary", "action_label": "attack, sting", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalKingCobra_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalMagma_CastSpell", "action_group": "stationary", "action_label": "attack, spin, cast", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalMagma_Charge", "action_group": "stationary", "action_label": "attack, block", "is_loop": true, "reviewed": true}
@@ -1816,7 +1815,6 @@
 {"clip": "RU01_BotRobot_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "RU01_BotRobot_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "RU01_BotRobot_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
-{"clip": "RU01_BoxyRobot_ArmSpinAttack", "action_group": "stationary", "action_label": "attack, spin", "is_loop": false, "reviewed": true}
 {"clip": "RU01_BoxyRobot_BattleIdleProjectileAttack", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "RU01_BoxyRobot_BattleIdleRapidProjectileAttack", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "RU01_BoxyRobot_BattleIdle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
@@ -1863,7 +1861,7 @@
 {"clip": "RU01_GridRobot_RollAttack01", "action_group": "stationary", "action_label": "attack, roll", "is_loop": true, "reviewed": true}
 {"clip": "RU01_GridRobot_RollAttack02", "action_group": "stationary", "action_label": "attack, roll", "is_loop": true, "reviewed": true}
 {"clip": "RU01_GridRobot_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
-{"clip": "RU01_GridRobot_SpiralForward", "action_group": "locomotion", "action_label": "run, forward, spin", "is_loop": true, "reviewed": true}
+{"clip": "RU01_GridRobot_SpiralForward", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "RU01_GridRobot_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "RU01_GridRobot_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "RU01_GridRobot_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}

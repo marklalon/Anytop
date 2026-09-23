@@ -76,7 +76,7 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # the modifiers follow in tuple order -- one combination, exactly one spelling
 # (see canonical_action_label).
 HEAD_VOCAB: tuple[str, ...] = (
-    "attack", "burrow", "crawl", "dance", "die", "draw", "fall",
+    "attack", "burrow", "crawl", "die", "draw", "fall",
     "fly", "getup", "hover", "hurt", "idle", "jump", "kneel", "land", "laydown",
     "lift", "pickup", "putdown", "rear", "rest", "roll", "run", "sheathe",
     "sitdown", "spawn", "stop", "swim", "takeoff", "turn", "walk", "work",
@@ -91,17 +91,15 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     "sniff", "yawn", "catch", "sting", "kick", "spit", "wag", "scratch",
     "crouch", "dead", "sit", "sleep",
     # -- block C: how a strike is delivered (manner before strike type) --
-    "spin", "flip", "twist", "charge",
+    "spin", "flip", "charge",
     "headbutt", "punch", "swat", "slash", "stab", "smash", "whip",
     "block", "cast", "projectile",
     # -- block D: affect / social gesture --
     "happy", "talk", "clap", "wave", "cry", "salute",
     # -- block E: activity and object handling --
-    "clean", "aim", "carry", "fishing", "cook", "reload",
+    "aim", "carry", "fishing", "cook", "reload",
     "saw", "shovel", "pull", "push",
-    # -- block F: which body part leads a dance --
-    "footwork", "fullbody", "armwork", "sway",
-    # -- block G: the implement an action is performed with (never the asset
+    # -- block F: the implement an action is performed with (never the asset
     # itself): archery, shooting, tool work, shield bash. The word names the
     # MOTION the implement produces, never the fact of holding one -- see the
     # note under DIRECTION_VOCAB.
@@ -217,7 +215,6 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "burrow": "digging underground",     # bare "burrow" is the hole, not the act
     "cast": "spellcasting",              # bare "cast" is plaster, or a film cast
     "charge": "rushing forward",         # bare "charge" is voltage or a fee
-    "clean": "grooming",                 # bare "clean" is the adjective, not the act
     "draw": "drawing a weapon",          # bare "draw" is pulling a line or a card
     "cry": "weeping",                    # bare "cry" reads as shouting out
     "flip": "somersault",                # bare "flip" is a coin or a switch

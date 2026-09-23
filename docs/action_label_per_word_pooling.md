@@ -175,7 +175,6 @@ T5 提升了多少」——本文任何地方都不声称这个数。
 - 改条件语义的每次改动都要求重训；旧 checkpoint 被两层指纹拒绝（不需要 regen cond）。
 - 训出 transition checkpoint 后，验收 `draw` / `sheathe` / `stop` 生成的动作朝向正确端点。
 - 训出后验收裸 `attack, swat` 出单侧而非双臂混合，`attack, left, swat` 与 `right` 可辨。
-  `dance` / `sway` / `fullbody` / `footwork` / `armwork` 五个词退役后没有训练样本，单独记录。
 - 训出后验收 `attack, hover` vs `idle, hover`（契约 6 下 head 通道 cos 0.36，**不再完全分开**，
   这是本次改动最需要盯的退化点）、`attack, hover, bite` 的打击类型是否仍可辨。
 - 训出后验收第二主词是否真的进了 head 通道：同物种对比 `jump` / `land, jump` / `attack, jump`，
