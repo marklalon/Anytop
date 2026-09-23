@@ -52,6 +52,11 @@ from data_loaders.truebones.truebones_utils.animation_utils import (
     LOOP_DETECTION_STEP_MIN,
     compute_motion_loop_diagnostics,
 )
+from data_loaders.truebones.truebones_utils.motion_labels import (
+    LOOP_FLAG_KEY,
+    clip_key,
+    load_action_labels,
+)
 from data_loaders.truebones.truebones_utils.param_utils import (
     FEATS_LEN,
     get_dataset_dir,
@@ -61,10 +66,12 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 def load_motions(data_root: str) -> dict[str, dict]:
     """Return {motion_name: metadata} for all motions.
 
-    ``is_loop`` is joined in from action_labels.jsonl, where the verdict lives
-    (auto-proposed by preprocessing, verified by hand); motion_metadata.json
-    no longer carries it. A clip whose row has no verdict yet gets none here,
-    so the report's "metadata" column reads False for it.
+    motion_metadata.json supplies the clip list and per-clip geometry
+    (``translation_root_index``). ``is_loop`` is joined in from
+    action_labels.jsonl, where the verdict lives (auto-proposed by
+    preprocessing, verified by hand); any stale copy in motion_metadata.json is
+    dropped. A clip whose row has no verdict yet gets none here, so the
+    report's "label" column reads False for it.
     """
     metadata_path = Path(data_root) / "motion_metadata.json"
     if not metadata_path.exists():
@@ -76,11 +83,6 @@ def load_motions(data_root: str) -> dict[str, dict]:
 
     motions = payload.get("motions", payload)
 
-    from data_loaders.truebones.truebones_utils.motion_labels import (
-        LOOP_FLAG_KEY,
-        clip_key,
-        load_action_labels,
-    )
     labels = load_action_labels(data_root)
 
     result = {}
@@ -165,10 +167,15 @@ def write_html_report(
             gap_bg = "#d4edda" if r["loop_margin"] <= 0 else "#f8d7da"
             xz_closed = r.get("root_xz_is_closed", True)
             xz_bg = "#d4edda" if xz_closed else "#f8d7da"
-            loop_flag = "F" if not r.get("runtime_is_loop", False) else "T"
-            loop_bg = "#f8d7da" if not r.get("runtime_is_loop", False) else "#d4edda"
+            runtime_loop = r.get("runtime_is_loop", False)
+            meta_loop = r.get("label_is_loop", False)
+            loop_flag = "T" if runtime_loop else "F"
+            loop_bg = "#d4edda" if runtime_loop else "#f8d7da"
+            meta_flag = "T" if meta_loop else "F"
+            meta_bg = "#d4edda" if meta_loop else "#f8d7da"
+            row_style = " style='background:#fff8d6'" if runtime_loop != meta_loop else ""
             rows.append(
-                f"<tr>"
+                f"<tr{row_style}>"
                 f"<td style='text-align:right'>{rank + 1}</td>"
                 f"<td><a href='{href}'>{name}</a></td>"
                 f"<td style='text-align:right'>{r['wrap_gap']:.6f}</td>"
@@ -176,6 +183,7 @@ def write_html_report(
                 f"<td style='text-align:right;background:{xz_bg}'>{r.get('root_xz_total_disp', 0):.6f}</td>"
                 f"<td style='text-align:right'>{r['n_frames']}</td>"
                 f"<td style='text-align:center;background:{loop_bg}'>{loop_flag}</td>"
+                f"<td style='text-align:center;background:{meta_bg}'>{meta_flag}</td>"
                 f"</tr>"
             )
         return "\n".join(rows)
@@ -194,6 +202,11 @@ def write_html_report(
     wrap_max = _stat(all_wrap_gap, max)
     xz_p50 = _stat(all_root_xz_disp, lambda v: _pct(v, 50))
     xz_max = _stat(all_root_xz_disp, max)
+    meta_loop_count = sum(1 for r in results if r.get("label_is_loop", False))
+    mismatch_count = sum(
+        1 for r in results
+        if r.get("runtime_is_loop", False) != r.get("label_is_loop", False)
+    )
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -241,6 +254,14 @@ Object-type filter     = {args.object_type or '(none)'}
   </table>
 </div>
 <div class="stat-box">
+  <h3>label is_loop (action_labels.jsonl)</h3>
+  <table>
+    <tr><td>True</td><td class="val">{meta_loop_count}</td></tr>
+    <tr><td>False</td><td class="val">{len(results) - meta_loop_count}</td></tr>
+    <tr><td>runtime vs label mismatch</td><td class="val">{mismatch_count}</td></tr>
+  </table>
+</div>
+<div class="stat-box">
   <h3>wrap_gap (p80 per-joint first-vs-last gap)</h3>
   <table>
     <tr><td>min</td><td class="val">{wrap_min}</td></tr>
@@ -272,7 +293,8 @@ Object-type filter     = {args.object_type or '(none)'}
     <th>gap_margin</th>
     <th>xz_disp</th>
   <th>frames</th>
-    <th>is_loop</th>
+    <th>runtime is_loop</th>
+    <th>label is_loop</th>
 </tr>
 </thead>
 <tbody>
@@ -344,7 +366,7 @@ def main():
 
         err["name"] = Path(name).stem
         err["object_type"] = meta.get("object_type", "?")
-        err["metadata_is_loop"] = bool(meta.get("is_loop", False))
+        err["label_is_loop"] = bool(meta.get(LOOP_FLAG_KEY, False))
         results.append(err)
 
     # ── Summary stats (computed before filtering) ──
@@ -354,13 +376,6 @@ def main():
     all_root_xz_disp = [r["root_xz_total_disp"] for r in results]
 
     print(f"Processed {len(results)} motions  |  runtime_loop={runtime_loop_count}  not_loop={len(results) - runtime_loop_count}")
-
-    # ── Print is_loop mismatches ──
-    mismatches = [r for r in results if r["runtime_is_loop"] != r["metadata_is_loop"]]
-    if mismatches:
-        print(f"\n*** {len(mismatches)} is_loop mismatch(es) (runtime vs metadata): ***")
-        for r in sorted(mismatches, key=lambda x: x["name"]):
-            print(f"  {r['name']}:  runtime={r['runtime_is_loop']}  metadata={r['metadata_is_loop']}")
 
     # ── Sort: is_loop=False first, then wrap_gap descending within each group ──
     if len(results) > 0:
