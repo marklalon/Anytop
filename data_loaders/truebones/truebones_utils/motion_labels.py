@@ -93,7 +93,7 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     # -- block C: how a strike is delivered (manner before strike type) --
     "spin", "flip", "charge",
     "headbutt", "punch", "swat", "slash", "stab", "smash", "whip",
-    "block", "cast", "projectile",
+    "block", "cast", "firebreath", "projectile",
     # -- block D: affect / social gesture --
     "happy", "talk", "clap", "wave", "cry", "salute",
     # -- block E: activity and object handling --
@@ -217,6 +217,7 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "charge": "rushing forward",         # bare "charge" is voltage or a fee
     "draw": "drawing a weapon",          # bare "draw" is pulling a line or a card
     "cry": "weeping",                    # bare "cry" reads as shouting out
+    "firebreath": "breathing fire",      # glued compound is no English word; T5 splits it into subword shards
     "flip": "somersault",                # bare "flip" is a coin or a switch
     "land": "touching down",             # bare "land" is terrain -- overwhelmingly
     "punch": "punching",                 # bare "punch" is the drink

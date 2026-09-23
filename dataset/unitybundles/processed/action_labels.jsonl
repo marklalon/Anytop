@@ -94,7 +94,7 @@
 {"clip": "IAC_Cavewoman_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Mammoth_Attack1", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_Attack", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": false, "reviewed": true}
-{"clip": "IAC_Mammoth_Charge", "action_group": "stationary", "action_label": "attack, rear, headbutt", "is_loop": false, "reviewed": true}
+{"clip": "IAC_Mammoth_Charge", "action_group": "stationary", "action_label": "attack, rear, smash", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_DamageHeavy", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_DamageLight", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_Die", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
@@ -587,7 +587,7 @@
 {"clip": "MB_TigerDrago_AttackPawL", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_AttackPawR", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_AttackTail", "action_group": "stationary", "action_label": "attack, whip", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_Attack", "action_group": "stationary", "action_label": "attack, rear", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_Attack", "action_group": "stationary", "action_label": "attack, rear, smash", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_Confused", "action_group": "stationary", "action_label": "idle, rear, look", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Death1Recover", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_Death1", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
@@ -682,7 +682,7 @@
 {"clip": "MB_Unka_AttackClawsL", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackFireBall", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackSpecial1Land", "action_group": "transition", "action_label": "land, hover", "is_loop": false, "reviewed": true}
-{"clip": "MB_Unka_AttackSpecial1Middle", "action_group": "stationary", "action_label": "attack, hover, projectile", "is_loop": true, "reviewed": true}
+{"clip": "MB_Unka_AttackSpecial1Middle", "action_group": "stationary", "action_label": "attack, hover, firebreath", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_AttackSpecial1Start", "action_group": "transition", "action_label": "takeoff, spin", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_AttackStump", "action_group": "stationary", "action_label": "attack, smash", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_AttackTailR", "action_group": "stationary", "action_label": "attack, whip", "is_loop": true, "reviewed": true}
@@ -697,7 +697,7 @@
 {"clip": "MB_Unka_FallDownFoward", "action_group": "locomotion", "action_label": "fly, dive", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FallLand", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FallLow", "action_group": "transition", "action_label": "jump, fall", "is_loop": true, "reviewed": true}
-{"clip": "MB_Unka_FireBreath", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
+{"clip": "MB_Unka_FireBreath", "action_group": "stationary", "action_label": "attack, firebreath", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyBackwards", "action_group": "locomotion", "action_label": "fly, backward", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyClosedWings50", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyClosedWings75", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
@@ -1507,7 +1507,7 @@
 {"clip": "MU06_Wind_WindSlashAttack", "action_group": "stationary", "action_label": "attack, slash", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalDragon_BiteAttack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalDragon_CastSpell", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
-{"clip": "PC_PolygonalDragon_FireBreathAttack", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
+{"clip": "PC_PolygonalDragon_FireBreathAttack", "action_group": "stationary", "action_label": "attack, firebreath", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalDragon_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalDragon_ProjectileAttack", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalDragon_StrafeLeft", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
