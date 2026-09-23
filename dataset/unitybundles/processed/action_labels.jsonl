@@ -30,8 +30,8 @@
 {"clip": "IAC_Caveman_LookBack", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Caveman_LookSideWeapon", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Caveman_LookSide", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
-{"clip": "IAC_Caveman_RoarWeapon", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
-{"clip": "IAC_Caveman_Roar", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
+{"clip": "IAC_Caveman_RoarWeapon", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
+{"clip": "IAC_Caveman_Roar", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Caveman_RunTurnLeftWeapon", "action_group": "locomotion", "action_label": "run, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Caveman_RunTurnLeft", "action_group": "locomotion", "action_label": "run, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Caveman_RunTurnRightWeapon", "action_group": "locomotion", "action_label": "run, turn, right", "is_loop": false, "reviewed": true}
@@ -74,8 +74,8 @@
 {"clip": "IAC_Cavewoman_LookBack", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Cavewoman_LookSideWeapon", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Cavewoman_LookSide", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
-{"clip": "IAC_Cavewoman_RoarWeapon", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
-{"clip": "IAC_Cavewoman_Roar", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
+{"clip": "IAC_Cavewoman_RoarWeapon", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
+{"clip": "IAC_Cavewoman_Roar", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Cavewoman_RunTurnLeftWeapon", "action_group": "locomotion", "action_label": "run, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Cavewoman_RunTurnLeft", "action_group": "locomotion", "action_label": "run, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Cavewoman_RunTurnRightWeapon", "action_group": "locomotion", "action_label": "run, turn, right", "is_loop": false, "reviewed": true}
@@ -104,7 +104,7 @@
 {"clip": "IAC_Mammoth_JumpUp", "action_group": "locomotion", "action_label": "fall, jump", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Mammoth_Land", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_LookSide", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
-{"clip": "IAC_Mammoth_Roar", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
+{"clip": "IAC_Mammoth_Roar", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Mammoth_RunTurnLeft", "action_group": "locomotion", "action_label": "run, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_RunTurnRight", "action_group": "locomotion", "action_label": "run, turn, right", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
@@ -127,7 +127,7 @@
 {"clip": "IAC_Sabertooth_Land", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Sabertooth_LookBack", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Sabertooth_LookSide", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
-{"clip": "IAC_Sabertooth_Roar", "action_group": "stationary", "action_label": "idle, roar", "is_loop": false, "reviewed": true}
+{"clip": "IAC_Sabertooth_Roar", "action_group": "stationary", "action_label": "roar", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Sabertooth_RunTurnLeft", "action_group": "locomotion", "action_label": "run, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Sabertooth_RunTurnRight", "action_group": "locomotion", "action_label": "run, turn, right", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Sabertooth_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
@@ -664,7 +664,7 @@
 {"clip": "MB_TigerDrago_SwimUnderWaterIdle", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_SwimUnderWaterVertical", "action_group": "locomotion", "action_label": "swim, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_TDFire", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
+{"clip": "MB_TigerDrago_TDFire", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Talk", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_TrotLeft", "action_group": "locomotion", "action_label": "walk, turn, left, trot", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_TrotRight", "action_group": "locomotion", "action_label": "walk, turn, right, trot", "is_loop": false, "reviewed": true}
@@ -927,7 +927,7 @@
 {"clip": "MU01_FlowerPotMonster_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MU01_FlowerPotMonster_JumpForward", "action_group": "transition", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "MU01_FlowerPotMonster_ProjectileAttack", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
-{"clip": "MU01_FlowerPotMonster_Roar", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
+{"clip": "MU01_FlowerPotMonster_Roar", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "MU01_FlowerPotMonster_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU01_FlowerPotMonster_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MU01_FlowerPotMonster_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
@@ -1212,7 +1212,7 @@
 {"clip": "MU04_ScorpionKing_RightStrikeAttack", "action_group": "stationary", "action_label": "attack, swat", "is_loop": true, "reviewed": true}
 {"clip": "MU04_ScorpionKing_RunForward", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "MU04_ScorpionKing_StompAttack", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
-{"clip": "MU04_ScorpionKing_Summon", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
+{"clip": "MU04_ScorpionKing_Summon", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "MU04_ScorpionKing_TailAttack", "action_group": "stationary", "action_label": "attack, sting", "is_loop": true, "reviewed": true}
 {"clip": "MU04_ScorpionKing_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU04_ScorpionKing_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
@@ -1596,10 +1596,10 @@
 {"clip": "PC_PolygonalTreant_WalkBackward", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalTreant_WalkForward", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_BiteAttack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
-{"clip": "PC_PolygonalWolf_BreathAttack", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
+{"clip": "PC_PolygonalWolf_BreathAttack", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_Die", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
 {"clip": "PC_PolygonalWolf_Eating", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
-{"clip": "PC_PolygonalWolf_Howl", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
+{"clip": "PC_PolygonalWolf_Howl", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_Jump", "action_group": "transition", "action_label": "jump, up", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_LookAround", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
@@ -1663,7 +1663,7 @@
 {"clip": "RMW_Golem_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Golem_SenseSomethingRT", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Golem_SenseSomethingST", "action_group": "stationary", "action_label": "idle, look", "is_loop": false, "reviewed": true}
-{"clip": "RMW_Golem_Taunting", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
+{"clip": "RMW_Golem_Taunting", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Golem_Victory", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Golem_WalkBack", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Golem_WalkLeft", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
@@ -1679,7 +1679,7 @@
 {"clip": "RMW_MonsterPlant_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "RMW_MonsterPlant_SenseSomethingRT", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "RMW_MonsterPlant_SenseSomethingST", "action_group": "stationary", "action_label": "idle, look", "is_loop": false, "reviewed": true}
-{"clip": "RMW_MonsterPlant_Taunt", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
+{"clip": "RMW_MonsterPlant_Taunt", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "RMW_MonsterPlant_Victory", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
 {"clip": "RMW_MonsterPlant_WalkBack", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "RMW_MonsterPlant_WalkLeft", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
@@ -1695,7 +1695,7 @@
 {"clip": "RMW_Orc_RunFWD", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Orc_SenseSomethingRPT", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Orc_SenseSomethingST", "action_group": "stationary", "action_label": "idle, look", "is_loop": false, "reviewed": true}
-{"clip": "RMW_Orc_Taunting", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true}
+{"clip": "RMW_Orc_Taunting", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Orc_Victory", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Orc_WalkBWD", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Orc_WalkFWD", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}

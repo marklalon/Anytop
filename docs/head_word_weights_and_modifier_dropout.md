@@ -96,7 +96,7 @@ BlastAttack、2 条蝎子、1 条法师……），推理时打裸 `attack` 得�
 | modifier | 边缘（任一种该首词的动作） | `--modifier_slot_drop_prob` 0.15 |
 | hands | **空手**（内容默认） | 无——空 = 空手，不是 unspecified |
 
-已知副作用：`idle` 的边缘会混进少量 `idle, roar / sleep / eat`（56×0.15 ≈ 8 条当量 vs 226 条
+已知副作用：`idle` 的边缘会混进少量 `idle, sleep / eat`（69×0.15 ≈ 10 条当量 vs 259 条
 真 idle），可接受；`attack` 边缘混进 cast / projectile 正是目的。第二个主词（`attack, jump`）
 不在 modifier 槽里，不会被丢。
 

@@ -45,7 +45,7 @@ _RETIRED_AUX_ACTION_GROUPS_KEY = "aux_action_groups"
 #                    condition, routed to the learned null embedding).
 #
 # The vocabulary is CONTROLLED, not mutually exclusive classes: a label names
-# as many words as apply ("idle, roar"), and naming only part of what a clip
+# as many words as apply ("idle, sniff"), and naming only part of what a clip
 # does is legal ("run" with no direction = the marginal over directions).
 #
 # Labels are keywords, not prose: mean-pooled T5 dilutes a modifier in
@@ -78,7 +78,7 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 HEAD_VOCAB: tuple[str, ...] = (
     "attack", "burrow", "crawl", "die", "draw", "fall",
     "fly", "getup", "hover", "hurt", "idle", "jump", "kneel", "land", "laydown",
-    "lift", "pickup", "putdown", "rear", "rest", "roll", "run", "sheathe",
+    "lift", "pickup", "putdown", "rear", "rest", "roar", "roll", "run", "sheathe",
     "sitdown", "spawn", "stop", "swim", "takeoff", "turn", "walk", "work",
 )
 
@@ -87,7 +87,7 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     # -- block A: how the head is executed (gait, speed, wing state) --
     "trot", "fast", "glide", "slow", "retreat", "dive", "flopping",
     # -- block B: secondary action layered on the head --
-    "bite", "roar", "eat", "look", "shake", "throw", "taunt",
+    "bite", "eat", "look", "shake", "throw", "taunt",
     "sniff", "yawn", "catch", "sting", "kick", "spit", "wag", "scratch",
     "crouch", "dead", "sit", "sleep",
     # -- block C: how a strike is delivered (manner before strike type) --
@@ -95,7 +95,7 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     "headbutt", "punch", "swat", "slash", "stab", "smash", "whip",
     "block", "cast", "firebreath", "projectile",
     # -- block D: affect / social gesture --
-    "happy", "talk", "clap", "wave", "cry", "salute",
+    "happy", "talk", "clap", "wave", "cry",
     # -- block E: activity and object handling --
     "aim", "carry", "fishing", "cook", "reload",
     "saw", "shovel", "pull", "push",
