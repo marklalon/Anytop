@@ -106,6 +106,37 @@ def test_removal_is_idempotent():
     assert find_prop_socket_joints(filtered.offsets, filtered.parents, names) == set()
 
 
+# Several props on one rig, PetKikiA-style: two long ones inflate the P90
+# reference so far that a third, shorter one only clears the gate once they are
+# gone. 'Point' is the 3ds Max helper prefix, not a body word.
+_MULTI_PROP_NAMES = _BODY_NAMES + ['Point_stick', 'Point_fire_C_01', 'Point_fire_C_02']
+_MULTI_PROP_PARENTS = np.array(_BODY_PARENTS + [0, 0, 0], dtype=np.int32)
+_MULTI_PROP_OFFSETS = np.array(
+    _BODY_OFFSETS + [[5.0, 0.0, 0.0], [0.0, 0.0, 5.0], [0.0, 0.0, 1.2]], dtype=np.float64
+)
+
+
+def test_props_that_inflate_the_reference_do_not_hide_a_shorter_one():
+    prop_joints = find_prop_socket_joints(_MULTI_PROP_OFFSETS, _MULTI_PROP_PARENTS, _MULTI_PROP_NAMES)
+    assert {_MULTI_PROP_NAMES[j] for j in prop_joints} == {
+        'Point_stick', 'Point_fire_C_01', 'Point_fire_C_02',
+    }
+
+
+def test_the_rescan_still_needs_the_name_gate():
+    """Only the reference is re-measured; a long anatomical bone stays put."""
+    names = _BODY_NAMES + ['Point_stick', 'Point_fire_C_01', 'Tail']
+    prop_joints = find_prop_socket_joints(_MULTI_PROP_OFFSETS, _MULTI_PROP_PARENTS, names)
+    assert {names[j] for j in prop_joints} == {'Point_stick', 'Point_fire_C_01'}
+
+
+def test_multi_prop_removal_is_idempotent():
+    anim = _make_anim(_MULTI_PROP_PARENTS, _MULTI_PROP_OFFSETS)
+    filtered, names, _ = drop_prop_socket_joints(anim, _MULTI_PROP_NAMES)
+    assert names == _BODY_NAMES
+    assert find_prop_socket_joints(filtered.offsets, filtered.parents, names) == set()
+
+
 def test_an_explicit_name_list_drops_exactly_what_detection_did():
     """The rest pose decides; each clip follows the names, never its own detector."""
     anim = _make_anim(_PARENTS, _OFFSETS)

@@ -1990,6 +1990,15 @@ def find_prop_socket_joints(
     opposite directions and are exact only together: 194 dataset joints are
     non-anatomically named but sit on the body (armor, fur, saddles), while
     geometry alone cannot tell a parked staff from a single-bone tail.
+
+    The scan repeats on the skeleton left after each pass's removal, until a pass
+    finds nothing. The props sit in the top decile they are measured against, so
+    a rig carrying several of them inflates its own reference: PetKikiA's stick
+    and first fire bone lift the P90 far enough to hide the other two fire bones
+    until they are gone. A rig with no socket stops after the first pass, so only
+    rigs that already had one can change -- the result is always exactly what
+    ``drop_prop_socket_joints`` followed by a fresh scan would leave, which keeps
+    the drop idempotent.
     """
     offsets = np.asarray(offsets, dtype=np.float64)
     parents = np.asarray(parents)
@@ -2004,28 +2013,47 @@ def find_prop_socket_joints(
     # The root's own offset is rig placement, not a bone: keep it out of both
     # the reference and the scan, the same way every other bone statistic does.
     lengths = np.linalg.norm(offsets, axis=1)
-    reference = max(float(np.percentile(lengths[1:], 90)), float(np.median(lengths[1:])))
-    if reference <= 0.0:
-        return set()
+    non_anatomical = {}
 
-    subtree_size = np.ones(joint_count, dtype=np.int64)
-    for joint_index in range(joint_count - 1, 0, -1):
-        parent_index = int(parents[joint_index])
-        if parent_index >= 0:
-            subtree_size[parent_index] += subtree_size[joint_index]
+    def _name_is_non_anatomical(joint_index):
+        if joint_index not in non_anatomical:
+            non_anatomical[joint_index] = joint_name_is_non_anatomical(joint_names[joint_index])
+        return non_anatomical[joint_index]
 
-    prop_joints = {
-        joint_index
-        for joint_index in range(1, joint_count)
-        if subtree_size[joint_index] <= max_subtree_joints
-        and lengths[joint_index] > length_ratio * reference
-        and joint_name_is_non_anatomical(joint_names[joint_index])
-    }
-    # Sweep the sockets' descendants in. Parents always precede their children,
-    # so one ascending pass carries a socket down its whole chain.
-    for joint_index in range(1, joint_count):
-        if int(parents[joint_index]) in prop_joints:
-            prop_joints.add(joint_index)
+    prop_joints = set()
+    while True:
+        remaining = [joint_index for joint_index in range(1, joint_count) if joint_index not in prop_joints]
+        if not remaining:
+            break
+        remaining_lengths = lengths[remaining]
+        reference = max(
+            float(np.percentile(remaining_lengths, 90)),
+            float(np.median(remaining_lengths)),
+        )
+        if reference <= 0.0:
+            break
+
+        subtree_size = np.ones(joint_count, dtype=np.int64)
+        for joint_index in range(joint_count - 1, 0, -1):
+            parent_index = int(parents[joint_index])
+            if parent_index >= 0 and joint_index not in prop_joints:
+                subtree_size[parent_index] += subtree_size[joint_index]
+
+        found = {
+            joint_index
+            for joint_index in remaining
+            if subtree_size[joint_index] <= max_subtree_joints
+            and lengths[joint_index] > length_ratio * reference
+            and _name_is_non_anatomical(joint_index)
+        }
+        if not found:
+            break
+        prop_joints |= found
+        # Sweep the sockets' descendants in. Parents always precede their
+        # children, so one ascending pass carries a socket down its whole chain.
+        for joint_index in range(1, joint_count):
+            if int(parents[joint_index]) in prop_joints:
+                prop_joints.add(joint_index)
     return prop_joints
 
 
