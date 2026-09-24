@@ -186,7 +186,7 @@ def test_eval_checkpoint_config_load_fails_fast_on_a_label_less_task(tmp_path) -
 def test_shipped_task_configs_all_carry_a_scoring_label() -> None:
     from eval import eval_checkpoint
 
-    for name in ("eval_tasks_locomotion.json", "eval_tasks_stationary.json", "eval_tasks_transition.json"):
+    for name in ("eval_tasks.json",):
         _checkpoint, tasks = eval_checkpoint._load_task_config(eval_checkpoint._SCRIPT_DIR / name)
         assert all(score_label for _category, _args, score_label in tasks), name
 

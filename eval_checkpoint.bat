@@ -5,7 +5,7 @@ REM Run the checkpoint evaluation battery + HTML report.
 REM
 REM Usage:
 REM   eval_checkpoint.bat <task_config.json> [extra eval args]
-REM   eval_checkpoint.bat eval\eval_tasks_locomotion.json --overwrite
+REM   eval_checkpoint.bat eval\eval_tasks.json --overwrite
 REM
 REM The task config must define checkpoint.RUN_NAME. checkpoint.MODEL_FILE is
 REM optional; when omitted, eval_checkpoint.py selects the newest model*.pt

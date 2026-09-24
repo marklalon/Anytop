@@ -10,7 +10,7 @@ evaluator, and write a self-contained HTML report.
 
 Generation tasks call ``sample.generate`` in-process with a shared generation
 runtime, so the checkpoint/model is loaded once for the whole battery. Tasks
-use ``batch_size=8 --amp_dtype fp32`` matching ``generate.bat``.
+use ``batch_size=4 --amp_dtype fp32``.
 Generated clips are scored in-process with the motion quality scorer, whose
 reference prior is pooled over every dataset in ``--dataset_root`` (default
 ``dataset/datasets.jsonl``) and indexed once for the whole battery.
@@ -46,20 +46,19 @@ in place), the stale output is wiped and the task is regenerated.  Pass
 ``--overwrite`` to wipe the output root and regenerate everything.
 
 The checkpoint and task battery are loaded from a JSON config (``--task_config``,
-default ``eval/eval_tasks_locomotion.json``) so they can be tuned without
+default ``eval/eval_tasks.json``) so they can be tuned without
 editing code. The config must define ``checkpoint.RUN_NAME`` and may define
 ``checkpoint.MODEL_FILE`` and ``checkpoint.OUTPUT_DIR`` (the run folder, see
 above). Each task is
 ``{"category": str, "args": [<generate.py flags>], "eval_label": str?}``;
 path-valued flags accept absolute paths or paths relative to the Anytop dir.
 
-The shipped batteries are ``eval/eval_tasks_locomotion.json``,
-``eval/eval_tasks_stationary.json`` and ``eval/eval_tasks_transition.json``
-(one per action group, each naming its own ``checkpoint.RUN_NAME``).
+The shipped battery is ``eval/eval_tasks.json`` (one file covering every
+species and category, naming its own ``checkpoint.RUN_NAME``).
 
 Usage::
 
-    python eval/eval_checkpoint.py --task_config eval/eval_tasks_locomotion.json
+    python eval/eval_checkpoint.py --task_config eval/eval_tasks.json
     python eval/eval_checkpoint.py --task_config my_tasks.json --output_root <dir>
     python eval/eval_checkpoint.py --task_config my_tasks.json --overwrite
     python eval/eval_checkpoint.py --model_path .../model.pt --task_config my_tasks.json
@@ -106,8 +105,8 @@ _SCORE_TOP_K_SPECIES = 3
 
 # Default task battery, loaded when --task_config is omitted. The batch entry
 # point requires this path explicitly; the Python default is kept for direct
-# invocations. The per-action-group batteries are eval_tasks_<group>.json.
-_DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks_locomotion.json"
+# invocations. The shipped battery is eval/eval_tasks.json.
+_DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks.json"
 # The datasets the scorer's reference prior is pooled over: every processed
 # dataset the training cond was merged from, not just the first one.
 _DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets.jsonl"
@@ -119,7 +118,7 @@ _PATH_FLAGS = ("--reference_motion", "--cond_path")
 # that white noise inflates the Jerk / Snap / SpectralFlatness scores this
 # harness reports (docs/bf16_precision_issues.md). Folded into the task checksum,
 # so output generated under different common flags is regenerated, not reused.
-_COMMON_GENERATE_ARGS = ("--batch_size", "8", "--amp_dtype", "fp32")
+_COMMON_GENERATE_ARGS = ("--batch_size", "4", "--amp_dtype", "fp32")
 
 
 # ── Task battery ────────────────────────────────────────────────────────────
@@ -131,7 +130,7 @@ _COMMON_GENERATE_ARGS = ("--batch_size", "8", "--amp_dtype", "fp32")
 #
 # Path-valued flags (see ``_PATH_FLAGS``) accept either an absolute path or a
 # path relative to the Anytop dir; the "$LAST_OUTPUT" sentinel passes through
-# unchanged. See eval/eval_tasks_locomotion.json for the default battery.
+# unchanged. See eval/eval_tasks.json for the default battery.
 def _resolve_arg_path(value: str, base_dir: Path) -> str:
     """Resolve a path-valued task arg.
 
@@ -885,12 +884,7 @@ def write_html_report(
         if r["median"] is not None:
             score = r["median"]
             bg = "#d4edda" if score >= 0.7 else ("#fff3cd" if score >= 0.4 else "#f8d7da")
-            n = len(r["scores"])
-            prior = html.escape(str(r.get("score_label") or ""))
-            score_cell = (
-                f'<span class="val">{score:.4f}</span>'
-                f'<br><span class="path">median of {n} clip(s) &middot; prior: {prior}</span>'
-            )
+            score_cell = f'<span class="val">{score:.4f}</span>'
         else:
             bg = "#f4f4f4"
             score_cell = '<span class="muted">—</span>'
@@ -1006,7 +1000,7 @@ def main() -> int:
         "--task_config", "--task-config", default=str(_DEFAULT_TASK_CONFIG),
         help="Path to the JSON file defining the task battery (absolute, or "
              "relative to the current working directory, falling back to the "
-             "Anytop dir). Default: eval/eval_tasks_locomotion.json.",
+             "Anytop dir). Default: eval/eval_tasks.json.",
     )
     parser.add_argument(
         "--filter", default=None,
