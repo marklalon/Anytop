@@ -390,9 +390,51 @@ def refresh_joint_metadata_in_cond_dict(cond_dict):
     return cond_dict
 
 
-def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True,
-                                  t5_conditioner=None):
+# Texts per T5 forward pass; bounds padding memory on a full-dataset encode.
+_T5_ENCODE_BATCH = 256
 
+
+def _build_t5_text_cache(cache_cond, t5_name):
+    """Map every embedding text already baked into *cache_cond* to its T5 vector.
+
+    The encoder is a masked mean over one text's own tokens, so a text encoded
+    under the same T5 model yields the same vector whichever cond it was baked
+    into. Joint-name rows and species descriptors share one table because they
+    go through the same encoder.
+    """
+    cache = {}
+    if not isinstance(cache_cond, dict):
+        return cache
+    for entry in cache_cond.values():
+        if not isinstance(entry, dict):
+            continue
+        joint_meta = entry.get('joints_names_embs_meta')
+        joint_embs = entry.get('joints_names_embs')
+        if (isinstance(joint_meta, dict) and joint_embs is not None
+                and str(joint_meta.get('t5_name') or '') == t5_name):
+            texts = list(joint_meta.get('embedding_texts') or ())
+            joint_embs = np.asarray(joint_embs, dtype=np.float32)
+            if joint_embs.ndim == 2 and joint_embs.shape[0] == len(texts):
+                for text, emb in zip(texts, joint_embs):
+                    cache.setdefault(str(text), emb)
+        species_meta = entry.get('species_emb_meta')
+        species_emb = entry.get('species_emb')
+        if (isinstance(species_meta, dict) and species_emb is not None
+                and str(species_meta.get('t5_name') or '') == t5_name
+                and species_meta.get('embedding_text')):
+            cache.setdefault(str(species_meta['embedding_text']),
+                             np.asarray(species_emb, dtype=np.float32))
+    return cache
+
+
+def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True,
+                                  t5_conditioner=None, embedding_cache_cond=None):
+    """Bake joint-name and species T5 embeddings into every entry of *cond*.
+
+    ``embedding_cache_cond`` is an already-encoded cond (e.g. the checkpoint's
+    reference cond.npy): any text it holds under the same T5 model is reused
+    verbatim, and T5 is loaded only when some text is missing from it.
+    """
     if not cond:
         return
 
@@ -413,50 +455,72 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
         # Fast-fail before any encoding: the per-species descriptor has no fallback,
         # so a species missing from species_tags.jsonl must surface here.
         assert_species_tags_cover(cond.keys())
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        print(f'Loading T5 model {t5_name} on {device.upper()} ...')
-        from model.conditioners import T5Conditioner
-        t5_conditioner = T5Conditioner(
-            name=t5_name,
-            finetune=False,
-            word_dropout=0.0,
-            normalize_text=False,
-            device=device,
-            autocast_dtype=None,
-            local_files_only=True,
-        )
 
-    print(f'Encoding joint-name embeddings for {joint_count} object types ...')
+    species_texts_by_object = {
+        object_type: build_species_embedding_text(cond[object_type])
+        for object_type in object_types_to_encode
+    }
 
-    with torch.no_grad():
-        for object_type in object_types_to_encode:
-            object_cond = cond[object_type]
-            embedding_texts = embedding_texts_by_object[object_type]
-            names_tokens = t5_conditioner.tokenize_entries(embedding_texts)
-            embs = t5_conditioner(names_tokens).detach().cpu().numpy().astype(np.float32, copy=False)
-            object_cond['joints_names_embs'] = embs
-            object_cond['joints_names_embs_meta'] = {
-                't5_name': t5_name,
-                'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-                'slim': bool(JOINT_NAME_EMBEDDING_SLIM),
-                'embedding_dim': int(embs.shape[1]) if embs.ndim == 2 else 0,
-                'embedding_texts': list(embedding_texts),
-            }
+    # Every text either comes from the cache or is encoded once, in one batch.
+    text_cache = _build_t5_text_cache(embedding_cache_cond, t5_name)
+    wanted = []
+    for object_type in object_types_to_encode:
+        wanted.extend(embedding_texts_by_object[object_type])
+        wanted.append(species_texts_by_object[object_type])
+    missing = list(dict.fromkeys(text for text in wanted if text not in text_cache))
+    if text_cache:
+        print(f'Reusing cached T5 embeddings for {len(set(wanted)) - len(missing)}/'
+              f'{len(set(wanted))} texts.')
 
-    print(f'Encoding species embeddings for {joint_count} object types ...')
-    with torch.no_grad():
-        for object_type in object_types_to_encode:
-            object_cond = cond[object_type]
-            species_text = build_species_embedding_text(object_cond)
-            species_tokens = t5_conditioner.tokenize_entries([species_text])
-            species_emb = t5_conditioner(species_tokens).detach().cpu().numpy().astype(np.float32, copy=False)
-            object_cond['species_emb'] = species_emb[0]
-            object_cond['species_emb_meta'] = {
-                't5_name': t5_name,
-                'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-                'embedding_dim': int(species_emb.shape[1]) if species_emb.ndim == 2 else 0,
-                'embedding_text': species_text,
-            }
+    if missing:
+        if t5_conditioner is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            print(f'Loading T5 model {t5_name} on {device.upper()} ...')
+            from model.conditioners import T5Conditioner
+            t5_conditioner = T5Conditioner(
+                name=t5_name,
+                finetune=False,
+                word_dropout=0.0,
+                normalize_text=False,
+                device=device,
+                autocast_dtype=None,
+                local_files_only=True,
+            )
+        if text_cache:
+            print(f'Texts not in the cache: {missing}')
+        print(f'Encoding {len(missing)} texts via T5 ...')
+        with torch.no_grad():
+            for start in range(0, len(missing), _T5_ENCODE_BATCH):
+                chunk = missing[start:start + _T5_ENCODE_BATCH]
+                tokens = t5_conditioner.tokenize_entries(chunk)
+                embs = t5_conditioner(tokens).detach().cpu().numpy().astype(np.float32, copy=False)
+                text_cache.update(zip(chunk, embs))
+    else:
+        print('All embedding texts cached; skipped T5.')
+
+    print(f'Attaching T5 embeddings for {joint_count} object types ...')
+    for object_type in object_types_to_encode:
+        object_cond = cond[object_type]
+        embedding_texts = embedding_texts_by_object[object_type]
+        embs = np.stack([text_cache[text] for text in embedding_texts]).astype(np.float32, copy=False)
+        object_cond['joints_names_embs'] = embs
+        object_cond['joints_names_embs_meta'] = {
+            't5_name': t5_name,
+            'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+            'slim': bool(JOINT_NAME_EMBEDDING_SLIM),
+            'embedding_dim': int(embs.shape[1]) if embs.ndim == 2 else 0,
+            'embedding_texts': list(embedding_texts),
+        }
+
+        species_text = species_texts_by_object[object_type]
+        species_emb = np.array(text_cache[species_text], dtype=np.float32)
+        object_cond['species_emb'] = species_emb
+        object_cond['species_emb_meta'] = {
+            't5_name': t5_name,
+            'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+            'embedding_dim': int(species_emb.shape[-1]),
+            'embedding_text': species_text,
+        }
 
     # cond keys are '<namespace>/<species>', which cannot go into a filename;
     # the file token degrades to the plain species name whenever it is unique.
