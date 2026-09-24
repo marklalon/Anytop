@@ -48,8 +48,8 @@
 {"clip": "IAC_Caveman_WalkTurnRight", "action_group": "locomotion", "action_label": "walk, turn, right", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Caveman_WalkWeapon", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Caveman_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "IAC_Cavewoman_Attack1Weapon", "action_group": "stationary", "action_label": "attack, punch", "is_loop": false, "reviewed": true}
-{"clip": "IAC_Cavewoman_Attack1", "action_group": "stationary", "action_label": "attack, punch", "is_loop": false, "reviewed": true}
+{"clip": "IAC_Cavewoman_Attack1Weapon", "action_group": "stationary", "action_label": "attack, stab", "is_loop": false, "reviewed": true}
+{"clip": "IAC_Cavewoman_Attack1", "action_group": "stationary", "action_label": "attack, right, punch", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Cavewoman_Attack2Weapon", "action_group": "stationary", "action_label": "attack, slash", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Cavewoman_Attack2", "action_group": "stationary", "action_label": "attack, kick", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Cavewoman_Attack3Weapon", "action_group": "stationary", "action_label": "attack, spin, slash", "is_loop": false, "reviewed": true}
@@ -450,7 +450,7 @@
 {"clip": "KI_Warrior_Run01Left2HLong", "action_group": "locomotion", "action_label": "run, left", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Run01Right2HLong", "action_group": "locomotion", "action_label": "run, right", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_ShieldAttack01", "action_group": "stationary", "action_label": "attack, left, shield", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_ShieldAttack02", "action_group": "stationary", "action_label": "attack, right, punch", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_ShieldAttack02", "action_group": "stationary", "action_label": "attack, left, punch", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Sprint01", "action_group": "locomotion", "action_label": "run, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Strafe01Left2HLong", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Strafe01Right2HLong", "action_group": "locomotion", "action_label": "walk, right", "is_loop": true, "reviewed": true}
@@ -835,8 +835,8 @@
 {"clip": "MLS_Knome_WorkPickup", "action_group": "stationary", "action_label": "pickup, left", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Knome_WorkRoutine", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Knome_WorkStart", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": false, "reviewed": true}
-{"clip": "MLS_RockGolem_Attack01", "action_group": "stationary", "action_label": "attack, punch", "is_loop": true, "reviewed": true}
-{"clip": "MLS_RockGolem_Attack02", "action_group": "stationary", "action_label": "attack, punch", "is_loop": true, "reviewed": true}
+{"clip": "MLS_RockGolem_Attack01", "action_group": "stationary", "action_label": "attack, right, punch", "is_loop": true, "reviewed": true}
+{"clip": "MLS_RockGolem_Attack02", "action_group": "stationary", "action_label": "attack, left, punch", "is_loop": true, "reviewed": true}
 {"clip": "MLS_RockGolem_Die", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
 {"clip": "MLS_RockGolem_GetHit", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MLS_RockGolem_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
@@ -1051,7 +1051,7 @@
 {"clip": "MU01_Sting_Idle", "action_group": "locomotion", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "MU01_Sting_JabRightAttack", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "MU01_Sting_PowerJabAttack", "action_group": "stationary", "action_label": "attack, stab", "is_loop": true, "reviewed": true}
-{"clip": "MU01_Sting_SliceLeftAttack", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}
+{"clip": "MU01_Sting_SliceLeftAttack", "action_group": "stationary", "action_label": "attack, left, slash", "is_loop": true, "reviewed": true}
 {"clip": "MU01_Sting_StingAttack", "action_group": "stationary", "action_label": "attack, sting", "is_loop": true, "reviewed": true}
 {"clip": "MU01_Sting_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU01_Sting_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
@@ -1207,7 +1207,7 @@
 {"clip": "MU04_ScorpionKing_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MU04_ScorpionKing_Jump", "action_group": "transition", "action_label": "jump, up", "is_loop": true, "reviewed": true}
 {"clip": "MU04_ScorpionKing_LeftStrikeAttack", "action_group": "stationary", "action_label": "attack, left, punch", "is_loop": true, "reviewed": true}
-{"clip": "MU04_ScorpionKing_LeftSwingAttack", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}
+{"clip": "MU04_ScorpionKing_LeftSwingAttack", "action_group": "stationary", "action_label": "attack, left, slash", "is_loop": true, "reviewed": true}
 {"clip": "MU04_ScorpionKing_ProjectileAttack", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "MU04_ScorpionKing_RightStrikeAttack", "action_group": "stationary", "action_label": "attack, swat", "is_loop": true, "reviewed": true}
 {"clip": "MU04_ScorpionKing_RunForward", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
@@ -1532,7 +1532,7 @@
 {"clip": "PC_PolygonalGolem_HitGroundAttack", "action_group": "stationary", "action_label": "attack, jump, smash", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalGolem_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalGolem_Jump", "action_group": "transition", "action_label": "jump, up", "is_loop": true, "reviewed": true}
-{"clip": "PC_PolygonalGolem_PunchAttack", "action_group": "stationary", "action_label": "attack, punch", "is_loop": true, "reviewed": true}
+{"clip": "PC_PolygonalGolem_PunchAttack", "action_group": "stationary", "action_label": "attack, right, punch", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalGolem_RunForward", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalGolem_StrafeLeft", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalGolem_StrafeRight", "action_group": "locomotion", "action_label": "walk, right", "is_loop": true, "reviewed": true}
@@ -1558,7 +1558,7 @@
 {"clip": "PC_PolygonalMagma_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "PC_PolygonalMagma_StrafeLeft", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalMagma_StrafeRight", "action_group": "locomotion", "action_label": "walk, right", "is_loop": true, "reviewed": true}
-{"clip": "PC_PolygonalMagma_SwingAttack", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}
+{"clip": "PC_PolygonalMagma_SwingAttack", "action_group": "stationary", "action_label": "attack, left, slash", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalMagma_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalOneEyedBat_CastSpell", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalOneEyedBat_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
@@ -1637,8 +1637,8 @@
 {"clip": "RMW_Dragon_SenseSomethingST", "action_group": "locomotion", "action_label": "hover, look", "is_loop": false, "reviewed": true}
 {"clip": "RMW_Dragon_Taunting", "action_group": "locomotion", "action_label": "hover, taunt", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Dragon_Victory", "action_group": "locomotion", "action_label": "hover, happy", "is_loop": true, "reviewed": true}
-{"clip": "RMW_EvilMage_Attack01", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
-{"clip": "RMW_EvilMage_Attack02", "action_group": "stationary", "action_label": "attack, cast", "is_loop": false, "reviewed": true}
+{"clip": "RMW_EvilMage_Attack01", "action_group": "stationary", "action_label": "attack, right, cast", "is_loop": true, "reviewed": true}
+{"clip": "RMW_EvilMage_Attack02", "action_group": "stationary", "action_label": "attack, right, cast", "is_loop": false, "reviewed": true}
 {"clip": "RMW_EvilMage_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "RMW_EvilMage_Dizzy", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
 {"clip": "RMW_EvilMage_GetHit", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
@@ -2147,7 +2147,7 @@
 {"clip": "TNR_Infantry_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Mage_AttackA", "action_group": "stationary", "action_label": "attack, right, slash", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Mage_AttackB", "action_group": "stationary", "action_label": "attack, right, slash", "is_loop": true, "reviewed": true}
-{"clip": "TNR_Mage_CastA", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Mage_CastA", "action_group": "stationary", "action_label": "attack, left, cast", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Mage_CastB", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Mage_CastC", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Mage_Charge", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
