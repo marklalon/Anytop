@@ -33,7 +33,7 @@ def restore_default_configuration():
 def _make_dataset_dir(root: Path, chain_forward: str | None = None) -> Path:
     root.mkdir(parents=True)
     (root / dt.SPECIES_TAGS_FILE).write_text(
-        '{"species": "Crow", "species_tags": ["Winged", "Small", "Flapping"]}\n',
+        '{"species": "Crow", "species_tags": ["Winged", "Flapping"]}\n',
         encoding="utf-8",
     )
     if chain_forward is not None:

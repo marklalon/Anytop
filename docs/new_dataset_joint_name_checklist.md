@@ -44,7 +44,7 @@ embedding_text        "Left Forearm"  / "Left Front Leg Ankle Contact"    ← T5
 
 ```bash
 # species_tags.jsonl 没有 fallback，缺一个物种就 SystemExit
-# {"species": "Cat", "species_tags": ["Quadruped", "Small", "Stalking"]}
+# {"species": "Cat", "species_tags": ["Quadruped", "Stalking"]}
 $EDITOR dataset/<新数据集>/species_tags.jsonl
 
 # 只有蛇/鱼这类没有可用肢体对的物种才需要

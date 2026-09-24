@@ -38,6 +38,7 @@ passes a bare species name keeps working under a multi-source configuration.
 from __future__ import annotations
 
 import json
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,11 +55,21 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     get_dataset_dir,
 )
 
-# Per-species motion descriptor (body-plan, size/build, locomotion). One object
-# per line:  {"species": "Cat", "species_tags": ["Quadruped", "Small", "Stalking"]}
+# Per-species motion descriptor (body-plan, locomotion). One object per line:
+#   {"species": "Cat", "species_tags": ["Quadruped", "Stalking"]}
 # Single source of truth for the species condition and the object subsets; the
 # species->tags mapping is never duplicated in code.
 SPECIES_TAGS_FILE = "species_tags.jsonl"
+
+# Slots per descriptor: body plan, then locomotion (optional modifiers + gerund).
+# There is no size slot: motion is scale-normalized before the model sees it, and
+# the descriptor is mean-pooled over tokens, so a weakly informative word only
+# dilutes the two that separate species.  A row with any other count is a stale
+# sidecar and is rejected rather than silently encoded into a different text.
+SPECIES_TAG_COUNT = 2
+
+# Separators accepted between tags in a single string (CLI, service requests).
+_TAG_SEPARATOR_RE = re.compile(r"[,;]")
 
 # Dataset-specific forward-chain overrides, for creatures without usable limb
 # pairs (serpentine or aquatic animals).  One object per line:
@@ -180,7 +191,45 @@ class DatasetTags:
         return [selector]
 
 
+# ── Tag normalization ────────────────────────────────────────────────────────
+def normalize_species_tag(tag) -> str:
+    """One tag in sidecar form: single-spaced words, each hyphen part capitalized.
+
+    The descriptor text is exactly these tags joined by one space, and T5 is
+    case-sensitive (``quadruped`` and ``Quadruped`` tokenize differently), so
+    every entry point writes the sidecar's spelling: ``chibi  wing-beating
+    hovering`` -> ``Chibi Wing-Beating Hovering``.
+    """
+    return " ".join(
+        "-".join(part[:1].upper() + part[1:].lower() for part in word.split("-"))
+        for word in str(tag).split()
+    )
+
+
+def parse_species_tags(raw) -> tuple[str, ...]:
+    """Tags from a ``"A, b c; D"`` string or a sequence, normalized, empties dropped.
+
+    The one parser for every entry point (sidecar, CLI ``--species_tags`` /
+    ``--species-tags``, the inference service, the species-identification LLM),
+    so the same descriptor always reaches T5 as the same text. Slot count is not
+    checked here; see ``check_species_tags``.
+    """
+    if raw is None:
+        return ()
+    items = _TAG_SEPARATOR_RE.split(raw) if isinstance(raw, str) else raw
+    return tuple(tag for tag in (normalize_species_tag(item) for item in items) if tag)
+
+
 # ── Sidecar loading ──────────────────────────────────────────────────────────
+def check_species_tags(tags, where: str) -> None:
+    """Raise unless ``tags`` is a ``SPECIES_TAG_COUNT``-slot descriptor with no empty slot."""
+    if len(tags) != SPECIES_TAG_COUNT or any(not str(tag).strip() for tag in tags):
+        raise ValueError(
+            f"{where}: species_tags must be {SPECIES_TAG_COUNT} non-empty tags "
+            f"[body-plan, locomotion], got {list(tags)!r}."
+        )
+
+
 def load_species_tags(path: Path) -> dict[str, tuple[str, ...]]:
     """Parse ``species_tags.jsonl`` into an insertion-ordered ``{species: tags}``.
 
@@ -195,11 +244,12 @@ def load_species_tags(path: Path) -> dict[str, tuple[str, ...]]:
     species_tags: dict[str, tuple[str, ...]] = {}
     for line_no, record in _iter_jsonl(path):
         species = str(record["species"]).strip()
-        tags = tuple(str(tag).strip() for tag in record["species_tags"])
+        tags = parse_species_tags(record["species_tags"])
         if not species or not tags:
             raise ValueError(
                 f"{path.name}:{line_no} has an empty species or species_tags."
             )
+        check_species_tags(tags, f"{path.name}:{line_no} ({species})")
         if species in species_tags:
             raise ValueError(f"{path.name}:{line_no} duplicates species '{species}'.")
         species_tags[species] = tags
@@ -522,9 +572,11 @@ def register_species_tags(species: str, tags) -> DatasetTags:
     written to the sidecar (``tools/process_new_skeleton.py --species-tags``).
     Rebuilds the snapshot so every derived view stays consistent.
     """
+    tags = parse_species_tags(tags)
+    check_species_tags(tags, f"register_species_tags({species!r})")
     current = dataset_tags()
     species_tags = dict(current.species_tags)
-    species_tags[str(species).strip()] = tuple(str(tag).strip() for tag in tags)
+    species_tags[str(species).strip()] = tags
     global _snapshot
     _snapshot = _snapshot_from(species_tags, current.chain_forward_joints)
     return _snapshot
@@ -579,4 +631,31 @@ def assert_species_tags_cover(object_types) -> None:
             f"\033[91m{SPECIES_TAGS_FILE} is missing tags for object_type(s): "
             f"{', '.join(missing)}. Add them in the {SPECIES_TAGS_FILE} sidecar "
             "before preprocessing or training.\033[0m"
+        )
+
+
+def assert_cond_species_tags_current(cond_dict) -> None:
+    """Fast-fail unless every cond entry's baked ``species_tags`` match the sidecar.
+
+    ``species_emb`` is encoded from the baked tags at regeneration time, so a
+    sidecar edited without re-running ``regenerate_dataset_artifacts.py`` leaves
+    the cond encoding the old descriptor -- same shapes, different meaning, and
+    nothing downstream would notice.
+    """
+    tags = dataset_tags()
+    stale = []
+    for object_type, entry in cond_dict.items():
+        baked = entry.get("species_tags") if isinstance(entry, Mapping) else None
+        if baked is None:
+            continue
+        current = tags.tags_for(object_type)
+        # Exact text, not normalized: species_emb was encoded from the baked spelling.
+        if tuple(str(tag) for tag in baked) != tuple(current):
+            stale.append(f"{object_type}: cond {list(baked)} vs sidecar {list(current)}")
+    if stale:
+        shown = "\n  ".join(stale[:10]) + (f"\n  ... ({len(stale)} total)" if len(stale) > 10 else "")
+        raise SystemExit(
+            f"\033[91mcond.npy species_tags are stale against {SPECIES_TAGS_FILE}:\n  {shown}\n"
+            "Re-run tools/regenerate_dataset_artifacts.py --species-tags-file <sidecar> "
+            "for this dataset.\033[0m"
         )

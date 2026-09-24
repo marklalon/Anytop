@@ -12,10 +12,10 @@ Similarity blends three signals (see ``SimilarityWeights``), each a distance
 in ``[0, ~1]``:
 
   * **Motion tags** -- the *primary* term. Every cond entry carries a baked
-    ``species_tags`` triple ``(body-plan, size, gait)`` such as
-    ``('Quadruped', 'Large', 'Galloping')``; the slots are compared one by one
-    and weighted (body plan first, gait second, size last), so a Horse is close
-    to a Deer and a Cavalry unit, and no closer to a Chicken than to a Crow.
+    ``species_tags`` pair ``(body-plan, gait)`` such as
+    ``('Quadruped', 'Galloping')``; the slots are compared one by one and
+    weighted (body plan above gait), so a Horse is close to a Deer and a Cavalry
+    unit, and no closer to a Chicken than to a Crow.
     Grouping by *how an animal moves* is what the smoothness / spectral
     statistics the scorer compares actually depend on.
   * **Body parts** -- Jaccard over the *slim* joint tokens the joint-name
@@ -49,18 +49,20 @@ from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 
 
 # ── Motion tags ──────────────────────────────────────────────────────────────
-# Slot weights of the species_tags triple: (body-plan, size, gait). Body plan
-# decides which limbs carry the motion; gait is the dynamics; size mostly
-# scales the tempo. The last word of the gait slot is compared, so the
-# "Chibi" / "Robotic" style prefixes ("Chibi Striding" vs "Striding") do not
-# separate species that move the same way.
-_TAG_SLOT_WEIGHTS = (0.5, 0.2, 0.3)
+# Slot weights of the species_tags pair: (body-plan, gait). Body plan decides
+# which limbs carry the motion; gait is the dynamics. The last word of the gait
+# slot is compared, so the "Chibi" / "Robotic" style prefixes ("Chibi Striding"
+# vs "Striding") do not separate species that move the same way.
+_TAG_SLOT_WEIGHTS = (0.6, 0.4)
 _TAG_ARITY = len(_TAG_SLOT_WEIGHTS)
-_GAIT_SLOT = 2
+_GAIT_SLOT = 1
+# A cond baked before the size slot was removed carries (body-plan, size, gait);
+# its size word is dropped on read so such a checkpoint's cond still ranks.
+_LEGACY_SIZE_SLOT_ARITY = 3
 
 
 def species_tags_of(object_cond: Mapping[str, object], object_type_hint: str) -> tuple[str, ...]:
-    """The ``(body-plan, size, gait)`` triple of a cond entry, lower-cased.
+    """The ``(body-plan, gait)`` pair of a cond entry, lower-cased.
 
     Reads the entry's baked ``species_tags`` (every cond since schema v4 has
     them, including a custom retarget cond), falling back to the tag sidecar
@@ -69,13 +71,16 @@ def species_tags_of(object_cond: Mapping[str, object], object_type_hint: str) ->
     tags = object_cond.get("species_tags")
     if not tags:
         tags = dataset_tags().tags_for(object_cond.get("object_type") or object_type_hint)
-    return tuple(str(tag).strip().lower() for tag in (tags or ()))
+    tags = tuple(str(tag).strip().lower() for tag in (tags or ()))
+    if len(tags) == _LEGACY_SIZE_SLOT_ARITY:
+        tags = (tags[0], tags[2])
+    return tags
 
 
 def tag_distance(query_tags: Sequence[str], candidate_tags: Sequence[str]) -> float:
-    """Weighted slot mismatch of two tag triples, in ``[0, 1]``.
+    """Weighted slot mismatch of two tag pairs, in ``[0, 1]``.
 
-    A triple that is missing or short (unregistered species) is maximally far
+    A pair that is missing or short (unregistered species) is maximally far
     from everything, so ranking falls back to the morphological terms.
     """
     if len(query_tags) < _TAG_ARITY or len(candidate_tags) < _TAG_ARITY:
@@ -236,7 +241,7 @@ DEFAULT_WEIGHTS = SimilarityWeights()
 @dataclass
 class SpeciesSimilarity:
     name: str
-    tag_distance: float           # weighted slot mismatch of the species_tags triples
+    tag_distance: float           # weighted slot mismatch of the species_tags pairs
     jaccard: float                # body-part overlap (1 = identical part set)
     topology_distance: float      # z-scored descriptor euclidean (pool-relative)
     combined_distance: float

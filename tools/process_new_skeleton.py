@@ -20,7 +20,7 @@ object_type       - Species/type name (e.g. "Dragon"). Inferred from the tpos-pa
                     when omitted: the whole stem minus trailing pose tokens
                     ("Pet_Kiki_A_Tpose.glb" -> "Pet_Kiki_A").
 species-tags      - Comma-separated species tags (motion descriptor) for --object-type,
-                    e.g. 'Quadruped,Large,Lumbering'. REQUIRED: it defines the
+                    e.g. 'Quadruped,Lumbering'. REQUIRED: it defines the
                     descriptor baked into cond.npy. There is no fallback to the
                     default dataset's species_tags.jsonl.
 crop-enabled      - Enable skeleton cropping to MAX_JOINTS=100.
@@ -223,12 +223,11 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
     if not raw_tags:
         raise ValueError(
             "--species-tags is required for a new skeleton. It defines the motion "
-            "descriptor (body-plan, size, locomotion) baked into cond.npy. There is "
+            "descriptor (body-plan, locomotion) baked into cond.npy. There is "
             "no fallback to the default dataset's tags."
         )
-    parsed_tags = tuple(t.strip() for t in raw_tags.split(',') if t.strip())
-    if not parsed_tags:
-        raise ValueError("--species-tags must contain at least one non-empty tag.")
+    parsed_tags = dataset_tags.parse_species_tags(raw_tags)
+    dataset_tags.check_species_tags(parsed_tags, "--species-tags")
     os.makedirs(save_dir, exist_ok=True)
     dataset_tags.register_species_tags(object_type, parsed_tags)
     _upsert_species_tags_sidecar(save_dir, object_type, parsed_tags)

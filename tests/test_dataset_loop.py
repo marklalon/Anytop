@@ -40,6 +40,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     physical_hml_to_canonical,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
     JOINT_NAME_EMBEDDING_SLIM,
@@ -176,14 +177,19 @@ def _load_cond_stamped_with_the_current_schema(*args, **kwargs):
     outright -- correctly, since those vectors mean something else. These are
     loop-padding tests, though: they must exercise the temporal path, not the
     embedding contract (tests/test_joint_struct_features.py covers that), so they
-    accept the cond that is on disk.
+    accept the cond that is on disk. The baked species_tags are restamped from
+    the sidecar for the same reason (tests/test_species_tags_config.py covers the
+    stale-cond guard).
     """
     cond_dict = load_cond(*args, **kwargs)
-    for entry in cond_dict.values():
+    tags = dataset_tags()
+    for object_type, entry in cond_dict.items():
         meta = dict(entry.get('joints_names_embs_meta') or {})
         meta['schema_version'] = JOINT_NAME_EMBEDDING_SCHEMA_VERSION
         meta['slim'] = JOINT_NAME_EMBEDDING_SLIM
         entry['joints_names_embs_meta'] = meta
+        if 'species_tags' in entry:
+            entry['species_tags'] = tags.tags_for(object_type)
     return cond_dict
 
 

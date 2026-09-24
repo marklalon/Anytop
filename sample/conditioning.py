@@ -21,6 +21,10 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     get_canonical_global_stats,
     mark_canonical_cond_entry,
 )
+from data_loaders.truebones.truebones_utils.dataset_tags import (
+    check_species_tags,
+    parse_species_tags,
+)
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
@@ -30,11 +34,16 @@ from utils.model_util import unwrap_anytop_model
 
 
 def _parse_species_tags(raw):
-    """Split a raw ``--species_tags`` string into a clean list of tags.
+    """``--species_tags`` -> tags in sidecar form, or ``[]`` when not given.
 
-    Accepts comma- or semicolon-separated tags and drops empty entries.
+    Uses the sidecar's own parser, so a hand-typed ``quadruped; chibi striding``
+    reaches T5 as the same text a registered species was encoded from, and a
+    descriptor with the wrong slot count fails here instead of being encoded.
     """
-    return [t.strip() for t in str(raw or '').replace(';', ',').split(',') if t.strip()]
+    tags = parse_species_tags(str(raw or ''))
+    if tags:
+        check_species_tags(tags, '--species_tags')
+    return list(tags)
 
 
 def _resolve_species_t5_name(cond_entry):

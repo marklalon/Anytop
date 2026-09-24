@@ -57,7 +57,10 @@ from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
-from data_loaders.truebones.truebones_utils.dataset_tags import assert_species_tags_cover
+from data_loaders.truebones.truebones_utils.dataset_tags import (
+    assert_cond_species_tags_current,
+    assert_species_tags_cover,
+)
 
 
 
@@ -1709,6 +1712,7 @@ class Truebones(data.Dataset):
         # Fast-fail before training if any species being trained lacks a motion
         # tag (the per-species condition has no fallback).
         assert_species_tags_cover(cond_dict.keys())
+        assert_cond_species_tags_current(cond_dict)
         cond_dict = ensure_joint_name_embeddings(cond_dict, cond_source=opt.cond_file)
         for object_type, cond in cond_dict.items():
             mark_canonical_cond_entry(cond)

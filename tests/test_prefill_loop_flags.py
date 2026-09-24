@@ -88,7 +88,7 @@ def _read_rows(path: Path):
 def _write_species_tags(dataset_dir: Path, species):
     _write_rows(
         dataset_dir / "species_tags.jsonl",
-        [{"species": name, "species_tags": ["Quadruped", "Medium", "Striding"]} for name in species],
+        [{"species": name, "species_tags": ["Quadruped", "Striding"]} for name in species],
     )
 
 

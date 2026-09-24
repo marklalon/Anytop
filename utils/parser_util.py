@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 22
+CKPT_VERSION = 23
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -697,7 +697,7 @@ def add_generate_options(parser):
                             "mode to guide away from).")
     group.add_argument("--species_tags", default="", type=str,
                        help="Override the target species' motion style tags for this generation, e.g. "
-                            "'Quadruped,Heavy,Lumbering'. Comma/semicolon-separated. The tags are re-encoded "
+                            "'Quadruped,Lumbering'. Comma/semicolon-separated. The tags are re-encoded "
                             "through the same T5 conditioner used at preprocessing and replace the species "
                             "descriptor baked into cond.npy (default from species_tags.jsonl), letting you "
                             "restyle the generated motion (e.g. make a Winged Dragon walk on the ground). "
@@ -750,7 +750,7 @@ def process_new_skeleton_args():
                             "enable for training-compatible preprocessing.")
     group.add_argument("--species-tags", required=True, type=str,
                        help="Comma-separated species tags (motion descriptor) for --object-type, "
-                            "e.g. 'Quadruped,Large,Lumbering'. REQUIRED for a new skeleton: it "
+                            "e.g. 'Quadruped,Lumbering'. REQUIRED for a new skeleton: it "
                             "defines the descriptor baked into cond.npy. There is no fallback to "
                             "the default dataset's species_tags.jsonl, so it must be supplied "
                             "explicitly.")

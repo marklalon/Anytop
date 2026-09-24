@@ -77,7 +77,7 @@ def _write_species_tags(dataset_dir, species=("Cat", "Dog", "Stale")):
     path = Path(dataset_dir) / "species_tags.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        json.dumps({"species": name, "species_tags": ["Quadruped", "Medium", "Striding"]})
+        json.dumps({"species": name, "species_tags": ["Quadruped", "Striding"]})
         for name in species
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

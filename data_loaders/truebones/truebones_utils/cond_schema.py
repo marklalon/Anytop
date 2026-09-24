@@ -37,6 +37,7 @@ import numpy as np
 from data_loaders.truebones.truebones_utils.topology_relations import (
     refresh_topology_relations_in_cond_dict,
 )
+from data_loaders.truebones.truebones_utils.dataset_tags import parse_species_tags
 from data_loaders.truebones.truebones_utils.dataset_sources import (
     COND_FILE,
     COND_SCHEMA_VERSION,
@@ -79,7 +80,7 @@ def _read_species_tags_sidecar(dataset_root) -> dict[str, tuple[str, ...]]:
             continue
         record = json.loads(text)
         species = str(record["species"]).strip()
-        tags[species] = tuple(str(tag).strip() for tag in record["species_tags"])
+        tags[species] = parse_species_tags(record["species_tags"])
     return tags
 
 
