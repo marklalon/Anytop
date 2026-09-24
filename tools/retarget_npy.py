@@ -18,7 +18,7 @@ Usage examples:
 
     # Retarget a feature-space .npy onto the Dragon skeleton
     python tools/retarget_npy.py \\
-        --source dataset/.../Horse___Run_01.npy --object_type Dragon
+        --source dataset/.../Horse_Run.npy --object_type Dragon
 
     # Retarget a raw GLB animation (source needs no cond entry)
     python tools/retarget_npy.py \\
@@ -170,7 +170,7 @@ def main() -> None:
             parser.error(
                 f'Could not infer source object_type from filename '
                 f'"{base_name}". For .npy sources the filename must contain '
-                f'a known object_type (e.g. Horse___Run_01.npy).'
+                f'a known object_type (e.g. Horse_Run.npy).'
             )
         if src_type == target_type:
             # Same skeleton — no retarget needed; copy source features as-is.

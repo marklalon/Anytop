@@ -254,3 +254,23 @@ def test_grouping_key_is_namespace_free_from_either_branch(tmp_path):
         )
         == "Horse"
     )
+
+
+@pytest.mark.parametrize(
+    "filename, expected",
+    [
+        ("Pet_Kiki_A.glb", "Pet_Kiki_A"),
+        ("Pet_Kiki_A_Tpose.glb", "Pet_Kiki_A"),
+        ("FEP_MagmaDemon_Tpose.glb", "FEP_MagmaDemon"),
+        ("Horse_Tpose.fbx", "Horse"),
+        ("Wyvern-T-Pose.fbx", "Wyvern"),
+        ("Elephant.rig.glb", "Elephant"),
+        ("dragon.fbx", "dragon"),
+    ],
+)
+def test_new_skeleton_species_is_the_whole_stem(filename, expected):
+    # A new skeleton has no registry to match prefixes against, so the stem is
+    # the species (as the raw directory name is in training), minus pose tokens.
+    from tools.process_new_skeleton import species_from_tpose_stem
+
+    assert species_from_tpose_stem(filename) == expected

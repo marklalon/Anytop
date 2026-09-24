@@ -13,11 +13,11 @@ baseline.
 
 Examples:
     python Anytop/tools/check_bone_length_drift.py \
-        --input Anytop/outputs/Fox___Run_0.npy
+        --input Anytop/outputs/Fox_Run_0.npy
 
     python Anytop/tools/check_bone_length_drift.py \
-        --input Anytop/outputs/Fox___Run_0.glb \
-        --json-out outputs/Fox___Run_0.bone_length_drift.json
+        --input Anytop/outputs/Fox_Run_0.glb \
+        --json-out outputs/Fox_Run_0.bone_length_drift.json
 """
 from __future__ import annotations
 

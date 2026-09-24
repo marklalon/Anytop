@@ -27,23 +27,23 @@ during restore.
 Usage:
     # Skinned GLB in native (mesh) space
     python tools/restore_glb_from_npy.py \\
-        --npy "F:/npy/Horse___RunToStop_29.npy" \\
+        --npy "F:/npy/Horse_RunToStop.npy" \\
         --tpose-mesh "D:/Models/HorseALL-TPOSE.fbx"
 
     # Skinned GLB in HML preprocessed space
     python tools/restore_glb_from_npy.py \\
-        --npy "F:/npy/Horse___RunToStop_29.npy" \\
+        --npy "F:/npy/Horse_RunToStop.npy" \\
         --tpose-mesh "D:/Models/HorseALL-TPOSE.fbx" \\
         --restore-space hml
 
     # Skeleton-only GLB from cond.npy (HML space)
     python tools/restore_glb_from_npy.py \\
-        --npy "F:/npy/Horse___RunToStop_29.npy" \\
+        --npy "F:/npy/Horse_RunToStop.npy" \\
         --skeleton-only
 
     # Skeleton-only GLB using T-pose armature for rest rotations (native space)
     python tools/restore_glb_from_npy.py \\
-        --npy "F:/npy/Horse___RunToStop_29.npy" \\
+        --npy "F:/npy/Horse_RunToStop.npy" \\
         --tpose-mesh "D:/Models/HorseALL-TPOSE.fbx" \\
         --skeleton-only
 

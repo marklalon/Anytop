@@ -5,8 +5,8 @@ set RUN_NAME=merged_all_v26
 REM ----------------------------------------------------------------------
 REM Combination rules for target skeleton + reference motion (passed via %* to sample/generate.py):
 REM   1) --object_type Horse only                          : random generation for Horse
-REM   2) --reference_motion path\Horse___Run.npy only      : infer "Horse" from filename, reference-guided generation
-REM   3) --reference_motion path\Flamingo___Walk.npy --object_type Horse
+REM   2) --reference_motion path\Horse_Run.npy only      : infer "Horse" from filename, reference-guided generation
+REM   3) --reference_motion path\Flamingo_Walk.npy --object_type Horse
 REM      : inferred "Flamingo" differs from target "Horse" -> auto retarget Flamingo motion to Horse skeleton,
 REM        then use as reference in diffusion process (intermediate _retargeted_*.npy / .bvh written to OUTPUT_DIR)
 REM   4) neither provided -> error and exit

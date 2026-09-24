@@ -61,14 +61,17 @@ def infer_object_type_from_filename(
 
     Handles these patterns (in priority order):
 
-        ``{Type}___{Action}_{ID}.ext``     — triple underscore (e.g. ``Horse___RunToStop_29.npy``)
-        ``{Type}_{Action}_{ID}.ext``        — single underscore (e.g. ``Sea_Lion_Swim_42.npy``)
-        ``{Type}-{Action}.ext``             — hyphen (e.g. ``Wyvern-Tpose.fbx``)
-        ``{Type}.{suffix}.ext``             — dot (e.g. ``Elephant.rig.glb``)
+        ``{Type}_{Action}.ext``   — underscore, the processed-clip convention
+                                    (e.g. ``FEP_MagmaDemon_Idle.npy``)
+        ``{Type}-{Action}.ext``   — hyphen (e.g. ``Wyvern-Tpose.fbx``)
+        ``{Type}.{suffix}.ext``   — dot (e.g. ``Elephant.rig.glb``)
 
-    When *valid_types* is provided the extracted candidate(s) are validated
-    against that container.  Multi-word types (e.g. ``Sea_Lion``) are handled
-    via progressive prefix matching. Validation is **case-insensitive** and the
+    The underscore that separates species from action is also legal *inside* a
+    species name (``Sea_Lion``, ``FEP_MagmaDemon``), so only a registry can
+    tell where the species ends. When *valid_types* is provided the candidates
+    are validated against it and the longest registered underscore prefix wins;
+    without it the stem is split blindly at the first underscore, which cuts a
+    multi-token species short. Validation is **case-insensitive** and the
     canonical key from *valid_types* is returned, so a lowercase filename like
     ``dragon_tpose.glb`` resolves to a registered ``Dragon`` key (matching the
     case-insensitive registry check downstream) instead of silently missing.
@@ -126,14 +129,7 @@ def infer_object_type_from_filename(
             return exact
         return _canon_folded.get(candidate.lower())
 
-    # 1. Triple-underscore separator  (highest priority)
-    sep_triple = "___"
-    if sep_triple in stem:
-        matched = _match(_strip_common_suffixes(stem.split(sep_triple, 1)[0]))
-        if matched is not None:
-            return matched
-
-    # 2. Progressive single-underscore prefix matching
+    # 1. Progressive underscore prefix matching
     #    (handles multi-word types like "Sea_Lion"). The range includes the whole
     #    stem so a file named after the species alone ("Deer_Buck.glb") matches
     #    "Deer_Buck" instead of stopping at the shorter "Deer".
@@ -147,7 +143,7 @@ def infer_object_type_from_filename(
         if best is not None:
             return best
 
-    # 3. Single underscore — first token (blind, when no valid_types)
+    # 2. Underscore — first token (blind, when no valid_types)
     if "_" in stem:
         first_token = _strip_common_suffixes(stem.split("_", 1)[0])
         if first_token:
@@ -155,7 +151,7 @@ def infer_object_type_from_filename(
             if matched is not None:
                 return matched
 
-    # 4. Hyphen separator (for FBX stems like "Wyvern-Tpose")
+    # 3. Hyphen separator (for FBX stems like "Wyvern-Tpose")
     if "-" in stem:
         first_token = _strip_common_suffixes(stem.split("-", 1)[0])
         if first_token:
@@ -163,7 +159,7 @@ def infer_object_type_from_filename(
             if matched is not None:
                 return matched
 
-    # 4b. Dot separator (for stems like "Elephant.rig" from "Elephant.rig.glb")
+    # 4. Dot separator (for stems like "Elephant.rig" from "Elephant.rig.glb")
     if "." in stem:
         first_token = _strip_common_suffixes(stem.split(".", 1)[0])
         if first_token:
@@ -172,9 +168,8 @@ def infer_object_type_from_filename(
                 return matched
 
     # 5. Fallback: bare stem (e.g. "dragon.fbx" → "dragon"). Validated too, so a
-    # file named after the species alone ("Sea_Lion.npy", "Deer_Buck.npy") still
-    # resolves once a registry is supplied -- rule 2 only ever tries *proper*
-    # prefixes, and rule 3 would stop at "Sea".
+    # hyphenated or dotted stem that no earlier rule matched still resolves
+    # when the whole stem is a registered species.
     stripped = _strip_common_suffixes(stem)
     if not stripped:
         return None

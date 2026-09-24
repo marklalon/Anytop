@@ -742,7 +742,8 @@ def process_new_skeleton_args():
                        help="Output directory.")
     group.add_argument("--object-type", default=None, type=str,
                        help="A character's species/type name (e.g. \"Dragon\"). "
-                            "When omitted, inferred from the tpos-path filename.")
+                            "When omitted, the tpos-path file stem minus trailing pose "
+                            "tokens (e.g. 'Pet_Kiki_A_Tpose.glb' -> 'Pet_Kiki_A').")
     group.add_argument("--crop-enabled", action='store_true', default=False,
                        help="Enable automatic skeleton cropping to MAX_JOINTS=100. "
                             "Off by default because inference has no joint cap; "
@@ -765,6 +766,10 @@ def process_new_skeleton_args():
     group.add_argument("--yes", action='store_true', default=False,
                        help="Skip all interactive confirmation prompts (e.g. existing data "
                             "overwrite prompt). Useful for headless / automated calls.")
+    group.add_argument("--export-tpose-bvh", action='store_true', default=False,
+                       help="Also write a single-frame t-pose BVH preview to "
+                            "<save-dir>/bvh_tpose/<object_type>.bvh (rest offsets from "
+                            "cond.npy, canonical frame and units).")
     args = parser.parse_args()
     return args
 

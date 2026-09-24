@@ -473,7 +473,7 @@ def main(args=None, cond_dict=None, runtime=None):
                 f"ERROR: Cannot infer object_type from reference motion filename: "
                 f"{reference_motion_path}\nAvailable object types: {available}\n"
                 "Rename the file to follow the naming convention "
-                "(e.g., 'ObjectType___action_id.npy') or pass --object_type explicitly."
+                "(e.g., 'ObjectType_Action.npy') or pass --object_type explicitly."
             )
     else:
         target_type = None  # unreachable

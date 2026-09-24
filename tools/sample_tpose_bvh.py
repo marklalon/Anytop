@@ -80,7 +80,8 @@ def _build_tpose_animation(object_cond: dict) -> tuple[Animation, list[str]]:
 def sample_tpose_bvh(
     dataset_dir: str | Path | None = None,
     only_objects: set[str] | None = None,
-) -> Path:
+) -> list[Path]:
+    """Write one t-pose BVH per requested character; return the written paths."""
     dataset_dir_path = Path(get_dataset_dir(str(dataset_dir) if dataset_dir else None)).resolve()
     cond_path = dataset_dir_path / "cond.npy"
     if not cond_path.exists():
@@ -106,16 +107,16 @@ def sample_tpose_bvh(
     out_dir = dataset_dir_path / "bvh_tpose"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    written = 0
+    written: list[Path] = []
     for object_type in object_types:
         anim, joint_names = _build_tpose_animation(cond[object_type])
         out_path = out_dir / f"{file_tokens[object_type]}.bvh"
         bvh_save(str(out_path), anim, names=joint_names, positions=False)
         print(f"[OK] {object_type}: {len(joint_names)} joints -> {out_path}")
-        written += 1
+        written.append(out_path)
 
-    print(f"\n[PASS] wrote {written} t-pose BVH file(s) to {out_dir}")
-    return out_dir
+    print(f"\n[PASS] wrote {len(written)} t-pose BVH file(s) to {out_dir}")
+    return written
 
 
 def main() -> int:
