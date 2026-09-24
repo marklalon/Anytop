@@ -327,6 +327,7 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'ctrl',
     'dummy',
     'effects',
+    'fan',
     'fire',
     'fur',
     'gold',

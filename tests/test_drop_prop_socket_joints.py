@@ -178,3 +178,19 @@ def test_reindex_rejects_a_keep_set_that_orphans_a_child():
     keep_indices = [j for j in range(len(_BODY_NAMES)) if j != 1]  # Spine, mid-chain
     with pytest.raises(ValueError, match='parent'):
         reindex_animation_to_kept_joints(anim, _BODY_NAMES, keep_indices)
+
+
+@pytest.mark.parametrize('prop_name', ['Bip001-Prop1', 'Bip01 Prop2', 'Bip001_Prop1'])
+def test_a_biped_prop_bone_skips_the_length_gate(prop_name):
+    """A Biped prop parked close to the body is still a prop: the name is reserved."""
+    names = _BODY_NAMES + [prop_name]
+    parents = np.array(_BODY_PARENTS + [0], dtype=np.int32)
+    offsets = np.array(_BODY_OFFSETS + [[0.5, 0.0, 0.0]], dtype=np.float64)
+    assert find_prop_socket_joints(offsets, parents, names) == {len(_BODY_NAMES)}
+
+
+def test_the_biped_prop_name_still_honours_the_subtree_cap():
+    names = _BODY_NAMES + ['Bip001-Prop1'] + [f'Chain{i}' for i in range(5)]
+    parents = np.array(_BODY_PARENTS + [0] + list(range(19, 24)), dtype=np.int32)
+    offsets = np.array(_BODY_OFFSETS + [[0.5, 0.0, 0.0]] * 6, dtype=np.float64)
+    assert find_prop_socket_joints(offsets, parents, names) == set()

@@ -1967,6 +1967,17 @@ def reorder_animation_to_dfs(anim, names):
 
 ################## Scaling Utilities #####################
 
+# 3ds Max Biped's held-prop bone ("Bip001-Prop1", "Bip01 Prop2"). The Biped
+# system reserves the name for props, so it is trusted without the length gate:
+# a rig can park its prop close to the body in the T-pose (Pet_Hamperor's
+# sceptre sits under the gate while it rides the right hand in every clip).
+_BIPED_PROP_BONE_PATTERN = re.compile(r'(?<![a-z0-9])bip\d+[\s_\-]?prop\d+$', re.IGNORECASE)
+
+
+def _is_biped_prop_bone(name):
+    return bool(_BIPED_PROP_BONE_PATTERN.search(str(name)))
+
+
 def find_prop_socket_joints(
     offsets,
     parents,
@@ -1985,6 +1996,10 @@ def find_prop_socket_joints(
     * it carries at most ``max_subtree_joints`` joints below it,
     * its bone is ``length_ratio`` times the skeleton's 90th-percentile bone
       (median as floor for near-degenerate rigs).
+
+    A 3ds Max Biped prop bone (``Bip001-Prop1``) skips the length test; the
+    subtree cap still applies. That name is the Biped system's own reservation
+    for props, unlike the free-form words the name test reads elsewhere.
 
     The socket and its whole subtree are returned. Name and geometry fail in
     opposite directions and are exact only together: 194 dataset joints are
@@ -2043,8 +2058,13 @@ def find_prop_socket_joints(
             joint_index
             for joint_index in remaining
             if subtree_size[joint_index] <= max_subtree_joints
-            and lengths[joint_index] > length_ratio * reference
-            and _name_is_non_anatomical(joint_index)
+            and (
+                _is_biped_prop_bone(joint_names[joint_index])
+                or (
+                    lengths[joint_index] > length_ratio * reference
+                    and _name_is_non_anatomical(joint_index)
+                )
+            )
         }
         if not found:
             break
