@@ -50,6 +50,7 @@ from sample.generation_runtime import (
     _lookup_object_type_case_insensitive,
     _normalize_optional_path,
     _raise_opt_max_joints_for_cond,
+    _resolve_generation_cond_path,
     prepare_generation_runtime,
 )
 from sample.inpaint import (
@@ -269,11 +270,13 @@ def main(args=None, cond_dict=None, runtime=None):
         runtime = prepare_generation_runtime(args, cond_dict=cond_dict)
     else:
         runtime.validate_args(args)
-        # If the task specifies a different --cond_path, reload that cond and
-        # re-derive opt for it (species entries, dataset_tags/subsets, baked
-        # tags) so the runtime reflects the task's cond rather than the
-        # checkpoint's. The model/diffusion stay shared.
-        task_cond = _normalize_optional_path(getattr(args, 'cond_path', '') or '')
+        # If the task resolves to a different cond than the runtime holds (its
+        # own --cond_path, or the checkpoint's cond when it names none), reload
+        # that cond and re-derive opt for it (species entries, dataset_tags/
+        # subsets, baked tags). A task without --cond_path after one with it
+        # therefore switches back to the checkpoint's cond. The model/diffusion
+        # stay shared.
+        task_cond = _normalize_optional_path(_resolve_generation_cond_path(args))
         if task_cond != runtime.cond_path:
             new_cond_dict = load_cond(task_cond)
             # Same gate the first cond went through: a task that swaps in another
@@ -470,7 +473,7 @@ def main(args=None, cond_dict=None, runtime=None):
                 f"ERROR: Cannot infer object_type from reference motion filename: "
                 f"{reference_motion_path}\nAvailable object types: {available}\n"
                 "Rename the file to follow the naming convention "
-                "(e.g., 'ObjectType___action_id.npy') or pass --object_type explicitly."
+                "(e.g., 'ObjectType_Action.npy') or pass --object_type explicitly."
             )
     else:
         target_type = None  # unreachable

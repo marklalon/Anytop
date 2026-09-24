@@ -279,9 +279,14 @@ _EMBED_TEXT_SKIP_TOKENS = {
 # "Bolt") and bare attachment sockets ("L_hand_container", "Quiver_container",
 # "WeaponPosition", "Bone_Mount"). Each was read off its tree first: the
 # containers hang as childless leaves off a hand or the spine, the mount node
-# sits between a rider's spine and the mount's own root. Rig roots that spell a
-# code instead of a body part go here too -- "CG" (centre of gravity), "Hub",
-# "Main" and a bare "Base" are all index-0 nodes with no anatomy in the name.
+# sits between a rider's spine and the mount's own root. "Point" is the 3ds Max
+# Point helper prefix, the same kind of marker as "Dummy" and "Bip": the Pet rigs
+# spell every node "Point_*"/"Bone_*", so without it "Point" survives as the only
+# token and masks the prop word beside it ("Point_fire_C_01" read as anatomy).
+# Their held "Point_stick" is the prop the name then has to carry. Rig roots
+# that spell a code instead of a body part go here too -- "CG" (centre of
+# gravity), "Hub", "Main" and a bare "Base" are all index-0 nodes with no
+# anatomy in the name.
 #
 # Deliberately NOT here, after checking the tree: "Crown" (RMW_Bat hangs it off
 # UpperBody, RMW_Slime off Head -- two rigs, two meanings), "Ice" (an ice
@@ -322,6 +327,7 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'ctrl',
     'dummy',
     'effects',
+    'fan',
     'fire',
     'fur',
     'gold',
@@ -347,6 +353,7 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'null',
     'passenger',
     'pick',
+    'point',
     'pole',
     'ponitail',
     'ponytail',
@@ -361,6 +368,7 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'shield',
     'spear',
     'staff',
+    'stick',
     'sword',
     'target',
     'trajectory',

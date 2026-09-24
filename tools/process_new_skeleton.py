@@ -16,9 +16,11 @@ classification). Tested on FBX from Mixamo and other sources.
 Input Arguments:
 tpos-path         - An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base (required).
 save-dir          - Output directory (required).
-object_type       - Species/type name (e.g. "Dragon"). Inferred from tpos-path filename when omitted.
+object_type       - Species/type name (e.g. "Dragon"). Inferred from the tpos-path file stem
+                    when omitted: the whole stem minus trailing pose tokens
+                    ("Pet_Kiki_A_Tpose.glb" -> "Pet_Kiki_A").
 species-tags      - Comma-separated species tags (motion descriptor) for --object-type,
-                    e.g. 'Quadruped,Large,Lumbering'. REQUIRED: it defines the
+                    e.g. 'Quadruped,Lumbering'. REQUIRED: it defines the
                     descriptor baked into cond.npy. There is no fallback to the
                     default dataset's species_tags.jsonl.
 crop-enabled      - Enable skeleton cropping to MAX_JOINTS=100.
@@ -27,26 +29,59 @@ reference-cond-path - REQUIRED. cond.npy to inherit the per-object_subset
                     standardization statistics from. Those statistics belong to a
                     trained checkpoint, so pass the checkpoint's own cond.npy
                     snapshot. There is no fallback to the processed dataset dir.
+export-tpose-bvh  - Also write a single-frame t-pose BVH preview of the processed
+                    skeleton (same as tools/sample_tpose_bvh.py).
 
 Output (under save_dir/):
   cond.npy    - Skeleton representation (joint name embeddings, graph conditions,
                 canonical feature-space metadata)
                 consumed by AnyTop inference via ``--cond-path``.
+  bvh_tpose/<object_type>.bvh - Optional (``--export-tpose-bvh``) t-pose preview
+                built from the cond.npy rest offsets, in the canonical frame/units.
 """
+import re
 import sys, os, shutil
 from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.motion_process import process_skeleton
-from utils.misc import infer_object_type_from_filename
 from utils.parser_util import process_new_skeleton_args
 
-# Trailing stem tokens that name the *pose*, not the species, so dropping them is
-# expected and needs no warning ("Horse_Tpose.fbx" -> "Horse").
+# Trailing stem tokens that name the *pose*, not the species ("Horse_Tpose.fbx"
+# -> "Horse"). Matched case-insensitively, with an optional hyphen before "pose"
+# ("Wyvern-T-Pose").
 _POSE_STEM_SUFFIXES = frozenset({
     "tpose", "apose", "pose", "rest", "restpose", "bind", "bindpose",
     "rig", "skeleton", "ref", "reference", "all",
 })
+_POSE_STEM_SUFFIX_RE = re.compile(
+    r"[_\-.](?:"
+    + "|".join(
+        re.escape(s[:-4]) + "-?pose" if s.endswith("pose") and len(s) > 4 else re.escape(s)
+        for s in sorted(_POSE_STEM_SUFFIXES, key=len, reverse=True)
+    )
+    + r")$",
+    re.IGNORECASE,
+)
+
+
+def species_from_tpose_stem(tpose_path: str) -> str | None:
+    """The species name a new skeleton's rest-pose file stands for.
+
+    Training takes the species from the raw directory name, never from a
+    filename, so a multi-token species ("MLH_Worker", "Pet_Kiki_A") survives
+    whole. A new skeleton has no directory convention and no cond.npy to match
+    prefixes against, so the file stem *is* the species name here, minus any
+    trailing pose tokens ("Pet_Kiki_A_Tpose.glb" -> "Pet_Kiki_A").
+    """
+    name = os.path.splitext(os.path.basename(tpose_path))[0]
+    while True:
+        stripped = _POSE_STEM_SUFFIX_RE.sub("", name)
+        if stripped == name or not stripped:
+            break
+        name = stripped
+    name = name.strip("_-. ")
+    return name or None
 
 def _upsert_species_tags_sidecar(save_dir: str, species: str, tags) -> str:
     """Write/update the ``species_tags.jsonl`` sidecar for one species.
@@ -90,6 +125,7 @@ def process_new_skeleton(
     species_tags: str | None = None,
     skip_t5_embeddings: bool = False,
     yes: bool = False,
+    export_tpose_bvh: bool = False,
 ) -> dict[str, Any]:
     """Process a new skeleton for AnyTop inference and return resolved metadata.
 
@@ -109,6 +145,7 @@ def process_new_skeleton(
         "skip_t5_embeddings": skip_t5_embeddings,
         "reference_cond_path": reference_cond_path,
         "yes": yes,
+        "export_tpose_bvh": export_tpose_bvh,
     })()
     return _process_new_skeleton_from_args(args)
 
@@ -160,26 +197,16 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
 
     object_type = args.object_type
     if object_type is None:
-        object_type = infer_object_type_from_filename(tpose_path)
+        object_type = species_from_tpose_stem(tpose_path)
         if object_type is None:
             raise FileNotFoundError(
                 f"Cannot infer object-type from reference file '{tpose_path}'."
             )
-        # This is the one inference with no cond.npy to validate against -- a new
-        # skeleton is by definition not registered anywhere yet -- so the filename
-        # is split blindly at the first underscore. Say so out loud when the rest
-        # of the stem is not just a pose suffix, because a multi-token species
-        # ("FEP_MagmaDemon_Tpose.glb") would silently register as "FEP".
-        _stem = os.path.splitext(os.path.basename(tpose_path))[0]
-        _remainder = _stem[len(object_type):].strip("_-. ")
-        if _remainder and _remainder.lower().replace("-", "") not in _POSE_STEM_SUFFIXES:
-            print(
-                f"[WARN] '{_stem}' carries more than the species name; only "
-                f"'{object_type}' was taken and '{_remainder}' dropped. A new "
-                f"skeleton has no cond.npy to validate the name against -- pass "
-                f"--object-type explicitly if that is wrong."
-            )
-        print(f"Auto-detected object_type: {object_type}")
+        print(
+            f"Auto-detected object_type: {object_type} (the whole file stem minus "
+            f"pose tokens; pass --object-type if the stem carries more than the "
+            f"species name)"
+        )
 
     # Skeleton cropping: off by default (inference has no joint cap).
     # Use --crop-enabled to enable MAX_JOINTS=100 cropping.
@@ -196,12 +223,11 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
     if not raw_tags:
         raise ValueError(
             "--species-tags is required for a new skeleton. It defines the motion "
-            "descriptor (body-plan, size, locomotion) baked into cond.npy. There is "
+            "descriptor (body-plan, locomotion) baked into cond.npy. There is "
             "no fallback to the default dataset's tags."
         )
-    parsed_tags = tuple(t.strip() for t in raw_tags.split(',') if t.strip())
-    if not parsed_tags:
-        raise ValueError("--species-tags must contain at least one non-empty tag.")
+    parsed_tags = dataset_tags.parse_species_tags(raw_tags)
+    dataset_tags.check_species_tags(parsed_tags, "--species-tags")
     os.makedirs(save_dir, exist_ok=True)
     dataset_tags.register_species_tags(object_type, parsed_tags)
     _upsert_species_tags_sidecar(save_dir, object_type, parsed_tags)
@@ -218,11 +244,17 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
         reference_cond_path=getattr(args, 'reference_cond_path', None) or None,
     )
 
+    tpose_bvh = None
+    if getattr(args, 'export_tpose_bvh', False):
+        from tools.sample_tpose_bvh import sample_tpose_bvh
+        (tpose_bvh,) = map(str, sample_tpose_bvh(save_dir, only_objects={object_type}))
+
     return {
         "save_dir": save_dir,
         "object_type": object_type,
         "tpose_path": tpose_path,
         "cond_npy": os.path.join(save_dir, "cond.npy"),
+        "tpose_bvh": tpose_bvh,
     }
 
 

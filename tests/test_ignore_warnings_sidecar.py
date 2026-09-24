@@ -34,7 +34,7 @@ def _make_dataset_dir(tmp_path, sidecar_text=None, *, sidecar_in_parent=False):
     dataset_dir = tmp_path / "processed"
     dataset_dir.mkdir(parents=True)
     (dataset_dir / dt.SPECIES_TAGS_FILE).write_text(
-        '{"species": "TestCreature", "species_tags": ["Quadruped", "Medium", "Striding"]}\n',
+        '{"species": "TestCreature", "species_tags": ["Quadruped", "Striding"]}\n',
         encoding="utf-8",
     )
     if sidecar_text is not None:

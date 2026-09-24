@@ -32,7 +32,7 @@ def _make_random_motion(seed: int, t_len: int, joint_count: int) -> np.ndarray:
     return rng.standard_normal((t_len, joint_count, FEATS_LEN), dtype=np.float32)
 
 
-def _make_cond_entry(tags: tuple[str, str, str], joint_count: int = 2) -> dict:
+def _make_cond_entry(tags: tuple[str, str], joint_count: int = 2) -> dict:
     return {
         "parents": np.array([-1, 0], dtype=np.int32)[:joint_count],
         "offsets": np.zeros((joint_count, 3), dtype=np.float64),
@@ -162,14 +162,14 @@ def test_reference_prior_words_reject_what_generate_rejects() -> None:
 
 
 def test_reference_bank_refuses_an_empty_label() -> None:
-    corpus = _make_corpus({"horse": _make_cond_entry(("Quadruped", "Large", "Galloping"))})
+    corpus = _make_corpus({"horse": _make_cond_entry(("Quadruped", "Galloping"))})
     with pytest.raises(ValueError, match="names no head word"):
         corpus.build_bank("horse", "")
 
 
 def test_clip_paths_match_on_head_words_and_list_a_transition_clip_once() -> None:
     corpus = _make_corpus(
-        {"horse": _make_cond_entry(("Quadruped", "Large", "Galloping"))},
+        {"horse": _make_cond_entry(("Quadruped", "Galloping"))},
         {"horse": {"walk": ["walk.npy", "walk_run.npy"], "run": ["walk_run.npy", "run.npy"]}},
     )
     assert corpus.clip_paths(("walk",)) == {"horse": ["walk.npy", "walk_run.npy"]}
@@ -179,10 +179,10 @@ def test_clip_paths_match_on_head_words_and_list_a_transition_clip_once() -> Non
 
 def test_reference_species_selection_accepts_external_query_cond() -> None:
     baseline_cond = {
-        "horse": _make_cond_entry(("Quadruped", "Large", "Galloping")),
-        "snake": _make_cond_entry(("Serpentine", "Small", "Slithering")),
+        "horse": _make_cond_entry(("Quadruped", "Galloping")),
+        "snake": _make_cond_entry(("Serpentine", "Slithering")),
     }
-    query_cond = _make_cond_entry(("Serpentine", "Small", "Slithering"))
+    query_cond = _make_cond_entry(("Serpentine", "Slithering"))
     corpus = _make_corpus(baseline_cond)
 
     selected = corpus.select_species(
@@ -202,31 +202,31 @@ def test_reference_species_selection_accepts_external_query_cond() -> None:
 
 def test_reference_species_selection_widens_to_the_clip_floor() -> None:
     cond = {
-        "horse": _make_cond_entry(("Quadruped", "Large", "Galloping")),
-        "deer": _make_cond_entry(("Quadruped", "Medium", "Galloping")),
-        "bear": _make_cond_entry(("Quadruped", "Large", "Lumbering")),
-        "crow": _make_cond_entry(("Winged", "Small", "Flapping")),
+        "horse": _make_cond_entry(("Quadruped", "Galloping")),
+        "deer": _make_cond_entry(("Quadruped", "Trotting")),
+        "bear": _make_cond_entry(("Quadruped", "Lumbering")),
+        "crow": _make_cond_entry(("Winged", "Flapping")),
     }
     corpus = _make_corpus(cond)
     paths = {"horse": ["h1"], "deer": ["d1", "d2"], "bear": ["b1", "b2", "b3"], "crow": ["c1"] * 10}
 
-    # top_k=1 is the horse alone; the floor of 6 clips pulls in deer and bear
-    # (nearest first) and stops before the crow.
+    # top_k=1 is the horse alone; the floor of 6 clips pulls in bear and deer
+    # (nearest first; equally far, so by name) and stops before the crow.
     selected = corpus.select_species("horse", ("walk",), paths, top_k_species=1, min_reference_clips=6)
-    assert [entry.name for entry in selected] == ["horse", "deer", "bear"]
+    assert [entry.name for entry in selected] == ["horse", "bear", "deer"]
     assert sum(entry.weight for entry in selected) == pytest.approx(1.0)
     assert selected[0].weight > selected[-1].weight
 
     # A floor already met by the top-k adds nothing.
     selected = corpus.select_species("horse", ("walk",), paths, top_k_species=2, min_reference_clips=1)
-    assert [entry.name for entry in selected] == ["horse", "deer"]
+    assert [entry.name for entry in selected] == ["horse", "bear"]
 
 
 def test_registered_cond_is_query_only_reference_baseline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    baseline_cond = {"horse": _make_cond_entry(("Quadruped", "Large", "Galloping"))}
-    custom_cond = {"dragon": _make_cond_entry(("Winged", "Heavy", "Soaring"))}
+    baseline_cond = {"horse": _make_cond_entry(("Quadruped", "Galloping"))}
+    custom_cond = {"dragon": _make_cond_entry(("Winged", "Soaring"))}
 
     scorer = object.__new__(scorer_mod.DistributionMotionQualityScorer)
     scorer.dataset_root = None

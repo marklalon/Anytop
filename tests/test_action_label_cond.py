@@ -138,11 +138,11 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # scalar would sit at its prior forever.
         for absent in ('climb', 'gallop', 'shuffle', 'sneak', 'flap', 'stand',
                        'stretch', 'dig', 'peck', 'drag', 'drink', 'graze',
-                       'haste'):
+                       'haste', 'clean'):
             self.assertNotIn(absent, CONTROLLED_VOCAB, absent)
         # ...and the words the corpus actually uses are all in.
         for present in ('cast', 'projectile', 'swat', 'spawn',
-                        'spin', 'headbutt', 'hover', 'work', 'dead', 'clean',
+                        'spin', 'headbutt', 'hover', 'work', 'dead', 'scratch',
                         'fast', 'fishing', 'bow', 'shield'):
             self.assertIn(present, CONTROLLED_VOCAB, present)
 
@@ -272,9 +272,9 @@ class ActionLabelVocabularyTest(unittest.TestCase):
     def test_canonical_label_round_trips_through_the_parser(self):
         for label in ('walk, forward', 'run, forward, left, fast', 'attack, bite',
                       'land, fly', 'getup, crouch', 'draw', 'sheathe', 'stop',
-                      'walk, forward, slow', 'idle, rear, roar',
+                      'walk, forward, slow', 'rear, roar',
                       'run, turn, right, fast', 'turn, left, hover',
-                      'attack, spin, bow', 'idle, roar'):
+                      'attack, spin, bow', 'roar'):
             self.assertEqual(canonical_action_label(parse_action_label(label)), label)
 
     def test_parser_enforces_the_spelling_contract(self):
@@ -300,10 +300,10 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         self.assertEqual(ACTION_LABEL_MAX_HEADS, 2)
 
     def test_eight_total_words_are_accepted_and_nine_are_rejected(self):
-        eight = 'idle, fast, bite, roar, eat, look, shake, throw'
+        eight = 'idle, fast, bite, eat, look, shake, throw, taunt'
         self.assertEqual(len(parse_action_label(eight)), 8)
         with self.assertRaises(ActionLabelError):
-            parse_action_label(eight + ', taunt')
+            parse_action_label(eight + ', sniff')
 
     def test_validator_hard_fails_on_a_non_canonical_or_unknown_label(self):
         from data_loaders.truebones.truebones_utils import motion_labels

@@ -48,6 +48,7 @@ from utils.fullbody_ik import (
     DEFAULT_IK_STRETCH_FACTOR,
     rebuild_fullbody_animation_with_ik,
 )
+from utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_np
 from utils.roundtrip_common import build_skeleton, identity_rest_rotations
 
 _REQUIRED_COND_FIELDS = ("joints_names", "parents", "offsets", "scale_factor", "orientation_quat")
@@ -170,6 +171,7 @@ def load_tpose_restore_metadata(
     object_type: str,
     *,
     expected_joint_count: Optional[int] = None,
+    promote_root_depth: int = 0,
 ) -> dict[str, object]:
     """Read the T-pose mesh's armature both as AnyTop features and as the raw rig."""
     from data_loaders.truebones.truebones_utils.motion_process import (
@@ -196,6 +198,7 @@ def load_tpose_restore_metadata(
         tpose_mesh,
         object_type,
         max_joints=uncropped_joint_cap,
+        promote_root_depth=int(promote_root_depth),
     )
     raw_parents = np.asarray(raw_parents, dtype=np.int32)
     raw_offsets = np.asarray(raw_offsets, dtype=np.float32)
@@ -257,11 +260,33 @@ def _remap_skeleton_metadata(
         offsets[target_joint_idx] = source_offsets[source_joint_idx]
         rest_rotations[target_joint_idx] = source_rest_rotations[source_joint_idx]
         parent_idx = int(source_parents[source_joint_idx])
+        if parent_idx >= 0 and source_names[parent_idx] not in target_index:
+            # A wrapper root the feature skeleton folded away (cond
+            # root_promote_depth): fold it into this joint the way
+            # promote_root_once does, so the joint keeps its world rest transform.
+            # Anything missing below the root is a real mismatch.
+            dropped = []
+            ancestor = parent_idx
+            while ancestor >= 0 and source_names[ancestor] not in target_index:
+                dropped.append(ancestor)
+                ancestor = int(source_parents[ancestor])
+            if ancestor >= 0:
+                raise ValueError(
+                    f"T-pose mesh parent '{source_names[parent_idx]}' for joint "
+                    f"'{joint_name}' is missing"
+                )
+            for wrapper_idx in dropped:
+                wrapper_rot = np.asarray(source_rest_rotations[wrapper_idx], dtype=np.float64)[None]
+                offsets[target_joint_idx] = (
+                    np.asarray(source_offsets[wrapper_idx], dtype=np.float64)
+                    + quat_rotate_wxyz_np(wrapper_rot, offsets[target_joint_idx][None].astype(np.float64))[0]
+                )
+                rest_rotations[target_joint_idx] = quat_multiply_wxyz_np(
+                    wrapper_rot, rest_rotations[target_joint_idx][None].astype(np.float64)
+                )[0]
+            parent_idx = -1
         if parent_idx >= 0:
-            parent_name = source_names[parent_idx]
-            if parent_name not in target_index:
-                raise ValueError(f"T-pose mesh parent '{parent_name}' for joint '{joint_name}' is missing")
-            parents[target_joint_idx] = target_index[parent_name]
+            parents[target_joint_idx] = target_index[source_names[parent_idx]]
 
     return parents, offsets, rest_rotations
 
@@ -289,6 +314,7 @@ def build_mesh_restore_context(
         tpose_mesh,
         object_type,
         expected_joint_count=len(joint_names),
+        promote_root_depth=int(cond_entry.get("root_promote_depth") or 0),
     )
 
     # ── T-pose rest rotations (from T-pose mesh), matched by joint name ────

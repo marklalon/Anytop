@@ -718,7 +718,11 @@ def build_tpose_cond(*args, **kwargs):
 def _build_rest_pose_only_cond(object_type, rest_pose_path, face_joints, crop_enabled=True):
     object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
         object_type, rest_pose_path, face_joints, crop_enabled=crop_enabled,
+        promote_root_depth=None,
     )
+    # No clips to measure the transport carrier on, so the wrapper depth is the
+    # structural one; npy_restore reads it back to fold the mesh rig the same way.
+    object_cond['root_promote_depth'] = int(tp.promote_root_depth)
     return object_cond, max_joints, tpose_reference_path
 
 
@@ -1184,7 +1188,7 @@ def _write_preprocess_seed_artifacts(save_dir, cond, motion_metadata, max_joints
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
 
-def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error, skip_t5=False, tpose_refs=None):
+def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error, skip_t5=False, tpose_refs=None, embedding_cache_cond=None):
     _print_dataset_summary(max_joints, files_counter, frames_counter)
     with open(pjoin(save_dir, 'metadata.txt'), 'w', encoding='utf-8') as text_file:
         text_file.write('max joints: %d\n' %(max_joints))
@@ -1197,7 +1201,7 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
     _write_positions_error_file(save_dir, squared_positions_error)
 
     if not skip_t5:
-        attach_t5_embeddings_to_cond(cond, save_dir)
+        attach_t5_embeddings_to_cond(cond, save_dir, embedding_cache_cond=embedding_cache_cond)
     _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs)
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
@@ -1794,6 +1798,13 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path,
         object_name, object_cond, reference_cond_path=reference_cond_path
     )
     cond[object_name] = object_cond
+    # The checkpoint's cond already holds T5 vectors for its joint-name and
+    # species texts; any text the new skeleton shares with it is reused, so T5
+    # loads only for texts the checkpoint never saw.
+    embedding_cache_cond = None
+    if not skip_t5 and reference_cond_path and os.path.isfile(reference_cond_path):
+        from .cond_schema import load_cond
+        embedding_cache_cond = load_cond(reference_cond_path)
     _write_dataset_artifacts(
         save_dir,
         cond,
@@ -1805,6 +1816,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path,
         squared_positions_error,
         skip_t5=skip_t5,
         tpose_refs={object_name: tpose_reference_path},
+        embedding_cache_cond=embedding_cache_cond,
     )
     # The joint-name embeddings only exist after the artifacts are written, and
     # only the reference cond knows what the checkpoint was actually trained on.

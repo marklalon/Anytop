@@ -321,7 +321,9 @@ class TrainLoop:
                 main_process_prefetch_batches=0,
                 # Validation sees the clips at their recorded tempo regardless
                 # of --motion_speed_aug, so val losses stay comparable across
-                # runs that differ only in the augmentation. The loop tile draw
+                # runs that differ only in the augmentation (the loader's
+                # budget-fit speed-up of over-long phase-anchored clips is data
+                # preparation, not augmentation, and still applies). The loop tile draw
                 # stays uniform for the same reason, and a loop clip is scored
                 # under the flag it was authored with: --loop_cond_prob is
                 # training-time label noise, not part of the val set.

@@ -85,6 +85,34 @@ def promote_root_once(
     return names, parents, offsets, local_rotations, local_positions, orients
 
 
+def wrapper_root_depth(joint_names, parents, offsets) -> int:
+    """How many roots :func:`collapse_root_skeleton`'s promote loop would fold.
+
+    The loader's rule -- a zero-offset root with a single child and no semantic
+    name -- evaluated without folding: a fold leaves the new root's offset zero
+    exactly when the child's own offset was, so the depth is the run of such
+    joints down the single-child root chain. Used where the loader's verdict was
+    blocked by rig furniture (prop sockets) that has since been dropped.
+    """
+    names = list(joint_names)
+    parents = np.asarray(parents, dtype=np.int64)
+    offsets = np.asarray(offsets)
+    depth = 0
+    root = 0
+    while root < len(names) - 1:
+        children = np.flatnonzero(parents == root)
+        children = children[children != root]
+        if (
+            len(children) != 1
+            or not np.isclose(offsets[root], 0).all()
+            or names[root].lower() in COMMON_ROOT_NAMES
+        ):
+            break
+        depth += 1
+        root = int(children[0])
+    return depth
+
+
 def collapse_root_skeleton(
     joint_names: list[str],
     parents: np.ndarray,

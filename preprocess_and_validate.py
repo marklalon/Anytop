@@ -462,15 +462,16 @@ def _capture_preserved_side_artifacts(
         }
 
     motions_dir = dataset_dir_path / MOTION_DIR
-    # The sidecar is a run prerequisite (verified up front before preprocessing
-    # starts), so every clip carries an entry and the strict join is the right
-    # read: an incomplete action_labels.jsonl aborts before anything is deleted.
-    # The loop flag is the one exception: the targeted species' rows may still
-    # lack it (their rebuild is what fills it), and those entries are dropped
-    # here anyway.
-    for motion_name, entry in load_motion_metadata(
-        dataset_dir_path, require_loop_flag=False
-    ).items():
+    # The targeted species' rows are dropped before the sidecar join: their
+    # clips are about to be rebuilt, and a clip whose source was deleted or
+    # split has no action_labels.jsonl row any more. Every preserved clip still
+    # needs one, so the strict join over those rows aborts before anything is
+    # deleted. The loop flag is not required here: rows that lack it fail the
+    # join after preprocessing instead.
+    from data_loaders.truebones.truebones_utils.dataset_pipeline import _load_motion_metadata_raw
+    raw_metadata = _load_motion_metadata_raw(dataset_dir_path)
+    kept: dict[str, dict[str, object]] = {}
+    for motion_name, entry in raw_metadata.items():
         if not (motions_dir / motion_name).exists():
             continue
         object_type = str(
@@ -479,7 +480,12 @@ def _capture_preserved_side_artifacts(
         )
         if object_type in target_object_types:
             continue
-        preserved.motion_metadata[motion_name] = dict(entry)
+        kept[motion_name] = entry
+    if kept:
+        joined = load_motion_metadata(
+            dataset_dir_path, require_loop_flag=False, only=set(kept)
+        )
+        preserved.motion_metadata = {name: dict(joined[name]) for name in kept}
 
     return preserved
 

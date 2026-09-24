@@ -131,6 +131,15 @@ JOINT_BUCKETS = (48, 64, MAX_JOINTS)
 # multiple (reference crop budget + num_frames range). Changing it requires
 # retraining.
 MAX_SOURCE_FRAMES_MULT=2
+# Largest speed-up the loader forces on a phase-anchored clip (an attack, a
+# death -- any label loop_is_phase_free rejects) that runs over the source
+# budget, so that it enters the window WHOLE instead of being cropped: a clip
+# up to this multiple of the budget is played faster until it fits, a longer
+# one is played this much faster and then cropped, keeping as much of the
+# event in the window as possible. Phase-free clips are cropped as recorded
+# (any window of a gait is still that gait). Invisible to the model, like
+# --motion_speed_aug; changing it requires retraining.
+MAX_FIT_SPEEDUP=1.5
 FPS=30
 FEATS_LEN=12
 SMPL_OFFSETS = np.array([[ 0.0000,  0.0000,  0.0000],

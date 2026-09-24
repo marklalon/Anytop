@@ -13,7 +13,7 @@ applied faithfully in the same order as dataset.py:
       with random phase offset and multi-cycle phase metadata
 
 Exported filenames encode the applied augmentations, e.g.:
-  Horse___Gallop_123__loop7x+spd1.13.bvh
+  Horse_Gallop__loop7x+spd1.13.bvh
 
 By default the exported BVH is the 60-frame model window itself, i.e. it plays
 at the window's compressed tempo. Pass --real-time to stretch it back to

@@ -45,7 +45,7 @@ _RETIRED_AUX_ACTION_GROUPS_KEY = "aux_action_groups"
 #                    condition, routed to the learned null embedding).
 #
 # The vocabulary is CONTROLLED, not mutually exclusive classes: a label names
-# as many words as apply ("idle, roar"), and naming only part of what a clip
+# as many words as apply ("idle, sniff"), and naming only part of what a clip
 # does is legal ("run" with no direction = the marginal over directions).
 #
 # Labels are keywords, not prose: mean-pooled T5 dilutes a modifier in
@@ -76,9 +76,9 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # the modifiers follow in tuple order -- one combination, exactly one spelling
 # (see canonical_action_label).
 HEAD_VOCAB: tuple[str, ...] = (
-    "attack", "burrow", "crawl", "dance", "die", "draw", "fall",
+    "attack", "burrow", "crawl", "die", "draw", "fall",
     "fly", "getup", "hover", "hurt", "idle", "jump", "kneel", "land", "laydown",
-    "lift", "pickup", "putdown", "rear", "rest", "roll", "run", "sheathe",
+    "lift", "pickup", "putdown", "rear", "rest", "roar", "roll", "run", "sheathe",
     "sitdown", "spawn", "stop", "swim", "takeoff", "turn", "walk", "work",
 )
 
@@ -87,21 +87,19 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     # -- block A: how the head is executed (gait, speed, wing state) --
     "trot", "fast", "glide", "slow", "retreat", "dive", "flopping",
     # -- block B: secondary action layered on the head --
-    "bite", "roar", "eat", "look", "shake", "throw", "taunt",
+    "bite", "eat", "look", "shake", "throw", "taunt",
     "sniff", "yawn", "catch", "sting", "kick", "spit", "wag", "scratch",
     "crouch", "dead", "sit", "sleep",
     # -- block C: how a strike is delivered (manner before strike type) --
-    "spin", "flip", "twist", "charge",
+    "spin", "flip", "charge",
     "headbutt", "punch", "swat", "slash", "stab", "smash", "whip",
-    "block", "cast", "projectile",
+    "block", "cast", "firebreath", "projectile",
     # -- block D: affect / social gesture --
-    "happy", "talk", "clap", "wave", "cry", "salute",
+    "happy", "talk", "clap", "wave", "cry",
     # -- block E: activity and object handling --
-    "clean", "aim", "carry", "fishing", "cook", "reload",
+    "aim", "carry", "fishing", "cook", "reload",
     "saw", "shovel", "pull", "push",
-    # -- block F: which body part leads a dance --
-    "footwork", "fullbody", "armwork", "sway",
-    # -- block G: the implement an action is performed with (never the asset
+    # -- block F: the implement an action is performed with (never the asset
     # itself): archery, shooting, tool work, shield bash. The word names the
     # MOTION the implement produces, never the fact of holding one -- see the
     # note under DIRECTION_VOCAB.
@@ -192,6 +190,37 @@ assert len(_HEAD_VOCAB_SET) == len(HEAD_VOCAB), "HEAD_VOCAB has a repeat"
 # one more. Three would have no defined reading.
 ACTION_LABEL_MAX_HEADS = 2
 
+# The heads whose loops are PHASE-FREE: a periodic state with no distinguished
+# frame (a gait cycle, a wingbeat, breathing, a held pose), so any frame may
+# start the window. Only a loop whose every head is listed here gets the
+# circular roll and the tiling in the dataset. Every other loop is
+# PHASE-ANCHORED -- an event (strike, flinch, roar, jump ...) that leaves a ready
+# pose and returns to it: closed, but its frame 0 is the ready pose and the
+# window holds exactly one event, which is what ``--loop`` must reproduce at
+# inference. A whitelist, so a new head defaults to anchored: anchoring a
+# phase-free loop only forgoes augmentation, while rolling an anchored one
+# scrambles the event's timing.
+PHASE_FREE_LOOP_HEADS: tuple[str, ...] = (
+    "crawl", "fall", "fly", "hover", "idle", "rest", "roll", "run", "swim", "walk",
+)
+_PHASE_FREE_LOOP_HEAD_SET: frozenset[str] = frozenset(PHASE_FREE_LOOP_HEADS)
+assert _PHASE_FREE_LOOP_HEAD_SET <= _HEAD_VOCAB_SET, (
+    "PHASE_FREE_LOOP_HEADS names non-head words: "
+    + str(sorted(_PHASE_FREE_LOOP_HEAD_SET - _HEAD_VOCAB_SET))
+)
+
+
+def loop_is_phase_free(label) -> bool:
+    """Whether a loop clip carrying *label* may be circularly rolled and tiled.
+
+    True only when every head word of the label is in
+    :data:`PHASE_FREE_LOOP_HEADS`; one anchored head ("idle, rear",
+    "attack, hover") anchors the clip. An empty label has no evidence either
+    way and is anchored.
+    """
+    heads = head_words_in(parse_action_label(label))
+    return bool(heads) and all(head in _PHASE_FREE_LOOP_HEAD_SET for head in heads)
+
 
 # ---------------------------------------------------------------------------
 # token -> T5 text
@@ -217,9 +246,9 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "burrow": "digging underground",     # bare "burrow" is the hole, not the act
     "cast": "spellcasting",              # bare "cast" is plaster, or a film cast
     "charge": "rushing forward",         # bare "charge" is voltage or a fee
-    "clean": "grooming",                 # bare "clean" is the adjective, not the act
     "draw": "drawing a weapon",          # bare "draw" is pulling a line or a card
     "cry": "weeping",                    # bare "cry" reads as shouting out
+    "firebreath": "breathing fire",      # glued compound is no English word; T5 splits it into subword shards
     "flip": "somersault",                # bare "flip" is a coin or a switch
     "land": "touching down",             # bare "land" is terrain -- overwhelmingly
     "punch": "punching",                 # bare "punch" is the drink
@@ -680,6 +709,7 @@ def load_motion_metadata(
     dataset_dir: str | Path,
     *,
     require_loop_flag: bool = True,
+    only: set[str] | None = None,
 ) -> dict[str, dict[str, object]]:
     """Load ``motion_metadata.json`` joined with per-clip action group/label/loop.
 
@@ -695,6 +725,9 @@ def load_motion_metadata(
     one), so a clip on disk with no flag means its row was edited after the
     build. ``require_loop_flag=False`` is for a bookkeeping read that must not
     fail on such a row: the joined entry then simply has no ``is_loop`` key.
+
+    ``only`` restricts the join (and its checks) to those motion names, for a
+    caller that is about to rebuild the rest and must not trip over their rows.
     """
     metadata_path = Path(dataset_dir) / MOTION_METADATA_FILE
     if not metadata_path.exists():
@@ -714,6 +747,8 @@ def load_motion_metadata(
     missing_loop_flags: list[str] = []
     for motion_name, metadata in motions.items():
         if not isinstance(metadata, dict):
+            continue
+        if only is not None and motion_name not in only:
             continue
         # metadata keys are the motions/ file names ("<name>.npy"); the sidecar
         # is keyed by the extension-less clip name.

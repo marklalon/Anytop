@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 22
+CKPT_VERSION = 23
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -265,7 +265,10 @@ def add_model_options(parser):
                             "(the corpus piles up on a few exact frame counts) so an inference num_frames "
                             "between the clusters is in distribution. The range is narrowed per clip so the "
                             "scaled clip stays >= min_length and a loop that fits the source budget still "
-                            "fits (never downgraded to non-loop by slowing down). 1.2 is the intended value.")
+                            "fits (never downgraded to non-loop by slowing down). A phase-anchored clip (label not "
+                            "loop_is_phase_free) over the source budget is additionally sped up by at least "
+                            "min(L/budget, MAX_FIT_SPEEDUP) -- even with this flag at 1.0 -- so it enters the "
+                            "window whole instead of being cropped. 1.2 is the intended value.")
     group.add_argument("--motion_speed_aug_prob", default=1.0, type=float,
                        help="Per-sample probability of applying --motion_speed_aug (default 1.0 = every clip). "
                             "The recorded tempo is one point of the continuum, so leaving a mass at exactly "
@@ -694,7 +697,7 @@ def add_generate_options(parser):
                             "mode to guide away from).")
     group.add_argument("--species_tags", default="", type=str,
                        help="Override the target species' motion style tags for this generation, e.g. "
-                            "'Quadruped,Heavy,Lumbering'. Comma/semicolon-separated. The tags are re-encoded "
+                            "'Quadruped,Lumbering'. Comma/semicolon-separated. The tags are re-encoded "
                             "through the same T5 conditioner used at preprocessing and replace the species "
                             "descriptor baked into cond.npy (default from species_tags.jsonl), letting you "
                             "restyle the generated motion (e.g. make a Winged Dragon walk on the ground). "
@@ -739,14 +742,15 @@ def process_new_skeleton_args():
                        help="Output directory.")
     group.add_argument("--object-type", default=None, type=str,
                        help="A character's species/type name (e.g. \"Dragon\"). "
-                            "When omitted, inferred from the tpos-path filename.")
+                            "When omitted, the tpos-path file stem minus trailing pose "
+                            "tokens (e.g. 'Pet_Kiki_A_Tpose.glb' -> 'Pet_Kiki_A').")
     group.add_argument("--crop-enabled", action='store_true', default=False,
                        help="Enable automatic skeleton cropping to MAX_JOINTS=100. "
                             "Off by default because inference has no joint cap; "
                             "enable for training-compatible preprocessing.")
     group.add_argument("--species-tags", required=True, type=str,
                        help="Comma-separated species tags (motion descriptor) for --object-type, "
-                            "e.g. 'Quadruped,Large,Lumbering'. REQUIRED for a new skeleton: it "
+                            "e.g. 'Quadruped,Lumbering'. REQUIRED for a new skeleton: it "
                             "defines the descriptor baked into cond.npy. There is no fallback to "
                             "the default dataset's species_tags.jsonl, so it must be supplied "
                             "explicitly.")
@@ -762,6 +766,10 @@ def process_new_skeleton_args():
     group.add_argument("--yes", action='store_true', default=False,
                        help="Skip all interactive confirmation prompts (e.g. existing data "
                             "overwrite prompt). Useful for headless / automated calls.")
+    group.add_argument("--export-tpose-bvh", action='store_true', default=False,
+                       help="Also write a single-frame t-pose BVH preview to "
+                            "<save-dir>/bvh_tpose/<object_type>.bvh (rest offsets from "
+                            "cond.npy, canonical frame and units).")
     args = parser.parse_args()
     return args
 

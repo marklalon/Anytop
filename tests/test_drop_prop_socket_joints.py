@@ -106,6 +106,37 @@ def test_removal_is_idempotent():
     assert find_prop_socket_joints(filtered.offsets, filtered.parents, names) == set()
 
 
+# Several props on one rig, PetKikiA-style: two long ones inflate the P90
+# reference so far that a third, shorter one only clears the gate once they are
+# gone. 'Point' is the 3ds Max helper prefix, not a body word.
+_MULTI_PROP_NAMES = _BODY_NAMES + ['Point_stick', 'Point_fire_C_01', 'Point_fire_C_02']
+_MULTI_PROP_PARENTS = np.array(_BODY_PARENTS + [0, 0, 0], dtype=np.int32)
+_MULTI_PROP_OFFSETS = np.array(
+    _BODY_OFFSETS + [[5.0, 0.0, 0.0], [0.0, 0.0, 5.0], [0.0, 0.0, 1.2]], dtype=np.float64
+)
+
+
+def test_props_that_inflate_the_reference_do_not_hide_a_shorter_one():
+    prop_joints = find_prop_socket_joints(_MULTI_PROP_OFFSETS, _MULTI_PROP_PARENTS, _MULTI_PROP_NAMES)
+    assert {_MULTI_PROP_NAMES[j] for j in prop_joints} == {
+        'Point_stick', 'Point_fire_C_01', 'Point_fire_C_02',
+    }
+
+
+def test_the_rescan_still_needs_the_name_gate():
+    """Only the reference is re-measured; a long anatomical bone stays put."""
+    names = _BODY_NAMES + ['Point_stick', 'Point_fire_C_01', 'Tail']
+    prop_joints = find_prop_socket_joints(_MULTI_PROP_OFFSETS, _MULTI_PROP_PARENTS, names)
+    assert {names[j] for j in prop_joints} == {'Point_stick', 'Point_fire_C_01'}
+
+
+def test_multi_prop_removal_is_idempotent():
+    anim = _make_anim(_MULTI_PROP_PARENTS, _MULTI_PROP_OFFSETS)
+    filtered, names, _ = drop_prop_socket_joints(anim, _MULTI_PROP_NAMES)
+    assert names == _BODY_NAMES
+    assert find_prop_socket_joints(filtered.offsets, filtered.parents, names) == set()
+
+
 def test_an_explicit_name_list_drops_exactly_what_detection_did():
     """The rest pose decides; each clip follows the names, never its own detector."""
     anim = _make_anim(_PARENTS, _OFFSETS)
@@ -147,3 +178,19 @@ def test_reindex_rejects_a_keep_set_that_orphans_a_child():
     keep_indices = [j for j in range(len(_BODY_NAMES)) if j != 1]  # Spine, mid-chain
     with pytest.raises(ValueError, match='parent'):
         reindex_animation_to_kept_joints(anim, _BODY_NAMES, keep_indices)
+
+
+@pytest.mark.parametrize('prop_name', ['Bip001-Prop1', 'Bip01 Prop2', 'Bip001_Prop1'])
+def test_a_biped_prop_bone_skips_the_length_gate(prop_name):
+    """A Biped prop parked close to the body is still a prop: the name is reserved."""
+    names = _BODY_NAMES + [prop_name]
+    parents = np.array(_BODY_PARENTS + [0], dtype=np.int32)
+    offsets = np.array(_BODY_OFFSETS + [[0.5, 0.0, 0.0]], dtype=np.float64)
+    assert find_prop_socket_joints(offsets, parents, names) == {len(_BODY_NAMES)}
+
+
+def test_the_biped_prop_name_still_honours_the_subtree_cap():
+    names = _BODY_NAMES + ['Bip001-Prop1'] + [f'Chain{i}' for i in range(5)]
+    parents = np.array(_BODY_PARENTS + [0] + list(range(19, 24)), dtype=np.int32)
+    offsets = np.array(_BODY_OFFSETS + [[0.5, 0.0, 0.0]] * 6, dtype=np.float64)
+    assert find_prop_socket_joints(offsets, parents, names) == set()

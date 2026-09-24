@@ -32,13 +32,15 @@ from data_loaders.truebones.data.dataset import (
     _tile_loop_motion,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
+from data_loaders.truebones.truebones_utils.motion_labels import loop_is_phase_free
+from data_loaders.truebones.truebones_utils.param_utils import MAX_FIT_SPEEDUP, MAX_SOURCE_FRAMES_MULT
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
 from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     physical_hml_to_canonical,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
     JOINT_NAME_EMBEDDING_SLIM,
@@ -60,10 +62,11 @@ def _find_motion(pattern: str) -> str:
 
 LOOP_MOTION = _find_motion("Ostrich_Run.npy")
 LOOP_SUBSET = "biped"
-# A loop authored WITH its closing key: frame 45 repeats frame 0 (wrap gap
-# 1.3e-5 of a frame step, wrap velocity row ~0), so the loader drops it and the
-# cycle it augments is 45 frames long.  Ostrich_Run above ends 0.6 of a step
-# short of frame 0 and keeps all its frames.
+# A PHASE-FREE loop authored WITH its closing key: its last frame repeats frame
+# 0, so the loader drops it and the cycle it augments is one frame shorter.
+# Ostrich_Run above ends 0.6 of a step short of frame 0 and keeps all its
+# frames.  It must stay phase-free (loop_is_phase_free) -- the test tiles it,
+# and a phase-anchored loop is never tiled.
 #
 # The two halves of that premise come from different places, which is why this
 # fixture drifts.  The repeated frame is in the motion, but the wrap terminal
@@ -73,8 +76,11 @@ LOOP_SUBSET = "biped"
 # repeat-the-last-step row instead, and ``_drop_loop_closing_frame`` then
 # correctly refuses it -- so the assertion below is also the tripwire for that
 # drift.  Re-point the fixture; do not relax the drop.
-CLOSING_KEY_LOOP_MOTION = _find_motion("Spider_Attack2.npy")
-CLOSING_KEY_LOOP_SUBSET = "multiped"
+CLOSING_KEY_LOOP_MOTION = _find_motion("Deer_WalkForward.npy")
+CLOSING_KEY_LOOP_SUBSET = "quadruped"
+# A PHASE-ANCHORED loop (an attack: closed, but frame 0 is the ready pose).
+ANCHORED_LOOP_MOTION = _find_motion("Spider_Attack2.npy")
+ANCHORED_LOOP_SUBSET = "multiped"
 NUM_FRAMES = 60
 # The n*MAX_SOURCE_FRAMES_MULT source-frame budget the dataset crops over-long
 # clips to (see _prepare_sample); over-long clips resample down at exactly
@@ -171,14 +177,19 @@ def _load_cond_stamped_with_the_current_schema(*args, **kwargs):
     outright -- correctly, since those vectors mean something else. These are
     loop-padding tests, though: they must exercise the temporal path, not the
     embedding contract (tests/test_joint_struct_features.py covers that), so they
-    accept the cond that is on disk.
+    accept the cond that is on disk. The baked species_tags are restamped from
+    the sidecar for the same reason (tests/test_species_tags_config.py covers the
+    stale-cond guard).
     """
     cond_dict = load_cond(*args, **kwargs)
-    for entry in cond_dict.values():
+    tags = dataset_tags()
+    for object_type, entry in cond_dict.items():
         meta = dict(entry.get('joints_names_embs_meta') or {})
         meta['schema_version'] = JOINT_NAME_EMBEDDING_SCHEMA_VERSION
         meta['slim'] = JOINT_NAME_EMBEDDING_SLIM
         entry['joints_names_embs_meta'] = meta
+        if 'species_tags' in entry:
+            entry['species_tags'] = tags.tags_for(object_type)
     return cond_dict
 
 
@@ -309,6 +320,55 @@ def test_loop_with_closing_key_is_augmented_as_its_clean_period() -> None:
 
     # Idempotent: the period itself has no closing key to give.
     assert _drop_loop_closing_frame(period) is period
+
+
+def test_loop_is_phase_free_needs_every_head_phase_free() -> None:
+    assert loop_is_phase_free("walk, forward")
+    assert loop_is_phase_free("idle, sleep")
+    assert loop_is_phase_free("fly, hover")
+    assert not loop_is_phase_free("attack, spit")
+    assert not loop_is_phase_free("roar")
+    # One anchored head anchors the clip, in either position.
+    assert not loop_is_phase_free("idle, rear")
+    assert not loop_is_phase_free("attack, hover")
+    assert not loop_is_phase_free("")
+    assert not loop_is_phase_free(None)
+
+
+@pytest.mark.parametrize("loop_cond_prob", [1.0, 0.0])
+def test_phase_anchored_loop_is_never_rolled_or_tiled(loop_cond_prob) -> None:
+    dataset = _build_truebones(
+        split="train",
+        num_frames=NUM_FRAMES,
+        objects_subset=ANCHORED_LOOP_SUBSET,
+        motion_cache_size=2,
+        loop_cond_prob=loop_cond_prob,
+    )
+    motion_dataset = dataset.motion_dataset
+    data = motion_dataset.data_dict[ANCHORED_LOOP_MOTION]
+    assert data["motion_metadata"]["is_loop"] is True and not loop_is_phase_free(
+        data["motion_metadata"]["action_label"]
+    ), f"fixture clip {ANCHORED_LOOP_MOTION} is no longer a phase-anchored loop -- re-point it"
+    cond = motion_dataset.cond_dict[data["object_type"]]
+    period = _drop_loop_closing_frame(np.load(data["motion_path"]).astype(np.float32, copy=False))
+
+    with patch.object(motion_dataset, '_sample_loop_offset', side_effect=AssertionError("rolled")), \
+            patch.object(motion_dataset, '_sample_loop_tile_count', side_effect=AssertionError("tiled")):
+        sample = motion_dataset._prepare_sample(
+            ANCHORED_LOOP_MOTION, data, target_num_frames=NUM_FRAMES, return_aug_info=True,
+        )
+    motion, _m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
+
+    told_loop = loop_cond_prob == 1.0
+    assert aug_info["loop_phase_offset"] == 0
+    assert aug_info["loop_tile_count"] == 1
+    assert aug_info["loop_phase_free"] is False
+    assert motion_metadata["is_loop"] is told_loop
+    assert np.isclose(float(aug_info["resample_speed_cond"]), float(period.shape[0]) / float(NUM_FRAMES))
+    # Frame 0 stays the ready pose: the window is the unrolled single event,
+    # periodic when the model is told it is a loop, an ordinary one-shot otherwise.
+    expected = _resample_raw_then_normalize(period, cond, NUM_FRAMES, periodic=told_loop)
+    assert_close("phase-anchored loop window", motion, expected, atol=3e-5)
 
 
 def test_speed_resample_preserves_velocity() -> None:
@@ -880,6 +940,104 @@ def test_motion_speed_sampler_stays_inside_the_clip_boundaries() -> None:
         # A non-loop clip over the budget gets cropped either way: no ceiling.
         draws = {sampler._sample_motion_speed_target_length(115, False, BUDGET_FRAMES) for _ in range(2000)}
         assert max(draws) > BUDGET_FRAMES, sorted(draws)
+
+
+def test_motion_speed_sampler_fits_phase_anchored_clips_into_the_budget() -> None:
+    fit_limit = int(MAX_FIT_SPEEDUP * BUDGET_FRAMES)
+    beyond = fit_limit + 20
+    beyond_fitted = int(round(beyond / MAX_FIT_SPEEDUP))
+    assert beyond_fitted > BUDGET_FRAMES
+    # The floor is data preparation, not augmentation: it applies with the
+    # augmentation off or not drawn, without consuming any randomness.
+    for sampler in (_speed_sampler(1.0), _speed_sampler(1.2, prob=0.0)):
+        with patch.object(dataset_module.random, 'uniform', side_effect=AssertionError("must not draw")):
+            assert sampler._sample_motion_speed_target_length(
+                BUDGET_FRAMES + 30, False, BUDGET_FRAMES, fit_budget=True) == BUDGET_FRAMES
+            assert sampler._sample_motion_speed_target_length(
+                fit_limit, True, BUDGET_FRAMES, fit_budget=True) == BUDGET_FRAMES
+            # Past the fit limit: sped up by the cap, then left to the crop.
+            assert sampler._sample_motion_speed_target_length(
+                beyond, False, BUDGET_FRAMES, fit_budget=True) == beyond_fitted
+            # A clip that already fits is untouched.
+            assert sampler._sample_motion_speed_target_length(
+                BUDGET_FRAMES - 5, False, BUDGET_FRAMES, fit_budget=True) == BUDGET_FRAMES - 5
+    # Without the flag (a phase-free clip) nothing is forced.
+    assert _speed_sampler(1.0)._sample_motion_speed_target_length(
+        BUDGET_FRAMES + 30, False, BUDGET_FRAMES) == BUDGET_FRAMES + 30
+
+    sampler = _speed_sampler(1.2)
+    rng = random.Random(11)
+    with patch.object(dataset_module.random, 'random', rng.random),             patch.object(dataset_module.random, 'uniform', rng.uniform):
+        def draws(length, is_loop=False):
+            return {
+                sampler._sample_motion_speed_target_length(length, is_loop, BUDGET_FRAMES, fit_budget=True)
+                for _ in range(2000)
+            }
+        # Floor below R: the augmentation draws in [L/budget, R], always fits.
+        over = BUDGET_FRAMES + 10
+        got = draws(over)
+        assert max(got) == BUDGET_FRAMES and min(got) == int(round(over / 1.2)), sorted(got)
+        # Floor above R: one value, exactly the budget.
+        assert draws(BUDGET_FRAMES + 30) == {BUDGET_FRAMES}
+        # A fitting anchored clip is never slowed back out of the budget, loop
+        # or not (a phase-free non-loop clip may be).
+        for is_loop in (False, True):
+            got = draws(BUDGET_FRAMES - 5, is_loop)
+            assert max(got) == BUDGET_FRAMES and min(got) < BUDGET_FRAMES - 5, sorted(got)
+        # Past the fit limit the floor is the cap and there is no ceiling.
+        assert draws(beyond) == {beyond_fitted}
+
+
+def test_long_phase_anchored_clip_is_fitted_whole_not_cropped() -> None:
+    dataset = _build_truebones(
+        split="train",
+        num_frames=NUM_FRAMES,
+        objects_subset=ANCHORED_LOOP_SUBSET,
+        motion_cache_size=0,
+    )
+    motion_dataset = dataset.motion_dataset
+    source_data = motion_dataset.data_dict[ANCHORED_LOOP_MOTION]
+    assert not loop_is_phase_free(source_data["motion_metadata"].get("action_label"))
+    source_raw = np.load(source_data["motion_path"]).astype(np.float32, copy=False)
+    cond = motion_dataset.cond_dict[source_data["object_type"]]
+
+    def prepare(long_len, randint):
+        repeat_count = (long_len + source_raw.shape[0] - 1) // source_raw.shape[0]
+        long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:long_len]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            motion_path = os.path.join(tmp_dir, "long_anchored.npy")
+            np.save(motion_path, long_raw)
+            long_data = dict(source_data)
+            long_data["motion_path"] = motion_path
+            long_data["length"] = long_len
+            long_data["motion_metadata"] = dict(source_data["motion_metadata"])
+            long_data["motion_metadata"]["is_loop"] = False
+            with patch.object(dataset_module.random, 'randint', randint):
+                sample = motion_dataset._prepare_sample(
+                    "synthetic_long_anchored.npy", long_data,
+                    target_num_frames=NUM_FRAMES, return_aug_info=True,
+                )
+        return long_raw, sample[0], sample[-1]
+
+    # Within the fit limit: played faster into exactly the budget, no crop draw.
+    long_raw, motion, aug_info = prepare(
+        BUDGET_FRAMES + 30, randint=lambda *_: (_ for _ in ()).throw(AssertionError("must not crop")),
+    )
+    fitted_raw, speed = time_scale_motion_features(long_raw, BUDGET_FRAMES)
+    assert_close("fitted anchored window", motion, _resample_raw_then_normalize(fitted_raw, cond, NUM_FRAMES), atol=3e-5)
+    assert np.isclose(float(aug_info["motion_speed_applied"]), speed) and speed > 1.0
+    assert np.isclose(float(aug_info["resample_speed_cond"]), MAX_SOURCE_FRAMES_MULT)
+
+    # Past it: sped up by the cap first, then cropped to the budget.
+    window_start = 3
+    beyond = int(MAX_FIT_SPEEDUP * BUDGET_FRAMES) + 20
+    long_raw, motion, aug_info = prepare(beyond, randint=lambda *_: window_start)
+    scaled_raw, _speed = time_scale_motion_features(long_raw, int(round(beyond / MAX_FIT_SPEEDUP)))
+    expected = _resample_raw_then_normalize(
+        scaled_raw[window_start:window_start + BUDGET_FRAMES], cond, NUM_FRAMES
+    )
+    assert_close("capped anchored crop", motion, expected, atol=3e-5)
+    assert np.isclose(float(aug_info["resample_speed_cond"]), MAX_SOURCE_FRAMES_MULT)
 
 
 def test_motion_speed_sampler_rejects_bad_settings() -> None:

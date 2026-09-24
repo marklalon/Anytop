@@ -232,7 +232,7 @@ def prepare_generation_runtime(args=None, cond_dict=None):
         sampling_method=sampling_method,
         sampling_steps=sampling_steps,
         amp_dtype=amp_dtype,
-        cond_path=_normalize_optional_path(getattr(args, 'cond_path', '') or ''),
+        cond_path=_normalize_optional_path(_resolve_generation_cond_path(args)),
     )
 
 

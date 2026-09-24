@@ -104,7 +104,7 @@ def _channels(model, labels, groups, dtype=torch.float64):
 def test_model_channels_equal_the_numpy_contract():
     bundle = make_test_bundle()
     model = _model(bundle)
-    labels = ['land, fly', 'draw', 'walk, forward, slow', 'idle, roar']
+    labels = ['land, fly', 'draw', 'walk, forward, slow', 'idle, sniff']
     groups = ['transition', 'transition', 'locomotion', 'stationary']
     got = _channels(model, labels, groups)
     expected = reference_channels(bundle, labels, groups)
@@ -186,7 +186,7 @@ def _modifier_dropped_channels(model, labels, groups, dtype=torch.float64):
 def test_modifier_slot_dropout_zeroes_only_the_modifier_channel_in_training():
     bundle = make_test_bundle()
     model = _model(bundle, modifier_drop_prob=1.0, eval_mode=False)
-    labels = ['walk, forward, fast', 'attack, left, swat', 'idle, roar', 'attack, jump, charge']
+    labels = ['walk, forward, fast', 'attack, left, swat', 'idle, sniff', 'attack, jump, charge']
     groups = ['locomotion', 'stationary', 'stationary', 'stationary']
     reference = _channels(model, labels, groups)
     dropped, word_mask = _modifier_dropped_channels(model, labels, groups)
@@ -202,7 +202,7 @@ def test_modifier_slot_dropout_zeroes_only_the_modifier_channel_in_training():
 
 def test_modifier_slot_dropout_is_off_in_eval_and_at_zero_probability():
     bundle = make_test_bundle()
-    labels = ['attack, swat', 'idle, roar']
+    labels = ['attack, swat', 'idle, sniff']
     groups = ['stationary', 'stationary']
     reference = _channels(_model(bundle), labels, groups)
     for model in (_model(bundle, modifier_drop_prob=1.0, eval_mode=True),
@@ -242,7 +242,7 @@ def test_projection_consumes_one_block_per_slot():
 def test_compacted_channels_match_numpy_and_lose_nothing():
     bundle = make_test_bundle()
     model = _model(bundle)
-    labels = ['attack, left, fast', 'walk, forward', 'idle, roar', 'draw']
+    labels = ['attack, left, fast', 'walk, forward', 'idle, sniff', 'draw']
     groups = ['stationary', 'locomotion', 'stationary', 'transition']
     full = _channels(model, labels, groups)
     compact = model._compact_action_slot_channels(full)
@@ -380,9 +380,8 @@ def test_loader_emits_exactly_the_three_slot_fields():
 def test_latent_dim_below_the_slot_source_rank_fails_at_construction():
     bundle = make_test_bundle()
     total_rank = bundle.slot_source_rank_report(TEST_LATENT_DIM)['total_rank']
-    # 32 head words, 6 directions, 64 modifier sources: the slots partition
-    # the vocabulary, so the ranks add to its size.
-    assert total_rank == 102
+    # The slots partition the vocabulary, so the ranks add to its size.
+    assert total_rank == 95
     with pytest.raises(ValueError, match="smaller than the total slot source rank"):
         _model(bundle, latent_dim=total_rank - 1)
     _model(bundle, latent_dim=TEST_LATENT_DIM)  # a width at or above it
