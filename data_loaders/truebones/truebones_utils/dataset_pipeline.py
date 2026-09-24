@@ -718,7 +718,11 @@ def build_tpose_cond(*args, **kwargs):
 def _build_rest_pose_only_cond(object_type, rest_pose_path, face_joints, crop_enabled=True):
     object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
         object_type, rest_pose_path, face_joints, crop_enabled=crop_enabled,
+        promote_root_depth=None,
     )
+    # No clips to measure the transport carrier on, so the wrapper depth is the
+    # structural one; npy_restore reads it back to fold the mesh rig the same way.
+    object_cond['root_promote_depth'] = int(tp.promote_root_depth)
     return object_cond, max_joints, tpose_reference_path
 
 

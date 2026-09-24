@@ -443,6 +443,17 @@ def get_common_features_from_rest_pose(
     # counts along. Everything below here (face joints, contact joints, offsets,
     # scale) is then inferred on the skeleton the model will see, whose joint 0
     # IS the translation root.
+    #
+    # ``promote_root_depth=None`` is the rest-pose-only case (a new skeleton with
+    # no clips to measure): the depth falls back to the loader's structural rule,
+    # re-applied here because at load time the drops above had not run yet -- a
+    # ``Dummy_Root`` whose only other children are prop sockets was kept there,
+    # while the same rig without sockets lost it.
+    if promote_root_depth is None:
+        from motion_lib.root_collapse import wrapper_root_depth
+        promote_root_depth = wrapper_root_depth(
+            rest_pose_names, reference_anim.parents, reference_anim.offsets,
+        )
     if promote_root_depth:
         reference_anim, rest_pose_names, _kept_after_promote = (
             promote_translation_root_to_hierarchy_root(
