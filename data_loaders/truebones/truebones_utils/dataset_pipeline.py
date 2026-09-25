@@ -1188,7 +1188,7 @@ def _write_preprocess_seed_artifacts(save_dir, cond, motion_metadata, max_joints
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
 
-def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error, skip_t5=False, tpose_refs=None, embedding_cache_cond=None):
+def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error, embedding_cache_cond, tpose_refs=None):
     _print_dataset_summary(max_joints, files_counter, frames_counter)
     with open(pjoin(save_dir, 'metadata.txt'), 'w', encoding='utf-8') as text_file:
         text_file.write('max joints: %d\n' %(max_joints))
@@ -1200,8 +1200,8 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
 
     _write_positions_error_file(save_dir, squared_positions_error)
 
-    if not skip_t5:
-        attach_t5_embeddings_to_cond(cond, save_dir, embedding_cache_cond=embedding_cache_cond)
+    attach_t5_embeddings_to_cond(cond, save_dir, embedding_cache_cond=embedding_cache_cond,
+                                 blank_unseen_joint_names=True)
     _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs)
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
@@ -1748,27 +1748,8 @@ def find_new_source_files(objects, dataset_dir=None, raw_data_dir=None):
     return result
 
 
-def _scan_joint_name_support(save_dir, cond, reference_cond_path):
-    """Report how well a new skeleton's joint tokens are covered by the reference.
-
-    Fails soft on purpose: this is a diagnostic bolted onto the end of a run that
-    has already produced a usable cond, so a reference that cannot be read costs
-    the report and nothing else.
-    """
-    from .joint_name_support import _warn, write_joint_name_support_report
-    try:
-        reference_cond = np.load(reference_cond_path, allow_pickle=True).item()
-    except Exception as exc:
-        _warn(f'joint-name support scan skipped: cannot read {reference_cond_path} ({exc})')
-        return
-    try:
-        write_joint_name_support_report(cond, save_dir, reference_cond)
-    except Exception as exc:
-        _warn(f'joint-name support scan failed: {exc}')
-
-
-def process_skeleton(object_name, face_joints, save_dir, tpose_path,
-                     crop_enabled=True, skip_t5=False, reference_cond_path=None):
+def process_skeleton(object_name, face_joints, save_dir, tpose_path, reference_cond_path,
+                     crop_enabled=True):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
@@ -1799,12 +1780,11 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path,
     )
     cond[object_name] = object_cond
     # The checkpoint's cond already holds T5 vectors for its joint-name and
-    # species texts; any text the new skeleton shares with it is reused, so T5
-    # loads only for texts the checkpoint never saw.
-    embedding_cache_cond = None
-    if not skip_t5 and reference_cond_path and os.path.isfile(reference_cond_path):
-        from .cond_schema import load_cond
-        embedding_cache_cond = load_cond(reference_cond_path)
+    # species texts; any text the new skeleton shares with it is reused. A joint
+    # text it never saw gets the blank name the model is trained to read as
+    # "unknown", so T5 loads only for a species-tag text the checkpoint lacks.
+    from .cond_schema import load_cond
+    embedding_cache_cond = load_cond(reference_cond_path)
     _write_dataset_artifacts(
         save_dir,
         cond,
@@ -1814,13 +1794,6 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path,
         files_counter,
         frames_counter,
         squared_positions_error,
-        skip_t5=skip_t5,
+        embedding_cache_cond,
         tpose_refs={object_name: tpose_reference_path},
-        embedding_cache_cond=embedding_cache_cond,
     )
-    # The joint-name embeddings only exist after the artifacts are written, and
-    # only the reference cond knows what the checkpoint was actually trained on.
-    # A new skeleton is exactly the case where a legal, collision-free name can
-    # still land outside that distribution, so scan it here.
-    if not skip_t5 and reference_cond_path:
-        _scan_joint_name_support(save_dir, cond, reference_cond_path)

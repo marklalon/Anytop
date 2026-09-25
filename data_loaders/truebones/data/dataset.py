@@ -52,7 +52,6 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-    JOINT_NAME_EMBEDDING_SLIM,
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
@@ -999,12 +998,6 @@ def ensure_joint_name_embeddings(
                 f"{schema_version!r}, this code expects {JOINT_NAME_EMBEDDING_SCHEMA_VERSION}. "
                 f"The vectors would load and quietly mean something else; regenerate the "
                 f"embeddings (tools/regenerate_dataset_artifacts.py)."
-            )
-        if bool(meta.get('slim', False)) != bool(JOINT_NAME_EMBEDDING_SLIM):
-            raise RuntimeError(
-                f"{cond_source} for '{object_type}' was encoded with slim="
-                f"{bool(meta.get('slim', False))} but this code writes slim="
-                f"{bool(JOINT_NAME_EMBEDDING_SLIM)}. Regenerate the embeddings."
             )
 
         cond['joints_names_embs'] = joints_names_embs

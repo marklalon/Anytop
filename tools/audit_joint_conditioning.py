@@ -42,7 +42,6 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
 )
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  # noqa: E402
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-    JOINT_NAME_EMBEDDING_SLIM,
     build_joint_embedding_texts,
 )
 
@@ -51,7 +50,7 @@ MAX_UNRESOLVED_COLLISION_PAIRS = 5
 MAX_MEAN_TEXT_TOKENS = 2.0
 MAX_TEXT_TOKENS = 4
 
-# Words the slim text must never emit again: every one of them is a function of
+# Words the joint text must never emit: every one of them is a function of
 # parents / rest positions / contacts, which the structural channel now carries.
 _STRUCTURE_DERIVED_WORDS = {
     'segment', 'of', 'instance', 'contact', 'endeffector',
@@ -272,8 +271,7 @@ def main():
     print(f'  size:                        {os.path.getsize(cond_path)} bytes')
     print(f'joint_struct schema:           {JOINT_STRUCT_FEATURE_SCHEMA_VERSION} '
           f'({JOINT_STRUCT_DIM} channels)')
-    print(f'joint-name embedding schema:   {JOINT_NAME_EMBEDDING_SCHEMA_VERSION} '
-          f'(slim={JOINT_NAME_EMBEDDING_SLIM})')
+    print(f'joint-name embedding schema:   {JOINT_NAME_EMBEDDING_SCHEMA_VERSION}')
     print()
 
     cond = load_cond(cond_path)
@@ -312,7 +310,6 @@ def main():
             'joint_struct_schema_version': JOINT_STRUCT_FEATURE_SCHEMA_VERSION,
             'joint_struct_feature_names': list(JOINT_STRUCT_FEATURE_NAMES),
             'joint_name_embedding_schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-            'joint_name_embedding_slim': bool(JOINT_NAME_EMBEDDING_SLIM),
             'encoded_schema_versions': encoded,
             'feature_ranges': ranges,
             'text_stats': text_stats,

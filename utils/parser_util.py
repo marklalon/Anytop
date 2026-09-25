@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 23
+CKPT_VERSION = 24
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -307,8 +307,8 @@ def add_model_options(parser):
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
     group.add_argument("--joint_name_drop_prob", default=0.0, type=float,
-                       help="Per-joint probability of replacing a joint's ENTIRE name embedding with a "
-                            "learned 'unknown joint' vector during training. --dropout_prob thins that "
+                       help="Per-joint probability of zeroing a joint's ENTIRE name embedding during "
+                            "training. --dropout_prob thins that "
                             "vector elementwise but never hides the joint's identity, so the model is "
                             "never trained to fall back on rest_pose/graph_dist/joints_relations and a "
                             "single rare name token can flip a limb's motion prior. Default 0.0 (off).")
@@ -759,10 +759,8 @@ def process_new_skeleton_args():
                             "standardization statistics from. Those statistics belong to a "
                             "trained checkpoint, so this must be the checkpoint's own "
                             "cond.npy snapshot (there is no fallback to the processed "
-                            "dataset directory).")
-    group.add_argument("--skip-t5-embeddings", action='store_true', default=False,
-                       help="Skip T5 embedding computation (caller will inject via "
-                            "attach_t5_embeddings_to_cond with a pre-loaded conditioner).")
+                            "dataset directory). A joint whose name text it never encodes "
+                            "gets the blank (all-zero) name the model reads as unknown.")
     group.add_argument("--yes", action='store_true', default=False,
                        help="Skip all interactive confirmation prompts (e.g. existing data "
                             "overwrite prompt). Useful for headless / automated calls.")

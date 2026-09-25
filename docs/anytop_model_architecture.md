@@ -121,9 +121,13 @@ T5 编码发生在预处理阶段，模型不会在每次 forward 中运行 T5�
 `joints_names_embs`，`InputProcess.text_embedding` 再把它投影到 latent width，并沿全部
 时间位置加到对应关节 token。
 
-`joint_name_drop_prob>0` 时，训练会把整个关节名称向量替换为 learned
-`unknown_joint_name`。它不同于普通 element-wise dropout：目的是真正隐藏关节名字，让模型
+`joint_name_drop_prob>0` 时，训练会把整个关节名称向量置零（与 padding 行同为全零，
+padding 已被 attention mask 和 loss 排除，不会混淆）。它不同于普通 element-wise dropout：目的是真正隐藏关节名字，让模型
 回退到 rest geometry、pairwise topology 和 structural channel。
+
+推理时处理新骨架（`process_new_skeleton` 与 server 的常驻 T5 注入）：embedding text 不在 checkpoint cond.npy 里的关节，名字直接
+置空（空文本经 T5 masked mean 恰为全零行），不在线编码；原文本记在
+`joints_names_embs_meta['blanked_unseen_texts']`。
 
 ### 3.3 关节结构通道
 

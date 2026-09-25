@@ -29,6 +29,8 @@ reference-cond-path - REQUIRED. cond.npy to inherit the per-object_subset
                     standardization statistics from. Those statistics belong to a
                     trained checkpoint, so pass the checkpoint's own cond.npy
                     snapshot. There is no fallback to the processed dataset dir.
+                    A joint whose name text it never encodes gets the blank
+                    (all-zero) name the model is trained to read as unknown.
 export-tpose-bvh  - Also write a single-frame t-pose BVH preview of the processed
                     skeleton (same as tools/sample_tpose_bvh.py).
 
@@ -123,7 +125,6 @@ def process_new_skeleton(
     object_type: str | None = None,
     crop_enabled: bool = False,
     species_tags: str | None = None,
-    skip_t5_embeddings: bool = False,
     yes: bool = False,
     export_tpose_bvh: bool = False,
 ) -> dict[str, Any]:
@@ -142,7 +143,6 @@ def process_new_skeleton(
         "tpos_path": tpos_path,
         "crop_enabled": crop_enabled,
         "species_tags": species_tags,
-        "skip_t5_embeddings": skip_t5_embeddings,
         "reference_cond_path": reference_cond_path,
         "yes": yes,
         "export_tpose_bvh": export_tpose_bvh,
@@ -239,9 +239,8 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
         None,
         args.save_dir,
         tpose_path,
+        args.reference_cond_path,
         crop_enabled=crop_enabled,
-        skip_t5=args.skip_t5_embeddings,
-        reference_cond_path=getattr(args, 'reference_cond_path', None) or None,
     )
 
     tpose_bvh = None

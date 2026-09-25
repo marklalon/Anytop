@@ -2,9 +2,9 @@
 
 ``--dropout_prob`` thins the 768-dim name vector elementwise, so every joint keeps
 its identity and the model never learns to place a joint from rest_pose /
-graph_dist / joints_relations alone. These cover the substitution that does hide
-it, and the two ways it could silently do nothing: leaking the name back through
-the species FiLM pathway, and writing content into padding slots.
+graph_dist / joints_relations alone. These cover the zeroing that does hide
+it, and the way it could silently do nothing: leaking the name back through
+the species FiLM pathway.
 """
 from __future__ import annotations
 
@@ -114,63 +114,39 @@ class JointNameDropoutTest(unittest.TestCase):
         model = AnyTop(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
                        num_layers=1, num_heads=2, dropout=0.0, cross_limb=True)
         self.assertEqual(model.joint_name_drop_prob, 0.0)
-        self.assertIsNone(model.input_process.unknown_joint_name)
 
     def test_invalid_probs_rejected(self):
         with self.assertRaises(ValueError):
             _make_model(joint_name_drop_prob=1.5)
 
-    def test_state_dict_key_only_when_enabled(self):
-        """An existing checkpoint must rebuild with no extra key: load_model is
-        strict about missing keys outside the QK-norm allowlist, so creating the
-        parameter unconditionally would refuse every pre-C1 checkpoint."""
+    def test_no_state_dict_key(self):
+        """The drop adds no parameter, so on/off checkpoints share one key set."""
         off = _make_model()
         on = _make_model(joint_name_drop_prob=0.15)
-        self.assertNotIn('input_process.unknown_joint_name', off.state_dict())
-        self.assertIn('input_process.unknown_joint_name', on.state_dict())
-
-    def test_unknown_vector_is_not_zero_initialized(self):
-        """Zero-init would place the substitute inside the padding signal and
-        start the parameter with no gradient signal to leave it."""
-        ip = _make_model(joint_name_drop_prob=0.15).input_process
-        self.assertGreater(float(ip.unknown_joint_name.detach().norm()), 1.0)
+        self.assertEqual(set(off.state_dict()), set(on.state_dict()))
 
     def test_eval_keeps_every_name(self):
         ip = _make_model(joint_name_drop_prob=1.0).input_process
         ip.eval()
         _, _, joints, _ = _joint_cond_inputs()
-        valid = torch.ones(joints.shape[:2], dtype=torch.bool)
-        self.assertTrue(torch.equal(ip._drop_joint_names(joints, valid), joints))
+        self.assertTrue(torch.equal(ip._drop_joint_names(joints), joints))
 
-    def test_substitute_is_not_rescaled(self):
-        """A token substitution, not a variance-preserving dropout: the dropped
-        row must be the parameter itself, never parameter/(1-p)."""
+    def test_dropped_rows_are_zero(self):
         ip = _make_model(joint_name_drop_prob=1.0).input_process
         ip.train()
         _, _, joints, _ = _joint_cond_inputs()
-        valid = torch.ones(joints.shape[:2], dtype=torch.bool)
-        dropped = ip._drop_joint_names(joints, valid)
-        self.assertTrue(torch.allclose(dropped[0, 0], ip.unknown_joint_name))
-
-    def test_padding_rows_are_untouched(self):
-        ip = _make_model(joint_name_drop_prob=1.0).input_process
-        ip.train()
-        _, _, joints, _ = _joint_cond_inputs()
-        valid = torch.tensor([[True, True, False, False],
-                              [True, True, True, True]])
-        dropped = ip._drop_joint_names(joints, valid)
-        self.assertTrue(torch.equal(dropped[0, 2:], joints[0, 2:]))
-        self.assertTrue(torch.allclose(dropped[0, :2], ip.unknown_joint_name.expand(2, T5_DIM)))
+        self.assertTrue(torch.equal(ip._drop_joint_names(joints), torch.zeros_like(joints)))
 
     def test_per_joint_rate_matches_prob(self):
         ip = _make_model(joint_name_drop_prob=0.5).input_process
         ip.train()
         joints = torch.randn(256, 8, T5_DIM)
-        valid = torch.ones(joints.shape[:2], dtype=torch.bool)
-        dropped = ip._drop_joint_names(joints, valid)
-        rate = (dropped != joints).all(dim=-1).float().mean().item()
+        dropped = ip._drop_joint_names(joints)
+        rate = (dropped == 0).all(dim=-1).float().mean().item()
         self.assertGreater(rate, 0.4)
         self.assertLess(rate, 0.6)
+        kept = ~(dropped == 0).all(dim=-1)
+        self.assertTrue(torch.equal(dropped[kept], joints[kept]))
 
     def test_film_sees_the_dropped_names(self):
         """The leak this ordering exists to prevent: if the species FiLM head read
@@ -188,12 +164,12 @@ class JointNameDropoutTest(unittest.TestCase):
                _joint_struct(*joints.shape[:2]))
         joint_part = probe.last_input[..., :T5_DIM]
         self.assertFalse(torch.allclose(joint_part, joints))
-        self.assertTrue(torch.allclose(joint_part, ip.unknown_joint_name.expand_as(joints)))
+        self.assertTrue(torch.equal(joint_part, torch.zeros_like(joints)))
 
     def test_forward_derives_joint_valid_from_padding_mask(self):
         """End to end: AnyTop.forward must read per-joint validity off the
-        padding mask's [1:, 1:] diagonal, so the padded joint of the second
-        sample keeps its (zero) name row."""
+        padding mask's [1:, 1:] diagonal (the struct channel re-zeroes padding
+        with it)."""
         model = _make_model(joint_name_drop_prob=1.0, max_joints=4)
         model.train()
         captured = {}

@@ -26,7 +26,6 @@ from .physics_joint_annotation import (
     build_joint_embedding_texts,
     build_species_embedding_text,
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-    JOINT_NAME_EMBEDDING_SLIM,
 )
 
 
@@ -339,13 +338,73 @@ def _build_t5_text_cache(cache_cond, t5_name):
     return cache
 
 
+def _reference_joint_texts(reference_cond, t5_name):
+    """Every joint-name text the reference cond encodes under *t5_name*.
+
+    Membership is only meaningful when the reference was built by the same text
+    builder, so an entry under another joint-name schema is a hard error rather
+    than a source of false "unseen" verdicts.
+    """
+    texts = set()
+    if not isinstance(reference_cond, dict):
+        raise ValueError('blanking unseen joint names needs the reference cond.npy')
+    for object_type, entry in reference_cond.items():
+        meta = entry.get('joints_names_embs_meta') if isinstance(entry, dict) else None
+        if not isinstance(meta, dict) or str(meta.get('t5_name') or '') != t5_name:
+            continue
+        schema_version = meta.get('schema_version')
+        if schema_version is None or int(schema_version) != JOINT_NAME_EMBEDDING_SCHEMA_VERSION:
+            raise ValueError(
+                f"reference cond entry '{object_type}' was encoded under joint-name schema "
+                f"{schema_version}, this code is at {JOINT_NAME_EMBEDDING_SCHEMA_VERSION}; "
+                f"which names it covers cannot be judged across schemas"
+            )
+        texts.update(str(text) for text in meta.get('embedding_texts') or ())
+    if not texts:
+        raise ValueError(f'the reference cond holds no joint-name texts encoded with {t5_name}')
+    return texts
+
+
+def _blank_unseen_joint_texts(embedding_texts_by_object, known_texts):
+    """Swap every joint text the reference never encodes for the blank text.
+
+    The model is trained to read an all-zero name row as "name unknown"
+    (``--joint_name_drop_prob``), and the blank text encodes to exactly that row.
+    A text the checkpoint was never trained on would instead be encoded into a
+    point of T5 space the model has no prior for. Returns
+    ``{object_type: {joint_index: original_text}}``.
+    """
+    blanked_by_object = {}
+    for object_type, texts in embedding_texts_by_object.items():
+        blanked = {
+            index: text for index, text in enumerate(texts)
+            if str(text).strip() and text not in known_texts
+        }
+        embedding_texts_by_object[object_type] = [
+            '' if index in blanked else text for index, text in enumerate(texts)
+        ]
+        blanked_by_object[object_type] = blanked
+        if blanked:
+            named = sum(1 for text in texts if str(text).strip())
+            print(f'[{object_type}] blanked {len(blanked)}/{named} named joint(s) whose '
+                  f'text the reference cond never encodes:')
+            for index, text in sorted(blanked.items()):
+                print(f'  - joint {index}: {text!r}')
+    return blanked_by_object
+
+
 def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True,
-                                  t5_conditioner=None, embedding_cache_cond=None):
+                                  t5_conditioner=None, embedding_cache_cond=None,
+                                  blank_unseen_joint_names=False):
     """Bake joint-name and species T5 embeddings into every entry of *cond*.
 
     ``embedding_cache_cond`` is an already-encoded cond (e.g. the checkpoint's
     reference cond.npy): any text it holds under the same T5 model is reused
     verbatim, and T5 is loaded only when some text is missing from it.
+
+    ``blank_unseen_joint_names`` gives every joint whose text that reference
+    never encodes the blank (all-zero) name instead of a fresh T5 vector; the
+    originals are kept in ``joints_names_embs_meta['blanked_unseen_texts']``.
     """
     if not cond:
         return
@@ -359,6 +418,12 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
         refresh_joint_metadata_in_object_cond(object_cond)
         embedding_texts = build_joint_embedding_texts(object_cond)
         embedding_texts_by_object[object_type] = embedding_texts
+
+    blanked_by_object = {}
+    if blank_unseen_joint_names:
+        blanked_by_object = _blank_unseen_joint_texts(
+            embedding_texts_by_object, _reference_joint_texts(embedding_cache_cond, t5_name)
+        )
 
     object_types_to_encode = sorted(cond)
     joint_count = len(object_types_to_encode)
@@ -419,9 +484,9 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
         object_cond['joints_names_embs_meta'] = {
             't5_name': t5_name,
             'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-            'slim': bool(JOINT_NAME_EMBEDDING_SLIM),
             'embedding_dim': int(embs.shape[1]) if embs.ndim == 2 else 0,
             'embedding_texts': list(embedding_texts),
+            'blanked_unseen_texts': dict(blanked_by_object.get(object_type, {})),
         }
 
         species_text = species_texts_by_object[object_type]

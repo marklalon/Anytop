@@ -1,6 +1,6 @@
 """End effector detection and symmetry analysis utilities."""
 
-from collections import Counter, defaultdict
+from collections import Counter
 
 import numpy as np
 import re
@@ -558,23 +558,6 @@ def _split_glued_compound_token(token):
 # a bump makes the loader reject stale cond files until preprocessing re-runs.
 JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 16
 
-# The text the pipeline encodes: body part and side only; structure-derived
-# tokens belong to the structural channel. ``slim=False`` adds them back for
-# offline comparison scripts, never for a training corpus.
-JOINT_NAME_EMBEDDING_SLIM = True
-
-_CHAIN_INDEX_ORDINAL_TOKENS = {
-    1: 'First',
-    2: 'Second',
-    3: 'Third',
-    4: 'Fourth',
-    5: 'Fifth',
-    6: 'Sixth',
-    7: 'Seventh',
-    8: 'Eighth',
-    9: 'Ninth',
-    10: 'Tenth',
-}
 def normalize_joint_name(name):
     # Split on lowercase→UPPER (e.g. "ElkRFemur" → "Elk RFemur")
     split_name = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
@@ -868,8 +851,8 @@ def _bare_arm_means_upper_arm(joint_names, parents):
         'forearm' in normalize_joint_name(str(name)).replace(' ', '')
         for name in joint_names
     ]
-    # Same reverse-index sweep as _build_chain_relative_joint_tokens: a child
-    # always has a higher index than its parent in these rigs.
+    # Reverse-index sweep: a child always has a higher index than its parent in
+    # these rigs.
     has_forearm_below = [False] * joint_count
     for joint_index in range(joint_count - 1, 0, -1):
         parent_index = int(parents[joint_index])
@@ -1161,130 +1144,14 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
     return fallback_tokens or canonical_name.split()
 
 
-def _chain_index_token(index):
-    index = int(index)
-    return _CHAIN_INDEX_ORDINAL_TOKENS.get(index, f'Index{index}')
+def build_joint_embedding_texts(object_cond):
+    """Per-joint T5 sentences: side + body part.
 
-
-def _chain_role_token(chain_index, chain_length):
-    chain_index = int(chain_index)
-    chain_length = int(chain_length)
-    if chain_length <= 1:
-        return None
-    if chain_index <= 1:
-        return 'ChainStart'
-    if chain_index >= chain_length:
-        return 'ChainEnd'
-    relative_position = float(chain_index - 1) / float(max(chain_length - 1, 1))
-    if relative_position <= 0.34:
-        return 'ChainEarly'
-    if relative_position >= 0.67:
-        return 'ChainLate'
-    return 'ChainMiddle'
-
-
-def _build_chain_relative_joint_tokens(refined_tokens_per_joint, parents):
-    joint_count = len(refined_tokens_per_joint)
-    if parents is None or len(parents) != joint_count:
-        return [[] for _ in range(joint_count)]
-
-    parents = np.asarray(parents, dtype=np.int64)
-    children = _child_map(parents)
-    signatures = [tuple(tokens) for tokens in refined_tokens_per_joint]
-    upward_steps = np.zeros(joint_count, dtype=np.int32)
-    downward_steps = np.zeros(joint_count, dtype=np.int32)
-
-    for joint_index in range(joint_count):
-        parent_index = int(parents[joint_index])
-        if parent_index >= 0 and signatures[parent_index] and signatures[parent_index] == signatures[joint_index]:
-            upward_steps[joint_index] = upward_steps[parent_index] + 1
-
-    for joint_index in range(joint_count - 1, -1, -1):
-        matching_children = [
-            child_index
-            for child_index in children[joint_index]
-            if signatures[joint_index] and signatures[child_index] == signatures[joint_index]
-        ]
-        if matching_children:
-            downward_steps[joint_index] = 1 + max(downward_steps[child_index] for child_index in matching_children)
-
-    chain_lengths = upward_steps + downward_steps + 1
-    chain_tokens = []
-    for joint_index in range(joint_count):
-        signature = signatures[joint_index]
-        chain_length = int(chain_lengths[joint_index])
-        if not signature or chain_length <= 1:
-            chain_tokens.append([])
-            continue
-
-        chain_index = int(upward_steps[joint_index]) + 1
-        joint_tokens = ['Segment', _chain_index_token(chain_index), 'Of', str(chain_length)]
-        role_token = _chain_role_token(chain_index, chain_length)
-        if role_token is not None:
-            joint_tokens.append(role_token)
-        chain_tokens.append(joint_tokens)
-
-    return chain_tokens
-
-
-def _sibling_instance_tokens(body_tokens_per_joint, flag_tokens_per_joint, symmetry_partner_indices):
-    """Number the joints that would otherwise share one identical text.
-
-    Whatever still collides here is a *sibling* repeat -- a centipede's leg
-    pairs, a bat's wing fingers -- which the chain tokens cannot separate
-    because the joints do not sit on one parent-child run.
-
-    The ordinal is a plain within-group index, deliberately not a geometric one.
-    Ordering siblings along a body axis would need that axis signed (raw PCA
-    would mirror-flip left against right), and the only thing it buys over array
-    order is mirror consistency -- which ``symmetry_partner_indices`` already
-    delivers exactly: propagating ranks across the symmetry links matches
-    742/742 paired joints, against 566/742 for bare array order. What is given
-    up is cross-species comparability: "Instance First" is a within-skeleton id,
-    not "the front-most pair".
-    """
-    groups = defaultdict(list)
-    for joint_index, (body_tokens, flag_tokens) in enumerate(zip(body_tokens_per_joint, flag_tokens_per_joint)):
-        if body_tokens:
-            groups[' '.join([*body_tokens, *flag_tokens])].append(joint_index)
-    groups = {text: indices for text, indices in groups.items() if len(indices) > 1}
-    if not groups:
-        return [[] for _ in body_tokens_per_joint]
-
-    partners = list(symmetry_partner_indices or [])
-    ranks = {}
-    # Rank the earliest group by array order, then let each later group inherit
-    # its ranks through the symmetry links whenever that yields a clean
-    # one-to-one match; otherwise fall back to array order for that group too.
-    for text in sorted(groups, key=lambda text: min(groups[text])):
-        indices = sorted(groups[text])
-        partner_indices = [
-            int(partners[joint_index]) if joint_index < len(partners) else -1
-            for joint_index in indices
-        ]
-        partner_ranks = [ranks[partner_index] for partner_index in partner_indices if partner_index in ranks]
-        if len(partner_ranks) == len(indices) and len(set(partner_ranks)) == len(indices):
-            ranks.update(zip(indices, partner_ranks))
-            continue
-        ranks.update((joint_index, rank) for rank, joint_index in enumerate(indices))
-
-    instance_tokens = [[] for _ in body_tokens_per_joint]
-    for indices in groups.values():
-        for joint_index in indices:
-            instance_tokens[joint_index] = [
-                'Instance', _chain_index_token(ranks[joint_index] + 1), 'Of', str(len(indices)),
-            ]
-    return instance_tokens
-
-
-def build_joint_embedding_texts(object_cond, slim=JOINT_NAME_EMBEDDING_SLIM):
-    """Per-joint T5 sentences: side + body part, and (only when ``slim=False``)
-    the structure-derived tokens the pre-v14 schema also spelled.
-
-    Slimming is done here, at token construction, rather than by deleting words
-    from a finished string: the chain grouping and the instance numbering read
-    each other, so a post-hoc blacklist would leave whichever of them happened to
-    survive keyed on a signature that no longer exists.
+    Structure-derived tokens (chain position, sibling numbering, contact and
+    end-effector flags) belong to the structural channel, never to the text.
+    Repeated siblings (a centipede's leg pairs, a bat's wing fingers) therefore
+    share one text on purpose: telling them apart is what sib_rank / fore_aft_n
+    / lateral_signed do, comparably across species.
     """
     base_joint_names = object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or []
     if not base_joint_names:
@@ -1296,8 +1163,6 @@ def build_joint_embedding_texts(object_cond, slim=JOINT_NAME_EMBEDDING_SLIM):
         object_cond.get('species_name') or object_cond.get('object_type'),
     )
     joint_side_labels = list(object_cond.get('joint_side_labels') or ['center'] * len(base_joint_names))
-    contact_joints = {int(joint_index) for joint_index in list(object_cond.get('contact_joints') or [])}
-    end_effector_joints = {int(joint_index) for joint_index in list(object_cond.get('end_effector_joints') or [])}
     bare_arm_flags = _bare_arm_means_upper_arm(
         raw_joint_names,
         object_cond.get('parents'),
@@ -1311,77 +1176,28 @@ def build_joint_embedding_texts(object_cond, slim=JOINT_NAME_EMBEDDING_SLIM):
         end_effector_joints=object_cond.get('end_effector_joints') or (),
         additional_prefixes=species_prefixes,
     )
-    refined_tokens_per_joint = [
-        _refine_joint_embedding_name(
+    texts = []
+    for joint_index, joint_name in enumerate(base_joint_names):
+        refined_tokens = _refine_joint_embedding_name(
             joint_name,
             bare_arm_flags[joint_index],
             additional_prefixes=species_prefixes,
             bare_leg_is_calf=bare_leg_flags[joint_index],
         )
-        for joint_index, joint_name in enumerate(base_joint_names)
-    ]
-    if slim:
-        chain_relative_tokens = [[] for _ in refined_tokens_per_joint]
-    else:
-        # Chain grouping stays side-aware even though the side word is emitted only
-        # once, at the end: without it a midline trunk (Buzzard "Tail 01") shares a
-        # signature with its left and right forks and swallows both into one chain.
-        chain_signature_tokens = [
-            [*tokens, joint_side_labels[joint_index] if joint_index < len(joint_side_labels) else 'center']
-            if tokens else []
-            for joint_index, tokens in enumerate(refined_tokens_per_joint)
-        ]
-        chain_relative_tokens = _build_chain_relative_joint_tokens(chain_signature_tokens, object_cond.get('parents'))
-
-    body_tokens_per_joint = []
-    flag_tokens_per_joint = []
-    for joint_index, joint_name in enumerate(base_joint_names):
-        refined_tokens = refined_tokens_per_joint[joint_index]
         # Same cleaning the table lookups use. It matters on the fallback path:
         # a name made *only* of markers comes back as the raw canonical tokens
         # ("BN_P", "Bip01"), which a bare .lower() cannot match against the set.
         lowered_tokens = {_clean_embedding_token(token) for token in refined_tokens}
         if lowered_tokens & _EMBED_TEXT_NON_ANATOMICAL_TOKENS:
-            body_tokens_per_joint.append([])
-            flag_tokens_per_joint.append([])
+            texts.append('')
             continue
 
-        # Side leads, so the text opens with the identity attributes as a plain
-        # English noun phrase ("Right Finger ...") -- a construction T5 saw in
-        # pretraining, unlike a trailing "Right" stranded after chain jargon.
-        # Everything derived (chain position, contact, end effector) follows.
+        # Side leads, so the text opens as a plain English noun phrase
+        # ("Right Finger") -- a construction T5 saw in pretraining.
         side = joint_side_labels[joint_index] if joint_index < len(joint_side_labels) else 'center'
-        body_tokens = [side.capitalize()] if side in ('left', 'right') else []
-        body_tokens.extend(refined_tokens)
-        body_tokens.extend(chain_relative_tokens[joint_index])
-        body_tokens_per_joint.append(body_tokens)
-
-        flag_tokens = []
-        if not slim:
-            if joint_index in contact_joints:
-                flag_tokens.append('Contact')
-            if joint_index in end_effector_joints:
-                flag_tokens.append('EndEffector')
-        flag_tokens_per_joint.append(flag_tokens)
-
-    if slim:
-        # Repeated siblings (a centipede's leg pairs, a bat's wing fingers) are
-        # left sharing one text on purpose: numbering them is a within-skeleton
-        # id, which is exactly what sib_rank / fore_aft_n / lateral_signed encode
-        # in the structural channel -- and there they are comparable across
-        # species, which "Instance First Of 22" never was.
-        instance_tokens_per_joint = [[] for _ in body_tokens_per_joint]
-    else:
-        # Instance ordinals sit with the other positional tokens, ahead of the
-        # derived Contact/EndEffector flags.
-        instance_tokens_per_joint = _sibling_instance_tokens(
-            body_tokens_per_joint, flag_tokens_per_joint, object_cond.get('symmetry_partner_indices')
-        )
-    return [
-        ' '.join([*body_tokens, *instance_tokens, *flag_tokens]) if body_tokens else ''
-        for body_tokens, instance_tokens, flag_tokens
-        in zip(body_tokens_per_joint, instance_tokens_per_joint, flag_tokens_per_joint)
-    ]
+        side_tokens = [side.capitalize()] if side in ('left', 'right') else []
+        texts.append(' '.join([*side_tokens, *refined_tokens]))
+    return texts
 
 
 # Limb and face corner codes in the symmetry signature: the side half is dropped

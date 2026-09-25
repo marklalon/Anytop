@@ -24,7 +24,7 @@ from data_loaders.truebones.truebones_utils.animation_utils import (
 )
 
 
-def _embedding_texts(joint_names, parents, offsets=None, species_name=None, slim=True):
+def _embedding_texts(joint_names, parents, offsets=None, species_name=None):
     parents = np.asarray(parents, dtype=np.int64)
     if offsets is None:
         # A plain chain down -Y, mirrored on X for the Left/Right pairs, is
@@ -48,7 +48,7 @@ def _embedding_texts(joint_names, parents, offsets=None, species_name=None, slim
     object_cond['parents'] = parents
     if species_name:
         object_cond['species_name'] = species_name
-    return build_joint_embedding_texts(object_cond, slim=slim)
+    return build_joint_embedding_texts(object_cond)
 
 
 def test_skeleton_wide_species_prefix_is_removed_from_embedding_text():
@@ -75,18 +75,11 @@ def test_species_word_is_dropped_so_variant_heads_share_one_anatomy():
     necks = texts[2:]
     assert all(text.startswith('Neck') for text in necks), necks
     assert all('Deer' not in text and 'Moose' not in text for text in necks), necks
-    # Under the slim schema they collapse onto ONE text, deliberately: what tells
+    # They collapse onto ONE text, deliberately: what tells
     # four interchangeable necks apart is where each one sits, which the
     # structural channel encodes per joint (and comparably across species).
     # tests/test_joint_struct_features.py covers that it does.
     assert set(necks) == {'Neck'}, necks
-    # The pre-v14 text is what the sibling ordinals were for.
-    legacy_necks = _embedding_texts(
-        ['Root', 'Spine01', 'DeerNeck01', 'MooseNeck', 'QuilinNeck01', 'DonkeyNeck01'],
-        [-1, 0, 1, 1, 1, 1],
-        slim=False,
-    )[2:]
-    assert len(set(legacy_necks)) == len(legacy_necks), legacy_necks
 
 
 def test_canonical_variant_suffix_never_enters_embedding_text():

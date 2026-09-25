@@ -43,7 +43,6 @@ sys.path.insert(0, str(ANYTOP_DIR))
 # process, each with its own module globals.
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_GROUPS,
-    action_words_in,
     build_motion_labels,
     load_motion_metadata,
     write_motion_metadata,
@@ -368,44 +367,6 @@ def _recompute_contact_joints(rebuilt_cond: dict[str, dict]) -> None:
             )
 
 
-def _compute_action_words(
-    rebuilt_cond: dict[str, dict],
-    motion_files: list[Path],
-    motion_metadata: dict[str, dict],
-    cond_lookup,
-) -> None:
-    """Bake the action words each species is animated with into cond.npy.
-
-    ``action_words`` is the sorted set of action words (never direction words)
-    over the species' clips. Nothing in training or generation reads it; it is
-    what the joint-name support scan of process_new_skeleton uses to decide
-    whether a reference species is animated enough for a rig-token match to
-    count as evidence (``_RIG_SIBLING_MIN_ACTIONS``).
-
-    (The loop-period table this replaced fed generation a per-species cycle
-    count for the circular time embedding; that embedding is now period-free,
-    so the table is gone.)
-    """
-    words_by_species: dict[str, set[str]] = {}
-    for motion_path in motion_files:
-        entry = motion_metadata.get(motion_path.name)
-        if not entry:
-            continue
-        object_type = _infer_object_type_from_motion_name(motion_path.name, cond_lookup)
-        if object_type not in rebuilt_cond:
-            continue
-        words_by_species.setdefault(object_type, set()).update(
-            action_words_in(str(entry.get("action_label") or ""))
-        )
-
-    for object_type, object_cond in rebuilt_cond.items():
-        object_cond.pop("loop_period_by_action", None)
-        object_cond.pop("loop_period_median", None)
-        object_cond["action_words"] = sorted(words_by_species.get(object_type, ()))
-    animated = sum(1 for words in words_by_species.values() if words)
-    print(f"[OK] action words baked for {animated}/{len(rebuilt_cond)} species")
-
-
 def _compute_clip_length_prior(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
@@ -643,6 +604,12 @@ def _regenerate_dataset_artifacts(
         object_type: copy.deepcopy(object_cond)
         for object_type, object_cond in active_cond.items()
     }
+    for object_cond in rebuilt_cond.values():
+        # These fields fed diagnostics/features that no longer exist. Do not
+        # perpetuate them when rebuilding a cond from an older snapshot.
+        object_cond.pop("action_words", None)
+        object_cond.pop("loop_period_by_action", None)
+        object_cond.pop("loop_period_median", None)
     _mark_object_feature_spaces(rebuilt_cond)
 
     t0 = time.time()
@@ -657,15 +624,6 @@ def _regenerate_dataset_artifacts(
         species_lookup_map(rebuilt_cond),
     )
     print(f"[OK] translation root contracts validated in {time.time() - t0:.1f}s")
-
-    t0 = time.time()
-    _compute_action_words(
-        rebuilt_cond,
-        motion_files,
-        existing_motion_metadata,
-        species_lookup_map(rebuilt_cond),
-    )
-    print(f"[OK] action words computed in {time.time() - t0:.1f}s")
 
     t0 = time.time()
     _compute_clip_length_prior(

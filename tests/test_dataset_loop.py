@@ -43,7 +43,6 @@ from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-    JOINT_NAME_EMBEDDING_SLIM,
 )
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 
@@ -186,7 +185,6 @@ def _load_cond_stamped_with_the_current_schema(*args, **kwargs):
     for object_type, entry in cond_dict.items():
         meta = dict(entry.get('joints_names_embs_meta') or {})
         meta['schema_version'] = JOINT_NAME_EMBEDDING_SCHEMA_VERSION
-        meta['slim'] = JOINT_NAME_EMBEDDING_SLIM
         entry['joints_names_embs_meta'] = meta
         if 'species_tags' in entry:
             entry['species_tags'] = tags.tags_for(object_type)

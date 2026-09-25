@@ -116,8 +116,7 @@ The script (`tools/process_new_skeleton.py`) accepts the following input argumen
 *object_type* - Species/type name (e.g. "Dragon"). Inferred from the tpos-path filename when omitted.
 *species_tags* - Comma-separated species tags (motion descriptor) for the object type, e.g. 'Quadruped,Lumbering'. REQUIRED: it defines the descriptor baked into cond.npy. There is no fallback to the default dataset's species_tags.jsonl.
 *crop_enabled* - Enable skeleton cropping to MAX_JOINTS=100. Off by default (inference has no joint cap); enable for training-compatible preprocessing.
-*reference_cond_path* - cond.npy to inherit the per-object_subset standardization statistics from. REQUIRED: the stats belong to a trained checkpoint, so pass the checkpoint's own cond.npy snapshot (there is no fallback to the processed dataset directory).
-*skip_t5_embeddings* - Skip T5 embedding computation (the caller injects them via attach_t5_embeddings_to_cond).
+*reference_cond_path* - cond.npy to inherit the per-object_subset standardization statistics from. REQUIRED: the stats belong to a trained checkpoint, so pass the checkpoint's own cond.npy snapshot (there is no fallback to the processed dataset directory). Its T5 vectors are reused, and a joint whose name text it never encodes gets the blank (all-zero) name the model reads as unknown.
 *yes* - Skip all interactive confirmation prompts (headless / automated calls).
 
 Finally, you can run the command: 

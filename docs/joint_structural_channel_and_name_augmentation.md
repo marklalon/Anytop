@@ -140,7 +140,7 @@ Left Hand Thumb Segment Third Of 3 ChainEnd EndEffector
 → Left Hand Thumb
 ```
 
-瘦身必须在 `build_joint_embedding_texts(..., slim=True)` 的 token 构造阶段完成，不能依靠事后字符串黑名单删除。非解剖关节继续使用空 embedding text。
+瘦身在 `build_joint_embedding_texts` 的 token 构造阶段完成（只产出侧别 + 部位，无其他分支），不能依靠事后字符串黑名单删除。非解剖关节继续使用空 embedding text。
 
 S 与 T 应配套使用：T 单独上线会让原本依靠结构词区分的关节发生碰撞；S 负责补回这部分区分度。
 
@@ -224,7 +224,7 @@ A 的目标是降低模型对 canonical 名称点的过拟合。它不能保证�
 训练后至少验证：
 
 1. **名称扰动鲁棒性**：固定相同扩散噪声，只替换一个关键关节的名称 embedding；输出的关节角色和弯曲方向应保持稳定。
-2. **名字盲测**：把全部 joint name 替换成 `unknown_joint_name`，模型仍能生成结构合理的动作。
+2. **名字盲测**：把全部 joint name 置零，模型仍能生成结构合理的动作。
 3. **多物种覆盖**：覆盖人形、四足、多足、翼类、蛇形以及没有 contact 标注的物种。
 4. **多随机种子**：使用相同测试集和多个 seed，报告均值与方差，避免单次生成偶然通过。
 5. **动作质量不退化**：对真实 clip 评估骨长误差、root height、位移、步频、关节活动幅度和 foot sliding；阈值应在训练前确定。
