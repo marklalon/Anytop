@@ -172,6 +172,17 @@ def test_props_and_controls_are_blanked_but_anatomy_in_the_same_name_survives():
     assert texts[6].startswith('Spine'), texts[6]
 
 
+def test_fur_chain_keeps_its_word():
+    # Mammoth/Parrot hang a "BN_Fur_01".."BN_Fur_03" chain off the body. It swings
+    # with the body like hair or a mane, so it is anatomy, not a blanked prop.
+    texts = _embedding_texts(
+        ['Hips', 'Spine1', 'BN_Fur_01', 'BN_Fur_02', 'BN_Fur_03'],
+        [-1, 0, 1, 2, 3],
+    )
+    for text in texts[2:]:
+        assert text.startswith('Fur'), texts
+
+
 def test_misspellings_and_standalone_abbreviations_fold_onto_the_real_word():
     texts = _embedding_texts(
         ['Hips', 'Pelv', 'LeftScap', 'LeftClav', 'LeftShin', 'Scull', 'Thouge01'],
@@ -239,6 +250,18 @@ def test_swapped_limb_code_is_left_alone_on_a_mouth_corner():
     assert 'Back' not in texts[2], texts[2]
     assert texts[2].startswith('Mouth'), texts[2]
     assert texts[3].startswith('Mouth'), texts[3]
+
+
+def test_lm_rm_on_a_head_decodes_as_the_mouth_corners():
+    # SabreToothTiger: "LM"/"RM" under the head are the mouth corners the other
+    # rigs spell "BN_Mouth_L_01"; the same code next to a limb word stays "Mid".
+    texts = _embedding_texts(
+        ['Sabrecat_Neck_Nek2_', 'Sabrecat_Head__Head_', 'Sabrecat_Head_LM01_', 'Sabrecat_Head_RM01_'],
+        [-1, 0, 1, 1],
+        offsets=[[0, 0, 0], [0, 0, 1], [0.05, -0.07, 0.12], [-0.05, -0.07, 0.12]],
+    )
+    assert texts[2] == 'Left Head Mouth', texts[2]
+    assert texts[3] == 'Right Head Mouth', texts[3]
 
 
 def test_mirrored_name_typo_folds_onto_the_segment_its_twin_uses():

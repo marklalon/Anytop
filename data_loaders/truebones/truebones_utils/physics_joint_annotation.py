@@ -202,10 +202,9 @@ _JAPANESE_NAME_REPLACEMENTS = {
     'tai': 'Tail',
 }
 
-# Joint-name tokens that unambiguously signal Japanese romaji rig naming. Used
-# only as *evidence* that a skeleton is Japanese-style; deliberately excludes
-# short/ambiguous tokens (e.g. "te", "o") so a single coincidental match in an
-# otherwise non-Japanese rig cannot flip on the gated replacements below.
+# Romaji tokens that mark a rig as Japanese-named. Short or ambiguous tokens
+# ("te", "o") are left out so one coincidental match cannot enable the gated
+# replacements below.
 _JAPANESE_EVIDENCE_TOKENS = frozenset({
     'momo', 'sippo', 'shippo', 'mune', 'hiza', 'hara', 'ashi', 'hiji',
     'koshi', 'kubi', 'atama', 'ago', 'kata',
@@ -213,10 +212,8 @@ _JAPANESE_EVIDENCE_TOKENS = frozenset({
 })
 _JAPANESE_EVIDENCE_MIN_DISTINCT = 3
 
-# Replacements that are only safe to apply once a skeleton is confirmed to use
-# Japanese romaji naming. "kao" (face → head) and "kosi" (hips, the unaspirated
-# spelling of "koshi") would rarely collide elsewhere, but "o" (tail, 尾) is a
-# single character that must never be mapped globally.
+# Replacements applied only to a rig confirmed Japanese-named: some are too short
+# to map globally ("o" = tail).
 _JAPANESE_GATED_REPLACEMENTS = {
     'kao': 'Head',
     'kosi': 'Hips',
@@ -224,19 +221,10 @@ _JAPANESE_GATED_REPLACEMENTS = {
     'te': 'Hand',
     'era': 'Gill',
 }
-# Chain-position filler that the Segment/ChainStart/ChainEnd tokens already say
-# better. Limb-position words (front/back/rear/mid) are deliberately NOT here:
-# they are the only thing separating a fore limb from a hind limb once the side
-# label is factored out, so dropping them collapsed e.g. Crocodile's
-# "Right Front Leg 1" and "Right Back Leg 1" onto one identical embedding text.
-# The phalanx-position words below are the same filler spelled anatomically.
-# The numeric spelling of a finger's position is already gone -- "LeftHandIndex1"
-# through "...3" all reduce to one token -- so keeping "Index Proximal" apart
-# from "Index" splits one body part across two T5 points for nothing. Every rig
-# here that spells it (the MLH/MLS packs' "Index_Proximal_L") carries exactly one
-# finger bone per hand, so there is no second phalanx left needing the word.
-# ``VariantN`` is a canonical/BVH uniqueness suffix, not anatomy; structural
-# channels distinguish those joints, so it must never enter the T5 text.
+# Filler dropped from the embedding text: chain position ("tip", "end"), phalanx
+# position ("proximal") and the canonical "Variant" uniqueness suffix. Limb
+# position words (front/back/mid) are not filler -- they separate a fore limb
+# from a hind one.
 _EMBED_TEXT_SKIP_TOKENS = {
     'base',
     'tip',
@@ -248,58 +236,14 @@ _EMBED_TEXT_SKIP_TOKENS = {
     'distal',
     'variant',
 }
-# Rig scaffolding, props and tack: bones that carry no anatomy at all. A joint
-# whose name reduces to nothing but these is blanked by build_joint_embedding_texts
-# (zero embedding), which is the honest encoding -- it has no cross-species slot.
-# A name that also carries anatomy keeps it ("XtraSpine" -> "Spine"), because the
-# per-token filter runs first and only the all-marker case reaches the blanking
-# fallback.
+# Words that name no body part: rig markers ("Bip", "Xtra"), controls and tack
+# ("Ctrl", "Saddle") and props ("Sword", "Quiver"). Dropped token by token, so a
+# name that also carries anatomy keeps it ("XtraSpine" -> "Spine"); a name made
+# only of these is blanked (zero embedding).
 #
-# Everything here was checked against its actual place in the tree before being
-# added: Horse/Camel "Saddle"/"Reins"/"Halter"/"Handle"/"Ctrl"/"IkChain" are tack
-# and controls hung off the spine, rhino "Passenger" is a rider node, serpent_man
-# "Blade" is a weapon parented to the hand, SabreToothTiger "MagicEffectsNode" and
-# FireAnt "ProjectileNodeFire" are VFX emitters, and Flamingo/Roach "Bone02" is a
-# bare generic marker. Deliberately NOT here: "spline", which in this corpus is
-# Anaconda's Hips->Spline01..06->Neck trunk (a real spine, mapped as a synonym),
-# and "down", which may be a lower-body qualifier rather than a control.
-#
-# The single-rig codes below were each read off their own tree before being
-# added: Rabbit's "Bip01" is a bare node between Root and Pelvis; Crow/Pirrana/
-# Tukan's "All" is the rig root, Hips -> All -> Locator; Boar's "Aux" hangs off
-# an otherwise ordinary "LeftClavicleAux"/"LeftCheekAux" (no plain Clavicle to
-# collide with, so the joint simply gains the corpus name); "Helt"/"Helb",
-# "Lftb"/"Rftb", "Bnp" and "Mag" are opaque suffix codes whose name already
-# carries the anatomy ("HeadEyeLidHelt", "LeftTwistBoneLftb").
-#
-# The game-character rigs carry far more equipment than the animal ones: held
-# weapons ("Sword", "Bow", "Arrow", "Spear", "Staff"), worn gear ("Shield",
-# "Armor", "Backpack", "Cape", "Skirt", "Robe", "Headband", "Quiver", "Bag"),
-# carried tools ("GoldPick", "BoneWood"), robot hardware ("Gun", "Barrel",
-# "Bolt") and bare attachment sockets ("L_hand_container", "Quiver_container",
-# "WeaponPosition", "Bone_Mount"). Each was read off its tree first: the
-# containers hang as childless leaves off a hand or the spine, the mount node
-# sits between a rider's spine and the mount's own root. "Point" is the 3ds Max
-# Point helper prefix, the same kind of marker as "Dummy" and "Bip": the Pet rigs
-# spell every node "Point_*"/"Bone_*", so without it "Point" survives as the only
-# token and masks the prop word beside it ("Point_fire_C_01" read as anatomy).
-# Their held "Point_stick" is the prop the name then has to carry. Rig roots
-# that spell a code instead of a body part go here too -- "CG" (centre of
-# gravity), "Hub", "Main" and a bare "Base" are all index-0 nodes with no
-# anatomy in the name.
-#
-# Deliberately NOT here, after checking the tree: "Crown" (RMW_Bat hangs it off
-# UpperBody, RMW_Slime off Head -- two rigs, two meanings), "Ice" (an ice
-# elemental's shards are its own body, like the plant monster's "Leaf"),
-# "Notch" (single joint on a rock golem's spine, could be rock anatomy) and
-# "Pad" (keeping it leaves "Shoulder Pad", which reads as the armour it is
-# instead of inventing a shoulder the Orc rig does not otherwise have).
-#
-# "Cape" and "Skirt" are left out for a different reason: those rigs qualify the
-# cloth with a direction ("CapeBack01", "FrontSkirt", "RearSkirt"), and blanking
-# fires only when *every* token is a marker -- so dropping the noun would leave a
-# bare "Back"/"Front" claiming to be the creature's back, which is worse than the
-# uninformative-but-true "Cape Back". Same treatment hair already gets.
+# Leave out words some rig uses for a body part or for motion that follows the
+# body ("Fur", "Spline"), and cloth nouns rigs qualify with a direction
+# ("CapeBack"): dropping them leaves a bare "Back" that reads as anatomy.
 _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'all',
     'armor',
@@ -329,7 +273,6 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'effects',
     'fan',
     'fire',
-    'fur',
     'gold',
     'gun',
     'halo',
@@ -351,6 +294,7 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'mount',
     'node',
     'null',
+    'opp',
     'passenger',
     'pick',
     'point',
@@ -376,13 +320,9 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'wood',
     'xtra',
 }
-# Side is re-attached from the geometry-derived joint_side_labels in
-# build_joint_embedding_texts, so the name's own side word is dropped here.
-# Across all 104 species the geometry label is a strict superset of the name:
-# it agrees on every joint that names a side (never conflicts, never falls back
-# to "center") and additionally sides 100 joints whose name is silent. Dropping
-# it also puts the side at one fixed position for every rig -- "R_thigh",
-# "thigh_R" and "RightThigh" all reduce to "Thigh ... Right".
+# Side words dropped from the name. build_joint_embedding_texts re-attaches the
+# side from the geometry-derived joint_side_labels, so every rig spells it the
+# same way ("R_thigh", "RightThigh" -> "Right Thigh").
 _EMBED_TEXT_SIDE_TOKENS = {
     'left',
     'right',
@@ -393,29 +333,12 @@ _EMBED_TEXT_HEAD_FEATURE_TOKENS = {
     'eye',
     'tongue',
 }
-# Creature words that some rigs glue onto an otherwise ordinary joint name. Two
-# sources: a rig that stamps its own species on every bone (Kappa_gorilla's
-# "GorillaJaw", "KappaNeck", "RightGorillaFinger101"), and a *variant* rig that
-# carries several interchangeable heads on one skeleton (antilope hangs a Deer,
-# Moose, Quilin and Donkey neck+head off Spine02; Tiger hangs a KhitanTiger neck
-# beside its own).
-#
-# The species is already conditioned globally through ``species_emb``, so
-# repeating it per joint only dilutes the anatomy. Measured on the current bank,
-# the dilution is total, not cosmetic: the nearest neighbour of "Kappa Head" is
-# "Neck Nek ..." (0.49) and of "Moose Neck" is "Right Quilin Moustache" (0.57) --
-# T5 clusters these joints by *species* instead of by body part, which is the
-# exact opposite of what a cross-species model needs. Dropping the word leaves
-# four plain "Neck" joints that _sibling_instance_tokens then numbers apart.
-#
-# Stripped from both canonical names and embedding text. If two joints become
-# identical after stripping, canonical-name assignment gives later occurrences
-# a neutral Variant suffix instead of putting the species word back.
-#
-# Deliberately excluded: 'ant' (spider_tarantula's "RightAnt00" is an antenna
-# under Head01, not the insect), 'horse' ("HorseLink" is a 3ds Max Biped leg
-# bone used by 33 species -- handled as a pair merge below), and 'jaws' (a
-# species here, but one keystroke from the anatomical 'jaw').
+# Species words glued onto joint names ("GorillaJaw", "MooseNeck"), stripped from
+# canonical names and embedding text. Species is conditioned through
+# ``species_emb``; left in, the word makes T5 cluster joints by species instead
+# of body part. Joints that collide after stripping get a Variant suffix. Words
+# that are also anatomy or rig vocabulary stay out ("ant" = antenna, "horse" in
+# "HorseLink").
 _EMBED_TEXT_CREATURE_TOKENS = {
     'antilope', 'bat', 'bear', 'bee', 'boar', 'buffalo', 'buzzard', 'camel',
     'cat', 'centipede', 'chicken', 'cobra', 'coyote', 'crab', 'cricket', 'crocodile',
@@ -436,24 +359,17 @@ def joint_name_token_is_species(token):
     return clean_token in _EMBED_TEXT_CREATURE_TOKENS
 
 
-# Quadruped limb codes: Lf/Rf/Lb/Rb = left/right fore/hind. The side half is
-# already recovered by detect_joint_side and re-attached from the geometry label,
-# so only the fore/hind half is emitted here. Dropping the code outright would
-# collapse a front leg onto a hind leg -- the same failure the front/back words
-# are kept out of _EMBED_TEXT_SKIP_TOKENS to avoid.
+# Quadruped limb codes (Lf/Rf/Lb/Rb = left/right fore/hind), decoded to their
+# fore/hind half; the side comes from the geometry label.
 _EMBED_TEXT_LIMB_CODE_TOKENS = {
     'lf': 'Front',
     'rf': 'Front',
     'lb': 'Back',
     'rb': 'Back',
 }
-# The same code with the two halves swapped -- Fl/Fr = fore-left/fore-right,
-# Bl/Br = back-left/back-right, Lm/Rm = the middle pair of a hexapod. Kept apart
-# from the table above because these spellings are ambiguous on their own:
-# MU04_Earthworm names the corners of its mouth "MouthTL"/"MouthBL", where "Bl"
-# is bottom-left and decoding it as a hind limb would invent anatomy. They are
-# only read when the same name also carries a limb word, which is how every rig
-# that uses them spells it ("FlLeg1", "BrLegAnkle", "LmLegAnkle").
+# The same codes spelled fore/hind first (Fl/Br) plus a hexapod's middle pair
+# (Lm/Rm). Ambiguous alone ("MouthBL" is bottom-left), so read only when the name
+# also carries a limb word.
 _EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS = {
     'fl': 'Front',
     'fr': 'Front',
@@ -463,33 +379,21 @@ _EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS = {
     'rm': 'Mid',
 }
 _EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS = frozenset({'arm', 'leg'})
-# "Digit" is the anatomical word for both a finger and a toe, and this corpus
-# uses it for both: 114 joints hang off a hand ("LeftArmPalm -> LeftArmDigit11",
-# a ghost's fingers, a bat's and a bird's wing digits, a robot's gripper) and 24
-# hang off a foot ("LbLegAnkle -> LbLegDigit11", the Bear's claws, the Bird's and
-# Fledgling's toes). Mapping the word to one corpus family would put a bear's toe
-# among the fingers; mapping it to neither leaves a "Digit" family sitting beside
-# the "Finger" and "Toe" ones for the same body part. The rig always says which
-# it is in the same name, and MU01_Bird carries both spellings at once, so the
-# limb word decides. Every one of the 138 resolves; none names both limbs.
+# Lm/Rm on a head joint ("Head_LM01") is a mouth corner, not a middle limb. A limb
+# word wins when a name carries both.
+_EMBED_TEXT_HEAD_SIDE_CODE_TOKENS = {
+    'lm': 'Mouth',
+    'rm': 'Mouth',
+}
+_EMBED_TEXT_HEAD_SIDE_CODE_CONTEXT_TOKENS = frozenset({'head'})
+# "Digit" is a finger on a hand and a toe on a foot; the limb word in the same
+# name decides which.
 _EMBED_TEXT_DIGIT_HAND_CONTEXT_TOKENS = frozenset({'arm', 'hand', 'palm'})
 _EMBED_TEXT_DIGIT_FOOT_CONTEXT_TOKENS = frozenset({'leg', 'foot', 'ankle', 'toe', 'paw', 'hoof'})
-# The limb a distal joint hangs off, as spelled inside that joint's own name. A
-# thumb is on a hand and an ankle is on a leg, so the carrier word records
-# nothing but which namespace the rig author worked in -- and this corpus uses
-# several for the same parts: the five fingers arrive as "LeftHandThumb1"
-# (Mixamo), "RigLArmThumb1" (the PC/RU packs) and a bare "NPC_LThumb01" (the
-# KI/RMW packs), the hand itself as "RigLArmPalm" against 108 species' plain
-# "Hand", and the leg's distal joints as "RigLLegAnkle"/"RigLLegFoot1"/
-# "RigLLegToes1" against the corpus "Ankle"/"Foot"/"Toe". Every one of those
-# split a body part across two or three points in T5 space; an incoming Mixamo
-# hand matched none of the finger spellings at all, and fell back on
-# "Right Arm Middle" at cos 0.69 -- the same finger under another name.
-#
-# "Wing" is deliberately not a carrier: a dragon's wing digit is a different
-# limb, not a different spelling of the same one, and the corpus keeps wing
-# anatomy apart everywhere else. Nor are the creature words a centaur rig uses
-# to tell its two halves apart ("horse_hand_L" beside "man_hand_L").
+# The limb word a rig repeats inside a distal joint's name ("LeftHandThumb1",
+# "RigLLegAnkle"). The part already implies its limb, so the carrier is dropped
+# and each finger, ankle or toe lands on one token across rig conventions.
+# "Wing" is not a carrier: a wing digit belongs to a different limb.
 _EMBED_TEXT_LIMB_CARRIER_TOKENS = frozenset({'Arm', 'Hand', 'Leg'})
 # Distal parts that already name the limb they sit on, so a carrier in front of
 # one is pure repetition.
@@ -497,27 +401,14 @@ _EMBED_TEXT_CARRIED_PART_TOKENS = frozenset({
     'Ankle', 'Finger', 'Foot', 'Hand', 'Heel', 'Hoof', 'Index', 'Little',
     'Middle', 'Paw', 'Pinky', 'Ring', 'Thumb', 'Toe', 'Wrist',
 })
-# Words that qualify *which* limb, kept in front of the part when the carrier is
-# dropped: "LFLegAnkle" is the fore ankle and has to stay off the hind one.
-# Read only ahead of the carrier. Behind it the same words index one limb out of
-# many instead -- PC_PolygonalSpiderlingVenom runs four pairs it spells
-# "RigLLegFront1..4", "RigLLegMid...", "RigLLegCtr...", "RigLLegBack..." -- and
-# there the leg word is the anatomy, not a namespace.
+# Words ahead of a dropped carrier that say which limb ("LFLegAnkle" = fore
+# ankle); they are kept. Behind the carrier they index one limb of many
+# ("LegFront1") and the carrier stays.
 _EMBED_TEXT_LIMB_QUALIFIER_TOKENS = frozenset({'Back', 'Front', 'Mid', 'Rear'})
-# Anatomical synonyms and rig abbreviations folded onto the vocabulary the rest
-# of the corpus already uses, so one body part is one point in T5 space instead
-# of a dozen singleton families. Left as-is when T5 gets there on its own; these
-# are the ones it does not -- it neighbours by spelling, so "Left Carpal" lands
-# on "Left Calf" (0.70) and "Left Ulna" on "Left Clavicle" (0.65).
-#
-# Every mapping was read off the joint's actual position in the tree, not a
-# dictionary: Deer runs Pelvis->Femur->Tibia->LargeCannon->PhalanxPrima->Hoof
-# (= Thigh/Calf/Foot/Toe) and Ribcage->Scapula->Humerus->Radius->Metacarpus
-# (= Clavicle/UpperArm/Forearm/Hand); Hyena runs Scapula->Humerus->Ulna->Carpal;
-# Anaconda runs Hips->Spline01..06->Neck. Not mapped, on inspection: 'ball'
-# (Bear uses it for both the ball of the foot and the palm), 'belly'/'stomach'
-# (abdomen, spine segment and fat jiggle across three rigs) and 'crest' (Boar's
-# is a back crest, not a neck one).
+# Synonyms, abbreviations and misspellings folded onto the corpus vocabulary, so
+# one body part is one T5 point ("Femur" -> "Thigh", "Clav" -> "Clavicle"). Map
+# a word by where the joint sits in the tree; ambiguous words ("Ball", "Belly")
+# stay unmapped.
 _EMBED_TEXT_SYNONYM_TOKENS = {
     # long bones -> the segment word the corpus uses
     'scapula': 'Clavicle',
@@ -558,8 +449,7 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
     'antennae': 'Feeler',
     'piers': 'Pincers',
     'pliers': 'Pincers',
-    # misspellings, which T5 has no reason to place anywhere near the word they
-    # meant
+    # misspellings
     'tounge': 'Tongue',
     'thouge': 'Tongue',
     'tunge': 'Tongue',
@@ -568,20 +458,11 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
     'pevis': 'Pelvis',
     'shouder': 'Shoulder',
     'uppder': 'Upper',
-    # One asset pack mirrored its left-side bones and ran a global L -> R
-    # replace over the copied names, which corrupted the words themselves: the
-    # left arm is "Lower_Arm_L" but the right one is "Rower_Arm_R", and the left
-    # leg is "Upper_Leg_L"/"Lower_Leg_L" against "Upper_Reg_R"/"Rower_Reg_R" on
-    # the right. Both spellings sit in the same skeleton, and the tree confirms
-    # them (UpperArm -> RowerArm -> Hand, Hips -> UpperReg -> RowerReg -> Foot),
-    # so the two sides landed in unrelated corners of T5 space and their
-    # symmetry pairs failed to form. The pair merges below turn the decoded
-    # words into the corpus segment names; these entries cover a stray single.
+    # an L -> R replace over mirrored bone names ("Rower_Arm_R", "Upper_Reg_R")
     'rower': 'Lower',
     'reg': 'Leg',
-    # rig abbreviations that echo the full word already in the same name
-    # ("LeftThighLeftThi", "SpineSpn0", "Tail0Tal0"); expanding them lets the
-    # adjacent-duplicate collapse in _refine_joint_embedding_name eat the echo.
+    # abbreviations echoing the full word in the same name ("SpineSpn0");
+    # expanded so the adjacent-duplicate collapse removes the echo
     'thi': 'Thigh',
     'clf': 'Calf',
     'fot': 'Foot',
@@ -592,10 +473,7 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
     'nek': 'Neck',
     'spn': 'Spine',
     'tal': 'Tail',
-    # standalone abbreviations, read off the tree: Deer_Buck hangs "LeftClav"
-    # and "LeftScap" off Spine4 (both girdle helpers, both -> Clavicle, as
-    # "scapula" already maps there), Hyena runs Femur -> Shin -> Ankle, and
-    # SabreToothTiger's "Pelv" sits Hips -> Pelv -> Thigh/Tail.
+    # standalone abbreviations
     'clav': 'Clavicle',
     'scap': 'Clavicle',
     'shin': 'Calf',
@@ -605,11 +483,8 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
     'btm': 'Bottom',
 }
 
-# Some rigs glue a multi-word joint name together in all lowercase
-# ("R_smallfrontarm_J01"), which leaves normalize_joint_name no case or digit
-# boundary to split on, so the whole blob survives as one OOV token. Segment
-# those against an explicit vocabulary during canonicalization so both the
-# canonical name and the T5 embedding text see real words.
+# Vocabulary for splitting an all-lowercase glued name ("smallfrontarm") into
+# words during canonicalization.
 _COMPOUND_MODIFIER_TOKENS = frozenset({
     'back', 'big', 'bottom', 'down', 'first', 'fore', 'front', 'hind', 'inner',
     'large', 'left', 'long', 'low', 'lower', 'mid', 'middle', 'outer', 'outter',
@@ -622,9 +497,8 @@ _COMPOUND_ANATOMY_TOKENS = frozenset({
     'thumb', 'toe', 'tongue', 'tooth', 'wing', 'wrist',
 })
 _COMPOUND_SPLIT_VOCABULARY = _COMPOUND_MODIFIER_TOKENS | _COMPOUND_ANATOMY_TOKENS
-# Real single words that happen to decompose into vocabulary entries. Splitting
-# them would be wrong ("ponytail" is a deliberate non-anatomical marker, and
-# "eyebrow" must not decay into the generic HeadFeature token via "eye").
+# Real words that decompose into vocabulary entries and must stay whole
+# ("ponytail", "eyebrow").
 _COMPOUND_SPLIT_PROTECTED_TOKENS = frozenset({
     'backbone', 'collarbone', 'eyeball', 'eyebrow', 'eyelid', 'fingertip',
     'foreleg', 'headtop', 'ponytail', 'ribcage', 'toenail', 'topknot',
@@ -664,23 +538,14 @@ def _split_glued_compound_token(token):
     return parts if parts is not None and len(parts) >= 2 else None
 
 
-# 15: distal joint names were normalized. The carrier limb a rig repeats inside
-# the joint's own name ("LeftHandThumb1", "RigLArmThumb1", "RigLArmPalm",
-# "RigLLegAnkle", "RigLLegToes1") is dropped, and so are the phalanx-position
-# words ("Index_Proximal_L"), so each hand, finger, ankle, foot and toe lands on
-# one token per side instead of one per rig convention.
-# 14: the text was slimmed. Chain ordinals ("Segment Second Of 3"), chain roles
-# (ChainStart/ChainEnd/...), sibling instance ordinals and the Contact /
-# EndEffector flags no longer go into it -- all of them are DERIVED from parents,
-# the rest pose and the contact annotation, which the structural channel now
-# carries per joint (see joint_struct_features). They were competing for the same
-# mean-pooled T5 vector as the body-part word, and the longer the sentence the
-# more diluted "Calf", "Finger" or "Wing" became.
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 15
+# Bump whenever the text build_joint_embedding_texts produces for a joint can
+# change: the token tables above, name canonicalization or refinement, or what
+# goes into the sentence. Stored name embeddings are keyed by this version, so
+# a bump makes the loader reject stale cond files until preprocessing re-runs.
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 16
 
-# The text the pipeline encodes. Structure-derived tokens are the structural
-# channel's job; a name says which body part a joint is and which side it is on,
-# and nothing else. ``slim=False`` rebuilds the pre-v14 text and exists for the
+# The text the pipeline encodes: body part and side only; structure-derived
+# tokens belong to the structural channel. ``slim=False`` adds them back for
 # offline comparison scripts, never for a training corpus.
 JOINT_NAME_EMBEDDING_SLIM = True
 
@@ -946,10 +811,8 @@ def build_species_embedding_text(object_cond):
     return ' '.join(motion_tokens)
 
 
-# Adjacent canonical tokens that name one anatomical part together. Applied to
-# the raw tokens, before the per-token substitutions in
-# _refine_joint_embedding_tokens -- those rewrite "arm", which would otherwise
-# hide every <modifier>+arm pair from this table.
+# Adjacent tokens that name one part together ("upper leg" -> Thigh). Applied
+# before the per-token substitutions, which would otherwise rewrite "arm".
 _EMBED_TEXT_TOKEN_PAIR_MERGES = {
     ('upper', 'leg'): 'Thigh',
     ('up', 'leg'): 'Thigh',
@@ -957,28 +820,16 @@ _EMBED_TEXT_TOKEN_PAIR_MERGES = {
     ('fore', 'leg'): 'Foreleg',
     ('upper', 'arm'): 'UpperArm',
     ('lower', 'arm'): 'Forearm',
-    # The counterpart of ('upper', 'leg'): the segment below the upper leg. On a
-    # quadruped's *fore* limb that segment is really a forearm, but the pair
-    # above already reads that rig's "UpperLeg" as a Thigh, so decoding both
-    # halves the same way at least keeps one limb in one family instead of
-    # splitting it across two.
+    # below an UpperLeg; Calf even on a fore limb, matching ('upper', 'leg')
     ('lower', 'leg'): 'Calf',
     # Same three segments as spelled by the L -> R mirrored names above.
     ('rower', 'arm'): 'Forearm',
     ('upper', 'reg'): 'Thigh',
     ('rower', 'reg'): 'Calf',
     ('lower', 'reg'): 'Calf',
-    # 3ds Max Biped's extra digitigrade leg link, exported by 33 species here.
-    # It sits Thigh -> Calf -> HorseLink -> Foot in every one of them, which is
-    # the ankle/hock; merging the pair both names it correctly and keeps the
-    # creature word "horse" out of the embedding text of a Cat, a Lion and a
-    # Chicken. No species carries both a HorseLink and an Ankle, so nothing
-    # collides.
+    # 3ds Max Biped's digitigrade link, Thigh -> Calf -> HorseLink -> Foot
     ('horse', 'link'): 'Ankle',
-    # CamelCase splits "EyeLid"/"EyeLids" into two tokens, and a bare 'eye' also
-    # emits the shared HeadFeature category -- merging the pair keeps an eyelid
-    # an eyelid instead of "Eye HeadFeature Lid". The glued lowercase spelling is
-    # already protected by _COMPOUND_SPLIT_PROTECTED_TOKENS.
+    # keeps an eyelid from reading as "Eye" (HeadFeature) + "Lid"
     ('eye', 'lid'): 'Eyelid',
     ('eye', 'lids'): 'Eyelid',
 }
@@ -1013,19 +864,15 @@ def _bare_arm_means_upper_arm(joint_names, parents):
     return has_forearm_below
 
 
-# The segment a rig means by a bare "Leg" depends entirely on what it calls the
-# segment above: with a Thigh/UpLeg above and a foot below, the bare word is the
-# shank. Kept as sets rather than one regex so the glued spellings the pair-merge
-# table already knows ("UpLeg") and the mirrored ones ("reg") stay in one place.
+# A bare "Leg" between a thigh and a foot is the shank; these sets spell the
+# thigh, the foot and the bare leg for that test.
 _EMBED_TEXT_THIGH_NAME_TOKENS = frozenset({'thigh', 'upleg', 'upperleg'})
 _EMBED_TEXT_DISTAL_LEG_TOKENS = frozenset({
     'foot', 'ankle', 'toe', 'toes', 'paw', 'hoof', 'heel', 'ball', 'tarsus', 'hock',
 })
 _EMBED_TEXT_BARE_LEG_TOKENS = frozenset({'leg', 'reg'})
-# How far up/down the same limb the thigh and the foot are allowed to sit. Four
-# links spans every leg in this corpus (Thigh -> Calf -> HorseLink -> Foot -> Toe)
-# while keeping an arthropod's 5-15 segment "Leg" chain, which has no thigh of
-# its own, from reaching one on another limb through the pelvis.
+# How many links along the limb the thigh and foot may sit: spans a full leg
+# without letting an arthropod's long "Leg" chain reach another limb's thigh.
 _BARE_LEG_CONTEXT_MAX_LINKS = 4
 
 
@@ -1103,7 +950,8 @@ def _bare_leg_means_calf(joint_names, parents, end_effector_joints=(), additiona
 
 def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
                                    quadrant_codes_name_a_limb=False,
-                                   digit_limb=None, bare_leg_is_calf=False):
+                                   digit_limb=None, bare_leg_is_calf=False,
+                                   side_codes_name_a_head=False):
     """Map one canonical token to the embedding token(s) it contributes."""
     if clean_token == 'digit' and digit_limb is not None:
         return ['Finger'] if digit_limb == 'hand' else ['Toe']
@@ -1114,6 +962,10 @@ def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
         quadrant_token = _EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS.get(clean_token)
         if quadrant_token is not None:
             return [quadrant_token]
+    elif side_codes_name_a_head:
+        head_code_token = _EMBED_TEXT_HEAD_SIDE_CODE_TOKENS.get(clean_token)
+        if head_code_token is not None:
+            return [head_code_token]
     # Ahead of the synonym lookup: 'reg' is a synonym-mapped spelling of 'leg',
     # and a bare 'reg' below a thigh is a Calf just like a bare 'leg'.
     if bare_leg_is_calf and clean_token in _EMBED_TEXT_BARE_LEG_TOKENS:
@@ -1163,7 +1015,7 @@ def joint_name_is_non_anatomical(name, additional_prefixes=()):
     nothing) is taken at its word, with the same test
     ``build_joint_embedding_texts`` uses to blank body tokens.
 
-    A *name* signal only -- armor, fur and saddles are non-anatomical but still
+    A *name* signal only -- armor and saddles are non-anatomical but still
     part of the character's size; pair with geometry (``find_prop_socket_joints``).
     """
     tokens = {
@@ -1231,6 +1083,7 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
     quadrant_codes_name_a_limb = bool(
         set(clean_tokens) & _EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS
     )
+    side_codes_name_a_head = bool(set(clean_tokens) & _EMBED_TEXT_HEAD_SIDE_CODE_CONTEXT_TOKENS)
     # Which limb a "Digit" belongs to, from the same name. Only an unambiguous
     # single side of the fork is read; a name that says both (or neither) keeps
     # the bare word.
@@ -1257,6 +1110,7 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
                 quadrant_codes_name_a_limb=quadrant_codes_name_a_limb,
                 digit_limb=digit_limb,
                 bare_leg_is_calf=bare_leg_is_calf,
+                side_codes_name_a_head=side_codes_name_a_head,
             )
         )
         index += 1
@@ -1508,13 +1362,8 @@ def build_joint_embedding_texts(object_cond, slim=JOINT_NAME_EMBEDDING_SLIM):
     ]
 
 
-# Side half of a quadruped limb code, dropped from the symmetry signature; the
-# fore/hind half is kept as a bare 'f'/'b' so LfLeg01 can only ever pair with
-# RfLeg01. Erasing the code outright would put a fore and a hind leg in one
-# group and leave the mirror test to tell them apart. The swapped spellings
-# (Fl/Fr, Bl/Br) and the hexapod's middle pair (Lm/Rm) need the same treatment
-# -- once detect_joint_side reads them, a front and a hind leg would otherwise
-# share the signature "leg 1" and could cross-pair.
+# Limb codes in the symmetry signature: the side half is dropped and the
+# fore/hind/middle half kept, so LfLeg01 pairs only with RfLeg01.
 _LIMB_CODE_SIGNATURE_TOKENS = {
     'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b',
     'fl': 'f', 'fr': 'f', 'bl': 'b', 'br': 'b',
@@ -1522,19 +1371,13 @@ _LIMB_CODE_SIGNATURE_TOKENS = {
 }
 
 
-# Spelling-only repairs, applied to the symmetry signature. The pack that ran a
-# global L -> R replace over its mirrored bone names corrupted the words too, so
-# the two halves of one limb no longer share a signature: "UpperLegLeft" against
-# "UpperRegRight", "LowerArmLeft" against "RowerArmRight". These undo the letter
-# swap so the pair can form; the embedding text has its own entries for the same
-# spellings. "Lwing"/"Rwing" is the other spelling problem in the same class: the
-# side letter is glued to the word with no case boundary, so the two sides read
-# as two different parts. Deliberately not the full synonym table -- a signature
-# is a spelling key, and folding synonyms into it would regroup every existing
-# rig.
+# Spelling repairs for the symmetry signature, so both halves of a pair share one
+# key ("UpperReg" -> "UpperLeg", "Lwing" -> "wing"). Spelling only: folding the
+# synonym table in would regroup existing rigs.
 _SIGNATURE_SPELLING_TOKENS = {
     'rower': 'lower',
     'reg': 'leg',
+    'piers': 'pliers',
     'lwing': 'wing',
     'rwing': 'wing',
 }
@@ -1904,9 +1747,6 @@ def detect_joint_side(name):
     tokens = set(normalized.split())
     right_markers = (
         ' right ',
-        ' npc r',
-        ' bip01 r',
-        ' bn r',
         ' r ',
         ' r_',
         ' rleg',
@@ -1921,9 +1761,6 @@ def detect_joint_side(name):
     )
     left_markers = (
         ' left ',
-        ' npc l',
-        ' bip01 l',
-        ' bn l',
         ' l ',
         ' l_',
         ' lleg',
@@ -1936,6 +1773,10 @@ def detect_joint_side(name):
         ' l kata',
         ' l hiji',
     )
+    # Markers are matched on whole words at their start. A rig prefix followed by
+    # a bare side letter ("NPC_R_Thigh", "BN_L_Arm") is already ' r ' / ' l ';
+    # spelled as a prefix marker (' npc r') it also caught the first letter of the
+    # next word, siding Bear's "NPC_Ribcage" right and "NPC_LowerFrontLip" left.
     padded = f' {normalized} '
     if any(marker in padded for marker in right_markers) or compact.startswith(('r_', 'rleg', 'rarm', 'rwing', 'rthigh', 'rmomo', 'rkata', 'rhiji')):
         return 'right'
@@ -1966,6 +1807,14 @@ def detect_joint_side(name):
         if right_quadrant and not left_quadrant:
             return 'right'
         if left_quadrant and not right_quadrant:
+            return 'left'
+    # Lm/Rm on a head: the mouth corners (_EMBED_TEXT_HEAD_SIDE_CODE_TOKENS).
+    elif tokens & _EMBED_TEXT_HEAD_SIDE_CODE_CONTEXT_TOKENS:
+        right_head_code = tokens & {'rm'}
+        left_head_code = tokens & {'lm'}
+        if right_head_code and not left_head_code:
+            return 'right'
+        if left_head_code and not right_head_code:
             return 'left'
     return None
 
@@ -2006,18 +1855,274 @@ def _passes_conservative_child_mirror_check(left_index, right_index, left_parent
     return mirror_error <= tolerance and yz_error <= tolerance
 
 
+# How unanimous the rig's own named joints must be about which X half is its
+# left before a name that contradicts it is overruled, and how many off-midline
+# named joints that vote needs.
+_WRONG_SIDE_NAME_MIN_AGREEMENT = 0.9
+_WRONG_SIDE_NAME_MIN_VOTES = 4
+# Fraction of a joint's offset from its parent below which it counts as on the
+# midline and casts no vote / cannot be on the wrong side.
+_WRONG_SIDE_MIDLINE_RATIO = 0.1
+
+
+def _subtree_mean_x(parents, rest_positions):
+    """Mean X over each joint's subtree, the joint included."""
+    subtree_x_sum = rest_positions[:, 0].copy()
+    subtree_size = np.ones(len(parents), dtype=np.float64)
+    depths = _joint_depths(parents)
+    for index in sorted(range(len(parents)), key=lambda i: -depths[i]):
+        if parents[index] >= 0:
+            subtree_x_sum[parents[index]] += subtree_x_sum[index]
+            subtree_size[parents[index]] += subtree_size[index]
+    return subtree_x_sum / subtree_size
+
+
+def _midline_tolerance(index, parents, rest_positions):
+    parent = parents[index]
+    anchor = rest_positions[parent] if parent >= 0 else np.zeros(3, dtype=np.float64)
+    return _WRONG_SIDE_MIDLINE_RATIO * max(float(np.linalg.norm(rest_positions[index] - anchor)), 1e-6)
+
+
+def _correct_wrong_side_mirror_siblings(joint_names, joint_side_labels, parents, rest_positions):
+    """Relabel named-side joints that sit on the other half of the rig from
+    their mirror twin. Mutates *joint_side_labels*; returns the indices.
+
+    Two slips in the source rigs, one rule. Leopard names both mane joints
+    right ("BN_Mane_R_01" at x=-0.08, "BN_Mane_R_02" at x=+0.08), so with no
+    left joint the pair can never form. Spider swaps its jaws as a pair
+    ("R_Jaw_" at +X, "L_Jaw_" at -X) while every other joint of the rig keeps
+    its left at -X. Which X half is left is read off the rig's own names, never
+    assumed, and only a near-unanimous vote is trusted. A joint on the wrong
+    half is overruled only when a sibling with the same name apart from its
+    side and indices ("Mane 01" / "Mane 02") is its mirror image and sits on the
+    half this joint's label claims -- whatever that sibling is labelled. The
+    same-part test matters: the mirror check alone is loose enough to match a
+    neighbouring part (Spider's "R_Jaw_" against "FangR_00_").
+
+    A joint's half is where its subtree lies, not its own point: Biped and jt_
+    rigs seat the clavicle and hip joints across the midline ("Bip01_R_Clavicle"
+    at x=+0.08 in Lion) while the limb below them sits on the named side.
+    """
+    rest_positions = np.asarray(rest_positions, dtype=np.float64)
+    side_x = _subtree_mean_x(parents, rest_positions)
+
+    def midline_tolerance(index):
+        return _midline_tolerance(index, parents, rest_positions)
+
+    left_positive = 0
+    left_negative = 0
+    for index, side in enumerate(joint_side_labels):
+        x = float(side_x[index])
+        if side not in ('left', 'right') or abs(x) <= midline_tolerance(index):
+            continue
+        if (side == 'left') == (x > 0):
+            left_positive += 1
+        else:
+            left_negative += 1
+    votes = left_positive + left_negative
+    if votes < _WRONG_SIDE_NAME_MIN_VOTES:
+        return []
+    if left_positive >= _WRONG_SIDE_NAME_MIN_AGREEMENT * votes:
+        left_sign = 1.0
+    elif left_negative >= _WRONG_SIDE_NAME_MIN_AGREEMENT * votes:
+        left_sign = -1.0
+    else:
+        return []
+
+    def claimed_sign(index):
+        return left_sign if joint_side_labels[index] == 'left' else -left_sign
+
+    def on_claimed_half(index):
+        x = float(side_x[index])
+        if abs(x) <= midline_tolerance(index):
+            return None
+        return x * claimed_sign(index) > 0
+
+    corrected = []
+    for index, side in enumerate(joint_side_labels):
+        if side not in ('left', 'right') or on_claimed_half(index) is not False:
+            continue
+        parent = parents[index]
+        has_mirror_twin = any(
+            sibling != index
+            and parents[sibling] == parent
+            and joint_side_labels[sibling] in ('left', 'right')
+            and _fallback_child_signature(joint_names[sibling]) == _fallback_child_signature(joint_names[index])
+            and abs(float(side_x[sibling])) > midline_tolerance(sibling)
+            and float(side_x[sibling]) * claimed_sign(index) > 0
+            and _passes_conservative_child_mirror_check(sibling, index, parent, parent, rest_positions)
+            for sibling in range(len(joint_side_labels))
+        )
+        if has_mirror_twin:
+            corrected.append(index)
+    for index in corrected:
+        joint_side_labels[index] = 'right' if joint_side_labels[index] == 'left' else 'left'
+    return corrected
+
+
+def _pair_sided_joints_by_geometry(joint_side_labels, symmetry_partner_indices, parents,
+                                   rest_positions, depths):
+    """Pair named-side joints whose signatures never met, by mirror geometry.
+
+    The name decides the side but the signature can still differ between the
+    halves: FireAnt's 3ds Max Biped extras keep their Ponytail index in the name
+    ("Bip01_Ponytail2_R_Antenna1" against "Bip01_Ponytail1_L_Antenna"), so the
+    two antennae and mandibles land in different signature groups. A left and a
+    right joint pair here only when they hang off the same parent or off an
+    already-mirrored parent pair, sit at the same depth, pass the child mirror
+    check, and are each other's closest match. Side labels are never created
+    here -- a 'center' joint stays out.
+    """
+    left_indices = [
+        index for index, side in enumerate(joint_side_labels)
+        if side == 'left' and symmetry_partner_indices[index] < 0
+    ]
+    right_indices = [
+        index for index, side in enumerate(joint_side_labels)
+        if side == 'right' and symmetry_partner_indices[index] < 0
+    ]
+    errors = {}
+    for left_index in left_indices:
+        left_parent = parents[left_index]
+        for right_index in right_indices:
+            right_parent = parents[right_index]
+            if depths[left_index] != depths[right_index]:
+                continue
+            if left_parent != right_parent and (
+                left_parent < 0 or symmetry_partner_indices[left_parent] != right_parent
+            ):
+                continue
+            if not _passes_conservative_child_mirror_check(
+                left_index, right_index, left_parent, right_parent, rest_positions,
+            ):
+                continue
+            mirror_error, yz_error, local_scale = _local_mirror_error(
+                left_index, right_index, left_parent, right_parent, rest_positions,
+            )
+            errors[left_index, right_index] = (mirror_error + yz_error) / local_scale
+
+    best_right = {}
+    best_left = {}
+    for (left_index, right_index), error in errors.items():
+        if left_index not in best_right or error < errors[left_index, best_right[left_index]]:
+            best_right[left_index] = right_index
+        if right_index not in best_left or error < errors[best_left[right_index], right_index]:
+            best_left[right_index] = left_index
+    return sorted(
+        (left_index, right_index) for left_index, right_index in best_right.items()
+        if best_left.get(right_index) == left_index
+    )
+
+
+# Smallest ratio of the two subtree sizes an unnamed twin may have: one half
+# can carry an extra prop joint (a blade in one hand).
+_UNSIDED_TWIN_MIN_SUBTREE_RATIO = 0.8
+
+
+def _subtree_sizes(parents):
+    """Per joint, its subtree size and its number of direct children."""
+    sizes = np.ones(len(parents), dtype=np.int64)
+    child_counts = np.zeros(len(parents), dtype=np.int64)
+    depths = _joint_depths(parents)
+    for index in sorted(range(len(parents)), key=lambda i: -depths[i]):
+        if parents[index] >= 0:
+            sizes[parents[index]] += sizes[index]
+            child_counts[parents[index]] += 1
+    return sizes, child_counts
+
+
+def _pair_unsided_twins_by_name(joint_side_labels, symmetry_partner_indices, parents,
+                                rest_positions, depths, signatures, subtree_x, subtree_sizes):
+    """Pair a named-side joint with a 'center' joint that is its unnamed twin.
+
+    Some rigs spell the side on one half only: serpent_man has "R_Arm_Shoulder"
+    and a plain "Arm_Shoulder" on the other half. With the side word stripped
+    the two names are the same, so the 'center' joint is a candidate when it
+    hangs off the same parent (or the mirror of the sided joint's parent), has
+    as many children and a subtree of about the same size, lies off the
+    midline on the other half -- judged by its subtree, as Biped clavicles
+    cross the midline -- and passes the child mirror check. Each candidate pair
+    must be the other's closest match. The 'center' joint takes the opposite
+    side; the pairs are returned as (left, right).
+    """
+    sizes, child_counts = subtree_sizes
+    def off_midline(index):
+        return abs(float(subtree_x[index])) > _midline_tolerance(index, parents, rest_positions)
+
+    sided = [
+        index for index, side in enumerate(joint_side_labels)
+        if side in ('left', 'right') and symmetry_partner_indices[index] < 0
+        and signatures[index] and off_midline(index)
+    ]
+    unsided = [
+        index for index, side in enumerate(joint_side_labels)
+        if side == 'center' and symmetry_partner_indices[index] < 0
+        and signatures[index] and off_midline(index)
+    ]
+    errors = {}
+    for sided_index in sided:
+        sided_parent = parents[sided_index]
+        for unsided_index in unsided:
+            unsided_parent = parents[unsided_index]
+            if signatures[sided_index] != signatures[unsided_index]:
+                continue
+            if depths[sided_index] != depths[unsided_index]:
+                continue
+            if child_counts[sided_index] != child_counts[unsided_index]:
+                continue
+            if (min(sizes[sided_index], sizes[unsided_index])
+                    < _UNSIDED_TWIN_MIN_SUBTREE_RATIO * max(sizes[sided_index], sizes[unsided_index])):
+                continue
+            if float(subtree_x[sided_index]) * float(subtree_x[unsided_index]) >= 0:
+                continue
+            if sided_parent != unsided_parent and (
+                sided_parent < 0 or symmetry_partner_indices[sided_parent] != unsided_parent
+            ):
+                continue
+            if not _passes_conservative_child_mirror_check(
+                sided_index, unsided_index, sided_parent, unsided_parent, rest_positions,
+            ):
+                continue
+            mirror_error, yz_error, local_scale = _local_mirror_error(
+                sided_index, unsided_index, sided_parent, unsided_parent, rest_positions,
+            )
+            errors[sided_index, unsided_index] = (mirror_error + yz_error) / local_scale
+
+    best_unsided = {}
+    best_sided = {}
+    for (sided_index, unsided_index), error in errors.items():
+        if sided_index not in best_unsided or error < errors[sided_index, best_unsided[sided_index]]:
+            best_unsided[sided_index] = unsided_index
+        if unsided_index not in best_sided or error < errors[best_sided[unsided_index], unsided_index]:
+            best_sided[unsided_index] = sided_index
+
+    pairs = []
+    for sided_index, unsided_index in sorted(best_unsided.items()):
+        if best_sided.get(unsided_index) != sided_index:
+            continue
+        if joint_side_labels[sided_index] == 'left':
+            joint_side_labels[unsided_index] = 'right'
+            pairs.append((sided_index, unsided_index))
+        else:
+            joint_side_labels[unsided_index] = 'left'
+            pairs.append((unsided_index, sided_index))
+    return pairs
+
+
 def _infer_symmetry_metadata(joint_names, parents, rest_positions, return_details=False):
     depths = _joint_depths(parents)
     joint_side_labels = []
     grouped_indices = {}
 
-    for joint_index, joint_name in enumerate(joint_names):
+    for joint_name in joint_names:
         side = detect_joint_side(joint_name)
         if side is None:
             side = detect_joint_side(_canonicalize_joint_name(joint_name))
-        side = side if side in ('left', 'right') else 'center'
-        joint_side_labels.append(side)
+        joint_side_labels.append(side if side in ('left', 'right') else 'center')
+    _correct_wrong_side_mirror_siblings(joint_names, joint_side_labels, parents, rest_positions)
 
+    for joint_index, joint_name in enumerate(joint_names):
+        side = joint_side_labels[joint_index]
         if side == 'center':
             continue
 
@@ -2058,6 +2163,10 @@ def _infer_symmetry_metadata(joint_names, parents, rest_positions, return_detail
         if parent_index >= 0:
             children[parent_index].append(joint_index)
 
+    signatures = [_joint_signature(joint_name) for joint_name in joint_names]
+    subtree_x = _subtree_mean_x(parents, np.asarray(rest_positions, dtype=np.float64))
+    subtree_sizes = _subtree_sizes(parents)
+
     changed = True
     while changed:
         changed = False
@@ -2082,6 +2191,23 @@ def _infer_symmetry_metadata(joint_names, parents, rest_positions, return_detail
             symmetry_partner_indices[right_index] = left_index
             joint_side_labels[left_index] = 'left'
             joint_side_labels[right_index] = 'right'
+            symmetric_joint_pairs.append([left_index, right_index])
+            changed = True
+
+        for left_index, right_index in _pair_sided_joints_by_geometry(
+            joint_side_labels, symmetry_partner_indices, parents, rest_positions, depths,
+        ):
+            symmetry_partner_indices[left_index] = right_index
+            symmetry_partner_indices[right_index] = left_index
+            symmetric_joint_pairs.append([left_index, right_index])
+            changed = True
+
+        for left_index, right_index in _pair_unsided_twins_by_name(
+            joint_side_labels, symmetry_partner_indices, parents, rest_positions, depths,
+            signatures, subtree_x, subtree_sizes,
+        ):
+            symmetry_partner_indices[left_index] = right_index
+            symmetry_partner_indices[right_index] = left_index
             symmetric_joint_pairs.append([left_index, right_index])
             changed = True
 

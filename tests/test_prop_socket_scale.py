@@ -118,7 +118,7 @@ def test_a_non_anatomical_name_alone_is_not_a_socket():
     """The geometry guard, on names that would otherwise flag the joint.
 
     194 joints across the 260 dataset species are named for something that is
-    not a body part -- armor, fur, ponytails, saddles, backpacks -- and they sit
+    not a body part -- armor, ponytails, saddles, backpacks -- and they sit
     on the character and belong in its size. Only the parked ones go.
     """
     worn = list(_ARCHER_NAMES)

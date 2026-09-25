@@ -586,7 +586,7 @@ def find_prop_socket_joints(
 
     The socket and its whole subtree are returned. Name and geometry fail in
     opposite directions and are exact only together: 194 dataset joints are
-    non-anatomically named but sit on the body (armor, fur, saddles), while
+    non-anatomically named but sit on the body (armor, saddles), while
     geometry alone cannot tell a parked staff from a single-bone tail.
 
     The scan repeats on the skeleton left after each pass's removal, until a pass

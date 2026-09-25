@@ -236,6 +236,30 @@ def test_joint_name_collision_report_is_empty_after_disambiguation():
         assert report["num_collision_groups"] == 0
 
 
+def test_translated_romaji_is_not_reused_as_a_collision_suffix():
+    # Pirrana: three anal-fin joints in two romaji spellings all canonicalize to
+    # "Anal Fin". The romaji word is a translation, not a distinguishing mark;
+    # appended it was translated again into the text "Anal Fin Anal Fin".
+    from data_loaders.truebones.truebones_utils.joint_name_canonical import (
+        refresh_joint_metadata_in_object_cond,
+    )
+    from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+        build_joint_embedding_texts,
+    )
+    names = ['mune', 'atama', 'ago', 'kosi', 'shippoA', 'shiribire', 'shirihireB', 'shiribireA']
+    cond = {
+        'joints_names': names,
+        'parents': np.array([-1, 0, 1, 0, 3, 4, 5, 5]),
+        'offsets': np.array([[0, 0, 0], [0, 0, 1], [0, 0, 1], [0, 0, -1],
+                             [0, 0, -1], [0, -1, 0], [0, -1, -1], [0, -1, 1]], dtype=np.float64),
+        'species_name': 'Pirrana',
+    }
+    refresh_joint_metadata_in_object_cond(cond)
+    assert cond['canonical_joint_names'][5:] == ['Anal Fin', 'Anal Fin B', 'Anal Fin A']
+    texts = build_joint_embedding_texts(cond)
+    assert texts[5:] == ['Anal Fin', 'Anal Fin', 'Anal Fin']
+
+
 if __name__ == "__main__":
     import traceback
 
@@ -246,6 +270,7 @@ if __name__ == "__main__":
         test_refresh_joint_metadata_rewrites_stale_canonical_names,
         test_refresh_joint_metadata_disambiguates_duplicate_canonical_names,
         test_joint_name_collision_report_is_empty_after_disambiguation,
+        test_translated_romaji_is_not_reused_as_a_collision_suffix,
     ]
 
     passed = 0

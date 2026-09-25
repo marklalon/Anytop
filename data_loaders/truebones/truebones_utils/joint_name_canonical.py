@@ -18,6 +18,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 )
 from .physics_joint_annotation import (
     build_semantic_metadata,
+    effective_canonical_replacements,
     infer_species_joint_name_prefixes,
     joint_name_token_is_species,
     normalize_joint_name,
@@ -76,13 +77,19 @@ def _remove_token_counts(tokens, counts_to_remove):
     return remaining_tokens
 
 
-def _joint_disambiguation_tokens(raw_name, canonical_name, additional_prefixes=()):
+def _joint_disambiguation_tokens(raw_name, canonical_name, additional_prefixes=(), translated_tokens=()):
     raw_value = str(raw_name or '')
     stripped_raw = strip_joint_name_prefix(raw_value, additional_prefixes)
     raw_tokens = normalize_joint_name(stripped_raw).split()
     canonical_tokens = normalize_joint_name(canonical_name).split()
     residual_tokens = _remove_token_counts(raw_tokens, Counter(canonical_tokens))
-    residual_tokens = [token for token in residual_tokens if not joint_name_token_is_species(token)]
+    # A word the canonicalizer translated is already in the canonical name under
+    # its English spelling; appended again it gets translated a second time
+    # (Pirrana "shiribire" -> "Anal Fin Shiribire" -> text "Anal Fin Anal Fin").
+    residual_tokens = [
+        token for token in residual_tokens
+        if not joint_name_token_is_species(token) and token not in translated_tokens
+    ]
     if raw_value.lower().startswith('jt'):
         residual_tokens.append('joint')
     return residual_tokens
@@ -127,6 +134,7 @@ def _disambiguate_duplicate_canonical_names(
     additional_prefixes=(),
 ):
     updated_names = list(canonical_names)
+    translated_tokens = frozenset(effective_canonical_replacements(raw_names))
     grouped_indices = defaultdict(list)
     for joint_index, canonical_name in enumerate(canonical_names):
         grouped_indices[str(canonical_name)].append(joint_index)
@@ -141,6 +149,7 @@ def _disambiguate_duplicate_canonical_names(
                 raw_names[index],
                 canonical_name,
                 additional_prefixes,
+                translated_tokens,
             )
             for index in indices
         ]
