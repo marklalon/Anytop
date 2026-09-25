@@ -64,13 +64,16 @@ EMBED_TEXT_FACE_QUADRANT_CODE_TOKENS = {
 EMBED_TEXT_FACE_QUADRANT_CONTEXT_TOKENS = frozenset({
     'mouth', 'lip', 'jaw', 'beak', 'eye', 'eyelid', 'brow', 'cheek',
 })
-# Lm/Rm on a head joint ("Head_LM01") is a mouth corner, not a middle limb. A limb
-# word wins when a name carries both.
-EMBED_TEXT_HEAD_SIDE_CODE_TOKENS = {
+# Mouth codes on a head joint: Lm/Rm are the side parts ("Head_LM01"), Tm/Dm the
+# top and down ones, so they are not a middle limb. Read when the name or the
+# joint above the code chain is a head; a limb word wins when a name carries both.
+EMBED_TEXT_HEAD_MOUTH_CODE_TOKENS = {
     'lm': 'Mouth',
     'rm': 'Mouth',
+    'tm': 'Upper Mouth',
+    'dm': 'Lower Mouth',
 }
-EMBED_TEXT_HEAD_SIDE_CODE_CONTEXT_TOKENS = frozenset({'head'})
+EMBED_TEXT_HEAD_CODE_CONTEXT_TOKENS = frozenset({'head'})
 
 # Filler dropped from the embedding text: chain position ("tip", "end"), phalanx
 # position ("proximal") and the canonical "Variant" uniqueness suffix. Limb
@@ -112,15 +115,12 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'bow',
     'brain',
     'center',
-    'cg',
     'chain',
     'container',
     'control',
     'controler',
     'copy',
-    'cog',
     'ctrl',
-    'dummy',
     'effects',
     'fan',
     'fire',
@@ -134,7 +134,6 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'helper',
     'helt',
     'hub',
-    'ik',
     'joint',
     'lftb',
     'locator',
@@ -171,6 +170,18 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'wood',
     'xtra',
 }
+# Markers of a helper node rather than a bone of the body: an IK target, an FX or
+# attach dummy, a centre-of-mass node. Unlike the words above they blank the
+# whole joint, because the body-part word beside them names what the helper
+# drives or sits on ("Foot_IK", "FXDummy_Head"), not the joint itself.
+_EMBED_TEXT_HELPER_NODE_TOKENS = frozenset({
+    'cg',
+    'cog',
+    'com',
+    'dummy',
+    'fx',
+    'ik',
+})
 # Side words dropped from the name. build_joint_embedding_texts re-attaches the
 # side from the geometry-derived joint_side_labels, so every rig spells it the
 # same way ("R_thigh", "RightThigh" -> "Right Thigh").
@@ -282,7 +293,7 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
 # or refinement, or what goes into the sentence. Stored name embeddings are keyed
 # by this version, so a bump makes the loader reject stale cond files until
 # preprocessing re-runs.
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 17
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 18
 
 
 # Adjacent tokens that name one part together ("upper leg" -> Thigh). Applied
@@ -422,10 +433,45 @@ def _bare_leg_means_calf(joint_names, parents, end_effector_joints=(), additiona
     return flags
 
 
+# How many links of its own code chain a mouth code may sit below the head.
+_MOUTH_CODE_CHAIN_MAX_LINKS = 4
+
+
+def _mouth_code_below_head(joint_names, parents, additional_prefixes=()):
+    """Per-joint flag: is this bare mouth code ("Bone_LM01") hung off a head?
+
+    Some rigs name the mouth parts by code alone, so the head context the name
+    lacks is read from the tree: the first ancestor outside the joint's own code
+    chain ("Bone_LM02" -> "Bone_LM01" -> "Bone_Head").
+    """
+    joint_count = len(joint_names)
+    if parents is None or len(parents) != joint_count:
+        return [False] * joint_count
+
+    parents = np.asarray(parents, dtype=np.int64)
+    token_sets = [
+        frozenset(_body_clean_tokens(str(name), additional_prefixes=additional_prefixes)[1])
+        for name in joint_names
+    ]
+    flags = [False] * joint_count
+    for joint_index, tokens in enumerate(token_sets):
+        if not tokens or not tokens <= EMBED_TEXT_HEAD_MOUTH_CODE_TOKENS.keys():
+            continue
+        ancestor = int(parents[joint_index])
+        for _ in range(_MOUTH_CODE_CHAIN_MAX_LINKS):
+            if ancestor < 0 or token_sets[ancestor] != tokens:
+                break
+            ancestor = int(parents[ancestor])
+        flags[joint_index] = (
+            ancestor >= 0 and bool(token_sets[ancestor] & EMBED_TEXT_HEAD_CODE_CONTEXT_TOKENS)
+        )
+    return flags
+
+
 def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
                                    quadrant_codes_name_a_limb=False,
                                    digit_limb=None, bare_leg_is_calf=False,
-                                   side_codes_name_a_head=False,
+                                   mouth_codes_name_a_head=False,
                                    quadrant_codes_name_a_face=False):
     """Map one canonical token to the embedding token(s) it contributes."""
     if clean_token == 'digit' and digit_limb is not None:
@@ -438,10 +484,10 @@ def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
         if quadrant_token is not None:
             return [quadrant_token]
     else:
-        if side_codes_name_a_head:
-            head_code_token = EMBED_TEXT_HEAD_SIDE_CODE_TOKENS.get(clean_token)
-            if head_code_token is not None:
-                return [head_code_token]
+        if mouth_codes_name_a_head:
+            head_code_text = EMBED_TEXT_HEAD_MOUTH_CODE_TOKENS.get(clean_token)
+            if head_code_text is not None:
+                return head_code_text.split()
         if quadrant_codes_name_a_face:
             face_code_token = EMBED_TEXT_FACE_QUADRANT_CODE_TOKENS.get(clean_token)
             if face_code_token is not None:
@@ -498,12 +544,23 @@ def joint_name_is_non_anatomical(name, additional_prefixes=()):
     A *name* signal only -- armor and saddles are non-anatomical but still
     part of the character's size; pair with geometry (``find_prop_socket_joints``).
     """
+    if joint_name_is_helper_node(name, additional_prefixes=additional_prefixes):
+        return True
     tokens = {
         clean_embedding_token(token)
         for token in _refine_joint_embedding_name(name, additional_prefixes=additional_prefixes)
     }
     tokens.discard('')
     return not tokens or bool(tokens & _EMBED_TEXT_NON_ANATOMICAL_TOKENS)
+
+
+def joint_name_is_helper_node(name, additional_prefixes=()):
+    """True when the name marks an IK / FX / centre-of-mass helper node."""
+    canonical_name = canonicalize_joint_name(name, additional_prefixes=additional_prefixes)
+    return any(
+        clean_embedding_token(token) in _EMBED_TEXT_HELPER_NODE_TOKENS
+        for token in canonical_name.split()
+    )
 
 
 def _body_clean_tokens(name, additional_prefixes=()):
@@ -520,7 +577,7 @@ def _body_clean_tokens(name, additional_prefixes=()):
         clean_token = clean_embedding_token(token)
         if not clean_token or clean_token.isdigit() or clean_token in _EMBED_TEXT_SKIP_TOKENS:
             continue
-        if clean_token in _EMBED_TEXT_NON_ANATOMICAL_TOKENS:
+        if clean_token in _EMBED_TEXT_NON_ANATOMICAL_TOKENS or clean_token in _EMBED_TEXT_HELPER_NODE_TOKENS:
             continue
         if clean_token in _EMBED_TEXT_SIDE_TOKENS:
             continue
@@ -555,7 +612,7 @@ def _drop_redundant_limb_carrier(refined_tokens):
 
 
 def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_prefixes=(),
-                                 bare_leg_is_calf=False):
+                                 bare_leg_is_calf=False, mouth_code_below_head=False):
     canonical_name, clean_tokens = _body_clean_tokens(name, additional_prefixes=additional_prefixes)
 
     # Gate for the ambiguous fore/hind codes: only a name that also spells a limb
@@ -563,7 +620,10 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
     quadrant_codes_name_a_limb = bool(
         set(clean_tokens) & EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS
     )
-    side_codes_name_a_head = bool(set(clean_tokens) & EMBED_TEXT_HEAD_SIDE_CODE_CONTEXT_TOKENS)
+    mouth_codes_name_a_head = (
+        mouth_code_below_head
+        or bool(set(clean_tokens) & EMBED_TEXT_HEAD_CODE_CONTEXT_TOKENS)
+    )
     quadrant_codes_name_a_face = bool(set(clean_tokens) & EMBED_TEXT_FACE_QUADRANT_CONTEXT_TOKENS)
     # Which limb a "Digit" belongs to, from the same name. Only an unambiguous
     # single side of the fork is read; a name that says both (or neither) keeps
@@ -591,7 +651,7 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
                 quadrant_codes_name_a_limb=quadrant_codes_name_a_limb,
                 digit_limb=digit_limb,
                 bare_leg_is_calf=bare_leg_is_calf,
-                side_codes_name_a_head=side_codes_name_a_head,
+                mouth_codes_name_a_head=mouth_codes_name_a_head,
                 quadrant_codes_name_a_face=quadrant_codes_name_a_face,
             )
         )
@@ -653,13 +713,22 @@ def build_joint_embedding_texts(object_cond):
         end_effector_joints=object_cond.get('end_effector_joints') or (),
         additional_prefixes=species_prefixes,
     )
+    mouth_code_flags = _mouth_code_below_head(
+        base_joint_names,
+        object_cond.get('parents'),
+        additional_prefixes=species_prefixes,
+    )
     texts = []
     for joint_index, joint_name in enumerate(base_joint_names):
+        if joint_name_is_helper_node(joint_name, additional_prefixes=species_prefixes):
+            texts.append('')
+            continue
         refined_tokens = _refine_joint_embedding_name(
             joint_name,
             bare_arm_flags[joint_index],
             additional_prefixes=species_prefixes,
             bare_leg_is_calf=bare_leg_flags[joint_index],
+            mouth_code_below_head=mouth_code_flags[joint_index],
         )
         # Same cleaning the table lookups use. It matters on the fallback path:
         # a name made *only* of markers comes back as the raw canonical tokens

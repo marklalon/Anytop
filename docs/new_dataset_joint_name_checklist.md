@@ -206,7 +206,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 
 ---
 
-## 2. 六个红旗 → 该改哪张表
+## 2. 红旗 → 该改哪张表
 
 | 症状 | 怎么发现 | 改哪里 |
 |---|---|---|
@@ -214,6 +214,8 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 | `embedding_text` 里出现物种名（`Gorilla Jaw`） | §1.4 审计里冒出物种词 | `EMBED_TEXT_CREATURE_TOKENS` §3-B3（**但先读 §5 的例外**） |
 | 同一块骨头在不同物种拼法不同（`Ulna` vs `Forearm`） | §1.4 的 NOVEL 列表 + §1.5 家族比例暴涨 | `EMBED_TEXT_SYNONYM_TOKENS` §3-B6 |
 | 道具/控制骨混进来（`Saddle`/`Ctrl`/`Bone02`/`Shield`） | §1.4 审计；inspection JSON 的 `is_anatomical` | `_EMBED_TEXT_NON_ANATOMICAL_TOKENS` §3-B4 |
+| IK/FX/COM 辅助节点被旁边的解剖词顶替（`Foot_IK` 读成 `Foot`、`FXDummy_Head` 读成 `Head`） | precheck 的 IK/control helper 告警；inspection JSON | `_EMBED_TEXT_HELPER_NODE_TOKENS` §3-B9 |
+| 整副 rig 每根骨都盖同一个包代码（`Bone_KSB_*`），文本里剩下 `Ksb` | precheck 的 stamped code 告警 | 前缀推断 §3-A7；码本身是解剖词时不会剥 |
 | 全小写粘连名整块变成一个 OOV token（`smallfrontarm`） | §1.4 审计里出现长怪词 | `_COMPOUND_*_TOKENS` §3-A5 |
 | 左右两侧拼法不同导致配不成对（`Lower_Arm_L` / `Rower_Arm_R`） | §1.6 的对称对清单少了整条肢 | `_SIGNATURE_SPELLING_TOKENS` §3-C2 |
 | T-pose 朝向反了/侧躺 | 验证器告警；`resolve_face_joints` 选错关节 | `_FACE_JOINT_*` / `_FORWARD_*` §3-C3 |
@@ -231,6 +233,8 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 | A3 | `JAPANESE_NAME_REPLACEMENTS` | 罗马音 → 英文（`momo`→Thigh）。**全局生效**，只放绝不歧义的词 |
 | A4 | `JAPANESE_GATED_REPLACEMENTS` + `_JAPANESE_EVIDENCE_TOKENS` | 危险的短词（`o`=尾、`te`=手），仅在骨架被判定为日式命名时才启用。判定门槛是 3 个不同 evidence token |
 | A5 | `_COMPOUND_MODIFIER_TOKENS` / `_COMPOUND_ANATOMY_TOKENS` / `_COMPOUND_SPLIT_PROTECTED_TOKENS` | 全小写粘连名的 DP 切分词表。加新解剖词进 ANATOMY；**凡是能被切开但不该切的真词必须进 PROTECTED**（`eyebrow` 会被切成 `eye`+`brow`）。注意有长度下限，`lwing` 这类 5 字符的粘连名根本进不了切分 |
+| A6 | `CANONICAL_SPELLING_REPLACEMENTS` | 拼写错误和缩写（`lag`→Leg、`feller`→Feeler、`dn`→Down）。放在 A 层而不是 B6，是因为 C 层的 contact / end-effector 读 canonical 名：`Lag` 不折叠，Butterfly 一个接触关节都找不到。**只放 C 层也需要认对的词**，纯文本层面的错拼仍进 B6。`face_orientation._canonicalize_joint_name` 同样读这张表 |
+| A7 | `infer_species_joint_name_prefixes` | 按骨架推断的前缀：所有关节都以物种名开头时剥物种名；否则找除 root 外每根骨都有的 `Bone_<code>`（物种名或包代码，`Bone_Ant`/`Bone_SBM`）。两道守卫：码本身是解剖词（`Bone_Head_*`、`Bone_Eye_*`）不剥；剥完后只剩侧别和编号不同的也不剥 |
 
 ### B 层 · Embedding text —— 只影响模型输入，**新数据集的首选改动层**
 
@@ -244,6 +248,8 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 | B6 | `EMBED_TEXT_SYNONYM_TOKENS` | 解剖同义词 + rig 缩写 + 拼写错误，全部折叠到语料已有的词。**长尾治理的主力表** |
 | B7 | `_EMBED_TEXT_TOKEN_PAIR_MERGES` | 相邻两词合成一词（`upper leg`→Thigh、`horse link`→Ankle）。单词映射解决不了时用这个。**注意执行顺序：pair merge 跑在 B6 单词映射之前**，所以被拼错的词要么两条都写（`('rower','reg')` 和 `rower`/`reg` 各自），要么就落不到 merge 上 |
 | B8 | `EMBED_TEXT_HEAD_FEATURE_TOKENS` | 头部附属物额外追加一个 `HeadFeature` 类别词，让它们在 T5 空间里彼此靠近 |
+| B9 | `_EMBED_TEXT_HELPER_NODE_TOKENS` | IK 目标、FX/挂点 dummy、质心节点（`ik`/`dummy`/`fx`/`com`/`cog`/`cg`）。和 B4 不同：B4 逐词丢弃、名字里还有解剖词就留下，B9 命中即**整个关节置零**，因为旁边的解剖词说的是它驱动或挂靠的部位（`Foot_IK`、`FXDummy_Head`）。一个词只进 B4 或 B9 其中一张 |
+| B10 | `EMBED_TEXT_HEAD_MOUTH_CODE_TOKENS` + `EMBED_TEXT_HEAD_CODE_CONTEXT_TOKENS` | 头上的口器码：`lm`/`rm`→Mouth（侧别交给几何），`tm`→Upper Mouth，`dm`→Lower Mouth。头部上下文来自同名里的 `head`，或沿自身码链往上第一个不同名的祖先是头（`Bone_LM02`→`Bone_LM01`→`Bone_Head`）。同名里有肢体词时让位给 B5 的中腿码 |
 
 ### C 层 · 元数据推断 —— **改错了不会报错，只会静默变差**
 
@@ -315,6 +321,10 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 - **`face_orientation.py` 有自己的一份 `_canonicalize_joint_name` 和 `_joint_signature`。**
   两份实现并存且行为故意不同——那一份丢弃单字符 token 含孤立数字。
   改任何一份都要同步检查另一份（`_LIMB_CODE_SIGNATURE_TOKENS` 在两边各有一份，必须一起改）。
+  A 层的替换表（A3/A4/A6）两份共用同一个常量，加表时两边都要接上。
+- **`data/dataset.py` 的 `_JOINT_MASK_EXCLUDE_TOKENS` 是另一张"非本体"词表，故意不和 B4/B9 合并。**
+  它决定训练 mask 能采哪些关节，还排除了头发/鬃毛/马尾这类次级运动和 `end`/`nub` 链端；
+  B4/B9 改了，要单独判断 mask 采样是否也该跟着改。
 - **`EMBED_TEXT_CREATURE_TOKENS`（`joint_name_canonical.py`）是手工列表，不是从 `species_tags.jsonl` 派生的。**
   加新物种时**必须手工补**，没有任何机制会提醒你。
   （没做成自动派生，是因为变体 rig 里会出现数据集中并不存在的生物名，比如 antilope 的 Quilin/Moose。）

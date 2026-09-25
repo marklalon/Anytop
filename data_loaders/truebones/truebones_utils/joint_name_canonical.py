@@ -76,6 +76,17 @@ JAPANESE_GATED_REPLACEMENTS = {
     'era': 'Gill',
 }
 
+# Misspellings and abbreviations folded while canonicalizing, so the physics
+# annotation (contacts, end effectors) reads the body part as well as the text
+# does ("Lag" -> "Leg", "Eyeild" -> "Eyelid", "Dn" -> "Down").
+CANONICAL_SPELLING_REPLACEMENTS = {
+    'lag': 'Leg',
+    'feller': 'Feeler',
+    'eyeild': 'Eyelid',
+    'eyei': 'Eye',
+    'dn': 'Down',
+}
+
 EMBED_TEXT_HEAD_FEATURE_TOKENS = {
     'beard',
     'ear',
@@ -199,10 +210,14 @@ def infer_species_joint_name_prefixes(joint_names, species_name=None):
     separator-preserving suffix forms and accept only the longest form that is
     a complete leading token on *every* joint.  The all-joints gate is what keeps
     an anatomical name such as ``HorseLink`` intact on an ordinary Horse rig.
+    Failing that, a ``Bone_<code>`` stamp is looked for
+    (``_infer_bone_code_joint_name_prefixes``).
     """
     names = [] if joint_names is None else [str(name or '') for name in joint_names]
-    if not names or not species_name:
+    if not names:
         return ()
+    if not species_name:
+        return _infer_bone_code_joint_name_prefixes(names)
 
     bare_species = str(species_name).replace('\\', '/').rsplit('/', 1)[-1]
     parts = [part for part in re.split(r'[^0-9A-Za-z]+', bare_species) if part]
@@ -225,7 +240,59 @@ def infer_species_joint_name_prefixes(joint_names, species_name=None):
             for name in names
         ):
             return (candidate,)
-    return ()
+    return _infer_bone_code_joint_name_prefixes(names)
+
+
+# Leading word some packs stamp ahead of a species or pack code on every bone
+# ("Bone_Ant_L_Leg01", "Bone_KSB_Head").
+_BONE_CODE_PREFIX_WORD = 'bone'
+
+
+def _infer_bone_code_joint_name_prefixes(names):
+    """``Bone_<code>`` shared by every joint but the rig root.
+
+    The code is a species name or a pack abbreviation that need not spell the
+    species ("Bone_SBM_Head" on a StagBeetle). A word that sits on the head, the
+    legs and the tail alike tells no joint apart, so it is stripped as a prefix.
+    Two guards keep a real body part: the code must not be an anatomy word
+    ("Bone_Head_LM01" keeps the head its mouth codes are read against), and the
+    names must still differ after it by more than side and index
+    ("Bone_Eye_L_01" / "Bone_Eye_R_01" keeps its eye).
+    """
+    body_names = [
+        name for name in names
+        if not all(token == 'root' or token.isdigit() for token in normalize_joint_name(name).split())
+    ]
+    if len(body_names) < 2:
+        return ()
+    token_lists = [normalize_joint_name(name).split() for name in body_names]
+    if any(len(tokens) < 3 or tokens[0] != _BONE_CODE_PREFIX_WORD for tokens in token_lists):
+        return ()
+    code = token_lists[0][1]
+    if code.isdigit() or any(tokens[1] != code for tokens in token_lists):
+        return ()
+    if code in _COMPOUND_ANATOMY_TOKENS or code in EMBED_TEXT_HEAD_FEATURE_TOKENS:
+        return ()
+    # Side words and single letters are dropped the same way canonicalization
+    # reads them, so "L"/"R" alone does not count as a second word.
+    residual_words = {
+        tuple(
+            token for token in tokens[2:]
+            if not token.isdigit() and len(token) > 1 and token not in ('left', 'right')
+        )
+        for tokens in token_lists
+    }
+    if len(residual_words) < 2:
+        return ()
+
+    prefix_pattern = re.compile(rf'{_BONE_CODE_PREFIX_WORD}[^0-9A-Za-z]*{re.escape(code)}', re.IGNORECASE)
+    prefixes = set()
+    for name in body_names:
+        match = prefix_pattern.match(name)
+        if match is None or not _has_joint_name_prefix(name, match.group(0), case_sensitive=False):
+            return ()
+        prefixes.add(match.group(0))
+    return tuple(sorted(prefixes, key=len, reverse=True))
 
 
 def strip_joint_name_prefix(name, additional_prefixes=()):
@@ -335,6 +402,8 @@ def canonicalize_joint_name(name, replacements=None, additional_prefixes=()):
             canonical_parts.append('Right')
         elif clean_part in replacements:
             canonical_parts.append(replacements[clean_part])
+        elif clean_part in CANONICAL_SPELLING_REPLACEMENTS:
+            canonical_parts.append(CANONICAL_SPELLING_REPLACEMENTS[clean_part])
         elif len(clean_part) == 1:
             # Skip single letters (except digits which are preserved for disambiguation)
             if not clean_part.isdigit():
@@ -478,7 +547,7 @@ def _disambiguate_duplicate_canonical_names(
     additional_prefixes=(),
 ):
     updated_names = list(canonical_names)
-    translated_tokens = frozenset(effective_canonical_replacements(raw_names))
+    translated_tokens = frozenset(effective_canonical_replacements(raw_names)) | frozenset(CANONICAL_SPELLING_REPLACEMENTS)
     grouped_indices = defaultdict(list)
     for joint_index, canonical_name in enumerate(canonical_names):
         grouped_indices[str(canonical_name)].append(joint_index)

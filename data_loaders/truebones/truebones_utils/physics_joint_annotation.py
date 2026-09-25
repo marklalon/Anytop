@@ -11,7 +11,7 @@ from .joint_name_canonical import (
 )
 from .joint_embedding_text import (
     EMBED_TEXT_FACE_QUADRANT_CONTEXT_TOKENS,
-    EMBED_TEXT_HEAD_SIDE_CODE_CONTEXT_TOKENS,
+    EMBED_TEXT_HEAD_CODE_CONTEXT_TOKENS,
     EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS,
 )
 from .joint_struct_features import child_lists
@@ -608,8 +608,8 @@ def detect_joint_side(name):
     if tokens & EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS:
         return _single_side(tokens & {'fr', 'br', 'rm', 'mr'}, tokens & {'fl', 'bl', 'lm', 'ml'})
     side = None
-    # Lm/Rm on a head: the mouth corners (EMBED_TEXT_HEAD_SIDE_CODE_TOKENS).
-    if tokens & EMBED_TEXT_HEAD_SIDE_CODE_CONTEXT_TOKENS:
+    # Lm/Rm on a head: the mouth corners (EMBED_TEXT_HEAD_MOUTH_CODE_TOKENS).
+    if tokens & EMBED_TEXT_HEAD_CODE_CONTEXT_TOKENS:
         side = _single_side(tokens & {'rm'}, tokens & {'lm'})
     # Tl/Tr/Bl/Br on a face part: its top/bottom corners
     # (EMBED_TEXT_FACE_QUADRANT_CODE_TOKENS).

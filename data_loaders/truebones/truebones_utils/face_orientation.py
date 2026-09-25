@@ -123,7 +123,7 @@ def _canonicalize_joint_name(name, replacements=None):
     apply only when the rig is confirmed Japanese-style; defaults to the base
     table otherwise.
     """
-    from .joint_name_canonical import JAPANESE_NAME_REPLACEMENTS
+    from .joint_name_canonical import CANONICAL_SPELLING_REPLACEMENTS, JAPANESE_NAME_REPLACEMENTS
 
     if replacements is None:
         replacements = JAPANESE_NAME_REPLACEMENTS
@@ -144,6 +144,8 @@ def _canonicalize_joint_name(name, replacements=None):
             canonical_parts.append('Right')
         elif clean_part in replacements:
             canonical_parts.append(replacements[clean_part])
+        elif clean_part in CANONICAL_SPELLING_REPLACEMENTS:
+            canonical_parts.append(CANONICAL_SPELLING_REPLACEMENTS[clean_part])
         elif len(clean_part) == 1:
             continue
         else:
