@@ -141,6 +141,49 @@ def test_lb_rb_suffixes_drive_side_detection_without_crossing_fore_and_hind() ->
     assert _joint_signature('LfLeg01') != _joint_signature('LbLeg01')
 
 
+def test_face_corner_codes_side_a_face_part_only() -> None:
+    # Top/bottom x left/right corners next to a face word (MU04_Earthworm).
+    assert detect_joint_side('RigMouthTL') == 'left'
+    assert detect_joint_side('RigMouthBL') == 'left'
+    assert detect_joint_side('RigMouthTR') == 'right'
+    assert detect_joint_side('RigMouthBR') == 'right'
+    # Top and bottom corners never share a symmetry group.
+    assert _joint_signature('RigMouthTL') == _joint_signature('RigMouthTR')
+    assert _joint_signature('RigMouthBL') == _joint_signature('RigMouthBR')
+    assert _joint_signature('RigMouthTL') != _joint_signature('RigMouthBL')
+    # Without a face or limb word the code stays unread.
+    assert detect_joint_side('RigTL') is None
+
+
+def test_wing_and_middle_leg_quadrant_codes_are_sided() -> None:
+    # A cicada's fore/hind wings and middle legs (Taobao_20260924 Cicada).
+    assert detect_joint_side('Bone_wingFL') == 'left'
+    assert detect_joint_side('Bone_wingBR') == 'right'
+    assert detect_joint_side('Bone_LegML00') == 'left'
+    assert detect_joint_side('Bone_LegMR00') == 'right'
+    assert _joint_signature('Bone_wingFL') == _joint_signature('Bone_wingFR')
+    assert _joint_signature('Bone_wingFL') != _joint_signature('Bone_wingBL')
+    assert _joint_signature('Bone_LegML00') == _joint_signature('Bone_LegMR00')
+    # A back leg with a limb word is still a back leg.
+    assert detect_joint_side('RigBLLeg1') == 'left'
+    assert _joint_signature('RigBLLeg1') == _joint_signature('RigBRLeg1')
+
+
+def test_mouth_corners_pair_top_with_top_and_bottom_with_bottom() -> None:
+    joint_names = ['Head', 'RigMouthTR', 'RigMouthBR', 'RigMouthTL', 'RigMouthBL']
+    parents = np.asarray([-1, 0, 0, 0, 0], dtype=np.int64)
+    rest_positions = np.asarray(
+        [[0, 0, 0], [1, 1, 1], [1, -1, 1], [-1, 1, 1], [-1, -1, 1]],
+        dtype=np.float64,
+    )
+    joint_side_labels, symmetry_partner_indices, _pairs = _infer_symmetry_metadata(
+        joint_names, parents, rest_positions,
+    )
+    assert joint_side_labels == ['center', 'right', 'right', 'left', 'left']
+    assert symmetry_partner_indices[1] == 3
+    assert symmetry_partner_indices[2] == 4
+
+
 def test_lb_rb_hind_limbs_pair_with_each_other_not_with_the_fore_limbs() -> None:
     joint_names = ['Root', 'LfLeg01', 'RfLeg01', 'LbLeg01', 'RbLeg01']
     parents = np.asarray([-1, 0, 0, 0, 0], dtype=np.int64)
@@ -217,10 +260,8 @@ def test_swapped_limb_code_is_read_only_next_to_a_limb_word() -> None:
     assert detect_joint_side('LmLegAnkle') == 'left'
     assert detect_joint_side('RmLeg1') == 'right'
 
-    # The gate: without a limb word the code is ambiguous. "MouthBL" is the
-    # bottom-left corner of a worm's mouth, not a back-left limb.
-    assert detect_joint_side('RigMouthBL') is None
-    assert detect_joint_side('RigMouthTR') is None
+    # The gate: without a limb or face word the code is ambiguous.
+    assert detect_joint_side('RigBL') is None
 
     # Side half dropped, fore/hind/middle half kept, same as Lf/Rf/Lb/Rb.
     assert _joint_signature('FlLeg1') == _joint_signature('FrLeg1')

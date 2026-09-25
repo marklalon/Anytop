@@ -368,8 +368,9 @@ _EMBED_TEXT_LIMB_CODE_TOKENS = {
     'rb': 'Back',
 }
 # The same codes spelled fore/hind first (Fl/Br) plus a hexapod's middle pair
-# (Lm/Rm). Ambiguous alone ("MouthBL" is bottom-left), so read only when the name
-# also carries a limb word.
+# (Lm/Rm, Ml/Mr). Ambiguous alone ("MouthBL" is bottom-left), so read only when
+# the name also carries a limb word. A wing is a limb here: a cicada's hind wing
+# is "wingBL".
 _EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS = {
     'fl': 'Front',
     'fr': 'Front',
@@ -377,8 +378,21 @@ _EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS = {
     'br': 'Back',
     'lm': 'Mid',
     'rm': 'Mid',
+    'ml': 'Mid',
+    'mr': 'Mid',
 }
-_EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS = frozenset({'arm', 'leg'})
+_EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS = frozenset({'arm', 'leg', 'wing'})
+# Top/bottom x left/right corners of a face part ("RigMouthTL" .. "RigMouthBR").
+# Read only next to a face word, which is what tells "Bl" apart from a hind limb.
+_EMBED_TEXT_FACE_QUADRANT_CODE_TOKENS = {
+    'tl': 'Upper',
+    'tr': 'Upper',
+    'bl': 'Lower',
+    'br': 'Lower',
+}
+_EMBED_TEXT_FACE_QUADRANT_CONTEXT_TOKENS = frozenset({
+    'mouth', 'lip', 'jaw', 'beak', 'eye', 'eyelid', 'brow', 'cheek',
+})
 # Lm/Rm on a head joint ("Head_LM01") is a mouth corner, not a middle limb. A limb
 # word wins when a name carries both.
 _EMBED_TEXT_HEAD_SIDE_CODE_TOKENS = {
@@ -951,7 +965,8 @@ def _bare_leg_means_calf(joint_names, parents, end_effector_joints=(), additiona
 def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
                                    quadrant_codes_name_a_limb=False,
                                    digit_limb=None, bare_leg_is_calf=False,
-                                   side_codes_name_a_head=False):
+                                   side_codes_name_a_head=False,
+                                   quadrant_codes_name_a_face=False):
     """Map one canonical token to the embedding token(s) it contributes."""
     if clean_token == 'digit' and digit_limb is not None:
         return ['Finger'] if digit_limb == 'hand' else ['Toe']
@@ -962,10 +977,15 @@ def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
         quadrant_token = _EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS.get(clean_token)
         if quadrant_token is not None:
             return [quadrant_token]
-    elif side_codes_name_a_head:
-        head_code_token = _EMBED_TEXT_HEAD_SIDE_CODE_TOKENS.get(clean_token)
-        if head_code_token is not None:
-            return [head_code_token]
+    else:
+        if side_codes_name_a_head:
+            head_code_token = _EMBED_TEXT_HEAD_SIDE_CODE_TOKENS.get(clean_token)
+            if head_code_token is not None:
+                return [head_code_token]
+        if quadrant_codes_name_a_face:
+            face_code_token = _EMBED_TEXT_FACE_QUADRANT_CODE_TOKENS.get(clean_token)
+            if face_code_token is not None:
+                return [face_code_token]
     # Ahead of the synonym lookup: 'reg' is a synonym-mapped spelling of 'leg',
     # and a bare 'reg' below a thigh is a Calf just like a bare 'leg'.
     if bare_leg_is_calf and clean_token in _EMBED_TEXT_BARE_LEG_TOKENS:
@@ -1084,6 +1104,7 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
         set(clean_tokens) & _EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS
     )
     side_codes_name_a_head = bool(set(clean_tokens) & _EMBED_TEXT_HEAD_SIDE_CODE_CONTEXT_TOKENS)
+    quadrant_codes_name_a_face = bool(set(clean_tokens) & _EMBED_TEXT_FACE_QUADRANT_CONTEXT_TOKENS)
     # Which limb a "Digit" belongs to, from the same name. Only an unambiguous
     # single side of the fork is read; a name that says both (or neither) keeps
     # the bare word.
@@ -1111,6 +1132,7 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
                 digit_limb=digit_limb,
                 bare_leg_is_calf=bare_leg_is_calf,
                 side_codes_name_a_head=side_codes_name_a_head,
+                quadrant_codes_name_a_face=quadrant_codes_name_a_face,
             )
         )
         index += 1
@@ -1362,12 +1384,14 @@ def build_joint_embedding_texts(object_cond, slim=JOINT_NAME_EMBEDDING_SLIM):
     ]
 
 
-# Limb codes in the symmetry signature: the side half is dropped and the
-# fore/hind/middle half kept, so LfLeg01 pairs only with RfLeg01.
+# Limb and face corner codes in the symmetry signature: the side half is dropped
+# and the fore/hind/middle (or top/bottom) half kept, so LfLeg01 pairs only with
+# RfLeg01 and MouthTL only with MouthTR.
 _LIMB_CODE_SIGNATURE_TOKENS = {
     'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b',
     'fl': 'f', 'fr': 'f', 'bl': 'b', 'br': 'b',
-    'lm': 'm', 'rm': 'm',
+    'lm': 'm', 'rm': 'm', 'ml': 'm', 'mr': 'm',
+    'tl': 't', 'tr': 't',
 }
 
 
@@ -1796,26 +1820,29 @@ def detect_joint_side(name):
         return 'left'
 
     # The same code with the halves swapped (Fl/Fr, Bl/Br) plus the hexapod's
-    # middle pair (Lm/Rm). Read only next to a limb word, for the same reason
-    # _EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS is gated: a mouth corner named
+    # middle pair (Lm/Rm, Ml/Mr). Read only next to a limb word, for the same
+    # reason _EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS is gated: a mouth corner named
     # "MouthBL" is a bottom-left corner, not a back-left leg. Without this a
     # whole quadruped ("FlLeg1".."BrLegFoot2") came back 'center' and formed no
     # symmetry pairs at all.
     if tokens & _EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS:
-        right_quadrant = tokens & {'fr', 'br', 'rm'}
-        left_quadrant = tokens & {'fl', 'bl', 'lm'}
-        if right_quadrant and not left_quadrant:
-            return 'right'
-        if left_quadrant and not right_quadrant:
-            return 'left'
+        return _single_side(tokens & {'fr', 'br', 'rm', 'mr'}, tokens & {'fl', 'bl', 'lm', 'ml'})
+    side = None
     # Lm/Rm on a head: the mouth corners (_EMBED_TEXT_HEAD_SIDE_CODE_TOKENS).
-    elif tokens & _EMBED_TEXT_HEAD_SIDE_CODE_CONTEXT_TOKENS:
-        right_head_code = tokens & {'rm'}
-        left_head_code = tokens & {'lm'}
-        if right_head_code and not left_head_code:
-            return 'right'
-        if left_head_code and not right_head_code:
-            return 'left'
+    if tokens & _EMBED_TEXT_HEAD_SIDE_CODE_CONTEXT_TOKENS:
+        side = _single_side(tokens & {'rm'}, tokens & {'lm'})
+    # Tl/Tr/Bl/Br on a face part: its top/bottom corners
+    # (_EMBED_TEXT_FACE_QUADRANT_CODE_TOKENS).
+    if side is None and tokens & _EMBED_TEXT_FACE_QUADRANT_CONTEXT_TOKENS:
+        side = _single_side(tokens & {'tr', 'br'}, tokens & {'tl', 'bl'})
+    return side
+
+
+def _single_side(right_codes, left_codes):
+    if right_codes and not left_codes:
+        return 'right'
+    if left_codes and not right_codes:
+        return 'left'
     return None
 
 

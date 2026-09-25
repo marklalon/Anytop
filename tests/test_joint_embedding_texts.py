@@ -148,6 +148,23 @@ def test_limb_code_keeps_fore_hind_apart_while_side_comes_from_geometry():
     assert texts[4].startswith('Right Back Leg'), texts[4]
 
 
+def test_wing_and_middle_leg_quadrant_codes_decode_like_leg_codes():
+    # A cicada's fore/hind wings and middle legs (Taobao_20260924 Cicada).
+    texts = _embedding_texts(
+        ['Root', 'Bone_wingFL', 'Bone_wingFR', 'Bone_wingBL', 'Bone_wingBR',
+         'Bone_LegML00', 'Bone_LegMR00'],
+        [-1, 0, 0, 0, 0, 0, 0],
+        offsets=[[0, 0, 0], [-2, 1, 1], [2, 1, 1], [-2, 1, -1], [2, 1, -1],
+                 [-1, -1, 0], [1, -1, 0]],
+    )
+    assert texts[1].startswith('Left Wing Front'), texts[1]
+    assert texts[2].startswith('Right Wing Front'), texts[2]
+    assert texts[3].startswith('Left Wing Back'), texts[3]
+    assert texts[4].startswith('Right Wing Back'), texts[4]
+    assert texts[5].startswith('Left Leg Mid'), texts[5]
+    assert texts[6].startswith('Right Leg Mid'), texts[6]
+
+
 def test_horse_link_is_named_for_where_it_sits_not_for_a_horse():
     # 3ds Max Biped's extra leg link, exported by 33 species here including a
     # Cat and a Chicken. It sits Thigh -> Calf -> HorseLink -> Foot.
@@ -239,17 +256,19 @@ def test_swapped_limb_code_decodes_only_when_the_name_spells_a_limb():
     assert texts[6].startswith('Right Mid Leg'), texts[6]
 
 
-def test_swapped_limb_code_is_left_alone_on_a_mouth_corner():
+def test_face_corner_code_reads_top_bottom_not_a_hind_limb():
     # MU04_Earthworm names the corners of its mouth MouthTL/TR/BL/BR, where "BL"
-    # is bottom-left. Decoding it as a hind limb would invent anatomy, so the
-    # code is only read next to a limb word.
+    # is bottom-left. Next to a face word the code is a top/bottom corner; the
+    # side comes from the geometry label like any other.
     texts = _embedding_texts(
-        ['RigBase', 'RigHead', 'RigMouthBL', 'RigMouthTR'],
-        [-1, 0, 1, 1],
+        ['RigBase', 'RigHead', 'RigMouthTL', 'RigMouthTR', 'RigMouthBL', 'RigMouthBR'],
+        [-1, 0, 1, 1, 1, 1],
+        offsets=[[0, 0, 0], [0, 0, 1], [-1, 1, 1], [1, 1, 1], [-1, -1, 1], [1, -1, 1]],
     )
-    assert 'Back' not in texts[2], texts[2]
-    assert texts[2].startswith('Mouth'), texts[2]
-    assert texts[3].startswith('Mouth'), texts[3]
+    assert texts[2].startswith('Left Mouth Upper'), texts[2]
+    assert texts[3].startswith('Right Mouth Upper'), texts[3]
+    assert texts[4].startswith('Left Mouth Lower'), texts[4]
+    assert texts[5].startswith('Right Mouth Lower'), texts[5]
 
 
 def test_lm_rm_on_a_head_decodes_as_the_mouth_corners():

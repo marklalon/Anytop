@@ -159,7 +159,8 @@ def _canonicalize_joint_name(name, replacements=None):
 _LIMB_CODE_SIGNATURE_TOKENS = {
     'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b',
     'fl': 'f', 'fr': 'f', 'bl': 'b', 'br': 'b',
-    'lm': 'm', 'rm': 'm',
+    'lm': 'm', 'rm': 'm', 'ml': 'm', 'mr': 'm',
+    'tl': 't', 'tr': 't',
 }
 
 

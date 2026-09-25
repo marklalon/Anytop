@@ -152,9 +152,10 @@ ROOT_MARKER_TOKENS = frozenset({
     "bip", "dummy", "root", "cg", "cog", "com", "hub", "main", "base", "center",
     "all", "locator", "null", "rig", "mount", "bone", "joint", "point",
 })
-# Two-letter codes that carry a side: quadrant (front/back/middle x left/right).
+# Two-letter codes that carry a side: a limb quadrant (front/back/middle x
+# left/right) or a face corner (top/bottom x left/right).
 SIDE_CODE_TOKENS = frozenset({
-    "lf", "rf", "lb", "rb", "lm", "rm", "fl", "fr", "bl", "br", "ml", "mr",
+    "lf", "rf", "lb", "rb", "lm", "rm", "fl", "fr", "bl", "br", "ml", "mr", "tl", "tr",
 })
 
 ERROR = "ERROR"
@@ -1083,8 +1084,9 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
                    f"side named on the wrong half of the rig, relabelled by preprocessing from the mirror "
                    f"geometry: {'; '.join(side_conflicts[:8])}", source)
 
-    # A two-letter side code the side detector does not read ("LegMR" as
-    # middle-right) leaves the joint 'center' when geometry cannot pair it.
+    # A two-letter side code the side detector does not read leaves the joint
+    # 'center' when geometry cannot pair it. It reads a limb quadrant only next
+    # to arm/leg/wing and a top/bottom corner only next to a face word.
     unread_codes = [
         raw for index, raw in enumerate(names)
         if side_labels[index] not in ("left", "right")
@@ -1128,16 +1130,19 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
     # on the wrong half is reported above and would otherwise show here as a
     # phantom imbalance of two. Blanked joints (a one-handed prop socket) are
     # left out, as they are from the mirror-partner check below.
+    # Partners are always one left and one right, so an imbalance implies
+    # unpaired joints; when those are listed below, the count is only context.
+    # It stays a WARN on its own when a pair has one half blanked.
     left = [raw for index, raw in enumerate(names) if side_labels[index] == "left" and texts[index].strip()]
     right = [raw for index, raw in enumerate(names) if side_labels[index] == "right" and texts[index].strip()]
-    if len(left) != len(right):
-        level = WARN if abs(len(left) - len(right)) > SIDE_COUNT_SLACK else INFO
-        report.add(level, species, "joint-names",
-                   f"{len(left)} left vs {len(right)} right joints", source)
     unpaired = [
         raw for index, raw in enumerate(names)
         if side_labels[index] in ("left", "right") and int(partners[index]) < 0 and texts[index].strip()
     ]
+    if len(left) != len(right):
+        level = WARN if abs(len(left) - len(right)) > SIDE_COUNT_SLACK and not unpaired else INFO
+        report.add(level, species, "joint-names",
+                   f"{len(left)} left vs {len(right)} right joints", source)
     if unpaired:
         report.add(WARN, species, "joint-names",
                    f"{len(unpaired)} sided joint(s) found no mirror partner: "
