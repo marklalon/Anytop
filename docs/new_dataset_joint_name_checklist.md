@@ -242,7 +242,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 | B2 | `_EMBED_TEXT_SIDE_TOKENS` | 名字自带的左右词，一律丢弃，侧别统一由几何标签重新贴到句首 |
 | B3 | `_EMBED_TEXT_CREATURE_TOKENS` | 物种名。新物种名 + 变体 rig 里出现的其他生物名要加，**但坐骑型 rig 是例外，见 §5** |
 | B4 | `_EMBED_TEXT_NON_ANATOMICAL_TOKENS` | rig 脚手架 / 道具 / 马具 / 武器 / 护具 / 挂点。整条名字只剩这些词时该关节被**置零 embedding** |
-| B5 | `_EMBED_TEXT_LIMB_CODE_TOKENS` / `_EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS` | 四足肢位码 `lf/rf/lb/rb` → `Front`/`Back`（左右交给几何）；后者是**halves 互换**的写法 `fl/fr/bl/br` 以及六足中腿 `lm/rm`，因为拼法有歧义（`MouthBL` 是嘴的左下角），只在同名里还有 `arm`/`leg` 时才解码 |
+| B5 | `_EMBED_TEXT_LIMB_CODE_TOKENS` / `_EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS` / `_EMBED_TEXT_FACE_QUADRANT_CODE_TOKENS` | 四足肢位码 `lf/rf/lb/rb` → `Front`/`Back`（左右交给几何）；halves 互换的 `fl/fr/bl/br`、六足中腿 `lm/rm/ml/mr` 只在同名里还有 `arm`/`leg`/`wing` 时解码。面部角码 `tl/tr/bl/br` → `Upper`/`Lower`，只在同名里还有 `mouth`/`lip`/`jaw` 等面部词时解码；上下文门控负责区分 `wingBL` 的后翼和 `MouthBL` 的左下嘴角 |
 | B6 | `_EMBED_TEXT_SYNONYM_TOKENS` | 解剖同义词 + rig 缩写 + 拼写错误，全部折叠到语料已有的词。**长尾治理的主力表** |
 | B7 | `_EMBED_TEXT_TOKEN_PAIR_MERGES` | 相邻两词合成一词（`upper leg`→Thigh、`horse link`→Ankle）。单词映射解决不了时用这个。**注意执行顺序：pair merge 跑在 B6 单词映射之前**，所以被拼错的词要么两条都写（`('rower','reg')` 和 `rower`/`reg` 各自），要么就落不到 merge 上 |
 | B8 | `_EMBED_TEXT_HEAD_FEATURE_TOKENS` | 头部附属物额外追加一个 `HeadFeature` 类别词，让它们在 T5 空间里彼此靠近 |
@@ -251,8 +251,8 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 
 | # | 位置 | 作用 |
 |---|---|---|
-| C1 | `detect_joint_side` 的 marker 元组 | 左右识别。新数据集用了新的侧别写法（`_L_`/`Lft`/`L01`/`Lwing`…）必须加。显式 `Left`/`Right` 优先于肢位码；歧义的肢位码要跟 B5 一样加 `arm`/`leg` 门控 |
-| C2 | `_joint_signature` / `_signature_tokens` / `_LIMB_CODE_SIGNATURE_TOKENS` / `_SIGNATURE_SPELLING_TOKENS` | 对称配对签名。剥掉侧别、**但保留前后半码**——否则前肢会和后肢配成一对。签名是**拼写键**，不吃 B6 同义词：左右拼法被改坏（`Lower`/`Rower`）时在 `_SIGNATURE_SPELLING_TOKENS` 里做纯拼写修复，不要把整张同义词表塞进来（会重排所有现有 rig 的分组） |
+| C1 | `detect_joint_side` 的 marker 元组 | 左右识别。新数据集用了新的侧别写法（`_L_`/`Lft`/`L01`/`Lwing`…）必须加。显式 `Left`/`Right` 优先于方位码；歧义码的门控必须与 B5 一致：肢体码要求 `arm`/`leg`/`wing`，面部角码要求 `mouth`/`lip`/`jaw` 等面部词 |
+| C2 | `_joint_signature` / `_signature_tokens` / `_LIMB_CODE_SIGNATURE_TOKENS` / `_SIGNATURE_SPELLING_TOKENS` | 对称配对签名。剥掉左右半码、**但保留前后/中或上下半码**——否则前肢会和后肢、上嘴角会和下嘴角配成一对。签名是**拼写键**，不吃 B6 同义词：左右拼法被改坏（`Lower`/`Rower`）时在 `_SIGNATURE_SPELLING_TOKENS` 里做纯拼写修复，不要把整张同义词表塞进来（会重排所有现有 rig 的分组） |
 | C3 | `_FACE_JOINT_*` / `_FORWARD_REFERENCE_PRIORITIES` / `_BODY_AXIS_*`（在 `face_orientation.py`） | 朝向解算挑哪些关节。新物种的髋/肩/鼻子叫了别的名字，朝向就会算错；道具骨（披风/头发/武器）要进 exclude |
 | C4 | `_CONTACT_JOINT_*` / `_CONTACT_CHAIN_*` | 触地关节判定（脚/爪/掌） |
 | C5 | `_END_EFFECTOR_*` | 末端执行器判定 |
@@ -264,7 +264,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 | # | 常量 | 作用 |
 |---|---|---|
 | D1 | `_FAMILY_CREATURE_TOKENS` | 与 B3 **手工保持同步**（该模块刻意只依赖 numpy，不能 import Anytop） |
-| D2 | `_FAMILY_LIMB_CODE_TOKENS` / `_FAMILY_QUADRANT_LIMB_CODE_TOKENS` | 与 B5 同步（含门控）：肢位码 → `Front`/`Back`/`Mid`，**映射而不是删除** |
+| D2 | `_FAMILY_LIMB_CODE_TOKENS` / `_FAMILY_QUADRANT_LIMB_CODE_TOKENS` | 应与 B5 的**肢体码分支**手工同步（含 `ml/mr` 和 `arm`/`leg`/`wing` 门控）：肢位码 → `Front`/`Back`/`Mid`，**映射而不是删除**。面部角码表达 `Upper`/`Lower`，不要复用成肢体的 `Front`/`Back` |
 | D3 | `_FAMILY_POSITION_TOKENS` | 方位词归一（`hind`/`rear`/`back` → `Back`）并提到 key 最前，让码形 rig 与词形 rig 落到同一个 key。**`fore` 和 `mid` 故意不在这里**：`ForeArm` 是前臂不是前肢的臂；`LegMid` 在蜘蛛是「第二对腿」、在 serpent_man 是「腿的中段（小腿）」，同一拼法两个意思，`family_key` 只看得到名字，分不开。代价是「码形/词形落同一 key」这条只对 Front/Back 成立（`LmLeg1`→MidLeg 而 `LegMid1`→Leg），这个方向是安全的一侧——欠分裂看得见（一个过大的通用桶），错误合并看不见 |
 | D4 | `_FAMILY_QUALIFIER_TOKENS` | 装饰限定词（`jiggle`/`twist`/`low`）。方位词归 D3 管，不放这里 |
 | D5 | `_TERMINAL_NAME_RE` | `Nub`/`End` 末端标记正则。新数据集用别的末端后缀就得加。判定末端一律用 `terminal_mask`（名字后缀 **且** 是叶子），不要用裸的 `is_terminal_name` |
@@ -297,9 +297,10 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
    D3 用「`fore` 不列入方位词」挡它。涉及 `front/back/rear/hind/fore` 和肢位码的任何
    改动，都要**逐条打印被移动的 key**再决定，别只看总数。
 
-5. **短码要门控，不要全局。** `fl/fr/bl/br/lm/rm` 这类两字母码在别的 rig 里可能是别的意思
-   （`MouthBL` = 嘴的左下角）。加进 B5 和 `detect_joint_side` 时都要求同名里还有 `arm`/`leg`，
-   门控条件两边必须一致，否则 embedding text 说它是后腿、side 说它是 center。
+5. **短码要门控，不要全局。** `fl/fr/bl/br/lm/rm/ml/mr/tl/tr` 这类两字母码会随上下文改变含义：
+   `wingBL` 是左后翼，`MouthBL` 是左下嘴角。加进 B5 和 `detect_joint_side` 时必须使用同一门控——
+   肢体码要求同名里还有 `arm`/`leg`/`wing`，面部角码要求面部词；否则 embedding text 和 side
+   会分歧。对称签名表还必须保留相应的前后/中或上下半码，不能只删掉整个短码。
 
 6. **默认改 B 层。** 只有当你确实要改导出的 BVH 骨名时才动 A 层，并且要记得 A 层的剥离会被
    `_disambiguate_duplicate_canonical_names` 部分抵消（见 §0-3）。
