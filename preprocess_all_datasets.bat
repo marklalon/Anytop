@@ -19,8 +19,8 @@ REM ----------------------------------------------------------------------
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
 
-REM Source raw BVH dir for the UnityBundles dataset (absolute).
-set UNITYBUNDLES_RAW=E:\Dataset\UnityBundles_anytop\raw
+REM Source raw BVH dir for the UnityBundles dataset (relative to this script).
+set UNITYBUNDLES_RAW=dataset\unitybundles\raw
 
 REM Capture the CLI args to forward to every preprocess step (e.g. --overwrite).
 set BATCH_ARGS=%*
