@@ -105,16 +105,24 @@ def test_conservative_fallback_disables_ambiguous_child_subtrees() -> None:
             [1.0, 0.0, 0.0],
             [-1.3, -0.1, 0.1],
             [-1.7, -0.2, 0.2],
-            [1.3, -0.1, 0.1],
-            [1.7, -0.2, 0.2],
+            [1.32, -0.08, 0.12],
+            [1.75, -0.15, 0.25],
         ],
         dtype=np.float64,
     )
 
+    # Two unnamed children a side, only loosely mirrored: no rule can tell
+    # which goes with which.
     details = _infer_symmetry_metadata(joint_names, parents, rest_positions, return_details=True)
 
     for joint_index in (3, 4, 5, 6):
         assert details['symmetry_partner_indices'][joint_index] == -1
+
+    # Exactly mirrored, the geometry settles it.
+    rest_positions[5:] = rest_positions[3:5] * np.array([-1.0, 1.0, 1.0])
+    details = _infer_symmetry_metadata(joint_names, parents, rest_positions, return_details=True)
+    partners = details['symmetry_partner_indices']
+    assert partners[3] == 5 and partners[4] == 6
 
 
 def test_lf_rf_suffixes_drive_side_detection_and_signature_normalization() -> None:
@@ -365,9 +373,10 @@ def test_named_sides_with_mismatched_signatures_pair_by_geometry() -> None:
 def test_geometry_fallback_never_pairs_a_non_mirrored_or_centre_joint() -> None:
     joint_names = ['Head', 'Horn1_L', 'Horn2_R', 'Crest']
     parents = np.array([-1, 0, 0, 0])
-    # Horn_R sits far off the mirror image of Horn_L; Crest names no side.
+    # Horn_R sits far off the mirror image of Horn_L; Crest names no side and
+    # mirrors nothing.
     rest_positions = np.array([
-        [0.0, 0.0, 0.0], [0.1, 0.1, 0.0], [-0.1, -0.3, 0.4], [-0.1, 0.1, 0.0],
+        [0.0, 0.0, 0.0], [0.1, 0.1, 0.0], [-0.1, -0.3, 0.4], [-0.1, 0.18, 0.05],
     ])
     sides, partners, _pairs = _infer_symmetry_metadata(joint_names, parents, rest_positions)
     assert partners[1] == -1 and partners[2] == -1
@@ -447,6 +456,97 @@ def test_unsided_twin_needs_the_same_name_and_the_other_half() -> None:
     assert sides[1] == 'center' and partners[1] == -1
 
 
+def _unnamed_ear_rig(right_ear_x=-0.09, right_tip=(-0.10, 0.25, 0.05), extra_right_joint=False,
+                     named_left_sign=None):
+    # Dog: the ears are "Bip01_Ponytail1" / "Bip01_Ponytail2", no side word.
+    joint_names = ['Bip01_Head', 'Bip01_Ponytail1', 'Bip01_Ponytail11',
+                   'Bip01_Ponytail2', 'Bip01_Ponytail21']
+    parents = [-1, 0, 1, 0, 3]
+    rest_positions = [
+        [0.0, 0.0, 0.0],
+        [0.09, 0.15, 0.02], [0.10, 0.25, 0.05],
+        [right_ear_x, 0.15, 0.02], list(right_tip),
+    ]
+    if extra_right_joint:
+        joint_names.append('Bip01_Ponytail2Nub')
+        parents.append(4)
+        rest_positions.append([right_tip[0] - 0.01, right_tip[1] + 0.05, right_tip[2]])
+    if named_left_sign is not None:
+        for part, x in (('Eye', 0.04), ('Cheek', 0.07), ('Jaw', 0.05), ('Brow', 0.03)):
+            for side, sign in (('L', named_left_sign), ('R', -named_left_sign)):
+                joint_names.append(f'{side}_{part}')
+                parents.append(0)
+                rest_positions.append([sign * x, 0.05 + x, 0.1])
+    return _infer_symmetry_metadata(joint_names, np.array(parents), np.array(rest_positions))
+
+
+def test_unnamed_exact_mirror_twins_are_paired_down_the_chain() -> None:
+    sides, partners, pairs = _unnamed_ear_rig()
+    assert partners[1] == 3 and partners[3] == 1
+    assert partners[2] == 4 and partners[4] == 2
+    # No side names anywhere: +X is left, as in every named rig.
+    assert sides[1:5] == ['left', 'left', 'right', 'right']
+    assert [1, 3] in pairs and [2, 4] in pairs
+
+
+def test_unnamed_twins_take_the_side_the_rig_names_their_half() -> None:
+    sides, partners, _pairs = _unnamed_ear_rig(named_left_sign=-1.0)
+    assert partners[1] == 3
+    assert sides[1] == 'right' and sides[3] == 'left'
+
+
+def test_unnamed_twins_need_an_exact_mirror_and_the_same_shape() -> None:
+    # About 10% of the bone length off the mirror image of the other ear.
+    _sides, partners, _pairs = _unnamed_ear_rig(right_ear_x=-0.07)
+    assert partners[1] == -1 and partners[3] == -1
+    # An extra joint under one ear only: the subtrees differ.
+    sides, partners, _pairs = _unnamed_ear_rig(extra_right_joint=True)
+    assert partners[1] == -1 and sides[1] == 'center'
+    # Both on the same half.
+    _sides, partners, _pairs = _unnamed_ear_rig(right_ear_x=0.09 + 1e-3,
+                                                right_tip=(0.10, 0.25, 0.05))
+    assert partners[1] == -1
+
+
+def test_a_named_side_joint_pairs_with_its_exact_mirror_whatever_its_name() -> None:
+    # The twins share no signature: only the geometry ties them.
+    joint_names = ['Head', 'L_Horn', 'Bip01_Xtra02', 'Crest']
+    parents = np.array([-1, 0, 0, 0])
+    rest_positions = np.array([
+        [0.0, 0.0, 0.0], [0.08, 0.12, 0.03], [-0.08, 0.12, 0.03], [0.0, 0.15, 0.0],
+    ])
+    sides, partners, _pairs = _infer_symmetry_metadata(joint_names, parents, rest_positions)
+    assert partners[1] == 2 and partners[2] == 1
+    assert sides[1] == 'left' and sides[2] == 'right'
+    assert sides[3] == 'center' and partners[3] == -1
+    # A named joint on the half the rest of the rig calls the other side is
+    # not trusted to pair.
+    joint_names = [*joint_names[:1], 'R_Horn', *joint_names[2:], 'L_Eye', 'R_Eye', 'L_Ear', 'R_Ear']
+    parents = np.array([-1, 0, 0, 0, 0, 0, 0, 0])
+    rest_positions = np.array([
+        *rest_positions, [0.04, 0.05, 0.1], [-0.04, 0.05, 0.1], [0.06, 0.1, 0.0], [-0.06, 0.1, 0.0],
+    ])
+    sides, partners, _pairs = _infer_symmetry_metadata(joint_names, parents, rest_positions)
+    assert partners[4] == 5 and partners[6] == 7
+    assert partners[1] == -1 and partners[2] == -1
+
+
+def test_unnamed_twins_with_a_tied_closest_match_stay_unpaired() -> None:
+    # Two coincident joints per half: their own geometry ties every cross pair,
+    # so none may pair by index order.
+    joint_names = ['Root', 'Spine', 'Qa', 'Wb', 'Ec', 'Rd', 'Ta', 'Yb', 'Uc', 'Id']
+    parents = np.array([-1, 0, 1, 1, 1, 1, 2, 3, 4, 5])
+    rest_positions = np.array([
+        [0.0, 0.0, 0.0], [0.0, 1.0, 0.0],
+        [1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0], [-1.0, 1.0, 0.0],
+        [1.0, 2.0, 0.0], [2.0, 1.0, 0.0], [-2.0, 1.0, 0.0], [-1.0, 2.0, 0.0],
+    ])
+    sides, partners, pairs = _infer_symmetry_metadata(joint_names, parents, rest_positions)
+    assert pairs == []
+    assert all(partner == -1 for partner in partners)
+    assert all(side == 'center' for side in sides)
+
+
 def main() -> None:
     test_horse_front_helper_bones_are_paired()
     test_conservative_fallback_rejects_non_mirrored_unique_children()
@@ -466,6 +566,11 @@ def main() -> None:
     test_mirror_pair_named_the_wrong_way_round_is_swapped()
     test_unsided_twin_of_a_named_side_joint_takes_the_other_side()
     test_unsided_twin_needs_the_same_name_and_the_other_half()
+    test_unnamed_exact_mirror_twins_are_paired_down_the_chain()
+    test_unnamed_twins_take_the_side_the_rig_names_their_half()
+    test_unnamed_twins_need_an_exact_mirror_and_the_same_shape()
+    test_a_named_side_joint_pairs_with_its_exact_mirror_whatever_its_name()
+    test_unnamed_twins_with_a_tied_closest_match_stay_unpaired()
     print('horse symmetry metadata regression: ok')
 
 

@@ -555,7 +555,7 @@ def _split_glued_compound_token(token):
 # change: the token tables above, name canonicalization or refinement, or what
 # goes into the sentence. Stored name embeddings are keyed by this version, so
 # a bump makes the loader reject stale cond files until preprocessing re-runs.
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 16
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 17
 
 def normalize_joint_name(name):
     # Split on lowercase→UPPER (e.g. "ElkRFemur" → "Elk RFemur")
@@ -1655,6 +1655,32 @@ def _local_mirror_error(left_index, right_index, left_parent, right_parent, rest
     return mirror_error, yz_error, local_scale
 
 
+# Two candidate errors closer than this count as a tie. The errors are
+# normalized by bone length, so this is a fraction of the joint's own bone.
+_NEAREST_TIE_TOLERANCE = 1e-6
+
+
+def _unambiguous_mutual_nearest(errors):
+    """Keys of ``errors`` whose two joints are each other's unique closest match.
+
+    ``errors`` maps (joint, joint) to a mirror error. A joint whose closest
+    match is tied between two candidates -- coincident helper bones, say --
+    has no closest match: picking either would pair by index order, and a wrong
+    parent pair also blocks every child pair beneath it. Returned sorted.
+    """
+    best = {}
+    for (first, second), error in errors.items():
+        for index, other in ((first, second), (second, first)):
+            if index not in best or error < best[index][0] - _NEAREST_TIE_TOLERANCE:
+                best[index] = (error, other)
+            elif error <= best[index][0] + _NEAREST_TIE_TOLERANCE:
+                best[index] = (min(error, best[index][0]), None)
+    return [
+        (first, second) for first, second in sorted(errors)
+        if best[first][1] == second and best[second][1] == first
+    ]
+
+
 def _passes_conservative_child_mirror_check(left_index, right_index, left_parent, right_parent, rest_positions):
     mirror_error, yz_error, local_scale = _local_mirror_error(
         left_index,
@@ -1813,17 +1839,7 @@ def _pair_sided_joints_by_geometry(joint_side_labels, symmetry_partner_indices, 
             )
             errors[left_index, right_index] = (mirror_error + yz_error) / local_scale
 
-    best_right = {}
-    best_left = {}
-    for (left_index, right_index), error in errors.items():
-        if left_index not in best_right or error < errors[left_index, best_right[left_index]]:
-            best_right[left_index] = right_index
-        if right_index not in best_left or error < errors[best_left[right_index], right_index]:
-            best_left[right_index] = left_index
-    return sorted(
-        (left_index, right_index) for left_index, right_index in best_right.items()
-        if best_left.get(right_index) == left_index
-    )
+    return _unambiguous_mutual_nearest(errors)
 
 
 # Smallest ratio of the two subtree sizes an unnamed twin may have: one half
@@ -1900,24 +1916,99 @@ def _pair_unsided_twins_by_name(joint_side_labels, symmetry_partner_indices, par
             )
             errors[sided_index, unsided_index] = (mirror_error + yz_error) / local_scale
 
-    best_unsided = {}
-    best_sided = {}
-    for (sided_index, unsided_index), error in errors.items():
-        if sided_index not in best_unsided or error < errors[sided_index, best_unsided[sided_index]]:
-            best_unsided[sided_index] = unsided_index
-        if unsided_index not in best_sided or error < errors[best_sided[unsided_index], unsided_index]:
-            best_sided[unsided_index] = sided_index
-
     pairs = []
-    for sided_index, unsided_index in sorted(best_unsided.items()):
-        if best_sided.get(unsided_index) != sided_index:
-            continue
+    for sided_index, unsided_index in _unambiguous_mutual_nearest(errors):
         if joint_side_labels[sided_index] == 'left':
             joint_side_labels[unsided_index] = 'right'
             pairs.append((sided_index, unsided_index))
         else:
             joint_side_labels[unsided_index] = 'left'
             pairs.append((unsided_index, sided_index))
+    return pairs
+
+
+# Largest mirror error, as a fraction of the joint's own bone length, an unnamed
+# pair may have. Nothing in the names vouches for such a pair, so only a near
+# exact mirror image counts.
+_UNNAMED_TWIN_MIRROR_TOLERANCE = 0.05
+
+
+def _rig_left_sign(joint_side_labels, subtree_x):
+    """+1 when the rig's named left half is +X, -1 when it is -X.
+
+    Read off the joints already labelled, by where their subtrees lie. A rig
+    with no side names at all gets +X, the convention every named rig follows.
+    """
+    vote = 0.0
+    for index, side in enumerate(joint_side_labels):
+        if side in ('left', 'right'):
+            vote += np.sign(float(subtree_x[index])) * (1.0 if side == 'left' else -1.0)
+    return -1.0 if vote < 0 else 1.0
+
+
+def _pair_unnamed_twins_by_geometry(joint_side_labels, symmetry_partner_indices, parents,
+                                    rest_positions, depths, subtree_x, subtree_sizes):
+    """Pair any two unpaired joints that are exact mirror images of each other.
+
+    The name rules all need something in the names to agree. Some rigs name
+    neither half -- Dog's ears are "Bip01_Ponytail1" and "Bip01_Ponytail2",
+    Crow's tail feathers "Tail02" and "Tail03" -- and a joint can carry a side
+    word while its twin carries none and shares no signature with it. Here the
+    geometry carries the whole decision, whatever the labels, so the gate is
+    strict: both joints off the midline on opposite halves, the same parent or
+    an already-mirrored parent pair, the same depth, child count and subtree
+    size, and both the joint's offset from its parent and its absolute position
+    mirrored to within ``_UNNAMED_TWIN_MIRROR_TOLERANCE`` of its bone length. A
+    joint that already names a side must lie on that side's half. Each must be
+    the other's closest match. Both joints take the side of the half they lie
+    on; the pairs are returned as (left, right).
+    """
+    rest_positions = np.asarray(rest_positions, dtype=np.float64)
+    sizes, child_counts = subtree_sizes
+    mirror = np.array([-1.0, 1.0, 1.0])
+    left_sign = _rig_left_sign(joint_side_labels, subtree_x)
+
+    def on_named_half(index):
+        side = joint_side_labels[index]
+        if side == 'center':
+            return True
+        return float(subtree_x[index]) * left_sign * (1.0 if side == 'left' else -1.0) > 0
+
+    candidates = [
+        index for index in range(len(joint_side_labels))
+        if symmetry_partner_indices[index] < 0 and parents[index] >= 0
+        and abs(float(subtree_x[index])) > _midline_tolerance(index, parents, rest_positions)
+        and on_named_half(index)
+    ]
+    errors = {}
+    for position, first in enumerate(candidates):
+        for second in candidates[position + 1:]:
+            if float(subtree_x[first]) * float(subtree_x[second]) >= 0:
+                continue
+            if (depths[first] != depths[second]
+                    or child_counts[first] != child_counts[second]
+                    or sizes[first] != sizes[second]):
+                continue
+            first_parent, second_parent = parents[first], parents[second]
+            if first_parent != second_parent and symmetry_partner_indices[first_parent] != second_parent:
+                continue
+            mirror_error, yz_error, local_scale = _local_mirror_error(
+                first, second, first_parent, second_parent, rest_positions,
+            )
+            absolute_error = float(np.linalg.norm(
+                rest_positions[first] - mirror * rest_positions[second]
+            ))
+            limit = _UNNAMED_TWIN_MIRROR_TOLERANCE * local_scale
+            if mirror_error + yz_error > limit or absolute_error > limit:
+                continue
+            errors[first, second] = (mirror_error + yz_error + absolute_error) / local_scale
+
+    pairs = []
+    for first, second in _unambiguous_mutual_nearest(errors):
+        left, right = (first, second) if float(subtree_x[first]) * left_sign > 0 else (second, first)
+        joint_side_labels[left] = 'left'
+        joint_side_labels[right] = 'right'
+        pairs.append((left, right))
     return pairs
 
 
@@ -2017,6 +2108,16 @@ def _infer_symmetry_metadata(joint_names, parents, rest_positions, return_detail
         for left_index, right_index in _pair_unsided_twins_by_name(
             joint_side_labels, symmetry_partner_indices, parents, rest_positions, depths,
             signatures, subtree_x, subtree_sizes,
+        ):
+            symmetry_partner_indices[left_index] = right_index
+            symmetry_partner_indices[right_index] = left_index
+            symmetric_joint_pairs.append([left_index, right_index])
+            changed = True
+
+        # Last: every name-backed rule has had its chance at these joints.
+        for left_index, right_index in _pair_unnamed_twins_by_geometry(
+            joint_side_labels, symmetry_partner_indices, parents, rest_positions, depths,
+            subtree_x, subtree_sizes,
         ):
             symmetry_partner_indices[left_index] = right_index
             symmetry_partner_indices[right_index] = left_index
