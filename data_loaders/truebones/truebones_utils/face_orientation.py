@@ -7,9 +7,11 @@ from motion_lib.Animation import Animation
 from .dataset_tags import dataset_tags
 from .ignore_warnings import skip_orientation_detection
 from .physics_joint_annotation import (
-    normalize_joint_name,
     detect_joint_side,
-    _joint_depths,
+    joint_depths,
+)
+from .joint_name_canonical import (
+    normalize_joint_name,
     strip_joint_name_prefix,
     effective_canonical_replacements,
 )
@@ -110,10 +112,10 @@ _BODY_AXIS_BASE_PRIORITIES = (
 )
 
 def _canonicalize_joint_name(name, replacements=None):
-    """Canonicalize a joint name using shared constants from physics_joint_annotation.
+    """Canonicalize a joint name using shared constants from joint_name_canonical.
 
     Note: drops single-character tokens (including isolated digits), unlike the
-    sibling implementation in physics_joint_annotation which preserves digits.
+    sibling implementation in joint_name_canonical which preserves digits.
     This preserves existing face-orientation matching behavior.
 
     ``replacements`` lets callers pass the skeleton-aware replacement table from
@@ -121,10 +123,10 @@ def _canonicalize_joint_name(name, replacements=None):
     apply only when the rig is confirmed Japanese-style; defaults to the base
     table otherwise.
     """
-    from .physics_joint_annotation import _JAPANESE_NAME_REPLACEMENTS
+    from .joint_name_canonical import JAPANESE_NAME_REPLACEMENTS
 
     if replacements is None:
-        replacements = _JAPANESE_NAME_REPLACEMENTS
+        replacements = JAPANESE_NAME_REPLACEMENTS
 
     # Strip prefix using the shared utility
     stripped = strip_joint_name_prefix(name)
@@ -188,7 +190,7 @@ def _face_joint_name_allowed(name):
 
 
 def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_root=True):
-    depths = _joint_depths(parents)
+    depths = joint_depths(parents)
     replacements = effective_canonical_replacements(joint_names)
     candidates = {'right': [], 'left': []}
     paired_candidates = {}
@@ -253,7 +255,7 @@ def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_
 
 
 def _find_forward_reference_joint(joint_names, parents, rest_positions=None):
-    depths = _joint_depths(parents)
+    depths = joint_depths(parents)
     replacements = effective_canonical_replacements(joint_names)
 
     # When rest positions are available, measure a skeleton scale so bone lengths
@@ -300,7 +302,7 @@ def _find_forward_reference_joint(joint_names, parents, rest_positions=None):
 
 
 def _find_centerline_reference_joint(joint_names, parents, priorities, *, prefer_deepest):
-    depths = _joint_depths(parents)
+    depths = joint_depths(parents)
     replacements = effective_canonical_replacements(joint_names)
     candidates = []
 
@@ -710,7 +712,7 @@ def _collect_homologous_pairs(joint_names, parents, *, allow_noisy):
     ``_face_joint_name_allowed``; ``True`` keeps them as a last resort, since even
     a foot pair still pins the left-right axis.
     """
-    depths = _joint_depths(parents)
+    depths = joint_depths(parents)
     replacements = effective_canonical_replacements(joint_names)
     by_signature = {}
 

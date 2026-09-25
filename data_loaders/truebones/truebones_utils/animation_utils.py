@@ -23,9 +23,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 from data_loaders.truebones.truebones_utils.skeleton_cropping import (
     select_cropped_joint_indices,
 )
-from .physics_joint_annotation import (
-    joint_name_is_non_anatomical,
-)
+from .joint_embedding_text import joint_name_is_non_anatomical
 
 
 ################## Constants #####################
@@ -41,7 +39,7 @@ def _warn(msg: str):
 
 from .joint_name_canonical import (  # noqa: F401  re-exported
     canonical_name_for_bvh,
-    _build_joint_name_inspection_rows,
+    build_joint_name_inspection_rows,
     _remove_token_counts,
     _joint_disambiguation_tokens,
     _display_disambiguation_tokens,
@@ -51,6 +49,8 @@ from .joint_name_canonical import (  # noqa: F401  re-exported
     write_joint_name_collision_report,
     refresh_joint_metadata_in_object_cond,
     refresh_joint_metadata_in_cond_dict,
+)
+from .joint_embedding_text import (  # noqa: F401  re-exported
     _T5_ENCODE_BATCH,
     _build_t5_text_cache,
     attach_t5_embeddings_to_cond,

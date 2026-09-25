@@ -9,9 +9,9 @@ silently skipped file or a joint whose name reaches T5 as noise.
 
 No Blender is needed: GLB/GLTF files are read straight from their JSON and
 binary chunks, and every name-derived verdict comes from the preprocessing
-pipeline's own rules (fbx_filename_rules, physics_joint_annotation,
-joint_name_canonical), so the precheck cannot drift from what preprocessing
-actually does.
+pipeline's own rules (fbx_filename_rules, joint_name_canonical,
+joint_embedding_text, physics_joint_annotation), so the precheck cannot drift
+from what preprocessing actually does.
 
 Checks
 ------
@@ -93,6 +93,9 @@ from data_loaders.truebones.truebones_utils.fbx_filename_rules import (  # noqa:
     should_skip_anim,
 )
 from data_loaders.truebones.truebones_utils.joint_name_canonical import (  # noqa: E402
+    JAPANESE_GATED_REPLACEMENTS,
+    is_japanese_style_naming,
+    normalize_joint_name,
     refresh_joint_metadata_in_object_cond,
 )
 from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS  # noqa: E402
@@ -103,12 +106,11 @@ from data_loaders.truebones.truebones_utils.face_orientation import (  # noqa: E
 )
 from data_loaders.truebones.truebones_utils.ignore_warnings import skip_orientation_detection  # noqa: E402
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  # noqa: E402
-    _JAPANESE_GATED_REPLACEMENTS,
-    _clean_embedding_token,
-    build_joint_embedding_texts,
     detect_joint_side,
-    is_japanese_style_naming,
-    normalize_joint_name,
+)
+from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noqa: E402
+    clean_embedding_token,
+    build_joint_embedding_texts,
 )
 
 DEFAULT_REFERENCE_COND = _ANYTOP_DIR / "dataset" / "merged" / "cond.npy"
@@ -1110,7 +1112,7 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
     for index, raw in enumerate(names):
         if texts[index].strip() or depths[index] <= ROOT_HELPER_MAX_DEPTH:
             continue
-        tokens = {_clean_embedding_token(t) for t in normalize_joint_name(raw).split()} - {''}
+        tokens = {clean_embedding_token(t) for t in normalize_joint_name(raw).split()} - {''}
         if tokens and tokens <= ROOT_MARKER_TOKENS:
             continue
         if child_count.get(index, 0) and any(
@@ -1156,7 +1158,7 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
     if not is_japanese_style_naming(names):
         gated = sorted({
             token for raw in names for token in normalize_joint_name(raw).split()
-            if token in _JAPANESE_GATED_REPLACEMENTS and len(token) > 1
+            if token in JAPANESE_GATED_REPLACEMENTS and len(token) > 1
         })
         if gated:
             report.add(WARN, species, "joint-names",
@@ -1171,7 +1173,7 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
     # -> eyeball and lids), so reading it as the body part is right.
     helpers = [
         index for index, raw in enumerate(names)
-        if {_clean_embedding_token(t) for t in normalize_joint_name(raw).split()} & HELPER_MARKER_TOKENS
+        if {clean_embedding_token(t) for t in normalize_joint_name(raw).split()} & HELPER_MARKER_TOKENS
     ]
     chain_roots = {
         i for i in helpers

@@ -37,7 +37,7 @@ import numpy as np
 # Add project root to path so imports from Anytop/ work when running the script directly.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_joint_embedding_texts
+from data_loaders.truebones.truebones_utils.joint_embedding_text import build_joint_embedding_texts
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond as _load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import bare_species_name
 

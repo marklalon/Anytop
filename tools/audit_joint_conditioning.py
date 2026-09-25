@@ -40,7 +40,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
     JOINT_STRUCT_FEATURE_SCHEMA_VERSION,
     build_joint_struct_features,
 )
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  # noqa: E402
+from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noqa: E402
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
     build_joint_embedding_texts,
 )

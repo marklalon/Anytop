@@ -1,34 +1,380 @@
-"""Joint-name canonicalization and per-joint text embeddings.
+"""Joint-name canonicalization.
 
-Assigns canonical joint names (disambiguating collisions), refreshes the joint
-metadata stored in cond dicts, and attaches the cached T5 embeddings of the
-joint / species texts. Re-exported by ``animation_utils``.
+Rig prefix/suffix stripping, the Japanese romaji table and glued-compound
+splitting that turn a raw bone name into its canonical form; canonical-name
+assignment with collision disambiguation; the joint metadata refresh of cond
+dicts. The joint texts and their T5 embeddings live in ``joint_embedding_text``.
+Re-exported by ``animation_utils``.
 """
 
 from collections import Counter, defaultdict
 import json
 import numpy as np
-import os
 from os.path import join as pjoin
 import re
-import torch
-
-from data_loaders.truebones.truebones_utils.dataset_tags import (
-    assert_species_tags_cover,
-)
-from .physics_joint_annotation import (
-    build_semantic_metadata,
-    effective_canonical_replacements,
-    infer_species_joint_name_prefixes,
-    joint_name_token_is_species,
-    normalize_joint_name,
-    strip_joint_name_prefix,
-    build_joint_embedding_texts,
-    JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-)
 
 
 ################## Joint Name Canonicalization #####################
+
+# Joint name canonicalization
+_CANONICAL_NAME_PREFIXES = (
+    'BN_Bip01',
+    'Bip001',
+    'Bip01',
+    'Sabrecat',
+    'NPC',
+    'Rig',
+    'BN',
+    'jt',
+    'Elk',
+)
+# Trailing rig suffixes stripped from joint names during canonicalization.
+# Matched case-insensitively against the raw (pre-lowercased) name.
+_CANONICAL_NAME_SUFFIXES = (
+    'SHJnt',
+)
+JAPANESE_NAME_REPLACEMENTS = {
+    'momo': 'Thigh',
+    'sippo': 'Tail',
+    'shippo': 'Tail',
+    'mune': 'Chest',
+    'hiza': 'Knee',
+    'hara': 'Stomach',
+    'ashi': 'Leg',
+    'hiji': 'Elbow',
+    'koshi': 'Hips',
+    'kubi': 'Neck',
+    'atama': 'Head',
+    'ago': 'Jaw',
+    'kata': 'Shoulder',
+    'munabire': 'Pectoral Fin',
+    'sebire': 'Dorsal Fin',
+    'harabire': 'Pelvic Fin',
+    'shiribire': 'Anal Fin',
+    'shirihire': 'Anal Fin',
+    'obire': 'Caudal Fin',
+    'tai': 'Tail',
+}
+
+# Romaji tokens that mark a rig as Japanese-named. Short or ambiguous tokens
+# ("te", "o") are left out so one coincidental match cannot enable the gated
+# replacements below.
+_JAPANESE_EVIDENCE_TOKENS = frozenset({
+    'momo', 'sippo', 'shippo', 'mune', 'hiza', 'hara', 'ashi', 'hiji',
+    'koshi', 'kubi', 'atama', 'ago', 'kata',
+    'munabire', 'sebire', 'harabire', 'shiribire', 'shirihire', 'obire',
+})
+_JAPANESE_EVIDENCE_MIN_DISTINCT = 3
+
+# Replacements applied only to a rig confirmed Japanese-named: some are too short
+# to map globally ("o" = tail).
+JAPANESE_GATED_REPLACEMENTS = {
+    'kao': 'Head',
+    'kosi': 'Hips',
+    'o': 'Tail',
+    'te': 'Hand',
+    'era': 'Gill',
+}
+
+EMBED_TEXT_HEAD_FEATURE_TOKENS = {
+    'beard',
+    'ear',
+    'eye',
+    'tongue',
+}
+
+# Species words glued onto joint names ("GorillaJaw", "MooseNeck"), stripped from
+# canonical names and embedding text. Species is conditioned through
+# ``species_emb``; left in, the word makes T5 cluster joints by species instead
+# of body part. Joints that collide after stripping get a Variant suffix. Words
+# that are also anatomy or rig vocabulary stay out ("ant" = antenna, "horse" in
+# "HorseLink").
+EMBED_TEXT_CREATURE_TOKENS = {
+    'antilope', 'bat', 'bear', 'bee', 'boar', 'buffalo', 'buzzard', 'camel',
+    'cat', 'centipede', 'chicken', 'cobra', 'coyote', 'crab', 'cricket', 'crocodile',
+    'crow', 'deer', 'dinosaur', 'dog', 'donkey', 'dragon', 'eagle', 'elephant',
+    'elk', 'flamingo', 'fox', 'gazelle', 'goat', 'gorilla', 'hamster', 'hen',
+    'hippopotamus', 'hound', 'hyena', 'jaguar', 'kappa', 'khitan', 'leapord',
+    'leopard', 'lion', 'lynx', 'mammoth', 'monkey', 'moose', 'mouse', 'ostrich',
+    'parrot', 'pigeon', 'puppy', 'quilin', 'rabbit', 'raptor', 'rat', 'rhino',
+    'roach', 'sabrecat', 'scorpion', 'seagull', 'serpent', 'skunk', 'spider',
+    'stego', 'tarantula', 'tiger', 'trex', 'tricera', 'tukan', 'turtle', 'tyranno',
+    'wyvern',
+}
+
+
+def joint_name_token_is_species(token):
+    """Whether one normalized joint-name token is a known species label."""
+    clean_token = re.sub(r'[^a-z0-9]+', '', str(token or '').casefold())
+    return clean_token in EMBED_TEXT_CREATURE_TOKENS
+
+# Vocabulary for splitting an all-lowercase glued name ("smallfrontarm") into
+# words during canonicalization.
+_COMPOUND_MODIFIER_TOKENS = frozenset({
+    'back', 'big', 'bottom', 'down', 'first', 'fore', 'front', 'hind', 'inner',
+    'large', 'left', 'long', 'low', 'lower', 'mid', 'middle', 'outer', 'outter',
+    'rear', 'right', 'second', 'short', 'small', 'third', 'top', 'upper',
+})
+_COMPOUND_ANATOMY_TOKENS = frozenset({
+    'ankle', 'arm', 'belly', 'body', 'calf', 'chest', 'claw', 'elbow', 'fat',
+    'fin', 'finger', 'foot', 'forearm', 'hand', 'head', 'hoof', 'horn', 'jaw',
+    'knee', 'leg', 'lip', 'neck', 'nose', 'palm', 'paw', 'spine', 'tail', 'thigh',
+    'thumb', 'toe', 'tongue', 'tooth', 'wing', 'wrist',
+})
+_COMPOUND_SPLIT_VOCABULARY = _COMPOUND_MODIFIER_TOKENS | _COMPOUND_ANATOMY_TOKENS
+# Real words that decompose into vocabulary entries and must stay whole
+# ("ponytail", "eyebrow").
+_COMPOUND_SPLIT_PROTECTED_TOKENS = frozenset({
+    'backbone', 'collarbone', 'eyeball', 'eyebrow', 'eyelid', 'fingertip',
+    'foreleg', 'headtop', 'ponytail', 'ribcage', 'toenail', 'topknot',
+})
+_COMPOUND_SPLIT_MIN_LENGTH = 6
+_COMPOUND_SPLIT_MIN_PART_LENGTH = 3
+
+
+def _split_glued_compound_token(token):
+    """Segment an all-lowercase glued joint token into vocabulary words.
+
+    Returns the parts (>= 2) when the *whole* token is covered by
+    ``_COMPOUND_SPLIT_VOCABULARY``, otherwise None -- an all-or-nothing rule so
+    an unknown word is never half-split into noise. Prefers the fewest parts,
+    breaking ties toward the longest leading word.
+    """
+    if len(token) < _COMPOUND_SPLIT_MIN_LENGTH:
+        return None
+    if token in _COMPOUND_SPLIT_PROTECTED_TOKENS or token in _COMPOUND_SPLIT_VOCABULARY:
+        return None
+
+    best_by_start = [None] * (len(token) + 1)
+    best_by_start[len(token)] = []
+    for start in range(len(token) - _COMPOUND_SPLIT_MIN_PART_LENGTH, -1, -1):
+        for end in range(len(token), start + _COMPOUND_SPLIT_MIN_PART_LENGTH - 1, -1):
+            word = token[start:end]
+            if word not in _COMPOUND_SPLIT_VOCABULARY:
+                continue
+            tail = best_by_start[end]
+            if tail is None:
+                continue
+            candidate = [word] + tail
+            if best_by_start[start] is None or len(candidate) < len(best_by_start[start]):
+                best_by_start[start] = candidate
+
+    parts = best_by_start[0]
+    return parts if parts is not None and len(parts) >= 2 else None
+
+
+def normalize_joint_name(name):
+    # Split on lowercase→UPPER (e.g. "ElkRFemur" → "Elk RFemur")
+    split_name = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
+    # Also split on UPPER→UPPER+lower (e.g. "RFemur" → "R Femur")
+    split_name = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', split_name)
+    split_name = re.sub(r'([A-Za-z])([0-9])', r'\1 \2', split_name)
+    split_name = re.sub(r'([0-9])([A-Za-z])', r'\1 \2', split_name)
+    return re.sub(r'[^a-z0-9]+', ' ', split_name.lower()).strip()
+
+
+def _has_joint_name_prefix(name, prefix, *, case_sensitive=True):
+    """Return whether *prefix* is one complete leading identifier token."""
+    name = str(name or '')
+    prefix = str(prefix or '')
+    leading = name[:len(prefix)]
+    prefix_matches = leading == prefix if case_sensitive else leading.casefold() == prefix.casefold()
+    if not prefix or not prefix_matches:
+        return False
+
+    prefix_end = len(prefix)
+    return (
+        prefix_end == len(name)
+        or not name[prefix_end].isalnum()
+        or name[prefix_end].isupper()
+        or name[prefix_end].isdigit()
+    )
+
+
+def infer_species_joint_name_prefixes(joint_names, species_name=None):
+    """Infer a character/species prefix shared by the whole skeleton.
+
+    Dataset identifiers commonly include a pack code (``IAC_Caveman``), while
+    their bones use only the species suffix (``Caveman Pelvis``).  Generate all
+    separator-preserving suffix forms and accept only the longest form that is
+    a complete leading token on *every* joint.  The all-joints gate is what keeps
+    an anatomical name such as ``HorseLink`` intact on an ordinary Horse rig.
+    """
+    names = [] if joint_names is None else [str(name or '') for name in joint_names]
+    if not names or not species_name:
+        return ()
+
+    bare_species = str(species_name).replace('\\', '/').rsplit('/', 1)[-1]
+    parts = [part for part in re.split(r'[^0-9A-Za-z]+', bare_species) if part]
+    candidates = set()
+    for start in range(len(parts)):
+        suffix = parts[start:]
+        if not any(any(character.isalpha() for character in part) for part in suffix):
+            continue
+        candidates.update({
+            ''.join(suffix),
+            ' '.join(suffix),
+            '_'.join(suffix),
+            '-'.join(suffix),
+        })
+
+    for candidate in sorted(candidates, key=lambda value: (len(value), value), reverse=True):
+        if all(
+            len(name) > len(candidate)
+            and _has_joint_name_prefix(name, candidate, case_sensitive=False)
+            for name in names
+        ):
+            return (candidate,)
+    return ()
+
+
+def strip_joint_name_prefix(name, additional_prefixes=()):
+    stripped = name
+    prefixes = (
+        *((prefix, False) for prefix in tuple(additional_prefixes or ())),
+        *((prefix, True) for prefix in _CANONICAL_NAME_PREFIXES),
+    )
+    for prefix, case_sensitive in sorted(prefixes, key=lambda item: len(item[0]), reverse=True):
+        # Prefixes are complete rig/character tokens, not arbitrary character
+        # sequences.  A following separator, digit, or CamelCase boundary is
+        # valid ("Rig_Head", "Rig01", "RigHead"); a lowercase continuation is
+        # not ("RightArm", "RigidBody", "Belly").  This boundary check is
+        # especially important for the short Unity prefix "Rig".
+        if _has_joint_name_prefix(stripped, prefix, case_sensitive=case_sensitive):
+            stripped = stripped[len(prefix):]
+            break
+    # Strip known rig suffixes (case-insensitive), but never reduce the name
+    # to an empty string (e.g. a joint literally named "SHJnt").
+    for suffix in sorted(_CANONICAL_NAME_SUFFIXES, key=len, reverse=True):
+        suffix_len = len(suffix)
+        if len(stripped) > suffix_len and stripped[-suffix_len:].lower() == suffix.lower():
+            stripped = stripped[:-suffix_len]
+            break
+    return stripped
+
+
+def is_japanese_style_naming(joint_names):
+    """True when the joint name set shows clear Japanese romaji rig naming.
+
+    Requires at least ``_JAPANESE_EVIDENCE_MIN_DISTINCT`` distinct unambiguous
+    romaji tokens so that a single coincidental match cannot trigger the gated
+    Japanese-only replacements.
+    """
+    if not joint_names:
+        return False
+    seen = set()
+    for name in joint_names:
+        for token in normalize_joint_name(name).split():
+            if token in _JAPANESE_EVIDENCE_TOKENS:
+                seen.add(token)
+                if len(seen) >= _JAPANESE_EVIDENCE_MIN_DISTINCT:
+                    return True
+    return False
+
+
+def effective_canonical_replacements(joint_names):
+    """Base canonical replacements, plus Japanese-only entries when warranted.
+
+    Falls back to the shared ``JAPANESE_NAME_REPLACEMENTS`` object (no copy)
+    unless the skeleton is confirmed Japanese-style, in which case the gated
+    ``kao``/``kosi``/``o`` mappings are merged in.
+    """
+    if is_japanese_style_naming(joint_names):
+        return {**JAPANESE_NAME_REPLACEMENTS, **JAPANESE_GATED_REPLACEMENTS}
+    return JAPANESE_NAME_REPLACEMENTS
+
+
+def _collapse_repeated_name_parts(canonical_parts):
+    """Drop words a rig name repeats verbatim.
+
+    Rigs that encode the parent path *and* the joint's own name emit the same
+    words twice ("Sabrecat_HeadLeftEar_LEar_" -> "Head Left Ear Left Ear"). Two
+    exact-match rules, so they can only ever remove a verbatim echo: collapse an
+    adjacent duplicate, then drop a trailing block that repeats the block right
+    before it.
+
+    Numeric parts are exempt: repeated digits are two index fields that happen to
+    hold the same value, not an echo. Boar's "LEFT_Ear_01_01SHJnt" is chain 01
+    segment 01 -- its siblings "..._01_02" and "..._01_03" prove it -- so
+    collapsing it would desync one member of a chain from the rest.
+
+    A trailing *abbreviation* of an earlier word ("LeftThigh_LThi_") is
+    deliberately left alone too: that would take a prefix heuristic, and the
+    three joints it covers do not justify the risk of eating a real short word.
+    """
+    collapsed = []
+    for part in canonical_parts:
+        if collapsed and collapsed[-1] == part and not part.isdigit():
+            continue
+        collapsed.append(part)
+
+    for block_length in range(2, len(collapsed) // 2 + 1):
+        block = collapsed[-block_length:]
+        if any(part.isdigit() for part in block):
+            continue
+        if block == collapsed[-2 * block_length:-block_length]:
+            return collapsed[:-block_length]
+    return collapsed
+
+
+def _drop_species_name_parts(canonical_parts):
+    return [part for part in canonical_parts if not joint_name_token_is_species(part)]
+
+
+def canonicalize_joint_name(name, replacements=None, additional_prefixes=()):
+    replacements = JAPANESE_NAME_REPLACEMENTS if replacements is None else replacements
+    split_name = normalize_joint_name(strip_joint_name_prefix(name, additional_prefixes))
+    canonical_parts = []
+    for part in split_name.split():
+        clean_part = re.sub(r'[^a-z0-9]+', '', part)
+        if not clean_part:
+            continue
+        if clean_part in ('l', 'left'):
+            canonical_parts.append('Left')
+        elif clean_part in ('r', 'right'):
+            canonical_parts.append('Right')
+        elif clean_part in replacements:
+            canonical_parts.append(replacements[clean_part])
+        elif len(clean_part) == 1:
+            # Skip single letters (except digits which are preserved for disambiguation)
+            if not clean_part.isdigit():
+                continue
+            canonical_parts.append(clean_part)
+        else:
+            compound_parts = _split_glued_compound_token(clean_part)
+            if compound_parts is None:
+                canonical_parts.append(clean_part.capitalize())
+            else:
+                canonical_parts.extend(part.capitalize() for part in compound_parts)
+
+    canonical_parts = _collapse_repeated_name_parts(canonical_parts)
+    canonical_parts = _drop_species_name_parts(canonical_parts)
+    return ' '.join(canonical_parts) if canonical_parts else name.strip()
+
+
+def collapse_solitary_head_feature_indices(canonical_joint_names):
+    normalized_tokens = [normalize_joint_name(name).split() for name in canonical_joint_names]
+    base_counts = Counter(
+        tuple(tokens[:-1])
+        for tokens in normalized_tokens
+        if len(tokens) >= 2
+        and tokens[-1].isdigit()
+        and any(token in EMBED_TEXT_HEAD_FEATURE_TOKENS for token in tokens[:-1])
+    )
+
+    collapsed_names = []
+    for name, tokens in zip(canonical_joint_names, normalized_tokens):
+        if (
+            len(tokens) >= 2
+            and tokens[-1].isdigit()
+            and any(token in EMBED_TEXT_HEAD_FEATURE_TOKENS for token in tokens[:-1])
+            and base_counts[tuple(tokens[:-1])] == 1
+        ):
+            collapsed_names.append(' '.join(token.capitalize() for token in tokens[:-1]))
+            continue
+        collapsed_names.append(name)
+    return collapsed_names
+
 
 def canonical_name_for_bvh(name, fallback_name):
     compact_name = re.sub(r'[^0-9A-Za-z_]+', '', str(name or ''))
@@ -38,7 +384,7 @@ def canonical_name_for_bvh(name, fallback_name):
     return fallback_compact or 'Joint'
 
 
-def _build_joint_name_inspection_rows(object_cond, embedding_texts):
+def build_joint_name_inspection_rows(object_cond, embedding_texts):
     raw_names = list(object_cond.get('joints_names') or [])
     canonical_names = list(object_cond.get('canonical_joint_names') or raw_names)
     canonical_bvh_names = list(object_cond.get('canonical_bvh_joint_names') or canonical_names)
@@ -265,6 +611,9 @@ def write_joint_name_collision_report(cond, save_dir):
 
 
 def refresh_joint_metadata_in_object_cond(object_cond):
+    # Imported here: physics_joint_annotation reads this module's name rules.
+    from .physics_joint_annotation import build_semantic_metadata
+
     joint_names = list(object_cond.get('joints_names') or [])
     if not joint_names:
         return
@@ -298,209 +647,3 @@ def refresh_joint_metadata_in_cond_dict(cond_dict):
         if isinstance(object_cond, dict):
             refresh_joint_metadata_in_object_cond(object_cond)
     return cond_dict
-
-
-# Texts per T5 forward pass; bounds padding memory on a full-dataset encode.
-_T5_ENCODE_BATCH = 256
-
-
-def _build_t5_text_cache(cache_cond, t5_name):
-    """Map every joint-name text already baked into *cache_cond* to its T5 vector.
-
-    The encoder is a masked mean over one text's own tokens, so a text encoded
-    under the same T5 model yields the same vector whichever cond it was baked
-    into.
-    """
-    cache = {}
-    if not isinstance(cache_cond, dict):
-        return cache
-    for entry in cache_cond.values():
-        if not isinstance(entry, dict):
-            continue
-        joint_meta = entry.get('joints_names_embs_meta')
-        joint_embs = entry.get('joints_names_embs')
-        if (isinstance(joint_meta, dict) and joint_embs is not None
-                and str(joint_meta.get('t5_name') or '') == t5_name):
-            texts = list(joint_meta.get('embedding_texts') or ())
-            joint_embs = np.asarray(joint_embs, dtype=np.float32)
-            if joint_embs.ndim == 2 and joint_embs.shape[0] == len(texts):
-                for text, emb in zip(texts, joint_embs):
-                    cache.setdefault(str(text), emb)
-    return cache
-
-
-def _reference_joint_texts(reference_cond, t5_name):
-    """Every joint-name text the reference cond encodes under *t5_name*.
-
-    Membership is only meaningful when the reference was built by the same text
-    builder, so an entry under another joint-name schema is a hard error rather
-    than a source of false "unseen" verdicts.
-    """
-    texts = set()
-    if not isinstance(reference_cond, dict):
-        raise ValueError('blanking unseen joint names needs the reference cond.npy')
-    for object_type, entry in reference_cond.items():
-        meta = entry.get('joints_names_embs_meta') if isinstance(entry, dict) else None
-        if not isinstance(meta, dict) or str(meta.get('t5_name') or '') != t5_name:
-            continue
-        schema_version = meta.get('schema_version')
-        if schema_version is None or int(schema_version) != JOINT_NAME_EMBEDDING_SCHEMA_VERSION:
-            raise ValueError(
-                f"reference cond entry '{object_type}' was encoded under joint-name schema "
-                f"{schema_version}, this code is at {JOINT_NAME_EMBEDDING_SCHEMA_VERSION}; "
-                f"which names it covers cannot be judged across schemas"
-            )
-        texts.update(str(text) for text in meta.get('embedding_texts') or ())
-    if not texts:
-        raise ValueError(f'the reference cond holds no joint-name texts encoded with {t5_name}')
-    return texts
-
-
-def _blank_unseen_joint_texts(embedding_texts_by_object, known_texts):
-    """Swap every joint text the reference never encodes for the blank text.
-
-    The model is trained to read an all-zero name row as "name unknown"
-    (``--joint_name_drop_prob``), and the blank text encodes to exactly that row.
-    A text the checkpoint was never trained on would instead be encoded into a
-    point of T5 space the model has no prior for. Returns
-    ``{object_type: {joint_index: original_text}}``.
-    """
-    blanked_by_object = {}
-    for object_type, texts in embedding_texts_by_object.items():
-        blanked = {
-            index: text for index, text in enumerate(texts)
-            if str(text).strip() and text not in known_texts
-        }
-        embedding_texts_by_object[object_type] = [
-            '' if index in blanked else text for index, text in enumerate(texts)
-        ]
-        blanked_by_object[object_type] = blanked
-        if blanked:
-            named = sum(1 for text in texts if str(text).strip())
-            print(f'[{object_type}] blanked {len(blanked)}/{named} named joint(s) whose '
-                  f'text the reference cond never encodes:')
-            for index, text in sorted(blanked.items()):
-                print(f'  - joint {index}: {text!r}')
-    return blanked_by_object
-
-
-def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True,
-                                  t5_conditioner=None, embedding_cache_cond=None,
-                                  blank_unseen_joint_names=False):
-    """Bake joint-name T5 embeddings into every entry of *cond*.
-
-    No species vector is baked: ``species_emb`` is bound from the species
-    descriptor table at training / generation time, so a stale one is dropped.
-
-    ``embedding_cache_cond`` is an already-encoded cond (e.g. the checkpoint's
-    reference cond.npy): any text it holds under the same T5 model is reused
-    verbatim, and T5 is loaded only when some text is missing from it.
-
-    ``blank_unseen_joint_names`` gives every joint whose text that reference
-    never encodes the blank (all-zero) name instead of a fresh T5 vector; the
-    originals are kept in ``joints_names_embs_meta['blanked_unseen_texts']``.
-    Every text is then either cached or blank, so T5 is never loaded -- the
-    inference path (process_new_skeleton) relies on that.
-    """
-    if not cond:
-        return
-
-    inspection_dir = pjoin(save_dir, 'joint_name_inspection')
-    os.makedirs(inspection_dir, exist_ok=True)
-
-    embedding_texts_by_object = {}
-    for object_type in sorted(cond):
-        object_cond = cond[object_type]
-        refresh_joint_metadata_in_object_cond(object_cond)
-        embedding_texts = build_joint_embedding_texts(object_cond)
-        embedding_texts_by_object[object_type] = embedding_texts
-
-    blanked_by_object = {}
-    if blank_unseen_joint_names:
-        blanked_by_object = _blank_unseen_joint_texts(
-            embedding_texts_by_object, _reference_joint_texts(embedding_cache_cond, t5_name)
-        )
-
-    object_types_to_encode = sorted(cond)
-    joint_count = len(object_types_to_encode)
-
-    if t5_conditioner is None:
-        # Fast-fail before any encoding: the per-species descriptor has no fallback,
-        # so a species missing from species_tags.jsonl must surface here.
-        assert_species_tags_cover(cond.keys())
-
-    # Every text either comes from the cache or is encoded once, in one batch.
-    text_cache = _build_t5_text_cache(embedding_cache_cond, t5_name)
-    wanted = []
-    for object_type in object_types_to_encode:
-        wanted.extend(embedding_texts_by_object[object_type])
-    # The blank name is the all-zero row (T5Conditioner masks an empty text out
-    # entirely), so it never needs the encoder.
-    if '' in wanted and '' not in text_cache and text_cache:
-        text_cache[''] = np.zeros_like(next(iter(text_cache.values())))
-    missing = list(dict.fromkeys(text for text in wanted if text not in text_cache))
-    if text_cache:
-        print(f'Reusing cached T5 embeddings for {len(set(wanted)) - len(missing)}/'
-              f'{len(set(wanted))} texts.')
-
-    if missing and blank_unseen_joint_names:
-        raise RuntimeError(
-            f'joint-name texts neither cached nor blanked: {missing}; the unseen-name '
-            'path must not need T5'
-        )
-    if missing:
-        if t5_conditioner is None:
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            print(f'Loading T5 model {t5_name} on {device.upper()} ...')
-            from model.conditioners import T5Conditioner
-            t5_conditioner = T5Conditioner(
-                name=t5_name,
-                finetune=False,
-                word_dropout=0.0,
-                normalize_text=False,
-                device=device,
-                autocast_dtype=None,
-                local_files_only=True,
-            )
-        if text_cache:
-            print(f'Texts not in the cache: {missing}')
-        print(f'Encoding {len(missing)} texts via T5 ...')
-        with torch.no_grad():
-            for start in range(0, len(missing), _T5_ENCODE_BATCH):
-                chunk = missing[start:start + _T5_ENCODE_BATCH]
-                tokens = t5_conditioner.tokenize_entries(chunk)
-                embs = t5_conditioner(tokens).detach().cpu().numpy().astype(np.float32, copy=False)
-                text_cache.update(zip(chunk, embs))
-    else:
-        print('All embedding texts cached; skipped T5.')
-
-    print(f'Attaching T5 embeddings for {joint_count} object types ...')
-    for object_type in object_types_to_encode:
-        object_cond = cond[object_type]
-        embedding_texts = embedding_texts_by_object[object_type]
-        embs = np.stack([text_cache[text] for text in embedding_texts]).astype(np.float32, copy=False)
-        object_cond['joints_names_embs'] = embs
-        object_cond['joints_names_embs_meta'] = {
-            't5_name': t5_name,
-            'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-            'embedding_dim': int(embs.shape[1]) if embs.ndim == 2 else 0,
-            'embedding_texts': list(embedding_texts),
-            'blanked_unseen_texts': dict(blanked_by_object.get(object_type, {})),
-        }
-
-        object_cond.pop('species_emb', None)
-        object_cond.pop('species_emb_meta', None)
-
-    # cond keys are '<namespace>/<species>', which cannot go into a filename;
-    # the file token degrades to the plain species name whenever it is unique.
-    from .dataset_sources import build_species_file_tokens
-    file_tokens = build_species_file_tokens(cond)
-    for object_type in sorted(cond):
-        object_cond = cond[object_type]
-        embedding_texts = embedding_texts_by_object[object_type]
-        inspection_path = pjoin(inspection_dir, f'{file_tokens[object_type]}.json')
-        with open(inspection_path, 'w', encoding='utf-8') as inspection_file:
-            json.dump(_build_joint_name_inspection_rows(object_cond, embedding_texts), inspection_file, indent=2)
-
-    if write_collision_report:
-        write_joint_name_collision_report(cond, save_dir)

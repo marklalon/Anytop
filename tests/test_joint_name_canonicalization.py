@@ -16,10 +16,8 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 from data_loaders.truebones.truebones_utils.animation_utils import (
     _joint_disambiguation_tokens,
 )
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
-    build_semantic_metadata,
-    strip_joint_name_prefix,
-)
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_semantic_metadata
+from data_loaders.truebones.truebones_utils.joint_name_canonical import strip_joint_name_prefix
 
 
 def test_unity_rig_prefixes_are_removed_from_canonical_names():
@@ -243,7 +241,7 @@ def test_translated_romaji_is_not_reused_as_a_collision_suffix():
     from data_loaders.truebones.truebones_utils.joint_name_canonical import (
         refresh_joint_metadata_in_object_cond,
     )
-    from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+    from data_loaders.truebones.truebones_utils.joint_embedding_text import (
         build_joint_embedding_texts,
     )
     names = ['mune', 'atama', 'ago', 'kosi', 'shippoA', 'shiribire', 'shirihireB', 'shiribireA']

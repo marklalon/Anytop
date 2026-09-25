@@ -6,7 +6,7 @@
 > `T5Conditioner.tokenize()` 实现，只作历史背景读，**不要照着改**。
 >
 > 本文只给常量名和函数名，不给行号——代码在动，行号会过期。搜索名字即可定位；
-> 除非特别说明，A/B/C 三层的常量都在 `data_loaders/truebones/truebones_utils/physics_joint_annotation.py` 里。
+> 除非特别说明，A/B/C 三层的常量按层分布：A 层在 `data_loaders/truebones/truebones_utils/joint_name_canonical.py`、B 层在 `joint_embedding_text.py`、C 层在 `physics_joint_annotation.py` / `face_orientation.py`。
 
 ---
 
@@ -14,7 +14,7 @@
 
 ```
 raw_name              "Bip01_L_ForeArm" / "LfLegAnkle" / "GorillaJaw"
-   │  _canonicalize_joint_name()  + _disambiguate_duplicate_canonical_names()
+   │  canonicalize_joint_name()  + _disambiguate_duplicate_canonical_names()
    ▼
 canonical_joint_names "Left Forearm" / "Lf Leg Ankle" / "Gorilla Jaw"     ← 导出 BVH 骨名、renamer 词表
    │  _refine_joint_embedding_name() + build_joint_embedding_texts()
@@ -27,12 +27,12 @@ embedding_text        "Left Forearm"  / "Left Front Leg Ankle Contact"    ← T5
 1. **不存在 OOV。** T5 是开放词表，再古怪的骨骼名都能编码。所以"新数据集有一堆没见过的名字"本身**不是**问题，
    问题只会是「编码到了错误的邻域」。
 2. **改第三层最安全。** 只影响 `joints_names_embs`，不动 BVH 骨名、不动 renamer bank、不动导出文件。
-   除非你确实想改导出的骨名，否则**默认改 refine 层，不要改 `_canonicalize_joint_name`**。
+   除非你确实想改导出的骨名，否则**默认改 refine 层，不要改 `canonicalize_joint_name`**。
 3. **第二层有个反直觉的坑**：`_disambiguate_duplicate_canonical_names` 为了保证名字唯一，
    会把原始名里的区分 token **重新贴回去**。所以在第二层剥离一个词（比如物种名），
    往往剥不掉——它会以后缀形式回来，你只是白白付出了 BVH 名变更 + renamer bank 重建的代价。
 
-还有一条**第四层**，容易被忘：对称配对用的是 `_joint_signature`，它读的是**第二层的拼写**，
+还有一条**第四层**，容易被忘：对称配对用的是 `joint_signature`，它读的是**第二层的拼写**，
 不经过第三层的任何同义词/缩写映射。所以在 B 层把两个拼法折叠到一起，**不会**让它们配成左右对；
 拼写腐蚀导致的配对失败要单独在 `_SIGNATURE_SPELLING_TOKENS` 里修。
 
@@ -83,7 +83,7 @@ python preprocess_and_validate.py --regenerate-side-artifacts
 {
   "index": 2,  "raw_name": "NPC_LLeg1",
   "canonical_name": "Left Leg 1",  "canonical_bvh_name": "LeftLeg1",
-  "embedding_text": "Left Leg Segment First Of 2 ChainStart",
+  "embedding_text": "Left Leg",
   "is_anatomical": true, "side": "left", "is_contact": false, "is_end_effector": false
 }
 ```
@@ -110,11 +110,9 @@ from collections import Counter, defaultdict
 sys.path.insert(0, '.')
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.animation_utils import refresh_joint_metadata_in_object_cond
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_joint_embedding_texts
+from data_loaders.truebones.truebones_utils.joint_embedding_text import build_joint_embedding_texts
 
-DERIVED = {'Left','Right','Segment','Of','Instance','Contact','EndEffector','ChainStart','ChainEnd',
-           'ChainEarly','ChainMiddle','ChainLate','First','Second','Third','Fourth','Fifth','Sixth',
-           'Seventh','Eighth','Ninth','Tenth','HeadFeature'}
+DERIVED = {'Left','Right','HeadFeature'}
 INDEX_RE = re.compile(r'^Index\d+$')
 
 def vocab(path):
@@ -213,8 +211,8 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 | 症状 | 怎么发现 | 改哪里 |
 |---|---|---|
 | 某关节的 `side` 是 `center`，但名字/几何明显有左右 | inspection JSON；§1.6 的翻转判据 | `detect_joint_side` §3-C1 |
-| `embedding_text` 里出现物种名（`Gorilla Jaw`） | §1.4 审计里冒出物种词 | `_EMBED_TEXT_CREATURE_TOKENS` §3-B3（**但先读 §5 的例外**） |
-| 同一块骨头在不同物种拼法不同（`Ulna` vs `Forearm`） | §1.4 的 NOVEL 列表 + §1.5 家族比例暴涨 | `_EMBED_TEXT_SYNONYM_TOKENS` §3-B6 |
+| `embedding_text` 里出现物种名（`Gorilla Jaw`） | §1.4 审计里冒出物种词 | `EMBED_TEXT_CREATURE_TOKENS` §3-B3（**但先读 §5 的例外**） |
+| 同一块骨头在不同物种拼法不同（`Ulna` vs `Forearm`） | §1.4 的 NOVEL 列表 + §1.5 家族比例暴涨 | `EMBED_TEXT_SYNONYM_TOKENS` §3-B6 |
 | 道具/控制骨混进来（`Saddle`/`Ctrl`/`Bone02`/`Shield`） | §1.4 审计；inspection JSON 的 `is_anatomical` | `_EMBED_TEXT_NON_ANATOMICAL_TOKENS` §3-B4 |
 | 全小写粘连名整块变成一个 OOV token（`smallfrontarm`） | §1.4 审计里出现长怪词 | `_COMPOUND_*_TOKENS` §3-A5 |
 | 左右两侧拼法不同导致配不成对（`Lower_Arm_L` / `Rower_Arm_R`） | §1.6 的对称对清单少了整条肢 | `_SIGNATURE_SPELLING_TOKENS` §3-C2 |
@@ -230,8 +228,8 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 |---|---|---|
 | A1 | `_CANONICAL_NAME_PREFIXES` | 剥掉 `Bip01`/`NPC`/`BN`/`Rig` 这类 rig 前缀。新数据集有自己的前缀就加这里 |
 | A2 | `_CANONICAL_NAME_SUFFIXES` | 同上，尾缀（`SHJnt`） |
-| A3 | `_JAPANESE_NAME_REPLACEMENTS` | 罗马音 → 英文（`momo`→Thigh）。**全局生效**，只放绝不歧义的词 |
-| A4 | `_JAPANESE_GATED_REPLACEMENTS` + `_JAPANESE_EVIDENCE_TOKENS` | 危险的短词（`o`=尾、`te`=手），仅在骨架被判定为日式命名时才启用。判定门槛是 3 个不同 evidence token |
+| A3 | `JAPANESE_NAME_REPLACEMENTS` | 罗马音 → 英文（`momo`→Thigh）。**全局生效**，只放绝不歧义的词 |
+| A4 | `JAPANESE_GATED_REPLACEMENTS` + `_JAPANESE_EVIDENCE_TOKENS` | 危险的短词（`o`=尾、`te`=手），仅在骨架被判定为日式命名时才启用。判定门槛是 3 个不同 evidence token |
 | A5 | `_COMPOUND_MODIFIER_TOKENS` / `_COMPOUND_ANATOMY_TOKENS` / `_COMPOUND_SPLIT_PROTECTED_TOKENS` | 全小写粘连名的 DP 切分词表。加新解剖词进 ANATOMY；**凡是能被切开但不该切的真词必须进 PROTECTED**（`eyebrow` 会被切成 `eye`+`brow`）。注意有长度下限，`lwing` 这类 5 字符的粘连名根本进不了切分 |
 
 ### B 层 · Embedding text —— 只影响模型输入，**新数据集的首选改动层**
@@ -240,19 +238,19 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 |---|---|---|
 | B1 | `_EMBED_TEXT_SKIP_TOKENS` | 链位置废词（`base`/`tip`/`end`）。**注意注释里的警告：`front`/`back`/`rear`/`mid` 故意不在这里**，它们是前肢与后肢唯一的区分 |
 | B2 | `_EMBED_TEXT_SIDE_TOKENS` | 名字自带的左右词，一律丢弃，侧别统一由几何标签重新贴到句首 |
-| B3 | `_EMBED_TEXT_CREATURE_TOKENS` | 物种名。新物种名 + 变体 rig 里出现的其他生物名要加，**但坐骑型 rig 是例外，见 §5** |
+| B3 | `EMBED_TEXT_CREATURE_TOKENS` | 物种名。新物种名 + 变体 rig 里出现的其他生物名要加，**但坐骑型 rig 是例外，见 §5** |
 | B4 | `_EMBED_TEXT_NON_ANATOMICAL_TOKENS` | rig 脚手架 / 道具 / 马具 / 武器 / 护具 / 挂点。整条名字只剩这些词时该关节被**置零 embedding** |
-| B5 | `_EMBED_TEXT_LIMB_CODE_TOKENS` / `_EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS` / `_EMBED_TEXT_FACE_QUADRANT_CODE_TOKENS` | 四足肢位码 `lf/rf/lb/rb` → `Front`/`Back`（左右交给几何）；halves 互换的 `fl/fr/bl/br`、六足中腿 `lm/rm/ml/mr` 只在同名里还有 `arm`/`leg`/`wing` 时解码。面部角码 `tl/tr/bl/br` → `Upper`/`Lower`，只在同名里还有 `mouth`/`lip`/`jaw` 等面部词时解码；上下文门控负责区分 `wingBL` 的后翼和 `MouthBL` 的左下嘴角 |
-| B6 | `_EMBED_TEXT_SYNONYM_TOKENS` | 解剖同义词 + rig 缩写 + 拼写错误，全部折叠到语料已有的词。**长尾治理的主力表** |
+| B5 | `EMBED_TEXT_LIMB_CODE_TOKENS` / `EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS` / `EMBED_TEXT_FACE_QUADRANT_CODE_TOKENS` | 四足肢位码 `lf/rf/lb/rb` → `Front`/`Back`（左右交给几何）；halves 互换的 `fl/fr/bl/br`、六足中腿 `lm/rm/ml/mr` 只在同名里还有 `arm`/`leg`/`wing` 时解码。面部角码 `tl/tr/bl/br` → `Upper`/`Lower`，只在同名里还有 `mouth`/`lip`/`jaw` 等面部词时解码；上下文门控负责区分 `wingBL` 的后翼和 `MouthBL` 的左下嘴角 |
+| B6 | `EMBED_TEXT_SYNONYM_TOKENS` | 解剖同义词 + rig 缩写 + 拼写错误，全部折叠到语料已有的词。**长尾治理的主力表** |
 | B7 | `_EMBED_TEXT_TOKEN_PAIR_MERGES` | 相邻两词合成一词（`upper leg`→Thigh、`horse link`→Ankle）。单词映射解决不了时用这个。**注意执行顺序：pair merge 跑在 B6 单词映射之前**，所以被拼错的词要么两条都写（`('rower','reg')` 和 `rower`/`reg` 各自），要么就落不到 merge 上 |
-| B8 | `_EMBED_TEXT_HEAD_FEATURE_TOKENS` | 头部附属物额外追加一个 `HeadFeature` 类别词，让它们在 T5 空间里彼此靠近 |
+| B8 | `EMBED_TEXT_HEAD_FEATURE_TOKENS` | 头部附属物额外追加一个 `HeadFeature` 类别词，让它们在 T5 空间里彼此靠近 |
 
 ### C 层 · 元数据推断 —— **改错了不会报错，只会静默变差**
 
 | # | 位置 | 作用 |
 |---|---|---|
 | C1 | `detect_joint_side` 的 marker 元组 | 左右识别。新数据集用了新的侧别写法（`_L_`/`Lft`/`L01`/`Lwing`…）必须加。显式 `Left`/`Right` 优先于方位码；歧义码的门控必须与 B5 一致：肢体码要求 `arm`/`leg`/`wing`，面部角码要求 `mouth`/`lip`/`jaw` 等面部词 |
-| C2 | `_joint_signature` / `_signature_tokens` / `_LIMB_CODE_SIGNATURE_TOKENS` / `_SIGNATURE_SPELLING_TOKENS` | 对称配对签名。剥掉左右半码、**但保留前后/中或上下半码**——否则前肢会和后肢、上嘴角会和下嘴角配成一对。签名是**拼写键**，不吃 B6 同义词：左右拼法被改坏（`Lower`/`Rower`）时在 `_SIGNATURE_SPELLING_TOKENS` 里做纯拼写修复，不要把整张同义词表塞进来（会重排所有现有 rig 的分组） |
+| C2 | `joint_signature` / `_signature_tokens` / `_LIMB_CODE_SIGNATURE_TOKENS` / `_SIGNATURE_SPELLING_TOKENS` | 对称配对签名。剥掉左右半码、**但保留前后/中或上下半码**——否则前肢会和后肢、上嘴角会和下嘴角配成一对。签名是**拼写键**，不吃 B6 同义词：左右拼法被改坏（`Lower`/`Rower`）时在 `_SIGNATURE_SPELLING_TOKENS` 里做纯拼写修复，不要把整张同义词表塞进来（会重排所有现有 rig 的分组） |
 | C3 | `_FACE_JOINT_*` / `_FORWARD_REFERENCE_PRIORITIES` / `_BODY_AXIS_*`（在 `face_orientation.py`） | 朝向解算挑哪些关节。新物种的髋/肩/鼻子叫了别的名字，朝向就会算错；道具骨（披风/头发/武器）要进 exclude |
 | C4 | `_CONTACT_JOINT_*` / `_CONTACT_CHAIN_*` | 触地关节判定（脚/爪/掌） |
 | C5 | `_END_EFFECTOR_*` | 末端执行器判定 |
@@ -317,7 +315,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 - **`face_orientation.py` 有自己的一份 `_canonicalize_joint_name` 和 `_joint_signature`。**
   两份实现并存且行为故意不同——那一份丢弃单字符 token 含孤立数字。
   改任何一份都要同步检查另一份（`_LIMB_CODE_SIGNATURE_TOKENS` 在两边各有一份，必须一起改）。
-- **`_EMBED_TEXT_CREATURE_TOKENS` 是手工列表，不是从 `species_tags.jsonl` 派生的。**
+- **`EMBED_TEXT_CREATURE_TOKENS`（`joint_name_canonical.py`）是手工列表，不是从 `species_tags.jsonl` 派生的。**
   加新物种时**必须手工补**，没有任何机制会提醒你。
   （没做成自动派生，是因为变体 rig 里会出现数据集中并不存在的生物名，比如 antilope 的 Quilin/Moose。）
 - **坐骑型 rig 是 B3 的反例，别照着表格加。** `MLH_Horseman`/`MLS_Dryad` 是**一副骨架上两个生物**：
@@ -347,7 +345,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 而 `--regenerate-side-artifacts`（内部走 `tools/regenerate_dataset_artifacts.py`）只重写 cond、
 不重写 motions。改了接触判定却只跑增量，cond 和动作张量会**静默失配**。
 
-版本号常量 `JOINT_NAME_EMBEDDING_SCHEMA_VERSION` 在 `physics_joint_annotation.py`。
+版本号常量 `JOINT_NAME_EMBEDDING_SCHEMA_VERSION` 在 `joint_embedding_text.py`。
 忘了 bump 的话不会报错，只会静默用旧 embedding 训练；bump 之后加载旧 cond 会打印
 `uses joint-name embedding schema N; current code expects N+1` 告警——
 这个告警是**正常的中间状态**，重跑完预处理就消失。

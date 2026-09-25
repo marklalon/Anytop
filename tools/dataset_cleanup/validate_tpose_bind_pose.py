@@ -386,11 +386,11 @@ def _analyze_rest_skeleton_symmetry(
         return 0, []
 
     from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
-        _infer_symmetry_metadata,
+        infer_symmetry_metadata,
     )
 
     names, parents, positions = _rest_skeleton_arrays(rest_skeleton)
-    _labels, partner_indices, pairs = _infer_symmetry_metadata(
+    _labels, partner_indices, pairs = infer_symmetry_metadata(
         names,
         parents,
         positions,

@@ -12,8 +12,8 @@ from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     detect_joint_side,
-    _infer_symmetry_metadata,
-    _joint_signature,
+    infer_symmetry_metadata,
+    joint_signature,
     rest_positions_from_offsets,
 )
 
@@ -28,7 +28,7 @@ def test_horse_front_helper_bones_are_paired() -> None:
     offsets = np.asarray(cond['offsets'], dtype=np.float64)
     rest_positions = rest_positions_from_offsets(offsets, parents)
 
-    joint_side_labels, symmetry_partner_indices, _pairs = _infer_symmetry_metadata(
+    joint_side_labels, symmetry_partner_indices, _pairs = infer_symmetry_metadata(
         joint_names,
         parents,
         rest_positions,
@@ -81,7 +81,7 @@ def test_conservative_fallback_rejects_non_mirrored_unique_children() -> None:
         dtype=np.float64,
     )
 
-    details = _infer_symmetry_metadata(joint_names, parents, rest_positions, return_details=True)
+    details = infer_symmetry_metadata(joint_names, parents, rest_positions, return_details=True)
 
     assert details['symmetry_partner_indices'][3] == -1
     assert details['symmetry_partner_indices'][4] == -1
@@ -113,14 +113,14 @@ def test_conservative_fallback_disables_ambiguous_child_subtrees() -> None:
 
     # Two unnamed children a side, only loosely mirrored: no rule can tell
     # which goes with which.
-    details = _infer_symmetry_metadata(joint_names, parents, rest_positions, return_details=True)
+    details = infer_symmetry_metadata(joint_names, parents, rest_positions, return_details=True)
 
     for joint_index in (3, 4, 5, 6):
         assert details['symmetry_partner_indices'][joint_index] == -1
 
     # Exactly mirrored, the geometry settles it.
     rest_positions[5:] = rest_positions[3:5] * np.array([-1.0, 1.0, 1.0])
-    details = _infer_symmetry_metadata(joint_names, parents, rest_positions, return_details=True)
+    details = infer_symmetry_metadata(joint_names, parents, rest_positions, return_details=True)
     partners = details['symmetry_partner_indices']
     assert partners[3] == 5 and partners[4] == 6
 
@@ -131,8 +131,8 @@ def test_lf_rf_suffixes_drive_side_detection_and_signature_normalization() -> No
     assert detect_joint_side('Sabrecat_LeftFinger3_RF30_') == 'left'
     assert detect_joint_side('Sabrecat_RightFinger3_LF30_') == 'right'
 
-    assert _joint_signature('Sabrecat_LeftFinger1_LF10_') == _joint_signature('Sabrecat_RightFinger1_RF10_')
-    assert _joint_signature('Sabrecat_Finger4_LF04_') == _joint_signature('Sabrecat_Finger4_RF04_')
+    assert joint_signature('Sabrecat_LeftFinger1_LF10_') == joint_signature('Sabrecat_RightFinger1_RF10_')
+    assert joint_signature('Sabrecat_Finger4_LF04_') == joint_signature('Sabrecat_Finger4_RF04_')
 
 
 def test_lb_rb_suffixes_drive_side_detection_without_crossing_fore_and_hind() -> None:
@@ -143,10 +143,10 @@ def test_lb_rb_suffixes_drive_side_detection_without_crossing_fore_and_hind() ->
     assert detect_joint_side('RbLeg01') == 'right'
     assert detect_joint_side('RbClaw4') == 'right'
 
-    assert _joint_signature('LbLeg01') == _joint_signature('RbLeg01')
+    assert joint_signature('LbLeg01') == joint_signature('RbLeg01')
     # The side half of the code is dropped, the fore/hind half is not: a fore leg
     # and a hind leg must not land in one symmetry group.
-    assert _joint_signature('LfLeg01') != _joint_signature('LbLeg01')
+    assert joint_signature('LfLeg01') != joint_signature('LbLeg01')
 
 
 def test_face_corner_codes_side_a_face_part_only() -> None:
@@ -156,9 +156,9 @@ def test_face_corner_codes_side_a_face_part_only() -> None:
     assert detect_joint_side('RigMouthTR') == 'right'
     assert detect_joint_side('RigMouthBR') == 'right'
     # Top and bottom corners never share a symmetry group.
-    assert _joint_signature('RigMouthTL') == _joint_signature('RigMouthTR')
-    assert _joint_signature('RigMouthBL') == _joint_signature('RigMouthBR')
-    assert _joint_signature('RigMouthTL') != _joint_signature('RigMouthBL')
+    assert joint_signature('RigMouthTL') == joint_signature('RigMouthTR')
+    assert joint_signature('RigMouthBL') == joint_signature('RigMouthBR')
+    assert joint_signature('RigMouthTL') != joint_signature('RigMouthBL')
     # Without a face or limb word the code stays unread.
     assert detect_joint_side('RigTL') is None
 
@@ -169,12 +169,12 @@ def test_wing_and_middle_leg_quadrant_codes_are_sided() -> None:
     assert detect_joint_side('Bone_wingBR') == 'right'
     assert detect_joint_side('Bone_LegML00') == 'left'
     assert detect_joint_side('Bone_LegMR00') == 'right'
-    assert _joint_signature('Bone_wingFL') == _joint_signature('Bone_wingFR')
-    assert _joint_signature('Bone_wingFL') != _joint_signature('Bone_wingBL')
-    assert _joint_signature('Bone_LegML00') == _joint_signature('Bone_LegMR00')
+    assert joint_signature('Bone_wingFL') == joint_signature('Bone_wingFR')
+    assert joint_signature('Bone_wingFL') != joint_signature('Bone_wingBL')
+    assert joint_signature('Bone_LegML00') == joint_signature('Bone_LegMR00')
     # A back leg with a limb word is still a back leg.
     assert detect_joint_side('RigBLLeg1') == 'left'
-    assert _joint_signature('RigBLLeg1') == _joint_signature('RigBRLeg1')
+    assert joint_signature('RigBLLeg1') == joint_signature('RigBRLeg1')
 
 
 def test_mouth_corners_pair_top_with_top_and_bottom_with_bottom() -> None:
@@ -184,7 +184,7 @@ def test_mouth_corners_pair_top_with_top_and_bottom_with_bottom() -> None:
         [[0, 0, 0], [1, 1, 1], [1, -1, 1], [-1, 1, 1], [-1, -1, 1]],
         dtype=np.float64,
     )
-    joint_side_labels, symmetry_partner_indices, _pairs = _infer_symmetry_metadata(
+    joint_side_labels, symmetry_partner_indices, _pairs = infer_symmetry_metadata(
         joint_names, parents, rest_positions,
     )
     assert joint_side_labels == ['center', 'right', 'right', 'left', 'left']
@@ -206,7 +206,7 @@ def test_lb_rb_hind_limbs_pair_with_each_other_not_with_the_fore_limbs() -> None
         dtype=np.float64,
     )
 
-    joint_side_labels, symmetry_partner_indices, _pairs = _infer_symmetry_metadata(
+    joint_side_labels, symmetry_partner_indices, _pairs = infer_symmetry_metadata(
         joint_names,
         parents,
         rest_positions,
@@ -241,7 +241,7 @@ def test_lf_rf_suffix_children_are_paired() -> None:
         dtype=np.float64,
     )
 
-    joint_side_labels, symmetry_partner_indices, _pairs = _infer_symmetry_metadata(
+    joint_side_labels, symmetry_partner_indices, _pairs = infer_symmetry_metadata(
         joint_names,
         parents,
         rest_positions,
@@ -272,10 +272,10 @@ def test_swapped_limb_code_is_read_only_next_to_a_limb_word() -> None:
     assert detect_joint_side('RigBL') is None
 
     # Side half dropped, fore/hind/middle half kept, same as Lf/Rf/Lb/Rb.
-    assert _joint_signature('FlLeg1') == _joint_signature('FrLeg1')
-    assert _joint_signature('LmLeg1') == _joint_signature('RmLeg1')
-    assert _joint_signature('FlLeg1') != _joint_signature('BlLeg1')
-    assert _joint_signature('FlLeg1') != _joint_signature('LmLeg1')
+    assert joint_signature('FlLeg1') == joint_signature('FrLeg1')
+    assert joint_signature('LmLeg1') == joint_signature('RmLeg1')
+    assert joint_signature('FlLeg1') != joint_signature('BlLeg1')
+    assert joint_signature('FlLeg1') != joint_signature('LmLeg1')
 
 
 def test_rig_prefix_then_a_word_starting_with_r_or_l_is_not_a_side() -> None:
@@ -293,7 +293,7 @@ def test_rig_prefix_then_a_word_starting_with_r_or_l_is_not_a_side() -> None:
 
 def test_piers_typo_pairs_with_pliers() -> None:
     # Centipede: "BN_Piers_L_01" is the left twin of "BN_Pliers_R_01".
-    assert _joint_signature('BN_Piers_L_01') == _joint_signature('BN_Pliers_R_01')
+    assert joint_signature('BN_Piers_L_01') == joint_signature('BN_Pliers_R_01')
 
 
 def test_lm_rm_on_a_head_reads_as_the_mouth_corners() -> None:
@@ -301,7 +301,7 @@ def test_lm_rm_on_a_head_reads_as_the_mouth_corners() -> None:
     # cheeks: the side letter leads, the head word says M is the mouth.
     assert detect_joint_side('Sabrecat_Head_LM01_') == 'left'
     assert detect_joint_side('Sabrecat_Head_RM01_') == 'right'
-    assert _joint_signature('Sabrecat_Head_LM01_') == _joint_signature('Sabrecat_Head_RM01_')
+    assert joint_signature('Sabrecat_Head_LM01_') == joint_signature('Sabrecat_Head_RM01_')
     # Without a head or limb word the code stays unread.
     assert detect_joint_side('RigLM01') is None
 
@@ -312,7 +312,7 @@ def test_glued_side_letter_on_a_wing_drives_side_detection() -> None:
     # 'center' while its "LBackArm1" limbs paired normally.
     assert detect_joint_side('RigLwing1') == 'left'
     assert detect_joint_side('RigRwing5') == 'right'
-    assert _joint_signature('RigLwing1') == _joint_signature('RigRwing1')
+    assert joint_signature('RigLwing1') == joint_signature('RigRwing1')
 
 
 def test_mirrored_name_typo_still_pairs_with_its_twin() -> None:
@@ -320,9 +320,9 @@ def test_mirrored_name_typo_still_pairs_with_its_twin() -> None:
     # copied names, corrupting the words: "Lower_Arm_L" against "Rower_Arm_R",
     # "Upper_Leg_L" against "Upper_Reg_R". The signature is a spelling key, so
     # the two halves of one limb stopped matching and the pairs never formed.
-    assert _joint_signature('Lower_Arm_L') == _joint_signature('Rower_Arm_R')
-    assert _joint_signature('Upper_Leg_L') == _joint_signature('Upper_Reg_R')
-    assert _joint_signature('Lower_Leg_L') == _joint_signature('Rower_Reg_R')
+    assert joint_signature('Lower_Arm_L') == joint_signature('Rower_Arm_R')
+    assert joint_signature('Upper_Leg_L') == joint_signature('Upper_Reg_R')
+    assert joint_signature('Lower_Leg_L') == joint_signature('Rower_Reg_R')
 
     joint_names = ['Hips', 'Upper_Leg_L', 'Lower_Leg_L', 'Upper_Reg_R', 'Rower_Reg_R']
     parents = np.asarray([-1, 0, 1, 0, 3], dtype=np.int64)
@@ -337,7 +337,7 @@ def test_mirrored_name_typo_still_pairs_with_its_twin() -> None:
         dtype=np.float64,
     )
 
-    _sides, symmetry_partner_indices, _pairs = _infer_symmetry_metadata(
+    _sides, symmetry_partner_indices, _pairs = infer_symmetry_metadata(
         joint_names,
         parents,
         rest_positions,
@@ -364,7 +364,7 @@ def test_named_sides_with_mismatched_signatures_pair_by_geometry() -> None:
         [0.06, -0.14, 0.19], [0.15, -0.17, 0.18],
         [-0.066, -0.167, 0.153], [0.064, -0.167, 0.153],
     ])
-    _sides, partners, _pairs = _infer_symmetry_metadata(joint_names, parents, rest_positions)
+    _sides, partners, _pairs = infer_symmetry_metadata(joint_names, parents, rest_positions)
     assert partners[1] == 3 and partners[3] == 1
     assert partners[2] == 4 and partners[4] == 2
     assert partners[5] == 6 and partners[6] == 5
@@ -378,7 +378,7 @@ def test_geometry_fallback_never_pairs_a_non_mirrored_or_centre_joint() -> None:
     rest_positions = np.array([
         [0.0, 0.0, 0.0], [0.1, 0.1, 0.0], [-0.1, -0.3, 0.4], [-0.1, 0.18, 0.05],
     ])
-    sides, partners, _pairs = _infer_symmetry_metadata(joint_names, parents, rest_positions)
+    sides, partners, _pairs = infer_symmetry_metadata(joint_names, parents, rest_positions)
     assert partners[1] == -1 and partners[2] == -1
     assert sides[3] == 'center' and partners[3] == -1
 
@@ -394,7 +394,7 @@ def _leopard_like_rig(mane_names):
         *[[sign * (0.2 + 0.05 * k), 0.1 * k, 0.1] for k in range(len(parts)) for sign in (1.0, -1.0)],
         [-0.08, -0.095, 0.221], [0.08, -0.095, 0.221],
     ])
-    return _infer_symmetry_metadata(joint_names, parents, rest_positions)
+    return infer_symmetry_metadata(joint_names, parents, rest_positions)
 
 
 def test_mirror_sibling_named_on_the_wrong_side_is_relabelled() -> None:
@@ -438,7 +438,7 @@ def _unsided_twin_rig(unsided_name, unsided_half=1.0):
         [-0.155, 0.72, -0.28], [-0.30, 0.72, -0.30], [-0.45, 0.22, -0.41],
         [-0.57, -0.25, -0.13], [-0.60, -0.40, -0.10], [-0.60, -0.50, 0.10],
     ])
-    return _infer_symmetry_metadata(joint_names, parents, rest_positions)
+    return infer_symmetry_metadata(joint_names, parents, rest_positions)
 
 
 def test_unsided_twin_of_a_named_side_joint_takes_the_other_side() -> None:
@@ -477,7 +477,7 @@ def _unnamed_ear_rig(right_ear_x=-0.09, right_tip=(-0.10, 0.25, 0.05), extra_rig
                 joint_names.append(f'{side}_{part}')
                 parents.append(0)
                 rest_positions.append([sign * x, 0.05 + x, 0.1])
-    return _infer_symmetry_metadata(joint_names, np.array(parents), np.array(rest_positions))
+    return infer_symmetry_metadata(joint_names, np.array(parents), np.array(rest_positions))
 
 
 def test_unnamed_exact_mirror_twins_are_paired_down_the_chain() -> None:
@@ -515,7 +515,7 @@ def test_a_named_side_joint_pairs_with_its_exact_mirror_whatever_its_name() -> N
     rest_positions = np.array([
         [0.0, 0.0, 0.0], [0.08, 0.12, 0.03], [-0.08, 0.12, 0.03], [0.0, 0.15, 0.0],
     ])
-    sides, partners, _pairs = _infer_symmetry_metadata(joint_names, parents, rest_positions)
+    sides, partners, _pairs = infer_symmetry_metadata(joint_names, parents, rest_positions)
     assert partners[1] == 2 and partners[2] == 1
     assert sides[1] == 'left' and sides[2] == 'right'
     assert sides[3] == 'center' and partners[3] == -1
@@ -526,7 +526,7 @@ def test_a_named_side_joint_pairs_with_its_exact_mirror_whatever_its_name() -> N
     rest_positions = np.array([
         *rest_positions, [0.04, 0.05, 0.1], [-0.04, 0.05, 0.1], [0.06, 0.1, 0.0], [-0.06, 0.1, 0.0],
     ])
-    sides, partners, _pairs = _infer_symmetry_metadata(joint_names, parents, rest_positions)
+    sides, partners, _pairs = infer_symmetry_metadata(joint_names, parents, rest_positions)
     assert partners[4] == 5 and partners[6] == 7
     assert partners[1] == -1 and partners[2] == -1
 
@@ -541,7 +541,7 @@ def test_unnamed_twins_with_a_tied_closest_match_stay_unpaired() -> None:
         [1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0], [-1.0, 1.0, 0.0],
         [1.0, 2.0, 0.0], [2.0, 1.0, 0.0], [-2.0, 1.0, 0.0], [-1.0, 2.0, 0.0],
     ])
-    sides, partners, pairs = _infer_symmetry_metadata(joint_names, parents, rest_positions)
+    sides, partners, pairs = infer_symmetry_metadata(joint_names, parents, rest_positions)
     assert pairs == []
     assert all(partner == -1 for partner in partners)
     assert all(side == 'center' for side in sides)

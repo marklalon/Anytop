@@ -33,7 +33,7 @@ def joint_condition_schema_versions():
     from data_loaders.truebones.truebones_utils.joint_struct_features import (
         JOINT_STRUCT_FEATURE_SCHEMA_VERSION,
     )
-    from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+    from data_loaders.truebones.truebones_utils.joint_embedding_text import (
         JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
     )
     return {

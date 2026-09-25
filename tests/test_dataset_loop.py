@@ -41,7 +41,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+from data_loaders.truebones.truebones_utils.joint_embedding_text import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
 )
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key

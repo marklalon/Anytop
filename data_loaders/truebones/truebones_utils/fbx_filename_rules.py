@@ -11,7 +11,7 @@ This module isolates the rules that infer meaning from animation filenames
 import os
 import re
 
-from .physics_joint_annotation import normalize_joint_name
+from .joint_name_canonical import normalize_joint_name
 
 
 def _reference_stem_tokens(file_path):

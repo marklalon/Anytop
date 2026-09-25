@@ -15,10 +15,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
-    build_joint_embedding_texts,
-    build_semantic_metadata,
-)
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_semantic_metadata
+from data_loaders.truebones.truebones_utils.joint_embedding_text import build_joint_embedding_texts
 from data_loaders.truebones.truebones_utils.animation_utils import (
     refresh_joint_metadata_in_object_cond,
 )

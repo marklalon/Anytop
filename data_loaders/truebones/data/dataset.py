@@ -53,7 +53,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
 )
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+from data_loaders.truebones.truebones_utils.joint_embedding_text import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import (

@@ -128,7 +128,7 @@ def _validated_rest_positions(object_cond, joint_count, source):
     return rest_pos
 
 
-def _child_lists(parents):
+def child_lists(parents):
     children = [[] for _ in range(len(parents))]
     for joint_index, parent_index in enumerate(parents):
         if parent_index >= 0:
@@ -220,7 +220,7 @@ def build_joint_struct_features(object_cond, source='cond entry'):
     parents = _validated_parents(object_cond, source)
     joint_count = int(parents.shape[0])
     rest_pos = _validated_rest_positions(object_cond, joint_count, source)
-    children = _child_lists(parents)
+    children = child_lists(parents)
     _run_of, position_in_run, run_members = _branch_free_runs(parents, children, source)
     is_contact, contact_known = _contact_flags(object_cond, joint_count, source)
 

@@ -18,11 +18,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
-from data_loaders.truebones.truebones_utils.joint_name_canonical import (  # noqa: E402
+from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noqa: E402
     _blank_unseen_joint_texts,
     _reference_joint_texts,
 )
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  # noqa: E402
+from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noqa: E402
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
 )
 
