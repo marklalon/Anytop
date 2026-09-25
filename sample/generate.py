@@ -51,6 +51,7 @@ from sample.generation_runtime import (
     _normalize_optional_path,
     _raise_opt_max_joints_for_cond,
     _resolve_generation_cond_path,
+    bind_species_table,
     prepare_generation_runtime,
 )
 from sample.inpaint import (
@@ -287,6 +288,7 @@ def main(args=None, cond_dict=None, runtime=None):
                 expected_embedding_dim=args.t5_out_dim,
                 cond_source=task_cond,
             )
+            bind_species_table(runtime.species_table, new_cond_dict, task_cond)
             new_opt = get_opt(
                 runtime.device, task_cond, cond_dict=new_cond_dict, inference=True
             )
@@ -783,11 +785,7 @@ def main(args=None, cond_dict=None, runtime=None):
         model,
         cond_dict,
         object_type,
-        default_cond_file=_checkpoint_cond_path(
-            getattr(args, 'model_path', ''),
-        ),
-        actual_cond_file=actual_cond_file,
-        t5_conditioner=getattr(runtime, 't5_conditioner', None),
+        runtime.species_table,
     )
 
     _, model_kwargs = create_condition(

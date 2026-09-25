@@ -6,13 +6,12 @@
 * ``_resolve_action_condition`` / ``_wrap_action_label_cfg`` -- the
   ``--action_label`` prompt as word-slot ids into the checkpoint's own frozen
   vocabulary, and the optional classifier-free guidance around it.
-* ``_resolve_species_emb_override`` -- ``--species_tags``, a re-encoded (or
-  cache-hit) species descriptor replacing the cond's baked ``species_emb``.
+* ``_resolve_species_emb_override`` -- ``--species_tags``, the checkpoint's
+  descriptor-table row replacing the species' own ``species_emb``.
 """
 import sys
 
 import numpy as np
-import torch
 
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.canonical_features import (
@@ -29,7 +28,6 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
 from model.cfg_sampler import ClassifierFreeActionModel
-from sample.generation_runtime import _load_default_cond_cache
 from utils.model_util import unwrap_anytop_model
 
 
@@ -46,101 +44,12 @@ def _parse_species_tags(raw):
     return list(tags)
 
 
-def _resolve_species_t5_name(cond_entry):
-    """Return the T5 model name used to bake this species' descriptor (species_emb_meta >
-    joints_names_embs_meta > t5-base)."""
-    for meta_key in ('species_emb_meta', 'joints_names_embs_meta'):
-        meta = cond_entry.get(meta_key)
-        if isinstance(meta, dict) and meta.get('t5_name'):
-            return str(meta['t5_name'])
-    return 't5-base'
-
-
-# Process-local T5 cache keyed by t5 model name for --species_tags re-encoding.
-_SPECIES_T5_CACHE = {}
-
-
-def _get_species_t5_conditioner(t5_name, *, preloaded=None):
-    """Return a T5 conditioner, preferring preloaded (if name matches) > cached > fresh."""
-    if preloaded is not None and str(getattr(preloaded, 'name', '')) == str(t5_name):
-        return preloaded
-    cached = _SPECIES_T5_CACHE.get(t5_name)
-    if cached is not None:
-        return cached
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"[generate] Loading T5 '{t5_name}' on {device.upper()} for species-tag re-encoding ...")
-    from model.conditioners import T5Conditioner
-
-    conditioner = T5Conditioner(
-        name=t5_name,
-        finetune=False,
-        word_dropout=0.0,
-        normalize_text=False,
-        device=device,
-        autocast_dtype=None,
-        local_files_only=True,
-    )
-    _SPECIES_T5_CACHE[t5_name] = conditioner
-    return conditioner
-
-
-def _encode_species_tags_override(tags, cond_entry, expected_dim, t5_conditioner=None):
-    """Re-encode species tags via T5 into a [expected_dim] species_emb override."""
-    species_text = ' '.join(tags)
-    t5_name = _resolve_species_t5_name(cond_entry)
-    print(f"[generate] Re-encoding species tags {tags} via T5 '{t5_name}' ...")
-    conditioner = _get_species_t5_conditioner(t5_name, preloaded=t5_conditioner)
-    with torch.no_grad():
-        tokens = conditioner.tokenize_entries([species_text])
-        emb = conditioner(tokens).detach().cpu().numpy().astype(np.float32, copy=False)[0]
-    if emb.shape[-1] != int(expected_dim):
-        raise ValueError(
-            f"--species_tags re-encoding produced dim {emb.shape[-1]} but the model expects "
-            f"{expected_dim} (t5_out_dim). The T5 model '{t5_name}' does not match the one used "
-            "to build cond.npy."
-        )
-    return emb
-
-
-def _find_cached_species_emb(tags, cond_dict, t5_name, expected_dim):
-    """Reuse baked species_emb when requested tags match an existing cond entry (same T5 + dim).
-    T5 mean-pooling is deterministic given tokenized text, so this is exact."""
-    target_text = ' '.join(tags)
-    for entry in cond_dict.values():
-        if not isinstance(entry, dict):
-            continue
-        emb = entry.get('species_emb')
-        meta = entry.get('species_emb_meta')
-        if emb is None or not isinstance(meta, dict):
-            continue
-        if str(meta.get('t5_name') or '') != str(t5_name):
-            continue
-        # Normalize whitespace for comparison.
-        if ' '.join(str(meta.get('embedding_text', '')).split()) != target_text:
-            continue
-        emb = np.asarray(emb, dtype=np.float32)
-        if emb.shape[-1] == int(expected_dim):
-            return emb, str(entry.get('object_type') or '?')
-    return None
-
-
-def _resolve_species_emb_override(
-    args,
-    model,
-    cond_dict,
-    object_type,
-    *,
-    default_cond_file,
-    actual_cond_file,
-    t5_conditioner=None,
-):
+def _resolve_species_emb_override(args, model, cond_dict, object_type, species_table):
     """``--species_tags`` -> a ``[t5_out_dim]`` species descriptor, or ``None``.
 
-    Restyles the target species' motion descriptor. A baked ``species_emb``
-    whose tags match (same T5, same dim) is reused as-is -- first from the
-    active cond, then from ``default_cond_file`` when the active
-    ``--cond_path`` is a small custom cond -- and only otherwise are the tags
-    re-encoded through T5 (``t5_conditioner`` is the runtime's preloaded one).
+    Restyles the target species' motion descriptor with a row of the
+    checkpoint's precomputed descriptor table. No T5 runs here: a combination
+    the table lacks is refused, because the weights never saw its vector.
     """
     species_tags = _parse_species_tags(getattr(args, 'species_tags', ''))
     if not species_tags:
@@ -154,41 +63,14 @@ def _resolve_species_emb_override(
             '--species_cond or --species_joint_cond; the species descriptor is unused, so '
             'the tags would have no effect.'
         )
-    target_cond_entry = cond_dict[object_type]
-    if 'species_emb' not in target_cond_entry:
-        sys.exit(
-            f"ERROR: cond entry for '{object_type}' has no baked 'species_emb'; regenerate "
-            "cond.npy with species embeddings before using --species_tags."
-        )
-    override_t5_name = _resolve_species_t5_name(target_cond_entry)
-    override_dim = int(np.asarray(target_cond_entry['species_emb']).shape[-1])
-    # Reuse baked species_emb if tags match an existing cond entry (same T5 + dim).
-    cached = _find_cached_species_emb(
-        species_tags, cond_dict, override_t5_name, override_dim,
-    )
-    if cached is None:
-        # The active --cond_path may be a small custom cond lacking the
-        # species whose baked tags match; fall back to the default cond DB.
-        default_cond_cache = _load_default_cond_cache(default_cond_file, actual_cond_file)
-        if default_cond_cache:
-            cached = _find_cached_species_emb(
-                species_tags, default_cond_cache, override_t5_name, override_dim,
-            )
-    if cached is not None:
-        species_emb_override, cache_src = cached
-        print(
-            f"[generate] species tags {species_tags} match baked descriptor of "
-            f"'{cache_src}'; reusing cached species_emb (skipped T5)."
-        )
-    else:
-        species_emb_override = _encode_species_tags_override(
-            species_tags,
-            target_cond_entry,
-            override_dim,
-            t5_conditioner=t5_conditioner,
-        )
+    if species_table is None:
+        sys.exit("ERROR: --species_tags needs the checkpoint's species descriptor table.")
+    try:
+        species_emb_override = species_table.lookup(species_tags, '--species_tags')
+    except ValueError as exc:
+        sys.exit(f'ERROR: {exc}')
     default_text = ' '.join(
-        (target_cond_entry.get('species_emb_meta') or {}).get('embedding_text', '').split()
+        (cond_dict[object_type].get('species_emb_meta') or {}).get('embedding_text', '').split()
     )
     print(
         f"[generate] species descriptor for '{object_type}' overridden: "

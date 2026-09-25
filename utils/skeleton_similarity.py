@@ -30,9 +30,8 @@ in ``[0, ~1]``:
     a weak tie-breaker only, since joint count says little about motion.
 
 The module is intentionally numpy-only so the lightweight motion-quality
-scorer does not pull in torch/motion_lib. A cond entry without ``species_tags``
-(an unregistered retarget target) gets the maximum tag distance to everything
-and is ranked by the two morphological terms alone.
+scorer does not pull in torch/motion_lib. Every cond entry carries its baked
+``species_tags`` pair; one without is old data and is refused.
 """
 
 from __future__ import annotations
@@ -42,56 +41,34 @@ from typing import List, Mapping, MutableMapping, Optional, Sequence
 
 import numpy as np
 
-# The tag sidecar is the fallback for a cond entry that predates baked
-# species_tags. dataset_tags is torch-free and reads its sidecars lazily, so
-# importing it keeps this module lightweight.
-from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
+from data_loaders.truebones.truebones_utils.dataset_tags import SPECIES_TAG_COUNT
 
 
 # ── Motion tags ──────────────────────────────────────────────────────────────
 # Slot weights of the species_tags pair: (body-plan, gait). Body plan decides
-# which limbs carry the motion; gait is the dynamics. The last word of the gait
-# slot is compared, so the "Chibi" / "Robotic" style prefixes ("Chibi Striding"
-# vs "Striding") do not separate species that move the same way.
+# which limbs carry the motion; gait is the dynamics.
 _TAG_SLOT_WEIGHTS = (0.6, 0.4)
-_TAG_ARITY = len(_TAG_SLOT_WEIGHTS)
-_GAIT_SLOT = 1
-# A cond baked before the size slot was removed carries (body-plan, size, gait);
-# its size word is dropped on read so such a checkpoint's cond still ranks.
-_LEGACY_SIZE_SLOT_ARITY = 3
 
 
 def species_tags_of(object_cond: Mapping[str, object], object_type_hint: str) -> tuple[str, ...]:
-    """The ``(body-plan, gait)`` pair of a cond entry, lower-cased.
-
-    Reads the entry's baked ``species_tags`` (every cond since schema v4 has
-    them, including a custom retarget cond), falling back to the tag sidecar
-    by object_type. Returns ``()`` for an unregistered species.
-    """
-    tags = object_cond.get("species_tags")
-    if not tags:
-        tags = dataset_tags().tags_for(object_cond.get("object_type") or object_type_hint)
-    tags = tuple(str(tag).strip().lower() for tag in (tags or ()))
-    if len(tags) == _LEGACY_SIZE_SLOT_ARITY:
-        tags = (tags[0], tags[2])
+    """The baked ``(body-plan, gait)`` pair of a cond entry, lower-cased."""
+    tags = tuple(str(tag).strip().lower() for tag in (object_cond.get("species_tags") or ()))
+    if len(tags) != SPECIES_TAG_COUNT:
+        raise ValueError(
+            f"cond entry '{object_cond.get('object_type') or object_type_hint}' has "
+            f"species_tags {list(tags)!r}, expected a (body-plan, gait) pair; "
+            "regenerate its cond.npy"
+        )
     return tags
 
 
 def tag_distance(query_tags: Sequence[str], candidate_tags: Sequence[str]) -> float:
-    """Weighted slot mismatch of two tag pairs, in ``[0, 1]``.
-
-    A pair that is missing or short (unregistered species) is maximally far
-    from everything, so ranking falls back to the morphological terms.
-    """
-    if len(query_tags) < _TAG_ARITY or len(candidate_tags) < _TAG_ARITY:
-        return 1.0
-    similarity = 0.0
-    for slot, weight in enumerate(_TAG_SLOT_WEIGHTS):
-        query_word, candidate_word = query_tags[slot], candidate_tags[slot]
-        if slot == _GAIT_SLOT:
-            query_word, candidate_word = query_word.split()[-1], candidate_word.split()[-1]
-        if query_word == candidate_word:
-            similarity += weight
+    """Weighted slot mismatch of two tag pairs, in ``[0, 1]``."""
+    similarity = sum(
+        weight
+        for weight, query_word, candidate_word in zip(_TAG_SLOT_WEIGHTS, query_tags, candidate_tags)
+        if query_word == candidate_word
+    )
     return float(1.0 - similarity)
 
 

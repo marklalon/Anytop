@@ -24,7 +24,6 @@ from .physics_joint_annotation import (
     normalize_joint_name,
     strip_joint_name_prefix,
     build_joint_embedding_texts,
-    build_species_embedding_text,
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
 )
 
@@ -306,12 +305,11 @@ _T5_ENCODE_BATCH = 256
 
 
 def _build_t5_text_cache(cache_cond, t5_name):
-    """Map every embedding text already baked into *cache_cond* to its T5 vector.
+    """Map every joint-name text already baked into *cache_cond* to its T5 vector.
 
     The encoder is a masked mean over one text's own tokens, so a text encoded
     under the same T5 model yields the same vector whichever cond it was baked
-    into. Joint-name rows and species descriptors share one table because they
-    go through the same encoder.
+    into.
     """
     cache = {}
     if not isinstance(cache_cond, dict):
@@ -328,13 +326,6 @@ def _build_t5_text_cache(cache_cond, t5_name):
             if joint_embs.ndim == 2 and joint_embs.shape[0] == len(texts):
                 for text, emb in zip(texts, joint_embs):
                     cache.setdefault(str(text), emb)
-        species_meta = entry.get('species_emb_meta')
-        species_emb = entry.get('species_emb')
-        if (isinstance(species_meta, dict) and species_emb is not None
-                and str(species_meta.get('t5_name') or '') == t5_name
-                and species_meta.get('embedding_text')):
-            cache.setdefault(str(species_meta['embedding_text']),
-                             np.asarray(species_emb, dtype=np.float32))
     return cache
 
 
@@ -396,7 +387,10 @@ def _blank_unseen_joint_texts(embedding_texts_by_object, known_texts):
 def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True,
                                   t5_conditioner=None, embedding_cache_cond=None,
                                   blank_unseen_joint_names=False):
-    """Bake joint-name and species T5 embeddings into every entry of *cond*.
+    """Bake joint-name T5 embeddings into every entry of *cond*.
+
+    No species vector is baked: ``species_emb`` is bound from the species
+    descriptor table at training / generation time, so a stale one is dropped.
 
     ``embedding_cache_cond`` is an already-encoded cond (e.g. the checkpoint's
     reference cond.npy): any text it holds under the same T5 model is reused
@@ -405,6 +399,8 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
     ``blank_unseen_joint_names`` gives every joint whose text that reference
     never encodes the blank (all-zero) name instead of a fresh T5 vector; the
     originals are kept in ``joints_names_embs_meta['blanked_unseen_texts']``.
+    Every text is then either cached or blank, so T5 is never loaded -- the
+    inference path (process_new_skeleton) relies on that.
     """
     if not cond:
         return
@@ -433,22 +429,25 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
         # so a species missing from species_tags.jsonl must surface here.
         assert_species_tags_cover(cond.keys())
 
-    species_texts_by_object = {
-        object_type: build_species_embedding_text(cond[object_type])
-        for object_type in object_types_to_encode
-    }
-
     # Every text either comes from the cache or is encoded once, in one batch.
     text_cache = _build_t5_text_cache(embedding_cache_cond, t5_name)
     wanted = []
     for object_type in object_types_to_encode:
         wanted.extend(embedding_texts_by_object[object_type])
-        wanted.append(species_texts_by_object[object_type])
+    # The blank name is the all-zero row (T5Conditioner masks an empty text out
+    # entirely), so it never needs the encoder.
+    if '' in wanted and '' not in text_cache and text_cache:
+        text_cache[''] = np.zeros_like(next(iter(text_cache.values())))
     missing = list(dict.fromkeys(text for text in wanted if text not in text_cache))
     if text_cache:
         print(f'Reusing cached T5 embeddings for {len(set(wanted)) - len(missing)}/'
               f'{len(set(wanted))} texts.')
 
+    if missing and blank_unseen_joint_names:
+        raise RuntimeError(
+            f'joint-name texts neither cached nor blanked: {missing}; the unseen-name '
+            'path must not need T5'
+        )
     if missing:
         if t5_conditioner is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -489,15 +488,8 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
             'blanked_unseen_texts': dict(blanked_by_object.get(object_type, {})),
         }
 
-        species_text = species_texts_by_object[object_type]
-        species_emb = np.array(text_cache[species_text], dtype=np.float32)
-        object_cond['species_emb'] = species_emb
-        object_cond['species_emb_meta'] = {
-            't5_name': t5_name,
-            'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-            'embedding_dim': int(species_emb.shape[-1]),
-            'embedding_text': species_text,
-        }
+        object_cond.pop('species_emb', None)
+        object_cond.pop('species_emb_meta', None)
 
     # cond keys are '<namespace>/<species>', which cannot go into a filename;
     # the file token degrades to the plain species name whenever it is unique.

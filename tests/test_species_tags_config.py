@@ -97,7 +97,7 @@ def test_configure_loads_custom_chain_forward_joints(tmp_path):
 def test_absent_default_chain_forward_sidecar_is_optional(tmp_path):
     """A dataset with no overrides falls through to semantic detection."""
     (tmp_path / "species_tags.jsonl").write_text(
-        '{"species": "Crow", "species_tags": ["Winged", "Flying"]}\n',
+        '{"species": "Crow", "species_tags": ["Winged", "Flapping"]}\n',
         encoding="utf-8",
     )
 

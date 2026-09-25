@@ -1779,10 +1779,11 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, reference_c
         object_name, object_cond, reference_cond_path=reference_cond_path
     )
     cond[object_name] = object_cond
-    # The checkpoint's cond already holds T5 vectors for its joint-name and
-    # species texts; any text the new skeleton shares with it is reused. A joint
-    # text it never saw gets the blank name the model is trained to read as
-    # "unknown", so T5 loads only for a species-tag text the checkpoint lacks.
+    # The checkpoint's cond already holds T5 vectors for its joint-name texts;
+    # any text the new skeleton shares with it is reused, and a joint text it
+    # never saw gets the blank name the model is trained to read as "unknown",
+    # so T5 is never loaded. The species descriptor is not baked at all:
+    # generation binds it from the checkpoint's descriptor table.
     from .cond_schema import load_cond
     embedding_cache_cond = load_cond(reference_cond_path)
     _write_dataset_artifacts(

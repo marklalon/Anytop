@@ -71,8 +71,22 @@ GROUP_ORDER = ["quadruped", "biped", "multiped", "winged", "serpentine", "aquati
 
 def load_cond(path: str) -> dict:
     # Schema-normalized: entries come back keyed '<namespace>/<species>', which is
-    # also what the plot labels and group lookups use.
-    return _load_cond(path)
+    # also what the plot labels and group lookups use. species_emb is not stored
+    # in cond.npy; it is bound from the species descriptor table next to the cond
+    # (a checkpoint's), else the repo-global one, when either exists.
+    from data_loaders.truebones.truebones_utils.species_descriptor_table import (
+        bind_cond_species_embs,
+        default_species_descriptor_table_path,
+        load_species_descriptor_table,
+        sibling_species_descriptor_table_path,
+    )
+    cond = _load_cond(path)
+    for table_path in (sibling_species_descriptor_table_path(path),
+                       default_species_descriptor_table_path()):
+        if table_path.is_file():
+            bind_cond_species_embs(cond, load_species_descriptor_table(table_path), path)
+            break
+    return cond
 
 
 def _embedding_texts_for_object(object_cond: dict) -> list[str]:

@@ -312,6 +312,7 @@ class TrainLoop:
                 action_group=getattr(self.args, 'action_group', ''),
                 action_label_cond=getattr(self.args, 'action_label_cond', False),
                 action_conditioning=getattr(self.args, 'action_conditioning', None),
+                species_table=getattr(self.args, 'species_descriptor_table', None),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
                 min_length=getattr(self.args, 'min_length', 20),
                 # Keep the loader's default background prefetch (0 selects its

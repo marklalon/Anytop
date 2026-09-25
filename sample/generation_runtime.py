@@ -16,6 +16,10 @@ from data_loaders.truebones.data.dataset import ensure_joint_name_embeddings
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
+from data_loaders.truebones.truebones_utils.species_descriptor_table import (
+    bind_cond_species_embs,
+    load_checkpoint_species_descriptor_table,
+)
 from utils import dist_util
 from utils.model_util import (
     bind_checkpoint_action_conditioning,
@@ -40,8 +44,9 @@ class GenerationRuntime:
     sampling_steps: int
     amp_dtype: str
     cond_path: str
-    # Preloaded T5 conditioner reused by --species_tags to avoid a second T5 load.
-    t5_conditioner: object = None
+    # The checkpoint's species descriptor table (None when the checkpoint has no
+    # species conditioning): the only source of species_emb at generation.
+    species_table: object = None
 
     def validate_args(self, args):
         expected_model = os.path.realpath(self.model_path)
@@ -102,6 +107,25 @@ def _resolve_generation_cond_path(args):
         "has moved on since. Copy the cond the run was trained with next to the "
         "checkpoint, or name one explicitly with --cond_path."
     )
+
+
+def _load_checkpoint_species_table(args):
+    """The descriptor table next to the checkpoint, or None when species cond is off."""
+    if not (getattr(args, 'species_cond', False) or getattr(args, 'species_joint_cond', False)):
+        return None
+    table = load_checkpoint_species_descriptor_table(args.model_path, 'the checkpoint')
+    if table.embedding_dim != int(args.t5_out_dim):
+        raise ValueError(
+            f"species descriptor table {table.source} is {table.embedding_dim}d but the "
+            f"model expects t5_out_dim={args.t5_out_dim}"
+        )
+    return table
+
+
+def bind_species_table(species_table, cond_dict, cond_source):
+    """Condition every cond entry on the checkpoint's table row for its species_tags."""
+    if species_table is not None:
+        bind_cond_species_embs(cond_dict, species_table, f"cond {cond_source}")
 
 
 def _load_generation_cond(args, opt, cond_dict=None):
@@ -218,6 +242,8 @@ def prepare_generation_runtime(args=None, cond_dict=None):
         expected_embedding_dim=args.t5_out_dim,
         cond_source=actual_cond_file,
     )
+    species_table = _load_checkpoint_species_table(args)
+    bind_species_table(species_table, cond_dict, actual_cond_file)
     model.eval()
     amp_dtype = _resolve_inference_amp_dtype(args)
 
@@ -233,6 +259,7 @@ def prepare_generation_runtime(args=None, cond_dict=None):
         sampling_steps=sampling_steps,
         amp_dtype=amp_dtype,
         cond_path=_normalize_optional_path(_resolve_generation_cond_path(args)),
+        species_table=species_table,
     )
 
 

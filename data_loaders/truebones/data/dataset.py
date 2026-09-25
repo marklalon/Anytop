@@ -32,6 +32,9 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     normalize_action_group,
     parse_action_label,
 )
+from data_loaders.truebones.truebones_utils.species_descriptor_table import (
+    bind_cond_species_embs,
+)
 from data_loaders.truebones.truebones_utils.cond_schema import (
     load_cond,
     species_lookup_map_for_dataset_dir,
@@ -1706,6 +1709,12 @@ class Truebones(data.Dataset):
         # tag (the per-species condition has no fallback).
         assert_species_tags_cover(cond_dict.keys())
         assert_cond_species_tags_current(cond_dict)
+        # species_emb is not stored in cond.npy: it is bound here from the
+        # descriptor table the run ships with its checkpoint (training passes
+        # it; a caller without species conditioning passes none).
+        species_table = kwargs.get('species_table')
+        if species_table is not None:
+            bind_cond_species_embs(cond_dict, species_table, opt.cond_file)
         cond_dict = ensure_joint_name_embeddings(cond_dict, cond_source=opt.cond_file)
         for object_type, cond in cond_dict.items():
             mark_canonical_cond_entry(cond)

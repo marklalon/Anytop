@@ -55,7 +55,7 @@ prescribes a fix.  A clip NAME is the weakest evidence there is about what a cli
 does -- it is good enough to pair two clips up and to notice that the pair
 disagrees with itself, and not good enough to decide which half is wrong, which
 is why no rule here proposes a corrected label.  What a clip actually does is
-settled from the render (``dataset/review/relabel_actions_llm.py`` feeds those
+settled from the render (``dataset/review/llm_annotate.py`` feeds those
 same GIFs to the vision model) or measured off the motion
 (``tools/prefill_direction_words.py``).
 
@@ -161,9 +161,8 @@ NO_HEADING_WORDS = ("hover",)
 # The VERTICAL axis is untouched: "idle, up, aim, bow" aims upward and keeps
 # its word -- this names the absence of a PLANAR component only, exactly like
 # NO_HEADING_WORDS above.  Matched anywhere in the label, not just as the head
-# ("idle, right, look" -> "idle, look").  The LLM annotator's "reset" (settle
-# into a neutral start pose, dataset/review/relabel_actions_llm.py) is the same
-# case and reaches the sidecar as "rest".
+# ("idle, right, look" -> "idle, look").  dataset/review/llm_annotate.py reads
+# this list for its prompt and drops a planar word from a draft that names one.
 NO_PLANAR_DIRECTION_WORDS = (
     "hurt", "getup", "idle", "rest", "stop", "draw", "sheathe", "headbutt", "bite",
 )

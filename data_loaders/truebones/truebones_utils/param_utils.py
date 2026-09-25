@@ -72,6 +72,14 @@ ACTION_WORD_EMBEDDINGS_FILE = "action_word_embeddings.npy"
 DEFAULT_ACTION_WORD_EMBEDDINGS = str(
         (_ANYTOP_ROOT / "dataset" / ACTION_WORD_EMBEDDINGS_FILE).resolve()
 )
+# Offline sidecar: the frozen T5 vector of every legal species descriptor
+# (body plan x locomotion), built at training startup. Repo-global for the same
+# reason as the action-word table; training copies it next to the checkpoint,
+# and inference reads only that copy.
+SPECIES_DESCRIPTOR_TABLE_FILE = "species_descriptor_embs.npy"
+DEFAULT_SPECIES_DESCRIPTOR_TABLE = str(
+        (_ANYTOP_ROOT / "dataset" / SPECIES_DESCRIPTOR_TABLE_FILE).resolve()
+)
 # Sidecar mapping object_type -> portable skinned-mesh T-pose reference path. Kept
 # out of cond.npy (no inference path reads it); consumed only by the offline dataset
 # GLB tool (data_bridge.restore_glb_from_anytop). Written/refreshed by the dataset

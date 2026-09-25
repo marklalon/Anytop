@@ -22,7 +22,9 @@ object_type       - Species/type name (e.g. "Dragon"). Inferred from the tpos-pa
 species-tags      - Comma-separated species tags (motion descriptor) for --object-type,
                     e.g. 'Quadruped,Lumbering'. REQUIRED: it defines the
                     descriptor baked into cond.npy. There is no fallback to the
-                    default dataset's species_tags.jsonl.
+                    default dataset's species_tags.jsonl. Only the tags are
+                    baked; generation looks their vector up in the checkpoint's
+                    species descriptor table (no T5 runs here).
 crop-enabled      - Enable skeleton cropping to MAX_JOINTS=100.
                     Off by default (inference has no joint cap).
 reference-cond-path - REQUIRED. cond.npy to inherit the per-object_subset
@@ -216,7 +218,7 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
     # A new skeleton must carry its own motion descriptor. There is no fallback
     # to the default dataset's species_tags.jsonl -- that would silently borrow a
     # same-named species' tags. Register the tags into the process snapshot (so
-    # the species_emb is encoded from them) and write the sidecar (the single
+    # the cond bakes them) and write the sidecar (the single
     # source of truth the cond bakes its species_tags field from).
     from data_loaders.truebones.truebones_utils import dataset_tags
     raw_tags = str(getattr(args, 'species_tags', '') or '').strip()

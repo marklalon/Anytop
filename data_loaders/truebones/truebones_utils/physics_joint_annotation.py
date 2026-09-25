@@ -5,7 +5,6 @@ from collections import Counter
 import numpy as np
 import re
 
-from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 
 
 # End effector joint detection tokens
@@ -776,36 +775,6 @@ def _collapse_solitary_head_feature_indices(canonical_joint_names):
             continue
         collapsed_names.append(name)
     return collapsed_names
-
-
-def _species_motion_tokens(object_cond):
-    object_type = str(object_cond.get('object_type') or '').strip()
-    if not object_type:
-        return []
-    return list(dataset_tags().tags_for(object_type))
-
-
-def build_species_embedding_text(object_cond):
-    """Return the text describing a species as a whole, encoded once per object
-    type into a single ``species_emb`` (T5) vector that conditions the whole
-    network -- as opposed to ``build_joint_embedding_texts``, which describes
-    each joint. This is the one place to refine the species descriptor; keep it
-    open-vocabulary text so novel species still map into the same T5 space.
-
-    Returns the motion-relevant body-plan/dynamics tags from ``species_tags.jsonl``,
-    which describe how the animal moves -- the axis that matters for motion and
-    that topology alone can't supply. There is no fallback: every species MUST
-    be registered in ``species_tags.jsonl`` (enforced by
-    assert_species_tags_cover at preprocessing/training time).
-    """
-    motion_tokens = _species_motion_tokens(object_cond)
-    if not motion_tokens:
-        object_type = str(object_cond.get('object_type') or '').strip() or '<empty>'
-        raise SystemExit(
-            f"\033[91mNo species_tags.jsonl entry for object_type '{object_type}'. "
-            "Register it in the species_tags.jsonl sidecar.\033[0m"
-        )
-    return ' '.join(motion_tokens)
 
 
 # Adjacent tokens that name one part together ("upper leg" -> Thigh). Applied

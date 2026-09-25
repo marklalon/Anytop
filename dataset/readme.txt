@@ -4,6 +4,8 @@
    --joints 打印每个关节 原名 -> canonical -> T5 文本，--report 写 JSON（含改名建议）;
 2. 渲染gif（dataset/review/render_gifs.py，按 datasets.jsonl 对所有数据集统一渲染；有网格的 GLB 渲染皮肤，仅骨架的 GLB 渲染胶囊骨架）；
 3. 基于gif，让llm自动标注species_tags.jsonl，action_labels.jsonl（填action_group和action_label）;
+   dataset/review/llm_annotate.py：actions / species 子命令出草稿到 <processed>/review/llm/（action_group 读行里已有的，不让 LLM 改），
+   看完草稿再 apply（只写 reviewed:false 的行，写入标 reviewed:false + autofill:true；--what species 改 species_tags.jsonl 后要重建 cond）;
 4. 跑预填工具，从动作本身补 action_labels.jsonl 里漏标的槽（默认 --dry-run，看完 --report 的 CSV 再 --apply；
    只补空槽、写入的行标 reviewed:false + autofill:true；reviewed:true 的行默认跳过，要一起判加 --include-reviewed）:
    - tools/prefill_loop_flags.py     预填 is_loop（预处理的硬前置）;

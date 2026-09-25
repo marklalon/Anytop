@@ -77,6 +77,7 @@ def get_dataset(
     motion_speed_aug_prob=1.0,
     loop_tile_single_prob=0.5,
     cond_path=None,
+    species_table=None,
 ):
     dataset = Truebones(
         split=split,
@@ -96,6 +97,7 @@ def get_dataset(
         motion_speed_aug_prob=motion_speed_aug_prob,
         loop_tile_single_prob=loop_tile_single_prob,
         cond_path=cond_path,
+        species_table=species_table,
     )
     return dataset
 
@@ -125,6 +127,7 @@ def get_dataset_loader(
     loop_tile_single_prob=0.5,
     cond_path=None,
     joint_buckets=JOINT_BUCKETS,
+    species_table=None,
 ):
     """``joint_buckets``: joint-count ceilings (param_utils.JOINT_BUCKETS by
     default). Batches are grouped by rig size and padded to their bucket's
@@ -149,6 +152,7 @@ def get_dataset_loader(
         motion_speed_aug_prob=motion_speed_aug_prob,
         loop_tile_single_prob=loop_tile_single_prob,
         cond_path=cond_path,
+        species_table=species_table,
     )
     collate = truebones_batch_collate
     sampler = None

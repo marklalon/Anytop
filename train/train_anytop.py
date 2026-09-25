@@ -33,6 +33,13 @@ from utils.model_util import create_model_and_diffusion_general_skeleton, resolv
 from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform, WandBPlatform #required
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.data.dataset import load_action_conditioning
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.param_utils import SPECIES_DESCRIPTOR_TABLE_FILE
+from data_loaders.truebones.truebones_utils.species_descriptor_table import (
+    build_species_descriptor_table,
+    cond_t5_name,
+    load_species_descriptor_table,
+)
 
 
 def find_latest_checkpoint(save_dir, prefix='model'):
@@ -219,10 +226,12 @@ def write_args_json(args, args_path):
     # user has no business overriding them from the command line.
     for key, value in joint_condition_schema_versions().items():
         setattr(args, key, value)
-    # The loaded word table is a runtime object, not a setting: its identity
-    # travels as the two fingerprints inside every checkpoint, and a numpy array
-    # is not JSON anyway.
-    recorded = {k: v for k, v in vars(args).items() if k != 'action_conditioning'}
+    # The loaded word and species tables are runtime objects, not settings: the
+    # word table's identity travels as the two fingerprints inside every
+    # checkpoint, the species table as a file next to it, and a numpy array is
+    # not JSON anyway.
+    runtime_objects = ('action_conditioning', 'species_descriptor_table')
+    recorded = {k: v for k, v in vars(args).items() if k not in runtime_objects}
     with open(args_path, 'w') as fw:
         json.dump(recorded, fw, indent=4, sort_keys=True)
 
@@ -248,6 +257,30 @@ def bootstrap_action_conditioning(args):
     return bundle
 
 
+def bootstrap_species_descriptor_table(args, cond_file, save_dir):
+    """The species descriptor table this run trains and ships with, or None.
+
+    This is where every species descriptor is encoded: the repo-global table is
+    built (or extended for a grown vocabulary) against the cond's T5 -- a no-op
+    load when it is already complete -- and copied into save_dir, where
+    generation reads it. A resume keeps the copy its weights were trained on.
+    Like the action bundle, it is a runtime object handed to the loaders, never
+    written to args.json.
+    """
+    if not (getattr(args, 'species_cond', False) or getattr(args, 'species_joint_cond', False)):
+        args.species_descriptor_table = None
+        return None
+    shipped = os.path.join(save_dir, SPECIES_DESCRIPTOR_TABLE_FILE)
+    if getattr(args, 'resume_checkpoint', '') and os.path.isfile(shipped):
+        table = load_species_descriptor_table(shipped)
+    else:
+        table = build_species_descriptor_table(t5_name=cond_t5_name(load_cond(cond_file)))
+        shutil.copy2(table.source, shipped)
+    args.species_descriptor_table = table
+    print(f"[species] descriptor table {table.source} ({len(table.descriptors)} descriptors)")
+    return table
+
+
 def create_training_data_loader(args):
     return get_dataset_loader(
         cond_path=args.cond_path,
@@ -270,6 +303,7 @@ def create_training_data_loader(args):
         motion_speed_aug=getattr(args, 'motion_speed_aug', 1.0),
         motion_speed_aug_prob=getattr(args, 'motion_speed_aug_prob', 1.0),
         loop_tile_single_prob=getattr(args, 'loop_tile_single_prob', 0.5),
+        species_table=getattr(args, 'species_descriptor_table', None),
     )
 
 def run_training(args):
@@ -298,6 +332,7 @@ def run_training(args):
     dist_util.setup_dist(args.device)
 
     bootstrap_action_conditioning(args)
+    bootstrap_species_descriptor_table(args, opt.cond_file, save_dir)
     data = create_training_data_loader(args)
     
     # Print motion count in train split

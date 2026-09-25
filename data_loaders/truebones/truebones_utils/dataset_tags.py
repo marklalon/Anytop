@@ -99,6 +99,32 @@ CANONICAL_OBJECT_SUBSETS = (
 # ``choices=`` lists that must be built before a dataset directory is known.
 OBJECT_SUBSET_CHOICES = ("all",) + CANONICAL_OBJECT_SUBSETS
 
+# The locomotion slot's closed vocabulary: one gait word per descriptor. Together
+# with the body plans (the capitalized object subsets) it spans every legal
+# descriptor, and species_descriptor_table encodes that whole product ahead of
+# training, so a word outside this list has no T5 vector anywhere. Adding one
+# means rebuilding the table and retraining.
+SPECIES_LOCOMOTIONS = (
+    "Crawling",
+    "Flapping",
+    "Fluttering",
+    "Galloping",
+    "Hopping",
+    "Hovering",
+    "Lumbering",
+    "Scurrying",
+    "Scuttling",
+    "Sideways",
+    "Slithering",
+    "Stalking",
+    "Striding",
+    "Swimming",
+    "Trotting",
+    "Undulating",
+    "Waddling",
+    "Whirling",
+)
+
 
 @dataclass(frozen=True)
 class SidecarPaths:
@@ -220,13 +246,46 @@ def parse_species_tags(raw) -> tuple[str, ...]:
     return tuple(tag for tag in (normalize_species_tag(item) for item in items) if tag)
 
 
+# The body-plan slot's closed vocabulary, in sidecar spelling.
+SPECIES_BODY_PLANS = tuple(normalize_species_tag(name) for name in CANONICAL_OBJECT_SUBSETS)
+
+
+def species_descriptor_text(tags) -> str:
+    """The text a descriptor is encoded from: its tags joined by one space."""
+    return " ".join(str(tag) for tag in tags)
+
+
+def species_descriptor_vocabulary() -> tuple[tuple[str, str], ...]:
+    """Every legal ``(body-plan, locomotion)`` descriptor, body plan major."""
+    return tuple(
+        (body_plan, locomotion)
+        for body_plan in SPECIES_BODY_PLANS
+        for locomotion in SPECIES_LOCOMOTIONS
+    )
+
+
 # ── Sidecar loading ──────────────────────────────────────────────────────────
 def check_species_tags(tags, where: str) -> None:
-    """Raise unless ``tags`` is a ``SPECIES_TAG_COUNT``-slot descriptor with no empty slot."""
+    """Raise unless ``tags`` is a ``[body-plan, locomotion]`` pair from the closed vocabularies."""
     if len(tags) != SPECIES_TAG_COUNT or any(not str(tag).strip() for tag in tags):
         raise ValueError(
             f"{where}: species_tags must be {SPECIES_TAG_COUNT} non-empty tags "
             f"[body-plan, locomotion], got {list(tags)!r}."
+        )
+    body_plan, locomotion = (str(tag) for tag in tags)
+    problems = []
+    if body_plan not in SPECIES_BODY_PLANS:
+        problems.append(
+            f"body plan {body_plan!r} is not one of {', '.join(SPECIES_BODY_PLANS)}"
+        )
+    if locomotion not in SPECIES_LOCOMOTIONS:
+        problems.append(
+            f"locomotion {locomotion!r} is not one of {', '.join(SPECIES_LOCOMOTIONS)}"
+        )
+    if problems:
+        raise ValueError(
+            f"{where}: {'; '.join(problems)}. The descriptor vocabulary is closed: "
+            "only its precomputed combinations have a species embedding."
         )
 
 
@@ -295,9 +354,8 @@ def _iter_jsonl(path: Path):
 def build_object_subsets(species_tags: Mapping[str, tuple[str, ...]]) -> dict[str, list[str]]:
     """Group species by object_subset (the lower-cased first motion tag).
 
-    Keys are ``"all"``, the seven canonical body plans (always present, possibly
-    empty), and any extra subset a dataset introduces. This is the only place
-    subsets are assembled.
+    Keys are ``"all"`` and the canonical body plans (always present, possibly
+    empty). This is the only place subsets are assembled.
     """
     subsets: dict[str, list[str]] = {"all": list(species_tags.keys())}
     for object_subset in CANONICAL_OBJECT_SUBSETS:
@@ -613,7 +671,7 @@ def assert_species_tags_cover(object_types) -> None:
     """Fast-fail unless every ``object_type`` has an entry in ``species_tags.jsonl``.
 
     The sidecar is the single source of truth for the per-species descriptor
-    (``build_species_embedding_text``) and the retarget group discount, and it
+    (its species descriptor table row) and the retarget group discount, and it
     carries no fallback. Call this at preprocessing and before training so a
     newly added species without motion tags surfaces immediately rather than
     silently degrading the species condition.
