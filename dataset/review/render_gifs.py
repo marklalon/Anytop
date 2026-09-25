@@ -1,35 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Render every processed clip of every dataset to a 224x224 review GIF.
+"""Render every source clip of every dataset to a 224x224 review GIF.
 
 Datasets are the ones ``../datasets.jsonl`` lists -- the same manifest
-``serve.py`` reads, one line per processed tree::
+``serve.py`` reads, one line per dataset, ``raw`` being the source tree
+(``<raw>/<Species>/*.glb``) and ``path`` the processed tree beside it::
 
-    {"namespace": "truebones/zoo",         "path": "dataset/truebones/zoo/truebones_processed"}
-    {"namespace": "truebones/zoo_upgrade", "path": "dataset/truebones/zoo_upgrade/clean_processed"}
-    {"namespace": "unitybundles",          "path": "dataset/unitybundles/processed"}
+    {"namespace": "truebones/zoo", "path": "dataset/truebones/zoo/truebones_processed",
+     "raw": "dataset/truebones/zoo/Truebone_Z-OO"}
 
-and for each of them the output is one GIF per *processed clip*::
+and for each of them the output is one GIF per clip the preprocessor would
+write::
 
     <processed>/review/gif/<Species>_<Action>.gif
 
 The names are the ``bvhs/`` names, exactly: a GIF is the picture of the clip
 that sits next to it in ``bvhs/`` and ``motions/``, so ``Alligator_BigMouth.gif``
 shows what ``Alligator_BigMouth.bvh`` contains and nothing has to be re-derived
-to line the two up.  Which source GLB that is comes straight out of the
-dataset's ``motion_metadata.json`` (``motions[<clip>.npy].source_fbx_path``),
-the only record of the mapping -- the preprocessor's filename rules strip
-species prefixes, drop all-in-one bundles and CamelCase the rest, and
-re-implementing them here would be a second copy free to drift.  So a dataset
-is renderable once it has been preprocessed; ``cond.npy`` is read too, for the
-per-species facing and size corrections, but a missing cond only costs those.
+to line the two up.  The clips and their names come from the preprocessor's
+own name-only enumeration (``dataset_pipeline.enumerate_object_clips``) over
+``raw`` -- its filename rules strip species prefixes, drop all-in-one bundles
+and CamelCase the rest, and re-implementing them here would be a second copy
+free to drift.  The per-species facing and canonical size come from the
+preprocessor's own rest-pose pass run on the raw reference file
+(:func:`_rest_frame_job`), not from ``cond.npy``.  Nothing a build writes is
+read, so a new dataset can be rendered and reviewed *before* it is
+preprocessed, and its GIFs stay valid after.  A clip the preprocessor later
+drops on geometry (too short, a still pose) has a GIF and no ``bvhs/`` twin.
 
 A run is incremental: a clip is rendered when its GIF is missing or when its
 source GLB has been modified since the GIF was written (:func:`_gif_state`),
 and ``--overwrite`` renders everything selected regardless.  ``--prune``
 deletes, before rendering, the GIFs that no longer have a source to be a
-picture of (:func:`_prune_plan`): a clip the index has dropped, or one whose
-source GLB is gone from disk.
+picture of (:func:`_prune_plan`): a clip the raw tree no longer yields.
 
 The scene is shared by every dataset, so the galleries read the same way: a
 fixed 1x1 see-through grid at ``z = 0`` under a shadow-casting sun, a 50mm lens
@@ -102,8 +105,6 @@ ANYTOP_ROOT = os.path.dirname(DATASET_ROOT)                    # Anytop
 
 # -- paths -------------------------------------------------------------------
 DATASETS_PATH = os.path.join(DATASET_ROOT, "datasets.jsonl")
-METADATA_NAME = "motion_metadata.json"
-COND_NAME = "cond.npy"
 GIF_SUBDIR = os.path.join("review", "gif")
 
 # -- gif ---------------------------------------------------------------------
@@ -227,12 +228,13 @@ DRAW_MODES = ("auto", "mesh", "skeleton")
 
 # ============================ job planning ==================================
 def _discover_datasets(manifest_path=DATASETS_PATH, anytop_root=ANYTOP_ROOT):
-    """The processed trees ``datasets.jsonl`` lists, as ``{namespace, ...}`` rows.
+    """The datasets ``datasets.jsonl`` lists, as ``{namespace, ...}`` rows.
 
-    Mirrors ``serve.py``'s reading of the same file: ``path`` is relative to the
-    Anytop tree that holds ``dataset/``.  A tree with no ``motion_metadata.json``
-    has not been preprocessed and has no clip index to render from, so it is
-    reported and left out rather than failing the run for the others.
+    Mirrors ``serve.py``'s reading of the same file: ``path`` (the processed
+    tree, where the GIFs go)
+    and ``raw`` (the source tree the clips are enumerated from) are relative
+    to the Anytop tree that holds ``dataset/``, or absolute.  ``raw`` is ``None`` for an entry without one;
+    the caller reports and skips it.
     """
     out = []
     if not os.path.isfile(manifest_path):
@@ -252,55 +254,47 @@ def _discover_datasets(manifest_path=DATASETS_PATH, anytop_root=ANYTOP_ROOT):
             namespace = str(entry.get("namespace") or entry.get("name")
                             or os.path.basename(rel))
             processed = os.path.normpath(os.path.join(anytop_root, rel))
+            raw = entry.get("raw")
             out.append({"namespace": namespace, "processed": processed,
-                        "metadata": os.path.join(processed, METADATA_NAME),
-                        "cond": os.path.join(processed, COND_NAME),
+                        "raw": os.path.normpath(os.path.join(anytop_root, raw))
+                               if raw else None,
                         "gif_dir": os.path.join(processed, GIF_SUBDIR)})
     return out
 
 
-def _load_clip_sources(metadata_path, anytop_root=ANYTOP_ROOT):
-    """``{clip stem: (species, source GLB path)}`` from ``motion_metadata.json``.
+def _load_clip_sources(raw_dir, anytop_root=ANYTOP_ROOT):
+    """``{clip stem: (species, source GLB path)}`` for every ``<raw>/<Species>/``.
 
-    The clip stem *is* the BVH stem (``Alligator_BigMouth``), which is what the
-    GIF is named after.  Nothing else in the tree records which source file a
-    clip came from, and the filename rules that produced it are lossy.  The
-    recorded path is absolute in every dataset built so far; a relative one is
-    taken against the Anytop root, the same base ``datasets.jsonl`` uses.
+    The preprocessor's own name-only enumeration, so the stem is the BVH stem
+    (``Alligator_BigMouth``) a build of the same tree writes.  Imported here and
+    not at module level: the spawned bpy workers re-import this module and have
+    no use for the pipeline.
     """
-    with open(metadata_path, "r", encoding="utf-8") as fh:
-        motions = json.load(fh).get("motions", {})
+    _pipeline_import_path(anytop_root)
+    from data_loaders.truebones.truebones_utils import dataset_pipeline
+
     clips = {}
-    for motion_name, entry in motions.items():
-        stem = os.path.splitext(motion_name)[0]
-        source = entry.get("source_fbx_path")
-        if not source:
+    for species in sorted(os.listdir(raw_dir)):
+        if not os.path.isdir(os.path.join(raw_dir, species)):
             continue
-        if not os.path.isabs(source):
-            source = os.path.join(anytop_root, source)
-        clips[stem] = (str(entry.get("object_type") or stem.split("_")[0]),
-                       os.path.normpath(source))
+        for stem, source in dataset_pipeline.enumerate_object_clips(
+                species, raw_dir).items():
+            clips[stem] = (species, os.path.normpath(source))
     return clips
 
 
-def _load_cond(cond_path):
-    try:
-        return np.load(cond_path, allow_pickle=True).item()
-    except (OSError, ValueError, AttributeError) as exc:
-        print("[WARN] no cond (%s): %s -- rendering without the per-species "
-              "facing and size corrections" % (cond_path, exc))
-        return {}
+def _pipeline_import_path(anytop_root=ANYTOP_ROOT):
+    """Make ``data_loaders`` importable, the way ``tools/`` scripts do."""
+    for path in (anytop_root, os.path.dirname(anytop_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
 
-def _load_facing(cond):
-    """``{species: yaw deg}`` putting each species' front towards azimuth 0.
+def _facing_yaw_deg(quat):
+    """The camera yaw that puts a species' front towards azimuth 0.
 
-    ``cond.npy`` stores, per species, the ``orientation_quat`` the preprocessor
-    rotates the skeleton by to make it face the canonical +Z; it is always a pure
-    +Y turn snapped to a quarter.  Measured: -90 for 58 of the 74 zoo species,
-    +-180 for 9 and 0 for 7; 0 for 26 of the 30 zoo_upgrade species, +90 for
-    Cobra and Rabbit2, 180 for Crow and Seagull; 0 for all 156 UnityBundles
-    species, which the bridge already turned onto +Z.  glTF's +Y is Blender's +Z
+    ``quat`` is the preprocessor's ``orientation_quat``: the pure +Y turn that
+    brings the rest pose onto the canonical +Z front.  glTF's +Y is Blender's +Z
     and glTF's +Z is Blender's -Y (the importer's Y-up conversion is a rotation,
     so a turn about +Y keeps its angle), and Blender's -Y is the axis
     :func:`_camera_basis` measures azimuth from -- so the quat's angle is the
@@ -309,51 +303,97 @@ def _load_facing(cond):
     The sign is the inverse: the quat turns the creature onto the canonical
     front, and what the camera needs is where the creature is pointing *now*.
     Verified rather than argued, because it is easy to get backwards and a
-    180-degree error renders a whole library from behind -- for each zoo
-    species the head and hips named by ``canonical_joint_names`` were read out
-    of the Blender armature and the real forward measured off them.  All 70
-    species whose head has any horizontal offset from their hips land on
-    ``-angle`` within a few degrees.  The four that do not are unmeasurable,
-    not counterexamples: Spider and Scorpion carry their head directly above
-    their hips, and Crab and Pigeon have no head joint at all.
+    180-degree error renders a whole library from behind: the head and hips
+    read out of the Blender armature land on ``-angle`` for every species whose
+    head has a horizontal offset from its hips.
     """
-    facing = {}
-    for key, entry in cond.items():
-        quat = entry.get("orientation_quat") if isinstance(entry, dict) else None
-        if quat is None:
-            continue
-        quat = np.asarray(quat, dtype=np.float64).reshape(4)   # (w, x, y, z)
-        facing[str(key).rsplit("/", 1)[-1]] = -math.degrees(
-            2.0 * math.atan2(float(quat[2]), float(quat[0])))
-    return facing
+    quat = np.asarray(quat, dtype=np.float64).reshape(4)   # (w, x, y, z)
+    return -math.degrees(2.0 * math.atan2(float(quat[2]), float(quat[0])))
 
 
-def _load_scales(cond):
-    """``{species: scale_factor}`` -- cond's own canonical size normalisation.
+def _rest_frame_job(raw_dir, species):
+    """``(species, facing yaw deg, scale_factor, error)`` for one species.
 
-    The GLBs are not on a shared scale: as imported, a zoo Rat spans 0.35 world
-    units and a Crab spans 160, a 457x spread, because most assets carry a 0.01
-    node scale and the Crab carries 1.0 (zoo_upgrade: a Rabbit2 at 0.75 against
-    a Horse at 360).  The grid is what pays for that.  Its cell is a fixed world
-    unit, so at the small end a whole creature sits inside one cell and at the
-    large end the lines converge into flat grey and the 200-unit ground plane's
-    own edge comes into frame -- which is what the Crab renders as.
+    The preprocessor's own rest-pose pass (``get_common_features_from_rest_pose``)
+    on the reference file it would pick, so the facing and the canonical size
+    are the ones a build of this tree bakes into ``cond.npy`` -- without one
+    having to exist.  The one input a build has and this does not is the
+    wrapper-root fold depth, which needs every clip aligned to decide; depth 0
+    leaves the facing unchanged and moves the size of a wrapped rig by a
+    fraction, which the grid does not show.
 
-    ``scale_factor`` is the number the preprocessor multiplies each species by
-    to reach the canonical size the model trains on, so it is both the fix and
-    the right unit: applied, a library lands between roughly 1 and 2.5 units
-    and one cell means the same fraction of a body everywhere.  Note it
-    multiplies the *armature-local* coordinates, so the node scale has to be
-    divided back out (see :func:`_rescale_to_canonical`).
+    Facing is always detected from the rig: the tag snapshot is an empty one,
+    so no dataset's ``chain_forward`` overrides or
+    ``!skip-orientation-detection`` apply and nothing outside ``raw`` is read.
+    Runs in a spawned child: the rest pose is imported through bpy.
     """
-    scales = {}
-    for key, entry in cond.items():
-        if not isinstance(entry, dict):
-            continue
-        scale = entry.get("scale_factor")
-        if scale:
-            scales[str(key).rsplit("/", 1)[-1]] = float(scale)
-    return scales
+    import contextlib
+
+    _pipeline_import_path()
+    from data_loaders.truebones.truebones_utils import dataset_tags
+    from data_loaders.truebones.truebones_utils.fbx_filename_rules import (
+        find_tpose_reference_path)
+    from data_loaders.truebones.truebones_utils.features import (
+        get_common_features_from_rest_pose)
+    from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS
+
+    try:
+        dataset_tags.configure_from_cond({})
+        species_dir = os.path.join(raw_dir, species)
+        sources = sorted(os.path.join(species_dir, name)
+                         for name in os.listdir(species_dir)
+                         if name.lower().endswith((".fbx", ".glb", ".gltf")))
+        with contextlib.redirect_stdout(io.StringIO()):
+            rest = get_common_features_from_rest_pose(
+                find_tpose_reference_path(sources), species,
+                max_joints=MAX_JOINTS)
+        quat = getattr(rest.orientation_quat, "qs", rest.orientation_quat)
+        return species, _facing_yaw_deg(quat), float(rest.scale_factor), None
+    except Exception as exc:    # noqa: BLE001 -- one bad rig must not end the run
+        return species, 0.0, None, "%s: %s" % (type(exc).__name__, exc)
+
+
+def _measure_rest_frames(datasets, jobs, workers):
+    """``{(namespace, species): (yaw deg, scale_factor)}`` for the jobs' species.
+
+    The facing turns the camera onto each species' front.  The scale is there
+    for the grid: the GLBs are not on a shared scale (most assets carry a 0.01
+    node scale, a few 1.0), and a grid cell is a fixed world unit, so at the
+    small end a whole creature sits inside one cell and at the large end the
+    lines converge into flat grey and the ground plane's own edge comes into
+    frame.  ``scale_factor`` is what the preprocessor multiplies each species
+    by to reach the canonical size the model trains on, so applied, one cell
+    means the same fraction of a body everywhere.
+
+    Measured only for species that have a clip to render, so an incremental
+    run pays for the rigs it touches.  A species whose rest pose cannot be read
+    is reported and renders uncorrected (yaw 0, its own scale).
+    """
+    by_namespace = {d["namespace"]: d for d in datasets}
+    wanted = sorted({(job[0], job[2]) for job in jobs})
+    frames = {}
+    if not wanted:
+        return frames
+    context = multiprocessing.get_context("spawn")
+    restore_output = _filtered_worker_output()
+    try:
+        with ProcessPoolExecutor(max_workers=max(1, min(workers, len(wanted))),
+                                 mp_context=context) as pool:
+            futures = {pool.submit(_rest_frame_job,
+                                   by_namespace[namespace]["raw"], species):
+                       namespace for namespace, species in wanted}
+            for future in as_completed(futures):
+                namespace = futures[future]
+                species, yaw, scale, error = future.result()
+                if error:
+                    print("[WARN] %s:%s: rest pose unreadable, rendering "
+                          "without facing and size corrections -- %s"
+                          % (namespace, species, error.splitlines()[0]),
+                          flush=True)
+                frames[(namespace, species)] = (yaw, scale)
+    finally:
+        restore_output()
+    return frames
 
 
 def _gif_state(gif_path, source):
@@ -384,31 +424,25 @@ def _gif_root(args, dataset):
 def _prune_plan(args, datasets):
     """``[(namespace, gif path, why)]`` -- the GIFs ``--prune`` deletes.
 
-    A GIF is orphaned when its stem is not a clip of the dataset's
-    ``motion_metadata.json`` any more (``"no clip"``: renamed, merged or
-    dropped by a later preprocess) or when the clip's recorded source GLB is
-    gone from disk (``"no source"``).  ``--clip`` narrows the scan; ``--filter``
-    does not, because an orphan has no index entry to read its species from.
+    A GIF is orphaned when its stem is no longer a clip the raw tree yields
+    (``"no clip"``: the source was renamed, removed, or is now skipped by the
+    filename rules).  ``--clip`` narrows the scan; ``--filter`` does not,
+    because an orphan has no source left to read its species from.
     """
     doomed = []
     for dataset in datasets:
         gif_root = _gif_root(args, dataset)
         if not os.path.isdir(gif_root):
             continue
-        clips = {os.path.normcase(stem): source for stem, (_species, source)
-                 in _load_clip_sources(dataset["metadata"]).items()}
+        clips = {os.path.normcase(stem)
+                 for stem in _load_clip_sources(dataset["raw"])}
         for name in sorted(os.listdir(gif_root)):
             stem, ext = os.path.splitext(name)
             if ext.lower() != ".gif" or not fnmatch.fnmatch(stem, args.clip):
                 continue
-            source = clips.get(os.path.normcase(stem))
-            if source is None:
-                why = "no clip"
-            elif not os.path.isfile(source):
-                why = "no source"
-            else:
-                continue
-            doomed.append((dataset["namespace"], os.path.join(gif_root, name), why))
+            if os.path.normcase(stem) not in clips:
+                doomed.append((dataset["namespace"],
+                               os.path.join(gif_root, name), "no clip"))
     return doomed
 
 
@@ -428,14 +462,10 @@ def _plan(args, datasets):
                  "joint_scale": args.joint_scale}
     for dataset in datasets:
         namespace = dataset["namespace"]
-        clips = _load_clip_sources(dataset["metadata"])
+        clips = _load_clip_sources(dataset["raw"])
         if not clips:
-            print("[WARN] %s: %s lists no clips" % (namespace, dataset["metadata"]))
+            print("[WARN] %s: %s yields no clips" % (namespace, dataset["raw"]))
             continue
-        cond = _load_cond(dataset["cond"]) if args.facing or args.canonical_scale \
-            else {}
-        facing = _load_facing(cond) if args.facing else {}
-        scales = _load_scales(cond) if args.canonical_scale else {}
         gif_root = _gif_root(args, dataset)
         for clip in sorted(clips):
             species, source = clips[clip]
@@ -444,17 +474,12 @@ def _plan(args, datasets):
             if not fnmatch.fnmatch(clip, args.clip):
                 continue
             gif_path = os.path.join(gif_root, clip + ".gif")
-            if not os.path.isfile(source):
-                print("  [WARN] %s:%s: source is gone (%s)"
-                      % (namespace, clip, source))
-                continue
             reason = "forced" if args.overwrite else _gif_state(gif_path, source)
             if reason is None:
                 skipped += 1
                 continue
             opts = dict(base_opts, namespace=namespace, reason=reason,
-                        facing_yaw_deg=facing.get(species, 0.0),
-                        canonical_scale=scales.get(species))
+                        facing_yaw_deg=0.0, canonical_scale=None)
             jobs.append((namespace, clip, species, source, gif_path, opts))
     return jobs, skipped
 
@@ -1605,7 +1630,7 @@ def _filtered_worker_output():
 # ================================== CLI =====================================
 def main():
     ap = argparse.ArgumentParser(
-        description="Render every processed clip of every dataset to a review GIF.")
+        description="Render every source clip of every dataset to a review GIF.")
     ap.add_argument("--datasets", default=DATASETS_PATH,
                     help="datasets.jsonl manifest (default: %(default)s)")
     ap.add_argument("--dataset", default="*",
@@ -1628,9 +1653,8 @@ def main():
                     help="re-render everything selected (default: only GIFs "
                          "that are missing or older than their source GLB)")
     ap.add_argument("--prune", action="store_true",
-                    help="first delete GIFs whose clip has left the index or "
-                         "whose source GLB is gone (honours --clip and "
-                         "--dry-run, not --filter)")
+                    help="first delete GIFs whose clip the raw tree no longer "
+                         "yields (honours --clip and --dry-run, not --filter)")
     ap.add_argument("--engine", default="eevee", choices=("eevee", "cycles"))
     ap.add_argument("--size", type=int, default=GIF_SIZE,
                     help="GIF edge in pixels (default: %(default)s)")
@@ -1665,8 +1689,8 @@ def main():
                     help="frames sampled per second of clip (default: %(default)s)")
     ap.add_argument("--max-frames", type=int, default=MAX_FRAMES)
     ap.add_argument("--no-facing", dest="facing", action="store_false",
-                    help="ignore cond.npy's orientation_quat; species authored "
-                         "off +Z then render side-on or from behind")
+                    help="skip the rest-pose facing detection; species "
+                         "authored off +Z then render side-on or from behind")
     ap.add_argument("--no-canonical-scale", dest="canonical_scale",
                     action="store_false",
                     help="import the GLBs at their own scale; the grid cell then "
@@ -1697,13 +1721,13 @@ def main():
                          % (args.datasets, args.dataset))
     ready = []
     for dataset in datasets:
-        if os.path.isfile(dataset["metadata"]):
+        if dataset["raw"] and os.path.isdir(dataset["raw"]):
             ready.append(dataset)
         else:
-            print("[WARN] %s: not preprocessed yet (no %s), skipped"
-                  % (dataset["namespace"], dataset["metadata"]))
+            print("[WARN] %s: no raw source tree (%s), skipped"
+                  % (dataset["namespace"], dataset["raw"] or "no \"raw\" in the manifest"))
     if not ready:
-        raise SystemExit("no dataset has a clip index to render from")
+        raise SystemExit("no dataset has a raw source tree to render from")
 
     doomed = _prune_plan(args, ready) if args.prune else []
     if doomed:
@@ -1721,6 +1745,14 @@ def main():
     jobs, skipped = _plan(args, ready)
     if args.limit:
         jobs = jobs[:args.limit]
+    if jobs and (args.facing or args.canonical_scale):
+        frames = _measure_rest_frames(ready, jobs, args.workers)
+        for namespace, _clip, species, _source, _gif, opts in jobs:
+            yaw, scale = frames.get((namespace, species), (0.0, None))
+            if args.facing:
+                opts["facing_yaw_deg"] = yaw
+            if args.canonical_scale:
+                opts["canonical_scale"] = scale
 
     reasons = collections.Counter(job[5]["reason"] for job in jobs)
     why = ", ".join("%d %s" % (reasons[r], r) for r in ("missing", "stale", "forced")
