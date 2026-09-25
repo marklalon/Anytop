@@ -35,6 +35,15 @@ Codes 0-3 and 5 keep their historical meaning so the near field is unchanged;
 only the two saturated buckets (hop >= MAX_PATH_LEN, and ``no_relation``) are
 subdivided. The tables are still plain integer indices into an ``nn.Embedding``,
 so nothing about the GRPE attention bias changes shape.
+
+Bilateral mirror twins (``symmetry_partner_indices``) are the one relation that
+is not a function of ``parents``: a left and right knee share a code with every
+other cousin at that LCA depth, so the partner is not singled out. The matrix
+leaving this module carries a twin as its topological code plus
+``MIRROR_TWIN_FLAG`` rather than as ``mirror_twin`` outright, so the model can
+drop the twin flag in training and fall back to the code the pair would
+otherwise have (``resolve_mirror_twin_codes``). Everything that indexes an
+embedding table must go through that resolve step first.
 """
 
 from __future__ import annotations
@@ -65,9 +74,18 @@ EDGE_CODES = {
     'cousin_shallow': 9,  # everything else, split by normalized LCA depth
     'cousin_mid': 10,
     'cousin_deep': 11,
+    # j is i's bilateral mirror partner. Never stored directly; see
+    # MIRROR_TWIN_FLAG.
+    'mirror_twin': 12,
 }
-NUM_EDGE_CODES = 12
+NUM_EDGE_CODES = 13
 EDGE_COUSIN_TIERS = 3
+
+# Added to a twin pair's topological code in the stored matrix. A power of two
+# above every code, so the flag and the fallback code never collide and the
+# padding fill (0) never reads as a twin.
+MIRROR_TWIN_FLAG = 16
+assert MIRROR_TWIN_FLAG > NUM_EDGE_CODES
 
 # Two categories that look useful and are provably empty, recorded so they do not
 # get proposed again. A branch-free run is a path, so any two joints in it are
@@ -137,11 +155,17 @@ def _branch_free_runs(parents: np.ndarray) -> np.ndarray:
     return run_root
 
 
-def create_topology_edge_relations(parents, max_path_len: int = MAX_PATH_LEN):
+def create_topology_edge_relations(parents, max_path_len: int = MAX_PATH_LEN,
+                                   symmetry_partner_indices=None):
     """Return ``(edge_rel, topo_rel)``, both ``(n, n)`` int arrays.
 
     ``topo_rel`` stays symmetric; ``edge_rel`` is directed, as it always was
     (``parent``/``child`` already distinguished the two orders).
+
+    With ``symmetry_partner_indices`` (``-1`` = unpaired), each mutual partner
+    pair gets ``MIRROR_TWIN_FLAG`` added to its ``edge_rel`` code in both
+    directions. A partner that is an ancestor/descendant, or not mutual, is
+    ignored rather than trusted: the near field is not a mirror relation.
     """
     parents = np.asarray(parents, dtype=np.int64).reshape(-1)
     n = len(parents)
@@ -220,20 +244,66 @@ def create_topology_edge_relations(parents, max_path_len: int = MAX_PATH_LEN):
     is_leaf = ~np.any(child_of, axis=1)
     edge_rel[idx[is_leaf], idx[is_leaf]] = EDGE_CODES['end_effector']
 
+    twin = _mirror_twin_mask(symmetry_partner_indices, n) & ~colinear & ~eye
+    edge_rel = edge_rel + MIRROR_TWIN_FLAG * twin.astype(np.int64)
+
     return edge_rel, topo_rel
+
+
+def _mirror_twin_mask(symmetry_partner_indices, n: int) -> np.ndarray:
+    """``(n, n)`` bool, True on both cells of every mutual partner pair."""
+    mask = np.zeros((n, n), dtype=bool)
+    if symmetry_partner_indices is None:
+        return mask
+    partner = np.asarray(symmetry_partner_indices, dtype=np.int64).reshape(-1)
+    if partner.shape[0] != n:
+        raise ValueError(
+            f"symmetry_partner_indices has {partner.shape[0]} entries for {n} joints"
+        )
+    idx = np.flatnonzero((partner >= 0) & (partner < n))
+    idx = idx[partner[partner[idx]] == idx]
+    mask[idx, partner[idx]] = True
+    return mask
+
+
+def split_mirror_twin_codes(edge_rel):
+    """Split a stored ``edge_rel`` into ``(topological code, is_twin)``."""
+    edge_rel = np.asarray(edge_rel, dtype=np.int64)
+    is_twin = edge_rel >= MIRROR_TWIN_FLAG
+    return edge_rel - MIRROR_TWIN_FLAG * is_twin, is_twin
+
+
+def resolve_mirror_twin_codes(edge_rel, drop=None):
+    """Map a stored ``edge_rel`` tensor onto embedding indices.
+
+    A twin cell becomes ``mirror_twin``; where ``drop`` is True it becomes its
+    topological code instead, exactly as if the pair had never been paired.
+    Torch-only (``edge_rel`` and ``drop`` are tensors); the import stays lazy so
+    this module stays numpy-only for the preprocessing side.
+    """
+    import torch
+
+    is_twin = edge_rel >= MIRROR_TWIN_FLAG
+    base = edge_rel - MIRROR_TWIN_FLAG * is_twin.to(edge_rel.dtype)
+    if drop is not None:
+        is_twin = is_twin & ~drop
+    return torch.where(is_twin, torch.full_like(base, EDGE_CODES['mirror_twin']), base)
 
 
 def refresh_topology_relations_in_object_cond(object_cond) -> None:
     """Recompute both matrices from ``parents``, in place.
 
-    Both are pure functions of ``parents``, which every cond entry already
-    carries, so a code change here reaches existing datasets without a regen.
-    It does mean the values on disk are advisory; the next preprocessing run
-    persists the refreshed ones.
+    Both are pure functions of ``parents`` and ``symmetry_partner_indices``,
+    which every cond entry already carries, so a code change here reaches
+    existing datasets without a regen. It does mean the values on disk are
+    advisory; the next preprocessing run persists the refreshed ones.
     """
     if not isinstance(object_cond, dict) or 'parents' not in object_cond:
         return
-    edge_rel, topo_rel = create_topology_edge_relations(object_cond['parents'])
+    edge_rel, topo_rel = create_topology_edge_relations(
+        object_cond['parents'],
+        symmetry_partner_indices=object_cond.get('symmetry_partner_indices'),
+    )
     object_cond['joint_relations'] = edge_rel
     object_cond['joints_graph_dist'] = topo_rel
 

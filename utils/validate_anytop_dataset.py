@@ -52,6 +52,7 @@ from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa
 from data_loaders.truebones.truebones_utils.topology_relations import (  # noqa: E402
     NUM_EDGE_CODES,
     NUM_TOPOLOGY_CODES,
+    split_mirror_twin_codes,
 )
 from data_loaders.truebones.truebones_utils import ignore_warnings  # noqa: E402
 from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
@@ -312,8 +313,11 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             # The codes index the model's hop/edge embedding tables directly: an
             # out-of-range value is not caught until a device-side gather, whose
             # error names neither the species nor the matrix.
+            # Twin cells carry MIRROR_TWIN_FLAG on top of their topological code;
+            # the range check is on that code.
+            edge_codes, _ = split_mirror_twin_codes(joint_relations)
             if joint_relations.size and not (
-                (0 <= joint_relations).all() and (joint_relations < NUM_EDGE_CODES).all()
+                (0 <= edge_codes).all() and (edge_codes < NUM_EDGE_CODES).all()
             ):
                 msg = (f"{object_type} joint_relations has codes outside "
                        f"[0, {NUM_EDGE_CODES}): {np.unique(joint_relations)}")

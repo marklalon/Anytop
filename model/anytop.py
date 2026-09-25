@@ -104,6 +104,8 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"joint_name_drop_prob must be in [0, 1], got {self.joint_name_drop_prob}"
             )
+        # Training-only; validated by GraphMotionDecoder.
+        self.mirror_twin_drop_prob=float(kargs.get('mirror_twin_drop_prob', 0.0))
         # Action-label conditioning: a single pathway -- the frozen T5 vectors of
         # the label's WORDS, pooled into one channel per slot (head /
         # direction / modifier) and concatenated. A channel reads its own slot
@@ -293,7 +295,8 @@ class AnyTop(nn.Module):
                                                         cross_limb_last_n=self.cross_limb_last_n,
                                                         action_label_adaln=self.action_label_adaln,
                                                         action_adaln_bottleneck=self.action_adaln_bottleneck,
-                                                        last_layer_ff=self.last_layer_ff)
+                                                        last_layer_ff=self.last_layer_ff,
+                                                        mirror_twin_drop_prob=self.mirror_twin_drop_prob)
             
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)

@@ -7,6 +7,7 @@ from torch import Tensor
 from data_loaders.truebones.truebones_utils.topology_relations import (
     NUM_EDGE_CODES,
     NUM_TOPOLOGY_CODES,
+    resolve_mirror_twin_codes,
 )
 import torch.nn.functional as F
 CUDA_LAUNCH_BLOCKING=1
@@ -965,9 +966,19 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                  value_emb=False,
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
                  cross_limb_last_n=0, action_label_adaln=False,
-                 action_adaln_bottleneck=0, last_layer_ff=0):
+                 action_adaln_bottleneck=0, last_layer_ff=0,
+                 mirror_twin_drop_prob=0.0):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
+
+        # --mirror_twin_drop_prob: per twin pair, the chance in training that
+        # the pair reads as its plain topological code instead of mirror_twin,
+        # so a skeleton whose pairing missed a twin is still in distribution.
+        self.mirror_twin_drop_prob = float(mirror_twin_drop_prob)
+        if not 0.0 <= self.mirror_twin_drop_prob <= 1.0:
+            raise ValueError(
+                f"mirror_twin_drop_prob must be in [0, 1], got {mirror_twin_drop_prob}"
+            )
 
         self.d_model = decoder_layer.d_model
         self.nheads = decoder_layer.heads
@@ -1071,6 +1082,20 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         else:
             self.action_adaln = None
 
+    def _resolve_edge_codes(self, edge_rel: Tensor) -> Tensor:
+        """Stored ``[B, J, J]`` codes -> embedding indices, with twin dropout.
+
+        The drop is drawn per joint at ``q = 1 - sqrt(1 - p)`` and a pair drops
+        when either end does. Each joint has at most one partner, so every pair
+        drops with exactly ``p``, and both directions of a pair together.
+        """
+        drop = None
+        if self.training and self.mirror_twin_drop_prob > 0.0:
+            q = 1.0 - math.sqrt(1.0 - self.mirror_twin_drop_prob)
+            joint_drop = torch.rand(edge_rel.shape[:-1], device=edge_rel.device) < q
+            drop = joint_drop.unsqueeze(-1) | joint_drop.unsqueeze(-2)
+        return resolve_mirror_twin_codes(edge_rel, drop)
+
     def _expand_relation_heads(self, relation: Tensor) -> Tensor:
         if relation.dim() == 3:
             return relation.unsqueeze(1).expand(-1, self.nheads, -1, -1)
@@ -1090,7 +1115,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             loop_phase_mask: Optional[Tensor] = None,
             action_adaln_cond: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
-        edge_rel = self._expand_relation_heads(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
+        edge_rel = self._resolve_edge_codes(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
+        edge_rel = self._expand_relation_heads(edge_rel)
         output = tgt
         T, B = tgt.shape[0], tgt.shape[1]
         # The loop phase table is built once here and shared by every layer:

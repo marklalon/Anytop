@@ -662,7 +662,10 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     object_cond['rest_pose'] = rest_pose_motion[0]
     mark_canonical_cond_entry(object_cond)
     object_cond['pose_base'] = 'rest_pose'
-    joint_relations, joints_graph_dist = create_topology_edge_relations(tp.tpos_anim.parents, max_path_len=MAX_PATH_LEN)
+    joint_relations, joints_graph_dist = create_topology_edge_relations(
+        tp.tpos_anim.parents, max_path_len=MAX_PATH_LEN,
+        symmetry_partner_indices=semantic_metadata['symmetry_partner_indices'],
+    )
     object_cond['joint_relations'] = joint_relations
     object_cond['joints_graph_dist'] = joints_graph_dist
     object_cond['object_type'] = object_type

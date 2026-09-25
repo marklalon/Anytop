@@ -17,6 +17,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -24,10 +25,13 @@ sys.path.insert(0, str(REPO_ROOT))
 from data_loaders.truebones.truebones_utils.topology_relations import (  # noqa: E402
     EDGE_CODES,
     GRAPH_DIST_FAR_BASE,
+    MIRROR_TWIN_FLAG,
     NUM_EDGE_CODES,
     NUM_TOPOLOGY_CODES,
     create_topology_edge_relations,
     refresh_topology_relations_in_cond_dict,
+    resolve_mirror_twin_codes,
+    split_mirror_twin_codes,
 )
 
 
@@ -81,6 +85,12 @@ HUMANOID_PARENTS = np.array([
     3, 15, 16,   # 15..17 right arm
     3, 18,       # 18..19 neck/head
 ], dtype=np.int64)
+
+# Left leg 4..7 <-> right leg 8..11, left arm 12..14 <-> right arm 15..17.
+HUMANOID_PARTNERS = np.full(len(HUMANOID_PARENTS), -1, dtype=np.int64)
+for _left, _right in zip(list(range(4, 8)) + list(range(12, 15)),
+                         list(range(8, 12)) + list(range(15, 18))):
+    HUMANOID_PARTNERS[_left], HUMANOID_PARTNERS[_right] = _right, _left
 
 # A single unbranched chain: every joint is in one run, no siblings anywhere.
 CHAIN_PARENTS = np.array([-1, 0, 1, 2, 3, 4, 5, 6, 7], dtype=np.int64)
@@ -267,6 +277,10 @@ class EmittedCodeCoverageTest(unittest.TestCase):
         for parents in ALL_TREES.values():
             edge_rel, topo_rel = create_topology_edge_relations(parents)
             emitted.update(int(v) for v in np.unique(edge_rel))
+        twin_edge, _ = create_topology_edge_relations(
+            HUMANOID_PARENTS, symmetry_partner_indices=HUMANOID_PARTNERS)
+        emitted.update(int(v) for v in np.unique(
+            resolve_mirror_twin_codes(torch.as_tensor(twin_edge)).numpy()))
         declared = set(EDGE_CODES.values()) - {EDGE_CODES['no_relation']}
         self.assertEqual(
             declared - emitted, set(),
@@ -319,6 +333,76 @@ class HopDistanceTest(unittest.TestCase):
                 np.testing.assert_array_equal(legacy_topo.astype(np.int64), brute)
 
 
+class MirrorTwinTest(unittest.TestCase):
+    def _twin_edge(self, partners=HUMANOID_PARTNERS):
+        return create_topology_edge_relations(
+            HUMANOID_PARENTS, symmetry_partner_indices=partners)[0]
+
+    def test_without_partners_the_matrix_is_unchanged(self):
+        plain, _ = create_topology_edge_relations(HUMANOID_PARENTS)
+        unpaired = np.full(len(HUMANOID_PARENTS), -1)
+        np.testing.assert_array_equal(self._twin_edge(unpaired), plain)
+        self.assertLess(int(plain.max()), MIRROR_TWIN_FLAG)
+
+    def test_twin_cells_carry_the_flag_over_their_topological_code(self):
+        plain, _ = create_topology_edge_relations(HUMANOID_PARENTS)
+        base, is_twin = split_mirror_twin_codes(self._twin_edge())
+        np.testing.assert_array_equal(base, plain)
+        expected = np.zeros_like(is_twin)
+        for i, j in enumerate(HUMANOID_PARTNERS):
+            if j >= 0:
+                expected[i, j] = True
+        np.testing.assert_array_equal(is_twin, expected)
+        np.testing.assert_array_equal(is_twin, is_twin.T)
+        # Thighs hang off the hips together: the fallback is 'sibling'.
+        self.assertEqual(base[4, 8], EDGE_CODES['sibling'])
+
+    def test_colinear_or_one_sided_partners_are_ignored(self):
+        partners = np.full(len(HUMANOID_PARENTS), -1)
+        partners[4], partners[6] = 6, 4      # thigh <-> its own shin: ancestor
+        partners[12] = 15                    # not mutual
+        _, is_twin = split_mirror_twin_codes(self._twin_edge(partners))
+        self.assertFalse(is_twin.any())
+
+    def test_a_partner_list_of_the_wrong_length_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._twin_edge(np.full(3, -1))
+
+    def test_resolve_maps_twins_and_drop_restores_the_fallback(self):
+        edge = torch.as_tensor(self._twin_edge()).unsqueeze(0)
+        base, is_twin = split_mirror_twin_codes(edge[0].numpy())
+        kept = resolve_mirror_twin_codes(edge)[0].numpy()
+        np.testing.assert_array_equal(kept[is_twin], EDGE_CODES['mirror_twin'])
+        np.testing.assert_array_equal(kept[~is_twin], base[~is_twin])
+        dropped = resolve_mirror_twin_codes(edge, torch.ones_like(edge, dtype=torch.bool))
+        np.testing.assert_array_equal(dropped[0].numpy(), base)
+        self.assertLess(int(kept.max()), NUM_EDGE_CODES)
+
+    def test_zero_padding_never_reads_as_a_twin(self):
+        padded = torch.zeros(1, 4, 4, dtype=torch.long)
+        self.assertTrue((resolve_mirror_twin_codes(padded) == 0).all())
+
+    def test_decoder_drops_whole_pairs_at_the_requested_rate(self):
+        from model.motion_transformer import GraphMotionDecoder, GraphMotionDecoderLayer
+        layer = GraphMotionDecoderLayer(d_model=8, nhead=2, dim_feedforward=16)
+        dec = GraphMotionDecoder(layer, num_layers=1, cross_limb=False,
+                                 mirror_twin_drop_prob=0.2)
+        edge = torch.as_tensor(self._twin_edge()).unsqueeze(0).expand(20000, -1, -1)
+        _, is_twin = split_mirror_twin_codes(edge[0].numpy())
+        is_twin = torch.as_tensor(is_twin)
+        torch.manual_seed(0)
+        dec.train()
+        resolved = dec._resolve_edge_codes(edge)
+        kept = resolved == EDGE_CODES['mirror_twin']
+        # Both directions of a pair always agree.
+        self.assertTrue(torch.equal(kept, kept.transpose(1, 2)))
+        rate = 1.0 - kept[:, is_twin].float().mean().item()
+        self.assertAlmostEqual(rate, 0.2, delta=0.01)
+        dec.eval()
+        self.assertTrue((dec._resolve_edge_codes(edge)[:, is_twin]
+                         == EDGE_CODES['mirror_twin']).all())
+
+
 class CondRefreshTest(unittest.TestCase):
     def test_refresh_overwrites_stale_matrices_from_parents(self):
         """Existing cond.npy files carry the old codes; the load path replaces them."""
@@ -334,6 +418,13 @@ class CondRefreshTest(unittest.TestCase):
         expected_edge, expected_topo = create_topology_edge_relations(HUMANOID_PARENTS)
         np.testing.assert_array_equal(cond['some/Species']['joint_relations'], expected_edge)
         np.testing.assert_array_equal(cond['some/Species']['joints_graph_dist'], expected_topo)
+
+    def test_refresh_reads_symmetry_partners(self):
+        cond = {'s': {'parents': HUMANOID_PARENTS,
+                      'symmetry_partner_indices': HUMANOID_PARTNERS.tolist()}}
+        refresh_topology_relations_in_cond_dict(cond)
+        _, is_twin = split_mirror_twin_codes(cond['s']['joint_relations'])
+        self.assertEqual(int(is_twin.sum()), 2 * int((HUMANOID_PARTNERS >= 0).sum() // 2))
 
     def test_refresh_skips_entries_without_parents(self):
         cond = {'no_parents': {'rest_pose': np.zeros((3, 12))}}

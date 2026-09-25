@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 25
+CKPT_VERSION = 26
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -312,6 +312,12 @@ def add_model_options(parser):
                             "vector elementwise but never hides the joint's identity, so the model is "
                             "never trained to fall back on rest_pose/graph_dist/joints_relations and a "
                             "single rare name token can flip a limb's motion prior. Default 0.0 (off).")
+    group.add_argument("--mirror_twin_drop_prob", default=0.2, type=float,
+                       help="Per bilateral twin pair, the probability in training that the pair's "
+                            "mirror_twin edge code is replaced by its plain topological code "
+                            "(sibling / sibling_limb / cousin), so a skeleton whose symmetry pairing "
+                            "missed some twins stays in distribution. Both directions of a pair drop "
+                            "together. Inference never drops.")
     group.add_argument("--species_cond", action='store_true',
                        help="Enable per-species FiLM conditioning: the T5-derived species descriptor "
                             "modulates the timestep token multiplicatively (gamma=1+res, beta; zero-init "
