@@ -1540,13 +1540,8 @@
 {"clip": "PC_PolygonalGolem_WalkBackward", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalGolem_WalkForward", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalKingCobra_BiteAttack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
-{"clip": "PC_PolygonalKingCobra_CastSpell", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
-{"clip": "PC_PolygonalKingCobra_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "PC_PolygonalKingCobra_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalKingCobra_SlitherForward", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
-{"clip": "PC_PolygonalKingCobra_SpitPoisonAttack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
-{"clip": "PC_PolygonalKingCobra_TailAttack", "action_group": "stationary", "action_label": "attack, sting", "is_loop": true, "reviewed": true}
-{"clip": "PC_PolygonalKingCobra_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalMagma_CastSpell", "action_group": "stationary", "action_label": "attack, spin, cast", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalMagma_Charge", "action_group": "stationary", "action_label": "attack, block", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalMagma_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
