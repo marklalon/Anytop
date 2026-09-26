@@ -15,7 +15,7 @@
 {"clip": "Insect_Butterfly_Death", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "Insect_Butterfly_EatLoop", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
 {"clip": "Insect_Butterfly_FlyDeath", "action_group": "transition", "action_label": "die, hover, backward", "is_loop": false, "reviewed": true}
-{"clip": "Insect_Butterfly_FlyLoop01", "action_group": "locomotion", "action_label": "fly, forward, slow", "is_loop": false, "reviewed": true}
+{"clip": "Insect_Butterfly_FlyLoop01", "action_group": "locomotion", "action_label": "fly, forward, slow", "is_loop": true, "reviewed": true}
 {"clip": "Insect_Butterfly_FlyLoop02", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
 {"clip": "Insect_Butterfly_Idle01", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Insect_Butterfly_Idle02", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
@@ -125,7 +125,7 @@
 {"clip": "Pet_Ignas_Idle02", "action_group": "stationary", "action_label": "hover, spin", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Ignas_Spawn", "action_group": "stationary", "action_label": "attack, hover, cast", "is_loop": false, "reviewed": true}
 {"clip": "Pet_Kiki_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Kiki_Idle02", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Kiki_Idle02", "action_group": "stationary", "action_label": "hover", "is_loop": false, "reviewed": true}
 {"clip": "Pet_Kiki_Spawn", "action_group": "stationary", "action_label": "attack, hover, spin", "is_loop": false, "reviewed": true}
 {"clip": "Pet_Marybell_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Marybell_Idle02", "action_group": "stationary", "action_label": "hover, spin", "is_loop": true, "reviewed": true}
