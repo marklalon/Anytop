@@ -1,3 +1,4 @@
+!skip-orientation-detection
 #prop-socket joint(s) for Pet_Hamperor
 #prop-socket joint(s) for Pet_Kiki
 #prop-socket joint(s) for Pet_Proce

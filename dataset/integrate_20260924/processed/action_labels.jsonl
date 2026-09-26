@@ -1,3 +1,10 @@
+{"clip": "Aquatic_Arapaima_FastSwim", "action_group": "locomotion", "action_label": "swim, forward, fast", "is_loop": true, "reviewed": true}
+{"clip": "Aquatic_Arapaima_SlowSwim", "action_group": "locomotion", "action_label": "swim, forward, slow", "is_loop": true, "reviewed": true}
+{"clip": "Aquatic_Arapaima_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
+{"clip": "Aquatic_GreatWhiteShark_FastSwim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
+{"clip": "Aquatic_GreatWhiteShark_Swim", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
+{"clip": "Aquatic_Octopus_FastSwim", "action_group": "locomotion", "action_label": "swim, forward, fast", "is_loop": true, "reviewed": true}
+{"clip": "Aquatic_Octopus_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
 {"clip": "Insect_Ant_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "Insect_Ant_Death", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
 {"clip": "Insect_Ant_Eat", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
