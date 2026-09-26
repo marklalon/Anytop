@@ -17,7 +17,13 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from motion_lib.FBX import extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
+from motion_lib.FBX import (
+    extract_armature_skeleton_data,
+    import_fbx,
+    pose_basis_reflections,
+    reflect_pose_channels,
+    remove_lights_and_cameras,
+)
 from data_loaders.truebones.truebones_utils.animation_utils import refresh_joint_metadata_in_object_cond
 from .rotation_numpy import (
     quat_conjugate_wxyz_np,
@@ -1000,6 +1006,7 @@ class AnimationExporter:
             ) from exc
 
         bone_names = [b.name for b in self.skeleton.bones]
+        tgt_reflections = None
         num_frames = joint_rotations.shape[0]
         jr = joint_rotations.detach().cpu().tolist()
         rt = root_translation.detach().cpu().tolist()
@@ -1248,6 +1255,16 @@ class AnimationExporter:
             bone_names = tgt_names
             bt = tgt_pose_loc.tolist() if tgt_pose_loc is not None else None
 
+            # The retarget ran against the reflection-folded rest; the pose
+            # scales that carry the mirror are still the imported ones here,
+            # before the animation is cleared and the bones renamed.
+            tgt_reflections = pose_basis_reflections(armature, tgt_names, tgt_parents)
+            if tgt_reflections is not None and np.any(tgt_reflections[0][root_indices] < 0.0):
+                raise RuntimeError(
+                    f"Target rig {os.path.basename(mesh_path)} mirrors its root bone; "
+                    "writing root channels onto a mirrored root is not supported."
+                )
+
             if rename_bones_to_canonical:
                 # Rename the imported rig's bones (and matching vertex groups) to
                 # the canonical BVH joint names so the GLB shares one joint-name
@@ -1332,6 +1349,12 @@ class AnimationExporter:
                         loc_arr = bt_np[:, j, :]
                     else:
                         loc_arr = zeros_f3
+                scale = np.ones(3, dtype=np.float64)
+                if tgt_reflections is not None and not is_root:
+                    scale = tgt_reflections[0][j]
+                    rot_arr, loc_arr = reflect_pose_channels(
+                        rot_arr, loc_arr, tgt_reflections[1][j]
+                    )
 
                 write_rotation_channel = (
                     True if rotation_channel_mask_np is None else bool(rotation_channel_mask_np[j])
@@ -1342,7 +1365,7 @@ class AnimationExporter:
                     pbone.rotation_quaternion = tuple(rot_arr[0])
                 else:
                     pbone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
-                pbone.scale = (1.0, 1.0, 1.0)
+                pbone.scale = tuple(scale)
                 pbone.keyframe_insert(data_path="location", frame=0)
                 if write_rotation_channel:
                     pbone.keyframe_insert(data_path="rotation_quaternion", frame=0)
@@ -1351,7 +1374,7 @@ class AnimationExporter:
                 _record(pbone.path_from_id("location"), loc_arr)
                 if write_rotation_channel:
                     _record(pbone.path_from_id("rotation_quaternion"), rot_arr)
-                _record(pbone.path_from_id("scale"), ones_f3)
+                _record(pbone.path_from_id("scale"), ones_f3 * scale)
 
         bpy.ops.object.mode_set(mode="OBJECT")
 

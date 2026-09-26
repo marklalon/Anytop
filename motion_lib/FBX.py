@@ -275,14 +275,110 @@ def _armature_yup_correction(armature):
     return correction
 
 
+def _reflection_signs(armature) -> dict[str, tuple[float, float, float]] | None:
+    """Per-bone sign of the pose-basis scale, or ``None`` when no bone is mirrored.
+
+    A glTF node may carry a negative rest scale (3ds Max mirrored bones). Blender
+    edit bones cannot store it, so the importer parks the sign in every frame's
+    pose basis instead; the rest pose has to take it back or the mirrored chain
+    rests pointing the wrong way. Read at the current scene frame.
+    """
+    signs = {}
+    for pose_bone in armature.pose.bones:
+        sign = tuple(-1.0 if value < 0.0 else 1.0 for value in pose_bone.scale)
+        if sign != (1.0, 1.0, 1.0):
+            signs[pose_bone.name] = sign
+    return signs or None
+
+
+def _proper_local_transform(parent_matrix, matrix):
+    """Local translation + rotation of ``matrix`` under ``parent_matrix`` with reflections removed.
+
+    A mirrored bone's world matrix has a negative determinant, which a quaternion
+    cannot hold. Each such frame is replaced by the proper rotation whose local X
+    column is flipped (``M @ diag(-1, 1, 1)``); translations are re-expressed in
+    that frame, so FK with the resulting rotations lands every head exactly where
+    Blender puts it. Frames without a reflection pass through unchanged.
+    """
+    import mathutils
+
+    flip_x = mathutils.Matrix.Diagonal((-1.0, 1.0, 1.0))
+    if parent_matrix is None:
+        local = matrix.copy()
+        parent_mirrored = False
+    else:
+        local = parent_matrix.inverted_safe() @ matrix
+        parent_mirrored = parent_matrix.to_3x3().determinant() < 0.0
+    translation = local.translation.copy()
+    linear = local.to_3x3()
+    if parent_mirrored:
+        translation = flip_x @ translation
+        linear = flip_x @ linear
+    if matrix.to_3x3().determinant() < 0.0:
+        linear = linear @ flip_x
+    return translation, linear.to_quaternion()
+
+
+def pose_basis_reflections(
+    armature, bone_names: list[str], parents: np.ndarray
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Map the reflection-free channels back onto a mirrored rig's pose basis.
+
+    Returns ``(scales, diagonals)``, each ``(J, 3)`` over ``bone_names`` (the
+    order :func:`extract_armature_skeleton_data` returns), or ``None`` when no
+    bone is mirrored. ``scales`` is the pose-basis scale sign each bone must
+    keep. ``diagonals`` is ``D = scale · flip``, where ``flip`` is the local X
+    flip :func:`_proper_local_transform` applied to the bone's frame; a rest-
+    relative rotation ``R`` and pose location ``t`` from the loader's rest then
+    write to Blender as ``D R D`` and ``D t``. Read at the current scene frame.
+    """
+    signs = _reflection_signs(armature)
+    if signs is None:
+        return None
+    joint_count = len(bone_names)
+    scales = np.ones((joint_count, 3), dtype=np.float64)
+    reflected = np.zeros(joint_count, dtype=bool)
+    for joint_idx, name in enumerate(bone_names):
+        scales[joint_idx] = signs.get(name, (1.0, 1.0, 1.0))
+        parent_idx = int(parents[joint_idx])
+        parent_reflected = reflected[parent_idx] if parent_idx >= 0 else False
+        reflected[joint_idx] = parent_reflected ^ bool(np.prod(scales[joint_idx]) < 0.0)
+    flips = np.where(reflected[:, None], np.array([-1.0, 1.0, 1.0]), 1.0)
+    return scales, scales * flips
+
+
+def reflect_pose_channels(
+    rotations: np.ndarray, locations: np.ndarray, diagonal: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Write loader-rest channels onto a mirrored bone's Blender pose basis.
+
+    ``diagonal`` is the bone's ``D`` from :func:`pose_basis_reflections`:
+    the rotation becomes ``D R D`` -- for a diagonal ``D`` of determinant ``d``
+    that keeps ``w`` and maps the vector part to ``d · D v`` -- and the location
+    becomes ``D t``.
+    """
+    reflected = np.array(rotations, dtype=np.float64, copy=True)
+    reflected[:, 1:] *= np.prod(diagonal) * diagonal
+    return reflected, locations * diagonal
+
+
 def extract_armature_skeleton_data(
     armature,
+    fold_reflections: bool = True,
 ) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
     """Extract bone names, parents, rest offsets, and rest rotations from an armature.
 
     Bones are returned in depth-first pre-order so the joint indexing matches the
     hierarchy order produced by BVH.save/BVH.load for the same skeleton.
+
+    With ``fold_reflections`` each mirrored bone's pose-scale sign (see
+    :func:`_reflection_signs`, read at the current scene frame) is folded back
+    into the rest pose, so rest and animated frames agree on which way the
+    mirrored chains point. Every reader of a rig's rest has to fold the same way
+    as :func:`_scene_to_animation`, or the rest it gets disagrees with the
+    loaded motion.
     """
+    reflection_signs = _reflection_signs(armature) if fold_reflections else None
     armature_bones = armature.data.bones
     all_roots = [bone for bone in armature_bones if bone.parent is None]
     if not all_roots:
@@ -339,18 +435,31 @@ def extract_armature_skeleton_data(
     # pose_bone.matrix (world‑space) coordinate frame.
     root_correction = _armature_yup_correction(armature)
 
+    rest_world = {}
     for joint_idx, bone in enumerate(ordered_bones):
+        parent_world = None
         if bone.parent is not None and bone.parent.name in name_to_idx:
             parent_idx = name_to_idx[bone.parent.name]
             parents[joint_idx] = parent_idx
             rest_local = bone.parent.matrix_local.inverted_safe() @ bone.matrix_local
+            parent_world = rest_world.get(bone.parent.name)
         else:
             rest_local = bone.matrix_local.copy()
             if root_correction is not None:
                 rest_local = root_correction @ rest_local
 
-        rest_translation = rest_local.translation
-        rest_quat = rest_local.to_quaternion()
+        if reflection_signs:
+            import mathutils
+
+            sign = reflection_signs.get(bone.name, (1.0, 1.0, 1.0))
+            world = rest_local @ mathutils.Matrix.Diagonal((*sign, 1.0))
+            if parent_world is not None:
+                world = parent_world @ world
+            rest_world[bone.name] = world
+            rest_translation, rest_quat = _proper_local_transform(parent_world, world)
+        else:
+            rest_translation = rest_local.translation
+            rest_quat = rest_local.to_quaternion()
         offsets[joint_idx] = (rest_translation.x, rest_translation.y, rest_translation.z)
         rest_rotations[joint_idx] = (rest_quat.w, rest_quat.x, rest_quat.y, rest_quat.z)
 
@@ -419,13 +528,15 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
     from motion_lib.Quaternions import Quaternions
 
     armature = _load_scene(scene_path)
+    scene = bpy.context.scene
+    sample_times = get_action_sample_times(armature)
+    set_scene_time(scene, sample_times[0])
+    reflection_signs = _reflection_signs(armature)
     bone_names, parents, offsets, rest_rotations = extract_armature_skeleton_data(armature)
 
     joint_count = len(bone_names)
     orients = Quaternions(rest_rotations)
 
-    scene = bpy.context.scene
-    sample_times = get_action_sample_times(armature)
     fps = infer_sample_fps(scene, sample_times)
     num_frames = len(sample_times)
 
@@ -477,8 +588,15 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
             else:
                 local_matrix = parent_inverse @ pose_matrix
 
-            t = local_matrix.translation
-            q = local_matrix.to_quaternion()
+            if reflection_signs:
+                if parent_inverse is None:
+                    t, q = _proper_local_transform(None, local_matrix)
+                else:
+                    parent_idx = ordered_parent_indices[joint_idx]
+                    t, q = _proper_local_transform(pose_matrices[parent_idx], pose_matrix)
+            else:
+                t = local_matrix.translation
+                q = local_matrix.to_quaternion()
             pos_np[frame_idx, joint_idx] = [t.x, t.y, t.z]
             rot_qs[frame_idx, joint_idx] = [q.w, q.x, q.y, q.z]
 

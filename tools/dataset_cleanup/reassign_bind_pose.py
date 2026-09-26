@@ -501,16 +501,23 @@ def _rebake_action_against_new_rest(
     """Rebuild pose-bone animation so total local transforms stay unchanged."""
     import numpy as np
     from mathutils import Quaternion
-    from motion_lib.FBX import extract_armature_skeleton_data, iter_action_fcurves
+    from motion_lib.FBX import (
+        extract_armature_skeleton_data,
+        iter_action_fcurves,
+        pose_basis_reflections,
+        reflect_pose_channels,
+    )
     from utils.rotation_numpy import (
         quat_conjugate_wxyz_np,
         quat_multiply_wxyz_np,
         quat_rotate_wxyz_np,
     )
 
-    new_names, _new_parents, new_offsets, new_rest_rotations = (
+    new_names, new_parents, new_offsets, new_rest_rotations = (
         extract_armature_skeleton_data(armature)
     )
+    # Read before the old action is cleared: its pose scales carry the mirror.
+    reflections = pose_basis_reflections(armature, new_names, new_parents)
     original_name_to_idx = {name: idx for idx, name in enumerate(original_names)}
     missing = [name for name in new_names if name not in original_name_to_idx]
     if missing:
@@ -537,6 +544,13 @@ def _rebake_action_against_new_rest(
         rest_rot_inv,
         total_positions - rest_off[None, :, :],
     )
+    pose_scales = np.ones((len(new_names), 3), dtype=np.float64)
+    if reflections is not None:
+        pose_scales = reflections[0]
+        for joint_idx, diagonal in enumerate(reflections[1]):
+            pose_rotations[:, joint_idx], pose_locations[:, joint_idx] = reflect_pose_channels(
+                pose_rotations[:, joint_idx], pose_locations[:, joint_idx], diagonal
+            )
 
     if armature.animation_data:
         armature.animation_data_clear()
@@ -570,7 +584,7 @@ def _rebake_action_against_new_rest(
             else:
                 quat = Quaternion((1.0, 0.0, 0.0, 0.0))
             pose_bone.rotation_quaternion = quat
-            pose_bone.scale = (1.0, 1.0, 1.0)
+            pose_bone.scale = tuple(float(v) for v in pose_scales[joint_idx])
             pose_bone.keyframe_insert(data_path="location", frame=frame_idx)
             pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame_idx)
             pose_bone.keyframe_insert(data_path="scale", frame=frame_idx)
