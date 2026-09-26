@@ -475,6 +475,31 @@ def _rebuild_location(bpy, armature, action, bone_name, outer, info, fps):
         fcurve.update()
 
 
+def _relative_to_object(info: FbxScaleInfo, armature) -> FbxScaleInfo:
+    """*info* with the armature object's own node scale divided out.
+
+    The importer turns a rig's top node (a 3ds Max ``Bip001``) into the
+    armature *object* and applies that node's scale as object scale, which it
+    gets right; only scale a bone node carries relative to it is half-applied.
+    An armature whose name is not an FBX node has no such scale to remove.
+    """
+    base = info.scale.get(_bone_key(info, armature.name), 1.0)
+    if abs(base - 1.0) <= _SCALE_EPS or base == 0.0:
+        return info
+    relative = FbxScaleInfo()
+    relative.scale = {k: v / base for k, v in info.scale.items()}
+    relative.parent_scale = {k: v / base for k, v in info.parent_scale.items()}
+    relative.local_translation = info.local_translation
+    relative.bind_posed = info.bind_posed
+    relative.translation_curve = info.translation_curve
+    relative.has_scaled_bone = any(
+        abs(v - 1.0) > _SCALE_EPS
+        for k, v in relative.scale.items()
+        if k in {_bone_key(info, b.name) for b in armature.data.bones}
+    )
+    return relative
+
+
 def repair_scaled_bone_import(bpy, filepath: str, objects=None) -> bool:
     """Undo Blender's half-applied bone scale on a freshly imported FBX.
 
@@ -494,12 +519,18 @@ def repair_scaled_bone_import(bpy, filepath: str, objects=None) -> bool:
     scene = bpy.context.scene
     fps = scene.render.fps / max(scene.render.fps_base, 1e-9)
     repaired = False
-    curve_info = None
+    full_curve_info = None
     for armature in armatures:
-        moved = _repair_rest(bpy, armature, info)
-        if moved and curve_info is None:
+        own_info = _relative_to_object(info, armature)
+        if not own_info.has_scaled_bone:
+            continue
+        curve_info = None
+        moved = _repair_rest(bpy, armature, own_info)
+        if moved:
             # Rebuilding a channel needs the key arrays the cheap scan skipped.
-            curve_info = read_scale_info(filepath, with_curves=True) or info
+            if full_curve_info is None:
+                full_curve_info = read_scale_info(filepath, with_curves=True) or info
+            curve_info = _relative_to_object(full_curve_info, armature)
         for action in _actions_of(armature):
             for fcurve in _action_fcurves(action):
                 if not fcurve.data_path.endswith(".location"):
@@ -508,9 +539,14 @@ def repair_scaled_bone_import(bpy, filepath: str, objects=None) -> bool:
                     bone_name = fcurve.data_path.split('"')[1]
                 except IndexError:
                     continue
+                # Several armatures from one file share one action (a slot
+                # per object) and _action_fcurves reads every slot: only this
+                # armature's bones are its to rescale.
+                if bone_name not in armature.data.bones:
+                    continue
                 if bone_name in moved:
                     continue  # rebuilt below instead of rescaled
-                factor = info.scale.get(_bone_key(info, bone_name), 1.0)
+                factor = own_info.scale.get(_bone_key(own_info, bone_name), 1.0)
                 if abs(factor - 1.0) <= _SCALE_EPS:
                     continue
                 for key_point in fcurve.keyframe_points:
@@ -521,7 +557,7 @@ def repair_scaled_bone_import(bpy, filepath: str, objects=None) -> bool:
                 repaired = True
             for bone_name, outer in moved.items():
                 _rebuild_location(
-                    bpy, armature, action, bone_name, outer, curve_info or info, fps
+                    bpy, armature, action, bone_name, outer, curve_info or own_info, fps
                 )
         repaired = repaired or bool(moved)
     return repaired
