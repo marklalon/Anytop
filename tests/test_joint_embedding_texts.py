@@ -140,7 +140,7 @@ def test_limb_code_keeps_fore_hind_apart_while_side_comes_from_geometry():
 
 
 def test_wing_and_middle_leg_quadrant_codes_decode_like_leg_codes():
-    # A cicada's fore/hind wings and middle legs (Taobao_20260924 Cicada).
+    # A cicada's fore/hind wings and middle legs (integrate_20260924 Cicada).
     texts = _embedding_texts(
         ['Root', 'Bone_wingFL', 'Bone_wingFR', 'Bone_wingBL', 'Bone_wingBR',
          'Bone_LegML00', 'Bone_LegMR00'],

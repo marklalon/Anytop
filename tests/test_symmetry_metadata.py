@@ -164,7 +164,7 @@ def test_face_corner_codes_side_a_face_part_only() -> None:
 
 
 def test_wing_and_middle_leg_quadrant_codes_are_sided() -> None:
-    # A cicada's fore/hind wings and middle legs (Taobao_20260924 Cicada).
+    # A cicada's fore/hind wings and middle legs (integrate_20260924 Cicada).
     assert detect_joint_side('Bone_wingFL') == 'left'
     assert detect_joint_side('Bone_wingBR') == 'right'
     assert detect_joint_side('Bone_LegML00') == 'left'

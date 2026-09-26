@@ -52,8 +52,8 @@ Exit status is 1 when any ERROR is found, else 0.
 
 Usage::
 
-    .venv/Scripts/python.exe Anytop/tools/precheck_dataset.py E:/Dataset/Taobao_20260924
-    .venv/Scripts/python.exe Anytop/tools/precheck_dataset.py E:/Dataset/Taobao_20260924 \\
+    .venv/Scripts/python.exe Anytop/tools/precheck_dataset.py Anytop/dataset/integrate_20260924/raw
+    .venv/Scripts/python.exe Anytop/tools/precheck_dataset.py Anytop/dataset/integrate_20260924/raw \\
         --filter "Pet_*" --joints --report precheck.json
 """
 

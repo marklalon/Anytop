@@ -1,4 +1,4 @@
 {"namespace": "truebones/zoo",         "path": "dataset/truebones/zoo/truebones_processed",          "raw": "dataset/truebones/zoo/Truebone_Z-OO"}
 {"namespace": "truebones/zoo_upgrade", "path": "dataset/truebones/zoo_upgrade/clean_processed",      "raw": "dataset/truebones/zoo_upgrade/clean"}
 {"namespace": "unitybundles",          "path": "dataset/unitybundles/processed",                    "raw": "dataset/unitybundles/raw"}
-{"namespace": "taobao_20260924",       "path": "dataset/taobao_20260924/processed",                 "raw": "dataset/taobao_20260924/raw"}
+{"namespace": "integrate_20260924",    "path": "dataset/integrate_20260924/processed",              "raw": "dataset/integrate_20260924/raw"}
