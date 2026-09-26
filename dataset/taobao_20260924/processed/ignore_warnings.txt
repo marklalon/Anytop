@@ -1,0 +1,4 @@
+#prop-socket joint(s) for Pet_Hamperor
+#prop-socket joint(s) for Pet_Kiki
+#prop-socket joint(s) for Pet_Proce
+#prop-socket joint(s) for Pet_Yulia

@@ -1,0 +1,117 @@
+{"clip": "Ant_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
+{"clip": "Ant_Death", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
+{"clip": "Ant_Eat", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
+{"clip": "Ant_Idle01", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Ant_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "Bee_Eat", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
+{"clip": "Bee_Fly01", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
+{"clip": "Bee_Fly02", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
+{"clip": "Bee_FlyDeath", "action_group": "transition", "action_label": "die, hover", "is_loop": false, "reviewed": true}
+{"clip": "Bee_FlyEnd", "action_group": "transition", "action_label": "land, hover", "is_loop": false, "reviewed": true}
+{"clip": "Bee_FlyStart", "action_group": "transition", "action_label": "takeoff", "is_loop": false, "reviewed": true}
+{"clip": "Bee_Idle01", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Bee_Idle02", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Bee_Idle03", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Butterfly_Death", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
+{"clip": "Butterfly_EatLoop", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
+{"clip": "Butterfly_FlyDeath", "action_group": "transition", "action_label": "die, hover, backward", "is_loop": false, "reviewed": true}
+{"clip": "Butterfly_FlyLoop01", "action_group": "locomotion", "action_label": "fly, forward, slow", "is_loop": false, "reviewed": true}
+{"clip": "Butterfly_FlyLoop02", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
+{"clip": "Butterfly_Idle01", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Butterfly_Idle02", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Cicada_Crying", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Cicada_Death", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
+{"clip": "Cicada_FlyAttack", "action_group": "stationary", "action_label": "attack, hover, bite", "is_loop": true, "reviewed": true}
+{"clip": "Cicada_FlyEnd", "action_group": "transition", "action_label": "land, hover", "is_loop": false, "reviewed": true}
+{"clip": "Cicada_FlyLoop", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
+{"clip": "Cicada_FlyStart", "action_group": "transition", "action_label": "takeoff", "is_loop": false, "reviewed": true}
+{"clip": "Dragonfly_Eat", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Dragonfly_Fly01", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
+{"clip": "Dragonfly_Fly02", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
+{"clip": "Dragonfly_FlyAttack01", "action_group": "stationary", "action_label": "attack, hover", "is_loop": false, "reviewed": true}
+{"clip": "Dragonfly_FlyAttack02", "action_group": "stationary", "action_label": "attack, hover", "is_loop": false, "reviewed": true}
+{"clip": "Dragonfly_FlyEnd", "action_group": "transition", "action_label": "land, hover", "is_loop": false, "reviewed": true}
+{"clip": "Dragonfly_FlyStart", "action_group": "transition", "action_label": "takeoff", "is_loop": false, "reviewed": true}
+{"clip": "Dragonfly_Idle02", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Dragonfly_Idle03", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Firefly_Death", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
+{"clip": "Firefly_Eat", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
+{"clip": "Firefly_FlyAttack", "action_group": "stationary", "action_label": "attack, hover, bite", "is_loop": true, "reviewed": true}
+{"clip": "Firefly_FlyEnd", "action_group": "transition", "action_label": "land, hover", "is_loop": false, "reviewed": true}
+{"clip": "Firefly_FlyLoop", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
+{"clip": "Firefly_Idle01", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Firefly_IdleAttack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
+{"clip": "Firefly_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "KingStagBeetle_Eat", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "KingStagBeetle_FlyAttack01", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
+{"clip": "KingStagBeetle_FlyAttack02", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
+{"clip": "KingStagBeetle_FlyAttack03", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
+{"clip": "KingStagBeetle_FlyDeath01", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
+{"clip": "KingStagBeetle_FlyDeath02", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
+{"clip": "KingStagBeetle_FlyEnd", "action_group": "transition", "action_label": "land, hover", "is_loop": false, "reviewed": true}
+{"clip": "KingStagBeetle_FlyLoop", "action_group": "locomotion", "action_label": "fly, forward, up", "is_loop": true, "reviewed": true}
+{"clip": "KingStagBeetle_FlyWalk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "KingStagBeetle_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Bentley_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Bentley_Idle02", "action_group": "stationary", "action_label": "hover, shake", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Bentley_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Chick_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Chick_Idle02", "action_group": "stationary", "action_label": "hover, roll, backward", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Chick_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Fafnir_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Fafnir_Idle02", "action_group": "stationary", "action_label": "attack, hover, spin", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Fafnir_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Gate_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Gate_Idle02", "action_group": "stationary", "action_label": "hover, jump, spin", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Gate_Pose", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Goldfish_Idle01", "action_group": "stationary", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Goldfish_Idle02", "action_group": "stationary", "action_label": "swim, roll", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Goldfish_Pose", "action_group": "stationary", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Hamperor_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Hamperor_Idle02", "action_group": "stationary", "action_label": "hover, eat", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Hamperor_Spawn", "action_group": "stationary", "action_label": "attack, hover, cast", "is_loop": false, "reviewed": true}
+{"clip": "Pet_Ignas_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Ignas_Idle02", "action_group": "stationary", "action_label": "hover, spin", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Ignas_Spawn", "action_group": "stationary", "action_label": "attack, hover, cast", "is_loop": false, "reviewed": true}
+{"clip": "Pet_Kiki_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Kiki_Idle02", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Kiki_Spawn", "action_group": "stationary", "action_label": "attack, hover, spin", "is_loop": false, "reviewed": true}
+{"clip": "Pet_Marybell_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Marybell_Idle02", "action_group": "stationary", "action_label": "hover, spin", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Marybell_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Miho_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Miho_Idle02", "action_group": "stationary", "action_label": "hover, roll, forward", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Miho_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Miri_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Miri_Idle02", "action_group": "stationary", "action_label": "hover, spin", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Miri_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Nero_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Nero_Idle02", "action_group": "stationary", "action_label": "attack, hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Nero_Pose", "action_group": "stationary", "action_label": "idle, laydown", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Penny_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Penny_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Proce_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Proce_Idle02", "action_group": "stationary", "action_label": "hover, happy", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Proce_Spawn", "action_group": "stationary", "action_label": "attack, hover, spin", "is_loop": false, "reviewed": true}
+{"clip": "Pet_Shiba_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_SnowDeer_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_SnowDeer_Idle02", "action_group": "stationary", "action_label": "hover, spin", "is_loop": true, "reviewed": true}
+{"clip": "Pet_SnowDeer_Pose", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Will_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Will_Pose", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Yulia_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Yulia_Idle02", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Yulia_Spawn", "action_group": "stationary", "action_label": "hover, spin", "is_loop": false, "reviewed": true}
+{"clip": "Sawyer_Attack01", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
+{"clip": "Sawyer_Attack02", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
+{"clip": "Sawyer_Death", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
+{"clip": "Sawyer_Eat", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
+{"clip": "Sawyer_Fly", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
+{"clip": "Sawyer_FlyEnd", "action_group": "transition", "action_label": "land, hover", "is_loop": false, "reviewed": true}
+{"clip": "Sawyer_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "StagBeetle_Attack01", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
+{"clip": "StagBeetle_Attack02", "action_group": "stationary", "action_label": "attack, swat", "is_loop": true, "reviewed": true}
+{"clip": "StagBeetle_Death", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
+{"clip": "StagBeetle_FlyEnd", "action_group": "transition", "action_label": "land, hover", "is_loop": false, "reviewed": true}
+{"clip": "StagBeetle_FlyLoop", "action_group": "locomotion", "action_label": "fly, forward, up", "is_loop": true, "reviewed": true}
+{"clip": "StagBeetle_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
