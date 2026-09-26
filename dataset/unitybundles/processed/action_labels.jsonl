@@ -514,7 +514,7 @@
 {"clip": "LH_Hero_MeleeRightAttack02", "action_group": "stationary", "action_label": "attack, right, punch", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_MeleeRightAttack03", "action_group": "stationary", "action_label": "attack, right, slash", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_NodHead", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_OnTheGroundLoop", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_OnTheGroundLoop", "action_group": "stationary", "action_label": "rest, sleep", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_PickUp", "action_group": "stationary", "action_label": "pickup", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_ProjectileRightAttack01", "action_group": "stationary", "action_label": "attack, right, projectile", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Pull", "action_group": "locomotion", "action_label": "walk, backward, pull", "is_loop": true, "reviewed": true}
@@ -649,7 +649,7 @@
 {"clip": "MB_TigerDrago_Scared", "action_group": "stationary", "action_label": "idle, shield", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_SleepEnter", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_SleepExit", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
-{"clip": "MB_TigerDrago_Sleep", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
+{"clip": "MB_TigerDrago_Sleep", "action_group": "stationary", "action_label": "rest, sleep", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Stun", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_SwimBack", "action_group": "locomotion", "action_label": "swim, backward", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_SwimIdle", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
@@ -734,7 +734,7 @@
 {"clip": "MB_Unka_RunRight", "action_group": "locomotion", "action_label": "run, turn, right", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_SleepEnd", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
-{"clip": "MB_Unka_SleepIdle", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
+{"clip": "MB_Unka_SleepIdle", "action_group": "stationary", "action_label": "rest, sleep", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_SleepStart", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_Spinning", "action_group": "stationary", "action_label": "attack, whip", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_Stun", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
@@ -1599,7 +1599,7 @@
 {"clip": "PC_PolygonalWolf_Jump", "action_group": "transition", "action_label": "jump, up", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_LookAround", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_PoundAttack", "action_group": "stationary", "action_label": "attack, jump, bite", "is_loop": false, "reviewed": true}
-{"clip": "PC_PolygonalWolf_Resting", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
+{"clip": "PC_PolygonalWolf_Resting", "action_group": "stationary", "action_label": "rest, sleep", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_RunForward", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_WalkBackward", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
@@ -1878,7 +1878,7 @@
 {"clip": "RU01_GripperRobot_Working", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
 {"clip": "RU01_HermitRobot_BlastAttack", "action_group": "stationary", "action_label": "attack, punch", "is_loop": true, "reviewed": true}
 {"clip": "RU01_HermitRobot_CastSpell", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
-{"clip": "RU01_HermitRobot_Charging", "action_group": "stationary", "action_label": "idle, crouch", "is_loop": true, "reviewed": true}
+{"clip": "RU01_HermitRobot_Charging", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
 {"clip": "RU01_HermitRobot_Defend", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
 {"clip": "RU01_HermitRobot_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "RU01_HermitRobot_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}

@@ -25,10 +25,10 @@
 {"clip": "Bear_HindBreathing", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
 {"clip": "Bear_HindToStand", "action_group": "transition", "action_label": "rear, down", "is_loop": false, "reviewed": true}
 {"clip": "Bear_Hind2", "action_group": "stationary", "action_label": "idle, rear, look", "is_loop": true, "reviewed": true}
-{"clip": "Bear_Lying", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
-{"clip": "Bear_LyingBreathing", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
+{"clip": "Bear_Lying", "action_group": "stationary", "action_label": "rest, sleep", "is_loop": true, "reviewed": true}
+{"clip": "Bear_LyingBreathing", "action_group": "stationary", "action_label": "rest, sleep", "is_loop": true, "reviewed": true}
 {"clip": "Bear_LyingToStand", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
-{"clip": "Bear_Lying2", "action_group": "stationary", "action_label": "rest, look", "is_loop": true, "reviewed": true}
+{"clip": "Bear_Lying2", "action_group": "stationary", "action_label": "rest, sleep", "is_loop": true, "reviewed": true}
 {"clip": "Bear_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Bear_Sneak", "action_group": "locomotion", "action_label": "walk, forward, slow", "is_loop": true, "reviewed": true}
 {"clip": "Bear_SneakL", "action_group": "locomotion", "action_label": "walk, left, slow", "is_loop": false, "reviewed": true}
@@ -51,7 +51,7 @@
 {"clip": "Boar_Laydown", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
 {"clip": "Boar_Observing", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "Boar_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
-{"clip": "Boar_Sleeping", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
+{"clip": "Boar_Sleeping", "action_group": "stationary", "action_label": "idle, rest, sleep", "is_loop": true, "reviewed": true}
 {"clip": "Boar_Sniffing", "action_group": "stationary", "action_label": "idle, sniff", "is_loop": true, "reviewed": true}
 {"clip": "Boar_Trot", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}
 {"clip": "Boar_WakeUp", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
@@ -90,7 +90,7 @@
 {"clip": "Deer_Buck_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Deer_Buck_Run2", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "Deer_Buck_Run3", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
-{"clip": "Deer_Buck_Sleeping", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
+{"clip": "Deer_Buck_Sleeping", "action_group": "stationary", "action_label": "idle, rest, sleep", "is_loop": true, "reviewed": true}
 {"clip": "Deer_Buck_Trot", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}
 {"clip": "Deer_Buck_WakeUp", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "Deer_Buck_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
@@ -108,7 +108,7 @@
 {"clip": "Donkey_Laydown", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
 {"clip": "Donkey_RearLegKick", "action_group": "stationary", "action_label": "attack, kick", "is_loop": true, "reviewed": true}
 {"clip": "Donkey_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
-{"clip": "Donkey_Sleep", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
+{"clip": "Donkey_Sleep", "action_group": "stationary", "action_label": "rest, sleep", "is_loop": true, "reviewed": true}
 {"clip": "Donkey_Trot", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}
 {"clip": "Donkey_WakeUp", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "Donkey_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
@@ -123,7 +123,7 @@
 {"clip": "Goat_RamRun", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Goat_RearKick", "action_group": "stationary", "action_label": "attack, kick", "is_loop": true, "reviewed": true}
 {"clip": "Goat_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
-{"clip": "Goat_Sleep", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
+{"clip": "Goat_Sleep", "action_group": "stationary", "action_label": "idle, rest, sleep", "is_loop": true, "reviewed": true}
 {"clip": "Goat_Trot", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}
 {"clip": "Goat_WakeUp", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "Goat_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
@@ -138,7 +138,7 @@
 {"clip": "Horse_Laydown", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
 {"clip": "Horse_RearLegKick", "action_group": "stationary", "action_label": "attack, kick", "is_loop": true, "reviewed": true}
 {"clip": "Horse_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
-{"clip": "Horse_Sleeping", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
+{"clip": "Horse_Sleeping", "action_group": "stationary", "action_label": "idle, rest, sleep", "is_loop": true, "reviewed": true}
 {"clip": "Horse_Trot", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}
 {"clip": "Horse_Turn", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
 {"clip": "Horse_WakeUp", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
@@ -158,11 +158,11 @@
 {"clip": "Kappa_gorilla_Gallop", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "Kappa_gorilla_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Kappa_gorilla_IdleToRelax", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
-{"clip": "Kappa_gorilla_Relax", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
-{"clip": "Kappa_gorilla_RelaxLookaround", "action_group": "stationary", "action_label": "rest, look", "is_loop": true, "reviewed": true}
-{"clip": "Kappa_gorilla_RelaxScratchground", "action_group": "stationary", "action_label": "rest", "is_loop": true, "reviewed": true}
+{"clip": "Kappa_gorilla_Relax", "action_group": "stationary", "action_label": "idle, rest", "is_loop": true, "reviewed": true}
+{"clip": "Kappa_gorilla_RelaxLookaround", "action_group": "stationary", "action_label": "idle, rest, look", "is_loop": true, "reviewed": true}
+{"clip": "Kappa_gorilla_RelaxScratchground", "action_group": "stationary", "action_label": "idle, rest", "is_loop": true, "reviewed": true}
 {"clip": "Kappa_gorilla_RelaxToIdle", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
-{"clip": "Kappa_gorilla_RelaxYawn", "action_group": "stationary", "action_label": "rest, yawn", "is_loop": true, "reviewed": true}
+{"clip": "Kappa_gorilla_RelaxYawn", "action_group": "stationary", "action_label": "idle, rest, yawn", "is_loop": true, "reviewed": true}
 {"clip": "Kappa_gorilla_Threaten", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "Kappa_gorilla_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
 {"clip": "Locust_monster_AtkL", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}

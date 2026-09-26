@@ -87,7 +87,7 @@
 {"clip": "Pet_Miri_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Nero_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Nero_Idle02", "action_group": "stationary", "action_label": "attack, hover", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Nero_Pose", "action_group": "stationary", "action_label": "idle, laydown", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Nero_Pose", "action_group": "stationary", "action_label": "idle, rest", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Penny_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Penny_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Proce_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
