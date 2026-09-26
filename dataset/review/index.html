@@ -129,17 +129,6 @@
     font-size: 10px;
     letter-spacing: .3px;
   }
-  /* A row a prefill tool filled: the label is a proposal measured from the
-     motion, not an annotation, until somebody signs it off here. */
-  .autofill-tag {
-    position: absolute; top: 0; left: 0;
-    padding: 3px 6px;
-    background: rgba(63,110,170,.92);
-    color: #fff;
-    font-size: 10px;
-    letter-spacing: .3px;
-    cursor: help;
-  }
 
   .thumb { position: relative; width: 224px; height: 224px; background: #202020; }
   .thumb img { display: block; width: 224px; height: 224px; }
@@ -337,12 +326,11 @@
   <select id="group"><option value="all">all</option></select>
 
   <label class="f" for="state">状态</label>
-  <select id="state" title="核验状态。自动补标 = 标签由 tools/prefill_*.py 预填、还没人核；改标签即清除该标记，只点 OK 核验则保留">
+  <select id="state" title="核验状态">
     <option value="all">all</option>
     <option value="todo">未核验</option>
     <option value="done">已核验</option>
     <option value="pending">待删除</option>
-    <option value="autofill">自动补标</option>
   </select>
 
   <label class="f" for="loop">loop</label>
@@ -432,9 +420,6 @@ function dropImgs(root) {
 
 const isReviewed = (r) => r.reviewed === true;
 const isPending = (r) => r.pending_delete === true;
-// A label a prefill tool wrote; serve.py drops the mark when a person retypes
-// the label, so this is "still as the tool left it", reviewed or not.
-const isAutofill = (r) => r.autofill === true;
 // is_loop is tri-state on a row: true / false are verdicts (proposed by
 // tools/prefill_loop_flags.py or set here); a row without the key has not been
 // judged yet.
@@ -547,13 +532,11 @@ function counts() {
   const done = rows.filter(isReviewed).length;
   const pending = rows.filter(isPending).length;
   const invalid = rows.filter(r => !!r.label_error).length;
-  const autofill = rows.filter(isAutofill).length;
   const loops = rows.filter(r => loopState(r) === 'yes').length;
   const unjudged = rows.filter(r => loopState(r) === 'none').length;
   $('counts').innerHTML = '已核验 <b>' + done + '</b> / ' + rows.length +
     ' &nbsp;·&nbsp; 循环 <b>' + loops + '</b>' +
     (unjudged ? ' <span style="color:#ffcf8f">(未判定 <b>' + unjudged + '</b>)</span>' : '') +
-    (autofill ? ' &nbsp;·&nbsp; 自动补标 <b>' + autofill + '</b>' : '') +
     (pending ? ' &nbsp;·&nbsp; 待删除 <b>' + pending + '</b>' : '') +
     (invalid ? ' &nbsp;·&nbsp; <span style="color:#ff8a80">非法 label <b>' + invalid + '</b></span>' : '') +
     ' &nbsp;·&nbsp; 当前筛选 <b>' + view.length + '</b>';
@@ -618,8 +601,7 @@ const datasetCountText = (d) => {
 
 const dsOptionText = (d) => d.name + '（' + datasetCountText(d) +
   (d.invalid_labels ? '，非法label ' + d.invalid_labels : '') +
-  (d.unflagged_loops ? '，loop未判定 ' + d.unflagged_loops : '') +
-  (d.autofill ? '，自动补标 ' + d.autofill : '') + '）';
+  (d.unflagged_loops ? '，loop未判定 ' + d.unflagged_loops : '') + '）';
 
 const allOptionText = (list) => {
   const sum = (key) => list.reduce((n, d) => n + (Number(d[key]) || 0), 0);
@@ -629,7 +611,6 @@ const allOptionText = (list) => {
     gif_count: sum('gif_count'),
     invalid_labels: sum('invalid_labels'),
     unflagged_loops: sum('unflagged_loops'),
-    autofill: sum('autofill'),
   });
 };
 
@@ -740,7 +721,6 @@ function applyFilters(keepPage, keepScroll) {
     if (s === 'todo' && isReviewed(r)) return false;
     if (s === 'done' && !isReviewed(r)) return false;
     if (s === 'pending' && !isPending(r)) return false;
-    if (s === 'autofill' && !isAutofill(r)) return false;
     if (l !== 'all' && loopState(r) !== l) return false;
     if (q) {
       const inLabel = wholeWord
@@ -866,18 +846,6 @@ function card(row) {
     tag.className = 'pending-tag';
     tag.textContent = '待删除';
     tag.title = '已标记 pending_delete；下次清理数据集时移除';
-    thumb.appendChild(tag);
-  }
-  if (row.autofill) {
-    // tools/prefill_direction_words.py fills an
-    // EMPTY slot from the motion and set reviewed:false. The flag says only
-    // that a tool wrote this label, not why: the measurement stays in that
-    // run's output, and what settles it here is the GIF.
-    const tag = document.createElement('div');
-    tag.className = 'autofill-tag';
-    tag.textContent = '自动补标';
-    tag.title = '这条标签是预填脚本写的，没人核验过。'
-      + '\n看 GIF 确认；不对就点标签改，对就点 OK 核验。';
     thumb.appendChild(tag);
   }
 

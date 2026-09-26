@@ -42,9 +42,9 @@ when it is.
 
 ``autofill`` marks a row whose label a prefill tool wrote
 (``tools/prefill_direction_words.py``): a proposal
-measured from the motion, with ``"reviewed": false`` beside it. The card shows
-it as a 自动补标 badge and the header filters on it, so a review pass can take
-the tool's proposals as one batch. Typing a different label clears the mark --
+measured from the motion, with ``"reviewed": false`` beside it. The page does
+not show it; the review pass finds these rows as unreviewed. Typing a different
+label clears the mark --
 the label is then a person's -- while signing the proposal off unchanged keeps
 it as provenance.
 
@@ -130,10 +130,12 @@ TRASH_ROOT = Path(r"E:\Dataset\Temp")
 
 # How a source path is mirrored under the trash root. The archive drive
 # ``E:\Dataset`` is the reference layout -- a file already living there keeps its
-# path verbatim -- and the two in-repo mirrors map back onto the names that drive
+# path verbatim -- and the in-repo mirrors map back onto the names that drive
 # uses, so ``...\truebones\zoo\Truebone_Z-OO\Alligator\x.glb`` lands in
 # ``<trash>\Truebone_Z-OO\Alligator\x.glb``. That reproduces exactly the
-# directories that were soft-deleted by hand before this button existed.
+# directories that were soft-deleted by hand before this button existed. Every
+# other manifest row's ``raw`` dir is appended at startup and mirrors onto
+# ``<trash>\<namespace>\<raw dir name>`` (see ``register_raw_mirrors``).
 SOURCE_MIRRORS = [
     (Path(r"E:\Dataset"), ""),
     (ANYTOP_ROOT / "dataset" / "truebones" / "zoo", ""),
@@ -419,16 +421,34 @@ def discover_datasets(datasets_file):
         if not labels.is_file():
             continue
         gif_dir = processed / "review" / "gif"
+        raw = entry.get("raw")
         out.append({
             "id": ns,
             "name": ns,
             "processed": str(processed),
+            "raw": (ANYTOP_ROOT / raw).resolve() if raw else None,
             "labels": labels,
             "gif_dir": gif_dir,
             "metadata": processed / "motion_metadata.json",
             "species_tags": processed / "species_tags.jsonl",
         })
     return out
+
+
+def register_raw_mirrors(datasets):
+    """Add each dataset's ``raw`` dir to SOURCE_MIRRORS as
+    ``<trash>\\<namespace>\\<raw dir name>``.
+
+    A raw dir an existing entry already covers keeps that entry's layout, so the
+    hand-made truebones mirrors are not shadowed by a longer manifest root.
+    """
+    for ds in datasets:
+        raw = ds.get("raw")
+        if raw is None:
+            continue
+        if any(raw.is_relative_to(root) for root, _ in SOURCE_MIRRORS):
+            continue
+        SOURCE_MIRRORS.append((raw, Path(*ds["id"].split("/"), raw.name)))
 
 
 def _bvhview_href(ds, clip):
@@ -1068,6 +1088,7 @@ def main():
     if not Handler.datasets:
         print(f"no datasets found in {args.datasets} -- check the manifest", file=os.sys.stderr)
         raise SystemExit(1)
+    register_raw_mirrors(Handler.datasets)
     for d in Handler.datasets:
         try:
             removed_species = _prune_dataset_species_tags(d)
