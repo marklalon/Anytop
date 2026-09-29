@@ -606,11 +606,16 @@ def add_generate_options(parser):
                             "condition the model is handed stays inside its training distribution "
                             "(needs a cond.npy baked by tools/regenerate_dataset_artifacts.py); "
                             "else the checkpoint's native window (60). "
-                            "When specified with --reference_motion: if R < M the tail "
-                            "is auto-outpainted, if R > M the reference is cropped to M. "
+                            "When R != M the reference is resampled to M frames (tempo "
+                            "change); pass --outpaint to crop / extend it instead. "
                             "Valid range: [min_length, MAX_SOURCE_FRAMES_MULT*num_frames] "
                             "of the checkpoint (param_utils.MAX_SOURCE_FRAMES_MULT); an "
                             "auto-picked length is clamped into it.")
+    group.add_argument("--outpaint", action="store_true",
+                       help="With --reference_motion, fit the reference to --num_frames M "
+                            "by length instead of by tempo: R > M crops the tail, R < M "
+                            "keeps the R frames clamped and generates [R, M) from noise. "
+                            "Without it the reference is always resampled to M.")
     group.add_argument("--object_type", default=None, type=str,
                        help="Target object type. Optional if --reference_motion is provided "
                             "(inferred from filename), or if --cond_path points at a cond file "

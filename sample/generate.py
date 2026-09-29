@@ -69,6 +69,7 @@ from sample.output_lengths import (
     _resample_window_to_output,
     _resolve_auto_output_lengths,
     fit_reference_to_output,
+    resample_reference_to_output,
     resolve_loop_condition,
 )
 from sample.reference_motion import (
@@ -244,7 +245,7 @@ def main(args=None, cond_dict=None, runtime=None):
     )
 
     # --skip_timesteps check deferred until after reference length R is known
-    # (R < M auto-enables outpaint, which does not need --skip_timesteps).
+    # (--outpaint with R < M needs no --skip_timesteps).
 
     # Fail fast if inpaint flags are set without reference motion.
     if _inpaint_early and not getattr(args, 'reference_motion', None):
@@ -324,9 +325,9 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # Output length, in priority order:
     #   1. --num_frames itself. An explicit number is the user's decision and
-    #      outranks everything, reference included (the reference is outpainted
-    #      when R < M and cropped when R > M, loop or not --
-    #      fit_reference_to_output): it is finalized right here, and every
+    #      outranks everything, reference included (the reference is resampled
+    #      to M, or under --outpaint outpainted when R < M and cropped when
+    #      R > M, loop or not): it is finalized right here, and every
     #      fallback below is guarded on requested_output_frames still being None.
     #   2. a --reference_motion's own frame count R -- with no number given, the
     #      reference IS the requested length.
@@ -378,10 +379,11 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # A --cond_path whose file holds exactly one species makes --object_type
     # redundant: there is only one possible target, so use it (e.g.
-    # `--cond_path outputs/new_skeleton_horse/cond.npy --loop`).
+    # `--cond_path outputs/new_skeleton_horse/cond.npy --loop`). With a
+    # --reference_motion this is the target only; the reference's source type
+    # is still resolved from the file itself.
     if (
-        not reference_motion_path
-        and not explicit_object_type
+        not explicit_object_type
         and str(getattr(args, 'cond_path', '') or '').strip()
         and len(cond_dict) == 1
     ):
@@ -670,10 +672,16 @@ def main(args=None, cond_dict=None, runtime=None):
                 )
         M = int(requested_output_frames)
 
-        # Fit the reference to M: crop (R > M) or outpaint-pad (R < M). A loop
-        # reference is no exception -- R < M appends frames from noise, which
-        # under is_loop is exactly where the model gets to close the cycle.
-        ref_features_full, auto_outpaint_range, fit_note = fit_reference_to_output(
+        # Fit the reference to M. By default it is resampled to M (tempo
+        # change, nothing to fill). --outpaint fits by length instead: crop
+        # (R > M) or outpaint-pad (R < M). A loop reference is no exception --
+        # R < M appends frames from noise, which under is_loop is exactly where
+        # the model gets to close the cycle.
+        fit_reference = (
+            fit_reference_to_output if getattr(args, 'outpaint', False)
+            else resample_reference_to_output
+        )
+        ref_features_full, auto_outpaint_range, fit_note = fit_reference(
             ref_features_full, M,
         )
         outpaint_active = auto_outpaint_range is not None
@@ -710,8 +718,8 @@ def main(args=None, cond_dict=None, runtime=None):
         if not outpaint_active and not user_inpaint_active and skip_timesteps_raw is None:
             sys.exit(
                 "ERROR: --skip_timesteps is required when using --reference_motion "
-                "without --inpaint_joints/--inpaint_frames and without a length "
-                "extension (R < num_frames).\n"
+                "without --inpaint_joints/--inpaint_frames and without an outpaint "
+                "extension (--outpaint with R < num_frames).\n"
                 "  Higher values (e.g. 80-100) produce motion more faithful to the reference;\n"
                 "  lower values (e.g. 20-40) allow more model-driven variation."
             )

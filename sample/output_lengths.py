@@ -160,8 +160,8 @@ def resolve_loop_condition(
 
 
 def fit_reference_to_output(reference_features, requested_frames):
-    """The reference as the window will be filled from it, for an output of M
-    frames.  Returns ``(features, outpaint_range, note)``.
+    """The ``--outpaint`` fit: the reference as the window will be filled from
+    it, for an output of M frames.  Returns ``(features, outpaint_range, note)``.
 
     The reference is a ONE-SHOT clip whatever the loop condition says: it covers
     exactly the R frames it holds, so R against M is a coverage question.  R > M
@@ -190,6 +190,23 @@ def fit_reference_to_output(reference_features, requested_frames):
             f'  Reference outpaint: R={R} < M={M} -> appended frames [{R}, {M - 1}]',
         )
     return reference_features, None, None
+
+
+def resample_reference_to_output(reference_features, requested_frames):
+    """The default fit without ``--outpaint``: the whole reference is resampled
+    (endpoint, one-shot) to M frames, so it covers the window end to end at a
+    changed tempo and nothing is left for the model to fill.  Same return shape
+    as ``fit_reference_to_output``; ``outpaint_range`` is always None.
+    """
+    R = int(reference_features.shape[0])
+    M = int(requested_frames)
+    if R == M:
+        return reference_features, None, None
+    return (
+        resample_motion_features(reference_features, M),
+        None,
+        f'  Reference resampled: R={R} -> M={M} (pass --outpaint to crop/extend instead)',
+    )
 
 
 def _finalize_output_lengths(requested_frames, min_length, internal_num_frames):

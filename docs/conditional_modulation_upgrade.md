@@ -105,7 +105,8 @@ loop 样本的训练语义，放在同一次消融里会和 action 调制的效�
   条件）：
   - 纯 loop 生成（没有 reference）导出到 M ≠ T 帧时按环形重采样，否则导出结果的接缝步长又会不均匀；
   - 带 reference 时导出同样按环形重采样，但 reference 自己不按环形处理：closing key 是它自己的一帧，
-    R > M 裁掉尾巴、R < M 追加 `[R, M)` 让模型从噪声填（`fit_reference_to_output`），再按端点映射
+    默认整段端点重采样到 M（`resample_reference_to_output`）；`--outpaint` 时 R > M 裁掉尾巴、
+    R < M 追加 `[R, M)` 让模型从噪声填（`fit_reference_to_output`），再按端点映射
     `t·(L-1)/(T-1)` 放进窗口（`_prepare_img2img_reference_bundle`）。代价是两个方向不再互为恒等：clamp 住的
     reference 姿态导出时会漂 `|M/T − 1|` 帧（M = 3T 上限处 2 帧，M < T 时不到 1 帧）；换来的是 loop 化由模型自己做——`is_loop` 条件、环形相位表、
     以及 R < M 时那段追加帧给它的空间，而不是由 pipeline 把 reference 摆成一个环；

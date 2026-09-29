@@ -73,6 +73,6 @@
 
     { "category": "InpaintFrames", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop.npy", "--inpaint_frames", "20-30"], "eval_label": "run" },
     { "category": "InpaintJoints", "args": ["--reference_motion", "outputs/corrupted_motion/dragon_walk.glb", "--cond_path", "outputs/new_skeleton_dragon/cond.npy", "--inpaint_joints", "RightThigh,LeftThigh,RightClavicle,LeftClavicle", "--skip_timesteps", "20", "--action_label", "walk, forward"] },
-    { "category": "Outpaint", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop.npy", "--num_frames", "120", "--skip_timesteps", "99", "--action_label", "run"] }
+    { "category": "Outpaint", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop.npy", "--num_frames", "120", "--outpaint", "--skip_timesteps", "99", "--action_label", "run"] }
   ]
 }
