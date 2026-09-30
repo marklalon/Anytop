@@ -296,6 +296,26 @@ def test_prune_stale_species_tags_uses_metadata_object_type_and_preserves_rows(t
     assert tags.read_bytes() == (cat_line + "\r\n").encode("utf-8")
 
 
+def test_prune_stale_species_tags_keeps_species_waiting_for_preprocessing(tmp_path):
+    tags = tmp_path / "species_tags.jsonl"
+    tags.write_text(
+        '{"species": "New_Hero", "species_tags": ["Biped", "Striding"]}\n'
+        '{"species": "Only_TPose", "species_tags": ["Biped", "Striding"]}\n',
+        encoding="utf-8",
+    )
+    raw = tmp_path / "raw"
+    (raw / "New_Hero").mkdir(parents=True)
+    (raw / "New_Hero" / "TPose.glb").write_bytes(b"")
+    (raw / "New_Hero" / "Walk.glb").write_bytes(b"")
+    (raw / "Only_TPose").mkdir()
+    (raw / "Only_TPose" / "TPose.glb").write_bytes(b"")
+
+    removed = review._prune_stale_species_tags(tags, {}, raw)
+
+    assert removed == ["Only_TPose"]
+    assert "New_Hero" in tags.read_text(encoding="utf-8")
+
+
 def test_clean_removes_species_tags_after_its_last_motion_is_deleted(tmp_path):
     processed = tmp_path / "processed"
     processed.mkdir()

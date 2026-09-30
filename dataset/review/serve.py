@@ -66,7 +66,9 @@ The header's "clean" button turns those marks into a real removal: every
 deleted outright, its review GIF deleted, its row dropped from
 ``action_labels.jsonl``, and its entry dropped from ``motion_metadata.json``
 (``total_clips`` updated). If that was a species' last motion, its stale row is
-also dropped from ``species_tags.jsonl``. The same stale-species check runs for
+also dropped from ``species_tags.jsonl`` -- unless the species' raw dir still
+holds an animation source, in which case the row is kept: the species is
+waiting for preprocessing, not stale. The same stale-species check runs for
 every configured dataset when this server starts. This keeps the dataset
 loadable immediately, not just after the next preprocess. Every source move is appended to
 ``<trash>/soft_deleted.jsonl`` so it can be traced back and undone by hand.
@@ -107,6 +109,9 @@ DEFAULT_DATASETS = DATASET_ROOT / "datasets.jsonl"
 if str(ANYTOP_ROOT) not in sys.path:
     sys.path.insert(0, str(ANYTOP_ROOT))
 
+from data_loaders.truebones.truebones_utils.fbx_filename_rules import (  # noqa: E402
+    _is_tpose_reference_path,
+)
 from data_loaders.truebones.truebones_utils.loop_verdict import (  # noqa: E402
     rewrite_terminal_row,
 )
@@ -124,6 +129,9 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     parse_action_label,
     set_loop_flag,
 )
+
+# Source animation extensions a raw species directory can hold.
+RAW_ANIMATION_SUFFIXES = (".glb", ".gltf", ".fbx", ".bvh")
 
 # Where "clean" parks the source file of a retired clip (--trash overrides it).
 TRASH_ROOT = Path(r"E:\Dataset\Temp")
@@ -329,14 +337,37 @@ def _write_metadata(path, payload):
     os.replace(tmp, path)
 
 
-def _prune_stale_species_tags(path, motions):
-    """Drop species-tag rows that own no remaining motion metadata entries.
+def _raw_species_with_animations(raw_dir):
+    """Casefolded names of ``raw_dir`` subdirectories holding a non-T-pose animation.
+
+    A species that is annotated but not preprocessed yet has no metadata entry,
+    only its source files; this is what keeps its tag row alive until then.
+    """
+    if raw_dir is None or not Path(raw_dir).is_dir():
+        return set()
+    active = set()
+    for species_dir in Path(raw_dir).iterdir():
+        if not species_dir.is_dir():
+            continue
+        if any(
+            f.suffix.lower() in RAW_ANIMATION_SUFFIXES and not _is_tpose_reference_path(str(f))
+            for f in species_dir.iterdir()
+            if f.is_file()
+        ):
+            active.add(species_dir.name.casefold())
+    return active
+
+
+def _prune_stale_species_tags(path, motions, raw_dir=None):
+    """Drop species-tag rows that own neither motion metadata nor raw animations.
 
     ``motion_metadata.json`` is authoritative for clip -> species membership;
     guessing from a clip filename would truncate multi-token names such as
-    ``FEP_MagmaDemon``. The sidecar's original row text, order, newline style,
-    and final-newline convention are preserved for every surviving row.
-    Returns removed species names in their sidecar order.
+    ``FEP_MagmaDemon``. A species whose ``raw_dir/<species>/`` still holds an
+    animation source is kept too: it is waiting for preprocessing, not stale.
+    The sidecar's original row text, order, newline style, and final-newline
+    convention are preserved for every surviving row. Returns removed species
+    names in their sidecar order.
     """
     path = Path(path)
     if not path.is_file():
@@ -357,6 +388,7 @@ def _prune_stale_species_tags(path, motions):
     if missing_object_type:
         sample = ", ".join(str(name) for name in missing_object_type[:3])
         raise ValueError(f"motion metadata 缺少 object_type：{sample}")
+    active |= _raw_species_with_animations(raw_dir)
 
     raw = path.read_bytes()
     newline = "\r\n" if b"\r\n" in raw else "\n"
@@ -395,7 +427,7 @@ def _prune_dataset_species_tags(ds):
     motions = payload.get("motions")
     if not isinstance(motions, dict):
         raise ValueError(f"{ds['metadata']} 缺少 motions 字段")
-    return _prune_stale_species_tags(ds["species_tags"], motions)
+    return _prune_stale_species_tags(ds["species_tags"], motions, ds.get("raw"))
 
 
 def discover_datasets(datasets_file):
@@ -1054,7 +1086,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(500, {"error": f"写入 {ds['metadata']} 失败：{exc}"})
             result["metadata_clips"] = len(motions)
             try:
-                removed_species = _prune_stale_species_tags(ds["species_tags"], motions)
+                removed_species = _prune_stale_species_tags(ds["species_tags"], motions, ds.get("raw"))
             except (OSError, ValueError) as exc:
                 result["notes"].append(f"清理 species_tags.jsonl 失败：{exc}")
             else:
