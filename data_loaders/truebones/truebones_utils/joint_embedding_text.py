@@ -90,8 +90,9 @@ _EMBED_TEXT_SKIP_TOKENS = {
     'distal',
     'variant',
 }
-# Words that name no body part: rig markers ("Bip", "Xtra"), controls and tack
-# ("Ctrl", "Saddle") and props ("Sword", "Quiver"). Dropped token by token, so a
+# Words that name no body part: rig markers ("Bip", "Xtra", a mirror copy's
+# "(mirrored)"), controls and tack ("Ctrl", "Saddle") and props ("Sword",
+# "Quiver"). Dropped token by token, so a
 # name that also carries anatomy keeps it ("XtraSpine" -> "Spine"); a name made
 # only of these is blanked (zero embedding).
 #
@@ -141,6 +142,7 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'magic',
     'main',
     'mesh',
+    'mirrored',
     'mount',
     'node',
     'null',
@@ -293,7 +295,7 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
 # or refinement, or what goes into the sentence. Stored name embeddings are keyed
 # by this version, so a bump makes the loader reject stale cond files until
 # preprocessing re-runs.
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 18
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 19
 
 
 # Adjacent tokens that name one part together ("upper leg" -> Thigh). Applied

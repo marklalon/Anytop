@@ -576,7 +576,7 @@ def _suggest_stem(species: str, stem: str) -> str | None:
     return None
 
 
-def _check_layout(root: Path, species_dirs: list[Path], report: Report, reference_species: set[str]) -> None:
+def _check_layout(root: Path, species_dirs: list[Path], report: Report) -> None:
     # Readmes, licences and shortcuts in the root are expected; only a motion
     # file there is a misplaced clip that no species will pick up.
     for entry in sorted(root.iterdir()):
@@ -595,13 +595,6 @@ def _check_layout(root: Path, species_dirs: list[Path], report: Report, referenc
                 report.add(WARN, name, "layout",
                            "FBX source; convert to GLB first (tools/dataset_cleanup/convert_fbx_2_glb.py) -- "
                            "content checks skip it", entry.name)
-    # Same bare name in another dataset is legal (the namespace keeps the cond
-    # keys apart) but makes bare-name --filter / species lookups ambiguous.
-    shared = sorted(d.name for d in species_dirs if d.name.lower() in reference_species)
-    if shared:
-        report.add(INFO, "-", "layout",
-                   f"{len(shared)} species name(s) already exist in the reference cond (fine across namespaces; "
-                   f"bare-name lookups become ambiguous): {', '.join(shared[:12])}{' ...' if len(shared) > 12 else ''}")
 
 
 def _check_filenames(species: str, files: list[Path], report: Report) -> tuple[Path | None, list[Path]]:
@@ -1258,11 +1251,10 @@ def main() -> int:
         parser.error(f"not a directory: {root}")
 
     vocabulary = None
-    reference_species: set[str] = set()
     promote_depths: dict[str, int] = {}
     if str(args.reference_cond).lower() != "none":
         if args.reference_cond.is_file():
-            vocabulary, reference_species = _load_reference_vocabulary(args.reference_cond)
+            vocabulary, _ = _load_reference_vocabulary(args.reference_cond)
             promote_depths = _load_reference_root_promote_depths(args.reference_cond, root)
         else:
             print(f"[WARN] reference cond not found: {args.reference_cond}; unseen-word check disabled")
@@ -1278,7 +1270,7 @@ def main() -> int:
 
     t5 = T5Pieces()
     report = Report()
-    _check_layout(root, species_dirs, report, reference_species)
+    _check_layout(root, species_dirs, report)
     total_files = 0
     for species_dir in species_dirs:
         species = species_dir.name

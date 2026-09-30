@@ -76,7 +76,7 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # the modifiers follow in tuple order -- one combination, exactly one spelling
 # (see canonical_action_label).
 HEAD_VOCAB: tuple[str, ...] = (
-    "attack", "burrow", "crawl", "die", "draw", "fall",
+    "attack", "burrow", "climb", "crawl", "die", "draw", "fall",
     "fly", "getup", "hover", "hurt", "idle", "jump", "kneel", "land", "laydown",
     "lift", "pickup", "putdown", "rear", "rest", "roar", "roll", "run", "sheathe",
     "sitdown", "spawn", "stop", "swim", "takeoff", "turn", "walk", "work",
@@ -201,7 +201,8 @@ ACTION_LABEL_MAX_HEADS = 2
 # phase-free loop only forgoes augmentation, while rolling an anchored one
 # scrambles the event's timing.
 PHASE_FREE_LOOP_HEADS: tuple[str, ...] = (
-    "crawl", "fall", "fly", "hover", "idle", "rest", "roll", "run", "swim", "walk",
+    "climb", "crawl", "fall", "fly", "hover", "idle", "rest", "roll", "run", "swim",
+    "walk",
 )
 _PHASE_FREE_LOOP_HEAD_SET: frozenset[str] = frozenset(PHASE_FREE_LOOP_HEADS)
 assert _PHASE_FREE_LOOP_HEAD_SET <= _HEAD_VOCAB_SET, (

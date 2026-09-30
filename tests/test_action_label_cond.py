@@ -136,7 +136,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # The vocabulary is closed now: a word nobody annotates is a token the
         # autocomplete would offer, the model never trained, and whose weight
         # scalar would sit at its prior forever.
-        for absent in ('climb', 'gallop', 'shuffle', 'sneak', 'flap', 'stand',
+        for absent in ('gallop', 'shuffle', 'sneak', 'flap', 'stand',
                        'stretch', 'dig', 'peck', 'drag', 'drink', 'graze',
                        'haste', 'clean'):
             self.assertNotIn(absent, CONTROLLED_VOCAB, absent)

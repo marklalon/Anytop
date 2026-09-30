@@ -217,6 +217,18 @@ def test_a_name_made_only_of_markers_blanks_through_punctuation_and_indices():
     assert texts[1:] == ['', '', '', ''], texts
 
 
+def test_mirror_copy_suffix_is_dropped_so_the_copy_embeds_like_its_original():
+    # 3ds Max names a mirrored copy "<original>(mirrored)"; the side comes from
+    # the geometry, so the suffix must not give the copy an embedding of its own.
+    texts = _embedding_texts(
+        ['Hips', 'Bone015', 'Bone015(mirrored)', 'LeftFin', 'RightFin(mirrored)'],
+        [-1, 0, 0, 0, 0],
+    )
+    assert texts[1] == '' and texts[2] == '', texts
+    assert texts[3].startswith('Left Fin'), texts[3]
+    assert texts[4].startswith('Right Fin'), texts[4]
+
+
 def test_aux_helper_keeps_the_anatomy_it_qualifies():
     texts = _embedding_texts(['Spine1', 'LeftClavicleAux', 'LeftCheekAux'], [-1, 0, 0])
     assert texts[1].startswith('Left Clavicle'), texts[1]
