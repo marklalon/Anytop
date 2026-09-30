@@ -546,13 +546,15 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode="POSE")
 
-    # Reuse the FULL root correction from the rest pose, translation included:
-    # pose_bone.matrix is armature-OBJECT space, not world space, so it carries
-    # the armature object's translation just as little as bone.matrix_local does.
-    # Applying only the rotation here left the rest offsets holding the object
-    # height while every animated frame started from zero, which sank the whole
-    # character below the floor for the rigs that park a height on the object.
-    root_correction = _armature_yup_correction(armature)
+    # Apply the FULL root correction, translation included: pose_bone.matrix is
+    # armature-OBJECT space, not world space, so it carries the armature
+    # object's transform just as little as bone.matrix_local does. Applying only
+    # the rotation left the rest offsets holding the object height while every
+    # animated frame started from zero, which sank the whole character below the
+    # floor for the rigs that park a height on the object. The correction is
+    # re-read on every frame: when the glTF root node is not a skin joint, the
+    # importer turns it into the armature object and its keys (the clip's root
+    # motion) animate the object, not any bone.
 
     # Pre-build ordered pose_bone list to avoid repeated dict lookups
     pose_bones = armature.pose.bones
@@ -561,6 +563,7 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
 
     for frame_idx, sample_time in enumerate(sample_times):
         set_scene_time(scene, sample_time)
+        root_correction = _armature_yup_correction(armature)
 
         pose_matrices = [
             pose_bone.matrix.copy() if pose_bone is not None else None

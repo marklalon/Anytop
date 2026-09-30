@@ -75,6 +75,7 @@
 {"clip": "Knight_AuntieTina_Airjet", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
 {"clip": "Knight_AuntieTina_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "Knight_AuntieTina_DoubleJump", "action_group": "locomotion", "action_label": "roll, jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Knight_AuntieTina_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Knight_AuntieTina_Landjet", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_AuntieTina_Prepare", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
 {"clip": "Knight_AuntieTina_Respawn", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
@@ -88,6 +89,7 @@
 {"clip": "Knight_GerryFinn_Airjet", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
 {"clip": "Knight_GerryFinn_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "Knight_GerryFinn_DoubleJump", "action_group": "locomotion", "action_label": "roll, jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Knight_GerryFinn_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Knight_GerryFinn_Jump", "action_group": "transition", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_GerryFinn_Landjet", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_GerryFinn_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
@@ -104,6 +106,7 @@
 {"clip": "Knight_MeiSha_Airjet", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
 {"clip": "Knight_MeiSha_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "Knight_MeiSha_DoubleJump", "action_group": "locomotion", "action_label": "roll, jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Knight_MeiSha_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Knight_MeiSha_Jump", "action_group": "transition", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_MeiSha_Longjuanfeng", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
 {"clip": "Knight_MeiSha_Prepare", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
@@ -160,3 +163,6 @@
 {"clip": "Pet_Yulia_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Yulia_Idle02", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Yulia_Spawn", "action_group": "stationary", "action_label": "hover, spin", "is_loop": false, "reviewed": true}
+{"clip": "RTS_Chicken_Attack", "action_group": "stationary", "action_label": "attack, jump, bite", "is_loop": false, "reviewed": true}
+{"clip": "RTS_Chicken_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "RTS_Chicken_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}

@@ -841,17 +841,18 @@
 {"clip": "Spider_AttackLeft", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Attackright", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "Spider_BackRear", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
-{"clip": "Spider_Injuredwalk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "Spider_Barking", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
+{"clip": "Spider_Fangy", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": false, "reviewed": true}
+{"clip": "Spider_Injuredwalk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Jump", "action_group": "transition", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Spider_LandinHAir", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Landing", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
 {"clip": "Spider_RetreatInjured", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Retreat", "action_group": "locomotion", "action_label": "walk, backward, retreat", "is_loop": true, "reviewed": true}
-{"clip": "Spider_Rising", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
+{"clip": "Spider_Riser", "action_group": "transition", "action_label": "jump, up", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Runleft", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Scary", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "Spider_SlowIdle", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
-{"clip": "Spider_Walker", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Spider_Walkleft", "action_group": "locomotion", "action_label": "walk, left", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Walkloop", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Stego_Attack2", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}

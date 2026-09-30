@@ -1899,6 +1899,7 @@
 {"clip": "RU01_JellyfishRobot_ProjectileAttack", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "RU01_JellyfishRobot_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "RU01_JellyfishRobot_SpinAttack", "action_group": "stationary", "action_label": "attack, spin", "is_loop": false, "reviewed": true}
+{"clip": "RU01_JellyfishRobot_Swim", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
 {"clip": "RU01_JellyfishRobot_SwingAttack", "action_group": "stationary", "action_label": "attack, swat", "is_loop": true, "reviewed": true}
 {"clip": "RU01_JellyfishRobot_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "RU01_JellyfishRobot_TumbleAttack", "action_group": "stationary", "action_label": "attack, roll", "is_loop": false, "reviewed": true}
