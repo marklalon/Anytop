@@ -23,8 +23,8 @@
 {"species": "Rabbit", "species_tags": ["Quadruped", "Scurrying"]}
 {"species": "Rabbit2", "species_tags": ["Quadruped", "Scurrying"]}
 {"species": "rhino", "species_tags": ["Quadruped", "Lumbering"]}
-{"species": "scorpion", "species_tags": ["Multiped", "Crawling"]}
+{"species": "scorpion", "species_tags": ["Multiped", "Scuttling"]}
 {"species": "Seagull", "species_tags": ["Winged", "Flapping"]}
 {"species": "serpent_man", "species_tags": ["Quadruped", "Striding"]}
-{"species": "spider_tarantula", "species_tags": ["Multiped", "Crawling"]}
+{"species": "spider_tarantula", "species_tags": ["Multiped", "Scuttling"]}
 {"species": "Tiger", "species_tags": ["Quadruped", "Stalking"]}
