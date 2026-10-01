@@ -29,11 +29,11 @@
     { "category": "Parrot", "args": ["--object_type", "Parrot2", "--action_label", "hurt"] },
     { "category": "Parrot", "args": ["--object_type", "Parrot2", "--action_label", "walk, forward", "--loop", "--species_tags", "Biped,Striding"] },
 
-    { "category": "Thief", "args": ["--cond_path", "outputs/new_skeleton_thief/cond.npy", "--action_label", "run, forward"] },
-    { "category": "Thief", "args": ["--cond_path", "outputs/new_skeleton_thief/cond.npy", "--action_label", "swim, jump"] },
-    { "category": "Thief", "args": ["--cond_path", "outputs/new_skeleton_thief/cond.npy", "--action_label", "attack, jump"] },
-    { "category": "Thief", "args": ["--cond_path", "outputs/new_skeleton_thief/cond.npy", "--action_label", "attack, swat"] },
-    { "category": "Thief", "args": ["--cond_path", "outputs/new_skeleton_thief/cond.npy", "--action_label", "fly, forward", "--species_tags", "Winged,Flapping"] },
+    { "category": "Thief", "args": ["--cond_path", "outputs/new_skeleton_human/cond.npy", "--action_label", "run, forward"] },
+    { "category": "Thief", "args": ["--cond_path", "outputs/new_skeleton_human/cond.npy", "--action_label", "swim, jump"] },
+    { "category": "Thief", "args": ["--cond_path", "outputs/new_skeleton_human/cond.npy", "--action_label", "attack, jump"] },
+    { "category": "Thief", "args": ["--cond_path", "outputs/new_skeleton_human/cond.npy", "--action_label", "attack, swat"] },
+    { "category": "Thief", "args": ["--cond_path", "outputs/new_skeleton_human/cond.npy", "--action_label", "fly, forward", "--species_tags", "Winged,Flapping"] },
     
     { "category": "RedDragon", "args": ["--cond_path", "outputs/new_skeleton_reddragon/cond.npy", "--action_label", "fly, forward"] },
     { "category": "RedDragon", "args": ["--cond_path", "outputs/new_skeleton_reddragon/cond.npy", "--action_label", "jump, up"] },
