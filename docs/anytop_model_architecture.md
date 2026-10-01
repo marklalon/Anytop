@@ -63,6 +63,7 @@ attention，最后由因子化注意力输出的预测就是干净动作。骨�
 - 全局 species FiLM 与 per-joint species × joint FiLM；
 - 四槽 action-label 条件与 action CFG；
 - canonical output-frame 和 resample-speed 条件；
+- 可选的 global topology conditioner（骨架汇总 → 每层 AdaLN，见 §4.4）；
 - subtree / temporal-span 混合噪声训练；
 - full temporal attention、QK-Norm 和细分的拓扑关系码。
 
@@ -199,6 +200,27 @@ zero-init MLP 投影并始终注入，不可 CFG-drop；缺失时 forward 直接
 `resample_speed_cond = source_frames / internal_frames`，经另一条 MLP 注入。它告诉模型当前
 时间窗口相对源动作的压缩/拉伸程度。数据侧的 `motion_speed_aug` 是另一项无显式条件的数据
 增强，不应与 `resample_speed_cond` 混为一谈。
+
+### 4.4 Global topology conditioner
+
+`--topology_cond`（默认关）把整副骨架汇总成一个向量，乘性地调制每一层。实现是
+`motion_transformer.TopologyConditioner`：
+
+- 输入是第 0 个时间位置的 rest-pose token 加 structural latent（§3.3），**不含 joint-name
+  embedding**。名字带物种身份，能还原物种的汇总会和 species descriptor 竞争——而推理时用户
+  正是改 species_tags 来换步态风格。去掉名字后，这条通路只描述几何比例，改关节名不会动它；
+- 若干 learned query 对全部有效关节做 cross-attention（padding 关节被 mask），过残差 FFN，
+  对 query 取平均得到每个样本一个向量；
+- zero-init 的头把它映射成与 action AdaLN 相同的 (B, L, 4, d) 布局，两者相加后在 temporal 与
+  FFN 的分支输入上做 `(1+γ)·x + β`；
+- 不做 CFG drop：它描述被驱动的骨架，不是引导方向。
+
+动机：§4 的其他全局条件都是类别量，没有一个带连续的骨架几何；整身比例原本只能靠每层的
+spatial attention 逐帧重建。rest-pose token 的非 root 行在同一物种内是常数（parent-local
+residual 在 rest 时为 0），所以这里的几何信息实际来自 structural channel。
+
+加了它之后，要复查 species_tags override（Galloping vs Lumbering、Flapping vs Hovering）的效果
+是否被削弱。
 
 ## 5. Decoder layer
 

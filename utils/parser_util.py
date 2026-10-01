@@ -363,6 +363,14 @@ def add_model_options(parser):
                             "without leaning on --action_label_cfg_scale and paying its quality cost. "
                             "Requires --action_label_cond. Costs d^2 + 4*layers*d^2 parameters. "
                             "See docs/conditional_modulation_upgrade.md section 3.")
+    group.add_argument("--topology_cond", action='store_true',
+                       help="Global topology conditioner: learned queries pool the skeleton's "
+                            "rest-pose + structural tokens (joint names excluded) into one summary, "
+                            "and a zero-initialised head turns it into a per-channel scale and shift "
+                            "on the temporal and feed-forward branch inputs of every decoder layer, "
+                            "summed with --action_label_adaln's. Never CFG-dropped. Gives every layer "
+                            "the whole-body proportions instead of leaving each to rebuild them "
+                            "through spatial attention.")
     group.add_argument("--direction_slot_drop_prob", default=0.15, type=float,
                        help="Per-sample probability of blanking the label's DIRECTION words during "
                             "training while the rest of the label stays. Trains the empty direction "
