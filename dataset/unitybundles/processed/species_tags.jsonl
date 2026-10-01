@@ -96,6 +96,7 @@
 {"species": "RMW_Slime", "species_tags": ["Drifting", "Hopping"]}
 {"species": "RMW_Spider", "species_tags": ["Multiped", "Scuttling"]}
 {"species": "RMW_TurtleShell", "species_tags": ["Drifting", "Crawling"]}
+{"species": "RTH_Hero", "species_tags": ["Biped", "Striding"]}
 {"species": "RU01_BallRobot", "species_tags": ["Drifting", "Hovering"]}
 {"species": "RU01_BlastRobot", "species_tags": ["Quadruped", "Scuttling"]}
 {"species": "RU01_BotRobot", "species_tags": ["Drifting", "Hovering"]}

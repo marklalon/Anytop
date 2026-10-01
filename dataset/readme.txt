@@ -8,5 +8,5 @@
 4. 预填 is_loop：tools/prefill_loop_flags.py（预处理的硬前置）;
 5. 人工核验：dataset/review/serve.py + index.html，先过 reviewed:false 的行;
 6. 预处理：preprocess_and_validate.py，生成 npy 和 cond;
-7. 补方向词：tools/prefill_direction_words.py --cond-path <processed>/cond.npy（依赖预处理结果），
-   看完 --report 再 --apply，核验后跑 preprocess_and_validate.py --regenerate-side-artifacts;
+7. 检查 loop 标记：tools/compute_loop_unclosure_error.py --data-root <processed>（依赖预处理结果），
+   检查 is_loop 标记是否正确;

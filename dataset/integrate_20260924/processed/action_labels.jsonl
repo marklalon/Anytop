@@ -1,10 +1,166 @@
+{"clip": "Aquatic_Angelfish_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "Aquatic_Arapaima_FastSwim", "action_group": "locomotion", "action_label": "swim, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "Aquatic_Arapaima_SlowSwim", "action_group": "locomotion", "action_label": "swim, forward, slow", "is_loop": true, "reviewed": true}
 {"clip": "Aquatic_Arapaima_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
+{"clip": "Aquatic_Bannerfish_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "Aquatic_Bannerfish_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "Aquatic_Batfish_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "Aquatic_Catfish_Swim", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "Aquatic_Clownfish_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "Aquatic_GreatWhiteShark_FastSwim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
 {"clip": "Aquatic_GreatWhiteShark_Swim", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
+{"clip": "Aquatic_Lanternfish_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": false, "reviewed": true, "autofill": true}
 {"clip": "Aquatic_Octopus_FastSwim", "action_group": "locomotion", "action_label": "swim, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "Aquatic_Octopus_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
+{"clip": "Aquatic_Pufferfish_Swim", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "Aquatic_SeaTurtle_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "Aquatic_Shark_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "Aquatic_YellowCroaker_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_LaydownIdle", "action_group": "stationary", "action_label": "idle, rest", "is_loop": true, "reviewed": true}
+{"clip": "CU_Cat_LaydownPlayB", "action_group": "stationary", "action_label": "idle, rest", "is_loop": true, "reviewed": true}
+{"clip": "CU_Cat_LaydownSleep", "action_group": "stationary", "action_label": "idle, rest, sleep", "is_loop": true, "reviewed": true}
+{"clip": "CU_Cat_LaydownToSit", "action_group": "transition", "action_label": "sitdown", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_LaydownToStand", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_SitCry", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
+{"clip": "CU_Cat_SitIdle", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_SitPicks", "action_group": "stationary", "action_label": "idle, scratch, sit", "is_loop": true, "reviewed": true}
+{"clip": "CU_Cat_SitToLaydown", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_SitToStand", "action_group": "transition", "action_label": "getup, sit", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_SitWash", "action_group": "stationary", "action_label": "idle, scratch, sit", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_SitWashB", "action_group": "stationary", "action_label": "idle, scratch, sit", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_StandCry", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "CU_Cat_StandDig", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_StandEat", "action_group": "stationary", "action_label": "idle, rest, eat", "is_loop": true, "reviewed": true}
+{"clip": "CU_Cat_StandIdle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_StandJump", "action_group": "transition", "action_label": "jump, forward", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_StandPunchR", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
+{"clip": "CU_Cat_StandRun", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_StandSmell", "action_group": "stationary", "action_label": "idle, sniff", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_StandSwimIdle", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
+{"clip": "CU_Cat_StandSwimWalk", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_StandToLaydown", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_StandToSit", "action_group": "transition", "action_label": "sitdown", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_StandWalk", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Boss01_Attack2", "action_group": "stationary", "action_label": "attack, jump", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Boss01_Attack3Loop", "action_group": "stationary", "action_label": "attack, gun", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Boss01_Attack3Start", "action_group": "stationary", "action_label": "idle, shield", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Boss01_Attack4", "action_group": "stationary", "action_label": "attack, jump, smash", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Boss01_Attack5", "action_group": "stationary", "action_label": "attack, gun", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Boss01_AttackL", "action_group": "stationary", "action_label": "attack, left, punch", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Boss01_AttackR", "action_group": "stationary", "action_label": "attack, right, punch", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Boss01_Begin", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Boss01_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Boss01_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Boss01_Stand", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Boss01_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Boss02_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "DMM_Boss02_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Boss02_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Boss02_Run", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Boss02_Skill01", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Boss02_Skill02", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Boss02_Skill03", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Boss02_Stand01", "action_group": "stationary", "action_label": "roar", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Boss02_Stun", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog01_Attack01", "action_group": "stationary", "action_label": "attack, bite", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog01_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog01_Idle", "action_group": "stationary", "action_label": "idle, shake", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Dog01_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog01_Walk", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Dog02_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog02_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog02_Idle", "action_group": "stationary", "action_label": "idle, shake", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Dog02_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog02_Walk", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Dog05_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog05_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog05_Idle", "action_group": "stationary", "action_label": "idle, shake", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Dog05_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog05_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog06_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog06_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog06_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Dog06_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog06_Walk", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Dog07_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog07_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Dog07_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Dog07_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police01_Attack", "action_group": "stationary", "action_label": "attack", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police01_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police01_Idle", "action_group": "stationary", "action_label": "idle, look, aim", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police01_LevelUp", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police01_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police01_Stand", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police01_StandUnlock", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police01_Stun", "action_group": "stationary", "action_label": "idle, crouch, sleep", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police01_Throw", "action_group": "stationary", "action_label": "attack, throw", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police01_ToolAttack01", "action_group": "stationary", "action_label": "idle, pull", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Police01_Unlock", "action_group": "stationary", "action_label": "work, crouch", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police04_Attack", "action_group": "stationary", "action_label": "attack", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police04_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police04_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police04_LevelUp", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police04_Run01", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police04_Stand01", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police04_StandUnlock", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police04_Stun", "action_group": "stationary", "action_label": "idle, crouch, sleep", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police04_Throw", "action_group": "stationary", "action_label": "attack, throw", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police04_ToolAttack01", "action_group": "stationary", "action_label": "idle, pull", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Police04_Unlock", "action_group": "stationary", "action_label": "work, crouch", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police05_LevelUp", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police05_RPGAttack", "action_group": "stationary", "action_label": "attack, gun", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Police05_RPGHurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police05_RPGIdle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police05_RPGRun", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police05_RPGStand02", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Police05_RPGStandUnlock", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police05_RPGStun", "action_group": "stationary", "action_label": "idle, crouch, sleep", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police05_RPGUnlock", "action_group": "stationary", "action_label": "work, crouch", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Police05_ToolAttack01", "action_group": "stationary", "action_label": "idle, pull", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Thief01_Anger", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief01_Cast", "action_group": "stationary", "action_label": "attack, throw", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Thief01_Crawl", "action_group": "locomotion", "action_label": "crawl, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief01_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Thief01_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief01_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief01_InCage", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief01_Jump", "action_group": "transition", "action_label": "jump, up", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief01_LevelUp", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief01_Run01", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief01_Run02", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief01_Stand", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief01_StandUnlock", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief01_Throw", "action_group": "stationary", "action_label": "attack, throw", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief01_ToolAttack01", "action_group": "stationary", "action_label": "idle, pull", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Thief01_Unlock", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief04_Cast", "action_group": "stationary", "action_label": "attack, throw", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Thief04_Crawl", "action_group": "locomotion", "action_label": "crawl, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief04_Dead", "action_group": "stationary", "action_label": "crawl, idle", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief04_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Thief04_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief04_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief04_InCage", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief04_Jump", "action_group": "transition", "action_label": "jump, up", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief04_LevelUp", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief04_Run01", "action_group": "locomotion", "action_label": "run, forward, happy", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief04_Run02", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief04_StandUnlock", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief04_Throw", "action_group": "stationary", "action_label": "attack, throw", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief04_ToolAttack01", "action_group": "stationary", "action_label": "idle, pull", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Thief04_Unlock", "action_group": "stationary", "action_label": "work, crouch", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief06_Crawl", "action_group": "locomotion", "action_label": "crawl, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief06_Dead", "action_group": "stationary", "action_label": "crawl, idle", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief06_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Thief06_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief06_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief06_InCage", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief06_Jump", "action_group": "transition", "action_label": "jump, up", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief06_LevelUp", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief06_Run01", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief06_StandUnlock", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief06_ToolAttack01", "action_group": "stationary", "action_label": "idle, pull", "is_loop": false, "reviewed": true}
+{"clip": "DMM_Thief06_Unlock", "action_group": "stationary", "action_label": "work, crouch", "is_loop": true, "reviewed": true}
 {"clip": "Insect_Ant_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "Insect_Ant_Death", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
 {"clip": "Insect_Ant_Eat", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
@@ -113,6 +269,139 @@
 {"clip": "Knight_MeiSha_Respawn", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "Knight_MeiSha_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_MeiSha_Sprint", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "PP_Anteater_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Anteater_Death", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "PP_Anteater_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Anteater_Idle2", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "PP_Anteater_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Anteater_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Beaver_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Beaver_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "PP_Beaver_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Beaver_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Beaver_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Chimpanzee_Attack", "action_group": "stationary", "action_label": "attack, smash", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Chimpanzee_Death", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "PP_Chimpanzee_IdleBangingChest", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
+{"clip": "PP_Chimpanzee_IdleBreathing", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Chimpanzee_IdleScreaming", "action_group": "stationary", "action_label": "idle, roar", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Chimpanzee_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Chimpanzee_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Dolphin_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Dolphin_Idle", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
+{"clip": "PP_Dolphin_Idle2", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
+{"clip": "PP_Dolphin_SwimJump", "action_group": "locomotion", "action_label": "swim, jump, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Dolphin_Swimming", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Dove_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Dove_Death", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "PP_Dove_Fly", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Dove_FlyToIdle", "action_group": "transition", "action_label": "land, hover", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "PP_Dove_IdleLeft", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true}
+{"clip": "PP_Dove_IdleRight", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true}
+{"clip": "PP_Dove_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Dove_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Eagle_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "PP_Eagle_FlyIdle", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
+{"clip": "PP_Eagle_Flying", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Eagle_FlyingAttack", "action_group": "stationary", "action_label": "attack, hover, catch", "is_loop": true, "reviewed": true}
+{"clip": "PP_Eagle_FlyStart", "action_group": "transition", "action_label": "takeoff", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "PP_Eagle_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "PP_Eagle_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Eagle_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Giraffe_Attack", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Giraffe_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "PP_Giraffe_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Giraffe_Idle2", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
+{"clip": "PP_Giraffe_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Goose_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Goose_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "PP_Goose_Fly", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Goose_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Goose_Idle2", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
+{"clip": "PP_Goose_Idle3", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "PP_Goose_Idle4", "action_group": "stationary", "action_label": "idle, shake", "is_loop": true, "reviewed": true}
+{"clip": "PP_Goose_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Goose_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Gorilla_Attack", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
+{"clip": "PP_Gorilla_ChestHit", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
+{"clip": "PP_Gorilla_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "PP_Gorilla_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "PP_Gorilla_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Gorilla_Walk", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}
+{"clip": "PP_Hen_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Hen_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "PP_Hen_Flying", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Hen_Idle2", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Hen_Idle3", "action_group": "stationary", "action_label": "idle, shake", "is_loop": true, "reviewed": true}
+{"clip": "PP_Hen_IdleBreath", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Hen_IdleRoast", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Hen_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Hen_SlowWalk", "action_group": "locomotion", "action_label": "walk, forward, slow", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Hen_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Orca_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Orca_Death", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "PP_Orca_Eat", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Orca_Idle", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
+{"clip": "PP_Orca_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Parrot_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Parrot_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "PP_Parrot_Fly", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Parrot_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Parrot_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Parrot_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Penguin_Death", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "PP_Penguin_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "PP_Penguin_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Penguin_Shake", "action_group": "stationary", "action_label": "idle, shake", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Penguin_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Rooster_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Rooster_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "PP_Rooster_Fly", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
+{"clip": "PP_Rooster_Idle2", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Rooster_Idle3", "action_group": "stationary", "action_label": "idle, shake", "is_loop": true, "reviewed": true}
+{"clip": "PP_Rooster_IdleBreathing", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Rooster_IdleRoast", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Rooster_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Rooster_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Seagull_Fly", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "PP_Seagull_Sitting", "action_group": "stationary", "action_label": "idle, sit", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "PP_Seal_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Seal_Death", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "PP_Seal_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Seal_Idle2", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "PP_Seal_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Seal_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Squid_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "PP_Squid_Swim", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
+{"clip": "PP_Squirrel_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Squirrel_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "PP_Squirrel_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Squirrel_Idle2", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "PP_Squirrel_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Squirrel_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_StarFish_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "autofill": true, "reviewed": true}
+{"clip": "PP_Tapir_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Tapir_Death", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "PP_Tapir_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Tapir_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Tapir_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Tucan_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Tucan_Death", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "PP_Tucan_Flying", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Tucan_IdleLeft", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Tucan_IdleRight", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Tucan_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Vulture_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Vulture_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "PP_Vulture_Fly", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Vulture_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "PP_Vulture_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "PP_Walrus_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Walrus_Death", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "PP_Walrus_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Walrus_Idle2", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
+{"clip": "PP_Walrus_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "PP_Walrus_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "Pet_Bentley_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Bentley_Idle02", "action_group": "stationary", "action_label": "hover, shake", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Bentley_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
@@ -125,9 +414,9 @@
 {"clip": "Pet_Gate_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Gate_Idle02", "action_group": "stationary", "action_label": "hover, jump, spin", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Gate_Pose", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Goldfish_Idle01", "action_group": "stationary", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Goldfish_Idle02", "action_group": "stationary", "action_label": "swim, roll", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Goldfish_Pose", "action_group": "stationary", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Goldfish_Idle01", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Goldfish_Idle02", "action_group": "locomotion", "action_label": "swim, roll, right", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Goldfish_Pose", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Hamperor_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Hamperor_Idle02", "action_group": "stationary", "action_label": "hover, eat", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Hamperor_Spawn", "action_group": "stationary", "action_label": "attack, hover, cast", "is_loop": false, "reviewed": true}
@@ -163,6 +452,6 @@
 {"clip": "Pet_Yulia_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Yulia_Idle02", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Yulia_Spawn", "action_group": "stationary", "action_label": "hover, spin", "is_loop": false, "reviewed": true}
-{"clip": "RTS_Chicken_Attack", "action_group": "stationary", "action_label": "attack, jump, bite", "is_loop": false, "reviewed": true}
-{"clip": "RTS_Chicken_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "RTS_Chicken_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "Voxel_Chicken_Attack", "action_group": "stationary", "action_label": "attack, jump, bite", "is_loop": false, "reviewed": true}
+{"clip": "Voxel_Chicken_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "Voxel_Chicken_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
