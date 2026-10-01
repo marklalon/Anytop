@@ -18,6 +18,6 @@ Goat_Walk
 Leapord_DieLoop
 # Bat: orientation calculation fell back to the across-vector heuristic
 # Crab: orientation calculation fell back to the across-vector heuristic
-# skeleton exceeds MAX_JOINTS (143 > 100) for Dragon
+# skeleton exceeds MAX_JOINTS (140 > 100) for Dragon
 # Pigeon: no head/neck forward reference was found; falling back to tail->spine body-axis orientation
 # Scorpion: no head/neck forward reference was found; falling back to tail->spine body-axis orientation

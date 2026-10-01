@@ -28,7 +28,9 @@ Content     a skin exists; animation present, one per file, at 30 fps, long
             enough, not a still pose; MAX_JOINTS after the structural drops.
             Like the Blender loader, only the largest root subtree is kept
             ("null" wrapper roots skipped, "*mesh*" children cut); everything
-            else in the armature is ignored by every check.
+            else in the armature is ignored by every check -- except that
+            several animated root chains with no dominant one are an ERROR
+            (the kept one is an arbitrary pick, the others' motion is lost).
 Consistency every file of a species carries the same joints, hierarchy and
             bind pose.
 Joint names (the main one) duplicate / empty / non-ASCII / over-long names;
@@ -125,6 +127,16 @@ BLENDER_NAME_MAX_BYTES = 63
 # A still clip moves no channel further than this (radians / rig-relative units).
 STILL_ROTATION_EPS = 1e-3
 STILL_TRANSLATION_EPS = 1e-3
+
+
+def _channel_spread(values: np.ndarray, path: str) -> float:
+    """How far a channel's keys drift from its first key (q and -q count as one rotation)."""
+    gap = np.abs(values - values[:1]).max(axis=1)
+    if path == "rotation":
+        gap = np.minimum(gap, np.abs(values + values[:1]).max(axis=1))
+    return float(gap.max())
+
+
 # Bind pose of two files of one species differs when a joint moves further than
 # this fraction of the rig's rest extent.
 BIND_POSE_RELATIVE_TOLERANCE = 1e-3
@@ -159,6 +171,10 @@ ROOT_MARKER_TOKENS = frozenset({
 SIDE_CODE_TOKENS = frozenset({
     "lf", "rf", "lb", "rb", "lm", "rm", "fl", "fr", "bl", "br", "ml", "mr", "tl", "tr",
 })
+# The loader keeps only the largest root subtree. It is the obvious main chain
+# when it holds at least this many times the joints of any other animated root
+# subtree; otherwise the kept skeleton is an arbitrary pick among peers.
+MAIN_ROOT_DOMINANCE_RATIO = 2.0
 
 ERROR = "ERROR"
 WARN = "WARN"
@@ -301,6 +317,9 @@ class FileFacts:
     distinct_skin_rigs: int = 0
     animations: list[dict] = field(default_factory=list)
     all_joint_names: list[str] = field(default_factory=list)  # every armature bone, kept or not
+    # Every root subtree of the armature as (root name, joint count, animated),
+    # the kept one first.
+    root_subtrees: list[tuple[str, int, bool]] = field(default_factory=list)
     error: str = ""
 
 
@@ -445,6 +464,8 @@ def _read_file_facts(path: Path) -> FileFacts:
     )
 
     ordered_set = set(ordered)
+    # Armature nodes some channel moves, kept or not.
+    moving_nodes: set[int] = set()
     for anim_index, animation in enumerate(doc.get("animations", [])):
         samplers = animation.get("samplers", [])
         times: list[np.ndarray] = []
@@ -453,26 +474,28 @@ def _read_file_facts(path: Path) -> FileFacts:
         for channel in animation.get("channels", []):
             target = channel.get("target", {})
             node = target.get("node")
-            if node is None or int(node) not in ordered_set:
+            if node is None or int(node) not in bone_nodes:
                 continue
-            targets_skeleton += 1
+            kept = int(node) in ordered_set
             sampler = samplers[int(channel["sampler"])]
-            key_times = gltf.accessor(int(sampler["input"]))[:, 0]
-            times.append(key_times)
-            if moving:
+            if kept:
+                targets_skeleton += 1
+                times.append(gltf.accessor(int(sampler["input"]))[:, 0])
+            path = target.get("path")
+            if path not in ("rotation", "translation", "scale"):
                 continue
             values = gltf.accessor(int(sampler["output"]))
             if sampler.get("interpolation") == "CUBICSPLINE":
                 values = values.reshape(-1, 3, values.shape[-1])[:, 1]
-            if len(values) < 2:
+            if not len(values):
                 continue
-            spread = np.abs(values - values[:1]).max()
-            if target.get("path") == "rotation":
-                moving = spread > STILL_ROTATION_EPS
-            elif target.get("path") == "translation":
-                moving = spread > STILL_TRANSLATION_EPS * max(local_extent, 1e-6)
-            elif target.get("path") == "scale":
-                moving = spread > STILL_ROTATION_EPS
+            eps = STILL_TRANSLATION_EPS * max(local_extent, 1e-6) if path == "translation" else STILL_ROTATION_EPS
+            spread = _channel_spread(values, path)
+            if spread > eps:
+                moving_nodes.add(int(node))
+            if not kept:
+                continue
+            moving = moving or spread > eps
         all_times = np.unique(np.concatenate(times)) if times else np.zeros(0)
         deltas = np.diff(all_times)
         deltas = deltas[deltas > 1e-6]
@@ -486,6 +509,10 @@ def _read_file_facts(path: Path) -> FileFacts:
             "fps": fps,
             "moving": moving,
         })
+    for root in [main_root] + [r for r in candidate_roots if r != main_root]:
+        members = subtree(root)
+        facts.root_subtrees.append(
+            (nodes[root].get("name", ""), len(members), any(m in moving_nodes for m in members)))
     return facts
 
 
@@ -678,6 +705,7 @@ def _check_file_content(species: str, facts: FileFacts, is_reference: bool, repo
     animations = facts.animations
     if is_reference:
         return
+    _check_root_subtrees(species, facts, report)
     if not animations:
         report.add(ERROR, species, "content", "no animation", name)
         return
@@ -696,6 +724,23 @@ def _check_file_content(species: str, facts: FileFacts, is_reference: bool, repo
                    f"only {anim['frames']} key frame(s); clips under {MIN_FRAMES} frames are filtered out", name)
     if not anim["moving"]:
         report.add(WARN, species, "content", "still pose: no joint channel moves", name)
+
+
+def _check_root_subtrees(species: str, facts: FileFacts, report: Report) -> None:
+    """Several animated root chains and none of them dominant: the loader keeps
+    one arbitrarily and drops the motion of the rest (a starfish rigged as one
+    root per arm)."""
+    (main_name, main_size, _), others = facts.root_subtrees[0], facts.root_subtrees[1:]
+    animated_peers = [(n, size) for n, size, animated in others
+                      if animated and main_size < MAIN_ROOT_DOMINANCE_RATIO * size]
+    if not animated_peers:
+        return
+    total = main_size + sum(size for _, size, _ in others)
+    report.add(ERROR, species, "content",
+               f"{len(facts.root_subtrees)} root chains and no main one: the loader keeps '{main_name}' "
+               f"({main_size}/{total} joints) and drops the motion of {len(animated_peers)} animated peer(s) "
+               f"({', '.join(f'{n}:{size}' for n, size in animated_peers[:6])}); "
+               "parent the chains under one root bone", facts.path.name)
 
 
 def _check_species_consistency(species: str, facts_list: list[FileFacts], reference: Path | None,
