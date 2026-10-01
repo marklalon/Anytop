@@ -354,13 +354,10 @@
 {"clip": "Elephant_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "FireAnt_AntAngry", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "FireAnt_AntAnnoyed", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": false, "reviewed": true}
-{"clip": "FireAnt_AntBackUp", "action_group": "locomotion", "action_label": "walk, backward, retreat", "is_loop": true, "reviewed": true}
 {"clip": "FireAnt_AntBite", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
-{"clip": "FireAnt_AntCreep", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "FireAnt_AntCreep", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "FireAnt_AntFeel", "action_group": "stationary", "action_label": "idle, sniff", "is_loop": true, "reviewed": true}
-{"clip": "FireAnt_AntFightOff", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
-{"clip": "FireAnt_AntForwardMarch", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "FireAnt_AntGesture", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
+{"clip": "FireAnt_AntForwardMarch", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "FireAnt_AntHit", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "FireAnt_AntHungry", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "FireAnt_AntIdle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
