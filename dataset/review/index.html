@@ -55,12 +55,15 @@
   button { cursor: pointer; }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .4; cursor: default; }
-  button#markFiltered:not(:disabled), button#clean:not(:disabled) {
+  button#markFiltered:not(:disabled), button#clean:not(:disabled),
+  button#clearAutofill:not(:disabled) {
     border-color: var(--warn); color: #ffb79c;
   }
-  button#markFiltered:hover:not(:disabled), button#clean:hover:not(:disabled) {
+  button#markFiltered:hover:not(:disabled), button#clean:hover:not(:disabled),
+  button#clearAutofill:hover:not(:disabled) {
     background: #4a2f2a;
   }
+  button[hidden] { display: none; }
   details.more-menu { position: relative; }
   details.more-menu > summary {
     list-style: none;
@@ -331,6 +334,7 @@
     <option value="todo">未核验</option>
     <option value="done">已核验</option>
     <option value="pending">待删除</option>
+    <option value="autofill">autofill</option>
   </select>
 
   <label class="f" for="loop">loop</label>
@@ -357,6 +361,7 @@
   <span class="counts" id="counts"></span>
   <span class="spacer"></span>
 
+  <button id="clearAutofill" hidden disabled title="清空 autofill 标记">Clear Autofill</button>
   <button id="refresh" title="重新读取数据（保留当前数据集 / action group / 状态 / loop / 搜索筛选、页码与滚动位置）">刷新</button>
   <details id="moreMenu" class="more-menu">
     <summary>更多</summary>
@@ -420,6 +425,8 @@ function dropImgs(root) {
 
 const isReviewed = (r) => r.reviewed === true;
 const isPending = (r) => r.pending_delete === true;
+// autofill: a prefill tool wrote the label on the row; editing the label drops it.
+const isAutofill = (r) => r.autofill === true;
 // is_loop is tri-state on a row: true / false are verdicts (proposed by
 // tools/prefill_loop_flags.py or set here); a row without the key has not been
 // judged yet.
@@ -544,7 +551,20 @@ function counts() {
   const markFiltered = $('markFiltered');
   const markable = view.filter(r => !isPending(r)).length;
   const hasTextSearch = $('q').value.trim().length > 0;
-  const busy = clean.dataset.busy === '1' || markFiltered.dataset.busy === '1';
+  const clearAutofill = $('clearAutofill');
+  const autofill = rows.filter(isAutofill).length;
+  const busy = clean.dataset.busy === '1' || markFiltered.dataset.busy === '1' ||
+    clearAutofill.dataset.busy === '1';
+  // Only offered while the autofill filter is on, so the clear happens with
+  // the flagged clips in view.
+  clearAutofill.hidden = $('state').value !== 'autofill';
+  if (clearAutofill.dataset.busy !== '1') {
+    clearAutofill.textContent = autofill ? 'Clear Autofill (' + autofill + ')' : 'Clear Autofill';
+  }
+  clearAutofill.disabled = autofill === 0 || busy;
+  clearAutofill.title = ds === ALL_DATASETS
+    ? '清空所有数据集中的 ' + autofill + ' 个 autofill 标记（label 保持不变）'
+    : '清空 ' + ds + ' 中的 ' + autofill + ' 个 autofill 标记（label 保持不变）';
   clean.disabled = ds === ALL_DATASETS || pending === 0 || busy;
   clean.textContent = pending ? '清理待删除 (' + pending + ')' : '清理待删除';
   clean.title = ds === ALL_DATASETS
@@ -721,6 +741,7 @@ function applyFilters(keepPage, keepScroll) {
     if (s === 'todo' && isReviewed(r)) return false;
     if (s === 'done' && !isReviewed(r)) return false;
     if (s === 'pending' && !isPending(r)) return false;
+    if (s === 'autofill' && !isAutofill(r)) return false;
     if (l !== 'all' && loopState(r) !== l) return false;
     if (q) {
       const inLabel = wholeWord
@@ -1105,6 +1126,41 @@ async function markFilteredPending() {
     (data.already_marked ? '（另有 ' + data.already_marked + ' 个原已标记）' : ''));
 }
 
+// Drop the autofill flag from every row of the active dataset (or of every
+// dataset in the all view). Labels are kept; only the prefill provenance goes,
+// so the rows read as a person's labels from then on.
+async function clearAutofill() {
+  const n = rows.filter(isAutofill).length;
+  if (!n) return;
+  const scope = ds === ALL_DATASETS ? '所有数据集' : ds;
+  const ok = confirm(
+    '清空 ' + scope + ' 中 ' + n + ' 个动作的 autofill 标记？\n\n' +
+    'action_label 保持不变，只删除 autofill 字段；此操作不可撤销。\n\n继续？');
+  if (!ok) return;
+
+  const btn = $('clearAutofill');
+  btn.dataset.busy = '1';
+  counts();
+  btn.textContent = '清空中…';
+  let data;
+  try {
+    const res = await fetch('api/clear-autofill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataset: ds })
+    });
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+  } catch (err) {
+    toast('清空 autofill 失败：' + err.message);
+    return;
+  } finally {
+    delete btn.dataset.busy;
+    await load(true);
+  }
+  toast('已清空 ' + data.cleared + ' 个 autofill 标记');
+}
+
 // Turn every pending_delete mark of the active dataset into a real removal:
 // the source file is moved into the trash dir, the clip's motion NPY and its
 // BVH are deleted outright, the review GIF is deleted, the row leaves
@@ -1214,6 +1270,7 @@ $('jump').onchange = () => { page = parseInt($('jump').value, 10) || 1; render()
 $('refresh').onclick = () => load(true);
 $('markFiltered').onclick = markFilteredPending;
 $('clean').onclick = clean;
+$('clearAutofill').onclick = clearAutofill;
 document.addEventListener('mousedown', (event) => {
   const menu = $('moreMenu');
   if (menu.open && !menu.contains(event.target)) menu.open = false;

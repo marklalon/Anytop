@@ -665,6 +665,21 @@ class LabelStore:
                 self._write()
             return changed
 
+    def clear_autofill(self):
+        """Drop ``autofill`` from every row in one rewrite; returns how many had it.
+
+        The labels stay as they are -- only the prefill provenance goes.
+        """
+        with self.lock:
+            self._reload_if_stale()
+            changed = 0
+            for row in self.rows:
+                if row.pop(AUTOFILL_KEY, None) is not None:
+                    changed += 1
+            if changed:
+                self._write()
+            return changed
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -834,7 +849,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = urlparse(self.path).path
-        if route not in ("/api/update", "/api/mark-pending", "/api/clean"):
+        if route not in ("/api/update", "/api/mark-pending", "/api/clean",
+                         "/api/clear-autofill"):
             return self._send_json(404, {"error": "not found"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -845,6 +861,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._clean(payload)
         if route == "/api/mark-pending":
             return self._mark_pending(payload)
+        if route == "/api/clear-autofill":
+            return self._clear_autofill(payload)
 
         ds, store = self._store_and_dataset(payload.get("dataset") or payload.get("ds"))
         if ds is None:
@@ -928,6 +946,29 @@ class Handler(BaseHTTPRequestHandler):
             "marked": marked,
             "already_marked": len(unique_clips) - marked,
         })
+
+    def _clear_autofill(self, payload):
+        """Clear every ``autofill`` flag of one dataset, or of all of them."""
+        requested_ds = payload.get("dataset") or payload.get("ds")
+        if requested_ds == "all":
+            selected = self.datasets
+        else:
+            if requested_ds and self._dataset(requested_ds) is None:
+                return self._send_json(404, {"error": f"unknown dataset: {requested_ds}"})
+            ds, _ = self._store_and_dataset(requested_ds)
+            if ds is None:
+                return self._send_json(400, {"error": "no datasets configured"})
+            selected = [ds]
+        cleared = 0
+        try:
+            for ds in selected:
+                store = self.stores.get(ds["id"])
+                if store is not None:
+                    cleared += store.clear_autofill()
+        except OSError as exc:
+            return self._send_json(500, {"error": f"write failed: {exc}", "cleared": cleared})
+        return self._send_json(200, {"dataset": requested_ds or selected[0]["id"],
+                                     "cleared": cleared})
 
     @staticmethod
     def _sync_terminal_row(ds, clip, is_loop):
