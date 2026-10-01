@@ -21,6 +21,10 @@ from .joint_struct_features import child_lists
 _END_EFFECTOR_DISTAL_TOKENS = (
     'toe',
     'foot',
+    'feet',
+    'ball',
+    'wrist',
+    'ankle',
     'hoof',
     'paw',
     'phalanx',
@@ -89,12 +93,14 @@ _END_EFFECTOR_EXCLUDE_TOKENS = (
     'shell',
     'center',
     'mascara',
+    'container',
 )
 
 # Contact joint detection tokens
 _CONTACT_JOINT_KEYWORDS = (
     'toe',
     'foot',
+    'feet',
     'hoof',
     'phalanx',
     'ashi',
@@ -122,6 +128,10 @@ _CONTACT_JOINT_WEAK_KEYWORDS = (
 _CONTACT_GEOMETRY_DISTAL_TOKENS = (
     'toe',
     'foot',
+    'feet',
+    'ball',
+    'wrist',
+    'ankle',
     'hoof',
     'paw',
     'phalanx',
@@ -152,6 +162,7 @@ _CONTACT_CHAIN_STOP_TOKENS = (
 _CONTACT_CHAIN_INCLUDE_TOKENS = (
     'toe',
     'foot',
+    'feet',
     'hoof',
     'paw',
     'phalanx',
@@ -231,8 +242,40 @@ def _joint_semantic_text(name):
     return f'{normalized} {canonical}'.strip()
 
 
+# A keyword this long may also hit a word with a side letter glued in front
+# ("rwing", "lfoot"); a shorter one may not, or "ear" would hit "rear".
+_GLUED_SIDE_KEYWORD_MIN_LEN = 4
+
+
+def _word_matches_keyword(word, keyword):
+    """A keyword matches a word it begins ("toe" -> "toes", "tail" -> "tailio"),
+    never one it only sits inside ("ear" in "rear" / "forearm", "lip" in "clip")."""
+    if word.startswith(keyword):
+        return True
+    return (
+        len(keyword) >= _GLUED_SIDE_KEYWORD_MIN_LEN
+        and len(word) > len(keyword)
+        and word[0] in 'lr'
+        and word[1:].startswith(keyword)
+    )
+
+
 def _text_matches_keywords(text, keywords):
-    return any(keyword in text for keyword in keywords)
+    words = text.split()
+    for keyword in keywords:
+        keyword_words = keyword.split()
+        if len(keyword_words) == 1:
+            if any(_word_matches_keyword(word, keyword) for word in words):
+                return True
+            continue
+        # A multi-word keyword ("end site") matches consecutive words, the last
+        # one by prefix like a single keyword.
+        span = len(keyword_words)
+        for start in range(len(words) - span + 1):
+            window = words[start:start + span]
+            if window[:-1] == keyword_words[:-1] and _word_matches_keyword(window[-1], keyword_words[-1]):
+                return True
+    return False
 
 
 def _joint_family_semantic_text(joint_index, joint_names, parents, max_depth=3):
@@ -483,10 +526,10 @@ def _infer_contact_joints_from_names(joint_names, parents, rest_positions):
         has_lower_limb_context = _text_matches_keywords(family_text, _CONTACT_JOINT_CONTEXT_KEYWORDS)
 
         is_strong_contact = _text_matches_keywords(semantic_text, _CONTACT_JOINT_KEYWORDS)
-        is_ball_contact = 'ball' in semantic_text and has_lower_limb_context and not has_upper_limb_context
-        is_claw_contact = 'claw' in semantic_text and has_lower_limb_context and not has_upper_limb_context
+        is_ball_contact = _text_matches_keywords(semantic_text, ('ball',)) and has_lower_limb_context and not has_upper_limb_context
+        is_claw_contact = _text_matches_keywords(semantic_text, ('claw',)) and has_lower_limb_context and not has_upper_limb_context
         is_end_site_contact = (
-            ('nub' in semantic_text or 'end site' in semantic_text)
+            _text_matches_keywords(semantic_text, ('nub', 'end site'))
             and has_lower_limb_context
             and not has_upper_limb_context
         )

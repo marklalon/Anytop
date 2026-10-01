@@ -33,6 +33,9 @@ Content     a skin exists; animation present, one per file, at 30 fps, long
             (the kept one is an arbitrary pick, the others' motion is lost).
 Consistency every file of a species carries the same joints, hierarchy and
             bind pose.
+Contact     a limb end (hoof, toe, foot, wrist ...) standing on the floor at rest
+            that contact inference leaves out -- the contact flags would mark
+            only some of the feet the rig stands on.
 Joint names (the main one) duplicate / empty / non-ASCII / over-long names;
             each joint is run through the pipeline canonicalizer and its T5
             embedding text is checked against the words the training corpus
@@ -108,7 +111,11 @@ from data_loaders.truebones.truebones_utils.face_orientation import (  # noqa: E
 )
 from data_loaders.truebones.truebones_utils.ignore_warnings import skip_orientation_detection  # noqa: E402
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  # noqa: E402
+    _END_EFFECTOR_EXCLUDE_TOKENS,
+    _joint_semantic_text,
+    _text_matches_keywords,
     detect_joint_side,
+    rest_positions_from_offsets,
 )
 from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noqa: E402
     clean_embedding_token,
@@ -127,6 +134,17 @@ BLENDER_NAME_MAX_BYTES = 63
 # A still clip moves no channel further than this (radians / rig-relative units).
 STILL_ROTATION_EPS = 1e-3
 STILL_TRANSLATION_EPS = 1e-3
+# A leaf whose rest height is within this fraction of the rig's height above the
+# lowest limb end stands on the floor.
+CONTACT_FLOOR_MARGIN_RATIO = 0.05
+# Words that make a floor-level leaf a limb end, i.e. something the rig stands on
+# (a hoof, a toe tip) rather than a tail or a hem lying low. "Digit" is left out:
+# it names the fingers of an arm or a wing, which may rest low without bearing
+# weight.
+CONTACT_LIMB_END_TOKENS = (
+    'hoof', 'foot', 'feet', 'toe', 'paw', 'claw', 'ball', 'heel', 'phalanx',
+    'ankle', 'leg', 'hand', 'finger', 'thumb', 'wrist',
+)
 
 
 def _channel_spread(values: np.ndarray, path: str) -> float:
@@ -1016,6 +1034,83 @@ def _pipeline_pruned_skeleton(skeleton: Skeleton, promote_depth: int = 0) -> tup
     return skeleton, removed
 
 
+def floor_limb_ends_missing_contact(cond: dict) -> list[int]:
+    """Leaves that stand on the floor at rest, are named as a limb end, and
+    are not covered by the inferred contact joints.
+
+    Named as a limb end: the leaf's own name carries a limb-end word, or its
+    parent's does -- a tip joint often has no word of its own ("Pad" under
+    "BackLeg", "Joint 4" under "Inner Toe 2"). A name with an excluded word
+    (an IK helper, a prop container) does not count.
+
+    The floor is the lowest of those limb ends and the contact joints, not the
+    lowest joint: a tail, a trunk or a tongue can hang below the feet and would
+    lift every foot out of the margin.
+
+    Covered means the leaf is a contact joint, a contact joint's parent, or has
+    one among its three nearest ancestors -- the contact chain the inference
+    grows from a toe tip up a foot. The usual cause of a hit is a naming rule
+    that drops the joint before contact inference sees it, or a rig whose
+    limbs carry no word the inference reads.
+    """
+    parents = np.asarray(cond["parents"], dtype=np.int64)
+    names = list(cond["joints_names"])
+    rest = rest_positions_from_offsets(cond["offsets"], parents)
+    height = max(float(np.ptp(rest[:, 1])), 1e-6)
+    contact = {int(index) for index in cond.get("contact_joints") or []}
+    has_child = np.zeros(len(parents), dtype=bool)
+    has_child[parents[parents >= 0]] = True
+    texts = [_joint_semantic_text(name) for name in names]
+    excluded = [_text_matches_keywords(text, _END_EFFECTOR_EXCLUDE_TOKENS) for text in texts]
+    limb_word = [_text_matches_keywords(text, CONTACT_LIMB_END_TOKENS) for text in texts]
+
+    def named_limb_end(index: int) -> bool:
+        if excluded[index]:
+            return False
+        parent = int(parents[index])
+        return limb_word[index] or (limb_word[parent] and not excluded[parent])
+
+    limb_ends = [
+        index for index in range(len(names))
+        if parents[index] >= 0 and not has_child[index] and named_limb_end(index)
+    ]
+    grounded_pool = limb_ends + sorted(contact)
+    if not grounded_pool:
+        return []
+    floor = float(rest[grounded_pool, 1].min())
+
+    def covered(index: int) -> bool:
+        if any(int(parents[c]) == index for c in contact):
+            return True
+        cursor = index
+        for _ in range(4):
+            if cursor in contact:
+                return True
+            cursor = int(parents[cursor])
+            if cursor < 0:
+                return False
+        return False
+
+    return [
+        index for index in limb_ends
+        if rest[index, 1] <= floor + CONTACT_FLOOR_MARGIN_RATIO * height and not covered(index)
+    ]
+
+
+def _check_contact_coverage(species: str, cond: dict, report: Report, source: str) -> None:
+    names = list(cond["joints_names"])
+    missing = floor_limb_ends_missing_contact(cond)
+    if not missing:
+        return
+    contact_names = list(cond.get("contact_joint_names") or [])
+    report.add(WARN, species, "contact",
+               f"floor-level limb end(s) not inferred as ground contact: "
+               f"{', '.join(names[index] for index in missing)} "
+               f"(contact joints: {', '.join(contact_names) if contact_names else 'none'}); "
+               "the model's contact flags will leave them out -- check the joint names "
+               "against the contact/end-effector keyword rules", source)
+
+
 def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | None, t5: T5Pieces,
                        report: Report, promote_depth: int = 0) -> list[dict]:
     source = facts.path.name
@@ -1039,6 +1134,7 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
         "species_name": species,
     }
     refresh_joint_metadata_in_object_cond(cond)
+    _check_contact_coverage(species, cond, report, source)
     texts = build_joint_embedding_texts(cond)
     canonical = cond["canonical_joint_names"]
     side_labels = cond["joint_side_labels"]
@@ -1171,22 +1267,22 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
     # phantom imbalance of two. Blanked joints (a one-handed prop socket) are
     # left out, as they are from the mirror-partner check below.
     # Partners are always one left and one right, so an imbalance implies
-    # unpaired joints; when those are listed below, the count is only context.
-    # It stays a WARN on its own when a pair has one half blanked.
+    # unpaired joints. Include their names with the counts for context.
+    # A count imbalance without named unpaired joints stays a WARN when large.
     left = [raw for index, raw in enumerate(names) if side_labels[index] == "left" and texts[index].strip()]
     right = [raw for index, raw in enumerate(names) if side_labels[index] == "right" and texts[index].strip()]
     unpaired = [
         raw for index, raw in enumerate(names)
         if side_labels[index] in ("left", "right") and int(partners[index]) < 0 and texts[index].strip()
     ]
-    if len(left) != len(right):
+    if len(left) != len(right) or unpaired:
         level = WARN if abs(len(left) - len(right)) > SIDE_COUNT_SLACK and not unpaired else INFO
+        details = (
+            f"; unpaired: {', '.join(unpaired[:10])}{' ...' if len(unpaired) > 10 else ''}"
+            if unpaired else ""
+        )
         report.add(level, species, "joint-names",
-                   f"{len(left)} left vs {len(right)} right joints", source)
-    if unpaired:
-        report.add(WARN, species, "joint-names",
-                   f"{len(unpaired)} sided joint(s) found no mirror partner: "
-                   f"{', '.join(unpaired[:10])}{' ...' if len(unpaired) > 10 else ''}", source)
+                   f"{len(left)} left vs {len(right)} right joints{details}", source)
 
     collisions = [c for c in canonical if " Variant" in c]
     if collisions:

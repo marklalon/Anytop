@@ -1,5 +1,6 @@
 import json
 import numpy as np
+import pytest
 import os
 import sys
 import tempfile
@@ -284,3 +285,49 @@ if __name__ == "__main__":
             failed += 1
 
     print(f"\n{passed} passed, {failed} failed, {len(tests)} total")
+
+
+def test_annotation_keywords_match_words_not_substrings():
+    from data_loaders.truebones.truebones_utils.physics_joint_annotation import _text_matches_keywords
+
+    # A keyword sitting inside another word is not that word.
+    assert not _text_matches_keywords('elk r rear hoof', ('ear',))
+    assert not _text_matches_keywords('forearm left 04', ('ear',))
+    assert not _text_matches_keywords('clip right 02', ('lip',))
+    assert not _text_matches_keywords('head container', ('tai',))
+    # A word the keyword begins still matches: plurals and glued suffixes.
+    assert _text_matches_keywords('toes rear 1 right', ('toe',))
+    assert _text_matches_keywords('tailio', ('tail',))
+    # A side letter glued in front, for keywords long enough not to collide.
+    assert _text_matches_keywords('rig rwing 5', ('wing',))
+    assert not _text_matches_keywords('rear', ('ear',))
+    # Multi-word keywords match consecutive words.
+    assert _text_matches_keywords('toe end site', ('end site',))
+    assert not _text_matches_keywords('end of site', ('end site',))
+
+
+_CONTACT_CASES = [
+    # 'Rear' must not read as 'ear'.
+    ('truebones/zoo/Deer', {'ElkRRearHoof', 'ElkLRearHoof', 'ElkRFrontHoof', 'ElkLFrontHoof'}, set()),
+    # The rear hooves are 'feet', not 'foot'.
+    ('unitybundles/MLH_Horseman', {'horse_feetTip_L', 'horse_feetTip_R', 'horse_handTip_L', 'horse_handTip_R'}, set()),
+    ('unitybundles/MLS_Dryad', {'horse_feetTip_L', 'horse_feetTip_R', 'horse_handTip_L', 'horse_handTip_R'}, set()),
+    # The foot ends in a 'ball' leaf; the hands hang well above the floor.
+    ('unitybundles/RTH_Hero', {'ball_l', 'ball_r', 'foot_l', 'foot_r'}, {'hand_l', 'hand_r', 'thumb_03_l', 'thumb_03_r'}),
+    # Flippers end in a 'Wrist' / 'Ankle' leaf, all four on the floor.
+    ('integrate_20260924/PP_Seal', {'Wrist_R', 'Wrist_L', 'Ankle_R', 'Ankle_L'}, set()),
+]
+
+
+@pytest.mark.parametrize('species, expected, forbidden', _CONTACT_CASES)
+def test_contact_joints_on_real_rigs(species, expected, forbidden):
+    cond_path = Path(__file__).resolve().parents[1] / 'dataset' / 'merged' / 'cond.npy'
+    if not cond_path.is_file():
+        pytest.skip('merged dataset not present')
+    from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+
+    entry = dict(load_cond(str(cond_path))[species])
+    refresh_joint_metadata_in_object_cond(entry)
+    names = set(entry['contact_joint_names'])
+    assert expected <= names, sorted(expected - names)
+    assert not names & forbidden, sorted(names & forbidden)
