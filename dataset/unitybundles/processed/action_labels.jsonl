@@ -1800,7 +1800,7 @@
 {"clip": "RTH_Hero_SingleSwordAttack01", "action_group": "stationary", "action_label": "attack, right, slash", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_SingleSwordAttack02", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_SingleSwordAttack03", "action_group": "stationary", "action_label": "attack, right, stab", "is_loop": true, "reviewed": true}
-{"clip": "RTH_Hero_Sleeping", "action_group": "stationary", "action_label": "rest, right, sleep", "is_loop": true, "reviewed": true}
+{"clip": "RTH_Hero_Sleeping", "action_group": "stationary", "action_label": "rest, sleep", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_SprintFWDBattle", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_Swimming", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "RTH_Hero_SwimmingFloating", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true, "autofill": true}

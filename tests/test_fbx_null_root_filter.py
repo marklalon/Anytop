@@ -69,9 +69,18 @@ class _FakeArmatureData:
         self.bones = bones
 
 
+class _FakePose:
+    def __init__(self, bones):
+        self.bones = bones
+
+
 class _FakeArmature:
     def __init__(self, bones):
         self.data = _FakeArmatureData(bones)
+        # No mirrored bones in this fixture: an empty pose list makes
+        # _reflection_signs return None, so the null-root logic is tested in
+        # isolation from the reflection fold.
+        self.pose = _FakePose([])
 
 
 def test_extract_armature_skeleton_data_promotes_null_root_children_and_keeps_largest_subtree():

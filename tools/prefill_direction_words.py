@@ -27,7 +27,7 @@ fills them, under four rules that never bend:
   the review list (``--dry-run`` is the default; ``--apply`` writes).
 
 Out of scope, whatever the motion says: the actions that have no planar
-direction to name (``audit_action_labels.NO_PLANAR_DIRECTION_WORDS`` -- hurt,
+direction to name (``motion_labels.NO_PLANAR_DIRECTION_WORDS`` -- hurt,
 getup, idle, rest, stop, draw, sheathe, headbutt, bite). A hit reaction or an
 idle is aimed nowhere, a headbutt is delivered with a CENTER joint, and the
 side of a draw is the scabbard's, so the side energy of such a clip reads its
@@ -140,8 +140,6 @@ for _candidate in (str(ANYTOP_DIR), str(ANYTOP_DIR.parent)):
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_VOCAB,
     DIRECTION_VOCAB,
-)
-from tools.audit_action_labels import (  # noqa: E402
     NO_HEADING_WORDS,
     NO_PLANAR_DIRECTION_WORDS,
     PLANAR_DIRECTIONS,

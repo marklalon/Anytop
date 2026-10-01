@@ -173,6 +173,81 @@ assert not any(char.isspace() for word in CONTROLLED_VOCAB for char in word), (
     + str([w for w in CONTROLLED_VOCAB if any(c.isspace() for c in w)])
 )
 
+# ---------------------------------------------------------------------------
+# Direction semantics shared by the label-prefill and LLM-annotation tools.
+# These name which axis a direction word speaks to, and which actions carry no
+# planar direction at all -- a corpus-wide rule about what these actions can
+# spell, not a tool knob.
+# ---------------------------------------------------------------------------
+
+# Direction words that name travel in the ground plane.
+PLANAR_DIRECTIONS: tuple[str, ...] = ("forward", "backward", "left", "right")
+
+# Words that name travel OUT of the ground plane. A dive, a jump-fall or a
+# vertical take-off has no planar heading to spell, so no rule may demand one
+# of them. ``fall`` and ``dive`` are ACTION_VOCAB words, not directions, but
+# they name the same vertical axis.
+VERTICAL_WORDS: tuple[str, ...] = ("up", "down", "dive", "fall")
+
+# ``hover`` holds the body in place: no heading of travel to spell. Distinct
+# from VERTICAL_WORDS (travel OUT of the plane) -- this names the absence of a
+# planar component. Matched anywhere in the label, not just as the head.
+NO_HEADING_WORDS: tuple[str, ...] = ("hover",)
+
+# Actions with NO PLANAR DIRECTION TO NAME, whatever their group. The planar
+# words (left / right / forward / backward) say which way an action is aimed or
+# travels; these actions are not aimed anywhere (a reaction or a body state,
+# a draw/sheathe, or a head strike), so no rule may demand a planar word of
+# them and the prefill tools never propose one. The VERTICAL axis is
+# untouched: "idle, up, aim, bow" aims upward and keeps its word. Matched
+# anywhere in the label, not just as the head ("idle, right, look" ->
+# "idle, look").
+NO_PLANAR_DIRECTION_WORDS: tuple[str, ...] = (
+    "hurt", "getup", "idle", "rest", "stop", "draw", "sheathe", "headbutt", "bite",
+)
+
+_unknown_directionless = set(NO_PLANAR_DIRECTION_WORDS) - set(ACTION_VOCAB)
+if _unknown_directionless:
+    raise RuntimeError(
+        "NO_PLANAR_DIRECTION_WORDS names %s, which ACTION_VOCAB does not have: a "
+        "word nothing can spell exempts nothing" % ", ".join(sorted(_unknown_directionless))
+    )
+
+# A renamed direction word would otherwise turn a direction rule into "every
+# locomotion clip is a violation" without anything saying why.
+_missing_directions = set(PLANAR_DIRECTIONS) - set(DIRECTION_VOCAB)
+if _missing_directions:
+    raise RuntimeError(
+        "DIRECTION_VOCAB no longer contains %s; update PLANAR_DIRECTIONS to match "
+        "DIRECTION_VOCAB in this file" % ", ".join(sorted(_missing_directions))
+    )
+
+# A word no label can spell would exempt or classify nothing, silently.
+_unknown_axis_words = (
+    set(VERTICAL_WORDS) | set(NO_HEADING_WORDS)
+) - set(DIRECTION_VOCAB) - set(ACTION_VOCAB)
+if _unknown_axis_words:
+    raise RuntimeError(
+        "VERTICAL_WORDS / NO_HEADING_WORDS name %s, which neither DIRECTION_VOCAB "
+        "nor ACTION_VOCAB has" % ", ".join(sorted(_unknown_axis_words))
+    )
+
+
+def takes_planar_direction(words) -> bool:
+    """False when a label's action has no planar direction to name (see above)."""
+    return not (set(words) & set(NO_PLANAR_DIRECTION_WORDS))
+
+
+def label_words(label: str) -> list[str]:
+    """The label's words, in stored order. Empty label -> empty list."""
+    return [word.strip() for word in str(label or "").split(",") if word.strip()]
+
+
+def mirror_label(label: str) -> str:
+    """*label* with left and right swapped, everything else untouched."""
+    swap = {"left": "right", "right": "left"}
+    return ", ".join(swap.get(word, word) for word in label_words(label))
+
 
 _HEAD_VOCAB_SET: frozenset[str] = frozenset(HEAD_VOCAB)
 

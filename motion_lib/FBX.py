@@ -244,10 +244,13 @@ def _armature_yup_correction(armature):
     Returns ``None`` when the correction is identity‑4×4 (common Truebones path),
     and when called outside a live Blender session.
     """
-    import mathutils
-
     if not hasattr(armature, "matrix_world"):
+        # No object transform to correct (and, outside Blender, no mathutils to
+        # read one with): this is the common non-Blender path, so the rest pose
+        # needs no correction.
         return None
+
+    import mathutils
 
     # Decompose matrix_world: R = rotation, T = translation, drop scale/shear
     world_t = armature.matrix_world.to_translation()

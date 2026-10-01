@@ -35,6 +35,7 @@ from __future__ import annotations
 import csv
 import json
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +62,8 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     canonical_action_label,
     clip_key,
     head_words_in,
+    label_words,
+    load_action_labels,
     parse_action_label,
 )
 from tools.action_label_sidecar import (  # noqa: E402
@@ -68,42 +71,81 @@ from tools.action_label_sidecar import (  # noqa: E402
     read_action_label_rows,
     rewrite_action_label_rows,
 )
-from tools.audit_action_labels import collect_clips, label_words  # noqa: E402
 
 
 # ── corpus ──────────────────────────────────────────────────────────────────
-
 def load_corpus(cond_path, action_group=None):
     """``(cond, sources, clips)`` for the whole corpus, minus retiring clips.
 
-    Each clip record is the audit's (clip / species / group / label /
-    motion_path / gif_path / labels_path) plus ``key`` (the sidecar key),
-    ``root`` (the dataset dir its sidecar lives in), ``reviewed`` and
-    ``is_loop`` read off the raw row. A ``pending_delete`` row is dropped:
-    the clip is on its way out and must neither receive a word nor serve as
-    calibration evidence.
+    Each clip record is ``clip`` / ``species`` / ``group`` / ``label`` /
+    ``motion_path`` plus ``key`` (the sidecar key), ``root`` (the dataset dir
+    its sidecar lives in), ``reviewed`` and ``is_loop`` read off the raw row.
+
+    Species membership follows the training loader exactly (``MotionDataset``):
+    a clip belongs to the species whose ``species_name`` prefixes it followed by
+    an underscore. A walk that grouped clips differently from training would
+    write labels onto clips the model never sees under that species.
+
+    A ``pending_delete`` row is dropped: the clip is on its way out (the review
+    UI retires it on the next cleanup) and must neither receive a word nor
+    serve as calibration evidence.
     """
     cond = load_cond(cond_path)
     sources = sources_from_cond(cond, cond_path)
-    clips = collect_clips(cond, sources, action_group=action_group)
-    marks = {}
+
+    species_by_namespace = defaultdict(list)
+    for object_key, entry in cond.items():
+        species_by_namespace[entry["dataset_namespace"]].append(
+            (object_key, str(entry["species_name"]))
+        )
+
+    clips = []
     for source in sources:
-        for row in read_action_label_rows(source.root):
-            marks[(source.root, clip_key(row.get("clip", "")))] = row
-    kept = []
-    for clip in clips:
-        root = str(Path(clip["labels_path"]).parent)
-        key = clip_key(clip["clip"])
-        row = marks.get((root, key)) or {}
-        if row.get("pending_delete"):
+        source_species = species_by_namespace.get(source.namespace)
+        if not source_species:
             continue
-        clip = dict(clip)
-        clip["key"] = key
-        clip["root"] = root
-        clip["reviewed"] = row.get("reviewed") is True
-        clip["is_loop"] = row.get(LOOP_FLAG_KEY)
-        kept.append(clip)
-    return cond, sources, kept
+        labels = load_action_labels(source.root)
+        rows = {clip_key(row.get("clip", "")): row
+                for row in read_action_label_rows(source.root)}
+        motion_dir = Path(source.motion_dir)
+        if not motion_dir.is_dir():
+            raise FileNotFoundError(
+                f"motions directory not found for namespace '{source.namespace}': "
+                f"{motion_dir}"
+            )
+        available = {path.name for path in motion_dir.glob("*.npy")}
+
+        # Longest species name first so 'Dog-2_Walk' is not claimed by 'Dog'.
+        ordered = sorted(source_species, key=lambda pair: -len(pair[1]))
+        claimed = set()
+        for object_key, species_name in ordered:
+            prefix = f"{species_name}_"
+            for name in sorted(available):
+                if name in claimed or not name.startswith(prefix):
+                    continue
+                # the sidecar is keyed by the extension-less clip name
+                key = clip_key(name)
+                entry = labels.get(key)
+                if entry is None:
+                    continue
+                if action_group and entry["action_group"] != action_group:
+                    continue
+                claimed.add(name)
+                row = rows.get(key) or {}
+                if row.get("pending_delete"):
+                    continue
+                clips.append({
+                    "clip": name,
+                    "species": object_key,
+                    "group": entry["action_group"],
+                    "label": entry["action_label"],
+                    "motion_path": str(motion_dir / name),
+                    "key": key,
+                    "root": source.root,
+                    "reviewed": row.get("reviewed") is True,
+                    "is_loop": row.get(LOOP_FLAG_KEY),
+                })
+    return cond, sources, clips
 
 
 def species_name(clip) -> str:
