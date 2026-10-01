@@ -64,6 +64,7 @@ from .features import (
 from .dataset_pipeline import (
     DatasetPreprocessingError,
     create_data_samples,
-    find_new_source_files,
+    find_orphan_clips,
+    find_source_changes,
     process_skeleton,
 )

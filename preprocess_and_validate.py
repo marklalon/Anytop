@@ -17,8 +17,8 @@ Options:
     --validate-only                      Skip preprocessing, only validate existing dataset
     --regenerate-side-artifacts          Regenerate cond.npy, joint-name encodings, the action-word table (only if the vocabulary or encoder changed) and other side artifacts without re-preprocessing motions
     --skip-validate                      Skip validation step (faster for CI)
-    --overwrite                          Reprocess every targeted object, deleting existing outputs first (a full wipe when no --filter is set). Without it, already-processed objects are skipped.
-    --yes, --assume-yes, -y              Auto-confirm the overwrite deletion prompt (no interactive input; for scripts/CI).
+    --overwrite                          Reprocess every targeted object, deleting existing outputs first (a full wipe when no --filter is set). Without it, preprocessing is incremental: clips of deleted sources are pruned, new or modified (newer than their clip) sources are (re)built.
+    --yes, --assume-yes, -y              Auto-confirm the overwrite / orphan-prune deletion prompt (no interactive input; for scripts/CI).
     --filter PATTERN                     Comma/semicolon-separated case-insensitive glob(s) restricting which object names are considered for processing
     --object-workers N                   Concurrent characters to preprocess (default: 16)
     --sample-count N                     Limit file validation to first N motions (0=all, default: 0)
@@ -543,50 +543,108 @@ def _delete_paths(paths: list[Path]) -> bool:
         return False
 
 
+def _prune_orphan_clips(
+    dataset_dir_path: Path,
+    orphans: dict[str, str],
+    raw_data_dir: str,
+    assume_yes: bool,
+) -> bool:
+    """Delete clips whose source file is gone; False when the user declines."""
+    _, motions_dir, _, _ = _resolve_dataset_paths(str(dataset_dir_path))
+    to_delete = sorted(orphans)
+    empty_species = _species_emptied_by(motions_dir, dataset_dir_path, to_delete)
+    species_with_sources = frozenset(_discover_all_objects(raw_data_dir))
+
+    print("\n" + "=" * 70)
+    print("WARNING: Processed clips whose source file no longer exists")
+    print("=" * 70)
+    print(f"Dataset directory: {dataset_dir_path}")
+    for motion_name in to_delete:
+        print(f"  - {motion_name}")
+    print("Their NPY/BVH, motion_metadata.json entries and action_labels.jsonl rows will be deleted.")
+    retired = sorted(empty_species - species_with_sources)
+    if retired:
+        print(f"Species left with no motion and no raw dir (purged from cond.npy and sidecars): "
+              f"{', '.join(retired)}")
+
+    if assume_yes:
+        print("\n--yes: confirmation skipped, deleting and continuing.")
+    elif not _confirm_yes_no("Enter 'yes' to delete them and continue, or 'no' to abort: "):
+        print("\nPreprocessing aborted.")
+        return False
+
+    _delete_motions(dataset_dir_path, to_delete, empty_species, species_with_sources)
+    return True
+
+
 def check_and_clean_old_data(
     dataset_dir: str = "",
     object_filter: str = "",
     raw_data_dir: str = "",
     overwrite: bool = False,
     assume_yes: bool = False,
-) -> tuple[bool, PreservedSideArtifacts, tuple[str, ...]]:
+) -> tuple[bool, PreservedSideArtifacts, tuple[str, ...], bool]:
     """
     Resolve which object types to (re)process and clean up stale outputs.
 
-    Default (incremental): processing is keyed on source anim files - only objects with
-    at least one not-yet-processed source file need work, and create_data_samples skips
-    the already-processed source files within them while self-merging the existing
-    dataset (so nothing is deleted and no side artifacts are preserved here). ``--overwrite``
+    Default (incremental): processing is keyed on source anim files, keeping clips 1:1
+    with them. Clips whose source is gone are pruned first (after confirmation). Only
+    objects with at least one new source, or one whose file is newer than its clip,
+    need work, and create_data_samples skips the up-to-date source files within them
+    while self-merging the existing dataset (so no side artifacts are preserved here). ``--overwrite``
     instead (re)builds the whole target set, deleting matching outputs first (a full wipe
     when no ``--filter`` is set). A non-empty ``object_filter`` narrows the target universe
     in both modes.
 
-    Returns (should_proceed, preserved_side_artifacts, objects_to_process).
+    Returns (should_proceed, preserved_side_artifacts, objects_to_process, pruned), where
+    ``pruned`` says clips were deleted, so side artifacts need regenerating even when
+    nothing is left to preprocess.
     """
     dataset_dir_path, motions_dir, bvhs_dir, joint_name_inspection_dir = _resolve_dataset_paths(dataset_dir)
     target_object_types = _resolve_target_object_types(object_filter, raw_data_dir)
 
     if not overwrite:
-        # Incremental: a cheap (no-geometry) scan finds objects with new source files.
+        # Incremental: a cheap (no-geometry) scan keeps the dataset 1:1 with the raw
+        # sources -- clips of deleted sources are pruned, new and modified sources
+        # are (re)built.
         if str(ANYTOP_DIR.parent) not in sys.path:
             sys.path.insert(0, str(ANYTOP_DIR.parent))
-        from data_loaders.truebones.truebones_utils.motion_process import find_new_source_files
+        from data_loaders.truebones.truebones_utils.motion_process import (
+            find_orphan_clips,
+            find_source_changes,
+        )
 
-        new_sources = find_new_source_files(
+        patterns = _parse_filter_patterns(object_filter)
+        orphans = find_orphan_clips(
+            str(dataset_dir_path), raw_data_dir or None,
+            species_filter=(lambda species: _matches_any(species, patterns)) if patterns else None,
+        )
+        pruned = False
+        if orphans:
+            if not _prune_orphan_clips(dataset_dir_path, orphans, raw_data_dir, assume_yes):
+                return False, PreservedSideArtifacts(), (), False
+            pruned = True
+
+        changes = find_source_changes(
             target_object_types, str(dataset_dir_path), raw_data_dir or None
         )
-        objects_to_process = tuple(obj for obj in target_object_types if obj in new_sources)
-        up_to_date = [obj for obj in target_object_types if obj not in new_sources]
+        objects_to_process = tuple(obj for obj in target_object_types if obj in changes)
+        up_to_date = [obj for obj in target_object_types if obj not in changes]
         if up_to_date:
-            print(f"\nUp to date (no new source files): {len(up_to_date)} object(s) skipped.")
+            print(f"\nUp to date (no new or modified source files): {len(up_to_date)} object(s) skipped.")
         if objects_to_process:
-            total_new = sum(len(new_sources[obj]) for obj in objects_to_process)
+            total_new = sum(len(changes[obj]["new"]) for obj in objects_to_process)
+            total_stale = sum(len(changes[obj]["stale"]) for obj in objects_to_process)
             print(
-                f"Incremental: {total_new} new source file(s) across "
-                f"{len(objects_to_process)} object(s): {', '.join(objects_to_process)}\n"
+                f"Incremental: {total_new} new + {total_stale} modified source file(s) across "
+                f"{len(objects_to_process)} object(s): {', '.join(objects_to_process)}"
             )
+            for obj in objects_to_process:
+                for path in changes[obj]["stale"]:
+                    print(f"  modified: {obj}/{Path(path).name}")
+            print()
         # create_data_samples self-merges the existing dataset, so no preservation needed.
-        return True, PreservedSideArtifacts(), objects_to_process
+        return True, PreservedSideArtifacts(), objects_to_process, pruned
 
     # Overwrite: a filter narrows the run to matching objects; without one we do a full wipe.
     is_full_refresh = not _parse_filter_patterns(object_filter)
@@ -617,7 +675,7 @@ def check_and_clean_old_data(
         ]
 
     if not paths_to_delete:
-        return True, preserved, objects_to_process
+        return True, preserved, objects_to_process, False
 
     print("\n" + "=" * 70)
     print(title)
@@ -631,14 +689,14 @@ def check_and_clean_old_data(
         print("\nDo you want to delete the matching files and proceed with preprocessing?")
         if not _confirm_yes_no("Enter 'yes' to delete and continue, or 'no' to abort: "):
             print("\nPreprocessing aborted.")
-            return False, preserved, objects_to_process
+            return False, preserved, objects_to_process, False
 
     print("\nDeleting...")
     if not _delete_paths(paths_to_delete):
         print("Aborting preprocessing.")
-        return False, preserved, objects_to_process
+        return False, preserved, objects_to_process, False
     print("Done.\n")
-    return True, preserved, objects_to_process
+    return True, preserved, objects_to_process, False
 
 
 def run_preprocessing(
@@ -746,92 +804,34 @@ def _collect_species_from_motions(
     return species_map
 
 
-def run_remove_motions(
-    dataset_dir: str = "",
-    object_filter: str = "",
-    rm_pattern: str = "",
-    raw_data_dir: str = "",
-    assume_yes: bool = False,
-) -> int:
-    """Remove motions matching *rm_pattern* from the preprocessed dataset.
-
-    Supports fnmatch wildcards against motion filenames (e.g. ``Horse_Run*``,
-    ``Dog_*``, ``*Dead*``). Combine with ``--filter`` to scope to specific species.
-    When **all** motions of a species are deleted the species entry is also purged
-    from ``cond.npy``, ``species_tags.jsonl``, ``joint_name_inspection/``, and the
-    dataset ``cache/`` files.
-    """
-
-    dataset_dir_path, motions_dir, bvhs_dir, joint_name_inspection_dir = _resolve_dataset_paths(dataset_dir)
-    target_species = _resolve_target_object_types(object_filter, raw_data_dir)
-
-    patterns = _parse_filter_patterns(rm_pattern)
-    if not patterns:
-        print("ERROR: --rm requires a non-empty pattern (e.g. --rm 'Horse_Run*')")
-        return 1
-
-    # Gather all motions currently on disk, scoped by --filter if provided.
+def _species_emptied_by(motions_dir: Path, dataset_dir_path: Path, to_delete: list[str]) -> set[str]:
+    """Species of *to_delete* that have no motion left once it is deleted."""
     all_species_motions = _collect_species_from_motions(
         motions_dir, species_lookup_map_for_dataset_dir(dataset_dir_path)
     )
-    if object_filter:
-        all_species_motions = {s: m for s, m in all_species_motions.items() if s in target_species}
-
-    # Match motions against rm_pattern
-    to_delete: list[str] = []
-    for species, motions in sorted(all_species_motions.items()):
-        for mname in sorted(motions):
-            if _matches_any(mname, patterns):
-                to_delete.append(mname)
-
-    if not to_delete:
-        print(f"No motions matched pattern '{rm_pattern}'" + (f" within species: {', '.join(target_species)}" if object_filter else ""))
-        return 0
-
-    # --- Summary ---
-    species_of_motion = {
-        motion_name: species
-        for species, motion_names in all_species_motions.items()
-        for motion_name in motion_names
+    doomed = set(to_delete)
+    return {
+        species for species, motions in all_species_motions.items()
+        if motions & doomed and not motions - doomed
     }
-    affected_species = sorted({species_of_motion[m] for m in to_delete})
-    species_remaining: dict[str, int] = {}
-    empty_species: set[str] = set()
-    for species in affected_species:
-        total = len(all_species_motions.get(species, set()))
-        deleted = sum(1 for m in to_delete if species_of_motion[m] == species)
-        remaining = total - deleted
-        species_remaining[species] = remaining
-        if remaining <= 0:
-            empty_species.add(species)
 
-    print("\n" + "=" * 70)
-    print("MOTIONS TO REMOVE")
-    print("=" * 70)
-    print(f"Dataset directory : {dataset_dir_path}")
-    print(f"Pattern           : {rm_pattern}")
-    if object_filter:
-        print(f"Species filter    : {object_filter}  ->  {', '.join(target_species)}")
-    print(f"Motions to delete : {len(to_delete)}")
-    print(f"Affected species  : {', '.join(affected_species)}")
-    if empty_species:
-        print(f"\n⚠  Species that will be EMPTIED (ALL motions removed): {', '.join(sorted(empty_species))}")
-        print("   Their cond.npy entries, species_tags.jsonl, inspection files,")
-        print("   and cache files will also be purged.")
-    print()
 
-    # List a preview
-    preview_n = min(len(to_delete), 20)
-    for m in to_delete[:preview_n]:
-        print(f"  - {m}")
-    if len(to_delete) > preview_n:
-        print(f"  ... and {len(to_delete) - preview_n} more")
-    print()
+def _delete_motions(
+    dataset_dir_path: Path,
+    to_delete: list[str],
+    empty_species: set[str],
+    species_with_sources: frozenset[str] = frozenset(),
+) -> None:
+    """Delete clips (``motions/`` file names) and every artifact keyed on them.
 
-    if not assume_yes:
-        if not _confirm_yes_no("Enter 'yes' to delete these motions, or 'no' to abort: "):
-            print("\nRemoval aborted.")
-            return 0
+    Removes each clip's NPY, BVH and inspection PNG, its ``motion_metadata.json``
+    entry and its ``action_labels.jsonl`` row. Species in *empty_species* (no
+    motion left) are also purged from ``cond.npy``, the per-species sidecars,
+    ``joint_name_inspection/`` and the length cache -- except that species in
+    *species_with_sources* keep their sidecar rows. Side artifacts are not
+    regenerated here.
+    """
+    _, motions_dir, bvhs_dir, joint_name_inspection_dir = _resolve_dataset_paths(str(dataset_dir_path))
 
     # --- Delete motion .npy files ---
     print("\nDeleting motion files...")
@@ -919,10 +919,13 @@ def run_remove_motions(
                 print(f"  [OK] Removed {cond_removed} species from cond.npy" + (" (deleted — no species remaining)" if not cond else ""))
 
         # species_tags.jsonl
+        # A species whose raw dir still holds sources is waiting to be rebuilt,
+        # and preprocessing refuses a species without its sidecar rows.
+        retired_species = empty_species - set(species_with_sources)
         st_path = dataset_dir_path / dataset_tags.SPECIES_TAGS_FILE
         if st_path.exists():
             st_entries = _load_jsonl(st_path)
-            new_st = [e for e in st_entries if e.get("species", "") not in empty_species]
+            new_st = [e for e in st_entries if e.get("species", "") not in retired_species]
             if len(new_st) != len(st_entries):
                 _write_jsonl(st_path, new_st)
                 print(f"  [OK] Removed {len(st_entries) - len(new_st)} species from species_tags.jsonl")
@@ -931,7 +934,7 @@ def run_remove_motions(
         cfj_path = dataset_dir_path / dataset_tags.CHAIN_FORWARD_JOINTS_FILE
         if cfj_path.exists():
             cfj_entries = _load_jsonl(cfj_path)
-            new_cfj = [e for e in cfj_entries if e.get("species", "") not in empty_species]
+            new_cfj = [e for e in cfj_entries if e.get("species", "") not in retired_species]
             if len(new_cfj) != len(cfj_entries):
                 _write_jsonl(cfj_path, new_cfj)
                 print(
@@ -953,6 +956,96 @@ def run_remove_motions(
             if ml_cache.exists():
                 ml_cache.unlink()
                 print(f"  [OK] Deleted cache/motion_lengths.npy (will be regenerated)")
+
+
+def run_remove_motions(
+    dataset_dir: str = "",
+    object_filter: str = "",
+    rm_pattern: str = "",
+    raw_data_dir: str = "",
+    assume_yes: bool = False,
+) -> int:
+    """Remove motions matching *rm_pattern* from the preprocessed dataset.
+
+    Supports fnmatch wildcards against motion filenames (e.g. ``Horse_Run*``,
+    ``Dog_*``, ``*Dead*``). Combine with ``--filter`` to scope to specific species.
+    When **all** motions of a species are deleted the species entry is also purged
+    from ``cond.npy``, ``species_tags.jsonl``, ``joint_name_inspection/``, and the
+    dataset ``cache/`` files.
+    """
+
+    dataset_dir_path, motions_dir, bvhs_dir, joint_name_inspection_dir = _resolve_dataset_paths(dataset_dir)
+    target_species = _resolve_target_object_types(object_filter, raw_data_dir)
+
+    patterns = _parse_filter_patterns(rm_pattern)
+    if not patterns:
+        print("ERROR: --rm requires a non-empty pattern (e.g. --rm 'Horse_Run*')")
+        return 1
+
+    # Gather all motions currently on disk, scoped by --filter if provided.
+    all_species_motions = _collect_species_from_motions(
+        motions_dir, species_lookup_map_for_dataset_dir(dataset_dir_path)
+    )
+    if object_filter:
+        all_species_motions = {s: m for s, m in all_species_motions.items() if s in target_species}
+
+    # Match motions against rm_pattern
+    to_delete: list[str] = []
+    for species, motions in sorted(all_species_motions.items()):
+        for mname in sorted(motions):
+            if _matches_any(mname, patterns):
+                to_delete.append(mname)
+
+    if not to_delete:
+        print(f"No motions matched pattern '{rm_pattern}'" + (f" within species: {', '.join(target_species)}" if object_filter else ""))
+        return 0
+
+    # --- Summary ---
+    species_of_motion = {
+        motion_name: species
+        for species, motion_names in all_species_motions.items()
+        for motion_name in motion_names
+    }
+    affected_species = sorted({species_of_motion[m] for m in to_delete})
+    species_remaining: dict[str, int] = {}
+    empty_species: set[str] = set()
+    for species in affected_species:
+        total = len(all_species_motions.get(species, set()))
+        deleted = sum(1 for m in to_delete if species_of_motion[m] == species)
+        remaining = total - deleted
+        species_remaining[species] = remaining
+        if remaining <= 0:
+            empty_species.add(species)
+
+    print("\n" + "=" * 70)
+    print("MOTIONS TO REMOVE")
+    print("=" * 70)
+    print(f"Dataset directory : {dataset_dir_path}")
+    print(f"Pattern           : {rm_pattern}")
+    if object_filter:
+        print(f"Species filter    : {object_filter}  ->  {', '.join(target_species)}")
+    print(f"Motions to delete : {len(to_delete)}")
+    print(f"Affected species  : {', '.join(affected_species)}")
+    if empty_species:
+        print(f"\n⚠  Species that will be EMPTIED (ALL motions removed): {', '.join(sorted(empty_species))}")
+        print("   Their cond.npy entries, species_tags.jsonl, inspection files,")
+        print("   and cache files will also be purged.")
+    print()
+
+    # List a preview
+    preview_n = min(len(to_delete), 20)
+    for m in to_delete[:preview_n]:
+        print(f"  - {m}")
+    if len(to_delete) > preview_n:
+        print(f"  ... and {len(to_delete) - preview_n} more")
+    print()
+
+    if not assume_yes:
+        if not _confirm_yes_no("Enter 'yes' to delete these motions, or 'no' to abort: "):
+            print("\nRemoval aborted.")
+            return 0
+
+    _delete_motions(dataset_dir_path, to_delete, empty_species)
 
     # --- Regenerate side artifacts after deletion ---
     print("\nRegenerating dataset side artifacts...")
@@ -1123,8 +1216,9 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Reprocess every targeted object, deleting existing outputs first (a full "
-            "wipe when no --filter is set). Without it, preprocessing is incremental: only "
-            "newly added source animations are processed; clips already on disk are kept."
+            "wipe when no --filter is set). Without it, preprocessing is incremental: clips "
+            "whose source file is gone are pruned, new sources and sources newer than their clip "
+            "are (re)built, and every other clip on disk is kept."
         ),
     )
     parser.add_argument(
@@ -1134,7 +1228,7 @@ def parse_args() -> argparse.Namespace:
         dest="assume_yes",
         action="store_true",
         help=(
-            "Auto-confirm the overwrite deletion prompt (no interactive input). "
+            "Auto-confirm the overwrite / orphan-prune deletion prompt (no interactive input). "
             "Use with --overwrite in scripts/CI."
         ),
     )
@@ -1258,7 +1352,7 @@ def main() -> int:
     if args.object_filter and not args.validate_only and not args.regenerate_side_artifacts:
         matched = _resolve_target_object_types(args.object_filter, args.raw_data_dir)
         if not matched:
-            # Non-fatal: like the incremental "no new source files" case, an unmatched
+            # Non-fatal: like the incremental "nothing changed" case, an unmatched
             # filter simply means there is nothing to preprocess for this dataset.
             filter_matched_nothing = True
             print(
@@ -1283,10 +1377,11 @@ def main() -> int:
     steps_completed = []
     preserved_side_artifacts = PreservedSideArtifacts()
     objects_to_process: tuple[str, ...] = ()
+    pruned = False
 
     # Check and clean old data before preprocessing
     if not args.validate_only:
-        should_proceed, preserved_side_artifacts, objects_to_process = check_and_clean_old_data(
+        should_proceed, preserved_side_artifacts, objects_to_process, pruned = check_and_clean_old_data(
             args.dataset_dir, args.object_filter, args.raw_data_dir,
             overwrite=args.overwrite, assume_yes=args.assume_yes,
         )
@@ -1305,7 +1400,13 @@ def main() -> int:
                 print("\nNo objects to process (filter matched no objects).")
             else:
                 print("\nNo objects to process: every targeted object is up to date "
-                      "(no new source files). Use --overwrite to force a rebuild.")
+                      "(no new or modified source files). Use --overwrite to force a rebuild.")
+            if pruned:
+                ret = run_regenerate_side_artifacts(args.dataset_dir)
+                if ret != 0:
+                    print("\n[FAIL] Side artifact regeneration failed, aborting workflow.")
+                    return ret
+                steps_completed.append("Prune")
         else:
             incremental = not args.overwrite
             ret = run_preprocessing(

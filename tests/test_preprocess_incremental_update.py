@@ -1076,7 +1076,16 @@ def test_run_preprocessing_calls_create_data_samples_directly(monkeypatch):
     assert captured['incremental'] is True
 
 
-def test_find_new_source_files_detects_only_unprocessed_sources(monkeypatch, tmp_path):
+def _write_clip(dataset_dir, motion_name, mtime=None):
+    path = dataset_dir / 'motions' / motion_name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(path, np.zeros((3, 2, 3), dtype=np.float32))
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+def test_find_source_changes_detects_only_unprocessed_sources(monkeypatch, tmp_path):
     raw = tmp_path / 'raw'
     (raw / 'Cat').mkdir(parents=True)
     (raw / 'Dog').mkdir(parents=True)
@@ -1091,20 +1100,79 @@ def test_find_new_source_files_detects_only_unprocessed_sources(monkeypatch, tmp
     dataset_dir.mkdir()
     # Cat_Walk.fbx already produced a clip; Cat_Run.fbx is new; Dog is entirely new.
     processed_src = str(raw / 'Cat' / 'Cat_Walk.fbx')
+    _write_clip(dataset_dir, 'Cat_Walk.npy')
     write_motion_metadata(
         dataset_dir,
-        {'Cat_Walk_1.npy': {'object_type': 'Cat', 'source_fbx_path': processed_src}},
+        {'Cat_Walk.npy': {'object_type': 'Cat', 'source_fbx_path': processed_src}},
         1,
     )
 
-    result = dataset_pipeline_mod.find_new_source_files(['Cat', 'Dog'], str(dataset_dir), str(raw))
+    result = dataset_pipeline_mod.find_source_changes(['Cat', 'Dog'], str(dataset_dir), str(raw))
 
     assert set(result) == {'Cat', 'Dog'}
-    assert [os.path.basename(p) for p in result['Cat']] == ['Cat_Run.fbx']
-    assert [os.path.basename(p) for p in result['Dog']] == ['Dog_Idle.fbx']
+    assert [os.path.basename(p) for p in result['Cat']['new']] == ['Cat_Run.fbx']
+    assert result['Cat']['stale'] == []
+    assert [os.path.basename(p) for p in result['Dog']['new']] == ['Dog_Idle.fbx']
 
 
-def test_find_new_source_files_omits_fully_processed_objects(monkeypatch, tmp_path):
+def test_find_source_changes_omits_fully_processed_objects(monkeypatch, tmp_path):
+    raw = tmp_path / 'raw'
+    (raw / 'Cat').mkdir(parents=True)
+    (raw / 'Cat' / 'Cat_Walk.fbx').write_text('x')
+    monkeypatch.setattr(dataset_pipeline_mod, 'should_skip_anim', lambda f, o: False)
+
+    dataset_dir = tmp_path / 'dataset'
+    dataset_dir.mkdir()
+    _write_clip(dataset_dir, 'Cat_Walk.npy')
+    write_motion_metadata(
+        dataset_dir,
+        {'Cat_Walk.npy': {'object_type': 'Cat', 'source_fbx_path': str(raw / 'Cat' / 'Cat_Walk.fbx')}},
+        1,
+    )
+
+    assert dataset_pipeline_mod.find_source_changes(['Cat'], str(dataset_dir), str(raw)) == {}
+
+
+def test_find_source_changes_rebuilds_sources_newer_than_their_clip(monkeypatch, tmp_path):
+    raw = tmp_path / 'raw'
+    (raw / 'Cat').mkdir(parents=True)
+    walk = raw / 'Cat' / 'Cat_Walk.fbx'
+    run = raw / 'Cat' / 'Cat_Run.fbx'
+    idle = raw / 'Cat' / 'Cat_Idle.fbx'
+    for source in (walk, run, idle):
+        source.write_text('x')
+    monkeypatch.setattr(dataset_pipeline_mod, 'should_skip_anim', lambda f, o: False)
+
+    dataset_dir = tmp_path / 'dataset'
+    dataset_dir.mkdir()
+    built = walk.stat().st_mtime
+    _write_clip(dataset_dir, 'Cat_Walk.npy', mtime=built)
+    _write_clip(dataset_dir, 'Cat_Run.npy', mtime=built)
+    # Cat_Run.fbx was edited in place after its clip was built; within the
+    # timestamp slack it still counts as up to date. Cat_Idle's clip is gone.
+    os.utime(run, (built + 60, built + 60))
+    os.utime(walk, (built + 1, built + 1))
+    write_motion_metadata(
+        dataset_dir,
+        {
+            'Cat_Walk.npy': {'object_type': 'Cat', 'source_fbx_path': str(walk)},
+            'Cat_Run.npy': {'object_type': 'Cat', 'source_fbx_path': str(run)},
+            'Cat_Idle.npy': {'object_type': 'Cat', 'source_fbx_path': str(idle)},
+        },
+        3,
+    )
+
+    result = dataset_pipeline_mod.find_source_changes(['Cat'], str(dataset_dir), str(raw))
+
+    assert result['Cat']['new'] == []
+    assert sorted(os.path.basename(p) for p in result['Cat']['stale']) == ['Cat_Idle.fbx', 'Cat_Run.fbx']
+    meta = dataset_pipeline_mod._load_motion_metadata_raw(dataset_dir)
+    assert dataset_pipeline_mod._object_processed_sources(meta, 'Cat', str(dataset_dir)) == {
+        os.path.realpath(walk)
+    }
+
+
+def test_find_orphan_clips_reports_clips_of_deleted_sources(monkeypatch, tmp_path):
     raw = tmp_path / 'raw'
     (raw / 'Cat').mkdir(parents=True)
     (raw / 'Cat' / 'Cat_Walk.fbx').write_text('x')
@@ -1114,11 +1182,66 @@ def test_find_new_source_files_omits_fully_processed_objects(monkeypatch, tmp_pa
     dataset_dir.mkdir()
     write_motion_metadata(
         dataset_dir,
-        {'Cat_Walk_1.npy': {'object_type': 'Cat', 'source_fbx_path': str(raw / 'Cat' / 'Cat_Walk.fbx')}},
-        1,
+        {
+            'Cat_Walk.npy': {'object_type': 'Cat', 'source_fbx_path': str(raw / 'Cat' / 'Cat_Walk.fbx')},
+            'Cat_Run.npy': {'object_type': 'Cat', 'source_fbx_path': str(raw / 'Cat' / 'Cat_Run.fbx')},
+            # The whole species' raw dir is gone.
+            'Dog_Idle.npy': {'object_type': 'Dog', 'source_fbx_path': str(raw / 'Dog' / 'Dog_Idle.fbx')},
+            # No recorded source: cannot be judged, left alone.
+            'Cat_Old.npy': {'object_type': 'Cat'},
+        },
+        4,
     )
 
-    assert dataset_pipeline_mod.find_new_source_files(['Cat'], str(dataset_dir), str(raw)) == {}
+    assert dataset_pipeline_mod.find_orphan_clips(str(dataset_dir), str(raw)) == {
+        'Cat_Run.npy': 'Cat',
+        'Dog_Idle.npy': 'Dog',
+    }
+    assert dataset_pipeline_mod.find_orphan_clips(
+        str(dataset_dir), str(raw), species_filter=lambda species: species == 'Dog'
+    ) == {'Dog_Idle.npy': 'Dog'}
+
+
+def test_incremental_check_prunes_clips_of_deleted_sources(monkeypatch, tmp_path):
+    raw = tmp_path / 'raw'
+    (raw / 'Cat').mkdir(parents=True)
+    walk = raw / 'Cat' / 'Cat_Walk.fbx'
+    walk.write_text('x')
+    monkeypatch.setattr(dataset_pipeline_mod, 'should_skip_anim', lambda f, o: False)
+
+    dataset_dir = tmp_path / 'dataset'
+    (dataset_dir / 'bvhs').mkdir(parents=True)
+    _write_clip(dataset_dir, 'Cat_Walk.npy')
+    _write_clip(dataset_dir, 'Cat_Run.npy')
+    (dataset_dir / 'bvhs' / 'Cat_Run.bvh').write_text('x')
+    np.save(dataset_dir / 'cond.npy', {'Cat': {**_make_cond_entry('Cat'), 'translation_root_index': 0}})
+    write_motion_metadata(
+        dataset_dir,
+        {
+            'Cat_Walk.npy': {'object_type': 'Cat', 'source_fbx_path': str(walk)},
+            # Cat_Run.fbx was deleted from the raw tree.
+            'Cat_Run.npy': {'object_type': 'Cat', 'source_fbx_path': str(raw / 'Cat' / 'Cat_Run.fbx')},
+        },
+        2,
+    )
+    _write_action_labels(
+        dataset_dir,
+        {'Cat_Walk': ('locomotion', 'walk'), 'Cat_Run': ('locomotion', 'run')},
+    )
+
+    proceed, _, objects_to_process, pruned = preprocess_and_validate_module.check_and_clean_old_data(
+        str(dataset_dir), '', str(raw), overwrite=False, assume_yes=True,
+    )
+
+    assert proceed and pruned
+    assert objects_to_process == ()
+    assert not (dataset_dir / 'motions' / 'Cat_Run.npy').exists()
+    assert not (dataset_dir / 'bvhs' / 'Cat_Run.bvh').exists()
+    assert (dataset_dir / 'motions' / 'Cat_Walk.npy').exists()
+    assert set(dataset_pipeline_mod._load_motion_metadata_raw(dataset_dir)) == {'Cat_Walk.npy'}
+    rows = [json.loads(line) for line in (dataset_dir / 'action_labels.jsonl').read_text().splitlines()]
+    assert [row['clip'] for row in rows] == ['Cat_Walk']
+    assert sorted(_cond_by_species(dataset_dir)) == ['Cat']
 
 
 def test_mark_object_feature_spaces():
@@ -1148,6 +1271,7 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     for source in ('Cat/Cat_Walk.fbx', 'Cat/Cat_Run.fbx', 'Dog/Dog_Idle.fbx'):
         (tmp_path / 'raw' / source).write_bytes(b'')
     done_source = str(tmp_path / 'raw' / 'Cat' / 'Cat_Walk.fbx')
+    np.save(dataset_dir / 'motions' / 'Cat_Walk.npy', np.zeros((3, 2, 3), dtype=np.float32))
     cat_cond = _make_cond_entry('Cat')
     dog_cond = _make_cond_entry('Dog')
     cat_cond['translation_root_index'] = 0

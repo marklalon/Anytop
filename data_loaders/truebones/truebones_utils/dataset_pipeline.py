@@ -759,9 +759,9 @@ def _resample_animation(anim, target_len):
 
 """Prepare processed tensors for all the files of a given object without writing them to disk yet.
 
-``skip_source_paths`` (incremental preprocessing): realpaths of source anim files that
-already produced clips on disk. Matching files are dropped from this run so only newly
-added source files are (re)processed. The rest-pose reference carrier is still selected
+``skip_source_paths`` (incremental preprocessing): realpaths of source anim files whose
+clips on disk are up to date. Matching files are dropped from this run so only new and
+modified source files are (re)processed. The rest-pose reference carrier is still selected
 from the full file list, so the per-object cond stays stable regardless of which clips
 are new. Returns None when no source files remain to process (object fully up to date)."""
 def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, crop_enabled=True, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset(), loop_verdicts=None, transition_clips=frozenset()):
@@ -798,10 +798,10 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         kept = [f for f in anim_files if os.path.realpath(f) not in skip_norm]
         skipped = len(anim_files) - len(kept)
         if skipped:
-            print(f'{object_type}: skipping {skipped} already-processed source file(s), {len(kept)} new to process')
+            print(f'{object_type}: skipping {skipped} up-to-date source file(s), {len(kept)} new or modified to process')
         anim_files = kept
         if len(anim_files) == 0:
-            print(f'skipping {object_type}: all source files already processed')
+            print(f'skipping {object_type}: all source files up to date')
             return None
 
     # Root confirmation sees anim_files as-is: full builds scan every selected
@@ -1288,7 +1288,9 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
 """ create dataset
 
 ``incremental``: keep already-processed clips on disk and only process source anim
-files that have not produced clips yet (per-object, keyed on source_fbx_path). A
+files that have not produced clips yet or whose source is newer than its clip
+(per-object, keyed on source_fbx_path). Clips of deleted sources are pruned by the
+caller beforehand (find_orphan_clips). A
 clip claiming a retained name that came from a different source is a hard error
 rather than an overwrite. The rewritten dataset state is seeded from the existing
 dataset so untouched objects survive.
@@ -1337,6 +1339,7 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
     existing_meta = {}
     per_object_skip = {}
     per_object_clip_sources = {}
+    per_object_stale_clips = {}
     per_object_frozen_roots = {}
     per_object_promote_depth = {}
     if incremental:
@@ -1346,8 +1349,13 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
             from .cond_schema import load_cond
             existing_cond = load_cond(cond_path)
         for object_type in objects:
-            per_object_skip[object_type] = _object_processed_sources(existing_meta, object_type)
+            per_object_skip[object_type] = _object_processed_sources(
+                existing_meta, object_type, target_dataset_dir
+            )
             per_object_clip_sources[object_type] = _object_clip_sources(existing_meta, object_type)
+            per_object_stale_clips[object_type] = _object_stale_clips(
+                existing_meta, object_type, target_dataset_dir
+            )
             frozen_root, promote_depth = frozen_root_contract(existing_cond, object_type)
             if frozen_root is not None:
                 per_object_frozen_roots[object_type] = frozen_root
@@ -1453,6 +1461,17 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
             existing_clip_sources=per_object_clip_sources.get(object_type),
         )
         frames_counter += object_frames
+        # A stale clip whose rebuilt source no longer yields it (now under the
+        # length filter, say) would otherwise survive as the old encoding.
+        for motion_name in sorted(set(per_object_stale_clips.get(object_type, {})) - set(object_motion_metadata)):
+            for path in (
+                pjoin(target_dataset_dir, MOTION_DIR, motion_name),
+                pjoin(target_dataset_dir, BVHS_DIR, os.path.splitext(motion_name)[0] + '.bvh'),
+            ):
+                if os.path.isfile(path):
+                    os.remove(path)
+            motion_metadata.pop(motion_name, None)
+            print(f'{object_type}: removed stale clip {motion_name} (its rebuilt source produced no clip)')
         # The seeded entries are canonically keyed ('<namespace>/<species>') while a
         # freshly built one arrives under its bare species name. Write through the
         # existing key so the rebuilt species replaces itself in place instead of
@@ -1683,16 +1702,53 @@ def _load_motion_metadata_raw(dataset_dir):
     return {name: dict(entry) for name, entry in motions.items() if isinstance(entry, dict)}
 
 
-def _object_processed_sources(existing_meta, object_name):
-    """Realpaths of source anim files that already produced clips for this object."""
+# Seconds a source may postdate its clip and still count as up to date. Absorbs
+# filesystem timestamp granularity and a copy that lands a source and its clip
+# within the same second; it is not a policy knob.
+SOURCE_MTIME_SLACK = 2.0
+
+
+def _clip_is_stale(dataset_dir, motion_name, source_path):
+    """True when ``motions/<motion_name>`` is missing or older than its source.
+
+    The clip is an encoding of that one file, so a source rewritten after the
+    clip was built (the RAW GLB tools edit sources in place) makes it wrong
+    without anything in the metadata changing. A source that no longer exists
+    is not stale -- it is orphaned, which :func:`find_orphan_clips` reports."""
+    if not os.path.isfile(source_path):
+        return False
+    motion_path = pjoin(str(dataset_dir), MOTION_DIR, motion_name)
+    if not os.path.isfile(motion_path):
+        return True
+    return os.path.getmtime(source_path) > os.path.getmtime(motion_path) + SOURCE_MTIME_SLACK
+
+
+def _object_processed_sources(existing_meta, object_name, dataset_dir=None):
+    """Realpaths of source anim files whose clips for this object are up to date.
+
+    With ``dataset_dir``, a source whose clip is stale (see :func:`_clip_is_stale`)
+    is left out, so it is rebuilt like a new source."""
     sources = set()
-    for entry in existing_meta.values():
+    stale = set()
+    for motion_name, entry in existing_meta.items():
         if str(entry.get('object_type', '')) != object_name:
             continue
         src = _normalized_source_fbx_path(entry)
-        if src:
-            sources.add(src)
-    return sources
+        if not src:
+            continue
+        sources.add(src)
+        if dataset_dir is not None and _clip_is_stale(dataset_dir, motion_name, src):
+            stale.add(src)
+    return sources - stale
+
+
+def _object_stale_clips(existing_meta, object_name, dataset_dir):
+    """{clip file name: source realpath} of this object's clips that are stale."""
+    return {
+        motion_name: src
+        for motion_name, src in _object_clip_sources(existing_meta, object_name).items()
+        if _clip_is_stale(dataset_dir, motion_name, src)
+    }
 
 
 def _object_clip_sources(existing_meta, object_name):
@@ -1731,24 +1787,58 @@ def list_object_source_files(object_type, raw_data_dir=None):
     return [f for f in anim_files if not should_skip_anim(f, object_type)]
 
 
-def find_new_source_files(objects, dataset_dir=None, raw_data_dir=None):
-    """Map each object with >=1 not-yet-processed source anim file to those new files.
+def find_source_changes(objects, dataset_dir=None, raw_data_dir=None):
+    """``{object: {'new': [...], 'stale': [...]}}`` -- the source files an incremental run rebuilds.
 
-    Objects whose every current source file already produced clips are omitted. Used by
-    the incremental preprocessing path to decide which objects need any work at all
-    (cheap: reads stored metadata + lists raw dirs, no geometry loading)."""
+    ``new``: sources that never produced a clip. ``stale``: sources whose clip is
+    missing or older than the source (:func:`_clip_is_stale`). Objects with
+    neither are omitted. Used by the incremental preprocessing path to decide
+    which objects need any work at all (cheap: reads stored metadata + stats
+    files, no geometry loading)."""
     target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
     existing_meta = _load_motion_metadata_raw(target_dataset_dir)
     result = {}
     for object_type in objects:
-        processed = _object_processed_sources(existing_meta, object_type)
-        new_files = [
-            f for f in list_object_source_files(object_type, raw_data_dir)
-            if os.path.realpath(f) not in processed
-        ]
-        if new_files:
-            result[object_type] = new_files
+        known = _object_processed_sources(existing_meta, object_type)
+        stale = set(_object_stale_clips(existing_meta, object_type, target_dataset_dir).values())
+        new_files, stale_files = [], []
+        for f in list_object_source_files(object_type, raw_data_dir):
+            real = os.path.realpath(f)
+            if real not in known:
+                new_files.append(f)
+            elif real in stale:
+                stale_files.append(f)
+        if new_files or stale_files:
+            result[object_type] = {'new': new_files, 'stale': stale_files}
     return result
+
+
+def find_orphan_clips(dataset_dir=None, raw_data_dir=None, species_filter=None):
+    """``{clip file name: object_type}`` of clips whose source no longer yields them.
+
+    A clip is orphaned when its recorded ``source_fbx_path`` is not among the
+    sources its object enumerates today: the file was deleted or renamed, its
+    object's raw directory is gone, or the filename rules now skip it. Clips
+    without a recorded source cannot be judged and are left alone.
+    ``species_filter`` (``object_type -> bool``) narrows the scan."""
+    target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
+    existing_meta = _load_motion_metadata_raw(target_dataset_dir)
+    live_sources = {}
+    orphans = {}
+    for motion_name, entry in existing_meta.items():
+        object_type = str(entry.get('object_type', ''))
+        src = _normalized_source_fbx_path(entry)
+        if not object_type or not src:
+            continue
+        if species_filter is not None and not species_filter(object_type):
+            continue
+        if object_type not in live_sources:
+            live_sources[object_type] = {
+                os.path.realpath(f) for f in list_object_source_files(object_type, raw_data_dir)
+            }
+        if src not in live_sources[object_type]:
+            orphans[motion_name] = object_type
+    return orphans
 
 
 def process_skeleton(object_name, face_joints, save_dir, tpose_path, reference_cond_path,
