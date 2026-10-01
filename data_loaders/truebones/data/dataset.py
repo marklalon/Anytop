@@ -59,6 +59,10 @@ from data_loaders.truebones.truebones_utils.joint_embedding_text import (
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
+from data_loaders.truebones.truebones_utils.leaf_drop import (
+    drop_joints_from_cond,
+    sample_leaf_drop,
+)
 from data_loaders.truebones.truebones_utils.dataset_tags import (
     assert_cond_species_tags_current,
     assert_species_tags_cover,
@@ -1319,6 +1323,30 @@ class MotionDataset(data.Dataset):
         )
 
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
+        cond = self.cond_dict[object_type]
+        joint_struct = self._joint_struct_cache[object_type]
+        # ── Leaf-drop augmentation (topology; see leaf_drop.py) ──
+        # Runs on the stored clip, before any temporal stage: from here on the
+        # sample IS a rig without those leaves, so every later stage and the
+        # canonical encode (whose L comes from the kept rest) see that rig.
+        leaf_drop_count = 0
+        leaf_drop_prob = float(getattr(self.opt, 'leaf_drop_prob', 0.0))
+        if leaf_drop_prob > 0.0 and random.random() < leaf_drop_prob:
+            dropped = sample_leaf_drop(cond, motion, motion_metadata['translation_root_index'])
+            if dropped:
+                keep, cond = drop_joints_from_cond(cond, dropped)
+                motion = motion[:, keep]
+                motion_metadata['translation_root_index'] = int(
+                    np.searchsorted(keep, int(motion_metadata['translation_root_index']))
+                )
+                parents = cond['parents']
+                joints_graph_dist = cond['joints_graph_dist']
+                joints_relations = cond['joint_relations']
+                rest_pose = build_canonical_rest_feature(cond)
+                offsets = cond['offsets']
+                joints_names_embs = cond['joints_names_embs']
+                joint_struct = build_joint_struct_features(cond, source=str(object_type))
+                leaf_drop_count = len(dropped)
         loop_phase_offset = 0
         loop_tile_count = 1
         # Besides loop_uncond, the only downgrade is the over-long crop below,
@@ -1421,7 +1449,7 @@ class MotionDataset(data.Dataset):
             m_length = target_num_frames
 
         motion = np.nan_to_num(
-            physical_hml_to_canonical(motion, self.cond_dict[object_type])
+            physical_hml_to_canonical(motion, cond)
         ).astype(np.float32, copy=False)
 
         # is_loop is the whole loop condition the model sees: a closed window.
@@ -1444,14 +1472,14 @@ class MotionDataset(data.Dataset):
 
         if return_aug_info:
             return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
-                'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
-                'joint_struct': self._joint_struct_cache[object_type],
-                'species_emb': self.cond_dict[object_type].get('species_emb'),
-                'rest_pose_physical': self.cond_dict[object_type]['rest_pose'],
-                'rest_pos_ric_hml': self.cond_dict[object_type]['rest_pos_ric_hml'],
-                'canonical_feature_mean': self.cond_dict[object_type].get('canonical_feature_mean'),
-                'canonical_feature_std': self.cond_dict[object_type].get('canonical_feature_std'),
-                'feature_space': self.cond_dict[object_type].get('feature_space', CANONICAL_FEATURE_SPACE),
+                'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
+                'joint_struct': joint_struct,
+                'species_emb': cond.get('species_emb'),
+                'rest_pose_physical': cond['rest_pose'],
+                'rest_pos_ric_hml': cond['rest_pos_ric_hml'],
+                'canonical_feature_mean': cond.get('canonical_feature_mean'),
+                'canonical_feature_std': cond.get('canonical_feature_std'),
+                'feature_space': cond.get('feature_space', CANONICAL_FEATURE_SPACE),
             }, {
                 'loop_applied': bool(loop_condition_active),
                 'loop_phase_offset': int(loop_phase_offset),
@@ -1460,16 +1488,17 @@ class MotionDataset(data.Dataset):
                 'resample_speed_cond': float(resample_speed_cond),
                 'loop_uncond': bool(loop_uncond),
                 'motion_speed_applied': float(motion_speed_applied),
+                'leaf_drop_count': int(leaf_drop_count),
             }
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
-            'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
-            'joint_struct': self._joint_struct_cache[object_type],
-            'species_emb': self.cond_dict[object_type].get('species_emb'),
-            'rest_pose_physical': self.cond_dict[object_type]['rest_pose'],
-            'rest_pos_ric_hml': self.cond_dict[object_type]['rest_pos_ric_hml'],
-            'canonical_feature_mean': self.cond_dict[object_type].get('canonical_feature_mean'),
-            'canonical_feature_std': self.cond_dict[object_type].get('canonical_feature_std'),
-            'feature_space': self.cond_dict[object_type].get('feature_space', CANONICAL_FEATURE_SPACE),
+            'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
+            'joint_struct': joint_struct,
+            'species_emb': cond.get('species_emb'),
+            'rest_pose_physical': cond['rest_pose'],
+            'rest_pos_ric_hml': cond['rest_pos_ric_hml'],
+            'canonical_feature_mean': cond.get('canonical_feature_mean'),
+            'canonical_feature_std': cond.get('canonical_feature_std'),
+            'feature_space': cond.get('feature_space', CANONICAL_FEATURE_SPACE),
         }
     
     def _apply_action_label_condition(self, motion_metadata) -> None:
@@ -1690,6 +1719,18 @@ class Truebones(data.Dataset):
                 f"loop_cond_prob must be in [0, 1], got {self.opt.loop_cond_prob}."
             )
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
+        self.opt.leaf_drop_prob = float(kwargs.get('leaf_drop_prob', 0.0))
+        if not 0.0 <= self.opt.leaf_drop_prob <= 1.0:
+            raise ValueError(
+                f"leaf_drop_prob must be in [0, 1], got {self.opt.leaf_drop_prob}."
+            )
+        # A training augmentation: on an evaluation split it would change the
+        # rigs being scored from one pass to the next.
+        if self.opt.leaf_drop_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
+            raise ValueError(
+                f"leaf_drop_prob={self.opt.leaf_drop_prob} on split '{split}': the "
+                f"leaf-drop augmentation is for training splits only; pass 0.0."
+            )
         if not 0.0 <= self.opt.loop_tile_single_prob <= 1.0:
             raise ValueError(
                 f"loop_tile_single_prob must be in [0, 1], got {self.opt.loop_tile_single_prob}."

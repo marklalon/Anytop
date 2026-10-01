@@ -280,6 +280,22 @@ def add_model_options(parser):
                             "single-cycle window -- the regime --loop with the auto length generates in -- "
                             "a small minority of draws, while every other draw is k bit-identical copies "
                             "of the cycle. Loader-only, like --motion_speed_aug: no regen, no bump.")
+    group.add_argument("--leaf_drop_prob", default=0.0, type=float,
+                       help="Per-sample probability of the leaf-drop topology augmentation (0.0 = off). "
+                            "The sample's rig loses every eligible terminator leaf (named Nub / end / "
+                            "site / Container, or locally static with either no name tokens or a zero "
+                            "name embedding) plus up to two trailing segments of repeated-name chains, "
+                            "with same-kind mirror twins together. A segment is eligible when its name "
+                            "stem matches its parent's and the stem does not end in leg / arm / foot / "
+                            "hoof / paw / hand. This can include animated ear or eye tips as well as "
+                            "tail, finger, wing and tongue tips; standalone body-part leaves are not "
+                            "selected by that rule. Root, translation root, facing, face and contact "
+                            "joints are protected. Exact on the kept features (a leaf's row moves no other joint); "
+                            "joint_struct, the relation matrices and the length scale L are rebuilt for the "
+                            "smaller rig. Teaches invariance to optional terminators and shorter distal "
+                            "chains, and keeps the --topology_cond pool from keying on each species' exact "
+                            "topology. Training splits only (the dataset refuses it for val/test). "
+                            "Loader-only: no regen, no model change, no CKPT_VERSION bump.")
     group.add_argument("--loop_cond_prob", default=1.0, type=float,
                        help="Probability that a loop training clip is TOLD it is a loop (is_loop=1: "
                             "circular time table, periodic window resample, wrap losses). The rest of "

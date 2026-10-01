@@ -76,6 +76,7 @@ def get_dataset(
     motion_speed_aug=1.0,
     motion_speed_aug_prob=1.0,
     loop_tile_single_prob=0.5,
+    leaf_drop_prob=0.0,
     cond_path=None,
     species_table=None,
 ):
@@ -96,6 +97,7 @@ def get_dataset(
         motion_speed_aug=motion_speed_aug,
         motion_speed_aug_prob=motion_speed_aug_prob,
         loop_tile_single_prob=loop_tile_single_prob,
+        leaf_drop_prob=leaf_drop_prob,
         cond_path=cond_path,
         species_table=species_table,
     )
@@ -125,6 +127,7 @@ def get_dataset_loader(
     motion_speed_aug=1.0,
     motion_speed_aug_prob=1.0,
     loop_tile_single_prob=0.5,
+    leaf_drop_prob=0.0,
     cond_path=None,
     joint_buckets=JOINT_BUCKETS,
     species_table=None,
@@ -151,6 +154,7 @@ def get_dataset_loader(
         motion_speed_aug=motion_speed_aug,
         motion_speed_aug_prob=motion_speed_aug_prob,
         loop_tile_single_prob=loop_tile_single_prob,
+        leaf_drop_prob=leaf_drop_prob,
         cond_path=cond_path,
         species_table=species_table,
     )

@@ -222,6 +222,19 @@ residual 在 rest 时为 0），所以这里的几何信息实际来自 structur
 加了它之后，要复查 species_tags override（Galloping vs Lumbering、Flapping vs Hovering）的效果
 是否被削弱。
 
+数据侧的 `--leaf_drop_prob`（默认 0，val/test 拒绝）给它配了拓扑增强：以该概率删掉所有符合
+条件的终端叶子——名称含 Nub / end / site / Container，或（名称没有有效词元或名称向量全零）
+且局部旋转静止；再随机删至多两个重复链的末段。重复链的判定是：叶子与父关节的规范名称去掉侧别词和
+末尾数字后词干相同，且词干末词不是 leg / arm / foot / hoof / paw / hand；镜像对成对删。
+因此可删的末段不局限于 Tail、Finger、Wing、Tongue，也可能是 Ear、Eye 等真实身体部位，
+即使该关节有动画；不在重复链上的蹄、下巴、耳、眼或挂在脊柱上的翅膀不会因此被选中。
+root、平移根、朝向关节、face 与 contact 标注关节始终保留。每个关节行存的是它自己的
+root-relative 位置、局部旋转和速度；叶子的旋转不影响其他关节，所以删行不会改变保留关节的运动。
+增强后的样本对应一副末端更短的骨架，而不一定只是去掉辅助节点。
+cond 按保留关节切片、索引重映射，structural channel、relation 矩阵和长度尺度 L 都按新骨架重建
+（`truebones_utils/leaf_drop.py`）。目的有两个：
+对末端节点与链长变化不敏感；不让这里的池化退化成按每个物种的精确拓扑查表。
+
 ## 5. Decoder layer
 
 每层的实际顺序是：
@@ -424,6 +437,7 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 | joint structural channel | `data_loaders/truebones/truebones_utils/joint_struct_features.py` |
 | refined topology codes | `data_loaders/truebones/truebones_utils/topology_relations.py` |
 | loop roll/tile/resample | `data_loaders/truebones/data/dataset.py` |
+| leaf-drop 拓扑增强 | `data_loaders/truebones/truebones_utils/leaf_drop.py` |
 | reference/inpainting/outpainting | `sample/generate.py` |
 
 ## 11. 参数预算（2026-09-21 普查）
