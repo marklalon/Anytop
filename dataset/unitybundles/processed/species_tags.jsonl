@@ -11,10 +11,10 @@
 {"species": "KI_Villager", "species_tags": ["Biped", "Striding"]}
 {"species": "KI_Warrior", "species_tags": ["Biped", "Striding"]}
 {"species": "LH_Hero", "species_tags": ["Biped", "Striding"]}
-{"species": "MB_TigerDrago", "species_tags": ["Quadruped", "Flapping"]}
-{"species": "MB_Unka", "species_tags": ["Quadruped", "Flapping"]}
+{"species": "MB_TigerDrago", "species_tags": ["Winged", "Flapping"]}
+{"species": "MB_Unka", "species_tags": ["Winged", "Flapping"]}
 {"species": "MLH_Archer", "species_tags": ["Biped", "Striding"]}
-{"species": "MLH_Griffin", "species_tags": ["Quadruped", "Flapping"]}
+{"species": "MLH_Griffin", "species_tags": ["Winged", "Flapping"]}
 {"species": "MLH_Horseman", "species_tags": ["Quadruped", "Galloping"]}
 {"species": "MLH_Worker", "species_tags": ["Biped", "Striding"]}
 {"species": "MLS_BattleOwl", "species_tags": ["Winged", "Flapping"]}
