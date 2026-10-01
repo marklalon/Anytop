@@ -104,7 +104,9 @@ def test_an_exempt_row_is_out_of_the_prefill_scope():
 def test_a_row_that_is_aimed_somewhere_stays_in_scope():
     assert kind_of(_clip("Wolf_AtkL", "attack, swat")) == "side"
     assert kind_of(_clip("Camel_Walk", "walk", "locomotion")) == "heading"
-    assert kind_of(_clip("Frog_Jump", "jump", "transition")) == "jump"
+    assert kind_of(_clip("Frog_Jump", "jump, up", "locomotion")) == "jump"
+    # A jump riding on a gait is that gait's heading row.
+    assert kind_of(_clip("Horse_RunJump", "run, forward, jump", "locomotion")) == "heading"
 
 
 def test_a_death_goes_to_the_topple_measurement_not_the_side_one():
@@ -122,9 +124,9 @@ def test_an_exempt_jump_may_still_be_written_up_but_never_a_planar_word():
 
     up = {"rise": 0.8, "air_frames": 9, "air_disp": [0.0, 0.0], "net": [0.0, 0.0]}
     planar = {"rise": 0.8, "air_frames": 9, "air_disp": [0.0, 0.9], "net": [0.0, 0.9]}
-    exempt = _clip("Frog_HopUp", "jump, idle", "transition")
+    exempt = _clip("Frog_HopUp", "jump, idle", "locomotion")
     exempt["is_loop"] = False
-    plain = _clip("Frog_Hop", "jump", "transition")
+    plain = _clip("Frog_Hop", "jump", "locomotion")
     plain["is_loop"] = False
 
     assert jump_verdict(_np(up), exempt, _Args())[:2] == ("write", ["up"])

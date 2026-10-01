@@ -33,8 +33,8 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 # position before this is evaluated.
 ROOT_XZ_DRIFT_THRESHOLD = 0.08
 
-# Net VERTICAL displacement of the translation root (same HML-normalised units)
-# above which the detrend extends from the XZ plane to all three axes.
+# Net VERTICAL displacement of the skeleton's lowest joint (same HML-normalised
+# units) above which the detrend extends from the XZ plane to all three axes.
 #
 # Y is not like XZ: the XZ origin is arbitrary (clips are centred on it), but the
 # Y origin is the FLOOR, so a clip's absolute height is meaningful and removing a
@@ -46,7 +46,10 @@ ROOT_XZ_DRIFT_THRESHOLD = 0.08
 #
 # Measured on the net endpoint offset, like the XZ threshold: a hop or jump that
 # comes back down nets out and keeps its arc, while a clip that ends elsewhere
-# went there and stayed.
+# went there and stayed. The lowest joint rather than the translation root,
+# because the root's height is also posture: a jump that takes off from a
+# crouch and lands standing raises the pelvis with both feet on the floor at
+# either end, while a climb or a dive carries the whole body, feet included.
 ROOT_Y_DRIFT_THRESHOLD = 0.25
 
 # Root XZ soft clamp, in HML-normalised units (a body span is 1.389).
@@ -60,8 +63,8 @@ ROOT_XZ_SOFT_CLAMP_KNEE = 0.3
 ROOT_XZ_SOFT_CLAMP_LIMIT = 0.5
 
 # Locomotion's own extent bound, tighter than the soft clamp above and applied to
-# EVERY clip the root-XZ policy selects -- all locomotion plus transition clips
-# whose is_loop is true -- not only the ones that travelled. That is what makes it
+# EVERY clip the root-XZ policy selects -- all locomotion -- not only the ones
+# that travelled. That is what makes it
 # an invariant of the selected set rather than of whether a clip happened to move.
 # The knee sits inside a normal gait's range (post-detrend extent runs p50 0.013,
 # p90 0.110, p95 0.159), so unlike the 0.6 ceiling it is touched routinely and must
@@ -823,7 +826,7 @@ def flatten_root_xz_drift(traj, heading):
 
 
 def root_y_drift_correction(traj_y):
-    """Return ``(correction, drift)`` for a ``(T,)`` root height track.
+    """Return ``(correction, drift)`` for a ``(T,)`` height track.
 
     The vertical counterpart of :func:`root_xz_drift_correction`, and simpler
     than it for one reason: there is no frame to rotate into. The XZ detrend has
@@ -838,10 +841,9 @@ def root_y_drift_correction(traj_y):
     climb from a flap that goes up and comes back. A statistic over time cannot,
     because both spend the clip away from where they started.
 
-    ``correction`` starts at zero, so ``traj_y - correction`` keeps frame 0 at
-    its authored height -- the height the vertical clamp and the floor bound
-    already agreed on -- and keeps every wingbeat, bob and surge that the
-    transport could not explain. ``drift`` is the signed travel's magnitude.
+    ``correction`` starts at zero, so subtracting it keeps frame 0 at its
+    authored height and keeps every wingbeat, bob and surge that the transport
+    could not explain. ``drift`` is the signed travel's magnitude.
     """
     traj_y = np.asarray(traj_y, dtype=np.float64).reshape(-1)
     n_frames = traj_y.shape[0]
@@ -852,15 +854,19 @@ def root_y_drift_correction(traj_y):
     return net * steps, abs(net)
 
 
-def flatten_root_y_drift(traj_y):
+def flatten_root_y_drift(traj_y, joint_heights):
     """Return ``(flattened_height, drift)`` for a root height track.
 
     The entry point preprocessing and the dataset validator share for the
-    vertical channel, mirroring :func:`flatten_root_xz_drift`. It removes the
-    travel and nothing else; bounding what is left is the caller's business (the
-    vertical clamp has already run by the time preprocessing gets here).
+    vertical channel, mirroring :func:`flatten_root_xz_drift`. The travel is
+    measured on the lowest joint -- ``joint_heights`` is the ``(T, J)`` world
+    height of every joint -- and removed from the root's ``traj_y``; FK carries
+    the same ramp to every joint, so the lowest one ends where it started (see
+    ``ROOT_Y_DRIFT_THRESHOLD`` for why not the root's own height). It removes
+    the travel and nothing else; bounding what is left is the caller's business.
     """
-    correction, drift = root_y_drift_correction(traj_y)
+    floor_y = np.asarray(joint_heights, dtype=np.float64).min(axis=1)
+    correction, drift = root_y_drift_correction(floor_y)
     return np.asarray(traj_y, dtype=np.float64).reshape(-1) - correction, drift
 
 

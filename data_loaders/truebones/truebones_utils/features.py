@@ -715,11 +715,9 @@ def extract_motion_features_from_aligned_anims(
     # ``flatten_root_travel`` is the caller's policy decision that this clip
     # takes the locomotion root-XZ policy: remove its travel, then bound what
     # the detrend leaves behind. A dataset build enables it for every locomotion
-    # clip (the historical behavior) and also for transition clips whose
-    # hand-reviewed ``is_loop`` annotation is true; stationary clips never enter
-    # either path. That extra transition branch is needed for clips such as
-    # MB_TigerDrago_RunJump, whose authored transport has to come off for the
-    # loop seam to close.
+    # clip and for no other group, whatever its loop verdict: a clip whose
+    # authored transport has to come off (MB_TigerDrago_RunJump, for its loop
+    # seam to close) belongs in the locomotion group.
     #
     # The measurement then says whether this particular clip actually travels,
     # so a clip already authored in place is left untouched rather than
@@ -747,7 +745,9 @@ def extract_motion_features_from_aligned_anims(
         # exactly as the vertical clamp shaped it, so an ordinary gait's bob,
         # and every hop that comes back down, are untouched: the two channels
         # are gated separately and a clip can take either, both or neither.
-        flattened_root_y, root_y_drift = flatten_root_y_drift(source_root_y)
+        flattened_root_y, root_y_drift = flatten_root_y_drift(
+            source_root_y, source_global_positions[..., 1],
+        )
         root_y_flattened = bool(root_y_drift > ROOT_Y_DRIFT_THRESHOLD)
         if root_y_flattened:
             target_root_y = flattened_root_y

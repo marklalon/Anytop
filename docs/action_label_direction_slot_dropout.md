@@ -81,7 +81,7 @@
 
 - 缺朝向的 locomotion 行很少（R4 报 16 条量级：`run, jump` / `swim, jump` / `swim` / `fly, roll` 等）。
 - **根位移不可用**：预处理对每一条 locomotion clip 做根 XZ detrend
-  （`dataset_pipeline`：`flatten_root_travel = is_locomotion or (is_transition and is_loop)`），
+  （`dataset_pipeline`：`flatten_root_travel = clip_key_name in locomotion_clips`），
   净位移为 0，`.npy` 和 `bvhs/` 里只剩周期内的 surge / sway。实测 651 条 locomotion 行净位移中位数 0、最大 0.2 残差，
   不能拿它判方向。
 - **唯一判据 = 支撑脚法**：`contact_joints` 触地帧相对根的 XZ 速度取反的均值 = 行进方向（相对朝向）。

@@ -33,8 +33,8 @@ idle is aimed nowhere, a headbutt is delivered with a CENTER joint, and the
 side of a draw is the scabbard's, so the side energy of such a clip reads its
 incidental lean and would spell it into a condition every species shares. Those
 rows are neither judged nor used to calibrate. Their VERTICAL word is
-untouched ("idle, up, aim, bow" keeps it), and a transition jump is still
-judged for ``up``.
+untouched ("idle, up, aim, bow" keeps it), and a jump is still judged for
+``up``.
 
 Four measurements, one per kind of row:
 
@@ -62,14 +62,16 @@ Four measurements, one per kind of row:
       swim / fly / roll rows are listed, never filled. A diagonal (foot velocity
       split across two axes) spells two words, as the labelled strafes do.
 
-  JUMP  (transition rows with ``jump``, ``up`` or a planar word)
+  JUMP  (rows headed by ``jump``, ``up`` or a planar word)
       With the direction slot dropped out at random, a bare ``jump`` cannot
       also mean "vertical jump", so a vertical jump is spelled ``jump, up``
       like ``fly, up``. The root's XZ displacement over its airborne frames
       (highest root height) decides: none = ``up``, a clear one = its planar
-      word(s). A non-loop transition still carries its net root travel, which
-      is used only as a cross-check (a contradiction lists the row). ``land``
-      rows keep their spelling -- ``land`` carries the vertical itself.
+      word(s). Jump rows are locomotion, so preprocessing has detrended their
+      net root travel; a one-shot clip that still carries some is cross-checked
+      against it (a contradiction lists the row). A ``jump`` that only rides
+      on a gait ("run, forward, jump") is a HEADING row. ``land`` rows keep
+      their spelling -- ``land`` carries the vertical itself.
 
   TOPPLE  (``die`` rows, one of ``forward`` / ``backward`` / ``left`` / ``right``)
       A death's direction is the way the body goes down. It is not a side --
@@ -186,7 +188,7 @@ HEADING_MIN_SPEED = 1.0
 # Second planar axis at least this share of the first -> two words (a strafe).
 HEADING_DIAG_SHARE = 0.5
 
-# ── jump (transition) ──
+# ── jump ──
 JUMP_MIN_RISE = 0.30          # root Y range (body lengths) to count as a jump
 JUMP_AIR_SHARE = 0.60         # airborne = root above this share of its height range
 JUMP_UP_MAX = 0.05            # airborne XZ displacement (body lengths) at most -> up
@@ -475,8 +477,10 @@ def kind_of(clip) -> str | None:
     # nor the support foot can read; every turn row already carries it.
     if "turn" in words:
         return None
-    if group == "transition" and "jump" in words and "land" not in words:
-        # A jump is judged for its VERTICAL word too, which no exemption
+    if words[0] == "jump" and "land" not in words:
+        # Routed by head word ahead of the group dispatch: a jump row is
+        # locomotion, but the support foot cannot read an airborne clip. A
+        # jump is judged for its VERTICAL word too, which no exemption
         # touches, so an exempt jump stays in scope (jump_verdict drops the
         # planar half of the verdict for it).
         return "jump"

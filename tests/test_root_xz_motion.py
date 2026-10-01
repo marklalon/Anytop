@@ -333,25 +333,7 @@ def test_the_pipeline_reads_the_gate_from_the_action_labels_sidecar(tmp_path):
     """The locomotion extent bound still comes from the action-label sidecar."""
     from data_loaders.truebones.truebones_utils.dataset_pipeline import (
         load_locomotion_clip_names,
-        load_transition_clip_names,
     )
-
-    rows = [
-        {"clip": "Wolf_Walk", "action_group": "locomotion", "action_label": "walk"},
-        {"clip": "Wolf_Die", "action_group": "transition", "action_label": "die"},
-    ]
-    (tmp_path / 'action_labels.jsonl').write_text(
-        os.linesep.join(json.dumps(row) for row in rows), encoding='utf-8'
-    )
-    assert load_locomotion_clip_names(tmp_path) == {'Wolf_Walk'}
-    assert load_transition_clip_names(tmp_path) == {'Wolf_Die'}
-    with pytest.raises(FileNotFoundError):
-        load_locomotion_clip_names(tmp_path / 'nope')
-
-
-def test_both_gate_sets_come_from_one_sidecar_read(tmp_path, monkeypatch):
-    """Two questions, one parse: the policy is asked for both sets together."""
-    from data_loaders.truebones.truebones_utils import dataset_pipeline
 
     rows = [
         {"clip": "Wolf_Walk", "action_group": "locomotion", "action_label": "walk"},
@@ -361,24 +343,13 @@ def test_both_gate_sets_come_from_one_sidecar_read(tmp_path, monkeypatch):
     (tmp_path / 'action_labels.jsonl').write_text(
         os.linesep.join(json.dumps(row) for row in rows), encoding='utf-8'
     )
-
-    reads = []
-    real_load_action_labels = dataset_pipeline.load_action_labels
-
-    def counting_load_action_labels(dataset_dir):
-        reads.append(dataset_dir)
-        return real_load_action_labels(dataset_dir)
-
-    monkeypatch.setattr(dataset_pipeline, 'load_action_labels', counting_load_action_labels)
-    locomotion, transition = dataset_pipeline.load_root_xz_gate_clip_names(tmp_path)
-
-    assert locomotion == {'Wolf_Walk'}
-    assert transition == {'Wolf_Die'}
-    assert len(reads) == 1
+    assert load_locomotion_clip_names(tmp_path) == {'Wolf_Walk'}
+    with pytest.raises(FileNotFoundError):
+        load_locomotion_clip_names(tmp_path / 'nope')
 
 
-def test_pipeline_detrend_gate_preserves_groups_and_adds_transition_loops():
-    """Locomotion stays opt-in; only transition loops join it."""
+def test_pipeline_detrend_gate_is_the_locomotion_group():
+    """Locomotion is detrended whatever its loop verdict; no other group is."""
     from data_loaders.truebones.truebones_utils.dataset_pipeline import (
         _encode_prepared_motion_file,
     )
@@ -411,49 +382,45 @@ def test_pipeline_detrend_gate_preserves_groups_and_adds_transition_loops():
             0,
             frozenset({clip} if action_group == 'locomotion' else ()),
             {clip: is_loop},
-            frozenset({clip} if action_group == 'transition' else ()),
         )
         assert not payload['motion_errors']
         return payload['results'][0]
 
-    transition_loops = [
-        encode('RunJump', action_group='transition', is_loop=True),
-        encode('DogdeRightG', action_group='transition', is_loop=True),
+    locomotion = [
+        encode('RunJump', action_group='locomotion', is_loop=True),
+        encode('RunRight', action_group='locomotion', is_loop=False),
     ]
-    transition_one_shot = encode('JumpForward', action_group='transition', is_loop=False)
-    locomotion_one_shot = encode('RunRight', action_group='locomotion', is_loop=False)
-    stationary_loop = encode('AttackBiteL', action_group='stationary', is_loop=True)
+    others = [
+        encode('DogdeRightG', action_group='transition', is_loop=True),
+        encode('AttackBiteL', action_group='stationary', is_loop=True),
+    ]
 
-    assert all(result['root_xz_flattened'] is True for result in transition_loops)
-    assert locomotion_one_shot['root_xz_flattened'] is True
-    assert transition_one_shot['root_xz_flattened'] is False
-    assert stationary_loop['root_xz_flattened'] is False
-    assert all(result['flatten_root_travel'] is True for result in transition_loops)
-    assert all(_reach(result['motion']) < ROOT_XZ_LOCOMOTION_LIMIT for result in transition_loops)
-    assert locomotion_one_shot['flatten_root_travel'] is True
-    assert _reach(locomotion_one_shot['motion']) < ROOT_XZ_LOCOMOTION_LIMIT
-    assert stationary_loop['flatten_root_travel'] is False
-    assert _reach(stationary_loop['motion']) > ROOT_XZ_LOCOMOTION_LIMIT
+    for result in locomotion:
+        assert result['flatten_root_travel'] is True
+        assert result['root_xz_flattened'] is True
+        assert _reach(result['motion']) < ROOT_XZ_LOCOMOTION_LIMIT
+    for result in others:
+        assert result['flatten_root_travel'] is False
+        assert result['root_xz_flattened'] is False
+        assert _reach(result['motion']) > ROOT_XZ_LOCOMOTION_LIMIT
 
 
-def test_validator_uses_the_same_group_and_loop_detrend_gate():
+def test_validator_uses_the_same_group_detrend_gate():
     import inspect
 
     from utils import validate_anytop_dataset
 
     source = inspect.getsource(validate_anytop_dataset.validate_motion_files)
-    assert 'is_locomotion = motion_path.stem in locomotion_clips' in source
-    assert 'motion_path.stem in transition_clips' in source
-    assert 'uses_locomotion_root_xz_policy = is_locomotion or is_transition_loop' in source
+    assert 'uses_locomotion_root_xz_policy = motion_path.stem in locomotion_clips' in source
+    assert 'transition' not in source
 
 
-def test_validator_reads_the_sidecar_only_for_the_gate_it_was_not_given(tmp_path, monkeypatch):
-    """One parse serves whichever gate the caller left out; none if neither.
+def test_validator_reads_the_sidecar_only_when_not_given_the_gate(tmp_path, monkeypatch):
+    """Supplying the locomotion set is a full override and touches no file.
 
-    Both gates are answers the same hand-maintained file gives. Supplying both
-    is a full override and touches no file at all. Deriving the omitted one here
-    cannot be the first thing to notice the sidecar is missing: the
-    motion_metadata join this function already performs requires it.
+    Deriving it here cannot be the first thing to notice the sidecar is
+    missing: the motion_metadata join this function already performs requires
+    it.
     """
     from data_loaders.truebones.truebones_utils import dataset_pipeline
     from utils import validate_anytop_dataset
@@ -482,10 +449,10 @@ def test_validator_reads_the_sidecar_only_for_the_gate_it_was_not_given(tmp_path
             tmp_path / 'motions', tmp_path / 'bvhs', {}, 1, 0.1, **gates
         )
 
-    run(locomotion_clips={'Wolf_Walk'}, transition_clips={'Wolf_Die'})
+    run(locomotion_clips={'Wolf_Walk'})
     assert reads == []
 
-    run(locomotion_clips={'Wolf_Walk'})
+    run()
     assert reads == [tmp_path]
 
 

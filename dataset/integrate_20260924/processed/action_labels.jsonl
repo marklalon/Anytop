@@ -32,7 +32,7 @@
 {"clip": "CU_Cat_StandDig", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "CU_Cat_StandEat", "action_group": "stationary", "action_label": "idle, rest, eat", "is_loop": true, "reviewed": true}
 {"clip": "CU_Cat_StandIdle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
-{"clip": "CU_Cat_StandJump", "action_group": "transition", "action_label": "jump, forward", "is_loop": false, "reviewed": true, "autofill": true}
+{"clip": "CU_Cat_StandJump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": false, "reviewed": true, "autofill": true}
 {"clip": "CU_Cat_StandPunchR", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "CU_Cat_StandRun", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "CU_Cat_StandSmell", "action_group": "stationary", "action_label": "idle, sniff", "is_loop": true, "reviewed": true, "autofill": true}
@@ -125,7 +125,7 @@
 {"clip": "DMM_Thief01_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief01_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief01_InCage", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
-{"clip": "DMM_Thief01_Jump", "action_group": "transition", "action_label": "jump, up", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief01_Jump", "action_group": "locomotion", "action_label": "jump, up", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief01_LevelUp", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief01_Run01", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief01_Run02", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
@@ -141,7 +141,7 @@
 {"clip": "DMM_Thief04_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief04_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief04_InCage", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
-{"clip": "DMM_Thief04_Jump", "action_group": "transition", "action_label": "jump, up", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief04_Jump", "action_group": "locomotion", "action_label": "jump, up", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief04_LevelUp", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief04_Run01", "action_group": "locomotion", "action_label": "run, forward, happy", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief04_Run02", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
@@ -155,7 +155,7 @@
 {"clip": "DMM_Thief06_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief06_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief06_InCage", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
-{"clip": "DMM_Thief06_Jump", "action_group": "transition", "action_label": "jump, up", "is_loop": true, "reviewed": true, "autofill": true}
+{"clip": "DMM_Thief06_Jump", "action_group": "locomotion", "action_label": "jump, up", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief06_LevelUp", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief06_Run01", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true, "autofill": true}
 {"clip": "DMM_Thief06_StandUnlock", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
@@ -246,14 +246,14 @@
 {"clip": "Knight_GerryFinn_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "Knight_GerryFinn_DoubleJump", "action_group": "locomotion", "action_label": "roll, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_GerryFinn_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "Knight_GerryFinn_Jump", "action_group": "transition", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Knight_GerryFinn_Jump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_GerryFinn_Landjet", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_GerryFinn_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Airjet", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "Knight_Lux_DoubleJump", "action_group": "locomotion", "action_label": "roll, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "Knight_Lux_Jump", "action_group": "transition", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Knight_Lux_Jump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Parry", "action_group": "stationary", "action_label": "attack, run, slash", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Prepare", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
 {"clip": "Knight_Lux_Respawn", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
@@ -263,7 +263,7 @@
 {"clip": "Knight_MeiSha_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "Knight_MeiSha_DoubleJump", "action_group": "locomotion", "action_label": "roll, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_MeiSha_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "Knight_MeiSha_Jump", "action_group": "transition", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Knight_MeiSha_Jump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_MeiSha_Longjuanfeng", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
 {"clip": "Knight_MeiSha_Prepare", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
 {"clip": "Knight_MeiSha_Respawn", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}

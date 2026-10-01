@@ -985,7 +985,9 @@ locomotion -- the character TRAVELS; the ground slides underneath it.
     wings), "walk, backward, retreat" (backing away). A sideways step with the
     body still facing ahead is just "walk, left" / "walk, right".
   - The label MUST name a direction, even for a clip authored in place: the
-    heading the gait is trying to go. A hover held in place is exempt.""",
+    heading the gait is trying to go. A hover held in place is exempt.
+  - Every jump is here, one in place included: "jump, up" (straight up),
+    "jump, forward", "jump, left".""",
     "stationary": """\
 stationary -- the character acts WITHOUT travelling across the ground.
   - Heads: idle (any standing / waiting / breathing / emote), attack, hurt (taking
@@ -1008,7 +1010,7 @@ transition -- the character CHANGES STATE, once, and does not return.
     word, never in the order of words: draw, sheathe, stop (a run skids to a
     halt), getup (from the ground back onto its feet), kneel, laydown, sitdown,
     land, takeoff, die, spawn (arrives, emerges, digs out), burrow (digs in,
-    leaves), jump, pickup, putdown, and "rear, up" / "rear, down".
+    leaves), pickup, putdown, and "rear, up" / "rear, down".
   - A SECOND head only says in what posture or context the event happens, event
     word first: "land, hover" (lands out of hovering flight), "land, run",
     "land, jump" (lands out of a jump), "die, hover" (dies in the air).

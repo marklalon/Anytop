@@ -105,7 +105,7 @@ def test_flattening_keeps_frame_zero_and_returns_to_it():
     # A whole number of bob cycles, so the endpoints differ by the rise alone.
     y = _climb(41, rise=2.0, bob=0.1, cycle=8)[:, 1]
 
-    flattened, drift = flatten_root_y_drift(y)
+    flattened, drift = flatten_root_y_drift(y, y[:, None])
 
     assert drift == pytest.approx(2.0, abs=1e-9)
     assert flattened[0] == pytest.approx(y[0])
@@ -116,7 +116,7 @@ def test_flattening_keeps_the_bob_the_climb_was_riding_on():
     """What is removed is the transport, not the cycle -- the same contract as XZ."""
     y = _climb(41, rise=2.0, bob=0.25, cycle=8)[:, 1]
 
-    flattened, _drift = flatten_root_y_drift(y)
+    flattened, _drift = flatten_root_y_drift(y, y[:, None])
 
     assert float(flattened.max() - flattened.min()) == pytest.approx(0.5, abs=0.05)
 
@@ -125,14 +125,26 @@ def test_a_hop_nets_out_and_is_kept_whatever_its_height():
     """An out-and-back excursion has no transport, however far it reached."""
     y = _hop(40, height=3.0)[:, 1]
 
-    flattened, drift = flatten_root_y_drift(y)
+    flattened, drift = flatten_root_y_drift(y, y[:, None])
 
     assert drift == pytest.approx(0.0, abs=1e-9)
     assert np.allclose(flattened, y)
 
 
+def test_the_travel_is_measured_on_the_lowest_joint_not_the_root():
+    """A crouch-to-stand raises the pelvis with both feet on the floor."""
+    root = np.linspace(0.4, 0.8, num=30)
+    feet = np.zeros_like(root)
+    head = root + 0.7
+
+    flattened, drift = flatten_root_y_drift(root, np.stack([root, feet, head], axis=1))
+
+    assert drift == pytest.approx(0.0)
+    assert np.allclose(flattened, root)
+
+
 def test_a_single_frame_track_is_a_no_op():
-    flattened, drift = flatten_root_y_drift(np.array([1.5]))
+    flattened, drift = flatten_root_y_drift(np.array([1.5]), np.array([[1.5]]))
 
     assert drift == 0.0
     assert np.allclose(flattened, [1.5])
@@ -172,6 +184,22 @@ def test_a_hop_is_kept_however_high_it_reaches():
     assert np.allclose(
         _root_height(features), positions_global(source)[:, 0, 1], atol=1e-6
     )
+
+
+def test_a_jump_from_a_crouch_to_standing_keeps_its_height():
+    """The pelvis ends higher than it started while the foot never leaves the floor."""
+    n_frames = 40
+    root_y = np.linspace(0.4, 0.4 + ROOT_Y_DRIFT_THRESHOLD * 2.0, num=n_frames)
+    source = _anim(np.stack([np.zeros(n_frames), root_y, np.zeros(n_frames)], axis=-1))
+    # The child is a foot held on the floor: its local offset cancels the pelvis.
+    source.positions[:, 1] = np.stack(
+        [np.zeros(n_frames), -root_y, np.zeros(n_frames)], axis=-1
+    )
+
+    features, _xz, y_flattened, _anim_out = _extract(source)
+
+    assert y_flattened is False
+    assert np.allclose(_root_height(features), root_y, atol=1e-6)
 
 
 def test_a_clip_outside_the_policy_keeps_its_climb():
@@ -284,7 +312,7 @@ def test_validator_warns_when_a_selected_clip_still_climbs(capsys):
         parents=np.array([-1, 0], dtype=np.int64),
     )
 
-    assert 'root height still climbs' in capsys.readouterr().out
+    assert 'lowest joint still climbs' in capsys.readouterr().out
 
 
 def test_validator_is_quiet_for_a_flattened_climb(capsys):
@@ -300,7 +328,7 @@ def test_validator_is_quiet_for_a_flattened_climb(capsys):
         parents=np.array([-1, 0], dtype=np.int64),
     )
 
-    assert 'root height still climbs' not in capsys.readouterr().out
+    assert 'lowest joint still climbs' not in capsys.readouterr().out
 
 
 # -- the vertical clamp runs after the detrend, exactly once ---------------
