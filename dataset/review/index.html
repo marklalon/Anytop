@@ -1226,7 +1226,8 @@ async function clean() {
   notice(lines, data.skipped.length > 0);
 }
 
-// Switching dataset resets the per-dataset filters and scrolls back to the top.
+// Switching dataset keeps the filters (refreshGroups falls back to 'all' when
+// the new dataset lacks the selected group) and scrolls back to the top.
 function onDatasetChange() {
   const next = $('dataset').value;
   if (!next || next === ds) return;
@@ -1234,12 +1235,6 @@ function onDatasetChange() {
   ds = next;
   localStorage.setItem(DS_KEY, ds);
   rows = [];
-  $('group').innerHTML = '<option value="all">all</option>';
-  $('group').value = 'all';
-  $('state').value = 'all';
-  $('loop').value = 'all';
-  $('q').value = '';
-  $('wholeWord').setAttribute('aria-pressed', 'false');
   page = 1;
   $('notice').hidden = true;   // the report belongs to the dataset that produced it
   window.scrollTo({ top: 0 });
