@@ -3,7 +3,8 @@
 > 状态：**已实施**（2026-09-18；方案本体见下，实际落地与方案的出入记在 §6）
 > 触发：裸 `attack, swat` 出双臂混合而非单侧
 > 影响：`ACTION_LABEL_PARSER_CONTRACT_VERSION` 4 → 5、`CKPT_VERSION` 15 → **16**，**需从头重训**，不需 cond regen
-> 相关：[`action_label_per_word_pooling.md`](action_label_per_word_pooling.md)、[`tools/audit_action_labels.py`](../tools/audit_action_labels.py)
+> 相关：[`action_label_per_word_pooling.md`](action_label_per_word_pooling.md)、[`motion_labels.py`](../data_loaders/truebones/truebones_utils/motion_labels.py)（方向常量 `NO_HEADING_WORDS` / `NO_PLANAR_DIRECTION_WORDS` 现居此）
+> 注：`tools/audit_action_labels.py` 与 `tools/audit_report_html.py` 已于 2026-10-01 删除，方向常量迁到 `motion_labels.py`；下文的 R1 / R3 / R4 / R5 与「审计」均指删除前的工具。
 > 后续：2026-09-21 modifier 槽也加了同构的 dropout（`--modifier_slot_drop_prob`），∅ 同样是边缘；
 > 见 [`head_word_weights_and_modifier_dropout.md`](head_word_weights_and_modifier_dropout.md) §3。
 
@@ -80,7 +81,7 @@
 
 - 缺朝向的 locomotion 行很少（R4 报 16 条量级：`run, jump` / `swim, jump` / `swim` / `fly, roll` 等）。
 - **根位移不可用**：预处理对每一条 locomotion clip 做根 XZ detrend
-  （`dataset_pipeline`：`flatten_root_travel = is_locomotion or (is_transition and is_loop)`），
+  （`dataset_pipeline`：`flatten_root_travel = clip_key_name in locomotion_clips`），
   净位移为 0，`.npy` 和 `bvhs/` 里只剩周期内的 surge / sway。实测 651 条 locomotion 行净位移中位数 0、最大 0.2 残差，
   不能拿它判方向。
 - **唯一判据 = 支撑脚法**：`contact_joints` 触地帧相对根的 XZ 速度取反的均值 = 行进方向（相对朝向）。
@@ -108,7 +109,7 @@
 
 **D. 审计工具衔接**
 
-- R4：`NO_HEADING_WORDS` 去掉 `jump`（[`audit_action_labels.py`](../tools/audit_action_labels.py)；这个常量同时是
+- R4：`NO_HEADING_WORDS` 去掉 `jump`（现居 `motion_labels.py`；这个常量同时是
   `--r4-exempt-words` 的默认值，CLI 默认跟着变），`run / swim / roll + jump` 必须有朝向。
   R4 只查 locomotion（`check_r4` 开头的 `if clip["group"] != "locomotion": continue`），所以这只影响 10 条
   locomotion 行；transition 的 `jump` 行不靠 R4，靠补标脚本 + 复核。
@@ -134,7 +135,7 @@
 
 1. 脚本 `--dry-run`，看标定准确率，定阈值。
 2. `prefill_direction_words --apply` → 1.1 代码。
-3. 预检：`audit_action_labels.py --cond-path dataset/merged/cond.npy --action-group all`（R3 / R4 / R5）、tests。
+3. 预检：`audit_action_labels.py` 的 R3 / R4 / R5、tests。
 4. 人工：review UI 过滤 `reviewed=false` 行逐条看 GIF。
 5. 同步 `relabel_actions_llm.py` 的 prompt（方向规则「单一主导侧向 → 写方向词」），
    `dataset/readme.txt` 的预填那一步（现在只有 `prefill_loop_flags.py`）加 prefill 工具；
@@ -232,7 +233,7 @@
 | `draw` / `sheathe` | 那个侧向是刀鞘的位置，不是动作的方向 |
 | `headbutt` / `bite` | 用头部发起，头是 center 关节；侧能量读到的是身体转向，不是这一击 |
 
-常量：`tools/audit_action_labels.py` 的 **`NO_PLANAR_DIRECTION_WORDS`**（`takes_planar_direction()`），
+常量：`data_loaders/.../motion_labels.py` 的 **`NO_PLANAR_DIRECTION_WORDS`**（`takes_planar_direction()`），
 词必须在 `ACTION_VOCAB` 里，否则 import 就报错（豁免一个不存在的词等于什么都没豁免）。
 **匹配位置不限于头词**：`idle, right, look` → `idle, look`、`attack, left, bite` → `attack, bite`。
 LLM 标注侧的 `reset`（回到中立起始姿势，`relabel_actions_llm.py` 的 transition 词表里有、
@@ -255,7 +256,7 @@ LLM 标注侧的 `reset`（回到中立起始姿势，`relabel_actions_llm.py` �
    这条是语料级规则，不是旋钮）。`not_mirror` / `crossed` 两项照查不误。
    （`crossed` 与「两边各自要带侧词」这两项已于 §9 删除：它们从 clip 名字读方向。）
 
-`tests/test_direction_exemption.py` 把三处都钉住了，其中一条直接读真实 sidecar：
+`tests/test_direction_exemption.py` 钉住了 sidecar 与补标脚本两处（审计那处随审计工具删除），其中一条直接读真实 sidecar：
 任何一次改标只要把平面方向词写回这些动作上，测试就红。
 
 **副作用**：镜像对合并成同一个标签后（`Dog_LookLeft` / `LookRight` 现在同为 `idle, look`），
@@ -265,7 +266,7 @@ LLM 标注侧的 `reset`（回到中立起始姿势，`relabel_actions_llm.py` �
 
 前面几节留下的三样东西都删了：它们要么在判「可能有问题」，要么把一次性的判据写进了长期数据。
 
-**审计只剩三条确定性文本规则**：`tools/audit_action_labels.py` 现在是 R3 / R4 / R5。
+**审计只剩三条确定性文本规则**：`tools/audit_action_labels.py` 删除前是 R3 / R4 / R5。
 删掉的是 **R1（标签桶离散度）**——它按物种中位成对距离判桶内离散度，要解码每条 clip 的 npy、
 要 `--ratio-threshold` / `--min-distance` / `--frames` 三个阈值、要 `--r1-exempt-labels` 白名单，
 报出来的是「这个桶看着不像一个动作」而不是「这条标签写错了」；§6.3 里它报的 15 条正是这种。

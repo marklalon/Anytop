@@ -280,6 +280,22 @@ def add_model_options(parser):
                             "single-cycle window -- the regime --loop with the auto length generates in -- "
                             "a small minority of draws, while every other draw is k bit-identical copies "
                             "of the cycle. Loader-only, like --motion_speed_aug: no regen, no bump.")
+    group.add_argument("--leaf_drop_prob", default=0.0, type=float,
+                       help="Per-sample probability of the leaf-drop topology augmentation (0.0 = off). "
+                            "The sample's rig loses every eligible terminator leaf (named Nub / end / "
+                            "site / Container, or locally static with either no name tokens or a zero "
+                            "name embedding) plus up to two trailing segments of repeated-name chains, "
+                            "with same-kind mirror twins together. A segment is eligible when its name "
+                            "stem matches its parent's and the stem does not end in leg / arm / foot / "
+                            "hoof / paw / hand. This can include animated ear or eye tips as well as "
+                            "tail, finger, wing and tongue tips; standalone body-part leaves are not "
+                            "selected by that rule. Root, translation root, facing, face and contact "
+                            "joints are protected. Exact on the kept features (a leaf's row moves no other joint); "
+                            "joint_struct, the relation matrices and the length scale L are rebuilt for the "
+                            "smaller rig. Teaches invariance to optional terminators and shorter distal "
+                            "chains, and keeps the --topology_cond pool from keying on each species' exact "
+                            "topology. Training splits only (the dataset refuses it for val/test). "
+                            "Loader-only: no regen, no model change, no CKPT_VERSION bump.")
     group.add_argument("--loop_cond_prob", default=1.0, type=float,
                        help="Probability that a loop training clip is TOLD it is a loop (is_loop=1: "
                             "circular time table, periodic window resample, wrap losses). The rest of "
@@ -363,6 +379,14 @@ def add_model_options(parser):
                             "without leaning on --action_label_cfg_scale and paying its quality cost. "
                             "Requires --action_label_cond. Costs d^2 + 4*layers*d^2 parameters. "
                             "See docs/conditional_modulation_upgrade.md section 3.")
+    group.add_argument("--topology_cond", action='store_true',
+                       help="Global topology conditioner: learned queries pool the skeleton's "
+                            "rest-pose + structural tokens (joint names excluded) into one summary, "
+                            "and a zero-initialised head turns it into a per-channel scale and shift "
+                            "on the temporal and feed-forward branch inputs of every decoder layer, "
+                            "summed with --action_label_adaln's. Never CFG-dropped. Gives every layer "
+                            "the whole-body proportions instead of leaving each to rebuild them "
+                            "through spatial attention.")
     group.add_argument("--direction_slot_drop_prob", default=0.15, type=float,
                        help="Per-sample probability of blanking the label's DIRECTION words during "
                             "training while the rest of the label stays. Trains the empty direction "
@@ -402,8 +426,8 @@ def add_data_options(parser, training=False):
                                 "'transition' (pose changes) -- or 'all' for one model over the "
                                 "whole corpus. No lists: each clip belongs to exactly one group. "
                                 "'all' carries NO group condition; the action label's first head "
-                                "word already determines the group (a property of the corpus, "
-                                "verified by tools/audit_action_labels.py), so a group token would "
+                                "word already determines the group (a property of the corpus), "
+                                "so a group token would "
                                 "add no information the label does not already carry. Draws are "
                                 "uniform over clips, so the group mix is the corpus's own "
                                 "(stationary ~53%); see --rare_head_word_floor for the tail. "

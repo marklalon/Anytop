@@ -42,12 +42,11 @@ Prerequisites (fast-fail):
 
 Loop flag ("is_loop" in action_labels.jsonl -- proposed by a tool, hand-verified):
     Every clip about to be built must already carry "is_loop"; this script only
-    READS action_labels.jsonl and never writes it. For transition clips the flag
-    decides whether the complete locomotion root policy (XZ detrend plus tighter
-    extent bound, and the vertical detrend for a clip that climbs past
-    ROOT_Y_DRIFT_THRESHOLD) is applied; locomotion keeps that original policy and
-    stationary keeps its original no-detrend behavior. The flag also decides the terminal
-    velocity row at extraction and is the model's loop condition. The workflow is:
+    READS action_labels.jsonl and never writes it. The flag decides the terminal
+    velocity row at extraction and is the model's loop condition; it does not
+    touch the root trajectory (the root policy -- XZ detrend, tighter extent
+    bound, vertical detrend past ROOT_Y_DRIFT_THRESHOLD -- is chosen by the
+    locomotion group alone). The workflow is:
         python tools/prefill_loop_flags.py --dataset-dir <dataset> --raw-data-dir <raw>
     to propose the flag from each source animation (the same alignment and
     detector this script uses), verify the proposals in dataset/review

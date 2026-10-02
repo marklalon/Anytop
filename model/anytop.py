@@ -4,6 +4,7 @@ import numpy as np
 from model.motion_transformer import (
     GraphMotionDecoderLayer,
     GraphMotionDecoder,
+    TopologyConditioner,
     run_in_fp32,
 )
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
@@ -147,6 +148,10 @@ class AnyTop(nn.Module):
                 "the action token, and without a label there is no token to drive "
                 "it -- the modulation would be one learned constant."
             )
+        # --topology_cond: a pooled whole-skeleton summary modulating every
+        # decoder layer (TopologyConditioner). Built last in __init__, so the
+        # flag does not reorder the other parameters' initialisation.
+        self.topology_cond = bool(kargs.get('topology_cond', False))
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if not 0.0 <= self.joint_mask_budget <= 1.0:
@@ -300,6 +305,10 @@ class AnyTop(nn.Module):
             
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
+        self.topology_conditioner = (
+            TopologyConditioner(self.latent_dim, self.num_layers, self.num_heads)
+            if self.topology_cond else None
+        )
 
     @staticmethod
     def _prepare_unreliable_mask(raw_mask, bs, nframes, njoints, device, dtype):
@@ -1068,7 +1077,15 @@ class AnyTop(nn.Module):
                 "build it from the cond entry via build_joint_struct_features; a batch "
                 "without it comes from a caller that assembles model_kwargs by hand."
             )
-        x = self.input_process(x, rest_pose, y['joints_names_embs'], species_emb_for_joints, joint_valid, y['joint_struct']) # applies linear layer on each frame to convert it to latent dim
+        topology_adaln = None
+        if self.topology_conditioner is None:
+            x = self.input_process(x, rest_pose, y['joints_names_embs'], species_emb_for_joints, joint_valid, y['joint_struct']) # applies linear layer on each frame to convert it to latent dim
+        else:
+            x, topology_tokens = self.input_process(
+                x, rest_pose, y['joints_names_embs'], species_emb_for_joints, joint_valid,
+                y['joint_struct'], return_topology_tokens=True,
+            )
+            topology_adaln = run_in_fp32(self.topology_conditioner, topology_tokens, joint_valid)
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
         spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
@@ -1102,6 +1119,7 @@ class AnyTop(nn.Module):
             # Same token the additive path summed in above, so a CFG-dropped row
             # modulates by the null embedding rather than skipping the head.
             action_adaln_cond=action_label_token if self.action_label_adaln else None,
+            topology_adaln=topology_adaln,
         )
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
         return output
@@ -1205,7 +1223,14 @@ class InputProcess(nn.Module):
         return joints_clean.masked_fill(drop.unsqueeze(-1), 0.0)
 
     def forward(self, x, rest_pose, joints_embedded_names, species_emb=None, joint_valid=None,
-                joint_struct=None):
+                joint_struct=None, return_topology_tokens=False):
+        """Embed every (frame, joint); the rest pose becomes frame 0.
+
+        With ``return_topology_tokens`` also returns the (B, J, d) rest-pose
+        token plus structural latent, WITHOUT the joint-name embedding: the
+        input of the --topology_cond pool, kept name-free so it describes the
+        skeleton's geometry and not the species' identity.
+        """
         # x.shape = [batch_size, joints, feature_len, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
         rest_pose_all_joints_except_root = self.tpos_joint_embedding(rest_pose[:, :, 1:])
@@ -1265,6 +1290,7 @@ class InputProcess(nn.Module):
         # and a live joint's struct row is never all-zero.
         struct_latent = struct_latent * joint_valid.unsqueeze(-1).to(struct_latent.dtype)
         x = x + struct_latent[None, ...]
+        topology_tokens = tpos_embedded[0] + struct_latent if return_topology_tokens else None
         # Absolute frame PE, the baseline frame signal for every sample (loop
         # samples add a circular phase on top, per decoder layer -- see
         # circular_phase_embedding). Batch dim 1: only row 0 is kept, so a
@@ -1272,7 +1298,10 @@ class InputProcess(nn.Module):
         # promotes the bf16 residual stream back to fp32 before the decoder.
         positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1)
         pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
-        return x + pos_emb.unsqueeze(1).unsqueeze(1)
+        x = x + pos_emb.unsqueeze(1).unsqueeze(1)
+        if return_topology_tokens:
+            return x, topology_tokens
+        return x
 
 
 class OutputProcess(nn.Module):

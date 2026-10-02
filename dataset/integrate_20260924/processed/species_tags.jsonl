@@ -64,12 +64,12 @@
 {"species": "PP_Walrus", "species_tags": ["Quadruped", "Crawling"]}
 {"species": "Pet_Bentley", "species_tags": ["Quadruped", "Hovering"]}
 {"species": "Pet_Chick", "species_tags": ["Biped", "Fluttering"]}
-{"species": "Pet_Fafnir", "species_tags": ["Winged", "Flapping"]}
+{"species": "Pet_Fafnir", "species_tags": ["Biped", "Flapping"]}
 {"species": "Pet_Gate", "species_tags": ["Drifting", "Hovering"]}
 {"species": "Pet_Goldfish", "species_tags": ["Aquatic", "Swimming"]}
 {"species": "Pet_Hamperor", "species_tags": ["Biped", "Hovering"]}
-{"species": "Pet_Ignas", "species_tags": ["Winged", "Flapping"]}
-{"species": "Pet_Kiki", "species_tags": ["Winged", "Flapping"]}
+{"species": "Pet_Ignas", "species_tags": ["Drifting", "Flapping"]}
+{"species": "Pet_Kiki", "species_tags": ["Biped", "Flapping"]}
 {"species": "Pet_Marybell", "species_tags": ["Biped", "Hovering"]}
 {"species": "Pet_Miho", "species_tags": ["Quadruped", "Hovering"]}
 {"species": "Pet_Miri", "species_tags": ["Drifting", "Hovering"]}
@@ -78,6 +78,6 @@
 {"species": "Pet_Proce", "species_tags": ["Biped", "Hovering"]}
 {"species": "Pet_Shiba", "species_tags": ["Quadruped", "Hovering"]}
 {"species": "Pet_SnowDeer", "species_tags": ["Quadruped", "Hovering"]}
-{"species": "Pet_Will", "species_tags": ["Winged", "Flapping"]}
+{"species": "Pet_Will", "species_tags": ["Biped", "Flapping"]}
 {"species": "Pet_Yulia", "species_tags": ["Multiped", "Hovering"]}
 {"species": "Voxel_Chicken", "species_tags": ["Biped", "Striding"]}

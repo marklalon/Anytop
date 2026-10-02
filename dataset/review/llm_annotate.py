@@ -94,10 +94,16 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     HEAD_VOCAB,
     LOOP_FLAG_KEY,
     MODIFIER_VOCAB,
+    NO_HEADING_WORDS,
+    NO_PLANAR_DIRECTION_WORDS,
+    PLANAR_DIRECTIONS,
+    VERTICAL_WORDS,
     canonical_action_label,
     clip_key,
     head_words_in,
+    mirror_label,
     parse_action_label,
+    takes_planar_direction,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     ACTION_LABELS_FILE,
@@ -107,14 +113,6 @@ from tools.action_label_sidecar import (  # noqa: E402
     autofill_action_label,
     read_action_label_rows,
     rewrite_action_label_rows,
-)
-from tools.audit_action_labels import (  # noqa: E402
-    NO_HEADING_WORDS,
-    NO_PLANAR_DIRECTION_WORDS,
-    PLANAR_DIRECTIONS,
-    VERTICAL_WORDS,
-    mirror_label,
-    takes_planar_direction,
 )
 
 # ── paths ────────────────────────────────────────────────────────────────────
@@ -308,7 +306,8 @@ def readable_species(species):
 
 
 # A trailing side marker, matched case-sensitively so "Upright" does not read as
-# the right-hand version of "Up". Same rule as tools/audit_action_labels.py.
+# the right-hand version of "Up". Only a trailing marker counts: "LeftFoot" and
+# "FlyLeftWing" are body parts, not a heading.
 _SIDE_WORD_RE = re.compile(r"(Left|Right)$")
 _SIDE_LETTER_RE = re.compile(r"(?<=[a-z])([LR])$")
 
@@ -986,7 +985,9 @@ locomotion -- the character TRAVELS; the ground slides underneath it.
     wings), "walk, backward, retreat" (backing away). A sideways step with the
     body still facing ahead is just "walk, left" / "walk, right".
   - The label MUST name a direction, even for a clip authored in place: the
-    heading the gait is trying to go. A hover held in place is exempt.""",
+    heading the gait is trying to go. A hover held in place is exempt.
+  - Every jump is here, one in place included: "jump, up" (straight up),
+    "jump, forward", "jump, left".""",
     "stationary": """\
 stationary -- the character acts WITHOUT travelling across the ground.
   - Heads: idle (any standing / waiting / breathing / emote), attack, hurt (taking
@@ -1009,7 +1010,7 @@ transition -- the character CHANGES STATE, once, and does not return.
     word, never in the order of words: draw, sheathe, stop (a run skids to a
     halt), getup (from the ground back onto its feet), kneel, laydown, sitdown,
     land, takeoff, die, spawn (arrives, emerges, digs out), burrow (digs in,
-    leaves), jump, pickup, putdown, and "rear, up" / "rear, down".
+    leaves), pickup, putdown, and "rear, up" / "rear, down".
   - A SECOND head only says in what posture or context the event happens, event
     word first: "land, hover" (lands out of hovering flight), "land, run",
     "land, jump" (lands out of a jump), "die, hover" (dies in the air).

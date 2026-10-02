@@ -515,9 +515,8 @@ def _validate_root_motion_drift(
     """Warn when a detrended clip still carries sustained travel.
 
     The invariant preprocessing establishes, checked with the same arithmetic
-    that establishes it. Every locomotion clip enters this path; transition
-    clips enter only when their hand-reviewed ``is_loop`` flag is true;
-    stationary clips never enter. Raw extent is deliberately not the measure.
+    that establishes it. Every locomotion clip enters this path; no other group
+    does. Raw extent is deliberately not the measure.
 
     Both channels are checked, each against the threshold that gates it: the
     horizontal one always detrends past ``ROOT_XZ_DRIFT_THRESHOLD``, the
@@ -564,10 +563,10 @@ def _validate_root_motion_drift(
         _flattened, drift = flatten_root_xz_drift(
             r_pos[:, [0, 2]], root_xz_heading(recovered, translation_root_index)
         )
-        # The vertical channel needs no frame and no recovered anim: the root's
-        # height is stored outright, so this reads it back exactly as
-        # preprocessing measured it.
-        _flattened_y, y_drift = flatten_root_y_drift(r_pos[:, 1])
+        # The vertical channel needs no frame and no recovered anim: every
+        # joint's world height is stored outright (position channel Y), so this
+        # reads the lowest joint back exactly as preprocessing measured it.
+        _flattened_y, y_drift = flatten_root_y_drift(r_pos[:, 1], motion[..., 1])
     except Exception as exc:
         print_warn(f"{motion_name}: failed to inspect root motion drift from NPy: {exc}")
         return
@@ -581,7 +580,7 @@ def _validate_root_motion_drift(
 
     if y_drift > ROOT_Y_DRIFT_THRESHOLD:
         print_warn(
-            f"{motion_name}: detrended clip's root height still climbs {y_drift:.3f} "
+            f"{motion_name}: detrended clip's lowest joint still climbs {y_drift:.3f} "
             f"across the clip, past the vertical flatten threshold "
             f"({ROOT_Y_DRIFT_THRESHOLD:.2f}) -- translation root index "
             f"{translation_root_index}"
@@ -611,8 +610,7 @@ def _validate_root_xz_ceiling(
     the operator itself cannot produce a radius at or above the limit.
 
     The caller runs it a second time over the clips the root-XZ policy selected
-    -- every locomotion clip, plus transition clips whose ``is_loop`` is true --
-    against the much tighter ``ROOT_XZ_LOCOMOTION_LIMIT``: each of those is
+    -- every locomotion clip -- against the much tighter ``ROOT_XZ_LOCOMOTION_LIMIT``: each of those is
     scaled into that bound, so unlike the drift check it needs no decoder and no
     heading.
     """
@@ -722,25 +720,16 @@ def validate_motion_files(
     motion_orientation_threshold: float = 45.0,
     ignored_stems: set[str] | None = None,
     locomotion_clips: set[str] | None = None,
-    transition_clips: set[str] | None = None,
 ) -> None:
     motion_files = sorted(motions_dir.glob("*.npy"))
-    if locomotion_clips is None or transition_clips is None:
-        # The two gates are two answers the same hand-maintained sidecar gives,
-        # so it is parsed once for both rather than once per question. Supplying
-        # both is a full override and reads no file. Deriving an omitted one
+    if locomotion_clips is None:
+        # Supplying the set is a full override and reads no file. Deriving it
         # here is safe because both in-repo callers run validate_motion_metadata
         # first, and that check fails on a missing sidecar before this point.
         from data_loaders.truebones.truebones_utils.dataset_pipeline import (
-            load_root_xz_gate_clip_names,
+            load_locomotion_clip_names,
         )
-        sidecar_locomotion, sidecar_transition = load_root_xz_gate_clip_names(
-            motions_dir.parent
-        )
-        if locomotion_clips is None:
-            locomotion_clips = sidecar_locomotion
-        if transition_clips is None:
-            transition_clips = sidecar_transition
+        locomotion_clips = load_locomotion_clip_names(motions_dir.parent)
     bvh_files = sorted(bvhs_dir.glob("*.bvh")) if bvhs_dir.exists() else []
 
     try:
@@ -829,12 +818,7 @@ def validate_motion_files(
                 ignored_stems=ignored_stems,
             )
 
-            is_locomotion = motion_path.stem in locomotion_clips
-            is_transition_loop = (
-                motion_path.stem in transition_clips
-                and bool(motion_metadata.get("is_loop"))
-            )
-            uses_locomotion_root_xz_policy = is_locomotion or is_transition_loop
+            uses_locomotion_root_xz_policy = motion_path.stem in locomotion_clips
 
             if uses_locomotion_root_xz_policy:
                 _validate_root_xz_ceiling(

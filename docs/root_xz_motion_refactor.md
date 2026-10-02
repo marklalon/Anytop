@@ -1,8 +1,8 @@
 # root XZ 运动处理规则
 
-预处理保留小范围的原地 root XZ 运动（模型学会"脚在动、root 微移"），保持 locomotion
-原有的去趋势和 extent 限制，并让标记为 loop 的 transition 动作执行同一套处理；
-stationary 不进入这套处理。所有位移仍会封顶，生成期一视同仁地积分重建 root motion。
+预处理保留小范围的原地 root XZ 运动（模型学会"脚在动、root 微移"），locomotion
+组做去趋势和 extent 限制，其他组不进入这套处理；需要去趋势的动作（包括所有以 jump
+为首词的动作）应当归入 locomotion 组。所有位移仍会封顶，生成期一视同仁地积分重建 root motion。
 `CKPT_VERSION = 6`，v5 及更早的 checkpoint 会被明确拒绝。
 
 ---
@@ -28,13 +28,11 @@ tile 接缝天然连续。
 
 ### 2.1 漂移扁平化（朝向帧运输量）
 
-**判据：`(locomotion OR (transition AND is_loop))` AND `朝向帧净运输量 > 0.08`。**
+**判据：`locomotion` AND `朝向帧净运输量 > 0.08`。**
 
-- **分组/标签门控**来自 `action_labels.jsonl`：locomotion 全部保持历史行为；transition 仅在
-  人工复核的 `is_loop == true` 时进入；stationary 永不进入。这样
-  `MB_TigerDrago_RunJump`、`MB_TigerDrago_DogdeRightG` 等 transition loop 会去掉持续运输量，
-  同时不会误伤 stationary loop 或改变 non-loop locomotion 的既有行为。被选中的 transition
-  loop 也与 locomotion 一样应用 0.2 extent 限制。
+- **分组门控**来自 `action_labels.jsonl`：只看 `action_group == locomotion`，与 `is_loop`
+  无关；transition / stationary 永不进入。要去掉持续运输量的动作（如 `MB_TigerDrago_RunJump`、
+  `MB_TigerDrago_DogdeRightG` 这类跳跃）应当放进 locomotion 组，而不是靠 loop 标记进入。
 - **测量**：已经烘成原地的动作不少，对它们施加算子只会引入浮点噪声。
 
 阈值 `ROOT_XZ_DRIFT_THRESHOLD = 0.08`（≈ 5.8% body span）。drift 分布平滑无谷，
@@ -106,11 +104,10 @@ tile 接缝天然连续。
 
 | 界限 | 范围 | 膝盖 / 天花板 | 算子 |
 |---|---|---|---|
-| **locomotion 界限** | 每一条 locomotion clip，以及 `is_loop` 的 transition clip | 0.1 / 0.2 | `scale_root_xz_extent`（整段**统一缩放**） |
+| **locomotion 界限** | 每一条 locomotion clip | 0.1 / 0.2 | `scale_root_xz_extent`（整段**统一缩放**） |
 | **全局天花板** | 每一条 clip | 0.4 / 0.5 | `soft_clamp_root_xz`（**逐帧**按半径） |
 
-**locomotion 界限**对门控选中的**每一条** clip 生效（全部 locomotion，加上 `is_loop` 的
-transition），而不只是真扁平化过的那些 —— 这样"被选中的 clip root XZ 不超过 0.2"才是
+**locomotion 界限**对门控选中的**每一条** clip 生效（全部 locomotion），而不只是真扁平化过的那些 —— 这样"被选中的 clip root XZ 不超过 0.2"才是
 它们共同的不变式，而不是"碰巧走过路的才算"，校验器也就能直接从张量上读出来，不需要
 解码器和朝向。实测扁平化后的 locomotion extent 分布 p50 0.013 / p90 0.110 / p95 0.159，
 所以约 90% 的 clip 落在膝盖以内、逐位不动。
@@ -131,7 +128,7 @@ transition），而不只是真扁平化过的那些 —— 这样"被选中的 
 
 在这个 opt-in 之内，两道的门并不相同：**locomotion 界限还额外要求
 `flatten_root_travel`**，而全局天花板只要求 `clamp_root_extent`。
-`dataset_pipeline.py` 令 `flatten_root_travel` 取 `locomotion OR (transition AND is_loop)`，
+`dataset_pipeline.py` 令 `flatten_root_travel` 取 `locomotion`，
 所以这一个门同时决定 detrend 和 0.2 extent 限制。**stationary 只是不进这两道，不是不受
 任何约束**：全局天花板仍然照常作用于它（见上表）。校验器使用相同门控检查残余 drift 和
 tighter extent。
@@ -273,7 +270,7 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
 
 ### 2.6 竖直去趋势（同一门控，自己的阈值）
 
-**判据：`(locomotion OR (transition AND is_loop))` AND `|root Y 末帧 − 首帧| > 0.25`。**
+**判据：`locomotion` AND `|最低关节高度 末帧 − 首帧| > 0.25`。**
 
 XZ 去趋势让步态原地跑；爬升 / 俯冲 / 上浮是同一件事把运输量转到了竖直方向，留着它
 就等于在同一条 clip 上违背 XZ 去趋势刚立下的不变量。所以竖直通道走同一个门控、同一个
@@ -289,7 +286,12 @@ XZ 去趋势让步态原地跑；爬升 / 俯冲 / 上浮是同一件事把运�
   0.25 也正落在数据的空隙里——现库门控内 0.10 ~ 0.25 之间一条 clip 都没有。
 - **按净端点偏移测量**，和 XZ 用净运输量同理：跳起又落回的弧线净值为 0，无论跳多高都
   原样保留；只有**结束在别处**的 clip 才算走了。
-- **算子**（`flatten_root_y_drift`）比 XZ 简单一层：Y 不需要朝向帧，因为"上"不随角色转动。
+- **测的是最低关节，不是 root**：root（骨盆）的高度里混着姿态。从蹲伏起跳、站立落地的
+  跳跃，骨盆末帧比首帧高 0.3 ~ 0.4，但双脚首尾都在地面上；按 root 测会把它当成爬升，
+  减掉的斜坡让落地后整个角色陷进地面。爬升、俯冲、上浮是整个身体在动，最低关节随之移动，
+  照样被选中。斜坡仍然减在 root 的高度轨迹上，FK 把同一斜坡带给每个关节，所以去趋势之后
+  最低关节首尾等高。
+- **算子**（`flatten_root_y_drift(root_y, joint_heights)`）比 XZ 简单一层：Y 不需要朝向帧，因为"上"不随角色转动。
   要减的就是首末两端点之间那条直线 —— 与 `_detrend_frame` 读端点的理由相同：只有端点能
   分开"爬升"和"扑翼上下"。frame 0 的高度保持不变，扑翼、起伏、surge 全部留下。
 - **两条通道各自门控**：一条 clip 可以只去 XZ、只去 Y、两条都去、或都不去。
@@ -348,8 +350,8 @@ transition/stationary（Spawn、Die、DiveIntoGround、各种跳摔），不在�
 
 | 检查 | 范围 | 判据 |
 |---|---|---|
-| `_validate_root_motion_drift` | locomotion clip + `is_loop` 的 transition clip | 两条通道各查一遍，判据与管线**完全相同**的算术：水平（解码器重建轨迹 + 同一朝向信号）扁平化后净运输量 ≤ `ROOT_XZ_DRIFT_THRESHOLD`；竖直（root 高度直接读出）净端点偏移 ≤ `ROOT_Y_DRIFT_THRESHOLD`。帧只由朝向的**净转角**决定，恢复动画的朝向常量偏移让首末两端同幅平移、精确抵消，所以管线与校验器选帧一致 |
-| `_validate_root_xz_ceiling`（对门控选中的 clip 再调一次） | locomotion clip + `is_loop` 的 transition clip | root XZ extent ≤ `ROOT_XZ_LOCOMOTION_LIMIT` + `1e-3`。比 drift 检查更强也更便宜：不需要解码器、不需要朝向，直接读 extent |
+| `_validate_root_motion_drift` | locomotion clip | 两条通道各查一遍，判据与管线**完全相同**的算术：水平（解码器重建轨迹 + 同一朝向信号）扁平化后净运输量 ≤ `ROOT_XZ_DRIFT_THRESHOLD`；竖直（张量位置通道 Y 直接读出每个关节的世界高度，取最低关节）净端点偏移 ≤ `ROOT_Y_DRIFT_THRESHOLD`。帧只由朝向的**净转角**决定，恢复动画的朝向常量偏移让首末两端同幅平移、精确抵消，所以管线与校验器选帧一致 |
+| `_validate_root_xz_ceiling`（对门控选中的 clip 再调一次） | locomotion clip | root XZ extent ≤ `ROOT_XZ_LOCOMOTION_LIMIT` + `1e-3`。比 drift 检查更强也更便宜：不需要解码器、不需要朝向，直接读 extent |
 | `_validate_root_xz_ceiling` | **每一条** clip | root XZ extent ≤ `ROOT_XZ_SOFT_CLAMP_LIMIT` + `1e-3`。超了说明 tensor 来自 clamp 之前 |
 | `_validate_root_transport_carrier` | 每一条 clip | 逐帧取非 root 关节 RIC 位移的最小值 = 刚性整体平移的下界；超过天花板 0.5 且 root 自己轨迹不到它的一半 ⇒ 报警（位移被写在了物种根看不见的关节上） |
 
@@ -368,9 +370,9 @@ transition/stationary（Spawn、Die、DiveIntoGround、各种跳摔），不在�
 | 常量 | 值 | 含义 |
 |---|---|---|
 | `ROOT_XZ_DRIFT_THRESHOLD` | 0.08 | 扁平化门限（≈ 5.8% body span），= loop 闭合容差 |
-| `ROOT_Y_DRIFT_THRESHOLD` | 0.25 | 竖直去趋势门限（≈ 18% body span），按净端点偏移测 |
+| `ROOT_Y_DRIFT_THRESHOLD` | 0.25 | 竖直去趋势门限（≈ 18% body span），按最低关节的净端点偏移测 |
 | `ROOT_XZ_LOCOMOTION_KNEE` | 0.1 | locomotion 统一缩放的不动区上限（≈ 扁平化后 extent 的 p90） |
-| `ROOT_XZ_LOCOMOTION_LIMIT` | 0.2 | locomotion 渐近界限；门控选中的每一条 clip（locomotion + `is_loop` 的 transition）都在此以内 |
+| `ROOT_XZ_LOCOMOTION_LIMIT` | 0.2 | locomotion 渐近界限；门控选中的每一条 clip（locomotion）都在此以内 |
 | `ROOT_XZ_SOFT_CLAMP_KNEE` | 0.4 | 全局软 clamp 不动区上限 |
 | `ROOT_XZ_SOFT_CLAMP_LIMIT` | 0.5 | 软 clamp 渐近天花板 |
 | `ROOT_Y_SOFT_CLAMP_KNEE` | -0.1 | 竖直下界软 clamp 不动区下限（深度 0.1 以内不动） |

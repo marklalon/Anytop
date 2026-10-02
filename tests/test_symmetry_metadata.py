@@ -37,12 +37,12 @@ def test_horse_front_helper_bones_are_paired() -> None:
     expected_pairs = {
         'Bip01_R_Hand': ('Bip01_L_Hand', 'right', 'left'),
         'Bip01_R_Finger0': ('Bip01_L_Finger0', 'right', 'left'),
-        'Bip01_Xtra02': ('Bip01_Xtra01', 'right', 'left'),
+        'Bip01_R_Finger01': ('Bip01_L_Finger01', 'right', 'left'),
     }
 
-    # Xtra01/Xtra02 and their Nub children are structurally mirrored by the
-    # child-mirror fallback (geometry check passes), so all four are paired.
-    expected_pairs['Bip01_Xtra02Nub'] = ('Bip01_Xtra01Nub', 'right', 'left')
+    # The front-limb digit bones (Finger0/Finger01 and their Nub children) are
+    # the front helper bones; they carry L_/R_ names, so they pair by name.
+    expected_pairs['Bip01_R_Finger01Nub'] = ('Bip01_L_Finger01Nub', 'right', 'left')
 
     index_by_name = {name: index for index, name in enumerate(joint_names)}
 

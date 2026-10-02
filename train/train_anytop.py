@@ -303,6 +303,7 @@ def create_training_data_loader(args):
         motion_speed_aug=getattr(args, 'motion_speed_aug', 1.0),
         motion_speed_aug_prob=getattr(args, 'motion_speed_aug_prob', 1.0),
         loop_tile_single_prob=getattr(args, 'loop_tile_single_prob', 0.5),
+        leaf_drop_prob=getattr(args, 'leaf_drop_prob', 0.0),
         species_table=getattr(args, 'species_descriptor_table', None),
     )
 

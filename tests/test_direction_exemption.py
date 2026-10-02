@@ -1,20 +1,17 @@
-"""Actions that take no PLANAR direction word (2026-09-19).
+"""Actions that take no PLANAR direction word.
 
 ``left`` / ``right`` / ``forward`` / ``backward`` say which way an action is
 aimed or travels. A hit reaction, a body state, a draw and a head strike are
 aimed nowhere, so a side word on them is read off an incidental lean and spends
-part of a condition every species shares. The rule therefore runs three ways,
-and all three are checked here:
+part of a condition every species shares. The rule runs two ways, and both are
+checked here:
 
 * no sidecar row spells one (the corpus invariant, checked against the real
   ``action_labels.jsonl`` files -- a relabel that reintroduces one fails here);
-* ``prefill_direction_words`` never proposes one, and never calibrates on one;
-* the audit rule that DEMANDS a direction (R4's heading) does not demand it of
-  these actions.  R3 demands none of anybody any more -- it never reads a
-  direction off a clip name -- which is checked here too.
+* ``prefill_direction_words`` never proposes one, and never calibrates on one.
 
 ``hover`` is deliberately NOT on this list: a hovering strike IS aimed
-somewhere ("attack, hover, left, swat"). It only exempts R4's heading.
+somewhere ("attack, hover, left, swat").
 
 The VERTICAL axis is untouched throughout: ``idle, up, aim, bow`` aims upward
 and keeps its word.
@@ -31,13 +28,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_VOCAB,
-    parse_action_label,
-)
-from tools.audit_action_labels import (
     NO_PLANAR_DIRECTION_WORDS,
     PLANAR_DIRECTIONS,
-    check_r3,
-    check_r4,
+    parse_action_label,
     takes_planar_direction,
 )
 from tools.prefill_direction_words import jump_verdict, kind_of
@@ -52,7 +45,7 @@ SIDECARS = [
 
 def _clip(name, label, group="stationary", species="zoo/Trex"):
     return {"clip": name, "species": species, "group": group, "label": label,
-            "gif_path": "", "motion_path": ""}
+            "motion_path": ""}
 
 
 # ── the rule itself ──────────────────────────────────────────────────────────
@@ -111,7 +104,9 @@ def test_an_exempt_row_is_out_of_the_prefill_scope():
 def test_a_row_that_is_aimed_somewhere_stays_in_scope():
     assert kind_of(_clip("Wolf_AtkL", "attack, swat")) == "side"
     assert kind_of(_clip("Camel_Walk", "walk", "locomotion")) == "heading"
-    assert kind_of(_clip("Frog_Jump", "jump", "transition")) == "jump"
+    assert kind_of(_clip("Frog_Jump", "jump, up", "locomotion")) == "jump"
+    # A jump riding on a gait is that gait's heading row.
+    assert kind_of(_clip("Horse_RunJump", "run, forward, jump", "locomotion")) == "heading"
 
 
 def test_a_death_goes_to_the_topple_measurement_not_the_side_one():
@@ -129,9 +124,9 @@ def test_an_exempt_jump_may_still_be_written_up_but_never_a_planar_word():
 
     up = {"rise": 0.8, "air_frames": 9, "air_disp": [0.0, 0.0], "net": [0.0, 0.0]}
     planar = {"rise": 0.8, "air_frames": 9, "air_disp": [0.0, 0.9], "net": [0.0, 0.9]}
-    exempt = _clip("Frog_HopUp", "jump, idle", "transition")
+    exempt = _clip("Frog_HopUp", "jump, idle", "locomotion")
     exempt["is_loop"] = False
-    plain = _clip("Frog_Hop", "jump", "transition")
+    plain = _clip("Frog_Hop", "jump", "locomotion")
     plain["is_loop"] = False
 
     assert jump_verdict(_np(up), exempt, _Args())[:2] == ("write", ["up"])
@@ -145,54 +140,3 @@ def _np(measure):
     return {**measure, "air_disp": np.asarray(measure["air_disp"], dtype=float),
             "net": np.asarray(measure["net"], dtype=float)}
 
-
-# ── the audit rules ──────────────────────────────────────────────────────────
-
-def test_r3_passes_an_exempt_mirror_pair_spelled_the_same():
-    """Both halves spelled the same IS the mirror for an action aimed nowhere."""
-    findings, stats = check_r3([_clip("Trex_BiteLeft", "attack, bite"),
-                                _clip("Trex_BiteRight", "attack, bite")])
-    assert findings == []
-    assert (stats["same_label"], stats["same_label_aimed"]) == (1, 0)
-
-
-def test_r3_counts_an_aimed_pair_spelled_the_same_but_does_not_report_it():
-    """Whether those two are mirror TAKES is a fact about the motion.
-
-    ``prefill_direction_words`` measures it there (mirror detection on the
-    positions, then side energy). R3 only has the names, and the names cannot
-    say either that the clips are mirror takes or which side each one strikes.
-    """
-    findings, stats = check_r3([_clip("Wolf_SwatLeft", "attack, swat"),
-                                _clip("Wolf_SwatRight", "attack, swat")])
-    assert findings == []
-    assert (stats["same_label"], stats["same_label_aimed"]) == (1, 1)
-
-
-def test_r3_passes_a_pair_whose_side_words_look_crossed_against_the_names():
-    """MB_Unka_DeathLeft really does fall to the character's right.
-
-    Such a pair is a valid mirror of itself, and only the clip NAME says it is
-    backwards -- so R3 says nothing about it. This is the check that produced
-    four findings against four correct labels before it was removed.
-    """
-    findings, stats = check_r3([_clip("MB_Unka_DeathLeft", "die, right", "transition"),
-                                _clip("MB_Unka_DeathRight", "die, left", "transition")])
-    assert findings == [] and stats["same_label"] == 0
-
-
-def test_r3_still_reports_an_exempt_pair_that_is_not_a_mirror():
-    """The exemption lifts the side-word demand, not the mirror check itself."""
-    findings, _stats = check_r3([_clip("Dog_HitLeft", "hurt"),
-                                 _clip("Dog_HitRight", "hurt, fall")])
-    assert [code for item in findings for code in item["problem_codes"]] == ["not_mirror"]
-
-
-def test_r4_demands_no_heading_of_an_exempt_locomotion_row():
-    findings, stats = check_r4([_clip("Horse_RunToStop", "stop", "locomotion")])
-    assert findings == [] and stats["no_heading_clips"] == 1
-
-
-def test_r4_still_demands_a_heading_of_an_aimed_locomotion_row():
-    findings, _stats = check_r4([_clip("Camel_Walk", "walk", "locomotion")])
-    assert [item["clip"] for item in findings] == ["Camel_Walk"]

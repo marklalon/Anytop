@@ -46,7 +46,8 @@ ROWS = [
 
 
 class _Source:
-    """The one field of a dataset source the writer reads."""
+    """The one field of a dataset source the writer reads (the corpus walk
+    also reads ``namespace`` and ``motion_dir``, set where it is tested)."""
 
     def __init__(self, root):
         self.root = str(root)
@@ -216,17 +217,16 @@ def test_head_order_conflicts_are_refused_before_anything_is_written(dataset):
 
 def test_the_corpus_loader_drops_retiring_rows_and_carries_the_review_marks(dataset, monkeypatch):
     """What both tools see: no pending_delete clip, and each row's marks."""
-    collected = [
-        {"clip": "Wolf_AtkL.npy", "species": "zoo/Wolf", "group": "stationary",
-         "label": "attack, swat", "motion_path": "", "gif_path": "",
-         "labels_path": str(dataset / ACTION_LABELS_FILE)},
-        {"clip": "Wolf_Dead.npy", "species": "zoo/Wolf", "group": "stationary",
-         "label": "idle, dead", "motion_path": "", "gif_path": "",
-         "labels_path": str(dataset / ACTION_LABELS_FILE)},
-    ]
-    monkeypatch.setattr(prefill_common, "load_cond", lambda path: {})
-    monkeypatch.setattr(prefill_common, "sources_from_cond", lambda cond, path: [_Source(dataset)])
-    monkeypatch.setattr(prefill_common, "collect_clips", lambda *a, **k: collected)
+    motion_dir = dataset / "motions"
+    motion_dir.mkdir()
+    for name in ("Wolf_AtkL.npy", "Wolf_Dead.npy"):
+        (motion_dir / name).write_bytes(b"")
+    source = _Source(dataset)
+    source.namespace = "zoo"
+    source.motion_dir = str(motion_dir)
+    cond = {"zoo/Wolf": {"dataset_namespace": "zoo", "species_name": "Wolf"}}
+    monkeypatch.setattr(prefill_common, "load_cond", lambda path: cond)
+    monkeypatch.setattr(prefill_common, "sources_from_cond", lambda cond, path: [source])
     _cond, _sources, clips = prefill_common.load_corpus("unused.npy")
     assert [clip["clip"] for clip in clips] == ["Wolf_AtkL.npy"]
     assert clips[0]["key"] == "Wolf_AtkL" and clips[0]["reviewed"] is True

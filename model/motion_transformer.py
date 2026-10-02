@@ -960,6 +960,74 @@ def _modulate(x: Tensor, adaln: Optional[Tensor], branch: int) -> Tensor:
     return x * (1.0 + gamma) + beta
 
 
+# --topology_cond: learned queries that pool the skeleton's joint tokens into
+# one summary vector, and the hidden width of the head that turns the summary
+# into per-layer modulation. The summary only has to separate the corpus'
+# distinct skeletons, far fewer directions than d_model.
+TOPOLOGY_POOL_QUERIES = 4
+TOPOLOGY_ADALN_HIDDEN = 128
+
+
+class TopologyConditioner(nn.Module):
+    """Whole-skeleton summary -> per-layer AdaLN scale and shift.
+
+    K learned queries cross-attend over the skeleton's joint tokens (padding
+    masked out), pass through a residual feed-forward, and are averaged into
+    one vector per sample; a zero-initialised head maps it to the same
+    ``(B, L * 4 * d_model)`` layout as the action AdaLN, so the two sum.
+
+    The tokens are the rest-pose token plus the structural latent only, never
+    the joint-name embedding: names carry species identity, and a summary that
+    can recover the species would compete with the species descriptor, the
+    channel users override at inference to change gait style.
+
+    Never CFG-dropped: it describes the skeleton being animated, not a style to
+    guide toward. Zero-init makes a fresh head the identity modulation.
+    """
+
+    def __init__(self, d_model: int, num_layers: int, num_heads: int,
+                 num_queries: int = TOPOLOGY_POOL_QUERIES,
+                 hidden: int = TOPOLOGY_ADALN_HIDDEN):
+        super().__init__()
+        self.num_layers = num_layers
+        self.d_model = d_model
+        # (K, 1, d): sequence-first, like every attention in this module.
+        self.queries = nn.Parameter(torch.randn(num_queries, 1, d_model) * 0.02)
+        self.norm_kv = nn.LayerNorm(d_model)
+        self.attn = SelectiveMultiheadAttention(d_model, num_heads)
+        self.norm_ff = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, 2 * d_model),
+            nn.GELU(),
+            nn.Linear(2 * d_model, d_model),
+        )
+        self.norm_out = nn.LayerNorm(d_model)
+        self.head = nn.Sequential(
+            nn.Linear(d_model, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, num_layers * ACTION_ADALN_PARAMS_PER_LAYER * d_model),
+        )
+        nn.init.zeros_(self.head[-1].weight)
+        nn.init.zeros_(self.head[-1].bias)
+
+    def summary(self, tokens: Tensor, joint_valid: Tensor) -> Tensor:
+        """``tokens`` (B, J, d), ``joint_valid`` (B, J) bool -> (B, d)."""
+        kv = self.norm_kv(tokens).transpose(0, 1)  # (J, B, d)
+        q = self.queries.expand(-1, tokens.shape[0], -1)  # (K, B, d)
+        attended, _ = self.attn(
+            q, kv, kv, key_padding_mask=~joint_valid.to(torch.bool), need_weights=False,
+        )
+        q = q + attended
+        q = q + self.ff(self.norm_ff(q))
+        return self.norm_out(q.mean(dim=0))
+
+    def forward(self, tokens: Tensor, joint_valid: Tensor) -> Tensor:
+        """(B, J, d) tokens -> (B, L, 4, d) modulation."""
+        return self.head(self.summary(tokens, joint_valid)).view(
+            tokens.shape[0], self.num_layers, ACTION_ADALN_PARAMS_PER_LAYER, self.d_model
+        )
+
+
 class GraphMotionDecoder(nn.TransformerDecoder):
     def __init__(self, decoder_layer, num_layers, norm=None,
                  num_topology_codes=NUM_TOPOLOGY_CODES, num_edge_codes=NUM_EDGE_CODES,
@@ -1113,7 +1181,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             memory_key_padding_mask: Optional[Tensor] = None, y=None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
             loop_phase_mask: Optional[Tensor] = None,
-            action_adaln_cond: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            action_adaln_cond: Optional[Tensor] = None,
+            topology_adaln: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._resolve_edge_codes(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._expand_relation_heads(edge_rel)
@@ -1158,6 +1227,11 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             action_adaln = run_in_fp32(self.action_adaln, action_adaln_cond).view(
                 B, self.num_layers, ACTION_ADALN_PARAMS_PER_LAYER, self.d_model
             )
+        # The topology modulation (TopologyConditioner, same layout) adds onto
+        # the action one: each is a residual gain around 1, so the sum keeps
+        # both zero-init starts at the identity.
+        if topology_adaln is not None:
+            action_adaln = topology_adaln if action_adaln is None else action_adaln + topology_adaln
         for layer_ind, mod in enumerate(self.layers):
             edge_value_emb = None
             topology_value_emb = None

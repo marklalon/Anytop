@@ -114,7 +114,6 @@ SPECIES_LOCOMOTIONS = (
     "Lumbering",
     "Scurrying",
     "Scuttling",
-    "Sideways",
     "Slithering",
     "Stalking",
     "Striding",
@@ -122,7 +121,6 @@ SPECIES_LOCOMOTIONS = (
     "Trotting",
     "Undulating",
     "Waddling",
-    "Whirling",
 )
 
 

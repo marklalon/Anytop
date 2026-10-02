@@ -388,6 +388,20 @@ def _drop_species_name_parts(canonical_parts):
     return [part for part in canonical_parts if not joint_name_token_is_species(part)]
 
 
+def _drop_leading_bone_word(canonical_parts):
+    """Drop a generic leading "Bone" ("Bone_hair_R_01" -> "Hair Right 01").
+
+    Kept when nothing but side words and indices would remain ("Bone002"), so
+    the name never shrinks to a bare number.
+    """
+    if not canonical_parts or canonical_parts[0].lower() != _BONE_CODE_PREFIX_WORD:
+        return canonical_parts
+    rest = canonical_parts[1:]
+    if not any(not part.isdigit() and part not in ('Left', 'Right') for part in rest):
+        return canonical_parts
+    return rest
+
+
 def canonicalize_joint_name(name, replacements=None, additional_prefixes=()):
     replacements = JAPANESE_NAME_REPLACEMENTS if replacements is None else replacements
     split_name = normalize_joint_name(strip_joint_name_prefix(name, additional_prefixes))
@@ -418,6 +432,7 @@ def canonicalize_joint_name(name, replacements=None, additional_prefixes=()):
 
     canonical_parts = _collapse_repeated_name_parts(canonical_parts)
     canonical_parts = _drop_species_name_parts(canonical_parts)
+    canonical_parts = _drop_leading_bone_word(canonical_parts)
     return ' '.join(canonical_parts) if canonical_parts else name.strip()
 
 
