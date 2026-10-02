@@ -35,7 +35,6 @@ from motion_edit.contacts import (
     ground_velocity_from_mask,
 )
 from motion_edit.package import (
-    NEAR_PI,
     RUNTIME_VERSION,
     EditPackage,
     decode_json,
@@ -46,9 +45,11 @@ from motion_edit.profile.build import COND_FIELDS, SCHEMA_VERSION as PROFILE_SCH
 from motion_edit.profile.data import Clip, skeleton_hash
 from motion_edit.profile.skeleton import CENTER, SkeletonStructure, resolve_contacts
 from motion_edit.rotations import (
+    nearest_rotvec_branch,
     quat_inv,
     quat_mul,
     rotvec_from_quat,
+    unwrap_rotvec,
     weighted_mean_quat,
 )
 from motion_edit.runtime import (
@@ -221,17 +222,23 @@ def split_root(root_pos: np.ndarray, root_rot: np.ndarray, *, window: int, perio
 
 
 def chain_layer(rotations: np.ndarray, root: int, *, periodic: bool):
-    """Reference pose (loop: per-joint mean; one-shot: first frame) and rotation-vector offsets."""
+    """Reference pose (per-joint mean), rotation-vector offsets unwrapped along
+    time, and the joints whose gain stays at 1.
+
+    A loop joint that winds a whole turn per period has unwrapped offsets that
+    differ by 2 pi across the seam; any gain other than 1 would break the seam,
+    so its gain is locked.
+    """
     frame_count, joint_count = rotations.shape[:2]
-    if periodic:
-        reference = np.stack([weighted_mean_quat(rotations[:, j], np.ones(frame_count))
-                              for j in range(joint_count)])
-    else:
-        reference = np.array(rotations[0], dtype=np.float64)
-    offsets = rotvec_from_quat(quat_mul(rotations, quat_inv(reference)[None]))
+    reference = np.stack([weighted_mean_quat(rotations[:, j], np.ones(frame_count))
+                          for j in range(joint_count)])
+    offsets = unwrap_rotvec(rotvec_from_quat(quat_mul(rotations, quat_inv(reference)[None])))
     offsets[:, root] = 0.0
-    near_pi = np.linalg.norm(offsets, axis=-1) > NEAR_PI
-    return reference, offsets, near_pi
+    locked = np.zeros(joint_count, dtype=bool)
+    if periodic:
+        across_seam = nearest_rotvec_branch(offsets[0], offsets[-1])
+        locked = np.linalg.norm(across_seam - offsets[0], axis=-1) > np.pi
+    return reference, offsets, locked
 
 
 def plant_layer(positions: np.ndarray, contacts: list[int], mask: np.ndarray,
@@ -464,7 +471,7 @@ def assemble_package(
     root_trend, root_osc, root_yaw, root_tilt = split_root(
         np.asarray(decoded.base_pos[:, root], dtype=np.float64), rotations[:, root],
         window=window, periodic=is_loop)
-    reference, chain_offsets, near_pi = chain_layer(rotations, root, periodic=is_loop)
+    reference, chain_offsets, gain_locked_mask = chain_layer(rotations, root, periodic=is_loop)
     plants = plant_layer(positions, used, mask, ground_velocity, fps, root, is_loop)
 
     roles = (list(profile.arrays["profile_role"]) if profile.arrays is not None
@@ -474,12 +481,10 @@ def assemble_package(
     passive = (profile.arrays["profile_passive"] if profile.arrays is not None
                else np.zeros(joint_count, dtype=bool))
 
-    near_pi_frames = {structure.names[j]: int(near_pi[:, j].sum())
-                      for j in np.flatnonzero(near_pi.any(axis=0))}
-    for name, count in near_pi_frames.items():
-        frame = int(np.flatnonzero(near_pi[:, structure.names.index(name)])[0])
-        diagnostics.append({"kind": "near_pi", "joint": name, "frame": frame,
-                            "message": f"{name}: chain offset near pi on {count} frame(s); gain held at 1"})
+    gain_locked = [structure.names[j] for j in np.flatnonzero(gain_locked_mask)]
+    for name in gain_locked:
+        diagnostics.append({"kind": "gain_locked", "joint": name,
+                            "message": f"{name}: winds a whole turn per loop; gain held at 1"})
     if decoded.ik_error is not None:
         diagnostics.append({"kind": "ik", "message":
                             f"full-body IK residual mean {decoded.ik_error[0]:.4g}, "
@@ -519,7 +524,7 @@ def assemble_package(
         "root_tilt": root_tilt,
         "chain_reference": reference,
         "chain_offsets": chain_offsets,
-        "chain_near_pi": near_pi,
+        "chain_gain_locked": gain_locked_mask,
         "chain_group": groups,
         "contact_joints": np.asarray(used, dtype=np.int32).reshape(-1),
         "contact_mask": mask,
@@ -571,7 +576,7 @@ def assemble_package(
             "plants": int(len(drift)),
             "slip_baseline_max": float(drift.max()) if len(drift) else 0.0,
             "slip_baseline_mean": float(drift.mean()) if len(drift) else 0.0,
-            "near_pi_frames": near_pi_frames,
+            "gain_locked": gain_locked,
             "items": diagnostics,
         },
     }

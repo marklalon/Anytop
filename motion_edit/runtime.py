@@ -10,7 +10,8 @@ Order (section 5.2):
 
 1. time: every output frame samples the clip at a source time ``s``; a loop
    keeps a whole number of frames per period and wraps its samples;
-2. amplitude: chain offsets scaled per group (frames near pi held at gain 1);
+2. amplitude: unwrapped chain offsets scaled per group (joints winding a whole
+   turn per loop held at gain 1);
 3. root: oscillation (sway, bounce), airborne arcs (jump_height), posture;
 4. plants + limb IK: planted feet follow their targets, swing feet carry the
    correction between them (``motion_edit.ik``);
@@ -27,8 +28,9 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from motion_edit.ik import LimbSolver, build_limbs, world_to_local
-from motion_edit.package import CHAIN_GROUPS, NEAR_PI, EditPackage
+from motion_edit.package import CHAIN_GROUPS, EditPackage
 from motion_edit.rotations import (
+    nearest_rotvec_branch,
     quat_from_rotvec,
     quat_inv,
     quat_mul,
@@ -365,14 +367,16 @@ class EditRuntime:
 
         timeline = self._timeline(resolved)
         diagnostics += [{"kind": "tempo", "message": m} for m in timeline.notes]
-        rotations, positions, near_pi = self._compose_layers(resolved, timeline.times)
-        if near_pi:
-            diagnostics.append({"kind": "near_pi", "message":
-                                f"chain offset near pi on {near_pi} joint-frame(s); gain held at 1"})
+        rotations, positions, held = self._compose_layers(resolved, timeline.times)
+        if held:
+            diagnostics.append({"kind": "gain_locked", "message":
+                                f"{held} joint(s) wind a whole turn per loop; gain held at 1"})
         pid, ptime = self._plant_timeline(timeline.times)
         pivot = np.zeros(pid.shape, dtype=bool)
         unreached = None
-        if any(resolved[n] != PARAM_SPECS[n].default for n in _IK_PARAMS) or resolved["foot_lock"]:
+        # no contact joints: nothing to plant, the composed pose stands
+        if pid.shape[1] and (any(resolved[n] != PARAM_SPECS[n].default for n in _IK_PARAMS)
+                             or resolved["foot_lock"]):
             targets = self._stance_targets(pid, ptime, timeline.rate, timeline.stride,
                                            bool(resolved["foot_lock"]))
             rotations, positions, pivot, unreached, ik_notes = self._solve_plants(
@@ -454,24 +458,25 @@ class EditRuntime:
         root = pkg.root
         reference = np.asarray(pkg["chain_reference"], dtype=np.float64)
         rotations = sample_quat(np.asarray(pkg["base_rot"], dtype=np.float64), times, periodic)
-        offsets = rotvec_from_quat(quat_mul(rotations, quat_inv(reference)[None]))
-        near_pi = np.linalg.norm(offsets, axis=-1) > NEAR_PI
+        # the sampled rotation's offset, on the branch of the stored unwrapped offsets
+        offsets = nearest_rotvec_branch(
+            rotvec_from_quat(quat_mul(rotations, quat_inv(reference)[None])),
+            sample_linear(np.asarray(pkg["chain_offsets"], dtype=np.float64), times, periodic))
+        locked = np.asarray(pkg["chain_gain_locked"], dtype=bool)
         gain = np.ones(pkg.joint_count)
         groups = [str(g) for g in pkg["chain_group"]]
         for j, group in enumerate(groups):
-            if group in AMP_GROUPS:
+            if group in AMP_GROUPS and not locked[j]:
                 gain[j] = p[f"amp.{group}"]
-        gain = np.where(near_pi, 1.0, gain[None, :])
-        rotations = quat_mul(quat_from_rotvec(offsets * gain[..., None]), reference[None])
+        rotations = quat_mul(quat_from_rotvec(offsets * gain[None, :, None]), reference[None])
         yaw = sample_angle(np.asarray(pkg["root_yaw"], dtype=np.float64), times, periodic)
         tilt = sample_quat(np.asarray(pkg["root_tilt"], dtype=np.float64), times, periodic)
         rotations[:, root] = quat_mul(yaw_quat(yaw), tilt)
 
         positions = sample_linear(np.asarray(pkg["base_pos"], dtype=np.float64), times, periodic)
         positions[:, root] = sample_linear(self._root_track(p), times, periodic)
-        flagged = int((near_pi & (gain == 1.0) & (np.asarray(
-            [p.get(f"amp.{g}", 1.0) for g in groups])[None] != 1.0)).sum())
-        return rotations, positions, flagged
+        held = int(sum(locked[j] and p.get(f"amp.{g}", 1.0) != 1.0 for j, g in enumerate(groups)))
+        return rotations, positions, held
 
     # ── 4. plants ────────────────────────────────────────────────────────
     def _plant_timeline(self, times: np.ndarray):
@@ -663,7 +668,7 @@ class EditRuntime:
             # otherwise ask for less stretch and fall short again
             rotations, solved, scale, gaps, pivot = self._solve_limbs(
                 solvers, composed, positions, pid, targets, stretch, scale)
-        if np.abs(scale - 1.0).max() > 1e-3:
+        if scale.size and np.abs(scale - 1.0).max() > 1e-3:
             diagnostics.append({"kind": "stretch", "frame": int(np.argmax(np.abs(scale - 1.0).max(axis=1))),
                                 "message": f"leg length scaled {scale.min():.3f} to {scale.max():.3f} (soft_stretch)"})
 

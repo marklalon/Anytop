@@ -20,7 +20,7 @@ import numpy as np
 
 # Bump when the package arrays or their meaning change; the runtime refuses
 # every other version.
-RUNTIME_VERSION = 2
+RUNTIME_VERSION = 3
 
 PACKAGE_SUFFIX = ".edit"
 MANIFEST_FILE = "manifest.json"
@@ -29,9 +29,6 @@ DATA_FILE = "data.npz"
 # Amplitude groups of section 5.1 (``amp.<group>``), plus the joints no
 # amplitude slider reaches.
 CHAIN_GROUPS = ("root", "legs", "arms", "axial", "tail", "wings", "other")
-
-# A chain offset this close to pi flips sides when scaled (section 4.1 step 4).
-NEAR_PI = 0.8 * np.pi
 
 
 class PackageVersionError(ValueError):

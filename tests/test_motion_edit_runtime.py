@@ -29,7 +29,7 @@ from motion_edit.decompose import (
 )
 from motion_edit.ik import Limb, LimbSolver
 from motion_edit.package import EditPackage, PackageVersionError, decode_json
-from motion_edit.rotations import quat_from_rotvec, quat_inv, quat_mul
+from motion_edit.rotations import quat_from_rotvec, quat_inv, quat_mul, rotvec_from_quat
 from motion_edit.runtime import (
     IMPLEMENTED,
     PARAM_SPECS,
@@ -75,17 +75,25 @@ def test_split_root_recombines_exactly():
         assert np.allclose(tilt[:, 2], 0.0, atol=1e-9)
 
 
-def test_chain_layer_offsets_rebuild_rotations_and_flag_near_pi():
+def test_chain_layer_offsets_rebuild_rotations_and_stay_continuous():
     rng = np.random.default_rng(1)
-    rot = quat_from_rotvec(rng.normal(scale=0.4, size=(30, 5, 3)))
-    rot[7, 3] = quat_mul(quat_from_rotvec(np.array([0.0, 2.9, 0.0])), rot[0, 3])
+    frames = 30
+    rot = quat_from_rotvec(rng.normal(scale=0.4, size=(frames, 5, 3)))
+    # joint 3 swings to 170 deg and back, joint 4 winds a whole turn per period
+    swing = np.radians(170.0) * np.sin(np.linspace(0.0, np.pi, frames))
+    rot[:, 3] = quat_from_rotvec(np.stack([np.zeros(frames), swing, np.zeros(frames)], -1))
+    turn = 2.0 * np.pi * np.arange(frames) / frames
+    rot[:, 4] = quat_from_rotvec(np.stack([np.zeros(frames), np.zeros(frames), turn], -1))
     for periodic in (True, False):
-        reference, offsets, near_pi = chain_layer(rot, root=0, periodic=periodic)
+        reference, offsets, locked = chain_layer(rot, root=0, periodic=periodic)
         rebuilt = quat_mul(quat_from_rotvec(offsets), reference[None])
         assert rotation_error(rebuilt[:, 1:], rot[:, 1:]) < 1e-9
         assert np.all(offsets[:, 0] == 0.0)
-    _, _, near_pi = chain_layer(rot, root=0, periodic=False)
-    assert near_pi[7, 3] and near_pi.sum() == 1
+        # half gain never steps further than the source does per frame
+        half = quat_mul(quat_from_rotvec(0.5 * offsets), reference[None])
+        step = lambda q: np.linalg.norm(rotvec_from_quat(quat_mul(q[1:], quat_inv(q[:-1]))), axis=-1)
+        assert np.all(step(half)[:, 1:4] <= step(rot)[:, 1:4] + 1e-6)
+        assert list(np.flatnonzero(locked)) == ([4] if periodic else [])
 
 
 def test_contact_source_provenance():
@@ -615,6 +623,18 @@ def test_contact_mask_edit_rebuilds_plants(horse_packages):
     assert max(d for d, _ in drift.values()) < 1e-4 * EditRuntime(edited).leg
     with pytest.raises(ValueError):
         with_contact_mask(package, mask[:, 1:])
+
+
+@requires_horse
+@pytest.mark.parametrize("kind", ["loop", "one_shot"])
+def test_edits_without_contact_joints_skip_the_plants(horse_packages, kind):
+    edited = with_contact_joints(horse_packages[kind], [])
+    runtime = EditRuntime(edited)
+    for params in ({"amp.legs": 0.5}, {"bounce": 1.5}):
+        result = runtime.apply(params)
+        assert result.composed and result.plant_id.shape[1] == 0
+    with pytest.raises(UnsupportedParameterError):
+        runtime.apply({"foot_lock": True})
 
 
 @requires_horse

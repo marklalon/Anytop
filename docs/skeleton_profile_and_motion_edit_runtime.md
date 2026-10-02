@@ -246,7 +246,7 @@ b       = 关节 j 在均值姿态下的骨向（p 的坐标系）
 4. **分层**：
    - `base`：每帧局部旋转和局部平移，作为兜底的细节层；
    - `root`：XZ 趋势、XZ 振荡、Y 趋势、Y 振荡、yaw 曲线；
-   - `chains`：按肢体链分组，每个关节相对**链参考姿态**的 rotvec 偏差曲线。loop 动作的参考姿态取周期均值；one-shot 取首帧，因为一般是起始站姿。偏差的模长接近 π 时（> 0.8π），缩放会让 rotvec 翻到另一侧，这些帧写进诊断，运行时对这些帧把该关节的增益夹到 1；
+   - `chains`：按肢体链分组，每个关节相对**链参考姿态**的 rotvec 偏差曲线。参考姿态取全段均值（loop 和 one-shot 相同），偏差最小，摆动围绕中心缩放。rotvec 沿时间 unwrap（每帧取与上一帧最近的等价分支，角度可以超过 π），所以任何增益下偏差曲线都连续。loop 中 unwrap 后首尾相差一整圈的关节（持续自转）缩放会破坏接缝，整段增益固定为 1，并写进诊断；
    - `plants`：每个接触区间的 `[start, end]`、`v_g` 曲线、接触点在"地面坐标系"（位置加上 `v_g` 的累积位移）中的落点，以及区间内脚相对落点的残差曲线（原结果自带的滑步）。落点同时保存为相对于根的偏移；
    - `events`：上述事件帧和周期。
 
@@ -265,11 +265,11 @@ b       = 关节 j 在均值姿态下的骨向（p 的坐标系）
                   #   决定哪些参数可用）、
                   # params（每个参数的默认值、范围、分组、对该动作是否可用、分解时的运行时是否已实现；
                   #   UI 服务端按当前运行时改写"已实现"）、
-                  # diagnostics（IK 残差、滑步基线、接近 π 的帧、逐条诊断）
+                  # diagnostics（IK 残差、滑步基线、增益固定的关节、逐条诊断）
   data.npz        # 骨架：parents, names, bvh_names, sides, orients, anim_offsets, skeleton_offsets, skeleton_rest_rotations
                   # base：base_rot (F,J,4), base_pos (F,J,3)            即解码 + IK 的结果本身
                   # root：root_trend, root_osc (F,3), root_yaw (F,), root_tilt (F,4)
-                  # chains：chain_reference (J,4), chain_offsets (F,J,3), chain_near_pi (F,J), chain_group (J,)
+                  # chains：chain_reference (J,4), chain_offsets (F,J,3)（unwrap 后），chain_gain_locked (J,), chain_group (J,)
                   # 接触：contact_joints (K,), contact_mask (F,K), ground_velocity (F,2)
                   # plants：plant_intervals (N,3) = (接触列, start, end)，plant_anchor / plant_root_offset (N,3)，
                   #   plant_residual (F,K,3), plant_id (F,K), plant_drift (N,)
@@ -332,7 +332,7 @@ Package 是自包含的：微调端不需要 cond.npy，也不需要数据集目
    one-shot：s = i × 倍率。
    M4 起改为以事件为节点的单调分段三次插值（PCHIP），t' = w(t)
 2. 幅度：chain_offsets 按每段的增益缩放（amp.* × windup_depth / overshoot 的分段曲线，段与段之间平滑过渡）；
-   第 4.1 节标出的接近 π 的帧，该关节增益夹到 1
+   采样后的偏差取与 chain_offsets 插值最近的分支再缩放；chain_gain_locked 的关节增益为 1
 3. 根（在源帧上算好，再按第 1 步采样）：sway 缩放 XZ 振荡；bounce 缩放 Y 振荡；
    jump_height 缩放每个离地段内根 Y 相对"起跳前最后一个着地帧—落地帧"连线的偏离（两端固定）。
    缩放的是趋势加振荡的整条 Y：0.5 秒的低通窗口和一次起跳差不多长，只缩放趋势会漏掉大半条弧线；
@@ -433,7 +433,7 @@ motion_edit/ui/vendor/           three.js 等前端依赖放在本地，离线�
 | GET | `/api/package/<id>` | manifest：参数默认值与范围、事件、接触关节集合及来源、接触区间、骨架（parents / offsets / names）、哪些参数对该动作可用（按服务端当前的参数集重建） |
 | POST | `/api/load` | 输入：package id + stretch_factor（可选）+ fullbody_ik（可选）；任一项与当前值不同时重新分解并覆盖 package，返回新的 manifest。重新分解会重置手动改过的接触区间，页面在执行前要求确认 |
 | POST | `/api/contacts` | 输入：package id + `joints`（完整的接触关节集合）+ `species`（是否应用到该物种），或 package id + `mask`（(K, F) 的 0/1 接触区间）。关节集合变了就重新检测区间，区间变了就重新计算 v_g、落点和残差，都不重新解码，结果覆盖 package。`species` 时把相对 cond 的增删（关节名）写进 `<dataset_root>/contact_overrides.json`（增删都为空时删掉该行），package 的增删随之转成物种来源；package 没有 `dataset_root` 时报错 |
-| POST | `/api/apply` | 输入：package id + 参数 + 事件帧（可选，用户拖动过时才带）。UI 一律走完整路径（第 0 步的默认值跳过关闭，即 T1b），默认值下的输出也是分解再重组的结果；输出：逐帧全局位置、局部旋转、`v_g'`、每个输出帧采样的源时间、输出时间轴上的着地掩码、支撑目标、够不到的掩码、诊断（夹紧、够不到、身体下降、rotvec 接近 π、tempo 取整）、与原始结果的最大位置差（UI 放在诊断列表里） |
+| POST | `/api/apply` | 输入：package id + 参数 + 事件帧（可选，用户拖动过时才带）。UI 一律走完整路径（第 0 步的默认值跳过关闭，即 T1b），默认值下的输出也是分解再重组的结果；输出：逐帧全局位置、局部旋转、`v_g'`、每个输出帧采样的源时间、输出时间轴上的着地掩码、支撑目标、够不到的掩码、诊断（夹紧、够不到、身体下降、增益固定、tempo 取整）、与原始结果的最大位置差（UI 放在诊断列表里） |
 | POST | `/api/export` | 输入同 `/api/apply`，外加格式（bvh / glb）、是否输出 root motion；写入文件并返回下载链接 |
 | GET / POST | `/api/presets/<id>` | 读写该 package 的参数预设（JSON，与 package 放在一起） |
 
@@ -450,7 +450,7 @@ v1 不考虑性能：参数滑杆在松开时才请求 `/api/apply`，拖动过�
    - 播放、暂停、逐帧、播放速度、循环开关；相机可以环绕和跟随。
 2. **参数面板**：按第 5.1 节分组（时间 / locomotion / 根 / 幅度 / 力度 / 次级运动 / 着地）。对当前动作不可用的参数直接隐藏（比如 attack 不显示 stride，没有 passive 关节就不显示 secondary）。每个滑杆都有"恢复默认"按钮；面板顶部有"全部恢复默认"，恢复后结果必须与原始结果完全一致（T1 在 UI 上的体现）。顶栏可以设置 stretch_factor 和 fullbody IK 开关（关掉 IK 时 stretch_factor 禁用），点"重新分解"生效。
 3. **时间轴**：按源帧显示，播放头在编辑结果当前帧采样的源时间上。显示事件标记（windup / impact / recover、起跳 / 落地、loop 周期边界），以及每个接触关节一行的接触区间色条（左侧是关节名）。事件标记可以拖动（M4）。接触区间在草稿上编辑：空白处拖动新增，拖动两端调整（loop 可以跨接缝），点选后按 Delete 删除；新增的格子绿色、删掉的格子淡红；"应用区间修改"才发给服务端，"放弃"恢复。点标尺行或关节名列只移动播放头。
-4. **诊断面板**：列出本次 apply 的夹紧、够不到、rotvec 接近 π、事件低置信度、分解时的 IK 残差等信息，点一条就跳到对应的帧并高亮对应的关节。
+4. **诊断面板**：列出本次 apply 的夹紧、够不到、增益固定、事件低置信度、分解时的 IK 残差等信息，点一条就跳到对应的帧并高亮对应的关节。
 5. **导出栏**：格式、是否输出 root motion、文件名；以及预设的保存和加载。
 
 **v1 不做的事**
@@ -513,7 +513,7 @@ M1 与 M2 可以并行；M3 依赖两者；M4、M5 可以并行；M6 可以在 M
 | 飞行、游泳 clip 被误判出接触区间 | 关节自己的地面离 clip 地面太高时整段不算接触；剩下的误判（比如整群脚都收起来时最低的那只）由用户在时间轴上清掉 |
 | fullbody IK 刚体化后偏离 pos 通道 | 分解时记录 IK 残差并显示在诊断面板；用户可以在加载时调大 stretch_factor |
 | 次级运动参数不合适 | 拟合只在驱动项有显著贡献时采用，其余用默认参数；是否启用由用户确认；`secondary.*` 滑杆可整体调节 |
-| 链偏差接近 π，缩放后翻转 | 分解时标出这些帧，运行时把该关节在这些帧上的增益夹到 1，并写入诊断 |
+| 链偏差越过 π，缩放后翻转 | 偏差沿时间 unwrap，曲线连续；loop 中每周期自转一整圈的关节增益固定为 1，并写入诊断 |
 | 原地 locomotion 的接触判定依赖隐含地速估计，转弯、侧移时各脚速度不一致 | 先只支持直行：根 yaw 变化超过 25° 的 locomotion 不提供 stride（写进诊断）。以后 `v_g` 改为每帧的二维向量加 yaw 角速度（刚体平面运动），按每只脚的位置分别计算其应有速度 |
 | 多个接触关节同时着地时，刚体脚部只能精确放下 pivot | distal 方向对齐，其余关节随刚体移动；T6 对它们给出单独的容差。脚趾在支撑期自己的滚动被 amp 压平时最明显 |
 | 编辑把落点推到腿够不到的地方（posture 抬高、stride 很大） | 先按 `soft_stretch` 拉长腿；拉到上限仍够不到时 IK 伸直到最近处并标红，pivot 停在目标上方时身体下降（第 5.2 节第 6 步），所以 posture 往上调可能被"下降"部分抵消，以诊断为准。腿的伸缩在蒙皮上可见，5–8% 基本看不出，接近 20% 时腿明显变细变长 |

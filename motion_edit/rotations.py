@@ -37,6 +37,30 @@ def rotvec_from_quat(q: np.ndarray) -> np.ndarray:
     return 2.0 * Quaternions(np.asarray(q, dtype=np.float64)).log()
 
 
+def nearest_rotvec_branch(v: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """The rotation vector equivalent to ``v`` (same rotation, angle shifted by
+    a multiple of 2 pi along its axis) closest to ``target``."""
+    v = np.asarray(v, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    angle = np.linalg.norm(v, axis=-1, keepdims=True)
+    target_norm = np.linalg.norm(target, axis=-1, keepdims=True)
+    # at the identity the axis is free: take the target's
+    axis = np.where(angle > 1e-9, v / np.maximum(angle, 1e-12),
+                    target / np.maximum(target_norm, 1e-12))
+    along = np.sum(target * axis, axis=-1, keepdims=True)
+    turns = np.round((along - angle) / (2.0 * np.pi))
+    return axis * (angle + 2.0 * np.pi * turns)
+
+
+def unwrap_rotvec(v: np.ndarray) -> np.ndarray:
+    """Rotation vectors (F, ...) continued along axis 0 so consecutive frames
+    never jump between branches; frame 0 keeps its shortest-arc value."""
+    out = np.array(v, dtype=np.float64)
+    for f in range(1, out.shape[0]):
+        out[f] = nearest_rotvec_branch(out[f], out[f - 1])
+    return out
+
+
 def quat_from_rotvec(v: np.ndarray) -> np.ndarray:
     v = np.asarray(v, dtype=np.float64)
     angle = np.linalg.norm(v, axis=-1, keepdims=True)
