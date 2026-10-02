@@ -261,10 +261,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
     def _contacts(self, package_id: str, body: dict) -> dict:
-        from motion_edit.decompose import with_contact_joints, with_contact_mask
+        from motion_edit.decompose import with_contact_joints, with_contact_mask, with_ground_height
 
         package = self.store.runtime(package_id).package
-        if body.get("mask") is not None:
+        if body.get("ground_height") is not None:
+            height = float(body["ground_height"])
+            if not np.isfinite(height):
+                raise ValueError("ground_height must be a finite number")
+            edited = with_ground_height(package, height)
+        elif body.get("mask") is not None:
             edited = with_contact_mask(package, np.asarray(body["mask"], dtype=bool).T)
         elif body.get("joints") is not None:
             joints = sorted({int(j) for j in body["joints"]})
@@ -275,7 +280,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 edited = with_contact_joints(package, joints)
         else:
-            raise ValueError("send 'joints' or 'mask'")
+            raise ValueError("send 'joints', 'mask' or 'ground_height'")
         self.store.replace(package_id, edited)
         return package_payload(self.store.runtime(package_id))
 

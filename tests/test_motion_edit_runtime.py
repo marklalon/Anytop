@@ -30,6 +30,7 @@ from motion_edit.decompose import (
 from motion_edit.ik import Limb, LimbSolver
 from motion_edit.package import EditPackage, PackageVersionError, decode_json
 from motion_edit.rotations import quat_from_rotvec, quat_inv, quat_mul, rotvec_from_quat
+from utils.fullbody_ik import trunk_joint_indices
 from motion_edit.runtime import (
     IMPLEMENTED,
     PARAM_SPECS,
@@ -94,6 +95,20 @@ def test_chain_layer_offsets_rebuild_rotations_and_stay_continuous():
         step = lambda q: np.linalg.norm(rotvec_from_quat(quat_mul(q[1:], quat_inv(q[:-1]))), axis=-1)
         assert np.all(step(half)[:, 1:4] <= step(rot)[:, 1:4] + 1e-6)
         assert list(np.flatnonzero(locked)) == ([4] if periodic else [])
+
+
+def test_trunk_is_the_ancestors_of_the_contact_limbs():
+    #   0 hips - 1 spine - 2 chest - 3 neck - 4 head
+    #            1 - 5 L thigh - 6 L foot      2 - 7 L arm - 8 L hand - 9 L finger
+    #            1 - 10 R thigh - 11 R foot    3 - 12 jaw
+    parents = [-1, 0, 1, 2, 3, 1, 5, 2, 7, 8, 1, 10, 3]
+    sides = ["center"] * 5 + ["left", "left", "left", "left", "left", "right", "right", "center"]
+    assert trunk_joint_indices(parents, sides, [6, 11]).tolist() == [0, 1]
+    assert trunk_joint_indices(parents, sides, [6, 11, 9]).tolist() == [0, 1, 2]
+    # a centre-line contact is its own limb root
+    assert trunk_joint_indices(parents, sides, [12]).tolist() == [0, 1, 2, 3]
+    assert trunk_joint_indices(parents, None, [6]).size == 0
+    assert trunk_joint_indices(parents, sides, []).size == 0
 
 
 def test_contact_source_provenance():
@@ -199,8 +214,12 @@ def test_redecompose_with_zero_stretch_is_rigid(horse_packages):
     rigid = redecompose(package, 0.0)
     assert rigid.manifest["stretch_factor"] == 0.0
     assert rigid.manifest["contacts"] == package.manifest["contacts"]
+    # the trunk and the limbs' attachment offsets keep the decode; every other bone is rigid
     parents = rigid["parents"]
-    child = np.flatnonzero(parents >= 0)
+    cond = decode_json(rigid["source_cond"])
+    kept = {rigid.root, *trunk_joint_indices(parents, cond["joint_side_labels"],
+                                             cond["contact_joints"]).tolist()}
+    child = np.flatnonzero((parents >= 0) & ~np.isin(parents, sorted(kept)))
     rest = np.linalg.norm(rigid["anim_offsets"][child], axis=-1)
     lengths = np.linalg.norm(rigid["base_pos"][:, child], axis=-1)
     assert np.abs(lengths - rest).max() < 1e-5
@@ -312,6 +331,22 @@ def _plant_drift(runtime: EditRuntime, result, *, pivots_only: bool = False,
     return out
 
 
+def _locking_pivot_baseline(runtime: EditRuntime, result) -> dict[int, float]:
+    """Per package plant: the largest original drift of a plant that pivoted its foot on
+    a frame it was planted."""
+    pivots = _plant_drift(runtime, result, pivots_only=True)
+    columns_of = {c: limb.columns for limb in runtime.limbs()[0] for c in limb.columns}
+    out = {}
+    for k in range(result.plant_id.shape[1]):
+        for f in np.flatnonzero(result.plant_id[:, k] >= 0):
+            plant = int(result.plant_id[f, k])
+            for c in columns_of.get(k, [k]):
+                if result.pivot[f, c]:
+                    base = pivots.get(int(result.plant_id[f, c]), (0.0, 0.0))[1]
+                    out[plant] = max(out.get(plant, 0.0), base)
+    return out
+
+
 @requires_horse
 @pytest.mark.parametrize("kind", ["loop", "one_shot"])
 def test_T5_T6_edits_keep_bones_and_plants(horse_packages, kind):
@@ -339,9 +374,15 @@ def test_T5_T6_edits_keep_bones_and_plants(horse_packages, kind):
         assert np.abs(off_bones - np.linalg.norm(sampled[:, child], axis=-1)).max() < BONE_TOL, params
         # T6: no plant slides more than the original did.  IK pins the pivot; the foot's other
         # contacts follow it rigidly, and an amplitude edit that flattens the toes' own roll
-        # (amp.legs = 0) leaves them a little slip of their own.
+        # (amp.legs = 0) leaves them a little slip of their own, one that amplifies it
+        # (amp.legs > 1) carries a joint rolling over the pivot proportionally further.
+        # foot_lock moves a foot's contacts by its pivot's slip, so a contact rolling over
+        # the pivot may spread by as much as that slip on top of its own.
+        roll = max(1.0, result.params.get("amp.legs", 1.0))
+        locked = _locking_pivot_baseline(runtime, result) if result.params.get("foot_lock") else {}
         for plant, (drift, baseline) in _plant_drift(runtime, result).items():
-            assert drift <= baseline + 0.015 * leg, (params, plant, drift, baseline)
+            allowed = roll * baseline + locked.get(plant, 0.0) + 0.015 * leg
+            assert drift <= allowed, (params, plant, drift, baseline)
         for plant, (drift, baseline) in _plant_drift(runtime, result, pivots_only=True).items():
             assert drift <= baseline + 1e-4 * leg, (params, plant, drift, baseline)
 

@@ -27,6 +27,7 @@
   #time { grid-area: time; border-top: 1px solid var(--line); background: var(--panel); padding: 6px 12px; }
   select, input, button { font: inherit; color: var(--text); background: #262a33;
     border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; }
+  [hidden] { display: none !important; }
   button { cursor: pointer; }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -116,14 +117,19 @@
     </div>
     <div id="params"></div>
     <h3>接触关节</h3>
+    <div class="controls" title="接触检测以这个世界 Y 高度为地面：关节的最低处离它超过 0.3 腿长就不算着地。网格随之移动">
+      <label class="chk">地面高度 <input id="groundHeight" type="number" step="0.01" style="width:72px"></label>
+      <button id="groundDiscard" class="discard" hidden>放弃</button>
+      <button id="groundApply" class="apply" hidden>应用</button>
+    </div>
     <ul class="contacts" id="contactList"></ul>
     <div class="controls" style="margin-top:6px">
       <select id="contactAdd" style="max-width:100%"><option value="">添加关节…</option></select>
     </div>
-    <div class="controls">
-      <button id="jointsDiscard" class="discard" disabled>放弃</button>
-      <button id="jointsPackage" class="apply" disabled>应用到本 package</button>
-      <button id="jointsSpecies" class="apply" disabled title="写入数据集的 contact_overrides.json">应用到该物种</button>
+    <div class="controls" id="jointsActions" hidden>
+      <button id="jointsDiscard" class="discard">放弃</button>
+      <button id="jointsPackage" class="apply">应用到本 package</button>
+      <button id="jointsSpecies" class="apply" title="写入数据集的 contact_overrides.json">应用到该物种</button>
     </div>
     <h3>诊断</h3>
     <ul class="diag" id="diag"></ul>
@@ -319,7 +325,7 @@ function ingest(data) {
   }
   pkg.extent = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], 1e-3);
   pkg.center = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
-  pkg.floor = 0;   // the processed clips stand on y = 0
+  pkg.floor = m.ground_height ?? 0;
   return pkg;
 }
 
@@ -343,6 +349,8 @@ async function openPackage(id, payload, keepParams = false) {
   $('pkgMeta').textContent = `${m.frame_count} 帧 · ${m.fps} fps · ${J} 关节 · profile ${m.profile.status}` +
     (m.events.period ? ` · 周期 ${m.events.period}` : '');
   $('stretch').value = m.stretch_factor;
+  $('groundHeight').value = state.pkg.floor;
+  showGroundActions(false);
   $('fullbodyIk').checked = m.fullbody_ik ?? true;
   $('stretch').disabled = !$('fullbodyIk').checked;
   setupSkeleton(ghost, J, state.pkg.sk.parents);
@@ -379,14 +387,11 @@ function buildAnchors() {
   anchorRoot.clear();
   const { contacts, m } = state.pkg;
   const r = Math.max(m.leg_length || state.pkg.extent / 4, 1e-3) * 0.06;
-  const geo = new THREE.RingGeometry(r * 0.6, r, 24).rotateX(-Math.PI / 2);
-  const mat = new THREE.MeshBasicMaterial({ color: css('--original'), side: THREE.DoubleSide, transparent: true, opacity: 0.45 });
-  state.pkg.anchorMeshes = contacts.plants.map(() => { const mesh = new THREE.Mesh(geo, mat); anchorRoot.add(mesh); return mesh; });
   // where the edit sent each planted contact (red: IK could not reach it)
-  const small = new THREE.RingGeometry(r * 0.25, r * 0.45, 20).rotateX(-Math.PI / 2);
+  const ring = new THREE.RingGeometry(r * 0.5, r * 0.8, 24).rotateX(-Math.PI / 2);
   const ok = new THREE.MeshBasicMaterial({ color: css('--contact'), side: THREE.DoubleSide });
   const miss = new THREE.MeshBasicMaterial({ color: css('--bad'), side: THREE.DoubleSide });
-  state.pkg.targetMeshes = contacts.joints.map(() => { const mesh = new THREE.Mesh(small, ok); anchorRoot.add(mesh); return mesh; });
+  state.pkg.targetMeshes = contacts.joints.map(() => { const mesh = new THREE.Mesh(ring, ok); anchorRoot.add(mesh); return mesh; });
   state.pkg.targetMaterials = { ok, miss };
 }
 
@@ -500,6 +505,39 @@ $('reload').onclick = async () => {
   finally { $('reload').disabled = false; }
 };
 $('pkgSelect').onchange = (e) => openPackage(e.target.value).catch(showError);
+
+// ── ground height: the grid follows the draft, contacts are re-detected on apply ──
+function showGroundActions(dirty) {
+  $('groundDiscard').hidden = $('groundApply').hidden = !dirty;
+  $('groundApply').disabled = false;
+}
+function setFloor(y) {
+  state.pkg.floor = y;
+  if (grid) grid.position.y = y;
+  draw();
+}
+$('groundHeight').oninput = () => {
+  if (!state.pkg) return;
+  const y = parseFloat($('groundHeight').value);
+  if (!Number.isFinite(y)) return;
+  const dirty = y !== (state.pkg.m.ground_height ?? 0);
+  showGroundActions(dirty);
+  setFloor(y);
+};
+$('groundDiscard').onclick = () => {
+  const y = state.pkg.m.ground_height ?? 0;
+  $('groundHeight').value = y;
+  showGroundActions(false);
+  setFloor(y);
+};
+$('groundApply').onclick = async () => {
+  const y = parseFloat($('groundHeight').value);
+  if (!Number.isFinite(y)) return;
+  if (state.pkg.m.contacts.intervals_edited && !confirm('改地面高度会重新检测区间，手动修改过的区间会丢失。继续？')) return;
+  $('groundApply').disabled = true;
+  try { await openPackage(state.id, await api('/api/contacts', { id: state.id, ground_height: y }), true); }
+  catch (e) { showError(e); $('groundApply').disabled = false; }
+};
 
 // ── playback ─────────────────────────────────────────────────────────────
 function frameCount() { return state.edited ? state.edited.F : state.pkg ? state.pkg.F : 0; }
@@ -789,7 +827,7 @@ function renderContacts() {
     if (state.highlight === j) li.classList.add('sel');
     const nm = document.createElement('span'); nm.className = 'jn'; nm.textContent = pkg.sk.names[j]; nm.title = pkg.sk.names[j];
     const tag = document.createElement('span'); tag.className = 'tag';
-    tag.textContent = !inNow ? '待添加' : !inDraft ? '待移除' : ({ cond: 'cond', species: '物种', package: '本 package' }[origin[j]] || '');
+    tag.textContent = !inNow ? '待添加' : !inDraft ? '待移除' : ({ species: '物种', package: '本 package' }[origin[j]] || '');
     const b = document.createElement('button'); b.textContent = inDraft ? '×' : '↺';
     b.title = inDraft ? '移除' : '恢复';
     b.onclick = () => { toggleContact(j); };
@@ -802,8 +840,12 @@ function renderContacts() {
     const o = document.createElement('option'); o.value = j; o.textContent = n; sel.appendChild(o);
   });
   const dirty = jointsDirty();
-  $('jointsDiscard').disabled = $('jointsPackage').disabled = !dirty;
-  $('jointsSpecies').disabled = !pkg.speciesWritable || (!dirty && !pkg.contacts.origin.includes('package'));
+  // without a draft only "apply to species" stays, to promote this package's own edits
+  const promotable = pkg.contacts.origin.includes('package');
+  $('jointsDiscard').hidden = $('jointsPackage').hidden = !dirty;
+  $('jointsSpecies').hidden = !dirty && !promotable;
+  $('jointsActions').hidden = !dirty && !promotable;
+  $('jointsSpecies').disabled = !pkg.speciesWritable;
   $('jointsSpecies').title = pkg.speciesWritable ? '写入数据集的 contact_overrides.json'
     : '这个 package 不知道所属数据集（用 decompose_clip 从数据集分解才能写物种覆盖）';
 }
@@ -917,19 +959,6 @@ function draw() {
     cp.setXYZ(0, PE[h * 3] + oE[0], PE[h * 3 + 1], PE[h * 3 + 2] + oE[1]);
     cp.needsUpdate = true; cross.geometry.computeBoundingSphere();
   }
-
-  // plant anchors: ground frame -> world is (anchor - D(u)) shifted with the body
-  const fo = pkg.loop ? Math.floor(tO) % F : Math.min(Math.floor(tO), F - 1), fa = tO - Math.floor(tO);
-  pkg.contacts.plants.forEach(([k, s, e], i) => {
-    const mesh = pkg.anchorMeshes[i];
-    const u = fo >= s ? fo : fo + F;
-    const on = u >= s && u < e;
-    mesh.visible = on;
-    if (!on) return;
-    const an = pkg.contacts.anchors, d = dispAt(pkg.disp, u + fa);
-    mesh.position.set(an[i * 3] - d[0] + dO[0] - side / 2, pkg.floor + 1e-4,
-                      an[i * 3 + 2] - d[1] + dO[1]);
-  });
 
   // edited plant targets at this frame
   const g0 = Math.min(f0, Fe - 1), g1 = f1 % Fe;

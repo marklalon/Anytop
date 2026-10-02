@@ -255,7 +255,11 @@ def plant_layer(positions: np.ndarray, contacts: list[int], mask: np.ndarray,
             wrapped = frames % frame_count
             ground = positions[wrapped, joint].copy()
             ground[:, [0, 2]] += displacement[frames]
+            # horizontally the mean, vertically the median: the interval's edge frames are
+            # the foot still landing or already lifting and would lift a mean, and the
+            # lowest frame of a long stance is the trough of the rigid fit's slow sway
             anchor = ground.mean(axis=0)
+            anchor[1] = np.median(ground[:, 1])
             mid = int(wrapped[len(frames) // 2])
             index = len(intervals)
             intervals.append((k, start, end))
@@ -331,6 +335,7 @@ class ClipInfo:
     fullbody_ik: bool = True
     # diagnostics about the package's inputs (a stale species override); a rebuild keeps them
     notes: list = field(default_factory=list)
+    ground_height: float = 0.0      # world Y of the ground contact detection measures against
 
 
 def decode_features(features: np.ndarray, cond_entry: dict, object_type: str, fps: float,
@@ -422,12 +427,13 @@ def assemble_package(
 
     # 2. contacts
     if contact_mask is None:
-        detected = detect_contacts(positions, used, leg or 0.0, fps, periodic=is_loop, params=contact_params)
+        detected = detect_contacts(positions, used, leg or 0.0, fps, periodic=is_loop,
+                                   ground=info.ground_height, params=contact_params)
     else:
         mask = np.asarray(contact_mask, dtype=bool).reshape(frame_count, len(used))
         detected = ContactResult(
             mask, ground_velocity_from_mask(positions, used, mask, fps, periodic=is_loop, params=contact_params),
-            float("nan"))
+            float(info.ground_height))
     mask = detected.mask
     ground_velocity = detected.ground_velocity
 
@@ -557,6 +563,7 @@ def assemble_package(
         "forward_base_joint_index": _optional_index(cond_entry.get("forward_base_joint_index")),
         "stretch_factor": float(info.stretch_factor),
         "fullbody_ik": bool(info.fullbody_ik),
+        "ground_height": float(info.ground_height),
         "input_notes": info.notes,
         "leg_length": float(leg or 0.0),
         "profile": {"status": profile.status, "leg_length": profile.leg_length, "gait": profile.gait,
@@ -599,7 +606,8 @@ def _stored_inputs(package: EditPackage):
     )
     info = ClipInfo(m["object_type"], m["clip"], bool(m["is_loop"]), m.get("action_group", ""),
                     m.get("action_label", ""), float(m["stretch_factor"]), m.get("dataset_root"),
-                    bool(m.get("fullbody_ik", True)), list(m.get("input_notes", [])))
+                    bool(m.get("fullbody_ik", True)), list(m.get("input_notes", [])),
+                    float(m.get("ground_height", 0.0)))
     return decode_json(arrays["source_cond"]), profile, info
 
 
@@ -647,6 +655,14 @@ def with_contact_joints(package: EditPackage, joints, *, species_add=None,
     source.package_remove = sorted(base - wanted)
     return assemble_package(Decoded.from_package(package), package["source_features"], cond, info,
                             profile, source)
+
+
+def with_ground_height(package: EditPackage, height: float) -> EditPackage:
+    """The package with another ground height (intervals detected afresh)."""
+    cond, profile, info = _stored_inputs(package)
+    info.ground_height = float(height)
+    return assemble_package(Decoded.from_package(package), package["source_features"], cond, info,
+                            profile, ContactSource.from_dict(package.manifest["contacts"]["source"]))
 
 
 def with_contact_mask(package: EditPackage, mask) -> EditPackage:

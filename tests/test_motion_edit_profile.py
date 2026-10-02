@@ -155,6 +155,14 @@ def test_tucked_feet_never_plant():
     assert not result.mask[:, 1].any()
 
 
+def test_hovering_feet_plant_only_on_their_ground():
+    pos, truth = _treadmill_walk()
+    pos[..., 1] += 1.0                                    # the whole clip a leg above y = 0
+    assert not detect_contacts(pos, [0, 1], 1.0, FPS, periodic=True).mask.any()
+    result = detect_contacts(pos, [0, 1], 1.0, FPS, periodic=True, ground=1.0)
+    assert (result.mask == truth).mean() > 0.85
+
+
 def test_two_frame_stance_of_a_fast_run_plants():
     # Every stance frame borders a touchdown or lift-off frame: only a
     # one-sided vertical difference reads it as still.

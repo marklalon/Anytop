@@ -24,7 +24,7 @@ class ContactParams:
 
     height: float = 0.05            # above the joint's own floor
     joint_floor_reach: float = 0.3  # a joint whose floor sits higher than this above the
-    #                                 clip's ground is never planted (tucked feet in flight)
+    #                                 ground is never planted (tucked feet, a hovering clip)
     vertical_speed: float = 0.5
     slip_absolute: float = 0.3      # |foot velocity + v_g| below max(absolute, relative * |v_g|)
     slip_relative: float = 0.3
@@ -40,7 +40,7 @@ class ContactParams:
 class ContactResult:
     mask: np.ndarray        # (F, K) bool, column k is contact_joints[k]
     ground_velocity: np.ndarray  # (F, 2) implied ground velocity v_g in XZ, world units / s
-    floor: float            # ground height the rule measured against
+    floor: float            # ground height the rule measured against (world Y)
 
 
 def _mode(periodic: bool) -> str:
@@ -112,19 +112,22 @@ def detect_contacts(
     fps: float,
     *,
     periodic: bool = False,
+    ground: float = 0.0,
     params: ContactParams = ContactParams(),
 ) -> ContactResult:
     """Contact mask of ``contact_joints`` over the clip ``positions`` (F, J, 3), Y up.
 
     ``periodic`` treats frame ``F - 1`` as followed by frame 0 (a loop clip
     without its closing key), so a plant that spans the seam is one interval.
+    ``ground`` is the world height of the ground: a joint that never comes
+    near it is never planted, however still it hangs.
     """
     contact_joints = [int(j) for j in contact_joints]
     frame_count = int(positions.shape[0])
     k = len(contact_joints)
     if k == 0 or frame_count < 2 or leg_length <= 0:
         return ContactResult(np.zeros((frame_count, k), dtype=bool),
-                             np.zeros((frame_count, 2)), float("nan"))
+                             np.zeros((frame_count, 2)), float(ground))
 
     p = np.asarray(positions, dtype=np.float64)[:, contact_joints]
     mode = _mode(periodic)
@@ -136,11 +139,10 @@ def detect_contacts(
         p_smooth = p
 
     height = p[..., 1]
-    floor = float(np.quantile(height.min(axis=1), params.floor_quantile))
     # Each joint is measured against its own floor (an ankle plants higher than
-    # the toe below it), but only if that floor is near the clip's ground.
+    # the toe below it), but only if that floor is near the ground.
     joint_floor = np.quantile(height, params.floor_quantile, axis=0)
-    reachable = joint_floor - floor <= params.joint_floor_reach * leg_length
+    reachable = joint_floor - ground <= params.joint_floor_reach * leg_length
     v_vertical = _still_speed(height, fps, periodic)
     v_horizontal = _derivative(p_smooth, fps, periodic)[..., [0, 2]]
 
@@ -154,14 +156,14 @@ def detect_contacts(
     masked = np.where(candidates(1.0)[..., None], v_horizontal, np.nan)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)   # all-NaN frames
-        ground = -np.nanmedian(masked, axis=1)
-    ground = _fill_nan_rows(ground, periodic)
+        ground_velocity = -np.nanmedian(masked, axis=1)
+    ground_velocity = _fill_nan_rows(ground_velocity, periodic)
     if params.ground_speed_sigma > 0:
-        ground = gaussian_filter1d(ground, params.ground_speed_sigma, axis=0, mode=mode)
+        ground_velocity = gaussian_filter1d(ground_velocity, params.ground_speed_sigma, axis=0, mode=mode)
 
-    slip = np.linalg.norm(v_horizontal + ground[:, None, :], axis=-1)
+    slip = np.linalg.norm(v_horizontal + ground_velocity[:, None, :], axis=-1)
     slip_limit = np.maximum(params.slip_absolute * leg_length,
-                            params.slip_relative * np.linalg.norm(ground, axis=-1))[:, None]
+                            params.slip_relative * np.linalg.norm(ground_velocity, axis=-1))[:, None]
 
     def confirmed(scale):
         return candidates(scale) & (slip < scale * slip_limit)
@@ -176,7 +178,7 @@ def detect_contacts(
             mask[:, c] = tiled[frame_count:2 * frame_count]
         else:
             mask[:, c] = _hysteresis(strict[:, c], loose[:, c], params.min_frames)
-    return ContactResult(mask, ground, floor)
+    return ContactResult(mask, ground_velocity, float(ground))
 
 
 def ground_velocity_from_mask(
