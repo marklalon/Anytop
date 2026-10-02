@@ -739,6 +739,14 @@ def add_generate_options(parser):
                             "restyle the generated motion (e.g. make a Winged Dragon walk on the ground). "
                             "Requires a checkpoint trained with --species_cond and/or --species_joint_cond. "
                             "Incompatible with --object_type all.")
+    group.add_argument("--species_cfg_scale", default=1.0, type=float,
+                       help="Classifier-free guidance scale over the species descriptor's "
+                            "droppable FiLM path. 1.0 (default) uses one forward; any other "
+                            "scale uses two (four when action-label CFG is also enabled). "
+                            "The per-joint species path stays active in both. "
+                            "Requires a checkpoint trained with --species_cond and non-zero "
+                            "--species_cfg_drop_prob. Uses --species_tags when supplied, otherwise "
+                            "the target species' baked descriptor.")
 
 
 def train_args():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
     JOINT_STRUCT_DIM,
 )
 from model.anytop import AnyTop  # noqa: E402
+from model.cfg_sampler import ClassifierFreeSpeciesModel  # noqa: E402
 
 
 T5_DIM = 512
@@ -28,6 +30,11 @@ class _CaptureDecoder(torch.nn.Module):
     def forward(self, **kwargs):
         self.last_kwargs = kwargs
         return kwargs['tgt']
+
+
+class _TimestepEchoDecoder(torch.nn.Module):
+    def forward(self, **kwargs):
+        return kwargs['tgt'] + kwargs['timesteps_embs'].sum()
 
 
 class _ProbeHead(torch.nn.Module):
@@ -222,6 +229,36 @@ class SpeciesHybridTest(unittest.TestCase):
         out = model(x, ts, y=y)
         self.assertIsNotNone(capture.last_kwargs)
         self.assertEqual(out.shape, x.shape)
+
+    def test_species_cfg_matches_explicit_film_branches(self):
+        model = _make_model(species_cond=True, species_joint_cond=True)
+        model.eval()
+        torch.nn.init.normal_(model.species_film[-1].weight, std=0.1)
+        model.seqTransDecoder = _TimestepEchoDecoder()
+        x = torch.randn(2, 4, 12, 3)
+        t = torch.tensor([1, 2])
+        y = _make_y(species_emb=torch.randn(2, T5_DIM))
+        with torch.no_grad():
+            cond = model(x, t, y=dict(y, species_active=torch.ones(2, dtype=torch.bool)))
+            uncond = model(x, t, y=dict(y, species_active=torch.zeros(2, dtype=torch.bool)))
+            guided = ClassifierFreeSpeciesModel(model, 2.0)(x, t, y=y)
+        self.assertFalse(torch.allclose(cond, uncond))
+        self.assertTrue(torch.allclose(guided, uncond + 2 * (cond - uncond)))
+        self.assertNotIn('species_active', y)
+
+    def test_species_cfg_requires_trained_droppable_film(self):
+        from sample.conditioning import _wrap_species_cfg
+        args = types.SimpleNamespace(species_cfg_scale=2.0, species_cfg_drop_prob=0.15)
+        with self.assertRaises(SystemExit):
+            _wrap_species_cfg(_make_model(species_joint_cond=True), args)
+        args.species_cfg_drop_prob = 0.0
+        with self.assertRaises(SystemExit):
+            _wrap_species_cfg(_make_model(species_cond=True), args)
+        args.species_cfg_drop_prob = 0.15
+        self.assertIsInstance(
+            _wrap_species_cfg(_make_model(species_cond=True), args),
+            ClassifierFreeSpeciesModel,
+        )
 
 
 if __name__ == '__main__':

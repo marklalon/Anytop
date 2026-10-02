@@ -9,6 +9,7 @@
 * ``_resolve_species_emb_override`` -- ``--species_tags``, the checkpoint's
   descriptor-table row replacing the species' own ``species_emb``.
 """
+import math
 import sys
 
 import numpy as np
@@ -27,7 +28,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
-from model.cfg_sampler import ClassifierFreeActionModel
+from model.cfg_sampler import ClassifierFreeActionModel, ClassifierFreeSpeciesModel
 from utils.model_util import unwrap_anytop_model
 
 
@@ -208,6 +209,30 @@ def _wrap_action_label_cfg(model, args, action_condition):
         f"{action_condition['action_label']!r} (2 model forwards per diffusion step)"
     )
     return ClassifierFreeActionModel(model, scale)
+
+
+def _wrap_species_cfg(model, args):
+    """Guide the species FiLM descriptor, leaving structural channels active."""
+    raw_scale = getattr(args, 'species_cfg_scale', None)
+    scale = 1.0 if raw_scale is None else float(raw_scale)
+    if not math.isfinite(scale) or scale < 0.0:
+        sys.exit(f"ERROR: --species_cfg_scale must be finite and >= 0, got {scale}.")
+    if scale == 1.0:
+        return model
+    unwrapped = unwrap_anytop_model(model)
+    if not getattr(unwrapped, 'species_cond', False):
+        sys.exit(
+            "ERROR: --species_cfg_scale requires a checkpoint trained with --species_cond. "
+            "--species_joint_cond alone has no droppable species branch."
+        )
+    if float(getattr(args, 'species_cfg_drop_prob', 0.0) or 0.0) <= 0.0:
+        sys.exit(
+            "ERROR: --species_cfg_scale requires a checkpoint trained with "
+            "--species_cfg_drop_prob > 0."
+        )
+    forwards = 4 if isinstance(model, ClassifierFreeActionModel) else 2
+    print(f"[generate] species CFG: scale={scale:g} ({forwards} model forwards per diffusion step)")
+    return ClassifierFreeSpeciesModel(model, scale)
 
 
 def _coerce_loop_flag(flag):

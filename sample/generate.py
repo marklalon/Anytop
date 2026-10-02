@@ -35,6 +35,7 @@ from sample.conditioning import (
     _resolve_action_condition,
     _resolve_species_emb_override,
     _wrap_action_label_cfg,
+    _wrap_species_cfg,
     create_condition,
 )
 from sample.export import (
@@ -138,7 +139,7 @@ def _generate_all_species(
     if action_condition is not None:
         print(f'  Action label: {action_condition["action_label"]!r} '
               f'(group={action_condition["action_group"]})')
-    sampling_model = _wrap_action_label_cfg(model, args, action_condition)
+    sampling_model = _wrap_species_cfg(_wrap_action_label_cfg(model, args, action_condition), args)
 
     for batch_idx, batch_species in enumerate(species_batches, 1):
             actual_bs = len(batch_species)
@@ -785,7 +786,7 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # Create condition with effective frame count (shared across passes).
     obj_batch = [object_type] * args.batch_size
-    _sampling_model = _wrap_action_label_cfg(model, args, _action_condition)
+    _sampling_model = _wrap_species_cfg(_wrap_action_label_cfg(model, args, _action_condition), args)
 
     # ── --species_tags: restyle the target species' motion descriptor ────────
     _species_emb_override = _resolve_species_emb_override(

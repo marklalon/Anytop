@@ -74,3 +74,23 @@ class ClassifierFreeActionModel(nn.Module):
         )
         uncond_out = self.model(x, timesteps, y=uncond_y, **kwargs)
         return uncond_out + self.guidance_scale * (cond_out - uncond_out)
+
+
+class ClassifierFreeSpeciesModel(ClassifierFreeActionModel):
+    """Guide the droppable species FiLM while retaining all other conditions.
+
+    In particular, species_joint_cond stays active in both passes, matching its
+    always-on training path. The model's species_active mask only gates the
+    timestep FiLM trained with species_cfg_drop_prob.
+    """
+
+    def forward(self, x, timesteps, y=None, **kwargs):
+        cond_out = self.model(x, timesteps, y=y, **kwargs)
+        if self.guidance_scale == 1.0:
+            return cond_out
+        uncond_y = dict(y or {})
+        uncond_y['species_active'] = torch.zeros(
+            x.shape[0], dtype=torch.bool, device=x.device
+        )
+        uncond_out = self.model(x, timesteps, y=uncond_y, **kwargs)
+        return uncond_out + self.guidance_scale * (cond_out - uncond_out)
