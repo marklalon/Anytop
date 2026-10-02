@@ -175,6 +175,28 @@ def test_two_frame_stance_of_a_fast_run_plants():
     assert contact_intervals(result.mask[:, 0], periodic=True) == [(0, 2), (10, 12)]
 
 
+def _gait_clip(pos: np.ndarray) -> Clip:
+    frames, joints = pos.shape[:2]
+    rot = np.zeros((frames, joints, 4))
+    rot[..., 0] = 1.0
+    return Clip(name="gait", action_group="locomotion", action_label="walk", is_loop=True, fps=FPS,
+                local_rotations=rot, global_rotations=rot, global_positions=pos)
+
+
+def test_gait_needs_repeated_steps():
+    pos, _ = _treadmill_walk()
+    gait = gait_stats.clip_gait(_gait_clip(pos), [0, 1], {0: [0], 1: [1]}, 1.0)
+    assert gait is not None and gait.period == pytest.approx(30.0)
+    # feet resettling at irregular times: touchdown spacings 8, 32, 20 and 60 frames
+    frames = 60
+    pos = np.zeros((frames, 2, 3))
+    pos[:, :, 1] = 0.3
+    for foot, stances in ((0, [(0, 5), (8, 13), (40, 45)]), (1, [(25, 30)])):
+        for start, end in stances:
+            pos[start:end, foot, 1] = 0.0
+    assert gait_stats.clip_gait(_gait_clip(pos), [0, 1], {0: [0], 1: [1]}, 1.0) is None
+
+
 def test_gait_ignores_a_flicker_without_lift_off():
     mask = np.zeros(24, dtype=bool)
     mask[1:9] = mask[11:13] = True                        # one stance broken at frames 9-10

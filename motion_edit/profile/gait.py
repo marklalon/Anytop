@@ -19,6 +19,9 @@ VERTICAL_PEAK = 0.15         # ... or of the lowest joint's lift, to count as ve
 # clip-wide q95 above its floor) between two plants; a lower gap is a flicker
 # inside one stance.  Relative, because a walking toe clears the floor by little.
 LIFTOFF_SHARE = 0.25
+# Median relative deviation of the touchdown spacings from their median above which
+# a clip's steps do not repeat: feet resettling in place, not a gait.
+GAIT_SPACING_SPREAD = 0.2
 
 
 @dataclass
@@ -96,6 +99,8 @@ def clip_gait(clip, contacts: list[int], limbs: dict[int, list[int]], leg_length
     period = float(np.median(periods))
     if period < 2:
         return None
+    if np.median(np.abs(np.asarray(periods) - period)) > GAIT_SPACING_SPREAD * period:
+        return None
     duty = float(np.mean([masks[f].mean() for f in starts]))
     stance = np.stack([masks[f] for f in starts], axis=1).any(axis=1)
     speed = float(np.linalg.norm(result.ground_velocity[stance].mean(axis=0))) / leg_length
@@ -131,7 +136,8 @@ def aggregate_gait(gaits: list[ClipGait]) -> dict:
 
 
 def stride_speed_fit(gaits: list[ClipGait]) -> dict:
-    """``stride = a · v_g^b`` over the species' loops; b fixed when the data is thin."""
+    """``stride = a · v_g^b`` over the species' locomotion clips, loop or not; b fixed when
+    the data is thin."""
     points = [(g.speed, g.stride) for g in gaits if g.speed > MIN_SPEED and g.stride > 0]
     if len(points) >= MIN_FIT_CLIPS and len({round(p[0], 3) for p in points}) >= 2:
         logv = np.log([p[0] for p in points])

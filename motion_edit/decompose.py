@@ -65,8 +65,10 @@ PACKAGE_COND_FIELDS = tuple(dict.fromkeys(COND_FIELDS + ("canonical_bvh_joint_na
 # Full-body IK bone stretch / compress bound (fraction of bone length) used to
 # decode an edit package.
 DEFAULT_STRETCH_FACTOR = 0.2
-# Low-pass window of the root trend for a one-shot clip; a loop uses its period.
-ONE_SHOT_TREND_SECONDS = 0.5
+# Low-pass window of the root trend; a locomotion loop uses its gait period instead.
+# A loop's own length is never the window: wrapped, it averages every frame alike and
+# leaves a constant trend, so sway / bounce would scale all of the root's movement.
+TREND_SECONDS = 0.5
 # Shortest span with no planted contact that counts as airborne.
 MIN_AIRBORNE_FRAMES = 2
 # Root yaw range above which a clip counts as turning: stride assumes a
@@ -448,7 +450,8 @@ def assemble_package(
         masks = gait_stats.limb_masks(detected, used, limbs, positions, True)
         events["touchdowns"] = {str(foot): sorted(s for s, _ in contact_intervals(m, periodic=True))
                                 for foot, m in masks.items()}
-        if gait is not None:
+        # a gait period only for locomotion: other loops have no repeated step to time
+        if gait is not None and info.action_group == "locomotion":
             events["period"] = gait.period
             events["duty"] = gait.duty
             events["phase"] = gait.phase
@@ -472,8 +475,7 @@ def assemble_package(
         events["vertical"] = {"net": round(vertical["net"], 4), "peak": round(vertical["peak"], 4)}
 
     # 4. layers
-    window = round(events["period"]) if (is_loop and events["period"]) else (
-        frame_count if is_loop else round(ONE_SHOT_TREND_SECONDS * fps))
+    window = round(events["period"]) if (is_loop and events["period"]) else round(TREND_SECONDS * fps)
     root_trend, root_osc, root_yaw, root_tilt = split_root(
         np.asarray(decoded.base_pos[:, root], dtype=np.float64), rotations[:, root],
         window=window, periodic=is_loop)

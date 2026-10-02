@@ -17,7 +17,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from data_loaders.truebones.truebones_utils.param_utils import FPS
 from motion_edit.decompose import (
+    TREND_SECONDS,
     ContactSource,
     chain_layer,
     decompose_motion,
@@ -74,6 +76,20 @@ def test_split_root_recombines_exactly():
         assert rotation_error(quat_mul(yaw_quat(yaw), tilt), rot) < 1e-9
         # the tilt carries no rotation about world Y
         assert np.allclose(tilt[:, 2], 0.0, atol=1e-9)
+
+
+def test_loop_root_trend_keeps_a_lunge():
+    # a loop that lunges out and back: with the trend window of a stationary loop the
+    # lunge stays in the trend, so sway / bounce leave it alone
+    frames = 60
+    pos = np.zeros((frames, 3))
+    pos[:, 0] = 0.5 * np.clip(1.5 * np.sin(np.pi * np.arange(frames) / frames), 0.0, 1.0)
+    rot = np.tile([1.0, 0.0, 0.0, 0.0], (frames, 1))
+    trend, osc, _, _ = split_root(pos, rot, window=round(TREND_SECONDS * FPS), periodic=True)
+    assert np.ptp(trend[:, 0]) > 0.6 * np.ptp(pos[:, 0])
+    # the whole loop as the window would average every frame alike
+    trend, _, _, _ = split_root(pos, rot, window=frames, periodic=True)
+    assert np.ptp(trend[:, 0]) < 1e-9
 
 
 def test_chain_layer_offsets_rebuild_rotations_and_stay_continuous():
