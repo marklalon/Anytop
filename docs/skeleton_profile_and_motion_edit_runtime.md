@@ -84,7 +84,7 @@ python -m motion_edit.decompose_clip --npy out/sample0.npy --object_type truebon
 
 1. **时间映射**：`tempo` 改变源时间采样。循环动作保持整数输出帧数并周期采样；one-shot 按源帧采样。存在 strike 事件时，`windup_speed`、`strike_speed`、`recover_speed` 可分别改变事件段速度，并用单调 PCHIP 插值形成时间映射。UI 可移动三个事件和选择发力链；事件是力度编辑的时间锚点。
 2. **关节幅度与发力**：对各组的 rotvec 偏移使用 `amp.legs`、`amp.arms`、`amp.axial`、`amp.wings` 等增益。`force` 调整蓄力、出击、恢复相关参数；`windup_depth` 和 `overshoot` 对发力链、躯干和根施加相对接触姿态的变化，并带动身体倾斜和位移。`spread.arms`、`spread.legs` 取 −1 到 1：每条有左右之分的手臂或腿在肢体根部转动，使肢端沿远离身体中线的水平方向移动“取值 × 该组比例 × 肢长”，负值向内收拢；外向方向取左右肢体根部连线的水平方向。腿是带接触关节的 IK 肢体，手臂是直接挂在躯干上的 `arms` 组链；有侧的 passive 部件（裙摆、披风、鳍等）不归入 `arms`。肢体首段过短或名为锁骨/肩胛时从下一关节转。某组没有左右成对的肢体时不提供该参数。腿的脚掌保持原世界朝向；肢体已指向正外或正内、或越过中线时写入诊断。
-3. **根运动**：`bounce` 缩放 Y 振荡，`sway` 缩放 XZ 振荡，`jump_height` 缩放腾空区间的高度弧线，`posture` 按腿长偏移根高度。
+3. **根运动**：`bounce` 缩放 Y 振荡，`sway` 缩放 XZ 振荡，`jump_height` 缩放腾空区间的离地高度：取最低接触关节高出其 floor（该关节在本片段中的最低支撑高度，从未支撑的关节取地面高度）的距离，减去起跳帧到落地帧两端值的连线（不低于 floor），根在竖直方向上移动 (k−1) 倍这个离地量；因此最低的脚始终不会低于该连线和 floor，k<1 不会把脚压进地面，区间两端也保持不动；循环动作的腾空区间可以跨越接缝，`posture` 按腿长偏移根高度。
 4. **着地目标与 IK**：对原结果的支撑脚位置施加编辑引起的变化。`stride` 改变原地 locomotion 的隐含前进速度和步幅；`spread.legs` 把每段支撑的着地目标沿该段中点的外向方向平移同样距离，整段支撑内不变，因此脚不滑动；默认保留原动画的滑步残差，`foot_lock` 打开时才移除。关节幅度、力度、根等会移动身体的编辑触发肢体 IK；`soft_stretch` 控制接近伸展或压缩极限时的软骨长调整。够不到的目标和修正量写入诊断，必要时对身体做着地高度补偿。
 5. **次级运动**：`tail_weight`、`passive_weight` 在 0–1 区间缩放部位自身曲线；超过 1 时，在编辑后的身体运动上叠加弹簧响应。对应的 `*_stiffness` 改弹簧频率，`gravity` 控制重力驱动项。次级运动在着地修正后计算，因此弹簧读到最终的身体轨迹。
 
@@ -92,7 +92,7 @@ python -m motion_edit.decompose_clip --npy out/sample0.npy --object_type truebon
 
 单独移动 strike 事件只改变后续力度编辑使用的锚点；力度参数保持默认值时不会改变姿态。
 
-参数是否可用取决于动作事实：例如 `stride` 只提供给有接触且不明显转向的 locomotion，`jump_height` 需要非循环腾空区间，力度参数需要 strike 事件，passive 参数需要对应关节。参数取值范围和完整清单以 `runtime.PARAM_SPECS` 为准。
+参数是否可用取决于动作事实：例如 `stride` 只提供给有接触且不明显转向的 locomotion，`jump_height` 需要动作标签含 `jump` 且存在腾空区间（循环与否均可），力度参数需要 strike 事件，passive 参数需要对应关节。参数取值范围和完整清单以 `runtime.PARAM_SPECS` 为准。
 
 ## 5. UI、覆盖与导出
 

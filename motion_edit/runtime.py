@@ -158,6 +158,14 @@ SOFT_STRETCH_START = 0.96
 SOFT_COMPRESS_START = 0.9
 
 
+# Action-label word that offers jump_height on a clip with airborne spans, loop or not.
+JUMP_WORD = "jump"
+
+
+def label_has_jump(action_label: str) -> bool:
+    return JUMP_WORD in {w.strip() for w in str(action_label or "").split(",")}
+
+
 # profile_spring columns (``decompose.SPRING_FIELDS``).
 SPRING_K, SPRING_C, SPRING_G_ANG, SPRING_G_LIN, SPRING_G_GRAV = range(5)
 
@@ -170,13 +178,13 @@ def available_params(package_facts: dict) -> list[str]:
     """Parameters that mean something for this clip (the UI hides the rest).
 
     ``package_facts``: ``is_loop``, ``locomotion``, ``has_plants``, ``turning``,
-    ``airborne``, ``has_passive``, ``strike`` (one-shot events found) and
-    ``chain_groups`` (groups with joints).
+    ``airborne``, ``jump`` (the action label names a jump), ``has_passive``, ``strike``
+    (one-shot events found) and ``chain_groups`` (groups with joints).
     """
     out = ["tempo", "bounce", "sway"]
     if package_facts["locomotion"] and package_facts["has_plants"] and not package_facts["turning"]:
         out.append("stride")
-    if package_facts["airborne"] and not package_facts["is_loop"]:
+    if package_facts["airborne"] and package_facts.get("jump"):
         out.append("jump_height")
     out += [f"amp.{g}" for g in AMP_GROUPS if g in package_facts["chain_groups"]]
     # which limbs are arms or legs depends on the clip's plants: EditRuntime keeps a spread
@@ -492,6 +500,8 @@ class EditRuntime:
         self.package = package
         # from the package facts, so a package built before a parameter existed still offers it
         facts = package.manifest.get("facts")
+        if facts and "jump" not in facts:
+            facts = {**facts, "jump": label_has_jump(package.manifest.get("action_label", ""))}
         self.available = set(available_params(facts) if facts else package.manifest.get("available_params", []))
         self._original = None
         self._limbs = None
@@ -818,15 +828,37 @@ class EditRuntime:
         osc = np.asarray(pkg["root_osc"], dtype=np.float64)
         root = trend + osc * np.array([p["sway"], p["bounce"], p["sway"]])
         if p["jump_height"] != 1.0:
-            for start, end in pkg.manifest["events"].get("airborne", []):
-                take, land = start - 1, end            # last planted frame, first planted frame
-                if take < 0 or land >= pkg.frame_count:
-                    continue
-                frames = np.arange(take, land + 1)
-                base = np.interp(frames, [take, land], [root[take, 1], root[land, 1]])
-                root[frames, 1] = base + p["jump_height"] * (root[frames, 1] - base)
+            self._scale_airborne(root, trend[:, 1] + osc[:, 1], p["jump_height"])
         root[:, 1] += p["posture"] * self.leg
         return root
+
+    def _scale_airborne(self, root: np.ndarray, source_y: np.ndarray, k: float) -> None:
+        """Scale each airborne span's lift off the ground by ``k``, in place (a loop's span
+        may wrap the seam).  The lift is the lowest contact joint's height above its floor
+        (the lowest height it is planted at in the clip, or the ground when it never is),
+        above the line between its values at the last and first planted frames (and above
+        the floor); the root moves by ``(k - 1)`` times it.  The lowest joint then stays on
+        or above that line and the floor, so lowering never sinks a foot, and the span's
+        ends do not move.  Heights are the
+        source pose's, carried by the edited root."""
+        pkg = self.package
+        count = pkg.frame_count
+        contacts = np.asarray(pkg["contact_joints"], dtype=np.int64)
+        heights = self.original_positions()[:, contacts, 1] + (root[:, 1] - source_y)[:, None]
+        mask = np.asarray(pkg["contact_mask"], dtype=bool)
+        ground = float(pkg.manifest.get("ground_height", 0.0))
+        floor = np.array([heights[mask[:, c], c].min() if mask[:, c].any() else ground
+                          for c in range(len(contacts))])
+        clearance = (heights - floor[None]).min(axis=1)
+        for start, end in pkg.manifest["events"].get("airborne", []):
+            take, land = start - 1, end            # last planted frame, first planted frame
+            if not pkg.is_loop and (take < 0 or land >= count):
+                continue
+            frames = np.arange(take, land + 1) % count
+            base = np.interp(np.arange(take, land + 1), [take, land],
+                             [clearance[frames[0]], clearance[frames[-1]]])
+            lift = np.maximum(clearance[frames] - np.maximum(base, 0.0), 0.0)
+            root[frames, 1] += (k - 1.0) * lift
 
     def _compose_layers(self, p: dict, times: np.ndarray, strike: Optional[dict], force: dict):
         pkg = self.package

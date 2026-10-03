@@ -67,6 +67,7 @@ from motion_edit.runtime import (
     available_params,
     forward_kinematics,
     ground_displacement,
+    label_has_jump,
     param_manifest,
     yaw_quat,
 )
@@ -354,12 +355,17 @@ def plant_layer(positions: np.ndarray, contacts: list[int], mask: np.ndarray,
     }
 
 
-def airborne_spans(mask: np.ndarray, min_frames: int = MIN_AIRBORNE_FRAMES) -> list[tuple[int, int]]:
-    """``(takeoff, landing)`` frames of each span with no planted contact between two plants."""
+def airborne_spans(mask: np.ndarray, min_frames: int = MIN_AIRBORNE_FRAMES,
+                   periodic: bool = False) -> list[tuple[int, int]]:
+    """``(takeoff, landing)`` frames of each span with no planted contact between two plants.
+    On a loop a span may cross the seam: its ``landing`` then exceeds the frame count."""
     planted = mask.any(axis=1)
+    if periodic and not planted.any():
+        return []
     spans = []
-    for start, end in contact_intervals(~planted):
-        if start > 0 and end < len(planted) and end - start >= min_frames:
+    for start, end in contact_intervals(~planted, periodic=periodic):
+        inside = periodic or (start > 0 and end < len(planted))
+        if inside and end - start >= min_frames:
             spans.append((start, end))
     return spans
 
@@ -749,7 +755,7 @@ def assemble_package(
                                         f"gait by up to {worst:.2f} cycle"})
     vertical = gait_stats.clip_vertical(clip, root, leg) if leg else None
     if used:
-        events["airborne"] = [list(span) for span in airborne_spans(mask)]
+        events["airborne"] = [list(span) for span in airborne_spans(mask, periodic=is_loop)]
     if vertical is not None:
         events["vertical"] = {"net": round(vertical["net"], 4), "peak": round(vertical["peak"], 4)}
     words = {w.strip() for w in info.action_label.split(",")}
@@ -790,6 +796,7 @@ def assemble_package(
         "has_plants": len(plants["plant_intervals"]) > 0,
         "turning": yaw_range > TURNING_YAW_DEG,
         "airborne": bool(events["airborne"]),
+        "jump": label_has_jump(info.action_label),
         "has_passive": bool(passive_mask.any()),
         "strike": "strike" in events,
         # passive joints answer to passive_weight, not to their group's slider

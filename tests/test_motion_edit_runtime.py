@@ -23,6 +23,7 @@ from data_loaders.truebones.truebones_utils.param_utils import FPS
 from motion_edit.decompose import (
     TREND_SECONDS,
     ContactSource,
+    airborne_spans,
     chain_layer,
     decompose_motion,
     profile_subset,
@@ -46,6 +47,7 @@ from motion_edit.runtime import (
     STRIKE_SHIFT,
     EditRuntime,
     UnsupportedParameterError,
+    available_params,
     blend_between_keys,
     forward_kinematics,
     ground_displacement,
@@ -324,8 +326,49 @@ def test_params_are_refused_not_ignored(packages):
     with pytest.raises(UnsupportedParameterError):
         runtime.apply({"force": 1.5})   # one-shot only
     with pytest.raises(UnsupportedParameterError):
-        runtime.apply({"jump_height": 1.5})   # not on a loop
+        runtime.apply({"jump_height": 1.5})   # the label names no jump
 
+
+def test_airborne_spans_wrap_the_loop_seam():
+    mask = np.ones((10, 2), dtype=bool)
+    mask[[0, 1, 8, 9]] = False
+    assert airborne_spans(mask) == []                      # touches both ends: not between plants
+    assert airborne_spans(mask, periodic=True) == [(8, 12)]
+    assert airborne_spans(np.zeros((10, 2), dtype=bool), periodic=True) == []
+
+
+def test_jump_height_follows_the_jump_label():
+    facts = {"is_loop": True, "locomotion": True, "has_plants": True, "turning": False,
+             "airborne": True, "jump": True, "has_passive": False, "chain_groups": []}
+    assert "jump_height" in available_params(facts)
+    assert "jump_height" not in available_params({**facts, "jump": False, "is_loop": False})
+    assert "jump_height" not in available_params({**facts, "airborne": False})
+
+
+@requires_horse
+def test_jump_height_scales_the_lift_without_sinking_feet():
+    package = _decompose("Horse_RunJump", False, "stationary", "jump, forward")
+    runtime = EditRuntime(package)
+    assert "jump_height" in runtime.available
+    contacts = np.asarray(package["contact_joints"])
+    mask = np.asarray(package["contact_mask"], dtype=bool)
+    heights = runtime.original_positions()[:, contacts, 1]
+    floor = np.array([heights[mask[:, c], c].min() if mask[:, c].any() else package.manifest["ground_height"]
+                      for c in range(len(contacts))])
+    spans = package.manifest["events"]["airborne"]
+    jump = max(spans, key=lambda span: span[1] - span[0])
+
+    def clearance(k):
+        positions = runtime.apply({"jump_height": k}, compose=True).global_positions
+        return (positions[:, contacts, 1] - floor[None]).min(axis=1)
+
+    source, low, high = clearance(1.0), clearance(0.5), clearance(1.8)
+    frames = np.arange(*jump)
+    assert low[frames].max() < 0.6 * source[frames].max()
+    assert high[frames].max() > 1.6 * source[frames].max()
+    for start, end in spans:
+        frames = np.arange(start, end)
+        assert (low[frames] >= np.minimum(source[frames], 0.0) - POS_TOL).all()
 
 # ── edits (M3): T4-T7 ────────────────────────────────────────────────────────
 
