@@ -63,6 +63,7 @@ from motion_edit.rotations import (
     weighted_mean_quat,
 )
 from motion_edit.runtime import (
+    EditRuntime,
     available_params,
     forward_kinematics,
     ground_displacement,
@@ -254,8 +255,8 @@ def chain_groups(structure: SkeletonStructure, roles: list[str], canonical_names
     """Amplitude group of every joint (``CHAIN_GROUPS`` codes).
 
     Support chains are legs; other sided limbs are arms, or wings by name, or
-    tail when they hang on one (tail feathers); center joints are axial, or
-    tail by name.  A joint inherits its parent's
+    tail when they hang on one (tail feathers); a sided passive part outside a
+    wing or tail is other; center joints are axial, or tail by name.  A joint inherits its parent's
     tail / wing group, so an unnamed tip stays with its chain.
     """
     groups = np.full(structure.joint_count, "other", dtype="<U8")
@@ -272,8 +273,11 @@ def chain_groups(structure: SkeletonStructure, roles: list[str], canonical_names
                 structure.limb_length(structure.limb_root(j)) < SMALL_LIMB_RATIO * structure.leg_length):
             groups[j] = "other"                   # an ear stays with the small attachments
         elif role in ("swing", "passive") and structure.sides[j] != CENTER:
+            # a sided hanging part (skirt, cape, fin, fur) is no arm: it stays with its wing
+            # or tail, else with the small attachments
             groups[j] = ("wings" if ("wing" in name or inherited == "wings") else
-                         "tail" if inherited == "tail" else "arms")
+                         "tail" if inherited == "tail" else
+                         "arms" if role == "swing" else "other")
         elif structure.sides[j] == CENTER and role in ("axial", "passive"):
             groups[j] = "tail" if ("tail" in name or inherited == "tail") else "axial"
         else:
@@ -880,7 +884,14 @@ def assemble_package(
             "items": diagnostics,
         },
     }
-    return EditPackage(manifest, arrays)
+    package = EditPackage(manifest, arrays)
+    # The facts identify candidate spread groups; only the runtime can tell whether
+    # each group has a usable left/right pair. Store the same set it will accept.
+    runtime_available = EditRuntime(package).available
+    available = [name for name in available if name in runtime_available]
+    manifest["available_params"] = available
+    manifest["params"] = param_manifest(available)
+    return package
 
 
 # ── edits of a package's own inputs ──────────────────────────────────────────

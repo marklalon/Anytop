@@ -16,7 +16,8 @@ Order (section 5.2):
    by its ``*_weight`` only up to 1;  the strike body (active chain, the trunk it
    hangs on, the root) drawn further from its contact pose in the windup
    (windup_depth) and pushed past it after contact (overshoot), with a lean
-   and a shift of the body against / along the strike;
+   and a shift of the body against / along the strike; the paired arms / legs
+   turned at their roots so their tips move out or in (spread);
 3. root: oscillation (sway, bounce), airborne arcs (jump_height), posture;
 4. plants + limb IK: planted feet follow their targets, swing feet carry the
    correction between them (``motion_edit.ik``);
@@ -42,6 +43,8 @@ from scipy.linalg import expm
 
 from motion_edit.ik import LimbSolver, build_limbs, world_to_local
 from motion_edit.package import CHAIN_GROUPS, EditPackage
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import joint_name_matches_keywords
+from motion_edit.profile.skeleton import CENTER as CENTER_SIDE
 from motion_edit.profile.spring import default_spring, drive_terms
 from motion_edit.rotations import (
     nearest_rotvec_branch,
@@ -76,6 +79,16 @@ _AMP = {f"amp.{g}": ParamSpec(1.0, 0.0, 2.0, "amp") for g in AMP_GROUPS}
 SWING_CHANNELS = ("tail", "passive")
 _SWING = {f"{c}_{knob}": ParamSpec(1.0, low, 2.0, "secondary")
           for c in SWING_CHANNELS for knob, low in (("weight", 0.0), ("stiffness", 0.5))}
+# spread.{group}: the tip of each sided limb of the group moves away from the body's midline
+# (toward it below 0), level with the ground, by the slider value times the group's fraction
+# of the limb's length.  The limb turns at its root; a planted foot is moved with it.
+SPREAD_REACH = {"arms": 1.0, "legs": 0.3}
+SPREAD_GROUPS = tuple(SPREAD_REACH)
+_SPREAD = {f"spread.{g}": ParamSpec(0.0, -1.0, 1.0, "spread") for g in SPREAD_GROUPS}
+# A limb whose first bone is shorter than this fraction of the limb (a clavicle, a hip
+# stub), or whose first joint is named as a shoulder girdle, turns at the joint below it.
+SPREAD_SHORT_ROOT = 0.3
+SPREAD_GIRDLE_KEYWORDS = ("clavicle", "collar", "scapula")
 # The slider scaling each group's chain offsets; tail joints that cannot swing follow the
 # tail's weight as a plain gain.
 GROUP_GAIN = {**{g: f"amp.{g}" for g in AMP_GROUPS}, "tail": "tail_weight"}
@@ -89,6 +102,7 @@ PARAM_SPECS: dict[str, ParamSpec] = {
     "sway": ParamSpec(1.0, 0.0, 2.0, "root"),
     "posture": ParamSpec(0.0, -0.3, 0.2, "root"),
     **_AMP,
+    **_SPREAD,
     "force": ParamSpec(1.0, 0.5, 2.0, "force"),
     "windup_depth": ParamSpec(1.0, 0.0, 2.0, "force"),
     "overshoot": ParamSpec(1.0, 0.0, 2.0, "force"),
@@ -106,13 +120,13 @@ PARAM_SPECS: dict[str, ParamSpec] = {
 # non-default value of any other parameter is refused, never ignored.
 IMPLEMENTED: frozenset[str] = frozenset(
     ["tempo", "stride", "bounce", "jump_height", "sway", "posture", "foot_lock", "soft_stretch",
-     *_AMP, *(name for name, spec in PARAM_SPECS.items() if spec.group in ("force", "secondary"))])
+     *_AMP, *_SPREAD, *(name for name, spec in PARAM_SPECS.items() if spec.group in ("force", "secondary"))])
 
 # Parameters that move the body or a support chain: any of them away from its
 # default re-solves the planted limbs.  The timing ones (tempo and the strike's
 # segment speeds) only re-time the clip.
 _IK_PARAMS = ("stride", "bounce", "jump_height", "sway", "posture", *GROUP_GAIN.values(), "force",
-              "windup_depth", "overshoot")
+              "windup_depth", "overshoot", "spread.legs")
 # force is a preset over every other strike parameter: those here are multiplied by it,
 # FORCE_SLOWED divided by force ** FORCE_SLOW_EXPONENT (a harder strike winds up and
 # recovers somewhat more slowly; the strike itself carries most of the change).
@@ -165,6 +179,10 @@ def available_params(package_facts: dict) -> list[str]:
     if package_facts["airborne"] and not package_facts["is_loop"]:
         out.append("jump_height")
     out += [f"amp.{g}" for g in AMP_GROUPS if g in package_facts["chain_groups"]]
+    # which limbs are arms or legs depends on the clip's plants: EditRuntime keeps a spread
+    # only when its group has a left / right pair
+    if {"arms", "legs"} & set(package_facts["chain_groups"]):
+        out += [f"spread.{g}" for g in SPREAD_GROUPS]
     if "tail" in package_facts["chain_groups"]:
         out += ["tail_weight", "tail_stiffness"]
     if package_facts["has_plants"]:
@@ -444,6 +462,16 @@ class EditResult:
 
 
 @dataclass
+class SpreadLimb:
+    group: str              # "arms" / "legs"
+    pivot: int              # the joint the limb turns at
+    tip: int                # the joint whose outward move the slider sets
+    sign: float             # +1 on the left, -1 on the right
+    length: float           # bone length from the pivot down to the tip
+    columns: list = field(default_factory=list)   # a leg's contact columns
+
+
+@dataclass
 class _Timeline:
     times: np.ndarray       # source frame per output frame
     rate: float             # source frames per output frame (mean, for a warped one-shot)
@@ -467,9 +495,14 @@ class EditRuntime:
         self.available = set(available_params(facts) if facts else package.manifest.get("available_params", []))
         self._original = None
         self._limbs = None
+        self._spread_limbs = None
+        self._lateral = {}
         self._springs = None
         self._channels = None
         self._subtrees = None
+        for group in SPREAD_GROUPS:
+            if {l.sign for l in self.spread_limbs() if l.group == group} != {1.0, -1.0}:
+                self.available.discard(f"spread.{group}")
 
     # ── parameters ───────────────────────────────────────────────────────
     def defaults(self) -> dict:
@@ -645,7 +678,8 @@ class EditRuntime:
         diagnostics += notes
         timeline = self._timeline(resolved, strike, force)
         diagnostics += [{"kind": "tempo", "message": m} for m in timeline.notes]
-        rotations, positions, held = self._compose_layers(resolved, timeline.times, strike, force)
+        rotations, positions, held, notes = self._compose_layers(resolved, timeline.times, strike, force)
+        diagnostics += notes
         if held:
             diagnostics.append({"kind": "gain_locked", "message":
                                 f"{held} joint(s) wind a whole turn per loop; gain held at 1"})
@@ -656,7 +690,8 @@ class EditRuntime:
         if pid.shape[1] and (any(resolved[n] != PARAM_SPECS[n].default for n in _IK_PARAMS)
                              or resolved["foot_lock"]):
             targets = self._stance_targets(pid, ptime, timeline, timeline.stride,
-                                           bool(resolved["foot_lock"]))
+                                           bool(resolved["foot_lock"]),
+                                           {g: resolved[f"spread.{g}"] for g in SPREAD_GROUPS})
             rotations, positions, pivot, unreached, ik_notes = self._solve_plants(
                 rotations, positions, pid, targets, resolved["soft_stretch"])
             diagnostics += ik_notes
@@ -854,8 +889,12 @@ class EditRuntime:
         if hit:
             self._lean(rotations, positions, [root] + trunk, STRIKE_LEAN * lean,
                        self.strike_lean_axis(strike, direction))
+        notes = []
+        for group in SPREAD_GROUPS:
+            if p[f"spread.{group}"] != 0.0:
+                notes += self._spread(rotations, positions, group, p[f"spread.{group}"], times)
         held = int(sum(locked[j] and p.get(GROUP_GAIN.get(g, ""), 1.0) != 1.0 for j, g in enumerate(groups)))
-        return rotations, positions, held
+        return rotations, positions, held, notes
 
     def _lean(self, rotations, positions, joints: list[int], angle: np.ndarray, axis: np.ndarray):
         """Turn the body by ``angle`` (F,) rad times ``axis`` (a world rotation vector per
@@ -872,6 +911,125 @@ class EditRuntime:
             else:
                 rotations[:, j] = quat_mul(quat_mul(quat_inv(glob[:, parent]), quat_mul(turn, glob[:, parent])),
                                            rotations[:, j])
+
+    def spread_limbs(self) -> list[SpreadLimb]:
+        """The sided limbs spread turns: each IK leg, and each arm hanging straight off the
+        trunk (an arms-group joint on a center parent; a sided swing joint on a leg is a
+        dewclaw, not an arm)."""
+        if self._spread_limbs is None:
+            pkg = self.package
+            parents = np.asarray(pkg["parents"])
+            sides = [str(s) for s in pkg["sides"]]
+            groups = [str(g) for g in pkg["chain_group"]]
+            names = [str(n) for n in pkg["names"]]
+            bone = np.linalg.norm(np.asarray(pkg["anim_offsets"], dtype=np.float64), axis=-1)
+            children = [[] for _ in parents]
+            for j, parent in enumerate(parents):
+                if parent >= 0:
+                    children[int(parent)].append(j)
+
+            def path(top: int, tip: int) -> list[int]:
+                out = [tip]
+                while out[-1] != top:
+                    out.append(int(parents[out[-1]]))
+                return out[::-1]
+
+            def limb(group, top, tip, columns=()):
+                if sides[top] == CENTER_SIDE:
+                    return None
+                chain = path(top, tip)
+                if len(chain) > 2 and (bone[chain[1]] < SPREAD_SHORT_ROOT * bone[chain[1:]].sum()
+                                       or joint_name_matches_keywords(names[chain[0]], SPREAD_GIRDLE_KEYWORDS)):
+                    chain = chain[1:]
+                return SpreadLimb(group, chain[0], tip, 1.0 if sides[top] == "left" else -1.0,
+                                  float(bone[chain[1:]].sum()), list(columns))
+
+            out = [limb("legs", leg.root, leg.foot, leg.columns) for leg in self.limbs()[0]]
+            for j, group in enumerate(groups):
+                parent = int(parents[j])
+                if group != "arms" or parent < 0 or sides[parent] != CENTER_SIDE:
+                    continue
+                arm, stack = [], [j]
+                while stack:
+                    k = stack.pop()
+                    arm.append(k)
+                    stack += [c for c in children[k] if groups[c] == "arms"]
+                reach = {k: bone[path(j, k)[1:]].sum() for k in arm}
+                out.append(limb("arms", j, max(arm, key=lambda k: (reach[k], -k))))
+            self._spread_limbs = [l for l in out if l is not None and l.length > 0.0]
+        return self._spread_limbs
+
+    def _spread_lateral(self, group: str, times: np.ndarray) -> Optional[np.ndarray]:
+        """(F', 3) unit horizontal direction from the group's right limb roots to its left
+        ones in the original clip at source ``times``; ``None`` without a pair."""
+        if group not in self._lateral:
+            limbs = [l for l in self.spread_limbs() if l.group == group]
+            left = [l.pivot for l in limbs if l.sign > 0]
+            right = [l.pivot for l in limbs if l.sign < 0]
+            lateral = None
+            if left and right:
+                pos = self.original_positions()
+                lateral = pos[:, left].mean(axis=1) - pos[:, right].mean(axis=1)
+                lateral[:, 1] = 0.0
+            self._lateral[group] = lateral
+        lateral = self._lateral[group]
+        if lateral is None:
+            return None
+        lateral = sample_linear(lateral, times, self.package.is_loop)
+        return lateral / np.maximum(np.linalg.norm(lateral, axis=-1, keepdims=True), 1e-12)
+
+    def _spread(self, rotations, positions, group: str, value: float, times: np.ndarray) -> list[dict]:
+        """Turn the group's limbs at their pivots, in place, so each tip moves
+        ``value * SPREAD_REACH[group] * length`` along its outward direction.  The turn is
+        about the axis normal to the limb and the outward direction, so it swings the tip
+        straight toward it; a limb pointing straight out or in moves as far as it can."""
+        pkg = self.package
+        parents = np.asarray(pkg["parents"])
+        name = f"spread.{group}"
+        lateral = self._spread_lateral(group, times)
+        if lateral is None:
+            return [{"kind": "spread", "param": name,
+                     "message": f"{name}: no left / right pair of limbs; nothing spread"}]
+        limbs = [l for l in self.spread_limbs() if l.group == group]
+        glob_rot, glob_pos = forward_kinematics(parents, rotations, positions)
+        middle = glob_pos[:, [l.pivot for l in limbs]].mean(axis=1)
+        notes = []
+        for limb in limbs:
+            out = limb.sign * lateral
+            v = glob_pos[:, limb.tip] - glob_pos[:, limb.pivot]
+            r = np.linalg.norm(v, axis=-1)
+            along = np.sum(v * out, axis=-1)
+            w = v - along[:, None] * out
+            rw = np.linalg.norm(w, axis=-1)
+            phi = np.arctan2(along, rw)
+            want = (along + value * SPREAD_REACH[group] * limb.length) / np.maximum(r, 1e-12)
+            theta = np.where(rw > 1e-9 * limb.length, np.arcsin(np.clip(want, -1.0, 1.0)) - phi, 0.0)
+            axis = np.cross(w / np.maximum(rw, 1e-12)[:, None], out)
+            turn = quat_from_rotvec(theta[:, None] * axis)
+            parent = int(parents[limb.pivot])
+            rotations[:, limb.pivot] = quat_mul(
+                quat_mul(quat_inv(glob_rot[:, parent]), quat_mul(turn, glob_rot[:, parent])),
+                rotations[:, limb.pivot])
+            if group == "legs":
+                # a foot keeps its world orientation: it stays as flat on the ground as it was
+                above = int(parents[limb.tip])
+                rotations[:, limb.tip] = quat_mul(quat_inv(quat_mul(turn, glob_rot[:, above])),
+                                                  glob_rot[:, limb.tip])
+            joint = str(pkg["names"][limb.tip])
+            capped = np.abs(want) > 1.0
+            if capped.any():
+                way = "out" if value > 0 else "in"
+                notes.append({"kind": "spread", "param": name, "joint": joint, "frame": int(np.argmax(capped)),
+                              "message": f"{name}: {joint} points straight {way} on {int(capped.sum())} "
+                                         f"frame(s); spread less than asked"})
+            side = np.sum((glob_pos[:, limb.pivot] - middle) * out, axis=-1)
+            before, after = side + along, side + np.sum(quat_rotate(turn, v) * out, axis=-1)
+            crossed = (after < 0.0) & (before >= 0.0)
+            if crossed.any():
+                notes.append({"kind": "spread", "param": name, "joint": joint, "frame": int(np.argmax(crossed)),
+                              "message": f"{name}: {joint} crosses the body's midline on "
+                                         f"{int(crossed.sum())} frame(s)"})
+        return notes
 
     # ── 4. plants ────────────────────────────────────────────────────────
     def _plant_timeline(self, times: np.ndarray):
@@ -948,7 +1106,8 @@ class EditRuntime:
         laps = np.floor(times / frames)
         return sample_linear(steps, times - laps * frames, False) + laps[:, None] * steps[frames]
 
-    def _stance_targets(self, pid, ptime, timeline: _Timeline, stride: float, lock: bool) -> np.ndarray:
+    def _stance_targets(self, pid, ptime, timeline: _Timeline, stride: float, lock: bool,
+                        spread: Optional[dict] = None) -> np.ndarray:
         """Where each planted contact joint goes (NaN off a plant).
 
         ``W = P(u) - (S - 1) (D(U) - D(U_mid)) - lock * residual(u)``: the
@@ -963,6 +1122,11 @@ class EditRuntime:
         The lock removes the slip of the foot's reference contact from all of
         its planted contacts: a heel peeling up about a planted toe keeps
         the peel and only loses the toe's slip.
+
+        ``spread`` (group -> spread value) moves every contact of a spread limb
+        outward, level with the ground, as far as the limb's turn moves its tip, along the outward
+        direction at the middle of the stance, held for all of it so the foot does
+        not slide.
         """
         pkg = self.package
         periodic = pkg.is_loop
@@ -1000,6 +1164,17 @@ class EditRuntime:
             residual[on, k] = slip
         if lock:
             out -= self._lock_slip(pid, residual)
+        for group, value in (spread or {}).items():
+            lateral = self._spread_lateral(group, timeline.times) if value != 0.0 else None
+            if lateral is None:
+                continue
+            for limb in (l for l in self.spread_limbs() if l.group == group and l.columns):
+                stance = (pid[:, limb.columns] >= 0).any(axis=1)
+                for index in _stance_runs(stance, periodic):
+                    frames = index % count
+                    move = (value * SPREAD_REACH[group] * limb.length * limb.sign
+                            * lateral[frames[len(frames) // 2]])
+                    out[frames[:, None], np.asarray(limb.columns)[None, :]] += move
         return out
 
     def _lock_slip(self, pid, residual) -> np.ndarray:

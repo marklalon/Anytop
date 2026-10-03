@@ -40,6 +40,7 @@ from motion_edit.runtime import (
     FORCE_SLOW_EXPONENT,
     IMPLEMENTED,
     PARAM_SPECS,
+    SPREAD_REACH,
     SPRING_G_GRAV,
     STRIKE_LEAN,
     STRIKE_SHIFT,
@@ -331,7 +332,8 @@ def test_params_are_refused_not_ignored(packages):
 def _edit_cases(package) -> list[dict]:
     """Every implemented slider of the clip at both ends of its range, and every toggle flipped."""
     cases = []
-    for name in package.manifest["available_params"]:
+    available = EditRuntime(package).available
+    for name in (n for n in PARAM_SPECS if n in available):
         if name not in IMPLEMENTED:
             continue
         spec = PARAM_SPECS[name]
@@ -500,7 +502,7 @@ def test_T7_sliders_are_continuous_at_their_defaults(packages, kind):
         n = min(len(pos), len(reference))
         return np.abs(pos[:n] - reference[:n]).max() / runtime.leg
 
-    for name in package.manifest["available_params"]:
+    for name in (n for n in PARAM_SPECS if n in runtime.available):
         spec = PARAM_SPECS[name]
         if name not in IMPLEMENTED or spec.toggle:
             continue
@@ -571,6 +573,64 @@ def test_amplitude_and_root_layers_act_where_named(packages):
     assert lowered.min() > -1e-9
     if not any(d["kind"] == "ground" for d in result.diagnostics):
         assert lowered.max() < 1e-9
+
+
+@requires_horse
+@pytest.mark.parametrize("kind, group", [("attack", "arms"), ("attack", "legs"), ("loop", "legs")])
+def test_spread_moves_the_limb_tips_outward(packages, kind, group):
+    """A spread turns paired limbs only, never a passive part."""
+    runtime = EditRuntime(packages[kind])
+    base = runtime.apply(compose=True).global_positions
+    value = 0.3
+    result = runtime.apply({f"spread.{group}": value})
+    lateral = runtime._spread_lateral(group, result.source_time)
+    limbs = [l for l in runtime.spread_limbs() if l.group == group]
+    assert {l.sign for l in limbs} == {1.0, -1.0}
+    passive = [bool(c) for c in runtime.channels()]
+    assert not any(passive[j] for l in limbs for j in _subtree(packages[kind], l.pivot))
+    for limb in limbs:
+        outward = limb.sign * np.sum((result.global_positions[:, limb.tip] - base[:, limb.tip]) * lateral, axis=-1)
+        assert np.median(outward) == pytest.approx(value * SPREAD_REACH[group] * limb.length, rel=0.05)
+    if group == "arms":
+        # nothing but the arms moves: an arm carries no foot
+        arms = np.zeros(packages[kind].joint_count, dtype=bool)
+        for limb in limbs:
+            arms[_subtree(packages[kind], limb.pivot)] = True
+        moved = np.abs(result.global_positions - base).max(axis=(0, 2))
+        assert moved[~arms].max() < 1e-9
+
+
+def test_sided_passive_parts_are_not_arms():
+    # a skirt hanging off the pelvis beside the legs: passive, it groups with the small
+    # attachments; the same chain left to swing is an arm
+    from motion_edit.decompose import chain_groups
+    from motion_edit.profile.skeleton import SkeletonStructure
+
+    names = ["Pelvis", "L Thigh", "L Foot", "R Thigh", "R Foot", "Skirt_L1", "Skirt_L2", "Skirt_R1", "Skirt_R2"]
+    cond = {"joints_names": names, "parents": [-1, 0, 1, 0, 3, 0, 5, 0, 7],
+            "offsets": [[0, 1, 0], [0.1, 0, 0], [0, -0.9, 0], [-0.1, 0, 0], [0, -0.9, 0],
+                        [0.15, 0, 0], [0, -0.4, 0], [-0.15, 0, 0], [0, -0.4, 0]],
+            "joint_side_labels": ["center", "left", "left", "right", "right", "left", "left", "right", "right"]}
+    structure = SkeletonStructure(cond, [2, 4])
+    roles = structure.base_roles()
+    assert roles[5:] == ["swing"] * 4
+    assert list(chain_groups(structure, roles, names)[5:]) == ["arms"] * 4
+    passive = roles[:5] + ["passive"] * 4
+    assert list(chain_groups(structure, passive, names)) == ["root"] + ["legs"] * 4 + ["other"] * 4
+
+
+@requires_horse
+def test_spread_is_offered_for_paired_limbs_only(packages):
+    # the horse's four limbs all carry contacts: they are legs, and it has no arms to spread
+    runtime = EditRuntime(packages["loop"])
+    assert {l.group for l in runtime.spread_limbs()} == {"legs"}
+    assert len(runtime.spread_limbs()) == 4
+    assert "spread.arms" not in runtime.available and "spread.legs" in runtime.available
+    assert "spread.arms" not in packages["loop"].manifest["available_params"]
+    assert "spread.arms" not in packages["loop"].manifest["params"]
+    assert "spread.legs" in packages["loop"].manifest["available_params"]
+    with pytest.raises(UnsupportedParameterError):
+        runtime.apply({"spread.arms": 0.5})
 
 
 def test_limb_solver_reaches_and_keeps_bone_lengths():
