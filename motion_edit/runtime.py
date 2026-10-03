@@ -12,14 +12,21 @@ Order (section 5.2):
    keeps a whole number of frames per period and wraps its samples; a
    one-shot's windup / strike / recover speeds warp time through its events (PCHIP);
 2. amplitude: unwrapped chain offsets scaled per group (joints winding a whole
-   turn per loop held at gain 1);  the strike body (active chain, the trunk it
+   turn per loop held at gain 1); a hanging part's (the tail, the passive joints)
+   by its ``*_weight`` only up to 1;  the strike body (active chain, the trunk it
    hangs on, the root) drawn further from its contact pose in the windup
    (windup_depth) and pushed past it after contact (overshoot), with a lean
    and a shift of the body against / along the strike;
 3. root: oscillation (sway, bounce), airborne arcs (jump_height), posture;
 4. plants + limb IK: planted feet follow their targets, swing feet carry the
    correction between them (``motion_edit.ik``);
+5. secondary motion: past 1, ``tail_weight`` / ``passive_weight`` add that fraction of
+   their part's spring response (``*_stiffness`` scales the spring's frequency) to the body's motion on top of its own curves (each
+   part hinges at its parent outside it, so its first joint swings too);
 6. ground: a planted foot IK could not bring down lowers the body instead.
+
+Step 5 runs after step 6: no passive joint lies on a limb IK solves, and the
+springs then read the body as it is finally placed.
 
 The runtime imports neither torch nor the decode path; everything it needs
 is in the package.
@@ -31,9 +38,11 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
+from scipy.linalg import expm
 
 from motion_edit.ik import LimbSolver, build_limbs, world_to_local
 from motion_edit.package import CHAIN_GROUPS, EditPackage
+from motion_edit.profile.spring import default_spring, drive_terms
 from motion_edit.rotations import (
     nearest_rotvec_branch,
     quat_from_rotvec,
@@ -57,8 +66,19 @@ class ParamSpec:
     toggle: bool = False
 
 
-AMP_GROUPS = tuple(g for g in CHAIN_GROUPS if g not in ("root", "other"))
+AMP_GROUPS = tuple(g for g in CHAIN_GROUPS if g not in ("root", "other", "tail"))
 _AMP = {f"amp.{g}": ParamSpec(1.0, 0.0, 2.0, "amp") for g in AMP_GROUPS}
+# Hanging parts have one treatment and a channel each: the tail (its joints that can swing:
+# no support joint below them) and the passive joints.  Up to 1 a channel's weight scales
+# the part's own curves (0 holds it rigid), past 1 it adds that fraction of the part's
+# spring swing, hinged at its non-passive parent (step 5); its stiffness multiplies the
+# spring's natural frequency at a constant damping ratio (stiffer: a smaller, quicker swing).
+SWING_CHANNELS = ("tail", "passive")
+_SWING = {f"{c}_{knob}": ParamSpec(1.0, low, 2.0, "secondary")
+          for c in SWING_CHANNELS for knob, low in (("weight", 0.0), ("stiffness", 0.5))}
+# The slider scaling each group's chain offsets; tail joints that cannot swing follow the
+# tail's weight as a plain gain.
+GROUP_GAIN = {**{g: f"amp.{g}" for g in AMP_GROUPS}, "tail": "tail_weight"}
 
 # The v1 parameter set (section 5.1), in panel order (grouped).
 PARAM_SPECS: dict[str, ParamSpec] = {
@@ -75,8 +95,9 @@ PARAM_SPECS: dict[str, ParamSpec] = {
     "windup_speed": ParamSpec(1.0, 0.5, 2.0, "force"),
     "strike_speed": ParamSpec(1.0, 0.5, 2.0, "force"),
     "recover_speed": ParamSpec(1.0, 0.5, 2.0, "force"),
-    "secondary.stiffness": ParamSpec(1.0, 0.25, 4.0, "secondary"),
-    "secondary.damping": ParamSpec(1.0, 0.25, 4.0, "secondary"),
+    **_SWING,
+    # the springs' gravity term, both channels: off, a swing ignores which way is down
+    "gravity": ParamSpec(True, group="secondary", toggle=True),
     "foot_lock": ParamSpec(False, group="contact", toggle=True),
     "soft_stretch": ParamSpec(0.1, 0.0, 0.2, "contact"),
 }
@@ -85,13 +106,13 @@ PARAM_SPECS: dict[str, ParamSpec] = {
 # non-default value of any other parameter is refused, never ignored.
 IMPLEMENTED: frozenset[str] = frozenset(
     ["tempo", "stride", "bounce", "jump_height", "sway", "posture", "foot_lock", "soft_stretch",
-     *_AMP, *(name for name, spec in PARAM_SPECS.items() if spec.group == "force")])
+     *_AMP, *(name for name, spec in PARAM_SPECS.items() if spec.group in ("force", "secondary"))])
 
 # Parameters that move the body or a support chain: any of them away from its
 # default re-solves the planted limbs.  The timing ones (tempo and the strike's
 # segment speeds) only re-time the clip.
-_IK_PARAMS = ("stride", "bounce", "jump_height", "sway", "posture", *_AMP, "force", "windup_depth",
-              "overshoot")
+_IK_PARAMS = ("stride", "bounce", "jump_height", "sway", "posture", *GROUP_GAIN.values(), "force",
+              "windup_depth", "overshoot")
 # force is a preset over every other strike parameter: those here are multiplied by it,
 # FORCE_SLOWED divided by force ** FORCE_SLOW_EXPONENT (a harder strike winds up and
 # recovers somewhat more slowly; the strike itself carries most of the change).
@@ -123,6 +144,10 @@ SOFT_STRETCH_START = 0.96
 SOFT_COMPRESS_START = 0.9
 
 
+# profile_spring columns (``decompose.SPRING_FIELDS``).
+SPRING_K, SPRING_C, SPRING_G_ANG, SPRING_G_LIN, SPRING_G_GRAV = range(5)
+
+
 class UnsupportedParameterError(ValueError):
     pass
 
@@ -140,12 +165,16 @@ def available_params(package_facts: dict) -> list[str]:
     if package_facts["airborne"] and not package_facts["is_loop"]:
         out.append("jump_height")
     out += [f"amp.{g}" for g in AMP_GROUPS if g in package_facts["chain_groups"]]
+    if "tail" in package_facts["chain_groups"]:
+        out += ["tail_weight", "tail_stiffness"]
     if package_facts["has_plants"]:
         out.append("posture")
     if package_facts.get("strike"):
         out += [name for name, spec in PARAM_SPECS.items() if spec.group == "force"]
     if package_facts["has_passive"]:
-        out += ["secondary.stiffness", "secondary.damping"]
+        out += ["passive_weight", "passive_stiffness"]
+    if package_facts["has_passive"] or "tail" in package_facts["chain_groups"]:
+        out.append("gravity")
     if package_facts["has_plants"]:
         out += ["foot_lock", "soft_stretch"]
     return [name for name in PARAM_SPECS if name in out]
@@ -225,6 +254,15 @@ def forward_kinematics(parents, rotations: np.ndarray, local_positions: np.ndarr
             g[:, j] = quat_mul(g[:, parent], rotations[:, j])
             p[:, j] = p[:, parent] + quat_rotate(g[:, parent], local_positions[:, j])
     return g, p
+
+
+def _refresh_fk(parents, rotations, local_positions, g, p, joints) -> None:
+    """``forward_kinematics`` redone in place for ``joints`` (index order, none the root),
+    their parents' globals already current."""
+    for j in joints:
+        parent = parents[j]
+        g[:, j] = quat_mul(g[:, parent], rotations[:, j])
+        p[:, j] = p[:, parent] + quat_rotate(g[:, parent], local_positions[:, j])
 
 
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
@@ -352,6 +390,38 @@ def ramped_envelope(values: np.ndarray, width: int, periodic: bool) -> np.ndarra
     return out
 
 
+def spring_response(drive: np.ndarray, k: float, c: float, fps: float, periodic: bool) -> np.ndarray:
+    """``θ`` (F, 3) of ``θ̈ + c θ̇ + k θ = drive`` on every frame, the three axes alike.
+
+    Each step is the oscillator's exact (matrix-exponential) transition under
+    the drive held at its mid-step value, so it is stable at any stiffness.  A
+    one-shot starts at rest; a loop starts on its periodic steady state, so the
+    response closes over the period.
+    """
+    system = np.zeros((3, 3))
+    system[0, 1] = 1.0
+    system[1] = [-k, -c, 1.0]
+    step = expm(system / fps)
+    phi, gamma = step[:2, :2], step[:2, 2]
+    frames = drive.shape[0]
+    ahead = np.roll(drive, -1, axis=0) if periodic else np.concatenate([drive[1:], drive[-1:]])
+    mid = 0.5 * (drive + ahead)
+
+    def run(state):
+        out = np.empty((frames, 3))
+        for i in range(frames):
+            out[i] = state[0]
+            state = phi @ state + gamma[:, None] * mid[i][None]
+        return out, state
+
+    if not periodic:
+        return run(np.zeros((2, 3)))[0]
+    _, end = run(np.zeros((2, 3)))
+    # x_F = Φ^F x_0 + (the response from rest) = x_0
+    start = np.linalg.lstsq(np.eye(2) - np.linalg.matrix_power(phi, frames), end, rcond=None)[0]
+    return run(start)[0]
+
+
 # ── result ───────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -397,6 +467,9 @@ class EditRuntime:
         self.available = set(available_params(facts) if facts else package.manifest.get("available_params", []))
         self._original = None
         self._limbs = None
+        self._springs = None
+        self._channels = None
+        self._subtrees = None
 
     # ── parameters ───────────────────────────────────────────────────────
     def defaults(self) -> dict:
@@ -436,12 +509,16 @@ class EditRuntime:
         leg = float(self.package.manifest.get("leg_length") or 0.0)
         return leg if leg > 0 else 1.0
 
-    def original_positions(self) -> np.ndarray:
+    def original_fk(self) -> tuple[np.ndarray, np.ndarray]:
+        """Global rotations and positions of the package's own (unedited) clip."""
         if self._original is None:
-            _, self._original = forward_kinematics(
+            self._original = forward_kinematics(
                 self.package["parents"], np.asarray(self.package["base_rot"], dtype=np.float64),
                 np.asarray(self.package["base_pos"], dtype=np.float64))
         return self._original
+
+    def original_positions(self) -> np.ndarray:
+        return self.original_fk()[1]
 
     # ── composition ──────────────────────────────────────────────────────
     def strike(self, events: dict | None = None) -> Optional[dict]:
@@ -585,6 +662,13 @@ class EditRuntime:
             diagnostics += ik_notes
         else:
             targets = self._stance_targets(pid, ptime, timeline, 1.0, False)
+        # 5. secondary motion: the swing past the hanging parts' own curves
+        weights = {c: resolved[f"{c}_weight"] - 1.0 for c in SWING_CHANNELS if resolved[f"{c}_weight"] > 1.0}
+        if weights:
+            stiffness = {c: resolved[f"{c}_stiffness"] for c in weights}
+            rotations, positions, notes = self._secondary(weights, stiffness, bool(resolved["gravity"]),
+                                                          rotations, positions)
+            diagnostics += notes
         return self._result(rotations, positions, resolved, True, timeline, pid, ptime, targets, pivot,
                             diagnostics, unreached, strike=strike)
 
@@ -722,9 +806,15 @@ class EditRuntime:
         locked = np.asarray(pkg["chain_gain_locked"], dtype=bool)
         gain = np.ones(pkg.joint_count)
         groups = [str(g) for g in pkg["chain_group"]]
+        channels = self.channels()
         for j, group in enumerate(groups):
-            if group in AMP_GROUPS and not locked[j]:
-                gain[j] = p[f"amp.{group}"]
+            if locked[j]:
+                continue
+            if channels[j]:
+                # 0 holds the joint rigid at its reference pose, 1 keeps its own curve
+                gain[j] = min(p[f"{channels[j]}_weight"], 1.0)
+            elif group in GROUP_GAIN:
+                gain[j] = p[GROUP_GAIN[group]]
         offsets = offsets * gain[None, :, None]
         root_track = self._root_track(p)
         tilt = sample_quat(np.asarray(pkg["root_tilt"], dtype=np.float64), times, periodic)
@@ -764,7 +854,7 @@ class EditRuntime:
         if hit:
             self._lean(rotations, positions, [root] + trunk, STRIKE_LEAN * lean,
                        self.strike_lean_axis(strike, direction))
-        held = int(sum(locked[j] and p.get(f"amp.{g}", 1.0) != 1.0 for j, g in enumerate(groups)))
+        held = int(sum(locked[j] and p.get(GROUP_GAIN.get(g, ""), 1.0) != 1.0 for j, g in enumerate(groups)))
         return rotations, positions, held
 
     def _lean(self, rotations, positions, joints: list[int], angle: np.ndarray, axis: np.ndarray):
@@ -1073,3 +1163,162 @@ class EditRuntime:
             gap = glob_pos[rows, p_joint, 1] - p_target[:, 1]
             gaps[stance] = np.fmax(gaps[stance], gap[stance])
         return rotations, positions, scale, gaps, pivot
+
+    # ── 5. secondary motion ──────────────────────────────────────────────
+    def channels(self) -> list[str]:
+        """Per joint, the channel of the hanging part it belongs to ("" for none): passive
+        joints ``passive``; the tail's joints that can swing (secondary-motion candidates,
+        closed downward) ``tail``."""
+        if self._channels is None:
+            pkg = self.package
+            parents = np.asarray(pkg["parents"])
+            passive = np.asarray(pkg.arrays.get("profile_passive", np.zeros(pkg.joint_count, dtype=bool)),
+                                 dtype=bool)
+            candidates = set((pkg.manifest.get("passive") or {}).get("candidates", []))
+            groups = [str(g) for g in pkg["chain_group"]]
+            out = [""] * pkg.joint_count
+            for j in range(pkg.joint_count):          # parents precede children
+                if passive[j]:
+                    out[j] = "passive"
+                elif j in candidates and (groups[j] == "tail" or (parents[j] >= 0 and out[parents[j]] == "tail")):
+                    out[j] = "tail"
+            self._channels = out
+        return self._channels
+
+    def springs(self) -> tuple[list[dict], list[str]]:
+        """The swinging bones the runtime simulates, parents first, and notes on what it cannot.
+
+        A joint ``X`` of a hanging part is the end of a bone that swings, so ``X`` itself moves:
+        * ``virtual``: the top of a part, whose parent is outside it, hinges on a virtual
+          joint at that parent: the swing turns ``X``'s local translation and rotation about
+          the parent (default spring: a rod from the parent to the part's tip);
+        * otherwise a joint of the part with children turns its own rotation, swinging them
+          (the profile's spring for the joint).
+        A leaf has no bone below it to swing; the bone above it does.  Each entry: ``joint``,
+        ``channel`` (its part's channel), ``virtual``, ``bone`` (the lever in the hinge frame) and
+        ``spring`` (``profile_spring`` layout)."""
+        if self._springs is None:
+            pkg = self.package
+            channels = self.channels()
+            table = pkg.arrays.get("profile_spring")
+            parents = np.asarray(pkg["parents"])
+            names = pkg["names"]
+            reference = np.asarray(pkg["chain_reference"], dtype=np.float64)
+            mean_offset = np.asarray(pkg["base_pos"], dtype=np.float64).mean(axis=0)
+            length = np.linalg.norm(mean_offset, axis=-1)
+            hang = np.zeros(pkg.joint_count)           # longest rest path below each joint
+            for j in range(pkg.joint_count - 1, -1, -1):
+                if parents[j] >= 0:
+                    hang[parents[j]] = max(hang[parents[j]], length[j] + hang[j])
+
+            def default(rod: float) -> np.ndarray:
+                spring = default_spring(rod, self.leg)
+                return np.array([spring[k] for k in ("k", "c", "g_ang", "g_lin", "g_grav")])
+
+            out, notes = [], []
+            for j, channel in enumerate(channels):
+                if not channel or j == pkg.root:
+                    continue
+                if channels[parents[j]] != channel:
+                    if length[j] <= 1e-9:
+                        notes.append(f"{names[j]}: sits on its parent; its part does not swing there")
+                    else:
+                        out.append({"joint": j, "channel": channel, "virtual": True,
+                                    "bone": mean_offset[j] / length[j], "spring": default(length[j] + hang[j])})
+                children = np.flatnonzero(parents == j)
+                if not children.size or length[children].max() <= 1e-9:
+                    continue
+                spring = None if table is None else np.asarray(table[j], dtype=np.float64)
+                if spring is None or not np.isfinite(spring).all() or spring[SPRING_K] <= 0.0:
+                    spring = default(hang[j])
+                bone = quat_rotate(reference[j], mean_offset[children[int(np.argmax(length[children]))]])
+                out.append({"joint": j, "channel": channel, "virtual": False,
+                            "bone": bone / np.linalg.norm(bone), "spring": spring})
+            self._springs = (out, notes)
+        return self._springs
+
+    @staticmethod
+    def _spring_drive(spring: dict, hinge_rot, hinge_pos, fps: float, periodic: bool,
+                      gravity: bool) -> np.ndarray:
+        """The right-hand side of the spring model (its constant term left out; without
+        ``gravity`` its gravity term too)."""
+        alpha, lin, grav = drive_terms(hinge_rot, hinge_pos, spring["bone"], fps, periodic)
+        gains = spring["spring"]
+        drive = gains[SPRING_G_ANG] * alpha + gains[SPRING_G_LIN] * lin
+        if gravity:
+            drive = drive + gains[SPRING_G_GRAV] * grav
+        return -drive
+
+    def _secondary(self, weights: dict, stiffness: dict, gravity: bool, rotations, positions):
+        """Every swinging bone keeps its own curve and swings its channel's ``weights`` times
+        its spring's response to the motion of its hinge, as edited (a loop's response is
+        periodic); the channel's ``stiffness`` multiplies the spring's natural frequency, its
+        damping ratio kept.  A part whose weight is not past 1 does not swing.  ``gravity``
+        keeps the springs' gravity term (a fitted spring's sag as its hinge tilts).
+
+        A virtual hinge sits at the part's parent and moves with it; a joint's hinge is the
+        joint, in its parent frame (turned by the virtual swing above it, if any).  Bones run
+        parents first, so one further down is driven by the full swing above it; only then
+        is every swing scaled by its weight, so the result grows in proportion to the slider
+        rather than compounding down the chain."""
+        pkg = self.package
+        parents = np.asarray(pkg["parents"])
+        springs, notes = self.springs()
+        diagnostics = [{"kind": "secondary", "message": n} for n in notes]
+        identity = np.array([1.0, 0.0, 0.0, 0.0])
+        full_rot, full_pos = np.array(rotations, copy=True), np.array(positions, copy=True)
+        out_rot, out_pos = np.array(rotations, copy=True), np.array(positions, copy=True)
+        glob_rot, glob_pos = forward_kinematics(parents, full_rot, full_pos)
+        virtual_full, virtual_out = {}, {}
+        count, peak = {}, {}
+        for spring in springs:
+            channel = spring["channel"]
+            weight = weights.get(channel, 0.0)
+            if weight <= 0.0:
+                continue
+            j = spring["joint"]
+            parent = int(parents[j])
+            if spring["virtual"]:
+                hinge_rot, hinge_pos = glob_rot[:, parent], glob_pos[:, parent]
+            else:
+                hinge_rot = quat_mul(glob_rot[:, parent], virtual_full.get(j, identity))
+                hinge_pos = glob_pos[:, j]
+            drive = self._spring_drive(spring, hinge_rot, hinge_pos, pkg.fps, pkg.is_loop, gravity)
+            hard = stiffness[spring["channel"]]
+            response = spring_response(drive, hard * hard * spring["spring"][SPRING_K],
+                                       hard * spring["spring"][SPRING_C], pkg.fps, pkg.is_loop)
+            for scale, rot, pos, virtual in ((1.0, full_rot, full_pos, virtual_full),
+                                             (weight, out_rot, out_pos, virtual_out)):
+                turn = quat_from_rotvec(scale * response)
+                if spring["virtual"]:
+                    # the virtual joint at the parent turns this joint's bone and frame
+                    pos[:, j] = quat_rotate(turn, pos[:, j])
+                    rot[:, j] = quat_mul(turn, rot[:, j])
+                    virtual[j] = turn
+                else:
+                    # in the hinge frame: inside the virtual turn this joint already took
+                    above = virtual.get(j, identity)
+                    rot[:, j] = quat_mul(quat_mul(above, quat_mul(turn, quat_inv(above))), rot[:, j])
+            # only j's subtree moved: the hinges further down read it
+            _refresh_fk(parents, full_rot, full_pos, glob_rot, glob_pos, self._subtree(j))
+            angle = np.linalg.norm(weight * response, axis=-1)
+            count[channel] = count.get(channel, 0) + 1
+            if channel not in peak or angle.max() > peak[channel][0]:
+                peak[channel] = (float(angle.max()), j, int(np.argmax(angle)))
+        for channel, (best, j, frame) in peak.items():
+            name = str(pkg["names"][j])
+            diagnostics.append({"kind": "secondary", "joint": name, "frame": frame, "message":
+                                f"{channel}_weight: {count[channel]} swinging bone(s), up to "
+                                f"{np.degrees(best):.1f} deg added ({name})"})
+        return out_rot, out_pos, diagnostics
+
+    def _subtree(self, j: int) -> list[int]:
+        """``j`` and its descendants in index order (parents precede children)."""
+        if self._subtrees is None:
+            parents = np.asarray(self.package["parents"])
+            below = [[k] for k in range(len(parents))]
+            for k in range(len(parents) - 1, 0, -1):
+                if parents[k] >= 0:
+                    below[parents[k]] += below[k]
+            self._subtrees = [sorted(s) for s in below]
+        return self._subtrees[j]

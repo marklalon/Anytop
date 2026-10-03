@@ -22,8 +22,10 @@ API::
     POST /api/contacts {id, joints, species}       another contact joint set; ``species``
                                                    also writes it to contact_overrides.json
     POST /api/contacts {id, mask}                  hand-edited contact intervals, (K, F) 0/1
+    POST /api/passive {id, joints, species}        another passive joint set; ``species``
+                                                   also writes it to passive_overrides.json
 
-Contact edits rewrite the package in place.
+Contact and passive edits rewrite the package in place.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ if ANYTOP_ROOT not in sys.path:
 import numpy as np  # noqa: E402
 
 from motion_edit.package import EditPackage, find_packages, is_package_dir  # noqa: E402
+from motion_edit.profile.skeleton import passive_layer  # noqa: E402
 from motion_edit.runtime import (  # noqa: E402
     PARAM_SPECS,
     EditRuntime,
@@ -147,8 +150,20 @@ def package_payload(runtime: EditRuntime) -> dict:
             "anchors": _flat(pkg["plant_anchor"], POSITION_DECIMALS),
             "drift": _flat(pkg["plant_drift"], POSITION_DECIMALS),
         },
+        "passive": passive_payload(pkg),
         "ground_velocity": _flat(pkg["ground_velocity"], POSITION_DECIMALS),
     }
+
+
+def passive_payload(pkg: EditPackage) -> dict:
+    """Passive joints with where each came from, and the candidates a click may add."""
+    m = pkg.manifest.get("passive") or {}
+    source = m.get("source") or {}
+    joints = [int(j) for j in np.flatnonzero(pkg["profile_passive"])] if "profile_passive" in pkg.arrays else []
+    origin = ["package" if j in source.get("package_add", []) else
+              "species" if j in source.get("species_add", []) else "name" for j in joints]
+    return {"joints": joints, "origin": origin, "candidates": m.get("candidates", []),
+            "promotable": bool(source.get("package_add") or source.get("package_remove"))}
 
 
 def apply_payload(runtime: EditRuntime, params: dict, events: dict | None = None) -> dict:
@@ -253,6 +268,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/contacts":
                 with self.store.edit_lock:
                     return self._json(200, self._contacts(package_id, body))
+            if path == "/api/passive":
+                with self.store.edit_lock:
+                    return self._json(200, self._passive(package_id, body))
             self._error(404, "not found")
         except KeyError as exc:
             self._error(404, f"unknown package or field {exc}")
@@ -287,22 +305,52 @@ class Handler(BaseHTTPRequestHandler):
         self.store.replace(package_id, edited)
         return package_payload(self.store.runtime(package_id))
 
+    def _passive(self, package_id: str, body: dict) -> dict:
+        from motion_edit.decompose import with_passive_joints
+
+        package = self.store.runtime(package_id).package
+        if body.get("joints") is None:
+            raise ValueError("send 'joints'")
+        joints = {int(j) for j in body["joints"]}
+        if any(j < 0 or j >= package.joint_count for j in joints):
+            raise ValueError("passive joint index out of range")
+        # taken as sent: the page closes an addition over its subtree itself
+        joints = sorted(joints)
+        candidates = set((package.manifest.get("passive") or {}).get("candidates", []))
+        outside = [str(package["names"][j]) for j in joints if j not in candidates]
+        if outside:
+            raise ValueError(f"a support joint hangs below: {', '.join(outside)}")
+        if body.get("species"):
+            add, remove = passive_layer(package["parents"], package.manifest["passive"]["named"], joints)
+            self._write_override(package, "passive", add, remove)
+            edited = with_passive_joints(package, joints, species_add=add, species_remove=remove)
+        else:
+            edited = with_passive_joints(package, joints)
+        self.store.replace(package_id, edited)
+        return package_payload(self.store.runtime(package_id))
+
     @staticmethod
-    def _write_species(package, joints):
-        """Record ``joints`` against cond as the species' contact override, then use it."""
-        from motion_edit.decompose import with_contact_joints
-        from motion_edit.profile.data import write_contact_override
+    def _write_override(package, kind: str, add: list[int], remove: list[int]) -> None:
+        """Write the species' ``contact`` / ``passive`` override row (joint names)."""
+        from motion_edit.profile.data import CONTACT_OVERRIDES_FILE, PASSIVE_OVERRIDES_FILE, write_species_override
 
         root = package.manifest.get("dataset_root")
         if not root or not os.path.isdir(root):
             raise ValueError("package does not know its dataset; re-decompose it with "
                              "decompose_clip from a dataset to write a species override")
         names = [str(n) for n in package["names"]]
+        write_species_override(root, CONTACT_OVERRIDES_FILE if kind == "contact" else PASSIVE_OVERRIDES_FILE,
+                               package.manifest["object_type"], [names[j] for j in add],
+                               [names[j] for j in remove], package.manifest["skeleton_hash"])
+
+    def _write_species(self, package, joints):
+        """Record ``joints`` against cond as the species' contact override, then use it."""
+        from motion_edit.decompose import with_contact_joints
+
         cond = set(package.manifest["contacts"]["source"]["cond"])
         add = sorted(set(joints) - cond)
         remove = sorted(cond - set(joints))
-        write_contact_override(root, package.manifest["object_type"], [names[j] for j in add],
-                               [names[j] for j in remove], package.manifest["skeleton_hash"])
+        self._write_override(package, "contact", add, remove)
         return with_contact_joints(package, joints, species_add=add, species_remove=remove)
 
 

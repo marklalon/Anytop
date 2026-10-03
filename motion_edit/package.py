@@ -26,8 +26,8 @@ PACKAGE_SUFFIX = ".edit"
 MANIFEST_FILE = "manifest.json"
 DATA_FILE = "data.npz"
 
-# Amplitude groups of section 5.1 (``amp.<group>``), plus the joints no
-# amplitude slider reaches.
+# Amplitude groups of section 5.1 (``amp.<group>``; the tail's is ``tail_weight``),
+# plus the joints no amplitude slider reaches.
 CHAIN_GROUPS = ("root", "legs", "arms", "axial", "tail", "wings", "other")
 
 

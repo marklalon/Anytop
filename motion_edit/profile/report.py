@@ -17,8 +17,8 @@ def _chain_line(row: dict) -> str:
     notes = [f"{row['role']}，{len(joints)} 个关节"]
     if row["fit_passed"]:
         notes.append("拟合通过：" + "、".join(row["fit_passed"]))
-    if row["confirmed"]:
-        notes.append("已确认：" + "、".join(row["confirmed"]))
+    if row["passive"]:
+        notes.append("passive：" + "、".join(row["passive"]))
     return f"{span}（{'；'.join(notes)}）"
 
 
@@ -28,7 +28,7 @@ def render_report(namespace: str, findings: dict[str, dict]) -> str:
              "已经体现在关节的 confidence 里，逐关节的原因见 skeleton_profiles.json 中关节的 unstable 字段。"
              "左右一致性只在 locomotion clip 上检查；表中\"左右不一致\"是 明显/全部，"
              "下面只列出镜像轴差 ≥ 30° 的，其余见 skeleton_profiles.json 的 findings。", ""]
-    lines.append("| 物种 | clip 数 | 叶链 / 已确认关节 | 左右不一致 | 名字冲突 | 不稳定 | 低置信度 | 其他 |")
+    lines.append("| 物种 | clip 数 | 候选部位 / passive 关节 | 左右不一致 | 名字冲突 | 不稳定 | 低置信度 | 其他 |")
     lines.append("|---|---|---|---|---|---|---|---|")
     for species in sorted(findings):
         f = findings[species]
@@ -39,7 +39,7 @@ def render_report(namespace: str, findings: dict[str, dict]) -> str:
             other_text = str(other)
         lines.append(
             f"| {species} | {f.get('clips', 0)} | {len(f.get('passive_chains', []))} / "
-            f"{sum(len(c['confirmed']) for c in f.get('passive_chains', []))} | "
+            f"{sum(len(c['passive']) for c in f.get('passive_chains', []))} | "
             f"{len(f.get('symmetry_axis', []))}/{len(f.get('symmetry', []))} | {len(f.get('name_dof', []))} | "
             f"{len(f.get('unstable', []))} | {len(f.get('low_confidence', []))} | {other_text} |")
     lines.append("")
@@ -57,7 +57,8 @@ def render_report(namespace: str, findings: dict[str, dict]) -> str:
             blocks.append("")
         chains = f.get("passive_chains") or []
         if chains:
-            blocks.append("**次级运动候选叶链**（要启用的关节名写进 passive_confirmations.json 的 confirmed；"
+            blocks.append("**次级运动候选**（每行一个挂在身体上的候选子树；名字是毛发、耳、衣物一类的连同子树默认 passive，尾巴归 tail_weight；"
+                          "增删写进 passive_overrides.json 的 add / remove，或在微调 UI 上点选；"
                           "\"拟合通过\"表示数据里有被身体带动的运动，其余用默认弹簧参数）")
             blocks.append("")
             for row in chains:

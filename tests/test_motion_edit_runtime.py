@@ -9,7 +9,9 @@ that dataset is not on disk.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -28,6 +30,7 @@ from motion_edit.decompose import (
     split_root,
     with_contact_joints,
     with_contact_mask,
+    with_passive_joints,
 )
 from motion_edit.ik import Limb, LimbSolver
 from motion_edit.package import EditPackage, PackageVersionError, decode_json
@@ -37,6 +40,7 @@ from motion_edit.runtime import (
     FORCE_SLOW_EXPONENT,
     IMPLEMENTED,
     PARAM_SPECS,
+    SPRING_G_GRAV,
     STRIKE_LEAN,
     STRIKE_SHIFT,
     EditRuntime,
@@ -48,6 +52,7 @@ from motion_edit.runtime import (
     ramped_envelope,
     sample_linear,
     soft_scale,
+    spring_response,
     strike_shapes,
     yaw_quat,
 )
@@ -173,19 +178,35 @@ def _reference(package: EditPackage):
     return restored.animation.rotations.qs, positions_global(restored.animation)
 
 
+def _with_passive(package: EditPackage, names: list[str]) -> EditPackage:
+    """``package`` with exactly ``names`` and their subtrees passive (this package's own edit)."""
+    from motion_edit.profile.skeleton import subtree_closure
+
+    index = [str(n) for n in package["names"]]
+    return with_passive_joints(package, sorted(subtree_closure(package["parents"], [index.index(n) for n in names])))
+
+
+HORSE_TAIL = ["BN_Tail_01"]       # with its subtree
+TREX_TAIL = ["jt_Tail1_C"]
+
+
 @pytest.fixture(scope="module")
 def packages():
-    return {
+    out = {
         "loop": _decompose("Horse_RunLoop", True, "locomotion", "run, forward"),
         "one_shot": _decompose("Horse_Jumping", False, "stationary", "attack, jump, smash"),
         "attack": _decompose("Trex_HumanBite", False, "stationary", "attack, bite", key=TREX_KEY),
         "hurt": _decompose("Trex_HitTorsoLeft", False, "stationary", "hurt", key=TREX_KEY),
         "loop_attack": _decompose("Horse_Attack", True, "stationary", "attack, charge"),
     }
+    out["loop_tail"] = _with_passive(out["loop"], HORSE_TAIL)
+    out["loop_bare"] = _with_passive(out["loop"], [])
+    out["attack_tail"] = _with_passive(out["attack"], TREX_TAIL)
+    return out
 
 
 @requires_horse
-@pytest.mark.parametrize("kind", ["loop", "one_shot"])
+@pytest.mark.parametrize("kind", ["loop", "one_shot", "attack_tail"])
 @pytest.mark.parametrize("compose", [False, True], ids=["T1_replay", "T1b_roundtrip"])
 def test_default_params_replay_the_decode(packages, kind, compose):
     package = packages[kind]
@@ -308,13 +329,13 @@ def test_params_are_refused_not_ignored(packages):
 # ── edits (M3): T4-T7 ────────────────────────────────────────────────────────
 
 def _edit_cases(package) -> list[dict]:
-    """Every implemented slider of the clip at both ends of its range, and foot_lock."""
+    """Every implemented slider of the clip at both ends of its range, and every toggle flipped."""
     cases = []
     for name in package.manifest["available_params"]:
         if name not in IMPLEMENTED:
             continue
         spec = PARAM_SPECS[name]
-        cases += [{name: True}] if spec.toggle else [{name: spec.low}, {name: spec.high}]
+        cases += [{name: not spec.default}] if spec.toggle else [{name: spec.low}, {name: spec.high}]
     return cases
 
 
@@ -372,7 +393,7 @@ def _locking_pivot_baseline(runtime: EditRuntime, result) -> dict[int, float]:
 
 
 @requires_horse
-@pytest.mark.parametrize("kind", ["loop", "one_shot", "attack", "hurt", "loop_attack"])
+@pytest.mark.parametrize("kind", ["loop", "one_shot", "attack", "hurt", "loop_attack", "loop_tail"])
 def test_T5_T6_edits_keep_bones_and_plants(packages, kind):
     package = packages[kind]
     runtime = EditRuntime(package)
@@ -455,7 +476,7 @@ def test_T6_foot_lock_keeps_the_foot_shape(packages, kind):
 
 
 @requires_horse
-@pytest.mark.parametrize("kind", ["loop", "loop_attack"])
+@pytest.mark.parametrize("kind", ["loop", "loop_attack", "loop_tail"])
 def test_T4_loop_seam_is_an_ordinary_step(packages, kind):
     package = packages[kind]
     runtime = EditRuntime(package)
@@ -467,7 +488,8 @@ def test_T4_loop_seam_is_an_ordinary_step(packages, kind):
 
 
 @requires_horse
-@pytest.mark.parametrize("kind", ["loop", "one_shot", "attack", "hurt", "loop_attack"])
+@pytest.mark.parametrize("kind", ["loop", "one_shot", "attack", "hurt", "loop_attack", "loop_tail",
+                                  "attack_tail"])
 def test_T7_sliders_are_continuous_at_their_defaults(packages, kind):
     package = packages[kind]
     runtime = EditRuntime(package)
@@ -540,7 +562,7 @@ def test_amplitude_and_root_layers_act_where_named(packages):
     base = runtime.apply(compose=True)
     groups = np.asarray([str(g) for g in package["chain_group"]])
     tail = groups == "tail"
-    moved = np.abs(runtime.apply({"amp.tail": 1.8}).global_positions - base.global_positions).max(axis=(0, 2))
+    moved = np.abs(runtime.apply({"tail_weight": 1.8}).global_positions - base.global_positions).max(axis=(0, 2))
     assert moved[tail].max() > 1e-3
     assert moved[~tail].max() < 1e-9          # the tail carries no foot: nothing else moves
     # bounce 0 leaves the root on its trend, lowered only where a foot could not reach
@@ -877,7 +899,9 @@ def test_force_moves_the_whole_strike_body(packages):
     # joints off the strike body move only rigidly with it or through the plants' IK
     legs = {j for limb in runtime.limbs()[0] for j in limb.chain + [limb.foot]}
     moved = np.abs(far.animation.rotations.qs - base.animation.rotations.qs).max(axis=(0, 2)) > 1e-9
-    assert set(np.flatnonzero(moved)) <= set(body) | legs | {root}
+    # the passive tail swings with the body it hangs on
+    passive = set(np.flatnonzero(package["profile_passive"]).tolist())
+    assert set(np.flatnonzero(moved)) <= set(body) | legs | passive | {root}
     # the lean swings the root -> effector lever toward the strike, never away from it
     axis = runtime.strike_lean_axis(strike, direction)
     lever = runtime.original_positions()[i, tip] - runtime.original_positions()[i, root]
@@ -954,3 +978,244 @@ def test_loop_segment_speeds_keep_whole_periods(packages):
     fast = runtime.apply({"strike_speed": 2.0})
     length = frames - (i - w) / 2.0
     assert len(fast.source_time) == max(2, int(round(length)))
+
+
+# ── secondary motion (M5) ────────────────────────────────────────────────────
+
+def test_spring_response_matches_the_steady_state_and_closes_a_loop():
+    fps, k, c, frames = 30.0, 150.0, 4.0, 60
+    omega = 2.0 * np.pi * fps / frames * 3                     # three cycles per loop
+    t = np.arange(frames) / fps
+    drive = np.stack([np.sin(omega * t), np.cos(omega * t), np.zeros(frames)], axis=1)
+    theta = spring_response(drive, k, c, fps, periodic=True)
+    gain = 1.0 / abs(k - omega ** 2 + 1j * omega * c)
+    assert np.linalg.norm(theta[:, :2], axis=1) == pytest.approx(np.full(frames, gain), rel=0.02)
+    assert np.abs(theta[:, 2]).max() == 0.0
+    # periodic: one more step past the last frame lands on the first
+    again = spring_response(np.concatenate([drive, drive]), k, c, fps, periodic=True)
+    assert np.abs(again[frames:] - theta).max() < 1e-9
+    # a one-shot starts at rest, and a stiff spring stays stable
+    assert np.abs(spring_response(np.zeros((10, 3)), k, c, fps, periodic=False)).max() == 0.0
+    stiff = spring_response(drive, 4.0 * (2.0 * np.pi * 8.0) ** 2, 1.0, fps, periodic=False)
+    assert np.isfinite(stiff).all() and np.abs(stiff).max() < 1.0
+
+
+def _subtree(package: EditPackage, j: int) -> list[int]:
+    from motion_edit.profile.skeleton import subtree_closure
+
+    return sorted(subtree_closure(package["parents"], [j]))
+
+
+def _swing(result, reference) -> np.ndarray:
+    """Per frame and joint, the parent-frame rotation vector taking ``reference`` to ``result``."""
+    return rotvec_from_quat(quat_mul(result.animation.rotations.qs, quat_inv(reference.animation.rotations.qs)))
+
+
+@requires_horse
+@pytest.mark.parametrize("kind", ["loop_tail", "attack_tail"])
+def test_secondary_scales_and_swings_the_passive_joints(packages, kind):
+    package = packages[kind]
+    runtime = EditRuntime(package)
+    passive = np.flatnonzero(package["profile_passive"])
+    passive = passive[~np.asarray(package["chain_gain_locked"], dtype=bool)[passive]]
+    others = np.setdiff1d(np.arange(package.joint_count), passive)
+    reference = np.asarray(package["chain_reference"])
+    offsets = np.asarray(package["chain_offsets"])
+    one = runtime.apply(compose=True)
+    for value in (0.0, 0.5):
+        rot = runtime.apply({"passive_weight": value}).animation.rotations.qs
+        # below 1 the passive joints' own curves scale like an amplitude: rigid at 0
+        expected = quat_mul(quat_from_rotvec(value * offsets[:, passive]), reference[None, passive])
+        assert rotation_error(rot[:, passive], expected) < ROT_TOL, value
+        assert rotation_error(rot[:, others], one.animation.rotations.qs[:, others]) < ROT_TOL, value
+    # past 1 they swing with the body, each bone by an angle in proportion to the slider
+    full, half = runtime.apply({"passive_weight": 2.0}), runtime.apply({"passive_weight": 1.5})
+    swing = _swing(full, one)
+    assert np.abs(swing[:, others]).max() < ROT_TOL
+    assert np.abs(full.global_positions[:, others] - one.global_positions[:, others]).max() < POS_TOL
+    assert np.linalg.norm(swing[:, passive], axis=-1).max() > np.radians(1.0)
+
+    def largest(result):
+        item = next(d for d in result.diagnostics if d["kind"] == "secondary" and "joint" in d)
+        return float(re.search(r"up to ([0-9.]+) deg", item["message"]).group(1))
+
+    assert largest(half) == pytest.approx(0.5 * largest(full), abs=0.1)
+
+
+@requires_horse
+def test_secondary_swings_with_the_edited_body(packages):
+    """The swing answers to the body as edited; a constant posture offset carries no acceleration."""
+    runtime = EditRuntime(packages["loop_tail"])
+    passive = np.flatnonzero(runtime.package["profile_passive"])
+    alone = _swing(runtime.apply({"passive_weight": 2.0}), runtime.apply(compose=True))[:, passive]
+    for params, moves in (({"amp.axial": 1.5}, True), ({"posture": -0.2}, False)):
+        swing = _swing(runtime.apply({**params, "passive_weight": 2.0}), runtime.apply(params))[:, passive]
+        assert (np.abs(swing - alone).max() > np.radians(1.0)) == moves, params
+
+
+@requires_horse
+def test_stiffness_tunes_only_its_own_swing(packages):
+    """A channel's stiffness acts only on its swing (weight past 1): a stiffer spring swings
+    less; the other channel's stiffness leaves it alone."""
+    runtime = EditRuntime(packages["loop_tail"])
+    passive = np.flatnonzero(runtime.package["profile_passive"])
+    one = runtime.apply(compose=True)
+    still = runtime.apply({"passive_stiffness": 2.0})
+    assert np.array_equal(still.animation.rotations.qs, one.animation.rotations.qs)
+    swing = {hard: np.linalg.norm(_swing(runtime.apply({"passive_weight": 2.0, "passive_stiffness": hard}),
+                                         one)[:, passive], axis=-1).max()
+             for hard in (0.5, 1.0, 2.0)}
+    assert swing[0.5] > swing[1.0] > swing[2.0] > 0.0
+    other = runtime.apply({"passive_weight": 2.0, "tail_stiffness": 2.0}
+                          if "tail_stiffness" in runtime.available else {"passive_weight": 2.0})
+    assert np.linalg.norm(_swing(other, one)[:, passive], axis=-1).max() == pytest.approx(swing[1.0])
+
+
+@requires_horse
+def test_gravity_toggles_the_springs_gravity_term(packages):
+    """gravity keeps the springs' gravity term; it acts only on a swing (weight past 1)."""
+    runtime = EditRuntime(packages["loop_tail"])
+    passive = np.flatnonzero(runtime.package["profile_passive"])
+    one = runtime.apply(compose=True)
+    assert "gravity" in runtime.available
+    assert np.array_equal(runtime.apply({"gravity": False}).animation.rotations.qs, one.animation.rotations.qs)
+    for spring in runtime.springs()[0]:
+        spring["spring"] = np.array(spring["spring"], copy=True)
+        spring["spring"][SPRING_G_GRAV] = 20.0
+    on, off = runtime.apply({"passive_weight": 2.0}), runtime.apply({"passive_weight": 2.0, "gravity": False})
+    assert np.linalg.norm(_swing(on, off)[:, passive], axis=-1).max() > np.radians(1.0)
+    for spring in runtime.springs()[0]:
+        spring["spring"][SPRING_G_GRAV] = 0.0
+    zero = runtime.apply({"passive_weight": 2.0})
+    assert rotation_error(zero.animation.rotations.qs, off.animation.rotations.qs) < ROT_TOL
+
+
+@requires_horse
+def test_T2_deterministic_with_secondary(packages):
+    runtime = EditRuntime(packages["attack_tail"])
+    params = {"force": 1.6, "amp.axial": 1.3, "passive_weight": 1.7}
+    a, b = runtime.apply(params), runtime.apply(params)
+    assert np.array_equal(a.animation.rotations.qs, b.animation.rotations.qs)
+    assert np.array_equal(a.global_positions, b.global_positions)
+
+
+# ── passive joint set ────────────────────────────────────────────────────────
+
+@requires_horse
+def test_passive_defaults_follow_joint_names(packages):
+    package = packages["loop"]
+    m = package.manifest["passive"]
+    names = set(m["names"])
+    # named parts with their whole subtrees, leaves included; the tail stays with tail_weight
+    assert {"BN_hair04_01", "BN_hair04_03", "Bip01_R_Ear_01"} <= names
+    assert {str(package["names"][j]) for j in _subtree(package, list(package["names"]).index("Bip01_R_Ear_01"))} <= names
+    assert not names & {"BN_Tail_01", "BN_Tail_05", "Bip01_Jaw", "BN_Eyebrow_R", "Handle"}
+    passive = set(m["joints"])
+    assert all(j in passive for j in passive for j in _subtree(package, j))
+    assert m["named"] == m["joints"] and passive <= set(m["candidates"])
+    # hair and ears answer to passive_weight, the tail to tail_weight: tuned apart
+    facts = package.manifest["facts"]
+    assert facts["has_passive"] and "passive_weight" in package.manifest["available_params"]
+    assert "tail_weight" in package.manifest["available_params"]
+    # a tail made passive leaves tail_weight with nothing to scale
+    assert "tail_weight" not in packages["loop_tail"].manifest["available_params"]
+    bare = packages["loop_bare"]
+    assert bare.manifest["passive"]["joints"] == [] and not bare.manifest["facts"]["has_passive"]
+    assert "passive_weight" not in bare.manifest["available_params"]
+
+
+@requires_horse
+def test_passive_edit_records_provenance_and_keeps_intervals(packages):
+    package = packages["one_shot"]
+    names = [str(n) for n in package["names"]]
+    jaw = _subtree(package, names.index("Bip01_Jaw"))
+    ear = _subtree(package, names.index("Bip01_R_Ear_01"))
+    joints = [j for j in package.manifest["passive"]["joints"] if j not in ear] + jaw
+    mask = np.array(package["contact_mask"], copy=True)
+    mask[:2] = True
+    edited = with_passive_joints(with_contact_mask(package, mask), joints)
+    source = edited.manifest["passive"]["source"]
+    # recorded as given: the jaw with its subtree added, the ear with its own removed
+    assert source["package_add"] == jaw and source["package_remove"] == ear
+    assert edited.manifest["passive"]["joints"] == sorted(joints)
+    # a part may stop partway down: dropping the jaw's tip leaves the jaw itself passive
+    tip = with_passive_joints(package, [j for j in joints if j != jaw[-1]])
+    assert jaw[0] in tip.manifest["passive"]["joints"] and jaw[-1] not in tip.manifest["passive"]["joints"]
+    assert np.array_equal(edited["contact_mask"], mask) and edited.manifest["contacts"]["intervals_edited"]
+    # the passive set survives a contact edit and a re-decomposition
+    assert with_contact_joints(edited, list(edited["contact_joints"])).manifest["passive"] == edited.manifest["passive"]
+    assert redecompose(edited).manifest["passive"]["joints"] == edited.manifest["passive"]["joints"]
+    # written into the species override, the change leaves the package's own edits
+    species = with_passive_joints(package, joints, species_add=jaw, species_remove=ear)
+    s2 = species.manifest["passive"]["source"]
+    assert s2["package_add"] == [] and s2["package_remove"] == []
+    assert species.manifest["passive"]["joints"] == edited.manifest["passive"]["joints"]
+
+
+def test_passive_source_reads_a_species_override():
+    from motion_edit.decompose import passive_source
+
+    cond = {"joints_names": ["root", "Tail_01", "Jaw", "Ear_L"]}
+    source = passive_source(cond, {"add": ["Jaw", "nope"], "remove": ["Ear_L"]})
+    assert source.species_add == [2] and source.species_remove == [3] and source.unknown_names == ["nope"]
+
+
+@requires_horse
+def test_serve_writes_a_species_passive_override(packages, tmp_path):
+    from motion_edit.profile.data import PASSIVE_OVERRIDES_FILE
+    from motion_edit.ui.serve import Handler, PackageStore
+
+    package = packages["one_shot"]
+    root = tmp_path / "dataset"
+    root.mkdir()
+    store_root = tmp_path / "packages"
+    package = EditPackage(dict(package.manifest, dataset_root=str(root)), package.arrays)
+    package.save(str(store_root / "clip.edit"))
+    handler = Handler.__new__(Handler)
+    handler.server = type("Server", (), {"store": PackageStore(str(store_root))})()
+    names = [str(n) for n in package["names"]]
+    jaw = _subtree(package, names.index("Bip01_Jaw"))
+    ear = _subtree(package, names.index("Bip01_R_Ear_01"))
+    joints = [j for j in package.manifest["passive"]["joints"] if j not in ear] + jaw
+    payload = handler._passive("clip.edit", {"joints": joints, "species": True})
+    rows = json.loads((root / PASSIVE_OVERRIDES_FILE).read_text(encoding="utf-8"))
+    assert rows[package.manifest["object_type"]]["add"] == sorted(names[j] for j in jaw)
+    assert rows[package.manifest["object_type"]]["remove"] == sorted(names[j] for j in ear)
+    assert sorted(payload["passive"]["joints"]) == sorted(set(joints) | set(jaw))
+    assert set(payload["passive"]["origin"]) == {"name", "species"}
+    with pytest.raises(ValueError):          # the spine holds the front legs
+        handler._passive("clip.edit", {"joints": [names.index("Bip01_Spine")]})
+
+
+@requires_horse
+def test_passive_part_hinges_at_its_parent(packages):
+    """A passive part swings from its non-passive parent, so even a lone leaf moves; bones keep
+    their lengths and nothing outside the part moves."""
+    runtime = EditRuntime(_with_passive(packages["loop"], ["Bip01_R_Ear_Nub"]))
+    package = runtime.package
+    leaf = list(package["names"]).index("Bip01_R_Ear_Nub")
+    assert [(s["joint"], s["virtual"]) for s in runtime.springs()[0] if s["channel"] == "passive"] == [(leaf, True)]
+    base, swung = runtime.apply(compose=True), runtime.apply({"passive_weight": 2.0})
+    moved = np.linalg.norm(swung.global_positions - base.global_positions, axis=-1).max(axis=0)
+    assert moved[leaf] > 1e-3 * runtime.leg
+    assert np.delete(moved, leaf).max() < POS_TOL
+    assert np.abs(np.linalg.norm(swung.animation.positions, axis=-1)
+                  - np.linalg.norm(base.animation.positions, axis=-1)).max() < BONE_TOL
+
+
+@requires_horse
+def test_tail_and_passive_parts_share_one_treatment(packages):
+    """tail_weight on the tail is what passive_weight is on the same joints made passive: two channels,
+    one treatment (scaled curves up to 1, a hinged spring swing past it)."""
+    tail_runtime = EditRuntime(packages["loop_bare"])
+    passive_runtime = EditRuntime(packages["loop_tail"])
+    tail = [j for j, c in enumerate(tail_runtime.channels()) if c == "tail"]
+    assert tail and tail == list(np.flatnonzero(packages["loop_tail"]["profile_passive"]))
+    for value in (0.0, 0.5, 1.5, 2.0):
+        a = tail_runtime.apply({"tail_weight": value})
+        b = passive_runtime.apply({"passive_weight": value})
+        assert np.abs(a.global_positions - b.global_positions).max() < POS_TOL, value
+        assert rotation_error(a.animation.rotations.qs, b.animation.rotations.qs) < ROT_TOL, value
+    # the first tail joint moves: its bone hinges at the pelvis
+    base, swung = tail_runtime.apply(compose=True), tail_runtime.apply({"tail_weight": 2.0})
+    assert np.linalg.norm(swung.global_positions[:, tail[0]] - base.global_positions[:, tail[0]], axis=-1).max()         > 1e-3 * tail_runtime.leg

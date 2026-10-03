@@ -18,7 +18,12 @@ from motion_edit.profile.joints import (
     joint_stats,
     main_child,
 )
-from motion_edit.profile.skeleton import SkeletonStructure, resolve_contacts
+from motion_edit.profile.skeleton import (
+    SkeletonStructure,
+    passive_name_layer,
+    resolve_contacts,
+    resolve_passive,
+)
 from motion_edit.profile.spring import clip_rows, default_spring, fit_spring, fitted_spring
 from motion_edit.rotations import quat_inv, quat_mul, quat_rotate, rotvec_from_quat
 
@@ -235,17 +240,22 @@ def build_species_profile(
         findings.override_notes.append(f"contact override names unknown joint '{name}'")
     structure = SkeletonStructure(cond_entry, contacts.used)
 
-    confirmed_names = set()
+    passive_entries = None
     if passive_override is not None:
         if passive_override.stale(current_hash):
             findings.override_notes.append(
-                "passive_confirmations.json row is stale (skeleton_hash changed); ignored")
+                "passive_overrides.json row is stale (skeleton_hash changed); ignored")
         else:
-            confirmed_names = set(passive_override.entries.get("confirmed", []))
-    candidate_names = {structure.names[j] for j in structure.passive_candidates()}
-    for name in sorted(confirmed_names - candidate_names):
+            passive_entries = passive_override.entries
+    add, remove, unknown = passive_name_layer(structure.names, passive_entries)
+    candidates = structure.passive_candidates()
+    passive = resolve_passive(structure.parents, structure.names, candidates, [(add, remove)])
+    for name in unknown:
+        findings.override_notes.append(f"passive override names unknown joint '{name}'")
+    for j in passive.outside:
         findings.override_notes.append(
-            f"passive_confirmations.json confirms '{name}', which is not a leaf-chain candidate")
+            f"passive_overrides.json adds '{structure.names[j]}', which has a support joint below it")
+    passive_joints = set(passive.joints)
 
     clips: list[Clip] = []
     for motion_name, row in sorted(motion_rows.items()):
@@ -293,37 +303,33 @@ def build_species_profile(
                 halves.append(_stats_for(sub, _frame_weights(sub), structure, j))
             problems[j] = _stability(stats[j], halves)
 
-    # Secondary motion: every leaf-chain candidate gets a spring -- the fitted
-    # one when the data shows real driven motion, a default one otherwise --
-    # and is simulated only once the user confirms it.
+    # Secondary motion: every candidate gets a spring -- the fitted one when the
+    # data shows real driven motion, a default one otherwise -- and is simulated
+    # only when passive (named as a hanging part, or added by an override).
     roles = structure.base_roles()
     base_roles = list(roles)
     springs = {}
-    for chain, candidates in structure.passive_chains():
-        passed, confirmed = [], []
-        for j in candidates:
-            name = structure.names[j]
-            fit = None
-            child = stats[j].main_child
-            if child is not None and stats[j].dof_class != "fixed":
-                fit = fit_spring(_spring_rows(clips, structure, j, stats[j].mean, child))
-            if fit is not None and fit.passed:
-                spring = fitted_spring(fit)
-                passed.append(name)
-            else:
-                spring = default_spring(structure.swing_length(chain, j), leg)
-            spring["swing_length"] = round(structure.swing_length(chain, j) / leg, 4) if leg > 0 else None
-            springs[j] = {"spring": spring,
-                          "spring_fit": None if fit is None else fit.as_json(),
-                          "passive_confirmed": name in confirmed_names}
-            if name in confirmed_names:
-                roles[j] = "passive"
-                confirmed.append(name)
+    for j in candidates:
+        fit = None
+        child = stats[j].main_child
+        if child is not None and stats[j].dof_class != "fixed":
+            fit = fit_spring(_spring_rows(clips, structure, j, stats[j].mean, child))
+        spring = fitted_spring(fit) if fit is not None and fit.passed else default_spring(
+            structure.swing_length(j), leg)
+        spring["swing_length"] = round(structure.swing_length(j) / leg, 4) if leg > 0 else None
+        springs[j] = {"spring": spring,
+                      "spring_fit": None if fit is None else fit.as_json(),
+                      "passive": j in passive_joints}
+        if j in passive_joints:
+            roles[j] = "passive"
+    # one report row per hanging part: a candidate subtree hanging off the body
+    for top in structure.passive_tops(candidates):
+        part = sorted(structure.subtree(top))
         findings.passive_chains.append({
-            "joints": [structure.names[j] for j in candidates],
-            "role": base_roles[candidates[0]],
-            "fit_passed": passed,
-            "confirmed": confirmed,
+            "joints": [structure.names[j] for j in part],
+            "role": base_roles[top],
+            "fit_passed": [structure.names[j] for j in part if springs[j]["spring"]["source"] == "fit"],
+            "passive": [structure.names[j] for j in part if j in passive_joints],
         })
 
     joints = []

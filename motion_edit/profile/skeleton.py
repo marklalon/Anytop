@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import joint_name_matches_keywords
+
 CENTER = "center"
 # A sided limb shorter than this fraction of the leg (ears, mouth corners,
 # whiskers) carries no locomotion or gesture meaning: role "other".
@@ -53,6 +55,71 @@ def resolve_contacts(cond_entry: dict, override_entries: dict | None) -> Contact
             else:
                 contacts.unknown_names.append(str(name))
     return contacts
+
+
+# Secondary-motion candidates passive by default, with their subtrees: a word of
+# the joint name begins with one of these (hair and clothing: "BN_hair04_01",
+# "Skirt_F_01").  Tails stay on their own channel (tail_weight), so they are tuned apart from these.
+# Overrides add or remove joints on top.
+PASSIVE_NAME_KEYWORDS = (
+    "hair", "fur", "mane", "ear",
+    "skirt", "cape", "cloak", "coat", "robe", "dress", "cloth", "scarf", "sleeve",
+    "ribbon", "sash", "apron", "shawl", "veil", "tassel",
+)
+
+
+def subtree_closure(parents, joints) -> set[int]:
+    """``joints`` with all their descendants (parents precede children)."""
+    out = {int(j) for j in joints}
+    for j, p in enumerate(parents):
+        if p >= 0 and int(p) in out:
+            out.add(j)
+    return out
+
+
+@dataclass
+class PassiveSet:
+    """A resolved passive set.  An addition brings its subtree, a removal takes exactly the
+    joints it lists, so a part may stop partway down (its lower joints follow rigidly)."""
+
+    joints: list[int]
+    named: list[int]                                        # the defaults by name
+    outside: list[int] = field(default_factory=list)        # additions that are not candidates
+
+
+def resolve_passive(parents, names: list[str], candidates, layers) -> PassiveSet:
+    """The candidates named as hanging parts (with their subtrees), then each ``(add, remove)``
+    layer of joint indices (species override, package edit) in turn: an addition brings its
+    subtree, a removal takes exactly its joints.  Only candidates are passive."""
+    candidates = {int(j) for j in candidates}
+    named = subtree_closure(parents, [j for j in candidates
+                                      if joint_name_matches_keywords(names[j], PASSIVE_NAME_KEYWORDS)])
+    wanted, outside = set(named), set()
+    for add, remove in layers:
+        add = {int(j) for j in add}
+        outside |= add - candidates
+        wanted = (wanted | subtree_closure(parents, add & candidates)) - {int(j) for j in remove}
+    return PassiveSet(sorted(wanted & candidates), sorted(named), sorted(outside))
+
+
+def passive_layer(parents, base, joints) -> tuple[list[int], list[int]]:
+    """The ``(add, remove)`` layer that turns the passive set ``base`` into exactly ``joints``."""
+    base, joints = {int(j) for j in base}, {int(j) for j in joints}
+    add = joints - base
+    return sorted(add), sorted((base | subtree_closure(parents, add)) - joints)
+
+
+def passive_name_layer(names: list[str], override_entries: dict | None) -> tuple[list[int], list[int], list[str]]:
+    """``(add, remove, unknown names)`` of a ``{"add": [...], "remove": [...]}`` name override."""
+    index_of = {n: i for i, n in enumerate(names)}
+    add, remove, unknown = [], [], []
+    for key, target in (("add", add), ("remove", remove)):
+        for name in (override_entries or {}).get(key, []):
+            if name in index_of:
+                target.append(index_of[name])
+            else:
+                unknown.append(str(name))
+    return sorted(add), sorted(remove), unknown
 
 
 class SkeletonStructure:
@@ -107,23 +174,6 @@ class SkeletonStructure:
         for c in self.contacts:
             support.update(self.path_to(c, self.limb_root(c)))
         return support
-
-    def leaf_chains(self) -> list[list[int]]:
-        """Each leaf's chain up to (not including) its nearest branching ancestor, root first."""
-        chains = []
-        for leaf in range(self.joint_count):
-            if self.children[leaf]:
-                continue
-            chain = [leaf]
-            j = leaf
-            while True:
-                p = int(self.parents[j])
-                if p < 0 or len(self.children[p]) != 1 or p == self.root:
-                    break
-                chain.append(p)
-                j = p
-            chains.append(chain[::-1])
-        return chains
 
     # ── lengths ──────────────────────────────────────────────────────────
     def contact_limbs(self) -> dict[int, list[int]]:
@@ -202,26 +252,28 @@ class SkeletonStructure:
                 roles.append("swing")
         return roles
 
-    def passive_chains(self) -> list[tuple[list[int], list[int]]]:
-        """``(leaf chain, its secondary-motion candidates)`` per leaf chain.
-
-        Candidates are the chain's joints off the support chains that have a
-        bone to swing; chains without one are left out.
-        """
-        support = self.support_joints()
-        out = []
-        for chain in self.leaf_chains():
-            candidates = [j for j in chain
-                          if j not in support and j != self.root and self.children[j]
-                          and self.bone_length[self.children[j]].max() > 1e-6]
-            if candidates:
-                out.append((chain, candidates))
-        return out
-
     def passive_candidates(self) -> list[int]:
-        return sorted(j for _, candidates in self.passive_chains() for j in candidates)
+        """Joints that may swing as secondary motion: every joint but the root whose subtree
+        holds no support joint, leaves included.  Closed downward like a passive set."""
+        blocked: set[int] = set()        # the root, support joints, and every joint above one
+        for j in [self.root, *self.support_joints()]:
+            while j >= 0 and j not in blocked:
+                blocked.add(j)
+                j = int(self.parents[j])
+        return [j for j in range(self.joint_count) if j not in blocked]
 
-    def swing_length(self, chain: list[int], j: int) -> float:
-        """Rest length of the chain hanging below ``j`` (``j``'s bone to the tip)."""
-        below = chain[chain.index(j) + 1:]
-        return float(self.bone_length[below].sum())
+    def passive_tops(self, joints) -> list[int]:
+        """The joints of a downward-closed set whose parent is outside it: one per hanging part."""
+        joints = set(joints)
+        return sorted(j for j in joints if int(self.parents[j]) not in joints)
+
+    def swing_length(self, j: int) -> float:
+        """Rest length hanging below ``j``: its longest path down to a leaf.  A leaf has none,
+        and its own bone (from the parent) stands in."""
+        if not self.children[j]:
+            return float(self.bone_length[j])
+        best = 0.0
+        for k in self.subtree(j):
+            if not self.children[k]:
+                best = max(best, float(self.bone_length[self.path_to(k, j)[:-1]].sum()))
+        return best

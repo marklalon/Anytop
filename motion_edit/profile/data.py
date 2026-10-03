@@ -18,7 +18,7 @@ DATASETS_MANIFEST = os.path.join(ANYTOP_ROOT, "dataset", "datasets.jsonl")
 PROFILES_FILE = "skeleton_profiles.json"
 REPORT_FILE = "skeleton_profiles_report.md"
 CONTACT_OVERRIDES_FILE = "contact_overrides.json"
-PASSIVE_CONFIRMATIONS_FILE = "passive_confirmations.json"
+PASSIVE_OVERRIDES_FILE = "passive_overrides.json"
 
 
 @dataclass(frozen=True)
@@ -162,10 +162,11 @@ def load_profiles(root: str) -> dict:
     return data.get("profiles", {}) if data else {}
 
 
-def write_contact_override(root: str, cond_key: str, add: list[str], remove: list[str],
+def write_species_override(root: str, file_name: str, cond_key: str, add: list[str], remove: list[str],
                            current_hash: str) -> str:
-    """Set (or, with nothing to add or remove, drop) one species' ``contact_overrides.json`` row."""
-    path = os.path.join(root, CONTACT_OVERRIDES_FILE)
+    """Set (or, with nothing to add or remove, drop) one species' row of a name-keyed
+    override sidecar (``contact_overrides.json``, ``passive_overrides.json``)."""
+    path = os.path.join(root, file_name)
     rows = _read_json(path)
     if add or remove:
         rows[cond_key] = {"add": sorted(add), "remove": sorted(remove), "skeleton_hash": current_hash}

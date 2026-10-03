@@ -278,6 +278,11 @@ def _text_matches_keywords(text, keywords):
     return False
 
 
+def joint_name_matches_keywords(name, keywords):
+    """Whether a word of the joint's normalized or canonical name begins with a keyword."""
+    return _text_matches_keywords(_joint_semantic_text(name), keywords)
+
+
 def _joint_family_semantic_text(joint_index, joint_names, parents, max_depth=3):
     semantic_chunks = []
     current_index = int(joint_index)

@@ -30,11 +30,14 @@ MIN_DELTA_R2 = 0.2
 MIN_T = 3.0
 FREQ_RANGE_HZ = (0.2, 8.0)  # natural frequency sqrt(k) / 2π
 
-# Default spring of a confirmed joint whose fit did not pass: a hanging chain
+# Default spring of a candidate whose fit did not pass: a hanging chain
 # swings slower the longer it is (pendulum, f ~ 1/sqrt(length)).
 DEFAULT_HZ_AT_LEG_LENGTH = 1.5   # natural frequency of a chain one leg length long
 DEFAULT_HZ_RANGE = (0.5, 4.0)
 DEFAULT_DAMPING_RATIO = 0.3
+# Shortest lever a default spring assumes (x leg length): a leaf joint's swing length
+# is only its own bone, and a tiny one would ring at the top frequency with a huge g_lin.
+MIN_SWING_LENGTH = 0.1
 
 
 @dataclass
@@ -64,9 +67,9 @@ def default_spring(swing_length: float, leg_length: float) -> dict:
     its parent's rotation one to one (``g_ang = 1``) and a sideways push at the
     pivot turns it by ``3 / (2 L)`` (``g_lin``).  Gravity is left out: the
     keyed pose already holds the chain where the animator wanted it, and the
-    runtime only adds the response to an edit.
+    runtime adds the response on top of that pose.
     """
-    length = max(float(swing_length), 1e-6)
+    length = max(float(swing_length), MIN_SWING_LENGTH * leg_length, 1e-6)
     ratio = length / leg_length if leg_length > 0 else 1.0
     hz = float(np.clip(DEFAULT_HZ_AT_LEG_LENGTH / np.sqrt(ratio), *DEFAULT_HZ_RANGE))
     k = (2.0 * np.pi * hz) ** 2
@@ -94,7 +97,14 @@ def fitted_spring(fit: "SpringFit") -> dict:
 
 
 def _sg(x: np.ndarray, deriv: int, fps: float, periodic: bool) -> np.ndarray:
-    return savgol_filter(x, SG_WINDOW, SG_ORDER, deriv=deriv, delta=1.0 / fps,
+    # a clip shorter than the window takes the longest odd window it holds
+    window = min(SG_WINDOW, x.shape[0] - 1 + x.shape[0] % 2)
+    if window <= SG_ORDER:
+        out = x
+        for _ in range(deriv):
+            out = np.gradient(out, 1.0 / fps, axis=0)
+        return out
+    return savgol_filter(x, window, SG_ORDER, deriv=deriv, delta=1.0 / fps,
                          axis=0, mode="wrap" if periodic else "interp")
 
 
@@ -110,6 +120,19 @@ def _angular_velocity(rot: np.ndarray, fps: float, periodic: bool) -> np.ndarray
     return omega
 
 
+def drive_terms(parent_rot: np.ndarray, parent_pos: np.ndarray, bone_dir: np.ndarray,
+                fps: float, periodic: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The model's driving terms ``(α_p, b × a_p, b × ĝ_p)``, each (F, 3) in the parent
+    frame, from the parent's global rotations and positions.  Shared by the fit and the
+    runtime's simulation, so both read the same parent motion."""
+    inv_parent = quat_inv(parent_rot)
+    alpha = _sg(_angular_velocity(parent_rot, fps, periodic), 1, fps, periodic)
+    alpha_local = quat_rotate(inv_parent, alpha)
+    accel_local = quat_rotate(inv_parent, _sg(parent_pos, 2, fps, periodic))
+    down_local = quat_rotate(inv_parent, np.array([0.0, -1.0, 0.0]))
+    return alpha_local, np.cross(bone_dir, accel_local), np.cross(bone_dir, down_local)
+
+
 def clip_rows(theta: np.ndarray, parent_rot: np.ndarray, parent_pos: np.ndarray,
               bone_dir: np.ndarray, fps: float, periodic: bool):
     """Regression rows ``(y, X)`` of one clip, axes stacked; None if too short."""
@@ -119,13 +142,7 @@ def clip_rows(theta: np.ndarray, parent_rot: np.ndarray, parent_pos: np.ndarray,
     theta_s = _sg(theta, 0, fps, periodic)
     theta_d = _sg(theta, 1, fps, periodic)
     theta_dd = _sg(theta, 2, fps, periodic)
-    inv_parent = quat_inv(parent_rot)
-    alpha = _sg(_angular_velocity(parent_rot, fps, periodic), 1, fps, periodic)
-    alpha_local = quat_rotate(inv_parent, alpha)
-    accel_local = quat_rotate(inv_parent, _sg(parent_pos, 2, fps, periodic))
-    down_local = quat_rotate(inv_parent, np.array([0.0, -1.0, 0.0]))
-    lin = np.cross(bone_dir, accel_local)
-    grav = np.cross(bone_dir, down_local)
+    alpha_local, lin, grav = drive_terms(parent_rot, parent_pos, bone_dir, fps, periodic)
     cols = [theta_s, theta_d, alpha_local, lin, grav]
     y = theta_dd.T.reshape(-1)                                   # axis-major stacking
     x = np.stack([c.T.reshape(-1) for c in cols] + [np.ones(3 * frames)], axis=1)

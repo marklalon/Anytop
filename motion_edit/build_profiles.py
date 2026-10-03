@@ -13,7 +13,7 @@ User sidecars read from the same root (rows keyed by cond key, joints by name,
 each with the ``skeleton_hash`` it was made against):
 
 * ``contact_overrides.json``    ``{"add": [...], "remove": [...]}``
-* ``passive_confirmations.json`` ``{"confirmed": [...]}``  (leaf-chain joints to simulate)
+* ``passive_overrides.json``    ``{"add": [...], "remove": [...]}``  (passive joints beyond the named defaults)
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ if ANYTOP_ROOT not in sys.path:
 from motion_edit.profile import build as builder  # noqa: E402
 from motion_edit.profile.data import (  # noqa: E402
     CONTACT_OVERRIDES_FILE,
-    PASSIVE_CONFIRMATIONS_FILE,
+    PASSIVE_OVERRIDES_FILE,
     PROFILES_FILE,
     REPORT_FILE,
     discover_sources,
@@ -102,7 +102,7 @@ def main(argv=None) -> int:
         cond = load_cond(source)
         metadata = load_motion_metadata(source.root)
         contact_overrides = load_species_sidecar(source.root, CONTACT_OVERRIDES_FILE)
-        passive_overrides = load_species_sidecar(source.root, PASSIVE_CONFIRMATIONS_FILE)
+        passive_overrides = load_species_sidecar(source.root, PASSIVE_OVERRIDES_FILE)
         for cond_key, entry in cond.items():
             species = str(entry.get("species_name") or cond_key.rsplit("/", 1)[-1])
             subset = builder.cond_subset(entry)

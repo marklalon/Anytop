@@ -19,7 +19,8 @@ from motion_edit.profile import gait as gait_stats
 from motion_edit.profile.build import _split_halves, apply_fallback
 from motion_edit.profile.data import Clip, skeleton_hash
 from motion_edit.profile.joints import classify_dof, joint_stats
-from motion_edit.profile.skeleton import SkeletonStructure, resolve_contacts
+from motion_edit.profile.skeleton import (SkeletonStructure, passive_layer, resolve_contacts, resolve_passive,
+                                          subtree_closure)
 from motion_edit.profile.spring import clip_rows, default_spring, fit_spring
 from motion_edit.rotations import (
     quat_from_rotvec,
@@ -96,8 +97,8 @@ def test_contact_limbs_leg_length_and_roles():
     assert roles[0] == "root"
     assert all(roles[j] == "support" for j in (2, 3, 4, 5, 6, 7, 8, 9))
     assert roles[10] == roles[11] == roles[12] == "axial"
-    # leaf chains off the legs: spine -> head and the tail (tips have no bone to swing)
-    assert s.passive_candidates() == [10, 12]
+    # everything with no support joint below it, leaves included (not the pelvis above the legs)
+    assert s.passive_candidates() == [10, 11, 12, 13]
 
 
 def test_resolve_contacts_applies_name_overrides():
@@ -329,14 +330,43 @@ def test_default_spring_slows_with_chain_length():
         assert spring["g_ang"] == 1.0 and spring["g_grav"] == 0.0
     assert default_spring(1e-4, 1.0)["natural_hz"] == 4.0          # clamped
     assert short["g_lin"] == pytest.approx(1.5 / 0.2)
+    # a leaf's lever is at least a tenth of the leg
+    assert default_spring(1e-4, 1.0)["g_lin"] == pytest.approx(1.5 / 0.1)
 
 
-def test_swing_length_and_passive_chains():
+def test_swing_length_and_passive_parts():
     cond = _biped_cond()
     s = SkeletonStructure(cond, cond["contact_joints"])
-    chains = {tuple(c): tuple(k) for c, k in s.passive_chains()}
-    assert chains == {(10, 11): (10,), (12, 13): (12,)}
-    assert s.swing_length([12, 13], 12) == pytest.approx(0.3)
+    assert s.passive_tops(s.passive_candidates()) == [10, 12]
+    assert s.swing_length(12) == pytest.approx(0.3)
+    assert s.swing_length(13) == pytest.approx(0.3)                 # a leaf: its own bone
+    assert s.swing_length(1) == pytest.approx(s.swing_length(2) + np.linalg.norm(cond["offsets"][2]))
+
+
+def test_passive_additions_bring_subtrees_removals_are_exact():
+    cond = _biped_cond()
+    s = SkeletonStructure(cond, cond["contact_joints"])
+    parents, names, candidates = s.parents, s.names, s.passive_candidates()
+    assert subtree_closure(parents, [10]) == {10, 11}
+
+    # a tail is not passive by name (tail_weight keeps it); hair is
+    assert resolve_passive(parents, names, candidates, []).named == []
+    names = names[:12] + ["hair_01", "hair_02"]
+
+    def resolve(*layers):
+        return resolve_passive(parents, names, candidates, list(layers))
+
+    assert resolve().named == [12, 13] and resolve().joints == [12, 13]
+    # adding a joint brings its subtree; one with a support joint below is refused
+    added = resolve(([10, 1], []))
+    assert added.joints == [10, 11, 12, 13] and added.outside == [1]
+    # a removal takes exactly its joints: the part above stays passive
+    assert resolve(([], [13])).joints == [12]
+    assert resolve(([], [12, 13])).joints == []
+    assert resolve(([], [12, 13]), ([12], [])).joints == [12, 13]
+    # passive_layer writes the layer that gives exactly the wanted set over the named one
+    for wanted in ([12], [10], [10, 11, 13], [13], []):
+        assert resolve(passive_layer(parents, [12, 13], wanted)).joints == sorted(wanted)
 
 
 # ── build helpers ───────────────────────────────────────────────────────────
@@ -392,8 +422,10 @@ def test_build_alligator_profile_from_dataset():
     metadata = load_motion_metadata(source.root)
     rows = {n: metadata[n] for n in species_motion_names(metadata, "Alligator")}
     from motion_edit.profile.data import SpeciesOverride
-    confirm = SpeciesOverride(entries={"confirmed": ["sippo03", "R_ashi"]})
-    profile, findings = build_species_profile(source, key, entry, rows, passive_override=confirm)
+    # a tail stays with tail_weight unless an override makes it passive; this one does, then tries
+    # to drop a joint in the middle (only that joint leaves) and to add a foot
+    override = SpeciesOverride(entries={"add": ["sippo01", "R_ashi"], "remove": ["sippo02"]})
+    profile, findings = build_species_profile(source, key, entry, rows, passive_override=override)
     assert findings.clips == len(rows) > 0 and not findings.decode_failures
     assert len(profile["joints"]) == len(entry["parents"])
     assert profile["contacts"]["used"] == sorted(entry["contact_joints"])
@@ -402,9 +434,11 @@ def test_build_alligator_profile_from_dataset():
     assert "locomotion|walk" in profile["source"]["action_families"]
     assert profile["gait"], "the walk clip should yield a gait entry"
     tail = next(j for j in profile["joints"] if j["name"] == "sippo03")
-    assert tail["role"] == "passive" and tail["passive_confirmed"]
+    assert tail["role"] == "passive" and tail["passive"]
     assert tail["spring"]["source"] in ("fit", "default") and tail["spring"]["k"] > 0
-    unconfirmed = next(j for j in profile["joints"] if j["name"] == "sippo02")
-    assert unconfirmed["role"] == "axial" and not unconfirmed["passive_confirmed"]
-    # a foot is not a leaf-chain candidate: the confirmation is reported, not applied
+    assert not next(j for j in profile["joints"] if j["name"] == "sippo02")["passive"]
+    assert next(j for j in profile["joints"] if j["name"] == "sippo01")["passive"]
+    jaw = next(j for j in profile["joints"] if j["name"] == "ago")
+    assert jaw["role"] != "passive" and not jaw["passive"] and jaw["spring"]["k"] > 0     # a candidate, off
+    # a foot is a support joint: the addition is reported, not applied
     assert any("R_ashi" in note for note in findings.override_notes)

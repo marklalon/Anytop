@@ -1,6 +1,6 @@
 # 骨架统计档案 + 动作微调运行时：执行方案
 
-> 状态：M1（Profile 提取器）、M2（分解器 + 严格回放 + UI 基础）、M3（时间 / locomotion / 根 / 幅度参数、锁脚 IK、UI 接触修正）、M4（one-shot 事件 + 力度参数、时间轴上的事件拖动）已实现，M4 的人工审查未做；M5 起未实现。
+> 状态：M1（Profile 提取器）、M2（分解器 + 严格回放 + UI 基础）、M3（时间 / locomotion / 根 / 幅度参数、锁脚 IK、UI 接触修正）、M4（one-shot 事件 + 力度参数、时间轴上的事件拖动）、M5（次级运动弹簧）已实现，M4、M5 的人工审查未做；M6 起未实现。
 > 范围：从训练动作数据中统计每个骨架的运动学属性（Skeleton Profile），把 AnyTop 的输出分解为可编辑的中间层（Edit Package），并在微调端用一个固定、确定性的运行时（Edit Runtime）合成最终动作，提供即时、可预期的参数化微调。
 > 不在范围内：训练"骨架 → 属性"预测模型；把属性作为 AnyTop 的条件输入。两者都要等本方案的 M7（约束后处理评估）给出结论后再立项。
 
@@ -78,7 +78,7 @@ tests/test_motion_edit_profile.py、tests/test_motion_edit_runtime.py
 
 - cond entry：`parents`、`offsets`、`kinematic_chains`、`contact_joints`、`symmetry_partner_indices`、`joint_side_labels`、`species_tags`、`translation_root_index`、`scale_factor`、`forward_joint_index`、`forward_base_joint_index`。
 - `contact_overrides.json`（可选，第 3.4 节）：用户对接触关节集合的手动增删。
-- `passive_confirmations.json`（可选，第 3.5 节）：用户确认要做次级运动的叶链关节。
+- `passive_overrides.json`（可选，第 3.5 节）：用户对次级运动关节集合（按名字的默认值）的手动增删。
 - 该物种所有 clip 的 `motions/*.npy`，形状 `(F, J, 12)`，通道为 pos 3 + rot6D 6 + vel 3。
 - `action_labels.jsonl`：`action_group`、`action_label`、`is_loop`，用于按动作族分组统计。
 
@@ -97,7 +97,7 @@ tests/test_motion_edit_profile.py、tests/test_motion_edit_runtime.py
 | `hinge_flex_sign` | 仅对有子骨的 hinge：从数据里读屈曲方向。锚点取最近的、静息位置与该关节不重合的祖先（零长骨会让父关节和它重合），对所有帧计算锚点到子关节的距离与主轴投影角的加权协方差；距离随角度增大而缩短，+主轴就是屈曲方向（+1），反之为 −1；距离几乎不变（数据里从未弯过）为 0。不在均值姿态附近做局部探测，因为接近伸直的均值姿态正处在距离的极大值上，两个方向分不出来 | 原结果接近伸直时 IK 的 pole 方向（第 5.2 节第 4 步） |
 | `ang_speed` | 局部角速度的 q50 / q95（rad/s） | 力度参数的上限参考、诊断 |
 | `role` ∈ {root, axial, support, swing, passive, other} | 见第 3.4 节 | 决定哪些编辑作用在哪个关节上 |
-| `spring` {source, k, c, g_ang, g_lin, g_grav, natural_hz, damping_ratio, swing_length} | 仅对叶链上的候选关节：拟合通过时取拟合值（source = fit），否则取默认值（source = default），见第 3.5 节；拟合的诊断数据另存在 `spring_fit` | 次级运动模拟 |
+| `spring` {source, k, c, g_ang, g_lin, g_grav, natural_hz, damping_ratio, swing_length} | 仅对次级运动候选关节：拟合通过时取拟合值（source = fit），否则取默认值（source = default），见第 3.5 节；拟合的诊断数据另存在 `spring_fit` | 次级运动模拟 |
 | `confidence` | 由覆盖度与稳定性（第 3.7 节）综合得出 | 低置信度时回退到默认值 |
 
 ### 3.4 接触关节与关节角色
@@ -108,23 +108,26 @@ tests/test_motion_edit_profile.py、tests/test_motion_edit_runtime.py
 - `support`：接触关节，以及从它往上直到肢体链根的所有关节。
 - `axial`：其余标记为 center 的关节（躯干、头、尾）。
 - `swing`：不接触地面的左右肢体（手臂、翅膀等）；肢体全长不到腿长 0.25 的小附件（耳、嘴角、须）记为 `other`。
-- `passive`：用户在 `passive_confirmations.json` 中确认的叶链关节（尾、耳、毛发、触须、翼膜、披风等），不在 support 链上。叶链是从一个叶关节往上、直到最近的分叉关节为止的那一段。
+- `passive`：要做次级运动的关节（耳、毛发、衣物等），下面不挂任何 support 关节，集合的确定方法见第 3.5 节。
 
 gait 统计（第 3.6 节）需要训练 clip 上的逐帧接触区间，按第 4.1 节的区间检测规则在上述接触关节上计算。报告列出在 locomotion 帧中接触占比低于 5% 的接触关节，供用户判断是否要从接触集合中去掉。
 
 ### 3.5 次级运动：候选、确认与弹簧参数
 
-**候选与确认**：每条叶链上、不属于 support 链、且有子骨可摆动的关节都是次级运动候选。报告按叶链列出候选；要启用哪些关节由用户决定，写在 `<dataset_root>/passive_confirmations.json`，按物种记录 `{"confirmed": [...], "skeleton_hash": ...}`（关节名）。确认的关节 `role` 改为 `passive`，运行时才对它做模拟；确认了非候选关节（比如脚）的条目不生效，写进报告。
+**候选与默认集合**：除根以外、子树里没有 support 关节的关节都是次级运动候选，叶关节也算（单骨的裙片、耳朵、鱼尾）。passive 集合的增删以子树为单位：加入一个关节连同它的整棵子树，移出一个关节也连同它的子树，上面的部分保持 passive，所以一个部位可以只摆上半段（下半段跟着最后一段 passive 骨刚性运动）。候选中，关节名（规范化后）有一个词以 hair、fur、mane、ear 或衣物词（skirt、cape、cloak、coat、robe、dress、cloth、scarf、sleeve、ribbon、sash、apron、shawl、veil、tassel）开头的，连同子树默认就是 passive（按词前缀匹配，rear 不会命中 ear）。下颌、眉毛、手指、缰绳这类候选默认不启用。尾巴不在默认集合里，但处理方式和 passive 完全相同，只是参数通道不同：尾巴组里可以摆的关节（候选，向下闭合，不含 passive 关节）属于 tail 通道（`tail_weight` / `tail_stiffness`），passive 关节属于 passive 通道（`passive_weight` / `passive_stiffness`），两者可以分别调。手动把尾巴加进 passive，就是把它换到 passive 通道。
+
+**手动增删**：和接触关节一样有两层。物种层写在 `<dataset_root>/passive_overrides.json`，按物种记录 `{"add": [...], "remove": [...], "skeleton_hash": ...}`（关节名，相对于按名字的默认集合）；package 层只改这一个 package。两层都可以在微调 UI 上编辑（第 5.4 节）。增加一个关节就增加它的整棵子树；移除只去掉列出的关节本身（UI 写入时会把要移除的子树完整列出），父关节仍是 passive 也照样生效。只有候选能成为 passive，增加了下面挂着 support 关节的关节（比如脚、脊柱）不生效，写进报告和 package 的诊断。passive 关节的 `role` 改为 `passive`，不再受 `amp.*` 控制，只听 passive 通道的两个参数（第 5.1 节）。
 
 **弹簧参数**：每个候选关节都带一组参数，来源有两个：
 
 1. **拟合**：数据里确实有被身体带动的运动时，用拟合出的参数（`source = fit`）。
-2. **默认**：其余情况都用默认参数（`source = default`）。数据里大部分尾巴、毛发是动画师手 K 的，和身体运动无关，拟合通不过，但这不妨碍它们在编辑后获得跟随感：运行时只叠加新旧父运动的模拟结果之差（第 5.2 节第 5 步），手 K 的原曲线原样保留，弹簧只负责编辑带来的那部分变化。
+2. **默认**：其余情况都用默认参数（`source = default`）。数据里大部分尾巴、毛发是动画师手 K 的，和身体运动无关，拟合通不过，但这不妨碍给它们加上跟随感：运行时在手 K 的原曲线上叠加弹簧对身体运动的响应（第 5.2 节第 5 步）。
 
 默认参数把关节下方的链看成一根绕关节摆动的均匀杆：
 
 ```text
-L       = 关节下方链的静息长度（swing_length 记录 L / 腿长）
+L       = 关节下方最长一条链的静息长度；叶关节没有下方的链，用它自己的骨（父关节到它）代替；
+          不短于 0.1 × 腿长（swing_length 记录 L / 腿长）
 f       = 1.5 Hz × (L / 腿长)^(−1/2)，夹在 0.5–4 Hz        （链越长摆得越慢，像单摆）
 k       = (2π f)²，c = 2 ζ √k，ζ = 0.3
 g_ang   = 1               （父关节转动时，杆按 1:1 落后）
@@ -132,9 +135,9 @@ g_lin   = 3 / (2L)        （父关节横向加速时，均匀杆绕端点的角
 g_grav  = 0               （手 K 的姿态已经是动画师要的下垂位置，不再叠加重力）
 ```
 
-用户还可以用 `secondary.stiffness / damping` 滑杆整体调节。
+运行时每个 passive 部位（父关节不是 passive 的最上面那个关节 J 和它的子树）在父关节 P 处另有一个虚拟铰链，它的弹簧按上式取默认参数，杆长 L = P 到 J 的距离 + J 下方最长的链（第 5.2 节第 5 步）。
 
-**拟合**：对叶链上的关节 j（父关节 p）：
+**拟合**：对有子骨的候选关节 j（父关节 p；叶关节不拟合，直接用默认参数）：
 
 ```text
 θ_j(t)  = 局部 rotvec 相对均值的偏差（p 的坐标系）
@@ -153,7 +156,7 @@ b       = 关节 j 在均值姿态下的骨向（p 的坐标系）
 2. 驱动项的贡献：完整模型的留出 R² 比去掉驱动项（g_ang = g_lin = g_grav = 0）的模型高出 `delta_r2` ≥ 0.2；
 3. 驱动系数至少有一个显著不为零（系数 / 标准误 > 3），固有频率 √k / 2π 在 0.2–8 Hz 之间，且 c ≥ 0。
 
-拟合通过与否只决定参数来源，不决定是否启用；报告里标出拟合通过的关节，供用户确认时参考。
+拟合通过与否只决定参数来源，不决定是否启用；报告里标出拟合通过的关节，供用户增删时参考。分解时，Profile 里没有弹簧参数的候选（没有 Profile、或 package 改了接触关节而多出来的候选）按上面的默认参数补齐。
 
 ### 3.6 全局属性与 locomotion 属性
 
@@ -168,7 +171,7 @@ b       = 关节 j 在均值姿态下的骨向（p 的坐标系）
 2. **对称性**：只在 locomotion clip 上检查（单手攻击、转身本来就左右不同）。`symmetry_partner_indices` 给出的左右配对，以 X = 0 平面镜像后比较：方差占比相差不超过 0.1；hinge 的转轴、planar 的平面法向夹角 < 20°。全部结果写进 JSON 的 findings；报告只列出镜像轴夹角 ≥ 30° 的，这一类才可能是骨架左右定义本身的问题。
 3. **名字合理性**：原名或规范名是 knee/elbow/hiza/hiji 一类的关节应当被判为 hinge。不是的话写进报告，不自动修改。
 4. **confidence** = 覆盖度 × 稳定性：覆盖度 = min(1, clip 数 / 8) × (0.5 + 0.5 × min(1, 动作族数 / 3))；不稳定的关节乘 0.5。
-5. **报告**：`skeleton_profiles_report.md`，开头是按物种的计数表，下面按物种列出：解码失败、覆盖文件问题（过期、关节名不存在、确认了非候选关节）、次级运动候选叶链（标出拟合通过和已确认的关节）、几乎不着地的接触关节、明显的左右镜像轴不一致、名字和自由度冲突。不稳定和低置信度只在表里给数量：它们主要反映物种的 clip 少、动作族单一，已经体现在 confidence 里。
+5. **报告**：`skeleton_profiles_report.md`，开头是按物种的计数表，下面按物种列出：解码失败、覆盖文件问题（过期、关节名不存在、增删不生效）、次级运动候选（每个挂在身体上的候选子树一行，标出拟合通过和 passive 的关节）、几乎不着地的接触关节、明显的左右镜像轴不一致、名字和自由度冲突。不稳定和低置信度只在表里给数量：它们主要反映物种的 clip 少、动作族单一，已经体现在 confidence 里。
 
 ### 3.8 输出格式
 
@@ -199,7 +202,7 @@ b       = 关节 j 在均值姿态下的骨向（p 的坐标系）
 }
 ```
 
-次级运动候选关节另有 `spring`、`spring_fit` 和 `passive_confirmed`；拆半不稳定的关节另有 `unstable`。
+次级运动候选关节另有 `spring`、`spring_fit` 和 `passive`（是否启用）；拆半不稳定的关节另有 `unstable`。
 
 `python -m motion_edit.build_profiles [--dataset <namespace>] [--species <glob>] [--workers N]` 读 `dataset/datasets.jsonl` 里的每个数据集，写 `<dataset_root>/skeleton_profiles.json` 和报告；带过滤条件时只替换本次构建的物种，其余行保留。
 
@@ -211,7 +214,7 @@ b       = 关节 j 在均值姿态下的骨向（p 的坐标系）
 
 - 拓扑、接触关节、对称性取自 cond（接触关节同样可以手动增删）；
 - `dof_class`、`hinge_flex_sign`：按规范关节名（`canonical_joint_names`），从 `species_tags` 相同的已知物种中取多数的 dof_class；匹配不到时用 ball。`confidence` 一律为 0；
-- 次级运动候选照常按叶链列出，参数用默认值；用户确认后同样可以启用。
+- 次级运动候选照常列出，参数用默认值；按名字默认启用，也可以手动增删。
 
 以后用预测模型替换这个回退策略，但要等 M7 的结论。
 
@@ -267,7 +270,8 @@ b       = 关节 j 在均值姿态下的骨向（p 的坐标系）
                   # input_notes（关于输入的诊断，如物种覆盖行过期；重新分解和接触编辑时保留，改写物种覆盖时清掉）、
                   # profile（status: ok / fallback / missing、该动作的 gait 行、stride_speed_fit）、
                   # contacts（使用的关节、来源 cond / species_add / species_remove / package_add / package_remove、
-                  #   接触区间是否被手动改过）、events（周期、各肢体着地帧、离地段、与 Profile gait 的相位偏差；
+                  #   接触区间是否被手动改过）、passive（启用的关节、按名字的默认集合、候选、
+                  #   来源 species_add / species_remove / package_add / package_remove）、events（周期、各肢体着地帧、离地段、与 Profile gait 的相位偏差；
                   #   one-shot 的 strike：主动链、末端、windup / impact / recover、置信度、标签先验的组、候选链）、
                   # facts（is_loop、locomotion、has_plants、turning、airborne、has_passive、strike、chain_groups：
                   #   决定哪些参数可用）、
@@ -300,7 +304,7 @@ Package 是自包含的：微调端不需要 cond.npy，也不需要数据集目
 | `bounce` | 1.0 | 0–2 | 根 Y 的振荡分量 | 支撑脚锁定，不穿地 |
 | `jump_height` | 1.0 | 0.5–1.8 | one-shot 的离地段：根 Y 相对起跳帧—落地帧连线的弧线，起跳和落地帧不动 | 落地帧接触关节回到地面 |
 | `sway` | 1.0 | 0–2 | 根 XZ 的振荡分量；XZ 趋势（突进、击退等真实位移）不受影响 | 支撑脚锁定 |
-| `amp.legs / arms / axial / tail / wings` | 1.0 | 0–2 | 各类链的偏差幅度 | 支撑脚锁定 |
+| `amp.legs / arms / axial / wings` | 1.0 | 0–2 | 各类链的偏差幅度 | 支撑脚锁定 |
 | `posture` | 0 | −0.3–0.2（× 腿长） | 髋高偏移（蹲 / 伸） | 支撑脚锁定，腿部 IK 重解 |
 | `force` | 1.0 | 0.5–2.0 | one-shot：组合下面三项 | 事件顺序不变；支撑脚锁定 |
 | `windup_depth` | 1.0 | 0–2 | 蓄力：整个打击身体（主动链、它所挂的躯干、根）在 windup 段离接触姿态更远，并且重心后移、躯干后仰 | 支撑脚锁定；到接触帧回到接触姿态 |
@@ -308,7 +312,11 @@ Package 是自包含的：微调端不需要 cond.npy，也不需要数据集目
 | `windup_speed` | 1.0 | 0.5–2.0 | 起始→windup 段的速度（蓄力快慢）；loop 上是 recover→下一个 windup 的整段 | 时间单调 |
 | `strike_speed` | 1.0 | 0.5–2.0 | windup→impact 段的速度（出击快慢） | 时间单调 |
 | `recover_speed` | 1.0 | 0.5–2.0 | impact→recover 段的速度（收招快慢） | 时间单调 |
-| `secondary.stiffness / damping` | 1.0 | 0.25–4 | passive 关节的弹簧参数倍率 | 只作用于已确认的 passive 关节 |
+| `tail_weight` | 1.0 | 0–2 | 尾巴里可以摆的关节：0–1 像 amp 一样缩放手 K 曲线（0 = 僵直地跟着父关节）；1–2 在手 K 曲线上叠加 (w − 1) × 弹簧对身体运动的响应（越大越飘）。尾巴里摆不了的关节（下面挂着 support 关节）把它当普通幅度增益 | 1 = 原动作 |
+| `tail_stiffness` | 1.0 | 0.5–2 | 尾巴弹簧的硬度：固有频率乘以该值（k × h²，c × h，阻尼比不变）；越硬摆得越小、越快，越软越拖、越飘 | 只在 `tail_weight` > 1 时起作用 |
+| `passive_weight` | 1.0 | 0–2 | passive 关节，和 `tail_weight` 同一种处理 | 只作用于 passive 关节；1 = 原动作 |
+| `passive_stiffness` | 1.0 | 0.5–2 | passive 弹簧的硬度，和 `tail_stiffness` 同理 | 只在 `passive_weight` > 1 时起作用 |
+| `gravity` | 开 | 开 / 关 | 两个通道的弹簧是否带重力项（`g_grav`，拟合出的弹簧才有；默认弹簧的 `g_grav` 为 0，开关对它没有影响；微调 UI 不显示，保持开） | 只在 `tail_weight` 或 `passive_weight` > 1 时起作用 |
 | `foot_lock` | 关 | 开 / 关 | 所有带接触区间的动作 | 开：接触区间内落点漂移为 0（够不到的帧除外）；关：保留原结果自带的滑步 |
 | `soft_stretch` | 0.1 | 0–0.2 | 所有带接触区间的动作：IK 重解时腿链骨长允许的最大伸缩比例 | 只在落点逼得腿接近伸直或远比原姿态更弯时起作用；0 时骨长与 package 一致 |
 
@@ -329,7 +337,7 @@ Package 是自包含的：微调端不需要 cond.npy，也不需要数据集目
 - `stride`：locomotion、有接触区间、且不是转弯动作（根 yaw 的变化范围 ≤ 25°）；
 - `jump_height`：one-shot 且检测到离地段（两个着地段之间没有任何接触的连续帧）。loop 的跳跃弧线在根 Y 的振荡里，由 `bounce` 调；起身这类没有离地段的竖直位移不提供；
 - `posture`、`foot_lock`：有接触区间；
-- `force` 系列：识别出了打击事件（one-shot，或标签表明有打击的 loop）；`secondary.*`：有已确认的 passive 关节。
+- `force` 系列：识别出了打击事件（one-shot，或标签表明有打击的 loop）；`passive_*`：有 passive 关节；`gravity`：有 `tail_*` 或 `passive_*`。`amp.<组>`、`tail_*`：该组里有不是 passive 的关节（尾巴被手动加成 passive 后不再显示 `tail_*`）。
 
 ### 5.2 运算顺序（固定）
 
@@ -345,8 +353,8 @@ Package 是自包含的：微调端不需要 cond.npy，也不需要数据集目
    loop：一个周期的节点是 windup、impact、recover、下一个 windup（再加上源第 0 帧），三段速度分别作用于
    windup→impact、impact→recover、recover→下一个 windup；变速后的周期长度取整（和 tempo 一样，实际倍率写进诊断），
    输出第 0 帧采样源第 0 帧。插值在周期两端各多带一个相邻节点，周期首尾的斜率相同，接缝处连续
-2. 幅度：chain_offsets 按 amp.* 缩放；采样后的偏差取与 chain_offsets 插值最近的分支再缩放；
-   chain_gain_locked 的关节增益为 1。
+2. 幅度：chain_offsets 按 amp.* 缩放；passive 关节按 min(passive_weight, 1)、尾巴里可以摆的关节按 min(tail_weight, 1) 缩放（尾巴其余关节按 tail_weight）；采样后的偏差取与
+   chain_offsets 插值最近的分支再缩放；chain_gain_locked 的关节增益为 1。
    打击身体 = 主动链 + 根到主动链挂接点之间的躯干关节 + 根（平移和倾斜）。两条时间曲线都是源时间 s 的函数：
    loop 上两条曲线按周期环绕（缓入不会越过上一个周期的 recover，周期衔接处两条曲线都是 0，所以闭合不受影响）。
    hold 在 windup 之前一个"windup→impact 长度"里从 0 缓入到 1，再在 windup→impact 段缓回 0（接触帧回到接触姿态）；
@@ -404,12 +412,24 @@ Package 是自包含的：微调端不需要 cond.npy，也不需要数据集目
      骨长逐帧平滑变化。包络让邻近帧的腿比必需的略长或略短，膝盖会把差吃掉，落点照样精确。
      拉到上限仍够不到的部分才交给第 6 步的身体下降
    - 够不到（pivot 误差 > 1e-4 × 腿长）的帧写进诊断
-5. 次级运动：已确认的 passive 关节只叠加增量：
-   θ_out = θ_orig + sim(新父运动, k', c') − sim(原父运动, k, c)
-   其中 k、c、g_* 取 Profile 的 spring（拟合值或默认值），k'、c' 是乘上 secondary.* 倍率后的值。
-   两次模拟用同一个积分器、同一组初值。同一条叶链从链根往链尖逐个关节模拟，
-   下游关节的"新父运动"已经包含上游关节的模拟增量
-   loop：预热两个周期，取第三个周期作为结果，保证首尾闭合
+5. 次级运动：passive 部位和尾巴是两个通道，处理相同，各有 weight w 和 stiffness h 两个参数。下面以 passive 为例，
+   尾巴同理；一个通道的 weight 不超过 1 时它不摆（stiffness 也就不起作用）。
+   w > 1 时，每段 passive 骨在自己的曲线上叠加 (w − 1) × sim(铰链运动)：
+   θ_out = θ_keyed + (w − 1) · sim(编辑后的铰链运动, h²·k, h·c)
+   h 把每个弹簧的固有频率乘以 h，阻尼比不变；虚拟铰链和 Profile 的弹簧一样缩放
+   标记关节 X 为 passive 的意思是"从父关节到 X 的那段骨会摆"，所以 X 自己就会动：
+   - 部位的最上面一个关节 J（父关节 P 不是 passive）：在 P 处虚拟一个铰链，摆动把 J 的局部平移和局部旋转
+     一起绕 P 转（骨长不变，P 和其它关节都不动；导出时这部分是 J 的平移通道）。弹簧取默认参数，
+     杆从 P 指向 J，杆长是 P 到 J 的距离加 J 下方最长的链；
+   - 部位里有子关节的 passive 关节 Y：转 Y 自己的局部旋转，带着子关节摆（铰链在 Y，父坐标系里已经包含
+     上面虚拟铰链的摆动），弹簧取 Profile 的 spring（拟合值或默认值），杆是 Y 到最长子关节的骨；
+   - 叶关节下方没有骨可摆，它的摆动由上一级负责，自己不单独模拟。
+   θ 和第 3.5 节的拟合是同一个量（铰链坐标系下的 rotvec，左乘），驱动项也按拟合的定义从铰链的全局旋转
+   和位置算（同一套 Savitzky–Golay 微分）。铰链运动取编辑后的动作，所以身体被编辑后（幅度、力度、tempo 等）
+   摆动也随之变化。one-shot 从静止开始；loop 直接取周期稳态（解出首帧状态，使一个周期后回到它），首尾闭合。
+   从父到子逐段模拟，下游的铰链运动包含上游的完整响应；全部算完再统一乘 (w − 1)，所以摆角和滑杆
+   成正比，不会沿链逐级放大。这一步在第 6 步之后执行：passive 关节不在任何 IK 肢体上，放在最后可以读到
+   身体最终的位置（包括着地时的身体下降）。两个通道的 weight 都 ≤ 1 时整层跳过
 6. 着地：支撑目标本身就取原结果的高度，第 4 步把脚放回去，原结果自带的悬空或穿地保持不变。
    只有 IK 够不到、pivot 停在目标上方时（比如 posture 抬高、bounce 压平后腿不够长），
    才把这些帧的身体按最大的差降下来。下降量取差的上包络：每帧的差向前后各展开 0.2 s 的升余弦斜坡，
@@ -429,7 +449,7 @@ Package 是自包含的：微调端不需要 cond.npy，也不需要数据集目
 | 重采样 | `runtime.py` 的 `sample_quat` / `sample_linear` / `sample_angle`：周期模式下第 F−1 帧之后接第 0 帧；整数时间原样返回关键帧，T1b 才能逐位一致。`npy_restore.resample_animation` 不动 |
 | PCHIP 时间扭曲 | 新写，放在 `runtime.py` |
 | 肢体 IK | `motion_edit/ik.py`：所有帧一起批量求解的 DLS（第 5.2 节第 4 步）。不放进 `utils/fullbody_ik.py`：那里是让每根骨对齐目标方向的全身求解，这里要的是"末端到点 + 软自由度 + 保持弯曲侧"，两者没有可共用的部分，放在一起只会让导出路径背上运行时的改动风险 |
-| 二阶弹簧积分 | 新写，放在 `runtime.py` |
+| 二阶弹簧积分 | `runtime.py` 的 `spring_response`：每帧用振子的矩阵指数做精确转移（驱动取半步中点值），任何刚度下都稳定。驱动项用 `profile/spring.py` 的 `drive_terms`，与拟合共用 |
 
 `profile/` 统计 hinge 主轴时用到的 log map 与运行时用同一套四元数实现，避免两边对 rotvec 的约定不一致。
 
@@ -460,6 +480,7 @@ motion_edit/ui/vendor/           three.js 等前端依赖放在本地，离线�
 | GET | `/api/package/<id>` | manifest：参数默认值与范围、事件、接触关节集合及来源、接触区间、骨架（parents / offsets / names）、哪些参数对该动作可用（按服务端当前的参数集重建） |
 | POST | `/api/load` | 输入：package id + stretch_factor（可选）+ fullbody_ik（可选）；任一项与当前值不同时重新分解并覆盖 package，返回新的 manifest。重新分解会重置手动改过的接触区间，页面在执行前要求确认 |
 | POST | `/api/contacts` | 输入：package id + `joints`（完整的接触关节集合）+ `species`（是否应用到该物种），或 package id + `mask`（(K, F) 的 0/1 接触区间），或 package id + `ground_height`（地面高度，重新检测区间）。关节集合变了就重新检测区间，区间变了就重新计算 v_g、落点和残差，都不重新解码，结果覆盖 package。`species` 时把相对 cond 的增删（关节名）写进 `<dataset_root>/contact_overrides.json`（增删都为空时删掉该行），package 的增删随之转成物种来源；package 没有 `dataset_root` 时报错 |
+| POST | `/api/passive` | 输入：package id + `joints`（完整的 passive 关节集合，按原样采用，必须都是候选；子树由页面补全）+ `species`（是否应用到该物种）。只重新组装 package，不重新解码，手动改过的接触区间保留。`species` 时把相对按名字默认集合的增删写进 `<dataset_root>/passive_overrides.json`（增删都为空时删掉该行） |
 | POST | `/api/apply` | 输入：package id + 参数 + `events`（可选，用户拖动过事件或换过主动链时才带：`windup` / `impact` / `recover` 源帧、`chain` 候选链根关节；顺序必须保持 windup < impact < recover）。UI 一律走完整路径（第 0 步的默认值跳过关闭，即 T1b），默认值下的输出也是分解再重组的结果；输出：逐帧全局位置、局部旋转、`v_g'`、每个输出帧采样的源时间、输出时间轴上的着地掩码、支撑目标、够不到的掩码、诊断（夹紧、够不到、身体下降、增益固定、tempo 取整）、与原始结果的最大位置差（UI 放在诊断列表里） |
 | POST | `/api/export` | 输入同 `/api/apply`，外加格式（bvh / glb）、是否输出 root motion；写入文件并返回下载链接 |
 | GET / POST | `/api/presets/<id>` | 读写该 package 的参数预设（JSON，与 package 放在一起） |
@@ -470,13 +491,13 @@ v1 不考虑性能：参数滑杆在松开时才请求 `/api/apply`，拖动过�
 
 1. **3D 视图**（three.js）：
    - 骨架用线段加关节球显示；接触关节在接触区间内高亮；
-   - 视口里左键点选关节，把它加入或移出接触关节草稿（中键环绕不受影响）；侧栏列出草稿和每个关节的来源（cond / 物种 / 本 package），也可以从下拉框添加。确认后"应用到本 package"或"应用到该物种"（走 `/api/contacts`）；
-   - 编辑结果每帧的支撑目标画成黄圈，够不到的标红；原始骨架按编辑结果当前帧采样的源时间对齐，tempo 改了也能逐帧对比；
+   - 视口里左键点选关节，把它加入或移出接触关节草稿；Shift + 左键加入或移出次级运动草稿：加入和移出都连同点中关节的整棵子树（移出时它上面的 passive 关节保留）；下面挂着支撑关节的关节给出提示，不加入。中键环绕不受影响。侧栏分别列出两份草稿和每个关节的来源（接触：cond / 物种 / 本 package；次级运动：物种 / 本 package，按名字的默认项不标），也可以从下拉框添加（次级运动的下拉框只列候选）。确认后"应用到本 package"或"应用到该物种"（分别走 `/api/contacts`、`/api/passive`）；次级运动关节在骨架上显示为高饱和的紫色，选中的关节画一个白色十字；
+   - 编辑结果每帧的支撑目标画成半透明的绿圈，够不到的标红；原始骨架按编辑结果当前帧采样的源时间对齐，tempo 改了也能逐帧对比；
    - 地面网格放在 `ground_height` 上，不随动画或相机移动；侧栏改地面高度时网格立即跟着移动，点"应用"后才重新检测接触区间；可以切换成"root motion 视图"，把 `v_g'` 积分到根上，让角色真正前进；
    - **对比**：同时显示原始结果（半透明）和编辑后的结果；也可以切换成左右并排；
    - 播放、暂停、逐帧、播放速度、循环开关；相机可以环绕和跟随。
-2. **参数面板**：按第 5.1 节分组（时间 / locomotion / 根 / 幅度 / 力度 / 次级运动 / 着地）。对当前动作不可用的参数直接隐藏（比如 attack 不显示 stride，没有 passive 关节就不显示 secondary）。每个滑杆都有"恢复默认"按钮；面板顶部有"全部恢复默认"，恢复后结果必须与原始结果完全一致（T1 在 UI 上的体现）。顶栏可以设置 stretch_factor 和 fullbody IK 开关（关掉 IK 时 stretch_factor 禁用），点"重新分解"生效。
-3. **时间轴**：按源帧显示，播放头在编辑结果当前帧采样的源时间上。显示事件标记（windup / impact / recover、起跳 / 落地、loop 周期边界），以及每个接触关节一行的接触区间色条（左侧是关节名）。事件标记（W / I / R）可以拖动，拖动时保持顺序，松开后重新 apply；参数面板的力度组里可以换主动链（候选链及能量占比）、重置事件，并显示事件置信度。接触区间在草稿上编辑：空白处拖动新增，拖动两端调整（loop 可以跨接缝），点选后按 Delete 删除；新增的格子绿色、删掉的格子淡红；"应用区间修改"才发给服务端，"放弃"恢复。点标尺行或关节名列只移动播放头。
+2. **参数面板**：按第 5.1 节分组（时间 / locomotion / 根 / 幅度 / 力度 / 次级运动 / 着地）。对当前动作不可用的参数直接隐藏（比如 attack 不显示 stride，没有 passive 关节就不显示 passive_*；weight ≤ 1 时同通道的 stiffness 滑杆禁用）。每个滑杆都有"恢复默认"按钮；面板顶部有"全部恢复默认"，恢复后结果必须与原始结果完全一致（T1 在 UI 上的体现）。顶栏可以设置 stretch_factor 和 fullbody IK 开关（关掉 IK 时 stretch_factor 禁用），点"重新分解"生效。
+3. **时间轴**：按源帧显示，播放头在编辑结果当前帧采样的源时间上。显示事件标记（windup / impact / recover、起跳 / 落地、loop 周期边界），以及每个接触关节一行的接触区间色条（左侧是关节名）。事件标记（W / I / R）可以拖动，拖动时保持顺序，松开后重新 apply；参数面板的力度组里可以换主动链（候选链按能量占比降序列出）；"全部恢复默认"同时把事件和主动链恢复为分解时检测的结果。接触区间在草稿上编辑：空白处拖动新增，拖动两端调整（loop 可以跨接缝），点选后按 Delete 删除；新增的格子绿色、删掉的格子淡红；时间轴上的"触地区间"按钮进入编辑，"应用"才发给服务端，"放弃"恢复。点标尺行或关节名列只移动播放头。
 4. **诊断面板**：列出本次 apply 的夹紧、够不到、增益固定、事件低置信度、分解时的 IK 残差等信息，点一条就跳到对应的帧并高亮对应的关节。
 5. **导出栏**：格式、是否输出 root motion、文件名；以及预设的保存和加载。
 
@@ -521,11 +542,11 @@ T6 不是"效果好"的判据，只是防止运行时把滑步弄得比原来更
 
 | 里程碑 | 内容 | 完成标准 |
 |---|---|---|
-| M1 | Profile 提取器 + 报告 | 所有物种的 Profile 生成完毕；第 3.7 节的检查全部跑完；人工看过报告（要做次级运动的关节可以随时写进 `passive_confirmations.json`，不阻塞后续里程碑） |
+| M1 | Profile 提取器 + 报告 | 所有物种的 Profile 生成完毕；第 3.7 节的检查全部跑完；人工看过报告（次级运动关节的增删可以随时在 UI 上做或写进 `passive_overrides.json`，不阻塞后续里程碑） |
 | M2 | 分解器（含 fullbody IK 刚体化、stretch_factor、接触区间检测）+ 严格回放 + UI 基础（server、3D 视图、对比、参数滑杆、加载时设置 stretch_factor） | T1、T1b、T2、T5 通过；UI 能加载 package 并做往返回放。之后 M3–M5 的人工审查都在这个 UI 上进行 |
 | M3 | 运行时：tempo / stride / bounce / sway / jump_height / amp / posture / foot_lock + 锁脚 IK；UI 上的接触修正（标记 / 取消接触关节，增删、拖动接触区间，应用到该物种） | T4–T7 通过；在原地 locomotion、Y 位移动作、带突进的攻击和 idle 上人工审查通过 |
 | M4 | one-shot 事件 + force 系列参数 | 人工抽查 attack clip 的事件帧，正确率 ≥ 80%；attack / hurt 上 T6、T7 通过；force 系列参数人工审查通过（试用的动作中要有带垫步、跨步的攻击 clip） |
-| M5 | 次级运动弹簧（增量模拟，拟合参数或默认参数） | 已确认的 passive 关节启用；T4、T7 通过；人工审查通过（审查的动作中要有用默认参数的手 K 尾巴） |
+| M5 | 次级运动：tail / passive 两个通道各一组 weight + stiffness（缩放手 K 曲线 / 叠加弹簧响应，拟合参数或默认参数，硬度整体缩放固有频率）；按名字的默认 passive 集合（含叶关节）与以子树为单位的 UI 增删 | passive 关节启用；T4、T7 通过；人工审查通过（审查的动作中要有用默认参数的手 K 尾巴） |
 | M6 | 微调 UI 完整版（第 5.4 节）：事件拖动、诊断面板、导出、预设、root motion 视图 | UI 上"全部恢复默认"与原始结果完全一致；UI 导出的文件与命令行用同一组参数导出的文件逐位一致；美术试用，收集参数是否够用、是否直观的反馈 |
 | M7 | Profile 用于生成后处理（hinge 投影），不改模型 | 对同一批生成结果做处理前后的盲审 A/B（左右位置随机），记录偏好；结论决定是否立项"预测器"和"Profile 作为 AnyTop 条件" |
 
@@ -539,7 +560,7 @@ M1 与 M2 可以并行；M3 依赖两者；M4、M5 可以并行；M6 可以在 M
 | cond 的 `contact_joints` 有漏标（如 Alligator 前脚） | 用户在 UI 上手动标记，可以只对一个 package 生效，也可以写进 `contact_overrides.json` 对整个物种生效；cond 修正走正常的 regen + 重训流程，单独决策 |
 | 飞行、游泳 clip 被误判出接触区间 | 关节自己的地面离 `ground_height` 太高时整段不算接触；生成结果整体浮起或下沉时在 UI 上调地面高度；剩下的误判由用户在时间轴上清掉 |
 | fullbody IK 刚体化后偏离 pos 通道 | 分解时记录 IK 残差并显示在诊断面板；用户可以在加载时调大 stretch_factor |
-| 次级运动参数不合适 | 拟合只在驱动项有显著贡献时采用，其余用默认参数；是否启用由用户确认；`secondary.*` 滑杆可整体调节 |
+| 次级运动参数不合适 | 拟合只在驱动项有显著贡献时采用，其余用默认参数；passive 集合可在 UI 上增删；`*_weight` / `*_stiffness` 滑杆整体调节 |
 | 链偏差越过 π，缩放后翻转 | 偏差沿时间 unwrap，曲线连续；loop 中每周期自转一整圈的关节增益固定为 1，并写入诊断 |
 | 原地 locomotion 的接触判定依赖隐含地速估计，转弯、侧移时各脚速度不一致 | 先只支持直行：根 yaw 变化超过 25° 的 locomotion 不提供 stride（写进诊断）。以后 `v_g` 改为每帧的二维向量加 yaw 角速度（刚体平面运动），按每只脚的位置分别计算其应有速度 |
 | 多个接触关节同时着地时，刚体脚部只能精确放下 pivot | distal 方向对齐，其余关节随刚体移动；T6 对它们给出单独的容差。脚趾在支撑期自己的滚动被 amp 压平时最明显 |

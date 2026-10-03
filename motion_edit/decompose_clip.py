@@ -10,7 +10,7 @@ Usage (from ``Anytop/``)::
     python -m motion_edit.decompose_clip --clip truebones/zoo:Horse_Walk.npy --out outputs/edit_packages
 
 Writes ``<out>/<clip>.edit/``.  The skeleton profile and the species'
-``contact_overrides.json`` row are read from the dataset whose ``cond.npy``
+``contact_overrides.json`` / ``passive_overrides.json`` rows are read from the dataset whose ``cond.npy``
 holds the cond key; ``--cond`` points at another cond file (a new skeleton
 from ``tools/process_new_skeleton.py``), which then has no profile unless
 ``--profiles`` names one.
@@ -34,11 +34,13 @@ from motion_edit.decompose import (  # noqa: E402
     StaleProfileError,
     contact_source,
     decompose_motion,
+    passive_source,
     profile_subset,
 )
 from motion_edit.package import PACKAGE_SUFFIX  # noqa: E402
 from motion_edit.profile.data import (  # noqa: E402
     CONTACT_OVERRIDES_FILE,
+    PASSIVE_OVERRIDES_FILE,
     PROFILES_FILE,
     discover_sources,
     load_cond,
@@ -56,12 +58,12 @@ def _find_dataset(cond_key: str):
     return None, None
 
 
-def _species_override(root: str, cond_key: str, cond_entry: dict):
-    row = load_species_sidecar(root, CONTACT_OVERRIDES_FILE).get(cond_key)
+def _species_override(root: str, file_name: str, cond_key: str, cond_entry: dict):
+    row = load_species_sidecar(root, file_name).get(cond_key)
     if row is None:
         return None, None
     if row.stale(skeleton_hash(cond_entry["parents"], cond_entry["offsets"])):
-        return None, f"{CONTACT_OVERRIDES_FILE} row for {cond_key} is stale (skeleton_hash changed); ignored"
+        return None, f"{file_name} row for {cond_key} is stale (skeleton_hash changed); ignored"
     return row.entries, None
 
 
@@ -148,18 +150,23 @@ def main(argv=None) -> int:
         print(f"error: {cond_key}: {exc}", file=sys.stderr)
         return 2
 
-    override, note = _species_override(dataset_root, cond_key, cond_entry) if dataset_root else (None, None)
-    if note:
-        notes.append(note)
+    override, note = (_species_override(dataset_root, CONTACT_OVERRIDES_FILE, cond_key, cond_entry)
+                      if dataset_root else (None, None))
+    input_notes = [{"kind": "contacts", "message": n} for n in notes + ([note] if note else [])]
     contacts = contact_source(cond_entry, override)
+    override, note = (_species_override(dataset_root, PASSIVE_OVERRIDES_FILE, cond_key, cond_entry)
+                      if dataset_root else (None, None))
+    if note:
+        input_notes.append({"kind": "passive", "message": note})
+    passive = passive_source(cond_entry, override)
 
     package = decompose_motion(
         features, cond_entry, object_type=cond_key, clip_name=name, is_loop=is_loop,
         action_group=action_group, action_label=action_label,
         fps=float(args.fps or FPS), stretch_factor=args.stretch_factor,
-        fullbody_ik=not args.no_fullbody_ik, profile=subset, contacts=contacts,
+        fullbody_ik=not args.no_fullbody_ik, profile=subset, contacts=contacts, passive=passive,
         dataset_root=os.path.abspath(dataset_root) if dataset_root else None,
-        notes=[{"kind": "contacts", "message": note} for note in notes])
+        notes=input_notes)
     out_dir = package.save(os.path.join(args.out, name + PACKAGE_SUFFIX))
 
     m = package.manifest

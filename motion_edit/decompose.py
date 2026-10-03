@@ -44,7 +44,16 @@ from motion_edit.package import (
 from motion_edit.profile import gait as gait_stats
 from motion_edit.profile.build import COND_FIELDS, SCHEMA_VERSION as PROFILE_SCHEMA
 from motion_edit.profile.data import Clip, skeleton_hash
-from motion_edit.profile.skeleton import CENTER, SMALL_LIMB_RATIO, SkeletonStructure, resolve_contacts
+from motion_edit.profile.skeleton import (
+    CENTER,
+    SMALL_LIMB_RATIO,
+    SkeletonStructure,
+    passive_name_layer,
+    resolve_contacts,
+    passive_layer,
+    resolve_passive,
+)
+from motion_edit.profile.spring import default_spring
 from motion_edit.rotations import (
     nearest_rotvec_branch,
     quat_inv,
@@ -136,6 +145,44 @@ def contact_source(cond_entry: dict, species_override: Optional[dict] = None) ->
 
 
 @dataclass
+class PassiveSource:
+    """Edits of the passive set over its named defaults (manifest provenance, joint indices).
+
+    The defaults and the candidates follow the package's skeleton and contact set,
+    so they are resolved when the package is assembled (``resolve``), not stored.
+    """
+
+    species_add: list[int] = field(default_factory=list)
+    species_remove: list[int] = field(default_factory=list)
+    package_add: list[int] = field(default_factory=list)
+    package_remove: list[int] = field(default_factory=list)
+    unknown_names: list[str] = field(default_factory=list)
+
+    def resolve(self, structure: SkeletonStructure, *, package: bool = True):
+        """The ``PassiveSet`` of the named defaults with the species' and (``package``)
+        this package's edits."""
+        layers = [(self.species_add, self.species_remove)]
+        if package:
+            layers.append((self.package_add, self.package_remove))
+        return resolve_passive(structure.parents, structure.names, structure.passive_candidates(), layers)
+
+    def as_dict(self) -> dict:
+        return {"species_add": self.species_add, "species_remove": self.species_remove,
+                "package_add": self.package_add, "package_remove": self.package_remove}
+
+    @classmethod
+    def from_dict(cls, row: Optional[dict]) -> "PassiveSource":
+        return cls(**{k: [int(j) for j in (row or {}).get(k, [])]
+                      for k in ("species_add", "species_remove", "package_add", "package_remove")})
+
+
+def passive_source(cond_entry: dict, species_override: Optional[dict] = None) -> PassiveSource:
+    """The named defaults with a species ``passive_overrides.json`` row (already hash-checked)."""
+    add, remove, unknown = passive_name_layer([str(n) for n in cond_entry["joints_names"]], species_override)
+    return PassiveSource(species_add=add, species_remove=remove, unknown_names=unknown)
+
+
+@dataclass
 class ProfileSubset:
     """What the package keeps of a species profile."""
 
@@ -217,6 +264,9 @@ def chain_groups(structure: SkeletonStructure, roles: list[str], canonical_names
             groups[j] = "root"
         elif role == "support":
             groups[j] = "legs"
+        elif role == "passive" and structure.sides[j] != CENTER and (
+                structure.limb_length(structure.limb_root(j)) < SMALL_LIMB_RATIO * structure.leg_length):
+            groups[j] = "other"                   # an ear stays with the small attachments
         elif role in ("swing", "passive") and structure.sides[j] != CENTER:
             groups[j] = ("wings" if ("wing" in name or inherited == "wings") else
                          "tail" if inherited == "tail" else "arms")
@@ -565,6 +615,7 @@ def decompose_motion(
     fullbody_ik: bool = True,
     profile: Optional[ProfileSubset] = None,
     contacts: Optional[ContactSource] = None,
+    passive: Optional[PassiveSource] = None,
     dataset_root: Optional[str] = None,
     notes: Optional[list] = None,
     contact_params: ContactParams = ContactParams(),
@@ -576,7 +627,8 @@ def decompose_motion(
                     float(stretch_factor), dataset_root, bool(fullbody_ik), list(notes or []))
     return assemble_package(decoded, features, cond_entry, info,
                             profile or ProfileSubset("missing"),
-                            contacts or contact_source(cond_entry), contact_params=contact_params)
+                            contacts or contact_source(cond_entry), passive or PassiveSource(),
+                            contact_params=contact_params)
 
 
 def assemble_package(
@@ -586,6 +638,7 @@ def assemble_package(
     info: ClipInfo,
     profile: ProfileSubset,
     contacts: ContactSource,
+    passive: PassiveSource,
     *,
     contact_mask: Optional[np.ndarray] = None,
     contact_params: ContactParams = ContactParams(),
@@ -627,8 +680,33 @@ def assemble_package(
     mask = detected.mask
     ground_velocity = detected.ground_velocity
 
-    roles = (list(profile.arrays["profile_role"]) if profile.arrays is not None
-             else structure.base_roles())
+    # passive: the candidates named as hanging parts, with the species' and this package's
+    # edits; each simulates with the profile's spring, or the default one without a profile
+    candidates = structure.passive_candidates()
+    resolved = passive.resolve(structure)
+    passive_joints, named = resolved.joints, resolved.named
+    for name in passive.unknown_names:
+        diagnostics.append({"kind": "passive", "message": f"passive override names unknown joint '{name}'"})
+    for j in resolved.outside:
+        diagnostics.append({"kind": "passive", "joint": structure.names[j], "message":
+                            f"{structure.names[j]}: a support joint hangs below it; not passive"})
+    springs = (np.array(profile.arrays["profile_spring"], dtype=np.float64, copy=True)
+               if profile.arrays is not None else np.full((joint_count, len(SPRING_FIELDS)), np.nan))
+    for j in candidates:
+        if not np.isfinite(springs[j]).all() and leg:
+            spring = default_spring(structure.swing_length(j), leg)
+            springs[j] = [spring[k] for k in SPRING_FIELDS]
+    passive_mask = np.zeros(joint_count, dtype=bool)
+    passive_mask[passive_joints] = True
+
+    # the profile's roles (a package without contacts keeps its legs), passive as resolved here
+    base_roles = structure.base_roles()
+    roles = (list(profile.arrays["profile_role"]) if profile.arrays is not None else list(base_roles))
+    for j in range(joint_count):
+        if passive_mask[j]:
+            roles[j] = "passive"
+        elif roles[j] == "passive":
+            roles[j] = base_roles[j]
     canonical = [str(n) for n in cond_entry.get("canonical_joint_names", structure.names)]
     groups = chain_groups(structure, roles, canonical)
 
@@ -688,9 +766,6 @@ def assemble_package(
     reference, chain_offsets, gain_locked_mask = chain_layer(rotations, root, periodic=is_loop)
     plants = plant_layer(positions, used, mask, ground_velocity, fps, root, is_loop)
 
-    passive = (profile.arrays["profile_passive"] if profile.arrays is not None
-               else np.zeros(joint_count, dtype=bool))
-
     gain_locked = [structure.names[j] for j in np.flatnonzero(gain_locked_mask)]
     for name in gain_locked:
         diagnostics.append({"kind": "gain_locked", "joint": name,
@@ -707,9 +782,10 @@ def assemble_package(
         "has_plants": len(plants["plant_intervals"]) > 0,
         "turning": yaw_range > TURNING_YAW_DEG,
         "airborne": bool(events["airborne"]),
-        "has_passive": bool(passive.any()),
+        "has_passive": bool(passive_mask.any()),
         "strike": "strike" in events,
-        "chain_groups": sorted(set(groups.tolist())),
+        # passive joints answer to passive_weight, not to their group's slider
+        "chain_groups": sorted(set(groups[~passive_mask].tolist())),
     }
     available = available_params(facts)
     if facts["locomotion"] and facts["has_plants"] and facts["turning"]:
@@ -746,8 +822,9 @@ def assemble_package(
     }
     if profile.arrays is not None:
         arrays.update(profile.arrays)
-    else:
-        arrays["profile_role"] = np.asarray(roles, dtype="<U8")
+    arrays["profile_role"] = np.asarray(roles, dtype="<U8")
+    arrays["profile_spring"] = springs
+    arrays["profile_passive"] = passive_mask
 
     drift = plants["plant_drift"]
     manifest = {
@@ -778,6 +855,13 @@ def assemble_package(
             "names": [structure.names[j] for j in used],
             "source": contacts.as_dict(),
             "intervals_edited": contact_mask is not None,
+        },
+        "passive": {
+            "joints": passive_joints,
+            "names": [structure.names[j] for j in passive_joints],
+            "named": named,
+            "candidates": candidates,
+            "source": passive.as_dict(),
         },
         "events": events,
         "facts": facts,
@@ -816,6 +900,10 @@ def _stored_inputs(package: EditPackage):
     return decode_json(arrays["source_cond"]), profile, info
 
 
+def _passive_of(package: EditPackage) -> PassiveSource:
+    return PassiveSource.from_dict((package.manifest.get("passive") or {}).get("source"))
+
+
 def redecompose(package: EditPackage, stretch_factor: Optional[float] = None, *,
                 fullbody_ik: Optional[bool] = None) -> EditPackage:
     """The same clip decomposed again from its stored features with another
@@ -833,7 +921,8 @@ def redecompose(package: EditPackage, stretch_factor: Optional[float] = None, *,
     decoded = decode_features(features, cond, info.object_type, package.fps, info.stretch_factor,
                               info.fullbody_ik)
     return assemble_package(decoded, features, cond, info, profile,
-                            ContactSource.from_dict(package.manifest["contacts"]["source"]))
+                            ContactSource.from_dict(package.manifest["contacts"]["source"]),
+                            _passive_of(package))
 
 
 def with_contact_joints(package: EditPackage, joints, *, species_add=None,
@@ -859,7 +948,7 @@ def with_contact_joints(package: EditPackage, joints, *, species_add=None,
     source.package_add = sorted(wanted - base)
     source.package_remove = sorted(base - wanted)
     return assemble_package(Decoded.from_package(package), package["source_features"], cond, info,
-                            profile, source)
+                            profile, source, _passive_of(package))
 
 
 def with_ground_height(package: EditPackage, height: float) -> EditPackage:
@@ -867,7 +956,8 @@ def with_ground_height(package: EditPackage, height: float) -> EditPackage:
     cond, profile, info = _stored_inputs(package)
     info.ground_height = float(height)
     return assemble_package(Decoded.from_package(package), package["source_features"], cond, info,
-                            profile, ContactSource.from_dict(package.manifest["contacts"]["source"]))
+                            profile, ContactSource.from_dict(package.manifest["contacts"]["source"]),
+                            _passive_of(package))
 
 
 def with_contact_mask(package: EditPackage, mask) -> EditPackage:
@@ -879,4 +969,32 @@ def with_contact_mask(package: EditPackage, mask) -> EditPackage:
         raise ValueError(f"contact mask has shape {mask.shape}, expected {expected}")
     return assemble_package(Decoded.from_package(package), package["source_features"], cond, info,
                             profile, ContactSource.from_dict(package.manifest["contacts"]["source"]),
+                            _passive_of(package), contact_mask=mask)
+
+
+def with_passive_joints(package: EditPackage, joints, *, species_add=None,
+                        species_remove=None) -> EditPackage:
+    """The package with exactly ``joints`` passive.
+
+    Recorded like ``with_contact_joints``: against the named defaults and the
+    species override as this package's own additions and removals, after
+    ``species_add`` / ``species_remove`` replace the species override.  The
+    contact intervals stay as they are, hand edits included.
+    """
+    cond, profile, info = _stored_inputs(package)
+    source = _passive_of(package)
+    if species_add is not None:
+        source.species_add = sorted(int(j) for j in species_add)
+    if species_remove is not None:
+        source.species_remove = sorted(int(j) for j in species_remove)
+    if species_add is not None or species_remove is not None:
+        # the override was just rewritten against this skeleton: input notes about it are void
+        info.notes = [n for n in info.notes if n.get("kind") != "passive"]
+    structure = SkeletonStructure(cond, list(package["contact_joints"]))
+    base = set(source.resolve(structure, package=False).joints)
+    source.package_add, source.package_remove = passive_layer(structure.parents, base, joints)
+    m = package.manifest
+    mask = package["contact_mask"] if m["contacts"].get("intervals_edited") else None
+    return assemble_package(Decoded.from_package(package), package["source_features"], cond, info,
+                            profile, ContactSource.from_dict(m["contacts"]["source"]), source,
                             contact_mask=mask)
