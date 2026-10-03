@@ -9,9 +9,13 @@ replay of section 1, principle 4).
 Order (section 5.2):
 
 1. time: every output frame samples the clip at a source time ``s``; a loop
-   keeps a whole number of frames per period and wraps its samples;
+   keeps a whole number of frames per period and wraps its samples; a
+   one-shot's windup / strike / recover speeds warp time through its events (PCHIP);
 2. amplitude: unwrapped chain offsets scaled per group (joints winding a whole
-   turn per loop held at gain 1);
+   turn per loop held at gain 1);  the strike body (active chain, the trunk it
+   hangs on, the root) drawn further from its contact pose in the windup
+   (windup_depth) and pushed past it after contact (overshoot), with a lean
+   and a shift of the body against / along the strike;
 3. root: oscillation (sway, bounce), airborne arcs (jump_height), posture;
 4. plants + limb IK: planted feet follow their targets, swing feet carry the
    correction between them (``motion_edit.ik``);
@@ -24,6 +28,7 @@ is in the package.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
@@ -66,9 +71,10 @@ PARAM_SPECS: dict[str, ParamSpec] = {
     **_AMP,
     "force": ParamSpec(1.0, 0.5, 2.0, "force"),
     "windup_depth": ParamSpec(1.0, 0.0, 2.0, "force"),
-    "strike_speed": ParamSpec(1.0, 0.5, 2.0, "force"),
     "overshoot": ParamSpec(1.0, 0.0, 2.0, "force"),
-    "impact_shift": ParamSpec(0.0, -0.3, 0.3, "force"),
+    "windup_speed": ParamSpec(1.0, 0.5, 2.0, "force"),
+    "strike_speed": ParamSpec(1.0, 0.5, 2.0, "force"),
+    "recover_speed": ParamSpec(1.0, 0.5, 2.0, "force"),
     "secondary.stiffness": ParamSpec(1.0, 0.25, 4.0, "secondary"),
     "secondary.damping": ParamSpec(1.0, 0.25, 4.0, "secondary"),
     "foot_lock": ParamSpec(False, group="contact", toggle=True),
@@ -79,11 +85,31 @@ PARAM_SPECS: dict[str, ParamSpec] = {
 # non-default value of any other parameter is refused, never ignored.
 IMPLEMENTED: frozenset[str] = frozenset(
     ["tempo", "stride", "bounce", "jump_height", "sway", "posture", "foot_lock", "soft_stretch",
-     *_AMP])
+     *_AMP, *(name for name, spec in PARAM_SPECS.items() if spec.group == "force")])
 
 # Parameters that move the body or a support chain: any of them away from its
-# default re-solves the planted limbs.  tempo alone only re-times the clip.
-_IK_PARAMS = ("stride", "bounce", "jump_height", "sway", "posture", *_AMP)
+# default re-solves the planted limbs.  The timing ones (tempo and the strike's
+# segment speeds) only re-time the clip.
+_IK_PARAMS = ("stride", "bounce", "jump_height", "sway", "posture", *_AMP, "force", "windup_depth",
+              "overshoot")
+# force is a preset over every other strike parameter: those here are multiplied by it,
+# FORCE_SLOWED divided by force ** FORCE_SLOW_EXPONENT (a harder strike winds up and
+# recovers somewhat more slowly; the strike itself carries most of the change).
+FORCE_PARAMS = ("windup_depth", "strike_speed", "overshoot")
+FORCE_SLOWED = ("windup_speed", "recover_speed")
+FORCE_SLOW_EXPONENT = 0.5
+# Speed of each strike segment: start -> windup, windup -> impact, impact -> recover.
+SEGMENT_SPEEDS = ("windup_speed", "strike_speed", "recover_speed")
+# Trunk lean (rad) and body shift (x leg length) per unit of windup_depth / overshoot
+# off 1: back against the strike in the windup, forward along it past contact.  They
+# give the edit a whole-body weight shift the clip's own trunk motion may not carry.
+STRIKE_LEAN = np.radians(20.0)
+STRIKE_SHIFT = 0.15
+# A strike whose horizontal travel is less than this fraction of its travel (a smash
+# straight down) leans along the character's facing instead.
+STRIKE_HORIZONTAL = 0.3
+# Strike events a request may move (source frames); it may also pick another chain.
+EVENT_KEYS = ("windup", "impact", "recover")
 
 # Foot error after IK reported as unreachable; a planted foot left higher than
 # this above its target lowers the body instead.
@@ -105,7 +131,8 @@ def available_params(package_facts: dict) -> list[str]:
     """Parameters that mean something for this clip (the UI hides the rest).
 
     ``package_facts``: ``is_loop``, ``locomotion``, ``has_plants``, ``turning``,
-    ``airborne``, ``has_passive`` and ``chain_groups`` (groups with joints).
+    ``airborne``, ``has_passive``, ``strike`` (one-shot events found) and
+    ``chain_groups`` (groups with joints).
     """
     out = ["tempo", "bounce", "sway"]
     if package_facts["locomotion"] and package_facts["has_plants"] and not package_facts["turning"]:
@@ -115,8 +142,8 @@ def available_params(package_facts: dict) -> list[str]:
     out += [f"amp.{g}" for g in AMP_GROUPS if g in package_facts["chain_groups"]]
     if package_facts["has_plants"]:
         out.append("posture")
-    if not package_facts["is_loop"]:
-        out += ["force", "windup_depth", "strike_speed", "overshoot", "impact_shift"]
+    if package_facts.get("strike"):
+        out += [name for name, spec in PARAM_SPECS.items() if spec.group == "force"]
     if package_facts["has_passive"]:
         out += ["secondary.stiffness", "secondary.damping"]
     if package_facts["has_plants"]:
@@ -235,6 +262,67 @@ def blend_between_keys(values: np.ndarray, keyed: np.ndarray, periodic: bool) ->
     return out
 
 
+def pchip(x: np.ndarray, y: np.ndarray, query: np.ndarray) -> np.ndarray:
+    """Monotone piecewise-cubic (Fritsch-Carlson) interpolation of increasing nodes ``x``."""
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    h = np.diff(x)
+    delta = np.diff(y) / h
+    slope = np.zeros_like(x)
+    if len(x) == 2:
+        slope[:] = delta[0]
+    else:
+        for k in range(1, len(x) - 1):
+            if delta[k - 1] * delta[k] > 0.0:
+                w1, w2 = 2.0 * h[k] + h[k - 1], h[k] + 2.0 * h[k - 1]
+                slope[k] = (w1 + w2) / (w1 / delta[k - 1] + w2 / delta[k])
+        for end, (h0, h1, d0, d1) in ((0, (h[0], h[1], delta[0], delta[1])),
+                                      (-1, (h[-1], h[-2], delta[-1], delta[-2]))):
+            m = ((2.0 * h0 + h1) * d0 - h0 * d1) / (h0 + h1)
+            if np.sign(m) != np.sign(d0):
+                m = 0.0
+            elif np.sign(d0) != np.sign(d1) and abs(m) > 3.0 * abs(d0):
+                m = 3.0 * d0
+            slope[end] = m
+    query = np.asarray(query, dtype=np.float64)
+    k = np.clip(np.searchsorted(x, query, side="right") - 1, 0, len(x) - 2)
+    t = (query - x[k]) / h[k]
+    t2, t3 = t * t, t * t * t
+    return ((2 * t3 - 3 * t2 + 1) * y[k] + (t3 - 2 * t2 + t) * h[k] * slope[k]
+            + (-2 * t3 + 3 * t2) * y[k + 1] + (t3 - t2) * h[k] * slope[k + 1])
+
+
+def _smoothstep(values: np.ndarray, low: float, high: float) -> np.ndarray:
+    if high <= low:
+        return (values >= low).astype(np.float64)
+    x = np.clip((values - low) / (high - low), 0.0, 1.0)
+    return x * x * (3.0 - 2.0 * x)
+
+
+def strike_shapes(times: np.ndarray, windup: int, impact: int, recover: int,
+                  period: Optional[int] = None) -> tuple[np.ndarray, np.ndarray]:
+    """The force layers' time shapes at source ``times``, both in [0, 1].
+
+    ``hold`` weighs the windup: eased in over one windup-to-impact length
+    before windup and out over the strike, so the body is back at its contact
+    pose by impact.
+    ``push`` weighs the drive past contact: eased in from halfway through the
+    strike to a crest a third of the way from impact to recover, out by recover.
+    A loop's (``period``) shapes wrap: the ease-in never reaches back past the
+    previous period's recover, and both shapes are zero where the period joins.
+    """
+    start = windup - (impact - windup)
+    if period:
+        start = max(start, recover - period)
+        times = start + np.mod(np.asarray(times, dtype=np.float64) - start, period)
+    else:
+        start = max(0.0, start)
+    hold = _smoothstep(times, start, windup) * (1.0 - _smoothstep(times, windup, impact))
+    crest = impact + (recover - impact) / 3.0
+    push = _smoothstep(times, 0.5 * (windup + impact), crest) * (1.0 - _smoothstep(times, crest, recover))
+    return hold, push
+
+
 def soft_scale(need: np.ndarray, own: np.ndarray, limit: float) -> np.ndarray:
     """Leg length factor for a target that asks for extension ``need`` of a pose whose own
     extension is ``own`` (both reach / chain length): 1 inside the comfortable band; past
@@ -281,15 +369,24 @@ class EditResult:
     pivot: np.ndarray                   # (F', K) the joint IK placed exactly
     unreached: np.ndarray               # (F', K) pivots IK could not bring to their target
     stride_factor: float                # S: v_g' = S * (time rate) * v_g
+    strike: Optional[dict] = None       # strike events used (source frames) and the active chain
     diagnostics: list = field(default_factory=list)
 
 
 @dataclass
 class _Timeline:
     times: np.ndarray       # source frame per output frame
-    rate: float             # source frames per output frame
+    rate: float             # source frames per output frame (mean, for a warped one-shot)
     stride: float           # S
     notes: list
+    speed: Optional[np.ndarray] = None   # (F',) local rate where time is warped
+    unwrapped: Optional[np.ndarray] = None   # (F',) a warped loop's source time before wrapping
+
+    def local_rate(self) -> np.ndarray:
+        return self.speed if self.speed is not None else np.full(len(self.times), self.rate)
+
+    def unwrapped_times(self) -> np.ndarray:
+        return self.unwrapped if self.unwrapped is not None else self.times
 
 
 class EditRuntime:
@@ -347,14 +444,116 @@ class EditRuntime:
         return self._original
 
     # ── composition ──────────────────────────────────────────────────────
-    def apply(self, params: dict | None = None, *, compose: bool = False) -> EditResult:
+    def strike(self, events: dict | None = None) -> Optional[dict]:
+        """The package's strike events with ``events`` (moved ``windup`` / ``impact`` /
+        ``recover`` frames, another ``chain`` from the candidates) applied; ``None``
+        without strike events.  ``joints`` are the active chain's (its subtree
+        without the chains nested in it) and ``effector`` its own leaf, ``moved``
+        the events the request moved."""
+        pkg = self.package
+        base = pkg.manifest["events"].get("strike")
+        events = {k: v for k, v in (events or {}).items() if v is not None}
+        if base is None:
+            if events:
+                raise ValueError("this clip has no strike events to move")
+            return None
+        unknown = set(events) - set(EVENT_KEYS) - {"chain"}
+        if unknown:
+            raise ValueError(f"unknown event(s) {sorted(unknown)}")
+        out = dict(base)
+        for key in (*EVENT_KEYS, "chain"):
+            if key in events:
+                out[key] = int(events[key])
+        frames = pkg.frame_count
+        if pkg.is_loop:
+            # unwrapped about impact, within one period
+            lap = out["impact"] // frames
+            for key in EVENT_KEYS:
+                out[key] -= lap * frames
+            if not out["windup"] < out["impact"] < out["recover"] <= out["windup"] + frames - 1:
+                raise ValueError("strike events must keep windup < impact < recover within one loop period")
+        elif not 0 <= out["windup"] < out["impact"] < out["recover"] <= frames - 1:
+            raise ValueError("strike events must keep 0 <= windup < impact < recover <= last frame")
+        chains = {c["joint"]: c for c in base["candidates"]}
+        if out["chain"] not in chains:
+            raise ValueError(f"joint {out['chain']} is not a strike chain candidate")
+        chain = chains[out["chain"]]
+        out["joints"] = [int(j) for j in chain["joints"]]
+        out["chain_name"], out["effector"], out["effector_name"] = (
+            chain["name"], int(chain["effector"]), chain["effector_name"])
+        out["moved"] = sorted(k for k in events if events[k] != base.get(k))
+        return out
+
+    def strike_body(self, strike: dict) -> tuple[list[int], list[int]]:
+        """``(trunk, body)`` of a strike: the joints between the root and the active
+        chain, and those with the chain's own (gain-locked joints left out)."""
+        pkg = self.package
+        parents = np.asarray(pkg["parents"])
+        locked = np.asarray(pkg["chain_gain_locked"], dtype=bool)
+        trunk, j = [], int(parents[strike["chain"]])
+        while j >= 0 and j != pkg.root:
+            trunk.append(j)
+            j = int(parents[j])
+        body = sorted(k for k in set(trunk) | set(strike["joints"]) if not locked[k] and k != pkg.root)
+        return trunk[::-1], body
+
+    def strike_direction(self, strike: dict) -> np.ndarray:
+        """Horizontal unit direction (X, Z) of the strike: the active chain joint that
+        travels furthest from windup to impact, or the facing when it strikes downward."""
+        pkg = self.package
+        original = self.original_positions()
+        frames = pkg.frame_count
+        impact = strike["impact"] % frames
+        travel = original[impact, strike["joints"]] - original[strike["windup"] % frames, strike["joints"]]
+        move = travel[int(np.argmax(np.linalg.norm(travel, axis=-1)))]
+        flat = move[[0, 2]]
+        if np.linalg.norm(flat) >= STRIKE_HORIZONTAL * max(np.linalg.norm(move), 1e-12) > 0.0:
+            return flat / np.linalg.norm(flat)
+        front, base = pkg.manifest.get("forward_joint_index"), pkg.manifest.get("forward_base_joint_index")
+        if front is not None and base is not None:
+            facing = (original[impact, front] - original[impact, base])[[0, 2]]
+            if np.linalg.norm(facing) > 1e-9:
+                return facing / np.linalg.norm(facing)
+        yaw = float(np.asarray(pkg["root_yaw"])[impact])
+        return np.array([np.sin(yaw), np.cos(yaw)])
+
+    def strike_lean_axis(self, strike: dict, direction: np.ndarray) -> np.ndarray:
+        """World axis the body leans about, scaled to how far a turn about it carries the
+        effector along the strike: the lever from the root to the effector at contact
+        swung toward ``direction``.  An upright trunk under a punch leans fully, a long
+        neck already reaching along the strike barely (its weight shift does the work)."""
+        original = self.original_positions()
+        impact = strike["impact"] % self.package.frame_count
+        lever = original[impact, strike["effector"]] - original[impact, self.package.root]
+        toward = np.array([direction[0], 0.0, direction[1]])
+        return np.cross(lever, toward) / max(float(np.linalg.norm(lever)), 1e-12)
+
+    @staticmethod
+    def _force(p: dict) -> tuple[dict, list]:
+        """The strike parameters with the force preset applied, each clamped to its own range."""
+        out, notes = {}, []
+        for name in FORCE_PARAMS + FORCE_SLOWED:
+            spec = PARAM_SPECS[name]
+            slowed = name in FORCE_SLOWED
+            value = p[name] / p["force"] ** FORCE_SLOW_EXPONENT if slowed else p[name] * p["force"]
+            clamped = float(np.clip(value, spec.low, spec.high))
+            if clamped != value:
+                notes.append({"kind": "clamped", "param": name, "message":
+                              f"{name} with force {p['force']:g} = {value:g} clamped to {clamped:g}"})
+            out[name] = clamped
+        return out, notes
+
+    def apply(self, params: dict | None = None, *, compose: bool = False,
+              events: dict | None = None) -> EditResult:
         """Compose the clip under ``params``.
 
         ``compose=True`` disables the all-default shortcut and rebuilds the
         clip from its layers with unit gains (T1b: it exercises the
-        decomposition the shortcut never reads).
+        decomposition the shortcut never reads).  ``events`` moves the strike
+        events the force parameters key on (``strike``).
         """
         resolved, diagnostics = self.resolve_params(params)
+        strike = self.strike(events)
         is_default = all(resolved[n] == PARAM_SPECS[n].default for n in PARAM_SPECS)
         pkg = self.package
         if is_default and not compose:
@@ -362,12 +561,14 @@ class EditRuntime:
             pid, ptime = self._plant_timeline(timeline.times)
             return self._result(
                 np.asarray(pkg["base_rot"]), np.asarray(pkg["base_pos"]), resolved, False, timeline,
-                pid, ptime, self._stance_targets(pid, ptime, 1.0, 1.0, False),
-                np.zeros(pid.shape, dtype=bool), diagnostics)
+                pid, ptime, self._stance_targets(pid, ptime, timeline, 1.0, False),
+                np.zeros(pid.shape, dtype=bool), diagnostics, strike=strike)
 
-        timeline = self._timeline(resolved)
+        force, notes = self._force(resolved)
+        diagnostics += notes
+        timeline = self._timeline(resolved, strike, force)
         diagnostics += [{"kind": "tempo", "message": m} for m in timeline.notes]
-        rotations, positions, held = self._compose_layers(resolved, timeline.times)
+        rotations, positions, held = self._compose_layers(resolved, timeline.times, strike, force)
         if held:
             diagnostics.append({"kind": "gain_locked", "message":
                                 f"{held} joint(s) wind a whole turn per loop; gain held at 1"})
@@ -377,18 +578,18 @@ class EditRuntime:
         # no contact joints: nothing to plant, the composed pose stands
         if pid.shape[1] and (any(resolved[n] != PARAM_SPECS[n].default for n in _IK_PARAMS)
                              or resolved["foot_lock"]):
-            targets = self._stance_targets(pid, ptime, timeline.rate, timeline.stride,
+            targets = self._stance_targets(pid, ptime, timeline, timeline.stride,
                                            bool(resolved["foot_lock"]))
             rotations, positions, pivot, unreached, ik_notes = self._solve_plants(
                 rotations, positions, pid, targets, resolved["soft_stretch"])
             diagnostics += ik_notes
         else:
-            targets = self._stance_targets(pid, ptime, timeline.rate, 1.0, False)
+            targets = self._stance_targets(pid, ptime, timeline, 1.0, False)
         return self._result(rotations, positions, resolved, True, timeline, pid, ptime, targets, pivot,
-                            diagnostics, unreached)
+                            diagnostics, unreached, strike=strike)
 
     def _result(self, rotations, positions, resolved, composed, timeline, pid, ptime, targets, pivot,
-                diagnostics, unreached=None) -> EditResult:
+                diagnostics, unreached=None, strike=None) -> EditResult:
         pkg = self.package
         animation = Animation(
             Quaternions(np.array(rotations, copy=True)),
@@ -402,7 +603,7 @@ class EditRuntime:
             animation=animation,
             fps=pkg.fps,
             global_positions=np.asarray(positions_global(animation)),
-            ground_velocity=ground * timeline.stride * timeline.rate,
+            ground_velocity=ground * timeline.stride * timeline.local_rate()[:, None],
             composed=composed,
             params=resolved,
             source_time=timeline.times,
@@ -412,16 +613,21 @@ class EditRuntime:
             pivot=pivot,
             unreached=unreached if unreached is not None else np.zeros(pid.shape, dtype=bool),
             stride_factor=timeline.stride,
+            strike=strike,
             diagnostics=diagnostics,
         )
 
     # ── 1. time ──────────────────────────────────────────────────────────
-    def _timeline(self, p: dict) -> _Timeline:
+    def _timeline(self, p: dict, strike: Optional[dict], force: dict) -> _Timeline:
         pkg = self.package
         frames = pkg.frame_count
         rate = p["tempo"]
         stride = p["stride"]
         notes = []
+        if strike is not None and any(force[name] != 1.0 for name in SEGMENT_SPEEDS):
+            if pkg.is_loop:
+                return self._loop_strike_timeline(rate, stride, strike, force)
+            return self._strike_timeline(rate, stride, strike, force)
         if pkg.is_loop:
             count = max(2, int(round(frames / rate)))
             times = np.arange(count, dtype=np.float64) * (frames / count)
@@ -433,6 +639,57 @@ class EditRuntime:
             count = int(np.floor((frames - 1) / rate + 1e-9)) + 1
             times = np.arange(count, dtype=np.float64) * rate
         return _Timeline(times, float(rate), float(stride), notes)
+
+    def _strike_timeline(self, rate: float, stride: float, strike: dict, force: dict) -> _Timeline:
+        """One-shot time warped through its events: start -> windup, windup -> impact and
+        impact -> recover each run at their own speed, the rest at its pace; ``tempo``
+        scales it all.  Source time per output frame is a monotone cubic (PCHIP) through
+        the event nodes."""
+        last = self.package.frame_count - 1
+        windup, impact, recover = strike["windup"], strike["impact"], strike["recover"]
+        source = np.array(sorted({0, windup, impact, recover, last}), dtype=np.float64)
+        length = np.diff(source)
+        for begin, end, name in ((0, windup, "windup_speed"), (windup, impact, "strike_speed"),
+                                 (impact, recover, "recover_speed")):
+            if end > begin:                     # each one runs between two adjacent nodes
+                length[int(np.flatnonzero(source == begin)[0])] /= force[name]
+        out = np.concatenate([[0.0], np.cumsum(length)]) / rate
+        count = int(np.floor(out[-1] + 1e-9)) + 1
+        times = np.clip(pchip(out, source, np.arange(count, dtype=np.float64)), 0.0, float(last))
+        speed = np.gradient(times) if count > 1 else np.ones(1)
+        return _Timeline(times, float(last / max(out[-1], 1e-12)), float(stride), [], speed)
+
+    def _loop_strike_timeline(self, rate: float, stride: float, strike: dict, force: dict) -> _Timeline:
+        """A loop's period warped through its strike: windup -> impact at ``strike_speed``,
+        impact -> recover at ``recover_speed``, recover -> the next windup at
+        ``windup_speed``; ``tempo`` scales it all, and the period keeps a whole number of
+        frames (as tempo alone does).  Output frame 0 samples source frame 0.  The PCHIP
+        runs through the nodes of one period plus a neighbour on each side, so its slope
+        is the same where consecutive periods meet."""
+        frames = self.package.frame_count
+        windup, impact, recover = strike["windup"], strike["impact"], strike["recover"]
+        zero = windup + (-windup) % frames                      # source frame 0 in [windup, windup + F)
+        source = np.array(sorted({windup, impact, recover, zero, windup + frames}), dtype=np.float64)
+        length = np.diff(source)
+        for k, begin in enumerate(source[:-1]):
+            name = ("strike_speed" if windup <= begin < impact else
+                    "recover_speed" if impact <= begin < recover else "windup_speed")
+            length[k] /= force[name]
+        out = np.concatenate([[0.0], np.cumsum(length)]) / rate
+        count = max(2, int(round(out[-1])))
+        notes = []
+        if abs(count - out[-1]) > 1e-9:
+            notes.append(f"strike speeds -> {count} frames per loop (from {out[-1]:.2f})")
+        out *= count / out[-1]
+        period = float(count)
+        i_at = lambda value: out[int(np.flatnonzero(source == value)[0])]
+        ext_source = np.concatenate([[recover - frames], source, [impact + frames]])
+        ext_out = np.concatenate([[i_at(recover) - period], out, [i_at(impact) + period]])
+        raw = i_at(zero) + np.arange(count, dtype=np.float64)
+        lap = np.floor((raw - out[0]) / period)
+        unwrapped = pchip(ext_out, ext_source, raw - lap * period) + lap * frames - zero
+        speed = np.gradient(np.concatenate([unwrapped[-1:] - frames, unwrapped, unwrapped[:1] + frames]))[1:-1]
+        return _Timeline(np.mod(unwrapped, frames), frames / count, float(stride), notes, speed, unwrapped)
 
     # ── 2 + 3. layers, amplitude, root ───────────────────────────────────
     def _root_track(self, p: dict) -> np.ndarray:
@@ -452,7 +709,7 @@ class EditRuntime:
         root[:, 1] += p["posture"] * self.leg
         return root
 
-    def _compose_layers(self, p: dict, times: np.ndarray):
+    def _compose_layers(self, p: dict, times: np.ndarray, strike: Optional[dict], force: dict):
         pkg = self.package
         periodic = pkg.is_loop
         root = pkg.root
@@ -468,15 +725,63 @@ class EditRuntime:
         for j, group in enumerate(groups):
             if group in AMP_GROUPS and not locked[j]:
                 gain[j] = p[f"amp.{group}"]
-        rotations = quat_mul(quat_from_rotvec(offsets * gain[None, :, None]), reference[None])
-        yaw = sample_angle(np.asarray(pkg["root_yaw"], dtype=np.float64), times, periodic)
+        offsets = offsets * gain[None, :, None]
+        root_track = self._root_track(p)
         tilt = sample_quat(np.asarray(pkg["root_tilt"], dtype=np.float64), times, periodic)
+        root_pos = sample_linear(root_track, times, periodic)
+        hit = strike is not None and (force["windup_depth"] != 1.0 or force["overshoot"] != 1.0)
+        if hit:
+            windup, impact = strike["windup"], strike["impact"]
+            hold, push = strike_shapes(times, windup, impact, strike["recover"],
+                                       pkg.frame_count if periodic else None)
+            windup, impact = windup % pkg.frame_count, impact % pkg.frame_count
+            g = 1.0 + (force["windup_depth"] - 1.0) * hold         # distance from the contact pose
+            b = (force["overshoot"] - 1.0) * push                  # drive past it, along the strike
+            trunk, body = self.strike_body(strike)
+            # the strike body's own motion: the chain, the trunk it hangs on and the root are
+            # drawn further from their contact pose in the windup and driven on past it
+            stored = np.asarray(pkg["chain_offsets"], dtype=np.float64)[:, body] * gain[body, None]
+            contact, drive = stored[impact], stored[impact] - stored[windup]
+            offsets[:, body] = (contact[None] + g[:, None, None] * (offsets[:, body] - contact[None])
+                                + b[:, None, None] * drive[None])
+            source_tilt = np.asarray(pkg["root_tilt"], dtype=np.float64)
+            off_contact = rotvec_from_quat(quat_mul(tilt, quat_inv(source_tilt[impact])[None]))
+            tilt_drive = rotvec_from_quat(quat_mul(source_tilt[impact], quat_inv(source_tilt[windup])))
+            tilt = quat_mul(quat_from_rotvec(g[:, None] * off_contact + b[:, None] * tilt_drive[None]),
+                            source_tilt[impact][None])
+            root_pos = (root_track[impact] + g[:, None] * (root_pos - root_track[impact])
+                        + b[:, None] * (root_track[impact] - root_track[windup]))
+            # and the body's weight: back against the strike in the windup, forward past contact
+            lean = -(force["windup_depth"] - 1.0) * hold + b               # units of STRIKE_LEAN / SHIFT
+            direction = self.strike_direction(strike)
+            root_pos[:, [0, 2]] += (STRIKE_SHIFT * self.leg * lean)[:, None] * direction[None]
+        rotations = quat_mul(quat_from_rotvec(offsets), reference[None])
+        yaw = sample_angle(np.asarray(pkg["root_yaw"], dtype=np.float64), times, periodic)
         rotations[:, root] = quat_mul(yaw_quat(yaw), tilt)
 
         positions = sample_linear(np.asarray(pkg["base_pos"], dtype=np.float64), times, periodic)
-        positions[:, root] = sample_linear(self._root_track(p), times, periodic)
+        positions[:, root] = root_pos
+        if hit:
+            self._lean(rotations, positions, [root] + trunk, STRIKE_LEAN * lean,
+                       self.strike_lean_axis(strike, direction))
         held = int(sum(locked[j] and p.get(f"amp.{g}", 1.0) != 1.0 for j, g in enumerate(groups)))
         return rotations, positions, held
+
+    def _lean(self, rotations, positions, joints: list[int], angle: np.ndarray, axis: np.ndarray):
+        """Turn the body by ``angle`` (F,) rad times ``axis`` (a world rotation vector per
+        radian), shared equally by ``joints`` (the root and the trunk above it), in place.
+        Each turns about the same world axis, so the turns commute and the trunk ends
+        ``angle`` over."""
+        parents = np.asarray(self.package["parents"])
+        turn = quat_from_rotvec((angle / len(joints))[:, None] * axis[None])
+        glob, _ = forward_kinematics(parents, rotations, positions)
+        for j in joints:
+            parent = int(parents[j])
+            if parent < 0:
+                rotations[:, j] = quat_mul(turn, rotations[:, j])
+            else:
+                rotations[:, j] = quat_mul(quat_mul(quat_inv(glob[:, parent]), quat_mul(turn, glob[:, parent])),
+                                           rotations[:, j])
 
     # ── 4. plants ────────────────────────────────────────────────────────
     def _plant_timeline(self, times: np.ndarray):
@@ -553,7 +858,7 @@ class EditRuntime:
         laps = np.floor(times / frames)
         return sample_linear(steps, times - laps * frames, False) + laps[:, None] * steps[frames]
 
-    def _stance_targets(self, pid, ptime, rate: float, stride: float, lock: bool) -> np.ndarray:
+    def _stance_targets(self, pid, ptime, timeline: _Timeline, stride: float, lock: bool) -> np.ndarray:
         """Where each planted contact joint goes (NaN off a plant).
 
         ``W = P(u) - (S - 1) (D(U) - D(U_mid)) - lock * residual(u)``: the
@@ -583,7 +888,9 @@ class EditRuntime:
                 stance = (pid[:, columns] >= 0).any(axis=1)
                 for index in _stance_runs(stance, periodic):
                     frames = index % count
-                    unwrapped = index * rate
+                    # a loop's seam run starts at a negative index; either may be warped
+                    unwrapped = (timeline.unwrapped_times()[index % count] + pkg.frame_count * (index // count)
+                                 if periodic else timeline.times[index])
                     mid = 0.5 * (unwrapped[0] + unwrapped[-1])
                     d = self._continuous_displacement(unwrapped) - self._continuous_displacement(
                         np.array([mid]))

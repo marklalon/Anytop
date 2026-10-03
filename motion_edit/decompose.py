@@ -6,8 +6,9 @@
    ``[1 - s, 1 + s]`` of their rest length.
 2. Detect the contact intervals of the clip's contact set
    (``motion_edit.contacts``, shared with the profile).
-3. Read the events: the loop's gait period and per-limb touchdowns, and the
-   airborne spans of a clip with real vertical motion.
+3. Read the events: the loop's gait period and per-limb touchdowns, the
+   airborne spans of a clip with real vertical motion, and a one-shot's
+   strike (active chain, windup / impact / recover).
 4. Split into layers: ``base`` (the decoded clip itself), ``root`` (trend /
    oscillation of the root translation, yaw), ``chains`` (each joint's
    rotation vector off a reference pose), ``plants`` (per contact interval:
@@ -24,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
-from scipy.ndimage import uniform_filter1d
+from scipy.ndimage import gaussian_filter1d, uniform_filter1d
 
 from data_loaders.truebones.truebones_utils.param_utils import FPS
 from motion_edit.contacts import (
@@ -43,7 +44,7 @@ from motion_edit.package import (
 from motion_edit.profile import gait as gait_stats
 from motion_edit.profile.build import COND_FIELDS, SCHEMA_VERSION as PROFILE_SCHEMA
 from motion_edit.profile.data import Clip, skeleton_hash
-from motion_edit.profile.skeleton import CENTER, SkeletonStructure, resolve_contacts
+from motion_edit.profile.skeleton import CENTER, SMALL_LIMB_RATIO, SkeletonStructure, resolve_contacts
 from motion_edit.rotations import (
     nearest_rotvec_branch,
     quat_inv,
@@ -74,6 +75,19 @@ MIN_AIRBORNE_FRAMES = 2
 # Root yaw range above which a clip counts as turning: stride assumes a
 # straight walk and is not offered (section 8).
 TURNING_YAW_DEG = 25.0
+# Event confidence below which the decomposer writes a diagnostic.
+LOW_EVENT_CONFIDENCE = 0.5
+# Head words of a loop that strikes once per period (a one-shot is always read for a strike).
+STRIKE_HEADS = ("attack", "hurt")
+# Action-label words that name what a strike is delivered with: the active chain
+# is picked among the chains of the first of these amplitude groups the rig has.
+STRIKE_WORD_GROUPS = {
+    "bite": ("axial",), "headbutt": ("axial",), "firebreath": ("axial",), "spit": ("axial",),
+    "kick": ("legs",),
+    "punch": ("arms", "legs"), "swat": ("arms", "legs"), "slash": ("arms", "legs"),
+    "stab": ("arms", "legs"), "catch": ("arms", "legs"), "smash": ("arms", "legs"),
+    "sting": ("tail",), "whip": ("tail",),
+}
 
 ROLE_CODES = ("root", "axial", "support", "swing", "passive", "other")
 DOF_CODES = ("fixed", "hinge", "planar", "ball")
@@ -188,8 +202,9 @@ def cond_subset(cond_entry: dict) -> dict:
 def chain_groups(structure: SkeletonStructure, roles: list[str], canonical_names: list[str]) -> np.ndarray:
     """Amplitude group of every joint (``CHAIN_GROUPS`` codes).
 
-    Support chains are legs; other sided limbs are arms, or wings by name;
-    center joints are axial, or tail by name.  A joint inherits its parent's
+    Support chains are legs; other sided limbs are arms, or wings by name, or
+    tail when they hang on one (tail feathers); center joints are axial, or
+    tail by name.  A joint inherits its parent's
     tail / wing group, so an unnamed tip stays with its chain.
     """
     groups = np.full(structure.joint_count, "other", dtype="<U8")
@@ -203,7 +218,8 @@ def chain_groups(structure: SkeletonStructure, roles: list[str], canonical_names
         elif role == "support":
             groups[j] = "legs"
         elif role in ("swing", "passive") and structure.sides[j] != CENTER:
-            groups[j] = "wings" if ("wing" in name or inherited == "wings") else "arms"
+            groups[j] = ("wings" if ("wing" in name or inherited == "wings") else
+                         "tail" if inherited == "tail" else "arms")
         elif structure.sides[j] == CENTER and role in ("axial", "passive"):
             groups[j] = "tail" if ("tail" in name or inherited == "tail") else "axial"
         else:
@@ -288,6 +304,178 @@ def airborne_spans(mask: np.ndarray, min_frames: int = MIN_AIRBORNE_FRAMES) -> l
         if start > 0 and end < len(planted) and end - start >= min_frames:
             spans.append((start, end))
     return spans
+
+
+@dataclass
+class StrikeChain:
+    root: int
+    joints: list[int]       # its subtree without the chains nested in it
+    leaves: list[int]       # leaves of those joints
+
+
+def strike_candidates(structure: SkeletonStructure, contacts: list[int], leg: float) -> list[StrikeChain]:
+    """The chains a one-shot can strike with, each long enough to carry a gesture.
+
+    First the subtrees hung on the trunk (legs, arms, neck, tail); the trunk
+    is the root and the ancestors of the contact limbs, the part the decode
+    keeps rigid.  A centre one that carries sided limbs of its own (a bird's
+    upper body with its wings) is split: each such limb is a chain, and so is
+    every centre branch beside one (the neck between the wings).  A chain is
+    its subtree without the chains split off it; one left without leaves of
+    its own is dropped.  Smaller branches (jaw, hair, fingers) stay with the
+    chain they hang on.
+    """
+    from utils.fullbody_ik import trunk_joint_indices
+
+    trunk = {structure.root, *trunk_joint_indices(structure.parents, structure.sides, contacts).tolist()}
+    parents, sides, children = structure.parents, structure.sides, structure.children
+
+    def reach(j: int) -> float:
+        return max(float(structure.bone_length[structure.path_to(k, j)[:-1]].sum())
+                   for k in structure.subtree(j) if not children[k]) + float(structure.bone_length[j])
+
+    def big(j: int) -> bool:
+        return reach(j) >= SMALL_LIMB_RATIO * leg
+
+    roots = [j for j in range(structure.joint_count)
+             if j not in trunk and parents[j] >= 0 and int(parents[j]) in trunk and big(j)]
+    for r in [r for r in roots if sides[r] == CENTER]:
+        inner = [j for j in structure.subtree(r)
+                 if j != r and sides[j] != CENTER and sides[int(parents[j])] == CENTER and big(j)]
+        beside = {k for j in inner for k in children[int(parents[j])]
+                  if sides[k] == CENTER and big(k)}
+        roots += inner + sorted(beside)
+    root_set = set(roots)
+    out = []
+    for r in sorted(root_set):
+        joints, stack = [], [r]
+        while stack:
+            k = stack.pop()
+            joints.append(k)
+            stack.extend(c for c in children[k] if c not in root_set)
+        leaves = sorted(k for k in joints if not children[k])
+        if leaves:
+            out.append(StrikeChain(r, sorted(joints), leaves))
+    return out
+
+
+def strike_events(positions: np.ndarray, structure: SkeletonStructure, contacts: list[int],
+                  mask: np.ndarray, leg: float, fps: float, groups=None,
+                  action_label: str = "", periodic: bool = False) -> Optional[dict]:
+    """The one-shot events of section 4.1 step 3 on global ``positions`` (F, J, 3).
+
+    Every candidate chain is measured by its leaves' speed relative to the
+    joint the chain hangs on, over the chain's rest reach (an angular speed),
+    so neither a lunge of the whole body nor a long chain's tip speed counts;
+    a chain carrying contact joints (``mask`` (F, K) over ``contacts``) only
+    on frames none of them is planted.  A chain's energy is the burst of that
+    speed squared above its own median over the clip: a strike stands out, a
+    steady flap or swish does not.  The active chain is the one with the
+    largest burst, its leaf with it is the effector; when the action label
+    names what the strike is delivered with (``STRIKE_WORD_GROUPS``), among
+    the chains holding joints of that amplitude group (``groups``).
+
+    The events follow the effector's travel along the strike direction (its
+    velocity at its speed peak ``swing``, away from the clip's first and last
+    two frames): ``windup`` is the nearest local minimum of that travel before
+    the swing (pulled back the furthest), ``impact`` the first local maximum
+    after it (contact: the effector stops advancing), ``recover`` the next
+    local minimum (the follow-through drawn back; the last frame when it never
+    is).  Each comes with a confidence in [0, 1].
+
+    A loop (``periodic``) has one strike per period: everything wraps across
+    the seam, and the events are unwrapped about ``impact`` (``0 <= impact <
+    F``; ``windup`` may be negative, ``recover`` past ``F - 1``, the three
+    within one period).
+    """
+    frames = positions.shape[0]
+    chains = strike_candidates(structure, contacts, leg)
+    if frames < 6 or not chains:
+        return None
+    mode = "wrap" if periodic else "nearest"
+    smooth = gaussian_filter1d(np.asarray(positions, dtype=np.float64), 1.0, axis=0, mode=mode)
+
+    def derivative(x: np.ndarray) -> np.ndarray:
+        if periodic:
+            return 0.5 * (np.roll(x, -1, axis=0) - np.roll(x, 1, axis=0))
+        return np.gradient(x, axis=0)
+
+    rest = structure.rest
+    measured = []
+    for chain in chains:
+        attach = int(structure.parents[chain.root])
+        rel = smooth[:, chain.leaves] - smooth[:, attach][:, None]
+        reach = max(float(np.linalg.norm(rest[chain.leaves] - rest[attach], axis=-1).max()), 1e-6)
+        energy = ((derivative(rel) * fps) ** 2).sum(axis=-1) / reach ** 2   # (F, leaves)
+        carried = [k for k, c in enumerate(contacts) if c in chain.joints]
+        if carried:
+            energy[mask[:, carried].any(axis=1)] = 0.0
+        burst = np.maximum(energy - np.median(energy, axis=0, keepdims=True), 0.0).sum(axis=0)
+        leaf = int(np.argmax(burst))
+        measured.append((float(burst[leaf]), chain, chain.leaves[leaf], rel[:, leaf], energy[:, leaf]))
+    order = sorted(range(len(measured)), key=lambda i: -measured[i][0])
+    words = [w.strip() for w in action_label.split(",")]
+    def has(i: int, group: str) -> bool:
+        return any(groups[j] == group for j in measured[i][1].joints)
+
+    prior = next((g for w in words for g in STRIKE_WORD_GROUPS.get(w, ())
+                  if groups is not None and any(has(i, g) for i in order)), None)
+    if prior is not None:
+        order = [i for i in order if has(i, prior)]
+    total, chain, effector, rel, energy = measured[order[0]]
+    whole = max(sum(m[0] for m in measured), 1e-12)
+
+    swing = int(np.argmax(energy)) if periodic else 2 + int(np.argmax(energy[2:-2]))
+    peak = float(energy[swing])
+    velocity = derivative(rel)[swing]
+    direction = velocity / max(float(np.linalg.norm(velocity)), 1e-12)
+    travel = rel @ direction
+    # frames are unwrapped for a loop: at(k) reads frame k mod F, and the three events
+    # stay within one period of each other
+    at = (lambda k: travel[k % frames]) if periodic else (lambda k: travel[k])
+    first = swing - (frames - 3) if periodic else 0
+    windup = swing - 1
+    while windup > first and at(windup - 1) < at(windup):
+        windup -= 1
+    final = windup + frames - 1 if periodic else frames - 1
+    impact = swing
+    while impact < final - 1 and at(impact + 1) > at(impact):
+        impact += 1
+    recover = impact + 1
+    while recover < final and at(recover + 1) < at(recover):
+        recover += 1
+    edge = not periodic and impact >= frames - 2
+    if periodic and impact >= frames:
+        windup, swing, impact, recover = windup - frames, swing - frames, impact - frames, recover - frames
+    span = float(np.ptp(travel))
+
+    def share(a: int, b: int) -> float:
+        return float(np.clip(abs(at(a) - at(b)) / span, 0.0, 1.0)) if span > 0 else 0.0
+
+    runner_up = measured[order[1]][0] if len(order) > 1 else 0.0
+    confidence = {
+        "chain": 1.0 - runner_up / max(total, 1e-12),
+        # a clear speed burst that ends in a stop short of the clip's end
+        "impact": (1.0 - float(np.median(energy)) / max(peak, 1e-12)) * (not edge),
+        "windup": share(impact, windup),
+        "recover": share(impact, recover),
+    }
+    return {
+        "chain": int(chain.root),
+        "chain_name": structure.names[chain.root],
+        "effector": int(effector),
+        "effector_name": structure.names[effector],
+        "windup": int(windup),
+        "swing": int(swing),
+        "impact": int(impact),
+        "recover": int(recover),
+        "confidence": {k: round(float(v), 4) for k, v in confidence.items()},
+        "label_group": prior,
+        "candidates": [{"joint": int(m[1].root), "name": structure.names[m[1].root],
+                        "effector": int(m[2]), "effector_name": structure.names[m[2]],
+                        "share": round(m[0] / whole, 4), "joints": m[1].joints}
+                       for m in sorted(measured, key=lambda m: m[1].root)],
+    }
 
 
 def _optional_index(value) -> Optional[int]:
@@ -439,6 +627,11 @@ def assemble_package(
     mask = detected.mask
     ground_velocity = detected.ground_velocity
 
+    roles = (list(profile.arrays["profile_role"]) if profile.arrays is not None
+             else structure.base_roles())
+    canonical = [str(n) for n in cond_entry.get("canonical_joint_names", structure.names)]
+    groups = chain_groups(structure, roles, canonical)
+
     # 3. events
     clip = Clip(name=info.clip_name, action_group=info.action_group, action_label=info.action_label,
                 is_loop=is_loop, fps=fps, local_rotations=rotations,
@@ -473,6 +666,19 @@ def assemble_package(
         events["airborne"] = [list(span) for span in airborne_spans(mask)]
     if vertical is not None:
         events["vertical"] = {"net": round(vertical["net"], 4), "peak": round(vertical["peak"], 4)}
+    words = {w.strip() for w in info.action_label.split(",")}
+    # a loop only when its label names a strike: a walk or an idle has none to read
+    if leg and (not is_loop or words & (set(STRIKE_HEADS) | set(STRIKE_WORD_GROUPS))):
+        strike = strike_events(positions, structure, used, mask, leg, fps, groups, info.action_label,
+                               periodic=is_loop)
+        if strike is not None:
+            events["strike"] = strike
+            for name, value in strike["confidence"].items():
+                if value < LOW_EVENT_CONFIDENCE:
+                    frame = (strike.get(name) if name != "chain" else strike["impact"]) % frame_count
+                    diagnostics.append({"kind": "event", "frame": int(frame), "joint": strike["effector_name"],
+                                        "message": f"strike {name} confidence {value:.2f} "
+                                                   f"(chain {strike['chain_name']}, effector {strike['effector_name']})"})
 
     # 4. layers
     window = round(events["period"]) if (is_loop and events["period"]) else round(TREND_SECONDS * fps)
@@ -482,10 +688,6 @@ def assemble_package(
     reference, chain_offsets, gain_locked_mask = chain_layer(rotations, root, periodic=is_loop)
     plants = plant_layer(positions, used, mask, ground_velocity, fps, root, is_loop)
 
-    roles = (list(profile.arrays["profile_role"]) if profile.arrays is not None
-             else structure.base_roles())
-    canonical = [str(n) for n in cond_entry.get("canonical_joint_names", structure.names)]
-    groups = chain_groups(structure, roles, canonical)
     passive = (profile.arrays["profile_passive"] if profile.arrays is not None
                else np.zeros(joint_count, dtype=bool))
 
@@ -506,6 +708,7 @@ def assemble_package(
         "turning": yaw_range > TURNING_YAW_DEG,
         "airborne": bool(events["airborne"]),
         "has_passive": bool(passive.any()),
+        "strike": "strike" in events,
         "chain_groups": sorted(set(groups.tolist())),
     }
     available = available_params(facts)

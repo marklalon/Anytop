@@ -20,7 +20,7 @@ import numpy as np
 
 # Bump when the package arrays or their meaning change; the runtime refuses
 # every other version.
-RUNTIME_VERSION = 3
+RUNTIME_VERSION = 5
 
 PACKAGE_SUFFIX = ".edit"
 MANIFEST_FILE = "manifest.json"

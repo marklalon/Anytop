@@ -155,7 +155,16 @@ const state = {
   jointDraft: null,     // Set of contact joints being edited
   maskEditing: false,   // the timeline edits contact intervals instead of scrubbing
   stDisplay: null,      // source time the playhead shows (fractional while interpolating)
+  events: null,         // strike events / chain moved on the page ({windup, impact, recover, chain})
 };
+const EVENT_KEYS = ['windup', 'impact', 'recover'];
+const EVENT_LABELS = { windup: 'W', impact: 'I', recover: 'R' };
+const EVENT_COLORS = { windup: '#6cc785', impact: '#ef6b6b', recover: '#b08cff' };
+// the strike as the page has it: the package's, with the moved events on top
+function strikeEvents() {
+  const base = state.pkg && state.pkg.m.events.strike;
+  return base ? { ...base, ...(state.events || {}) } : null;
+}
 
 // ── three.js scene ───────────────────────────────────────────────────────
 const view = $('view');
@@ -337,6 +346,7 @@ async function openPackage(id, payload, keepParams = false) {
   state.pkg = ingest(data);
   if (!sameClip) {
     state.params = {};
+    state.events = null;
     state.frame = 0; state.clock = 0; state.lap = 0;
   }
   state.edited = null;
@@ -360,13 +370,7 @@ async function openPackage(id, payload, keepParams = false) {
   buildGrid();
   buildAnchors();
   buildParams();
-  for (const [name, value] of Object.entries(state.params)) {
-    const row = document.querySelector(`.row[data-param="${name}"]`);
-    if (!row) { delete state.params[name]; continue; }
-    const input = row.querySelector('input');
-    if (input.type === 'checkbox') input.checked = !!value; else input.value = value;
-    row.querySelector('.val').textContent = fmt(value);
-  }
+  restoreParamInputs();
   renderContacts();
   setMaskEditing(false);   // the draft was just reset to the package's mask
   if (!sameClip) frameCamera();
@@ -443,6 +447,50 @@ function buildParams() {
     row.append(label, input, val, reset);
     row.dataset.param = name;
     box.appendChild(row);
+    if (name === 'force') box.appendChild(strikeRow());
+  }
+}
+
+// active chain of the force parameters, and a reset for moved events
+function strikeRow() {
+  const strike = strikeEvents(), row = document.createElement('div');
+  row.className = 'controls';
+  const label = document.createElement('label'); label.className = 'chk'; label.textContent = '主动链 ';
+  label.title = '力度参数作用的链；事件标记（W / I / R）在时间轴上拖动';
+  const sel = document.createElement('select'); sel.style.maxWidth = '170px';
+  for (const c of strike.candidates) {
+    const o = document.createElement('option'); o.value = c.joint;
+    o.textContent = `${c.name} (${Math.round(c.share * 100)}%)`; sel.appendChild(o);
+  }
+  sel.value = strike.chain;
+  sel.onchange = () => { setEvents({ chain: +sel.value }); };
+  label.appendChild(sel);
+  const reset = document.createElement('button'); reset.textContent = '重置事件';
+  reset.title = '事件帧和主动链恢复为分解时检测的结果';
+  reset.disabled = !state.events;
+  reset.onclick = () => { state.events = null; buildParams(); restoreParamInputs(); applyEdit(); };
+  const conf = document.createElement('span'); conf.className = 'meta';
+  const c = state.pkg.m.events.strike.confidence;
+  conf.textContent = `置信度 链 ${c.chain.toFixed(2)} · W ${c.windup.toFixed(2)} · I ${c.impact.toFixed(2)} · R ${c.recover.toFixed(2)}`;
+  row.append(label, reset, conf);
+  return row;
+}
+
+function setEvents(patch) {
+  const base = state.pkg.m.events.strike;
+  const next = { ...(state.events || {}), ...patch };
+  for (const k of Object.keys(next)) if (next[k] === base[k]) delete next[k];
+  state.events = Object.keys(next).length ? next : null;
+  buildParams(); restoreParamInputs(); applyEdit();
+}
+
+function restoreParamInputs() {
+  for (const [name, value] of Object.entries(state.params)) {
+    const row = document.querySelector(`.row[data-param="${name}"]`);
+    if (!row) { delete state.params[name]; continue; }
+    const input = row.querySelector('input');
+    if (input.type === 'checkbox') input.checked = !!value; else input.value = value;
+    row.querySelector('.val').textContent = fmt(value);
   }
 }
 
@@ -452,13 +500,15 @@ function setParam(name, value) {
   applyEdit();
 }
 
-$('resetAll').onclick = () => { state.params = {}; buildParams(); applyEdit(); };
+$('resetAll').onclick = () => { state.params = {}; state.events = null; buildParams(); applyEdit(); };
 
 async function applyEdit() {
   if (!state.id) return;
   const ticket = ++state.pending;   // a newer request supersedes this one
   try {
-    const data = await api('/api/apply', { id: state.id, params: state.params });
+    const body = { id: state.id, params: state.params };
+    if (state.events) body.events = state.events;
+    const data = await api('/api/apply', body);
     if (ticket !== state.pending) return;
     state.edited = { positions: Float32Array.from(data.positions), F: data.frames, gv: data.ground_velocity,
       disp: groundDisplacement(data.ground_velocity, data.frames, state.pkg.loop, state.pkg.fps),
@@ -630,6 +680,8 @@ tl.addEventListener('pointerdown', (e) => {
   tl.setPointerCapture(e.pointerId);
   setPlaying(false);
   const hit = tlHit(e);
+  const marker = !state.maskEditing && eventAt(hit.x);
+  if (marker) { drag = { mode: 'event', key: marker }; return; }
   if (!state.maskEditing || (hit.row < 0 && hit.y < TL.ruler && !hit.inLabel)) {
     drag = { mode: 'scrub' }; setFrame(sourceFrameToEdited(hit.scrub)); return;
   }
@@ -652,6 +704,7 @@ tl.addEventListener('pointermove', (e) => {
   if (!drag || !tl.hasPointerCapture(e.pointerId)) return;
   const hit = tlHit(e);
   if (drag.mode === 'scrub') { setFrame(sourceFrameToEdited(hit.wrapped)); return; }
+  if (drag.mode === 'event') { moveEvent(drag.key, hit.scrub); return; }
   if (drag.mode === 'create') {
     state.maskDraft[drag.k] = drag.snapshot.slice();
     const a = Math.min(drag.from, hit.frame), b = Math.max(drag.from, hit.frame) + 1;
@@ -671,6 +724,7 @@ tl.addEventListener('pointermove', (e) => {
 });
 tl.addEventListener('pointerup', (e) => {
   if (tl.hasPointerCapture(e.pointerId)) tl.releasePointerCapture(e.pointerId);
+  if (drag && drag.mode === 'event') { drag = null; setEvents({}); return; }
   if (drag && (drag.mode === 'start' || drag.mode === 'end') && state.selectedRun) {
     // re-read the run: it may have merged into a neighbour
     const r = state.selectedRun;
@@ -693,6 +747,39 @@ window.addEventListener('keydown', (e) => {
   setCells(k, s, end, 0); state.selectedRun = null;
   updateMaskButtons(); drawTimeline();
 });
+
+// strike event marker under the pointer on the collapsed axis (x from tlHit)
+const EVENT_GRAB = 5;   // CSS px
+// a loop's events are unwrapped about impact (windup may be negative, recover past F-1):
+// they sit on the timeline at their frame in the period
+function eventFrame(f) { const F = state.pkg.F; return state.pkg.loop ? ((f % F) + F) % F : f; }
+function eventAt(x) {
+  const strike = strikeEvents(); if (!strike) return null;
+  const L = tlLayout();
+  let best = null, bestD = EVENT_GRAB + 1;
+  for (const k of EVENT_KEYS) {
+    const d = Math.abs(eventFrame(strike[k]) / L.span * L.w - x);
+    if (d < bestD) { best = k; bestD = d; }
+  }
+  return best;
+}
+// a dragged marker keeps the order windup < impact < recover (on a loop, unwrapped and
+// within one period: it may be dragged across the seam)
+function moveEvent(key, frame) {
+  const strike = strikeEvents(), F = state.pkg.F, loop = state.pkg.loop;
+  const i = EVENT_KEYS.indexOf(key);
+  if (loop) frame = [frame - F, frame, frame + F].reduce((a, b) =>
+    Math.abs(b - strike[key]) < Math.abs(a - strike[key]) ? b : a);
+  const lo = i > 0 ? strike[EVENT_KEYS[i - 1]] + 1 : loop ? strike.recover - (F - 1) : 0;
+  const hi = i < 2 ? strike[EVENT_KEYS[i + 1]] - 1 : loop ? strike.windup + (F - 1) : F - 1;
+  const f = Math.max(lo, Math.min(hi, frame));
+  if (f === strike[key]) return;
+  const base = state.pkg.m.events.strike;
+  state.events = { ...(state.events || {}), [key]: f };
+  if (f === base[key]) delete state.events[key];
+  if (!Object.keys(state.events).length) state.events = null;
+  drawTimeline();
+}
 
 function maskDirty() {
   if (!state.pkg || !state.maskDraft) return false;
@@ -783,6 +870,18 @@ function drawTimeline() {
       if (hi > lo) g.strokeRect(x(lo) + 0.5, TL.ruler + k * L.rowH + 0.5, x(hi) - x(lo) - 1, L.rowH - 3);
     }
     g.lineWidth = 1;
+  }
+  const strike = strikeEvents();
+  if (strike) {
+    // strike markers: a line through the rows (on the cell's centre while they show) and its letter
+    g.font = 'bold 10px system-ui'; g.textAlign = 'center'; g.lineWidth = 2;
+    for (const k of EVENT_KEYS) {
+      const xf = Math.round(L.rows ? x(eventFrame(strike[k]) + 0.5) : x(eventFrame(strike[k]))) + 0.5;
+      g.strokeStyle = g.fillStyle = EVENT_COLORS[k];
+      g.beginPath(); g.moveTo(xf, L.rows ? TL.ruler : 10); g.lineTo(xf, L.h); g.stroke();
+      g.fillText(EVENT_LABELS[k] + (state.events && k in state.events ? '*' : ''), xf, 9);
+    }
+    g.textAlign = 'start'; g.lineWidth = 1;
   }
   if (ev.period) {
     g.strokeStyle = '#7a8394'; g.setLineDash([3, 3]);

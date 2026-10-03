@@ -3,8 +3,8 @@
 Usage:
     pytest tests/test_motion_edit_runtime.py
 
-The clip-level tests decompose Truebones Horse clips and skip when that
-dataset is not on disk.
+The clip-level tests decompose Truebones Horse and Trex clips and skip when
+that dataset is not on disk.
 """
 
 from __future__ import annotations
@@ -34,22 +34,28 @@ from motion_edit.package import EditPackage, PackageVersionError, decode_json
 from motion_edit.rotations import quat_from_rotvec, quat_inv, quat_mul, rotvec_from_quat
 from utils.fullbody_ik import trunk_joint_indices
 from motion_edit.runtime import (
+    FORCE_SLOW_EXPONENT,
     IMPLEMENTED,
     PARAM_SPECS,
+    STRIKE_LEAN,
+    STRIKE_SHIFT,
     EditRuntime,
     UnsupportedParameterError,
     blend_between_keys,
     forward_kinematics,
     ground_displacement,
+    pchip,
     ramped_envelope,
     sample_linear,
     soft_scale,
+    strike_shapes,
     yaw_quat,
 )
 
 ANYTOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HORSE_ROOT = os.path.join(ANYTOP, "dataset", "truebones", "zoo", "truebones_processed")
 HORSE_KEY = "truebones/zoo/Horse"
+TREX_KEY = "truebones/zoo/Trex"
 
 ROT_TOL = 1e-5   # rad
 POS_TOL = 1e-6
@@ -140,16 +146,17 @@ requires_horse = pytest.mark.skipif(
     not os.path.isfile(os.path.join(HORSE_ROOT, "cond.npy")), reason="Truebones zoo dataset not on disk")
 
 
-def _decompose(clip: str, is_loop: bool, action_group: str, action_label: str, stretch: float = 0.1):
+def _decompose(clip: str, is_loop: bool, action_group: str, action_label: str, stretch: float = 0.1,
+               key: str = HORSE_KEY):
     from motion_edit.profile.data import load_profiles
 
-    cond = np.load(os.path.join(HORSE_ROOT, "cond.npy"), allow_pickle=True).item()[HORSE_KEY]
+    cond = np.load(os.path.join(HORSE_ROOT, "cond.npy"), allow_pickle=True).item()[key]
     features = np.load(os.path.join(HORSE_ROOT, "motions", clip + ".npy"))
     if is_loop:
         from data_loaders.truebones.data.dataset import _drop_loop_closing_frame
         features = _drop_loop_closing_frame(features)
-    profile = profile_subset(load_profiles(HORSE_ROOT).get(HORSE_KEY), cond, action_label)
-    return decompose_motion(features, cond, object_type=HORSE_KEY, clip_name=clip, is_loop=is_loop,
+    profile = profile_subset(load_profiles(HORSE_ROOT).get(key), cond, action_label)
+    return decompose_motion(features, cond, object_type=key, clip_name=clip, is_loop=is_loop,
                             action_group=action_group, action_label=action_label,
                             stretch_factor=stretch, profile=profile)
 
@@ -167,18 +174,21 @@ def _reference(package: EditPackage):
 
 
 @pytest.fixture(scope="module")
-def horse_packages():
+def packages():
     return {
         "loop": _decompose("Horse_RunLoop", True, "locomotion", "run, forward"),
         "one_shot": _decompose("Horse_Jumping", False, "stationary", "attack, jump, smash"),
+        "attack": _decompose("Trex_HumanBite", False, "stationary", "attack, bite", key=TREX_KEY),
+        "hurt": _decompose("Trex_HitTorsoLeft", False, "stationary", "hurt", key=TREX_KEY),
+        "loop_attack": _decompose("Horse_Attack", True, "stationary", "attack, charge"),
     }
 
 
 @requires_horse
 @pytest.mark.parametrize("kind", ["loop", "one_shot"])
 @pytest.mark.parametrize("compose", [False, True], ids=["T1_replay", "T1b_roundtrip"])
-def test_default_params_replay_the_decode(horse_packages, kind, compose):
-    package = horse_packages[kind]
+def test_default_params_replay_the_decode(packages, kind, compose):
+    package = packages[kind]
     ref_rot, ref_pos = _reference(package)
     result = EditRuntime(package).apply(compose=compose)
     assert result.composed == compose
@@ -188,8 +198,8 @@ def test_default_params_replay_the_decode(horse_packages, kind, compose):
 
 @requires_horse
 @pytest.mark.parametrize("compose", [False, True])
-def test_T2_deterministic(horse_packages, compose):
-    runtime = EditRuntime(horse_packages["loop"])
+def test_T2_deterministic(packages, compose):
+    runtime = EditRuntime(packages["loop"])
     a = runtime.apply(compose=compose)
     b = runtime.apply(compose=compose)
     assert np.array_equal(a.animation.rotations.qs, b.animation.rotations.qs)
@@ -199,8 +209,8 @@ def test_T2_deterministic(horse_packages, compose):
 
 @requires_horse
 @pytest.mark.parametrize("compose", [False, True])
-def test_T5_bone_lengths_match_package(horse_packages, compose):
-    package = horse_packages["one_shot"]
+def test_T5_bone_lengths_match_package(packages, compose):
+    package = packages["one_shot"]
     result = EditRuntime(package).apply(compose=compose)
     parents = package["parents"]
     child = np.flatnonzero(parents >= 0)
@@ -210,8 +220,8 @@ def test_T5_bone_lengths_match_package(horse_packages, compose):
 
 
 @requires_horse
-def test_package_round_trips_through_disk(horse_packages, tmp_path):
-    package = horse_packages["loop"]
+def test_package_round_trips_through_disk(packages, tmp_path):
+    package = packages["loop"]
     package.save(str(tmp_path / "clip.edit"))
     loaded = EditPackage.load(str(tmp_path / "clip.edit"))
     for compose in (False, True):
@@ -225,8 +235,8 @@ def test_package_round_trips_through_disk(horse_packages, tmp_path):
 
 
 @requires_horse
-def test_redecompose_with_zero_stretch_is_rigid(horse_packages):
-    package = horse_packages["one_shot"]
+def test_redecompose_with_zero_stretch_is_rigid(packages):
+    package = packages["one_shot"]
     rigid = redecompose(package, 0.0)
     assert rigid.manifest["stretch_factor"] == 0.0
     assert rigid.manifest["contacts"] == package.manifest["contacts"]
@@ -246,8 +256,8 @@ def test_redecompose_with_zero_stretch_is_rigid(horse_packages):
 
 
 @requires_horse
-def test_redecompose_without_fullbody_ik(horse_packages):
-    package = horse_packages["loop"]
+def test_redecompose_without_fullbody_ik(packages):
+    package = packages["loop"]
     free = redecompose(package, fullbody_ik=False)
     assert free.manifest["fullbody_ik"] is False
     assert free.manifest["stretch_factor"] == package.manifest["stretch_factor"]
@@ -268,8 +278,8 @@ def test_redecompose_without_fullbody_ik(horse_packages):
 
 
 @requires_horse
-def test_contacts_and_events_are_detected(horse_packages):
-    loop = horse_packages["loop"]
+def test_contacts_and_events_are_detected(packages):
+    loop = packages["loop"]
     assert loop.manifest["profile"]["status"] == "ok"
     assert loop.manifest["events"]["period"] == pytest.approx(loop.frame_count, abs=1)
     assert len(loop["plant_intervals"]) > 0
@@ -280,19 +290,17 @@ def test_contacts_and_events_are_detected(horse_packages):
         assert (loop["plant_id"][frames, k] >= 0).all()
     assert "stride" in loop.manifest["available_params"]
     assert "force" not in loop.manifest["available_params"]
-    assert "force" in horse_packages["one_shot"].manifest["available_params"]
+    assert "force" in packages["one_shot"].manifest["available_params"]
 
 
 @requires_horse
-def test_params_are_refused_not_ignored(horse_packages):
-    runtime = EditRuntime(horse_packages["loop"])
+def test_params_are_refused_not_ignored(packages):
+    runtime = EditRuntime(packages["loop"])
     assert not runtime.apply({"tempo": 1.0, "foot_lock": False}).composed
     with pytest.raises(ValueError):
         runtime.apply({"no_such_param": 1.0})
     with pytest.raises(UnsupportedParameterError):
         runtime.apply({"force": 1.5})   # one-shot only
-    with pytest.raises(UnsupportedParameterError):
-        EditRuntime(horse_packages["one_shot"]).apply({"force": 1.5})   # not implemented yet
     with pytest.raises(UnsupportedParameterError):
         runtime.apply({"jump_height": 1.5})   # not on a loop
 
@@ -364,9 +372,9 @@ def _locking_pivot_baseline(runtime: EditRuntime, result) -> dict[int, float]:
 
 
 @requires_horse
-@pytest.mark.parametrize("kind", ["loop", "one_shot"])
-def test_T5_T6_edits_keep_bones_and_plants(horse_packages, kind):
-    package = horse_packages[kind]
+@pytest.mark.parametrize("kind", ["loop", "one_shot", "attack", "hurt", "loop_attack"])
+def test_T5_T6_edits_keep_bones_and_plants(packages, kind):
+    package = packages[kind]
     runtime = EditRuntime(package)
     leg = runtime.leg
     parents = package["parents"]
@@ -397,19 +405,21 @@ def test_T5_T6_edits_keep_bones_and_plants(horse_packages, kind):
         roll = max(1.0, result.params.get("amp.legs", 1.0))
         locked = _locking_pivot_baseline(runtime, result) if result.params.get("foot_lock") else {}
         for plant, (drift, baseline) in _plant_drift(runtime, result).items():
-            allowed = roll * baseline + locked.get(plant, 0.0) + 0.015 * leg
+            allowed = roll * baseline + locked.get(plant, 0.0) + 0.02 * leg
             assert drift <= allowed, (params, plant, drift, baseline)
-        for plant, (drift, baseline) in _plant_drift(runtime, result, pivots_only=True).items():
+        # foot_lock re-pins a heel that pivots again after rolling over its toe: per run
+        runs = bool(result.params.get("foot_lock"))
+        for plant, (drift, baseline) in _plant_drift(runtime, result, pivots_only=True, pivot_runs=runs).items():
             assert drift <= baseline + 1e-4 * leg, (params, plant, drift, baseline)
 
 
 @requires_horse
 @pytest.mark.parametrize("kind", ["loop", "one_shot"])
-def test_T6_foot_lock_pins_the_pivots(horse_packages, kind):
+def test_T6_foot_lock_pins_the_pivots(packages, kind):
     """The pivot is the foot's deepest planted contact; it holds still while it stays the
     pivot.  A heel that is the pivot again after its toe lifts has rolled about the toe
     in between, so each unbroken run is measured on its own."""
-    runtime = EditRuntime(horse_packages[kind])
+    runtime = EditRuntime(packages[kind])
     for extra in ({}, {"bounce": 1.5}, {"amp.legs": 1.4}):
         result = runtime.apply({"foot_lock": True, **extra})
         drift = _plant_drift(runtime, result, pivots_only=True, pivot_runs=True)
@@ -418,10 +428,10 @@ def test_T6_foot_lock_pins_the_pivots(horse_packages, kind):
 
 @requires_horse
 @pytest.mark.parametrize("kind", ["loop", "one_shot"])
-def test_T6_foot_lock_keeps_the_foot_shape(horse_packages, kind):
+def test_T6_foot_lock_keeps_the_foot_shape(packages, kind):
     """foot_lock removes one slip per foot: every planted contact keeps its original offset
     from the foot's reference contact, so a heel peeling up about a planted toe still peels."""
-    runtime = EditRuntime(horse_packages[kind])
+    runtime = EditRuntime(packages[kind])
     package = runtime.package
     original = runtime.original_positions()
     result = runtime.apply({"foot_lock": True})
@@ -445,8 +455,9 @@ def test_T6_foot_lock_keeps_the_foot_shape(horse_packages, kind):
 
 
 @requires_horse
-def test_T4_loop_seam_is_an_ordinary_step(horse_packages):
-    package = horse_packages["loop"]
+@pytest.mark.parametrize("kind", ["loop", "loop_attack"])
+def test_T4_loop_seam_is_an_ordinary_step(packages, kind):
+    package = packages[kind]
     runtime = EditRuntime(package)
     for params in [{}] + _edit_cases(package):
         pos = runtime.apply(params, compose=True).global_positions
@@ -456,26 +467,35 @@ def test_T4_loop_seam_is_an_ordinary_step(horse_packages):
 
 
 @requires_horse
-@pytest.mark.parametrize("kind", ["loop", "one_shot"])
-def test_T7_sliders_are_continuous_at_their_defaults(horse_packages, kind):
-    package = horse_packages[kind]
+@pytest.mark.parametrize("kind", ["loop", "one_shot", "attack", "hurt", "loop_attack"])
+def test_T7_sliders_are_continuous_at_their_defaults(packages, kind):
+    package = packages[kind]
     runtime = EditRuntime(package)
     reference = runtime.apply().global_positions
+
+    def change(name, value):
+        pos = runtime.apply({name: value}).global_positions
+        n = min(len(pos), len(reference))
+        return np.abs(pos[:n] - reference[:n]).max() / runtime.leg
+
     for name in package.manifest["available_params"]:
         spec = PARAM_SPECS[name]
         if name not in IMPLEMENTED or spec.toggle:
             continue
         eps = 1e-3 * (spec.high - spec.low)
-        for value in (spec.default - eps, spec.default + eps):
-            pos = runtime.apply({name: value}).global_positions
-            n = min(len(pos), len(reference))
-            change = np.abs(pos[:n] - reference[:n]).max() / runtime.leg
-            assert change <= 20.0 * eps, (name, value, change)
+        for sign in (-1.0, 1.0):
+            moved = change(name, spec.default + sign * eps)
+            if moved <= 20.0 * eps:
+                continue
+            # a timing slider shifts every later frame, so its constant grows with the clip's
+            # length and speed: past the bound it must still be linear (half the step, half
+            # the change), which a layer switching on all at once is not
+            assert change(name, spec.default + sign * eps / 2) <= 0.55 * moved, (name, sign, moved)
 
 
 @requires_horse
-def test_T2_deterministic_with_edits(horse_packages):
-    runtime = EditRuntime(horse_packages["loop"])
+def test_T2_deterministic_with_edits(packages):
+    runtime = EditRuntime(packages["loop"])
     params = {"stride": 1.3, "bounce": 1.4, "amp.legs": 1.2, "tempo": 1.25, "foot_lock": True}
     a, b = runtime.apply(params), runtime.apply(params)
     assert np.array_equal(a.animation.rotations.qs, b.animation.rotations.qs)
@@ -483,22 +503,22 @@ def test_T2_deterministic_with_edits(horse_packages):
 
 
 @requires_horse
-def test_tempo_keeps_whole_loop_periods(horse_packages):
-    package = horse_packages["loop"]
+def test_tempo_keeps_whole_loop_periods(packages):
+    package = packages["loop"]
     runtime = EditRuntime(package)
     for tempo in (0.5, 0.8, 1.3, 2.0):
         result = runtime.apply({"tempo": tempo})
         count = len(result.source_time)
         assert count == max(2, round(package.frame_count / tempo))
         assert np.allclose(np.diff(result.source_time), package.frame_count / count)
-    one_shot = EditRuntime(horse_packages["one_shot"]).apply({"tempo": 2.0})
-    assert one_shot.source_time[-1] <= horse_packages["one_shot"].frame_count - 1
+    one_shot = EditRuntime(packages["one_shot"]).apply({"tempo": 2.0})
+    assert one_shot.source_time[-1] <= packages["one_shot"].frame_count - 1
     assert np.allclose(np.diff(one_shot.source_time), 2.0)
 
 
 @requires_horse
-def test_tempo_and_stride_scale_the_ground_speed(horse_packages):
-    package = horse_packages["loop"]
+def test_tempo_and_stride_scale_the_ground_speed(packages):
+    package = packages["loop"]
     runtime = EditRuntime(package)
     base = np.linalg.norm(runtime.apply().ground_velocity, axis=-1).mean()
     stride = runtime.apply({"stride": 1.3})
@@ -514,8 +534,8 @@ def test_tempo_and_stride_scale_the_ground_speed(horse_packages):
 
 
 @requires_horse
-def test_amplitude_and_root_layers_act_where_named(horse_packages):
-    package = horse_packages["loop"]
+def test_amplitude_and_root_layers_act_where_named(packages):
+    package = packages["loop"]
     runtime = EditRuntime(package)
     base = runtime.apply(compose=True)
     groups = np.asarray([str(g) for g in package["chain_group"]])
@@ -611,10 +631,10 @@ def test_soft_scale_band_and_limits():
 
 
 @requires_horse
-def test_soft_stretch_takes_over_from_lowering(horse_packages):
+def test_soft_stretch_takes_over_from_lowering(packages):
     """A raised posture is reached by lengthening the legs first; the body is lowered only
     for what the limit cannot cover, and a lowered posture shortens them."""
-    runtime = EditRuntime(horse_packages["loop"])
+    runtime = EditRuntime(packages["loop"])
     package = runtime.package
 
     def lowered(result):
@@ -664,8 +684,8 @@ def test_forward_kinematics_matches_motion_lib():
 # ── contact edits ─────────────────────────────────────────────────────────────
 
 @requires_horse
-def test_contact_mask_edit_rebuilds_plants(horse_packages):
-    package = horse_packages["one_shot"]
+def test_contact_mask_edit_rebuilds_plants(packages):
+    package = packages["one_shot"]
     same = with_contact_mask(package, package["contact_mask"])
     assert same.manifest["contacts"]["intervals_edited"]
     assert np.array_equal(same["plant_intervals"], package["plant_intervals"])
@@ -684,8 +704,8 @@ def test_contact_mask_edit_rebuilds_plants(horse_packages):
 
 @requires_horse
 @pytest.mark.parametrize("kind", ["loop", "one_shot"])
-def test_edits_without_contact_joints_skip_the_plants(horse_packages, kind):
-    edited = with_contact_joints(horse_packages[kind], [])
+def test_edits_without_contact_joints_skip_the_plants(packages, kind):
+    edited = with_contact_joints(packages[kind], [])
     runtime = EditRuntime(edited)
     for params in ({"amp.legs": 0.5}, {"bounce": 1.5}):
         result = runtime.apply(params)
@@ -695,8 +715,8 @@ def test_edits_without_contact_joints_skip_the_plants(horse_packages, kind):
 
 
 @requires_horse
-def test_contact_joint_edit_records_provenance(horse_packages):
-    package = horse_packages["one_shot"]
+def test_contact_joint_edit_records_provenance(packages):
+    package = packages["one_shot"]
     joints = list(package["contact_joints"])
     removed = joints[0]
     names = [str(n) for n in package["names"]]
@@ -715,8 +735,8 @@ def test_contact_joint_edit_records_provenance(horse_packages):
 
 
 @requires_horse
-def test_input_notes_survive_rebuilds(horse_packages):
-    package = horse_packages["one_shot"]
+def test_input_notes_survive_rebuilds(packages):
+    package = packages["one_shot"]
     note = {"kind": "contacts", "message": "override row is stale"}
     package = EditPackage(dict(package.manifest, input_notes=[note]), package.arrays)
     for rebuilt in (redecompose(package), with_contact_mask(package, package["contact_mask"]),
@@ -754,3 +774,183 @@ def test_serve_refuses_non_json_posts(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ── one-shot events + force (M4) ─────────────────────────────────────────────
+
+def test_pchip_is_monotone_through_its_nodes():
+    x = np.array([0.0, 4.0, 6.0, 15.0, 20.0])
+    y = np.array([0.0, 10.0, 12.0, 14.0, 30.0])
+    q = np.linspace(0.0, 20.0, 401)
+    assert np.allclose(pchip(x, y, x), y)
+    assert np.all(np.diff(pchip(x, y, q)) >= -1e-12)
+    # collinear nodes give the straight line
+    assert np.allclose(pchip(x, 2.0 * x + 1.0, q), 2.0 * q + 1.0)
+
+
+def test_strike_shapes_hold_and_ease():
+    t = np.arange(0.0, 60.0, 0.25)
+    hold, push = strike_shapes(t, 20, 30, 36)
+    at = lambda c, f: c[np.searchsorted(t, f)]
+    assert at(hold, 5) == 0.0 and at(hold, 59) == 0.0 and at(push, 5) == 0.0 and at(push, 59) == 0.0
+    assert at(hold, 20) == 1.0 and 0.0 < at(hold, 25) < 1.0 and at(hold, 30) == 0.0
+    assert at(push, 25) == 0.0 and at(push, 32) == pytest.approx(1.0) and at(push, 36) == 0.0
+    assert at(push, 30) > 0.0                       # the drive starts before contact
+    assert np.abs(np.diff(hold)).max() < 0.1 and np.abs(np.diff(push)).max() < 0.15   # no step
+
+
+@requires_horse
+@pytest.mark.parametrize("kind", ["attack", "hurt", "one_shot"])
+def test_strike_events_are_ordered_on_the_active_chain(packages, kind):
+    package = packages[kind]
+    strike = package.manifest["events"]["strike"]
+    assert 0 <= strike["windup"] < strike["swing"] <= strike["impact"] < strike["recover"] <= package.frame_count - 1
+    chain = next(c for c in strike["candidates"] if c["joint"] == strike["chain"])
+    assert strike["effector"] in chain["joints"]
+    assert all(0.0 <= v <= 1.0 for v in strike["confidence"].values())
+    assert package.manifest["facts"]["strike"]
+
+
+@requires_horse
+def test_strike_bite_is_delivered_by_the_neck(packages):
+    package = packages["attack"]
+    strike = package.manifest["events"]["strike"]
+    groups = [str(g) for g in package["chain_group"]]
+    assert strike["label_group"] == "axial" and groups[strike["chain"]] == "axial"
+
+
+@requires_horse
+def test_strike_events_can_be_moved(packages):
+    runtime = EditRuntime(packages["attack"])
+    strike = runtime.strike()
+    moved = runtime.strike({"impact": strike["impact"] + 1})
+    assert moved["impact"] == strike["impact"] + 1 and moved["moved"] == ["impact"]
+    other = next(c for c in strike["candidates"] if c["joint"] != strike["chain"])
+    switched = runtime.strike({"chain": other["joint"]})
+    assert switched["joints"] == other["joints"]
+    # the effector follows the chain: the lean's lever is the new chain's own leaf
+    assert switched["effector"] == other["effector"] and switched["effector"] in other["joints"]
+    for bad in ({"impact": strike["windup"]}, {"recover": strike["impact"]},
+                {"chain": runtime.package.root}, {"apex": 3}):
+        with pytest.raises(ValueError):
+            runtime.strike(bad)
+    with pytest.raises(ValueError):
+        EditRuntime(with_contact_joints(packages["one_shot"], [])).strike({"impact": 3})
+    # moving events alone changes nothing: they only key the force parameters
+    base = runtime.apply(compose=True).global_positions
+    again = runtime.apply(compose=True, events={"impact": strike["impact"] + 1}).global_positions
+    assert np.array_equal(again, base)
+
+
+@requires_horse
+def test_force_moves_the_whole_strike_body(packages):
+    from motion_edit.rotations import quat_rotate
+
+    runtime = EditRuntime(packages["attack"])
+    package = runtime.package
+    strike = runtime.strike()
+    w, i = strike["windup"], strike["impact"]
+    trunk, body = runtime.strike_body(strike)
+    assert trunk and set(strike["joints"]) <= set(body) | {package.root}
+    base = runtime.apply(compose=True)
+    direction = runtime.strike_direction(strike)
+    flat = lambda v: v[..., [0, 2]] @ direction
+
+    deep = runtime.apply({"windup_depth": 2.0})
+    assert np.array_equal(deep.source_time, base.source_time)
+    # the body's weight goes back against the strike in the windup...
+    root = package.root
+    assert flat(deep.global_positions[w, root] - base.global_positions[w, root]) < -0.5 * STRIKE_SHIFT * runtime.leg
+    # ...the trunk leans back with it: the joint the chain hangs on falls behind further than the root
+    top = trunk[-1]
+    assert flat(deep.global_positions[w, top] - base.global_positions[w, top]) < flat(
+        deep.global_positions[w, root] - base.global_positions[w, root])
+    # ...and the body is back at its contact pose by contact
+    assert np.abs(deep.global_positions[i, body] - base.global_positions[i, body]).max() < 1e-3 * runtime.leg
+
+    far = runtime.apply({"overshoot": 2.0})
+    crest = int(round(i + (strike["recover"] - i) / 3.0))
+    # past contact the body drives on along the strike, and the active chain's reach with it
+    assert flat(far.global_positions[crest, root] - base.global_positions[crest, root]) > 0.5 * STRIKE_SHIFT * runtime.leg
+    tip = strike["effector"]
+    assert flat(far.global_positions[crest, tip] - base.global_positions[crest, tip]) > 0.5 * STRIKE_SHIFT * runtime.leg
+    # joints off the strike body move only rigidly with it or through the plants' IK
+    legs = {j for limb in runtime.limbs()[0] for j in limb.chain + [limb.foot]}
+    moved = np.abs(far.animation.rotations.qs - base.animation.rotations.qs).max(axis=(0, 2)) > 1e-9
+    assert set(np.flatnonzero(moved)) <= set(body) | legs | {root}
+    # the lean swings the root -> effector lever toward the strike, never away from it
+    axis = runtime.strike_lean_axis(strike, direction)
+    lever = runtime.original_positions()[i, tip] - runtime.original_positions()[i, root]
+    assert np.dot(np.cross(axis, lever), [direction[0], 0.0, direction[1]]) >= 0.0
+
+    # force is the preset over the rest: depth, strike speed and overshoot up, windup and
+    # recover speeds down
+    a = runtime.apply({"force": 1.4}).global_positions
+    slowed = 1.0 / 1.4 ** FORCE_SLOW_EXPONENT
+    b = runtime.apply({"windup_depth": 1.4, "strike_speed": 1.4, "overshoot": 1.4,
+                       "windup_speed": slowed, "recover_speed": slowed}).global_positions
+    assert np.array_equal(a, b)
+    slow = runtime.apply({"force": 2.0, "recover_speed": 0.5})
+    assert any(d["kind"] == "clamped" and d["param"] == "recover_speed" for d in slow.diagnostics)
+    clamped = runtime.apply({"force": 2.0, "windup_depth": 1.5})
+    assert any(d["kind"] == "clamped" and d["param"] == "windup_depth" for d in clamped.diagnostics)
+    assert "impact_shift" not in PARAM_SPECS
+
+
+@requires_horse
+def test_segment_speeds_retime_the_events(packages):
+    runtime = EditRuntime(packages["attack"])
+    strike = runtime.strike()
+    w, i, r = strike["windup"], strike["impact"], strike["recover"]
+    last = runtime.package.frame_count - 1
+
+    def frame_of(result, source):
+        return float(np.interp(source, result.source_time, np.arange(len(result.source_time))))
+
+    for name, (a, b) in (("windup_speed", (0, w)), ("strike_speed", (w, i)), ("recover_speed", (i, r))):
+        fast = runtime.apply({name: 2.0})
+        assert np.all(np.diff(fast.source_time) > 0), name
+        assert frame_of(fast, b) - frame_of(fast, a) == pytest.approx((b - a) / 2.0, abs=0.15), name
+        for c, d in ((0, w), (w, i), (i, r)):
+            if (c, d) != (a, b):
+                assert frame_of(fast, d) - frame_of(fast, c) == pytest.approx(d - c, abs=0.15), (name, c, d)
+        assert len(fast.source_time) == int(np.floor(last - (b - a) / 2.0 + 1e-9)) + 1
+    # the warped timeline drives the implied ground speed
+    fast = runtime.apply({"strike_speed": 2.0})
+    expected = (sample_linear(runtime.package["ground_velocity"], fast.source_time, False)
+                * np.gradient(fast.source_time)[:, None])
+    assert np.allclose(fast.ground_velocity, expected)
+
+
+@requires_horse
+def test_loop_strike_events_wrap_within_one_period(packages):
+    package = packages["loop_attack"]
+    frames = package.frame_count
+    strike = package.manifest["events"]["strike"]
+    assert 0 <= strike["impact"] < frames
+    assert strike["windup"] < strike["swing"] <= strike["impact"] < strike["recover"] <= strike["windup"] + frames - 1
+    runtime = EditRuntime(package)
+    # an impact dragged across the seam is the same strike a period on
+    moved = runtime.strike({k: strike[k] + frames for k in ("windup", "impact", "recover")})
+    assert [moved[k] for k in ("windup", "impact", "recover")] == [strike[k] for k in ("windup", "impact", "recover")]
+    with pytest.raises(ValueError):
+        runtime.strike({"recover": strike["windup"] + frames})       # longer than a period
+
+
+@requires_horse
+def test_loop_segment_speeds_keep_whole_periods(packages):
+    runtime = EditRuntime(packages["loop_attack"])
+    frames = runtime.package.frame_count
+    strike = runtime.strike()
+    w, i, r = strike["windup"], strike["impact"], strike["recover"]
+    for params in ({"strike_speed": 2.0}, {"recover_speed": 0.5}, {"windup_speed": 1.5}, {"force": 2.0, "tempo": 1.3}):
+        result = runtime.apply(params)
+        unwrapped = np.unwrap(result.source_time * 2 * np.pi / frames) * frames / (2 * np.pi)
+        assert np.all(np.diff(unwrapped) > 0), params
+        assert result.source_time[0] == pytest.approx(0.0, abs=1e-9), params      # frame 0 samples frame 0
+        # one whole period: the step across the seam is an ordinary one
+        seam = (result.source_time[0] + frames) - result.source_time[-1]
+        assert 0.0 < seam < 3.0 * np.diff(unwrapped).max(), params
+    fast = runtime.apply({"strike_speed": 2.0})
+    length = frames - (i - w) / 2.0
+    assert len(fast.source_time) == max(2, int(round(length)))

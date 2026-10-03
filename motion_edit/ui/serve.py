@@ -17,7 +17,8 @@ API::
     GET  /api/package/<id>          manifest, skeleton, original frames, contacts
     POST /api/load    {id, stretch_factor,         re-decompose in place
                        fullbody_ik}
-    POST /api/apply   {id, params}                 edited frames + diagnostics (full path)
+    POST /api/apply   {id, params, events}         edited frames + diagnostics (full path);
+                                                   ``events`` moves the strike events / chain
     POST /api/contacts {id, joints, species}       another contact joint set; ``species``
                                                    also writes it to contact_overrides.json
     POST /api/contacts {id, mask}                  hand-edited contact intervals, (K, F) 0/1
@@ -150,9 +151,9 @@ def package_payload(runtime: EditRuntime) -> dict:
     }
 
 
-def apply_payload(runtime: EditRuntime, params: dict) -> dict:
+def apply_payload(runtime: EditRuntime, params: dict, events: dict | None = None) -> dict:
     # always the full decompose -> gains -> recompose path, never the all-default replay
-    result = runtime.apply(params, compose=True)
+    result = runtime.apply(params, compose=True, events=events)
     original = runtime.apply()
     return {
         "params": result.params,
@@ -164,6 +165,8 @@ def apply_payload(runtime: EditRuntime, params: dict) -> dict:
         "planted": (result.plant_id >= 0).astype(np.uint8).ravel().tolist(),
         "targets": _flat(np.nan_to_num(result.plant_target), POSITION_DECIMALS),
         "unreached": result.unreached.astype(np.uint8).ravel().tolist(),
+        "strike": ({k: result.strike[k] for k in ("chain", "windup", "impact", "recover", "joints")}
+                   if result.strike else None),
         "max_position_delta": (float(np.abs(result.global_positions - original.global_positions).max())
                                if result.global_positions.shape == original.global_positions.shape else None),
         "diagnostics": result.diagnostics,
@@ -233,7 +236,7 @@ class Handler(BaseHTTPRequestHandler):
             package_id = str(body.get("id", ""))
             if path == "/api/apply":
                 runtime = self.store.runtime(package_id)
-                return self._json(200, apply_payload(runtime, body.get("params") or {}))
+                return self._json(200, apply_payload(runtime, body.get("params") or {}, body.get("events")))
             if path == "/api/load":
                 from motion_edit.decompose import redecompose
 
