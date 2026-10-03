@@ -97,10 +97,10 @@ GROUP_GAIN = {**{g: f"amp.{g}" for g in AMP_GROUPS}, "tail": "tail_weight"}
 PARAM_SPECS: dict[str, ParamSpec] = {
     "tempo": ParamSpec(1.0, 0.5, 2.0, "time"),
     "stride": ParamSpec(1.0, 0.6, 1.6, "locomotion"),
-    "bounce": ParamSpec(1.0, 0.0, 2.0, "root"),
-    "jump_height": ParamSpec(1.0, 0.5, 1.8, "root"),
-    "sway": ParamSpec(1.0, 0.0, 2.0, "root"),
     "posture": ParamSpec(0.0, -0.3, 0.2, "root"),
+    "jump_height": ParamSpec(1.0, 0.5, 1.8, "root"),
+    "bounce": ParamSpec(1.0, 0.0, 2.0, "root"),
+    "sway": ParamSpec(1.0, 0.0, 2.0, "root"),
     **_AMP,
     **_SPREAD,
     "force": ParamSpec(1.0, 0.5, 2.0, "force"),
