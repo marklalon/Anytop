@@ -1219,3 +1219,186 @@ def test_tail_and_passive_parts_share_one_treatment(packages):
     # the first tail joint moves: its bone hinges at the pelvis
     base, swung = tail_runtime.apply(compose=True), tail_runtime.apply({"tail_weight": 2.0})
     assert np.linalg.norm(swung.global_positions[:, tail[0]] - base.global_positions[:, tail[0]], axis=-1).max()         > 1e-3 * tail_runtime.leg
+
+
+# ── export (M6) ────────────────────────────────────────────────────────────
+
+def _serve(root: str):
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from motion_edit.ui.serve import Handler, PackageStore
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.store = PackageStore(root)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def _call(server, path: str, body=None):
+    import urllib.request
+
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{server.server_port}{path}", method="GET" if body is None else "POST",
+        data=None if body is None else json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request) as response:
+        raw = response.read()
+        return json.loads(raw) if response.headers.get_content_type() == "application/json" else raw
+
+
+@requires_horse
+def test_ui_export_matches_the_command_line(packages, tmp_path):
+    """The page's export and ``apply_edit --sidecar <sidecar>`` write the same bytes, with
+    moved strike events and root motion; all defaults export the package's own decode."""
+    from motion_edit.apply_edit import export_result
+    from motion_edit.apply_edit import main as apply_main
+
+    package = packages["attack"]
+    package.save(str(tmp_path / "attack.edit"))
+    strike = EditRuntime(package).strike()
+    server = _serve(str(tmp_path))
+    try:
+        cases = {"edit": ({"force": 1.5, "tempo": 1.2}, {"impact": strike["impact"] + 1}, True),
+                 "default": ({}, None, False)}
+        for name, (params, events, root_motion) in cases.items():
+            out = _call(server, "/api/export", {"id": "attack.edit", "params": params, "events": events,
+                                                "root_motion": root_motion, "name": name})
+            with open(out["sidecar"], "r", encoding="utf-8") as handle:
+                assert json.load(handle)["events"] == events
+            downloaded = _call(server, out["url"])
+            with open(out["path"], "rb") as handle:
+                assert handle.read() == downloaded
+            cli = str(tmp_path / f"cli_{name}.glb")
+            argv = [str(tmp_path / "attack.edit"), "--sidecar", out["sidecar"], "--glb", cli]
+            assert apply_main(argv + (["--root_motion"] if root_motion else [])) == 0
+            with open(cli, "rb") as handle:
+                assert handle.read() == downloaded, name
+        # all defaults: the runtime's replay of the package, not the composed round trip
+        replay = str(tmp_path / "replay.glb")
+        export_result(package, EditRuntime(package).apply(), replay, fmt="glb")
+        with open(replay, "rb") as a, open(str(tmp_path / "attack.edit" / "exports" / "default.glb"), "rb") as b:
+            assert a.read() == b.read()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@requires_horse
+def test_root_motion_travels_along_the_ground_velocity(packages):
+    from motion_edit.apply_edit import root_motion_animation
+
+    package = packages["loop"]
+    result = EditRuntime(package).apply({"tempo": 1.3})
+    moved = root_motion_animation(package, result)
+    disp = ground_displacement(result.ground_velocity, result.fps, False)
+    shift = moved.positions - result.animation.positions
+    roots = np.flatnonzero(package["parents"] < 0)
+    assert np.allclose(shift[:, roots][..., [0, 2]], disp[:, None], atol=1e-12)
+    assert np.abs(np.delete(shift, roots, axis=1)).max() == 0 and np.abs(shift[..., 1]).max() == 0
+    # a run covers ground: the export is not the in-place clip
+    assert np.linalg.norm(disp[-1]) > 0.5 * EditRuntime(package).leg
+
+
+HORSE_TPOSE = os.path.join(ANYTOP, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Horse", "HorseALL-TPOSE.glb")
+requires_horse_mesh = pytest.mark.skipif(not os.path.isfile(HORSE_TPOSE), reason="Horse T-pose mesh not on disk")
+
+
+@requires_horse
+@requires_horse_mesh
+def test_mesh_preview_drives_bones_like_the_skinned_export(packages, tmp_path):
+    """A bone at ``W_joint(t) · C`` (the page's skinning) is where the skinned export puts it,
+    up to the export's fixed similarity; the UI's skinned export is the command line's."""
+    from motion_edit.apply_edit import main as apply_main
+    from motion_edit.mesh import _glb_skin_worlds, _quat_matrix, attach_mesh, mesh_source
+
+    package = packages["loop"]
+    directory = str(tmp_path / "run.edit")
+    package.save(directory)
+    calibration = attach_mesh(directory, package, HORSE_TPOSE)
+    runtime = EditRuntime(package)
+    assert calibration["rest_residual"] < 1e-4 * runtime.leg
+    assert not calibration["unskinned_joints"] and mesh_source(directory) == os.path.abspath(HORSE_TPOSE)
+    # re-decomposing rewrites the package, not its mesh
+    redecompose(package, 0.0).save(directory)
+    assert mesh_source(directory) is not None
+
+    server = _serve(str(tmp_path))
+    try:
+        payload = _call(server, "/api/package/run.edit")["mesh"]
+        assert payload["exportable"] and set(payload["bones"]) == set(calibration["bones"])
+        params = {"tempo": 1.2, "amp.legs": 1.5}
+        out = _call(server, "/api/export", {"id": "run.edit", "params": params,
+                                            "mesh": True, "name": "skinned"})
+        assert "--mesh" in out["command"]
+    finally:
+        server.shutdown()
+        server.server_close()
+    cli = str(tmp_path / "cli.glb")
+    assert apply_main([directory, "--sidecar", out["sidecar"], "--mesh", "--glb", cli]) == 0
+    with open(cli, "rb") as a, open(out["path"], "rb") as b:
+        assert a.read() == b.read()
+
+    # bone worlds of the export's first key against the page's W · C (export space -> package space)
+    exported = _glb_skin_worlds(out["path"])
+    result = EditRuntime(EditPackage.load(directory)).apply(params)
+    rotations, positions = forward_kinematics(package["parents"], np.asarray(result.animation.rotations.qs, float),
+                                              np.asarray(result.animation.positions, float))
+    driven = {}
+    for name, bone in calibration["bones"].items():
+        j = bone["joint"]
+        if j < 0:
+            continue
+        world = np.eye(4)
+        q = rotations[0, j]
+        world[:3, :3] = _quat_matrix([q[1], q[2], q[3], q[0]])
+        world[:3, 3] = positions[0, j]
+        driven[name] = world @ np.array(bone["matrix"]).reshape(4, 4).T
+    names = sorted(driven)
+    a = np.array([exported[n][:3, 3] for n in names])
+    b = np.array([driven[n][:3, 3] for n in names])
+    from motion_edit.mesh import _similarity
+    similarity = _similarity(a, b)
+    worst = max(np.abs(similarity @ exported[n] - driven[n]).max() for n in names)
+    assert worst < 1e-4 * runtime.leg
+
+
+@requires_horse
+@requires_horse_mesh
+def test_skinned_export_matches_restore_glb(packages, tmp_path):
+    """The skinned export at defaults is ``tools/restore_glb_from_npy.py``'s skinned GLB of the
+    same features: every bone's world rotation agrees (IK runs on the cond skeleton here and on
+    the mesh rig there, so not to the bit)."""
+    from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+    from motion_edit.mesh import _glb_skin_worlds, export_skinned_glb, mesh_context
+    from utils.exporter import AnimationExporter, animation_to_exporter_inputs
+    from utils.npy_restore import build_mesh_restore_context, restore_animation_from_features
+
+    package = packages["loop"]
+    mine = export_skinned_glb(package, EditRuntime(package).apply().animation, package.fps,
+                              str(tmp_path / "mine.glb"), HORSE_TPOSE)
+    cond = load_cond(os.path.join(HORSE_ROOT, "cond.npy"))[HORSE_KEY]
+    restored = restore_animation_from_features(
+        package["source_features"], build_mesh_restore_context(cond, HORSE_TPOSE, HORSE_KEY),
+        restore_space="native", fullbody_ik=True, stretch_factor=package.manifest["stretch_factor"],
+        fps=package.fps)
+    inputs = animation_to_exporter_inputs(restored.animation, restored.skeleton)
+    reference = str(tmp_path / "reference.glb")
+    AnimationExporter(restored.skeleton, fps=package.fps).export_glb(
+        *inputs[:3], reference, mesh_path=HORSE_TPOSE, bone_translations=inputs[3], export_mesh=True)
+    a, b = _glb_skin_worlds(mine), _glb_skin_worlds(reference)
+    assert set(a) == set(b)
+    for name in a:
+        ra = a[name][:3, :3] / np.linalg.norm(a[name][:3, 0])
+        rb = b[name][:3, :3] / np.linalg.norm(b[name][:3, 0])
+        angle = np.degrees(np.arccos(np.clip((np.trace(ra.T @ rb) - 1) / 2, -1, 1)))
+        assert angle < 0.5, (name, angle)
+
+    # a package from before its cond subset carried root_promote_depth cannot be skinned
+    old = EditPackage(package.manifest, dict(package.arrays))
+    cond_subset = decode_json(package["source_cond"])
+    del cond_subset["root_promote_depth"]
+    from motion_edit.package import encode_json
+    old.arrays["source_cond"] = encode_json(cond_subset)
+    with pytest.raises(ValueError, match="root_promote_depth"):
+        mesh_context(old, HORSE_TPOSE)

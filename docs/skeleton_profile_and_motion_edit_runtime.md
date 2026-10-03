@@ -1,6 +1,6 @@
 # 骨架统计档案 + 动作微调运行时：执行方案
 
-> 状态：M1（Profile 提取器）、M2（分解器 + 严格回放 + UI 基础）、M3（时间 / locomotion / 根 / 幅度参数、锁脚 IK、UI 接触修正）、M4（one-shot 事件 + 力度参数、时间轴上的事件拖动）、M5（次级运动弹簧）已实现，M4、M5 的人工审查未做；M6 起未实现。
+> 状态：M1（Profile 提取器）、M2（分解器 + 严格回放 + UI 基础）、M3（时间 / locomotion / 根 / 幅度参数、锁脚 IK、UI 接触修正）、M4（one-shot 事件 + 力度参数、时间轴上的事件拖动）、M5（次级运动弹簧）、M6（微调 UI 完整版：事件拖动、诊断面板、导出、root motion 视图）已实现，M4、M5 的人工审查和 M6 的美术试用未做；M7 未实现。
 > 范围：从训练动作数据中统计每个骨架的运动学属性（Skeleton Profile），把 AnyTop 的输出分解为可编辑的中间层（Edit Package），并在微调端用一个固定、确定性的运行时（Edit Runtime）合成最终动作，提供即时、可预期的参数化微调。
 > 不在范围内：训练"骨架 → 属性"预测模型；把属性作为 AnyTop 的条件输入。两者都要等本方案的 M7（约束后处理评估）给出结论后再立项。
 
@@ -61,12 +61,13 @@ motion_edit/
   profile/                  统计提取器：data / skeleton / joints / spring / gait / build / report
   decompose.py              生成结果 → Edit Package；接触关节 / 接触区间的修改
   package.py                Edit Package 的读写与版本号（不导入 torch）
+  mesh.py                   蒙皮 mesh：预览 GLB、骨骼标定、蒙皮导出（第 4.3 节）
   runtime.py                EditRuntime：package + 参数 → Animation（第 5 节）
   ik.py                     肢体 IK（第 5.2 节第 4 步）
   ui/                       微调 UI：serve.py + index.html + vendor/（第 5.4 节）
   build_profiles.py         命令行：批量构建 Profile 并输出审查报告
-  decompose_clip.py         命令行：npy + cond → Edit Package（--stretch_factor、--no_fullbody_ik）
-  apply_edit.py             命令行：package + 参数 JSON → BVH / GLB
+  decompose_clip.py         命令行：npy + cond → Edit Package（--stretch_factor、--no_fullbody_ik、--tpose_mesh）
+  apply_edit.py             命令行：package + 参数 JSON → BVH / GLB（--mesh 蒙皮）
 tests/test_motion_edit_profile.py、tests/test_motion_edit_runtime.py
 ```
 
@@ -287,11 +288,29 @@ b       = 关节 j 在均值姿态下的骨向（p 的坐标系）
                   #   plant_residual (F,K,3), plant_id (F,K), plant_drift (N,)
                   # profile 子集：profile_role / dof / axes / flex_sign / spring / passive / confidence
                   # 重新分解用：source_features (F,J,12), source_cond（cond 子集的 JSON；运行时不读）
+  mesh/           # 可选，分解时指定了 --tpose_mesh 才有（第 4.3 节）
 ```
 
 旋转按 `R = exp(chain_offsets) · chain_reference` 重组，根旋转按 `R_root = yaw(root_yaw) · root_tilt` 重组，根平移是 `root_trend + root_osc`。跨越 loop 接缝的接触区间 `end > F`，帧号对 F 取模。
 
 Package 是自包含的：微调端不需要 cond.npy，也不需要数据集目录。`runtime_version` 不兼容时拒绝加载。
+
+### 4.3 蒙皮 mesh（可选）
+
+`decompose_clip --tpose_mesh <T-pose FBX / GLB>` 在 package 里额外写一个 `mesh/` 目录：
+
+```text
+mesh/
+  source.json       # {"tpose_mesh": T-pose 文件的绝对路径}
+  preview.glb       # mesh 蒙皮在 package 骨架的静息姿态上
+  calibration.json  # 每根预览骨骼：驱动它的关节 + 一个常量矩阵 C
+```
+
+蒙皮走 `tools/restore_glb_from_npy.py` 默认的 native 路径：用 T-pose 构建 mesh 上下文（静息旋转按关节名匹配，T-pose 的包装根按 cond 的 `root_promote_depth` 折叠，所以 cond 子集里必须有这个字段），把 package 的动画按 T-pose 静息旋转重新表达，逆预处理相似变换回到 mesh 自身空间，再交给 exporter。因此蒙皮导出的 GLB 在 mesh 的原始坐标空间，而骨架导出的 GLB 在 HML 空间。
+
+预览不在浏览器里解码：预览 GLB 站在静息姿态，先拟合一个相似变换 S 把它的世界空间对到 package 的空间（吸收导入 / 导出的单位和坐标轴约定），每根骨骼取它自己的关节（或最近的祖先关节）a，`C = W_a(静息)⁻¹ · S · M(静息)`。之后任一帧骨骼都在 `W_a(t) · C`，`W_a(t)` 是编辑结果里该关节的世界变换；任何关节之上的骨骼固定在 `S · M`。页面只做这一次矩阵乘法，所以预览和蒙皮导出一致。
+
+`mesh/` 不属于运行时读取的数组，重新分解（骨架和静息姿态不变）和接触编辑都保留它。蒙皮导出会重新导入 T-pose 文件，所以它必须留在分解时的位置；不在了时 UI 不提供蒙皮导出。不带 `--tpose_mesh` 重新运行 `decompose_clip` 会删掉旧的 `mesh/`。
 
 ## 5. 阶段 C：微调运行时
 
@@ -465,12 +484,13 @@ motion_edit/ui/serve.py          python -m motion_edit.ui.serve --packages <dir>
   ├─ 加载时可选 stretch_factor / fullbody_ik：与 package 当前值不同时，用 package 内的原始特征重新分解
   ├─ 接触修正：改接触关节集合时重新检测区间；改区间时重新计算落点和残差
   ├─ 把结果以逐帧全局位置 + 局部旋转的形式返回给页面
-  └─ 导出 BVH / GLB（复用 npy_restore 的 exporter 路径）
+  ├─ 有 mesh/ 时提供预览 GLB 和骨骼标定（第 4.3 节）
+  └─ 导出 GLB：写参数 sidecar 后在子进程里跑 motion_edit.apply_edit --sidecar（bpy 只能在进程主线程上跑）
 motion_edit/ui/index.html        单页：3D 视图 + 参数面板 + 时间轴 + 诊断面板
 motion_edit/ui/vendor/           three.js 等前端依赖放在本地，离线可用
 ```
 
-所有编辑都只在服务端的 `EditRuntime` 里算，页面只负责显示。这样页面看到的结果和导出文件、命令行 `motion_edit.apply_edit` 的结果是同一份，不会出现"预览和导出不一致"。
+所有编辑都只在服务端的 `EditRuntime` 里算，页面只负责显示。这样页面看到的结果和导出文件、命令行 `motion_edit.apply_edit` 的结果是同一份，不会出现"预览和导出不一致"。导出本身就是命令行：服务端把参数和事件写成 sidecar，再用 `apply_edit --sidecar <sidecar>` 导出，所以 UI 导出的文件与命令行用同一组参数导出的文件逐位一致；全部默认时导出的是 package 自身的解码结果（运行时第 0 步的跳过），不是往返重组。
 
 **HTTP 接口**
 
@@ -482,8 +502,9 @@ motion_edit/ui/vendor/           three.js 等前端依赖放在本地，离线�
 | POST | `/api/contacts` | 输入：package id + `joints`（完整的接触关节集合）+ `species`（是否应用到该物种），或 package id + `mask`（(K, F) 的 0/1 接触区间），或 package id + `ground_height`（地面高度，重新检测区间）。关节集合变了就重新检测区间，区间变了就重新计算 v_g、落点和残差，都不重新解码，结果覆盖 package。`species` 时把相对 cond 的增删（关节名）写进 `<dataset_root>/contact_overrides.json`（增删都为空时删掉该行），package 的增删随之转成物种来源；package 没有 `dataset_root` 时报错 |
 | POST | `/api/passive` | 输入：package id + `joints`（完整的 passive 关节集合，按原样采用，必须都是候选；子树由页面补全）+ `species`（是否应用到该物种）。只重新组装 package，不重新解码，手动改过的接触区间保留。`species` 时把相对按名字默认集合的增删写进 `<dataset_root>/passive_overrides.json`（增删都为空时删掉该行） |
 | POST | `/api/apply` | 输入：package id + 参数 + `events`（可选，用户拖动过事件或换过主动链时才带：`windup` / `impact` / `recover` 源帧、`chain` 候选链根关节；顺序必须保持 windup < impact < recover）。UI 一律走完整路径（第 0 步的默认值跳过关闭，即 T1b），默认值下的输出也是分解再重组的结果；输出：逐帧全局位置、局部旋转、`v_g'`、每个输出帧采样的源时间、输出时间轴上的着地掩码、支撑目标、够不到的掩码、诊断（夹紧、够不到、身体下降、增益固定、tempo 取整）、与原始结果的最大位置差（UI 放在诊断列表里） |
-| POST | `/api/export` | 输入同 `/api/apply`，外加格式（bvh / glb）、是否输出 root motion；写入文件并返回下载链接 |
-| GET / POST | `/api/presets/<id>` | 读写该 package 的参数预设（JSON，与 package 放在一起） |
+| POST | `/api/export` | 输入同 `/api/apply`，外加是否输出 root motion、是否蒙皮（mesh）、文件名；写入 `<package>/exports/<名字>.glb`，旁边是 sidecar `<名字>.glb.json`（params、events、root_motion、mesh），返回下载链接和等价的命令行。root motion 把 `v_g'` 的累积位移加到顶层关节的 XZ 上，与 root motion 视图一致 |
+| GET | `/api/download?id=&file=` | 下载 `exports/` 下的文件 |
+| GET | `/api/mesh?id=` | 该 package 的预览 GLB；`/api/package/<id>` 的 `mesh` 字段给出它的地址、每根骨骼的标定、能否蒙皮导出 |
 
 v1 不考虑性能：参数滑杆在松开时才请求 `/api/apply`，拖动过程中不发请求；新请求到达时丢弃尚未返回的旧请求的结果。
 
@@ -495,17 +516,17 @@ v1 不考虑性能：参数滑杆在松开时才请求 `/api/apply`，拖动过�
    - 编辑结果每帧的支撑目标画成半透明的绿圈，够不到的标红；原始骨架按编辑结果当前帧采样的源时间对齐，tempo 改了也能逐帧对比；
    - 地面网格放在 `ground_height` 上，不随动画或相机移动；侧栏改地面高度时网格立即跟着移动，点"应用"后才重新检测接触区间；可以切换成"root motion 视图"，把 `v_g'` 积分到根上，让角色真正前进；
    - **对比**：同时显示原始结果（半透明）和编辑后的结果；也可以切换成左右并排；
-   - 播放、暂停、逐帧、播放速度、循环开关；相机可以环绕和跟随。
+   - 播放、暂停、逐帧、播放速度、循环开关；相机可以环绕和跟随；
+   - package 有蒙皮 mesh 时时间轴面板出现 **Show Mesh** 勾选框（默认开）：编辑后的骨架显示蒙皮，原始骨架不显示。
 2. **参数面板**：按第 5.1 节分组（时间 / locomotion / 根 / 幅度 / 力度 / 次级运动 / 着地）。对当前动作不可用的参数直接隐藏（比如 attack 不显示 stride，没有 passive 关节就不显示 passive_*；weight ≤ 1 时同通道的 stiffness 滑杆禁用）。每个滑杆都有"恢复默认"按钮；面板顶部有"全部恢复默认"，恢复后结果必须与原始结果完全一致（T1 在 UI 上的体现）。顶栏可以设置 stretch_factor 和 fullbody IK 开关（关掉 IK 时 stretch_factor 禁用），点"重新分解"生效。
 3. **时间轴**：按源帧显示，播放头在编辑结果当前帧采样的源时间上。显示事件标记（windup / impact / recover、起跳 / 落地、loop 周期边界），以及每个接触关节一行的接触区间色条（左侧是关节名）。事件标记（W / I / R）可以拖动，拖动时保持顺序，松开后重新 apply；参数面板的力度组里可以换主动链（候选链按能量占比降序列出）；"全部恢复默认"同时把事件和主动链恢复为分解时检测的结果。接触区间在草稿上编辑：空白处拖动新增，拖动两端调整（loop 可以跨接缝），点选后按 Delete 删除；新增的格子绿色、删掉的格子淡红；时间轴上的"触地区间"按钮进入编辑，"应用"才发给服务端，"放弃"恢复。点标尺行或关节名列只移动播放头。
 4. **诊断面板**：列出本次 apply 的夹紧、够不到、增益固定、事件低置信度、分解时的 IK 残差等信息，点一条就跳到对应的帧并高亮对应的关节。
-5. **导出栏**：格式、是否输出 root motion、文件名；以及预设的保存和加载。
+5. **导出栏**：只导出 GLB（BVH 走命令行 `apply_edit --bvh`）；是否输出 root motion、文件名；package 有蒙皮 mesh 时出现蒙皮勾选框（默认开）；导出后显示下载链接和等价的命令行。
 
 **v1 不做的事**
 
-- 不显示蒙皮网格，只显示骨架。有网格的角色导出 GLB 后，用外部工具查看；
 - 不在页面里调用 AnyTop 生成新动作。package 由服务端生成后放进 `--packages` 目录；
-- 不做多用户：单机本地使用，参数预设和接触覆盖只写在本地。
+- 不做多用户：单机本地使用，导出文件和接触覆盖只写在本地。
 
 ## 6. 验收
 
@@ -547,7 +568,7 @@ T6 不是"效果好"的判据，只是防止运行时把滑步弄得比原来更
 | M3 | 运行时：tempo / stride / bounce / sway / jump_height / amp / posture / foot_lock + 锁脚 IK；UI 上的接触修正（标记 / 取消接触关节，增删、拖动接触区间，应用到该物种） | T4–T7 通过；在原地 locomotion、Y 位移动作、带突进的攻击和 idle 上人工审查通过 |
 | M4 | one-shot 事件 + force 系列参数 | 人工抽查 attack clip 的事件帧，正确率 ≥ 80%；attack / hurt 上 T6、T7 通过；force 系列参数人工审查通过（试用的动作中要有带垫步、跨步的攻击 clip） |
 | M5 | 次级运动：tail / passive 两个通道各一组 weight + stiffness（缩放手 K 曲线 / 叠加弹簧响应，拟合参数或默认参数，硬度整体缩放固有频率）；按名字的默认 passive 集合（含叶关节）与以子树为单位的 UI 增删 | passive 关节启用；T4、T7 通过；人工审查通过（审查的动作中要有用默认参数的手 K 尾巴） |
-| M6 | 微调 UI 完整版（第 5.4 节）：事件拖动、诊断面板、导出、预设、root motion 视图 | UI 上"全部恢复默认"与原始结果完全一致；UI 导出的文件与命令行用同一组参数导出的文件逐位一致；美术试用，收集参数是否够用、是否直观的反馈 |
+| M6 | 微调 UI 完整版（第 5.4 节）：事件拖动、诊断面板、导出、root motion 视图 | UI 上"全部恢复默认"与原始结果完全一致；UI 导出的文件与命令行用同一组参数导出的文件逐位一致；美术试用，收集参数是否够用、是否直观的反馈 |
 | M7 | Profile 用于生成后处理（hinge 投影），不改模型 | 对同一批生成结果做处理前后的盲审 A/B（左右位置随机），记录偏好；结论决定是否立项"预测器"和"Profile 作为 AnyTop 条件" |
 
 M1 与 M2 可以并行；M3 依赖两者；M4、M5 可以并行；M6 可以在 M3 之后的任意时间开始，随 M4、M5 增加参数分组。

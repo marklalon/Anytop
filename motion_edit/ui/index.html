@@ -62,6 +62,19 @@
   .contacts li.sel .jn { color: var(--contact); font-weight: 600; }
   #passiveList li.sel .jn { color: var(--passive); }
   .contacts li button { padding: 0 5px; }
+  #exportResult { word-break: break-all; margin-bottom: 4px; }
+  #exportResult a { color: var(--accent); }
+  #exportResult code { display: block; margin-top: 4px; padding: 4px 6px; background: #262a33; border-radius: 4px;
+    user-select: all; font-size: 11px; }
+  #exportDialog { width: min(360px, calc(100vw - 32px)); padding: 16px 18px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--panel); color: var(--text); }
+  #exportDialog::backdrop { background: rgba(0, 0, 0, .55); }
+  #exportDialog .title { margin-bottom: 10px; }
+  .progress { position: relative; height: 6px; overflow: hidden; border-radius: 3px; background: #262a33; }
+  .progress::after { content: ""; position: absolute; top: 0; bottom: 0; width: 35%; border-radius: 3px;
+    background: var(--accent); animation: progress-slide 1.2s ease-in-out infinite; }
+  @keyframes progress-slide { from { left: -35%; } to { left: 100%; } }
+  #exportDialog .meta { margin-top: 8px; font-variant-numeric: tabular-nums; }
   @media (max-width: 860px) {
     #app { grid-template-columns: 1fr; grid-template-rows: auto 55vh auto auto;
       grid-template-areas: "head" "view" "time" "side"; }
@@ -100,6 +113,11 @@
         <option value="edited">仅编辑结果</option>
       </select></label>
       <label class="chk"><input id="rootMotion" type="checkbox">root motion 视图</label>
+      <label class="chk" id="meshViewLabel" hidden title="编辑结果显示蒙皮 mesh、骨架，或两者叠加">显示 <select id="meshView">
+        <option value="both" selected>Mesh and Skeleton</option>
+        <option value="mesh">Mesh Only</option>
+        <option value="skeleton">Skeleton Only</option>
+      </select></label>
     </div>
     <canvas id="timeline" height="60"></canvas>
     <div class="controls" style="margin-top:4px">
@@ -142,14 +160,30 @@
       <button id="passivePackage" class="apply">应用到本 package</button>
       <button id="passiveSpecies" class="apply" title="写入数据集的 passive_overrides.json">应用到该物种</button>
     </div>
+    <h3>导出</h3>
+    <div class="controls">
+      <label class="chk" title="把隐含地速积分到根上，角色真正前进；关闭时保持原地动作"><input id="exportRootMotion" type="checkbox">root motion</label>
+      <label class="chk" id="exportMeshLabel" hidden title="蒙皮在分解时指定的 T-pose mesh 上（mesh 自身的坐标空间）"><input id="exportMesh" type="checkbox" checked>蒙皮 mesh</label>
+    </div>
+    <div class="controls">
+      <input id="exportName" placeholder="文件名" style="flex:1;min-width:0">
+      <button id="exportBtn" class="apply">导出</button>
+    </div>
+    <div id="exportResult" class="meta" hidden></div>
     <h3>诊断</h3>
     <ul class="diag" id="diag"></ul>
   </aside>
 </div>
+<dialog id="exportDialog">
+  <div class="title">正在导出 <span id="exportDialogFile"></span></div>
+  <div class="progress" role="progressbar" aria-label="导出进度"></div>
+  <div class="meta" id="exportDialogTime"></div>
+</dialog>
 
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/GLTFLoader.js';
 
 const $ = (id) => document.getElementById(id);
 const GROUP_TITLES = { time: '时间', locomotion: 'locomotion', root: '根', amp: '幅度', force: '力度',
@@ -168,6 +202,7 @@ const state = {
   maskEditing: false,   // the timeline edits contact intervals instead of scrubbing
   stDisplay: null,      // source time the playhead shows (fractional while interpolating)
   events: null,         // strike events / chain moved on the page ({windup, impact, recover, chain})
+  mesh: null,           // skinned preview driven by the edited skeleton ({root, nodes})
 };
 const EVENT_KEYS = ['windup', 'impact', 'recover'];
 const EVENT_LABELS = { windup: 'W', impact: 'I', recover: 'R' };
@@ -204,14 +239,91 @@ let grid = null, gridCell = 1;
 const ghostRoot = new THREE.Group(), editRoot = new THREE.Group(), anchorRoot = new THREE.Group();
 scene.add(ghostRoot, editRoot, anchorRoot);
 
+// Skeletons draw over the mesh: no depth test, and transparent so they all go in
+// the pass after the opaque mesh, ordered by renderOrder.
 function makeSkeleton(color, opacity) {
   const lines = new THREE.LineSegments(new THREE.BufferGeometry(),
-    new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity, depthWrite: opacity >= 1 }));
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthTest: false, depthWrite: false }));
   const points = new THREE.Points(new THREE.BufferGeometry(),
     new THREE.PointsMaterial({ size: 6, sizeAttenuation: false, vertexColors: true,
-      transparent: opacity < 1, opacity, depthWrite: opacity >= 1 }));
+      transparent: true, opacity, depthTest: false, depthWrite: false }));
   return { lines, points };
 }
+// ── skinned preview (motion_edit.mesh): each bone sits at W_joint(t) · C ──
+scene.add(new THREE.HemisphereLight(0xdfe6f2, 0x30343c, 2.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(1, 2, 1.5);
+scene.add(sun);
+const gltfLoader = new GLTFLoader();
+
+function disposeMesh() {
+  if (!state.mesh) return;
+  scene.remove(state.mesh.root);
+  state.mesh.root.traverse((o) => {
+    if (o.geometry) o.geometry.dispose();
+    for (const m of [].concat(o.material || [])) {
+      for (const v of Object.values(m)) if (v && v.isTexture) v.dispose();
+      m.dispose();
+    }
+  });
+  state.mesh = null;
+}
+
+async function loadMesh(info) {
+  disposeMesh();
+  if (!info) return;
+  const gltf = await gltfLoader.loadAsync(info.url);
+  const root = gltf.scene;
+  root.updateMatrixWorld(true);
+  // the loader sanitizes node names the same way
+  const bones = {};
+  for (const [name, cal] of Object.entries(info.bones)) bones[THREE.PropertyBinding.sanitizeNodeName(name)] = cal;
+  // every node under the scene, parents first; calibrated bones carry their joint + matrix
+  const nodes = [];
+  root.traverse((o) => {
+    if (o === root) return;
+    const cal = bones[o.name];
+    if (o.isSkinnedMesh) o.frustumCulled = false;   // the bind-pose bounds do not follow the edit
+    for (const m of [].concat(o.material || [])) {
+      // stochastic transparency: blended surfaces become hashed alpha tests that
+      // write depth, so overlapping layers need no sorting
+      if (m.transparent || m.opacity < 1) {
+        m.transparent = false; m.alphaHash = true; m.depthWrite = true; m.needsUpdate = true;
+      }
+    }
+    if (cal) o.matrixAutoUpdate = false;
+    nodes.push({ node: o, joint: cal ? cal.joint : null, C: cal ? new THREE.Matrix4().fromArray(cal.matrix) : null });
+  });
+  // hidden until draw() poses it: the edit is still being fetched, and the bind
+  // pose would flash for the frames in between
+  root.visible = false;
+  scene.add(root);
+  state.mesh = { root, nodes };
+}
+
+const _world = new THREE.Matrix4(), _inv = new THREE.Matrix4();
+const _pos = new THREE.Vector3(), _rot = new THREE.Quaternion(), _unit = new THREE.Vector3(1, 1, 1);
+// P: joint world positions (J*3), Q: joint world rotations (J*4, w x y z), offset: [x, z]
+function poseMesh(P, Q, offset) {
+  for (const { node, joint, C } of state.mesh.nodes) {
+    const parentWorld = node.parent.matrixWorld;
+    if (C) {
+      if (joint >= 0) {
+        _pos.set(P[joint * 3] + offset[0], P[joint * 3 + 1], P[joint * 3 + 2] + offset[1]);
+        _rot.set(Q[joint * 4 + 1], Q[joint * 4 + 2], Q[joint * 4 + 3], Q[joint * 4]);
+        _world.compose(_pos, _rot, _unit).multiply(C);
+      } else {
+        _world.makeTranslation(offset[0], 0, offset[1]).multiply(C);
+      }
+      // the local the scene graph turns back into this world
+      node.matrix.multiplyMatrices(_inv.copy(parentWorld).invert(), _world);
+      node.matrixWorld.copy(_world);
+    } else {
+      node.matrixWorld.multiplyMatrices(parentWorld, node.matrix);
+    }
+  }
+}
+
 const ghost = makeSkeleton(css('--original'), 0.35);
 const edit = makeSkeleton(css('--edited'), 1);
 ghostRoot.add(ghost.lines, ghost.points);
@@ -219,7 +331,7 @@ editRoot.add(edit.lines, edit.points);
 
 // Pending contact-joint changes: bigger squares drawn over everything.
 const marks = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({
-  size: 9, sizeAttenuation: false, vertexColors: true, depthTest: false, depthWrite: false }));
+  size: 9, sizeAttenuation: false, vertexColors: true, transparent: true, depthTest: false, depthWrite: false }));
 // Joint selected in the contact panel: a thin cross behind its square (drawn after
 // the bones, before the squares; neither depth-tests against it).
 const CROSS = 27;   // CSS px; the point sprite is CROSS * pixel ratio device pixels
@@ -235,9 +347,11 @@ function crossTexture() {
 }
 const cross = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({
   size: CROSS, sizeAttenuation: false, map: crossTexture(), color: 0xffffff,
-  alphaTest: 0.5, depthTest: false, depthWrite: false }));
+  alphaTest: 0.5, transparent: true, depthTest: false, depthWrite: false }));
 cross.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3), 3));
-cross.renderOrder = 1; edit.points.renderOrder = 2; marks.renderOrder = 3;
+// back to front: original, edited bones, cross, edited joints, pending squares
+ghost.lines.renderOrder = ghost.points.renderOrder = 1;
+edit.lines.renderOrder = 2; cross.renderOrder = 3; edit.points.renderOrder = 4; marks.renderOrder = 5;
 editRoot.add(cross, marks);
 
 function resize() {
@@ -298,6 +412,28 @@ function updateSkeleton(sk, P, offset, colorOf) {
   sk.lines.geometry.computeBoundingSphere(); sk.points.geometry.computeBoundingSphere();
 }
 
+// one frame's joint rotations (J*4, w x y z) at time t, nlerp between neighbouring frames
+function sampleRotations(arr, J, n, t, loop) {
+  const i0 = Math.floor(t), a = t - i0;
+  const idx = (i) => loop ? ((i % n) + n) % n : Math.max(0, Math.min(n - 1, i));
+  const o0 = idx(i0) * J * 4;
+  if (a < 1e-6) return arr.subarray(o0, o0 + J * 4);
+  const o1 = idx(i0 + 1) * J * 4, out = new Float32Array(J * 4);
+  for (let j = 0; j < J; j++) {
+    const b = j * 4;
+    let dot = 0, len = 0;
+    for (let c = 0; c < 4; c++) dot += arr[o0 + b + c] * arr[o1 + b + c];
+    const sign = dot < 0 ? -1 : 1;
+    for (let c = 0; c < 4; c++) {
+      out[b + c] = arr[o0 + b + c] + (sign * arr[o1 + b + c] - arr[o0 + b + c]) * a;
+      len += out[b + c] * out[b + c];
+    }
+    len = Math.sqrt(len) || 1;
+    for (let c = 0; c < 4; c++) out[b + c] /= len;
+  }
+  return out;
+}
+
 // ── package loading ──────────────────────────────────────────────────────
 async function api(path, body) {
   const res = await fetch(path, body === undefined ? {} : {
@@ -338,6 +474,7 @@ function ingest(data) {
   pkg.isPassive = new Set(data.passive.joints);
   pkg.isCandidate = new Set(data.passive.candidates);
   pkg.speciesWritable = !!data.species_writable;
+  pkg.mesh = data.mesh;
   pkg.plantAt = data.contacts.joints.map(() => new Int32Array(F).fill(-1));
   data.contacts.plants.forEach(([k, s, e], i) => { for (let u = s; u < e; u++) pkg.plantAt[k][u % F] = i; });
   pkg.disp = groundDisplacement(pkg.gv, F, pkg.loop, pkg.fps);
@@ -363,6 +500,10 @@ async function openPackage(id, payload, keepParams = false) {
     state.params = {};
     state.events = null;
     state.frame = 0; state.clock = 0; state.lap = 0;
+    $('exportName').value = data.manifest.clip || '';
+    $('exportResult').hidden = true;
+    $('meshView').value = 'both';
+    $('exportMesh').checked = true;
   }
   state.edited = null;
   state.highlight = -1;
@@ -391,6 +532,11 @@ async function openPackage(id, payload, keepParams = false) {
   renderPassive();
   setMaskEditing(false);   // the draft was just reset to the package's mask
   if (!sameClip) frameCamera();
+  $('meshViewLabel').hidden = !data.mesh;
+  syncExportMesh();
+  if (!sameClip || !state.mesh) {
+    try { await loadMesh(data.mesh); } catch (e) { disposeMesh(); showError(e); }
+  }
   await applyEdit();
 }
 
@@ -533,14 +679,15 @@ async function applyEdit() {
   if (!state.id) return;
   const ticket = ++state.pending;   // a newer request supersedes this one
   try {
-    const body = { id: state.id, params: state.params };
+    const body = { id: state.id, params: state.params, globals: !!state.mesh };
     if (state.events) body.events = state.events;
     const data = await api('/api/apply', body);
     if (ticket !== state.pending) return;
     state.edited = { positions: Float32Array.from(data.positions), F: data.frames, gv: data.ground_velocity,
       disp: groundDisplacement(data.ground_velocity, data.frames, state.pkg.loop, state.pkg.fps),
       sourceTime: data.source_time, planted: Uint8Array.from(data.planted),
-      targets: Float32Array.from(data.targets), unreached: Uint8Array.from(data.unreached) };
+      targets: Float32Array.from(data.targets), unreached: Uint8Array.from(data.unreached),
+      globalRotations: data.global_rotations ? Float32Array.from(data.global_rotations) : null };
     const delta = data.max_position_delta;
     renderDiagnostics([{ kind: 'delta', message: `与原始结果最大位置差：${delta === null ? '—（帧数不同）' : delta.toExponential(2)}` },
       ...data.diagnostics]);
@@ -582,6 +729,55 @@ $('reload').onclick = async () => {
   finally { $('reload').disabled = false; }
 };
 $('pkgSelect').onchange = (e) => openPackage(e.target.value).catch(showError);
+
+// ── export: the server runs apply_edit's export on the same params / events ──
+// the mesh checkbox: a package whose T-pose mesh is still where it was
+function syncExportMesh() {
+  const mesh = state.pkg && state.pkg.mesh;
+  $('exportMeshLabel').hidden = !(mesh && mesh.exportable);
+}
+$('meshView').onchange = () => draw();
+// blocking progress: a modal dialog makes the rest of the page inert; the server
+// gives no progress, so the bar is indeterminate and the elapsed time counts up
+const exportDialog = $('exportDialog');
+exportDialog.addEventListener('cancel', (e) => e.preventDefault());   // no Esc while exporting
+// registered before every other keydown listener: page shortcuts stay off too
+window.addEventListener('keydown', (e) => {
+  if (!exportDialog.open) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+}, { capture: true });
+function showExportProgress(file) {
+  const start = performance.now();
+  const tick = () => { $('exportDialogTime').textContent = `${((performance.now() - start) / 1000).toFixed(0)} 秒`; };
+  $('exportDialogFile').textContent = file;
+  tick();
+  const timer = setInterval(tick, 500);
+  exportDialog.showModal();
+  return () => { clearInterval(timer); exportDialog.close(); };
+}
+$('exportBtn').onclick = async () => {
+  if (!state.id) return;
+  $('exportBtn').disabled = true;
+  const done = showExportProgress(`${$('exportName').value.trim() || state.pkg.m.clip || 'edit'}.glb`);
+  try {
+    const body = { id: state.id, params: state.params, events: state.events,
+      root_motion: $('exportRootMotion').checked, name: $('exportName').value,
+      mesh: !$('exportMeshLabel').hidden && $('exportMesh').checked };
+    const data = await api('/api/export', body);
+    done();   // closed before the download starts: the page is inert while it is open
+    const out = $('exportResult'); out.innerHTML = '';
+    const link = document.createElement('a');
+    link.href = data.url; link.download = data.file; link.textContent = data.file;
+    out.append('已写入 ', link);
+    const cmd = document.createElement('code');
+    cmd.title = '命令行用同一组参数导出（逐位一致）'; cmd.textContent = data.command;
+    out.append(cmd);
+    out.hidden = false;
+    link.click();
+    showError();
+  } catch (e) { showError(e); }
+  finally { done(); $('exportBtn').disabled = false; }
+};
 
 // ── ground height: the grid follows the draft, contacts are re-detected on apply ──
 function showGroundActions(dirty) {
@@ -1137,6 +1333,14 @@ function draw() {
   const oE = [dE[0] + side / 2, dE[1]];
   const PE = sampleFrame(state.edited.positions, J, Fe, t, pkg.loop);
   updateSkeleton(edit, PE, oE, (j) => pkg.isContact.has(j) ? cContact : pkg.isPassive.has(j) ? cPassive : cEdit);
+  const meshView = $('meshView').value;
+  if (state.mesh) {
+    const gr = state.edited.globalRotations;
+    state.mesh.root.visible = meshView !== 'skeleton' && !!gr;
+    if (state.mesh.root.visible) poseMesh(PE, sampleRotations(gr, J, Fe, t, pkg.loop), oE);
+  }
+  // the edited skeleton hides only behind a mesh that is actually shown
+  edit.lines.visible = edit.points.visible = !(meshView === 'mesh' && state.mesh && state.mesh.root.visible);
   ghostRoot.visible = mode !== 'edited';
   updateSkeleton(ghost, sampleFrame(pkg.original, J, F, tO, pkg.loop), [dO[0] - side / 2, dO[1]], () => cOrig);
 

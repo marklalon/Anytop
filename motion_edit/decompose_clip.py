@@ -9,7 +9,8 @@ Usage (from ``Anytop/``)::
     # a training clip, labels and loop flag from its dataset
     python -m motion_edit.decompose_clip --clip truebones/zoo:Horse_Walk.npy --out outputs/edit_packages
 
-Writes ``<out>/<clip>.edit/``.  The skeleton profile and the species'
+Writes ``<out>/<clip>.edit/``; with ``--tpose_mesh`` also its ``mesh/``
+(``motion_edit.mesh``), without it any ``mesh/`` an earlier run left is removed.  The skeleton profile and the species'
 ``contact_overrides.json`` / ``passive_overrides.json`` rows are read from the dataset whose ``cond.npy``
 holds the cond key; ``--cond`` points at another cond file (a new skeleton
 from ``tools/process_new_skeleton.py``), which then has no profile unless
@@ -85,6 +86,8 @@ def main(argv=None) -> int:
     parser.add_argument("--no_fullbody_ik", action="store_true",
                         help="decode without full-body IK: keep the per-frame bone translations "
                              "(--stretch_factor is then unused)")
+    parser.add_argument("--tpose_mesh", help="T-pose FBX / GLB of the skeleton: the tuning UI previews and "
+                                             "exports the clip skinned on it")
     parser.add_argument("--out", default="outputs/edit_packages", help="directory the package is written under")
     args = parser.parse_args(argv)
 
@@ -168,6 +171,9 @@ def main(argv=None) -> int:
         dataset_root=os.path.abspath(dataset_root) if dataset_root else None,
         notes=input_notes)
     out_dir = package.save(os.path.join(args.out, name + PACKAGE_SUFFIX))
+    from motion_edit.mesh import attach_mesh
+
+    calibration = attach_mesh(out_dir, package, args.tpose_mesh)
 
     m = package.manifest
     print(f"Wrote {out_dir}: {m['frame_count']} frames, {m['joint_count']} joints, "
@@ -175,6 +181,11 @@ def main(argv=None) -> int:
           f"plants={m['diagnostics']['plants']}, period={m['events'].get('period')}")
     for item in m["diagnostics"]["items"]:
         print(f"  [{item['kind']}] {item['message']}")
+    if calibration is not None:
+        print(f"  mesh: {args.tpose_mesh}, {len(calibration['bones'])} bones, "
+              f"rest fit residual {calibration['rest_residual']:.2e}")
+        if calibration["unskinned_joints"]:
+            print(f"  [mesh] joints with no bone of that name: {', '.join(calibration['unskinned_joints'])}")
     return 0
 
 

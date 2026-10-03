@@ -241,7 +241,11 @@ def profile_subset(profile: Optional[dict], cond_entry: dict, action_label: str 
 
 
 def cond_subset(cond_entry: dict) -> dict:
-    return {k: cond_entry[k] for k in PACKAGE_COND_FIELDS if k in cond_entry}
+    subset = {k: cond_entry[k] for k in PACKAGE_COND_FIELDS if k in cond_entry}
+    # how many T-pose wrapper roots the skeleton folded in; a skinned export
+    # (motion_edit.mesh) collapses the T-pose mesh's armature the same way
+    subset["root_promote_depth"] = int(cond_entry.get("root_promote_depth") or 0)
+    return subset
 
 
 # ── layers ───────────────────────────────────────────────────────────────────
