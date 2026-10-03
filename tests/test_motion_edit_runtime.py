@@ -670,8 +670,9 @@ def test_spread_is_offered_for_paired_limbs_only(packages):
     assert len(runtime.spread_limbs()) == 4
     assert "spread.arms" not in runtime.available and "spread.legs" in runtime.available
     assert "spread.arms" not in packages["loop"].manifest["available_params"]
-    assert "spread.arms" not in packages["loop"].manifest["params"]
+    assert not packages["loop"].manifest["params"]["spread.arms"]["available"]
     assert "spread.legs" in packages["loop"].manifest["available_params"]
+    assert packages["loop"].manifest["params"]["spread.legs"]["available"]
     with pytest.raises(UnsupportedParameterError):
         runtime.apply({"spread.arms": 0.5})
 
