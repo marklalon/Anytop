@@ -1,0 +1,1431 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motion Edit</title>
+<style>
+  :root {
+    --bg: #15171c; --panel: #1d2027; --line: #2c313b; --text: #d8dce4; --muted: #8a93a3;
+    --accent: #4fa3ff; --warn: #f0b44c; --bad: #ef6b6b; --good: #6cc785;
+    --edited: #4fa3ff; --original: #c8ccd4; --contact: #ffcf4a; --passive: #b45cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.4 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  #app { display: grid; height: 100%; grid-template-columns: 1fr 340px;
+    grid-template-rows: auto 1fr auto; grid-template-areas: "head head" "view side" "time side"; }
+  header { grid-area: head; display: flex; gap: 10px; align-items: center; padding: 8px 12px;
+    border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header select { min-width: min(280px, 100%); max-width: 100%; }
+  #view { grid-area: view; position: relative; min-height: 0; }
+  #view canvas { display: block; width: 100%; height: 100%; }
+  #overlay { position: absolute; left: 10px; top: 8px; color: var(--muted); pointer-events: none;
+    font-variant-numeric: tabular-nums; }
+  #side { grid-area: side; border-left: 1px solid var(--line); background: var(--panel);
+    overflow-y: auto; padding: 8px 12px; }
+  #time { grid-area: time; border-top: 1px solid var(--line); background: var(--panel); padding: 6px 12px; }
+  select, input, button { font: inherit; color: var(--text); background: #262a33;
+    border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; }
+  [hidden] { display: none !important; }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.discard { background: #a23a3a; border-color: #a23a3a; color: #fff; }
+  button.apply { background: #2f8a4c; border-color: #2f8a4c; color: #fff; }
+  button.discard:hover:not(:disabled), button.apply:hover:not(:disabled) { border-color: #fff; }
+  button:disabled, input:disabled { opacity: .45; cursor: default; }
+  label.chk { display: inline-flex; gap: 4px; align-items: center; color: var(--muted); }
+  h3 { margin: 12px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .row { display: grid; grid-template-columns: 112px 1fr 44px 22px; gap: 6px; align-items: center; margin: 3px 0; }
+  .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row input[type=range] { width: 100%; padding: 0; }
+  .row .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .row button { padding: 0 4px; }
+  .badge { font-size: 10px; color: var(--warn); border: 1px solid var(--warn); border-radius: 3px; padding: 0 3px; margin-left: 4px; }
+  .status { margin: 6px 0; padding: 6px 8px; border-radius: 4px; background: #262a33; font-variant-numeric: tabular-nums; }
+  ul.diag { list-style: none; margin: 0; padding: 0; }
+  ul.diag li { padding: 4px 6px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  ul.diag li:hover { background: #262a33; }
+  ul.diag .kind { color: var(--warn); margin-right: 6px; }
+  .controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+  .controls .frame { font-variant-numeric: tabular-nums; min-width: 92px; color: var(--muted); }
+  #timeline { width: 100%; display: block; cursor: ew-resize; touch-action: none; user-select: none; }
+  .meta { color: var(--muted); font-size: 12px; }
+  #error { color: var(--bad); }
+  .contacts { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow-y: auto; }
+  .contacts li { display: flex; gap: 6px; align-items: center; padding: 2px 4px; border-bottom: 1px solid var(--line); }
+  .contacts li .jn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .contacts li .tag { font-size: 10px; color: var(--muted); }
+  .contacts li .jn { cursor: pointer; }
+  .contacts li.add .jn { color: var(--good); } .contacts li.remove .jn { color: var(--bad); text-decoration: line-through; }
+  .contacts li.sel .jn { color: var(--contact); font-weight: 600; }
+  #passiveList li.sel .jn { color: var(--passive); }
+  .contacts li button { padding: 0 5px; }
+  #exportResult { word-break: break-all; margin-bottom: 4px; }
+  #exportResult a { color: var(--accent); }
+  #exportResult code { display: block; margin-top: 4px; padding: 4px 6px; background: #262a33; border-radius: 4px;
+    user-select: all; font-size: 11px; }
+  #exportDialog { width: min(360px, calc(100vw - 32px)); padding: 16px 18px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--panel); color: var(--text); }
+  #exportDialog::backdrop { background: rgba(0, 0, 0, .55); }
+  #exportDialog .title { margin-bottom: 10px; }
+  .progress { position: relative; height: 6px; overflow: hidden; border-radius: 3px; background: #262a33; }
+  .progress::after { content: ""; position: absolute; top: 0; bottom: 0; width: 35%; border-radius: 3px;
+    background: var(--accent); animation: progress-slide 1.2s ease-in-out infinite; }
+  @keyframes progress-slide { from { left: -35%; } to { left: 100%; } }
+  #exportDialog .meta { margin-top: 8px; font-variant-numeric: tabular-nums; }
+  @media (max-width: 860px) {
+    #app { grid-template-columns: 1fr; grid-template-rows: auto 55vh auto auto;
+      grid-template-areas: "head" "view" "time" "side"; }
+    #side { border-left: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/" } }
+</script>
+</head>
+<body>
+<div id="app">
+  <header>
+    <select id="pkgSelect"></select>
+    <span class="meta" id="pkgMeta"></span>
+    <span style="flex:1"></span>
+    <label class="chk" title="关闭时保留解码出的逐帧骨骼平移，stretch_factor 不起作用"><input id="fullbodyIk" type="checkbox">fullbody IK</label>
+    <label class="chk">stretch_factor <input id="stretch" type="number" min="0" max="1" step="0.01" style="width:64px"></label>
+    <button id="reload">重新分解</button>
+    <span id="error"></span>
+  </header>
+  <div id="view"><div id="overlay"></div></div>
+  <div id="time">
+    <div class="controls">
+      <button id="play">▶</button>
+      <button id="prev">◀|</button>
+      <button id="next">|▶</button>
+      <span class="frame" id="frameLabel">0 / 0</span>
+      <label class="chk">播放速度 <select id="playRate"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option></select></label>
+      <label class="chk"><input id="loopPlay" type="checkbox" checked>循环</label>
+      <label class="chk" title="播放时在相邻帧之间插值；拖动时间轴仍对齐整数帧"><input id="smooth" type="checkbox" checked>平滑插值</label>
+      <span style="width:12px"></span>
+      <label class="chk">对比 <select id="compare">
+        <option value="overlay" selected>叠加（原始半透明）</option>
+        <option value="side">左右并排</option>
+        <option value="edited">仅编辑结果</option>
+      </select></label>
+      <label class="chk"><input id="rootMotion" type="checkbox">root motion 视图</label>
+      <label class="chk" id="meshViewLabel" hidden title="编辑结果显示蒙皮 mesh、骨架，或两者叠加">显示 <select id="meshView">
+        <option value="both" selected>Mesh and Skeleton</option>
+        <option value="mesh">Mesh Only</option>
+        <option value="skeleton">Skeleton Only</option>
+      </select></label>
+    </div>
+    <canvas id="timeline" height="60"></canvas>
+    <div class="controls" style="margin-top:4px">
+      <span class="meta" id="maskState"></span>
+      <span style="flex:1"></span>
+      <span class="hint maskEditing" hidden>空白处拖动新增 · 拖动两端调整 · 点选后按 Delete 删除</span>
+      <button id="maskDiscard" class="maskEditing discard" hidden>放弃</button>
+      <button id="maskApply" class="maskEditing apply" hidden>应用</button>
+      <button id="maskEdit">触地区间</button>
+    </div>
+  </div>
+  <aside id="side">
+    <div id="status" class="status" hidden></div>
+    <div class="controls">
+      <button id="resetAll">全部恢复默认</button>
+    </div>
+    <div id="params"></div>
+    <h3>接触关节</h3>
+    <div class="controls" title="接触检测以这个世界 Y 高度为地面：关节的最低处离它超过 0.3 腿长就不算着地。网格随之移动">
+      <label class="chk">地面高度 <input id="groundHeight" type="number" step="0.01" style="width:72px"></label>
+      <button id="groundDiscard" class="discard" hidden>放弃</button>
+      <button id="groundApply" class="apply" hidden>应用</button>
+    </div>
+    <ul class="contacts" id="contactList"></ul>
+    <div class="controls" style="margin-top:6px">
+      <select id="contactAdd" style="max-width:100%"><option value="">添加关节…</option></select>
+    </div>
+    <div class="controls" id="jointsActions" hidden>
+      <button id="jointsDiscard" class="discard">放弃</button>
+      <button id="jointsPackage" class="apply">应用到本 package</button>
+      <button id="jointsSpecies" class="apply" title="写入数据集的 contact_overrides.json">应用到该物种</button>
+    </div>
+    <h3>次级运动关节</h3>
+    <ul class="contacts" id="passiveList"></ul>
+    <div class="controls" style="margin-top:6px">
+      <select id="passiveAdd" style="max-width:100%"><option value="">添加关节…</option></select>
+    </div>
+    <div class="controls" id="passiveActions" hidden>
+      <button id="passiveDiscard" class="discard">放弃</button>
+      <button id="passivePackage" class="apply">应用到本 package</button>
+      <button id="passiveSpecies" class="apply" title="写入数据集的 passive_overrides.json">应用到该物种</button>
+    </div>
+    <h3>导出</h3>
+    <div class="controls">
+      <label class="chk" title="把隐含地速积分到根上，角色真正前进；关闭时保持原地动作"><input id="exportRootMotion" type="checkbox">root motion</label>
+      <label class="chk" id="exportMeshLabel" hidden title="蒙皮在分解时指定的 T-pose mesh 上（mesh 自身的坐标空间）"><input id="exportMesh" type="checkbox" checked>蒙皮 mesh</label>
+    </div>
+    <div class="controls">
+      <input id="exportName" placeholder="文件名" style="flex:1;min-width:0">
+      <button id="exportBtn" class="apply">导出</button>
+    </div>
+    <div id="exportResult" class="meta" hidden></div>
+    <h3>诊断</h3>
+    <ul class="diag" id="diag"></ul>
+  </aside>
+</div>
+<dialog id="exportDialog">
+  <div class="title">正在导出 <span id="exportDialogFile"></span></div>
+  <div class="progress" role="progressbar" aria-label="导出进度"></div>
+  <div class="meta" id="exportDialogTime"></div>
+</dialog>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/GLTFLoader.js';
+
+const $ = (id) => document.getElementById(id);
+const GROUP_TITLES = { time: '时间', locomotion: 'locomotion', root: '根', amp: '幅度', spread: '分叉', force: '力度',
+  secondary: '次级运动', contact: '着地' };
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// ── state ────────────────────────────────────────────────────────────────
+const state = {
+  id: null, pkg: null, edited: null, params: {}, frame: 0, playing: false, clock: 0,
+  highlight: -1, pending: 0,
+  lap: 0,   // completed loop plays; root motion keeps travelling across the seam
+  maskDraft: null,      // (K rows of F 0/1) contact intervals being edited
+  selectedRun: null,    // {k, s, e} a run picked on the timeline (e may exceed F)
+  jointDraft: null,     // Set of contact joints being edited
+  passiveDraft: null,   // Set of passive joints being edited
+  maskEditing: false,   // the timeline edits contact intervals instead of scrubbing
+  stDisplay: null,      // source time the playhead shows (fractional while interpolating)
+  events: null,         // strike events / chain moved on the page ({windup, impact, recover, chain})
+  mesh: null,           // skinned preview driven by the edited skeleton ({root, nodes})
+};
+const EVENT_KEYS = ['windup', 'impact', 'recover'];
+const EVENT_LABELS = { windup: 'W', impact: 'I', recover: 'R' };
+const EVENT_COLORS = { windup: '#6cc785', impact: '#ef6b6b', recover: '#b08cff' };
+// the strike as the page has it: the package's, with the moved events on top
+function strikeEvents() {
+  const base = state.pkg && state.pkg.m.events.strike;
+  return base ? { ...base, ...(state.events || {}) } : null;
+}
+
+// ── three.js scene ───────────────────────────────────────────────────────
+const view = $('view');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+view.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(css('--bg'));
+const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 1000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = false;   // no inertia: the view stops when the mouse does
+// Blender navigation: middle = orbit, shift + middle = pan (OrbitControls pans a
+// ROTATE button with shift held), wheel = zoom; left / right do nothing.
+controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: null };
+// no middle-click autoscroll, no context menu
+renderer.domElement.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
+renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+// Right button belongs to nobody in the viewport: swallow it before the browser
+// starts a mouse gesture (capture phase, default prevented).
+for (const type of ['pointerdown', 'mousedown', 'mouseup', 'auxclick']) {
+  view.addEventListener(type, (e) => { if (e.button === 2) { e.preventDefault(); e.stopPropagation(); } }, { capture: true });
+}
+
+let grid = null, gridCell = 1;
+const ghostRoot = new THREE.Group(), editRoot = new THREE.Group(), anchorRoot = new THREE.Group();
+scene.add(ghostRoot, editRoot, anchorRoot);
+
+// Skeletons draw over the mesh: no depth test, and transparent so they all go in
+// the pass after the opaque mesh, ordered by renderOrder.
+function makeSkeleton(color, opacity) {
+  const lines = new THREE.LineSegments(new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthTest: false, depthWrite: false }));
+  const points = new THREE.Points(new THREE.BufferGeometry(),
+    new THREE.PointsMaterial({ size: 6, sizeAttenuation: false, vertexColors: true,
+      transparent: true, opacity, depthTest: false, depthWrite: false }));
+  return { lines, points };
+}
+// ── skinned preview (motion_edit.mesh): each bone sits at W_joint(t) · C ──
+scene.add(new THREE.HemisphereLight(0xdfe6f2, 0x30343c, 2.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(1, 2, 1.5);
+scene.add(sun);
+const gltfLoader = new GLTFLoader();
+
+function disposeMesh() {
+  if (!state.mesh) return;
+  scene.remove(state.mesh.root);
+  state.mesh.root.traverse((o) => {
+    if (o.geometry) o.geometry.dispose();
+    for (const m of [].concat(o.material || [])) {
+      for (const v of Object.values(m)) if (v && v.isTexture) v.dispose();
+      m.dispose();
+    }
+  });
+  state.mesh = null;
+}
+
+async function loadMesh(info) {
+  disposeMesh();
+  if (!info) return;
+  const gltf = await gltfLoader.loadAsync(info.url);
+  const root = gltf.scene;
+  root.updateMatrixWorld(true);
+  // the loader sanitizes node names the same way
+  const bones = {};
+  for (const [name, cal] of Object.entries(info.bones)) bones[THREE.PropertyBinding.sanitizeNodeName(name)] = cal;
+  // every node under the scene, parents first; calibrated bones carry their joint + matrix
+  const nodes = [];
+  root.traverse((o) => {
+    if (o === root) return;
+    const cal = bones[o.name];
+    if (o.isSkinnedMesh) o.frustumCulled = false;   // the bind-pose bounds do not follow the edit
+    for (const m of [].concat(o.material || [])) {
+      // stochastic transparency: blended surfaces become hashed alpha tests that
+      // write depth, so overlapping layers need no sorting
+      if (m.transparent || m.opacity < 1) {
+        m.transparent = false; m.alphaHash = true; m.depthWrite = true; m.needsUpdate = true;
+      }
+    }
+    if (cal) o.matrixAutoUpdate = false;
+    nodes.push({ node: o, joint: cal ? cal.joint : null, C: cal ? new THREE.Matrix4().fromArray(cal.matrix) : null });
+  });
+  // hidden until draw() poses it: the edit is still being fetched, and the bind
+  // pose would flash for the frames in between
+  root.visible = false;
+  scene.add(root);
+  state.mesh = { root, nodes };
+}
+
+const _world = new THREE.Matrix4(), _inv = new THREE.Matrix4();
+const _pos = new THREE.Vector3(), _rot = new THREE.Quaternion(), _unit = new THREE.Vector3(1, 1, 1);
+// P: joint world positions (J*3), Q: joint world rotations (J*4, w x y z), offset: [x, z]
+function poseMesh(P, Q, offset) {
+  for (const { node, joint, C } of state.mesh.nodes) {
+    const parentWorld = node.parent.matrixWorld;
+    if (C) {
+      if (joint >= 0) {
+        _pos.set(P[joint * 3] + offset[0], P[joint * 3 + 1], P[joint * 3 + 2] + offset[1]);
+        _rot.set(Q[joint * 4 + 1], Q[joint * 4 + 2], Q[joint * 4 + 3], Q[joint * 4]);
+        _world.compose(_pos, _rot, _unit).multiply(C);
+      } else {
+        _world.makeTranslation(offset[0], 0, offset[1]).multiply(C);
+      }
+      // the local the scene graph turns back into this world
+      node.matrix.multiplyMatrices(_inv.copy(parentWorld).invert(), _world);
+      node.matrixWorld.copy(_world);
+    } else {
+      node.matrixWorld.multiplyMatrices(parentWorld, node.matrix);
+    }
+  }
+}
+
+const ghost = makeSkeleton(css('--original'), 0.35);
+const edit = makeSkeleton(css('--edited'), 1);
+ghostRoot.add(ghost.lines, ghost.points);
+editRoot.add(edit.lines, edit.points);
+
+// Pending contact-joint changes: bigger squares drawn over everything.
+const marks = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({
+  size: 9, sizeAttenuation: false, vertexColors: true, transparent: true, depthTest: false, depthWrite: false }));
+// Joint selected in the contact panel: a thin cross behind its square (drawn after
+// the bones, before the squares; neither depth-tests against it).
+const CROSS = 27;   // CSS px; the point sprite is CROSS * pixel ratio device pixels
+function crossTexture() {
+  const dpr = renderer.getPixelRatio(), n = Math.round(CROSS * dpr) | 1, w = Math.max(1, Math.round(dpr));
+  const c = document.createElement('canvas'); c.width = c.height = n;
+  const g = c.getContext('2d'); g.fillStyle = '#fff';
+  const o = Math.floor((n - w) / 2);
+  g.fillRect(o, 0, w, n); g.fillRect(0, o, n, w);
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false;
+  return t;
+}
+const cross = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({
+  size: CROSS, sizeAttenuation: false, map: crossTexture(), color: 0xffffff,
+  alphaTest: 0.5, transparent: true, depthTest: false, depthWrite: false }));
+cross.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3), 3));
+// back to front: original, edited bones, cross, edited joints, pending squares
+ghost.lines.renderOrder = ghost.points.renderOrder = 1;
+edit.lines.renderOrder = 2; cross.renderOrder = 3; edit.points.renderOrder = 4; marks.renderOrder = 5;
+editRoot.add(cross, marks);
+
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / Math.max(h, 1);
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(view);
+
+// ── data helpers ─────────────────────────────────────────────────────────
+function jointPos(arr, J, f, j) { const o = (f * J + j) * 3; return [arr[o], arr[o + 1], arr[o + 2]]; }
+
+function groundDisplacement(gv, F, loop, fps) {
+  // cumulative v_g (XZ), two periods for a loop -- the decomposer's convention
+  const n = loop ? 2 * F : F, out = new Float64Array(n * 2);
+  for (let i = 1; i < n; i++) {
+    const s = (i - 1) % F;
+    out[i * 2] = out[(i - 1) * 2] + gv[s * 2] / fps;
+    out[i * 2 + 1] = out[(i - 1) * 2 + 1] + gv[s * 2 + 1] / fps;
+  }
+  return out;
+}
+
+function setupSkeleton(sk, J, parents) {
+  const bones = [];
+  for (let j = 0; j < J; j++) if (parents[j] >= 0) bones.push(parents[j], j);
+  sk.bones = bones;
+  sk.lines.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(bones.length * 3), 3));
+  sk.points.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(J * 3), 3));
+  sk.points.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(J * 3), 3));
+}
+
+// one frame's joint positions (J*3) at time t, linear between neighbouring frames
+function sampleFrame(arr, J, n, t, loop) {
+  const i0 = Math.floor(t), a = t - i0;
+  const idx = (i) => loop ? ((i % n) + n) % n : Math.max(0, Math.min(n - 1, i));
+  const o0 = idx(i0) * J * 3;
+  if (a < 1e-6) return arr.subarray(o0, o0 + J * 3);
+  const o1 = idx(i0 + 1) * J * 3, out = new Float32Array(J * 3);
+  for (let i = 0; i < J * 3; i++) out[i] = arr[o0 + i] + (arr[o1 + i] - arr[o0 + i]) * a;
+  return out;
+}
+
+function updateSkeleton(sk, P, offset, colorOf) {
+  const { J } = state.pkg;
+  const lp = sk.lines.geometry.attributes.position, pp = sk.points.geometry.attributes.position;
+  const pc = sk.points.geometry.attributes.color;
+  for (let i = 0; i < sk.bones.length; i++) {
+    const o = sk.bones[i] * 3;
+    lp.setXYZ(i, P[o] + offset[0], P[o + 1], P[o + 2] + offset[1]);
+  }
+  for (let j = 0; j < J; j++) {
+    pp.setXYZ(j, P[j * 3] + offset[0], P[j * 3 + 1], P[j * 3 + 2] + offset[1]);
+    const c = colorOf(j); pc.setXYZ(j, c.r, c.g, c.b);
+  }
+  lp.needsUpdate = pp.needsUpdate = pc.needsUpdate = true;
+  sk.lines.geometry.computeBoundingSphere(); sk.points.geometry.computeBoundingSphere();
+}
+
+// one frame's joint rotations (J*4, w x y z) at time t, nlerp between neighbouring frames
+function sampleRotations(arr, J, n, t, loop) {
+  const i0 = Math.floor(t), a = t - i0;
+  const idx = (i) => loop ? ((i % n) + n) % n : Math.max(0, Math.min(n - 1, i));
+  const o0 = idx(i0) * J * 4;
+  if (a < 1e-6) return arr.subarray(o0, o0 + J * 4);
+  const o1 = idx(i0 + 1) * J * 4, out = new Float32Array(J * 4);
+  for (let j = 0; j < J; j++) {
+    const b = j * 4;
+    let dot = 0, len = 0;
+    for (let c = 0; c < 4; c++) dot += arr[o0 + b + c] * arr[o1 + b + c];
+    const sign = dot < 0 ? -1 : 1;
+    for (let c = 0; c < 4; c++) {
+      out[b + c] = arr[o0 + b + c] + (sign * arr[o1 + b + c] - arr[o0 + b + c]) * a;
+      len += out[b + c] * out[b + c];
+    }
+    len = Math.sqrt(len) || 1;
+    for (let c = 0; c < 4; c++) out[b + c] /= len;
+  }
+  return out;
+}
+
+// ── package loading ──────────────────────────────────────────────────────
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function showError(e) { $('error').textContent = e ? String(e.message || e) : ''; }
+
+async function loadList() {
+  const data = await api('/api/packages');
+  const sel = $('pkgSelect');
+  sel.innerHTML = '';
+  for (const p of data.packages) {
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = `${p.clip} · ${p.object_type}${p.is_loop ? ' · loop' : ''}`;
+    sel.appendChild(o);
+  }
+  const want = new URLSearchParams(location.hash.slice(1)).get('p');
+  if (want && data.packages.some((p) => p.id === want)) sel.value = want;
+  if (sel.value) await openPackage(sel.value);
+  else { $('status').textContent = `${data.root} 下没有 package`; $('status').hidden = false; }
+}
+
+function ingest(data) {
+  const m = data.manifest;
+  const J = m.joint_count, F = m.frame_count;
+  const pkg = {
+    m, J, F, fps: m.fps, loop: m.is_loop, sk: data.skeleton,
+    original: Float32Array.from(data.original.positions),
+    contacts: data.contacts, gv: data.ground_velocity,
+  };
+  pkg.isContact = new Set(data.contacts.joints);
+  pkg.passive = data.passive;
+  pkg.isPassive = new Set(data.passive.joints);
+  pkg.isCandidate = new Set(data.passive.candidates);
+  pkg.speciesWritable = !!data.species_writable;
+  pkg.mesh = data.mesh;
+  pkg.plantAt = data.contacts.joints.map(() => new Int32Array(F).fill(-1));
+  data.contacts.plants.forEach(([k, s, e], i) => { for (let u = s; u < e; u++) pkg.plantAt[k][u % F] = i; });
+  pkg.disp = groundDisplacement(pkg.gv, F, pkg.loop, pkg.fps);
+  // scale for grid / points / camera from the rest extent of frame 0
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let j = 0; j < J; j++) {
+    const p = jointPos(pkg.original, J, 0, j);
+    for (let a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], p[a]); hi[a] = Math.max(hi[a], p[a]); }
+  }
+  pkg.extent = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], 1e-3);
+  pkg.center = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
+  pkg.floor = m.ground_height ?? 0;
+  return pkg;
+}
+
+async function openPackage(id, payload, keepParams = false) {
+  showError();
+  const data = payload || await api('/api/package/' + encodeURIComponent(id).replace(/%2F/g, '/'));
+  const sameClip = keepParams && state.id === id;
+  state.id = id;
+  state.pkg = ingest(data);
+  if (!sameClip) {
+    state.params = {};
+    state.events = null;
+    state.frame = 0; state.clock = 0; state.lap = 0;
+    $('exportName').value = data.manifest.clip || '';
+    $('exportResult').hidden = true;
+    $('meshView').value = 'both';
+    $('exportMesh').checked = true;
+  }
+  state.edited = null;
+  state.highlight = -1;
+  state.maskDraft = data.contacts.mask.map((row) => row.slice());
+  state.selectedRun = null;
+  state.jointDraft = new Set(data.contacts.joints);
+  state.passiveDraft = new Set(data.passive.joints);
+  location.hash = 'p=' + encodeURIComponent(id);
+  const { m, J } = state.pkg;
+  $('pkgMeta').textContent = `${m.frame_count} 帧 · ${m.fps} fps · ${J} 关节 · profile ${m.profile.status}` +
+    (m.events.period ? ` · 周期 ${m.events.period}` : '');
+  $('stretch').value = m.stretch_factor;
+  $('groundHeight').value = state.pkg.floor;
+  showGroundActions(false);
+  $('fullbodyIk').checked = m.fullbody_ik ?? true;
+  $('stretch').disabled = !$('fullbodyIk').checked;
+  setupSkeleton(ghost, J, state.pkg.sk.parents);
+  setupSkeleton(edit, J, state.pkg.sk.parents);
+  marks.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(J * 3), 3));
+  marks.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(J * 3), 3));
+  buildGrid();
+  buildAnchors();
+  buildParams();
+  restoreParamInputs();
+  renderContacts();
+  renderPassive();
+  setMaskEditing(false);   // the draft was just reset to the package's mask
+  if (!sameClip) frameCamera();
+  $('meshViewLabel').hidden = !data.mesh;
+  syncExportMesh();
+  if (!sameClip || !state.mesh) {
+    try { await loadMesh(data.mesh); } catch (e) { disposeMesh(); showError(e); }
+  }
+  await applyEdit();
+}
+
+function buildGrid() {
+  if (grid) scene.remove(grid);
+  const { extent, m } = state.pkg;
+  gridCell = Math.max(m.leg_length || extent / 4, 1e-3) / 2;
+  const cells = 100;   // room for a few root-motion loops
+  grid = new THREE.GridHelper(gridCell * cells, cells, 0x566074, 0x353b48);
+  grid.position.y = state.pkg.floor;
+  scene.add(grid);
+}
+
+function buildAnchors() {
+  anchorRoot.clear();
+  const { contacts, m } = state.pkg;
+  const r = Math.max(m.leg_length || state.pkg.extent / 4, 1e-3) * 0.06;
+  // where the edit sent each planted contact (red: IK could not reach it)
+  const ring = new THREE.RingGeometry(r * 0.5, r * 0.8, 24).rotateX(-Math.PI / 2);
+  const ok = new THREE.MeshBasicMaterial({ color: css('--good'), side: THREE.DoubleSide,
+    transparent: true, opacity: 0.55, depthWrite: false });
+  const miss = new THREE.MeshBasicMaterial({ color: css('--bad'), side: THREE.DoubleSide });
+  state.pkg.targetMeshes = contacts.joints.map(() => { const mesh = new THREE.Mesh(ring, ok); anchorRoot.add(mesh); return mesh; });
+  state.pkg.targetMaterials = { ok, miss };
+}
+
+function frameCamera() {
+  const { extent, center } = state.pkg;
+  controls.target.set(center[0], center[1], center[2]);
+  camera.position.set(center[0] + extent * 1.4, center[1] + extent * 0.6, center[2] + extent * 1.8);
+  camera.near = extent / 500; camera.far = extent * 500; camera.updateProjectionMatrix();
+  controls.update();
+}
+
+// ── parameters ───────────────────────────────────────────────────────────
+function fmt(v) { return typeof v === 'boolean' ? (v ? '开' : '关') : (+v).toFixed(2); }
+
+// runtime parameters the panel leaves at their defaults
+const HIDDEN_PARAMS = new Set(['gravity']);
+
+function buildParams() {
+  const box = $('params');
+  box.innerHTML = '';
+  const { m } = state.pkg;
+  let group = null;
+  for (const [name, spec] of Object.entries(m.params)) {
+    if (!spec.available || HIDDEN_PARAMS.has(name)) continue;
+    if (spec.group !== group) {
+      group = spec.group;
+      const h = document.createElement('h3'); h.textContent = GROUP_TITLES[group] || group; box.appendChild(h);
+    }
+    const row = document.createElement('div'); row.className = 'row';
+    const label = document.createElement('span'); label.className = 'name'; label.title = name;
+    label.textContent = name;
+    if (!spec.implemented) { const b = document.createElement('span'); b.className = 'badge'; b.textContent = '未实现'; label.appendChild(b); }
+    const val = document.createElement('span'); val.className = 'val';
+    let input;
+    if (spec.toggle) {
+      input = document.createElement('input'); input.type = 'checkbox'; input.checked = !!spec.default;
+      input.onchange = () => setParam(name, input.checked);
+    } else {
+      input = document.createElement('input'); input.type = 'range';
+      input.min = spec.min; input.max = spec.max; input.step = (spec.max - spec.min) / 200; input.value = spec.default;
+      input.oninput = () => { val.textContent = fmt(input.value); };
+      input.onchange = () => setParam(name, +input.value);   // request on release only
+    }
+    input.disabled = !spec.implemented;
+    val.textContent = fmt(spec.default);
+    const reset = document.createElement('button'); reset.textContent = '↺'; reset.title = '恢复默认';
+    reset.disabled = !spec.implemented;
+    reset.onclick = () => {
+      if (spec.toggle) input.checked = !!spec.default; else input.value = spec.default;
+      val.textContent = fmt(spec.default); setParam(name, spec.default);
+    };
+    row.append(label, input, val, reset);
+    row.dataset.param = name;
+    box.appendChild(row);
+    if (name === 'force') box.appendChild(strikeRow());
+  }
+  syncStiffness();
+}
+
+// a part's spring only swings with its weight past 1: its stiffness does nothing before that
+function syncStiffness() {
+  for (const row of document.querySelectorAll('.row[data-param$="_stiffness"]')) {
+    const weight = row.dataset.param.replace(/_stiffness$/, '_weight');
+    const off = !((state.params[weight] ?? 1) > 1);
+    row.querySelector('input').disabled = off || !state.pkg.m.params[row.dataset.param].implemented;
+    row.title = off ? `${weight} > 1 时才起作用` : '';
+  }
+}
+
+// active chain of the force parameters, most likely first
+function strikeRow() {
+  const strike = strikeEvents(), row = document.createElement('div');
+  row.className = 'controls';
+  const label = document.createElement('label'); label.className = 'chk'; label.textContent = '主动链 ';
+  label.title = '力度参数作用的链；事件标记（W / I / R）在时间轴上拖动';
+  const sel = document.createElement('select'); sel.style.maxWidth = '170px';
+  for (const c of [...strike.candidates].sort((a, b) => b.share - a.share)) {
+    const o = document.createElement('option'); o.value = c.joint;
+    o.textContent = `${c.name} (${Math.round(c.share * 100)}%)`; sel.appendChild(o);
+  }
+  sel.value = strike.chain;
+  sel.onchange = () => { setEvents({ chain: +sel.value }); };
+  label.appendChild(sel);
+  row.append(label);
+  return row;
+}
+
+function setEvents(patch) {
+  const base = state.pkg.m.events.strike;
+  const next = { ...(state.events || {}), ...patch };
+  for (const k of Object.keys(next)) if (next[k] === base[k]) delete next[k];
+  state.events = Object.keys(next).length ? next : null;
+  buildParams(); restoreParamInputs(); applyEdit();
+}
+
+function restoreParamInputs() {
+  for (const [name, value] of Object.entries(state.params)) {
+    const row = document.querySelector(`.row[data-param="${name}"]`);
+    if (!row) { delete state.params[name]; continue; }
+    const input = row.querySelector('input');
+    if (input.type === 'checkbox') input.checked = !!value; else input.value = value;
+    row.querySelector('.val').textContent = fmt(value);
+  }
+  syncStiffness();
+}
+
+function setParam(name, value) {
+  const spec = state.pkg.m.params[name];
+  if (value === spec.default) delete state.params[name]; else state.params[name] = value;
+  syncStiffness();
+  applyEdit();
+}
+
+$('resetAll').onclick = () => { state.params = {}; state.events = null; buildParams(); applyEdit(); };
+
+async function applyEdit() {
+  if (!state.id) return;
+  const ticket = ++state.pending;   // a newer request supersedes this one
+  try {
+    const body = { id: state.id, params: state.params, globals: !!state.mesh };
+    if (state.events) body.events = state.events;
+    const data = await api('/api/apply', body);
+    if (ticket !== state.pending) return;
+    state.edited = { positions: Float32Array.from(data.positions), F: data.frames, gv: data.ground_velocity,
+      disp: groundDisplacement(data.ground_velocity, data.frames, state.pkg.loop, state.pkg.fps),
+      sourceTime: data.source_time, planted: Uint8Array.from(data.planted),
+      targets: Float32Array.from(data.targets), unreached: Uint8Array.from(data.unreached),
+      globalRotations: data.global_rotations ? Float32Array.from(data.global_rotations) : null };
+    const delta = data.max_position_delta;
+    renderDiagnostics([{ kind: 'delta', message: `与原始结果最大位置差：${delta === null ? '—（帧数不同）' : delta.toExponential(2)}` },
+      ...data.diagnostics]);
+    showError();
+    setFrame(state.frame);
+  } catch (e) {
+    if (ticket === state.pending) showError(e);
+  }
+}
+
+function renderDiagnostics(applyItems) {
+  const ul = $('diag'); ul.innerHTML = '';
+  const { m, sk } = state.pkg;
+  const items = [...(applyItems || []), ...(m.diagnostics.items || [])];
+  const summary = { kind: 'slip', message: `接触区间 ${m.diagnostics.plants} 个，原结果滑步基线 max ${(+m.diagnostics.slip_baseline_max).toFixed(4)} / mean ${(+m.diagnostics.slip_baseline_mean).toFixed(4)}` };
+  for (const it of [summary, ...items]) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="kind">${it.kind}</span>`;
+    li.appendChild(document.createTextNode(it.message));
+    li.onclick = () => {
+      if (Number.isInteger(it.frame)) setFrame(it.frame);
+      state.highlight = it.joint ? sk.names.indexOf(it.joint) : -1;
+      renderContacts(); renderPassive(); draw();
+    };
+    ul.appendChild(li);
+  }
+}
+
+// ── stretch_factor / fullbody IK reload ─────────────────────────────────
+$('fullbodyIk').onchange = () => { $('stretch').disabled = !$('fullbodyIk').checked; };
+$('reload').onclick = async () => {
+  if (!state.id) return;
+  const s = +$('stretch').value, ik = $('fullbodyIk').checked;
+  if (state.pkg.m.contacts.intervals_edited &&
+      !confirm('重新分解会重置手动修改过的接触区间，继续？')) return;
+  $('reload').disabled = true;
+  try { await openPackage(state.id, await api('/api/load', { id: state.id, stretch_factor: s, fullbody_ik: ik })); }
+  catch (e) { showError(e); }
+  finally { $('reload').disabled = false; }
+};
+$('pkgSelect').onchange = (e) => openPackage(e.target.value).catch(showError);
+
+// ── export: the server runs apply_edit's export on the same params / events ──
+// the mesh checkbox: a package whose T-pose mesh is still where it was
+function syncExportMesh() {
+  const mesh = state.pkg && state.pkg.mesh;
+  $('exportMeshLabel').hidden = !(mesh && mesh.exportable);
+}
+$('meshView').onchange = () => draw();
+// blocking progress: a modal dialog makes the rest of the page inert; the server
+// gives no progress, so the bar is indeterminate and the elapsed time counts up
+const exportDialog = $('exportDialog');
+exportDialog.addEventListener('cancel', (e) => e.preventDefault());   // no Esc while exporting
+// registered before every other keydown listener: page shortcuts stay off too
+window.addEventListener('keydown', (e) => {
+  if (!exportDialog.open) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+}, { capture: true });
+function showExportProgress(file) {
+  const start = performance.now();
+  const tick = () => { $('exportDialogTime').textContent = `${((performance.now() - start) / 1000).toFixed(0)} 秒`; };
+  $('exportDialogFile').textContent = file;
+  tick();
+  const timer = setInterval(tick, 500);
+  exportDialog.showModal();
+  return () => { clearInterval(timer); exportDialog.close(); };
+}
+$('exportBtn').onclick = async () => {
+  if (!state.id) return;
+  $('exportBtn').disabled = true;
+  const done = showExportProgress(`${$('exportName').value.trim() || state.pkg.m.clip || 'edit'}.glb`);
+  try {
+    const body = { id: state.id, params: state.params, events: state.events,
+      root_motion: $('exportRootMotion').checked, name: $('exportName').value,
+      mesh: !$('exportMeshLabel').hidden && $('exportMesh').checked };
+    const data = await api('/api/export', body);
+    done();   // closed before the download starts: the page is inert while it is open
+    const out = $('exportResult'); out.innerHTML = '';
+    const link = document.createElement('a');
+    link.href = data.url; link.download = data.file; link.textContent = data.file;
+    out.append('已写入 ', link);
+    const cmd = document.createElement('code');
+    cmd.title = '命令行用同一组参数导出（逐位一致）'; cmd.textContent = data.command;
+    out.append(cmd);
+    out.hidden = false;
+    link.click();
+    showError();
+  } catch (e) { showError(e); }
+  finally { done(); $('exportBtn').disabled = false; }
+};
+
+// ── ground height: the grid follows the draft, contacts are re-detected on apply ──
+function showGroundActions(dirty) {
+  $('groundDiscard').hidden = $('groundApply').hidden = !dirty;
+  $('groundApply').disabled = false;
+}
+function setFloor(y) {
+  state.pkg.floor = y;
+  if (grid) grid.position.y = y;
+  draw();
+}
+$('groundHeight').oninput = () => {
+  if (!state.pkg) return;
+  const y = parseFloat($('groundHeight').value);
+  if (!Number.isFinite(y)) return;
+  const dirty = y !== (state.pkg.m.ground_height ?? 0);
+  showGroundActions(dirty);
+  setFloor(y);
+};
+$('groundDiscard').onclick = () => {
+  const y = state.pkg.m.ground_height ?? 0;
+  $('groundHeight').value = y;
+  showGroundActions(false);
+  setFloor(y);
+};
+$('groundApply').onclick = async () => {
+  const y = parseFloat($('groundHeight').value);
+  if (!Number.isFinite(y)) return;
+  if (state.pkg.m.contacts.intervals_edited && !confirm('改地面高度会重新检测区间，手动修改过的区间会丢失。继续？')) return;
+  $('groundApply').disabled = true;
+  try { await openPackage(state.id, await api('/api/contacts', { id: state.id, ground_height: y }), true); }
+  catch (e) { showError(e); $('groundApply').disabled = false; }
+};
+
+// ── playback ─────────────────────────────────────────────────────────────
+function frameCount() { return state.edited ? state.edited.F : state.pkg ? state.pkg.F : 0; }
+function setFrame(f) {
+  const F = frameCount(); if (!F) return;
+  state.frame = Math.max(0, Math.min(F - 1, f)); state.clock = state.frame; draw();
+}
+function setPlaying(on) {
+  state.playing = on; $('play').textContent = on ? '❚❚' : '▶';
+  if (!on) { state.clock = state.frame; draw(); }   // a paused frame is a whole frame
+}
+// step one frame, wrapping at either end (a loop's root motion carries across the seam)
+function step(d) {
+  setPlaying(false);
+  const F = frameCount(); if (!F) return;
+  let f = state.frame + d;
+  if (f < 0 || f >= F) { if (state.pkg.loop) state.lap += f < 0 ? -1 : 1; f = ((f % F) + F) % F; }
+  setFrame(f);
+}
+$('play').onclick = () => setPlaying(!state.playing);
+$('prev').onclick = () => step(-1);
+$('next').onclick = () => step(1);
+$('compare').onchange = () => draw();
+$('smooth').onchange = () => draw();
+$('rootMotion').onchange = () => { state.lap = 0; draw(); };
+
+const tl = $('timeline');
+const TL = { label: 120, ruler: 14, empty: 24, pad: 3 };   // pad: room for the last tick / playhead
+function tlLayout() {
+  // contact rows only while editing intervals; otherwise an empty band keeps a scrubbable height
+  const rows = state.pkg && state.maskEditing ? state.pkg.contacts.joints.length : 0;
+  const rowH = rows <= 16 ? 12 : 8;
+  const body = rows ? rows * rowH : TL.empty;
+  // contact rows hold F frame cells; the collapsed axis puts frame 0 at the left end and F-1 at the right
+  const F = state.pkg ? state.pkg.F : 1, span = rows ? F : Math.max(F - 1, 1);
+  return { rows, rowH, span, h: TL.ruler + body + 4, w: tl.clientWidth - TL.label - TL.pad };
+}
+// source frame under the pointer (clamped, and wrapped for scrubbing past either
+// end), and the contact row (-1: the ruler)
+function tlHit(e) {
+  const r = tl.getBoundingClientRect(), L = tlLayout(), F = state.pkg.F;
+  const x = e.clientX - r.left - TL.label, y = e.clientY - r.top;
+  const raw = Math.floor(x / L.w * F);
+  const frame = Math.max(0, Math.min(F - 1, raw));
+  // scrubbing picks the nearest tick on the collapsed axis, the cell under the pointer on the rows
+  const idx = L.rows ? Math.floor(x / L.w * L.span) : Math.round(x / L.w * L.span);
+  const wrapped = ((idx % F) + F) % F;
+  const scrub = state.pkg.loop ? wrapped : Math.max(0, Math.min(F - 1, idx));
+  const row = y < TL.ruler ? -1 : Math.floor((y - TL.ruler) / L.rowH);
+  return { frame, scrub, wrapped, row: row < L.rows ? row : -1, x, y, inLabel: x < 0, px: L.w / F };
+}
+// Interval editing is a mode: it ends only through 放弃 or 应用, and while it is on
+// only the ruler row above the contact rows scrubs.
+function setMaskEditing(on) {
+  state.maskEditing = on;
+  state.selectedRun = null;
+  for (const el of document.querySelectorAll('.maskEditing')) el.hidden = !on;
+  tl.style.cursor = on ? 'default' : '';
+  updateMaskButtons(); drawTimeline();
+}
+$('maskEdit').onclick = () => setMaskEditing(true);
+function sourceFrameToEdited(f) {
+  // nearest output frame whose source time is f (playhead follows the edited timeline)
+  const st = state.edited ? state.edited.sourceTime : null;
+  if (!st) return f;
+  let best = 0, err = Infinity;
+  for (let i = 0; i < st.length; i++) { const d = Math.abs(st[i] - f); if (d < err) { err = d; best = i; } }
+  return best;
+}
+function runAt(k, f) {
+  const row = state.maskDraft[k], F = state.pkg.F, loop = state.pkg.loop;
+  if (!row[f]) return null;
+  let s = f, e = f + 1, n = 1;
+  while (n < F && (loop ? row[((s - 1) % F + F) % F] : s > 0 && row[s - 1])) { s--; n++; }
+  while (n < F && (loop ? row[e % F] : e < F && row[e])) { e++; n++; }
+  return { k, s, e };
+}
+function setCells(k, s, e, v) {
+  const F = state.pkg.F;
+  for (let u = s; u < e; u++) state.maskDraft[k][((u % F) + F) % F] = v;
+}
+function nearestUnwrapped(g, ref) {
+  if (!state.pkg.loop) return g;
+  const F = state.pkg.F;
+  return [g - F, g, g + F].reduce((a, b) => Math.abs(b - ref) < Math.abs(a - ref) ? b : a);
+}
+let drag = null;
+tl.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0 || !state.pkg) return;
+  tl.setPointerCapture(e.pointerId);
+  setPlaying(false);
+  const hit = tlHit(e);
+  const marker = !state.maskEditing && eventAt(hit.x);
+  if (marker) { drag = { mode: 'event', key: marker }; return; }
+  if (!state.maskEditing || (hit.row < 0 && hit.y < TL.ruler && !hit.inLabel)) {
+    drag = { mode: 'scrub' }; setFrame(sourceFrameToEdited(hit.scrub)); return;
+  }
+  if (hit.row < 0 || hit.inLabel) { drag = null; return; }
+  const run = runAt(hit.row, hit.frame);
+  if (run) {
+    const F = state.pkg.F, edgePx = Math.max(5, hit.px / 2);
+    const xs = (((run.s % F) + F) % F) * hit.px, xe = (((run.e - 1) % F) + 1) * hit.px;
+    if (Math.abs(hit.x - xs) <= edgePx) drag = { mode: 'start', run };
+    else if (Math.abs(hit.x - xe) <= edgePx) drag = { mode: 'end', run };
+    else drag = null;
+    state.selectedRun = run;
+  } else {
+    drag = { mode: 'create', k: hit.row, from: hit.frame, snapshot: state.maskDraft[hit.row].slice() };
+    state.selectedRun = null;
+  }
+  drawTimeline();
+});
+tl.addEventListener('pointermove', (e) => {
+  if (!drag || !tl.hasPointerCapture(e.pointerId)) return;
+  const hit = tlHit(e);
+  if (drag.mode === 'scrub') { setFrame(sourceFrameToEdited(hit.wrapped)); return; }
+  if (drag.mode === 'event') { moveEvent(drag.key, hit.scrub); return; }
+  if (drag.mode === 'create') {
+    state.maskDraft[drag.k] = drag.snapshot.slice();
+    const a = Math.min(drag.from, hit.frame), b = Math.max(drag.from, hit.frame) + 1;
+    setCells(drag.k, a, b, 1);
+  } else {
+    const { k, s, e: end } = drag.run;
+    setCells(k, s, end, 0);
+    if (drag.mode === 'start') {
+      const ns = Math.min(nearestUnwrapped(hit.frame, s), end - 1);
+      setCells(k, ns, end, 1); state.selectedRun = { k, s: ns, e: end };
+    } else {
+      const ne = Math.max(nearestUnwrapped(hit.frame, end - 1) + 1, s + 1);
+      setCells(k, s, ne, 1); state.selectedRun = { k, s, e: ne };
+    }
+  }
+  updateMaskButtons(); drawTimeline();
+});
+tl.addEventListener('pointerup', (e) => {
+  if (tl.hasPointerCapture(e.pointerId)) tl.releasePointerCapture(e.pointerId);
+  if (drag && drag.mode === 'event') { drag = null; setEvents({}); return; }
+  if (drag && (drag.mode === 'start' || drag.mode === 'end') && state.selectedRun) {
+    // re-read the run: it may have merged into a neighbour
+    const r = state.selectedRun;
+    state.selectedRun = runAt(r.k, ((r.s % state.pkg.F) + state.pkg.F) % state.pkg.F);
+  }
+  drag = null; drawTimeline();
+});
+// Esc is 放弃: interval editing first, else the contact-joint draft, else the passive draft
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !state.pkg) return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const btn = state.maskEditing ? $('maskDiscard') : jointsDirty() ? $('jointsDiscard')
+    : passiveDirty() ? $('passiveDiscard') : null;
+  if (!btn || btn.disabled) return;
+  drag = null; btn.click();
+});
+window.addEventListener('keydown', (e) => {
+  if (!state.maskEditing || !state.selectedRun || !['Delete', 'Backspace'].includes(e.key)) return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const { k, s, e: end } = state.selectedRun;
+  setCells(k, s, end, 0); state.selectedRun = null;
+  updateMaskButtons(); drawTimeline();
+});
+
+// strike event marker under the pointer on the collapsed axis (x from tlHit)
+const EVENT_GRAB = 5;   // CSS px
+// a loop's events are unwrapped about impact (windup may be negative, recover past F-1):
+// they sit on the timeline at their frame in the period
+function eventFrame(f) { const F = state.pkg.F; return state.pkg.loop ? ((f % F) + F) % F : f; }
+function eventAt(x) {
+  const strike = strikeEvents(); if (!strike) return null;
+  const L = tlLayout();
+  let best = null, bestD = EVENT_GRAB + 1;
+  for (const k of EVENT_KEYS) {
+    const d = Math.abs(eventFrame(strike[k]) / L.span * L.w - x);
+    if (d < bestD) { best = k; bestD = d; }
+  }
+  return best;
+}
+// a dragged marker keeps the order windup < impact < recover (on a loop, unwrapped and
+// within one period: it may be dragged across the seam)
+function moveEvent(key, frame) {
+  const strike = strikeEvents(), F = state.pkg.F, loop = state.pkg.loop;
+  const i = EVENT_KEYS.indexOf(key);
+  if (loop) frame = [frame - F, frame, frame + F].reduce((a, b) =>
+    Math.abs(b - strike[key]) < Math.abs(a - strike[key]) ? b : a);
+  const lo = i > 0 ? strike[EVENT_KEYS[i - 1]] + 1 : loop ? strike.recover - (F - 1) : 0;
+  const hi = i < 2 ? strike[EVENT_KEYS[i + 1]] - 1 : loop ? strike.windup + (F - 1) : F - 1;
+  const f = Math.max(lo, Math.min(hi, frame));
+  if (f === strike[key]) return;
+  const base = state.pkg.m.events.strike;
+  state.events = { ...(state.events || {}), [key]: f };
+  if (f === base[key]) delete state.events[key];
+  if (!Object.keys(state.events).length) state.events = null;
+  drawTimeline();
+}
+
+function maskDirty() {
+  if (!state.pkg || !state.maskDraft) return false;
+  return state.pkg.contacts.mask.some((row, k) => row.some((v, f) => v !== state.maskDraft[k][f]));
+}
+function updateMaskButtons() {
+  $('maskEdit').hidden = state.maskEditing;
+  const dirty = maskDirty();
+  $('maskApply').disabled = !dirty;
+  $('maskState').textContent = dirty ? '区间有未应用的修改' :
+    (state.pkg && state.pkg.m.contacts.intervals_edited ? '区间已手动修改' : '');
+}
+$('maskDiscard').onclick = () => {
+  state.maskDraft = state.pkg.contacts.mask.map((row) => row.slice());
+  setMaskEditing(false);
+};
+$('maskApply').onclick = async () => {
+  if (!maskDirty()) { setMaskEditing(false); return; }
+  $('maskApply').disabled = $('maskDiscard').disabled = true;
+  try { await openPackage(state.id, await api('/api/contacts', { id: state.id, mask: state.maskDraft }), true); }
+  catch (e) { showError(e); }
+  finally { $('maskDiscard').disabled = false; updateMaskButtons(); }
+};
+
+// collapsed timeline: one horizontal axis with a tick per frame (0 .. F-1) above it
+function drawAxis(g, L, F, x) {
+  const y = Math.round(L.h / 2) + 0.5;   // the playhead bar is centred on the same line
+  g.strokeStyle = '#5a6272'; g.lineWidth = 1;
+  g.beginPath();
+  g.moveTo(TL.label, y); g.lineTo(TL.label + L.w, y);
+  for (let f = 0; f < F; f++) {
+    const xf = Math.round(x(f)) + 0.5;
+    g.moveTo(xf, y); g.lineTo(xf, y - 4);
+  }
+  g.stroke();
+}
+
+function drawTimeline() {
+  const pkg = state.pkg; if (!pkg || !state.maskDraft) return;
+  const dpr = window.devicePixelRatio || 1, L = tlLayout(), W = tl.clientWidth;
+  if (tl.width !== Math.round(W * dpr) || tl.height !== Math.round(L.h * dpr)) {
+    tl.width = Math.round(W * dpr); tl.height = Math.round(L.h * dpr); tl.style.height = L.h + 'px';
+  }
+  const g = tl.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, L.h);
+  const F = pkg.F, x = (f) => TL.label + f / L.span * L.w;
+  const ev = pkg.m.events;
+  // row labels
+  g.font = '10px system-ui'; g.textBaseline = 'middle';
+  if (L.rows) pkg.contacts.joints.forEach((j, k) => {
+    const sel = state.highlight === j;
+    g.fillStyle = sel ? css('--contact') : '#8a93a3';
+    g.font = sel ? 'bold 10px system-ui' : '10px system-ui';
+    const name = pkg.sk.names[j];
+    g.fillText(name.length > 20 ? name.slice(0, 19) + '…' : name, 2, TL.ruler + k * L.rowH + L.rowH / 2);
+  });
+  g.textBaseline = 'alphabetic';
+  // bars: one rect per run of same-state cells (kept / added / removed by the draft)
+  const fills = [null, css('--contact'), css('--good'), 'rgba(239,107,107,0.35)'];
+  if (L.rows) state.maskDraft.forEach((row, k) => {
+    const was = pkg.contacts.mask[k];
+    const kind = (f) => row[f] ? (was[f] ? 1 : 2) : (was[f] ? 3 : 0);
+    for (let f = 0; f < F;) {
+      const c = kind(f); let e = f + 1;
+      while (e < F && kind(e) === c) e++;
+      if (c) { g.fillStyle = fills[c]; g.fillRect(x(f), TL.ruler + k * L.rowH, x(e) - x(f), L.rowH); }
+      f = e;
+    }
+  });
+  // frame grid over the bars, like a table (skipped when cells get too narrow to read)
+  g.strokeStyle = '#3a404c'; g.lineWidth = 1;
+  const top = TL.ruler, bottom = TL.ruler + L.rows * L.rowH, snap = (v) => Math.round(v) + 0.5;
+  g.beginPath();
+  if (L.rows && L.w / F >= 3) for (let f = 0; f <= F; f++) { g.moveTo(snap(x(f)), top); g.lineTo(snap(x(f)), bottom); }
+  if (L.rows) for (let k = 0; k <= L.rows; k++) { g.moveTo(TL.label, snap(top + k * L.rowH)); g.lineTo(TL.label + L.w, snap(top + k * L.rowH)); }
+  g.stroke();
+  if (!L.rows && !state.maskEditing) drawAxis(g, L, F, x);
+  if (state.maskEditing && !L.rows) {
+    g.fillStyle = '#8a93a3'; g.font = '11px system-ui'; g.textBaseline = 'middle';
+    g.fillText('没有接触关节：先在右侧「接触关节」里添加，再编辑触地区间', TL.label + 6, top + TL.empty / 2);
+    g.textBaseline = 'alphabetic';
+  }
+  if (state.selectedRun) {
+    const { k, s, e } = state.selectedRun;
+    g.strokeStyle = css('--accent'); g.lineWidth = 1.5;
+    for (const [a, b] of [[s, Math.min(e, F)], [s - F, e - F], [s + F, e + F]]) {
+      const lo = Math.max(a, 0), hi = Math.min(b, F);
+      if (hi > lo) g.strokeRect(x(lo) + 0.5, TL.ruler + k * L.rowH + 0.5, x(hi) - x(lo) - 1, L.rowH - 3);
+    }
+    g.lineWidth = 1;
+  }
+  const strike = strikeEvents();
+  if (strike) {
+    // strike markers: a line through the rows (on the cell's centre while they show) and its letter
+    g.font = 'bold 10px system-ui'; g.textAlign = 'center'; g.lineWidth = 2;
+    for (const k of EVENT_KEYS) {
+      const xf = Math.round(L.rows ? x(eventFrame(strike[k]) + 0.5) : x(eventFrame(strike[k]))) + 0.5;
+      g.strokeStyle = g.fillStyle = EVENT_COLORS[k];
+      g.beginPath(); g.moveTo(xf, L.rows ? TL.ruler : 10); g.lineTo(xf, L.h); g.stroke();
+      g.fillText(EVENT_LABELS[k] + (state.events && k in state.events ? '*' : ''), xf, 9);
+    }
+    g.textAlign = 'start'; g.lineWidth = 1;
+  }
+  if (ev.period) {
+    g.strokeStyle = '#7a8394'; g.setLineDash([3, 3]);
+    for (let p = ev.period; p < F; p += ev.period) { g.beginPath(); g.moveTo(x(p), 0); g.lineTo(x(p), L.h); g.stroke(); }
+    g.setLineDash([]);
+  }
+  // playhead at the source time the edited frame samples
+  let st = state.stDisplay !== null ? state.stDisplay
+    : state.edited && state.edited.sourceTime ? state.edited.sourceTime[state.frame] : state.frame;
+  if (pkg.loop) st = ((st % F) + F) % F;
+  g.fillStyle = css('--accent');
+  if (L.rows) {
+    // contact rows: a flat block one cell wide and one row high in the ruler row; it glides
+    // while smooth playback interpolates and sits on a whole cell otherwise (scrubbing, paused)
+    const s0 = state.playing && $('smooth').checked ? st : Math.min(Math.floor(st), F - 1);
+    const y0 = (TL.ruler - L.rowH) / 2;
+    g.fillRect(x(s0), y0, x(Math.min(s0 + 1, F)) - x(s0), L.rowH);
+    if (s0 + 1 > F) g.fillRect(x(0), y0, x(s0 + 1 - F) - x(0), L.rowH);   // a loop's wrap past F-1
+    return;
+  }
+  st = Math.min(st, F - 1);   // the wrap from F-1 back to 0 has no room on the axis
+  // collapsed axis: a solid bar centred on the frame's tick
+  const PLAYHEAD_W = 7, PLAYHEAD_H = 0.8, bar = Math.min(PLAYHEAD_W, x(1) - x(0));
+  const h = Math.round(L.h * PLAYHEAD_H);
+  g.fillRect(x(st) - bar / 2, Math.round(L.h / 2) + 0.5 - h / 2, bar, h);
+}
+
+// ── contact joints ───────────────────────────────────────────────────────
+function jointsDirty() {
+  if (!state.pkg || !state.jointDraft) return false;
+  const cur = state.pkg.isContact;
+  return state.jointDraft.size !== cur.size || [...state.jointDraft].some((j) => !cur.has(j));
+}
+function renderContacts() {
+  const pkg = state.pkg, ul = $('contactList'); ul.innerHTML = '';
+  const origin = {}; pkg.contacts.joints.forEach((j, k) => { origin[j] = pkg.contacts.origin[k]; });
+  const all = [...new Set([...pkg.contacts.joints, ...state.jointDraft])].sort((a, b) => a - b);
+  for (const j of all) {
+    const li = document.createElement('li');
+    const inNow = pkg.isContact.has(j), inDraft = state.jointDraft.has(j);
+    li.className = inNow && !inDraft ? 'remove' : !inNow && inDraft ? 'add' : '';
+    if (state.highlight === j) li.classList.add('sel');
+    const nm = document.createElement('span'); nm.className = 'jn'; nm.textContent = pkg.sk.names[j]; nm.title = pkg.sk.names[j];
+    const tag = document.createElement('span'); tag.className = 'tag';
+    tag.textContent = !inNow ? '待添加' : !inDraft ? '待移除' : ({ species: '物种', package: '本 package' }[origin[j]] || '');
+    const b = document.createElement('button'); b.textContent = inDraft ? '×' : '↺';
+    b.title = inDraft ? '移除' : '恢复';
+    b.onclick = () => { toggleContact(j); };
+    nm.onclick = () => { state.highlight = state.highlight === j ? -1 : j; renderContacts(); renderPassive(); draw(); };
+    li.append(nm, tag, b); ul.appendChild(li);
+  }
+  const sel = $('contactAdd'); sel.innerHTML = '<option value="">添加关节…</option>';
+  pkg.sk.names.forEach((n, j) => {
+    if (state.jointDraft.has(j)) return;
+    const o = document.createElement('option'); o.value = j; o.textContent = n; sel.appendChild(o);
+  });
+  const dirty = jointsDirty();
+  // without a draft only "apply to species" stays, to promote this package's own edits
+  const promotable = pkg.contacts.origin.includes('package');
+  $('jointsDiscard').hidden = $('jointsPackage').hidden = !dirty;
+  $('jointsSpecies').hidden = !dirty && !promotable;
+  $('jointsActions').hidden = !dirty && !promotable;
+  $('jointsSpecies').disabled = !pkg.speciesWritable;
+  $('jointsSpecies').title = pkg.speciesWritable ? '写入数据集的 contact_overrides.json'
+    : '这个 package 不知道所属数据集（用 decompose_clip 从数据集分解才能写物种覆盖）';
+}
+function toggleContact(j) {
+  if (state.jointDraft.has(j)) state.jointDraft.delete(j); else state.jointDraft.add(j);
+  renderContacts(); draw();
+}
+$('contactAdd').onchange = (e) => { if (e.target.value !== '') toggleContact(+e.target.value); };
+$('jointsDiscard').onclick = () => { state.jointDraft = new Set(state.pkg.contacts.joints); renderContacts(); draw(); };
+async function sendJoints(species) {
+  if (state.pkg.m.contacts.intervals_edited && !confirm('改接触关节会重新检测区间，手动修改过的区间会丢失。继续？')) return;
+  if (species && !confirm('写入 ' + state.pkg.m.object_type + ' 的 contact_overrides.json，影响该物种之后的 Profile 构建和分解。继续？')) return;
+  try {
+    await openPackage(state.id, await api('/api/contacts',
+      { id: state.id, joints: [...state.jointDraft], species }), true);
+  } catch (e) { showError(e); }
+}
+$('jointsPackage').onclick = () => sendJoints(false);
+$('jointsSpecies').onclick = () => sendJoints(true);
+
+// ── passive joints ───────────────────────────────────────────────────────
+function passiveDirty() {
+  if (!state.pkg || !state.passiveDraft) return false;
+  const cur = state.pkg.isPassive;
+  return state.passiveDraft.size !== cur.size || [...state.passiveDraft].some((j) => !cur.has(j));
+}
+function renderPassive() {
+  const pkg = state.pkg, ul = $('passiveList'); ul.innerHTML = '';
+  const origin = {}; pkg.passive.joints.forEach((j, k) => { origin[j] = pkg.passive.origin[k]; });
+  const all = [...new Set([...pkg.passive.joints, ...state.passiveDraft])].sort((a, b) => a - b);
+  for (const j of all) {
+    const li = document.createElement('li');
+    const inNow = pkg.isPassive.has(j), inDraft = state.passiveDraft.has(j);
+    li.className = inNow && !inDraft ? 'remove' : !inNow && inDraft ? 'add' : '';
+    if (state.highlight === j) li.classList.add('sel');
+    const nm = document.createElement('span'); nm.className = 'jn'; nm.textContent = pkg.sk.names[j]; nm.title = pkg.sk.names[j];
+    const tag = document.createElement('span'); tag.className = 'tag';
+    tag.textContent = !inNow ? '待添加' : !inDraft ? '待移除'
+      : ({ species: '物种', package: '本 package' }[origin[j]] || '');
+    const b = document.createElement('button'); b.textContent = inDraft ? '×' : '↺';
+    b.title = inDraft ? '移除' : '恢复';
+    b.onclick = () => { togglePassive(j); };
+    nm.onclick = () => { state.highlight = state.highlight === j ? -1 : j; renderContacts(); renderPassive(); draw(); };
+    li.append(nm, tag, b); ul.appendChild(li);
+  }
+  // only candidates can swing (nothing that holds a support joint): the dropdown offers them
+  const sel = $('passiveAdd'); sel.innerHTML = '<option value="">添加关节…</option>';
+  pkg.passive.candidates.forEach((j) => {
+    if (state.passiveDraft.has(j)) return;
+    const o = document.createElement('option'); o.value = j; o.textContent = pkg.sk.names[j]; sel.appendChild(o);
+  });
+  const dirty = passiveDirty(), promotable = pkg.passive.promotable;
+  $('passiveDiscard').hidden = $('passivePackage').hidden = !dirty;
+  $('passiveSpecies').hidden = !dirty && !promotable;
+  $('passiveActions').hidden = !dirty && !promotable;
+  $('passiveSpecies').disabled = !pkg.speciesWritable;
+  $('passiveSpecies').title = pkg.speciesWritable ? '写入数据集的 passive_overrides.json'
+    : '这个 package 不知道所属数据集（用 decompose_clip 从数据集分解才能写物种覆盖）';
+}
+// adding a joint adds its subtree, removing one removes its subtree (the part above stays)
+function subtreeOf(j) {
+  const parents = state.pkg.sk.parents, out = new Set([j]);
+  for (let k = j + 1; k < parents.length; k++) if (out.has(parents[k])) out.add(k);   // parents precede children
+  return out;
+}
+function togglePassive(j) {
+  const draft = state.passiveDraft;
+  if (draft.has(j)) {
+    for (const k of subtreeOf(j)) draft.delete(k);
+  } else if (!state.pkg.isCandidate.has(j)) {
+    showError(state.pkg.sk.names[j] + ' 不能做次级运动：它下面挂着支撑关节（或它是根）');
+    return;
+  } else {
+    for (const k of subtreeOf(j)) draft.add(k);
+  }
+  showError();
+  renderPassive(); draw();
+}
+$('passiveAdd').onchange = (e) => { if (e.target.value !== '') togglePassive(+e.target.value); };
+$('passiveDiscard').onclick = () => { state.passiveDraft = new Set(state.pkg.passive.joints); renderPassive(); draw(); };
+async function sendPassive(species) {
+  if (species && !confirm('写入 ' + state.pkg.m.object_type + ' 的 passive_overrides.json，影响该物种之后的 Profile 构建和分解。继续？')) return;
+  try {
+    await openPackage(state.id, await api('/api/passive',
+      { id: state.id, joints: [...state.passiveDraft], species }), true);
+  } catch (e) { showError(e); }
+}
+$('passivePackage').onclick = () => sendPassive(false);
+$('passiveSpecies').onclick = () => sendPassive(true);
+
+// left click in the viewport picks the edited-skeleton joint nearest the cursor on
+// screen, within a radius about the size of its square, for the contact draft
+// (shift: the passive draft)
+const PICK_RADIUS = 5;   // CSS px
+let pickDown = null;
+renderer.domElement.addEventListener('pointerdown', (e) => { if (e.button === 0) pickDown = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (e.button !== 0 || !pickDown || !state.pkg) return;
+  const moved = Math.hypot(e.clientX - pickDown[0], e.clientY - pickDown[1]); pickDown = null;
+  if (moved > 4) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const pos = edit.points.geometry.attributes.position, v = new THREE.Vector3();
+  let best = -1, bestD = Infinity, bestZ = Infinity;
+  for (let j = 0; j < pos.count; j++) {
+    v.fromBufferAttribute(pos, j).applyMatrix4(edit.points.matrixWorld).project(camera);
+    if (v.z < -1 || v.z > 1) continue;   // behind the camera / clipped
+    const d = Math.hypot((v.x + 1) / 2 * r.width - mx, (1 - v.y) / 2 * r.height - my);
+    if (d > PICK_RADIUS) continue;
+    // nearest on screen; among overlapping squares, the one in front
+    if (d < bestD - 0.5 || (Math.abs(d - bestD) <= 0.5 && v.z < bestZ)) { best = j; bestD = d; bestZ = v.z; }
+  }
+  if (best < 0) return;
+  if (e.shiftKey) togglePassive(best); else toggleContact(best);
+});
+
+// ── draw ─────────────────────────────────────────────────────────────────
+const cOrig = new THREE.Color(css('--original')), cEdit = new THREE.Color(css('--edited'));
+const cContact = new THREE.Color(css('--contact')), cPassive = new THREE.Color(css('--passive'));
+const cPassiveAdd = new THREE.Color('#33d6ff'), cPassiveDrop = new THREE.Color('#ff8c1a');
+const cAdd = new THREE.Color('#22ff55'), cDrop = new THREE.Color('#ff2a2a');
+
+// ground displacement at (fractional) frame t, clamped to the array
+function dispAt(disp, t) {
+  const n = disp.length / 2, c = Math.max(0, Math.min(n - 1, t));
+  const i0 = Math.floor(c), i1 = Math.min(n - 1, i0 + 1), a = c - i0;
+  return [disp[i0 * 2] + (disp[i1 * 2] - disp[i0 * 2]) * a,
+          disp[i0 * 2 + 1] + (disp[i1 * 2 + 1] - disp[i0 * 2 + 1]) * a];
+}
+
+// Root-motion travel at frame t: D(t), plus a full period per completed loop play.
+function travel(disp, F, t) {
+  const d = dispAt(disp, t);
+  if (!state.pkg.loop || !state.lap) return d;
+  // a loop's displacement array spans two periods, so disp[F] is one full period
+  return [state.lap * disp[F * 2] + d[0], state.lap * disp[F * 2 + 1] + d[1]];
+}
+
+function draw() {
+  const pkg = state.pkg; if (!pkg || !state.edited) return;
+  const f = state.frame, mode = $('compare').value, rootMotion = $('rootMotion').checked;
+  const Fe = state.edited.F, J = pkg.J, F = pkg.F;
+  // interpolate between frames only while playing; a paused / scrubbed frame is whole
+  const smooth = state.playing && $('smooth').checked;
+  const t = smooth ? state.clock : f;
+  const f0 = Math.floor(t), a = t - f0;
+  const f1 = pkg.loop ? f0 + 1 : Math.min(f0 + 1, Fe - 1);   // a loop's f1 may be Fe (the seam)
+  // source time of edited frame i; past the seam it continues into the next period
+  const srcAt = (i) => {
+    const s = state.edited.sourceTime; if (!s) return i;
+    return i >= Fe ? s[i - Fe] + F : s[i];
+  };
+  let tO;   // source frame the ghost shows
+  if (smooth) tO = srcAt(f0) + (srcAt(f1) - srcAt(f0)) * a;
+  else { const st = srcAt(f); tO = pkg.loop ? Math.round(st) % F : Math.min(Math.round(st), F - 1); }
+  state.stDisplay = smooth ? tO : srcAt(f);
+
+  const dE = rootMotion ? travel(state.edited.disp, Fe, t) : [0, 0];
+  const dO = rootMotion ? travel(pkg.disp, F, tO) : [0, 0];
+  const side = mode === 'side' ? pkg.extent * 1.2 : 0;
+  const K = pkg.contacts.joints.length;
+  const oE = [dE[0] + side / 2, dE[1]];
+  const PE = sampleFrame(state.edited.positions, J, Fe, t, pkg.loop);
+  updateSkeleton(edit, PE, oE, (j) => pkg.isContact.has(j) ? cContact : pkg.isPassive.has(j) ? cPassive : cEdit);
+  const meshView = $('meshView').value;
+  if (state.mesh) {
+    const gr = state.edited.globalRotations;
+    state.mesh.root.visible = meshView !== 'skeleton' && !!gr;
+    if (state.mesh.root.visible) poseMesh(PE, sampleRotations(gr, J, Fe, t, pkg.loop), oE);
+  }
+  // the edited skeleton hides only behind a mesh that is actually shown
+  edit.lines.visible = edit.points.visible = !(meshView === 'mesh' && state.mesh && state.mesh.root.visible);
+  ghostRoot.visible = mode !== 'edited';
+  updateSkeleton(ghost, sampleFrame(pkg.original, J, F, tO, pkg.loop), [dO[0] - side / 2, dO[1]], () => cOrig);
+
+  // pending changes: big squares, contact green (add) / red (remove), passive cyan / orange
+  const mp = marks.geometry.attributes.position, mc = marks.geometry.attributes.color;
+  let n = 0;
+  for (let j = 0; j < J; j++) {
+    const add = state.jointDraft.has(j), passive = state.passiveDraft.has(j);
+    const c = add !== pkg.isContact.has(j) ? (add ? cAdd : cDrop)
+      : passive !== pkg.isPassive.has(j) ? (passive ? cPassiveAdd : cPassiveDrop) : null;
+    if (!c) continue;
+    mp.setXYZ(n, PE[j * 3] + oE[0], PE[j * 3 + 1], PE[j * 3 + 2] + oE[1]);
+    mc.setXYZ(n, c.r, c.g, c.b); n++;
+  }
+  marks.geometry.setDrawRange(0, n);
+  mp.needsUpdate = mc.needsUpdate = true; marks.geometry.computeBoundingSphere();
+  // joint selected in the contact panel / diagnostics
+  const h = state.highlight;
+  cross.visible = h >= 0 && h < J;
+  if (cross.visible) {
+    const cp = cross.geometry.attributes.position;
+    cp.setXYZ(0, PE[h * 3] + oE[0], PE[h * 3 + 1], PE[h * 3 + 2] + oE[1]);
+    cp.needsUpdate = true; cross.geometry.computeBoundingSphere();
+  }
+
+  // edited plant targets at this frame
+  const g0 = Math.min(f0, Fe - 1), g1 = f1 % Fe;
+  pkg.contacts.joints.forEach((j, k) => {
+    const mesh = pkg.targetMeshes[k];
+    const on = !!state.edited.planted[g0 * K + k];
+    mesh.visible = on;
+    if (!on) return;
+    const tg = state.edited.targets, t0 = (g0 * K + k) * 3, t1 = (g1 * K + k) * 3;
+    const b = state.edited.planted[g1 * K + k] ? a : 0;
+    mesh.material = state.edited.unreached[g0 * K + k] ? pkg.targetMaterials.miss : pkg.targetMaterials.ok;
+    mesh.position.set(tg[t0] + (tg[t1] - tg[t0]) * b + oE[0], tg[t0 + 1] + (tg[t1 + 1] - tg[t0 + 1]) * b + 2e-4,
+                      tg[t0 + 2] + (tg[t1 + 2] - tg[t0 + 2]) * b + oE[1]);
+  });
+
+  $('frameLabel').textContent = `${f} / ${Fe - 1}`;
+  $('overlay').textContent = `${pkg.m.clip} · ${pkg.m.action_label || ''}`;
+  drawTimeline();
+}
+
+let last = performance.now();
+function tick(now) {
+  const dt = (now - last) / 1000; last = now;
+  if (state.playing && state.pkg && state.edited) {
+    const F = frameCount();
+    state.clock += dt * state.pkg.fps * +$('playRate').value;
+    if (state.clock >= F) {
+      if ($('loopPlay').checked) {
+        if (state.pkg.loop) state.lap += Math.floor(state.clock / F);
+        state.clock %= F;
+      }
+      else { state.clock = F - 1; state.frame = F - 1; setPlaying(false); }
+    }
+    const f = Math.floor(state.clock);
+    if (state.playing && (f !== state.frame || $('smooth').checked)) { state.frame = f; draw(); }
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+// Space is play / pause and nothing else: taken in the capture phase, before a
+// focused button, checkbox or dropdown sees it (buttons and checkboxes fire on
+// keyup, so that is swallowed too).
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space') return;
+  e.preventDefault(); e.stopPropagation();
+  if (!e.repeat) $('play').click();
+}, { capture: true });
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); e.stopPropagation(); }
+}, { capture: true });
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.code === 'ArrowLeft') $('prev').click();
+  if (e.code === 'ArrowRight') $('next').click();
+});
+window.addEventListener('resize', drawTimeline);
+
+resize();
+requestAnimationFrame(tick);
+loadList().catch(showError);
+</script>
+</body>
+</html>

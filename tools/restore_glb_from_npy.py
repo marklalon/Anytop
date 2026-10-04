@@ -107,6 +107,7 @@ from utils.npy_restore import (
     build_mesh_restore_context,
     build_skeleton_only_context,
     coerce_root_translation_xz,
+    invert_preprocess_transform,
     restore_animation_from_features,
 )
 
@@ -328,9 +329,19 @@ def restore_glb(
         )
 
     # ── Decode (shared with the generate-time BVH preview) ────────────────────
+    # In HML space, IK must solve on the same cond skeleton as the mesh-free
+    # export. The T-pose rest bake changes joint-local rotations, and solving
+    # after that bake can produce a different rigid pose.
+    restore_ctx = ctx
+    if tpose_mesh is not None and restore_space == "hml" and fullbody_ik:
+        restore_ctx = build_skeleton_only_context(
+            cond_entry,
+            object_type=object_type,
+            feature_joint_count=feature_joint_count,
+        )
     restored = restore_animation_from_features(
         features,
-        ctx,
+        restore_ctx,
         restore_space=restore_space,
         fullbody_ik=fullbody_ik,
         stretch_factor=stretch_factor,
@@ -343,27 +354,49 @@ def restore_glb(
     if not fullbody_ik:
         print("Skipping IK (use --fullbody-ik to enable).")
     export_anim = restored.animation
+    if restore_ctx is not ctx:
+        from data_loaders.truebones.truebones_utils.features import (
+            recover_processed_animation_from_feature_animation,
+        )
+
+        export_anim = recover_processed_animation_from_feature_animation(
+            export_anim,
+            ctx.tpose_rest_rotations,
+        )
     skeleton = restored.skeleton
     output_fps = restored.fps
 
     # ── Export skeleton units ───────────────────────────────────────────────
-    # The core builds the export skeleton in the animation's units, so in HML
-    # mode a mesh rig comes back scaled by scale_factor (IK and skeleton agree).
-    # That is what the mesh-free skeleton-only HML armature needs. The skinned
-    # HML export instead keeps the rig in native units: the exporter retargets
-    # world-space onto the reverse-aligned mesh armature, and the pose
-    # translations carry the scale as they always have.
+    # The core builds its skeleton in the units and rest basis of restore_ctx.
+    # Mesh-free HML uses the cond skeleton, so its offsets agree with the IK
+    # solve. Mesh-backed HML + IK also solves on the cond skeleton, then bakes
+    # the recovered pose onto the T-pose rest rotations above. The skinned HML
+    # export keeps its rig in native local units; the armature object carries
+    # the forward preprocess similarity (global_similarity below), so the
+    # animation's local translations and root orientation must first go back
+    # through the inverse similarity. Otherwise scale and facing are applied
+    # twice to the skinned motion.
     skeleton_only_from_tpose = skeleton_only and tpose_mesh is not None
     if skeleton_only_from_tpose and restore_space == "native":
         print(
             "Skeleton-only (native): using the T-pose armature as export rig "
             "and omitting meshes, preserving source node scale/local offsets"
         )
-    elif skeleton_only_from_tpose and restore_space == "hml" and abs(ctx.scale_factor - 1.0) > 1e-12:
-        print(
-            "Skeleton-only (hml): skeleton offsets rescaled by scale_factor "
-            f"{ctx.scale_factor:.6f} into normalized HML space to match the motion"
-        )
+    elif skeleton_only_from_tpose and restore_space == "hml":
+        if abs(ctx.scale_factor - 1.0) > 1e-12:
+            print(
+                "Skeleton-only (hml): skeleton offsets rescaled by scale_factor "
+                f"{ctx.scale_factor:.6f} into normalized HML space to match the motion"
+            )
+        if restore_ctx is not ctx:
+            from utils.roundtrip_common import build_skeleton
+
+            skeleton = build_skeleton(
+                ctx.export_joint_names,
+                ctx.export_offsets * ctx.scale_factor,
+                ctx.export_parents,
+                ctx.export_rest_rotations,
+            )
     elif not skeleton_only and restore_space == "hml":
         from utils.roundtrip_common import build_skeleton
 
@@ -372,6 +405,12 @@ def restore_glb(
             ctx.export_offsets,
             ctx.export_parents,
             ctx.export_rest_rotations,
+        )
+        export_anim = invert_preprocess_transform(
+            export_anim,
+            scale_factor=ctx.scale_factor,
+            root_translation_xz=None,
+            orientation_quat=ctx.orientation_quat,
         )
 
     joint_rotations, root_translation, root_rotation, bone_translations = (
@@ -502,7 +541,7 @@ def main() -> None:
         help=(
             "Allowed bone-length elasticity ratio for IK.  Each edge may "
             f"stretch/compress by ±stretch_factor (default: {DEFAULT_IK_STRETCH_FACTOR}, "
-            "i.e. ±10 %).  Only effective when --fullbody-ik is enabled."
+            "i.e. ±10 %%).  Only effective when --fullbody-ik is enabled."
         ),
     )
     parser.add_argument(

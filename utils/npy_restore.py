@@ -47,6 +47,7 @@ from motion_lib.Quaternions import Quaternions
 from utils.fullbody_ik import (
     DEFAULT_IK_STRETCH_FACTOR,
     rebuild_fullbody_animation_with_ik,
+    trunk_joint_indices,
 )
 from utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_np
 from utils.roundtrip_common import build_skeleton, identity_rest_rotations
@@ -89,6 +90,9 @@ class RestoreSkeletonContext:
     export_rest_rotations: np.ndarray
     export_offsets_space: str = "hml"
     mesh_bone_names: Optional[list[str]] = None
+    # cond's contact joints and side labels: they locate the trunk full-body IK leaves alone
+    contact_joints: Optional[list[int]] = None
+    joint_side_labels: Optional[list[str]] = None
 
     @property
     def joint_count(self) -> int:
@@ -120,6 +124,15 @@ def _check_feature_joint_count(feature_joint_count: Optional[int], joint_names: 
             f"NPY has J={feature_joint_count} joints but cond.npy has "
             f"{len(joint_names)} joints for '{object_type}'."
         )
+
+
+def _trunk_fields(cond_entry: dict) -> dict:
+    contacts = cond_entry.get("contact_joints")
+    sides = cond_entry.get("joint_side_labels")
+    return {
+        "contact_joints": [int(j) for j in contacts] if contacts is not None else None,
+        "joint_side_labels": [str(s) for s in sides] if sides is not None else None,
+    }
 
 
 def build_skeleton_only_context(
@@ -163,6 +176,7 @@ def build_skeleton_only_context(
         export_rest_rotations=identity_rest.copy(),
         export_offsets_space="hml",
         mesh_bone_names=None,
+        **_trunk_fields(cond_entry),
     )
 
 
@@ -349,6 +363,7 @@ def build_mesh_restore_context(
         export_rest_rotations=np.asarray(export_rest_rotations, dtype=np.float32),
         export_offsets_space="native",
         mesh_bone_names=list(tpose_meta["raw_joint_names"]),
+        **_trunk_fields(cond_entry),
     )
 
 
@@ -570,12 +585,20 @@ def restore_animation_from_features(
     ik_error = None
     if fullbody_ik:
         _log(log, f"Full-body IK reconstruction on export skeleton (stretch_factor={stretch_factor:.2f})...")
+        # The trunk keeps the decoded pose, local translations included: a rigid trunk
+        # cannot follow a back that bends where limbs branch off it, and the miss would
+        # carry every limb off its target.  Each limb starts from its decoded attachment
+        # point and is rebuilt rigidly from there, where mesh deformation shows.
+        export_parents = np.asarray(ctx.export_parents, dtype=np.int32)
+        trunk = trunk_joint_indices(export_parents, ctx.joint_side_labels, ctx.contact_joints)
+        kept_rotations = sorted({translation_root_index, *trunk.tolist()})
+        attachments = np.flatnonzero(np.isin(export_parents, kept_rotations)).tolist()
         export_anim, ik_mean_error, ik_max_error = rebuild_fullbody_animation_with_ik(
             export_anim,
             rigid_offsets=export_offsets,
-            rigid_parents=np.asarray(ctx.export_parents, dtype=np.int32),
-            preserved_position_indices=[translation_root_index],
-            preserved_rotation_indices=[translation_root_index],
+            rigid_parents=export_parents,
+            preserved_position_indices=sorted({*kept_rotations, *attachments}),
+            preserved_rotation_indices=kept_rotations,
             stretch_factor=stretch_factor,
         )
         ik_error = (float(ik_mean_error), float(ik_max_error))
@@ -586,8 +609,8 @@ def restore_animation_from_features(
         )
         _log(
             log,
-            "Preserving translation-root local pose during IK: "
-            f"{ctx.export_joint_names[translation_root_index]} (index {translation_root_index})",
+            "Preserving the decoded trunk pose during IK: "
+            + ", ".join(ctx.export_joint_names[j] for j in kept_rotations),
         )
 
     # ── Resample in time (optional) ───────────────────────────────────────

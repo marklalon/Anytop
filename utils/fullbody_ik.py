@@ -422,6 +422,35 @@ def apply_bone_stretch_correction(
         animation.positions[:, j] *= ratio
 
 
+def trunk_joint_indices(
+    parents: np.ndarray,
+    side_labels: list[str] | None,
+    contact_joints: list[int] | np.ndarray | None,
+) -> np.ndarray:
+    """Joints between the root and the limbs that carry the contact joints.
+
+    A sided contact joint's limb starts at the top of its run of same-side
+    joints (the thigh, the clavicle); a centre-line contact joint is its own
+    limb root.  The trunk is every proper ancestor of a limb root.  Empty when
+    the skeleton has no contact joints or no side labels.
+    """
+    parents = np.asarray(parents, dtype=np.int64)
+    if side_labels is None or contact_joints is None or len(contact_joints) == 0:
+        return np.zeros(0, dtype=np.int32)
+    sides = [str(side) for side in side_labels]
+    trunk: set[int] = set()
+    for joint in np.asarray(contact_joints, dtype=np.int64).reshape(-1):
+        root = int(joint)
+        if sides[root] != "center":
+            while parents[root] >= 0 and sides[int(parents[root])] == sides[root]:
+                root = int(parents[root])
+        ancestor = int(parents[root])
+        while ancestor >= 0:
+            trunk.add(ancestor)
+            ancestor = int(parents[ancestor])
+    return np.asarray(sorted(trunk), dtype=np.int32)
+
+
 def run_basic_inverse_kinematics_with_constraints(
     animation: Animation,
     target_global_positions: np.ndarray,
