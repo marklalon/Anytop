@@ -2,31 +2,34 @@
 Augmented Training Motion Sampler — BVH Preview Export
 
 Randomly samples N motions from the training dataset and exports them as BVH files
-for manual verification. Every augmentation that the model sees during training is
-applied faithfully in the same order as dataset.py:
+for manual verification. Required --mode enables exactly one augmentation with
+probability 100%; other augmentations are disabled:
 
-  0. motion speed      — the clip is first time-scaled (played faster / slower
-      at the same fps) when --motion-speed-aug > 1; everything below then sees
-      the scaled clip as an ordinary source clip
-  1. random crop       — random start offset when clip > num_frames
-  2. loop simulation   — loop motions are repeated/resampled to num_frames,
-      with random phase offset and multi-cycle phase metadata
+  loop          — loop closing-key removal, phase roll and tiling, using only
+                  loop clips and respecting training's phase-anchored labels
+  motion-speed  — time scaling with range --motion-speed-aug (default: 1.3,
+                  matching train_all.bat; 1.0 disables random speed changes)
+  leaf-drop     — remove eligible leaf joints and export the reduced skeleton
+
+All modes keep training's automatic speed fitting for phase-anchored actions,
+capped by MAX_FIT_SPEEDUP. Clips still above the source-length budget are randomly
+cropped, followed by the normal model-window resampling.
 
 Exported filenames encode the applied augmentations, e.g.:
-  Horse_Gallop__loop7x+spd1.13.bvh
+  Horse_Gallop__loop+loop7x+roll12.bvh
+  Horse_Gallop__motion-speed+spd1.130.bvh
 
-By default the exported BVH is the 60-frame model window itself, i.e. it plays
-at the window's compressed tempo. Pass --real-time to stretch it back to
-resample_speed_cond * num_frames frames -- what sample/generate.py does with
-its output -- so the BVH plays at the tempo the model is actually modelling.
-The speed augmentation is only visible this way: the window CONTENT of a
-time-scaled clip is the same as the original's, only its resample_speed
-(and the velocity channels) differ.
+By default every mode exports at the real 30 fps tempo by stretching the window
+back to resample_speed_cond * num_frames frames, as sample/generate.py does.
+Pass --no-real-time to export the model window itself at its compressed tempo.
+Real-time export makes speed changes visible: the window content of a time-scaled
+clip is the same as the original's; its resample_speed and velocity channels differ.
 
 Usage
 -----
     # From inside the Anytop/ directory:
     python tools/sample_augmented_bvh.py \\
+        --mode loop \\
         --n 10 \\
         --num-frames 60 \\
         --objects-subset quadropeds_test \\
@@ -34,18 +37,15 @@ Usage
 
 Arguments
 ---------
+  --mode              Required: loop / motion-speed / leaf-drop (one only)
   --n                 Number of samples to export  (default: 10)
   --num-frames        Window length in frames, must match --num_frames in training (default: 60)
-  --loop-only         Sample only motions marked as loop clips
-  --loop-cond-prob    Probability that a loop clip is told it is one (default: 1.0 = always)
-  --motion-speed-aug  Motion-speed augmentation range R, log-uniform in [1/R, R] (default: 1.0 = off)
-  --motion-speed-aug-prob  Per-clip probability of applying it (default: 1.0)
+  --motion-speed-aug  Speed range R >= 1, log-uniform in [1/R, R] (default: 1.3)
   --loop-tile-single-prob  Floor on P(loop tile count == 1) (default: 0.5; 0.0 = uniform)
-  --real-time         Export at resample_speed_cond * num-frames frames (real 30 fps tempo)
+  --no-real-time      Export the model window instead of the default real 30 fps tempo
   --objects-subset    Subset name or single species name (default: "all")
-  --action-group      Single action group to keep: locomotion | stationary | transition (default: "" = all)
-  --split             train / test / all (default: "train")
-  --seed              RNG seed for reproducibility (default: 0)
+  --split             train / test / all (default: "all")
+  --seed              RNG seed for reproducibility (default: 1234)
   --dataset-dir       Dataset root (auto-detected if omitted)
   --output-dir        Where to write BVH files (default: ./augmented_bvh_samples)
 """
@@ -89,12 +89,39 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
 )
-from model.joint_mask_utils import sample_subtree_joint_mask
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+class PreviewMotionDataset(MotionDataset):
+    """Isolate preview augmentations without changing training behavior."""
+
+    def _prepare_sample(self, name, data, **kwargs):
+        if self.opt.preview_mode != "loop":
+            # loop_cond_prob=0 only hides the condition; it still rolls/tiles.
+            data = dict(data)
+            data["motion_metadata"] = dict(data["motion_metadata"], is_loop=False)
+        return super()._prepare_sample(name, data, **kwargs)
+
+    def _sample_motion_speed_target_length(
+        self, length, is_loop, max_source_length, *, fit_budget=False,
+    ):
+        if self.opt.preview_mode != "motion-speed" or self.opt.motion_speed_aug == 1.0:
+            # The training sampler keeps deterministic fitting even when
+            # random speed augmentation is disabled (R=1 or probability=0).
+            return super()._sample_motion_speed_target_length(
+                length, is_loop, max_source_length, fit_budget=fit_budget,
+            )
+        for _ in range(32):
+            target_length = super()._sample_motion_speed_target_length(
+                length, is_loop, max_source_length, fit_budget=fit_budget,
+            )
+            if target_length != length:
+                return target_length
+        raise ValueError("Speed range cannot produce a changed frame count for this clip.")
+
 
 def _build_cond_dict(opt, objects_subset: str) -> dict:
     """Load cond.npy and prepare static canonical metadata.
@@ -119,8 +146,7 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
         n_joints = np.asarray(cond["parents"]).shape[0]
         if "joints_names_embs" not in cond:
             cond["joints_names_embs"] = np.zeros((n_joints, 768), dtype=np.float32)
-
-        # Precompute joint_mask_candidate_roots for subtree masking export
+        # Required sample metadata even though this tool does not mask joints.
         cond["joint_mask_candidate_roots"] = _build_joint_mask_candidate_roots(cond)
 
     return cond_dict
@@ -149,34 +175,34 @@ def _export_bvh(
 # Main
 # ---------------------------------------------------------------------------
 
+class _SingleMode(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            raise argparse.ArgumentError(self, "--mode may only be specified once")
+        setattr(namespace, self.dest, values)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Export augmented training motions as BVH files for manual verification."
     )
+    p.add_argument("--mode", required=True, action=_SingleMode,
+                   choices=("loop", "motion-speed", "leaf-drop"),
+                   help="Preview exactly one augmentation, enabled with probability 100%%.")
     p.add_argument("--n", type=int, default=10, help="Number of samples to export.")
     p.add_argument("--num-frames", type=int, default=60,
                    help="Temporal window length in frames (must match --num_frames in training).")
-    p.add_argument("--loop-only", action="store_true",
-                   help="Only sample/export motions whose metadata marks them as loop clips.")
-    p.add_argument("--loop-cond-prob", type=float, default=1.0,
-                   help="Probability that a loop clip is told it is one. Match --loop_cond_prob.")
-    p.add_argument("--motion-speed-aug", type=float, default=1.0,
-                   help="Motion-speed augmentation range R (1.0 = off). Match --motion_speed_aug.")
-    p.add_argument("--motion-speed-aug-prob", type=float, default=1.0,
-                   help="Per-clip probability of applying the motion-speed augmentation. Match --motion_speed_aug_prob.")
     p.add_argument("--loop-tile-single-prob", type=float, default=0.5,
                    help="Floor on the probability that a loop window holds one cycle. Match --loop_tile_single_prob.")
-    p.add_argument("--real-time", action="store_true",
-                   help="Stretch the exported window back to resample_speed_cond * num-frames frames, as "
-                        "sample/generate.py does with its output, so the BVH plays at the real 30 fps tempo. "
-                        "Without it the BVH is the compressed model window and a time-scaled clip looks "
-                        "identical to the original.")
+    p.add_argument("--motion-speed-aug", type=float, default=1.3,
+                   help="Speed range R >= 1, log-uniform in [1/R, R]; default: 1.3, matching "
+                        "train_all.bat (1.0 disables random speed changes). Used only in motion-speed mode.")
+    p.add_argument("--no-real-time", dest="real_time", action="store_false", default=True,
+                   help="Export the model window at its compressed tempo. By default all modes export "
+                        "at the real 30 fps tempo (resample_speed_cond * num-frames frames).")
     p.add_argument("--objects-subset", default="all",
                    help="Predefined subset name or single species (e.g. 'quadropeds_test', 'Horse').")
-    p.add_argument("--action-group", default="",
-                   choices=["", "all", "locomotion", "stationary", "transition"],
-                   help="Single action group to keep (e.g. 'locomotion'); '' or 'all' keeps every clip.")
-    p.add_argument("--split", default="train",
+    p.add_argument("--split", default="all",
                    help="Dataset split: train / test / all.")
     p.add_argument("--seed", type=int, default=1234,
                    help="RNG seed for reproducible sampling.")
@@ -187,13 +213,25 @@ def parse_args() -> argparse.Namespace:
                    help="Processed dataset root (auto-detected if omitted).")
     p.add_argument("--output-dir", default="outputs/augmented_bvh_samples",
                    help="Directory to write BVH files.")
-    p.add_argument("--joint-mask-prob", type=float, default=1.0,
-                   help="Probability of exporting a masked counterpart for each sampled clip (0 = disabled). "
-                        "Matches --joint_mask_prob in training. (default: 1.0)")
-    p.add_argument("--joint-mask-budget", type=float, default=0.15,
-                   help="Maximum fraction of non-root joints in each masked export. "
-                        "Matches --joint_mask_budget in training. (default: 0.15)")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.mode == "motion-speed" and (
+        not np.isfinite(args.motion_speed_aug) or args.motion_speed_aug < 1.0
+    ):
+        p.error("--motion-speed-aug must be finite and >= 1 in motion-speed mode")
+    if not 0.0 <= args.loop_tile_single_prob <= 1.0:
+        p.error("--loop-tile-single-prob must be in [0, 1]")
+    if args.n <= 0 or args.num_frames <= 0:
+        p.error("--n and --num-frames must be positive")
+    return args
+
+
+class _AugmentationNotApplicable(Exception):
+    """The requested augmentation could not be applied to a clip.
+
+    This is a property of the clip (e.g. no droppable leaf joints, or a speed
+    draw that rounded back to the original length), not a tool error, so it is
+    reported as a skip rather than a failure.
+    """
 
 
 def main() -> int:
@@ -220,12 +258,13 @@ def main() -> int:
     if not cond_path and args.dataset_dir:
         cond_path = str(Path(args.dataset_dir).resolve() / "cond.npy")
     opt = get_opt(device, cond_path)
-    source = opt.sources[0]
 
     # Augmentation settings
-    opt.loop_cond_prob = args.loop_cond_prob
-    opt.motion_speed_aug = args.motion_speed_aug
-    opt.motion_speed_aug_prob = args.motion_speed_aug_prob
+    opt.preview_mode = args.mode
+    opt.loop_cond_prob = 1.0
+    opt.motion_speed_aug = args.motion_speed_aug if args.mode == "motion-speed" else 1.0
+    opt.motion_speed_aug_prob = 1.0 if args.mode == "motion-speed" else 0.0
+    opt.leaf_drop_prob = 1.0 if args.mode == "leaf-drop" else 0.0
     opt.loop_tile_single_prob = args.loop_tile_single_prob
     opt.motion_cache_size = 0  # no cache needed for sampling
 
@@ -245,14 +284,14 @@ def main() -> int:
     allowed_motion_names = load_allowed_motion_names_per_source(
         args.split,
         opt.sources,
-        args.action_group,
+        "",
         motion_metadata_lookup,
     )
     eligible = sum(len(names) for names in allowed_motion_names.values())
     print(f"[INFO] Eligible motions in split '{args.split}': {eligible} "
           f"across {len(allowed_motion_names)} dataset source(s)")
 
-    dataset = MotionDataset(
+    dataset = PreviewMotionDataset(
         opt=opt,
         cond_dict=cond_dict,
         num_frames=args.num_frames,
@@ -263,22 +302,22 @@ def main() -> int:
     print(f"[INFO] Dataset size (after min-length filter): {len(dataset)} motions")
 
     if len(dataset) == 0:
-        print("[ERROR] No motions available after filtering. Check subset / split / action-group.")
+        print("[ERROR] No motions available after filtering. Check subset / split.")
         return 1
 
     candidate_names = list(dataset.name_list)
-    if args.loop_only:
+    if args.mode == "loop":
         candidate_names = [
             name for name in candidate_names
             if bool(dataset.data_dict[name].get("motion_metadata", {}).get("is_loop", False))
         ]
         print(f"[INFO] Loop-only candidates: {len(candidate_names)}")
         if not candidate_names:
-            print("[ERROR] No loop motions available after filtering. Check subset / split / action-group.")
+            print("[ERROR] No loop motions available after filtering. Check subset / split.")
             return 1
 
     # -----------------------------------------------------------------------
-    # Sample N names (with replacement if N > dataset size)
+    # Sample distinct names, capped at the candidate count.
     # -----------------------------------------------------------------------
     n = min(args.n, len(candidate_names))
     if args.n > len(candidate_names):
@@ -293,6 +332,7 @@ def main() -> int:
     # -----------------------------------------------------------------------
     exported = 0
     failed = 0
+    skipped = 0
     multi_source = len(opt.sources) > 1
 
     for idx, name in enumerate(sampled_names):
@@ -302,7 +342,7 @@ def main() -> int:
             # _prepare_sample applies augmentations and returns canonical motion.
             (
                 motion_canonical,  # (num_frames, J, 12) canonical model space
-                m_length,     # actual frames (before padding)
+                m_length,     # prepared-motion frame count; _prepare_sample resamples to num_frames, so the [:m_length] slice is the whole array
                 parents,
                 rest_pose,
                 offsets,
@@ -317,12 +357,20 @@ def main() -> int:
                 aug_info,     # dict: loop_applied, resample_speed_cond, ...
             ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 
+            object_cond = aug_info["object_cond"]
+            leaf_drop_count = int(aug_info.get("leaf_drop_count", 0))
+            if args.mode == "leaf-drop" and leaf_drop_count == 0:
+                raise _AugmentationNotApplicable("No eligible leaf joints to drop.")
+            if (args.mode == "motion-speed" and args.motion_speed_aug > 1.0
+                    and float(aug_info["motion_speed_applied"]) == 1.0):
+                raise _AugmentationNotApplicable("Speed draw rounded to the original length.")
+
             # ----------------------------------------------------------------
             # Decode canonical model-space features back to physical HML-like features.
             # ----------------------------------------------------------------
             motion_raw = canonical_to_physical_hml(
                 motion_canonical[:m_length],
-                cond_dict[object_type],
+                object_cond,
             ).astype(np.float32)
             export_frames = int(motion_raw.shape[0])
             if args.real_time:
@@ -343,9 +391,9 @@ def main() -> int:
             # the preprocessing pipeline.
             # ----------------------------------------------------------------
             joints_names = list(
-                cond_dict[object_type].get(
+                object_cond.get(
                     "canonical_bvh_joint_names",
-                    cond_dict[object_type].get("joints_names", []),
+                    object_cond.get("joints_names", []),
                 )
             )
             n_joints = np.asarray(parents).shape[0]
@@ -361,7 +409,7 @@ def main() -> int:
             # flattened in, since the bare filename repeats across datasets.
             clip_label = name if multi_source else name.rpartition("/")[2]
             stem = Path(clip_label.replace("/", "_")).stem
-            tags: list[str] = []
+            tags: list[str] = [args.mode]
             source_metadata = dataset.data_dict[name].get("motion_metadata", {})
             source_length = int(dataset.data_dict[name].get("length", motion_canonical.shape[0]))
             is_source_loop = bool(source_metadata.get("is_loop", False))
@@ -370,11 +418,13 @@ def main() -> int:
             # aug_info contains actual augmentation results (not just parameters)
             if aug_info.get("loop_applied"):
                 tags.append(f"loop{loop_tile_count}x")
-            elif is_source_loop:
-                tags.append("loopuncond")
+            if args.mode == "loop":
+                tags.append(f"roll{int(aug_info.get('loop_phase_offset', 0))}")
             motion_speed_applied = float(aug_info.get("motion_speed_applied", 1.0))
-            if motion_speed_applied != 1.0:
-                tags.append(f"spd{motion_speed_applied:.2f}")
+            if args.mode == "motion-speed":
+                tags.append(f"spd{motion_speed_applied:.3f}")
+            if leaf_drop_count:
+                tags.append(f"drop{leaf_drop_count}j")
 
             fname = f"{stem}__{'+'.join(tags)}.bvh"
             save_path = output_dir / fname
@@ -383,7 +433,7 @@ def main() -> int:
                 save_path,
                 motion_raw,
                 joints_names,
-                cond_dict[object_type],
+                object_cond,
             )
             if ok:
                 loop_note = ""
@@ -395,60 +445,19 @@ def main() -> int:
                         f", source={source_length}f"
                     )
                 speed_note = ""
-                if motion_speed_applied != 1.0:
+                if args.mode == "motion-speed":
                     speed_note = f", speed={motion_speed_applied:.3f}"
+                if leaf_drop_count:
+                    speed_note += f", dropped={leaf_drop_count}j, kept={n_joints}j"
                 print(f"OK  → {save_path.name}  [{export_frames}f, {object_type}{loop_note}{speed_note}]")
                 exported += 1
             else:
                 print("FAIL (BVH export failed)")
                 failed += 1
 
-            # ----------------------------------------------------------------
-            # Subtree joint mask export (if enabled)
-            # ----------------------------------------------------------------
-            if args.joint_mask_prob > 0.0 and args.joint_mask_budget > 0.0:
-                mask_rng = np.random.default_rng(args.seed + idx)
-                if args.joint_mask_prob >= 1.0 or float(mask_rng.random()) < args.joint_mask_prob:
-                    mask = sample_subtree_joint_mask(
-                        parents=list(parents),
-                        candidate_root_mask=cond_dict[object_type]["joint_mask_candidate_roots"][: len(parents)],
-                        joint_mask_budget=args.joint_mask_budget,
-                        rng=mask_rng,
-                    )
-                else:
-                    mask = None
-                if mask is not None:
-                    # Apply mask in canonical model space, then decode for BVH export.
-                    motion_masked_canonical = motion_canonical.copy()
-                    motion_masked_canonical[:, mask, :] = 0.0
-                    motion_masked_raw = canonical_to_physical_hml(
-                        motion_masked_canonical[:m_length],
-                        cond_dict[object_type],
-                    ).astype(np.float32)
-                    if export_frames != motion_masked_raw.shape[0]:
-                        motion_masked_raw = resample_motion_features(
-                            motion_masked_raw, export_frames, periodic=bool(aug_info.get("loop_applied")),
-                        )
-
-                    masked_tags = list(tags) + [f"mask{int(round(args.joint_mask_budget * 100))}"]
-                    masked_fname = f"{stem}__{'+'.join(masked_tags)}_masked.bvh"
-                    masked_path = output_dir / masked_fname
-
-                    ok2 = _export_bvh(
-                        masked_path,
-                        motion_masked_raw,
-                        joints_names,
-                        cond_dict[object_type],
-                    )
-                    if ok2:
-                        print(f"     └─ masked  → {masked_path.name}")
-                        exported += 1
-                    else:
-                        print(f"     └─ masked export FAILED")
-                        failed += 1
-                else:
-                    pass
-
+        except _AugmentationNotApplicable as exc:
+            print(f"SKIP  -> {exc}")
+            skipped += 1
         except Exception as exc:
             print(f"ERROR: {exc}")
             failed += 1
@@ -457,9 +466,11 @@ def main() -> int:
     # Summary
     # -----------------------------------------------------------------------
     print(f"[DONE] Exported {exported} files ({n} samples) to: {output_dir}")
+    if skipped:
+        print(f"       {skipped} clip(s) skipped — requested augmentation not applicable.")
     if failed:
         print(f"       {failed} file(s) failed — check error messages above.")
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

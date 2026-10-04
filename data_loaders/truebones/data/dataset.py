@@ -1489,6 +1489,7 @@ class MotionDataset(data.Dataset):
                 'loop_uncond': bool(loop_uncond),
                 'motion_speed_applied': float(motion_speed_applied),
                 'leaf_drop_count': int(leaf_drop_count),
+                'object_cond': cond,  # Exact per-sample skeleton for augmentation previews.
             }
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
