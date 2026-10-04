@@ -12,6 +12,7 @@ from utils.device_transfer import host_to_device
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     JOINT_STRUCT_DIM,
 )
+from data_loaders.truebones.truebones_utils.joint_parts import JOINT_PARTS
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_LABEL_SLOTS,
     HEAD_SLOT_PRIMARY_WEIGHT,
@@ -152,6 +153,15 @@ class AnyTop(nn.Module):
         # decoder layer (TopologyConditioner). Built last in __init__, so the
         # flag does not reorder the other parameters' initialisation.
         self.topology_cond = bool(kargs.get('topology_cond', False))
+        # Auxiliary part / contact heads (JointPartHead): training targets read
+        # off one decoder layer, never a condition. part_head_layer counts the
+        # decoder layers run before the tap; 0 is the middle.
+        self.part_head = bool(kargs.get('part_head', False))
+        self.part_head_layer = int(kargs.get('part_head_layer', 0)) or max(1, self.num_layers // 2)
+        if not 1 <= self.part_head_layer <= self.num_layers:
+            raise ValueError(
+                f"part_head_layer must be in [1, {self.num_layers}], got {self.part_head_layer}"
+            )
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if not 0.0 <= self.joint_mask_budget <= 1.0:
@@ -177,8 +187,7 @@ class AnyTop(nn.Module):
                 f"(got min={self.temporal_span_mask_min_frames}, max={self.temporal_span_mask_max_frames})"
             )
 
-        self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout, species_joint_cond=self.species_joint_cond,
-                                          joint_name_drop_prob=self.joint_name_drop_prob)
+        self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout, species_joint_cond=self.species_joint_cond)
         # Token-type embedding for "this (frame, joint) is being re-drawn",
         # added to the input tokens right after InputProcess so the WHOLE trunk
         # (spatial / temporal attention, FFN, and through them the cross-limb
@@ -309,6 +318,9 @@ class AnyTop(nn.Module):
             TopologyConditioner(self.latent_dim, self.num_layers, self.num_heads)
             if self.topology_cond else None
         )
+        # Built after everything else, so the flag does not reorder the other
+        # parameters' initialisation.
+        self.joint_part_head = JointPartHead(self.latent_dim, len(JOINT_PARTS)) if self.part_head else None
 
     @staticmethod
     def _prepare_unreliable_mask(raw_mask, bs, nframes, njoints, device, dtype):
@@ -1020,11 +1032,17 @@ class AnyTop(nn.Module):
             raw_std, 'canonical_feature_std', batch_size, device, dtype)
         return run_in_fp32(self.canonical_frame_projection, torch.cat([mean, std], dim=-1))
 
-    def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
+    def forward(self, x, timesteps, y=None, train_step=None, return_aux=False, **unused_kwargs):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
+
+        ``return_aux`` (training, a Python constant) also returns a dict with
+        the part head's ``part_logits`` [B, J, C] and ``contact_logit`` [B, J],
+        and the ``joint_name_drop`` [B, J] mask this pass blanked names with.
         """
+        if return_aux and self.joint_part_head is None:
+            raise ValueError("return_aux needs the part head: build the model with part_head=True.")
 
         joints_padding_mask = y['joints_padding_mask'].to(x.device)
         rest_pose = y['rest_pose'].to(x.device).unsqueeze(0)
@@ -1077,13 +1095,15 @@ class AnyTop(nn.Module):
                 "build it from the cond entry via build_joint_struct_features; a batch "
                 "without it comes from a caller that assembles model_kwargs by hand."
             )
+        joint_name_drop = self._sample_joint_name_drop(bs, njoints, x.device)
         topology_adaln = None
         if self.topology_conditioner is None:
-            x = self.input_process(x, rest_pose, y['joints_names_embs'], species_emb_for_joints, joint_valid, y['joint_struct']) # applies linear layer on each frame to convert it to latent dim
+            x = self.input_process(x, rest_pose, y['joints_names_embs'], species_emb_for_joints, joint_valid, y['joint_struct'],
+                                   joint_name_drop=joint_name_drop) # applies linear layer on each frame to convert it to latent dim
         else:
             x, topology_tokens = self.input_process(
                 x, rest_pose, y['joints_names_embs'], species_emb_for_joints, joint_valid,
-                y['joint_struct'], return_topology_tokens=True,
+                y['joint_struct'], return_topology_tokens=True, joint_name_drop=joint_name_drop,
             )
             topology_adaln = run_in_fp32(self.topology_conditioner, topology_tokens, joint_valid)
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
@@ -1120,9 +1140,40 @@ class AnyTop(nn.Module):
             # modulates by the null embedding rather than skipping the head.
             action_adaln_cond=action_label_token if self.action_label_adaln else None,
             topology_adaln=topology_adaln,
+            return_layer=self.part_head_layer if return_aux else None,
         )
+        if return_aux:
+            output, tapped = output
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
-        return output
+        if not return_aux:
+            return output
+        frame_valid = (
+            torch.arange(nframes, device=x.device).unsqueeze(0)
+            < torch.as_tensor(y['lengths'], device=x.device).reshape(-1, 1)
+        )
+        part_logits, contact_logit = self.joint_part_head(tapped, frame_valid)
+        if joint_name_drop is None:
+            joint_name_drop = torch.zeros(bs, njoints, dtype=torch.bool, device=x.device)
+        return output, {
+            'part_logits': part_logits,
+            'contact_logit': contact_logit,
+            'joint_name_drop': joint_name_drop,
+        }
+
+    def _sample_joint_name_drop(self, batch_size, joint_count, device):
+        """Whole-joint name dropout mask, ``[B, J]`` bool, or None when off.
+
+        A per-(sample, joint) Bernoulli at ``joint_name_drop_prob`` in training;
+        InputProcess zeroes the selected name rows, and the part loss reads the
+        same mask (the part is learned only where the name is hidden). Padding
+        rows are zero already, so they need no exclusion. Eval keeps every name.
+
+        Branch-free on tensor values (``torch.rand`` + compare, no ``.any()`` in a
+        python ``if``) so it does not break torch.compile or cudagraph capture.
+        """
+        if (not self.training) or self.joint_name_drop_prob <= 0.0:
+            return None
+        return torch.rand(batch_size, joint_count, device=device) < self.joint_name_drop_prob
 
 
     def _apply(self, fn):
@@ -1137,8 +1188,7 @@ class AnyTop(nn.Module):
 # in the case of GMDM, the input process is as follows:
 # embed each joint of each frame of each motion in batch by the same MLP, separately !
 class InputProcess(nn.Module):
-    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, dropout_prob=0, species_joint_cond=False,
-                 joint_name_drop_prob=0.0):
+    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, dropout_prob=0, species_joint_cond=False):
         super().__init__()
         self.input_feats = input_feats
         self.latent_dim = latent_dim
@@ -1162,7 +1212,8 @@ class InputProcess(nn.Module):
         # carry. Padding never reaches a live joint (the attention mask and the
         # loss both exclude it), so sharing the zero row costs nothing, and it
         # leaves inference a parameter-free way to feed a joint with no name.
-        self.joint_name_drop_prob = float(joint_name_drop_prob)
+        # The mask is drawn by AnyTop (_sample_joint_name_drop), which hands it
+        # to the part loss as well.
         # When --species_joint_cond, the species descriptor FiLM-modulates each
         # per-joint name embedding: gamma/beta are produced from the *concatenation*
         # of that joint's embedding and the species descriptor, so the modulation is
@@ -1190,7 +1241,7 @@ class InputProcess(nn.Module):
             nn.init.zeros_(self.species_film_j[-1].bias)
         self.text_embedding = nn.Linear(text_in_dim, self.latent_dim)
         # Structural channel: the joint's own place in the skeleton (its position
-        # along a branch-free run, whether that run ends on the ground, its height
+        # along a branch-free run, whether it is a leaf, its height
         # and signed lateral offset, its sibling rank) projected into the token
         # alongside the name. Ordinary init, NOT zero: this is meant to carry
         # signal from step one, and it is the only per-joint identity left when
@@ -1201,30 +1252,13 @@ class InputProcess(nn.Module):
             nn.Linear(self.latent_dim, self.latent_dim),
         )
 
-    def _drop_joint_names(self, joints_clean):
-        """Zero whole joint-name rows.
-
-        A per-(sample, joint) Bernoulli at ``joint_name_drop_prob`` blanks the
-        name of a random subset of joints, leaving rest pose and the topology as
-        the other per-joint identity signals. Padding rows are zero already, so
-        they need no exclusion.
-
-        No 1/(1-p) rescale: this hides a whole row rather than thinning a
-        vector, so there is nothing to compensate for. Eval keeps every name.
-
-        Kept branch-free on tensor values (``torch.rand`` + ``masked_fill``, no
-        ``.any()`` in a python ``if``) so it does not break torch.compile or the
-        cudagraph capture the joint/temporal mask samplers were rewritten for.
-        """
-        if (not self.training) or self.joint_name_drop_prob <= 0.0:
-            return joints_clean
-        batch_size, joint_count = joints_clean.shape[0], joints_clean.shape[1]
-        drop = torch.rand(batch_size, joint_count, device=joints_clean.device) < self.joint_name_drop_prob
-        return joints_clean.masked_fill(drop.unsqueeze(-1), 0.0)
-
     def forward(self, x, rest_pose, joints_embedded_names, species_emb=None, joint_valid=None,
-                joint_struct=None, return_topology_tokens=False):
+                joint_struct=None, return_topology_tokens=False, joint_name_drop=None):
         """Embed every (frame, joint); the rest pose becomes frame 0.
+
+        ``joint_name_drop`` ([B, J] bool) zeroes those joints' whole name rows,
+        leaving rest pose and the topology as their identity signals. No
+        1/(1-p) rescale: a hidden row is not a thinned vector.
 
         With ``return_topology_tokens`` also returns the (B, J, d) rest-pose
         token plus structural latent, WITHOUT the joint-name embedding: the
@@ -1252,7 +1286,10 @@ class InputProcess(nn.Module):
         # Whole-joint dropout runs FIRST, so everything downstream -- the elementwise
         # dropout, the FiLM condition, the projection -- sees the zeroed row and
         # the hidden name cannot leak back in through the species pathway.
-        joints_clean = self._drop_joint_names(joints_clean)
+        if joint_name_drop is not None:
+            joints_clean = joints_clean.masked_fill(
+                joint_name_drop.to(joints_clean.device).unsqueeze(-1), 0.0
+            )
         joints_embedded_names = self.joints_names_dropout(joints_clean)
         if self.species_joint_cond:
             if species_emb is None:
@@ -1302,6 +1339,39 @@ class InputProcess(nn.Module):
         if return_topology_tokens:
             return x, topology_tokens
         return x
+
+
+class JointPartHead(nn.Module):
+    """Per-joint body-part logits and ground-contact logit from one decoder layer.
+
+    Each joint is read as its rest token (frame 0) next to the mean of its
+    valid frames, so the head sees the joint's place in the skeleton and how
+    it moves. Computed in fp32: two small MLPs on [B, J] rows.
+    """
+
+    def __init__(self, latent_dim, num_parts):
+        super().__init__()
+        width = 2 * latent_dim
+        self.part_norm = nn.LayerNorm(width)
+        self.part_mlp = nn.Sequential(
+            nn.Linear(width, latent_dim // 2), nn.GELU(), nn.Linear(latent_dim // 2, num_parts),
+        )
+        self.contact_norm = nn.LayerNorm(width)
+        self.contact_mlp = nn.Sequential(
+            nn.Linear(width, latent_dim // 2), nn.GELU(), nn.Linear(latent_dim // 2, 1),
+        )
+
+    def forward(self, tokens, frame_valid):
+        """``tokens`` [T+1, B, J, d] (row 0 the rest token), ``frame_valid`` [B, T]."""
+        with torch.autocast(device_type=tokens.device.type, enabled=False):
+            tokens = tokens.float()
+            weights = frame_valid.t().to(tokens.dtype)                       # [T, B]
+            weights = weights / weights.sum(dim=0, keepdim=True).clamp_min(1.0)
+            motion = (tokens[1:] * weights[:, :, None, None]).sum(dim=0)     # [B, J, d]
+            joint = torch.cat([tokens[0], motion], dim=-1)                  # [B, J, 2d]
+            part_logits = self.part_mlp(self.part_norm(joint))
+            contact_logit = self.contact_mlp(self.contact_norm(joint)).squeeze(-1)
+        return part_logits, contact_logit
 
 
 class OutputProcess(nn.Module):

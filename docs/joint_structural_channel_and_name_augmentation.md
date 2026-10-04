@@ -47,10 +47,9 @@ S 和 T 构成主方案；A 风险更高，单独验证后再启用。
 结构特征只读取：
 
 - `parents`；
-- 物理 rest position，即 `cond['rest_pos_ric_hml']` 或 `cond['rest_pose'][:, :3]`；
-- `contact_joints` 和 `contact_joint_source`。
+- 物理 rest position，即 `cond['rest_pos_ric_hml']` 或 `cond['rest_pose'][:, :3]`。
 
-不能使用传给 `InputProcess` 的 canonical rest token，也不能读取 joint name 文本。
+不能使用传给 `InputProcess` 的 canonical rest token，也不能读取 joint name 文本。接触也不进结构通道：它是辅助头的训练目标（见 `joint_part_annotation_aux_head.md`），作为条件会把答案直接交给模型。
 
 #### 无分叉段
 
@@ -67,7 +66,7 @@ S 和 T 构成主方案；A 风险更高，单独验证后再启用。
 LeftThigh → LeftShin → LeftFoot → LeftToeBase
 ```
 
-#### 每关节 13 维描述子
+#### 每关节 10 维描述子（schema 2）
 
 设关节位于长度为 `L` 的 run 中，第 `k` 个位置从 0 开始；`J` 是骨架关节数。几何尺度定义为：
 
@@ -79,9 +78,6 @@ scale = max(x_span, y_span, z_span, eps)
 |---|---|---|
 | `depth_norm` | `(k + 1) / L` | run 内相对位置 |
 | `run_len_inv` | `1 / L` | 为相对位置提供有界的 run 长度信息 |
-| `run_ends_contact` | run 末端或其直接 child 是否为 contact | 区分落地肢体与非落地肢体 |
-| `is_contact` | 当前关节是否为 contact | 提供落地点身份 |
-| `contact_known` | `contact_joint_source != 'none'` | 区分“不是 contact”和“没有 contact 标注” |
 | `is_leaf` | 当前关节是否无 child | 提供末端身份 |
 | `height_n` | `(y - y_min) / max(y_span, eps)` | 归一化高度 |
 | `lateral_signed` | `(x - x_root) / scale` | 相对 root 的左右位置 |
@@ -294,6 +290,8 @@ cond 于 2026-09-07 20:07 重新生成（schema 14 / slim），`merged_locomotio
 
 ### 翻转后的风险：结构通道的单点依赖与语义可控性
 
+本节和上一节的实验都在 schema 1 上做，当时结构通道还含 `run_ends_contact / is_contact / contact_known` 三个接触通道。
+
 `tools/verify_struct_dependency_risk.py`，6 物种 × 3 seed。所有结构故障都经过**真实的** `build_joint_struct_features` 重建，只替换 `joint_struct` 一路输入。
 
 **A. 结构检测出错时的降级**（dev = 位移偏差 / 骨架尺寸；对照：删掉全部名字 = 0.018–0.049，结构置换上界 = 0.074–0.269）
@@ -329,5 +327,4 @@ cond 于 2026-09-07 20:07 重新生成（schema 14 / slim），`merged_locomotio
 - **A（同义增广）未实现，且按当前证据不建议做。** 它的目标是"降低模型对 canonical 名称点的过拟合"，而 `ood_name` 显示这种过拟合已经基本不存在：整副骨架改名成未登记同义词的代价与删掉全部名字同量级。A 的成本（人工审核的 alias 表 + 侧别安全性 + 新 sidecar 契约）与剩余收益不匹配。若仍要做，最小可行范围是只针对残余的左右名称依赖（Ostrich 0.72、Centipede 0.80），而不是全词表。
 - **第 5.2 节第 5、7 项没有结论。** 需要一个用同一 cond schema 训练的对照 checkpoint，以及事先约定的质量阈值。
 - **结构通道与 rest pose 的一致性没有守卫。** 上面的 `rest_mirror` 说明两者矛盾时输出崩坏（承重骨误差 48.5%）；`build_joint_struct_features` 与 `tpos_joint_embedding` 读的是同一个 cond 字段，所以正常管线难以产生这种矛盾，但 `process_new_skeleton` 之后值得加一条断言。
-- **`_contact_flags` 用 `cond.get('contact_joints') or []` 取值**，传 ndarray 会抛 "truth value of an array is ambiguous"。现在只因为 cond 里存的是 list 才没暴露。
-- **名字的语义控制力已接近零**，文档第 2 节"让文本负责关节是什么身体部位"这一半目标没有达成——身体部位实际上也由结构决定了。若确实需要按语义指定肢体角色，杠杆是 `contact_joints`。
+- **名字的语义控制力已接近零**，文档第 2 节"让文本负责关节是什么身体部位"这一半目标没有达成——身体部位实际上也由结构决定了。schema 2 的结构通道不含接触，按语义指定肢体角色目前没有条件侧的杠杆；部位改由辅助头预测（`joint_part_annotation_aux_head.md`）。

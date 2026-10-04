@@ -83,6 +83,7 @@ from sample.reference_motion import (
     _should_retarget_reference,
     _validate_reference_motion_path,
 )
+from sample.joint_parts_output import write_generation_joint_parts
 from sample.sampling import _sample_batch
 from utils import dist_util
 from utils.fixseed import fixseed
@@ -226,6 +227,11 @@ def _generate_all_species(
                     _bvh_preview_options(args),
                 ))
 
+            # Before the export: a full-body-IK preview of a skeleton without a baked
+    # annotation reads its contacts from it.
+            write_generation_joint_parts(
+                model, sample, model_kwargs, list(batch_species), cond_dict, out_path,
+            )
             for task in tqdm(export_tasks, desc=f'batch {batch_idx} export'):
                 npy_name = _export_motion(task)
                 print(f'    Created: {npy_name}')
@@ -958,6 +964,11 @@ def main(args=None, cond_dict=None, runtime=None):
             preview_options,
         ))
 
+    # Before the export: a full-body-IK preview of a skeleton without a baked
+    # annotation reads its contacts from it.
+    write_generation_joint_parts(
+        model, sample, model_kwargs, obj_batch, cond_dict, out_path,
+    )
     for task in tqdm(export_tasks, desc=f'{object_file_token} export'):
         npy_name = _export_motion(task)
         print(f'    Created motion: {npy_name}')

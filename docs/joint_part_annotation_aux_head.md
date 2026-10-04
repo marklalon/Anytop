@@ -1,9 +1,9 @@
 # 关节部位标注与辅助预测头
 
-> 状态：方案，未实施。
+> 状态：第 1–4 步代码已落地（2026-10-04）；4 个数据集 cond 已烘焙标注（只加了字段，旧接触字段未剥）；完整 cond 重新生成与 merge、全部物种 reviewed、训练（第 5 步）未做。
 > 核心思路：每个关节的「部位 + 接触」由人工核验的标注提供。它只作为训练的辅助预测目标和 loss 的权重来源，不再作为条件喂给模型。模型学会从名字、几何和运动推断部位，生成时把预测结果写进输出目录的 `joint_parts.jsonl`。
-> 数据来源唯一：训练时从 `joint_parts.jsonl` 读，推理时从生成目录的 `joint_parts.jsonl` 读。两处格式相同，npy 本身不带元数据。cond.npy 不再保存任何接触或部位信息。
-> 影响：需要重新生成 cond；模型侧做 joint_struct schema bump 和 CKPT bump，从头重训；生成的 npy 格式不变。
+> 编辑源头唯一：数据集的 `joint_parts.jsonl`。cond.npy 带一份烘焙进去的快照（逐关节部位、接触），训练、checkpoint 和数据集 clip 的读取方都只读 cond；cond 里没有标注的新骨架，读生成目录的 `joint_parts.jsonl`（模型预测）。npy 本身不带元数据。
+> 影响：需要重新生成 cond；模型侧 joint_struct schema 1→2、CKPT 26→27，从头重训；生成的 npy 格式不变。
 
 ## 1. 背景与依据
 
@@ -45,7 +45,7 @@
 |---|---|---|
 | 0 | `trunk` | 骨盆、脊柱、胸腔；蛇、鱼、蠕虫的主体段 |
 | 1 | `neck` | 颈椎链 |
-| 2 | `head` | 头及其附属：下颌、眼、耳、舌、角、喙、触须根 |
+| 2 | `head` | 头及其附属：下颌、眼、耳、舌、角、喙 |
 | 3 | `arm` | 前肢从肩/锁骨到腕之前 |
 | 4 | `hand` | 腕及以下：掌、指、爪 |
 | 5 | `leg` | 后肢从髋到踝之前；多足动物步行足的近端段 |
@@ -53,14 +53,14 @@
 | 7 | `wing` | 整条翼链，包括翼指和受驱动的羽毛骨 |
 | 8 | `tail` | 尾链 |
 | 9 | `fin` | 鳍 |
-| 10 | `soft` | 被动附属物：毛发、鬃、衣物、披风、饰物、被动触手、植物叶片 |
+| 10 | `soft` | 被动附属物：触须（feeler）、毛发、鬃、衣物、披风、饰物、被动触手、植物叶片 |
 | 255 | `helper` | 非解剖节点：包装根、locator、IK target。显示，但不进 loss |
 
 未标注的关节在训练里取 ignore（−1）。`helper` 是一个确定的判断，ignore 表示「还不知道」，两者不同。
 
 ### 2.2 接触位（独立于部位）
 
-`contact ∈ {0, 1}`：正常站立或行走时会着地的关节。语义沿用现有 `contact_joints`，即**整条脚链**（踝、趾、趾尖）。四足动物的前肢 `hand` 链同样可以是 contact。
+`contact ∈ {0, 1}`：正常站立或行走时会着地的关节。名字（embedding 文本）是 Foot / Hand、且下面还有非 helper 子节点的关节不是 contact，着地的是它下面的趾、指；趾、指本身即使还有子节点也可以是 contact。预填取现有 `contact_joints`，再去掉这类 Foot / Hand 关节。四足动物的前肢 `hand` 链同样可以是 contact。
 
 ### 2.3 歧义判定规则（写进 UI 的帮助面板）
 
@@ -76,12 +76,15 @@
 
 | 场景 | 读哪里 | 读取函数 |
 |---|---|---|
-| 预处理、训练 loader、数据集 clip 的还原和评估 | `<processed>/joint_parts.jsonl` | `joint_parts.load_joint_parts(sidecar_dir, species, cond_entry)` → 按关节名绑定到 cond 骨架 |
-| 推理生成的动作（导出、还原、评估、后处理） | 生成输出目录下的 `joint_parts.jsonl` | 同一个函数，`sidecar_dir` = npy 所在目录 |
+| 人工编辑、预填、烘焙 | `<processed>/joint_parts.jsonl` | `read_joint_parts_sidecar` / `bind_joint_parts`（按关节名绑定到 cond 骨架） |
+| 训练 loader、数据集物种的还原 / 评估 / retarget / motion_edit、checkpoint 生成 | cond entry 里烘焙的数组 | `cond_contact_joints(entry)`；部位直接取 `entry['joint_parts']` |
+| cond 里没有标注的骨架（`process_new_skeleton`）生成的动作 | 生成输出目录下的 `joint_parts.jsonl` | `load_joint_parts(sidecar_dir, species, cond_entry)`，`sidecar_dir` = npy 所在目录 |
 
-- **cond.npy 不保存任何接触或部位字段。** 删除 `contact_joints / contact_joint_names / contact_joint_source / end_effector_joints / end_effector_names`，也不新增 `joint_parts`。改了标注不需要重新生成 cond，两边也不会不一致。
-- 训练 loader 在内存中把绑定好的数组挂到样本上，供 leaf_drop 同步删除、bone_length_aug 读取，**永远不回写 cond.npy**。
-- 两种场景用同一个读取函数和同一种格式，只是目录不同。函数放在 `data_loaders/truebones/truebones_utils/joint_parts.py`，不依赖 `motion_edit`、`sample` 或 `tools`。
+- **cond entry 的烘焙字段**：`joint_parts`（int16[J]，helper 为 255）、`joint_contact`（bool[J]）、`joint_parts_reviewed`、`joint_parts_sig`（这一行里 skeleton_sig、reviewed 和各关节 part / contact 的哈希；`src`、`why` 不参与）。存逐关节数组而不是下标列表，leaf_drop 按行切片即可。推断出来的 `contact_joints / contact_joint_names / contact_joint_source / end_effector_joints / end_effector_names` 不再写入。
+- **烘焙**：`tools/regenerate_dataset_artifacts.py` 在写 cond 前烘焙；核验改完行之后用 `--joint-parts-only` 只重烘焙这几个字段（几秒），再 `tools/merge_dataset_cond.py`。没有行或 stale 的物种不带烘焙字段、只打 WARN（新物种要等 cond 写出后才能预填），loader 遇到这种 entry 直接报错。
+- **防漂移**：`validate_anytop_dataset.py` 比对 cond 的 `joint_parts_sig` 和 sidecar 当前那一行，不一致就报错，提示重烘焙并重新 merge。训练本身不读 sidecar。
+- checkpoint 的 `cond.npy` 就带着标注，save_dir 生成时不需要数据集目录，也没有单独的 sidecar 副本；merged cond 的 key 带 namespace，物种跨数据集重名也不冲突。
+- 函数都在 `data_loaders/truebones/truebones_utils/joint_parts.py`，不依赖 `motion_edit`、`sample` 或 `tools`。`has_joint_parts(entry)` 区分「数据集物种」和「新骨架」：后者没有烘焙字段。
 
 ### 3.2 sidecar 格式
 
@@ -122,7 +125,7 @@ python tools/prefill_joint_parts.py --dataset truebones/zoo [--filter A,B] [--dr
    - 挂点高、横向展开大，且物种标记为飞行：`wing`；
    - 物种标记为游泳或漂浮，且分支很短：`fin`；
    - 其余短叶链：`soft`，UI 中标为低置信度。
-5. **接触。** 调用现有的 `infer_contact_joints`，输入和预处理完全相同（原始关节名，以及 cond offsets 重建的 rest 位置），所以初值与今天 cond 里的 `contact_joints` 逐个物种一致（有单测覆盖）。把它从 `physics_joint_annotation.py` 搬进 `joint_parts.py` 要等到第 3 步：在那之前，`build_semantic_metadata` 还在调用它，提前搬会造成循环 import。
+5. **接触。** 调用 `joint_parts.prefill_contacts`（原 `physics_joint_annotation.infer_contact_joints`，先几何后名字，连同私有辅助函数一起搬进 `joint_parts.py`；几何法的候选叶子池是名字带远端肢体词、不带排除词的叶子）。输入是原始关节名和 cond offsets 重建的 rest 位置，再按 2.2 去掉带子节点的 Foot / Hand 关节。
 
 工具输出一份报告：每个物种各类别的计数、几何兜底的关节数。报告按兜底数从多到少排序，作为人工核验的顺序。
 
@@ -183,27 +186,30 @@ T-pose **只从 cond 生成，不读原始 GLB**。cond 里的骨架才是训练
 
 | 位置 | 改动 |
 |---|---|
-| `physics_joint_annotation.infer_contact_joints` 及私有辅助函数、`_infer_end_effector_joints` | 前者搬进 `joint_parts.py`，只作预填用；后者删除 |
-| `features.get_common_features_from_rest_pose`：调用推断、`TPoseFeatures.foot_indices / contact_joint_source` | 删除推断。`foot_indices` 由调用方从 sidecar 解析后传入 |
+| `physics_joint_annotation.infer_contact_joints` 及私有辅助函数、`_infer_end_effector_joints` | 搬进 `joint_parts.py`，公开名 `prefill_contacts`，只作预填和外部 rig 的启发式；末端推断只留下几何法候选叶子池（`_infer_contact_leaf_candidates`），尾、头、附肢的分类删除；`build_semantic_metadata` 不再产出接触和末端 |
+| `features.get_common_features_from_rest_pose`：调用推断、`TPoseFeatures.foot_indices / contact_joint_source` | 删除推断和 `contact_joint_source`；`foot_indices` 改为默认空的字段 |
 | `features.tpose_features_from_cond` | 不再读 `cond['contact_joints']`，改为接收 `contact_joints` 参数 |
 | `dataset_pipeline.py`、`joint_name_canonical.py` 写入 `end_effector_* / contact_*` | 删除，不写入任何替代字段 |
-| `regenerate_dataset_artifacts._recompute_contact_joints` | 删除；改为一个只读检查：每个物种在 sidecar 里都有非 stale 的行 |
+| `regenerate_dataset_artifacts._recompute_contact_joints` | 删除；重建 cond 时剥掉五个接触字段，再从 sidecar 烘焙（3.1）。缺行或 stale 只打 WARN 不报错：完整预处理会调用它，新物种要等它写出 cond 之后才能预填。`--joint-parts-only` 只重烘焙 |
 | [skeleton_metadata.py](../data_loaders/skeleton_metadata.py) | 除自身外没有引用，整文件删除 |
 | `joint_embedding_text._bare_leg_means_calf` 的 `end_effector_joints` 参数 | 删除（函数里本来就有「无子节点」判断）。删完对全体 embedding 文本跑 diff，有任何变化就 bump 名字 schema |
-| `leaf_drop` | `_INDEX_LIST_KEYS` 删掉 `contact_* / end_effector_*`；改为同步删除 loader 挂上来的 `joint_parts / joint_contact` 数组，`_protected_joints` 改读这两个数组 |
-| `build_joint_name_inspection_rows` | `is_contact / is_end_effector` 改为从 sidecar 读 `part / contact` |
-| `validate_anytop_dataset.py:134`、`precheck_dataset.py` | 改为校验 sidecar：覆盖全部物种、无 stale、取值合法、contact ⊂ 非 helper；未 reviewed 给 WARN |
+| `leaf_drop` | `_INDEX_LIST_KEYS` 删掉 `contact_* / end_effector_*`；改为同步切片烘焙的 `joint_parts / joint_contact` 数组，`_protected_joints` 改读 `joint_contact` |
+| `build_joint_name_inspection_rows` | `is_contact / is_end_effector` 改为从 sidecar 读 `part / is_contact` |
+| `validate_anytop_dataset.py` | 每个物种都有烘焙字段、形状对得上骨架、`joint_parts_sig` 与 sidecar 当前行一致；未 reviewed 给 WARN；cond 里残留推断接触字段报错 |
+| `precheck_dataset.py` | 它跑在原始数据上、cond 还不存在，没有 sidecar 可校验；接触覆盖检查改为检查 `prefill_contacts` 的预填结果 |
 
 ### 5.2 其余读取方改走唯一来源
 
 | 读取方 | 场景 | 来源 |
 |---|---|---|
-| `bone_length_aug`（肢体分组、高度补偿） | 训练 loader | loader 挂上来的数组（来自 sidecar） |
-| `eval/motion_quality/scorer.py`（limb mask） | 数据集 clip / 生成结果 | 数据集 sidecar / 生成目录 sidecar |
-| `utils/npy_restore.py`（`_trunk_fields`） | 数据集 clip / 生成结果 | 数据集 sidecar / 生成目录 sidecar；`ctx.contact_joints` 由调用方传入，不再读 cond_entry |
-| `utils/exporter._ground_root_on_lowest_contacts` | 生成结果导出 | 生成目录 sidecar；**外部 rig** 用 `joint_parts.prefill_contacts` 启发式 |
-| `utils/retarget_pipeline.py`（`bake_foot_floor_offset`、源骨架接触） | 目标是数据集物种时读 sidecar；源骨架或外部 rig 用启发式 | 同左 |
-| 预处理中需要接触的步骤 | 构建数据集 | sidecar；**缺少行就直接报错**，提示先运行 `prefill_joint_parts.py` |
+| `bone_length_aug`（肢体分组、高度补偿） | 训练 loader | cond 烘焙的 `joint_contact` |
+| `eval/motion_quality/scorer.py`（limb mask） | 数据集 clip / 生成结果 | entry 有烘焙字段就读 cond；没有的（`register_cond(cond, joint_parts_dir=生成目录)` 注册的新骨架）读生成目录 sidecar |
+| `utils/npy_restore.py`（`_trunk_fields`） | 数据集 clip / 生成结果 | `contact_joints` 由调用方传入；只有 full-body IK 需要，缺了就报错。`motion_contact_joints(npy_path, entry)`：entry 有烘焙字段就读 cond，否则读 npy 旁边的 sidecar |
+| `utils/exporter._ground_root_on_lowest_contacts` | 原生 GLB retarget 导出 | 目标是外部 rig，用 `prefill_contacts` 启发式 |
+| `utils/retarget_pipeline.py`（`bake_foot_floor_offset`） | 目标骨架 | `retarget_target_contacts(entry)`：有烘焙字段读 cond；数据集外的骨架（`process_new_skeleton`）用启发式。源骨架接触没有读取方，已删除 |
+| `tools/prefill_direction_words.py`（支撑脚朝向） | 数据集 clip | cond 烘焙字段 |
+| `motion_edit`（`profile.data.load_cond`、`decompose_clip --cond`） | 数据集 clip / 生成结果 | cond 烘焙字段；`decompose_clip --cond` 给的 entry 没有烘焙字段时读 npy 旁边的 sidecar。package 的 cond 子集带 `joint_contact`；redecompose 用 package 里记录的接触集。motion_edit 自身逻辑未改 |
+| 预处理中需要接触的步骤 | 构建数据集 | cond 烘焙字段；**没有就直接报错**，提示先预填、核验、重烘焙 |
 
 `process_new_skeleton`（推理时的新骨架）不需要标注：部位和接触由模型预测，写进生成目录的 `joint_parts.jsonl`（第 6.4 节）。
 
@@ -222,7 +228,7 @@ T-pose **只从 cond 生成，不读原始 GLB**。cond 里的骨架才是训练
 - `y['joint_contact_target']`：`float[J_max]`；
 - `y['joint_contact_valid']`：`bool[J_max]`。
 
-**名字置零 mask 外置**：现在 `_drop_joint_names` 在 `InputProcess` 内部抽样。改为在 `AnyTop.forward` 入口抽样得到 `y['joint_name_drop']`（`bool[B, J]`），`InputProcess` 只负责应用。抽样分布不变；采样时 mask 全为 False，键依然存在。
+**名字置零 mask 外置**：`AnyTop._sample_joint_name_drop` 抽样得到 `joint_name_drop`（`bool[B, J]`），`InputProcess(..., joint_name_drop=...)` 只负责应用。抽样点就在调用 `InputProcess` 之前，和原来在 `InputProcess` 内部抽样的 RNG 顺序相同；eval 或概率为 0 时是 None。mask 不写回 `y`，由 `return_aux` 的返回值交给 loss。
 
 **预测头**（`model/anytop.py`）：
 
@@ -233,8 +239,10 @@ part_logits   = MLP_part(LN(z))      [B, J, C]   # d→d/2→C，GELU
 contact_logit = MLP_contact(LN(z))   [B, J]
 ```
 
-- 两个头合计约 0.2M 参数，fp32 计算。decoder 加一个可选参数 `return_layer=k`，前向时把该层输出顺手保存下来，不额外做一次前向。
-- `AnyTop.forward(..., return_aux: bool = False)`：默认只返回 x0，采样路径不用改；训练时传 `True`，返回 `(x0, part_logits, contact_logit)`。`return_aux` 是 Python 常量，只会多出一张 compile 图。
+- `JointPartHead`，两个头合计约 0.3M 参数（latent 384），fp32 计算。decoder 加一个可选参数 `return_layer=k`，前向时把前 k 层之后的输出顺手保存下来，不额外做一次前向。`--part_head_layer k`，0 表示 `max(1, layers // 2)`。
+- `--lambda_part` 或 `--lambda_contact` 非零才建头（`part_head=True`），否则 state_dict 不多任何键。
+- `AnyTop.forward(..., return_aux: bool = False)`：默认只返回 x0，采样路径不用改；训练时传 `True`，返回 `(x0, {'part_logits', 'contact_logit', 'joint_name_drop'})`。`return_aux` 是 Python 常量：用 dynamo 计数，False / True 各一张图、无 graph break，训练只用 True 一张。
+- 已核对：同一组权重下，`return_aux=False` 的输出与改动前的模型逐位一致（eval 和带 dropout、名字置零的 train 模式都是），挂上头并 `return_aux=True` 时 x0 也逐位一致。
 
 **loss**（`gaussian_diffusion.training_losses`）：
 
@@ -246,27 +254,29 @@ loss      += lambda_part * L_part + lambda_contact * L_contact
 ```
 
 - 部位 loss 只看被置零名字的关节（约束 1）；接触 loss 看全部关节，因为接触不能从名字读出。
-- 类别权重在启动时由训练集统计一次，写进 args.json。
+- 类别权重在启动时由训练集统计一次（`MotionDataset.joint_part_counts`：每个 clip 计一次其物种的非 helper 关节，`part_class_weights` 取频率的 −1/2 次方并归一到期望为 1），写进 args.json 的 `part_class_weights`。
 - 不随 t 加权：rest token 不加噪，探针里 t=0 和 t=50 只差约 1 个点。
 
 ### 6.3 版本与兼容
 
-- joint_struct schema 从 1 改为 2，加上新参数，一起做 CKPT bump。旧 checkpoint 直接拒绝，不做 warm start。
-- `args.json` 记录 `joint_part_schema_version`，resume 和生成时校验。
-- cond 需要重新生成（删除字段）；motions 不需要重新预处理。
+- joint_struct schema 从 1 改为 2（删掉 `run_ends_contact / is_contact / contact_known`，维度 13→10），CKPT_VERSION 从 26 改为 27。旧 checkpoint 直接拒绝，不做 warm start。
+- `args.json` 记录 `joint_part_schema_version`（和另外两个 joint 条件 schema 一起由 `joint_condition_schema_versions` 盖章），resume 和生成时校验。
+- 训练启动时复制到 save_dir 的 `cond.npy` 已带烘焙标注，不另存 sidecar。
+- cond 需要重新生成（删除推断接触字段、烘焙标注）；motions 不需要重新预处理。
 
 ### 6.4 推理输出：生成目录下的 joint_parts.jsonl
 
-生成的 `.npy` **格式不变**，仍然是裸特征数组（`sample/export.py:73`）。部位信息和数据集一样放在旁边的 sidecar 里：生成时在输出目录写一个 `joint_parts.jsonl`，格式与 3.2 相同，每个骨架一行，同一骨架的所有 npy 共用这一行。
+生成的 `.npy` **格式不变**，仍然是裸特征数组（`sample/export.py:73`）。数据集物种的部位在 cond 里，读取方直接用；cond 里没有标注的新骨架，部位放在旁边的 sidecar 里：生成时在输出目录写一个 `joint_parts.jsonl`，格式与 3.2 相同，每个骨架一行，同一骨架的所有 npy 共用这一行。
 
-- 读取方已经能从文件名加 cond 解析出物种（`infer_object_type_from_filename` / `resolve_species_key`），拿到物种名后，就到 npy 所在目录的 `joint_parts.jsonl` 里查这一行。数据集 clip 用的是同一个函数 `joint_parts.load_joint_parts(sidecar_dir, species, cond_entry)`，只是 `sidecar_dir` 不同。
-- 行的来源：
-  - **已知物种**（数据集 sidecar 里有这一行）：原样复制人工标注，`source = annotation`；
-  - **新骨架**（`process_new_skeleton`）：用模型预测，`source = model`。
-- 行里每个关节额外记录 `part_prob` 和 `contact_prob`。已知物种也记录，用来诊断辅助头和人工标注的差距。3.2 的解析器会忽略这两个额外字段。
-- 模型预测的取法：采样最后 10% 去噪步的 logits 取平均（这些步传 `return_aux=True`，CFG 只取 cond 分支），再对本次运行里该骨架的**所有样本**求平均，然后取 argmax，接触以 0.5 为阈值。部位是骨架的属性，不是单条动作的属性，所以每个骨架只存一行。
+- 读取规则只有一条：entry 有烘焙字段就用 cond，否则从文件名加 cond 解析出物种（`infer_object_type_from_filename` / `resolve_species_key`），到 npy 所在目录的 `joint_parts.jsonl` 里查这一行（`joint_parts.load_joint_parts`）。
+- 行的来源（`sample/joint_parts_output.py`，导出之前写，新骨架的 full-body IK 预览要读它）：
+  - **新骨架**（`process_new_skeleton`）：用模型预测，`source = model`，关节的 `src = model`；
+  - **数据集物种**：只在 checkpoint 有辅助头时写，part / contact 取 cond 烘焙的标注，`source = src = annotation`，纯诊断用，读取方不读；
+  - checkpoint 没有辅助头、cond 里又没有标注：不写这一行，打印警告。
+- 行里每个关节额外记录 `part_prob` 和 `contact_prob`，数据集物种用它诊断辅助头和人工标注的差距。3.2 的解析器会忽略这两个额外字段。
+- 模型预测的取法：采样结束后，用条件模型（不经过 CFG 包装）在 t = 0 对最终样本做一次 `return_aux=True` 的前向，再对本批里该骨架的**所有样本**求平均，然后取 argmax，接触以 0.5 为阈值。没有改成「最后 10% 去噪步取平均」：那要侵入采样循环和 CFG 包装，而探针里 t=0 与 t=50 只差约 1 个点，干净样本上的一次前向已经够用。部位是骨架的属性，不是单条动作的属性，所以每个骨架只存一行。
 - 写入规则：输出目录里已经有 `skeleton_sig` 相同的行时，**保留不动**，保证同一目录下先后导出的动作看到的部位一致；sig 不同（骨架已经变了）就覆盖，并打印警告。
-- 需要接触的读取方（`write_feature_bvh`、`tools/restore_glb_from_npy.py`、eval）找不到这一行时直接报错，提示用新代码重新生成，**不退回启发式**。
+- 需要接触的读取方（`write_feature_bvh`、`tools/restore_glb_from_npy.py`、eval）遇到没有烘焙字段、又找不到这一行的骨架时直接报错，提示用新代码重新生成，**不退回启发式**。
 
 motion_edit 如何消费这个块，留给它自己重构，不在本方案范围内。
 
@@ -291,7 +301,7 @@ motion_edit 如何消费这个块，留给它自己重构，不在本方案范�
 - **旧**：现有 merged_all_v41 checkpoint（300k 步，EMA），接触在 cond 里，没有辅助头。
 - **新**：本方案全部改动：去掉接触条件，加辅助头。训练配置和 v41 相同，训练到同样的步数。
 
-评估在同一组物种和动作标签上进行，推理精度设置相同（不同精度下的 eval 分数不可比）。两边计算指标时使用**同一份 sidecar 标注**，保证足部指标的口径一致。
+评估在同一组物种和动作标签上进行，推理精度设置相同（不同精度下的 eval 分数不可比）。两边计算指标时使用**同一份烘焙标注**（同一个 cond），保证足部指标的口径一致。
 
 | 场景 | 指标 |
 |---|---|
@@ -308,10 +318,10 @@ motion_edit 如何消费这个块，留给它自己重构，不在本方案范�
 
 ## 9. 实施顺序
 
-1. `joint_parts.py`（类别表、按关节名绑定、读取函数、启发式迁移）、`tools/prefill_joint_parts.py` 和单测；对 4 个数据集跑 dry-run，查看报告。
-2. `serve.py` 路由、`parts.html`、`dataset/review/vendor/`，然后人工核验全部 331 个物种。
-3. 预处理和读取方改造（第 5 节）、cond 重新生成、precheck 和 validate。
-4. 模型和辅助 loss（第 6 节）和生成目录 sidecar 输出（6.4）；跑单测，确认 `return_aux=False` 时与改动前逐位一致，确认 compile 图的数量。
-5. 训练新版，按第 8 节与 v41 对比。
+1. ✅ `joint_parts.py`（类别表、按关节名绑定、读取函数、启发式迁移）、`tools/prefill_joint_parts.py` 和单测；对 4 个数据集跑 dry-run，查看报告。
+2. 🔶 `serve.py` 路由、`parts.html`、`dataset/review/vendor/` 已完成；人工核验进行中（2026-10-04：331 个物种都有非 stale 的行，82 个 reviewed）。
+3. 🔶 预处理和读取方改造（第 5 节）已完成；4 个数据集 cond 已用 `--joint-parts-only` 烘焙（331/331，原文件备份为 `cond.npy.pre_jp_bake.bak`）。**未做**：对 4 个数据集跑完整的 `tools/regenerate_dataset_artifacts.py`（剥掉推断接触字段），再用 `tools/merge_dataset_cond.py` 重建 `dataset/merged/cond.npy`，然后跑 validate。现在的 merged cond 还没有烘焙字段，用它的训练 / 测试会报 `carries no 'joint_contact'`。核验期间每改完一批行，都要重烘焙并重新 merge。
+4. ✅ 模型和辅助 loss（第 6 节）和生成目录 sidecar 输出（6.4）；单测通过，`return_aux=False` 与改动前逐位一致，compile 图数量见 6.2。
+5. 训练新版，按第 8 节与 v41 对比。训练命令要加 `--lambda_part / --lambda_contact`（以及 `--joint_name_drop_prob`，部位 loss 只在置零的关节上算）。
 
 第 2 步的人工核验可以和第 3、4 步并行；第 5 步必须等第 2 步全部 reviewed 后再开训。

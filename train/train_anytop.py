@@ -35,6 +35,7 @@ from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform,
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.data.dataset import load_action_conditioning
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.joint_parts import JOINT_PARTS, part_class_weights
 from data_loaders.truebones.truebones_utils.param_utils import SPECIES_DESCRIPTOR_TABLE_FILE
 from data_loaders.truebones.truebones_utils.species_descriptor_table import (
     build_species_descriptor_table,
@@ -321,7 +322,7 @@ def run_training(args):
     args.checkpoint_step_numbering = 'completed_steps'
     opt = get_opt(args.device, args.cond_path)
     # The checkpoint directory carries its own inference contract: cond.npy is
-    # self-sufficient (baked species tags included), so generation from this
+    # self-sufficient (baked species tags and joint parts included), so generation from this
     # save_dir never needs the training dataset directories. Refreshed on every
     # launch, including resumes, so an updated cond does not leave a stale copy.
     shutil.copy2(opt.cond_file, os.path.join(save_dir, 'cond.npy'))
@@ -343,6 +344,15 @@ def run_training(args):
     train_split = getattr(args, 'train_split', 'train')
     num_motions = len(data.dataset)
     print(f"[INFO] Train split '{train_split}': {num_motions} motions")
+
+    if getattr(args, 'lambda_part', 0.0) > 0.0:
+        # A statistic of this run's training clips, recorded with its settings;
+        # args.json is written again to carry it.
+        args.part_class_weights = part_class_weights(data.dataset.motion_dataset.joint_part_counts())
+        print("[parts] class weights " + ", ".join(
+            f"{name}={weight:.2f}" for name, weight in zip(JOINT_PARTS, args.part_class_weights)
+        ))
+        write_args_json(args, os.path.join(save_dir, 'args.json'))
 
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
     model.to(dist_util.dev())

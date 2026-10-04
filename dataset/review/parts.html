@@ -230,7 +230,7 @@
   <div id="side">
     <div id="tableWrap">
       <table>
-        <thead><tr><th>#</th><th>名字</th><th>文本</th><th>部位</th><th title="接触（C）">接触</th><th>来源</th></tr></thead>
+        <thead><tr><th>#</th><th>名字</th><th title="T5 joint-name embedding text">EmbedText</th><th>部位</th><th title="接触（C）">接触</th><th>来源</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
@@ -242,7 +242,7 @@
         <li>海龟、海豹的鳍肢：主动划水的大鳍肢归 arm/leg（前肢 arm，后肢 leg），小的稳定鳍归 fin。</li>
         <li>尾巴末端受尾链驱动、自身无主动运动的饰物（毛团、尾羽）归 soft。</li>
         <li>爪长在 hand 上的归 hand，长在 foot 上的归 foot。</li>
-        <li><b>接触</b>：正常站立或行走时会着地的关节，标整条脚链（踝、趾、趾尖）。四足动物的前肢 hand 链同样可以是接触。</li>
+        <li><b>接触</b>：正常站立或行走时会着地的关节。名字是 Foot / Hand、下面还有趾或指的关节不标，标它下面的趾、指（含趾尖、指尖）。四足动物前肢的指同样可以是接触。</li>
         <li><b>helper</b>：包装根、locator、IK target、道具挂点。确定不是身体部位才标 helper；不进 loss，不能是接触。</li>
       </ul>
       <div class="counts">视口：中键旋转，Shift+中键 / 右键平移，滚轮缩放；左键单击选择，Shift+单击选整棵子树，Ctrl+单击增减，左键拖框多选（Shift 拖框为追加）。半透明 = 几何兜底；白环 = 接触；灰色小点 = helper。</div>
@@ -286,6 +286,9 @@ const PART_KEYS = {
   trunk: '1', neck: '2', head: '3', arm: '4', hand: '5', leg: '6', foot: '7',
   wing: '8', tail: '9', soft: '0', fin: 'F', helper: 'H',
 };
+// Sphere size relative to the skeleton's base radius: hands, feet and soft
+// parts are dense chains of short bones, helpers are not body parts.
+const PART_SCALE = { hand: .5, foot: .5, soft: .5, helper: .55 };
 const KEY_TO_PART = Object.fromEntries(Object.entries(PART_KEYS).map(([p, k]) => [k.toLowerCase(), p]));
 const STATUS_ICON = { reviewed: '✓', auto: '○', stale: '⚠', missing: '·' };
 const STATUS_TITLE = { reviewed: '已核验', auto: '预填，未核验', stale: '骨架已变，需重新确认', missing: '尚未写入 sidecar（显示预填结果）' };
@@ -424,16 +427,24 @@ const skel = {
   group: null, positions: [], radius: 0.01, diag: 1, center: new THREE.Vector3(),
   solid: null, ghost: null, halo: null, lines: null, rings: [],
 };
+// Contact ring texture: a white ring on a dark rim (readable against
+// light-coloured spheres too). The rim's inner edge sits RING_INNER_PX from the
+// centre, and the sprite is scaled so that edge lands on the joint sphere.
+const RING_TEXTURE_PX = 64;
+const RING_INNER_PX = 22;
+const RING_RIM_PX = 8;
+const ringScale = (radius) => radius * RING_TEXTURE_PX / RING_INNER_PX;
 const ringTexture = (() => {
   const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = 64;
+  canvas.width = canvas.height = RING_TEXTURE_PX;
   const ctx = canvas.getContext('2d');
-  // White ring on a dark rim, so it reads against light-coloured spheres too.
-  for (const [color, width] of [['#111', 11], ['#fff', 6]]) {
+  const centre = RING_TEXTURE_PX / 2;
+  const mid = RING_INNER_PX + RING_RIM_PX / 2;
+  for (const [color, width] of [['#111', RING_RIM_PX], ['#fff', RING_RIM_PX / 2]]) {
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
     ctx.beginPath();
-    ctx.arc(32, 32, 25, 0, Math.PI * 2);
+    ctx.arc(centre, centre, mid, 0, Math.PI * 2);
     ctx.stroke();
   }
   return new THREE.CanvasTexture(canvas);
@@ -477,6 +488,11 @@ function buildSkeleton(bvhText, payload) {
   skel.diag = Math.max(box.getSize(new THREE.Vector3()).length(), 1e-6);
   box.getCenter(skel.center);
   skel.radius = skel.diag * 0.011;
+  // Joints whose centre lies inside another joint's largest possible sphere
+  // (a wrapper root on its pelvis): their outline must clear that sphere.
+  skel.near = positions.map((p, j) => positions
+    .map((q, k) => [k, p.distanceTo(q)])
+    .filter(([k, d]) => k !== j && d < skel.radius));
 
   const group = new THREE.Group();
   const sphere = new THREE.SphereGeometry(1, 16, 12);
@@ -507,9 +523,9 @@ function buildSkeleton(bvhText, payload) {
   group.add(skel.lines);
 
   skel.rings = positions.map((p) => {
-    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTexture, depthTest: false, transparent: true }));
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTexture, transparent: true, depthWrite: false }));
     sprite.position.copy(p);
-    sprite.scale.setScalar(skel.radius * 3.6);
+    sprite.scale.setScalar(ringScale(skel.radius));
     sprite.renderOrder = 3;
     group.add(sprite);
     return sprite;
@@ -534,9 +550,10 @@ const tmpColor = new THREE.Color();
 function refreshVisuals() {
   if (!skel.group || !state.current) return;
   const joints = state.current.joints;
+  const radii = joints.map((j) => skel.radius * (PART_SCALE[j.part] ?? 1));
   joints.forEach((j) => {
     const p = skel.positions[j.index];
-    const r = j.part === 'helper' ? skel.radius * .55 : skel.radius;
+    const r = radii[j.index];
     tmpMatrix.makeScale(r, r, r).setPosition(p);
     const ghost = j.src === 'geometry';
     skel.solid.setMatrixAt(j.index, ghost ? zeroMatrix : tmpMatrix);
@@ -544,10 +561,13 @@ function refreshVisuals() {
     tmpColor.set(PART_COLORS[j.part]);
     skel.solid.setColorAt(j.index, tmpColor);
     skel.ghost.setColorAt(j.index, tmpColor);
-    const hr = r * 1.55;
+    const covering = skel.near[j.index].reduce(
+      (most, [k, d]) => (d < radii[k] ? Math.max(most, d + radii[k]) : most), r);
+    const hr = covering * 1.55;
     skel.halo.setMatrixAt(j.index, state.selected.has(j.index)
       ? new THREE.Matrix4().makeScale(hr, hr, hr).setPosition(p) : zeroMatrix);
     skel.rings[j.index].visible = !!j.contact;
+    skel.rings[j.index].scale.setScalar(ringScale(r));
   });
   for (const mesh of [skel.solid, skel.ghost, skel.halo]) {
     mesh.instanceMatrix.needsUpdate = true;
@@ -608,10 +628,7 @@ function pick(event) {
 }
 
 function jointTip(j) {
-  const lines = [`#${j.index} ${j.name}`, `${j.part}${j.contact ? ' · 接触' : ''} · ${j.src}`];
-  if (j.text && j.text !== j.name) lines.splice(1, 0, `文本：${j.text}`);
-  if (j.why) lines.push(j.why);
-  return lines.join('\n');
+  return `[${j.part}] ${j.name}\nEmbedText: ${j.text || '（空）'}`;
 }
 
 let drag = null;

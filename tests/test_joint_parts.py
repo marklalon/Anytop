@@ -278,12 +278,13 @@ def test_merge_of_stale_row_drops_reviewed_and_keeps_surviving_manual():
 # ---------------------------------------------------------------------------
 
 def test_prefill_contacts_match_cond_on_real_datasets():
-    """The contact prefill reproduces cond's contact_joints, rig for rig."""
+    """The contact prefill is cond's contact_joints minus Foot/Hand joints with children, rig for rig."""
     manifest = REPO_ROOT / 'dataset' / 'datasets.jsonl'
     if not manifest.is_file():
         pytest.skip('dataset manifest not present')
     from data_loaders.truebones.truebones_utils.cond_schema import load_cond
     from data_loaders.truebones.truebones_utils.dataset_sources import load_datasets_manifest
+    from data_loaders.truebones.truebones_utils.joint_embedding_text import build_joint_embedding_texts
 
     checked = 0
     for source in load_datasets_manifest(manifest):
@@ -296,7 +297,187 @@ def test_prefill_contacts_match_cond_on_real_datasets():
             names = entry['joints_names']
             assert all(proposal[name]['part'] for name in names), key
             proposed = [i for i, name in enumerate(names) if proposal[name]['contact']]
-            assert proposed == sorted(int(i) for i in entry['contact_joints']), key
+            parents = [int(parent) for parent in entry['parents']]
+
+            texts = build_joint_embedding_texts(entry)
+
+            def keeps_contact(i):
+                if not {'foot', 'hand'} & set(texts[i].lower().split()):
+                    return True
+                return not any(
+                    parent == i and proposal[names[child]]['part'] != 'helper'
+                    for child, parent in enumerate(parents)
+                )
+
+            expected = [int(i) for i in sorted(entry['contact_joints']) if keeps_contact(int(i))]
+            assert proposed == expected, key
             checked += 1
     if not checked:
         pytest.skip('no dataset cond with contact_joints present')
+
+
+def test_horselink_is_a_leg_segment_even_spelled_ankle():
+    # A Biped bird leg: Thigh -> Calf -> HorseLink -> Foot -> Toe, toe on the ground.
+    joints = [
+        ('Bip01', None, (0.0, 0.0, 0.0)),
+        ('Bip01_Pelvis', 'Bip01', (0.0, 0.6, 0.0)),
+        ('Bip01_Spine', 'Bip01_Pelvis', (0.0, 0.7, 0.1)),
+        ('Bip01_Head', 'Bip01_Spine', (0.0, 0.9, 0.3)),
+    ]
+    for side, x in (('L', 0.1), ('R', -0.1)):
+        joints += [
+            (f'Bip01_{side}_Thigh', 'Bip01_Pelvis', (x, 0.55, 0.0)),
+            (f'Bip01_{side}_Calf', f'Bip01_{side}_Thigh', (x, 0.4, 0.05)),
+            (f'Bip01_{side}_HorseLink', f'Bip01_{side}_Calf', (x, 0.2, -0.05)),
+            (f'Bip01_{side}_Foot', f'Bip01_{side}_HorseLink', (x, 0.03, 0.0)),
+            (f'Bip01_{side}_Toe0', f'Bip01_{side}_Foot', (x, 0.0, 0.08)),
+        ]
+    parts, proposal = _parts(_entry(joints, ('Biped', 'Walking')))
+    assert parts['Bip01_L_HorseLink'] == 'leg'
+    assert proposal['Bip01_L_HorseLink']['src'] == 'name'
+    assert parts['Bip01_L_Calf'] == 'leg'
+    assert parts['Bip01_L_Foot'] == 'foot' and parts['Bip01_L_Toe0'] == 'foot'
+
+
+def test_feelers_are_soft_not_head():
+    joints = [
+        ('Body', None, (0.0, 0.3, 0.0)),
+        ('Head', 'Body', (0.0, 0.35, 0.3)),
+        ('L_Feeler1', 'Head', (0.05, 0.45, 0.4)),
+        ('L_Feeler2', 'L_Feeler1', (0.1, 0.55, 0.5)),
+        ('Jaw', 'Head', (0.0, 0.3, 0.38)),
+        ('R_Shall1', 'Head', (-0.05, 0.4, 0.4)),
+    ]
+    parts, _ = _parts(_entry(joints, ('Multiped', 'Crawling')))
+    assert parts['L_Feeler1'] == 'soft' and parts['L_Feeler2'] == 'soft'
+    assert parts['R_Shall1'] == 'soft'
+    assert parts['Head'] == 'head' and parts['Jaw'] == 'head'
+
+
+def test_a_foot_joint_above_its_toes_is_not_a_contact():
+    joints = [('Hips', None, (0.0, 0.5, 0.0))]
+    for side, x in (('L', 0.1), ('R', -0.1)):
+        joints += [
+            (f'{side}_Thigh', 'Hips', (x, 0.45, 0.0)),
+            (f'{side}_Calf', f'{side}_Thigh', (x, 0.25, 0.0)),
+            (f'{side}_Foot', f'{side}_Calf', (x, 0.02, 0.0)),
+            (f'{side}_Toe', f'{side}_Foot', (x, 0.0, 0.08)),
+            (f'{side}_ToeEnd', f'{side}_Toe', (x, 0.0, 0.12)),
+        ]
+    joints += [('Spine', 'Hips', (0.0, 0.7, 0.0)), ('Head', 'Spine', (0.0, 0.9, 0.0))]
+    _, proposal = _parts(_entry(joints, ('Biped', 'Walking')))
+    assert proposal['L_Foot']['part'] == 'foot' and proposal['L_Foot']['contact'] == 0
+    assert proposal['L_Toe']['contact'] == 1 and proposal['L_ToeEnd']['contact'] == 1
+
+
+# ---------------------------------------------------------------------------
+# Readers: dataset binding, generation rows, loss statistics
+# ---------------------------------------------------------------------------
+
+def test_bake_writes_the_row_into_the_entry():
+    from data_loaders.truebones.truebones_utils.joint_parts import (
+        JOINT_CONTACT_KEY,
+        JOINT_PARTS_KEY,
+        JOINT_PARTS_REVIEWED_KEY,
+        JOINT_PARTS_SIG_KEY,
+        bake_joint_parts,
+        cond_contact_joints,
+        has_joint_parts,
+        joint_parts_row_signature,
+        strip_joint_parts,
+    )
+
+    entry = _small_entry()
+    row = _row(entry)
+    assert not has_joint_parts(entry)
+    with pytest.raises(JointPartsError, match='joint-parts-only'):
+        cond_contact_joints(entry)
+    bake_joint_parts(entry, row)
+    names = entry['joints_names']
+    assert entry[JOINT_PARTS_KEY].tolist() == [PART_IDS[row['joints'][n]['part']] for n in names]
+    assert cond_contact_joints(entry) == np.flatnonzero(entry[JOINT_CONTACT_KEY]).tolist()
+    assert cond_contact_joints(entry)
+    assert entry[JOINT_PARTS_REVIEWED_KEY] is row['reviewed']
+    # The signature follows what the bake takes, not provenance notes.
+    sig = entry[JOINT_PARTS_SIG_KEY]
+    noted = {**row, 'joints': {n: dict(j, why='edited note') for n, j in row['joints'].items()}}
+    assert joint_parts_row_signature(noted, names) == sig
+    flipped = {**row, 'joints': dict(row['joints'])}
+    flipped['joints'][names[0]] = dict(row['joints'][names[0]], contact=1 - row['joints'][names[0]]['contact'])
+    assert joint_parts_row_signature(flipped, names) != sig
+    strip_joint_parts(entry)
+    assert not has_joint_parts(entry) and JOINT_PARTS_SIG_KEY not in entry
+
+
+def test_bake_refuses_a_stale_row():
+    from data_loaders.truebones.truebones_utils.joint_parts import bake_joint_parts
+
+    entry = _small_entry()
+    row = _row(entry)
+    renamed = dict(entry, joints_names=[f'{name}_v2' for name in entry['joints_names']])
+    with pytest.raises(JointPartsError, match='another skeleton'):
+        bake_joint_parts(renamed, row)
+
+
+def test_output_rows_keep_a_matching_skeleton_and_replace_a_changed_one(tmp_path):
+    from data_loaders.truebones.truebones_utils.joint_parts import (
+        joint_parts_row,
+        write_output_joint_parts,
+    )
+
+    entry = _small_entry()
+    names, parents = entry['joints_names'], entry['parents']
+    count = len(names)
+    first = joint_parts_row('Synthetic', names, parents, part_ids=[PART_IDS['trunk']] * count,
+                            contact=[0] * count, source='model', src='model',
+                            part_prob=np.full((count, 11), 1 / 11), contact_prob=np.zeros(count))
+    assert write_output_joint_parts(tmp_path, [first]) == []
+    again = joint_parts_row('Synthetic', names, parents, part_ids=[PART_IDS['leg']] * count,
+                            contact=[1] * count, source='model', src='model')
+    # Same skeleton: the directory keeps the labelling its earlier motions saw.
+    assert write_output_joint_parts(tmp_path, [again]) == []
+    bound = load_joint_parts(tmp_path, 'Synthetic', entry)
+    assert set(bound.part_ids.tolist()) == {PART_IDS['trunk']} and bound.source == 'model'
+    assert 'part_prob' in read_joint_parts_sidecar(tmp_path / JOINT_PARTS_FILE)['Synthetic']['joints'][names[0]]
+
+    renamed = [f'{name}_v2' for name in names]
+    changed = joint_parts_row('Synthetic', renamed, parents, part_ids=[PART_IDS['leg']] * count,
+                              contact=[1] * count, source='model', src='model')
+    warnings = write_output_joint_parts(tmp_path, [changed])
+    assert len(warnings) == 1 and 'another skeleton' in warnings[0]
+    rebound = load_joint_parts(tmp_path, 'Synthetic', dict(entry, joints_names=renamed))
+    assert set(rebound.part_ids.tolist()) == {PART_IDS['leg']}
+
+
+def test_part_class_weights_are_inverse_sqrt_frequency_with_unit_mean():
+    from data_loaders.truebones.truebones_utils.joint_parts import JOINT_PARTS, part_class_weights
+
+    counts = np.zeros(len(JOINT_PARTS))
+    counts[PART_IDS['trunk']], counts[PART_IDS['soft']] = 900, 100
+    weights = np.asarray(part_class_weights(counts))
+    assert weights[PART_IDS['soft']] == pytest.approx(3.0 * weights[PART_IDS['trunk']])
+    assert float((counts / counts.sum() * weights).sum()) == pytest.approx(1.0)
+    assert weights[PART_IDS['wing']] == 0.0
+
+
+def test_retarget_contacts_fall_back_to_the_prefill_outside_every_dataset():
+    from data_loaders.truebones.truebones_utils.joint_parts import (
+        bake_joint_parts,
+        prefill_contacts,
+        retarget_target_contacts,
+    )
+    from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+        rest_positions_from_offsets,
+    )
+
+    entry = _small_entry()
+    rest = rest_positions_from_offsets(entry['offsets'], entry['parents'])
+    heuristic = prefill_contacts(entry['joints_names'], entry['parents'], rest)
+    # No baked annotation: a process_new_skeleton rig.
+    assert retarget_target_contacts(entry) == heuristic
+    row = _row(entry)
+    first_foot = next(name for name in entry['joints_names'] if row['joints'][name]['contact'])
+    row['joints'][first_foot] = dict(row['joints'][first_foot], contact=0, src='manual')
+    bake_joint_parts(entry, row)
+    annotated = retarget_target_contacts(entry)
+    assert entry['joints_names'].index(first_foot) not in annotated

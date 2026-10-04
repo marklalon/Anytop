@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -63,6 +64,8 @@ def test_hml_skinned_matches_skeleton_only(tmp_path: Path, fullbody_ik: bool) ->
     features = np.load(MOTION_NPY)[:3]
     npy_path = tmp_path / "Horse_Attack.npy"
     np.save(npy_path, features)
+    # tmp_path stands in for a generation directory, which carries the sidecar.
+    shutil.copy2(COND_NPY.parent / "joint_parts.jsonl", tmp_path / "joint_parts.jsonl")
     skeleton_path = tmp_path / "skeleton.glb"
     tpose_skeleton_path = tmp_path / "tpose_skeleton.glb"
     skinned_path = tmp_path / "skinned.glb"

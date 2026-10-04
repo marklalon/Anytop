@@ -38,7 +38,7 @@ from data_loaders.truebones.truebones_utils.topology_relations import (  # noqa:
 def legacy_topology_edge_relations(parents, max_path_len=5):
     """The pre-refinement implementation, verbatim."""
     edge_types = {'self': 0, 'parent': 1, 'child': 2, 'sibling': 3,
-                  'no_relation': 4, 'end_effector': 5}
+                  'no_relation': 4, 'leaf': 5}
     n = len(parents)
     topo_rel = np.zeros((n, n))
     edge_rel = np.ones((n, n)) * edge_types['no_relation']
@@ -68,7 +68,7 @@ def legacy_topology_edge_relations(parents, max_path_len=5):
             else:
                 topo_rel[i, j] = topo_rel[i, parent_j] + 1
         if ee:
-            edge_rel[i, i] = edge_types['end_effector']
+            edge_rel[i, i] = edge_types['leaf']
     topo_rel[topo_rel > max_path_len] = max_path_len
     return edge_rel, topo_rel
 
@@ -184,9 +184,9 @@ class NearFieldUnchangedTest(unittest.TestCase):
                 # the exact-hop range, not stayed put.
                 self.assertTrue((topo_rel[~near] >= GRAPH_DIST_FAR_BASE).all())
 
-    def test_self_parent_child_sibling_end_effector_match_the_legacy_implementation(self):
+    def test_self_parent_child_sibling_leaf_match_the_legacy_implementation(self):
         kept = (EDGE_CODES['self'], EDGE_CODES['parent'], EDGE_CODES['child'],
-                EDGE_CODES['sibling'], EDGE_CODES['end_effector'])
+                EDGE_CODES['sibling'], EDGE_CODES['leaf'])
         for name, parents in ALL_TREES.items():
             legacy_edge, _ = legacy_topology_edge_relations(parents)
             edge_rel, _ = create_topology_edge_relations(parents)

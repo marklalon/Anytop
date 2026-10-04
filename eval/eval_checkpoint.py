@@ -461,8 +461,10 @@ def _task_score_label(extra_args: list, eval_label: str | None) -> str:
     return label
 
 
-def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> dict | None:
-    """Load a cond.npy and register its entries as query skeleton metadata.
+def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str, task_dir) -> dict | None:
+    """Load a cond.npy and register its entries as query skeleton metadata;
+    their part annotation is the ``joint_parts.jsonl`` generation wrote into
+    ``task_dir``.
 
     Returns the loaded cond dict (None when it could not be loaded) so the
     caller can resolve the task's filename token against it.
@@ -473,7 +475,7 @@ def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str)
     except Exception as exc:
         print(f"    [WARN] failed to register cond_path {cond_path}: {exc}")
         return None
-    scorer.register_cond(cond)
+    scorer.register_cond(cond, joint_parts_dir=task_dir)
     return cond
 
 
@@ -599,7 +601,7 @@ def _build_record_from_existing(
             record["reference_motion"] = m.group(1) or m.group(2)
         m = re.search(r'--cond_path\s+(?:"([^"]*)"|(\S+))', record["command"])
         if m:
-            task_cond = _register_cond_path(scorer, m.group(1) or m.group(2))
+            task_cond = _register_cond_path(scorer, m.group(1) or m.group(2), task_dir)
 
     first_npy = _first_output_npy(task_dir)
     record["first_npy"] = first_npy
@@ -778,7 +780,7 @@ def run_task(
     task_cond: dict | None = None
     task_cond_path = _extract_cond_path(extra_args)
     if task_cond_path:
-        task_cond = _register_cond_path(scorer, task_cond_path)
+        task_cond = _register_cond_path(scorer, task_cond_path, task_dir)
 
     # Score the generated clips in-process (scores.json per task).
     scores: dict[str, float] = {}

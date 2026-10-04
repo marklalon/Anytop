@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from data_loaders.truebones.truebones_utils.joint_parts import cond_contact_joints
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import joint_name_matches_keywords
 
 CENTER = "center"
@@ -44,10 +45,11 @@ class ContactSet:
 
 
 def resolve_contacts(cond_entry: dict, override_entries: dict | None) -> ContactSet:
-    """cond's ``contact_joints`` with a ``{"add": [...], "remove": [...]}`` name override."""
+    """The entry's contacts (joint_parts annotation baked into cond) with a
+    ``{"add": [...], "remove": [...]}`` name override."""
     names = [str(n) for n in cond_entry["joints_names"]]
     index_of = {n: i for i, n in enumerate(names)}
-    contacts = ContactSet(cond=sorted(int(j) for j in cond_entry.get("contact_joints", [])))
+    contacts = ContactSet(cond=cond_contact_joints(cond_entry))
     for key, target in (("add", contacts.added), ("remove", contacts.removed)):
         for name in (override_entries or {}).get(key, []):
             if name in index_of:

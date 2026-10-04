@@ -7,11 +7,13 @@ token "I am the third link of a limb that ends on the ground". This module
 computes that missing per-joint signal from geometry and topology alone, so the
 name is free to carry body-part semantics and nothing else.
 
-Read ONLY from ``parents``, the physical rest positions and the contact
-annotation. Deliberately *not* from any joint name: the whole point is a channel
+Read ONLY from ``parents`` and the physical rest positions. Deliberately *not*
+from any joint name: the whole point is a channel
 that is bit-identical when a rig is renamed. Deliberately not from the canonical
 rest token handed to ``InputProcess`` either -- that token is standardized per
-species and no longer holds per-joint rest positions.
+species and no longer holds per-joint rest positions. Nor from the part /
+contact annotation: that is the auxiliary head's target (joint_parts.py), and a
+condition carrying it would hand the answer to the model.
 
 The features are pure functions of the cond entry, so they are recomputed on
 both sides rather than written into cond.npy: training and generation MUST call
@@ -27,15 +29,12 @@ import numpy as np
 # Recorded in args.json at train time and re-checked at resume/generation: a
 # checkpoint fitted on schema N cannot read schema N+1 features, and a pure
 # reordering would leave every shape lining up.
-JOINT_STRUCT_FEATURE_SCHEMA_VERSION = 1
+JOINT_STRUCT_FEATURE_SCHEMA_VERSION = 2
 
 # Order is the channel order of the returned array; changing it is a schema bump.
 JOINT_STRUCT_FEATURE_NAMES = (
     'depth_norm',        # (k + 1) / L      -- position along its branch-free run
     'run_len_inv',       # 1 / L            -- bounded run length, pairs with depth_norm
-    'run_ends_contact',  # the run terminates on (or just above) a ground contact
-    'is_contact',        # this joint is a ground contact
-    'contact_known',     # the species HAS a contact annotation at all
     'is_leaf',           # no children
     'height_n',          # (y - y_min) / y_span
     'lateral_signed',    # (x - x_root) / scale   -- signed, so left != right
@@ -196,33 +195,18 @@ def _subtree_sizes(parents, children):
     return sizes
 
 
-def _contact_flags(object_cond, joint_count, source):
-    contact_source = str(object_cond.get('contact_joint_source') or 'none')
-    is_contact = np.zeros(joint_count, dtype=bool)
-    for raw_index in list(object_cond.get('contact_joints') or []):
-        contact_index = int(raw_index)
-        if not 0 <= contact_index < joint_count:
-            raise JointStructFeatureError(
-                f"{source}: contact joint index {contact_index} is out of range for "
-                f"{joint_count} joints."
-            )
-        is_contact[contact_index] = True
-    return is_contact, contact_source != 'none'
-
-
 def build_joint_struct_features(object_cond, source='cond entry'):
     """``[J, JOINT_STRUCT_DIM]`` float32 structural descriptors for one species.
 
-    Deterministic and name-invariant: two cond entries with the same ``parents``,
-    rest positions and contact annotation produce bit-identical output whatever
-    their joints are called.
+    Deterministic and name-invariant: two cond entries with the same ``parents``
+    and rest positions produce bit-identical output whatever their joints are
+    called.
     """
     parents = _validated_parents(object_cond, source)
     joint_count = int(parents.shape[0])
     rest_pos = _validated_rest_positions(object_cond, joint_count, source)
     children = child_lists(parents)
     _run_of, position_in_run, run_members = _branch_free_runs(parents, children, source)
-    is_contact, contact_known = _contact_flags(object_cond, joint_count, source)
 
     spans = rest_pos.max(axis=0) - rest_pos.min(axis=0)
     # One isotropic scale for the two signed axes, so a limb's lateral offset is
@@ -264,18 +248,10 @@ def build_joint_struct_features(object_cond, source='cond entry'):
 
     run_length = np.zeros(joint_count, dtype=np.float64)
     run_start_index = np.zeros(joint_count, dtype=np.int64)
-    run_ends_contact = np.zeros(joint_count, dtype=np.float64)
     for members in run_members:
-        last_index = members[-1]
-        # "or its direct child": a foot's contact is often annotated one joint
-        # further down, on the toe that opens the next run.
-        ends_contact = bool(is_contact[last_index]) or any(
-            bool(is_contact[child_index]) for child_index in children[last_index]
-        )
         for joint_index in members:
             run_length[joint_index] = float(len(members))
             run_start_index[joint_index] = members[0]
-            run_ends_contact[joint_index] = 1.0 if ends_contact else 0.0
 
     is_leaf = np.asarray(
         [0.0 if children[joint_index] else 1.0 for joint_index in range(joint_count)],
@@ -285,9 +261,6 @@ def build_joint_struct_features(object_cond, source='cond entry'):
         [
             (position_in_run.astype(np.float64) + 1.0) / run_length,
             1.0 / run_length,
-            run_ends_contact,
-            is_contact.astype(np.float64),
-            np.full(joint_count, 1.0 if contact_known else 0.0),
             is_leaf,
             height_n,
             lateral_signed,

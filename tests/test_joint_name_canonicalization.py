@@ -320,14 +320,20 @@ _CONTACT_CASES = [
 
 
 @pytest.mark.parametrize('species, expected, forbidden', _CONTACT_CASES)
-def test_contact_joints_on_real_rigs(species, expected, forbidden):
+def test_contact_prefill_on_real_rigs(species, expected, forbidden):
     cond_path = Path(__file__).resolve().parents[1] / 'dataset' / 'merged' / 'cond.npy'
     if not cond_path.is_file():
         pytest.skip('merged dataset not present')
     from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 
-    entry = dict(load_cond(str(cond_path))[species])
-    refresh_joint_metadata_in_object_cond(entry)
-    names = set(entry['contact_joint_names'])
+    from data_loaders.truebones.truebones_utils.joint_parts import prefill_contacts
+    from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+        rest_positions_from_offsets,
+    )
+
+    entry = load_cond(str(cond_path))[species]
+    joint_names = list(entry['joints_names'])
+    rest = rest_positions_from_offsets(entry['offsets'], entry['parents'])
+    names = {joint_names[index] for index in prefill_contacts(joint_names, entry['parents'], rest)}
     assert expected <= names, sorted(expected - names)
     assert not names & forbidden, sorted(names & forbidden)

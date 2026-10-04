@@ -11,6 +11,7 @@ Options:
     --dataset-dir PATH      Path to dataset directory (uses default if not specified)
     --t5-model NAME         T5 model name to use (default: t5-base)
     --no-rest-reseat        Skip the rest-vs-clip geometry re-seat (normally always on)
+    --joint-parts-only      Only re-bake joint_parts.jsonl into cond.npy (after a review)
 
 Examples:
     # Regenerate sidecar artifacts with default settings
@@ -21,6 +22,9 @@ Examples:
 
     # Re-encode with different T5 model
     python tools/regenerate_dataset_artifacts.py --t5-model t5-large
+
+    # Re-bake the reviewed part / contact annotation (then re-merge the cond)
+    python tools/regenerate_dataset_artifacts.py --dataset-dir PATH --joint-parts-only
 """
 
 import argparse
@@ -82,8 +86,13 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
 )
 from tools.build_action_label_embeddings import build_word_table  # noqa: E402
 from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  # noqa: E402
-    build_semantic_metadata,
+from data_loaders.truebones.truebones_utils.joint_parts import (  # noqa: E402
+    JOINT_PARTS_FILE,
+    bake_joint_parts,
+    read_joint_parts_sidecar,
+    row_is_stale,
+    species_of,
+    strip_joint_parts,
 )
 
 
@@ -331,40 +340,47 @@ def _compute_canonical_stats_per_object_subset(
             )
 
 
-def _recompute_contact_joints(rebuilt_cond: dict[str, dict]) -> None:
-    """Re-infer contact joints for every object using current skeleton info.
+def _bake_joint_parts(cond_dict: dict[str, dict], dataset_dir_path: Path) -> None:
+    """Bake each species' joint_parts.jsonl row into its cond entry.
 
-    Contact joints depend only on skeleton topology (names, parents, offsets),
-    so they can be safely recomputed from cond.npy without re-loading source FBX."""
-
-    for object_type, object_cond in sorted(rebuilt_cond.items()):
-        parents = np.asarray(object_cond["parents"], dtype=np.int64)
-        offsets = np.asarray(object_cond["offsets"], dtype=np.float64)
-        joint_names = list(object_cond["joints_names"])
-
-        semantic_metadata = build_semantic_metadata(
-            joint_names,
-            parents,
-            offsets,
-            species_name=object_cond.get("species_name") or object_cond.get("object_type") or object_type,
+    A species without a current row is left without the baked keys and only
+    reported: a new species can be prefilled only once this run has written its
+    cond entry, and the loader refuses it until it is baked."""
+    rows = read_joint_parts_sidecar(dataset_dir_path / JOINT_PARTS_FILE)
+    problems = []
+    unreviewed = 0
+    for object_type, object_cond in sorted(cond_dict.items()):
+        strip_joint_parts(object_cond)
+        row = rows.get(species_of(object_cond))
+        if row is None:
+            problems.append(f"{object_type}: no row")
+        elif row_is_stale(row, object_cond["joints_names"], object_cond["parents"]):
+            problems.append(f"{object_type}: stale (skeleton changed)")
+        else:
+            bake_joint_parts(object_cond, row)
+            unreviewed += not row["reviewed"]
+    print(f"[OK] {JOINT_PARTS_FILE} baked into {len(cond_dict) - len(problems)}/{len(cond_dict)} cond entries")
+    if problems:
+        print(
+            f"[WARN] {JOINT_PARTS_FILE} does not cover the cond skeletons ({len(problems)}): "
+            + "; ".join(problems[:10])
+            + ". Run tools/prefill_joint_parts.py, review the rows in dataset/review, then "
+            "re-run with --joint-parts-only before training."
         )
+    if unreviewed:
+        print(f"[WARN] {JOINT_PARTS_FILE}: {unreviewed} species not reviewed yet")
 
-        old_contact = list(object_cond.get("contact_joints", []))
-        new_contact = semantic_metadata["contact_joints"]
-        old_source = object_cond.get("contact_joint_source", "")
-        new_source = semantic_metadata["contact_joint_source"]
 
-        object_cond["contact_joints"] = new_contact
-        object_cond["contact_joint_names"] = semantic_metadata["contact_joint_names"]
-        object_cond["contact_joint_source"] = new_source
-        object_cond["end_effector_joints"] = semantic_metadata["end_effector_joints"]
-        object_cond["end_effector_names"] = semantic_metadata["end_effector_names"]
-
-        if old_contact != new_contact or old_source != new_source:
-            print(
-                f"[OK] {object_type}: contact_joints {old_contact} -> {new_contact} "
-                f"(source: {old_source} -> {new_source})"
-            )
+def rebake_joint_parts(dataset_dir: str | Path | None = None) -> Path:
+    """Re-bake joint_parts.jsonl into an existing cond.npy, touching nothing else."""
+    dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
+    cond_path = dataset_dir_path / "cond.npy"
+    if not cond_path.exists():
+        raise RuntimeError(f"cond.npy not found at {cond_path}")
+    cond = dict(np.load(cond_path, allow_pickle=True).item())
+    _bake_joint_parts(cond, dataset_dir_path)
+    save_cond(cond_path, cond)
+    return dataset_dir_path
 
 
 def _compute_clip_length_prior(
@@ -610,11 +626,11 @@ def _regenerate_dataset_artifacts(
         object_cond.pop("action_words", None)
         object_cond.pop("loop_period_by_action", None)
         object_cond.pop("loop_period_median", None)
+        # Contacts are baked from joint_parts.jsonl, not inferred.
+        for key in ("contact_joints", "contact_joint_names", "contact_joint_source",
+                    "end_effector_joints", "end_effector_names"):
+            object_cond.pop(key, None)
     _mark_object_feature_spaces(rebuilt_cond)
-
-    t0 = time.time()
-    _recompute_contact_joints(rebuilt_cond)
-    print(f"[OK] contact joints recomputed in {time.time() - t0:.1f}s")
 
     t0 = time.time()
     _validate_object_translation_roots(
@@ -660,6 +676,8 @@ def _regenerate_dataset_artifacts(
     t0 = time.time()
     _compute_canonical_stats_per_object_subset(rebuilt_cond, motion_files)
     print(f"[OK] per-object_subset canonical stats computed in {time.time() - t0:.1f}s")
+
+    _bake_joint_parts(rebuilt_cond, dataset_dir_path)
 
     # Re-stamp on write: this is the dataset's own cond, so entries stay keyed
     # <namespace>/<species> with dataset_root=None ("wherever this file lives").
@@ -738,6 +756,12 @@ def main() -> int:
              "the animation never puts them). The step is idempotent and normally always "
              "on; this is an escape hatch for reproducing an older build.",
     )
+    parser.add_argument(
+        "--joint-parts-only",
+        action="store_true",
+        help="Only re-bake joint_parts.jsonl into the existing cond.npy (after reviewing "
+             "rows in dataset/review); re-merge dataset/merged/cond.npy afterwards.",
+    )
     args = parser.parse_args()
 
     print("\n" + "=" * 70)
@@ -751,6 +775,9 @@ def main() -> int:
             species_tags_file=args.species_tags_file,
             chain_forward_joints_file=args.chain_forward_joints_file,
         )
+        if args.joint_parts_only:
+            rebake_joint_parts(args.dataset_dir)
+            return 0
         dataset_dir_path = regenerate_dataset_artifacts(
             args.dataset_dir,
             t5_model=args.t5_model,

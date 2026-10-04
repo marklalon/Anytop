@@ -666,11 +666,6 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
         tp.forward_joint_index,
         tp.forward_base_joint_index,
     )
-    object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
-    object_cond['end_effector_names'] = semantic_metadata['end_effector_names']
-    object_cond['contact_joints'] = semantic_metadata['contact_joints']
-    object_cond['contact_joint_names'] = semantic_metadata['contact_joint_names']
-    object_cond['contact_joint_source'] = semantic_metadata['contact_joint_source']
     object_cond['joint_side_labels'] = semantic_metadata['joint_side_labels']
     object_cond['symmetry_partner_indices'] = semantic_metadata['symmetry_partner_indices']
     object_cond['symmetric_joint_pairs'] = semantic_metadata['symmetric_joint_pairs']

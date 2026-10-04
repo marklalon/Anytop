@@ -87,7 +87,7 @@ SPREAD_GROUPS = tuple(SPREAD_REACH)
 _SPREAD = {f"spread.{g}": ParamSpec(0.0, -1.0, 1.0, "spread") for g in SPREAD_GROUPS}
 # A limb whose first bone is shorter than this fraction of the limb (a clavicle, a hip
 # stub), or whose first joint is named as a shoulder girdle, turns at the joint below it.
-SPREAD_SHORT_ROOT = 0.3
+SPREAD_SHORT_ROOT = 0.2
 SPREAD_GIRDLE_KEYWORDS = ("clavicle", "collar", "scapula")
 # The slider scaling each group's chain offsets; tail joints that cannot swing follow the
 # tail's weight as a plain gain.

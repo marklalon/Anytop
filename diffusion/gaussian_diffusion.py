@@ -178,6 +178,9 @@ class GaussianDiffusion:
         lambda_loop_wrap=0.,
         lambda_loop_root_closure=0.,
         lambda_bone=0.,
+        lambda_part=0.,
+        lambda_contact=0.,
+        part_class_weights=None,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
         renoise_same_level_prob=1.0,
@@ -191,6 +194,14 @@ class GaussianDiffusion:
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_loop_root_closure = float(lambda_loop_root_closure)
         self.lambda_bone = float(lambda_bone)
+        self.lambda_part = float(lambda_part)
+        self.lambda_contact = float(lambda_contact)
+        # Per-class weights of the part loss (training-set statistics, recorded
+        # in args.json); None weighs every class alike.
+        self.part_class_weights = (
+            None if part_class_weights is None
+            else th.as_tensor(part_class_weights, dtype=th.float32)
+        )
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
         self.renoise_same_level_prob = float(renoise_same_level_prob)
@@ -207,6 +218,10 @@ class GaussianDiffusion:
             )
         if self.lambda_bone < 0.0:
             raise ValueError(f"lambda_bone must be >= 0, got {self.lambda_bone}")
+        if self.lambda_part < 0.0 or self.lambda_contact < 0.0:
+            raise ValueError(
+                f"lambda_part / lambda_contact must be >= 0, got {self.lambda_part} / {self.lambda_contact}"
+            )
         if self.temporal_span_seam_loss_weight < 0.0:
             raise ValueError(
                 "temporal_span_seam_loss_weight must be >= 0, got "
@@ -1841,6 +1856,38 @@ class GaussianDiffusion:
             unwrapped_model = next_model
         return unwrapped_model
 
+    def joint_part_losses(self, aux, y):
+        """Per-sample auxiliary part / contact losses, ``[B]`` each.
+
+        The part cross-entropy covers the joints whose name this pass blanked
+        and that carry a label: with the name visible the part is read off it,
+        a shortcut the head must not be trained on. Contacts cover every
+        labelled joint, since no name tells them. Each is a weighted mean over a
+        sample's joints, 0 for a sample with none.
+        """
+        part_logits = aux['part_logits'].float()
+        contact_logit = aux['contact_logit'].float()
+        joint_count = part_logits.shape[1]
+        part_target = y['joint_part_target'][:, :joint_count].to(part_logits.device)
+        contact_target = y['joint_contact_target'][:, :joint_count].to(part_logits.device).float()
+        contact_valid = y['joint_contact_valid'][:, :joint_count].to(part_logits.device)
+        part_mask = aux['joint_name_drop'] & (part_target >= 0)
+        safe_target = part_target.clamp_min(0)
+        cross_entropy = th.nn.functional.cross_entropy(
+            part_logits.transpose(1, 2), safe_target, reduction='none'
+        )
+        weights = part_mask.float()
+        if self.part_class_weights is not None:
+            class_weights = self.part_class_weights.to(part_logits.device)
+            weights = weights * class_weights[safe_target]
+        binary = th.nn.functional.binary_cross_entropy_with_logits(
+            contact_logit, contact_target, reduction='none'
+        )
+        return {
+            'part_loss': _per_sample_mean(cross_entropy, weights),
+            'contact_loss': _per_sample_mean(binary, contact_valid.float()),
+        }
+
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
         Compute training losses for a single timestep.
@@ -1893,7 +1940,11 @@ class GaussianDiffusion:
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.num_timesteps
         elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
-            model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
+            aux_on = self.lambda_part > 0.0 or self.lambda_contact > 0.0
+            if aux_on:
+                model_output, aux = model(x_t, self._scale_timesteps(t), return_aux=True, **model_kwargs)
+            else:
+                model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
 
             if self.model_var_type in [
                 ModelVarType.LEARNED,
@@ -1980,6 +2031,15 @@ class GaussianDiffusion:
                     )
                     terms["loss"] = terms["loss"] + self.lambda_bone * terms["bone_loss"]
 
+                if aux_on:
+                    part_terms = self.joint_part_losses(aux, y_for_decode)
+                    terms.update(part_terms)
+                    terms["loss"] = (
+                        terms["loss"]
+                        + self.lambda_part * terms["part_loss"]
+                        + self.lambda_contact * terms["contact_loss"]
+                    )
+
                 if self.lambda_loop_wrap > 0.0:
                     y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
                     loop_terms = self.loop_wrap_loss(
@@ -2011,6 +2071,11 @@ class GaussianDiffusion:
             raise NotImplementedError(self.loss_type)
 
         return terms
+
+def _per_sample_mean(values, weights):
+    """Weighted mean over the joint axis, 0 for a sample with no weight."""
+    return (values * weights).sum(dim=-1) / weights.sum(dim=-1).clamp_min(1e-8)
+
 
 def extract_into_tensor(arr, timesteps, broadcast_shape):
     """

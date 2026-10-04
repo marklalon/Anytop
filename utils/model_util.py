@@ -210,6 +210,9 @@ def get_gmdm_args(args):
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
             'action_label_adaln': getattr(args, 'action_label_adaln', False),
             'topology_cond': getattr(args, 'topology_cond', False),
+            'part_head': (getattr(args, 'lambda_part', 0.0) > 0.0
+                          or getattr(args, 'lambda_contact', 0.0) > 0.0),
+            'part_head_layer': getattr(args, 'part_head_layer', 0),
             'direction_slot_drop_prob': getattr(args, 'direction_slot_drop_prob', 0.0),
             'modifier_slot_drop_prob': getattr(args, 'modifier_slot_drop_prob', 0.0),
             # The training entry point builds one bundle and hands the same
@@ -255,6 +258,9 @@ def create_gaussian_diffusion(args):
         lambda_loop_wrap=getattr(args, 'lambda_loop_wrap', 0.0),
         lambda_loop_root_closure=getattr(args, 'lambda_loop_root_closure', 0.0),
         lambda_bone=getattr(args, 'lambda_bone', 0.0),
+        lambda_part=getattr(args, 'lambda_part', 0.0),
+        lambda_contact=getattr(args, 'lambda_contact', 0.0),
+        part_class_weights=getattr(args, 'part_class_weights', None),
         temporal_span_seam_loss_weight=getattr(args, 'temporal_span_seam_loss_weight', 0.0),
         temporal_span_seam_width=getattr(args, 'temporal_span_seam_width', 2),
         renoise_same_level_prob=getattr(args, 'renoise_same_level_prob', 1.0),

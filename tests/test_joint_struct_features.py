@@ -5,7 +5,7 @@ per-joint identity in the token, so respelling a leg could change how the knee
 bends. These pin the two properties that make it a usable fallback -- it is a
 pure function of geometry and topology, and it separates joints the slim name
 text deliberately collapses -- plus the contracts the builder refuses to guess
-at (a forest, a cycle, a contact index off the end).
+at (a forest, a cycle).
 """
 from __future__ import annotations
 
@@ -59,8 +59,6 @@ def _biped(**overrides):
     entry = {
         'parents': np.asarray(_BIPED_PARENTS, dtype=np.int64),
         'rest_pos_ric_hml': _BIPED_REST.copy(),
-        'contact_joints': [5, 8],
-        'contact_joint_source': 'geometry',
         'joints_names': ['Hips', 'Spine', 'Head', 'LThigh', 'LShin', 'LFoot',
                          'RThigh', 'RShin', 'RFoot'],
     }
@@ -89,8 +87,6 @@ class BranchFreeRuns(unittest.TestCase):
             'rest_pos_ric_hml': np.array(
                 [[0, 0, 0], [0, 1, 0], [0, 2, 0], [-1, 3, 0], [1, 3, 0]], dtype=np.float32
             ),
-            'contact_joints': [],
-            'contact_joint_source': 'none',
         }
         run_len_inv = _channel(build_joint_struct_features(entry), 'run_len_inv')
         # 1 and 2 share a run of two; the fork's children are runs of one each.
@@ -105,36 +101,14 @@ class BranchFreeRuns(unittest.TestCase):
         self.assertGreater(float(attach[5]), float(height[5]))
 
 
-class ContactAndShape(unittest.TestCase):
-    def test_the_grounded_limb_is_marked_and_the_neck_is_not(self):
-        features = build_joint_struct_features(_biped())
-        ends_contact = _channel(features, 'run_ends_contact')
-        np.testing.assert_allclose(ends_contact[[3, 4, 5, 6, 7, 8]], 1.0)
-        np.testing.assert_allclose(ends_contact[[0, 1, 2]], 0.0)
-
-    def test_a_contact_one_joint_below_the_run_still_marks_it(self):
-        # A toe annotated as the contact opens its own run; the foot's run must
-        # still read as grounded.
-        entry = {
-            'parents': np.asarray([-1, 0, 1, 2, 2], dtype=np.int64),
-            'rest_pos_ric_hml': np.array(
-                [[0, 1, 0], [0, .5, 0], [0, 0, 0], [0, 0, .1], [0, 0, -.1]], dtype=np.float32
-            ),
-            'contact_joints': [3],
-            'contact_joint_source': 'names',
-        }
-        ends_contact = _channel(build_joint_struct_features(entry), 'run_ends_contact')
-        self.assertEqual(float(ends_contact[1]), 1.0)  # the run ending at joint 2
-        self.assertEqual(float(ends_contact[2]), 1.0)
-
-    def test_contact_known_separates_no_contact_from_no_annotation(self):
-        annotated = build_joint_struct_features(_biped())
-        unannotated = build_joint_struct_features(
-            _biped(contact_joints=[], contact_joint_source='none')
-        )
-        np.testing.assert_allclose(_channel(annotated, 'contact_known'), 1.0)
-        np.testing.assert_allclose(_channel(unannotated, 'contact_known'), 0.0)
-        np.testing.assert_allclose(_channel(unannotated, 'is_contact'), 0.0)
+class Shape(unittest.TestCase):
+    def test_a_contact_annotation_changes_nothing(self):
+        """Contacts are the auxiliary head's target, never a condition."""
+        baseline = build_joint_struct_features(_biped())
+        annotated = build_joint_struct_features(_biped(
+            contact_joints=[5, 8], joint_contact=np.array([0, 0, 0, 0, 0, 1, 0, 0, 1], dtype=bool),
+        ))
+        self.assertTrue(np.array_equal(baseline, annotated))
 
     def test_leaves_heights_and_subtree_sizes(self):
         features = build_joint_struct_features(_biped())
@@ -177,8 +151,6 @@ class ContactAndShape(unittest.TestCase):
                 [[0, 0, 0], [0, 1, 0], [-1, 2, 0], [-.3, 2, 0], [.3, 2, 0], [1, 2, 0]],
                 dtype=np.float32,
             ),
-            'contact_joints': [],
-            'contact_joint_source': 'none',
         }
         necks = build_joint_struct_features(entry)[2:]
         self.assertEqual(len({tuple(row) for row in necks.tolist()}), 4)
@@ -235,9 +207,6 @@ class MalformedInputIsRefused(unittest.TestCase):
 
     def test_a_parent_index_past_the_end(self):
         self._expect(parents=np.asarray([-1, 0, 99, 0, 3, 4, 0, 6, 7], dtype=np.int64))
-
-    def test_a_contact_index_past_the_end(self):
-        self._expect(contact_joints=[5, 99])
 
     def test_non_finite_rest_positions(self):
         broken = _BIPED_REST.copy()

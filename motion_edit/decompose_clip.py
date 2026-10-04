@@ -38,6 +38,12 @@ from motion_edit.decompose import (  # noqa: E402
     passive_source,
     profile_subset,
 )
+from data_loaders.truebones.truebones_utils.joint_parts import (  # noqa: E402
+    JOINT_CONTACT_KEY,
+    has_joint_parts,
+    load_joint_parts,
+    species_of,
+)
 from motion_edit.package import PACKAGE_SUFFIX  # noqa: E402
 from motion_edit.profile.data import (  # noqa: E402
     CONTACT_OVERRIDES_FILE,
@@ -130,6 +136,11 @@ def main(argv=None) -> int:
         cond_key = args.object_type
         if args.cond:
             cond_entry = np.load(args.cond, allow_pickle=True).item().get(cond_key)
+            if cond_entry is not None and not has_joint_parts(cond_entry):
+                # a new skeleton: its generation directory holds the predicted parts
+                cond_entry[JOINT_CONTACT_KEY] = load_joint_parts(
+                    os.path.dirname(os.path.abspath(args.npy)), species_of(cond_entry), cond_entry,
+                ).contact
         else:
             source, cond_entry = _find_dataset(cond_key)
             dataset_root = source.root if source else None

@@ -2,9 +2,11 @@
 
 The annotation is a training *target*, never a condition: the model is asked to
 predict it from the names, geometry and motion it is already given. It lives in
-one sidecar per dataset, ``<processed>/joint_parts.jsonl``, and a generation run
-writes the same file next to its ``.npy`` output, so a reader resolves both
-through :func:`load_joint_parts` and never through ``cond.npy``.
+one sidecar per dataset, ``<processed>/joint_parts.jsonl``, which is what people
+edit; the dataset's ``cond.npy`` carries a baked copy (:func:`bake_joint_parts`)
+that the loader, the checkpoint and the readers of dataset clips use. A
+generation run writes the same sidecar format next to its ``.npy`` output for
+the skeletons whose cond has no baked annotation.
 
 Rows are keyed by species and their joints by **name**, not index: a joint set
 that changes (cropping, prop-socket removal, leaf cleanup) would silently shift
@@ -14,7 +16,7 @@ refused until it is reviewed again.
 
 :func:`prefill_joint_parts` proposes a row from names first, then inheritance
 down the tree, then geometry, and takes the contact flags from
-:func:`infer_contact_joints`. Limbs are labelled by fore/hind position, not by
+:func:`prefill_contacts`. Limbs are labelled by fore/hind position, not by
 use: a quadruped's foreleg is ``arm``/``hand``, a multiped's walking legs are all
 ``leg``/``foot``; standing on a limb is what the separate ``contact`` bit says.
 """
@@ -35,8 +37,13 @@ from .joint_embedding_text import (
     clean_embedding_token,
     joint_name_is_helper_node,
 )
-from .joint_name_canonical import infer_species_joint_name_prefixes
-from .physics_joint_annotation import infer_contact_joints, rest_positions_from_offsets
+from .joint_name_canonical import infer_species_joint_name_prefixes, normalize_joint_name
+from .physics_joint_annotation import (
+    _joint_semantic_text,
+    _text_matches_keywords,
+    infer_symmetry_metadata,
+    rest_positions_from_offsets,
+)
 from .joint_struct_features import child_lists
 
 # Bumped whenever a part is added, removed, renamed or reordered: part ids are
@@ -66,8 +73,9 @@ PART_IDS[HELPER_PART] = HELPER_PART_ID
 ALL_PART_LABELS = JOINT_PARTS + (HELPER_PART,)
 
 # Provenance of a joint's entry. ``manual`` is a person's edit and is never
-# overwritten by a later prefill.
-PART_SOURCES = ('name', 'inherit', 'geometry', 'manual')
+# overwritten by a later prefill; ``model`` is a generation run's prediction and
+# ``annotation`` a generation run's copy of a dataset's baked annotation.
+PART_SOURCES = ('name', 'inherit', 'geometry', 'manual', 'model', 'annotation')
 
 JOINT_PARTS_FILE = 'joint_parts.jsonl'
 
@@ -125,6 +133,21 @@ def read_joint_parts_sidecar(path) -> dict[str, dict]:
     path = Path(path)
     if not path.is_file():
         return {}
+    stamp = path.stat().st_mtime_ns
+    cached = _SIDECAR_CACHE.get(str(path))
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    rows = _parse_joint_parts_sidecar(path)
+    _SIDECAR_CACHE[str(path)] = (stamp, rows)
+    return rows
+
+
+# Parsed sidecars by path, invalidated by mtime: readers that resolve many
+# species of one dataset (the loader, an export run) parse the file once.
+_SIDECAR_CACHE: dict[str, tuple[int, dict[str, dict]]] = {}
+
+
+def _parse_joint_parts_sidecar(path) -> dict[str, dict]:
     rows: dict[str, dict] = {}
     for line_no, line in enumerate(path.read_text(encoding='utf-8').splitlines(), start=1):
         text = line.strip()
@@ -196,8 +219,8 @@ def bind_joint_parts(row, joint_names, parents) -> BoundJointParts:
 def load_joint_parts(sidecar_dir, species, cond_entry) -> BoundJointParts:
     """The parts of ``species`` from ``<sidecar_dir>/joint_parts.jsonl``, bound to ``cond_entry``.
 
-    ``sidecar_dir`` is a processed dataset for its own clips, or a generation
-    output directory for the motions written there.
+    ``sidecar_dir`` is a processed dataset when baking its cond, or a
+    generation output directory for the motions written there.
     """
     path = Path(sidecar_dir) / JOINT_PARTS_FILE
     rows = read_joint_parts_sidecar(path)
@@ -206,6 +229,147 @@ def load_joint_parts(sidecar_dir, species, cond_entry) -> BoundJointParts:
             f'{path} has no row for {species!r}; run tools/prefill_joint_parts.py first.'
         )
     return bind_joint_parts(rows[species], list(cond_entry['joints_names']), cond_entry['parents'])
+
+
+# Per-joint arrays a dataset cond entry carries, baked from its sidecar row by
+# tools/regenerate_dataset_artifacts.py. Leaf removal and bone-length
+# augmentation keep them aligned with the joints they edit.
+JOINT_PARTS_KEY = 'joint_parts'
+JOINT_CONTACT_KEY = 'joint_contact'
+JOINT_PARTS_REVIEWED_KEY = 'joint_parts_reviewed'
+# Fingerprint of the row content the arrays were baked from; a validator
+# compares it with the sidecar to catch an annotation edited after the bake.
+JOINT_PARTS_SIG_KEY = 'joint_parts_sig'
+BAKED_JOINT_PARTS_KEYS = (JOINT_PARTS_KEY, JOINT_CONTACT_KEY, JOINT_PARTS_REVIEWED_KEY, JOINT_PARTS_SIG_KEY)
+
+
+def joint_parts_row_signature(row, joint_names) -> str:
+    """Fingerprint of what a bake takes from ``row``: skeleton, review flag, part and contact."""
+    joints = row['joints']
+    payload = json.dumps(
+        [row['skeleton_sig'], bool(row['reviewed']),
+         [[joints[name]['part'], int(joints[name]['contact'])] for name in joint_names]],
+        separators=(',', ':'),
+    )
+    return hashlib.sha1(payload.encode('utf-8')).hexdigest()[:16]
+
+
+def bake_joint_parts(cond_entry, row) -> None:
+    """Write ``row``, bound to ``cond_entry``'s skeleton, into the entry's baked keys."""
+    joint_names = list(cond_entry['joints_names'])
+    bound = bind_joint_parts(row, joint_names, cond_entry['parents'])
+    cond_entry[JOINT_PARTS_KEY] = bound.part_ids
+    cond_entry[JOINT_CONTACT_KEY] = bound.contact
+    cond_entry[JOINT_PARTS_REVIEWED_KEY] = bound.reviewed
+    cond_entry[JOINT_PARTS_SIG_KEY] = joint_parts_row_signature(row, joint_names)
+
+
+def strip_joint_parts(cond_entry) -> None:
+    for key in BAKED_JOINT_PARTS_KEYS:
+        cond_entry.pop(key, None)
+
+
+def has_joint_parts(cond_entry) -> bool:
+    """True for a dataset species with a baked annotation; a skeleton outside every
+    dataset (``process_new_skeleton``) has none."""
+    return cond_entry.get(JOINT_CONTACT_KEY) is not None
+
+
+def cond_contact_joints(cond_entry) -> list[int]:
+    """Contact joints baked into a dataset cond entry."""
+    if not has_joint_parts(cond_entry):
+        raise JointPartsError(
+            f'cond entry {cond_entry.get("object_type")!r} carries no {JOINT_CONTACT_KEY!r}; '
+            f'run tools/prefill_joint_parts.py, review the row, then '
+            f'tools/regenerate_dataset_artifacts.py --joint-parts-only and merge the cond.'
+        )
+    return [int(index) for index in np.flatnonzero(np.asarray(cond_entry[JOINT_CONTACT_KEY], dtype=bool))]
+
+
+def retarget_target_contacts(cond_entry) -> list[int]:
+    """Contacts a retarget grounds its target on.
+
+    A dataset species uses its annotation. A skeleton outside every dataset
+    is an external rig and takes the prefill heuristic.
+    """
+    if has_joint_parts(cond_entry):
+        return cond_contact_joints(cond_entry)
+    parents = np.asarray(cond_entry['parents'], dtype=np.int64)
+    rest = rest_positions_from_offsets(cond_entry['offsets'], parents)
+    return prefill_contacts(list(cond_entry['joints_names']), parents, rest)
+
+
+def part_class_weights(counts) -> list[float]:
+    """Per-class weights of the part loss from joint counts over the training clips.
+
+    Inverse square root of the frequency, scaled so the expected weight of a
+    labelled joint is 1; a class with no joints gets 0.
+    """
+    counts = np.asarray(counts, dtype=np.float64)
+    if counts.shape != (len(JOINT_PARTS),) or counts.sum() <= 0:
+        raise JointPartsError(f'part counts must be {len(JOINT_PARTS)} non-negative numbers with a positive sum.')
+    frequency = counts / counts.sum()
+    weights = np.where(counts > 0, 1.0 / np.sqrt(np.maximum(frequency, 1e-12)), 0.0)
+    weights /= float((frequency * weights).sum())
+    return [float(value) for value in weights]
+
+
+def joint_parts_row(species, joint_names, parents, part_ids, contact, *, source, src,
+                    part_prob=None, contact_prob=None) -> dict:
+    """A sidecar row for one skeleton from per-joint arrays.
+
+    ``part_prob`` (J, C) and ``contact_prob`` (J,) are recorded per joint when
+    given; :func:`bind_joint_parts` ignores them.
+    """
+    names_by_id = {PART_IDS[name]: name for name in ALL_PART_LABELS}
+    joints = {}
+    for index, name in enumerate(joint_names):
+        part = names_by_id[int(part_ids[index])]
+        entry = {
+            'part': part,
+            'contact': int(bool(contact[index]) and part != HELPER_PART),
+            'src': src,
+            'why': '',
+        }
+        if part_prob is not None:
+            entry['part_prob'] = [round(float(value), 4) for value in part_prob[index]]
+        if contact_prob is not None:
+            entry['contact_prob'] = round(float(contact_prob[index]), 4)
+        joints[str(name)] = entry
+    return {
+        'species': str(species),
+        'skeleton_sig': skeleton_signature(joint_names, parents),
+        'reviewed': False,
+        'source': source,
+        'joints': joints,
+    }
+
+
+def write_output_joint_parts(out_dir, rows) -> list[str]:
+    """Merge ``rows`` into ``<out_dir>/joint_parts.jsonl``; returns warnings.
+
+    A row whose species is already there with the same ``skeleton_sig`` is left
+    as it is, so every motion exported into one directory sees one labelling.
+    One with a different signature (the skeleton changed) is replaced.
+    """
+    path = Path(out_dir) / JOINT_PARTS_FILE
+    existing = dict(read_joint_parts_sidecar(path))
+    warnings = []
+    changed = False
+    for row in rows:
+        old = existing.get(row['species'])
+        if old is not None and old['skeleton_sig'] == row['skeleton_sig']:
+            continue
+        if old is not None:
+            warnings.append(
+                f"{path}: replacing the {row['species']!r} row written for another skeleton "
+                f"({old['skeleton_sig']} -> {row['skeleton_sig']})."
+            )
+        existing[row['species']] = row
+        changed = True
+    if changed:
+        write_joint_parts_sidecar(path, existing.values())
+    return warnings
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +385,8 @@ _NAME_PART_TOKENS = {
         'skirt', 'cape', 'cloak', 'ribbon', 'tassle', 'pendant', 'necklace', 'bell',
         'hat', 'helmet', 'glasses', 'jiggle', 'wiggle', 'muscle', 'fat', 'flap',
         'leaf', 'leaves', 'petal', 'flower', 'rose', 'bud',
+        # Antennae and whisker-like feelers trail the head's motion.
+        'feeler', 'feelers', 'shall',
     },
     'wing': {'wing', 'wings'},
     'fin': {'fin', 'pectoral', 'dorsal', 'caudal', 'anal', 'pelvic', 'gill'},
@@ -229,7 +395,7 @@ _NAME_PART_TOKENS = {
         'head', 'headfeature', 'face', 'ear', 'eye', 'eyelid', 'eyebrow', 'eyeball',
         'pupil', 'mascara', 'jaw', 'mouth', 'tongue', 'lip', 'cheek', 'corner', 'nose',
         'nostril', 'horn', 'horns', 'beak', 'fang', 'fangs', 'tooth', 'teeth',
-        'feeler', 'feelers', 'lure', 'wattle', 'crest', 'crown',
+        'lure', 'wattle', 'crest', 'crown',
         # An elephant's trunk is a nose; the torso is spelled Spine/Chest/Body.
         'trunk',
     },
@@ -268,6 +434,15 @@ _PROP_TOKENS = {
 _BLANKED_SOFT_TOKENS = {'ponytail', 'ponitail', 'robe', 'headband'}
 # A sided "Hip" is the thigh's root; a centred one is the pelvis.
 _SIDED_HIP_TOKEN = 'hip'
+
+# Raw-name words the slim text folds into a distal word: a Biped "HorseLink"
+# (the extra segment of a digitigrade leg) is spelled "Ankle" for T5, but it is
+# still the leg, above the foot.
+_RAW_LEG_SEGMENTS = ('horselink',)
+
+# Words of the joint a hand or foot hangs from: not a contact when it has
+# children (they are the toes or fingers that touch down).
+_NON_CONTACT_ROOT_TOKENS = {'foot', 'hand'}
 
 # Proximal limb words: a contact joint carrying one is still the limb, not its end.
 _PROXIMAL_LIMB_TOKENS = {
@@ -385,6 +560,7 @@ def prefill_joint_parts(cond_entry) -> dict[str, dict]:
             parts[index], src[index], why[index] = HELPER_PART, 'name', 'wrapper'
 
     # Pass 1: names.
+    proximal = [False] * joint_count
     distal = [False] * joint_count
     feather = [False] * joint_count
     tentacle = [False] * joint_count
@@ -392,8 +568,14 @@ def prefill_joint_parts(cond_entry) -> dict[str, dict]:
         if parts[index] is not None:
             continue
         token_set = set(tokens[index])
+        compact = ''.join(ch for ch in raw_names[index].lower() if ch.isalnum())
+        segment = next((word for word in _RAW_LEG_SEGMENTS if word in compact), None)
         part, hit = _name_part(tokens[index], sides[index])
-        if part is not None:
+        if segment is not None:
+            parts[index], src[index] = 'leg', 'name'
+            why[index] = f'{texts[index] or raw_names[index]}; {segment} is a leg segment'
+            proximal[index] = True
+        elif part is not None:
             parts[index], src[index], why[index] = part, 'name', texts[index]
         elif token_set & _TENTACLE_TOKENS:
             tentacle[index] = True
@@ -432,11 +614,12 @@ def prefill_joint_parts(cond_entry) -> dict[str, dict]:
                 parts[index] = 'wing'
 
     # Contact ends of a limb are its hand/foot even when only spelled "Leg".
-    contact_joints, _ = infer_contact_joints(raw_names, parents, rest)
+    contact_joints = prefill_contacts(raw_names, parents, rest)
     contact = np.zeros(joint_count, dtype=bool)
     contact[[int(index) for index in contact_joints]] = True
     for index in range(joint_count):
-        if contact[index] and parts[index] in _DISTAL_OF and not set(tokens[index]) & _PROXIMAL_LIMB_TOKENS:
+        if (contact[index] and parts[index] in _DISTAL_OF and not proximal[index]
+                and not set(tokens[index]) & _PROXIMAL_LIMB_TOKENS):
             parts[index] = _DISTAL_OF[parts[index]]
             why[index] = f'{why[index]}; ground contact, limb end'
 
@@ -555,6 +738,15 @@ def prefill_joint_parts(cond_entry) -> dict[str, dict]:
                 member_part = 'foot'
             parts[member], src[member], why[member] = member_part, 'geometry', reason
 
+    # A joint spelled Foot or Hand with toes or fingers below it is not where
+    # the limb touches down; its toes and fingers keep their contact. Helper
+    # children (IK targets, sockets) do not count.
+    for index in range(joint_count):
+        if set(tokens[index]) & _NON_CONTACT_ROOT_TOKENS and any(
+            parts[child] != HELPER_PART for child in children[index]
+        ):
+            contact[index] = False
+
     result = {}
     for index, name in enumerate(raw_names):
         is_contact = bool(contact[index]) and parts[index] != HELPER_PART
@@ -600,3 +792,363 @@ def merge_prefill(existing_row, prefill, species, skeleton_sig):
     reviewed = bool(existing_row) and existing_row['reviewed'] and not stale
     row = {'species': species, 'skeleton_sig': skeleton_sig, 'reviewed': reviewed, 'joints': joints}
     return row, changed
+
+
+# ---------------------------------------------------------------------------
+# Contact prefill (heuristic)
+# ---------------------------------------------------------------------------
+
+# Leaf name tokens that keep a leaf out of the geometric contact candidates.
+_CONTACT_EXCLUDE_TOKENS = (
+    'jiggle',
+    'twist',
+    'hair',
+    'fur',
+    'beard',
+    'eyebrow',
+    'eyelid',
+    'eyeball',
+    'eye',
+    'ear',
+    'lip',
+    'saddle',
+    'halter',
+    'reins',
+    'handle',
+    'trajectory',
+    'projectile',
+    'magic',
+    'mesh',
+    'ik',
+    'chain',
+    'xtra',
+    'extra',
+    'ponytail',
+    'body',
+    'spine',
+    'shell',
+    'center',
+    'mascara',
+    'container',
+)
+
+# Contact joint detection tokens
+_CONTACT_JOINT_KEYWORDS = (
+    'toe',
+    'foot',
+    'feet',
+    'hoof',
+    'phalanx',
+    'ashi',
+    'ankle',
+    'heel',
+    'paw',
+)
+_CONTACT_JOINT_CONTEXT_KEYWORDS = _CONTACT_JOINT_KEYWORDS + (
+    'leg',
+)
+_CONTACT_JOINT_UPPER_LIMB_TOKENS = (
+    'hand',
+    'finger',
+    'thumb',
+    'arm',
+    'wrist',
+    'elbow',
+    'forearm',
+    'shoulder',
+    'wing',
+)
+_CONTACT_JOINT_WEAK_KEYWORDS = (
+    'leg',
+)
+_CONTACT_GEOMETRY_DISTAL_TOKENS = (
+    'toe',
+    'foot',
+    'feet',
+    'ball',
+    'wrist',
+    'ankle',
+    'hoof',
+    'paw',
+    'phalanx',
+    'claw',
+    'finger',
+    'thumb',
+    'hand',
+    'leg',
+)
+_CONTACT_CHAIN_STOP_TOKENS = (
+    'hip',
+    'hips',
+    'pelvis',
+    'root',
+    'cog',
+    'spine',
+    'chest',
+    'thigh',
+    'knee',
+    'upperleg',
+    'upleg',
+    'neck',
+    'head',
+    'tail',
+    'jaw',
+    'body',
+)
+_CONTACT_CHAIN_INCLUDE_TOKENS = (
+    'toe',
+    'foot',
+    'feet',
+    'hoof',
+    'paw',
+    'phalanx',
+    'claw',
+    'finger',
+    'thumb',
+    'hand',
+    'palm',
+    'ball',
+    'ankle',
+    'wrist',
+)
+_CONTACT_PARENT_OFFSET_RATIO = 0.22
+_CONTACT_PARENT_OFFSET_MIN = 0.10
+_CONTACT_PARENT_OFFSET_CAP = 0.20
+_CONTACT_CUMULATIVE_OFFSET_RATIO = 0.44
+_CONTACT_CUMULATIVE_OFFSET_MIN = 0.15
+_CONTACT_CUMULATIVE_OFFSET_CAP = 0.34
+
+
+def _joint_family_semantic_text(joint_index, joint_names, parents, max_depth=3):
+    semantic_chunks = []
+    current_index = int(joint_index)
+    depth = 0
+    while current_index >= 0 and depth <= max_depth:
+        semantic_chunks.append(_joint_semantic_text(joint_names[current_index]))
+        current_index = int(parents[current_index])
+        depth += 1
+    return ' '.join(chunk for chunk in semantic_chunks if chunk)
+
+
+def _is_informative_joint_name(name):
+    normalized = normalize_joint_name(name)
+    if not normalized:
+        return False
+    tokens = [token for token in normalized.split() if token]
+    return any(len(token) > 1 for token in tokens)
+
+
+def _filter_grounded_joint_indices(candidate_indices, rest_positions, margin_ratio=0.18):
+    if len(candidate_indices) == 0 or len(rest_positions) == 0:
+        return []
+
+    unique_candidates = sorted({int(joint_index) for joint_index in candidate_indices})
+    body_height = max(float(np.ptp(rest_positions[:, 1])), 1e-6)
+    ground_margin = max(body_height * margin_ratio, 1e-3)
+    ground_level = float(np.min(rest_positions[unique_candidates, 1]))
+    return [
+        joint_index
+        for joint_index in unique_candidates
+        if rest_positions[joint_index, 1] <= ground_level + ground_margin
+    ]
+
+
+def _expand_grounded_contact_chain(candidate_indices, grounded_indices, parents, rest_positions, margin_ratio=0.2):
+    if not grounded_indices:
+        return []
+
+    candidate_set = {int(joint_index) for joint_index in candidate_indices}
+    expanded = set(int(joint_index) for joint_index in grounded_indices)
+    body_height = max(float(np.ptp(rest_positions[:, 1])), 1e-6)
+    parent_margin = max(body_height * margin_ratio, 1e-3)
+    frontier = list(expanded)
+
+    while frontier:
+        joint_index = frontier.pop()
+        parent_index = int(parents[joint_index])
+        if parent_index < 0 or parent_index not in candidate_set or parent_index in expanded:
+            continue
+        if abs(float(rest_positions[parent_index, 1] - rest_positions[joint_index, 1])) > parent_margin:
+            continue
+        expanded.add(parent_index)
+        frontier.append(parent_index)
+
+    return sorted(expanded)
+
+
+def _select_grounded_contact_leaves(candidate_indices, joint_names, parents, rest_positions):
+    if len(candidate_indices) == 0:
+        return []
+
+    candidate_indices = sorted({int(joint_index) for joint_index in candidate_indices})
+    body_height = max(float(np.ptp(rest_positions[:, 1])), 1e-6)
+    pair_height_margin = max(body_height * 0.24, 1e-3)
+    single_height_margin = max(body_height * 0.18, 1e-3)
+
+    _, symmetry_partner_indices, _ = infer_symmetry_metadata(joint_names, parents, rest_positions)
+    paired_groups = []
+    paired_joint_indices = set()
+
+    for joint_index in candidate_indices:
+        partner_index = int(symmetry_partner_indices[joint_index])
+        if partner_index < 0 or partner_index not in candidate_indices or joint_index >= partner_index:
+            continue
+        paired_groups.append((
+            float((rest_positions[joint_index, 1] + rest_positions[partner_index, 1]) / 2.0),
+            joint_index,
+            partner_index,
+        ))
+        paired_joint_indices.add(joint_index)
+        paired_joint_indices.add(partner_index)
+
+    selected = set()
+    if paired_groups:
+        min_pair_height = min(group[0] for group in paired_groups)
+        for pair_height, left_index, right_index in paired_groups:
+            if pair_height <= min_pair_height + pair_height_margin:
+                selected.add(left_index)
+                selected.add(right_index)
+
+    if not selected:
+        min_height = float(np.min(rest_positions[candidate_indices, 1]))
+        for joint_index in candidate_indices:
+            if rest_positions[joint_index, 1] <= min_height + single_height_margin:
+                selected.add(joint_index)
+
+    for joint_index in candidate_indices:
+        if joint_index in paired_joint_indices:
+            continue
+        if rest_positions[joint_index, 1] <= min(float(rest_positions[index, 1]) for index in selected) + single_height_margin:
+            selected.add(joint_index)
+
+    return sorted(selected)
+
+
+def _expand_contact_chain_from_leaves(leaf_indices, joint_names, parents, rest_positions, max_depth=4):
+    if not leaf_indices:
+        return []
+
+    body_height = max(float(np.ptp(rest_positions[:, 1])), 1e-6)
+    chain_margin = max(body_height * 0.2, 1e-3)
+    # Cap support-joint backfilling when the parent-child bone itself is too long.
+    # This keeps obvious mid-limb transport bones such as Calf/HorseLink from being
+    # mislabeled as direct contact points, while still allowing short foot/hand/palm
+    # support bones to remain in the contact chain.
+    max_parent_contact_offset = min(
+        max(body_height * _CONTACT_PARENT_OFFSET_RATIO, _CONTACT_PARENT_OFFSET_MIN),
+        _CONTACT_PARENT_OFFSET_CAP,
+    )
+    # Also cap the cumulative distance from the terminal contact leaf. Even when
+    # every individual bone is short, a long multi-bone chain should not turn a
+    # clearly upstream support joint into a direct contact point.
+    max_cumulative_contact_offset = min(
+        max(body_height * _CONTACT_CUMULATIVE_OFFSET_RATIO, _CONTACT_CUMULATIVE_OFFSET_MIN),
+        _CONTACT_CUMULATIVE_OFFSET_CAP,
+    )
+    expanded = set(int(joint_index) for joint_index in leaf_indices)
+
+    for joint_index in leaf_indices:
+        current_index = int(joint_index)
+        cumulative_contact_offset = 0.0
+        for _ in range(max_depth):
+            parent_index = int(parents[current_index])
+            if parent_index < 0:
+                break
+            parent_text = _joint_semantic_text(joint_names[parent_index])
+            if _text_matches_keywords(parent_text, _CONTACT_CHAIN_STOP_TOKENS):
+                break
+            if not _text_matches_keywords(parent_text, _CONTACT_CHAIN_INCLUDE_TOKENS):
+                break
+            parent_contact_offset = float(np.linalg.norm(rest_positions[parent_index] - rest_positions[current_index]))
+            if parent_contact_offset > max_parent_contact_offset:
+                break
+            cumulative_contact_offset += parent_contact_offset
+            if cumulative_contact_offset > max_cumulative_contact_offset:
+                break
+            if abs(float(rest_positions[parent_index, 1] - rest_positions[current_index, 1])) > chain_margin:
+                break
+            expanded.add(parent_index)
+            current_index = parent_index
+
+    return sorted(expanded)
+
+
+def _infer_contact_leaf_candidates(parents, joint_names):
+    """Leaves named as a distal limb part: the pool the geometric contact prefill grounds."""
+    children = child_lists(parents)
+    candidates = []
+    for joint_index, child_indices in enumerate(children):
+        if child_indices or not _is_informative_joint_name(joint_names[joint_index]):
+            continue
+        semantic_text = _joint_semantic_text(joint_names[joint_index])
+        if _text_matches_keywords(semantic_text, _CONTACT_EXCLUDE_TOKENS):
+            continue
+        if _text_matches_keywords(semantic_text, _CONTACT_GEOMETRY_DISTAL_TOKENS):
+            candidates.append(joint_index)
+    return candidates
+
+
+def _infer_contact_joints_from_names(joint_names, parents, rest_positions):
+    strong_candidates = []
+    weak_candidates = []
+    children = child_lists(parents)
+
+    for joint_index, joint_name in enumerate(joint_names):
+        semantic_text = _joint_semantic_text(joint_name)
+        family_text = _joint_family_semantic_text(joint_index, joint_names, parents, max_depth=3)
+        has_upper_limb_context = _text_matches_keywords(family_text, _CONTACT_JOINT_UPPER_LIMB_TOKENS)
+        has_lower_limb_context = _text_matches_keywords(family_text, _CONTACT_JOINT_CONTEXT_KEYWORDS)
+
+        is_strong_contact = _text_matches_keywords(semantic_text, _CONTACT_JOINT_KEYWORDS)
+        is_ball_contact = _text_matches_keywords(semantic_text, ('ball',)) and has_lower_limb_context and not has_upper_limb_context
+        is_claw_contact = _text_matches_keywords(semantic_text, ('claw',)) and has_lower_limb_context and not has_upper_limb_context
+        is_end_site_contact = (
+            _text_matches_keywords(semantic_text, ('nub', 'end site'))
+            and has_lower_limb_context
+            and not has_upper_limb_context
+        )
+
+        if is_strong_contact or is_ball_contact or is_claw_contact or is_end_site_contact:
+            strong_candidates.append(joint_index)
+            continue
+
+        if not children[joint_index] and not has_upper_limb_context and _text_matches_keywords(semantic_text, _CONTACT_JOINT_WEAK_KEYWORDS):
+            weak_candidates.append(joint_index)
+
+    grounded_candidates = _filter_grounded_joint_indices(strong_candidates, rest_positions, margin_ratio=0.24)
+    if grounded_candidates:
+        return _expand_grounded_contact_chain(strong_candidates, grounded_candidates, parents, rest_positions)
+
+    grounded_weak_candidates = _filter_grounded_joint_indices(weak_candidates, rest_positions, margin_ratio=0.24)
+    if grounded_weak_candidates:
+        return grounded_weak_candidates
+
+    return []
+
+
+def _infer_contact_joints_from_geometry(joint_names, rest_positions, parents):
+    if len(rest_positions) == 0:
+        return []
+
+    candidates = _infer_contact_leaf_candidates(parents, joint_names)
+    if not candidates:
+        return []
+
+    grounded_leaves = _select_grounded_contact_leaves(candidates, joint_names, parents, rest_positions)
+    if not grounded_leaves:
+        return []
+
+    return _expand_contact_chain_from_leaves(grounded_leaves, joint_names, parents, rest_positions)
+
+
+def prefill_contacts(joint_names, parents, rest_positions) -> list[int]:
+    """Heuristic ground-contact joints of a skeleton: geometry first, then names.
+
+    The contact prefill of :func:`prefill_joint_parts`, and the only contact
+    source for a rig that has no sidecar row (an external GLB/FBX being
+    exported or retargeted from).
+    """
+    contact_joints = _infer_contact_joints_from_geometry(joint_names, rest_positions, parents)
+    if contact_joints:
+        return contact_joints
+    return _infer_contact_joints_from_names(joint_names, parents, rest_positions)

@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 26
+CKPT_VERSION = 27
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -36,9 +36,12 @@ def joint_condition_schema_versions():
     from data_loaders.truebones.truebones_utils.joint_embedding_text import (
         JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
     )
+    from data_loaders.truebones.truebones_utils.joint_parts import JOINT_PART_SCHEMA_VERSION
     return {
         'joint_struct_schema_version': int(JOINT_STRUCT_FEATURE_SCHEMA_VERSION),
         'joint_name_embedding_schema_version': int(JOINT_NAME_EMBEDDING_SCHEMA_VERSION),
+        # The auxiliary head's output channels are the part classes.
+        'joint_part_schema_version': int(JOINT_PART_SCHEMA_VERSION),
     }
 
 
@@ -257,6 +260,17 @@ def add_model_options(parser):
                             "Anchoring on GT (not rest) preserves genuinely animated bone-length deformation. "
                             "Weighted by alphas_cumprod[t] so it fades out at high noise. Computed on "
                             "denormalized outputs; recommended range ~0.1-0.3.")
+    group.add_argument("--lambda_part", default=0.0, type=float,
+                       help="Weight of the auxiliary body-part loss (0.0=off): cross-entropy of the part "
+                            "head against joint_parts.jsonl, on the joints whose name "
+                            "--joint_name_drop_prob blanked in that sample only (with the name kept, the "
+                            "part is read off the name). Classes are weighted by inverse-sqrt frequency "
+                            "over the training clips. A non-zero --lambda_part or --lambda_contact builds "
+                            "the auxiliary heads (see --part_head_layer).")
+    group.add_argument("--lambda_contact", default=0.0, type=float,
+                       help="Weight of the auxiliary ground-contact loss (0.0=off): binary cross-entropy "
+                            "of the contact head against joint_parts.jsonl, on every non-helper joint "
+                            "(contact is not readable from a name).")
     group.add_argument("--motion_speed_aug", default=1.0, type=float,
                        help="Motion-speed augmentation range R (1.0 = off). Each training clip is first "
                             "time-scaled by a log-uniform ratio in [1/R, R] -- played faster (fewer frames) "
@@ -337,6 +351,10 @@ def add_model_options(parser):
                             "vector elementwise but never hides the joint's identity, so the model is "
                             "never trained to fall back on rest_pose/graph_dist/joints_relations and a "
                             "single rare name token can flip a limb's motion prior. Default 0.0 (off).")
+    group.add_argument("--part_head_layer", default=0, type=int,
+                       help="Decoder layer whose output feeds the auxiliary part / contact heads: the "
+                            "heads read the output after this many layers (0 = half of --layers). Part "
+                            "information is strongest in the shallow layers and fades with depth.")
     group.add_argument("--mirror_twin_drop_prob", default=0.2, type=float,
                        help="Per bilateral twin pair, the probability in training that the pair's "
                             "mirror_twin edge code is replaced by its plain topological code "

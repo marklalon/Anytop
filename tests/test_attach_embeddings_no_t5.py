@@ -17,7 +17,7 @@ def stub_text_builders(monkeypatch):
     texts = {"New": ["Hips", "Left Tentacle", ""]}
     monkeypatch.setattr(jet, "refresh_joint_metadata_in_object_cond", lambda entry: None)
     monkeypatch.setattr(jet, "build_joint_embedding_texts", lambda entry: list(texts[entry["object_type"]]))
-    monkeypatch.setattr(jet, "build_joint_name_inspection_rows", lambda entry, texts: [])
+    monkeypatch.setattr(jet, "build_joint_name_inspection_rows", lambda entry, texts, parts=None: [])
     monkeypatch.setattr(jet, "assert_species_tags_cover", lambda keys: None)
 
     def no_t5(*_args, **_kwargs):

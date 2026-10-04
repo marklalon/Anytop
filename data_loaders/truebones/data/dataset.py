@@ -59,6 +59,13 @@ from data_loaders.truebones.truebones_utils.joint_embedding_text import (
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
+from data_loaders.truebones.truebones_utils.joint_parts import (
+    HELPER_PART_ID,
+    JOINT_CONTACT_KEY,
+    JOINT_PARTS,
+    JOINT_PARTS_KEY,
+    cond_contact_joints,
+)
 from data_loaders.truebones.truebones_utils.leaf_drop import (
     drop_joints_from_cond,
     sample_leaf_drop,
@@ -1495,6 +1502,8 @@ class MotionDataset(data.Dataset):
             return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
                 'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
                 'joint_struct': joint_struct,
+                JOINT_PARTS_KEY: cond.get(JOINT_PARTS_KEY),
+                JOINT_CONTACT_KEY: cond.get(JOINT_CONTACT_KEY),
                 'species_emb': cond.get('species_emb'),
                 'rest_pose_physical': cond['rest_pose'],
                 'rest_pos_ric_hml': cond['rest_pos_ric_hml'],
@@ -1517,6 +1526,8 @@ class MotionDataset(data.Dataset):
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
             'joint_struct': joint_struct,
+            JOINT_PARTS_KEY: cond.get(JOINT_PARTS_KEY),
+            JOINT_CONTACT_KEY: cond.get(JOINT_CONTACT_KEY),
             'species_emb': cond.get('species_emb'),
             'rest_pose_physical': cond['rest_pose'],
             'rest_pos_ric_hml': cond['rest_pos_ric_hml'],
@@ -1581,6 +1592,18 @@ class MotionDataset(data.Dataset):
         
     def __len__(self):
         return len(self.name_list) - self.pointer
+
+    def joint_part_counts(self) -> np.ndarray:
+        """Labelled joints per part class over this split's clips, ``[C]``.
+
+        A clip counts its species' joints once; helpers are not trained on and
+        are left out. The part loss weighs its classes from this.
+        """
+        counts = np.zeros(len(JOINT_PARTS), dtype=np.int64)
+        for name in self.name_list[self.pointer:]:
+            part_ids = np.asarray(self.cond_dict[self.data_dict[name]['object_type']][JOINT_PARTS_KEY])
+            counts += np.bincount(part_ids[part_ids != HELPER_PART_ID], minlength=len(JOINT_PARTS))
+        return counts
 
     def sampler_index_joint_counts(self):
         """Joint count of every index the loader's sampler can yield, in that
@@ -1795,6 +1818,10 @@ class Truebones(data.Dataset):
                     "compute the per-object_subset canonical standardization statistics."
                 )
             cond['joint_mask_candidate_roots'] = _build_joint_mask_candidate_roots(cond)
+            # The baked part / contact annotation feeds the auxiliary head's
+            # targets, leaf removal and bone-length grounding; refuse an entry
+            # without one up front.
+            cond_contact_joints(cond)
 
         motion_metadata_lookup = {
             source.namespace: load_motion_metadata(source.root)

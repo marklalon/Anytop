@@ -126,27 +126,32 @@ class JointNameDropoutTest(unittest.TestCase):
         self.assertEqual(set(off.state_dict()), set(on.state_dict()))
 
     def test_eval_keeps_every_name(self):
-        ip = _make_model(joint_name_drop_prob=1.0).input_process
-        ip.eval()
-        _, _, joints, _ = _joint_cond_inputs()
-        self.assertTrue(torch.equal(ip._drop_joint_names(joints), joints))
+        model = _make_model(joint_name_drop_prob=1.0)
+        model.eval()
+        self.assertIsNone(model._sample_joint_name_drop(2, 4, torch.device('cpu')))
 
     def test_dropped_rows_are_zero(self):
-        ip = _make_model(joint_name_drop_prob=1.0).input_process
-        ip.train()
-        _, _, joints, _ = _joint_cond_inputs()
-        self.assertTrue(torch.equal(ip._drop_joint_names(joints), torch.zeros_like(joints)))
+        """A dropped joint embeds exactly as a joint whose name row is zero."""
+        ip = _make_model().input_process
+        ip.eval()
+        x, rest_pose, joints, _ = _joint_cond_inputs()
+        valid = torch.ones(joints.shape[:2], dtype=torch.bool)
+        struct = _joint_struct(*joints.shape[:2])
+        drop = torch.zeros(joints.shape[:2], dtype=torch.bool)
+        drop[0, 1] = drop[1, 3] = True
+        blanked = joints.masked_fill(drop.unsqueeze(-1), 0.0)
+        with torch.no_grad():
+            dropped = ip(x, rest_pose, joints, None, valid, struct, joint_name_drop=drop)
+            reference = ip(x, rest_pose, blanked, None, valid, struct)
+        self.assertTrue(torch.equal(dropped, reference))
 
     def test_per_joint_rate_matches_prob(self):
-        ip = _make_model(joint_name_drop_prob=0.5).input_process
-        ip.train()
-        joints = torch.randn(256, 8, T5_DIM)
-        dropped = ip._drop_joint_names(joints)
-        rate = (dropped == 0).all(dim=-1).float().mean().item()
+        model = _make_model(joint_name_drop_prob=0.5)
+        model.train()
+        drop = model._sample_joint_name_drop(256, 8, torch.device('cpu'))
+        rate = drop.float().mean().item()
         self.assertGreater(rate, 0.4)
         self.assertLess(rate, 0.6)
-        kept = ~(dropped == 0).all(dim=-1)
-        self.assertTrue(torch.equal(dropped[kept], joints[kept]))
 
     def test_film_sees_the_dropped_names(self):
         """The leak this ordering exists to prevent: if the species FiLM head read
@@ -161,7 +166,8 @@ class JointNameDropoutTest(unittest.TestCase):
         with torch.no_grad():
             ip(x, rest_pose, joints, species,
                torch.ones(joints.shape[:2], dtype=torch.bool),
-               _joint_struct(*joints.shape[:2]))
+               _joint_struct(*joints.shape[:2]),
+               joint_name_drop=torch.ones(joints.shape[:2], dtype=torch.bool))
         joint_part = probe.last_input[..., :T5_DIM]
         self.assertFalse(torch.allclose(joint_part, joints))
         self.assertTrue(torch.equal(joint_part, torch.zeros_like(joints)))
@@ -176,10 +182,10 @@ class JointNameDropoutTest(unittest.TestCase):
         real = model.input_process.forward
 
         def spy(x, rest_pose, joints_embedded_names, species_emb=None, joint_valid=None,
-                joint_struct=None):
+                joint_struct=None, joint_name_drop=None):
             captured['joint_valid'] = joint_valid
             return real(x, rest_pose, joints_embedded_names, species_emb, joint_valid,
-                        joint_struct)
+                        joint_struct, joint_name_drop=joint_name_drop)
 
         model.input_process.forward = spy
         model.seqTransDecoder = _CaptureDecoder()

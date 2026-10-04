@@ -363,7 +363,7 @@ _EMBED_TEXT_BARE_LEG_TOKENS = frozenset({'leg', 'reg'})
 _BARE_LEG_CONTEXT_MAX_LINKS = 4
 
 
-def _bare_leg_means_calf(joint_names, parents, end_effector_joints=(), additional_prefixes=()):
+def _bare_leg_means_calf(joint_names, parents, additional_prefixes=()):
     """Per-joint flag: is this bare "Leg" the segment *below* a named thigh?
 
     The leg-side counterpart of ``_bare_arm_means_upper_arm``. In Mixamo-style
@@ -397,14 +397,13 @@ def _bare_leg_means_calf(joint_names, parents, end_effector_joints=(), additiona
         )
 
     children = child_lists(parents)
-    end_effectors = {int(joint_index) for joint_index in (end_effector_joints or ())}
     flags = [False] * joint_count
     for joint_index in range(joint_count):
         own_tokens = tokens_per_joint[joint_index]
         if len(own_tokens) != 1 or own_tokens[0] not in _EMBED_TEXT_BARE_LEG_TOKENS:
             continue
         # A bare "Leg" with nothing below it is the foot, not the shank.
-        if joint_index in end_effectors or not children[joint_index]:
+        if not children[joint_index]:
             continue
 
         ancestor = int(parents[joint_index])
@@ -712,7 +711,6 @@ def build_joint_embedding_texts(object_cond):
     bare_leg_flags = _bare_leg_means_calf(
         base_joint_names,
         object_cond.get('parents'),
-        end_effector_joints=object_cond.get('end_effector_joints') or (),
         additional_prefixes=species_prefixes,
     )
     mouth_code_flags = _mouth_code_below_head(
@@ -945,13 +943,19 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
     # cond keys are '<namespace>/<species>', which cannot go into a filename;
     # the file token degrades to the plain species name whenever it is unique.
     from .dataset_sources import build_species_file_tokens
+    # Imported here: joint_parts builds on this module's texts.
+    from .joint_parts import JOINT_PARTS_FILE, read_joint_parts_sidecar, species_of
     file_tokens = build_species_file_tokens(cond)
+    part_rows = read_joint_parts_sidecar(pjoin(save_dir, JOINT_PARTS_FILE))
     for object_type in sorted(cond):
         object_cond = cond[object_type]
         embedding_texts = embedding_texts_by_object[object_type]
         inspection_path = pjoin(inspection_dir, f'{file_tokens[object_type]}.json')
+        rows = build_joint_name_inspection_rows(
+            object_cond, embedding_texts, part_rows.get(species_of(object_cond)),
+        )
         with open(inspection_path, 'w', encoding='utf-8') as inspection_file:
-            json.dump(build_joint_name_inspection_rows(object_cond, embedding_texts), inspection_file, indent=2)
+            json.dump(rows, inspection_file, indent=2)
 
     if write_collision_report:
         write_joint_name_collision_report(cond, save_dir)

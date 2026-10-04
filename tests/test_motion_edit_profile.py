@@ -61,6 +61,10 @@ def test_weighted_mean_quat_ignores_sign_and_follows_weights():
 
 # ── skeleton structure ───────────────────────────────────────────────────────
 
+# The biped fixture stands on its ankles and toes.
+_BIPED_CONTACTS = [4, 5, 8, 9]
+
+
 def _biped_cond():
     # root(0) - pelvis(1) - L hip(2) knee(3) ankle(4) toe(5); R hip(6) knee(7) ankle(8) toe(9);
     # spine(10) - head(11); tail(12) - tail tip(13)
@@ -77,7 +81,7 @@ def _biped_cond():
              "r_hip", "r_knee", "r_ankle", "r_toe", "spine", "head", "tail", "tail_tip"]
     return {
         "joints_names": names, "parents": parents, "offsets": offsets,
-        "joint_side_labels": sides, "contact_joints": [4, 5, 8, 9],
+        "joint_side_labels": sides, "joint_contact": np.isin(np.arange(14), _BIPED_CONTACTS),
         "translation_root_index": 0, "axial_avg_len": 0.3, "scale_factor": 1.0,
         "species_tags": ("Biped", "Walking"),
         "canonical_joint_names": ["Root", "Hips", "Left Thigh", "Left Knee", "Left Foot", "Left Toe",
@@ -88,7 +92,7 @@ def _biped_cond():
 
 def test_contact_limbs_leg_length_and_roles():
     cond = _biped_cond()
-    s = SkeletonStructure(cond, cond["contact_joints"])
+    s = SkeletonStructure(cond, _BIPED_CONTACTS)
     assert s.contact_limbs() == {2: [5, 4], 6: [9, 8]}       # lowest-at-rest first
     # hip -> toe: knee 0.45 + ankle 0.45 + toe |(0,-0.05,0.1)|
     expected = 0.9 + np.hypot(0.05, 0.1)
@@ -336,7 +340,7 @@ def test_default_spring_slows_with_chain_length():
 
 def test_swing_length_and_passive_parts():
     cond = _biped_cond()
-    s = SkeletonStructure(cond, cond["contact_joints"])
+    s = SkeletonStructure(cond, _BIPED_CONTACTS)
     assert s.passive_tops(s.passive_candidates()) == [10, 12]
     assert s.swing_length(12) == pytest.approx(0.3)
     assert s.swing_length(13) == pytest.approx(0.3)                 # a leaf: its own bone
@@ -345,7 +349,7 @@ def test_swing_length_and_passive_parts():
 
 def test_passive_additions_bring_subtrees_removals_are_exact():
     cond = _biped_cond()
-    s = SkeletonStructure(cond, cond["contact_joints"])
+    s = SkeletonStructure(cond, _BIPED_CONTACTS)
     parents, names, candidates = s.parents, s.names, s.passive_candidates()
     assert subtree_closure(parents, [10]) == {10, 11}
 
@@ -393,13 +397,13 @@ def test_fallback_borrows_by_canonical_name_within_species_tags():
          "principal_axes": np.eye(3).tolist()}
         for j in range(14)]}
     other_tags = dict(cond, species_tags=("Quadruped", "Walking"))
-    profile = {"contacts": {"used": cond["contact_joints"]}, "needs_fallback": True}
+    profile = {"contacts": {"used": _BIPED_CONTACTS}, "needs_fallback": True}
     apply_fallback(profile, cond, [(cond, donor_profile), (other_tags, {"joints": []})])
     knee = profile["joints"][3]
     assert knee["dof_class"] == "hinge" and knee["fallback_donors"] == 1
     assert knee["confidence"] == 0.0 and profile["fallback"]
 
-    profile = {"contacts": {"used": cond["contact_joints"]}, "needs_fallback": True}
+    profile = {"contacts": {"used": _BIPED_CONTACTS}, "needs_fallback": True}
     apply_fallback(profile, cond, [(other_tags, donor_profile)])
     assert profile["joints"][3]["dof_class"] == "ball"
 
@@ -413,6 +417,7 @@ def test_build_alligator_profile_from_dataset():
     if source is None or not os.path.isfile(os.path.join(source.root, "cond.npy")):
         pytest.skip("truebones/zoo dataset not present")
     from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
+    from data_loaders.truebones.truebones_utils.joint_parts import cond_contact_joints
     from motion_edit.profile.build import build_species_profile, cond_subset
     from motion_edit.profile.data import species_motion_names
 
@@ -428,7 +433,7 @@ def test_build_alligator_profile_from_dataset():
     profile, findings = build_species_profile(source, key, entry, rows, passive_override=override)
     assert findings.clips == len(rows) > 0 and not findings.decode_failures
     assert len(profile["joints"]) == len(entry["parents"])
-    assert profile["contacts"]["used"] == sorted(entry["contact_joints"])
+    assert profile["contacts"]["used"] == cond_contact_joints(entry)
     elbows = [j for j in profile["joints"] if j["name"] in ("R_hiji", "L_hiji")]
     assert all(j["dof_class"] == "hinge" and j["hinge_flex_sign"] != 0 for j in elbows)
     assert "locomotion|walk" in profile["source"]["action_families"]

@@ -77,7 +77,7 @@ JAPANESE_GATED_REPLACEMENTS = {
 }
 
 # Misspellings and abbreviations folded while canonicalizing, so the physics
-# annotation (contacts, end effectors) reads the body part as well as the text
+# annotation (contacts) reads the body part as well as the text
 # does ("Lag" -> "Leg", "Eyeild" -> "Eyelid", "Dn" -> "Down").
 CANONICAL_SPELLING_REPLACEMENTS = {
     'lag': 'Leg',
@@ -468,13 +468,14 @@ def canonical_name_for_bvh(name, fallback_name):
     return fallback_compact or 'Joint'
 
 
-def build_joint_name_inspection_rows(object_cond, embedding_texts):
+def build_joint_name_inspection_rows(object_cond, embedding_texts, joint_parts=None):
+    """One row per joint for the inspection JSON. ``joint_parts`` is the
+    species' sidecar row (``joint_parts.jsonl``), when there is one."""
     raw_names = list(object_cond.get('joints_names') or [])
     canonical_names = list(object_cond.get('canonical_joint_names') or raw_names)
     canonical_bvh_names = list(object_cond.get('canonical_bvh_joint_names') or canonical_names)
     side_labels = list(object_cond.get('joint_side_labels') or ['center'] * len(raw_names))
-    contact_joints = {int(joint_index) for joint_index in list(object_cond.get('contact_joints') or [])}
-    end_effector_joints = {int(joint_index) for joint_index in list(object_cond.get('end_effector_joints') or [])}
+    part_entries = dict(joint_parts['joints']) if joint_parts else {}
 
     inspection_rows = []
     for joint_index, raw_name in enumerate(raw_names):
@@ -488,8 +489,8 @@ def build_joint_name_inspection_rows(object_cond, embedding_texts):
             'embedding_text': str(embedding_text),
             'is_anatomical': bool(str(embedding_text).strip()),
             'side': str(side_labels[joint_index] if joint_index < len(side_labels) else 'center'),
-            'is_contact': bool(joint_index in contact_joints),
-            'is_end_effector': bool(joint_index in end_effector_joints),
+            'part': part_entries.get(str(raw_name), {}).get('part'),
+            'is_contact': bool(part_entries.get(str(raw_name), {}).get('contact', 0)),
         })
     return inspection_rows
 
@@ -711,11 +712,6 @@ def refresh_joint_metadata_in_object_cond(object_cond):
         species_name=object_cond.get('species_name') or object_cond.get('object_type'),
     )
     assign_canonical_joint_names(object_cond, joint_names, semantic_metadata['canonical_joint_names'])
-    object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
-    object_cond['end_effector_names'] = semantic_metadata['end_effector_names']
-    object_cond['contact_joints'] = semantic_metadata['contact_joints']
-    object_cond['contact_joint_names'] = semantic_metadata['contact_joint_names']
-    object_cond['contact_joint_source'] = semantic_metadata['contact_joint_source']
     object_cond['joint_side_labels'] = semantic_metadata['joint_side_labels']
     object_cond['symmetry_partner_indices'] = semantic_metadata['symmetry_partner_indices']
     object_cond['symmetric_joint_pairs'] = semantic_metadata['symmetric_joint_pairs']

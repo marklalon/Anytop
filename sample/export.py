@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from utils.fullbody_ik import DEFAULT_IK_STRETCH_FACTOR
-from utils.npy_restore import write_feature_bvh
+from utils.npy_restore import motion_contact_joints, write_feature_bvh
 
 
 def _zero_root_ric_xz(motion_np, translation_root_index):
@@ -70,13 +70,20 @@ def _export_motion(task):
     cond skeleton in HML space, with the same optional full-body IK.
     """
     motion_np, cond_entry, npy_name, joint_names, out_path, fps, preview_options = task
-    np.save(pjoin(out_path, npy_name), motion_np)
+    npy_path = pjoin(out_path, npy_name)
+    np.save(npy_path, motion_np)
+    # Full-body IK keeps the trunk above the contact limbs: the run's own
+    # joint_parts.jsonl, written before the export.
+    contact_joints = (
+        motion_contact_joints(npy_path, cond_entry) if preview_options['fullbody_ik'] else None
+    )
     write_feature_bvh(
         motion_np,
         cond_entry,
         pjoin(out_path, npy_name.replace('.npy', '.bvh')),
         fps=fps,
         joint_names=joint_names,
+        contact_joints=contact_joints,
         **preview_options,
     )
     return npy_name

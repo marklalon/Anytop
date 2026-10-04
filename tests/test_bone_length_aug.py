@@ -37,7 +37,7 @@ def fixture():
                 joint_side_labels=['center', 'left', 'left', 'left', 'right', 'right', 'right'],
                 canonical_joint_names=['Hips', 'Left Thigh', 'Left Knee', 'Left Foot',
                                        'Right Thigh', 'Right Knee', 'Right Foot'],
-                contact_joints=[3, 6], translation_root_index=0,
+                joint_contact=np.isin(np.arange(7), [3, 6]), translation_root_index=0,
                 canonical_feature_mean=np.zeros(12), canonical_feature_std=np.ones(12),
                 joint_mask_candidate_roots=np.zeros(7), joints_names_embs=np.zeros((7, 4)),
                 joints_graph_dist=np.zeros((7, 7)), joint_relations=np.zeros((7, 7)),
@@ -88,7 +88,7 @@ def test_all_actions_and_missing_labels_are_augmented(label):
 
 def test_velocity_and_authored_deformation_with_rotating_parent():
     motion, cond, metadata = fixture()
-    cond['contact_joints'] = []
+    cond['joint_contact'] = np.zeros(7, dtype=bool)
     cond['canonical_joint_names'] = ['Hips', 'Tail 1', 'Tail 2', 'Tail 3', '', '', '']
     cond['joint_side_labels'] = ['center'] * 7
     rotations = np.zeros((30, 7, 4))
@@ -127,7 +127,7 @@ def test_velocity_and_authored_deformation_with_rotating_parent():
 def test_nonroot_translation_carrier_and_separate_roots(periodic):
     motion, cond, metadata = fixture()
     cond['parents'][4] = -1
-    cond['contact_joints'] = []
+    cond['joint_contact'] = np.zeros(7, dtype=bool)
     cond['canonical_joint_names'] = ['Hips', 'Tail 1', 'Tail 2', 'Tail 3', '', '', '']
     cond['joint_side_labels'] = ['center'] * 7
     cond['translation_root_index'] = metadata['translation_root_index'] = 2
@@ -213,7 +213,7 @@ def test_zero_length_skeleton_is_exportable_with_explicit_note():
 def test_tiny_named_helpers_do_not_hide_real_fallback_bones():
     motion, cond, metadata = fixture()
     cond['canonical_joint_names'] = ['Hips', 'Spine', '', '', '', '', '']
-    cond['contact_joints'] = []
+    cond['joint_contact'] = np.zeros(7, dtype=bool)
     cond['joint_side_labels'] = ['center'] * 7
     cond['offsets'][1] = [1e-9, 0, 0]
     groups = body_groups(cond)
@@ -234,10 +234,10 @@ def test_non_parent_first_joint_order_is_supported():
         cond[key] = cond[key][order]
     for key in ['canonical_joint_names', 'joint_side_labels']:
         cond[key] = [cond[key][j] for j in order]
-    cond['contact_joints'] = [int(inverse[j]) for j in cond['contact_joints']]
+    cond['joint_contact'] = cond['joint_contact'][order]
     out, new_cond, info = augment_bone_lengths(motion[:, order], cond, metadata, rng=random.Random(3))
     assert info['applied'] and np.isfinite(out).all()
-    np.testing.assert_allclose(out[:, cond['contact_joints'], 1], 0, atol=1e-6)
+    np.testing.assert_allclose(out[:, np.flatnonzero(cond['joint_contact']), 1], 0, atol=1e-6)
 
 
 def make_dataset(cls=MotionDataset):

@@ -13,6 +13,7 @@ import re
 
 import numpy as np
 
+from data_loaders.truebones.truebones_utils.joint_parts import cond_contact_joints
 from motion_edit.ik import build_limbs
 
 # Relative group-scale range when a caller does not choose one.
@@ -114,7 +115,7 @@ def body_groups(cond):
 def _body_groups(cond, parents, order, children):
     names = list(cond.get('canonical_joint_names') or cond.get('joints_names') or [])
     sides = list(cond.get('joint_side_labels') or ['center'] * len(parents))
-    contacts = list(cond.get('contact_joints') or [])
+    contacts = cond_contact_joints(cond)
     limbs, _ = build_limbs(parents, sides, contacts, int(cond.get('translation_root_index', 0)))
     groups = {}
     legs = sorted({j for limb in limbs for j in [*limb.chain[1:], limb.foot]})
@@ -184,7 +185,7 @@ def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_A
     old_rest = np.asarray(cond['rest_pos_ric_hml'], dtype=np.float64)
     rest = _scale_positions(old_rest, parents, order, scales)
     # Add rest bone-vector changes to preserve the rest's grounding convention.
-    contacts = list(cond.get('contact_joints') or [])
+    contacts = cond_contact_joints(cond)
     height_shift = float(np.mean(old_rest[contacts, 1] - rest[contacts, 1])) if contacts else 0.0
     rest[:, 1] += height_shift
     new_cond = dict(cond)
