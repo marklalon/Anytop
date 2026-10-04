@@ -18,8 +18,17 @@ from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
 from utils.device_transfer import host_to_device
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
-from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
+from data_loaders.truebones.truebones_utils.canonical_features import (
+    _length_scale_from_cond,
+    canonical_to_physical_hml,
+)
 
+
+# Floor of the rest length that normalizes the bone-vector loss, as a fraction
+# of the skeleton's length scale L: bones shorter than this (finger tips, toe
+# segments) are weighted as if they had this length, which bounds how much
+# louder the shortest bones can be than an L-long one.
+BONE_REST_FLOOR_FRAC = 0.1
 
 _EXTRACT_TENSOR_CACHE = {}
 _EXTRACT_TENSOR_CACHE_FINALIZERS = {}
@@ -519,42 +528,49 @@ class GaussianDiffusion:
         loss_val = (loss * valid).sum() / valid.sum().clamp(min=1)
         return loss_val
 
-    def _masked_smooth_l1(self, x, mask, beta=0.1):
+    def _masked_smooth_l1(self, x, mask, beta=0.1, weight=None):
         """Smooth-L1 (Huber) of ``x`` averaged over entries where ``mask`` > 0.
 
-        ``beta`` is small so the relative bone-length errors (typically << 1)
-        stay in the quadratic regime while a few gross outliers are linearized
-        (robust). ``mask`` and ``x`` broadcast to the same shape.
+        ``beta`` is small so the relative bone errors (typically << 1) stay in
+        the quadratic regime while a few gross outliers are linearized (robust).
+        ``weight`` scales entries without entering the denominator, so a weight
+        below one lowers the loss instead of renormalizing it away. ``mask``,
+        ``weight`` and ``x`` broadcast to the same shape.
         """
         absx = x.abs()
         huber = th.where(absx < beta, 0.5 * x * x / beta, absx - 0.5 * beta)
         denom = mask.sum().clamp(min=1.0)
+        if weight is not None:
+            huber = huber * weight
         return (huber * mask).sum() / denom
 
-    def bone_length_consistency_loss(self, pred_physical, target_physical, spat_mask, y):
-        """Target-relative, rest-length-normalized bone-length loss (V1).
+    def bone_vector_consistency_loss(self, pred_physical, target_physical, spat_mask, y, t=None):
+        """Target-relative, rest-length-normalized parent->child bone-vector loss.
 
-        Penalizes each predicted bone length's deviation from the GROUND-TRUTH
-        bone length at the same frame, normalized by the rest bone length.
+        For every bone ``v_j = p_j - p_parent`` on the position channel it
+        penalizes ``|v_pred - v_gt| / max(rest_j, BONE_REST_FLOOR_FRAC * L)``
+        through a smooth-L1. The vector difference carries both the bone's
+        length error and its direction error (about ``length * angle``), so a
+        bone that keeps its length but points the wrong way is penalized too.
 
-        Why normalized by rest length: ``l_simple`` weights every joint uniformly
-        in standardized space, and -- since canonical_features.collapse_stat_blocks
-        collapsed each feature block's std to one scalar -- every axis within a
-        block uniformly too. (Before that collapse the per-channel std made
-        ``1 / std`` an implicit per-axis weight that under-penalized the vertical
-        position axis by up to 4.1x; the uniformity claimed here held over joints
-        only.) What stays
-        non-uniform is bone *scale*: a fixed position error is a tiny fraction of
-        a long proximal bone but a huge fraction of a short distal one -- exactly
-        why distal bones stretch on novel skeletons. Dividing the length error by
-        the rest bone length gives short/distal bones proportionally larger
-        gradient, the signal ``l_simple`` structurally omits (and the reason a
-        plain absolute bone L2 was redundant with it).
+        Why normalized by rest length: ``l_simple`` weights every joint's
+        absolute position uniformly in standardized space, so a fixed position
+        error is a tiny fraction of a long proximal bone but several bone
+        lengths on a short distal one -- distal bones are left nearly
+        unconstrained in both length and direction. Dividing by the rest bone
+        length gives them proportionally larger gradient, the signal
+        ``l_simple`` structurally omits (and the reason an unnormalized bone
+        L2 is redundant with it). The floor at ``BONE_REST_FLOOR_FRAC * L``
+        bounds that amplification so the shortest bones cannot dominate.
 
         Why the target is GT (not rest): anchoring on the ground-truth per-frame
-        length preserves genuinely animated bone-length deformation -- the loss
-        only tracks GT's own length trajectory, so species that legitimately
-        stretch a bone are not fought.
+        bone vector preserves genuinely animated bone-length deformation.
+
+        Why weighted by ``alphas_cumprod[t]``: at high noise the MSE-optimal x0
+        is a posterior mean whose averaged poses have shortened, blurred bones;
+        holding those to a GT bone vector fights ``l_simple``. The weight fades
+        the term out where the signal fraction is small. ``t=None`` means
+        unweighted.
 
         Returns a scalar loss.
         """
@@ -563,7 +579,7 @@ class GaussianDiffusion:
         parents_list = (y or {}).get('parents')
         if parents_list is None:
             raise ValueError(
-                "bone_length_consistency_loss requires y['parents'] (per-sample "
+                "bone_vector_consistency_loss requires y['parents'] (per-sample "
                 "parent arrays from the collate); none were provided."
             )
         # Rest bone lengths MUST come from the PHYSICAL rest pose. The canonical
@@ -578,7 +594,7 @@ class GaussianDiffusion:
                 rest_pos = rest_physical[..., 0:3]
         if rest_pos is None:
             raise ValueError(
-                "bone_length_consistency_loss requires physical rest positions "
+                "bone_vector_consistency_loss requires physical rest positions "
                 "(y['rest_pos_ric_hml'] or y['rest_pose_physical']) to normalize "
                 "by rest bone length; y['rest_pose'] is the canonical rest feature "
                 "(zero position residual at rest) and would make this loss "
@@ -603,8 +619,8 @@ class GaussianDiffusion:
         pos_tgt = target_physical[:, :, 0:3, :]
 
         gather_bt = parents_idx.view(bs, max_joints, 1, 1).expand(-1, -1, 3, n_frames)
-        len_pred = (pos_pred - th.gather(pos_pred, 1, gather_bt)).norm(dim=2)   # [bs, J, T]
-        len_tgt = (pos_tgt - th.gather(pos_tgt, 1, gather_bt)).norm(dim=2)
+        vec_pred = pos_pred - th.gather(pos_pred, 1, gather_bt)               # [bs, J, 3, T]
+        vec_tgt = pos_tgt - th.gather(pos_tgt, 1, gather_bt)
         gather_r = parents_idx.view(bs, max_joints, 1).expand(-1, -1, 3)
         rest_len = (rest_pos - th.gather(rest_pos, 1, gather_r)).norm(dim=2)    # [bs, J]
 
@@ -612,11 +628,21 @@ class GaussianDiffusion:
         # rest length (skip zero-length bones, e.g. zero-offset leaves).
         joint_valid = spat_mask.float().transpose(1, 3).reshape(bs, max_joints) > 0.5
         bone_valid = joint_valid & parent_is_bone & (rest_len > 1e-4)          # [bs, J]
-        inv_rest = (1.0 / (rest_len + 1e-4)).unsqueeze(-1)                     # [bs, J, 1]
 
-        rel = (len_pred - len_tgt) * inv_rest                                 # [bs, J, T]
-        valid_bt = bone_valid.unsqueeze(-1).float().expand(-1, -1, n_frames)
-        return self._masked_smooth_l1(rel, valid_bt)
+        length_scale = th.as_tensor(
+            _length_scale_from_cond(y, like=pred_physical),
+            dtype=pred_physical.dtype, device=device,
+        ).reshape(-1)
+        length_scale = length_scale.expand(bs) if length_scale.numel() == 1 else length_scale
+        rest_floor = (BONE_REST_FLOOR_FRAC * length_scale).view(bs, 1)
+        inv_rest = (1.0 / th.maximum(rest_len, rest_floor)).unsqueeze(-1)       # [bs, J, 1]
+
+        rel = (vec_pred - vec_tgt).norm(dim=2) * inv_rest                     # [bs, J, T]
+        valid_bt = bone_valid.unsqueeze(-1).to(pred_physical.dtype).expand(-1, -1, n_frames)
+        signal = None
+        if t is not None:
+            signal = extract_into_tensor(self.alphas_cumprod, t, (bs, 1, 1)).to(pred_physical.dtype)
+        return self._masked_smooth_l1(rel, valid_bt, weight=signal)
 
     def _coerce_bool_batch(self, value, batch_size, device, default=False):
         if value is None:
@@ -1948,9 +1974,9 @@ class GaussianDiffusion:
                     terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
 
                 if self.lambda_bone > 0.:
-                    terms["bone_loss"] = self.bone_length_consistency_loss(
+                    terms["bone_loss"] = self.bone_vector_consistency_loss(
                         model_output_physical, target_physical,
-                        joints_padding_mask_fp32, y_for_decode,
+                        joints_padding_mask_fp32, y_for_decode, t=t,
                     )
                     terms["loss"] = terms["loss"] + self.lambda_bone * terms["bone_loss"]
 

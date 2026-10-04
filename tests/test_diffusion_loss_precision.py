@@ -95,24 +95,96 @@ class _CaptureDecoder(nn.Module):
         return kwargs["tgt"]
 
 
-class BoneLengthLossTests(unittest.TestCase):
-    """Regression tests for bone_length_consistency_loss's rest-length source.
+class BoneVectorLossTests(unittest.TestCase):
+    """Tests for bone_vector_consistency_loss.
 
-    The loss normalizes per-frame bone-length errors by the PHYSICAL rest bone
+    The loss normalizes per-frame bone-vector errors by the PHYSICAL rest bone
     length. y['rest_pose'] is the canonical rest feature whose position channel
     is the rest-centered residual (exactly zero at rest), so using it made every
     rest bone length read as 0, masked out every bone, and silently zeroed the
     whole loss regardless of lambda_bone.
     """
 
-    def _make_diffusion(self) -> GaussianDiffusion:
+    def _make_diffusion(self, betas=(0.001, 0.002, 0.003)) -> GaussianDiffusion:
         return GaussianDiffusion(
-            betas=np.array([0.001, 0.002, 0.003], dtype=np.float64),
+            betas=np.array(betas, dtype=np.float64),
             model_mean_type=ModelMeanType.START_X,
             model_var_type=ModelVarType.FIXED_LARGE,
             loss_type=LossType.MSE,
             lambda_bone=0.2,
         )
+
+    @staticmethod
+    def _chain(rest_pos, n_frames=4):
+        rest_pos = np.asarray(rest_pos, dtype=np.float32)
+        n = rest_pos.shape[0]
+        y = {
+            "parents": [np.arange(-1, n - 1, dtype=np.int64)],
+            "rest_pos_ric_hml": torch.from_numpy(rest_pos).unsqueeze(0),
+            "rest_length_scale": torch.tensor([1.0]),
+        }
+        target = torch.zeros(1, n, 12, n_frames)
+        target[:, :, 0:3, :] = torch.from_numpy(rest_pos).view(1, n, 3, 1).expand(1, n, 3, n_frames)
+        return y, target, torch.ones(1, 1, 1, n)
+
+    def test_direction_error_with_exact_length_is_penalized(self):
+        diffusion = self._make_diffusion()
+        y, target, spat_mask = self._chain([[0, 0, 0], [1, 0, 0], [2, 0, 0]])
+        pred = target.clone()
+        # Swing bone 1->2 by 90 degrees about z: same length, wrong direction.
+        pred[0, 2, 0:3, :] = torch.tensor([1.0, 1.0, 0.0]).view(3, 1)
+        loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
+        # |dv| = sqrt(2), rest = 1 -> linear Huber branch: sqrt(2) - 0.05, over 2 bones.
+        expected = (np.sqrt(2.0) - 0.05) / 2.0
+        self.assertAlmostEqual(loss.item(), expected, places=5)
+
+    def test_rigid_translation_is_free(self):
+        diffusion = self._make_diffusion()
+        y, target, spat_mask = self._chain([[0, 0, 0], [1, 0, 0], [2, 0, 0]])
+        pred = target.clone()
+        pred[:, :, 0:3, :] += torch.tensor([0.3, -0.2, 0.5]).view(1, 1, 3, 1)
+        loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
+        self.assertAlmostEqual(loss.item(), 0.0, places=6)
+
+    def test_short_bone_normalization_is_floored(self):
+        diffusion = self._make_diffusion()
+        # Bone 1->2 is 0.01 long, below BONE_REST_FLOOR_FRAC * L = 0.1.
+        y, target, spat_mask = self._chain([[0, 0, 0], [1, 0, 0], [1.01, 0, 0]])
+        pred = target.clone()
+        pred[0, 2, 0, :] += 0.005
+        loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
+        rel = 0.005 / 0.1  # floored rest, not 0.005 / 0.01
+        expected = (0.5 * rel * rel / 0.1) / 2.0
+        self.assertAlmostEqual(loss.item(), expected, places=5)
+
+    def test_gradient_is_finite_on_exact_and_padded_bones(self):
+        diffusion = self._make_diffusion()
+        y, target, _ = self._chain([[0, 0, 0], [1, 0, 0], [2, 0, 0]])
+        # One padded joint row: zero positions on both sides, masked out.
+        target = torch.cat([target, torch.zeros(1, 1, 12, target.shape[-1])], dim=1)
+        y["rest_pos_ric_hml"] = torch.cat([y["rest_pos_ric_hml"], torch.zeros(1, 1, 3)], dim=1)
+        spat_mask = torch.tensor([1.0, 1.0, 1.0, 0.0]).view(1, 1, 1, 4)
+        pred = target.clone()
+        pred[0, 2, 0, :] += 0.2
+        pred.requires_grad_(True)
+        loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y, t=torch.tensor([1]))
+        loss.backward()
+        self.assertTrue(torch.isfinite(pred.grad).all())
+        self.assertGreater(pred.grad.abs().sum().item(), 0.0)
+        self.assertEqual(pred.grad[0, 3].abs().sum().item(), 0.0)
+
+    def test_high_noise_timesteps_are_downweighted(self):
+        diffusion = self._make_diffusion(betas=(0.01, 0.5, 0.9))
+        y, target, spat_mask = self._chain([[0, 0, 0], [1, 0, 0], [2, 0, 0]])
+        pred = target.clone()
+        pred[0, 2, 0, :] += 0.3
+        unweighted = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
+        low = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y, t=torch.tensor([0]))
+        high = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y, t=torch.tensor([2]))
+        alphas_cumprod = diffusion.alphas_cumprod
+        self.assertAlmostEqual(low.item(), unweighted.item() * alphas_cumprod[0], places=6)
+        self.assertAlmostEqual(high.item(), unweighted.item() * alphas_cumprod[2], places=6)
+        self.assertLess(high.item(), 0.1 * low.item())
 
     def test_bone_loss_nonzero_when_predicted_lengths_differ(self):
         diffusion = self._make_diffusion()
@@ -133,12 +205,12 @@ class BoneLengthLossTests(unittest.TestCase):
         pred[0, 1, 0, :] += 0.1
         spat_mask = torch.ones(1, 1, 1, 3)
 
-        loss = diffusion.bone_length_consistency_loss(pred, target, spat_mask, y)
+        loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
         self.assertTrue(torch.isfinite(loss))
         self.assertGreater(loss.item(), 0.0)
 
         # Exact match -> zero loss.
-        exact = diffusion.bone_length_consistency_loss(target, target, spat_mask, y)
+        exact = diffusion.bone_vector_consistency_loss(target, target, spat_mask, y)
         self.assertEqual(exact.item(), 0.0)
 
     def test_bone_loss_rejects_canonical_rest_pose_only(self):
@@ -152,7 +224,7 @@ class BoneLengthLossTests(unittest.TestCase):
         }
         target = torch.zeros(1, 3, 12, 4)
         with self.assertRaises(ValueError):
-            diffusion.bone_length_consistency_loss(
+            diffusion.bone_vector_consistency_loss(
                 target, target, torch.ones(1, 1, 1, 3), y
             )
 
@@ -173,7 +245,7 @@ class BoneLengthLossTests(unittest.TestCase):
         target[:, :, 0:3, :] = torch.from_numpy(rest_pos).view(1, 3, 3, 1).expand(1, 3, 3, n_frames)
         pred = target.clone()
         pred[0, 2, 0, :] += 0.2  # stretch bone 1->2 by 20%
-        loss = diffusion.bone_length_consistency_loss(
+        loss = diffusion.bone_vector_consistency_loss(
             pred, target, torch.ones(1, 1, 1, 3), y
         )
         self.assertGreater(loss.item(), 0.0)

@@ -4,7 +4,7 @@ REM script, so chained calls cannot overflow cmd.exe's 8191-character limit.
 setlocal
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_all_v41
+set RUN_NAME=merged_all_v42
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize the
@@ -67,6 +67,7 @@ pushd "%SCRIPT_DIR%"
 	--lambda_loop_root_closure 0.04 ^
 	--lambda_vel 0.2 ^
 	--lambda_geo 0.1 ^
+	--lambda_bone 0.1 ^
 	--motion_cache_size 32768 ^
 	--amp_dtype fp16 ^
 	--main_process_prefetch_batches 64 ^

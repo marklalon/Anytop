@@ -249,12 +249,14 @@ def add_model_options(parser):
                             "1.0 is an order of magnitude above it. loop_root_xz_drift (the per-cycle "
                             "seam pop in physical units) is logged whenever this or --lambda_loop_wrap is on.")
     group.add_argument("--lambda_bone", default=0.0, type=float,
-                       help="Weight for the target-relative, rest-length-normalized bone-length loss (0.0=off). "
-                            "Penalizes each predicted bone length's deviation from the GROUND-TRUTH bone length "
-                            "at the same frame, normalized by the rest bone length so short/distal bones (which "
-                            "l_simple under-weights and which stretch most on novel skeletons) get proportionally "
-                            "larger gradient. Anchoring on GT (not rest) preserves genuinely animated bone-length "
-                            "deformation. Computed on denormalized outputs; recommended range ~0.1-0.3.")
+                       help="Weight for the target-relative, rest-length-normalized bone-vector loss (0.0=off). "
+                            "Penalizes |v_pred - v_gt| for every parent->child bone vector of the position "
+                            "channel, i.e. both the bone's length and its direction, divided by the rest bone "
+                            "length (floored at a fraction of the skeleton length scale) so short/distal bones, "
+                            "which l_simple leaves nearly unconstrained, get proportionally larger gradient. "
+                            "Anchoring on GT (not rest) preserves genuinely animated bone-length deformation. "
+                            "Weighted by alphas_cumprod[t] so it fades out at high noise. Computed on "
+                            "denormalized outputs; recommended range ~0.1-0.3.")
     group.add_argument("--motion_speed_aug", default=1.0, type=float,
                        help="Motion-speed augmentation range R (1.0 = off). Each training clip is first "
                             "time-scaled by a log-uniform ratio in [1/R, R] -- played faster (fewer frames) "
