@@ -16,6 +16,9 @@ from data_loaders.truebones.data.dataset import MotionDataset
     ["--mode", "loop", "--mode", "leaf-drop"],
     ["--mode", "motion-speed", "--motion-speed-aug", "0.9"],
     ["--mode", "loop", "--loop-only"],
+    ["--mode", "bone-length", "--bone-length-aug", "0"],
+    ["--mode", "bone-length", "--bone-length-aug", "1"],
+    ["--mode", "bone-length", "--bone-length-aug", "nan"],
 ])
 def test_cli_rejects_missing_mixed_or_disabled_mode(monkeypatch, argv):
     monkeypatch.setattr(sys, "argv", ["preview", *argv])
@@ -24,13 +27,13 @@ def test_cli_rejects_missing_mixed_or_disabled_mode(monkeypatch, argv):
     assert error.value.code == 2
 
 
-@pytest.mark.parametrize("mode", ["loop", "motion-speed", "leaf-drop"])
+@pytest.mark.parametrize("mode", ["loop", "motion-speed", "leaf-drop", "bone-length"])
 def test_cli_accepts_one_mode(monkeypatch, mode):
     monkeypatch.setattr(sys, "argv", ["preview", "--mode", mode])
     assert parse_args().mode == mode
 
 
-@pytest.mark.parametrize("mode", ["motion-speed", "leaf-drop"])
+@pytest.mark.parametrize("mode", ["motion-speed", "leaf-drop", "bone-length"])
 def test_other_modes_bypass_loop_stages_without_mutating_source(monkeypatch, mode):
     dataset = PreviewMotionDataset.__new__(PreviewMotionDataset)
     dataset.opt = SimpleNamespace(preview_mode=mode)

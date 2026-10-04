@@ -38,6 +38,8 @@ pushd "%SCRIPT_DIR%"
 	--species_film_bottleneck 128 ^
 	--species_joint_cond ^
 	--leaf_drop_prob 0.2 ^
+	--bone_length_aug_prob 0.5 ^
+	--bone_length_aug 0.2 ^
 	--motion_speed_aug 1.3 ^
 	--loop_cond_prob 0.8 ^
 	--cross_limb_dim 128 ^
@@ -54,14 +56,14 @@ pushd "%SCRIPT_DIR%"
 	--num_steps 300000 ^
 	--dropout_prob 0.1 ^
 	--action_label_cfg_drop_prob 0.2 ^
-	--joint_mask_prob 0.3 ^
+	--joint_mask_prob 0.2 ^
 	--joint_mask_budget 0.15 ^
 	--unreliable_mask_drop_prob 0.2 ^
 	--renoise_same_level_prob 0.8 ^
 	--joint_name_drop_prob 0.15 ^
 	--direction_slot_drop_prob 0.15 ^
 	--modifier_slot_drop_prob 0.15 ^
-	--temporal_span_mask_prob 0.3 ^
+	--temporal_span_mask_prob 0.2 ^
 	--temporal_span_seam_loss_weight 0.2 ^
 	--lambda_loop_wrap 0.04 ^
 	--lambda_loop_root_closure 0.04 ^

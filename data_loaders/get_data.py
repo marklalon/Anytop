@@ -11,6 +11,7 @@ from data_loaders.joint_buckets import (
 )
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import Truebones
+from data_loaders.truebones.truebones_utils.bone_length_aug import DEFAULT_BONE_LENGTH_AUG
 from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
 
 
@@ -77,6 +78,8 @@ def get_dataset(
     motion_speed_aug_prob=1.0,
     loop_tile_single_prob=0.5,
     leaf_drop_prob=0.0,
+    bone_length_aug_prob=0.0,
+    bone_length_aug=DEFAULT_BONE_LENGTH_AUG,
     cond_path=None,
     species_table=None,
 ):
@@ -98,6 +101,8 @@ def get_dataset(
         motion_speed_aug_prob=motion_speed_aug_prob,
         loop_tile_single_prob=loop_tile_single_prob,
         leaf_drop_prob=leaf_drop_prob,
+        bone_length_aug_prob=bone_length_aug_prob,
+        bone_length_aug=bone_length_aug,
         cond_path=cond_path,
         species_table=species_table,
     )
@@ -128,6 +133,8 @@ def get_dataset_loader(
     motion_speed_aug_prob=1.0,
     loop_tile_single_prob=0.5,
     leaf_drop_prob=0.0,
+    bone_length_aug_prob=0.0,
+    bone_length_aug=DEFAULT_BONE_LENGTH_AUG,
     cond_path=None,
     joint_buckets=JOINT_BUCKETS,
     species_table=None,
@@ -155,6 +162,8 @@ def get_dataset_loader(
         motion_speed_aug_prob=motion_speed_aug_prob,
         loop_tile_single_prob=loop_tile_single_prob,
         leaf_drop_prob=leaf_drop_prob,
+        bone_length_aug_prob=bone_length_aug_prob,
+        bone_length_aug=bone_length_aug,
         cond_path=cond_path,
         species_table=species_table,
     )

@@ -10,6 +10,8 @@ probability 100%; other augmentations are disabled:
   motion-speed  — time scaling with range --motion-speed-aug (default: 1.3,
                   matching train_all.bat; 1.0 disables random speed changes)
   leaf-drop     — remove eligible leaf joints and export the reduced skeleton
+  bone-length   — symmetric body proportions, paired original/augmented BVHs
+                  with actual scales in filenames and contact residuals in logs
 
 All modes keep training's automatic speed fitting for phase-anchored actions,
 capped by MAX_FIT_SPEEDUP. Clips still above the source-length budget are randomly
@@ -37,7 +39,8 @@ Usage
 
 Arguments
 ---------
-  --mode              Required: loop / motion-speed / leaf-drop (one only)
+  --mode              Required: loop / motion-speed / leaf-drop / bone-length (one only)
+  --bone-length-aug   Relative group-scale range (default: 0.1 = +/-10%)
   --n                 Number of samples to export  (default: 10)
   --num-frames        Window length in frames, must match --num_frames in training (default: 60)
   --motion-speed-aug  Speed range R >= 1, log-uniform in [1/R, R] (default: 1.3)
@@ -102,7 +105,10 @@ class PreviewMotionDataset(MotionDataset):
         if self.opt.preview_mode != "loop":
             # loop_cond_prob=0 only hides the condition; it still rolls/tiles.
             data = dict(data)
+            source_is_loop = bool(data['motion_metadata'].get('is_loop', False))
             data["motion_metadata"] = dict(data["motion_metadata"], is_loop=False)
+            if self.opt.preview_mode == 'bone-length':
+                data['motion_metadata']['bone_length_source_is_loop'] = source_is_loop
         return super()._prepare_sample(name, data, **kwargs)
 
     def _sample_motion_speed_target_length(
@@ -187,9 +193,11 @@ def parse_args() -> argparse.Namespace:
         description="Export augmented training motions as BVH files for manual verification."
     )
     p.add_argument("--mode", required=True, action=_SingleMode,
-                   choices=("loop", "motion-speed", "leaf-drop"),
+                   choices=("loop", "motion-speed", "leaf-drop", "bone-length"),
                    help="Preview exactly one augmentation, enabled with probability 100%%.")
     p.add_argument("--n", type=int, default=10, help="Number of samples to export.")
+    p.add_argument('--bone-length-aug', type=float, default=0.1,
+                   help='Relative body-proportion range; 0.1 = +/-10%% (bone-length mode only).')
     p.add_argument("--num-frames", type=int, default=60,
                    help="Temporal window length in frames (must match --num_frames in training).")
     p.add_argument("--loop-tile-single-prob", type=float, default=0.5,
@@ -220,6 +228,10 @@ def parse_args() -> argparse.Namespace:
         p.error("--motion-speed-aug must be finite and >= 1 in motion-speed mode")
     if not 0.0 <= args.loop_tile_single_prob <= 1.0:
         p.error("--loop-tile-single-prob must be in [0, 1]")
+    if args.mode == 'bone-length' and (
+        not np.isfinite(args.bone_length_aug) or not 0.0 < args.bone_length_aug < 1.0
+    ):
+        p.error('--bone-length-aug must be finite and in (0, 1) in bone-length mode')
     if args.n <= 0 or args.num_frames <= 0:
         p.error("--n and --num-frames must be positive")
     return args
@@ -265,6 +277,8 @@ def main() -> int:
     opt.motion_speed_aug = args.motion_speed_aug if args.mode == "motion-speed" else 1.0
     opt.motion_speed_aug_prob = 1.0 if args.mode == "motion-speed" else 0.0
     opt.leaf_drop_prob = 1.0 if args.mode == "leaf-drop" else 0.0
+    opt.bone_length_aug_prob = 1.0 if args.mode == 'bone-length' else 0.0
+    opt.bone_length_aug = args.bone_length_aug
     opt.loop_tile_single_prob = args.loop_tile_single_prob
     opt.motion_cache_size = 0  # no cache needed for sampling
 
@@ -306,6 +320,8 @@ def main() -> int:
         return 1
 
     candidate_names = list(dataset.name_list)
+    if args.mode == 'bone-length':
+        print(f'[INFO] Bone-length candidates (all actions and skeletons): {len(candidate_names)}')
     if args.mode == "loop":
         candidate_names = [
             name for name in candidate_names
@@ -358,6 +374,10 @@ def main() -> int:
             ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 
             object_cond = aug_info["object_cond"]
+            bone_info = aug_info.get('bone_length_aug', {})
+            if args.mode == 'bone-length':
+                if not bone_info.get('applied'):
+                    raise _AugmentationNotApplicable(bone_info.get('skip_reason', 'No eligible body groups.'))
             leaf_drop_count = int(aug_info.get("leaf_drop_count", 0))
             if args.mode == "leaf-drop" and leaf_drop_count == 0:
                 raise _AugmentationNotApplicable("No eligible leaf joints to drop.")
@@ -425,9 +445,32 @@ def main() -> int:
                 tags.append(f"spd{motion_speed_applied:.3f}")
             if leaf_drop_count:
                 tags.append(f"drop{leaf_drop_count}j")
+            if args.mode == 'bone-length':
+                tags.extend(f'{group}{factor:.3f}' for group, factor in bone_info['scales'].items())
 
             fname = f"{stem}__{'+'.join(tags)}.bvh"
             save_path = output_dir / fname
+
+            if args.mode == 'bone-length':
+                # Replay the exact crop/resample on the original skeleton.
+                # Bone draws have already advanced RNG, so start from the state
+                # immediately before the augmented sample's temporal stages.
+                post_state = random.getstate()
+                old_prob = opt.bone_length_aug_prob
+                try:
+                    opt.bone_length_aug_prob = 0.0
+                    random.setstate(aug_info['bone_length_rng_state'])
+                    baseline = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
+                finally:
+                    opt.bone_length_aug_prob = old_prob
+                    random.setstate(post_state)
+                baseline_cond = baseline[13]['object_cond']
+                baseline_raw = canonical_to_physical_hml(baseline[0], baseline_cond).astype(np.float32)
+                if baseline_raw.shape[0] != export_frames:
+                    baseline_raw = resample_motion_features(baseline_raw, export_frames, periodic=False)
+                original_path = output_dir / f'{stem}__original.bvh'
+                if not _export_bvh(original_path, baseline_raw, joints_names, baseline_cond):
+                    raise RuntimeError('Original comparison BVH export failed.')
 
             ok = _export_bvh(
                 save_path,
@@ -449,6 +492,10 @@ def main() -> int:
                     speed_note = f", speed={motion_speed_applied:.3f}"
                 if leaf_drop_count:
                     speed_note += f", dropped={leaf_drop_count}j, kept={n_joints}j"
+                if args.mode == 'bone-length':
+                    speed_note += f", scales={bone_info['scales']}, contact_ik=off"
+                    if bone_info['notes']:
+                        speed_note += f", notes={'; '.join(bone_info['notes'])}"
                 print(f"OK  → {save_path.name}  [{export_frames}f, {object_type}{loop_note}{speed_note}]")
                 exported += 1
             else:
@@ -470,7 +517,7 @@ def main() -> int:
         print(f"       {skipped} clip(s) skipped — requested augmentation not applicable.")
     if failed:
         print(f"       {failed} file(s) failed — check error messages above.")
-    return 1 if failed else 0
+    return 1 if failed or (args.mode == 'bone-length' and exported == 0) else 0
 
 
 if __name__ == "__main__":

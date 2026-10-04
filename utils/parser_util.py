@@ -298,6 +298,13 @@ def add_model_options(parser):
                             "chains, and keeps the --topology_cond pool from keying on each species' exact "
                             "topology. Training splits only (the dataset refuses it for val/test). "
                             "Loader-only: no regen, no model change, no CKPT_VERSION bump.")
+    group.add_argument("--bone_length_aug_prob", default=0.0, type=float,
+                       help="Probability of symmetric body-proportion augmentation; training only (0 = off).")
+    group.add_argument("--bone_length_aug", default=0.1, type=float,
+                       help="Relative bone-length range: 0.1 draws group scales in [0.9, 1.1]. "
+                            "All actions/rigs; anatomical or fallback topology groups. "
+                            "Contact IK is disabled; source local rotations are preserved, with no quality rejection. "
+                            "Loader-only: no dataset regeneration or checkpoint schema change.")
     group.add_argument("--loop_cond_prob", default=1.0, type=float,
                        help="Probability that a loop training clip is TOLD it is a loop (is_loop=1: "
                             "circular time table, periodic window resample, wrap losses). The rest of "

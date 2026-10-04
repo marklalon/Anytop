@@ -63,6 +63,11 @@ from data_loaders.truebones.truebones_utils.leaf_drop import (
     drop_joints_from_cond,
     sample_leaf_drop,
 )
+from data_loaders.truebones.truebones_utils.bone_length_aug import (
+    DEFAULT_BONE_LENGTH_AUG,
+    augment_bone_lengths,
+    validate_bone_length_aug,
+)
 from data_loaders.truebones.truebones_utils.dataset_tags import (
     assert_cond_species_tags_current,
     assert_species_tags_cover,
@@ -1347,6 +1352,21 @@ class MotionDataset(data.Dataset):
                 joints_names_embs = cond['joints_names_embs']
                 joint_struct = build_joint_struct_features(cond, source=str(object_type))
                 leaf_drop_count = len(dropped)
+        bone_length_info = {'applied': False, 'scales': {}, 'skip_reason': 'probability draw'}
+        bone_length_prob = float(getattr(self.opt, 'bone_length_aug_prob', 0.0))
+        if bone_length_prob > 0.0 and random.random() < bone_length_prob:
+            bone_metadata = dict(motion_metadata)
+            bone_metadata['is_loop'] = bool(bone_metadata.get('bone_length_source_is_loop', is_loop))
+            motion, cond, bone_length_info = augment_bone_lengths(
+                motion, cond, bone_metadata,
+                float(getattr(self.opt, 'bone_length_aug', DEFAULT_BONE_LENGTH_AUG)),
+            )
+            if bone_length_info['applied']:
+                rest_pose = build_canonical_rest_feature(cond)
+                offsets = cond['offsets']
+                joint_struct = build_joint_struct_features(cond, source=str(object_type))
+        # Preview can replay temporal draws on the original skeleton exactly.
+        bone_length_rng_state = random.getstate() if return_aug_info else None
         loop_phase_offset = 0
         loop_tile_count = 1
         # Besides loop_uncond, the only downgrade is the over-long crop below,
@@ -1468,6 +1488,7 @@ class MotionDataset(data.Dataset):
         motion_metadata['loop_tile_count'] = int(loop_tile_count)
         # Diagnostics only (training logs), never a model input.
         motion_metadata['motion_speed_applied'] = float(motion_speed_applied)
+        motion_metadata['bone_length_aug_applied'] = bool(bone_length_info['applied'])
         self._apply_action_label_condition(motion_metadata)
 
         if return_aug_info:
@@ -1489,6 +1510,8 @@ class MotionDataset(data.Dataset):
                 'loop_uncond': bool(loop_uncond),
                 'motion_speed_applied': float(motion_speed_applied),
                 'leaf_drop_count': int(leaf_drop_count),
+                'bone_length_aug': bone_length_info,
+                'bone_length_rng_state': bone_length_rng_state,
                 'object_cond': cond,  # Exact per-sample skeleton for augmentation previews.
             }
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
@@ -1721,6 +1744,11 @@ class Truebones(data.Dataset):
             )
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
         self.opt.leaf_drop_prob = float(kwargs.get('leaf_drop_prob', 0.0))
+        self.opt.bone_length_aug_prob = float(kwargs.get('bone_length_aug_prob', 0.0))
+        self.opt.bone_length_aug = float(kwargs.get('bone_length_aug', DEFAULT_BONE_LENGTH_AUG))
+        validate_bone_length_aug(self.opt.bone_length_aug_prob, self.opt.bone_length_aug)
+        if self.opt.bone_length_aug_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
+            raise ValueError('bone-length augmentation is for training splits only; pass 0.0.')
         if not 0.0 <= self.opt.leaf_drop_prob <= 1.0:
             raise ValueError(
                 f"leaf_drop_prob must be in [0, 1], got {self.opt.leaf_drop_prob}."

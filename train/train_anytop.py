@@ -29,6 +29,7 @@ from utils.parser_util import (
 from utils import dist_util
 from train.training_loop import TrainLoop
 from data_loaders.get_data import get_dataset_loader
+from data_loaders.truebones.truebones_utils.bone_length_aug import DEFAULT_BONE_LENGTH_AUG
 from utils.model_util import create_model_and_diffusion_general_skeleton, resolve_t5_out_dim
 from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform, WandBPlatform #required
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
@@ -304,6 +305,8 @@ def create_training_data_loader(args):
         motion_speed_aug_prob=getattr(args, 'motion_speed_aug_prob', 1.0),
         loop_tile_single_prob=getattr(args, 'loop_tile_single_prob', 0.5),
         leaf_drop_prob=getattr(args, 'leaf_drop_prob', 0.0),
+        bone_length_aug_prob=getattr(args, 'bone_length_aug_prob', 0.0),
+        bone_length_aug=getattr(args, 'bone_length_aug', DEFAULT_BONE_LENGTH_AUG),
         species_table=getattr(args, 'species_descriptor_table', None),
     )
 

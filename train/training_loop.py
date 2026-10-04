@@ -977,7 +977,7 @@ class TrainLoop:
         flag_keys = (
             'is_loop', 'loop_data_aug_applied', 'loop_tile_count',
             'loop_phase_offset', 'resample_speed_cond', 'motion_speed_applied',
-            'n_joints',
+            'bone_length_aug_applied', 'n_joints',
         )
         flags = {k: field_list(k) for k in flag_keys}
 
