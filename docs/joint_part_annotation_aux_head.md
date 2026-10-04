@@ -64,8 +64,9 @@
 
 ### 2.3 歧义判定规则（写进 UI 的帮助面板）
 
-- **按功能判定，不按骨骼同源。** 蝙蝠的「手指」是 `wing`；章鱼主动划水的腕是 `arm`；水母被动拖曳的触手是 `soft`。
-- 海龟、海豹的鳍肢：主动划水的大鳍肢归 `arm/leg`，小的稳定鳍归 `fin`。
+- **四肢按前后位置判定，不按用途。** 四足的前肢是 `arm/hand`，后肢是 `leg/foot`，前肢着不着地都一样；承重由 contact 表达。节肢、多足动物的步行足一律 `leg/foot`，螯、钳、须肢是 `arm/hand`。
+- **翼、鳍、soft 按功能判定。** 蝙蝠的「手指」是 `wing`；章鱼主动划水的腕是 `arm`；水母被动拖曳的触手是 `soft`。
+- 海龟、海豹的鳍肢：主动划水的大鳍肢归 `arm/leg`（前肢 arm，后肢 leg），小的稳定鳍归 `fin`。
 - 尾巴末端受尾链驱动、自身无主动运动的饰物（毛团、尾羽），归 `soft`。
 - 爪长在 hand 上的归 `hand`，长在 foot 上的归 `foot`。
 
@@ -94,7 +95,7 @@
 
 - **按关节名索引，不按下标。** 物种的关节集合一变（剪裁、prop socket 删除、leaf 清理），下标就会悄悄错位，`chain_forward_joints.jsonl` 在 Pirrana 上就出过这个问题。
 - `skeleton_sig` 和当前 cond 不一致时，这一行判为 **stale**：UI 列出新增和消失的关节，要求重新确认；预处理和训练对 stale 行直接报错。
-- `src ∈ {name, inherit, geometry, contact_rule, manual}`，`why` 是一句依据，用于 UI 悬浮提示。人工改过的关节记为 `src = manual`，重新预填时不会被覆盖。
+- `src ∈ {name, inherit, geometry, manual}`，`why` 是一句依据，用于 UI 悬浮提示。人工改过的关节记为 `src = manual`，重新预填时不会被覆盖。
 
 ### 3.3 预填工具 `tools/prefill_joint_parts.py`
 
@@ -106,17 +107,22 @@ python tools/prefill_joint_parts.py --dataset truebones/zoo [--filter A,B] [--dr
 
 默认只补两类关节：没有行的物种，以及已有行里 `src != manual` 且未 reviewed 的关节。
 
-分四遍做，前一遍的结果优先：
+分五步做，前一步定下的结果后面不再覆盖（第 3 步的肢体细化除外，它专门改写 arm/leg/hand/foot）：
 
-1. **名字。** 输入是 `build_joint_embedding_texts` 的 slim 文本加 canonical 名。部位关键词表写在 `joint_parts.py` 里，用 `joint_name_matches_keywords` 做**词前缀匹配**（`ear` 不能命中 `rear`）。`joint_name_is_helper_node` 命中的关节归 `helper`。
-2. **沿树继承。** 名字为空或未命中的关节（`Bone_03`、`Leaf`、`Petal`）继承最近的已标祖先。然后细化：`arm` 链上腕及以下改为 `hand`，`leg` 链上踝及以下改为 `foot`。
-3. **几何兜底**，只处理前两遍都没定下来的关节。使用 `joint_struct` 的量（`height_n / lateral_signed / fore_aft_n / attach_h_n / is_leaf`）和物种的 `species_tags`：
+1. **名字。** 输入是 `build_joint_embedding_texts` 的 slim 文本，按整词查 `joint_parts.py` 里的部位词表；一个文本含多个部位词时按优先级取（soft > wing > fin > tail > head > neck > hand > foot > arm > leg > trunk，所以 `Tail Hair` 是 soft、`Wing Claw` 是 wing）。`helper` 有三种：`joint_name_is_helper_node` 命中的 IK/FX 节点；root 链上没有部位词的包装节点（`Armature`、`Bip01`、locator）；slim 文本被清空、但原名里有道具词的关节（剑、盾、背包、缰绳、挂点）。原名里是马尾、长袍、头带的归 `soft`。
+2. **沿树继承。** 名字为空或未命中的关节（`Bone_03`、`Index`）继承最近的已标祖先。爪、垫跟随所在肢体（hand 或 foot）；羽毛在翼上是 `wing`，其他地方是 `soft`；触手挂在头上是 `head`，挂在身体上是 `arm`（漂浮物种是 `soft`）。
+3. **肢体细化。**
+   - 着地的 arm/leg 关节（名字不是大腿、小腿、上臂这类近端词）改为 hand/foot；没有 hand/foot 的肢体链，从最后一个分叉（没有分叉则是叶子）往下改为 hand/foot。
+   - 翼物种的翼骨被拼成 arm 时（蝙蝠）整条改为 `wing`；带着 `wing` 关节的肢体链也整条改为 `wing`（Shoulder/Elbow/Wrist 末端挂 Wing 的海鸥）。
+   - 多足物种中着地的 arm 链改为 `leg/foot`（拼成 UpperArm/Finger 的蚂蚁步行足）。
+   - 四足、双足、翼物种做前后判定：先看肢体链自己名字里的 Front/Fore 或 Hind/Back/Rear；没有这类词时，如果这副骨架在别处拼出了 arm，就按链顶关节的部位定前后（熊前肢末端的 `Arm Ball` 是 hand，猫头鹰 `UpperLeg` 下的 `Hand` 是 foot）；整副骨架都没有 arm 时，才按挂点沿躯干轴的位置，在最大间隔处分成前、后两组。
+4. **几何兜底**，只处理前面都没定下来的关节（现有数据里只有 2 个）。使用 `joint_struct` 的量（`height_n / lateral_signed / fore_aft_n / attach_h_n / is_leaf`）和物种的 `species_tags`：
    - 沿前后轴延伸最远的两条主链：前端为 neck→head，后端为 tail；
    - 侧向分支，末端接近地面：`leg`→`foot`；
    - 挂点高、横向展开大，且物种标记为飞行：`wing`；
    - 物种标记为游泳或漂浮，且分支很短：`fin`；
    - 其余短叶链：`soft`，UI 中标为低置信度。
-4. **接触。** 把现有 `infer_contact_joints`（及其私有辅助函数）从 `physics_joint_annotation.py` 原样搬进 `joint_parts.py`，作为接触预填，初值与今天 cond 里的 `contact_joints` 完全一致。
+5. **接触。** 调用现有的 `infer_contact_joints`，输入和预处理完全相同（原始关节名，以及 cond offsets 重建的 rest 位置），所以初值与今天 cond 里的 `contact_joints` 逐个物种一致（有单测覆盖）。把它从 `physics_joint_annotation.py` 搬进 `joint_parts.py` 要等到第 3 步：在那之前，`build_semantic_metadata` 还在调用它，提前搬会造成循环 import。
 
 工具输出一份报告：每个物种各类别的计数、几何兜底的关节数。报告按兜底数从多到少排序，作为人工核验的顺序。
 
@@ -138,15 +144,18 @@ python tools/prefill_joint_parts.py --dataset truebones/zoo [--filter A,B] [--dr
 |---|---|
 | `GET /parts` | 返回 `parts.html` |
 | `GET /vendor/*` | 返回 `dataset/review/vendor/` 下的文件 |
+| `GET /api/parts/datasets` | 有 `cond.npy` 的数据集列表（动作标签页的 `/api/datasets` 仍只列有 `action_labels.jsonl` 的） |
 | `GET /api/parts/species?ds=` | 物种列表：关节数、状态（`missing / auto / reviewed / stale`）、几何兜底数、各类别计数 |
 | `GET /api/parts/tpose.bvh?ds=&species=` | 单帧 T-pose BVH，由 cond 生成，缓存到 `<processed>/bvh_tpose/<species>.bvh`；cond 的 mtime 变化后重建 |
-| `GET /api/parts/skeleton?ds=&species=` | 每个关节：index、raw 名、canonical 名、embedding 文本、side、mirror twin、part、contact、src、why |
+| `GET /api/parts/skeleton?ds=&species=` | 每个关节：index、raw 名、canonical 名、embedding 文本、parent、side、mirror twin、part、contact、src、why；另有 `bvh_order`，stale 时有新增 / 消失的关节 |
 | `POST /api/parts/update` | 修改若干关节的 part / contact，或设置 `reviewed`。整文件原子重写，带 mtime 冲突检测，做法同 `LabelStore` |
 | `POST /api/parts/prefill` | 对一个物种重跑预填（`manual` 关节不动），返回 diff，确认后写入 |
 
-把 cond 写成 BVH 的那段函数，从 `tools/sample_tpose_bvh.py` 提取到 `data_loaders/truebones/truebones_utils/` 下，由工具和 serve.py 共用；serve.py 不 import `tools/`。
+把 cond 写成 BVH 的函数在 `data_loaders/truebones/truebones_utils/tpose_bvh.py`，`tools/sample_tpose_bvh.py` 和 serve.py 共用；它不依赖 `motion_lib`，serve.py 也不 import `tools/`。
 
-T-pose **只从 cond 生成，不读原始 GLB**。cond 里的骨架才是训练时的那一副：已剪裁、已去 prop socket、已统一朝向和尺度。BVH 的关节顺序就是 cond 的顺序，前端用序号对应 index，不靠名字匹配。
+T-pose **只从 cond 生成，不读原始 GLB**。cond 里的骨架才是训练时的那一副：已剪裁、已去 prop socket、已统一朝向和尺度。BVH 的层级按从 joint 0 出发的 DFS 写出，`tpose_bvh_text` 同时返回 `order`（BVH 第 k 个关节 = cond 第 `order[k]` 个），skeleton 接口把它作为 `bvh_order` 下发，前端按它对应 index，不靠名字匹配。helper 追加在尾部的 cond 不是 DFS 顺序，靠这个映射才不会错位（现有 331 个物种恰好都是 DFS 顺序）。
+
+**没有行或 stale 的物种**显示为写入后会得到的结果：预填，叠加旧行里仍存在的 manual 关节。第一次编辑（或直接确认）时才把整行写进 sidecar，`skeleton_sig` 更新为当前骨架，stale 行的 reviewed 清零。
 
 ### 4.2 布局与交互
 
@@ -161,10 +170,10 @@ T-pose **只从 cond 生成，不读原始 GLB**。cond 里的骨架才是训练
 └ [重新预填] [左→右镜像] [撤销] ………………… [确认并下一个 ⏎] ┘
 ```
 
-- **视口**：中键旋转，Shift+中键平移，滚轮缩放；正视、侧视、俯视三个快捷视角。关节用 `InstancedMesh` 球体，骨段用线，按 bbox 自动取景。
+- **视口**：中键旋转，Shift+中键或右键平移，滚轮缩放；正视、侧视、俯视三个快捷视角（小键盘 1 / 3 / 7，`.` 重新取景）。关节用 `InstancedMesh` 球体，骨段用线，按 bbox 自动取景，最低关节处画地面网格。
 - **配色**：每个部位一个固定色相，明暗两种主题下都要有足够对比度。`src = geometry` 的关节画成半透明，`helper` 用灰色小点，`contact` 用白色外环（不靠颜色区分，色盲也能看出来）。
 - **选择**：单击选一个关节；Shift+单击选整棵子树；Ctrl+单击切换单个关节；拖框多选。视口和右栏表格双向联动。
-- **标注**：数字键或色板设部位，`C` 切换接触；「左→右镜像」按 mirror twin / side 配对复制；支持 `Ctrl+Z` 撤销。
+- **标注**：色板或按键设部位（`1`–`9` 为 trunk…tail，`0` soft，`F` fin，`H` helper；没有选择时作用于鼠标下的关节），`C` 切换接触；「左→右镜像」把 side 为 left 的关节复制到其 mirror twin（有选择时只复制所选）；`Ctrl+Z` 撤销，撤销会把 src / why 一并恢复。
 - **确认**：`⏎` 写入 `reviewed: true` 并跳到下一个未核验物种。改动即时保存（防抖 500 ms）。
 - **第二阶段（可选）**：从 `bvhs/` 选一个该物种的行走类 clip 播放，下方实时画出接触关节的高度曲线。用来核对接触比只看 T-pose 可靠，但第一版不做。
 
