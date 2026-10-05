@@ -371,6 +371,7 @@ def _parts_store(tmp_path, monkeypatch):
     store = review.PartsStore({
         "id": "sample", "processed": str(processed),
         "cond": processed / "cond.npy", "joint_parts": processed / review.JOINT_PARTS_FILE,
+        "metadata": processed / "motion_metadata.json",
     })
     return store, entry
 
@@ -442,3 +443,23 @@ def test_parts_stale_row_lists_added_and_removed_joints(tmp_path, monkeypatch):
     assert shown["status"] == "stale" and not shown["reviewed"]
     assert shown["added"] == ["Head"] and shown["removed"] == ["Gone"]
     assert {j["name"]: j["part"] for j in shown["joints"]}["Tail1"] == "soft"
+
+
+def test_parts_clips_list_only_the_species_clips_that_have_a_bvh(tmp_path, monkeypatch):
+    store, _ = _parts_store(tmp_path, monkeypatch)
+    store.metadata_path.write_text(json.dumps({"motions": {
+        "Synthetic_Walk.npy": {"object_type": "Synthetic"},
+        "Synthetic_Idle.npy": {"object_type": "Synthetic"},
+        "Other_Walk.npy": {"object_type": "Other"},
+    }}), encoding="utf-8")
+    store.clip_dir.mkdir()
+    (store.clip_dir / "Synthetic_Walk.bvh").write_text("walk", encoding="utf-8")
+    (store.clip_dir / "Other_Walk.bvh").write_text("other", encoding="utf-8")
+
+    assert store.clips("Synthetic") == ["Synthetic_Walk"]
+    assert store.clip_bvh("Synthetic", "Synthetic_Walk") == b"walk"
+    for clip in ("Synthetic_Idle", "Other_Walk", "../Synthetic_Walk"):
+        with pytest.raises(KeyError):
+            store.clip_bvh("Synthetic", clip)
+    with pytest.raises(KeyError):
+        store.clips("Missing")

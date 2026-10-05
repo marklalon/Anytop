@@ -173,6 +173,8 @@
     color: var(--dim);
   }
   #status { color: var(--dim); font-size: 12px; min-width: 120px; }
+  #clip { max-width: 220px; }
+  #play { min-width: 32px; }
   #status.err { color: var(--bad); }
 
   dialog {
@@ -254,6 +256,9 @@
   <div class="palette" id="palette"></div>
   <span class="spacer"></span>
   <span id="status"></span>
+  <label class="f" for="clip">动作</label>
+  <select id="clip" title="在视口里播放该物种的动作（← / → 切换）"></select>
+  <button id="play" title="暂停 / 播放（空格）" disabled>⏸</button>
   <button id="prefill" title="对当前物种重跑预填（manual 关节不动），先看 diff 再确认">重新预填</button>
   <button id="mirror" title="把左侧关节的部位和接触复制到其 mirror twin（有选择时只复制所选）">左→右镜像</button>
   <button id="undo" title="撤销（Ctrl+Z）">撤销</button>
@@ -296,10 +301,14 @@ const SAVE_DEBOUNCE_MS = 500;
 
 const $ = (id) => document.getElementById(id);
 let hoverIndex = null;   // joint under the cursor (viewport or table)
+// The dataset selector's aggregate entry; species then carry their own ``ds``.
+const ALL_DATASETS = 'all';
 const state = {
-  ds: null,
-  species: [],
-  current: null,      // skeleton payload
+  ds: null,           // selected dataset id, or ALL_DATASETS
+  datasets: [],
+  species: [],        // species-list rows, each tagged with its dataset id ``ds``
+  current: null,      // skeleton payload, tagged with ``ds``
+  opening: null,      // speciesKey being loaded, so arrow keys step from it
   selected: new Set(),
   anchor: null,       // last clicked table row, for shift ranges
   pending: {},        // joint name -> edit not yet sent
@@ -331,6 +340,11 @@ function recall(key) { try { return localStorage.getItem('parts.' + key); } catc
 // Species list
 // ---------------------------------------------------------------------------
 
+const speciesKey = (s) => s.ds + '\t' + s.species;
+const datasetName = (id) => (state.datasets.find((d) => d.id === id) || { name: id }).name;
+// The species the list highlights and the arrow keys step from.
+const activeKey = () => state.opening || (state.current && speciesKey(state.current));
+
 function visibleSpecies() {
   const filter = $('stateFilter').value;
   const query = $('q').value.trim().toLowerCase();
@@ -352,14 +366,15 @@ function renderSpecies() {
   box.textContent = '';
   for (const s of visibleSpecies()) {
     const div = document.createElement('div');
-    div.className = `sp st-${s.status}` + (state.current && state.current.species === s.species ? ' active' : '');
-    div.title = `${STATUS_TITLE[s.status]}\n${s.joints} 关节，继承 ${s.inherit}，几何兜底 ${s.geometry}，人工 ${s.manual}，接触 ${s.contact}`;
+    div.className = `sp st-${s.status}` + (speciesKey(s) === activeKey() ? ' active' : '');
+    const where = state.ds === ALL_DATASETS ? `${datasetName(s.ds)}\n` : '';
+    div.title = `${where}${STATUS_TITLE[s.status]}\n${s.joints} 关节，继承 ${s.inherit}，几何兜底 ${s.geometry}，人工 ${s.manual}，接触 ${s.contact}`;
     div.innerHTML = `<span class="ic"></span><span class="nm"></span>`
       + (s.geometry ? `<span class="geo">(${s.geometry})</span>` : '')
       + `<span class="n">${s.joints}</span>`;
     div.querySelector('.ic').textContent = STATUS_ICON[s.status];
     div.querySelector('.nm').textContent = s.species;
-    div.addEventListener('click', () => openSpecies(s.species));
+    div.addEventListener('click', () => openSpecies(s));
     box.appendChild(div);
   }
   const done = state.species.filter((s) => s.status === 'reviewed').length;
@@ -367,8 +382,8 @@ function renderSpecies() {
   $('progress').innerHTML = `已核验 <b>${done}</b>/${state.species.length}` + (stale ? ` · stale <b>${stale}</b>` : '');
 }
 
-function syncSpeciesEntry(payload) {
-  const entry = state.species.find((s) => s.species === payload.species);
+function syncSpeciesEntry(ds, payload) {
+  const entry = state.species.find((s) => s.ds === ds && s.species === payload.species);
   if (!entry) return;
   const joints = payload.joints;
   entry.status = payload.status;
@@ -379,28 +394,42 @@ function syncSpeciesEntry(payload) {
   renderSpecies();
 }
 
+const datasetOptionText = (name, count) => (count == null ? name : `${name}（${count}）`);
+
 async function loadDatasets() {
   const { datasets } = await api('/api/parts/datasets');
+  state.datasets = datasets;
   const sel = $('dataset');
   sel.textContent = '';
-  for (const d of datasets) sel.add(new Option(d.name, d.id));
+  const total = datasets.reduce((n, d) => n + (Number(d.species) || 0), 0);
+  sel.add(new Option(datasetOptionText('all', total), ALL_DATASETS));
+  for (const d of datasets) sel.add(new Option(datasetOptionText(d.name, d.species), d.id));
   const saved = recall('ds');
-  if (saved && datasets.some((d) => d.id === saved)) sel.value = saved;
+  sel.value = saved === ALL_DATASETS || datasets.some((d) => d.id === saved) ? saved
+    : datasets.length ? datasets[0].id : ALL_DATASETS;
   await switchDataset(sel.value);
 }
 
 async function switchDataset(id) {
-  await flushSave();
+  try { await flushSave(); } catch (err) { return; }
   state.ds = id;
   remember('ds', id);
-  const data = await api(`/api/parts/species?ds=${encodeURIComponent(id)}`);
-  state.species = data.species;
-  if (data.orphans.length) setStatus(`sidecar 里有 cond 中已不存在的物种：${data.orphans.join(', ')}`, true);
-  state.current = null;
+  const ids = id === ALL_DATASETS ? state.datasets.map((d) => d.id) : [id];
+  const lists = await Promise.all(ids.map((ds) => api(`/api/parts/species?ds=${encodeURIComponent(ds)}`)));
+  if (state.ds !== id) return;
+  state.species = lists.flatMap((data, k) => data.species.map((s) => ({ ...s, ds: ids[k] })));
+  if (id === ALL_DATASETS) {
+    state.species.sort((a, b) => a.species.toLowerCase().localeCompare(b.species.toLowerCase())
+      || a.ds.localeCompare(b.ds));
+  }
+  const orphans = lists.flatMap((data, k) => data.orphans.map((o) => (ids.length > 1 ? `${datasetName(ids[k])}/${o}` : o)));
+  if (orphans.length) setStatus(`sidecar 里有 cond 中已不存在的物种：${orphans.join(', ')}`, true);
+  closeSpecies();
   renderSpecies();
-  const saved = recall('species.' + id);
-  const first = visibleSpecies()[0];
-  const target = saved && state.species.some((s) => s.species === saved) ? saved : first && first.species;
+  // Saved as a speciesKey; a bare species name is one saved per dataset.
+  const saved = recall('species.' + id) || '';
+  const savedKey = saved.includes('\t') ? saved : `${id}\t${saved}`;
+  const target = state.species.find((s) => speciesKey(s) === savedKey) || visibleSpecies()[0];
   if (target) await openSpecies(target);
 }
 
@@ -423,10 +452,15 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.2);
 sun.position.set(1, 2, 1.5);
 scene.add(sun);
 
+// ``positions`` is the pose on screen (picking reads it too); ``rest`` the t-pose.
 const skel = {
-  group: null, positions: [], radius: 0.01, diag: 1, center: new THREE.Vector3(),
+  group: null, positions: [], rest: [], radius: 0.01, diag: 1, center: new THREE.Vector3(),
   solid: null, ghost: null, halo: null, lines: null, rings: [],
 };
+// The clip playing in the viewport (see parseBVH).
+let anim = null;      // { bvh (parseBVH), order, time, playing }
+let clipToken = 0;
+const clock = new THREE.Clock();
 // Contact ring texture: a white ring on a dark rim (readable against
 // light-coloured spheres too). The rim's inner edge sits RING_INNER_PX from the
 // centre, and the sprite is scaled so that edge lands on the joint sphere.
@@ -464,6 +498,7 @@ new ResizeObserver(resize).observe(view);
 scene.background = new THREE.Color(cssVar('--view-bg'));
 
 function disposeSkeleton() {
+  stopClip();
   if (!skel.group) return;
   skel.group.traverse((obj) => {
     if (obj.geometry) obj.geometry.dispose();
@@ -473,16 +508,69 @@ function disposeSkeleton() {
   skel.group = null;
 }
 
+// Parse a BVH into its joints (ENDSITEs dropped) and per-frame local poses.
+// A position channel *replaces* the joint's OFFSET, as motion_lib.BVH reads it;
+// three's BVHLoader adds the two, which lifts a root that has a non-zero OFFSET
+// and doubles every bone with position channels. Frames are applied by hand,
+// not through an AnimationMixer, whose track binding rejects joint names
+// containing '.' or ':'.
+function parseBVH(text, jointCount) {
+  const result = new BVHLoader().parse(text);
+  const bones = result.skeleton.bones.filter((bone) => bone.name !== 'ENDSITE');
+  if (bones.length !== jointCount) throw new Error(`BVH 有 ${bones.length} 个关节，cond 有 ${jointCount} 个`);
+  // Position channels per ROOT/JOINT, in hierarchy order (the bones' order).
+  const hasPosition = [];
+  for (const line of text.split(/^MOTION/m)[0].split('\n')) {
+    const t = line.trim();
+    if (/^(ROOT|JOINT)\s/.test(t)) hasPosition.push(false);
+    else if (t.startsWith('CHANNELS') && /position/i.test(t)) hasPosition[hasPosition.length - 1] = true;
+  }
+  // The loader emits a position then a quaternion track per joint, in bone order.
+  const tracks = result.clip.tracks;
+  const frames = tracks.length ? tracks[1].times.length : 1;
+  const pos = bones.map((bone, k) => {
+    const values = Float32Array.from(tracks[2 * k].values);
+    if (hasPosition[k]) {
+      for (let f = 0; f < frames; f++) {
+        values[3 * f] -= bone.position.x;
+        values[3 * f + 1] -= bone.position.y;
+        values[3 * f + 2] -= bone.position.z;
+      }
+    }
+    return values;
+  });
+  const quat = bones.map((_, k) => tracks[2 * k + 1].values);
+  const frameTime = Number((/^Frame Time:\s*([\d.eE+-]+)/m.exec(text) || [])[1]) || 1 / 30;
+  const root = new THREE.Object3D();
+  root.add(result.skeleton.bones[0]);
+  return { root, bones, pos, quat, frames, frameTime };
+}
+
+const tmpVec = new THREE.Vector3();
+const tmpQuat = new THREE.Quaternion();
+
+// Pose ``bvh`` at fractional frame ``t`` (positions lerped, rotations slerped
+// between the two neighbouring frames) and write each joint's world position
+// to ``out[order[k]]``.
+function sampleBVH(bvh, t, order, out) {
+  const f0 = Math.min(Math.floor(t), bvh.frames - 1);
+  const f1 = Math.min(f0 + 1, bvh.frames - 1);
+  const w = Math.min(Math.max(t - f0, 0), 1);
+  bvh.bones.forEach((bone, k) => {
+    bone.position.fromArray(bvh.pos[k], 3 * f0).lerp(tmpVec.fromArray(bvh.pos[k], 3 * f1), w);
+    bone.quaternion.fromArray(bvh.quat[k], 4 * f0).slerp(tmpQuat.fromArray(bvh.quat[k], 4 * f1), w);
+  });
+  bvh.root.updateMatrixWorld(true);
+  bvh.bones.forEach((bone, k) => bone.getWorldPosition(out[order[k]]));
+}
+
 function buildSkeleton(bvhText, payload) {
   disposeSkeleton();
-  const result = new BVHLoader().parse(bvhText);
-  const bones = result.skeleton.bones.filter((bone) => bone.name !== 'ENDSITE');
   const order = payload.bvh_order;
-  if (bones.length !== order.length) throw new Error(`BVH 有 ${bones.length} 个关节，cond 有 ${order.length} 个`);
-  bones[0].updateMatrixWorld(true);
-  const positions = new Array(order.length);
-  bones.forEach((bone, k) => { positions[order[k]] = bone.getWorldPosition(new THREE.Vector3()); });
+  const positions = order.map(() => new THREE.Vector3());
+  sampleBVH(parseBVH(bvhText, order.length), 0, order, positions);
   skel.positions = positions;
+  skel.rest = positions.map((p) => p.clone());
 
   const box = new THREE.Box3().setFromPoints(positions);
   skel.diag = Math.max(box.getSize(new THREE.Vector3()).length(), 1e-6);
@@ -597,10 +685,98 @@ function setView(kind) {
   camera.position.copy(skel.center).addScaledVector(dirs[kind], dist);
   controls.update();
 }
+
+
 document.querySelectorAll('.viewbtns button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+
+// Move bones, rings and spheres to skel.positions.
+function applyPose() {
+  if (!skel.group) return;
+  const joints = state.current.joints;
+  const linePos = skel.lines.geometry.getAttribute('position');
+  skel.lines.userData.segments.forEach((child, s) => {
+    const a = skel.positions[joints[child].parent], b = skel.positions[child];
+    linePos.setXYZ(2 * s, a.x, a.y, a.z);
+    linePos.setXYZ(2 * s + 1, b.x, b.y, b.z);
+  });
+  linePos.needsUpdate = true;
+  skel.lines.geometry.computeBoundingSphere();
+  skel.rings.forEach((sprite, index) => sprite.position.copy(skel.positions[index]));
+  refreshVisuals();
+}
+
+// Pose the joints from the clip at ``anim.time``.
+function poseFromClip() {
+  const { bvh } = anim;
+  sampleBVH(bvh, anim.time / bvh.frameTime, anim.order, skel.positions);
+  applyPose();
+}
+
+function stopClip() {
+  clipToken++;
+  anim = null;
+  $('play').disabled = true;
+  $('play').textContent = '⏸';
+}
+
+function setPlaying(on) {
+  if (!anim) return;
+  anim.playing = on;
+  $('play').textContent = on ? '⏸' : '▶';
+}
+
+// Fill the clip dropdown for the open species; TPose (no clip) is selected.
+function fillClipOptions(clips, species) {
+  const sel = $('clip');
+  sel.textContent = '';
+  sel.add(new Option('TPose', ''));
+  for (const clip of clips) {
+    const opt = new Option(clip.startsWith(species + '_') ? clip.slice(species.length + 1) : clip, clip);
+    opt.title = clip;
+    sel.add(opt);
+  }
+  sel.value = '';
+  sel.disabled = !clips.length;
+}
+
+async function playClip(clip) {
+  stopClip();
+  if (!state.current || !skel.group) return;
+  if (!clip) {
+    skel.rest.forEach((p, index) => skel.positions[index].copy(p));
+    applyPose();
+    return;
+  }
+  const token = clipToken;
+  const { ds, species } = state.current;
+  setStatus(`加载动作 ${clip}…`);
+  try {
+    const q = `ds=${encodeURIComponent(ds)}&species=${encodeURIComponent(species)}&clip=${encodeURIComponent(clip)}`;
+    const text = await api(`/api/parts/clip.bvh?${q}`);
+    if (token !== clipToken) return;
+    const order = state.current.bvh_order;
+    const bvh = parseBVH(text, order.length);
+    anim = { bvh, order, time: 0, playing: true };
+    $('play').disabled = false;
+    setPlaying(true);
+    clock.getDelta();
+    poseFromClip();
+    setStatus(`${clip}：${bvh.frames} 帧`);
+  } catch (err) {
+    if (token !== clipToken) return;
+    $('clip').value = '';
+    setStatus(`动作加载失败：${err.message}`, true);
+  }
+}
 
 function animate() {
   requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  if (anim && anim.playing) {
+    // Loops over [first frame, last frame]: the last key is held, not blended into the first.
+    anim.time = (anim.time + dt) % Math.max((anim.bvh.frames - 1) * anim.bvh.frameTime, anim.bvh.frameTime);
+    poseFromClip();
+  }
   renderer.render(scene, camera);
 }
 animate();
@@ -800,11 +976,12 @@ $('rows').addEventListener('mouseleave', () => { hoverIndex = null; });
 
 function renderTitle() {
   const s = state.current;
-  if (!s) { $('title').textContent = ''; return; }
+  if (!s) { $('title').textContent = ''; $('banner').hidden = true; return; }
   const tags = s.species_tags.length ? ` · ${s.species_tags.join(' / ')}` : '';
+  const where = state.ds === ALL_DATASETS ? `${datasetName(s.ds)} · ` : '';
   $('title').innerHTML = `<b></b> <span></span>`;
   $('title').querySelector('b').textContent = s.species;
-  $('title').querySelector('span').textContent = `${s.joints.length} 关节${tags} · ${STATUS_TITLE[s.status]}`;
+  $('title').querySelector('span').textContent = `${where}${s.joints.length} 关节${tags} · ${STATUS_TITLE[s.status]}`;
   const banner = $('banner');
   if (s.status === 'stale' || s.added.length || s.removed.length) {
     const parts = ['骨架与 sidecar 写入时不同，请重新确认。'];
@@ -871,10 +1048,10 @@ async function flushSave(extra = {}) {
   const edits = state.pending;
   if (!state.current || (!Object.keys(edits).length && !Object.keys(extra).length)) return;
   state.pending = {};
-  const species = state.current.species;
+  const { ds, species } = state.current;
   try {
-    const payload = await api('/api/parts/update', { ds: state.ds, species, joints: edits, ...extra });
-    if (state.current && state.current.species === species) {
+    const payload = await api('/api/parts/update', { ds, species, joints: edits, ...extra });
+    if (state.current && state.current.ds === ds && state.current.species === species) {
       // Keep local edits made while the request was in flight.
       state.current.status = payload.status;
       state.current.reviewed = payload.reviewed;
@@ -882,7 +1059,7 @@ async function flushSave(extra = {}) {
       state.current.removed = payload.removed;
       renderTitle();
     }
-    syncSpeciesEntry(payload);
+    syncSpeciesEntry(ds, payload);
     setStatus(`已保存 ${new Date().toLocaleTimeString()}`);
   } catch (err) {
     state.pending = { ...edits, ...state.pending };
@@ -917,18 +1094,22 @@ async function confirmAndNext() {
     await flushSave({ reviewed: true });
   } catch (err) { return; }
   const list = visibleSpecies();
-  const at = list.findIndex((s) => s.species === state.current.species);
+  const at = list.findIndex((s) => speciesKey(s) === speciesKey(state.current));
   const rest = [...list.slice(at + 1), ...list.slice(0, Math.max(at, 0))];
   const next = rest.find((s) => s.status !== 'reviewed');
-  if (next) await openSpecies(next.species);
-  else setStatus('当前筛选里没有未核验的物种了');
+  if (next) await openSpecies(next);
+  else {
+    closeSpecies();
+    renderSpecies();
+    setStatus('当前筛选里没有未核验的物种了');
+  }
 }
 
 async function rePrefill() {
   if (!state.current) return;
   await flushSave();
-  const species = state.current.species;
-  const { diff } = await api('/api/parts/prefill', { ds: state.ds, species, apply: false });
+  const { ds, species } = state.current;
+  const { diff } = await api('/api/parts/prefill', { ds, species, apply: false });
   $('diffTitle').textContent = species;
   const body = $('diffBody');
   if (!diff.length) {
@@ -952,10 +1133,11 @@ async function rePrefill() {
   });
   dlg.close();
   if (!answer) return;
-  const { skeleton } = await api('/api/parts/prefill', { ds: state.ds, species, apply: true });
-  state.current = skeleton;
+  const { skeleton } = await api('/api/parts/prefill', { ds, species, apply: true });
+  syncSpeciesEntry(ds, skeleton);
+  if (!state.current || speciesKey(state.current) !== speciesKey({ ds, species })) return;
+  state.current = { ...skeleton, ds };
   state.undo = [];
-  syncSpeciesEntry(skeleton);
   refreshVisuals();
   renderTable();
   renderTitle();
@@ -966,15 +1148,26 @@ async function rePrefill() {
 // Opening a species
 // ---------------------------------------------------------------------------
 
-async function openSpecies(species) {
-  try { await flushSave(); } catch (err) { return; }
+async function openSpecies({ ds, species }) {
+  // Taken before the save so the latest open wins when arrow keys are held.
   const token = ++state.loadToken;
+  state.opening = speciesKey({ ds, species });
+  renderSpecies();
+  scrollActiveIntoView();
+  try { await flushSave(); } catch (err) {
+    if (token === state.loadToken) { state.opening = null; renderSpecies(); }
+    return;
+  }
+  if (token !== state.loadToken) return;
   setStatus(`加载 ${species}…`);
-  const q = `ds=${encodeURIComponent(state.ds)}&species=${encodeURIComponent(species)}`;
+  const q = `ds=${encodeURIComponent(ds)}&species=${encodeURIComponent(species)}`;
   try {
-    const [payload, bvh] = await Promise.all([api(`/api/parts/skeleton?${q}`), api(`/api/parts/tpose.bvh?${q}`)]);
+    const [payload, bvh, { clips }] = await Promise.all([
+      api(`/api/parts/skeleton?${q}`), api(`/api/parts/tpose.bvh?${q}`), api(`/api/parts/clips?${q}`)]);
     if (token !== state.loadToken) return;
-    state.current = payload;
+    state.opening = null;
+    state.current = { ...payload, ds };
+    fillClipOptions(clips, species);
     state.selected = new Set();
     state.anchor = null;
     state.undo = [];
@@ -984,13 +1177,65 @@ async function openSpecies(species) {
     renderTable();
     renderTitle();
     renderSpecies();
-    remember('species.' + state.ds, species);
+    remember('species.' + state.ds, speciesKey(state.current));
     setStatus('');
-    const active = $('species').querySelector('.sp.active');
-    if (active) active.scrollIntoView({ block: 'nearest' });
+    scrollActiveIntoView();
   } catch (err) {
+    if (token !== state.loadToken) return;
+    state.opening = null;
+    renderSpecies();
     setStatus(`加载失败：${err.message}`, true);
   }
+}
+
+function scrollActiveIntoView() {
+  const active = $('species').querySelector('.sp.active');
+  if (active) active.scrollIntoView({ block: 'nearest' });
+}
+
+// Empty the viewport and the joint table. Edits still pending are sent
+// without waiting (flushSave reads the species before clearing it here).
+function closeSpecies() {
+  state.loadToken++;
+  state.opening = null;
+  if (state.current && Object.keys(state.pending).length) flushSave().catch(() => {});
+  disposeSkeleton();
+  state.current = null;
+  state.selected = new Set();
+  state.anchor = null;
+  state.undo = [];
+  $('undo').disabled = true;
+  $('tip').hidden = true;
+  hoverIndex = null;
+  fillClipOptions([], '');
+  renderTable();
+  renderTitle();
+}
+
+// Left/Right step through the open species' clips; TPose is the first entry.
+function stepClip(delta) {
+  const sel = $('clip');
+  if (sel.disabled || !state.current) return;
+  const next = Math.min(Math.max(sel.selectedIndex + delta, 0), sel.options.length - 1);
+  if (next === sel.selectedIndex) return;
+  sel.selectedIndex = next;
+  playClip(sel.value);
+}
+
+// Arrow keys step through the species list as filtered and sorted.
+function stepSpecies(delta) {
+  const list = visibleSpecies();
+  if (!list.length) return;
+  const at = list.findIndex((s) => speciesKey(s) === activeKey());
+  const next = at < 0 ? (delta > 0 ? 0 : list.length - 1)
+    : Math.min(Math.max(at + delta, 0), list.length - 1);
+  if (next !== at) openSpecies(list[next]);
+}
+
+// A filter or search that matches no species empties the viewport.
+function refilterSpecies() {
+  renderSpecies();
+  if (!visibleSpecies().length && (state.current || state.opening)) closeSpecies();
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,8 +1271,22 @@ function toggleContact() {
 
 document.addEventListener('keydown', (event) => {
   const tag = (event.target.tagName || '').toLowerCase();
+  // Arrow keys also work from the search box; select menus keep their own.
+  if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !$('diffDlg').open
+      && !event.ctrlKey && !event.metaKey && !event.altKey
+      && (event.target === $('q') || !['input', 'select', 'textarea'].includes(tag) || event.target.type === 'checkbox')) {
+    event.preventDefault();
+    stepSpecies(event.key === 'ArrowDown' ? 1 : -1);
+    return;
+  }
   if (tag === 'input' && event.target.type !== 'checkbox' || tag === 'select' || tag === 'textarea') return;
   if ($('diffDlg').open) return;
+  if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight')
+      && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+    event.preventDefault();
+    stepClip(event.key === 'ArrowRight' ? 1 : -1);
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); undo(); return; }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
     event.preventDefault();
@@ -1039,6 +1298,7 @@ document.addEventListener('keydown', (event) => {
   if (views[event.code]) { event.preventDefault(); setView(views[event.code]); return; }
   if (event.key === 'Enter') { event.preventDefault(); confirmAndNext(); return; }
   if (event.key === 'Escape') { select([], 'set'); return; }
+  if (event.key === ' ') { event.preventDefault(); if (anim) setPlaying(!anim.playing); return; }
   const key = event.key.toLowerCase();
   if (key === 'c') { toggleContact(); return; }
   if (event.code.startsWith('Numpad')) return;
@@ -1051,22 +1311,25 @@ document.addEventListener('keydown', (event) => {
 });
 
 $('dataset').addEventListener('change', (e) => switchDataset(e.target.value));
-$('stateFilter').addEventListener('change', () => { remember('filter', $('stateFilter').value); renderSpecies(); });
+$('stateFilter').addEventListener('change', () => { remember('filter', $('stateFilter').value); refilterSpecies(); });
 $('sort').addEventListener('change', () => { remember('sort', $('sort').value); renderSpecies(); });
-$('q').addEventListener('input', renderSpecies);
+$('q').addEventListener('input', refilterSpecies);
 $('undo').addEventListener('click', undo);
+$('clip').addEventListener('change', () => { $('clip').blur(); playClip($('clip').value); });
+$('play').addEventListener('click', () => { $('play').blur(); if (anim) setPlaying(!anim.playing); });
 $('mirror').addEventListener('click', mirrorLeftToRight);
 $('confirm').addEventListener('click', confirmAndNext);
 $('prefill').addEventListener('click', () => rePrefill().catch((err) => setStatus(`预填失败：${err.message}`, true)));
 window.addEventListener('pagehide', () => {
   if (!state.current || !Object.keys(state.pending).length) return;
-  const body = JSON.stringify({ ds: state.ds, species: state.current.species, joints: state.pending });
+  const body = JSON.stringify({ ds: state.current.ds, species: state.current.species, joints: state.pending });
   navigator.sendBeacon('/api/parts/update', new Blob([body], { type: 'application/json' }));
 });
 
 $('stateFilter').value = recall('filter') || 'all';
 $('sort').value = recall('sort') || 'name';
 $('undo').disabled = true;
+fillClipOptions([], '');
 buildPalette();
 loadDatasets().catch((err) => setStatus(`加载失败：${err.message}`, true));
 </script>

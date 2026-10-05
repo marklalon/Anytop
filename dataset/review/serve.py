@@ -82,7 +82,8 @@ first edit writes that proposal into the sidecar together with the edit. Every
 edited joint becomes ``"src": "manual"``, which a later prefill never touches.
 The t-pose is a single-frame BVH written from cond (``truebones_utils
 .tpose_bvh``) and cached under ``<processed>/bvh_tpose/``; it is rebuilt when
-cond.npy is newer.
+cond.npy is newer. The page can also play a species' clips from
+``<processed>/bvhs/``, listed through ``motion_metadata.json``.
 
     python serve.py [--port 8765] [--datasets ../datasets.jsonl] [--no-browser]
 
@@ -747,6 +748,10 @@ class PartsStore:
         self.cond_path = Path(ds["cond"])
         self.path = Path(ds["joint_parts"])
         self.bvh_dir = Path(ds["processed"]) / "bvh_tpose"
+        self.clip_dir = Path(ds["processed"]) / "bvhs"
+        self.metadata_path = Path(ds["metadata"])
+        self.clips_by_species = {}   # object_type -> clip stems (from motion_metadata.json)
+        self.metadata_mtime = None
         self.lock = threading.Lock()
         self.cond = {}
         self.cond_mtime = None
@@ -812,6 +817,11 @@ class PartsStore:
         return merged, sig, added, removed
 
     # -- reads -----------------------------------------------------------
+    def species_count(self):
+        with self.lock:
+            self._refresh()
+            return len(self.by_species)
+
     def species_list(self):
         with self.lock:
             self._refresh()
@@ -845,6 +855,30 @@ class PartsStore:
             if not path.is_file() or path.stat().st_mtime_ns < self.cond_mtime:
                 write_tpose_bvh(entry, path)
             return path.read_bytes()
+
+    def clips(self, species):
+        """Stems of ``species``' clips that have a BVH under ``bvhs/``, sorted."""
+        with self.lock:
+            self._refresh()
+            self._entry(species)
+            mtime = self.metadata_path.stat().st_mtime_ns if self.metadata_path.is_file() else None
+            if mtime != self.metadata_mtime:
+                motions = {}
+                if mtime is not None:
+                    payload = json.loads(self.metadata_path.read_text(encoding="utf-8"))
+                    motions = payload.get("motions") or {}
+                self.clips_by_species = {}
+                for clip, meta in motions.items():
+                    self.clips_by_species.setdefault(meta.get("object_type"), []).append(clip_stem(clip))
+                self.metadata_mtime = mtime
+            stems = self.clips_by_species.get(species, [])
+            return sorted((s for s in stems if (self.clip_dir / f"{s}.bvh").is_file()), key=str.lower)
+
+    def clip_bvh(self, species, clip):
+        """A clip's BVH; ``clip`` must be one of ``species``' clips."""
+        if clip not in self.clips(species):
+            raise KeyError(clip)
+        return (self.clip_dir / f"{clip}.bvh").read_bytes()
 
     def skeleton(self, species):
         with self.lock:
@@ -1160,10 +1194,15 @@ class Handler(BaseHTTPRequestHandler):
     def _parts_get(self, path):
         params = self._query()
         if path == "/api/parts/datasets":
-            return self._send_json(200, {"datasets": [
-                {"id": d["id"], "name": d["name"], "joint_parts": str(d["joint_parts"])}
-                for d in self.parts_datasets
-            ]})
+            payload = []
+            for d in self.parts_datasets:
+                try:
+                    count = self.parts_stores[d["id"]].species_count()
+                except (JointPartsError, ValueError, OSError):
+                    count = None
+                payload.append({"id": d["id"], "name": d["name"],
+                                "joint_parts": str(d["joint_parts"]), "species": count})
+            return self._send_json(200, {"datasets": payload})
         store = self._parts_store(params.get("ds"))
         if store is None:
             return self._send_json(404, {"error": f"unknown dataset: {params.get('ds')}"})
@@ -1179,6 +1218,15 @@ class Handler(BaseHTTPRequestHandler):
                                   {"Cache-Control": "no-store"})
             if path == "/api/parts/skeleton":
                 return self._send_json(200, store.skeleton(species))
+            if path == "/api/parts/clips":
+                return self._send_json(200, {"species": species, "clips": store.clips(species)})
+            if path == "/api/parts/clip.bvh":
+                clip = params.get("clip", "")
+                # clips() raises KeyError for a species missing from cond.
+                if clip not in store.clips(species):
+                    return self._send_json(404, {"error": f"no clip {clip!r} for {species}"})
+                return self._send(200, store.clip_bvh(species, clip),
+                                  "text/plain; charset=utf-8", {"Cache-Control": "no-store"})
         except KeyError:
             return self._send_json(404, {"error": f"species not in cond: {species}"})
         except (JointPartsError, ValueError) as exc:
