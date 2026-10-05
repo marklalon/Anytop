@@ -19,7 +19,6 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 )
 from .joint_name_canonical import (
     EMBED_TEXT_CREATURE_TOKENS,
-    EMBED_TEXT_HEAD_FEATURE_TOKENS,
     build_joint_name_inspection_rows,
     canonicalize_joint_name,
     infer_species_joint_name_prefixes,
@@ -288,6 +287,17 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
     'lips': 'Lip',
     'btm': 'Bottom',
 }
+# Parts on the head other than the head itself, matched on the refined tokens
+# (after synonyms, so "Snout" counts as "Nose"). A name holding one gets a
+# trailing "HeadFeature" category word: alone, a sided "Left Ear" or "Left Jaw"
+# sits next to the limbs in T5 space, because the side word dominates a short
+# text. The specific word stays, so Eye, Ear and Jaw remain apart.
+_EMBED_TEXT_HEAD_PART_TOKENS = frozenset({
+    'beak', 'beard', 'cheek', 'crest', 'crown', 'ear', 'eye', 'eyeball', 'eyebrow',
+    'eyelid', 'face', 'fang', 'fangs', 'horn', 'horns', 'jaw', 'lip', 'lure',
+    'mouth', 'nose', 'nostril', 'pupil', 'teeth', 'tongue', 'tooth', 'trunk',
+    'wattle',
+})
 
 
 # Bump whenever the text build_joint_embedding_texts produces for a joint can
@@ -295,7 +305,7 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
 # or refinement, or what goes into the sentence. Stored name embeddings are keyed
 # by this version, so a bump makes the loader reject stale cond files until
 # preprocessing re-runs.
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 20
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 21
 
 
 # Adjacent tokens that name one part together ("upper leg" -> Thigh). Applied
@@ -316,9 +326,10 @@ _EMBED_TEXT_TOKEN_PAIR_MERGES = {
     ('lower', 'reg'): 'Calf',
     # 3ds Max Biped's digitigrade link, Thigh -> Calf -> HorseLink -> Foot
     ('horse', 'link'): 'Ankle',
-    # keeps an eyelid from reading as "Eye" (HeadFeature) + "Lid"
+    # keeps an eyelid from reading as "Eye" + "Lid"
     ('eye', 'lid'): 'Eyelid',
     ('eye', 'lids'): 'Eyelid',
+    ('eye', 'ball'): 'Eyeball',
 }
 
 
@@ -558,12 +569,6 @@ def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
         return ['UpperLeg']
     if clean_token == 'clip':
         return ['Appendage']
-    if clean_token in EMBED_TEXT_HEAD_FEATURE_TOKENS:
-        # Emit the specific word *and* the shared category. The category token
-        # keeps every head appendage close together in T5 space (the point of
-        # the grouping), while the specific word stops Jaguar's Eye, Ear and
-        # Beard from collapsing onto one identical "HeadFeature Right".
-        return [clean_token.capitalize(), 'HeadFeature']
     return [clean_token.capitalize()]
 
 
@@ -711,7 +716,10 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
         if position == 0 or token != merged_tokens[position - 1]
     ]
     if deduped_tokens:
-        return _drop_redundant_limb_carrier(deduped_tokens)
+        refined_tokens = _drop_redundant_limb_carrier(deduped_tokens)
+        if any(token.lower() in _EMBED_TEXT_HEAD_PART_TOKENS for token in refined_tokens):
+            refined_tokens = [*refined_tokens, 'HeadFeature']
+        return refined_tokens
 
     # Nothing survived, so hand back the raw canonical tokens -- minus the side
     # word, which build_joint_embedding_texts is about to re-attach from the

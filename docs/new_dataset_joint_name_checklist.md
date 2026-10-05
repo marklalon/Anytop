@@ -247,7 +247,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 | B5 | `EMBED_TEXT_LIMB_CODE_TOKENS` / `EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS` / `EMBED_TEXT_FACE_QUADRANT_CODE_TOKENS` | 四足肢位码 `lf/rf/lb/rb` → `Front`/`Back`（左右交给几何）；halves 互换的 `fl/fr/bl/br`、六足中腿 `lm/rm/ml/mr` 只在同名里还有 `arm`/`leg`/`wing` 时解码。面部角码 `tl/tr/bl/br` → `Upper`/`Lower`，只在同名里还有 `mouth`/`lip`/`jaw` 等面部词时解码；上下文门控负责区分 `wingBL` 的后翼和 `MouthBL` 的左下嘴角 |
 | B6 | `EMBED_TEXT_SYNONYM_TOKENS` | 解剖同义词 + rig 缩写 + 拼写错误，全部折叠到语料已有的词。**长尾治理的主力表** |
 | B7 | `_EMBED_TEXT_TOKEN_PAIR_MERGES` | 相邻两词合成一词（`upper leg`→Thigh、`horse link`→Ankle）。单词映射解决不了时用这个。**注意执行顺序：pair merge 跑在 B6 单词映射之前**，所以被拼错的词要么两条都写（`('rower','reg')` 和 `rower`/`reg` 各自），要么就落不到 merge 上 |
-| B8 | `EMBED_TEXT_HEAD_FEATURE_TOKENS` | 头部附属物额外追加一个 `HeadFeature` 类别词，让它们在 T5 空间里彼此靠近 |
+| B8 | `_EMBED_TEXT_HEAD_PART_TOKENS` | 精炼后的名字里含头部部位词（同义词映射之后判定），末尾追加一个 `HeadFeature` 类别词，避免带 side 的短文本（`Left Ear`、`Left Jaw`）在 T5 空间里贴到四肢上。新数据集出现新的头部部位词时加进这张表 |
 | B9 | `_EMBED_TEXT_HELPER_NODE_TOKENS` | IK 目标、FX/挂点 dummy、质心节点（`ik`/`dummy`/`fx`/`com`/`cog`/`cg`）。和 B4 不同：B4 逐词丢弃、名字里还有解剖词就留下，B9 命中即**整个关节置零**，因为旁边的解剖词说的是它驱动或挂靠的部位（`Foot_IK`、`FXDummy_Head`）。一个词只进 B4 或 B9 其中一张 |
 | B10 | `EMBED_TEXT_HEAD_MOUTH_CODE_TOKENS` + `EMBED_TEXT_HEAD_CODE_CONTEXT_TOKENS` | 头上的口器码：`lm`/`rm`→Mouth（侧别交给几何），`tm`→Upper Mouth，`dm`→Lower Mouth。头部上下文来自同名里的 `head`，或沿自身码链往上第一个不同名的祖先是头（`Bone_LM02`→`Bone_LM01`→`Bone_Head`）。同名里有肢体词时让位给 B5 的中腿码 |
 
