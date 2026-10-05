@@ -18,7 +18,11 @@ from data_loaders.truebones.truebones_utils.animation_utils import (
     _joint_disambiguation_tokens,
 )
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_semantic_metadata
-from data_loaders.truebones.truebones_utils.joint_name_canonical import strip_joint_name_prefix
+from data_loaders.truebones.truebones_utils.joint_name_canonical import (
+    canonicalize_joint_name,
+    infer_species_joint_name_prefixes,
+    strip_joint_name_prefix,
+)
 
 
 def test_unity_rig_prefixes_are_removed_from_canonical_names():
@@ -65,6 +69,35 @@ def test_species_word_is_not_removed_when_it_is_not_a_skeleton_wide_prefix():
     )
 
     assert metadata["canonical_joint_names"] == ["Hips", "Horse Link", "Horse Head"]
+
+
+@pytest.mark.parametrize("mount, rider", [("horse", "man"), ("Mount", "Rider")])
+def test_composite_body_words_are_stripped_from_rider_and_mount(mount, rider):
+    raw_names = [
+        "Root",
+        f"{mount}Spine", f"{mount}_hand_L", f"{mount}_hand_R",
+        f"{rider}_spine", f"{rider}_hand_L", f"{rider}_hand_R", f"{rider}_armor_L",
+        "Spear",
+    ]
+    body_words = tuple(sorted((mount.lower(), rider.lower())))
+    assert infer_species_joint_name_prefixes(raw_names, "MLH_Horseman") == body_words
+    assert infer_species_joint_name_prefixes(raw_names, None) == body_words
+    stripped = [canonicalize_joint_name(name, additional_prefixes=(mount, rider)) for name in raw_names]
+    assert stripped == [
+        "Root", "Spine", "Hand Left", "Hand Right", "Spine", "Hand Left", "Hand Right", "Armor Left", "Spear",
+    ]
+
+
+@pytest.mark.parametrize("raw_names", [
+    # Limb codes: each leads one side only.
+    ["Pelvis", "LF_Leg1", "LF_Leg2", "LF_Foot", "RF_Leg1", "RF_Leg2", "RF_Foot"],
+    # Fingers: no midline joint.
+    ["Hand_L", "Ring_01_L", "Ring_02_L", "Ring_01_R", "Ring_02_R", "Pinky_01_L", "Pinky_01_R", "Pinky_02_L"],
+    # One body word is anatomy.
+    ["Hips", "HorseLink", "HorseHead", "Horse_Leg_L", "Horse_Leg_R"],
+])
+def test_composite_body_rule_leaves_other_rigs_alone(raw_names):
+    assert infer_species_joint_name_prefixes(raw_names, None) == ()
 
 
 def test_species_prefix_is_removed_before_duplicate_name_disambiguation():

@@ -295,7 +295,7 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
 # or refinement, or what goes into the sentence. Stored name embeddings are keyed
 # by this version, so a bump makes the loader reject stale cond files until
 # preprocessing re-runs.
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 19
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 20
 
 
 # Adjacent tokens that name one part together ("upper leg" -> Thigh). Applied
@@ -466,6 +466,50 @@ def _mouth_code_below_head(joint_names, parents, additional_prefixes=()):
         flags[joint_index] = (
             ancestor >= 0 and bool(token_sets[ancestor] & EMBED_TEXT_HEAD_CODE_CONTEXT_TOKENS)
         )
+    return flags
+
+
+# Synonym words that name a bone only inside a limb: a hoofed leg's "Cannon"
+# below the tibia, against a gun barrel mounted on the back.
+_EMBED_TEXT_LIMB_ONLY_SYNONYM_TOKENS = frozenset({'cannon'})
+# Segment words, after synonym folding, that put a joint inside a limb.
+_EMBED_TEXT_LIMB_SEGMENT_TOKENS = frozenset({
+    'Thigh', 'Calf', 'Knee', 'Ankle', 'Foot', 'Leg', 'UpperLeg',
+    'UpperArm', 'Forearm', 'Elbow', 'Wrist', 'Hand', 'Arm',
+})
+
+
+def _limb_only_word_outside_limb(joint_names, parents, additional_prefixes=()):
+    """Per-joint flag: does this limb-only word sit off any limb?
+
+    The context is the first ancestor outside the joint's own chain
+    ("Cannon3_R" -> "Cannon2_R" -> "Cannon1_R" -> "Spine1"). A name that also
+    spells a limb segment carries its own context. A flagged joint names no body
+    part.
+    """
+    joint_count = len(joint_names)
+    if parents is None or len(parents) != joint_count:
+        return [False] * joint_count
+
+    parents = np.asarray(parents, dtype=np.int64)
+    token_sets = [
+        frozenset(_body_clean_tokens(str(name), additional_prefixes=additional_prefixes)[1])
+        for name in joint_names
+    ]
+    def limb_segments(tokens):
+        return {
+            _EMBED_TEXT_SYNONYM_TOKENS.get(token, token.capitalize())
+            for token in tokens - _EMBED_TEXT_LIMB_ONLY_SYNONYM_TOKENS
+        } & _EMBED_TEXT_LIMB_SEGMENT_TOKENS
+
+    flags = [False] * joint_count
+    for joint_index, tokens in enumerate(token_sets):
+        if not tokens & _EMBED_TEXT_LIMB_ONLY_SYNONYM_TOKENS or limb_segments(tokens):
+            continue
+        ancestor = int(parents[joint_index])
+        while ancestor >= 0 and token_sets[ancestor] == tokens:
+            ancestor = int(parents[ancestor])
+        flags[joint_index] = ancestor < 0 or not limb_segments(token_sets[ancestor])
     return flags
 
 
@@ -718,9 +762,14 @@ def build_joint_embedding_texts(object_cond):
         object_cond.get('parents'),
         additional_prefixes=species_prefixes,
     )
+    off_limb_flags = _limb_only_word_outside_limb(
+        base_joint_names,
+        object_cond.get('parents'),
+        additional_prefixes=species_prefixes,
+    )
     texts = []
     for joint_index, joint_name in enumerate(base_joint_names):
-        if joint_name_is_helper_node(joint_name, additional_prefixes=species_prefixes):
+        if off_limb_flags[joint_index] or joint_name_is_helper_node(joint_name, additional_prefixes=species_prefixes):
             texts.append('')
             continue
         refined_tokens = _refine_joint_embedding_name(

@@ -210,15 +210,25 @@ def infer_species_joint_name_prefixes(joint_names, species_name=None):
     separator-preserving suffix forms and accept only the longest form that is
     a complete leading token on *every* joint.  The all-joints gate is what keeps
     an anatomical name such as ``HorseLink`` intact on an ordinary Horse rig.
-    Failing that, a ``Bone_<code>`` stamp is looked for
-    (``_infer_bone_code_joint_name_prefixes``).
+    Failing that, the body words of a composite rig
+    (``_infer_composite_body_joint_name_prefixes``) and then a ``Bone_<code>``
+    stamp (``_infer_bone_code_joint_name_prefixes``) are looked for; neither
+    needs the species name.
     """
     names = [] if joint_names is None else [str(name or '') for name in joint_names]
     if not names:
         return ()
-    if not species_name:
-        return _infer_bone_code_joint_name_prefixes(names)
+    return (
+        _infer_species_name_joint_name_prefixes(names, species_name)
+        or _infer_composite_body_joint_name_prefixes(names)
+        or _infer_bone_code_joint_name_prefixes(names)
+    )
 
+
+def _infer_species_name_joint_name_prefixes(names, species_name):
+    """The longest suffix form of the species name that leads every joint."""
+    if not species_name:
+        return ()
     bare_species = str(species_name).replace('\\', '/').rsplit('/', 1)[-1]
     parts = [part for part in re.split(r'[^0-9A-Za-z]+', bare_species) if part]
     candidates = set()
@@ -240,7 +250,69 @@ def infer_species_joint_name_prefixes(joint_names, species_name=None):
             for name in names
         ):
             return (candidate,)
-    return _infer_bone_code_joint_name_prefixes(names)
+    return ()
+
+
+_COMPOSITE_BODY_MIN_JOINTS_PER_WORD = 3
+_COMPOSITE_BODY_MIN_SHARED_PARTS = 2
+_COMPOSITE_BODY_SIDE_WORDS = {'l': 'left', 'left': 'left', 'r': 'right', 'right': 'right'}
+
+
+def _infer_composite_body_joint_name_prefixes(names):
+    """Leading words that tell the bodies of a composite rig apart.
+
+    A rider and its mount, or a centaur's horse body and human torso, name each
+    bone after its body ("horse_hand_L", "man_hand_L"). The bodies split the
+    skeleton, so no one word leads every joint, and the root and the props carry
+    none. A leading word is such a body word when it
+      - is not an anatomy, modifier or side word,
+      - leads a whole body: a midline joint and joints on both sides, which
+        rules out a limb code ("LF_Leg") or a finger ("Ring_01_L"),
+      - names body parts another such word also names ("upperArm" under both).
+    At least two body words are needed; a lone one is anatomy ("HorseLink" on
+    a plain horse) and stays.
+    """
+    joint_counts = Counter()
+    sides_by_word = defaultdict(set)
+    parts_by_word = defaultdict(set)
+    for name in names:
+        if strip_joint_name_prefix(name) != name:
+            continue
+        tokens = normalize_joint_name(name).split()
+        if len(tokens) < 2:
+            continue
+        word = tokens[0]
+        if (
+            not word.isalpha() or len(word) < 2
+            or word in _COMPOSITE_BODY_SIDE_WORDS or word in _COMPOUND_SPLIT_VOCABULARY
+            or not _has_joint_name_prefix(name, word, case_sensitive=False)
+        ):
+            continue
+        part = tuple(
+            token for token in tokens[1:]
+            if not token.isdigit() and len(token) > 1 and token not in _COMPOSITE_BODY_SIDE_WORDS
+        )
+        if not part:
+            continue
+        sides = {_COMPOSITE_BODY_SIDE_WORDS[token] for token in tokens[1:] if token in _COMPOSITE_BODY_SIDE_WORDS}
+        joint_counts[word] += 1
+        sides_by_word[word].add(sides.pop() if len(sides) == 1 else 'center')
+        parts_by_word[word].add(part)
+
+    candidates = [
+        word for word, count in joint_counts.items()
+        if count >= _COMPOSITE_BODY_MIN_JOINTS_PER_WORD
+        and sides_by_word[word] == {'left', 'right', 'center'}
+    ]
+    body_words = {
+        word for word in candidates
+        if any(
+            other != word
+            and len(parts_by_word[word] & parts_by_word[other]) >= _COMPOSITE_BODY_MIN_SHARED_PARTS
+            for other in candidates
+        )
+    }
+    return tuple(sorted(body_words)) if len(body_words) >= 2 else ()
 
 
 # Leading word some packs stamp ahead of a species or pack code on every bone
