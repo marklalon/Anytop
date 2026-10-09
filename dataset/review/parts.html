@@ -645,9 +645,9 @@ function buildSkeleton(bvhText, payload) {
     return sprite;
   });
 
-  // Floor grid at the lowest joint, for judging what reaches the ground.
+  // Floor grid at Y=0, the processed data's ground, for judging what reaches it.
   const grid = new THREE.GridHelper(skel.diag * 2, 20, cssVar('--grid'), cssVar('--grid'));
-  grid.position.set(skel.center.x, box.min.y, skel.center.z);
+  grid.position.set(skel.center.x, 0, skel.center.z);
   grid.material.transparent = true;
   grid.material.opacity = .6;
   group.add(grid);

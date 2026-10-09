@@ -500,6 +500,7 @@ def test_incremental_prepare_scans_only_new_source_and_reuses_alignment(monkeypa
         orientation_quat=object(),
         prop_socket_names=(),
         end_site_names=(),
+        detached_root_depth=0,
         names=['Root', 'Tail'],
         tpos_anim=object(),
     )
@@ -594,6 +595,7 @@ def test_incremental_prepare_rejects_new_source_root_mismatch(monkeypatch, tmp_p
         orientation_quat=object(),
         prop_socket_names=(),
         end_site_names=(),
+        detached_root_depth=0,
         names=['Root', 'Tail'],
         tpos_anim=object(),
     )
@@ -659,6 +661,7 @@ def test_incremental_prepare_accepts_a_new_source_rooted_above_the_frozen_joint(
         orientation_quat=object(),
         prop_socket_names=(),
         end_site_names=(),
+        detached_root_depth=0,
         names=['Cg', 'Pelvis', 'Spine'],
         tpos_anim=object(),
     )

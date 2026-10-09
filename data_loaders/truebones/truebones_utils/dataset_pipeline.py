@@ -787,9 +787,10 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     # decision, and it takes two passes because each needs the other's answer:
     # the depth is only knowable once every clip has been aligned and measured,
     # and the measurement is only final once the wrapper is gone. A pass that
-    # lands on joint 0 is the fixed point -- there is nothing above the root left
-    # to fold -- and an incremental run arrives with the depth already frozen in
-    # cond, so it settles on the first pass.
+    # lands on joint 0 with no detached control root on top is the fixed point --
+    # there is nothing above the real root left to fold -- and an incremental run
+    # arrives with the depth already frozen in cond, so it settles on the first
+    # pass.
     #
     # The bpy import of every source is cached across the passes: a second pass
     # re-normalizes the same files at the new depth, and re-importing them is
@@ -798,7 +799,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     # arrives with the root already frozen and provably breaks on the first pass,
     # so it holds nothing it could not use.
     raw_load_cache = {} if frozen_translation_root_index is None else None
-    for _pass in range(3):
+    for _pass in range(4):
         object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
             object_type,
             t_pos_path,
@@ -880,16 +881,41 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                     ]
                 )
 
-        if translation_root_index == 0 or frozen_translation_root_index is not None:
+        if frozen_translation_root_index is not None:
+            # A frozen depth that still leaves a detached control root on top
+            # would carry it onto every new clip; only a full rebuild re-derives
+            # the species root.
+            if tp.detached_root_depth:
+                raise DatasetPreprocessingError(
+                    [
+                        f"[FAIL] Object '{object_type}': the frozen cond "
+                        f"root_promote_depth={promote_root_depth} leaves the detached "
+                        f"control root '{tp.names[0]}' on top. Re-run with --overwrite "
+                        f"to fold it."
+                    ]
+                )
             break
 
-        # Everything above the joint this species travels on is an inert control
-        # node. Fold it into the real root and measure again on that skeleton.
-        folded = list(tp.names[:translation_root_index])
-        real_root_name = tp.names[translation_root_index]
-        promote_root_depth += translation_root_index
+        if translation_root_index == 0:
+            if not tp.detached_root_depth:
+                break
+            # The species travels on its root, but that root is a detached
+            # control node (Crow's ground-level ``Pelvis``). Folding it hands its
+            # transport to the child, so the next pass settles on joint 0 again.
+            fold_count = int(tp.detached_root_depth)
+            kind = "detached control root(s)"
+        else:
+            # Everything above the joint this species travels on is an inert
+            # control node.
+            fold_count = translation_root_index
+            kind = "wrapper joint(s)"
+
+        # Fold into the real root and measure again on that skeleton.
+        folded = list(tp.names[:fold_count])
+        real_root_name = tp.names[fold_count]
+        promote_root_depth += fold_count
         print(
-            f"[OK] {object_type}: folding {translation_root_index} wrapper joint(s) "
+            f"[OK] {object_type}: folding {fold_count} {kind} "
             f"{folded} into the real root '{real_root_name}'",
             flush=True,
         )

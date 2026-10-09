@@ -64,7 +64,7 @@ JOINT_PARTS = (
     'fin',
     'soft',
 )
-# A definite "not a body part" verdict (wrapper roots, IK targets, props). Kept
+# A definite "not a body part" verdict (IK targets, props). Kept
 # out of the class ids: it is shown and reviewed, never trained on.
 HELPER_PART = 'helper'
 HELPER_PART_ID = 255
@@ -542,8 +542,7 @@ def prefill_joint_parts(cond_entry) -> dict[str, dict]:
     src = [None] * joint_count
     why = [''] * joint_count
 
-    # Helpers: IK/FX nodes, named props, and the wrapper chain (no body-part
-    # word: "Armature", "Bip01", a bare locator) above the trunk's first part.
+    # Helpers: IK/FX nodes and named props.
     for index in range(joint_count):
         if joint_name_is_helper_node(raw_names[index], additional_prefixes=prefixes):
             parts[index], src[index], why[index] = HELPER_PART, 'name', 'helper node'
@@ -552,12 +551,10 @@ def prefill_joint_parts(cond_entry) -> dict[str, dict]:
             if part is not None:
                 parts[index], src[index] = part, 'name'
                 why[index] = f'prop ({word})' if part == HELPER_PART else word
-    for index in order:
-        parent = int(parents[index])
-        on_wrapper_chain = parent < 0 or (parts[parent] == HELPER_PART and why[parent] == 'wrapper')
-        names_no_part = _name_part(tokens[index], sides[index])[0] is None
-        if on_wrapper_chain and names_no_part and parts[index] is None and children[index]:
-            parts[index], src[index], why[index] = HELPER_PART, 'name', 'wrapper'
+    # The root is the trunk whatever it is called ("Armature", "Bip01", a
+    # locator, a hub): the whole body hangs from it.
+    for index in np.flatnonzero(parents < 0):
+        parts[index], src[index], why[index] = 'trunk', 'name', 'root'
 
     # Pass 1: names.
     proximal = [False] * joint_count

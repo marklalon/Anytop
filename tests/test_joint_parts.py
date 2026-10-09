@@ -166,7 +166,7 @@ def test_tentacles_follow_where_they_hang(tags, body_tentacle):
     assert parts['Tentacle2'] == body_tentacle and parts['Tentacle3'] == body_tentacle
 
 
-def test_unnamed_wrapper_root_is_helper_and_blank_child_inherits():
+def test_root_is_trunk_and_blank_child_inherits():
     joints = [
         ('Armature', None, (0.0, 0.0, 0.0)),
         ('Hips', 'Armature', (0.0, 0.5, 0.0)),
@@ -175,7 +175,7 @@ def test_unnamed_wrapper_root_is_helper_and_blank_child_inherits():
         ('Bone02', 'Head', (0.0, 1.0, 0.0)),
     ]
     parts, proposal = _parts(_entry(joints, ('Biped', 'Striding')))
-    assert parts['Armature'] == 'helper' and proposal['Armature']['contact'] == 0
+    assert parts['Armature'] == 'trunk' and proposal['Armature']['contact'] == 0
     assert parts['Bone02'] == 'head' and proposal['Bone02']['src'] == 'inherit'
 
 

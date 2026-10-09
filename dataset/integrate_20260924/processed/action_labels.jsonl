@@ -421,19 +421,19 @@
 {"clip": "Pet_Hamperor_Idle02", "action_group": "stationary", "action_label": "hover, eat", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Hamperor_Spawn", "action_group": "stationary", "action_label": "attack, hover, cast", "is_loop": false, "reviewed": true}
 {"clip": "Pet_Ignas_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Ignas_Idle02", "action_group": "stationary", "action_label": "hover, spin", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Ignas_Idle02", "action_group": "stationary", "action_label": "hover, spin, happy", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Ignas_Spawn", "action_group": "stationary", "action_label": "attack, hover, cast", "is_loop": false, "reviewed": true}
 {"clip": "Pet_Kiki_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Kiki_Idle02", "action_group": "stationary", "action_label": "hover", "is_loop": false, "reviewed": true}
+{"clip": "Pet_Kiki_Idle02", "action_group": "stationary", "action_label": "hover, happy", "is_loop": false, "reviewed": true}
 {"clip": "Pet_Kiki_Spawn", "action_group": "stationary", "action_label": "attack, hover, spin", "is_loop": false, "reviewed": true}
 {"clip": "Pet_Marybell_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Marybell_Idle02", "action_group": "stationary", "action_label": "hover, spin", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Marybell_Idle02", "action_group": "stationary", "action_label": "hover, spin, happy", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Marybell_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Miho_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Miho_Idle02", "action_group": "stationary", "action_label": "hover, roll, forward", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Miho_Idle02", "action_group": "stationary", "action_label": "roll, hover, forward", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Miho_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Miri_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Miri_Idle02", "action_group": "stationary", "action_label": "hover, spin", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Miri_Idle02", "action_group": "stationary", "action_label": "hover, spin, happy", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Miri_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Nero_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Nero_Idle02", "action_group": "stationary", "action_label": "attack, hover", "is_loop": true, "reviewed": true}
@@ -445,13 +445,13 @@
 {"clip": "Pet_Proce_Spawn", "action_group": "stationary", "action_label": "attack, hover, spin", "is_loop": false, "reviewed": true}
 {"clip": "Pet_Shiba_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_SnowDeer_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
-{"clip": "Pet_SnowDeer_Idle02", "action_group": "stationary", "action_label": "hover, spin", "is_loop": true, "reviewed": true}
+{"clip": "Pet_SnowDeer_Idle02", "action_group": "stationary", "action_label": "hover, spin, happy", "is_loop": true, "reviewed": true}
 {"clip": "Pet_SnowDeer_Pose", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Will_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Will_Pose", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Yulia_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Yulia_Idle02", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Yulia_Spawn", "action_group": "stationary", "action_label": "hover, spin", "is_loop": false, "reviewed": true}
+{"clip": "Pet_Yulia_Spawn", "action_group": "stationary", "action_label": "hover, spin, happy", "is_loop": false, "reviewed": true}
 {"clip": "Voxel_Chicken_Attack", "action_group": "stationary", "action_label": "attack, jump, bite", "is_loop": false, "reviewed": true}
 {"clip": "Voxel_Chicken_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Voxel_Chicken_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}

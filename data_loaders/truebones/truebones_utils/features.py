@@ -446,21 +446,40 @@ def get_common_features_from_rest_pose(
     # re-applied here because at load time the drops above had not run yet -- a
     # ``Dummy_Root`` whose only other children are prop sockets was kept there,
     # while the same rig without sockets lost it.
-    if promote_root_depth is None:
-        from motion_lib.root_collapse import wrapper_root_depth
+    #
+    # A detached control root left on top after that fold -- a ground-level joint
+    # with the body standing above it (``detached_root_depth``) -- is measured on
+    # the folded skeleton. The rest-pose-only case folds it here too; with
+    # clips, phase 1 adds it to the depth it records, so the fold stays one
+    # frozen number in cond.
+    from motion_lib.root_collapse import detached_root_depth, wrapper_root_depth
+    rest_pose_only = promote_root_depth is None
+    if rest_pose_only:
         promote_root_depth = wrapper_root_depth(
             rest_pose_names, reference_anim.parents, reference_anim.offsets,
         )
-    if promote_root_depth:
-        reference_anim, rest_pose_names, _kept_after_promote = (
-            promote_translation_root_to_hierarchy_root(
-                reference_anim,
-                rest_pose_names,
-                promote_root_depth,
-                context=rest_pose_context,
-            )
+
+    def _fold_roots(anim, names, joints, depth):
+        anim, names, kept = promote_translation_root_to_hierarchy_root(
+            anim, names, depth, context=rest_pose_context,
         )
-        face_joints = _remap_joint_indices(face_joints, _kept_after_promote)
+        return anim, names, _remap_joint_indices(joints, kept)
+
+    if promote_root_depth:
+        reference_anim, rest_pose_names, face_joints = _fold_roots(
+            reference_anim, rest_pose_names, face_joints, promote_root_depth,
+        )
+    detached_depth = detached_root_depth(
+        rest_pose_names,
+        reference_anim.parents,
+        positions_global(reference_anim)[0],
+    )
+    if rest_pose_only and detached_depth:
+        reference_anim, rest_pose_names, face_joints = _fold_roots(
+            reference_anim, rest_pose_names, face_joints, detached_depth,
+        )
+        promote_root_depth += detached_depth
+        detached_depth = 0
     # Crop oversized skeletons down to max_joints BEFORE any face/contact/offset
     # inference, so every downstream rest-pose artifact is built on the cropped
     # skeleton. Leaves are removed deepest-first, same-depth ties prefer shorter
@@ -550,6 +569,7 @@ def get_common_features_from_rest_pose(
         prop_socket_names=prop_socket_names,
         end_site_names=end_site_names,
         promote_root_depth=int(promote_root_depth),
+        detached_root_depth=int(detached_depth),
     )
 
 
@@ -659,6 +679,9 @@ class TPoseFeatures:
     # How many wrapper joints above the real root this skeleton already had
     # folded away, so every motion clip of the character drops the same ones.
     promote_root_depth: int = 0
+    # Detached control roots still on top of this skeleton after that fold
+    # (``detached_root_depth``); phase 1 adds them to the depth it records.
+    detached_root_depth: int = 0
 
 
 def extract_motion_features_from_aligned_anims(
