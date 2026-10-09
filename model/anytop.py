@@ -106,6 +106,13 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"joint_name_drop_prob must be in [0, 1], got {self.joint_name_drop_prob}"
             )
+        # Whole-skeleton name dropout: every name of the sample at once, unioned
+        # with the per-joint draw. Same defaults contract as joint_name_drop_prob.
+        self.skeleton_name_drop_prob=float(kargs.get('skeleton_name_drop_prob', 0.0))
+        if not 0.0 <= self.skeleton_name_drop_prob <= 1.0:
+            raise ValueError(
+                f"skeleton_name_drop_prob must be in [0, 1], got {self.skeleton_name_drop_prob}"
+            )
         # Training-only; validated by GraphMotionDecoder.
         self.mirror_twin_drop_prob=float(kargs.get('mirror_twin_drop_prob', 0.0))
         # Action-label conditioning: a single pathway -- the frozen T5 vectors of
@@ -1163,17 +1170,28 @@ class AnyTop(nn.Module):
     def _sample_joint_name_drop(self, batch_size, joint_count, device):
         """Whole-joint name dropout mask, ``[B, J]`` bool, or None when off.
 
-        A per-(sample, joint) Bernoulli at ``joint_name_drop_prob`` in training;
-        InputProcess zeroes the selected name rows, and the part loss reads the
-        same mask (the part is learned only where the name is hidden). Padding
-        rows are zero already, so they need no exclusion. Eval keeps every name.
+        In training, the union of a per-(sample, joint) Bernoulli at
+        ``joint_name_drop_prob`` (some names unknown, as when
+        ``process_new_skeleton`` blanks unseen texts) and a per-sample Bernoulli
+        at ``skeleton_name_drop_prob`` that hides every name of the sample (a
+        rig with no recognisable name, and no neighbour's name to read the
+        species off). InputProcess zeroes the selected name rows, and the part
+        loss reads the same mask (the part is learned only where the name is
+        hidden). Padding rows are zero already, so they need no exclusion. Eval
+        keeps every name.
 
         Branch-free on tensor values (``torch.rand`` + compare, no ``.any()`` in a
         python ``if``) so it does not break torch.compile or cudagraph capture.
         """
-        if (not self.training) or self.joint_name_drop_prob <= 0.0:
+        if not self.training:
             return None
-        return torch.rand(batch_size, joint_count, device=device) < self.joint_name_drop_prob
+        if self.joint_name_drop_prob <= 0.0 and self.skeleton_name_drop_prob <= 0.0:
+            return None
+        drop = torch.rand(batch_size, joint_count, device=device) < self.joint_name_drop_prob
+        if self.skeleton_name_drop_prob > 0.0:
+            whole = torch.rand(batch_size, 1, device=device) < self.skeleton_name_drop_prob
+            drop = drop | whole
+        return drop
 
 
     def _apply(self, fn):

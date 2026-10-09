@@ -559,6 +559,9 @@ class TrainLoop:
     # moving it to the device just to read it back cost a stream sync per step.
     HOST_ONLY_COND_KEYS = ('joint_mask_candidate_roots',)
 
+    # Loss terms that have no value under eval(); validation does not log them.
+    TRAIN_ONLY_LOSS_KEYS = ('part_loss',)
+
     def _move_cond_to_device(self, cond):
         y = {
             key: val if key in self.HOST_ONLY_COND_KEYS or not torch.is_tensor(val)
@@ -712,10 +715,11 @@ class TrainLoop:
                 model_kwargs=self._with_train_step(cond, self.total_step()),
                 noise=noise,
             )
+        # part_loss covers only joints whose name was dropped, and eval drops none.
         return {
             key: value.detach().float().mean()
             for key, value in losses.items()
-            if torch.is_tensor(value)
+            if torch.is_tensor(value) and key not in self.TRAIN_ONLY_LOSS_KEYS
         }
 
     def total_step(self):

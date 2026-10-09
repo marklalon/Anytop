@@ -322,6 +322,6 @@ motion_edit 如何消费这个块，留给它自己重构，不在本方案范�
 2. 🔶 `serve.py` 路由、`parts.html`、`dataset/review/vendor/` 已完成；人工核验进行中（2026-10-04：331 个物种都有非 stale 的行，82 个 reviewed）。
 3. 🔶 预处理和读取方改造（第 5 节）已完成；4 个数据集 cond 已用 `--joint-parts-only` 烘焙（331/331，原文件备份为 `cond.npy.pre_jp_bake.bak`）。**未做**：对 4 个数据集跑完整的 `tools/regenerate_dataset_artifacts.py`（剥掉推断接触字段），再用 `tools/merge_dataset_cond.py` 重建 `dataset/merged/cond.npy`，然后跑 validate。现在的 merged cond 还没有烘焙字段，用它的训练 / 测试会报 `carries no 'joint_contact'`。核验期间每改完一批行，都要重烘焙并重新 merge。
 4. ✅ 模型和辅助 loss（第 6 节）和生成目录 sidecar 输出（6.4）；单测通过，`return_aux=False` 与改动前逐位一致，compile 图数量见 6.2。
-5. 训练新版，按第 8 节与 v41 对比。训练命令要加 `--lambda_part / --lambda_contact`（以及 `--joint_name_drop_prob`，部位 loss 只在置零的关节上算）。
+5. 训练新版，按第 8 节与 v41 对比。训练命令要加 `--lambda_part / --lambda_contact`（以及 `--joint_name_drop_prob`，部位 loss 只在置零的关节上算）。逐关节置零时，其余关节的名字会暴露物种，部位可以直接查表得到；`--skeleton_name_drop_prob` 按样本清空全部名字，堵住这条捷径。
 
 第 2 步的人工核验可以和第 3、4 步并行；第 5 步必须等第 2 步全部 reviewed 后再开训。

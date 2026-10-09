@@ -125,6 +125,8 @@ T5 编码发生在预处理阶段，模型不会在每次 forward 中运行 T5�
 `joint_name_drop_prob>0` 时，训练会把整个关节名称向量置零（与 padding 行同为全零，
 padding 已被 attention mask 和 loss 排除，不会混淆）。它不同于普通 element-wise dropout：目的是真正隐藏关节名字，让模型
 回退到 rest geometry、pairwise topology 和 structural channel。
+`skeleton_name_drop_prob>0` 时，另按样本一次清空该样本的全部关节名，与逐关节置零取并集：逐关节置零留下的
+其余名字足以认出物种，这一项训练的是名字全都不认识的骨架。两者共用同一个 mask，部位 loss 读的也是它。
 
 推理时处理新骨架（`process_new_skeleton` 与 server 的常驻 T5 注入）：embedding text 不在 checkpoint cond.npy 里的关节，名字直接
 置空（空文本经 T5 masked mean 恰为全零行），不在线编码；原文本记在

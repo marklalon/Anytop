@@ -262,11 +262,12 @@ def add_model_options(parser):
                             "denormalized outputs; recommended range ~0.1-0.3.")
     group.add_argument("--lambda_part", default=0.0, type=float,
                        help="Weight of the auxiliary body-part loss (0.0=off): cross-entropy of the part "
-                            "head against joint_parts.jsonl, on the joints whose name "
-                            "--joint_name_drop_prob blanked in that sample only (with the name kept, the "
-                            "part is read off the name). Classes are weighted by inverse-sqrt frequency "
-                            "over the training clips. A non-zero --lambda_part or --lambda_contact builds "
-                            "the auxiliary heads (see --part_head_layer).")
+                            "head against joint_parts.jsonl, computed only on joints whose name was "
+                            "blanked by --joint_name_drop_prob or --skeleton_name_drop_prob (a kept name "
+                            "already gives the part away). Without either drop the loss is always zero, "
+                            "and validation does not log it. Classes are weighted by inverse-sqrt "
+                            "frequency over the training clips. A non-zero --lambda_part or "
+                            "--lambda_contact builds the auxiliary heads (see --part_head_layer).")
     group.add_argument("--lambda_contact", default=0.0, type=float,
                        help="Weight of the auxiliary ground-contact loss (0.0=off): binary cross-entropy "
                             "of the contact head against joint_parts.jsonl, on every non-helper joint "
@@ -351,6 +352,12 @@ def add_model_options(parser):
                             "vector elementwise but never hides the joint's identity, so the model is "
                             "never trained to fall back on rest_pose/graph_dist/joints_relations and a "
                             "single rare name token can flip a limb's motion prior. Default 0.0 (off).")
+    group.add_argument("--skeleton_name_drop_prob", default=0.0, type=float,
+                       help="Per-sample probability of zeroing EVERY joint name of the sample during "
+                            "training, unioned with --joint_name_drop_prob. The per-joint drop leaves "
+                            "the other names in place, from which the species (and so each joint's part) "
+                            "can be read; this one trains the rig whose names are all unknown. Names "
+                            "only: rest pose and joint_struct stay. Default 0.0 (off).")
     group.add_argument("--part_head_layer", default=0, type=int,
                        help="Decoder layer whose output feeds the auxiliary part / contact heads: the "
                             "heads read the output after this many layers (0 = half of --layers). Part "

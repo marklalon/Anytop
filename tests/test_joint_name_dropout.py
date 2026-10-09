@@ -51,7 +51,7 @@ class _ProbeHead(torch.nn.Module):
         return self.real(inp)
 
 
-def _make_model(joint_name_drop_prob=0.0,
+def _make_model(joint_name_drop_prob=0.0, skeleton_name_drop_prob=0.0,
                 species_joint_cond=False, max_joints=4):
     return AnyTop(
         max_joints=max_joints,
@@ -65,6 +65,7 @@ def _make_model(joint_name_drop_prob=0.0,
         t5_out_dim=T5_DIM,
         species_joint_cond=species_joint_cond,
         joint_name_drop_prob=joint_name_drop_prob,
+        skeleton_name_drop_prob=skeleton_name_drop_prob,
     )
 
 
@@ -152,6 +153,35 @@ class JointNameDropoutTest(unittest.TestCase):
         rate = drop.float().mean().item()
         self.assertGreater(rate, 0.4)
         self.assertLess(rate, 0.6)
+
+    def test_skeleton_drop_blanks_whole_samples(self):
+        """With only the skeleton drop on, every row of the mask is all-True or
+        all-False, at about the requested sample rate."""
+        model = _make_model(skeleton_name_drop_prob=0.5)
+        model.train()
+        drop = model._sample_joint_name_drop(512, 8, torch.device('cpu'))
+        per_sample = drop.float().mean(dim=1)
+        self.assertTrue(torch.all((per_sample == 0.0) | (per_sample == 1.0)))
+        self.assertGreater(per_sample.mean().item(), 0.4)
+        self.assertLess(per_sample.mean().item(), 0.6)
+
+    def test_skeleton_drop_unions_with_joint_drop(self):
+        model = _make_model(joint_name_drop_prob=0.2, skeleton_name_drop_prob=0.3)
+        model.train()
+        drop = model._sample_joint_name_drop(4096, 16, torch.device('cpu'))
+        whole = drop.all(dim=1).float().mean().item()
+        partial = drop[~drop.all(dim=1)].float().mean().item()
+        self.assertAlmostEqual(whole, 0.3, delta=0.04)
+        self.assertAlmostEqual(partial, 0.2, delta=0.02)
+
+    def test_skeleton_drop_eval_and_validation(self):
+        model = _make_model(skeleton_name_drop_prob=1.0)
+        model.eval()
+        self.assertIsNone(model._sample_joint_name_drop(2, 4, torch.device('cpu')))
+        with self.assertRaises(ValueError):
+            _make_model(skeleton_name_drop_prob=-0.1)
+        self.assertEqual(set(_make_model().state_dict()),
+                         set(_make_model(skeleton_name_drop_prob=0.1).state_dict()))
 
     def test_film_sees_the_dropped_names(self):
         """The leak this ordering exists to prevent: if the species FiLM head read
