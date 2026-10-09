@@ -885,6 +885,22 @@ class PartsStore:
             self._refresh()
             return self._skeleton_payload(species)
 
+    def _species_dir(self, species):
+        """The species' source folder under the dataset's raw root, relative to Anytop, or None."""
+        raw = self.ds.get("raw")
+        if raw is None or not raw.is_dir():
+            return None
+        found = raw / species
+        if not found.is_dir():
+            folded = species.casefold()
+            found = next((d for d in raw.iterdir() if d.is_dir() and d.name.casefold() == folded), None)
+            if found is None:
+                return None
+        try:
+            return found.relative_to(ANYTOP_ROOT).as_posix()
+        except ValueError:
+            return str(found)
+
     def _skeleton_payload(self, species):
         key, entry = self._entry(species)
         row, sig, added, removed = self._proposal(species, entry)
@@ -917,6 +933,7 @@ class PartsStore:
             "species": species,
             "object_type": key,
             "species_tags": list(entry.get("species_tags") or ()),
+            "path": self._species_dir(species),
             "status": status,
             "reviewed": bool(stored and status == "reviewed"),
             "skeleton_sig": sig,

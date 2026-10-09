@@ -129,6 +129,20 @@
     color: var(--dim); font-size: 12px; pointer-events: none;
   }
   #title b { color: var(--text); font-size: 14px; }
+  #transport {
+    position: absolute; bottom: 8px; left: 10px; right: 10px; z-index: 4;
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px;
+    background: rgba(0,0,0,.55);
+    border-radius: 4px;
+  }
+  #transport[hidden] { display: none; }
+  #transport button { padding: 1px 8px; font-size: 12px; }
+  #transport select { padding: 1px 4px; font-size: 12px; }
+  #scrub { flex: 1; min-width: 60px; accent-color: var(--accent); }
+  #frameNo { color: var(--dim); font: 11px ui-monospace, Consolas, monospace; white-space: nowrap; min-width: 72px; text-align: right; }
+  #transport:not([hidden]) ~ #title { bottom: 46px; }
+  #title button { pointer-events: auto; padding: 0 6px; margin-left: 4px; font-size: 11px; opacity: .85; }
 
   #side { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--edge); background: var(--panel); }
   #tableWrap { overflow-y: auto; flex: 1; }
@@ -225,6 +239,19 @@
       <button data-view="fit" title="重新取景（小键盘 .）">⤢</button>
     </div>
     <div id="banner" hidden></div>
+    <div id="transport" hidden>
+      <button id="play" title="暂停 / 播放（空格）">⏸</button>
+      <button id="stepBack" title="上一帧（,）">‹</button>
+      <button id="stepFwd" title="下一帧（.）">›</button>
+      <input type="range" id="scrub" min="0" max="0" step="any" value="0" title="拖动定位（拖动时暂停）">
+      <span id="frameNo"></span>
+      <select id="speed" title="播放速度">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1">1×</option>
+        <option value="2">2×</option>
+      </select>
+    </div>
     <div id="title"></div>
     <div id="tip" hidden></div>
     <div id="box" hidden></div>
@@ -258,9 +285,8 @@
   <span id="status"></span>
   <label class="f" for="clip">动作</label>
   <select id="clip" title="在视口里播放该物种的动作（← / → 切换）"></select>
-  <button id="play" title="暂停 / 播放（空格）" disabled>⏸</button>
   <button id="prefill" title="对当前物种重跑预填（manual 关节不动），先看 diff 再确认">重新预填</button>
-  <button id="mirror" title="把左侧关节的部位和接触复制到其 mirror twin（有选择时只复制所选）">左→右镜像</button>
+  <button id="mirror" title="把左侧关节的部位和接触复制到其 mirror twin（有选择时只复制所选；M）">左→右镜像 <kbd>M</kbd></button>
   <button id="undo" title="撤销（Ctrl+Z）">撤销</button>
   <button id="confirm" class="primary" title="标记为已核验并跳到下一个未核验物种（Enter）">确认并下一个 ⏎</button>
 </footer>
@@ -715,7 +741,7 @@ function poseFromClip() {
 function stopClip() {
   clipToken++;
   anim = null;
-  $('play').disabled = true;
+  $('transport').hidden = true;
   $('play').textContent = '⏸';
 }
 
@@ -724,6 +750,32 @@ function setPlaying(on) {
   anim.playing = on;
   $('play').textContent = on ? '⏸' : '▶';
 }
+
+// Playback loops over [first frame, last frame]: the last key is held, not blended into the first.
+const lastFrame = () => Math.max(anim.bvh.frames - 1, 0);
+const loopLength = () => Math.max(lastFrame() * anim.bvh.frameTime, anim.bvh.frameTime);
+
+function syncTransport() {
+  const frame = anim.time / anim.bvh.frameTime;
+  $('scrub').value = frame;
+  $('frameNo').textContent = `${Math.min(Math.floor(frame + 1e-6), lastFrame()) + 1} / ${anim.bvh.frames}`;
+}
+
+function seekFrame(frame) {
+  if (!anim) return;
+  setPlaying(false);
+  anim.time = Math.min(Math.max(frame, 0), lastFrame()) * anim.bvh.frameTime;
+  poseFromClip();
+  syncTransport();
+}
+
+function stepFrame(delta) {
+  if (!anim) return;
+  const n = lastFrame() + 1;
+  seekFrame((((Math.round(anim.time / anim.bvh.frameTime) + delta) % n) + n) % n);
+}
+
+let playbackSpeed = Number(recall('speed')) || 1;
 
 // Fill the clip dropdown for the open species; TPose (no clip) is selected.
 function fillClipOptions(clips, species) {
@@ -757,10 +809,12 @@ async function playClip(clip) {
     const order = state.current.bvh_order;
     const bvh = parseBVH(text, order.length);
     anim = { bvh, order, time: 0, playing: true };
-    $('play').disabled = false;
+    $('scrub').max = lastFrame();
+    $('transport').hidden = false;
     setPlaying(true);
     clock.getDelta();
     poseFromClip();
+    syncTransport();
     setStatus(`${clip}：${bvh.frames} 帧`);
   } catch (err) {
     if (token !== clipToken) return;
@@ -773,9 +827,9 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
   if (anim && anim.playing) {
-    // Loops over [first frame, last frame]: the last key is held, not blended into the first.
-    anim.time = (anim.time + dt) % Math.max((anim.bvh.frames - 1) * anim.bvh.frameTime, anim.bvh.frameTime);
+    anim.time = (anim.time + dt * playbackSpeed) % loopLength();
     poseFromClip();
+    syncTransport();
   }
   renderer.render(scene, camera);
 }
@@ -979,8 +1033,17 @@ function renderTitle() {
   if (!s) { $('title').textContent = ''; $('banner').hidden = true; return; }
   const tags = s.species_tags.length ? ` · ${s.species_tags.join(' / ')}` : '';
   const where = state.ds === ALL_DATASETS ? `${datasetName(s.ds)} · ` : '';
-  $('title').innerHTML = `<b></b> <span></span>`;
+  $('title').innerHTML = `<b></b><button type="button">复制路径</button> <span></span>`;
   $('title').querySelector('b').textContent = s.species;
+  const copy = $('title').querySelector('button');
+  copy.disabled = !s.path;
+  copy.title = s.path || '该数据集没有原始素材目录';
+  copy.addEventListener('click', () => {
+    copy.blur();
+    navigator.clipboard.writeText(s.path).then(
+      () => setStatus(`已复制 ${s.path}`),
+      (err) => setStatus(`复制失败：${err.message}`, true));
+  });
   $('title').querySelector('span').textContent = `${where}${s.joints.length} 关节${tags} · ${STATUS_TITLE[s.status]}`;
   const banner = $('banner');
   if (s.status === 'stale' || s.added.length || s.removed.length) {
@@ -1301,6 +1364,8 @@ document.addEventListener('keydown', (event) => {
   if (event.key === ' ') { event.preventDefault(); if (anim) setPlaying(!anim.playing); return; }
   const key = event.key.toLowerCase();
   if (key === 'c') { toggleContact(); return; }
+  if (key === 'm') { mirrorLeftToRight(); return; }
+  if (event.key === ',' || event.key === '.') { stepFrame(event.key === '.' ? 1 : -1); return; }
   if (event.code.startsWith('Numpad')) return;
   const part = KEY_TO_PART[key];
   if (part) {
@@ -1317,6 +1382,17 @@ $('q').addEventListener('input', refilterSpecies);
 $('undo').addEventListener('click', undo);
 $('clip').addEventListener('change', () => { $('clip').blur(); playClip($('clip').value); });
 $('play').addEventListener('click', () => { $('play').blur(); if (anim) setPlaying(!anim.playing); });
+$('stepBack').addEventListener('click', () => { $('stepBack').blur(); stepFrame(-1); });
+$('stepFwd').addEventListener('click', () => { $('stepFwd').blur(); stepFrame(1); });
+$('scrub').addEventListener('input', () => seekFrame(Number($('scrub').value)));
+// Hand the keyboard back to the page shortcuts once the drag ends.
+$('scrub').addEventListener('change', () => $('scrub').blur());
+$('speed').value = String(playbackSpeed);
+$('speed').addEventListener('change', () => {
+  playbackSpeed = Number($('speed').value) || 1;
+  remember('speed', $('speed').value);
+  $('speed').blur();
+});
 $('mirror').addEventListener('click', mirrorLeftToRight);
 $('confirm').addEventListener('click', confirmAndNext);
 $('prefill').addEventListener('click', () => rePrefill().catch((err) => setStatus(`预填失败：${err.message}`, true)));
