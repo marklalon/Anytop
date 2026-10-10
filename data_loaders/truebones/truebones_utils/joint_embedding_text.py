@@ -1000,17 +1000,12 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
     # cond keys are '<namespace>/<species>', which cannot go into a filename;
     # the file token degrades to the plain species name whenever it is unique.
     from .dataset_sources import build_species_file_tokens
-    # Imported here: joint_parts builds on this module's texts.
-    from .joint_parts import JOINT_PARTS_FILE, read_joint_parts_sidecar, species_of
     file_tokens = build_species_file_tokens(cond)
-    part_rows = read_joint_parts_sidecar(pjoin(save_dir, JOINT_PARTS_FILE))
     for object_type in sorted(cond):
         object_cond = cond[object_type]
         embedding_texts = embedding_texts_by_object[object_type]
         inspection_path = pjoin(inspection_dir, f'{file_tokens[object_type]}.json')
-        rows = build_joint_name_inspection_rows(
-            object_cond, embedding_texts, part_rows.get(species_of(object_cond)),
-        )
+        rows = build_joint_name_inspection_rows(object_cond, embedding_texts)
         with open(inspection_path, 'w', encoding='utf-8') as inspection_file:
             json.dump(rows, inspection_file, indent=2)
 

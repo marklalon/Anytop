@@ -4,7 +4,6 @@ import os
 import sys
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -37,9 +36,8 @@ def _fake_scorer_class(captured: dict[str, object]):
         def __init__(self, dataset_root=None):
             captured["dataset_root"] = dataset_root
 
-        def register_cond(self, cond, joint_parts_dir=None):
+        def register_cond(self, cond):
             captured["cond"] = cond
-            captured["joint_parts_dir"] = joint_parts_dir
 
         def species_lookup(self):
             return {}
@@ -93,8 +91,6 @@ def test_main_registers_cond_path_for_novel_query_species(tmp_path, monkeypatch)
     assert exit_code == 0
     loaded_cond = captured["cond"]
     assert set(loaded_cond.keys()) == {"dragon"}
-    # The novel skeleton's parts come from the sidecar beside the motions.
-    assert Path(captured["joint_parts_dir"]) == Path(motion_path).resolve().parent
     np.testing.assert_array_equal(loaded_cond["dragon"]["parents"], cond_dict["dragon"]["parents"])
     np.testing.assert_allclose(loaded_cond["dragon"]["offsets"], cond_dict["dragon"]["offsets"])
     assert loaded_cond["dragon"]["joints_names"] == cond_dict["dragon"]["joints_names"]

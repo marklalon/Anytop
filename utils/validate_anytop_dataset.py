@@ -48,23 +48,9 @@ from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E40
 )
 from utils.misc import infer_object_type_from_filename  # noqa: E402
 from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE  # noqa: E402
-from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
-from data_loaders.truebones.truebones_utils.joint_parts import (  # noqa: E402
-    JOINT_CONTACT_KEY,
-    JOINT_PARTS_FILE,
-    JOINT_PARTS_KEY,
-    JOINT_PARTS_REVIEWED_KEY,
-    JOINT_PARTS_SIG_KEY,
-    has_joint_parts,
-    joint_parts_row_signature,
-    read_joint_parts_sidecar,
-    species_of,
-)
-
-# Inferred contact fields cond must not carry: contacts are baked from joint_parts.jsonl.
-_CONTACT_COND_KEYS = (
-    "contact_joints", "contact_joint_names", "contact_joint_source",
-    "end_effector_joints", "end_effector_names",
+from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
+    STALE_JOINT_ANNOTATION_KEYS,
+    load_cond,
 )
 from data_loaders.truebones.truebones_utils.topology_relations import (  # noqa: E402
     NUM_EDGE_CODES,
@@ -148,11 +134,11 @@ def _validate_optional_semantic_metadata(object_type: str, object_cond: dict, n_
             if invalid_labels:
                 print_warn(f"validation error: {object_type} joint_side_labels contain invalid values: {invalid_labels}")
 
-    stale_keys = [key for key in _CONTACT_COND_KEYS if key in object_cond]
+    stale_keys = [key for key in STALE_JOINT_ANNOTATION_KEYS if key in object_cond]
     if stale_keys:
         print_warn(
-            f"validation error: {object_type} cond still carries {stale_keys}; contacts are baked "
-            f"from {JOINT_PARTS_FILE} -- regenerate cond (tools/regenerate_dataset_artifacts.py)"
+            f"validation error: {object_type} cond still carries {stale_keys}; contacts and body "
+            f"parts are not dataset data -- regenerate cond (tools/regenerate_dataset_artifacts.py)"
         )
 
     symmetry_partner_indices = object_cond.get("symmetry_partner_indices")
@@ -215,24 +201,6 @@ def _validate_optional_semantic_metadata(object_type: str, object_cond: dict, n_
             print_warn(f"validation error: {object_type} {key} out of range: {index}")
 
 
-def _validate_baked_joint_parts(object_cond: dict, n_joints: int, rows: dict) -> None:
-    """The baked part / contact arrays exist, fit the skeleton and match the sidecar row."""
-    rebake = "tools/regenerate_dataset_artifacts.py --joint-parts-only"
-    if not has_joint_parts(object_cond):
-        raise ValueError(f"no baked {JOINT_PARTS_FILE} annotation; prefill and review it, then run {rebake}")
-    for key in (JOINT_PARTS_KEY, JOINT_CONTACT_KEY):
-        if np.asarray(object_cond[key]).shape != (n_joints,):
-            raise ValueError(f"{key} shape {np.asarray(object_cond[key]).shape} != ({n_joints},)")
-    row = rows.get(species_of(object_cond))
-    if row is None:
-        raise ValueError(f"baked annotation has no row in {JOINT_PARTS_FILE} any more")
-    names = list(object_cond["joints_names"])
-    if not all(name in row["joints"] for name in names) or (
-        joint_parts_row_signature(row, names) != object_cond.get(JOINT_PARTS_SIG_KEY)
-    ):
-        raise ValueError(f"{JOINT_PARTS_FILE} row changed after the bake; run {rebake} and re-merge")
-
-
 def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
     cond = load_cond(cond_path)
     
@@ -271,8 +239,6 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
         "translation_root_index",
     }
 
-    unreviewed_parts = []
-    joint_parts_rows = read_joint_parts_sidecar(Path(cond_path).parent / JOINT_PARTS_FILE)
     for object_type in objects_to_validate:
         try:
             object_cond = cond[object_type]
@@ -384,17 +350,9 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
                 print_warn(f"validation error: {msg}")
 
             _validate_optional_semantic_metadata(object_type, object_cond, n_joints)
-            _validate_baked_joint_parts(object_cond, n_joints, joint_parts_rows)
-            if not object_cond[JOINT_PARTS_REVIEWED_KEY]:
-                unreviewed_parts.append(object_type)
         except Exception as e:
             msg = f"{object_type}: {e}"
             print_warn(f"validation error: {msg}")
-    if unreviewed_parts:
-        print_warn(
-            f"{JOINT_PARTS_FILE}: {len(unreviewed_parts)} species not reviewed yet "
-            f"(dataset/review parts page): {', '.join(sorted(unreviewed_parts)[:10])}"
-        )
     
     print_ok(f"cond.npy validated for {len(cond)} object types")
     return cond

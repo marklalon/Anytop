@@ -62,8 +62,6 @@ def _entry():
         'symmetry_partner_indices': partners,
         'symmetric_joint_pairs': [[4, 6], [5, 7], [14, 16], [15, 17]],
         'symmetric_joint_pair_names': [['j4', 'j6'], ['j5', 'j7'], ['j14', 'j16'], ['j15', 'j17']],
-        'joint_parts': np.arange(joint_count, dtype=np.int16),
-        'joint_contact': np.isin(np.arange(joint_count), [_FOOT]),
         'face_joints': [4, 6],
         'kinematic_chains': [[0, 1, 2, 3], [1, 4, 5], [1, 6, 7], [0, 8], [0, 9, 10]],
         'translation_root_index': 0,
@@ -112,8 +110,6 @@ def test_drop_remaps_every_index():
     assert entry['symmetry_partner_indices'] == [-1, -1, -1, 4, 3, -1, -1, -1, -1, -1, -1, 13, 14, 11, 12]
     assert entry['symmetric_joint_pairs'] == [[3, 4], [11, 13], [12, 14]]
     assert entry['symmetric_joint_pair_names'] == [['j4', 'j6'], ['j14', 'j16'], ['j15', 'j17']]
-    assert np.flatnonzero(entry['joint_contact']).tolist() == [5]
-    np.testing.assert_array_equal(entry['joint_parts'], _entry()['joint_parts'][keep])
     assert entry['face_joints'] == [3, 4]
     assert entry['kinematic_chains'] == [[0, 1, 2], [1, 3], [1, 4], [0, 5], [0, 6, 7]]
     assert entry['forward_joint_index'] == 2 and entry['forward_base_joint_index'] is None
@@ -139,7 +135,7 @@ def test_selection_rules():
     for _ in range(200):
         dropped = set(sample_leaf_drop(entry, motion, translation_root_index=0, rng=rng))
         assert {_HEAD_NUB, _NAMELESS_STATIC} <= dropped    # the terminator group always goes
-        # body parts, a leg's last joint, a moving nameless joint, roots, face, contact: never
+        # body parts, a leg's last joint, a moving nameless joint, roots, face: never
         assert not dropped & {0, 4, 6, _FOOT, _JAW, _NAMELESS_LIVE, _L_LEG_TIP, _R_LEG_TIP}
         assert (_L_FINGER_TIP in dropped) == (_R_FINGER_TIP in dropped)  # mirror twins together
         seen_segments.update(dropped - {_HEAD_NUB, _NAMELESS_STATIC})
@@ -158,7 +154,7 @@ def test_without_a_terminator_a_segment_still_goes():
 
 def test_a_twin_of_a_protected_joint_is_kept():
     entry = _entry()
-    entry['joint_contact'] = np.isin(np.arange(len(_PARENTS)), [_L_FINGER_TIP])
+    entry['face_joints'] = [_L_FINGER_TIP]
     motion = _motion(live_joints=[])
     rng = random.Random(2)
     for _ in range(50):

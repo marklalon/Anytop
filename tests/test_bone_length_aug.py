@@ -37,7 +37,7 @@ def fixture():
                 joint_side_labels=['center', 'left', 'left', 'left', 'right', 'right', 'right'],
                 canonical_joint_names=['Hips', 'Left Thigh', 'Left Knee', 'Left Foot',
                                        'Right Thigh', 'Right Knee', 'Right Foot'],
-                joint_contact=np.isin(np.arange(7), [3, 6]), translation_root_index=0,
+                symmetry_partner_indices=[-1, 4, 5, 6, 1, 2, 3], translation_root_index=0,
                 canonical_feature_mean=np.zeros(12), canonical_feature_std=np.ones(12),
                 joint_mask_candidate_roots=np.zeros(7), joints_names_embs=np.zeros((7, 4)),
                 joints_graph_dist=np.zeros((7, 7)), joint_relations=np.zeros((7, 7)),
@@ -59,11 +59,13 @@ def test_symmetric_lengths_grounding_and_unmutated_source():
     saved_motion, saved_rest = motion.copy(), cond['rest_pose'].copy()
     out, new_cond, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(3))
     assert info['applied'], info
-    factor = info['scales']['legs']
+    factor = info['scales']['chain_1']
     assert .9 <= factor <= 1.1 and factor != 1
-    assert body_groups(cond) == {'legs': [2, 3, 5, 6]}
-    np.testing.assert_allclose(new_cond['offsets'][[2, 3, 5, 6]], cond['offsets'][[2, 3, 5, 6]] * factor)
-    np.testing.assert_array_equal(new_cond['offsets'][[0, 1, 4]], cond['offsets'][[0, 1, 4]])
+    # Topology groups: each leg is one branch-free chain, the mirror pair one group.
+    assert body_groups(cond) == {'chain_1': [1, 2, 3, 4, 5, 6]}
+    np.testing.assert_allclose(new_cond['offsets'][1:], cond['offsets'][1:] * factor)
+    np.testing.assert_array_equal(new_cond['offsets'][0], cond['offsets'][0])
+    # The clip's lowest point (the feet) keeps its height.
     np.testing.assert_allclose(out[:, [3, 6], 1], 0, atol=1e-6)
     np.testing.assert_array_equal(motion, saved_motion)
     np.testing.assert_array_equal(cond['rest_pose'], saved_rest)
@@ -88,9 +90,11 @@ def test_all_actions_and_missing_labels_are_augmented(label):
 
 def test_velocity_and_authored_deformation_with_rotating_parent():
     motion, cond, metadata = fixture()
-    cond['joint_contact'] = np.zeros(7, dtype=bool)
     cond['canonical_joint_names'] = ['Hips', 'Tail 1', 'Tail 2', 'Tail 3', '', '', '']
     cond['joint_side_labels'] = ['center'] * 7
+    cond.pop('symmetry_partner_indices')
+    # Zero-length bones are never stretched: the tail chain is the only group.
+    cond['offsets'][4:] = 0
     rotations = np.zeros((30, 7, 4))
     rotations[..., 0] = 1
     angle = np.linspace(0, .5, 30)
@@ -111,10 +115,11 @@ def test_velocity_and_authored_deformation_with_rotating_parent():
     assert info['applied']
     actual = recover_from_bvh_ric_np(out, translation_root_index=0)
     np.testing.assert_allclose(np.diff(actual, axis=0), out[:-1, :, 9:12], atol=2e-7)
-    factor = info['scales']['tail']
+    factor = info['scales']['chain_1']
     scaled_positions = positions.copy()
     scaled_positions[:, [1, 2, 3]] *= factor
     expected, _ = batch_forward_kinematics_np(rotations, scaled_positions, cond['parents'])
+    expected[..., 1] += world[..., 1].min() - expected[..., 1].min()
     np.testing.assert_allclose(actual, expected, atol=2e-7)
     for j in [1, 2, 3]:
         p = cond['parents'][j]
@@ -127,9 +132,9 @@ def test_velocity_and_authored_deformation_with_rotating_parent():
 def test_nonroot_translation_carrier_and_separate_roots(periodic):
     motion, cond, metadata = fixture()
     cond['parents'][4] = -1
-    cond['joint_contact'] = np.zeros(7, dtype=bool)
     cond['canonical_joint_names'] = ['Hips', 'Tail 1', 'Tail 2', 'Tail 3', '', '', '']
     cond['joint_side_labels'] = ['center'] * 7
+    cond.pop('symmetry_partner_indices')
     cond['translation_root_index'] = metadata['translation_root_index'] = 2
     metadata['is_loop'] = periodic
     rotations = np.zeros((30, 7, 4))
@@ -150,8 +155,12 @@ def test_nonroot_translation_carrier_and_separate_roots(periodic):
     motion[-1, :, 9:12] = world[0] - world[-1] if periodic else motion[-2, :, 9:12]
     out, _, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(5))
     scaled_local = local.copy()
-    scaled_local[:, [1, 3]] *= info['scales']['tail']
+    groups = body_groups(cond)
+    assert groups['chain_1'] == [1, 3]
+    for group, factor in info['scales'].items():
+        scaled_local[:, groups[group]] *= factor
     expected, _ = batch_forward_kinematics_np(rotations, scaled_local, cond['parents'])
+    expected[..., 1] += world[..., 1].min() - expected[..., 1].min()
     # World recovery chooses the first carrier's XZ as its origin.
     expected[..., 0] -= expected[0, 2, 0]
     expected[..., 2] -= expected[0, 2, 2]
@@ -213,7 +222,6 @@ def test_zero_length_skeleton_is_exportable_with_explicit_note():
 def test_tiny_named_helpers_do_not_hide_real_fallback_bones():
     motion, cond, metadata = fixture()
     cond['canonical_joint_names'] = ['Hips', 'Spine', '', '', '', '', '']
-    cond['joint_contact'] = np.zeros(7, dtype=bool)
     cond['joint_side_labels'] = ['center'] * 7
     cond['offsets'][1] = [1e-9, 0, 0]
     groups = body_groups(cond)
@@ -234,10 +242,11 @@ def test_non_parent_first_joint_order_is_supported():
         cond[key] = cond[key][order]
     for key in ['canonical_joint_names', 'joint_side_labels']:
         cond[key] = [cond[key][j] for j in order]
-    cond['joint_contact'] = cond['joint_contact'][order]
+    cond['symmetry_partner_indices'] = [inverse[cond['symmetry_partner_indices'][j]] if j else -1
+                                        for j in order]
     out, new_cond, info = augment_bone_lengths(motion[:, order], cond, metadata, rng=random.Random(3))
     assert info['applied'] and np.isfinite(out).all()
-    np.testing.assert_allclose(out[:, np.flatnonzero(cond['joint_contact']), 1], 0, atol=1e-6)
+    np.testing.assert_allclose(out[:, np.flatnonzero(np.isin(order, [3, 6])), 1], 0, atol=1e-6)
 
 
 def make_dataset(cls=MotionDataset):

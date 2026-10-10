@@ -70,8 +70,6 @@ pushd "%SCRIPT_DIR%"
 	--lambda_vel 0.2 ^
 	--lambda_geo 0.1 ^
 	--lambda_bone 0.1 ^
-	--lambda_part 0.02 ^
-	--lambda_contact 0.01 ^
 	--motion_cache_size 32768 ^
 	--amp_dtype fp16 ^
 	--main_process_prefetch_batches 64 ^

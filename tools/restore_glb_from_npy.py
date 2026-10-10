@@ -106,7 +106,6 @@ from utils.fullbody_ik import DEFAULT_IK_STRETCH_FACTOR
 from utils.npy_restore import (
     build_mesh_restore_context,
     build_skeleton_only_context,
-    motion_contact_joints,
     coerce_root_translation_xz,
     invert_preprocess_transform,
     restore_animation_from_features,
@@ -282,14 +281,11 @@ def restore_glb(
     cond_entry = cond[object_type]
     features = np.load(npy_path)
     feature_joint_count = int(features.shape[1]) if features.ndim == 3 else None
-    # Full-body IK keeps the trunk above the contact limbs; nothing else reads them.
-    contact_joints = motion_contact_joints(npy_path, cond_entry) if fullbody_ik else None
     if skeleton_only and tpose_mesh is None:
         ctx = build_skeleton_only_context(
             cond_entry,
             object_type=object_type,
             feature_joint_count=feature_joint_count,
-            contact_joints=contact_joints,
         )
         tpose_mesh_resolved = None
     else:
@@ -298,7 +294,6 @@ def restore_glb(
             tpose_mesh,
             object_type,
             feature_joint_count=feature_joint_count,
-            contact_joints=contact_joints,
         )
         # skeleton-only native with tpose_mesh: import the source armature and
         # drop only its meshes at export time. This preserves the same
@@ -343,7 +338,6 @@ def restore_glb(
             cond_entry,
             object_type=object_type,
             feature_joint_count=feature_joint_count,
-            contact_joints=contact_joints,
         )
     restored = restore_animation_from_features(
         features,

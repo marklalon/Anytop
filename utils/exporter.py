@@ -618,13 +618,13 @@ def _rename_armature_bones_to_canonical(
                 group.name = new_name
 
 
-# Contact joints that set the floor, and the up axis of the retarget's world
-# space (``extract_armature_skeleton_data`` hands back a Y-up basis).
-_GROUND_CONTACT_COUNT = 2
+# Feet that set the floor, and the up axis of the retarget's world space
+# (``extract_armature_skeleton_data`` hands back a Y-up basis).
+_GROUND_FOOT_COUNT = 2
 _GROUND_UP_AXIS = 1
 
 
-def _ground_root_on_lowest_contacts(
+def _ground_root_on_feet(
     pose_rotations: np.ndarray,
     pose_translations: Optional[np.ndarray],
     root_translation: np.ndarray,
@@ -633,30 +633,30 @@ def _ground_root_on_lowest_contacts(
     parents: np.ndarray,
     rest_offsets: np.ndarray,
     rest_rotations: np.ndarray,
-) -> tuple[np.ndarray, Optional[dict]]:
-    """Shift the root by a constant so the lowest contacts sit at their bind height.
+) -> tuple[np.ndarray, dict]:
+    """Shift the root by a constant so the lowest feet sit at their bind height.
 
     Measured on the final target pose channels -- after any IK rebuild -- so the
-    written clip is grounded exactly. Each contact joint's floor is its lowest
-    height over the clip; the two lowest of those are averaged, and the root's
-    pose location takes the one constant offset that puts that average at the
-    bind pose's contact height (the two lowest contact joints of the bind pose,
-    averaged). The bind height, not y=0, because a contact joint sits above the
-    sole: an ankle-only rig (LH_Hero) grounds its ankle ~7.5 units up. Only the
-    two lowest count because contact detection can also return joints that
-    never reach the floor (a caveman's finger tips).
+    written clip is grounded exactly. The feet are the prefilled ``foot`` chains
+    and contact ``hand`` chains of the rig (``joint_parts.foot_chains``); a rig without any stands on its
+    lowest joint instead. Each foot's floor is the lowest height any of its
+    joints reaches over the clip; the two lowest feet are averaged, and the
+    root's pose location takes the one constant offset that puts that average
+    at the bind pose's height of the two lowest feet. The bind height, not y=0,
+    because a foot joint sits above the sole: an ankle-only rig (LH_Hero)
+    grounds its ankle ~7.5 units up.
 
     The channels follow Blender pose-bone semantics, so the root's world
     position is ``rest_offset + rest_rotation . location`` and a world-space
     shift ``d`` is ``rest_rotation^-1 . d`` in its location channel.
 
-    The rig is an external one with no joint_parts.jsonl row, so its contacts
-    come from the prefill heuristic.
-
-    Returns ``(root_translation, report)``; *report* is ``None`` when the rig
-    has no detectable contact joints and the root is returned unchanged.
+    Returns ``(root_translation, report)``.
     """
-    from data_loaders.truebones.truebones_utils.joint_parts import prefill_contacts
+    from data_loaders.truebones.truebones_utils.joint_parts import (
+        ground_floors,
+        prefill_foot_chains,
+        skeleton_entry,
+    )
 
     parents = np.asarray(parents, dtype=np.int32)
     rest_offsets = np.asarray(rest_offsets, dtype=np.float64)
@@ -675,10 +675,7 @@ def _ground_root_on_lowest_contacts(
         rest_offsets,
         rest_rotations,
     )
-    contact_indices = prefill_contacts(list(names), parents, rest_positions[0])
-    contact_indices = [int(j) for j in contact_indices if 0 <= int(j) < joint_count]
-    if not contact_indices:
-        return root_translation, None
+    chains = prefill_foot_chains(skeleton_entry(names, parents, rest_positions[0]))
 
     if pose_translations is None:
         pose_locations = np.zeros((frame_count, joint_count, 3), dtype=np.float64)
@@ -689,12 +686,13 @@ def _ground_root_on_lowest_contacts(
         pose_rotations, pose_locations, parents, rest_offsets, rest_rotations,
     )
 
-    contact_floor = world_positions[:, contact_indices, _GROUND_UP_AXIS].min(axis=0)
-    lowest_order = np.argsort(contact_floor)[:_GROUND_CONTACT_COUNT]
-    floor_height = float(np.mean(contact_floor[lowest_order]))
+    lowest = world_positions[:, :, _GROUND_UP_AXIS].min(axis=0)
+    foot_floor = ground_floors(lowest, chains)
+    lowest_order = np.argsort(foot_floor)[:_GROUND_FOOT_COUNT]
+    floor_height = float(np.mean(foot_floor[lowest_order]))
 
-    bind_contact_heights = rest_positions[0, contact_indices, _GROUND_UP_AXIS]
-    bind_height = float(np.mean(np.sort(bind_contact_heights)[:_GROUND_CONTACT_COUNT]))
+    bind_floor = ground_floors(rest_positions[0, :, _GROUND_UP_AXIS], chains)
+    bind_height = float(np.mean(np.sort(bind_floor)[:_GROUND_FOOT_COUNT]))
 
     world_shift = np.zeros(3, dtype=np.float64)
     world_shift[_GROUND_UP_AXIS] = bind_height - floor_height
@@ -703,10 +701,12 @@ def _ground_root_on_lowest_contacts(
         world_shift[None],
     )[0]
 
+    foot_names = (
+        [names[chain[int(np.argmin(lowest[chain]))]] for chain in chains]
+        if chains else [names[int(np.argmin(lowest))]]
+    )
     report = {
-        "contacts": [
-            (names[contact_indices[k]], float(contact_floor[k])) for k in lowest_order
-        ],
+        "feet": [(foot_names[k], float(foot_floor[k])) for k in lowest_order],
         "floor_height": floor_height,
         "bind_height": bind_height,
         "shift": float(world_shift[_GROUND_UP_AXIS]),
@@ -989,9 +989,8 @@ class AnimationExporter:
                 use (0.1 = ±10 %). Only read when *fullbody_ik* is set.
             fullbody_ik_iterations: IK passes. Only read when *fullbody_ik* is set.
             ground_contacts: After the retarget (and IK, if on), shift the target
-                root by a constant Y so its two lowest contact joints sit at the
-                bind pose's contact height; see
-                :func:`_ground_root_on_lowest_contacts`. Only meaningful
+                root by a constant Y so its two lowest feet sit at their bind
+                pose height; see :func:`_ground_root_on_feet`. Only meaningful
                 with *mesh_path*. Off by default: it is a real translation and
                 would break the self-retarget round trip.
         """
@@ -1218,7 +1217,7 @@ class AnimationExporter:
                     )
 
             if ground_contacts:
-                tgt_root_trans, ground_report = _ground_root_on_lowest_contacts(
+                tgt_root_trans, ground_report = _ground_root_on_feet(
                     tgt_pose_rot,
                     tgt_pose_loc,
                     tgt_root_trans,
@@ -1227,17 +1226,14 @@ class AnimationExporter:
                     rest_offsets=tgt_offsets,
                     rest_rotations=tgt_rest_rots,
                 )
-                if ground_report is None:
-                    print("Grounding skipped: no contact joints detected on the target.")
-                else:
-                    contact_text = ", ".join(
-                        f"{name} {height:+.4f}" for name, height in ground_report["contacts"]
-                    )
-                    print(
-                        f"Grounding: root shifted by {ground_report['shift']:+.4f} in Y "
-                        f"to bind contact height {ground_report['bind_height']:+.4f} "
-                        f"(lowest contacts: {contact_text})"
-                    )
+                foot_text = ", ".join(
+                    f"{name} {height:+.4f}" for name, height in ground_report["feet"]
+                )
+                print(
+                    f"Grounding: root shifted by {ground_report['shift']:+.4f} in Y "
+                    f"to bind foot height {ground_report['bind_height']:+.4f} "
+                    f"(lowest feet: {foot_text})"
+                )
 
             if rotation_channel_mask_np is not None:
                 tgt_rotation_channel_mask = np.zeros((J_tgt,), dtype=bool)

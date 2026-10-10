@@ -57,8 +57,8 @@ def render_report(namespace: str, findings: dict[str, dict]) -> str:
             blocks.append("")
         chains = f.get("passive_chains") or []
         if chains:
-            blocks.append("**次级运动候选**（每行一个挂在身体上的候选子树；名字是毛发、耳、衣物一类的连同子树默认 passive，尾巴归 tail_weight；"
-                          "增删写进 passive_overrides.json 的 add / remove，或在微调 UI 上点选；"
+            blocks.append("**次级运动候选**（每行一个挂在身体上的候选子树；部位是 soft 的默认 passive，部位是 tail 的归 tail_weight；"
+                          "在微调 UI 的部位模式里改部位，写进 joint_parts_overrides.json；"
                           "\"拟合通过\"表示数据里有被身体带动的运动，其余用默认弹簧参数）")
             blocks.append("")
             for row in chains:

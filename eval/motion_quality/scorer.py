@@ -46,12 +46,6 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
     species_lookup_map,
 )
 
-from data_loaders.truebones.truebones_utils.joint_parts import (
-    cond_contact_joints,
-    has_joint_parts,
-    load_joint_parts,
-    species_of,
-)
 from .bone_length_drift import compute_bone_length_drift, resolve_comparison_edges
 from .reference_bank import DEFAULT_MIN_REFERENCE_CLIPS, ReferenceCorpus, WeightedReferenceBank
 from .reference_stats import CH_POS, CH_ROT
@@ -251,7 +245,6 @@ def _coerce_index_array(indices: Sequence[int] | np.ndarray | None, n_joints: in
 def _build_joint_groups_from_cond(
     object_cond: Mapping[str, object],
     n_joints: int,
-    contact_joints: Sequence[int] = (),
 ) -> Tuple[Dict[str, np.ndarray], str]:
     parents = np.asarray(object_cond.get("parents", []), dtype=np.int64)
     if len(parents) != n_joints:
@@ -259,7 +252,10 @@ def _build_joint_groups_from_cond(
 
     labels_source = object_cond.get("canonical_joint_names") or object_cond.get("joints_names") or []
     labels = [_normalise_joint_label(labels_source[idx]) if idx < len(labels_source) else "" for idx in range(n_joints)]
-    contact_indices = _coerce_index_array(list(contact_joints), n_joints)
+    # Sided joints are limbs whatever their names say: a limb is what branches
+    # off the midline in a left / right pair.
+    sides = list(object_cond.get("joint_side_labels") or [])
+    sided = np.array([idx < len(sides) and str(sides[idx]) != "center" for idx in range(n_joints)], dtype=bool)
 
     limb_mask = np.zeros(n_joints, dtype=bool)
     axial_name_mask = np.zeros(n_joints, dtype=bool)
@@ -274,8 +270,7 @@ def _build_joint_groups_from_cond(
         axial_name_mask[joint_index] = _looks_like_axial_joint(label)
         if _looks_like_limb_joint(label):
             limb_mask[joint_index] = True
-    if contact_indices.size:
-        limb_mask[contact_indices] = True
+    limb_mask[1:] |= sided[1:]
 
     changed = True
     while changed:
@@ -682,20 +677,13 @@ class DistributionMotionQualityScorer:
         self._cond_lookup = self._corpus.cond_lookup
         self._query_cond_lookup = dict(self._cond_lookup)
         self._custom_cond_keys: set[str] = set()
-        # joint_parts.jsonl directory per custom key without a baked
-        # annotation: the generation output directory its query motions were
-        # written to.
-        self._custom_parts_dirs: Dict[str, Optional[str]] = {}
         self._joint_group_cache: Dict[Tuple[str, int], Tuple[Dict[str, np.ndarray], str]] = {}
 
-    def register_cond(self, cond_dict: dict, joint_parts_dir=None) -> None:
+    def register_cond(self, cond_dict: dict) -> None:
         """Register query skeleton metadata from a custom cond.npy.
 
         Custom entries are used to interpret query skeletons, but the dataset
         reference baseline remains the default cond.npy loaded by the scorer.
-        ``joint_parts_dir`` holds the ``joint_parts.jsonl`` of entries without a
-        baked annotation: the generation output directory of the motions being
-        scored.
         """
         for key, entry in cond_dict.items():
             key_str = str(key)
@@ -707,7 +695,6 @@ class DistributionMotionQualityScorer:
                     break
             self._query_cond_lookup[target_key] = entry
             self._custom_cond_keys.add(target_key)
-            self._custom_parts_dirs[target_key] = None if joint_parts_dir is None else str(joint_parts_dir)
             for cache_key in list(self._joint_group_cache):
                 if cache_key[0] == target_key:
                     del self._joint_group_cache[cache_key]
@@ -839,22 +826,9 @@ class DistributionMotionQualityScorer:
                 f"Joint group resolution requires a matching skeleton definition."
             )
 
-        result = _build_joint_groups_from_cond(cond, n_joints, self._contact_joints(object_type, cond))
+        result = _build_joint_groups_from_cond(cond, n_joints)
         self._joint_group_cache[cache_key] = result
         return result
-
-    def _contact_joints(self, object_type: str, cond) -> list[int]:
-        """The contacts of ``object_type``: the annotation baked into its cond, or
-        for a registered skeleton without one the generation run's row."""
-        if has_joint_parts(cond):
-            return cond_contact_joints(cond)
-        sidecar_dir = self._custom_parts_dirs.get(object_type)
-        if sidecar_dir is None:
-            raise KeyError(
-                f"{object_type!r} has no baked annotation and was not registered with the "
-                f"generation output directory holding its joint_parts.jsonl."
-            )
-        return load_joint_parts(sidecar_dir, species_of(cond), cond).contact_joints
 
     def _reference_group_features(self, reference_bank: WeightedReferenceBank, nperseg: int) -> List[dict]:
         """Per-clip ``{metric: {group: mean}}`` of a bank's reference clips.

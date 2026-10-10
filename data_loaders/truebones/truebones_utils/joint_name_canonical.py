@@ -540,14 +540,12 @@ def canonical_name_for_bvh(name, fallback_name):
     return fallback_compact or 'Joint'
 
 
-def build_joint_name_inspection_rows(object_cond, embedding_texts, joint_parts=None):
-    """One row per joint for the inspection JSON. ``joint_parts`` is the
-    species' sidecar row (``joint_parts.jsonl``), when there is one."""
+def build_joint_name_inspection_rows(object_cond, embedding_texts):
+    """One row per joint for the inspection JSON."""
     raw_names = list(object_cond.get('joints_names') or [])
     canonical_names = list(object_cond.get('canonical_joint_names') or raw_names)
     canonical_bvh_names = list(object_cond.get('canonical_bvh_joint_names') or canonical_names)
     side_labels = list(object_cond.get('joint_side_labels') or ['center'] * len(raw_names))
-    part_entries = dict(joint_parts['joints']) if joint_parts else {}
 
     inspection_rows = []
     for joint_index, raw_name in enumerate(raw_names):
@@ -561,8 +559,6 @@ def build_joint_name_inspection_rows(object_cond, embedding_texts, joint_parts=N
             'embedding_text': str(embedding_text),
             'is_anatomical': bool(str(embedding_text).strip()),
             'side': str(side_labels[joint_index] if joint_index < len(side_labels) else 'center'),
-            'part': part_entries.get(str(raw_name), {}).get('part'),
-            'is_contact': bool(part_entries.get(str(raw_name), {}).get('contact', 0)),
         })
     return inspection_rows
 

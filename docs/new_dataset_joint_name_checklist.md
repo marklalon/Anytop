@@ -258,7 +258,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 | C1 | `detect_joint_side` 的 marker 元组 | 左右识别。新数据集用了新的侧别写法（`_L_`/`Lft`/`L01`/`Lwing`…）必须加。显式 `Left`/`Right` 优先于方位码；歧义码的门控必须与 B5 一致：肢体码要求 `arm`/`leg`/`wing`，面部角码要求 `mouth`/`lip`/`jaw` 等面部词 |
 | C2 | `joint_signature` / `_signature_tokens` / `_LIMB_CODE_SIGNATURE_TOKENS` / `_SIGNATURE_SPELLING_TOKENS` | 对称配对签名。剥掉左右半码、**但保留前后/中或上下半码**——否则前肢会和后肢、上嘴角会和下嘴角配成一对。签名是**拼写键**，不吃 B6 同义词：左右拼法被改坏（`Lower`/`Rower`）时在 `_SIGNATURE_SPELLING_TOKENS` 里做纯拼写修复，不要把整张同义词表塞进来（会重排所有现有 rig 的分组） |
 | C3 | `_FACE_JOINT_*` / `_FORWARD_REFERENCE_PRIORITIES` / `_BODY_AXIS_*`（在 `face_orientation.py`） | 朝向解算挑哪些关节。新物种的髋/肩/鼻子叫了别的名字，朝向就会算错；道具骨（披风/头发/武器）要进 exclude |
-| C4 | `_CONTACT_JOINT_*` / `_CONTACT_CHAIN_*`（在 `joint_parts.py`） | `joint_parts.jsonl` 的触地预填（脚/爪/掌）；预填之后由人工核验 |
+| C4 | `_CONTACT_JOINT_*` / `_CONTACT_CHAIN_*`（在 `joint_parts.py`） | motion_edit 的触地预填（脚/爪/掌）；在 motion_edit 页面校准，写入 `joint_parts_overrides.json` |
 | C5 | `_CONTACT_GEOMETRY_DISTAL_TOKENS` / `_CONTACT_EXCLUDE_TOKENS`（在 `joint_parts.py`） | 几何法触地预填的候选叶子池：名字带远端肢体词、不带排除词的叶子 |
 
 ### D 层 · 度量 —— 不影响模型，但影响 renamer 的评测与 S6 prior

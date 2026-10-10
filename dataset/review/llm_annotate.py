@@ -77,6 +77,7 @@ for _candidate in (str(ANYTOP_DIR), str(ANYTOP_DIR.parent)):
         sys.path.insert(0, _candidate)
 
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
+from data_loaders.truebones.truebones_utils.joint_parts import prefill_joint_parts  # noqa: E402
 from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
     CANONICAL_OBJECT_SUBSETS,
     SPECIES_LOCOMOTIONS,
@@ -595,8 +596,9 @@ def rig_facts(entry):
     """Anatomy the picture cannot be trusted for, read from one cond.npy species.
 
     A "chain root" is a joint whose name matches a limb pattern while its parent
-    does not -- one hit per limb. Contact joints are the preprocessor's own
-    foot detection and count legs independently of how the rig names them.
+    does not -- one hit per limb. Contact joints are the contact prefill
+    (``joint_parts.prefill_joint_parts``) and count legs independently of how
+    the rig names them.
     """
     names = [str(n) for n in entry.get("joints_names") or []]
     raw_parents = entry.get("parents")
@@ -616,7 +618,8 @@ def rig_facts(entry):
         return [names[j] for j in range(len(names))
                 if hit(j) and not any(hit(a) for a in ancestors(j))]
 
-    contact_set = {str(n) for n in entry.get("contact_joint_names") or []}
+    parts = prefill_joint_parts(entry)
+    contact_set = {name for name, joint in parts.items() if joint["contact"]}
 
     children = {}
     for j, p in enumerate(parents):
@@ -646,7 +649,7 @@ def rig_facts(entry):
         "legs": chain_roots(lambda j: bool(_LEG_RE.search(names[j]))),
         "wings": chain_roots(lambda j: bool(_WING_RE.search(names[j]))),
         "arms": chain_roots(lambda j: bool(_ARM_RE.search(names[j]))),
-        # One per foot: the preprocessor marks every joint of a foot.
+        # One per foot: the contact prefill marks every joint of a foot.
         "contacts": chain_roots(lambda j: names[j] in contact_set),
         "has_tail": any(_TAIL_RE.search(n) for n in names),
         "has_head": any(_HEAD_RE.search(n) for n in names),

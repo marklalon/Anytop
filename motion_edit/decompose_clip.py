@@ -10,17 +10,16 @@ Usage (from ``Anytop/``)::
     python -m motion_edit.decompose_clip --clip truebones/zoo:Horse_Walk.npy --out outputs/edit_packages
 
 Writes ``<out>/<clip>.edit/``; with ``--tpose_mesh`` also its ``mesh/``
-(``motion_edit.mesh``), without it any ``mesh/`` an earlier run left is removed.  The skeleton profile and the species'
-``contact_overrides.json`` / ``passive_overrides.json`` rows are read from the dataset whose ``cond.npy``
-holds the cond key; ``--cond`` points at another cond file (a new skeleton
-from ``tools/process_new_skeleton.py``), which then has no profile unless
-``--profiles`` names one.
+(``motion_edit.mesh``), without it any ``mesh/`` an earlier run left is removed.  The joints' parts and
+contacts are prefilled from the skeleton (``motion_edit.profile.parts``); the skeleton profile and the
+species' ``joint_parts_overrides.json`` row are read from the dataset whose ``cond.npy`` holds the cond
+key.  ``--cond`` points at another cond file (a new skeleton from ``tools/process_new_skeleton.py``),
+which then has no species row, and no profile unless ``--profiles`` names one.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 
@@ -32,27 +31,21 @@ import numpy as np  # noqa: E402
 
 from motion_edit.decompose import (  # noqa: E402
     DEFAULT_STRETCH_FACTOR,
+    PartSource,
     StaleProfileError,
-    contact_source,
     decompose_motion,
-    passive_source,
     profile_subset,
 )
-from data_loaders.truebones.truebones_utils.joint_parts import (  # noqa: E402
-    JOINT_CONTACT_KEY,
-    has_joint_parts,
-    load_joint_parts,
-    species_of,
-)
 from motion_edit.package import PACKAGE_SUFFIX  # noqa: E402
+from motion_edit.profile.parts import JOINT_PARTS_OVERRIDES_FILE  # noqa: E402
 from motion_edit.profile.data import (  # noqa: E402
-    CONTACT_OVERRIDES_FILE,
-    PASSIVE_OVERRIDES_FILE,
     PROFILES_FILE,
+    ProfileSchemaError,
     discover_sources,
     load_cond,
     load_profiles,
     load_species_sidecar,
+    read_profiles_file,
     skeleton_hash,
 )
 
@@ -136,11 +129,6 @@ def main(argv=None) -> int:
         cond_key = args.object_type
         if args.cond:
             cond_entry = np.load(args.cond, allow_pickle=True).item().get(cond_key)
-            if cond_entry is not None and not has_joint_parts(cond_entry):
-                # a new skeleton: its generation directory holds the predicted parts
-                cond_entry[JOINT_CONTACT_KEY] = load_joint_parts(
-                    os.path.dirname(os.path.abspath(args.npy)), species_of(cond_entry), cond_entry,
-                ).contact
         else:
             source, cond_entry = _find_dataset(cond_key)
             dataset_root = source.root if source else None
@@ -152,33 +140,27 @@ def main(argv=None) -> int:
         name = args.name or os.path.splitext(os.path.basename(args.npy))[0]
 
     profile = None
-    if not args.no_profile:
-        if args.profiles:
-            with open(args.profiles, "r", encoding="utf-8") as handle:
-                profile = (json.load(handle).get("profiles") or {}).get(cond_key)
-        elif dataset_root:
-            profile = load_profiles(dataset_root).get(cond_key)
     try:
+        if not args.no_profile:
+            if args.profiles:
+                profile = read_profiles_file(args.profiles).get(cond_key)
+            elif dataset_root:
+                profile = load_profiles(dataset_root).get(cond_key)
         subset = profile_subset(profile, cond_entry, action_label)
-    except StaleProfileError as exc:
+    except (ProfileSchemaError, StaleProfileError) as exc:
         print(f"error: {cond_key}: {exc}", file=sys.stderr)
         return 2
 
-    override, note = (_species_override(dataset_root, CONTACT_OVERRIDES_FILE, cond_key, cond_entry)
+    override, note = (_species_override(dataset_root, JOINT_PARTS_OVERRIDES_FILE, cond_key, cond_entry)
                       if dataset_root else (None, None))
-    input_notes = [{"kind": "contacts", "message": n} for n in notes + ([note] if note else [])]
-    contacts = contact_source(cond_entry, override)
-    override, note = (_species_override(dataset_root, PASSIVE_OVERRIDES_FILE, cond_key, cond_entry)
-                      if dataset_root else (None, None))
-    if note:
-        input_notes.append({"kind": "passive", "message": note})
-    passive = passive_source(cond_entry, override)
+    input_notes = [{"kind": "parts", "message": n} for n in notes + ([note] if note else [])]
+    parts = PartSource.from_dict({"species": (override or {}).get("joints")})
 
     package = decompose_motion(
         features, cond_entry, object_type=cond_key, clip_name=name, is_loop=is_loop,
         action_group=action_group, action_label=action_label,
         fps=float(args.fps or FPS), stretch_factor=args.stretch_factor,
-        fullbody_ik=not args.no_fullbody_ik, profile=subset, contacts=contacts, passive=passive,
+        fullbody_ik=not args.no_fullbody_ik, profile=subset, parts=parts,
         dataset_root=os.path.abspath(dataset_root) if dataset_root else None,
         notes=input_notes)
     out_dir = package.save(os.path.join(args.out, name + PACKAGE_SUFFIX))

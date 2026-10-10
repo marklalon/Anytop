@@ -11,9 +11,9 @@ Read ONLY from ``parents`` and the physical rest positions. Deliberately *not*
 from any joint name: the whole point is a channel
 that is bit-identical when a rig is renamed. Deliberately not from the canonical
 rest token handed to ``InputProcess`` either -- that token is standardized per
-species and no longer holds per-joint rest positions. Nor from the part /
-contact annotation: that is the auxiliary head's target (joint_parts.py), and a
-condition carrying it would hand the answer to the model.
+species and no longer holds per-joint rest positions. Nor from ground
+contacts: they are a heuristic guess, and a condition carrying one hands the
+model its mistakes.
 
 The features are pure functions of the cond entry, so they are recomputed on
 both sides rather than written into cond.npy: training and generation MUST call

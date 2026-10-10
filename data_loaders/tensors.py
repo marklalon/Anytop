@@ -11,11 +11,6 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from data_loaders.joint_buckets import bucket_ceiling
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
-from data_loaders.truebones.truebones_utils.joint_parts import (
-    HELPER_PART_ID,
-    JOINT_CONTACT_KEY,
-    JOINT_PARTS_KEY,
-)
 from data_loaders.truebones.truebones_utils.motion_labels import ACTION_LABEL_MAX_WORDS
 
 
@@ -170,13 +165,6 @@ def truebones_collate(batch):
             ])
         })
 
-    # Auxiliary part / contact targets. Always present together (all -1 /
-    # all False for a sample without an annotation), for the same key-set
-    # stability as joint_struct.
-    if 'joint_part_target' in notnone_batches[0]:
-        for key in ('joint_part_target', 'joint_contact_target', 'joint_contact_valid'):
-            cond['y'][key] = torch.stack([batch_item[key] for batch_item in notnone_batches])
-
     if any('rest_pose_physical' in batch_item for batch_item in notnone_batches):
         cond['y'].update({
             'rest_pose_physical': collate_tensors([
@@ -292,36 +280,6 @@ def truebones_collate(batch):
 
     return motion, cond
 
-def _joint_part_targets(extra_cond, max_joints, n_joints):
-    """Padded auxiliary targets of one sample.
-
-    ``joint_part_target`` is the part id, -1 where there is nothing to learn
-    (helpers, padding, a sample without an annotation); contacts are valid on
-    the same joints.
-    """
-    part_target = torch.full((max_joints,), -1, dtype=torch.int64)
-    contact_target = torch.zeros((max_joints,), dtype=torch.float32)
-    contact_valid = torch.zeros((max_joints,), dtype=torch.bool)
-    part_ids = extra_cond.get(JOINT_PARTS_KEY) if extra_cond is not None else None
-    if part_ids is not None:
-        part_ids = np.asarray(part_ids, dtype=np.int64)
-        contact = np.asarray(extra_cond[JOINT_CONTACT_KEY], dtype=np.bool_)
-        if part_ids.shape != (n_joints,) or contact.shape != (n_joints,):
-            raise ValueError(
-                f"joint part arrays describe {part_ids.shape}/{contact.shape} joints but the "
-                f"sample has {n_joints}."
-            )
-        trained = part_ids != HELPER_PART_ID
-        part_target[:n_joints] = torch.from_numpy(np.where(trained, part_ids, -1))
-        contact_target[:n_joints] = torch.from_numpy(contact.astype(np.float32))
-        contact_valid[:n_joints] = torch.from_numpy(trained)
-    return {
-        'joint_part_target': part_target,
-        'joint_contact_target': contact_target,
-        'joint_contact_valid': contact_valid,
-    }
-
-
 def truebones_batch_collate(batch, joint_buckets=None):
     """Collate a raw batch from MotionDataset into the format for truebones_collate.
 
@@ -427,7 +385,6 @@ def truebones_batch_collate(batch, joint_buckets=None):
             joint_struct = torch.zeros((max_joints, JOINT_STRUCT_DIM), dtype=torch.float32)
             joint_struct[:n_joints] = torch.from_numpy(raw_joint_struct)
             item['joint_struct'] = joint_struct
-        item.update(_joint_part_targets(extra_cond, max_joints, n_joints))
         if extra_cond is not None and 'rest_pose_physical' in extra_cond:
             rest_physical = torch.zeros((max_joints, n_feats), dtype=torch.float32)
             raw_rest_physical = np.asarray(extra_cond['rest_pose_physical'], dtype=np.float32)

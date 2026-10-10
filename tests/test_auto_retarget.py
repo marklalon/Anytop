@@ -522,7 +522,7 @@ def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> N
         offsets=offsets,
         tpos_anim=SimpleNamespace(parents=parents),
         tpos_rots=_identity_quat(6)[None, :, :],
-        foot_indices=[],
+        foot_chains=None,
         scale_factor=1.0,
         orientation_quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
     )
@@ -668,7 +668,7 @@ def test_tpose_aligned_roundtrip_with_nontrivial_rest_rotations() -> None:
         offsets=offsets,
         tpos_anim=SimpleNamespace(parents=parents),
         tpos_rots=tpos_rots,
-        foot_indices=[],
+        foot_chains=None,
         scale_factor=1.0,
         orientation_quat=identity.copy(),
     )
@@ -768,7 +768,7 @@ def test_retarget_features_npy_to_target_encodes_feature_space_animation_directl
         offsets=np.zeros((2, 3), dtype=np.float64),
         tpos_anim=SimpleNamespace(parents=np.array([-1, 0], dtype=np.int32)),
         tpos_rots=_identity_quat(2)[None, :, :].astype(np.float64),
-        foot_indices=[],
+        foot_chains=None,
         scale_factor=1.0,
         orientation_quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
     )
@@ -848,7 +848,7 @@ def test_retarget_features_npy_to_target_uses_effective_root_override(
         offsets=np.zeros((2, 3), dtype=np.float64),
         tpos_anim=SimpleNamespace(parents=np.array([-1, 0], dtype=np.int32)),
         tpos_rots=_identity_quat(2)[None, :, :].astype(np.float64),
-        foot_indices=[],
+        foot_chains=None,
         scale_factor=1.0,
         orientation_quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
     )
@@ -1512,22 +1512,30 @@ def test_bake_foot_floor_offset_single_foot_still_aligns_to_zero() -> None:
     # Sanity: foot floats at 0.75 before flooring.
     assert positions_global(anim)[:, 2, 1].min() == pytest.approx(0.75, abs=1e-6)
 
-    bake_foot_floor_offset(anim, foot_indices=[2])
+    bake_foot_floor_offset(anim, foot_chains=[[2]])
     gp = positions_global(anim)
     assert gp[:, 2, 1].min() == pytest.approx(0.0, abs=1e-6)
     # Root dropped by the float amount, leaving it 2 units above the floored foot.
     assert gp[:, 0, 1].mean() == pytest.approx(2.0, abs=1e-6)
 
 
-def test_bake_foot_floor_offset_noop_without_contacts() -> None:
+def test_bake_foot_floor_offset_noop_without_chains() -> None:
     from motion_lib.Animation import positions_global
     from utils.retarget_pipeline import bake_foot_floor_offset
 
-    for foot_indices in (None, [], np.array([], dtype=np.int64)):
-        anim = _floating_anim(foot_height=0.75)
-        before = positions_global(anim).copy()
-        bake_foot_floor_offset(anim, foot_indices=foot_indices)
-        np.testing.assert_allclose(positions_global(anim), before, atol=1e-9)
+    anim = _floating_anim(foot_height=0.75)
+    before = positions_global(anim).copy()
+    bake_foot_floor_offset(anim, foot_chains=None)
+    np.testing.assert_allclose(positions_global(anim), before, atol=1e-9)
+
+
+def test_bake_foot_floor_offset_footless_stands_on_lowest_joint() -> None:
+    from motion_lib.Animation import positions_global
+    from utils.retarget_pipeline import bake_foot_floor_offset
+
+    anim = _floating_anim(foot_height=0.75)
+    bake_foot_floor_offset(anim, foot_chains=[])
+    assert positions_global(anim)[:, :, 1].min() == pytest.approx(0.0, abs=1e-6)
 
 
 def test_bake_foot_floor_offset_lifts_sunken_skeleton() -> None:
@@ -1536,12 +1544,12 @@ def test_bake_foot_floor_offset_lifts_sunken_skeleton() -> None:
     from utils.retarget_pipeline import bake_foot_floor_offset
 
     anim = _floating_anim(foot_height=-0.4)
-    bake_foot_floor_offset(anim, foot_indices=[2])
+    bake_foot_floor_offset(anim, foot_chains=[[2]])
     assert positions_global(anim)[:, 2, 1].min() == pytest.approx(0.0, abs=1e-6)
 
 
-def test_bake_foot_floor_offset_uses_median_of_per_joint_mins() -> None:
-    # Two feet at different heights: the median of per-joint minimums aligns.
+def test_bake_foot_floor_offset_uses_median_of_per_foot_mins() -> None:
+    # Two feet at different heights: the median of per-foot minimums aligns.
     from motion_lib.Animation import Animation, positions_global
     from utils.retarget_pipeline import bake_foot_floor_offset
 
@@ -1574,7 +1582,8 @@ def test_bake_foot_floor_offset_uses_median_of_per_joint_mins() -> None:
     right_foot_min = gp[:, 4, 1].min()  # 1.0
     expected_median = float(np.median([left_foot_min, right_foot_min]))  # 0.75
 
-    bake_foot_floor_offset(anim, foot_indices=[2, 4])
+    # Each foot's floor is its own lowest joint: the mid joints never count.
+    bake_foot_floor_offset(anim, foot_chains=[[1, 2], [3, 4]])
     gp_after = positions_global(anim)
 
     # Left foot min should be at 0.5 - 0.75 = -0.25

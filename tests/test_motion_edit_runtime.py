@@ -22,16 +22,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data_loaders.truebones.truebones_utils.param_utils import FPS
 from motion_edit.decompose import (
     TREND_SECONDS,
-    ContactSource,
+    PartSource,
     airborne_spans,
     chain_layer,
     decompose_motion,
     profile_subset,
     redecompose,
     split_root,
-    with_contact_joints,
     with_contact_mask,
-    with_passive_joints,
+    with_parts,
 )
 from motion_edit.ik import Limb, LimbSolver
 from motion_edit.package import EditPackage, PackageVersionError, decode_json
@@ -41,7 +40,7 @@ from motion_edit.runtime import (
     FORCE_SLOW_EXPONENT,
     IMPLEMENTED,
     PARAM_SPECS,
-    SPREAD_REACH,
+    SPREAD_PLANTED_REACH,
     SPRING_G_GRAV,
     STRIKE_LEAN,
     STRIKE_SHIFT,
@@ -127,7 +126,7 @@ def test_chain_layer_offsets_rebuild_rotations_and_stay_continuous():
         assert list(np.flatnonzero(locked)) == ([4] if periodic else [])
 
 
-def test_trunk_is_the_ancestors_of_the_contact_limbs():
+def test_trunk_is_the_ancestors_of_the_limbs():
     #   0 hips - 1 spine - 2 chest - 3 neck - 4 head
     #            1 - 5 L thigh - 6 L foot      2 - 7 L arm - 8 L hand - 9 L finger
     #            1 - 10 R thigh - 11 R foot    3 - 12 jaw
@@ -139,13 +138,16 @@ def test_trunk_is_the_ancestors_of_the_contact_limbs():
     assert trunk_joint_indices(parents, sides, [12]).tolist() == [0, 1, 2, 3]
     assert trunk_joint_indices(parents, None, [6]).size == 0
     assert trunk_joint_indices(parents, sides, []).size == 0
+    # by default every sided limb bounds the trunk: the arms hang off the chest
+    assert trunk_joint_indices(parents, sides).tolist() == [0, 1, 2]
 
 
-def test_contact_source_provenance():
-    source = ContactSource(cond=[4, 5, 8], species_add=[12], species_remove=[5],
-                           package_add=[5, 13], package_remove=[8])
-    assert source.used == [4, 5, 12, 13]
-    assert ContactSource.from_dict(source.as_dict()).used == source.used
+def test_part_source_round_trips_and_refuses_unknown_parts():
+    source = PartSource(species={"Tail": {"part": "soft"}}, package={"Toe": {"contact": 1}})
+    assert PartSource.from_dict(source.as_dict()) == source
+    assert PartSource.from_dict(None) == PartSource()
+    with pytest.raises(ValueError, match="unknown part"):
+        PartSource.from_dict({"package": {"Tail": {"part": "tentacle"}}})
 
 
 # ── clip-level invariants ────────────────────────────────────────────────────
@@ -174,9 +176,8 @@ def _reference(package: EditPackage):
     from utils.npy_restore import build_skeleton_only_context, restore_animation_from_features
 
     cond = decode_json(package["source_cond"])
-    contacts = package.manifest["contacts"]["source"]["cond"]
     restored = restore_animation_from_features(
-        package["source_features"], build_skeleton_only_context(cond, contact_joints=contacts),
+        package["source_features"], build_skeleton_only_context(cond),
         restore_space="hml",
         fullbody_ik=package.manifest["fullbody_ik"], stretch_factor=package.manifest["stretch_factor"],
         fps=package.fps)
@@ -184,11 +185,38 @@ def _reference(package: EditPackage):
 
 
 def _with_passive(package: EditPackage, names: list[str]) -> EditPackage:
-    """``package`` with exactly ``names`` and their subtrees passive (this package's own edit)."""
+    """``package`` with exactly ``names`` and their subtrees soft, so passive (this package's
+    own edit); any other soft joint becomes a helper, which no slider or spring reaches."""
     from motion_edit.profile.skeleton import subtree_closure
 
     index = [str(n) for n in package["names"]]
-    return with_passive_joints(package, sorted(subtree_closure(package["parents"], [index.index(n) for n in names])))
+    soft = subtree_closure(package["parents"], [index.index(n) for n in names])
+    parts = [str(p) for p in package["joint_part"]]
+    joints = {index[j]: {"part": "soft" if j in soft else "helper"}
+              for j in range(len(index)) if j in soft or parts[j] == "soft"}
+    return with_parts(package, joints)
+
+
+def _with_contacts(package: EditPackage, joints) -> EditPackage:
+    """``package`` with exactly ``joints`` as its contacts (this package's own edit)."""
+    names = [str(n) for n in package["names"]]
+    return with_parts(package, {name: {"contact": int(j in set(joints))} for j, name in enumerate(names)})
+
+
+def test_an_edit_cannot_make_a_helper_a_contact(packages):
+    package = packages["loop"]
+    names = [str(n) for n in package["names"]]
+    contacts = set(int(j) for j in package["contact_joints"])
+    contact_name = names[min(contacts)]
+    free_name = names[next(j for j in range(len(names)) if j not in contacts and j != package.root)]
+    helper = with_parts(package, {free_name: {"part": "helper"}})
+    with pytest.raises(ValueError, match="helper joint cannot be a contact"):
+        with_parts(helper, {free_name: {"contact": 1}})
+    with pytest.raises(ValueError, match="helper joint cannot be a contact"):
+        with_parts(package, {free_name: {"part": "helper", "contact": 1}})
+    # making a contact joint a helper drops its contact
+    dropped = with_parts(package, {contact_name: {"part": "helper"}})
+    assert names.index(contact_name) not in set(int(j) for j in dropped["contact_joints"])
 
 
 HORSE_TAIL = ["BN_Tail_01"]       # with its subtree
@@ -269,8 +297,7 @@ def test_redecompose_with_zero_stretch_is_rigid(packages):
     # the trunk and the limbs' attachment offsets keep the decode; every other bone is rigid
     parents = rigid["parents"]
     cond = decode_json(rigid["source_cond"])
-    kept = {rigid.root, *trunk_joint_indices(parents, cond["joint_side_labels"],
-                                             rigid.manifest["contacts"]["source"]["cond"]).tolist()}
+    kept = {rigid.root, *trunk_joint_indices(parents, cond["joint_side_labels"]).tolist()}
     child = np.flatnonzero((parents >= 0) & ~np.isin(parents, sorted(kept)))
     rest = np.linalg.norm(rigid["anim_offsets"][child], axis=-1)
     lengths = np.linalg.norm(rigid["base_pos"][:, child], axis=-1)
@@ -623,7 +650,8 @@ def test_amplitude_and_root_layers_act_where_named(packages):
 @requires_horse
 @pytest.mark.parametrize("kind, group", [("attack", "arms"), ("attack", "legs"), ("loop", "legs")])
 def test_spread_moves_the_limb_tips_outward(packages, kind, group):
-    """A spread turns paired limbs only, never a passive part."""
+    """A spread turns paired limbs only, never a passive part (one may hang off a limb and
+    ride along, like a T-rex's thigh muscle)."""
     runtime = EditRuntime(packages[kind])
     base = runtime.apply(compose=True).global_positions
     value = 0.3
@@ -632,12 +660,21 @@ def test_spread_moves_the_limb_tips_outward(packages, kind, group):
     limbs = [l for l in runtime.spread_limbs() if l.group == group]
     assert {l.sign for l in limbs} == {1.0, -1.0}
     passive = [bool(c) for c in runtime.channels()]
-    assert not any(passive[j] for l in limbs for j in _subtree(packages[kind], l.pivot))
+    parents = packages[kind]["parents"]
+
+    def chain(limb):
+        j, out = limb.tip, []
+        while j != limb.pivot:
+            out.append(j)
+            j = int(parents[j])
+        return out + [limb.pivot]
+
+    assert not any(passive[j] for l in limbs for j in chain(l))
     for limb in limbs:
         outward = limb.sign * np.sum((result.global_positions[:, limb.tip] - base[:, limb.tip]) * lateral, axis=-1)
-        assert np.median(outward) == pytest.approx(value * SPREAD_REACH[group] * limb.length, rel=0.05)
+        assert np.median(outward) == pytest.approx(value * limb.reach * limb.length, rel=0.05)
     if group == "arms":
-        # nothing but the arms moves: an arm carries no foot
+        # nothing but the arms moves: the T-rex's arms carry no foot
         arms = np.zeros(packages[kind].joint_count, dtype=bool)
         for limb in limbs:
             arms[_subtree(packages[kind], limb.pivot)] = True
@@ -645,9 +682,9 @@ def test_spread_moves_the_limb_tips_outward(packages, kind, group):
         assert moved[~arms].max() < 1e-9
 
 
-def test_sided_passive_parts_are_not_arms():
-    # a skirt hanging off the pelvis beside the legs: passive, it groups with the small
-    # attachments; the same chain left to swing is an arm
+def test_groups_follow_the_parts():
+    # a skirt hanging off the pelvis beside the legs is soft: it groups with the small
+    # attachments; the same chain labelled as arms is an arm
     from motion_edit.decompose import chain_groups
     from motion_edit.profile.skeleton import SkeletonStructure
 
@@ -657,26 +694,32 @@ def test_sided_passive_parts_are_not_arms():
                         [0.15, 0, 0], [0, -0.4, 0], [-0.15, 0, 0], [0, -0.4, 0]],
             "joint_side_labels": ["center", "left", "left", "right", "right", "left", "left", "right", "right"]}
     structure = SkeletonStructure(cond, [2, 4])
-    roles = structure.base_roles()
-    assert roles[5:] == ["swing"] * 4
-    assert list(chain_groups(structure, roles, names)[5:]) == ["arms"] * 4
-    passive = roles[:5] + ["passive"] * 4
-    assert list(chain_groups(structure, passive, names)) == ["root"] + ["legs"] * 4 + ["other"] * 4
+    legs = ["trunk", "leg", "foot", "leg", "foot"]
+    assert list(chain_groups(structure, legs + ["soft"] * 4)) == ["root"] + ["legs"] * 4 + ["other"] * 4
+    assert list(chain_groups(structure, legs + ["arm", "hand"] * 2)[5:]) == ["arms"] * 4
+    assert list(chain_groups(structure, legs + ["fin", "helper", "wing", "tail"])[5:]) == ["fins", "other", "wings", "tail"]
 
 
 @requires_horse
 def test_spread_is_offered_for_paired_limbs_only(packages):
-    # the horse's four limbs all carry contacts: they are legs, and it has no arms to spread
+    # the horse's forelegs are arms and its hind legs legs; all four stand on the ground, so
+    # each turns from its IK limb's root by the planted reach and moves its contacts
     runtime = EditRuntime(packages["loop"])
-    assert {l.group for l in runtime.spread_limbs()} == {"legs"}
-    assert len(runtime.spread_limbs()) == 4
-    assert "spread.arms" not in runtime.available and "spread.legs" in runtime.available
-    assert "spread.arms" not in packages["loop"].manifest["available_params"]
-    assert not packages["loop"].manifest["params"]["spread.arms"]["available"]
-    assert "spread.legs" in packages["loop"].manifest["available_params"]
-    assert packages["loop"].manifest["params"]["spread.legs"]["available"]
+    limbs = runtime.spread_limbs()
+    assert sorted(l.group for l in limbs) == ["arms", "arms", "legs", "legs"]
+    assert all(l.columns and l.reach == SPREAD_PLANTED_REACH for l in limbs)
+    for group in ("arms", "legs"):
+        assert f"spread.{group}" in runtime.available
+        assert packages["loop"].manifest["params"][f"spread.{group}"]["available"]
+    # a pair broken by a part edit is no longer offered
+    package = packages["loop"]
+    names = [str(n) for n in package["names"]]
+    right_arm = [names[j] for j in range(len(names))
+                 if str(package["chain_group"][j]) == "arms" and str(package["sides"][j]) == "right"]
+    lopsided = EditRuntime(with_parts(package, {n: {"part": "helper"} for n in right_arm}))
+    assert "spread.arms" not in lopsided.available
     with pytest.raises(UnsupportedParameterError):
-        runtime.apply({"spread.arms": 0.5})
+        lopsided.apply({"spread.arms": 0.5})
 
 
 def test_limb_solver_reaches_and_keeps_bone_lengths():
@@ -833,7 +876,7 @@ def test_contact_mask_edit_rebuilds_plants(packages):
 @requires_horse
 @pytest.mark.parametrize("kind", ["loop", "one_shot"])
 def test_edits_without_contact_joints_skip_the_plants(packages, kind):
-    edited = with_contact_joints(packages[kind], [])
+    edited = _with_contacts(packages[kind], [])
     runtime = EditRuntime(edited)
     for params in ({"amp.legs": 0.5}, {"bounce": 1.5}):
         result = runtime.apply(params)
@@ -843,37 +886,41 @@ def test_edits_without_contact_joints_skip_the_plants(packages, kind):
 
 
 @requires_horse
-def test_contact_joint_edit_records_provenance(packages):
+def test_part_edit_records_its_layer(packages):
     package = packages["one_shot"]
     joints = list(package["contact_joints"])
     removed = joints[0]
     names = [str(n) for n in package["names"]]
     added = names.index("Bip01_Head") if "Bip01_Head" in names else int(package["parents"][joints[0]])
-    edited = with_contact_joints(package, joints[1:] + [added])
-    source = edited.manifest["contacts"]["source"]
-    assert source["package_remove"] == [removed]
-    assert source["package_add"] == [added]
+    edited = _with_contacts(package, joints[1:] + [added])
+    # the package layer holds exactly what differs from the prefill
+    assert edited.manifest["parts"]["package"] == {names[added]: {"contact": 1}, names[removed]: {"contact": 0}}
     assert added in list(edited["contact_joints"]) and removed not in list(edited["contact_joints"])
-    # writing the change into the species override moves it out of the package's own edits
-    species = with_contact_joints(package, joints[1:] + [added],
-                                  species_add=[added], species_remove=[removed])
-    s2 = species.manifest["contacts"]["source"]
-    assert s2["package_add"] == [] and s2["package_remove"] == []
+    rows = edited.manifest["parts"]["joints"]
+    assert rows[added]["src"] == rows[removed]["src"] == "package"
+    # written into the species row, the change leaves the package's own edits
+    species = with_parts(edited, {}, species=True)
+    assert species.manifest["parts"]["package"] == {}
+    assert species.manifest["parts"]["species"] == edited.manifest["parts"]["package"]
     assert list(species["contact_joints"]) == list(edited["contact_joints"])
+    # a part edit that leaves the contact set alone keeps hand-edited intervals
+    mask = np.array(package["contact_mask"], copy=True)
+    mask[:2] = True
+    kept = with_parts(with_contact_mask(package, mask), {names[added]: {"part": "soft"}})
+    assert np.array_equal(kept["contact_mask"], mask) and kept.manifest["contacts"]["intervals_edited"]
 
 
 @requires_horse
 def test_input_notes_survive_rebuilds(packages):
     package = packages["one_shot"]
-    note = {"kind": "contacts", "message": "override row is stale"}
+    note = {"kind": "parts", "message": "override row is stale"}
     package = EditPackage(dict(package.manifest, input_notes=[note]), package.arrays)
     for rebuilt in (redecompose(package), with_contact_mask(package, package["contact_mask"]),
-                    with_contact_joints(package, list(package["contact_joints"]))):
+                    with_parts(package, {})):
         assert note in rebuilt.manifest["diagnostics"]["items"]
         assert rebuilt.manifest["input_notes"] == [note]
-    # a rewritten species override voids the notes about the old one
-    joints = list(package["contact_joints"])
-    rewritten = with_contact_joints(package, joints, species_add=[], species_remove=[])
+    # a rewritten species row voids the notes about the old one
+    rewritten = with_parts(package, {}, species=True)
     assert note not in rewritten.manifest["diagnostics"]["items"]
 
 
@@ -943,8 +990,8 @@ def test_strike_events_are_ordered_on_the_active_chain(packages, kind):
 def test_strike_bite_is_delivered_by_the_neck(packages):
     package = packages["attack"]
     strike = package.manifest["events"]["strike"]
-    groups = [str(g) for g in package["chain_group"]]
-    assert strike["label_group"] == "axial" and groups[strike["chain"]] == "axial"
+    parts = [str(p) for p in package["joint_part"]]
+    assert strike["label_parts"] == ["head", "neck"] and parts[strike["chain"]] in ("head", "neck")
 
 
 @requires_horse
@@ -963,7 +1010,7 @@ def test_strike_events_can_be_moved(packages):
         with pytest.raises(ValueError):
             runtime.strike(bad)
     with pytest.raises(ValueError):
-        EditRuntime(with_contact_joints(packages["one_shot"], [])).strike({"impact": 3})
+        EditRuntime(_with_contacts(packages["one_shot"], [])).strike({"impact": 3})
     # moving events alone changes nothing: they only key the force parameters
     base = runtime.apply(compose=True).global_positions
     again = runtime.apply(compose=True, events={"impact": strike["impact"] + 1}).global_positions
@@ -1208,18 +1255,19 @@ def test_T2_deterministic_with_secondary(packages):
 # ── passive joint set ────────────────────────────────────────────────────────
 
 @requires_horse
-def test_passive_defaults_follow_joint_names(packages):
+def test_passive_defaults_are_the_soft_parts(packages):
     package = packages["loop"]
     m = package.manifest["passive"]
     names = set(m["names"])
-    # named parts with their whole subtrees, leaves included; the tail stays with tail_weight
-    assert {"BN_hair04_01", "BN_hair04_03", "Bip01_R_Ear_01"} <= names
-    assert {str(package["names"][j]) for j in _subtree(package, list(package["names"]).index("Bip01_R_Ear_01"))} <= names
-    assert not names & {"BN_Tail_01", "BN_Tail_05", "Bip01_Jaw", "BN_Eyebrow_R", "Handle"}
+    parts = [str(p) for p in package["joint_part"]]
+    # the mane is soft with its whole subtree, leaves included; the tail stays with tail_weight,
+    # the ears and the jaw with the head
+    assert {"BN_hair04_01", "BN_hair04_03"} <= names
+    assert not names & {"BN_Tail_01", "BN_Tail_05", "Bip01_Jaw", "Bip01_R_Ear_01", "Handle"}
     passive = set(m["joints"])
     assert all(j in passive for j in passive for j in _subtree(package, j))
-    assert m["named"] == m["joints"] and passive <= set(m["candidates"])
-    # hair and ears answer to passive_weight, the tail to tail_weight: tuned apart
+    assert passive == {j for j, p in enumerate(parts) if p == "soft"} & set(m["candidates"])
+    # hair answers to passive_weight, the tail to tail_weight: tuned apart
     facts = package.manifest["facts"]
     assert facts["has_passive"] and "passive_weight" in package.manifest["available_params"]
     assert "tail_weight" in package.manifest["available_params"]
@@ -1231,44 +1279,26 @@ def test_passive_defaults_follow_joint_names(packages):
 
 
 @requires_horse
-def test_passive_edit_records_provenance_and_keeps_intervals(packages):
+def test_soft_edits_make_parts_passive_and_survive_rebuilds(packages):
     package = packages["one_shot"]
     names = [str(n) for n in package["names"]]
     jaw = _subtree(package, names.index("Bip01_Jaw"))
-    ear = _subtree(package, names.index("Bip01_R_Ear_01"))
-    joints = [j for j in package.manifest["passive"]["joints"] if j not in ear] + jaw
-    mask = np.array(package["contact_mask"], copy=True)
-    mask[:2] = True
-    edited = with_passive_joints(with_contact_mask(package, mask), joints)
-    source = edited.manifest["passive"]["source"]
-    # recorded as given: the jaw with its subtree added, the ear with its own removed
-    assert source["package_add"] == jaw and source["package_remove"] == ear
-    assert edited.manifest["passive"]["joints"] == sorted(joints)
-    # a part may stop partway down: dropping the jaw's tip leaves the jaw itself passive
-    tip = with_passive_joints(package, [j for j in joints if j != jaw[-1]])
-    assert jaw[0] in tip.manifest["passive"]["joints"] and jaw[-1] not in tip.manifest["passive"]["joints"]
-    assert np.array_equal(edited["contact_mask"], mask) and edited.manifest["contacts"]["intervals_edited"]
-    # the passive set survives a contact edit and a re-decomposition
-    assert with_contact_joints(edited, list(edited["contact_joints"])).manifest["passive"] == edited.manifest["passive"]
-    assert redecompose(edited).manifest["passive"]["joints"] == edited.manifest["passive"]["joints"]
-    # written into the species override, the change leaves the package's own edits
-    species = with_passive_joints(package, joints, species_add=jaw, species_remove=ear)
-    s2 = species.manifest["passive"]["source"]
-    assert s2["package_add"] == [] and s2["package_remove"] == []
-    assert species.manifest["passive"]["joints"] == edited.manifest["passive"]["joints"]
-
-
-def test_passive_source_reads_a_species_override():
-    from motion_edit.decompose import passive_source
-
-    cond = {"joints_names": ["root", "Tail_01", "Jaw", "Ear_L"]}
-    source = passive_source(cond, {"add": ["Jaw", "nope"], "remove": ["Ear_L"]})
-    assert source.species_add == [2] and source.species_remove == [3] and source.unknown_names == ["nope"]
+    # a part may stop partway down: the jaw's tip left as it is follows the jaw rigidly
+    edited = with_parts(package, {names[j]: {"part": "soft"} for j in jaw[:-1]})
+    passive = edited.manifest["passive"]["joints"]
+    assert set(jaw[:-1]) <= set(passive) and jaw[-1] not in passive
+    # a soft joint with a support joint below it is reported, not made passive
+    spine = names.index("Bip01_Spine")
+    blocked = with_parts(package, {names[spine]: {"part": "soft"}})
+    assert spine not in blocked.manifest["passive"]["joints"]
+    assert any(d["kind"] == "passive" and d.get("joint") == names[spine]
+               for d in blocked.manifest["diagnostics"]["items"])
+    assert redecompose(edited).manifest["passive"]["joints"] == passive
 
 
 @requires_horse
-def test_serve_writes_a_species_passive_override(packages, tmp_path):
-    from motion_edit.profile.data import PASSIVE_OVERRIDES_FILE
+def test_serve_writes_a_species_parts_override(packages, tmp_path):
+    from motion_edit.profile.parts import JOINT_PARTS_OVERRIDES_FILE
     from motion_edit.ui.serve import Handler, PackageStore
 
     package = packages["one_shot"]
@@ -1281,16 +1311,18 @@ def test_serve_writes_a_species_passive_override(packages, tmp_path):
     handler.server = type("Server", (), {"store": PackageStore(str(store_root))})()
     names = [str(n) for n in package["names"]]
     jaw = _subtree(package, names.index("Bip01_Jaw"))
-    ear = _subtree(package, names.index("Bip01_R_Ear_01"))
-    joints = [j for j in package.manifest["passive"]["joints"] if j not in ear] + jaw
-    payload = handler._passive("clip.edit", {"joints": joints, "species": True})
-    rows = json.loads((root / PASSIVE_OVERRIDES_FILE).read_text(encoding="utf-8"))
-    assert rows[package.manifest["object_type"]]["add"] == sorted(names[j] for j in jaw)
-    assert rows[package.manifest["object_type"]]["remove"] == sorted(names[j] for j in ear)
-    assert sorted(payload["passive"]["joints"]) == sorted(set(joints) | set(jaw))
-    assert set(payload["passive"]["origin"]) == {"name", "species"}
-    with pytest.raises(ValueError):          # the spine holds the front legs
-        handler._passive("clip.edit", {"joints": [names.index("Bip01_Spine")]})
+    # a package edit first, then the same joints written for the species
+    handler._parts("clip.edit", {"joints": {names[j]: {"part": "soft"} for j in jaw}})
+    payload = handler._parts("clip.edit", {"joints": {}, "species": True})
+    rows = json.loads((root / JOINT_PARTS_OVERRIDES_FILE).read_text(encoding="utf-8"))
+    row = rows[package.manifest["object_type"]]
+    assert row["joints"] == {names[j]: {"part": "soft"} for j in jaw}
+    assert row["skeleton_hash"] == package.manifest["skeleton_hash"]
+    assert set(jaw) <= set(payload["passive"]["joints"])
+    assert payload["parts"]["package"] == {} and payload["parts"]["species"] == row["joints"]
+    assert {payload["parts"]["joints"][j]["src"] for j in jaw} == {"species"}
+    with pytest.raises(ValueError, match="unknown part"):
+        handler._parts("clip.edit", {"joints": {names[jaw[0]]: {"part": "antenna"}}})
 
 
 @requires_horse
@@ -1486,8 +1518,7 @@ def test_skinned_export_matches_restore_glb(packages, tmp_path):
     cond = load_cond(os.path.join(HORSE_ROOT, "cond.npy"))[HORSE_KEY]
     restored = restore_animation_from_features(
         package["source_features"],
-        build_mesh_restore_context(cond, HORSE_TPOSE, HORSE_KEY,
-                                   contact_joints=package.manifest["contacts"]["source"]["cond"]),
+        build_mesh_restore_context(cond, HORSE_TPOSE, HORSE_KEY),
         restore_space="native", fullbody_ik=True, stretch_factor=package.manifest["stretch_factor"],
         fps=package.fps)
     inputs = animation_to_exporter_inputs(restored.animation, restored.skeleton)

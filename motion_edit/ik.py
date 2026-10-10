@@ -58,16 +58,30 @@ def _ancestors(j: int, parents) -> list[int]:
     return out
 
 
-def build_limbs(parents, sides, contact_joints, translation_root: int) -> tuple[list[Limb], list[str]]:
-    """Contact joints grouped into solvable limbs, and notes on the ones that are not."""
+def build_limbs(parents, sides, contact_joints, translation_root: int,
+                parts=None) -> tuple[list[Limb], list[str]]:
+    """Contact joints grouped into solvable limbs, and notes on the ones that are not.
+
+    A sided contact joint's limb starts at the top of its run of same-side joints;
+    with ``parts`` (one per joint) the run also stops where the limb's kind does
+    (``parts.LIMB_KIND``: a foot belongs to its leg, not to a sided hip pad above it).
+    """
+    from motion_edit.profile.parts import LIMB_KIND
+
     parents = np.asarray(parents)
     notes: list[str] = []
     groups: dict[int, list[int]] = {}
+
+    def same_limb(j: int, parent: int) -> bool:
+        if sides[parent] != sides[j]:
+            return False
+        return parts is None or (LIMB_KIND.get(parts[j]) is not None
+                                 and LIMB_KIND.get(parts[parent]) == LIMB_KIND.get(parts[j]))
+
     for column, joint in enumerate(contact_joints):
         root = int(joint)
-        side = sides[root]
-        if side != "center":
-            while parents[root] >= 0 and sides[int(parents[root])] == side:
+        if sides[root] != "center":
+            while parents[root] >= 0 and same_limb(root, int(parents[root])):
                 root = int(parents[root])
         groups.setdefault(root, []).append(column)
     limbs = []

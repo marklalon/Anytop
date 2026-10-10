@@ -25,7 +25,8 @@ AnyTop 生成形状为 `(F, J, 12)` 的动作特征，通道为位置 3、旋转
 
 | 数据 | 来源 | 用途 |
 |---|---|---|
-| `cond` 条目 | 骨架数据集或另行指定的 `cond.npy` | 关节层级、静息骨架、接触关节、左右标记等骨架定义 |
+| `cond` 条目 | 骨架数据集或另行指定的 `cond.npy` | 关节层级、静息骨架、左右标记等骨架定义 |
+| 关节部位与接触 | 从骨架预填，物种级 / Package 级人工校准（第 2.1 节） | 编辑分组、次级运动通道、IK 肢体、接触集合、发力链先验 |
 | Skeleton Profile | 同一骨架的训练 clip 离线统计 | 关节自由度与主轴、角色、弹簧参数、步态参考；分解时取出该 clip 所需子集 |
 | Edit Package | 对某条生成或训练动作分解得到 | 运行时需要的全部数组和元数据；可独立加载并重复编辑 |
 
@@ -46,7 +47,52 @@ Profile 是可选输入。缺失时，分解器从 `cond` 推导角色和腿长�
 - **次级运动**：候选关节的 `spring` 和拟合信息。数据能支持受父运动驱动的拟合时使用拟合参数，否则用按悬挂长度计算的默认弹簧。是否启用 passive 由关节选择决定，和弹簧拟合是否通过无关。
 - **动作参考**：locomotion 的周期、占空比、着地相位、隐含地速、步幅，以及竖直动作统计。分解器使用匹配 `action_label` 的步态行比较当前动作并产生诊断；编辑以当前动作自身的事件和曲线为基准。
 
-接触关节集合从物种的 `joint_parts.jsonl` 接触标注开始（烘焙在 cond 的 `joint_contact` 里），物种级 `contact_overrides.json` 可按关节名增删；接触发生在哪些帧由动作计算。Passive 候选须满足子树内没有支撑关节，名字匹配毛发、耳朵、衣物等部位的候选默认启用；`passive_overrides.json` 可覆盖。两种物种级覆盖都带 `skeleton_hash`，骨架变化后旧覆盖被忽略。没有训练 clip 的骨架可按相同 `species_tags` 和规范关节名借用其他 Profile 的自由度信息，置信度为 0；没有可用 Profile 时仍可分解。
+接触关节集合和 passive 关节都由第 2.1 节的部位决定；接触发生在哪些帧由动作计算。Passive 候选须满足子树内没有支撑关节，部位为 `soft` 的候选启用。没有训练 clip 的骨架可按相同 `species_tags` 和规范关节名借用其他 Profile 的自由度信息，置信度为 0；没有可用 Profile 时仍可分解。
+
+### 2.1 关节部位与接触
+
+每个关节有一个部位和一个接触位（`motion_edit/profile/parts.py`）。默认值由 `data_loaders/truebones/truebones_utils/joint_parts.py` 的 `prefill_joint_parts` 预填：先按 embedding 文本里的部位词，再沿树继承，再做肢体细化（着地的肢体末端改为 hand/foot、翼链整条改为 wing、多足的步行肢改为 leg/foot、四足按前后分 arm/leg），最后用几何兜底；接触来自 `prefill_contacts`（先几何后名字），名字是 Foot / Hand 且下面还有趾、指的关节不算接触。
+
+人工校准分两层，后一层覆盖前一层，每层只记与下层不同的关节（`{关节名: {"part", "contact"}}`）：
+
+- **物种层**：数据集根目录的 `joint_parts_overrides.json`，按 cond key 存，带 `skeleton_hash`，骨架变化后整行忽略并写诊断；
+- **Package 层**：存在 manifest 的 `parts.package` 里，只影响这一个 Package。
+
+Profile 构建和分解读同一份「预填 + 物种层」。预填只看 cond 子集（`profile.build.COND_FIELDS`），Package 重建时用存下的子集重算，结果与首次分解一致。
+
+| 部位 | 含义 / 判定 |
+|---|---|
+| `trunk` | 骨盆、脊柱、胸腔；蛇、鱼、蠕虫的主体段 |
+| `neck` | 颈椎链 |
+| `head` | 头及其附属：下颌、眼、耳、舌、角、喙 |
+| `arm` | 前肢从肩 / 锁骨到腕之前 |
+| `hand` | 腕及以下：掌、指、爪 |
+| `leg` | 后肢从髋到踝之前；多足动物步行足的近端段 |
+| `foot` | 踝及以下：跖、趾、蹄、爪尖 |
+| `wing` | 整条翼链，包括翼指和受驱动的羽毛骨 |
+| `tail` | 尾链 |
+| `fin` | 鳍 |
+| `soft` | 被动附属物：触须、毛发、鬃、衣物、披风、饰物、被动触手、植物叶片 |
+| `helper` | 非解剖节点：包装根、locator、IK target、道具挂点；不能是接触 |
+
+歧义判定：
+
+- 四肢按前后位置判定，不按用途。四足的前肢是 `arm/hand`，后肢是 `leg/foot`，前肢着不着地都一样，承重由接触位表达。节肢、多足动物的步行足一律 `leg/foot`，螯、钳、须肢是 `arm/hand`。
+- 翼、鳍、`soft` 按功能判定。蝙蝠的「手指」是 `wing`；章鱼主动划水的腕是 `arm`；水母被动拖曳的触手是 `soft`。海龟、海豹主动划水的大鳍肢归 `arm/leg`，小的稳定鳍归 `fin`。
+- 尾巴末端受尾链驱动、自身无主动运动的饰物（毛团、尾羽）归 `soft`。爪长在 hand 上的归 `hand`，长在 foot 上的归 `foot`。
+- 接触是正常站立或行走时会着地的关节；四足前肢的指同样可以是接触。
+
+部位驱动的编辑：
+
+| 机制 / 参数 | 由什么决定 |
+|---|---|
+| 接触集合、`foot_lock`、`soft_stretch`、`jump_height`、`stride` | 接触位 |
+| IK 肢体 | 从接触关节向上到同侧、同一肢体类（arm/hand、leg/foot、wing）的最高关节 |
+| `amp.legs` / `amp.arms` / `amp.wings` / `amp.fins` / `amp.axial` | `leg+foot` / `arm+hand` / `wing` / `fin` / `trunk+neck+head`；翻译根单列为 root，`soft`、`helper` 不受幅度滑杆控制 |
+| `tail_weight` / `tail_stiffness` | `tail` 中能摆动的关节 |
+| `passive_*`、`gravity` | `soft` 中能摆动的关节 |
+| `spread.arms` / `spread.legs` | arms / legs 组里挂在其他组关节上的肢体；带 IK 肢体的从 IK 肢体根部转、移动其着地目标 |
+| 发力链的标签先验 | bite / headbutt / firebreath / spit → `head`、`neck`；kick → `leg`、`foot`；punch / swat / slash / stab / catch / smash → `arm`、`hand`，没有再找 `leg`、`foot`；sting / whip → `tail` |
 
 ## 3. Edit Package：动作的可编辑表示
 
@@ -74,7 +120,7 @@ python -m motion_edit.decompose_clip --npy out/sample0.npy --object_type truebon
 | `data.npz` | 骨架、解码后的基准动画、分解层、接触 mask 与锚点、Profile 子集；另存 `source_features` 与 JSON 编码的 `source_cond` 供重新分解 |
 | `mesh/`（可选） | `--tpose_mesh` 指定的 T-pose FBX/GLB 的预览与标定数据，用于蒙皮预览和导出 |
 
-`package.py` 负责读写，当前 `RUNTIME_VERSION = 5`；加载时要求版本一致。`runtime.py` 只读取 Package，不导入 torch，也不走特征解码路径。编辑接触集合、地面高度、接触区间或 passive 集合时，`decompose.py` 的 `with_*` 函数会用 Package 内保存的数据重建相关层。修改解码设置走 `redecompose`，从保存的原始 features 重新解码；它会重新检测接触区间，手工区间编辑不会保留。
+`package.py` 负责读写，当前 `RUNTIME_VERSION = 6`；加载时要求版本一致。`runtime.py` 只读取 Package，不导入 torch，也不走特征解码路径。编辑部位与接触、地面高度或接触区间时，`decompose.py` 的 `with_parts` / `with_ground_height` / `with_contact_mask` 会用 Package 内保存的数据重建相关层；部位编辑不改变接触集合时，手工接触区间保留。修改解码设置走 `redecompose`，从保存的原始 features 重新解码；它会重新检测接触区间，手工区间编辑不会保留。
 
 ## 4. EditRuntime：参数如何作用于动画
 
@@ -83,7 +129,7 @@ python -m motion_edit.decompose_clip --npy out/sample0.npy --object_type truebon
 运行时按固定顺序合成：
 
 1. **时间映射**：`tempo` 改变源时间采样。循环动作保持整数输出帧数并周期采样；one-shot 按源帧采样。存在 strike 事件时，`windup_speed`、`strike_speed`、`recover_speed` 可分别改变事件段速度，并用单调 PCHIP 插值形成时间映射。UI 可移动三个事件和选择发力链；事件是力度编辑的时间锚点。
-2. **关节幅度与发力**：对各组的 rotvec 偏移使用 `amp.legs`、`amp.arms`、`amp.axial`、`amp.wings` 等增益。`force` 调整蓄力、出击、恢复相关参数；`windup_depth` 和 `overshoot` 对发力链、躯干和根施加相对接触姿态的变化，并带动身体倾斜和位移。`spread.arms`、`spread.legs` 取 −1 到 1：每条有左右之分的手臂或腿在肢体根部转动，使肢端沿远离身体中线的水平方向移动“取值 × 该组比例 × 肢长”，负值向内收拢；外向方向取左右肢体根部连线的水平方向。腿是带接触关节的 IK 肢体，手臂是直接挂在躯干上的 `arms` 组链；有侧的 passive 部件（裙摆、披风、鳍等）不归入 `arms`。肢体首段过短或名为锁骨/肩胛时从下一关节转。某组没有左右成对的肢体时不提供该参数。腿的脚掌保持原世界朝向；肢体已指向正外或正内、或越过中线时写入诊断。
+2. **关节幅度与发力**：对各组的 rotvec 偏移使用 `amp.legs`、`amp.arms`、`amp.axial`、`amp.wings`、`amp.fins` 等增益（分组见第 2.1 节）。`force` 调整蓄力、出击、恢复相关参数；`windup_depth` 和 `overshoot` 对发力链、躯干和根施加相对接触姿态的变化，并带动身体倾斜和位移。`spread.arms`、`spread.legs` 取 −1 到 1：每条有左右之分的手臂或腿在肢体根部转动，使肢端沿远离身体中线的水平方向移动“取值 × 比例 × 肢长”，负值向内收拢；比例是组的比例（arms 1.0、legs 0.3），着地的肢体一律用着地比例 0.3；外向方向取左右肢体根部连线的水平方向。四足的前肢属于 arms、后肢属于 legs，可分别调节。着地的肢体从 IK 肢体根部转动、移动其着地目标，脚掌保持原世界朝向；不着地的肢体从链顶转动、移动最远的关节。肢体首段过短或名为锁骨/肩胛时从下一关节转。某组没有左右成对的肢体时不提供该参数。肢体已指向正外或正内、或越过中线时写入诊断。
 3. **根运动**：`bounce` 缩放 Y 振荡，`sway` 缩放 XZ 振荡，`jump_height` 缩放腾空区间的离地高度：取最低接触关节高出其 floor（该关节在本片段中的最低支撑高度，从未支撑的关节取地面高度）的距离，减去起跳帧到落地帧两端值的连线（不低于 floor），根在竖直方向上移动 (k−1) 倍这个离地量；因此最低的脚始终不会低于该连线和 floor，k<1 不会把脚压进地面，区间两端也保持不动；循环动作的腾空区间可以跨越接缝，`posture` 按腿长偏移根高度。
 4. **着地目标与 IK**：对原结果的支撑脚位置施加编辑引起的变化。`stride` 改变原地 locomotion 的隐含前进速度和步幅；`spread.legs` 把每段支撑的着地目标沿该段中点的外向方向平移同样距离，整段支撑内不变，因此脚不滑动；默认保留原动画的滑步残差，`foot_lock` 打开时才移除。关节幅度、力度、根等会移动身体的编辑触发肢体 IK；`soft_stretch` 控制接近伸展或压缩极限时的软骨长调整。够不到的目标和修正量写入诊断，必要时对身体做着地高度补偿。
 5. **次级运动**：`tail_weight`、`passive_weight` 在 0–1 区间缩放部位自身曲线；超过 1 时，在编辑后的身体运动上叠加弹簧响应。对应的 `*_stiffness` 改弹簧频率，`gravity` 控制重力驱动项。次级运动在着地修正后计算，因此弹簧读到最终的身体轨迹。
@@ -98,7 +144,7 @@ python -m motion_edit.decompose_clip --npy out/sample0.npy --object_type truebon
 
 `python -m motion_edit.ui.serve --packages outputs/edit_packages` 启动本地页面（默认 `127.0.0.1:8770`）。页面可选择 Package，比较原动作和编辑动作，查看骨架或可选蒙皮 mesh、时间轴、接触目标、root motion 和诊断；参数改动通过 `/api/apply` 调用同一个 `EditRuntime`。
 
-页面可以修改接触关节、接触帧区间、地面高度和 passive 关节。关节集合可只应用到当前 Package，也可写入数据集的 `contact_overrides.json` / `passive_overrides.json`，作为该物种后续分解的默认覆盖。接触区间和地面高度是当前 Package 的编辑。解码设置通过 `/api/load` 重新分解。`PackageStore` 按文件变更重载 Package，并在写入、重建和导出之间使用编辑锁。
+页面右栏「部位与接触」显示每个关节的部位、接触和来源（预填的名字 / 继承 / 几何，或物种 / 本包），视口可按部位着色、接触关节画白环。视口单击选关节，Shift+单击选整棵子树，Ctrl+单击增减；色板或按键设部位（`1`–`9` 为 trunk…tail，`0` soft，`F` fin，`H` helper），`C` 切换接触，`M` 把左侧关节复制到镜像关节，`Ctrl+Z` 撤销；「重新预填」把草稿恢复成预填结果。草稿可只应用到当前 Package（`POST /api/parts`），也可写入数据集的 `joint_parts_overrides.json`，作为该物种后续 Profile 构建和分解的默认值。接触区间和地面高度是当前 Package 的编辑。解码设置通过 `/api/load` 重新分解。`PackageStore` 按文件变更重载 Package，并在写入、重建和导出之间使用编辑锁。
 
 导出使用 `python -m motion_edit.apply_edit <clip>.edit --bvh out.bvh` 或 `--glb out.glb`。参数可来自 `--params` JSON、`--set name=value`，或 UI 生成的 sidecar（`params` 加 `events`）。默认 GLB 是骨架动画；`--mesh` 使用 Package 的 T-pose mesh 蒙皮；`--root_motion` 把输出地速积分到根。UI 导出会写 sidecar 并在子进程运行同一 CLI，因此预览与文件共用运行时合成逻辑。
 

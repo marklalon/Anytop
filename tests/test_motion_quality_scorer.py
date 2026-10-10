@@ -223,21 +223,10 @@ def test_reference_species_selection_widens_to_the_clip_floor() -> None:
 
 
 def test_registered_cond_is_query_only_reference_baseline(
-    monkeypatch: pytest.MonkeyPatch, tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from data_loaders.truebones.truebones_utils.joint_parts import (
-        joint_parts_row,
-        write_output_joint_parts,
-    )
-
     baseline_cond = {"horse": _make_cond_entry(("Quadruped", "Galloping"))}
-    custom_cond = {"dragon": {**_make_cond_entry(("Winged", "Soaring")), "species_name": "dragon"}}
-    # The generation directory of the scored motions carries the novel skeleton's row.
-    dragon = custom_cond["dragon"]
-    write_output_joint_parts(tmp_path, [joint_parts_row(
-        "dragon", dragon["joints_names"], dragon["parents"], part_ids=[0, 5], contact=[0, 0],
-        source="model", src="model",
-    )])
+    custom_cond = {"dragon": _make_cond_entry(("Winged", "Soaring"))}
 
     scorer = object.__new__(scorer_mod.DistributionMotionQualityScorer)
     scorer.dataset_root = None
@@ -245,9 +234,8 @@ def test_registered_cond_is_query_only_reference_baseline(
     scorer._cond_lookup = scorer._corpus.cond_lookup
     scorer._query_cond_lookup = dict(baseline_cond)
     scorer._custom_cond_keys = set()
-    scorer._custom_parts_dirs = {}
     scorer._joint_group_cache = {}
-    scorer.register_cond(custom_cond, joint_parts_dir=tmp_path)
+    scorer.register_cond(custom_cond)
 
     captured: dict[str, object] = {}
 

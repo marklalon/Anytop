@@ -9,11 +9,11 @@ Writes ``<processed root>/skeleton_profiles.json`` and
 ``<processed root>/skeleton_profiles_report.md``.  A filtered run replaces only
 the species it built and keeps every other row of the existing file.
 
-User sidecars read from the same root (rows keyed by cond key, joints by name,
-each with the ``skeleton_hash`` it was made against):
+The user sidecar read from the same root (rows keyed by cond key, joints by
+name, each with the ``skeleton_hash`` it was made against):
 
-* ``contact_overrides.json``    ``{"add": [...], "remove": [...]}``
-* ``passive_overrides.json``    ``{"add": [...], "remove": [...]}``  (passive joints beyond the named defaults)
+* ``joint_parts_overrides.json``  ``{"joints": {name: {"part": ..., "contact": 0 / 1}}}``
+  (corrections of the part / contact prefill, ``motion_edit.profile.parts``)
 """
 
 from __future__ import annotations
@@ -33,8 +33,6 @@ if ANYTOP_ROOT not in sys.path:
 
 from motion_edit.profile import build as builder  # noqa: E402
 from motion_edit.profile.data import (  # noqa: E402
-    CONTACT_OVERRIDES_FILE,
-    PASSIVE_OVERRIDES_FILE,
     PROFILES_FILE,
     REPORT_FILE,
     discover_sources,
@@ -42,12 +40,13 @@ from motion_edit.profile.data import (  # noqa: E402
     load_species_sidecar,
     species_motion_names,
 )
+from motion_edit.profile.parts import JOINT_PARTS_OVERRIDES_FILE  # noqa: E402
 from motion_edit.profile.report import render_report  # noqa: E402
 
 
-def _build_job(source, cond_key, cond_entry, motion_rows, contact_override, passive_override):
+def _build_job(source, cond_key, cond_entry, motion_rows, parts_override):
     profile, findings = builder.build_species_profile(
-        source, cond_key, cond_entry, motion_rows, contact_override, passive_override)
+        source, cond_key, cond_entry, motion_rows, parts_override)
     return source.namespace, cond_key, profile, dataclasses.asdict(findings)
 
 
@@ -101,8 +100,7 @@ def main(argv=None) -> int:
     for source in sources:
         cond = load_cond(source)
         metadata = load_motion_metadata(source.root)
-        contact_overrides = load_species_sidecar(source.root, CONTACT_OVERRIDES_FILE)
-        passive_overrides = load_species_sidecar(source.root, PASSIVE_OVERRIDES_FILE)
+        parts_overrides = load_species_sidecar(source.root, JOINT_PARTS_OVERRIDES_FILE)
         for cond_key, entry in cond.items():
             species = str(entry.get("species_name") or cond_key.rsplit("/", 1)[-1])
             subset = builder.cond_subset(entry)
@@ -110,8 +108,7 @@ def main(argv=None) -> int:
             if not _matches(cond_key, species, args.species):
                 continue
             rows = {name: metadata[name] for name in species_motion_names(metadata, species)}
-            jobs.append((source, cond_key, subset, rows,
-                         contact_overrides.get(cond_key), passive_overrides.get(cond_key)))
+            jobs.append((source, cond_key, subset, rows, parts_overrides.get(cond_key)))
     if not jobs:
         print("No species matched.")
         return 1

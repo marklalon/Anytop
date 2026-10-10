@@ -241,34 +241,31 @@ def test_preview_bvh_stays_rotation_only_for_pure_rotation_clip():
 
 def test_preview_bvh_with_rigid_ik_matches_restore_decode():
     """``--fullbody_ik --stretch_factor 0`` keeps every limb bone at its rest
-    length; the trunk (ancestors of the contact limbs) and the limb attachments
+    length; the trunk (where the sided limbs branch off) and the limb attachments
     keep their decoded local translations, so the BVH carries position channels
     and still loads back to the restored world pose."""
     if not (os.path.isfile(_BUFFALO_NPY) and os.path.isfile(_COND)):
         pytest.skip("Buffalo NPY / cond.npy fixtures not available")
 
     from motion_lib import BVH
-    from data_loaders.truebones.truebones_utils.joint_parts import cond_contact_joints
     from utils.fullbody_ik import trunk_joint_indices
 
     cond_dict = load_cond(_COND)
     cond = cond_dict[resolve_species_key(cond_dict, "Buffalo")]
     raw = np.load(_BUFFALO_NPY).astype(np.float32)
-    contacts = cond_contact_joints(cond)
 
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "preview_ik.bvh")
         restored = write_feature_bvh(
             raw, cond, out, fps=30.0, fullbody_ik=True, stretch_factor=0.0,
-            contact_joints=contacts,
         )
         assert restored.ik_error is not None
         position_channels = _bvh_nonroot_position_channel_count(out)
         loaded, _names, _ft = BVH.load(out)
 
     parents = np.asarray(cond["parents"], dtype=np.int64)
-    trunk = trunk_joint_indices(parents, cond["joint_side_labels"], contacts)
-    assert trunk.size, "Buffalo should have a trunk above its contact limbs"
+    trunk = trunk_joint_indices(parents, cond["joint_side_labels"])
+    assert trunk.size, "Buffalo should have a trunk above its limbs"
     kept = {int(cond.get("translation_root_index", 0) or 0), *trunk.tolist()}
     preserved = kept | set(np.flatnonzero(np.isin(parents, sorted(kept))).tolist())
     limbs = np.array(sorted(set(range(len(parents))) - preserved))

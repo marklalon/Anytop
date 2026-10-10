@@ -6,9 +6,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from data_loaders.truebones.truebones_utils.joint_parts import cond_contact_joints
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import joint_name_matches_keywords
-
 CENTER = "center"
 # A sided limb shorter than this fraction of the leg (ears, mouth corners,
 # whiskers) carries no locomotion or gesture meaning: role "other".
@@ -32,44 +29,6 @@ def rest_positions(parents, offsets) -> np.ndarray:
     return out
 
 
-@dataclass
-class ContactSet:
-    cond: list[int]
-    added: list[int] = field(default_factory=list)
-    removed: list[int] = field(default_factory=list)
-    unknown_names: list[str] = field(default_factory=list)
-
-    @property
-    def used(self) -> list[int]:
-        return sorted((set(self.cond) | set(self.added)) - set(self.removed))
-
-
-def resolve_contacts(cond_entry: dict, override_entries: dict | None) -> ContactSet:
-    """The entry's contacts (joint_parts annotation baked into cond) with a
-    ``{"add": [...], "remove": [...]}`` name override."""
-    names = [str(n) for n in cond_entry["joints_names"]]
-    index_of = {n: i for i, n in enumerate(names)}
-    contacts = ContactSet(cond=cond_contact_joints(cond_entry))
-    for key, target in (("add", contacts.added), ("remove", contacts.removed)):
-        for name in (override_entries or {}).get(key, []):
-            if name in index_of:
-                target.append(index_of[name])
-            else:
-                contacts.unknown_names.append(str(name))
-    return contacts
-
-
-# Secondary-motion candidates passive by default, with their subtrees: a word of
-# the joint name begins with one of these (hair and clothing: "BN_hair04_01",
-# "Skirt_F_01").  Tails stay on their own channel (tail_weight), so they are tuned apart from these.
-# Overrides add or remove joints on top.
-PASSIVE_NAME_KEYWORDS = (
-    "hair", "fur", "mane", "ear",
-    "skirt", "cape", "cloak", "coat", "robe", "dress", "cloth", "scarf", "sleeve",
-    "ribbon", "sash", "apron", "shawl", "veil", "tassel",
-)
-
-
 def subtree_closure(parents, joints) -> set[int]:
     """``joints`` with all their descendants (parents precede children)."""
     out = {int(j) for j in joints}
@@ -81,47 +40,15 @@ def subtree_closure(parents, joints) -> set[int]:
 
 @dataclass
 class PassiveSet:
-    """A resolved passive set.  An addition brings its subtree, a removal takes exactly the
-    joints it lists, so a part may stop partway down (its lower joints follow rigidly)."""
+    """The passive joints: the ``soft`` ones that can swing (``passive_candidates``)."""
 
     joints: list[int]
-    named: list[int]                                        # the defaults by name
-    outside: list[int] = field(default_factory=list)        # additions that are not candidates
+    outside: list[int] = field(default_factory=list)        # soft joints with a support joint below
 
 
-def resolve_passive(parents, names: list[str], candidates, layers) -> PassiveSet:
-    """The candidates named as hanging parts (with their subtrees), then each ``(add, remove)``
-    layer of joint indices (species override, package edit) in turn: an addition brings its
-    subtree, a removal takes exactly its joints.  Only candidates are passive."""
-    candidates = {int(j) for j in candidates}
-    named = subtree_closure(parents, [j for j in candidates
-                                      if joint_name_matches_keywords(names[j], PASSIVE_NAME_KEYWORDS)])
-    wanted, outside = set(named), set()
-    for add, remove in layers:
-        add = {int(j) for j in add}
-        outside |= add - candidates
-        wanted = (wanted | subtree_closure(parents, add & candidates)) - {int(j) for j in remove}
-    return PassiveSet(sorted(wanted & candidates), sorted(named), sorted(outside))
-
-
-def passive_layer(parents, base, joints) -> tuple[list[int], list[int]]:
-    """The ``(add, remove)`` layer that turns the passive set ``base`` into exactly ``joints``."""
-    base, joints = {int(j) for j in base}, {int(j) for j in joints}
-    add = joints - base
-    return sorted(add), sorted((base | subtree_closure(parents, add)) - joints)
-
-
-def passive_name_layer(names: list[str], override_entries: dict | None) -> tuple[list[int], list[int], list[str]]:
-    """``(add, remove, unknown names)`` of a ``{"add": [...], "remove": [...]}`` name override."""
-    index_of = {n: i for i, n in enumerate(names)}
-    add, remove, unknown = [], [], []
-    for key, target in (("add", add), ("remove", remove)):
-        for name in (override_entries or {}).get(key, []):
-            if name in index_of:
-                target.append(index_of[name])
-            else:
-                unknown.append(str(name))
-    return sorted(add), sorted(remove), unknown
+def resolve_passive(candidates, soft) -> PassiveSet:
+    candidates, soft = {int(j) for j in candidates}, {int(j) for j in soft}
+    return PassiveSet(sorted(soft & candidates), sorted(soft - candidates))
 
 
 class SkeletonStructure:

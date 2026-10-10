@@ -1,7 +1,7 @@
 """Edit Package: a decomposed generation result, self-contained on disk.
 
 A package is a directory ``<clip>.edit/`` holding ``manifest.json`` (metadata,
-parameter specs, contact provenance, diagnostics) and ``data.npz`` (the arrays
+parameter specs, part / contact provenance, diagnostics) and ``data.npz`` (the arrays
 the runtime composes from, plus the source features and cond subset the
 server re-decomposes from).  Layout: section 4.2 of
 ``docs/skeleton_profile_and_motion_edit_runtime.md``.
@@ -20,15 +20,16 @@ import numpy as np
 
 # Bump when the package arrays or their meaning change; the runtime refuses
 # every other version.
-RUNTIME_VERSION = 5
+RUNTIME_VERSION = 6
 
 PACKAGE_SUFFIX = ".edit"
 MANIFEST_FILE = "manifest.json"
 DATA_FILE = "data.npz"
 
 # Amplitude groups of section 5.1 (``amp.<group>``; the tail's is ``tail_weight``),
-# plus the joints no amplitude slider reaches.
-CHAIN_GROUPS = ("root", "legs", "arms", "axial", "tail", "wings", "other")
+# plus the joints no amplitude slider reaches.  Each joint's group follows its part
+# (``decompose.PART_GROUPS``).
+CHAIN_GROUPS = ("root", "legs", "arms", "axial", "tail", "wings", "fins", "other")
 
 
 class PackageVersionError(ValueError):

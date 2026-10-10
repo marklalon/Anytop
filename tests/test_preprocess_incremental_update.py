@@ -495,7 +495,7 @@ def test_incremental_prepare_scans_only_new_source_and_reuses_alignment(monkeypa
     parents = np.array([-1, 0], dtype=np.int64)
     tp = SimpleNamespace(
         offsets=np.zeros((2, 3), dtype=np.float32),
-        foot_indices=[],
+        foot_chains=None,
         tpos_rots=object(),
         orientation_quat=object(),
         prop_socket_names=(),
@@ -590,7 +590,7 @@ def test_incremental_prepare_rejects_new_source_root_mismatch(monkeypatch, tmp_p
     parents = np.array([-1, 0], dtype=np.int64)
     tp = SimpleNamespace(
         offsets=np.zeros((2, 3), dtype=np.float32),
-        foot_indices=[],
+        foot_chains=None,
         tpos_rots=object(),
         orientation_quat=object(),
         prop_socket_names=(),
@@ -656,7 +656,7 @@ def test_incremental_prepare_accepts_a_new_source_rooted_above_the_frozen_joint(
     parents = np.array([-1, 0, 1], dtype=np.int64)
     tp = SimpleNamespace(
         offsets=np.zeros((3, 3), dtype=np.float32),
-        foot_indices=[],
+        foot_chains=None,
         tpos_rots=object(),
         orientation_quat=object(),
         prop_socket_names=(),

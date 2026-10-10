@@ -80,9 +80,11 @@ SWING_CHANNELS = ("tail", "passive")
 _SWING = {f"{c}_{knob}": ParamSpec(1.0, low, 2.0, "secondary")
           for c in SWING_CHANNELS for knob, low in (("weight", 0.0), ("stiffness", 0.5))}
 # spread.{group}: the tip of each sided limb of the group moves away from the body's midline
-# (toward it below 0), level with the ground, by the slider value times the group's fraction
-# of the limb's length.  The limb turns at its root; a planted foot is moved with it.
+# (toward it below 0), level with the ground, by the slider value times the limb's reach
+# (a fraction of its length: the group's, or the planted one for a limb that stands on the
+# ground).  The limb turns at its root; a planted foot is moved with it.
 SPREAD_REACH = {"arms": 1.0, "legs": 0.3}
+SPREAD_PLANTED_REACH = 0.3
 SPREAD_GROUPS = tuple(SPREAD_REACH)
 _SPREAD = {f"spread.{g}": ParamSpec(0.0, -1.0, 1.0, "spread") for g in SPREAD_GROUPS}
 # A limb whose first bone is shorter than this fraction of the limb (a clavicle, a hip
@@ -126,7 +128,7 @@ IMPLEMENTED: frozenset[str] = frozenset(
 # default re-solves the planted limbs.  The timing ones (tempo and the strike's
 # segment speeds) only re-time the clip.
 _IK_PARAMS = ("stride", "bounce", "jump_height", "sway", "posture", *GROUP_GAIN.values(), "force",
-              "windup_depth", "overshoot", "spread.legs")
+              "windup_depth", "overshoot", "spread.arms", "spread.legs")
 # force is a preset over every other strike parameter: those here are multiplied by it,
 # FORCE_SLOWED divided by force ** FORCE_SLOW_EXPONENT (a harder strike winds up and
 # recovers somewhat more slowly; the strike itself carries most of the change).
@@ -187,8 +189,7 @@ def available_params(package_facts: dict) -> list[str]:
     if package_facts["airborne"] and package_facts.get("jump"):
         out.append("jump_height")
     out += [f"amp.{g}" for g in AMP_GROUPS if g in package_facts["chain_groups"]]
-    # which limbs are arms or legs depends on the clip's plants: EditRuntime keeps a spread
-    # only when its group has a left / right pair
+    # EditRuntime keeps a spread only when its group has a left / right pair of limbs
     if {"arms", "legs"} & set(package_facts["chain_groups"]):
         out += [f"spread.{g}" for g in SPREAD_GROUPS]
     if "tail" in package_facts["chain_groups"]:
@@ -476,7 +477,8 @@ class SpreadLimb:
     tip: int                # the joint whose outward move the slider sets
     sign: float             # +1 on the left, -1 on the right
     length: float           # bone length from the pivot down to the tip
-    columns: list = field(default_factory=list)   # a leg's contact columns
+    reach: float            # fraction of the length the tip moves per unit of the slider
+    columns: list = field(default_factory=list)   # a planted limb's contact columns
 
 
 @dataclass
@@ -945,9 +947,10 @@ class EditRuntime:
                                            rotations[:, j])
 
     def spread_limbs(self) -> list[SpreadLimb]:
-        """The sided limbs spread turns: each IK leg, and each arm hanging straight off the
-        trunk (an arms-group joint on a center parent; a sided swing joint on a leg is a
-        dewclaw, not an arm)."""
+        """The sided limbs spread turns: each arms / legs limb hanging off a joint of another
+        group (a quadruped's forelegs are arms, its hind legs legs).  A limb carrying an IK
+        limb turns from the IK limb's root and moves its planted contacts with it, by the
+        planted reach; any other turns from its own top and moves its farthest joint."""
         if self._spread_limbs is None:
             pkg = self.package
             parents = np.asarray(pkg["parents"])
@@ -973,21 +976,27 @@ class EditRuntime:
                 if len(chain) > 2 and (bone[chain[1]] < SPREAD_SHORT_ROOT * bone[chain[1:]].sum()
                                        or joint_name_matches_keywords(names[chain[0]], SPREAD_GIRDLE_KEYWORDS)):
                     chain = chain[1:]
+                reach = SPREAD_PLANTED_REACH if columns else SPREAD_REACH[group]
                 return SpreadLimb(group, chain[0], tip, 1.0 if sides[top] == "left" else -1.0,
-                                  float(bone[chain[1:]].sum()), list(columns))
+                                  float(bone[chain[1:]].sum()), reach, list(columns))
 
-            out = [limb("legs", leg.root, leg.foot, leg.columns) for leg in self.limbs()[0]]
+            ik_limbs = self.limbs()[0]
+            out = []
             for j, group in enumerate(groups):
                 parent = int(parents[j])
-                if group != "arms" or parent < 0 or sides[parent] != CENTER_SIDE:
+                if group not in SPREAD_GROUPS or (parent >= 0 and groups[parent] == group):
                     continue
-                arm, stack = [], [j]
+                members, stack = [], [j]
                 while stack:
                     k = stack.pop()
-                    arm.append(k)
-                    stack += [c for c in children[k] if groups[c] == "arms"]
-                reach = {k: bone[path(j, k)[1:]].sum() for k in arm}
-                out.append(limb("arms", j, max(arm, key=lambda k: (reach[k], -k))))
+                    members.append(k)
+                    stack += [c for c in children[k] if groups[c] == group]
+                planted = [leg for leg in ik_limbs if leg.root in members]
+                if planted:
+                    out += [limb(group, leg.root, leg.foot, leg.columns) for leg in planted]
+                    continue
+                reach = {k: bone[path(j, k)[1:]].sum() for k in members}
+                out.append(limb(group, j, max(members, key=lambda k: (reach[k], -k))))
             self._spread_limbs = [l for l in out if l is not None and l.length > 0.0]
         return self._spread_limbs
 
@@ -1012,7 +1021,7 @@ class EditRuntime:
 
     def _spread(self, rotations, positions, group: str, value: float, times: np.ndarray) -> list[dict]:
         """Turn the group's limbs at their pivots, in place, so each tip moves
-        ``value * SPREAD_REACH[group] * length`` along its outward direction.  The turn is
+        ``value * reach * length`` along its outward direction.  The turn is
         about the axis normal to the limb and the outward direction, so it swings the tip
         straight toward it; a limb pointing straight out or in moves as far as it can."""
         pkg = self.package
@@ -1034,7 +1043,7 @@ class EditRuntime:
             w = v - along[:, None] * out
             rw = np.linalg.norm(w, axis=-1)
             phi = np.arctan2(along, rw)
-            want = (along + value * SPREAD_REACH[group] * limb.length) / np.maximum(r, 1e-12)
+            want = (along + value * limb.reach * limb.length) / np.maximum(r, 1e-12)
             theta = np.where(rw > 1e-9 * limb.length, np.arcsin(np.clip(want, -1.0, 1.0)) - phi, 0.0)
             axis = np.cross(w / np.maximum(rw, 1e-12)[:, None], out)
             turn = quat_from_rotvec(theta[:, None] * axis)
@@ -1042,8 +1051,8 @@ class EditRuntime:
             rotations[:, limb.pivot] = quat_mul(
                 quat_mul(quat_inv(glob_rot[:, parent]), quat_mul(turn, glob_rot[:, parent])),
                 rotations[:, limb.pivot])
-            if group == "legs":
-                # a foot keeps its world orientation: it stays as flat on the ground as it was
+            if limb.columns:
+                # a planted foot keeps its world orientation: it stays as flat on the ground as it was
                 above = int(parents[limb.tip])
                 rotations[:, limb.tip] = quat_mul(quat_inv(quat_mul(turn, glob_rot[:, above])),
                                                   glob_rot[:, limb.tip])
@@ -1094,7 +1103,8 @@ class EditRuntime:
         if self._limbs is None:
             pkg = self.package
             self._limbs = build_limbs(np.asarray(pkg["parents"]), [str(s) for s in pkg["sides"]],
-                                      np.asarray(pkg["contact_joints"]), pkg.root)
+                                      np.asarray(pkg["contact_joints"]), pkg.root,
+                                      parts=[str(p) for p in pkg["joint_part"]])
         return self._limbs
 
     def _foot_groups(self) -> list[list[int]]:
@@ -1204,7 +1214,7 @@ class EditRuntime:
                 stance = (pid[:, limb.columns] >= 0).any(axis=1)
                 for index in _stance_runs(stance, periodic):
                     frames = index % count
-                    move = (value * SPREAD_REACH[group] * limb.length * limb.sign
+                    move = (value * limb.reach * limb.length * limb.sign
                             * lateral[frames[len(frames) // 2]])
                     out[frames[:, None], np.asarray(limb.columns)[None, :]] += move
         return out

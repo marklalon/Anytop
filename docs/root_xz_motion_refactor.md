@@ -95,8 +95,8 @@ tile 接缝天然连续。
 **foot contact 通道已在 `canonical_motion_v4` 中整体移除**（v3 的 index 12）。它在 v3 里是
 在 root XZ 编辑之前读取的（`get_contact_state` 读变换前的 `positions_global(new_anim)`）：
 扁平化等于给每个关节加上步速，踩实的脚随之动起来 —— 在变换后算接触会静默丢掉整个支撑相。
-现在特征向量只剩 12 维（pos 0:3 / rot 3:9 / vel 9:12）。关节的接触标注在 `joint_parts.jsonl`，
-是**关节语义标注**，供辅助头训练与落地烘焙使用，与逐帧二值通道无关。
+现在特征向量只剩 12 维（pos 0:3 / rot 3:9 / vel 9:12）。哪些关节会着地不属于数据集：motion_edit 从骨架预填、
+允许人工校准（`motion_edit/profile/parts.py`），与逐帧二值通道无关。
 
 ### 2.2 两道 extent 界限
 

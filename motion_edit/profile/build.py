@@ -10,25 +10,19 @@ from typing import Optional
 
 import numpy as np
 
-from data_loaders.truebones.truebones_utils.joint_parts import JOINT_CONTACT_KEY
 from motion_edit.profile import gait as gait_stats
-from motion_edit.profile.data import Clip, DatasetSource, decode_clip, skeleton_hash
+from motion_edit.profile.data import SCHEMA_VERSION, Clip, DatasetSource, decode_clip, skeleton_hash
 from motion_edit.profile.joints import (
     JointStats,
     axis_angle_deg,
     joint_stats,
     main_child,
 )
-from motion_edit.profile.skeleton import (
-    SkeletonStructure,
-    passive_name_layer,
-    resolve_contacts,
-    resolve_passive,
-)
+from motion_edit.profile.parts import resolve_parts
+from motion_edit.profile.skeleton import SkeletonStructure, resolve_passive
 from motion_edit.profile.spring import clip_rows, default_spring, fit_spring, fitted_spring
 from motion_edit.rotations import quat_inv, quat_mul, quat_rotate, rotvec_from_quat
 
-SCHEMA_VERSION = 2
 
 # Split-half stability (section 3.7)
 HINGE_AXIS_TOL_DEG = 15.0
@@ -51,9 +45,9 @@ HINGE_NAME = re.compile(r"knee|elbow|hiza|hiji", re.IGNORECASE)
 
 COND_FIELDS = (
     "joints_names", "parents", "offsets", "scale_factor", "orientation_quat",
-    "translation_root_index", JOINT_CONTACT_KEY, "joint_side_labels", "symmetry_partner_indices",
+    "translation_root_index", "joint_side_labels", "symmetry_partner_indices",
     "kinematic_chains", "species_tags", "axial_avg_len", "canonical_joint_names",
-    "forward_joint_index", "forward_base_joint_index",
+    "forward_joint_index", "forward_base_joint_index", "species_name", "object_type",
 )
 
 
@@ -222,40 +216,30 @@ def build_species_profile(
     cond_key: str,
     cond_entry: dict,
     motion_rows: dict,
-    contact_override=None,
-    passive_override=None,
+    parts_override=None,
 ) -> tuple[dict, Findings]:
-    """Profile of one species from its clips (``motion_rows``: motion file -> metadata row)."""
+    """Profile of one species from its clips (``motion_rows``: motion file -> metadata row);
+    ``parts_override`` is its ``joint_parts_overrides.json`` row."""
     findings = Findings(species=cond_key)
     current_hash = skeleton_hash(cond_entry["parents"], cond_entry["offsets"])
 
-    override_entries = None
-    if contact_override is not None:
-        if contact_override.stale(current_hash):
+    species_parts = None
+    if parts_override is not None:
+        if parts_override.stale(current_hash):
             findings.override_notes.append(
-                "contact_overrides.json row is stale (skeleton_hash changed); ignored")
+                "joint_parts_overrides.json row is stale (skeleton_hash changed); ignored")
         else:
-            override_entries = contact_override.entries
-    contacts = resolve_contacts(cond_entry, override_entries)
-    for name in contacts.unknown_names:
-        findings.override_notes.append(f"contact override names unknown joint '{name}'")
-    structure = SkeletonStructure(cond_entry, contacts.used)
+            species_parts = parts_override.entries.get("joints")
+    parts = resolve_parts(cond_entry, species_parts)
+    for name in parts.unknown_names:
+        findings.override_notes.append(f"joint_parts override names unknown joint '{name}'")
+    structure = SkeletonStructure(cond_entry, parts.contacts)
 
-    passive_entries = None
-    if passive_override is not None:
-        if passive_override.stale(current_hash):
-            findings.override_notes.append(
-                "passive_overrides.json row is stale (skeleton_hash changed); ignored")
-        else:
-            passive_entries = passive_override.entries
-    add, remove, unknown = passive_name_layer(structure.names, passive_entries)
     candidates = structure.passive_candidates()
-    passive = resolve_passive(structure.parents, structure.names, candidates, [(add, remove)])
-    for name in unknown:
-        findings.override_notes.append(f"passive override names unknown joint '{name}'")
+    passive = resolve_passive(candidates, parts.joints_of("soft"))
     for j in passive.outside:
         findings.override_notes.append(
-            f"passive_overrides.json adds '{structure.names[j]}', which has a support joint below it")
+            f"'{structure.names[j]}' is soft but a support joint hangs below it; not passive")
     passive_joints = set(passive.joints)
 
     clips: list[Clip] = []
@@ -277,8 +261,7 @@ def build_species_profile(
             "hip_height": None if structure.hip_height is None else round(structure.hip_height / leg, 4),
             "axial_length": round(structure.axial_length / leg, 4) if leg > 0 else None,
         },
-        "contacts": {"cond": contacts.cond, "override_add": sorted(contacts.added),
-                     "override_remove": sorted(contacts.removed), "used": contacts.used},
+        "contacts": {"used": parts.contacts},
     }
     if not clips:
         profile["joints"] = []
@@ -306,7 +289,7 @@ def build_species_profile(
 
     # Secondary motion: every candidate gets a spring -- the fitted one when the
     # data shows real driven motion, a default one otherwise -- and is simulated
-    # only when passive (named as a hanging part, or added by an override).
+    # only when passive (a soft part).
     roles = structure.base_roles()
     base_roles = list(roles)
     springs = {}
@@ -360,19 +343,19 @@ def build_species_profile(
         if HINGE_NAME.search(label) and stats[j].dof_class != "hinge":
             findings.name_dof.append(f"{structure.names[j]} ({canonical[j]}): {stats[j].dof_class}")
 
-    gaits, planted, loco_frames = [], np.zeros(len(contacts.used)), 0
+    gaits, planted, loco_frames = [], np.zeros(len(parts.contacts)), 0
     limbs = structure.contact_limbs()
     for c in clips:
-        if c.action_group != "locomotion" or not contacts.used:
+        if c.action_group != "locomotion" or not parts.contacts:
             continue
-        result = gait_stats.clip_contacts(c, contacts.used, leg)
+        result = gait_stats.clip_contacts(c, parts.contacts, leg)
         planted += result.mask.sum(axis=0)
         loco_frames += c.frame_count
-        g = gait_stats.clip_gait(c, contacts.used, limbs, leg, result)
+        g = gait_stats.clip_gait(c, parts.contacts, limbs, leg, result)
         if g is not None:
             gaits.append(g)
     if loco_frames:
-        for k, joint in enumerate(contacts.used):
+        for k, joint in enumerate(parts.contacts):
             share = planted[k] / loco_frames
             if share < RARE_CONTACT_SHARE:
                 findings.rare_contacts.append(f"{structure.names[joint]} ({share:.1%})")

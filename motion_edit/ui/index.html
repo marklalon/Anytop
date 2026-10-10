@@ -53,15 +53,21 @@
   #timeline { width: 100%; display: block; cursor: ew-resize; touch-action: none; user-select: none; }
   .meta { color: var(--muted); font-size: 12px; }
   #error { color: var(--bad); }
-  .contacts { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow-y: auto; }
-  .contacts li { display: flex; gap: 6px; align-items: center; padding: 2px 4px; border-bottom: 1px solid var(--line); }
-  .contacts li .jn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .contacts li .tag { font-size: 10px; color: var(--muted); }
-  .contacts li .jn { cursor: pointer; }
-  .contacts li.add .jn { color: var(--good); } .contacts li.remove .jn { color: var(--bad); text-decoration: line-through; }
-  .contacts li.sel .jn { color: var(--contact); font-weight: 600; }
-  #passiveList li.sel .jn { color: var(--passive); }
-  .contacts li button { padding: 0 5px; }
+  .palette { display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0; }
+  .palette button { padding: 1px 5px; font-size: 11px; display: inline-flex; gap: 4px; align-items: center; }
+  .palette .sw { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .palette kbd { color: var(--muted); font: 10px ui-monospace, Consolas, monospace; }
+  .partsTable { max-height: 300px; overflow-y: auto; overflow-x: hidden; border: 1px solid var(--line);
+    border-radius: 4px; background: var(--panel); }
+  .partsTable table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+  .partsTable td { padding: 1px 3px; border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; }
+  .partsTable td.ix { color: var(--muted); text-align: right; width: 24px; }
+  .partsTable td.nm { text-overflow: ellipsis; cursor: pointer; }
+  .partsTable td.pt { width: 84px; } .partsTable td.ct { width: 22px; text-align: center; }
+  .partsTable td.src { width: 38px; font-size: 10px; color: var(--muted); text-overflow: ellipsis; }
+  .partsTable select { padding: 0 2px; font-size: 11px; width: 100%; }
+  .partsTable tr.sel td { background: #2c3a52; }
+  .partsTable tr.changed td.nm { color: var(--warn); }
   #exportResult { word-break: break-all; margin-bottom: 4px; }
   #exportResult a { color: var(--accent); }
   #exportResult code { display: block; margin-top: 4px; padding: 4px 6px; background: #262a33; border-radius: 4px;
@@ -135,30 +141,28 @@
       <button id="resetAll">全部恢复默认</button>
     </div>
     <div id="params"></div>
-    <h3>接触关节</h3>
+    <h3>部位与接触</h3>
     <div class="controls" title="接触检测以这个世界 Y 高度为地面：关节的最低处离它超过 0.3 腿长就不算着地。网格随之移动">
       <label class="chk">地面高度 <input id="groundHeight" type="number" step="0.01" style="width:72px"></label>
       <button id="groundDiscard" class="discard" hidden>放弃</button>
       <button id="groundApply" class="apply" hidden>应用</button>
     </div>
-    <ul class="contacts" id="contactList"></ul>
-    <div class="controls" style="margin-top:6px">
-      <select id="contactAdd" style="max-width:100%"><option value="">添加关节…</option></select>
+    <div class="controls">
+      <label class="chk" title="编辑骨架的关节按部位着色，接触关节画白环（关闭时：接触黄色、次级运动紫色）"><input id="colorByPart" type="checkbox" checked>按部位着色</label>
+      <span class="meta" id="partsSummary"></span>
     </div>
-    <div class="controls" id="jointsActions" hidden>
-      <button id="jointsDiscard" class="discard">放弃</button>
-      <button id="jointsPackage" class="apply">应用到本 package</button>
-      <button id="jointsSpecies" class="apply" title="写入数据集的 contact_overrides.json">应用到该物种</button>
+    <div class="palette" id="palette"
+      title="给选中的关节设部位：点色块或按键。视口里单击选一个关节，Shift+单击选整棵子树，Ctrl+单击增减；C 切换接触"></div>
+    <div class="controls">
+      <button id="partsMirror" title="把左侧关节的部位和接触复制到镜像关节（有选中时只复制选中的）">左→右镜像 <kbd>M</kbd></button>
+      <button id="partsUndo" title="撤销上一步部位 / 接触修改">撤销 <kbd>Ctrl+Z</kbd></button>
+      <button id="partsPrefill" title="草稿恢复成预填结果（覆盖物种和本 package 的修改），应用后才生效">重新预填</button>
     </div>
-    <h3>次级运动关节</h3>
-    <ul class="contacts" id="passiveList"></ul>
-    <div class="controls" style="margin-top:6px">
-      <select id="passiveAdd" style="max-width:100%"><option value="">添加关节…</option></select>
-    </div>
-    <div class="controls" id="passiveActions" hidden>
-      <button id="passiveDiscard" class="discard">放弃</button>
-      <button id="passivePackage" class="apply">应用到本 package</button>
-      <button id="passiveSpecies" class="apply" title="写入数据集的 passive_overrides.json">应用到该物种</button>
+    <div class="partsTable"><table><tbody id="partsRows"></tbody></table></div>
+    <div class="controls" id="partsActions" style="margin-top:6px" hidden>
+      <button id="partsDiscard" class="discard">放弃</button>
+      <button id="partsPackage" class="apply">应用到本 package</button>
+      <button id="partsSpecies" class="apply" title="写入数据集的 joint_parts_overrides.json">应用到该物种</button>
     </div>
     <h3>导出</h3>
     <div class="controls">
@@ -186,6 +190,18 @@ import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/GLTFLoader.js';
 
 const $ = (id) => document.getElementById(id);
+// Body parts (motion_edit.profile.parts) in palette order, with their key and colour.
+const PARTS = [
+  ['trunk', '躯干', '1'], ['neck', '颈', '2'], ['head', '头', '3'], ['arm', '前肢', '4'], ['hand', '手/前爪', '5'],
+  ['leg', '后肢', '6'], ['foot', '足', '7'], ['wing', '翼', '8'], ['tail', '尾', '9'], ['soft', '被动 soft', '0'],
+  ['fin', '鳍', 'F'], ['helper', '辅助', 'H'],
+];
+const PART_COLORS = {
+  trunk: '#9aa3b5', neck: '#d7b56d', head: '#ffd166', arm: '#4fa3ff', hand: '#8ccfff', leg: '#46b866',
+  foot: '#a6e3a1', wing: '#c792ea', tail: '#ff9f43', fin: '#2ec4b6', soft: '#ff6b9a', helper: '#5c6370',
+};
+// where a joint's part comes from: the prefill pass, or the override layer that changed it
+const PART_SRC = { name: '名字', inherit: '继承', geometry: '几何', species: '物种', package: '本包' };
 const GROUP_TITLES = { time: '时间', locomotion: 'locomotion', root: '根', amp: '幅度', spread: '分叉', force: '力度',
   secondary: '次级运动', contact: '着地' };
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -197,8 +213,9 @@ const state = {
   lap: 0,   // completed loop plays; root motion keeps travelling across the seam
   maskDraft: null,      // (K rows of F 0/1) contact intervals being edited
   selectedRun: null,    // {k, s, e} a run picked on the timeline (e may exceed F)
-  jointDraft: null,     // Set of contact joints being edited
-  passiveDraft: null,   // Set of passive joints being edited
+  partsDraft: null,     // per joint {part, contact} being edited
+  partsUndo: [],        // earlier drafts, newest last
+  selection: new Set(), // joints the part keys / palette act on
   maskEditing: false,   // the timeline edits contact intervals instead of scrubbing
   stDisplay: null,      // source time the playhead shows (fractional while interpolating)
   events: null,         // strike events / chain moved on the page ({windup, impact, recover, chain})
@@ -349,10 +366,25 @@ const cross = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMater
   size: CROSS, sizeAttenuation: false, map: crossTexture(), color: 0xffffff,
   alphaTest: 0.5, transparent: true, depthTest: false, depthWrite: false }));
 cross.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3), 3));
-// back to front: original, edited bones, cross, edited joints, pending squares
+// Contact joints when coloured by part: a white ring around the joint.
+const RING = 15;   // CSS px
+function ringTexture() {
+  const dpr = renderer.getPixelRatio(), n = Math.round(RING * dpr) | 1;
+  const c = document.createElement('canvas'); c.width = c.height = n;
+  const g = c.getContext('2d'); g.strokeStyle = '#fff'; g.lineWidth = Math.max(1.5, 1.5 * dpr);
+  g.beginPath(); g.arc(n / 2, n / 2, n / 2 - g.lineWidth, 0, Math.PI * 2); g.stroke();
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = t.minFilter = THREE.LinearFilter; t.generateMipmaps = false;
+  return t;
+}
+const rings = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({
+  size: RING, sizeAttenuation: false, map: ringTexture(), color: 0xffffff,
+  alphaTest: 0.3, transparent: true, depthTest: false, depthWrite: false }));
+// back to front: original, edited bones, cross, edited joints, contact rings, pending squares
 ghost.lines.renderOrder = ghost.points.renderOrder = 1;
-edit.lines.renderOrder = 2; cross.renderOrder = 3; edit.points.renderOrder = 4; marks.renderOrder = 5;
-editRoot.add(cross, marks);
+edit.lines.renderOrder = 2; cross.renderOrder = 3; edit.points.renderOrder = 4; rings.renderOrder = 5;
+marks.renderOrder = 6;
+editRoot.add(cross, rings, marks);
 
 function resize() {
   const w = view.clientWidth, h = view.clientHeight;
@@ -470,9 +502,9 @@ function ingest(data) {
     contacts: data.contacts, gv: data.ground_velocity,
   };
   pkg.isContact = new Set(data.contacts.joints);
+  pkg.parts = data.parts;
   pkg.passive = data.passive;
   pkg.isPassive = new Set(data.passive.joints);
-  pkg.isCandidate = new Set(data.passive.candidates);
   pkg.speciesWritable = !!data.species_writable;
   pkg.mesh = data.mesh;
   pkg.plantAt = data.contacts.joints.map(() => new Int32Array(F).fill(-1));
@@ -509,8 +541,8 @@ async function openPackage(id, payload, keepParams = false) {
   state.highlight = -1;
   state.maskDraft = data.contacts.mask.map((row) => row.slice());
   state.selectedRun = null;
-  state.jointDraft = new Set(data.contacts.joints);
-  state.passiveDraft = new Set(data.passive.joints);
+  resetPartsDraft();
+  if (!sameClip) state.selection = new Set();
   location.hash = 'p=' + encodeURIComponent(id);
   const { m, J } = state.pkg;
   $('pkgMeta').textContent = `${m.frame_count} 帧 · ${m.fps} fps · ${J} 关节 · profile ${m.profile.status}` +
@@ -524,12 +556,12 @@ async function openPackage(id, payload, keepParams = false) {
   setupSkeleton(edit, J, state.pkg.sk.parents);
   marks.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(J * 3), 3));
   marks.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(J * 3), 3));
+  rings.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(J * 3), 3));
   buildGrid();
   buildAnchors();
   buildParams();
   restoreParamInputs();
-  renderContacts();
-  renderPassive();
+  renderParts();
   setMaskEditing(false);   // the draft was just reset to the package's mask
   if (!sameClip) frameCamera();
   $('meshViewLabel').hidden = !data.mesh;
@@ -709,8 +741,8 @@ function renderDiagnostics(applyItems) {
     li.appendChild(document.createTextNode(it.message));
     li.onclick = () => {
       if (Number.isInteger(it.frame)) setFrame(it.frame);
-      state.highlight = it.joint ? sk.names.indexOf(it.joint) : -1;
-      renderContacts(); renderPassive(); draw();
+      const j = it.joint ? sk.names.indexOf(it.joint) : -1;
+      if (j >= 0) selectJoint(j); else { state.highlight = -1; draw(); }
     };
     ul.appendChild(li);
   }
@@ -955,12 +987,11 @@ tl.addEventListener('pointerup', (e) => {
   }
   drag = null; drawTimeline();
 });
-// Esc is 放弃: interval editing first, else the contact-joint draft, else the passive draft
+// Esc is 放弃: interval editing first, else the part draft
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || !state.pkg) return;
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-  const btn = state.maskEditing ? $('maskDiscard') : jointsDirty() ? $('jointsDiscard')
-    : passiveDirty() ? $('passiveDiscard') : null;
+  const btn = state.maskEditing ? $('maskDiscard') : partsDirty() ? $('partsDiscard') : null;
   if (!btn || btn.disabled) return;
   drag = null; btn.click();
 });
@@ -1083,7 +1114,7 @@ function drawTimeline() {
   if (!L.rows && !state.maskEditing) drawAxis(g, L, F, x);
   if (state.maskEditing && !L.rows) {
     g.fillStyle = '#8a93a3'; g.font = '11px system-ui'; g.textBaseline = 'middle';
-    g.fillText('没有接触关节：先在右侧「接触关节」里添加，再编辑触地区间', TL.label + 6, top + TL.empty / 2);
+    g.fillText('没有接触关节：先在右侧「部位与接触」里勾选，再编辑触地区间', TL.label + 6, top + TL.empty / 2);
     g.textBaseline = 'alphabetic';
   }
   if (state.selectedRun) {
@@ -1133,135 +1164,168 @@ function drawTimeline() {
   g.fillRect(x(st) - bar / 2, Math.round(L.h / 2) + 0.5 - h / 2, bar, h);
 }
 
-// ── contact joints ───────────────────────────────────────────────────────
-function jointsDirty() {
-  if (!state.pkg || !state.jointDraft) return false;
-  const cur = state.pkg.isContact;
-  return state.jointDraft.size !== cur.size || [...state.jointDraft].some((j) => !cur.has(j));
+// ── parts and contacts ───────────────────────────────────────────────────
+// The draft is every joint's {part, contact}; the package's are pkg.parts.joints.
+function resetPartsDraft() {
+  state.partsDraft = state.pkg.parts.joints.map((row) => ({ part: row.part, contact: !!row.contact }));
+  state.partsUndo = [];
 }
-function renderContacts() {
-  const pkg = state.pkg, ul = $('contactList'); ul.innerHTML = '';
-  const origin = {}; pkg.contacts.joints.forEach((j, k) => { origin[j] = pkg.contacts.origin[k]; });
-  const all = [...new Set([...pkg.contacts.joints, ...state.jointDraft])].sort((a, b) => a - b);
-  for (const j of all) {
-    const li = document.createElement('li');
-    const inNow = pkg.isContact.has(j), inDraft = state.jointDraft.has(j);
-    li.className = inNow && !inDraft ? 'remove' : !inNow && inDraft ? 'add' : '';
-    if (state.highlight === j) li.classList.add('sel');
-    const nm = document.createElement('span'); nm.className = 'jn'; nm.textContent = pkg.sk.names[j]; nm.title = pkg.sk.names[j];
-    const tag = document.createElement('span'); tag.className = 'tag';
-    tag.textContent = !inNow ? '待添加' : !inDraft ? '待移除' : ({ species: '物种', package: '本 package' }[origin[j]] || '');
-    const b = document.createElement('button'); b.textContent = inDraft ? '×' : '↺';
-    b.title = inDraft ? '移除' : '恢复';
-    b.onclick = () => { toggleContact(j); };
-    nm.onclick = () => { state.highlight = state.highlight === j ? -1 : j; renderContacts(); renderPassive(); draw(); };
-    li.append(nm, tag, b); ul.appendChild(li);
-  }
-  const sel = $('contactAdd'); sel.innerHTML = '<option value="">添加关节…</option>';
-  pkg.sk.names.forEach((n, j) => {
-    if (state.jointDraft.has(j)) return;
-    const o = document.createElement('option'); o.value = j; o.textContent = n; sel.appendChild(o);
-  });
-  const dirty = jointsDirty();
-  // without a draft only "apply to species" stays, to promote this package's own edits
-  const promotable = pkg.contacts.origin.includes('package');
-  $('jointsDiscard').hidden = $('jointsPackage').hidden = !dirty;
-  $('jointsSpecies').hidden = !dirty && !promotable;
-  $('jointsActions').hidden = !dirty && !promotable;
-  $('jointsSpecies').disabled = !pkg.speciesWritable;
-  $('jointsSpecies').title = pkg.speciesWritable ? '写入数据集的 contact_overrides.json'
-    : '这个 package 不知道所属数据集（用 decompose_clip 从数据集分解才能写物种覆盖）';
+function partsChanged(j) {
+  const now = state.pkg.parts.joints[j], d = state.partsDraft[j];
+  return d.part !== now.part || d.contact !== !!now.contact;
 }
-function toggleContact(j) {
-  if (state.jointDraft.has(j)) state.jointDraft.delete(j); else state.jointDraft.add(j);
-  renderContacts(); draw();
+function partsDirty() {
+  return !!(state.pkg && state.partsDraft) && state.partsDraft.some((_, j) => partsChanged(j));
 }
-$('contactAdd').onchange = (e) => { if (e.target.value !== '') toggleContact(+e.target.value); };
-$('jointsDiscard').onclick = () => { state.jointDraft = new Set(state.pkg.contacts.joints); renderContacts(); draw(); };
-async function sendJoints(species) {
-  if (state.pkg.m.contacts.intervals_edited && !confirm('改接触关节会重新检测区间，手动修改过的区间会丢失。继续？')) return;
-  if (species && !confirm('写入 ' + state.pkg.m.object_type + ' 的 contact_overrides.json，影响该物种之后的 Profile 构建和分解。继续？')) return;
-  try {
-    await openPackage(state.id, await api('/api/contacts',
-      { id: state.id, joints: [...state.jointDraft], species }), true);
-  } catch (e) { showError(e); }
+function editParts(change) {
+  const before = JSON.stringify(state.partsDraft);
+  change(state.partsDraft);
+  for (const d of state.partsDraft) if (d.part === 'helper') d.contact = false;
+  if (JSON.stringify(state.partsDraft) === before) return;
+  state.partsUndo.push(JSON.parse(before));
+  renderParts(); draw();
 }
-$('jointsPackage').onclick = () => sendJoints(false);
-$('jointsSpecies').onclick = () => sendJoints(true);
-
-// ── passive joints ───────────────────────────────────────────────────────
-function passiveDirty() {
-  if (!state.pkg || !state.passiveDraft) return false;
-  const cur = state.pkg.isPassive;
-  return state.passiveDraft.size !== cur.size || [...state.passiveDraft].some((j) => !cur.has(j));
+function setPart(part) {
+  const sel = [...state.selection];
+  if (!sel.length) { showError('先在视口或表格里选中关节'); return; }
+  showError();
+  editParts((draft) => { for (const j of sel) draft[j].part = part; });
 }
-function renderPassive() {
-  const pkg = state.pkg, ul = $('passiveList'); ul.innerHTML = '';
-  const origin = {}; pkg.passive.joints.forEach((j, k) => { origin[j] = pkg.passive.origin[k]; });
-  const all = [...new Set([...pkg.passive.joints, ...state.passiveDraft])].sort((a, b) => a - b);
-  for (const j of all) {
-    const li = document.createElement('li');
-    const inNow = pkg.isPassive.has(j), inDraft = state.passiveDraft.has(j);
-    li.className = inNow && !inDraft ? 'remove' : !inNow && inDraft ? 'add' : '';
-    if (state.highlight === j) li.classList.add('sel');
-    const nm = document.createElement('span'); nm.className = 'jn'; nm.textContent = pkg.sk.names[j]; nm.title = pkg.sk.names[j];
-    const tag = document.createElement('span'); tag.className = 'tag';
-    tag.textContent = !inNow ? '待添加' : !inDraft ? '待移除'
-      : ({ species: '物种', package: '本 package' }[origin[j]] || '');
-    const b = document.createElement('button'); b.textContent = inDraft ? '×' : '↺';
-    b.title = inDraft ? '移除' : '恢复';
-    b.onclick = () => { togglePassive(j); };
-    nm.onclick = () => { state.highlight = state.highlight === j ? -1 : j; renderContacts(); renderPassive(); draw(); };
-    li.append(nm, tag, b); ul.appendChild(li);
-  }
-  // only candidates can swing (nothing that holds a support joint): the dropdown offers them
-  const sel = $('passiveAdd'); sel.innerHTML = '<option value="">添加关节…</option>';
-  pkg.passive.candidates.forEach((j) => {
-    if (state.passiveDraft.has(j)) return;
-    const o = document.createElement('option'); o.value = j; o.textContent = pkg.sk.names[j]; sel.appendChild(o);
-  });
-  const dirty = passiveDirty(), promotable = pkg.passive.promotable;
-  $('passiveDiscard').hidden = $('passivePackage').hidden = !dirty;
-  $('passiveSpecies').hidden = !dirty && !promotable;
-  $('passiveActions').hidden = !dirty && !promotable;
-  $('passiveSpecies').disabled = !pkg.speciesWritable;
-  $('passiveSpecies').title = pkg.speciesWritable ? '写入数据集的 passive_overrides.json'
-    : '这个 package 不知道所属数据集（用 decompose_clip 从数据集分解才能写物种覆盖）';
+function toggleSelectedContact() {
+  const sel = [...state.selection];
+  if (!sel.length) { showError('先在视口或表格里选中关节'); return; }
+  showError();
+  // all on when any is off, else all off
+  const on = sel.some((j) => !state.partsDraft[j].contact);
+  editParts((draft) => { for (const j of sel) draft[j].contact = on && draft[j].part !== 'helper'; });
 }
-// adding a joint adds its subtree, removing one removes its subtree (the part above stays)
+function mirrorParts() {
+  const { sides, partners } = state.pkg.sk;
+  const from = (state.selection.size ? [...state.selection] : sides.map((_, j) => j))
+    .filter((j) => sides[j] === 'left' && partners[j] >= 0);
+  if (!from.length) { showError('没有可镜像的左侧关节（或缺少镜像对照）'); return; }
+  showError();
+  editParts((draft) => { for (const j of from) draft[partners[j]] = { ...draft[j] }; });
+}
+function undoParts() {
+  if (!state.partsUndo.length) return;
+  state.partsDraft = state.partsUndo.pop();
+  renderParts(); draw();
+}
+function prefillParts() {
+  const prefill = state.pkg.parts.prefill;
+  const changed = prefill.filter((row, j) => row.part !== state.partsDraft[j].part
+    || !!row.contact !== state.partsDraft[j].contact).length;
+  if (!changed) { showError('草稿已经和预填结果一致'); return; }
+  if (!confirm(`草稿里有 ${changed} 个关节和预填结果不同，全部恢复成预填结果？（应用后才生效）`)) return;
+  showError();
+  editParts((draft) => prefill.forEach((row, j) => { draft[j] = { part: row.part, contact: !!row.contact }; }));
+}
+// adding a joint adds its subtree (parents precede children)
 function subtreeOf(j) {
   const parents = state.pkg.sk.parents, out = new Set([j]);
-  for (let k = j + 1; k < parents.length; k++) if (out.has(parents[k])) out.add(k);   // parents precede children
+  for (let k = j + 1; k < parents.length; k++) if (out.has(parents[k])) out.add(k);
   return out;
 }
-function togglePassive(j) {
-  const draft = state.passiveDraft;
-  if (draft.has(j)) {
-    for (const k of subtreeOf(j)) draft.delete(k);
-  } else if (!state.pkg.isCandidate.has(j)) {
-    showError(state.pkg.sk.names[j] + ' 不能做次级运动：它下面挂着支撑关节（或它是根）');
-    return;
-  } else {
-    for (const k of subtreeOf(j)) draft.add(k);
-  }
-  showError();
-  renderPassive(); draw();
+// click: that joint; shift: its subtree; ctrl / cmd: toggle it in the selection
+function selectJoint(j, e) {
+  const sel = state.selection;
+  if (e && (e.ctrlKey || e.metaKey)) { if (sel.has(j)) sel.delete(j); else sel.add(j); }
+  else if (e && e.shiftKey) state.selection = subtreeOf(j);
+  else state.selection = new Set([j]);
+  state.highlight = j;
+  renderParts(); draw();
+  const row = document.querySelector(`#partsRows tr[data-j="${j}"]`);
+  if (row) row.scrollIntoView({ block: 'nearest' });
 }
-$('passiveAdd').onchange = (e) => { if (e.target.value !== '') togglePassive(+e.target.value); };
-$('passiveDiscard').onclick = () => { state.passiveDraft = new Set(state.pkg.passive.joints); renderPassive(); draw(); };
-async function sendPassive(species) {
-  if (species && !confirm('写入 ' + state.pkg.m.object_type + ' 的 passive_overrides.json，影响该物种之后的 Profile 构建和分解。继续？')) return;
+function buildPalette() {
+  const box = $('palette'); box.innerHTML = '';
+  for (const [part, label, key] of PARTS) {
+    const b = document.createElement('button'); b.title = `${part}（${key}）`;
+    b.innerHTML = `<span class="sw" style="background:${PART_COLORS[part]}"></span>${label}<kbd>${key}</kbd>`;
+    b.onclick = () => setPart(part);
+    box.appendChild(b);
+  }
+  const c = document.createElement('button'); c.title = '切换选中关节的接触（C）';
+  c.innerHTML = '接触<kbd>C</kbd>'; c.onclick = toggleSelectedContact;
+  box.appendChild(c);
+}
+function renderParts() {
+  const pkg = state.pkg, body = $('partsRows'); body.innerHTML = '';
+  const rows = pkg.parts.joints;
+  pkg.sk.names.forEach((name, j) => {
+    const d = state.partsDraft[j], tr = document.createElement('tr');
+    tr.dataset.j = j;
+    if (state.selection.has(j)) tr.classList.add('sel');
+    if (partsChanged(j)) tr.classList.add('changed');
+    const ix = document.createElement('td'); ix.className = 'ix'; ix.textContent = j;
+    const nm = document.createElement('td'); nm.className = 'nm'; nm.textContent = name;
+    nm.title = `${name}\n${pkg.parts.prefill[j].why || ''}`;
+    nm.onclick = (e) => selectJoint(j, e);
+    const pt = document.createElement('td'); pt.className = 'pt'; const sel = document.createElement('select');
+    for (const [part, label] of PARTS) {
+      const o = document.createElement('option'); o.value = part; o.textContent = label; sel.appendChild(o);
+    }
+    sel.value = d.part; sel.style.borderColor = PART_COLORS[d.part];
+    sel.onchange = () => editParts((draft) => { draft[j].part = sel.value; });
+    pt.appendChild(sel);
+    const ct = document.createElement('td'); ct.className = 'ct'; const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = d.contact; cb.disabled = d.part === 'helper'; cb.title = '接触';
+    cb.onchange = () => editParts((draft) => { draft[j].contact = cb.checked; });
+    ct.appendChild(cb);
+    const src = document.createElement('td'); src.className = 'src';
+    src.textContent = partsChanged(j) ? '待应用' : (PART_SRC[rows[j].src] || rows[j].src);
+    tr.append(ix, nm, pt, ct, src); body.appendChild(tr);
+  });
+  const counts = {};
+  for (const d of state.partsDraft) counts[d.part] = (counts[d.part] || 0) + 1;
+  $('partsSummary').textContent = `接触 ${state.partsDraft.filter((d) => d.contact).length} · `
+    + PARTS.filter(([p]) => counts[p]).map(([p, label]) => `${label} ${counts[p]}`).join(' · ');
+  const dirty = partsDirty();
+  // without a draft only "apply to species" stays, to promote this package's own edits
+  const promotable = Object.keys(pkg.parts.package || {}).length > 0;
+  $('partsDiscard').hidden = $('partsPackage').hidden = !dirty;
+  $('partsSpecies').hidden = !dirty && !promotable;
+  $('partsActions').hidden = !dirty && !promotable;
+  $('partsSpecies').disabled = !pkg.speciesWritable;
+  $('partsSpecies').title = pkg.speciesWritable ? '写入数据集的 joint_parts_overrides.json'
+    : '这个 package 不知道所属数据集（用 decompose_clip 从数据集分解才能写物种覆盖）';
+  $('partsUndo').disabled = !state.partsUndo.length;
+}
+async function sendParts(species) {
+  const pkg = state.pkg, joints = {};
+  state.partsDraft.forEach((d, j) => {
+    if (partsChanged(j)) joints[pkg.sk.names[j]] = { part: d.part, contact: d.contact ? 1 : 0 };
+  });
+  const contactsChange = state.partsDraft.some((d, j) => d.contact !== pkg.isContact.has(j));
+  if (contactsChange && pkg.m.contacts.intervals_edited
+      && !confirm('改接触关节会重新检测区间，手动修改过的区间会丢失。继续？')) return;
+  if (species && !confirm('写入 ' + pkg.m.object_type + ' 的 joint_parts_overrides.json，影响该物种之后的 Profile 构建和分解。继续？')) return;
   try {
-    await openPackage(state.id, await api('/api/passive',
-      { id: state.id, joints: [...state.passiveDraft], species }), true);
+    await openPackage(state.id, await api('/api/parts', { id: state.id, joints, species }), true);
   } catch (e) { showError(e); }
 }
-$('passivePackage').onclick = () => sendPassive(false);
-$('passiveSpecies').onclick = () => sendPassive(true);
+$('partsPackage').onclick = () => sendParts(false);
+$('partsSpecies').onclick = () => sendParts(true);
+$('partsDiscard').onclick = () => { resetPartsDraft(); renderParts(); draw(); };
+$('partsMirror').onclick = mirrorParts;
+$('partsUndo').onclick = undoParts;
+$('partsPrefill').onclick = prefillParts;
+$('colorByPart').onchange = () => draw();
+buildPalette();
+const PART_KEYS = Object.fromEntries(PARTS.map(([part, , key]) => [key.toLowerCase(), part]));
+window.addEventListener('keydown', (e) => {
+  if (!state.pkg || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undoParts(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const key = e.key.toLowerCase();
+  if (key in PART_KEYS) setPart(PART_KEYS[key]);
+  else if (key === 'c') toggleSelectedContact();
+  else if (key === 'm') mirrorParts();
+});
 
 // left click in the viewport picks the edited-skeleton joint nearest the cursor on
-// screen, within a radius about the size of its square, for the contact draft
-// (shift: the passive draft)
+// screen, within a radius about the size of its square (see selectJoint for the modifiers)
 const PICK_RADIUS = 5;   // CSS px
 let pickDown = null;
 renderer.domElement.addEventListener('pointerdown', (e) => { if (e.button === 0) pickDown = [e.clientX, e.clientY]; });
@@ -1281,15 +1345,20 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     // nearest on screen; among overlapping squares, the one in front
     if (d < bestD - 0.5 || (Math.abs(d - bestD) <= 0.5 && v.z < bestZ)) { best = j; bestD = d; bestZ = v.z; }
   }
-  if (best < 0) return;
-  if (e.shiftKey) togglePassive(best); else toggleContact(best);
+  if (best < 0) {
+    if (!e.shiftKey && !e.ctrlKey && !e.metaKey && state.selection.size) {
+      state.selection = new Set(); renderParts(); draw();
+    }
+    return;
+  }
+  selectJoint(best, e);
 });
 
 // ── draw ─────────────────────────────────────────────────────────────────
 const cOrig = new THREE.Color(css('--original')), cEdit = new THREE.Color(css('--edited'));
 const cContact = new THREE.Color(css('--contact')), cPassive = new THREE.Color(css('--passive'));
-const cPassiveAdd = new THREE.Color('#33d6ff'), cPassiveDrop = new THREE.Color('#ff8c1a');
-const cAdd = new THREE.Color('#22ff55'), cDrop = new THREE.Color('#ff2a2a');
+const cAdd = new THREE.Color('#22ff55'), cDrop = new THREE.Color('#ff2a2a'), cSelected = new THREE.Color('#ffffff');
+const PART_THREE = Object.fromEntries(Object.entries(PART_COLORS).map(([k, v]) => [k, new THREE.Color(v)]));
 
 // ground displacement at (fractional) frame t, clamped to the array
 function dispAt(disp, t) {
@@ -1332,7 +1401,9 @@ function draw() {
   const K = pkg.contacts.joints.length;
   const oE = [dE[0] + side / 2, dE[1]];
   const PE = sampleFrame(state.edited.positions, J, Fe, t, pkg.loop);
-  updateSkeleton(edit, PE, oE, (j) => pkg.isContact.has(j) ? cContact : pkg.isPassive.has(j) ? cPassive : cEdit);
+  const byPart = $('colorByPart').checked;
+  updateSkeleton(edit, PE, oE, (j) => byPart ? PART_THREE[state.partsDraft[j].part]
+    : pkg.isContact.has(j) ? cContact : pkg.isPassive.has(j) ? cPassive : cEdit);
   const meshView = $('meshView').value;
   if (state.mesh) {
     const gr = state.edited.globalRotations;
@@ -1344,19 +1415,28 @@ function draw() {
   ghostRoot.visible = mode !== 'edited';
   updateSkeleton(ghost, sampleFrame(pkg.original, J, F, tO, pkg.loop), [dO[0] - side / 2, dO[1]], () => cOrig);
 
-  // pending changes: big squares, contact green (add) / red (remove), passive cyan / orange
+  // big squares: selected joints white, pending contact changes green (add) / red (remove)
   const mp = marks.geometry.attributes.position, mc = marks.geometry.attributes.color;
   let n = 0;
   for (let j = 0; j < J; j++) {
-    const add = state.jointDraft.has(j), passive = state.passiveDraft.has(j);
-    const c = add !== pkg.isContact.has(j) ? (add ? cAdd : cDrop)
-      : passive !== pkg.isPassive.has(j) ? (passive ? cPassiveAdd : cPassiveDrop) : null;
+    const contact = !!state.partsDraft[j].contact;
+    const c = state.selection.has(j) ? cSelected
+      : contact !== pkg.isContact.has(j) ? (contact ? cAdd : cDrop) : null;
     if (!c) continue;
     mp.setXYZ(n, PE[j * 3] + oE[0], PE[j * 3 + 1], PE[j * 3 + 2] + oE[1]);
     mc.setXYZ(n, c.r, c.g, c.b); n++;
   }
   marks.geometry.setDrawRange(0, n);
   mp.needsUpdate = mc.needsUpdate = true; marks.geometry.computeBoundingSphere();
+  // contact joints of the draft: a white ring (shape, not colour, so part colours stay readable)
+  const rp = rings.geometry.attributes.position;
+  let r = 0;
+  if (byPart) for (let j = 0; j < J; j++) {
+    if (!state.partsDraft[j].contact) continue;
+    rp.setXYZ(r++, PE[j * 3] + oE[0], PE[j * 3 + 1], PE[j * 3 + 2] + oE[1]);
+  }
+  rings.geometry.setDrawRange(0, r);
+  rp.needsUpdate = true; rings.geometry.computeBoundingSphere();
   // joint selected in the contact panel / diagnostics
   const h = state.highlight;
   cross.visible = h >= 0 && h < J;

@@ -1,0 +1,1528 @@
+{
+ "unitybundles/IAC_Caveman": {
+  "joints": {
+   "Caveman L Finger2": {
+    "contact": 0
+   },
+   "Caveman L Finger21": {
+    "contact": 0
+   },
+   "Caveman R Finger2": {
+    "contact": 0
+   },
+   "Caveman R Finger21": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "a94df2e045db5d43d7376d8c8230ea351e3a42b9"
+ },
+ "unitybundles/IAC_Mammoth": {
+  "joints": {
+   "Mammoth Trunk": {
+    "part": "soft"
+   },
+   "Mammoth Trunk02": {
+    "part": "soft"
+   },
+   "Mammoth Trunk03": {
+    "part": "soft"
+   },
+   "Mammoth Trunk04": {
+    "part": "soft"
+   },
+   "Mammoth Trunk05": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "f737c8a44c899345d333123b7599c28cd8ce413d"
+ },
+ "unitybundles/MLH_Archer": {
+  "joints": {
+   "Armor_L": {
+    "part": "soft"
+   },
+   "Armor_R": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "74f53881378a538a4bacf4c919d26ac60336e431"
+ },
+ "unitybundles/MLH_Griffin": {
+  "joints": {
+   "Foot_L": {
+    "contact": 1
+   },
+   "Foot_R": {
+    "contact": 1
+   },
+   "Hand_L": {
+    "contact": 1
+   },
+   "Hand_R": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "2c6ce0fae906275620dd363a37b62401e94e07be"
+ },
+ "unitybundles/MLH_Horseman": {
+  "joints": {
+   "horse_feet_L": {
+    "contact": 1
+   },
+   "horse_feet_R": {
+    "contact": 1
+   },
+   "horse_hand_L": {
+    "contact": 1
+   },
+   "horse_hand_R": {
+    "contact": 1
+   },
+   "man_armor_L": {
+    "part": "helper"
+   },
+   "man_armor_R": {
+    "part": "helper"
+   }
+  },
+  "skeleton_hash": "c937fb605686396c8d5d553585d3cc3c012887b8"
+ },
+ "unitybundles/MLH_Worker": {
+  "joints": {
+   "Foot_L": {
+    "contact": 1
+   },
+   "Foot_R": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "0c724a7d90bd947220dee637d6c4dcc6d4081c9b"
+ },
+ "unitybundles/MLS_BattleOwl": {
+  "joints": {
+   "Ear01_L": {
+    "part": "soft"
+   },
+   "Ear01_R": {
+    "part": "soft"
+   },
+   "Ear02_L": {
+    "part": "soft"
+   },
+   "Ear02_R": {
+    "part": "soft"
+   },
+   "Ear03_L": {
+    "part": "soft"
+   },
+   "Ear03_R": {
+    "part": "soft"
+   },
+   "Index02_L": {
+    "contact": 1
+   },
+   "Index02_R": {
+    "contact": 1
+   },
+   "Index03_L": {
+    "contact": 1
+   },
+   "Index03_R": {
+    "contact": 1
+   },
+   "Middle02L": {
+    "contact": 1
+   },
+   "Middle02L.001": {
+    "contact": 1
+   },
+   "Middle03_L": {
+    "contact": 1
+   },
+   "Middle03_R": {
+    "contact": 1
+   },
+   "Pinky02_L": {
+    "contact": 1
+   },
+   "Pinky02_R": {
+    "contact": 1
+   },
+   "Pinky03_L": {
+    "contact": 1
+   },
+   "Pinky03_R": {
+    "contact": 1
+   },
+   "joint5": {
+    "part": "tail"
+   },
+   "joint6": {
+    "part": "tail"
+   },
+   "joint7": {
+    "part": "tail"
+   },
+   "joint8": {
+    "part": "tail"
+   }
+  },
+  "skeleton_hash": "3739145657982a54645da1857ab60e22a9be13c9"
+ },
+ "unitybundles/MLS_DemonHunter": {
+  "joints": {
+   "Armor_L": {
+    "part": "soft"
+   },
+   "Armor_R": {
+    "part": "soft"
+   },
+   "Ear01_L": {
+    "part": "soft"
+   },
+   "Ear01_R": {
+    "part": "soft"
+   },
+   "Ear02_L": {
+    "part": "soft"
+   },
+   "Ear02_R": {
+    "part": "soft"
+   },
+   "Ear03_L": {
+    "part": "soft"
+   },
+   "Ear03_R": {
+    "part": "soft"
+   },
+   "Foot_L": {
+    "contact": 1
+   },
+   "Foot_R": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "e623e2986de681fbd8ea4f415f12b390d6720b44"
+ },
+ "unitybundles/MLS_Dryad": {
+  "joints": {
+   "ear01_L": {
+    "part": "soft"
+   },
+   "ear01_R": {
+    "part": "soft"
+   },
+   "ear02_L": {
+    "part": "soft"
+   },
+   "ear02_R": {
+    "part": "soft"
+   },
+   "ear03_L": {
+    "part": "soft"
+   },
+   "ear03_R": {
+    "part": "soft"
+   },
+   "horse_feet_L": {
+    "contact": 1
+   },
+   "horse_feet_R": {
+    "contact": 1
+   },
+   "horse_handTip_L": {
+    "part": "foot"
+   },
+   "horse_handTip_R": {
+    "part": "foot"
+   },
+   "horse_hand_L": {
+    "part": "foot",
+    "contact": 1
+   },
+   "horse_hand_R": {
+    "part": "foot",
+    "contact": 1
+   },
+   "horse_lowerArm_L": {
+    "part": "leg"
+   },
+   "horse_lowerArm_R": {
+    "part": "leg"
+   },
+   "horse_upperArm_L": {
+    "part": "leg"
+   },
+   "horse_upperArm_R": {
+    "part": "leg"
+   }
+  },
+  "skeleton_hash": "723a759b09d5828aa346ce0ae2fb82c261e17768"
+ },
+ "unitybundles/MLS_ElfRanger": {
+  "joints": {
+   "Armor_L": {
+    "part": "soft"
+   },
+   "Armor_R": {
+    "part": "soft"
+   },
+   "Ear_L_01": {
+    "part": "soft"
+   },
+   "Ear_L_02": {
+    "part": "soft"
+   },
+   "Ear_L_03": {
+    "part": "soft"
+   },
+   "Ear_R_01": {
+    "part": "soft"
+   },
+   "Ear_R_02": {
+    "part": "soft"
+   },
+   "Ear_R_03": {
+    "part": "soft"
+   },
+   "Foot_L": {
+    "contact": 1
+   },
+   "Foot_R": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "e0e29a98c2258e653f55385b70db55853f28c70d"
+ },
+ "unitybundles/MLS_Knome": {
+  "joints": {
+   "Ear01_L": {
+    "part": "soft"
+   },
+   "Ear01_R": {
+    "part": "soft"
+   },
+   "Ear02_L": {
+    "part": "soft"
+   },
+   "Ear02_R": {
+    "part": "soft"
+   },
+   "Ear03_L": {
+    "part": "soft"
+   },
+   "Ear03_R": {
+    "part": "soft"
+   },
+   "Foot_L": {
+    "contact": 1
+   },
+   "Foot_R": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "767295908299fadf20266697127b1ff9405f0d0f"
+ },
+ "unitybundles/MLS_RockGolem": {
+  "joints": {
+   "Foot_L": {
+    "contact": 1
+   },
+   "Foot_R": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "fb9ca1df3cddb18889011e6a1ea59c03839e1803"
+ },
+ "unitybundles/MLS_Treeant": {
+  "joints": {
+   "Foot_L": {
+    "contact": 1
+   },
+   "Foot_R": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "f68ab4efb1bfcd9251b9e964e8394c3548e63352"
+ },
+ "unitybundles/MU01_Bat": {
+  "joints": {
+   "RigLEar1": {
+    "part": "soft"
+   },
+   "RigLEar2": {
+    "part": "soft"
+   },
+   "RigLEar3": {
+    "part": "soft"
+   },
+   "RigREar1": {
+    "part": "soft"
+   },
+   "RigREar2": {
+    "part": "soft"
+   },
+   "RigREar3": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "ffa9f2237492047564374e14eb9d74fa797c51f0"
+ },
+ "unitybundles/MU01_BatLord": {
+  "joints": {
+   "RigEarL1": {
+    "part": "soft"
+   },
+   "RigEarL2": {
+    "part": "soft"
+   },
+   "RigEarL3": {
+    "part": "soft"
+   },
+   "RigEarL4": {
+    "part": "soft"
+   },
+   "RigEarL5": {
+    "part": "soft"
+   },
+   "RigEarR1": {
+    "part": "soft"
+   },
+   "RigEarR2": {
+    "part": "soft"
+   },
+   "RigEarR3": {
+    "part": "soft"
+   },
+   "RigEarR4": {
+    "part": "soft"
+   },
+   "RigEarR5": {
+    "part": "soft"
+   },
+   "RigLLegAnkle": {
+    "contact": 0
+   },
+   "RigRLegAnkle": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "7d4b1ecbc621e72f5d8d53983bb615e79e427542"
+ },
+ "unitybundles/MU01_Bird": {
+  "joints": {
+   "RigLLegDigit11": {
+    "contact": 1
+   },
+   "RigLLegDigit21": {
+    "contact": 1
+   },
+   "RigRLegDigit11": {
+    "contact": 1
+   },
+   "RigRLegDigit21": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "539544d8c78b199bcbb9376a36ad4c83e7bfc510"
+ },
+ "unitybundles/MU01_Fledgling": {
+  "joints": {
+   "RigLLegDigit11": {
+    "contact": 1
+   },
+   "RigLLegDigit21": {
+    "contact": 1
+   },
+   "RigRLegDigit11": {
+    "contact": 1
+   },
+   "RigRLegDigit21": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "fc7375dcc06f6b3a589689e5f4ac49c218986dde"
+ },
+ "unitybundles/MU01_Shade": {
+  "joints": {
+   "RigLLegDigit11": {
+    "contact": 1
+   },
+   "RigRLegDigit11": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "7825b115e395ff1b5cc925b96ebafa48ad43e134"
+ },
+ "unitybundles/MU01_Shadow": {
+  "joints": {
+   "RigLLegAnkle": {
+    "contact": 0
+   },
+   "RigRLegAnkle": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "ee6326c4cb7b4a94098cd9e5e8e871fb3c46440f"
+ },
+ "unitybundles/MU01_Toadstool": {
+  "joints": {
+   "RigLLegAnkle": {
+    "contact": 0
+   },
+   "RigLLegFoot1": {
+    "contact": 1
+   },
+   "RigRLegAnkle": {
+    "contact": 0
+   },
+   "RigRLegFoot1": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "28d1c93964c2236f795e8578efb58fa1921c311c"
+ },
+ "unitybundles/MU01_VampireBat": {
+  "joints": {
+   "RigRibcage": {
+    "part": "head"
+   }
+  },
+  "skeleton_hash": "5b08aa3f16798c0104a256a39ada156b999a73f5"
+ },
+ "unitybundles/MU04_Pollen": {
+  "joints": {
+   "RigLeaves": {
+    "part": "helper"
+   }
+  },
+  "skeleton_hash": "1bdc17f4dc406136afce016899fcd9638df79978"
+ },
+ "unitybundles/MU04_Scorpion": {
+  "joints": {
+   "RigLArm1": {
+    "part": "arm"
+   },
+   "RigLArm2": {
+    "part": "arm"
+   },
+   "RigLArm3": {
+    "part": "arm"
+   },
+   "RigLArmClawBtm1": {
+    "part": "hand"
+   },
+   "RigLArmClawTop1": {
+    "part": "hand"
+   },
+   "RigLArmPalm": {
+    "part": "hand"
+   },
+   "RigRArm1": {
+    "part": "arm"
+   },
+   "RigRArm2": {
+    "part": "arm"
+   },
+   "RigRArm3": {
+    "part": "arm"
+   },
+   "RigRArmClawBtm1": {
+    "part": "hand"
+   },
+   "RigRArmClawTop1": {
+    "part": "hand"
+   },
+   "RigRArmPalm": {
+    "part": "hand"
+   }
+  },
+  "skeleton_hash": "9386c1090aa096dd2d738532cffa65e3bbd23cb5"
+ },
+ "unitybundles/MU04_ScorpionKing": {
+  "joints": {
+   "RigLArmClawDown1": {
+    "part": "hand"
+   },
+   "RigLArmClawUp1": {
+    "part": "hand"
+   },
+   "RigRArmClawDown1": {
+    "part": "hand"
+   },
+   "RigRArmClawUp1": {
+    "part": "hand"
+   }
+  },
+  "skeleton_hash": "7d9261efb79ca7bae3e8ea359c62b2194291495e"
+ },
+ "unitybundles/MU04_Spore": {
+  "joints": {
+   "RigTail1": {
+    "part": "soft"
+   },
+   "RigTail2": {
+    "part": "soft"
+   },
+   "RigTail3": {
+    "part": "soft"
+   },
+   "RigTail4": {
+    "part": "soft"
+   },
+   "RigTail5": {
+    "part": "soft"
+   },
+   "RigTail6": {
+    "part": "soft"
+   },
+   "RigTail7": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "bbc6efcd1d6e28ac84e3702c381cf8446f17291c"
+ },
+ "unitybundles/MU04_Wraith": {
+  "joints": {
+   "RigLArm1": {
+    "part": "wing"
+   },
+   "RigLArm2": {
+    "part": "wing"
+   },
+   "RigLArmDigit11": {
+    "part": "wing"
+   },
+   "RigLArmDigit12": {
+    "part": "wing"
+   },
+   "RigLArmDigit21": {
+    "part": "wing"
+   },
+   "RigLArmDigit22": {
+    "part": "wing"
+   },
+   "RigLArmDigit31": {
+    "part": "wing"
+   },
+   "RigLArmDigit32": {
+    "part": "wing"
+   },
+   "RigLArmDigit33": {
+    "part": "wing"
+   },
+   "RigLArmDigit41": {
+    "part": "wing"
+   },
+   "RigLArmDigit42": {
+    "part": "wing"
+   },
+   "RigLArmPalm": {
+    "part": "wing"
+   },
+   "RigRArm1": {
+    "part": "wing"
+   },
+   "RigRArm2": {
+    "part": "wing"
+   },
+   "RigRArmDigit11": {
+    "part": "wing"
+   },
+   "RigRArmDigit12": {
+    "part": "wing"
+   },
+   "RigRArmDigit21": {
+    "part": "wing"
+   },
+   "RigRArmDigit22": {
+    "part": "wing"
+   },
+   "RigRArmDigit31": {
+    "part": "wing"
+   },
+   "RigRArmDigit32": {
+    "part": "wing"
+   },
+   "RigRArmDigit33": {
+    "part": "wing"
+   },
+   "RigRArmDigit41": {
+    "part": "wing"
+   },
+   "RigRArmDigit42": {
+    "part": "wing"
+   },
+   "RigRArmPalm": {
+    "part": "wing"
+   }
+  },
+  "skeleton_hash": "035ad6db663e9565a27dc06fdd9daa5015eb63f0"
+ },
+ "unitybundles/MU06_IceMage": {
+  "joints": {
+   "RigBack": {
+    "part": "helper"
+   },
+   "RigIce01": {
+    "part": "helper"
+   },
+   "RigIce02": {
+    "part": "helper"
+   },
+   "RigIce03": {
+    "part": "helper"
+   },
+   "RigIce04": {
+    "part": "helper"
+   },
+   "RigIce05": {
+    "part": "helper"
+   }
+  },
+  "skeleton_hash": "95abb7678a925ca612fcf36d351ddfa2ea029d0c"
+ },
+ "unitybundles/PC_PolygonalDragon": {
+  "joints": {
+   "RigLBackLegAnkle": {
+    "contact": 0
+   },
+   "RigLBackLegFoot1": {
+    "contact": 1
+   },
+   "RigLFrontLegAnkle": {
+    "contact": 0
+   },
+   "RigLFrontLegFoot1": {
+    "contact": 1
+   },
+   "RigRBackLegAnkle": {
+    "contact": 0
+   },
+   "RigRBackLegFoot1": {
+    "contact": 1
+   },
+   "RigRFrontLegAnkle": {
+    "contact": 0
+   },
+   "RigRFrontLegFoot1": {
+    "contact": 1
+   },
+   "RigRibcage001Bone001": {
+    "part": "head"
+   }
+  },
+  "skeleton_hash": "d52fa7b0c73f3de270d8259149121ff3bb9b00e2"
+ },
+ "unitybundles/PC_PolygonalGiantBee": {
+  "joints": {
+   "RigLBackArm3": {
+    "contact": 1
+   },
+   "RigLMidArm1": {
+    "part": "leg"
+   },
+   "RigLMidArm2": {
+    "part": "leg"
+   },
+   "RigLMidArm3": {
+    "part": "foot",
+    "contact": 1
+   },
+   "RigRBackArm3": {
+    "contact": 1
+   },
+   "RigRMidArm1": {
+    "part": "leg"
+   },
+   "RigRMidArm2": {
+    "part": "leg"
+   },
+   "RigRMidArm3": {
+    "part": "foot",
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "74a8cd577c5d1c550d19bfdbdf90f9a5ad169b64"
+ },
+ "unitybundles/PC_PolygonalGolem": {
+  "joints": {
+   "RigLLegAnkle": {
+    "contact": 0
+   },
+   "RigRLegAnkle": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "c4509c8cd26b77e96e819559d0678b259b37e313"
+ },
+ "unitybundles/PC_PolygonalMagma": {
+  "joints": {
+   "RigLArmThumb1": {
+    "contact": 0
+   },
+   "RigLArmThumb2": {
+    "contact": 0
+   },
+   "RigRArmThumb1": {
+    "contact": 0
+   },
+   "RigRArmThumb2": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "df36d32b0ab9fa542ebcd8fd37b3a101b130becd"
+ },
+ "unitybundles/PC_PolygonalSpiderlingVenom": {
+  "joints": {
+   "RigButt": {
+    "part": "tail"
+   }
+  },
+  "skeleton_hash": "39b760e578e3c030601bce221babb8f50a05837f"
+ },
+ "unitybundles/PC_PolygonalTreant": {
+  "joints": {
+   "RigLLegFront1": {
+    "part": "leg"
+   },
+   "RigLLegFront2": {
+    "part": "leg"
+   },
+   "RigLLegFrontAnkle": {
+    "part": "foot"
+   },
+   "RigRLegFront1": {
+    "part": "leg"
+   },
+   "RigRLegFront2": {
+    "part": "leg"
+   },
+   "RigRLegFrontAnkle": {
+    "part": "foot"
+   }
+  },
+  "skeleton_hash": "8fd04c5b174046a3bb2545b3f698e8359ac19456"
+ },
+ "unitybundles/PC_PolygonalWolf": {
+  "joints": {
+   "RigBLLegAnkle": {
+    "contact": 0
+   },
+   "RigBLLegFoot1": {
+    "contact": 1
+   },
+   "RigBRLegAnkle": {
+    "contact": 0
+   },
+   "RigBRLegFoot1": {
+    "contact": 1
+   },
+   "RigFLLegAnkle": {
+    "contact": 0
+   },
+   "RigFLLegFoot1": {
+    "contact": 1
+   },
+   "RigFRLegAnkle": {
+    "contact": 0
+   },
+   "RigFRLegFoot1": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "c75f7feafc65b302155cfec3464cb46132038169"
+ },
+ "unitybundles/RMW_Bat": {
+  "joints": {
+   "Crown": {
+    "part": "soft"
+   },
+   "Ear01_L": {
+    "part": "soft"
+   },
+   "Ear01_R": {
+    "part": "soft"
+   },
+   "Ear02_L": {
+    "part": "soft"
+   },
+   "Ear02_R": {
+    "part": "soft"
+   },
+   "Ear03_L": {
+    "part": "soft"
+   },
+   "Ear03_R": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "3289922561aae3afd6000e78919efabd993a1a49"
+ },
+ "unitybundles/RMW_EvilMage": {
+  "joints": {
+   "Back": {
+    "part": "helper"
+   },
+   "Thumb01_L": {
+    "contact": 0
+   },
+   "Thumb01_R": {
+    "contact": 0
+   },
+   "Thumb02_L": {
+    "contact": 0
+   },
+   "Thumb02_R": {
+    "contact": 0
+   },
+   "Thumb03_L": {
+    "contact": 0
+   },
+   "Thumb03_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "ce2c25288f5bc7a3997a61dea52acb10060ba9cc"
+ },
+ "unitybundles/RMW_Golem": {
+  "joints": {
+   "Back": {
+    "part": "helper"
+   },
+   "Leg02_L": {
+    "contact": 0
+   },
+   "Leg02_R": {
+    "contact": 0
+   },
+   "Notch": {
+    "part": "helper"
+   },
+   "Shoulder_L": {
+    "part": "helper"
+   },
+   "Shoulder_R": {
+    "part": "helper"
+   },
+   "Thumb01_L": {
+    "contact": 0
+   },
+   "Thumb01_R": {
+    "contact": 0
+   },
+   "Thumb02_L": {
+    "contact": 0
+   },
+   "Thumb02_R": {
+    "contact": 0
+   },
+   "Thumb03_L": {
+    "contact": 0
+   },
+   "Thumb03_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "c33ad475384d68a634fe9b68172f087eba7ffeff"
+ },
+ "unitybundles/RMW_MonsterPlant": {
+  "joints": {
+   "Eye01": {
+    "part": "soft"
+   },
+   "Eye02": {
+    "part": "soft"
+   },
+   "Eye03": {
+    "part": "soft"
+   },
+   "Eye04": {
+    "part": "soft"
+   },
+   "Eye05": {
+    "part": "soft"
+   },
+   "EyeTip": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "e3735fb4451ba7112dcfc7325ac35bfd06cb3cba"
+ },
+ "unitybundles/RMW_Orc": {
+  "joints": {
+   "Ear01_L": {
+    "part": "soft"
+   },
+   "Ear01_R": {
+    "part": "soft"
+   },
+   "Ear02_L": {
+    "part": "soft"
+   },
+   "Ear02_R": {
+    "part": "soft"
+   },
+   "Ear03_L": {
+    "part": "soft"
+   },
+   "Ear03_R": {
+    "part": "soft"
+   },
+   "Foot_L": {
+    "contact": 1
+   },
+   "Foot_R": {
+    "contact": 1
+   },
+   "ShouderPad": {
+    "part": "helper"
+   }
+  },
+  "skeleton_hash": "90b117a54d2d836d535abc2a0b5fb920bae3d636"
+ },
+ "unitybundles/RMW_Skeleton": {
+  "joints": {
+   "FeetBall_L": {
+    "contact": 1
+   },
+   "FeetBall_R": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "507eb8efd34f2f774aa3389d7d9b284be7653479"
+ },
+ "unitybundles/RMW_Slime": {
+  "joints": {
+   "Crown": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "0f5f21ff64cb547c23234107cda2be6d0b681b70"
+ },
+ "unitybundles/RMW_Spider": {
+  "joints": {
+   "Belly01": {
+    "part": "soft"
+   },
+   "Belly02": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "c7905b7fc2e43df49319e8e9034e659d1ead877d"
+ },
+ "unitybundles/RMW_TurtleShell": {
+  "joints": {
+   "HornL01": {
+    "part": "helper"
+   },
+   "HornL02": {
+    "part": "helper"
+   },
+   "HornL03": {
+    "part": "helper"
+   },
+   "HornL04": {
+    "part": "helper"
+   },
+   "HornLTip01": {
+    "part": "helper"
+   },
+   "HornLTip02": {
+    "part": "helper"
+   },
+   "HornLTip03": {
+    "part": "helper"
+   },
+   "HornLTip04": {
+    "part": "helper"
+   },
+   "HornMid01": {
+    "part": "helper"
+   },
+   "HornMid02": {
+    "part": "helper"
+   },
+   "HornMid03": {
+    "part": "helper"
+   },
+   "HornMidTip01": {
+    "part": "helper"
+   },
+   "HornMidTip02": {
+    "part": "helper"
+   },
+   "HornMidTip03": {
+    "part": "helper"
+   },
+   "HornR01": {
+    "part": "helper"
+   },
+   "HornR02": {
+    "part": "helper"
+   },
+   "HornR03": {
+    "part": "helper"
+   },
+   "HornR04": {
+    "part": "helper"
+   },
+   "HornRTip01": {
+    "part": "helper"
+   },
+   "HornRTip02": {
+    "part": "helper"
+   },
+   "HornRTip03": {
+    "part": "helper"
+   },
+   "HornRTip04": {
+    "part": "helper"
+   },
+   "Shell": {
+    "part": "helper"
+   }
+  },
+  "skeleton_hash": "ce4c2594680eb42a3a7c85775825fa2f6377d2da"
+ },
+ "unitybundles/RTH_Hero": {
+  "joints": {
+   "foot_l": {
+    "contact": 1
+   },
+   "foot_r": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "536ef697181a82fd2680f5e1f3e336105910f08b"
+ },
+ "unitybundles/RU01_BlastRobot": {
+  "joints": {
+   "RigFLLeg1": {
+    "part": "leg"
+   },
+   "RigFLLeg2": {
+    "part": "leg"
+   },
+   "RigFLLegAnkle": {
+    "part": "foot"
+   },
+   "RigFRLeg1": {
+    "part": "leg"
+   },
+   "RigFRLeg2": {
+    "part": "leg"
+   },
+   "RigFRLegAnkle": {
+    "part": "foot"
+   }
+  },
+  "skeleton_hash": "fc09dbce626b177699643fa0a12a24f7d17a9de7"
+ },
+ "unitybundles/RU01_BotRobot": {
+  "joints": {
+   "RigLArmFingerIn1": {
+    "contact": 0
+   },
+   "RigLArmFingerOut1": {
+    "contact": 0
+   },
+   "RigLArmFingerTop1": {
+    "contact": 0
+   },
+   "RigRArmFingerIn1": {
+    "contact": 0
+   },
+   "RigRArmFingerOut1": {
+    "contact": 0
+   },
+   "RigRArmFingerTop1": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "ebda6e10c4c9160b728139dff96082f2cf66d766"
+ },
+ "unitybundles/RU01_BoxyRobot": {
+  "joints": {
+   "RigCover": {
+    "part": "head"
+   },
+   "RigLArmClawB1": {
+    "contact": 0
+   },
+   "RigLArmClawB2": {
+    "contact": 0
+   },
+   "RigLArmClawF1": {
+    "contact": 0
+   },
+   "RigLArmClawF2": {
+    "contact": 0
+   },
+   "RigRArmClawB1": {
+    "contact": 0
+   },
+   "RigRArmClawB2": {
+    "contact": 0
+   },
+   "RigRArmClawF1": {
+    "contact": 0
+   },
+   "RigRArmClawF2": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "9f433da9e1b698e2901dace0d846ffcba3185f3c"
+ },
+ "unitybundles/RU01_DeliveryRobot": {
+  "joints": {
+   "RigArmClawL1": {
+    "contact": 0
+   },
+   "RigArmClawR1": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "e3bb513887ebe278abdbe825e780399d9f592a75"
+ },
+ "unitybundles/RU01_GripperRobot": {
+  "joints": {
+   "RigLArmThumb1": {
+    "contact": 0
+   },
+   "RigRArmThumb1": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "013cad7d33b90402f01ca85a8c1a4f37c195c4d4"
+ },
+ "unitybundles/RU01_HermitRobot": {
+  "joints": {
+   "RigFLLeg1": {
+    "part": "leg"
+   },
+   "RigFLLeg2": {
+    "part": "leg"
+   },
+   "RigFLLegAnkle": {
+    "part": "foot"
+   },
+   "RigFRLeg1": {
+    "part": "leg"
+   },
+   "RigFRLeg2": {
+    "part": "leg"
+   },
+   "RigFRLegAnkle": {
+    "part": "foot"
+   }
+  },
+  "skeleton_hash": "6f060fbebe8d9f42efa1b9a9c2815bdfc4389f32"
+ },
+ "unitybundles/RU01_JellyfishRobot": {
+  "joints": {
+   "RigRing": {
+    "part": "helper"
+   }
+  },
+  "skeleton_hash": "895af072e08491f856774e574e009efdd9f8c884"
+ },
+ "unitybundles/RU01_MetalRobot": {
+  "joints": {
+   "RigLLegAnkle": {
+    "contact": 0
+   },
+   "RigRLegAnkle": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "f32f61fce2866d8dd06a56e825bcee8b909c0335"
+ },
+ "unitybundles/RU01_NexusRobot": {
+  "joints": {
+   "RigLArmFingerIn1": {
+    "contact": 0
+   },
+   "RigLArmFingerOut1": {
+    "contact": 0
+   },
+   "RigLArmFingerTop1": {
+    "contact": 0
+   },
+   "RigRArmFingerIn1": {
+    "contact": 0
+   },
+   "RigRArmFingerOut1": {
+    "contact": 0
+   },
+   "RigRArmFingerTop1": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "d531aeb9598901e68bf3f8dec30ca1ae45c2927a"
+ },
+ "unitybundles/RU01_TankerRobot": {
+  "joints": {
+   "RigLLegAnkle": {
+    "contact": 0
+   },
+   "RigRLegAnkle": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "250dc53df6f0cbe0464f1e4a27f3a698751dcfab"
+ },
+ "unitybundles/RU01_TechRobot": {
+  "joints": {
+   "RigLLegAnkle": {
+    "contact": 0
+   },
+   "RigRLegAnkle": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "07d77f3807a5104809bf1d509674e4f94a2bfd6c"
+ },
+ "unitybundles/RU02_DragonBot": {
+  "joints": {
+   "RigLLegAnkle": {
+    "contact": 0
+   },
+   "RigLLegFoot1": {
+    "contact": 1
+   },
+   "RigRLegAnkle": {
+    "contact": 0
+   },
+   "RigRLegFoot1": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "c6951a271200cc37acc9779b143070c22c993ddf"
+ },
+ "unitybundles/RU02_DragonPredatorRobot": {
+  "joints": {
+   "RigLLegFoot1": {
+    "contact": 1
+   },
+   "RigRLegFoot1": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "9013f38f5b437cf8c34ec68f59b35856c0e43ffd"
+ },
+ "unitybundles/RU02_DragonRobot": {
+  "joints": {
+   "RigLLegFoot1": {
+    "contact": 1
+   },
+   "RigRLegFoot1": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "8286455cf8ca7d913e215fb0cfedc58a4bf6f737"
+ },
+ "unitybundles/RU02_NoseRobot": {
+  "joints": {
+   "RigEarL1": {
+    "part": "soft"
+   },
+   "RigEarL2": {
+    "part": "soft"
+   },
+   "RigEarL3": {
+    "part": "soft"
+   },
+   "RigEarL4": {
+    "part": "soft"
+   },
+   "RigEarR1": {
+    "part": "soft"
+   },
+   "RigEarR2": {
+    "part": "soft"
+   },
+   "RigEarR3": {
+    "part": "soft"
+   },
+   "RigEarR4": {
+    "part": "soft"
+   },
+   "RigLLegAnkle": {
+    "contact": 0
+   },
+   "RigLLegFoot1": {
+    "contact": 1
+   },
+   "RigNose1": {
+    "part": "soft"
+   },
+   "RigNose10": {
+    "part": "soft"
+   },
+   "RigNose2": {
+    "part": "soft"
+   },
+   "RigNose3": {
+    "part": "soft"
+   },
+   "RigNose4": {
+    "part": "soft"
+   },
+   "RigNose5": {
+    "part": "soft"
+   },
+   "RigNose6": {
+    "part": "soft"
+   },
+   "RigNose7": {
+    "part": "soft"
+   },
+   "RigNose8": {
+    "part": "soft"
+   },
+   "RigNose9": {
+    "part": "soft"
+   },
+   "RigRLegAnkle": {
+    "contact": 0
+   },
+   "RigRLegFoot1": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "8dd7f1531afb930a170f832c96c1057d5057832c"
+ },
+ "unitybundles/TNR_Cavalry": {
+  "joints": {
+   "Bip002": {
+    "part": "trunk"
+   }
+  },
+  "skeleton_hash": "83ff17adbb451b1414b9dc83d815b08c30a70601"
+ },
+ "unitybundles/TNR_CavalryArcher": {
+  "joints": {
+   "Bip002": {
+    "part": "trunk"
+   }
+  },
+  "skeleton_hash": "6a35916c1ff96261b18b1cc7193b6b8c03cfa5dc"
+ },
+ "unitybundles/TNR_CavalryMage": {
+  "joints": {
+   "Bip002": {
+    "part": "trunk"
+   }
+  },
+  "skeleton_hash": "e99b57fe53c4168bfbbf897dd3a4e3fd5919c867"
+ },
+ "unitybundles/TNR_CavalrySpear": {
+  "joints": {
+   "Bip002": {
+    "part": "trunk"
+   }
+  },
+  "skeleton_hash": "83ff17adbb451b1414b9dc83d815b08c30a70601"
+ },
+ "unitybundles/TTR_HeavyCavalry": {
+  "joints": {
+   "Bip001 L Finger0": {
+    "contact": 0
+   },
+   "Bip001 L Toe0": {
+    "contact": 0
+   },
+   "Bip001 R Finger0": {
+    "contact": 0
+   },
+   "Bip001 R Toe0": {
+    "contact": 0
+   },
+   "Bip002": {
+    "part": "trunk"
+   }
+  },
+  "skeleton_hash": "ab7b6e4027a9b6a5c75376e3faeea773197ea6cb"
+ },
+ "unitybundles/TTR_LightCavalry": {
+  "joints": {
+   "Bip001 L Finger0": {
+    "contact": 0
+   },
+   "Bip001 L Toe0": {
+    "contact": 0
+   },
+   "Bip001 R Finger0": {
+    "contact": 0
+   },
+   "Bip001 R Toe0": {
+    "contact": 0
+   },
+   "Bip002": {
+    "part": "trunk"
+   }
+  },
+  "skeleton_hash": "ab7b6e4027a9b6a5c75376e3faeea773197ea6cb"
+ },
+ "unitybundles/TTR_MountedKnight": {
+  "joints": {
+   "Bip001 L Finger0": {
+    "contact": 0
+   },
+   "Bip001 L Toe0": {
+    "contact": 0
+   },
+   "Bip001 R Finger0": {
+    "contact": 0
+   },
+   "Bip001 R Toe0": {
+    "contact": 0
+   },
+   "Bip002": {
+    "part": "trunk"
+   }
+  },
+  "skeleton_hash": "ab7b6e4027a9b6a5c75376e3faeea773197ea6cb"
+ },
+ "unitybundles/TTR_MountedMage": {
+  "joints": {
+   "Bip001 L Finger0": {
+    "contact": 0
+   },
+   "Bip001 L Toe0": {
+    "contact": 0
+   },
+   "Bip001 R Finger0": {
+    "contact": 0
+   },
+   "Bip001 R Toe0": {
+    "contact": 0
+   },
+   "Bip002": {
+    "part": "trunk"
+   }
+  },
+  "skeleton_hash": "ab7b6e4027a9b6a5c75376e3faeea773197ea6cb"
+ },
+ "unitybundles/TTR_MountedScout": {
+  "joints": {
+   "Bip001 L Finger0": {
+    "contact": 0
+   },
+   "Bip001 L Toe0": {
+    "contact": 0
+   },
+   "Bip001 R Finger0": {
+    "contact": 0
+   },
+   "Bip001 R Toe0": {
+    "contact": 0
+   },
+   "Bip002": {
+    "part": "trunk"
+   }
+  },
+  "skeleton_hash": "ab7b6e4027a9b6a5c75376e3faeea773197ea6cb"
+ }
+}

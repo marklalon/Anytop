@@ -52,6 +52,14 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
 
 SPECIES_TAGS_FILE = "species_tags.jsonl"
 
+# Per-joint contact / end-effector / body-part fields a cond entry must not
+# carry: they are not dataset data (motion_edit prefills parts and contacts).
+STALE_JOINT_ANNOTATION_KEYS = (
+    "contact_joints", "contact_joint_names", "contact_joint_source",
+    "end_effector_joints", "end_effector_names",
+    "joint_parts", "joint_contact", "joint_parts_reviewed", "joint_parts_sig",
+)
+
 
 def cond_schema_version(cond_dict: Mapping[str, Mapping]) -> int:
     """Lowest schema version across entries (0 when any entry predates v4)."""

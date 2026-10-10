@@ -17,10 +17,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from motion_edit.contacts import contact_intervals, detect_contacts
 from motion_edit.profile import gait as gait_stats
 from motion_edit.profile.build import _split_halves, apply_fallback
-from motion_edit.profile.data import Clip, skeleton_hash
+from motion_edit.profile.data import (
+    PROFILES_FILE,
+    SCHEMA_VERSION,
+    Clip,
+    ProfileSchemaError,
+    load_profiles,
+    skeleton_hash,
+)
 from motion_edit.profile.joints import classify_dof, joint_stats
-from motion_edit.profile.skeleton import (SkeletonStructure, passive_layer, resolve_contacts, resolve_passive,
-                                          subtree_closure)
+from motion_edit.profile.parts import layer_for, merge_layers, resolve_parts, validate_entries
+from motion_edit.profile.skeleton import SkeletonStructure, resolve_passive, subtree_closure
 from motion_edit.profile.spring import clip_rows, default_spring, fit_spring
 from motion_edit.rotations import (
     quat_from_rotvec,
@@ -81,7 +88,7 @@ def _biped_cond():
              "r_hip", "r_knee", "r_ankle", "r_toe", "spine", "head", "tail", "tail_tip"]
     return {
         "joints_names": names, "parents": parents, "offsets": offsets,
-        "joint_side_labels": sides, "joint_contact": np.isin(np.arange(14), _BIPED_CONTACTS),
+        "joint_side_labels": sides, "species_name": "Biped",
         "translation_root_index": 0, "axial_avg_len": 0.3, "scale_factor": 1.0,
         "species_tags": ("Biped", "Walking"),
         "canonical_joint_names": ["Root", "Hips", "Left Thigh", "Left Knee", "Left Foot", "Left Toe",
@@ -105,11 +112,46 @@ def test_contact_limbs_leg_length_and_roles():
     assert s.passive_candidates() == [10, 11, 12, 13]
 
 
-def test_resolve_contacts_applies_name_overrides():
+def test_resolve_parts_applies_the_layers_in_turn():
     cond = _biped_cond()
-    contacts = resolve_contacts(cond, {"add": ["tail_tip", "nope"], "remove": ["l_ankle"]})
-    assert contacts.used == [5, 8, 9, 13]
-    assert contacts.unknown_names == ["nope"]
+    prefill = resolve_parts(cond)
+    assert prefill.parts[11] == "head" and prefill.parts[12] == prefill.parts[13] == "tail"
+    assert prefill.parts[5] == "foot" and all(prefill.src)
+    species = {"tail_tip": {"part": "soft", "contact": 1}, "l_toe": {"contact": 0}, "nope": {"part": "arm"}}
+    package = {"tail_tip": {"part": "helper"}, "l_hip": {"part": "arm"}}
+    resolved = resolve_parts(cond, species, package)
+    assert resolved.unknown_names == ["nope"]
+    # the later layer wins, a helper is never a contact, an untouched joint keeps its prefill
+    assert resolved.parts[13] == "helper" and not resolved.contact[13] and resolved.src[13] == "package"
+    assert resolved.parts[2] == "arm" and not resolved.contact[5] and resolved.src[5] == "species"
+    assert resolved.parts[11] == "head" and resolved.src[11] == prefill.src[11]
+    # layer_for writes exactly the entries that reproduce a wanted state
+    wanted = {name: {"part": p, "contact": int(c)}
+              for name, p, c in zip(resolved.names, resolved.parts, resolved.contact)}
+    rebuilt = resolve_parts(cond, layer_for(prefill, wanted))
+    assert rebuilt.parts == resolved.parts and rebuilt.contact == resolved.contact
+    assert merge_layers({"a": {"part": "arm"}}, {"a": {"contact": 1}}) == {"a": {"part": "arm", "contact": 1}}
+    with pytest.raises(ValueError, match="unknown part"):
+        resolve_parts(cond, {"head": {"part": "antenna"}})
+
+
+def test_a_helper_entry_cannot_be_a_contact():
+    with pytest.raises(ValueError, match="helper joint cannot be a contact"):
+        validate_entries({"head": {"part": "helper", "contact": 1}}, "edit")
+    assert validate_entries({"head": {"part": "helper", "contact": 0}}, "edit") == {
+        "head": {"part": "helper", "contact": 0}}
+
+
+def test_load_profiles_refuses_another_schema(tmp_path):
+    import json
+
+    path = tmp_path / PROFILES_FILE
+    path.write_text(json.dumps({"schema_version": SCHEMA_VERSION - 1, "profiles": {"x": {}}}))
+    with pytest.raises(ProfileSchemaError, match="rebuild"):
+        load_profiles(str(tmp_path))
+    path.write_text(json.dumps({"schema_version": SCHEMA_VERSION, "profiles": {"x": {}}}))
+    assert load_profiles(str(tmp_path)) == {"x": {}}
+    assert load_profiles(str(tmp_path / "missing")) == {}
 
 
 def test_skeleton_hash_tracks_offsets():
@@ -347,30 +389,15 @@ def test_swing_length_and_passive_parts():
     assert s.swing_length(1) == pytest.approx(s.swing_length(2) + np.linalg.norm(cond["offsets"][2]))
 
 
-def test_passive_additions_bring_subtrees_removals_are_exact():
+def test_passive_is_the_soft_joints_that_can_swing():
     cond = _biped_cond()
     s = SkeletonStructure(cond, _BIPED_CONTACTS)
-    parents, names, candidates = s.parents, s.names, s.passive_candidates()
-    assert subtree_closure(parents, [10]) == {10, 11}
-
-    # a tail is not passive by name (tail_weight keeps it); hair is
-    assert resolve_passive(parents, names, candidates, []).named == []
-    names = names[:12] + ["hair_01", "hair_02"]
-
-    def resolve(*layers):
-        return resolve_passive(parents, names, candidates, list(layers))
-
-    assert resolve().named == [12, 13] and resolve().joints == [12, 13]
-    # adding a joint brings its subtree; one with a support joint below is refused
-    added = resolve(([10, 1], []))
-    assert added.joints == [10, 11, 12, 13] and added.outside == [1]
-    # a removal takes exactly its joints: the part above stays passive
-    assert resolve(([], [13])).joints == [12]
-    assert resolve(([], [12, 13])).joints == []
-    assert resolve(([], [12, 13]), ([12], [])).joints == [12, 13]
-    # passive_layer writes the layer that gives exactly the wanted set over the named one
-    for wanted in ([12], [10], [10, 11, 13], [13], []):
-        assert resolve(passive_layer(parents, [12, 13], wanted)).joints == sorted(wanted)
+    candidates = s.passive_candidates()
+    assert subtree_closure(s.parents, [10]) == {10, 11}
+    # a soft joint with a support joint below it cannot swing: reported, not passive
+    passive = resolve_passive(candidates, [13, 12, 1])
+    assert passive.joints == [12, 13] and passive.outside == [1]
+    assert resolve_passive(candidates, []).joints == []
 
 
 # ── build helpers ───────────────────────────────────────────────────────────
@@ -417,7 +444,6 @@ def test_build_alligator_profile_from_dataset():
     if source is None or not os.path.isfile(os.path.join(source.root, "cond.npy")):
         pytest.skip("truebones/zoo dataset not present")
     from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
-    from data_loaders.truebones.truebones_utils.joint_parts import cond_contact_joints
     from motion_edit.profile.build import build_species_profile, cond_subset
     from motion_edit.profile.data import species_motion_names
 
@@ -427,13 +453,14 @@ def test_build_alligator_profile_from_dataset():
     metadata = load_motion_metadata(source.root)
     rows = {n: metadata[n] for n in species_motion_names(metadata, "Alligator")}
     from motion_edit.profile.data import SpeciesOverride
-    # a tail stays with tail_weight unless an override makes it passive; this one does, then tries
-    # to drop a joint in the middle (only that joint leaves) and to add a foot
-    override = SpeciesOverride(entries={"add": ["sippo01", "R_ashi"], "remove": ["sippo02"]})
-    profile, findings = build_species_profile(source, key, entry, rows, passive_override=override)
+    # a tail stays with tail_weight unless an override makes it soft; this one marks two of its
+    # joints soft (the one between them stays tail) and a foot, which cannot swing
+    joints = {"sippo01": {"part": "soft"}, "sippo03": {"part": "soft"}, "R_ashi": {"part": "soft"}}
+    override = SpeciesOverride(entries={"joints": joints})
+    profile, findings = build_species_profile(source, key, entry, rows, parts_override=override)
     assert findings.clips == len(rows) > 0 and not findings.decode_failures
     assert len(profile["joints"]) == len(entry["parents"])
-    assert profile["contacts"]["used"] == cond_contact_joints(entry)
+    assert profile["contacts"]["used"] == resolve_parts(entry, joints).contacts
     elbows = [j for j in profile["joints"] if j["name"] in ("R_hiji", "L_hiji")]
     assert all(j["dof_class"] == "hinge" and j["hinge_flex_sign"] != 0 for j in elbows)
     assert "locomotion|walk" in profile["source"]["action_families"]
@@ -445,5 +472,5 @@ def test_build_alligator_profile_from_dataset():
     assert next(j for j in profile["joints"] if j["name"] == "sippo01")["passive"]
     jaw = next(j for j in profile["joints"] if j["name"] == "ago")
     assert jaw["role"] != "passive" and not jaw["passive"] and jaw["spring"]["k"] > 0     # a candidate, off
-    # a foot is a support joint: the addition is reported, not applied
+    # a foot is a support joint: its soft part is reported, not made passive
     assert any("R_ashi" in note for note in findings.override_notes)

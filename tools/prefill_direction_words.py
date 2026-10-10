@@ -56,8 +56,9 @@ Four measurements, one per kind of row:
   HEADING  (locomotion rows, ``forward`` / ``backward`` / ``left`` / ``right``)
       Preprocessing detrends every locomotion clip's root XZ, so the net travel
       is gone from the tensor. What survives is the support foot: over the
-      frames where a contact joint is on the ground, its velocity relative to
-      the root is minus the travel direction. That is the only usable cue and
+      frames where a support joint (one that reaches the clip's floor) is on
+      the ground, its velocity relative to the root is minus the travel
+      direction. That is the only usable cue and
       it only exists for a gait with ground contact (walk / run / crawl);
       swim / fly / roll rows are listed, never filled. A diagonal (foot velocity
       split across two axes) spells two words, as the labelled strafes do.
@@ -149,7 +150,6 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     label_words,
     takes_planar_direction,
 )
-from data_loaders.truebones.truebones_utils.joint_parts import cond_contact_joints  # noqa: E402
 from tools.prefill_common import (  # noqa: E402
     DecodedClip,
     Proposal,
@@ -182,7 +182,10 @@ MIRROR_PAIR_FRAMES = 32
 
 # ── heading (locomotion) ──
 GROUND_GAIT_HEADS = ("walk", "run", "crawl")
-# Contact frames: a contact joint within this share of its height range from its lowest.
+# Support joints: those whose lowest point over the clip is within this share of
+# the clip's height span above its lowest joint.
+GROUND_BAND_SHARE = 0.05
+# Contact frames: a support joint within this share of its height range from its lowest.
 CONTACT_HEIGHT_SHARE = 0.20
 # Support-foot travel speed (body lengths / s) under which no heading is read.
 HEADING_MIN_SPEED = 1.0
@@ -323,12 +326,21 @@ def planar_words(vector, diag_share: float) -> list[str]:
     return sorted(words, key=DIRECTION_VOCAB.index)
 
 
+def support_joints(world: np.ndarray) -> list[int]:
+    """Joints that reach the floor in this clip: their lowest point is within
+    ``GROUND_BAND_SHARE`` of the clip's height span above its lowest joint."""
+    lowest = world[:, :, 1].min(axis=0)
+    floor = float(lowest.min())
+    span = max(float(world[:, :, 1].max()) - floor, 1e-9)
+    return [int(j) for j in np.flatnonzero(lowest <= floor + GROUND_BAND_SHARE * span)]
+
+
 def heading_measure(decoded: DecodedClip, entry) -> np.ndarray | None:
     """Support-foot travel direction (body lengths / s) in the XZ plane, or None."""
-    contacts = cond_contact_joints(entry)
-    if not contacts or decoded.frames < 3:
+    if decoded.frames < 3:
         return None
     world = decoded.world
+    contacts = support_joints(world)
     velocity = np.diff(world, axis=0)
     root_velocity = velocity[:, decoded.root_index, :]
     total = np.zeros(2)
