@@ -99,12 +99,17 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     # -- block E: activity and object handling --
     "aim", "carry", "fishing", "cook", "reload",
     "saw", "shovel", "pull", "push",
-    # -- block F: the implement an action is performed with (never the asset
-    # itself): archery, shooting, tool work, shield bash. The word names the
-    # MOTION the implement produces, never the fact of holding one -- see the
-    # note under DIRECTION_VOCAB.
-    "bow", "gun", "hammer", "shield",
+    # -- block F: the implement an action is performed with: archery,
+    # shooting, tool work, shield bash, and ``weapon`` -- the catch-all for a
+    # held weapon no specific word names. See the note under DIRECTION_VOCAB.
+    "bow", "gun", "hammer", "shield", "weapon",
 )
+
+# The block-F words that name a specific implement. ``weapon`` is their
+# fallback, so a label carries at most one of it and these.
+IMPLEMENT_WORDS: tuple[str, ...] = ("bow", "gun", "hammer", "shield")
+WEAPON_FALLBACK_WORD = "weapon"
+assert set(IMPLEMENT_WORDS) | {WEAPON_FALLBACK_WORD} <= set(MODIFIER_VOCAB)
 
 ACTION_VOCAB: tuple[str, ...] = HEAD_VOCAB + MODIFIER_VOCAB
 
@@ -116,12 +121,10 @@ ACTION_VOCAB: tuple[str, ...] = HEAD_VOCAB + MODIFIER_VOCAB
 # one per label.
 DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right", "up", "down")
 
-# WHAT THE CHARACTER HOLDS IS NOT PART OF THE LABEL. There is no hand-state
-# word and no hand slot: an armed and an unarmed clip of the same strike are
-# ONE condition, and the annotation says only what the body does. A visible
-# prop never changes a label. Where an implement IS the motion it reaches the
-# model as a modifier (``bow`` / ``gun`` / ``hammer`` / ``shield``) -- that
-# word names the strike, not the grip.
+# A HELD WEAPON IS ONE MODIFIER, NOT A GRIP. ``bow`` / ``gun`` / ``hammer`` /
+# ``shield`` name an implement whose motion is the action; ``weapon`` marks any
+# other held weapon, one-handed or two-handed alike, and never joins them. There is no hand-count
+# word and no hand slot, and a non-weapon prop never changes a label.
 CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB + DIRECTION_VOCAB
 
 # The closed axis whose table rows are NOT T5 encodings but a synthetic
@@ -420,7 +423,8 @@ def parse_action_label(label: str) -> list[str]:
 
     Every comma-separated piece must be a vocabulary token verbatim: no empty
     segment, no repeat, at most :data:`ACTION_LABEL_MAX_WORDS` tokens, 1..
-    :data:`ACTION_LABEL_MAX_HEADS` head words. An empty label parses to ``[]``
+    :data:`ACTION_LABEL_MAX_HEADS` head words, ``weapon`` never beside an
+    :data:`IMPLEMENT_WORDS` word. An empty label parses to ``[]``
     (= no condition).
 
     Raises :class:`ActionLabelError` rather than dropping anything: a silently
@@ -461,6 +465,14 @@ def parse_action_label(label: str) -> list[str]:
             f"{ACTION_LABEL_MAX_HEADS}). A label names a state, optionally "
             f"qualified by one more, and nothing longer has a defined reading."
         )
+    if WEAPON_FALLBACK_WORD in tokens:
+        implements = [token for token in tokens if token in IMPLEMENT_WORDS]
+        if implements:
+            raise ActionLabelError(
+                f"action_label {label!r} names {WEAPON_FALLBACK_WORD!r} with "
+                f"{implements}. {WEAPON_FALLBACK_WORD!r} is the fallback for a "
+                f"weapon no implement word names; keep only the specific word."
+            )
     return tokens
 
 

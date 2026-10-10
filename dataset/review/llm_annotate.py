@@ -1003,7 +1003,8 @@ stationary -- the character acts WITHOUT travelling across the ground.
     (unarmed lateral sweep of paw / claw / tail), sting, stab, slash, punch,
     smash (heavy overhead or ground slam), throw, spit, cast (magic),
     firebreath, projectile, charge (wind-up or lunge in place), spin; and the
-    implement when the strike IS its motion: bow, gun, hammer, shield.
+    implement when the strike IS its motion: bow, gun, hammer, shield; any
+    other held weapon: weapon.
   - rear means the front of the body comes UP off the ground: "idle, rear",
     "attack, rear".
   - Write a direction word only for a strike or a step that really goes one way.""",
@@ -1052,10 +1053,10 @@ WHAT THE RENDER DOES NOT TELL YOU
    in-place gait still gets its direction -- the heading it is trying to go.
 4. SPEED IS INVISIBLE at this playback rate. Write "fast" only when the name says
    Fast / Sprint / Dash, "slow" only when it says Slow, never both.
-5. WHAT THE CHARACTER HOLDS IS NOT LABELLED. An armed and an empty-handed swing
-   are the same label; a visible prop never changes it. bow / gun / hammer /
-   shield name the MOTION the implement makes (drawing a bow, firing, hammering,
-   a shield bash), never the fact of holding one.
+5. A HELD WEAPON IS ONE WORD. bow / gun / hammer / shield name the MOTION the
+   implement makes (drawing a bow, firing, hammering, a shield bash); any other
+   weapon in hand, one- or two-handed, adds "weapon" -- never together with
+   bow / gun / hammer / shield. A non-weapon prop never changes the label.
 
 ACTION GROUP -- ALREADY DECIDED
 Every clip below is {group_rules}

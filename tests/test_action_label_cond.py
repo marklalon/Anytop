@@ -110,10 +110,11 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         self.assertEqual(DIRECTION_VOCAB, ("forward", "backward", "left", "right", "up", "down"))
         # The direction axis closes the vocabulary.
         self.assertEqual(CONTROLLED_VOCAB[-len(DIRECTION_VOCAB):], DIRECTION_VOCAB)
-        # The label says nothing about what the character holds, so every
-        # spelling of a hand state is a hard error rather than a silently
-        # different condition.
-        for absent in ("weapon", "1hand", "2hand", "hand0", "hand1", "hand2"):
+        # A held weapon is one modifier whatever the grip, so every spelling
+        # of a hand count is a hard error rather than a silently different
+        # condition.
+        self.assertIn("weapon", CONTROLLED_VOCAB)
+        for absent in ("1hand", "2hand", "hand0", "hand1", "hand2"):
             self.assertNotIn(absent, CONTROLLED_VOCAB)
         # Derived adjectives are deliberately absent -- T5 presses "leftward" and
         # "rightward" to near-synonyms -- and so is the mushy "sideways".
@@ -289,6 +290,8 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             ('idle, hand1', 'a hand-state token, which is not vocabulary'),
             ('idle, hand0', 'a hand-state token, which is not vocabulary'),
             ('walk, forward, hand2', 'a hand-state token, which is not vocabulary'),
+            ('attack, bow, weapon', 'weapon beside a specific implement word'),
+            ('idle, shield, weapon', 'weapon beside a specific implement word'),
             (', '.join(['idle'] + list(DIRECTION_VOCAB) + ['bow', 'gun']),
              'over the token cap'),
         ):
