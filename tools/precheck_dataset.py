@@ -43,7 +43,8 @@ Joint names (the main one) duplicate / empty / non-ASCII / over-long names;
             stamped on most joints of a rig, texts left with no body-part word,
             side codes the side detector does not read ("LegMR" stays
             'center'), name side vs geometry side conflicts, unpaired
-            left/right names, blanked joints that parent anatomy, IK helpers
+            left/right names, unpaired sided joints on the midline (an
+            ERROR: the side is a naming mistake), blanked joints that parent anatomy, IK helpers
             that pass for a body part ("Foot_IK" -> "Foot"), canonical-name
             collisions, and Japanese romaji words whose gated mapping stays off.
 
@@ -156,6 +157,10 @@ SHORT_CODE_MAX_LEN = 3
 RIG_STAMP_RATIO = 0.5
 # Left/right name counts may differ by this much before it is worth a warning.
 SIDE_COUNT_SLACK = 2
+# An unpaired left/right joint lying within this share of the rig's lateral
+# width of the midline is a centre joint carrying a wrong side code in its name
+# (Spider "NPC_L_MagicNode", a one-legged rig's "RigLLeg1").
+MIDLINE_SIDE_TOLERANCE = 0.015
 # Blanked joints this close to the root are rig roots / centre-of-gravity nodes.
 ROOT_HELPER_MAX_DEPTH = 2
 # Name tokens that mark an IK / control helper rather than a body part.
@@ -907,6 +912,17 @@ def _parent_offsets(skeleton: Skeleton) -> np.ndarray:
     return offsets
 
 
+def _rest_positions_from_offsets(offsets: np.ndarray, parents: np.ndarray) -> np.ndarray:
+    positions = np.zeros_like(offsets)
+    done = np.asarray(parents) < 0
+    positions[done] = offsets[done]
+    while not done.all():
+        ready = ~done & done[np.maximum(parents, 0)]
+        positions[ready] = positions[parents[ready]] + offsets[ready]
+        done |= ready
+    return positions
+
+
 def _facing_aligned_offsets(skeleton: Skeleton, species: str) -> np.ndarray:
     """``_parent_offsets`` turned into the frame preprocessing builds the joint
     metadata in: the rest pose rotated by the same facing correction
@@ -1187,6 +1203,21 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
         )
         report.add(level, species, "joint-names",
                    f"{len(left)} left vs {len(right)} right joints{details}", source)
+
+    # Blanked joints count here too: the side label still reaches the cond.
+    lateral = _rest_positions_from_offsets(offsets, skeleton.parents)[:, 0]
+    width = float(np.ptp(lateral))
+    on_midline = [
+        f"{raw} ({side_labels[index]}, x={lateral[index]:+.4f})"
+        for index, raw in enumerate(names)
+        if side_labels[index] in ("left", "right") and int(partners[index]) < 0
+        and width > 0 and abs(lateral[index]) <= MIDLINE_SIDE_TOLERANCE * width
+    ]
+    if on_midline:
+        report.add(ERROR, species, "joint-names",
+                   f"{len(on_midline)} unpaired joint(s) on the midline carry a side from their name -- "
+                   f"rename them without the side code: {', '.join(on_midline[:10])}"
+                   f"{' ...' if len(on_midline) > 10 else ''}", source)
 
     collisions = [c for c in canonical if " Variant" in c]
     if collisions:
