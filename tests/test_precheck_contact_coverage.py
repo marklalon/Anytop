@@ -1,5 +1,5 @@
 """precheck_dataset's contact-coverage check: a limb end standing on the floor
-at rest that contact inference leaves out is reported."""
+at rest that the contact prefill leaves out is reported."""
 
 from __future__ import annotations
 
@@ -16,6 +16,10 @@ for path in (_ANYTOP, _ANYTOP / "tools"):
 import precheck_dataset as precheck  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_name_canonical import (  # noqa: E402
     refresh_joint_metadata_in_object_cond,
+)
+from data_loaders.truebones.truebones_utils.joint_parts import prefill_contacts  # noqa: E402
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  # noqa: E402
+    rest_positions_from_offsets,
 )
 
 # A quadruped standing on four feet: hips, spine, two front legs, two rear legs,
@@ -49,7 +53,8 @@ def _cond(names, positions=_POSITIONS):
 
 def test_inferred_contact_feet_are_not_reported():
     cond = _cond(_NAMES)
-    contact = {cond["joints_names"][index] for index in cond["contact_joints"]}
+    rest = rest_positions_from_offsets(cond["offsets"], cond["parents"])
+    contact = {_NAMES[index] for index in prefill_contacts(_NAMES, cond["parents"], rest)}
     assert {"LFrontFoot", "RFrontFoot"} <= contact
     assert "LBackPad" not in contact
 
@@ -70,18 +75,19 @@ def test_a_tip_under_an_excluded_parent_is_not_reported():
 
 def test_a_floor_level_foot_left_out_of_contact_is_reported():
     cond = _cond(_NAMES)
-    # Simulate an inference that saw only the front feet.
-    cond["contact_joints"] = [_NAMES.index("LFrontFoot"), _NAMES.index("RFrontFoot")]
+    # Simulate a prefill that saw only the front feet.
+    contact = [_NAMES.index("LFrontFoot"), _NAMES.index("RFrontFoot")]
     cond["joints_names"] = [name.replace("BackPad", "BackHoof") for name in _NAMES]
-    missing = [cond["joints_names"][index] for index in precheck.floor_limb_ends_missing_contact(cond)]
+    missing = [cond["joints_names"][index]
+               for index in precheck.floor_limb_ends_missing_contact(cond, contact)]
     assert missing == ["LBackHoof", "RBackHoof"]
 
 
 def test_a_contact_ancestor_covers_its_toe_tip():
     names = [name.replace("BackPad", "BackToe") for name in _NAMES]
     cond = _cond(names)
-    cond["contact_joints"] = [names.index(n) for n in ("LFrontFoot", "RFrontFoot", "LBackLeg", "RBackLeg")]
-    assert precheck.floor_limb_ends_missing_contact(cond) == []
+    contact = [names.index(n) for n in ("LFrontFoot", "RFrontFoot", "LBackLeg", "RBackLeg")]
+    assert precheck.floor_limb_ends_missing_contact(cond, contact) == []
 
 
 def test_a_tail_hanging_below_the_feet_does_not_lower_the_floor():
@@ -89,6 +95,6 @@ def test_a_tail_hanging_below_the_feet_does_not_lower_the_floor():
     positions = _POSITIONS.copy()
     positions[names.index("Tail2"), 1] = -0.1
     cond = _cond(names, positions)
-    cond["contact_joints"] = [names.index("LFrontFoot"), names.index("RFrontFoot")]
-    missing = [names[index] for index in precheck.floor_limb_ends_missing_contact(cond)]
+    contact = [names.index("LFrontFoot"), names.index("RFrontFoot")]
+    missing = [names[index] for index in precheck.floor_limb_ends_missing_contact(cond, contact)]
     assert missing == ["LBackHoof", "RBackHoof"]

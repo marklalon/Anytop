@@ -23,6 +23,7 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
     species_file_token,
     species_lookup_map,
 )
+from data_loaders.truebones.truebones_utils.joint_parts import retarget_target_contacts
 from data_loaders.truebones.truebones_utils.motion_process import (
     tpose_features_from_cond,
 )
@@ -170,7 +171,9 @@ def _retarget_reference_motion(
 
     # Both skeletons reconstructed from cond (no mesh read).
     src_tp = tpose_features_from_cond(src_cond, source_type)
-    tgt_tp = tpose_features_from_cond(tgt_cond, target_type)
+    tgt_tp = tpose_features_from_cond(
+        tgt_cond, target_type, contact_joints=retarget_target_contacts(tgt_cond),
+    )
 
     target_features = retarget_features_npy_to_target(
         ref_raw,
@@ -257,7 +260,9 @@ def _retarget_reference_motion_from_file(
     )
 
     # Target rest-pose from cond; source skeleton/motion from the animation file.
-    tgt_tp = tpose_features_from_cond(tgt_cond, target_type)
+    tgt_tp = tpose_features_from_cond(
+        tgt_cond, target_type, contact_joints=retarget_target_contacts(tgt_cond),
+    )
 
     target_features = retarget_animation_file_to_target(
         reference_motion_path,

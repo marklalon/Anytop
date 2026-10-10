@@ -12,6 +12,8 @@ NOTE — frame convention: these ``offsets`` are the processed bind pose stored 
 ``cond.npy``. Preprocessing has already applied the character orientation and
 dataset scale before deriving them, so the dumped t-pose is in the dataset's
 canonical training frame and units rather than the native FBX authoring frame.
+The writer is ``truebones_utils.tpose_bvh``, shared with the review server's
+parts page.
 
 Output layout (next to cond.npy):
     <dataset>/cond.npy
@@ -30,8 +32,6 @@ import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
-
 ANYTOP_DIR = Path(__file__).resolve().parent.parent
 _PARENT_DIR = ANYTOP_DIR.parent
 sys.path.insert(0, str(_PARENT_DIR))
@@ -43,38 +43,7 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
     resolve_species_key,
 )
 from data_loaders.truebones.truebones_utils.param_utils import get_dataset_dir  # noqa: E402
-
-from motion_lib.Animation import Animation  # noqa: E402
-from motion_lib.Quaternions import Quaternions  # noqa: E402
-from motion_lib.BVH import save as bvh_save  # noqa: E402
-
-
-def _build_tpose_animation(object_cond: dict) -> tuple[Animation, list[str]]:
-    """Build a one-frame rest-pose Animation from a cond.npy object entry."""
-    offsets = np.asarray(object_cond["offsets"], dtype=np.float64)
-    parents = np.asarray(object_cond["parents"], dtype=np.int64)
-    joint_names = [
-        str(name).replace(" ", "_")
-        for name in object_cond.get(
-            "canonical_bvh_joint_names",
-            object_cond.get("canonical_joint_names", object_cond["joints_names"]),
-        )
-    ]
-
-    num_joints = offsets.shape[0]
-    if parents.shape[0] != num_joints or len(joint_names) != num_joints:
-        raise ValueError(
-            f"inconsistent joint counts: offsets={num_joints}, "
-            f"parents={parents.shape[0]}, names={len(joint_names)}"
-        )
-
-    # One frame, identity joint rotations -> FK reproduces the rest (t-)pose.
-    rotations = Quaternions.id((1, num_joints))
-    positions = offsets[np.newaxis, :, :].copy()  # (1, J, 3)
-    orients = Quaternions.id(num_joints)
-
-    anim = Animation(rotations, positions, orients, offsets, parents)
-    return anim, joint_names
+from data_loaders.truebones.truebones_utils.tpose_bvh import write_tpose_bvh  # noqa: E402
 
 
 def sample_tpose_bvh(
@@ -109,10 +78,9 @@ def sample_tpose_bvh(
 
     written: list[Path] = []
     for object_type in object_types:
-        anim, joint_names = _build_tpose_animation(cond[object_type])
         out_path = out_dir / f"{file_tokens[object_type]}.bvh"
-        bvh_save(str(out_path), anim, names=joint_names, positions=False)
-        print(f"[OK] {object_type}: {len(joint_names)} joints -> {out_path}")
+        order = write_tpose_bvh(cond[object_type], out_path)
+        print(f"[OK] {object_type}: {len(order)} joints -> {out_path}")
         written.append(out_path)
 
     print(f"\n[PASS] wrote {len(written)} t-pose BVH file(s) to {out_dir}")

@@ -432,10 +432,7 @@ def retarget_animation_file_to_target(
         get_scale_reference_extent,
         compute_scale_factor,
     )
-    from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
-        detect_joint_side,
-        infer_contact_joints,
-    )
+    from data_loaders.truebones.truebones_utils.physics_joint_annotation import detect_joint_side
 
     # 1. Load the raw animation. FBX.load returns per-joint total local rotations
     #    plus the armature's local rest rotations in ``orients``. Keeping that
@@ -663,15 +660,9 @@ def retarget_animation_file_to_target(
     )
     source_tpose_positions = positions_global(source_tpose_anim)
     source_offsets = offsets_from_positions(source_tpose_positions[0], source_tpose_anim.parents)
-    source_foot_indices, source_contact_source = infer_contact_joints(
-        src_names,
-        source_tpose_anim.parents,
-        source_tpose_positions[0],
-    )
     source_tp = SimpleNamespace(
         scale_factor=source_scale_factor,
         offsets=source_offsets,
-        foot_indices=source_foot_indices,
         tpos_rots=source_tpose_anim.rotations,
         names=list(src_names),
         tpos_anim=source_tpose_anim,
@@ -679,7 +670,6 @@ def retarget_animation_file_to_target(
         orientation_quat=Quaternions(src_orientation_quat[None]),
         forward_joint_index=src_forward_joint,
         forward_base_joint_index=src_forward_base_joint,
-        contact_joint_source=source_contact_source,
         axial_avg_len=axial_avg_len,
     )
     source_cond = {

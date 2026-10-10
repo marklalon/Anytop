@@ -19,6 +19,11 @@ from typing import Optional
 
 import numpy as np
 
+from data_loaders.truebones.truebones_utils.joint_parts import (
+    JOINT_CONTACT_KEY,
+    JOINT_PARTS_KEY,
+    cond_contact_joints,
+)
 from data_loaders.truebones.truebones_utils.topology_relations import (
     refresh_topology_relations_in_object_cond,
 )
@@ -55,12 +60,12 @@ _ROW_KEYS = (
     'canonical_joint_names',
     'canonical_bvh_joint_names',
     'joint_side_labels',
+    JOINT_PARTS_KEY,
+    JOINT_CONTACT_KEY,
 )
 # Joint-index lists, each optionally paired with a parallel list of names.
 _INDEX_LIST_KEYS = (
-    ('contact_joints', 'contact_joint_names'),
     ('face_joints', 'face_joint_names'),
-    ('end_effector_joints', 'end_effector_names'),
     ('helper_joint_indices', None),
 )
 # Single joint indices; ``None`` / negative means "unset".
@@ -90,8 +95,8 @@ def _protected_joints(entry, translation_root_index) -> set[int]:
         index = _int_or_none(index)
         if index is not None:
             protected.add(index)
-    for key in ('contact_joints', 'face_joints'):
-        protected.update(int(index) for index in (entry.get(key) or []))
+    protected.update(int(index) for index in (entry.get('face_joints') or []))
+    protected.update(cond_contact_joints(entry))
     return protected
 
 

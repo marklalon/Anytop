@@ -1182,7 +1182,10 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             cross_limb_unreliable_mask: Optional[Tensor] = None,
             loop_phase_mask: Optional[Tensor] = None,
             action_adaln_cond: Optional[Tensor] = None,
-            topology_adaln: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            topology_adaln: Optional[Tensor] = None,
+            return_layer: Optional[int] = None) -> Union[Tensor , Tuple[Tensor, Tensor]]:
+        """``return_layer`` = k also returns the tokens after the first k layers
+        (the auxiliary part head's input), from this same pass."""
         topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._resolve_edge_codes(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._expand_relation_heads(edge_rel)
@@ -1249,8 +1252,12 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     loop_phase_embedding=loop_phase_embedding,
                     action_adaln=None if action_adaln is None else action_adaln[:, layer_ind])
+            if return_layer is not None and layer_ind + 1 == return_layer:
+                tapped = output
         if self.norm is not None:
             output = self.norm(output)
+        if return_layer is not None:
+            return output, tapped
         return output
 
 class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):

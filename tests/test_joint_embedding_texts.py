@@ -166,6 +166,29 @@ def test_horse_link_is_named_for_where_it_sits_not_for_a_horse():
     assert texts[3].startswith('Left Ankle'), texts[3]
 
 
+def test_cannon_is_a_leg_bone_only_below_a_limb_segment():
+    texts = _embedding_texts(
+        ['Hips', 'Spine1', 'Cannon1_R', 'Cannon2_R', 'LargeCannon',
+         'RightThigh', 'RightTibia', 'RightLargeCannon'],
+        [-1, 0, 1, 2, 1, 0, 5, 6],
+    )
+    # Gun barrels on the back.
+    assert texts[2] == ''
+    assert texts[3] == ''
+    assert texts[4] == ''
+    # The hoofed leg's cannon bone.
+    assert texts[7].endswith('Foot'), texts[7]
+
+
+def test_a_long_cannon_chain_inside_a_limb_stays_a_leg_bone():
+    texts = _embedding_texts(
+        ['Hips', 'RightThigh', 'RightTibia',
+         'Cannon1_R', 'Cannon2_R', 'Cannon3_R', 'Cannon4_R', 'Cannon5_R', 'Cannon6_R'],
+        [-1, 0, 1, 2, 3, 4, 5, 6, 7],
+    )
+    assert all(text.endswith('Foot') for text in texts[3:]), texts[3:]
+
+
 def test_props_and_controls_are_blanked_but_anatomy_in_the_same_name_survives():
     texts = _embedding_texts(
         ['Hips', 'Spine1', 'Saddle', 'Reins01', 'Ctrl', 'MagicEffectsNode', 'XtraSpine'],

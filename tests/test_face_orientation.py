@@ -264,8 +264,8 @@ class FaceOrientationChainForwardTest(unittest.TestCase):
         jaws_candidates = _get_facing_candidates(jaws_positions, 'Jaws')
 
         crow_positions = np.zeros((1, 24, 3), dtype=np.float64)
-        crow_positions[:, 8] = np.array([-0.4, 0.0, 0.0], dtype=np.float64)
-        crow_positions[:, 22] = np.array([0.6, 0.0, 0.0], dtype=np.float64)
+        crow_positions[:, 7] = np.array([-0.4, 0.0, 0.0], dtype=np.float64)
+        crow_positions[:, 21] = np.array([0.6, 0.0, 0.0], dtype=np.float64)
         crow_candidates = _get_facing_candidates(crow_positions, 'Crow')
 
         np.testing.assert_allclose(jaws_candidates['chain'][0], np.array([1.0, 0.0, 0.0]), atol=1e-8)

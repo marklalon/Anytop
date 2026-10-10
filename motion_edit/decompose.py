@@ -72,7 +72,7 @@ from motion_edit.runtime import (
     yaw_quat,
 )
 
-PACKAGE_COND_FIELDS = tuple(dict.fromkeys(COND_FIELDS + ("canonical_bvh_joint_names", "end_effector_joints")))
+PACKAGE_COND_FIELDS = tuple(dict.fromkeys(COND_FIELDS + ("canonical_bvh_joint_names",)))
 
 # Full-body IK bone stretch / compress bound (fraction of bone length) used to
 # decode an edit package.
@@ -593,13 +593,16 @@ class ClipInfo:
 
 
 def decode_features(features: np.ndarray, cond_entry: dict, object_type: str, fps: float,
-                    stretch_factor: float, fullbody_ik: bool = True) -> Decoded:
+                    stretch_factor: float, fullbody_ik: bool = True, *,
+                    contact_joints: list[int]) -> Decoded:
     """``fullbody_ik`` off keeps the decode's per-frame local translations, so bones
-    stretch and swing freely and ``stretch_factor`` has no effect."""
+    stretch and swing freely and ``stretch_factor`` has no effect.  ``contact_joints``
+    (the annotation's, before overrides) place the trunk full-body IK keeps."""
     from utils.npy_restore import build_skeleton_only_context, restore_animation_from_features
 
     ctx = build_skeleton_only_context(cond_entry, object_type=object_type,
-                                      feature_joint_count=features.shape[1])
+                                      feature_joint_count=features.shape[1],
+                                      contact_joints=list(contact_joints))
     restored = restore_animation_from_features(
         features, ctx, restore_space="hml", fullbody_ik=bool(fullbody_ik),
         stretch_factor=float(stretch_factor), fps=fps)
@@ -636,12 +639,14 @@ def decompose_motion(
 ) -> EditPackage:
     """``notes``: diagnostic items about the inputs, kept through later rebuilds."""
     features = np.asarray(features)
-    decoded = decode_features(features, cond_entry, object_type, fps, stretch_factor, fullbody_ik)
+    contacts = contacts or contact_source(cond_entry)
+    decoded = decode_features(features, cond_entry, object_type, fps, stretch_factor, fullbody_ik,
+                              contact_joints=contacts.cond)
     info = ClipInfo(object_type, clip_name, bool(is_loop), action_group, action_label,
                     float(stretch_factor), dataset_root, bool(fullbody_ik), list(notes or []))
     return assemble_package(decoded, features, cond_entry, info,
                             profile or ProfileSubset("missing"),
-                            contacts or contact_source(cond_entry), passive or PassiveSource(),
+                            contacts, passive or PassiveSource(),
                             contact_params=contact_params)
 
 
@@ -940,11 +945,10 @@ def redecompose(package: EditPackage, stretch_factor: Optional[float] = None, *,
     if fullbody_ik is not None:
         info.fullbody_ik = bool(fullbody_ik)
     features = package["source_features"]
+    contacts = ContactSource.from_dict(package.manifest["contacts"]["source"])
     decoded = decode_features(features, cond, info.object_type, package.fps, info.stretch_factor,
-                              info.fullbody_ik)
-    return assemble_package(decoded, features, cond, info, profile,
-                            ContactSource.from_dict(package.manifest["contacts"]["source"]),
-                            _passive_of(package))
+                              info.fullbody_ik, contact_joints=contacts.cond)
+    return assemble_package(decoded, features, cond, info, profile, contacts, _passive_of(package))
 
 
 def with_contact_joints(package: EditPackage, joints, *, species_add=None,

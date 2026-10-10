@@ -84,12 +84,12 @@ python preprocess_and_validate.py --regenerate-side-artifacts
   "index": 2,  "raw_name": "NPC_LLeg1",
   "canonical_name": "Left Leg 1",  "canonical_bvh_name": "LeftLeg1",
   "embedding_text": "Left Leg",
-  "is_anatomical": true, "side": "left", "is_contact": false, "is_end_effector": false
+  "is_anatomical": true, "side": "left", "part": "leg", "is_contact": false
 }
 ```
 
 看四件事：`embedding_text` 是不是人话；`side` 有没有该左右却是 `center`；
-`is_contact` / `is_end_effector` 在末端关节上有没有点亮；`is_anatomical` 有没有误杀真解剖。
+`part` 对不对、`is_contact` 在末端关节上有没有点亮；`is_anatomical` 有没有误杀真解剖。
 
 顺手做一次**新鲜度对拍**：用当前代码 live 重算一遍 `build_joint_embedding_texts`，和 JSON 里的
 `embedding_text` 逐条比对。全等说明产物和代码同步；不等说明有人改了词表却没重跑（或忘了 bump）。
@@ -247,7 +247,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 | B5 | `EMBED_TEXT_LIMB_CODE_TOKENS` / `EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS` / `EMBED_TEXT_FACE_QUADRANT_CODE_TOKENS` | 四足肢位码 `lf/rf/lb/rb` → `Front`/`Back`（左右交给几何）；halves 互换的 `fl/fr/bl/br`、六足中腿 `lm/rm/ml/mr` 只在同名里还有 `arm`/`leg`/`wing` 时解码。面部角码 `tl/tr/bl/br` → `Upper`/`Lower`，只在同名里还有 `mouth`/`lip`/`jaw` 等面部词时解码；上下文门控负责区分 `wingBL` 的后翼和 `MouthBL` 的左下嘴角 |
 | B6 | `EMBED_TEXT_SYNONYM_TOKENS` | 解剖同义词 + rig 缩写 + 拼写错误，全部折叠到语料已有的词。**长尾治理的主力表** |
 | B7 | `_EMBED_TEXT_TOKEN_PAIR_MERGES` | 相邻两词合成一词（`upper leg`→Thigh、`horse link`→Ankle）。单词映射解决不了时用这个。**注意执行顺序：pair merge 跑在 B6 单词映射之前**，所以被拼错的词要么两条都写（`('rower','reg')` 和 `rower`/`reg` 各自），要么就落不到 merge 上 |
-| B8 | `EMBED_TEXT_HEAD_FEATURE_TOKENS` | 头部附属物额外追加一个 `HeadFeature` 类别词，让它们在 T5 空间里彼此靠近 |
+| B8 | `_EMBED_TEXT_HEAD_PART_TOKENS` | 精炼后的名字里含头部部位词（同义词映射之后判定），末尾追加一个 `HeadFeature` 类别词，避免带 side 的短文本（`Left Ear`、`Left Jaw`）在 T5 空间里贴到四肢上。新数据集出现新的头部部位词时加进这张表 |
 | B9 | `_EMBED_TEXT_HELPER_NODE_TOKENS` | IK 目标、FX/挂点 dummy、质心节点（`ik`/`dummy`/`fx`/`com`/`cog`/`cg`）。和 B4 不同：B4 逐词丢弃、名字里还有解剖词就留下，B9 命中即**整个关节置零**，因为旁边的解剖词说的是它驱动或挂靠的部位（`Foot_IK`、`FXDummy_Head`）。一个词只进 B4 或 B9 其中一张 |
 | B10 | `EMBED_TEXT_HEAD_MOUTH_CODE_TOKENS` + `EMBED_TEXT_HEAD_CODE_CONTEXT_TOKENS` | 头上的口器码：`lm`/`rm`→Mouth（侧别交给几何），`tm`→Upper Mouth，`dm`→Lower Mouth。头部上下文来自同名里的 `head`，或沿自身码链往上第一个不同名的祖先是头（`Bone_LM02`→`Bone_LM01`→`Bone_Head`）。同名里有肢体词时让位给 B5 的中腿码 |
 
@@ -258,8 +258,8 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 | C1 | `detect_joint_side` 的 marker 元组 | 左右识别。新数据集用了新的侧别写法（`_L_`/`Lft`/`L01`/`Lwing`…）必须加。显式 `Left`/`Right` 优先于方位码；歧义码的门控必须与 B5 一致：肢体码要求 `arm`/`leg`/`wing`，面部角码要求 `mouth`/`lip`/`jaw` 等面部词 |
 | C2 | `joint_signature` / `_signature_tokens` / `_LIMB_CODE_SIGNATURE_TOKENS` / `_SIGNATURE_SPELLING_TOKENS` | 对称配对签名。剥掉左右半码、**但保留前后/中或上下半码**——否则前肢会和后肢、上嘴角会和下嘴角配成一对。签名是**拼写键**，不吃 B6 同义词：左右拼法被改坏（`Lower`/`Rower`）时在 `_SIGNATURE_SPELLING_TOKENS` 里做纯拼写修复，不要把整张同义词表塞进来（会重排所有现有 rig 的分组） |
 | C3 | `_FACE_JOINT_*` / `_FORWARD_REFERENCE_PRIORITIES` / `_BODY_AXIS_*`（在 `face_orientation.py`） | 朝向解算挑哪些关节。新物种的髋/肩/鼻子叫了别的名字，朝向就会算错；道具骨（披风/头发/武器）要进 exclude |
-| C4 | `_CONTACT_JOINT_*` / `_CONTACT_CHAIN_*` | 触地关节判定（脚/爪/掌） |
-| C5 | `_END_EFFECTOR_*` | 末端执行器判定 |
+| C4 | `_CONTACT_JOINT_*` / `_CONTACT_CHAIN_*`（在 `joint_parts.py`） | `joint_parts.jsonl` 的触地预填（脚/爪/掌）；预填之后由人工核验 |
+| C5 | `_CONTACT_GEOMETRY_DISTAL_TOKENS` / `_CONTACT_EXCLUDE_TOKENS`（在 `joint_parts.py`） | 几何法触地预填的候选叶子池：名字带远端肢体词、不带排除词的叶子 |
 
 ### D 层 · 度量 —— 不影响模型，但影响 renamer 的评测与 S6 prior
 
@@ -335,8 +335,8 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
   新 rig 有自己的缩写体系时只能继续往 B6 加。
 - **`ant` / `horse` / `jaws` 被刻意排除在物种表之外**（分别撞 antenna、HorseLink、jaw）。
   再加物种名时要检查是否和解剖词撞车。
-- **装备挂点会被判成 end effector。** `LeftHandContainer` 这类挂在手下的空节点是叶子，
-  `_END_EFFECTOR_*` 认它。B4 置零只去掉名字里的 marker 词，不会取消这个标志。
+- **装备挂点会进触地预填的候选池。** `LeftHandContainer` 这类挂在手下的空节点是叶子，
+  `_CONTACT_GEOMETRY_DISTAL_TOKENS` 认它。B4 置零只去掉名字里的 marker 词，不会把它踢出候选池；核验时在 parts 页去掉。
 
 ---
 

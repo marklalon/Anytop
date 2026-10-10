@@ -46,7 +46,7 @@ Profile 是可选输入。缺失时，分解器从 `cond` 推导角色和腿长�
 - **次级运动**：候选关节的 `spring` 和拟合信息。数据能支持受父运动驱动的拟合时使用拟合参数，否则用按悬挂长度计算的默认弹簧。是否启用 passive 由关节选择决定，和弹簧拟合是否通过无关。
 - **动作参考**：locomotion 的周期、占空比、着地相位、隐含地速、步幅，以及竖直动作统计。分解器使用匹配 `action_label` 的步态行比较当前动作并产生诊断；编辑以当前动作自身的事件和曲线为基准。
 
-接触关节集合从 `cond.contact_joints` 开始，物种级 `contact_overrides.json` 可按关节名增删；接触发生在哪些帧由动作计算。Passive 候选须满足子树内没有支撑关节，名字匹配毛发、耳朵、衣物等部位的候选默认启用；`passive_overrides.json` 可覆盖。两种物种级覆盖都带 `skeleton_hash`，骨架变化后旧覆盖被忽略。没有训练 clip 的骨架可按相同 `species_tags` 和规范关节名借用其他 Profile 的自由度信息，置信度为 0；没有可用 Profile 时仍可分解。
+接触关节集合从物种的 `joint_parts.jsonl` 接触标注开始（烘焙在 cond 的 `joint_contact` 里），物种级 `contact_overrides.json` 可按关节名增删；接触发生在哪些帧由动作计算。Passive 候选须满足子树内没有支撑关节，名字匹配毛发、耳朵、衣物等部位的候选默认启用；`passive_overrides.json` 可覆盖。两种物种级覆盖都带 `skeleton_hash`，骨架变化后旧覆盖被忽略。没有训练 clip 的骨架可按相同 `species_tags` 和规范关节名借用其他 Profile 的自由度信息，置信度为 0；没有可用 Profile 时仍可分解。
 
 ## 3. Edit Package：动作的可编辑表示
 

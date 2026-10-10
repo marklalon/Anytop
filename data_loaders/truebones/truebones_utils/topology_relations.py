@@ -66,7 +66,7 @@ EDGE_CODES = {
     # in every earlier checkpoint's embedding table; every pair that used to land
     # here now lands in 6..11 below.
     'no_relation': 4,
-    'end_effector': 5,
+    'leaf': 5,            # the diagonal cell of a joint without children
     # --- former 'no_relation', subdivided -----------------------------------
     'ancestor': 6,        # j is a strict ancestor of i, more than one hop up
     'descendant': 7,      # j is a strict descendant of i, more than one hop down
@@ -242,7 +242,7 @@ def create_topology_edge_relations(parents, max_path_len: int = MAX_PATH_LEN,
     edge_rel = np.where(child_of, EDGE_CODES['child'], edge_rel)
     np.fill_diagonal(edge_rel, EDGE_CODES['self'])
     is_leaf = ~np.any(child_of, axis=1)
-    edge_rel[idx[is_leaf], idx[is_leaf]] = EDGE_CODES['end_effector']
+    edge_rel[idx[is_leaf], idx[is_leaf]] = EDGE_CODES['leaf']
 
     twin = _mirror_twin_mask(symmetry_partner_indices, n) & ~colinear & ~eye
     edge_rel = edge_rel + MIRROR_TWIN_FLAG * twin.astype(np.int64)

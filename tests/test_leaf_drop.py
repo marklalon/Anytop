@@ -62,11 +62,9 @@ def _entry():
         'symmetry_partner_indices': partners,
         'symmetric_joint_pairs': [[4, 6], [5, 7], [14, 16], [15, 17]],
         'symmetric_joint_pair_names': [['j4', 'j6'], ['j5', 'j7'], ['j14', 'j16'], ['j15', 'j17']],
-        'contact_joints': [_FOOT],
-        'contact_joint_names': ['j8'],
+        'joint_parts': np.arange(joint_count, dtype=np.int16),
+        'joint_contact': np.isin(np.arange(joint_count), [_FOOT]),
         'face_joints': [4, 6],
-        'end_effector_joints': [_HEAD_NUB, _L_FINGER_TIP, _R_FINGER_TIP, _FOOT, _TAIL_TIP],
-        'end_effector_names': [f'j{j}' for j in (3, 5, 7, 8, 10)],
         'kinematic_chains': [[0, 1, 2, 3], [1, 4, 5], [1, 6, 7], [0, 8], [0, 9, 10]],
         'translation_root_index': 0,
         'forward_joint_index': 2,
@@ -114,9 +112,9 @@ def test_drop_remaps_every_index():
     assert entry['symmetry_partner_indices'] == [-1, -1, -1, 4, 3, -1, -1, -1, -1, -1, -1, 13, 14, 11, 12]
     assert entry['symmetric_joint_pairs'] == [[3, 4], [11, 13], [12, 14]]
     assert entry['symmetric_joint_pair_names'] == [['j4', 'j6'], ['j14', 'j16'], ['j15', 'j17']]
-    assert entry['contact_joints'] == [5] and entry['contact_joint_names'] == ['j8']
+    assert np.flatnonzero(entry['joint_contact']).tolist() == [5]
+    np.testing.assert_array_equal(entry['joint_parts'], _entry()['joint_parts'][keep])
     assert entry['face_joints'] == [3, 4]
-    assert entry['end_effector_joints'] == [5, 7] and entry['end_effector_names'] == ['j8', 'j10']
     assert entry['kinematic_chains'] == [[0, 1, 2], [1, 3], [1, 4], [0, 5], [0, 6, 7]]
     assert entry['forward_joint_index'] == 2 and entry['forward_base_joint_index'] is None
     assert entry['canonical_joint_names'] == [_NAMES[j] for j in keep]
@@ -160,7 +158,7 @@ def test_without_a_terminator_a_segment_still_goes():
 
 def test_a_twin_of_a_protected_joint_is_kept():
     entry = _entry()
-    entry['contact_joints'] = [_L_FINGER_TIP]
+    entry['joint_contact'] = np.isin(np.arange(len(_PARENTS)), [_L_FINGER_TIP])
     motion = _motion(live_joints=[])
     rng = random.Random(2)
     for _ in range(50):
@@ -175,7 +173,7 @@ _needs_merged = pytest.mark.skipif(not os.path.isfile(_MERGED_COND), reason='mer
 
 @_needs_merged
 @pytest.mark.parametrize('species, clip, body_parts', [
-    # Rear hooves carry no contact annotation; the wings hang off the spine.
+    # Rear hooves, jaw and ears are body parts; the wings hang off the spine.
     ('truebones/zoo/Deer', 'Deer_Gallop.npy',
      ['Right Rear Hoof', 'Left Rear Hoof', 'Jaw', 'Right Ear', 'Left Ear']),
     ('truebones/zoo/Roach', 'Roach_Scurry.npy', ['Spine 1 Left Wing', 'Spine 1 Right Wing']),

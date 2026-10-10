@@ -113,6 +113,54 @@ def wrapper_root_depth(joint_names, parents, offsets) -> int:
     return depth
 
 
+# A detached control root is a ground-level mover with the body standing above
+# it: Crow's ``Pelvis`` under its ``Spine``. Both shares are of the rest
+# skeleton's largest joint span. The root must sit at most MAX_HEIGHT above the
+# lowest rest joint, and its only child at least MIN_RISE above the root. A
+# Biped ``Bip01`` on its pelvis (no rise) and a body root that merely sits low
+# (no ground contact) both stay.
+DETACHED_ROOT_MAX_HEIGHT_SHARE = 0.12
+DETACHED_ROOT_MIN_RISE_SHARE = 0.15
+
+
+def detached_root_depth(joint_names, parents, rest_positions) -> int:
+    """How many detached control roots sit on top of the skeleton.
+
+    The run down the single-child root chain of joints that stand on the ground
+    with their child well above them (``DETACHED_ROOT_*_SHARE``), measured in the
+    Y-up rest pose. Each one is folded with :func:`promote_root_once`, which is
+    lossless: the child inherits its rotation and its transport.
+    """
+    names = list(joint_names)
+    parents = np.asarray(parents, dtype=np.int64)
+    rest_positions = np.asarray(rest_positions, dtype=np.float64)
+    if len(names) < 2:
+        return 0
+    deltas = rest_positions[:, None, :] - rest_positions[None, :, :]
+    span = float(np.sqrt((deltas ** 2).sum(-1)).max())
+    if span <= 0.0:
+        return 0
+    floor = float(rest_positions[:, 1].min())
+    depth = 0
+    root = 0
+    while root < len(names) - 1:
+        children = np.flatnonzero(parents == root)
+        children = children[children != root]
+        if len(children) != 1:
+            break
+        child = int(children[0])
+        height = rest_positions[root, 1] - floor
+        rise = rest_positions[child, 1] - rest_positions[root, 1]
+        if (
+            height > DETACHED_ROOT_MAX_HEIGHT_SHARE * span
+            or rise < DETACHED_ROOT_MIN_RISE_SHARE * span
+        ):
+            break
+        depth += 1
+        root = child
+    return depth
+
+
 def collapse_root_skeleton(
     joint_names: list[str],
     parents: np.ndarray,

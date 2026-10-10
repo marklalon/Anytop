@@ -149,6 +149,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     label_words,
     takes_planar_direction,
 )
+from data_loaders.truebones.truebones_utils.joint_parts import cond_contact_joints  # noqa: E402
 from tools.prefill_common import (  # noqa: E402
     DecodedClip,
     Proposal,
@@ -324,7 +325,7 @@ def planar_words(vector, diag_share: float) -> list[str]:
 
 def heading_measure(decoded: DecodedClip, entry) -> np.ndarray | None:
     """Support-foot travel direction (body lengths / s) in the XZ plane, or None."""
-    contacts = [int(j) for j in entry.get("contact_joints", [])]
+    contacts = cond_contact_joints(entry)
     if not contacts or decoded.frames < 3:
         return None
     world = decoded.world

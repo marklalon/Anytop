@@ -146,13 +146,16 @@ def main() -> None:
     from data_loaders.truebones.truebones_utils.features import (
         tpose_features_from_cond,
     )
+    from data_loaders.truebones.truebones_utils.joint_parts import retarget_target_contacts
     from utils.misc import infer_object_type_from_filename
     from utils.npy_restore import write_feature_bvh
 
     base_name = os.path.splitext(os.path.basename(source_path))[0]
 
     # Target rest-pose skeleton reconstructed from cond — no T-pose mesh read.
-    tgt_tp = tpose_features_from_cond(tgt_cond, target_type)
+    tgt_tp = tpose_features_from_cond(
+        tgt_cond, target_type, contact_joints=retarget_target_contacts(tgt_cond),
+    )
 
     # Resolve FPS from target cond (used for BVH export frametime).
     fps = float(tgt_cond.get('fps', 30.0))

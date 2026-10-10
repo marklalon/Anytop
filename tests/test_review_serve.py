@@ -357,3 +357,109 @@ def test_clean_removes_species_tags_after_its_last_motion_is_deleted(tmp_path):
     assert any("Cat, Already_Stale" in note for note in payload["notes"])
     saved_tags = [json.loads(line) for line in species_tags.read_text(encoding="utf-8").splitlines()]
     assert [row["species"] for row in saved_tags] == ["Dog"]
+
+
+def _parts_store(tmp_path, monkeypatch):
+    """A PartsStore over one synthetic quadruped; cond.npy is stubbed out."""
+    from tests.test_joint_parts import _quadruped
+
+    entry = _quadruped(['FrontLeg1', 'FrontLeg2', 'FrontFoot'], ['BackLeg1', 'BackLeg2', 'BackFoot'])
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    (processed / "cond.npy").write_bytes(b"")
+    monkeypatch.setattr(review, "load_cond", lambda path: {entry["object_type"]: entry})
+    store = review.PartsStore({
+        "id": "sample", "processed": str(processed),
+        "cond": processed / "cond.npy", "joint_parts": processed / review.JOINT_PARTS_FILE,
+        "metadata": processed / "motion_metadata.json",
+    })
+    return store, entry
+
+
+def test_parts_page_shows_a_missing_row_as_its_prefill_and_writes_it_on_first_edit(tmp_path, monkeypatch):
+    store, entry = _parts_store(tmp_path, monkeypatch)
+    [listed], orphans = store.species_list()
+    assert listed["status"] == "missing" and orphans == []
+    shown = store.skeleton("Synthetic")
+    assert {j["name"]: j["part"] for j in shown["joints"]}["L_FrontFoot"] == "hand"
+    assert not store.path.exists()
+
+    payload = store.update("Synthetic", {"Tail1": {"part": "soft"}})
+
+    assert payload["status"] == "auto"
+    row = review.read_joint_parts_sidecar(store.path)["Synthetic"]
+    assert row["joints"]["Tail1"] == {**row["joints"]["Tail1"], "part": "soft", "src": "manual"}
+    assert row["joints"]["Head"]["src"] == "name"
+    assert len(row["joints"]) == len(entry["joints_names"])
+
+
+def test_parts_update_refuses_contact_on_helper_without_writing(tmp_path, monkeypatch):
+    store, _ = _parts_store(tmp_path, monkeypatch)
+    store.update("Synthetic", {"Head": {"part": "helper"}})
+    before = store.path.read_bytes()
+    with pytest.raises(review.JointPartsError, match="helper"):
+        store.update("Synthetic", {"Head": {"contact": 1}})
+    assert store.path.read_bytes() == before
+
+
+def test_parts_undo_restores_the_prefill_source(tmp_path, monkeypatch):
+    store, _ = _parts_store(tmp_path, monkeypatch)
+    store.update("Synthetic", {"Tail1": {"part": "soft"}})
+    store.update("Synthetic", {"Tail1": {"part": "tail", "contact": 0, "src": "name", "why": "Tail"}})
+    joint = review.read_joint_parts_sidecar(store.path)["Synthetic"]["joints"]["Tail1"]
+    assert joint == {"part": "tail", "contact": 0, "src": "name", "why": "Tail"}
+
+
+def test_parts_reprefill_keeps_manual_joints_and_drops_reviewed_only_on_change(tmp_path, monkeypatch):
+    store, _ = _parts_store(tmp_path, monkeypatch)
+    store.update("Synthetic", {"Tail1": {"part": "soft"}}, reviewed=True)
+
+    result = store.prefill("Synthetic", apply=True)
+    assert result["diff"] == []
+    assert result["skeleton"]["status"] == "reviewed"
+
+    # A non-manual joint edited behind the page's back is re-proposed on prefill.
+    rows = review.read_joint_parts_sidecar(store.path)
+    rows["Synthetic"]["joints"]["Head"]["part"] = "neck"
+    review.write_joint_parts_sidecar(store.path, rows.values())
+    result = store.prefill("Synthetic", apply=True)
+    assert [d["name"] for d in result["diff"]] == ["Head"]
+    assert result["skeleton"]["status"] == "auto"
+    joints = review.read_joint_parts_sidecar(store.path)["Synthetic"]["joints"]
+    assert joints["Head"]["part"] == "head" and joints["Tail1"]["part"] == "soft"
+
+
+def test_parts_stale_row_lists_added_and_removed_joints(tmp_path, monkeypatch):
+    store, _ = _parts_store(tmp_path, monkeypatch)
+    store.update("Synthetic", {"Tail1": {"part": "soft"}}, reviewed=True)
+    rows = review.read_joint_parts_sidecar(store.path)
+    joints = rows["Synthetic"]["joints"]
+    joints["Gone"] = joints.pop("Head")
+    rows["Synthetic"]["skeleton_sig"] = "0" * 16
+    review.write_joint_parts_sidecar(store.path, rows.values())
+
+    shown = store.skeleton("Synthetic")
+
+    assert shown["status"] == "stale" and not shown["reviewed"]
+    assert shown["added"] == ["Head"] and shown["removed"] == ["Gone"]
+    assert {j["name"]: j["part"] for j in shown["joints"]}["Tail1"] == "soft"
+
+
+def test_parts_clips_list_only_the_species_clips_that_have_a_bvh(tmp_path, monkeypatch):
+    store, _ = _parts_store(tmp_path, monkeypatch)
+    store.metadata_path.write_text(json.dumps({"motions": {
+        "Synthetic_Walk.npy": {"object_type": "Synthetic"},
+        "Synthetic_Idle.npy": {"object_type": "Synthetic"},
+        "Other_Walk.npy": {"object_type": "Other"},
+    }}), encoding="utf-8")
+    store.clip_dir.mkdir()
+    (store.clip_dir / "Synthetic_Walk.bvh").write_text("walk", encoding="utf-8")
+    (store.clip_dir / "Other_Walk.bvh").write_text("other", encoding="utf-8")
+
+    assert store.clips("Synthetic") == ["Synthetic_Walk"]
+    assert store.clip_bvh("Synthetic", "Synthetic_Walk") == b"walk"
+    for clip in ("Synthetic_Idle", "Other_Walk", "../Synthetic_Walk"):
+        with pytest.raises(KeyError):
+            store.clip_bvh("Synthetic", clip)
+    with pytest.raises(KeyError):
+        store.clips("Missing")

@@ -10,6 +10,7 @@ from typing import Optional
 
 import numpy as np
 
+from data_loaders.truebones.truebones_utils.joint_parts import JOINT_CONTACT_KEY
 from motion_edit.profile import gait as gait_stats
 from motion_edit.profile.data import Clip, DatasetSource, decode_clip, skeleton_hash
 from motion_edit.profile.joints import (
@@ -50,7 +51,7 @@ HINGE_NAME = re.compile(r"knee|elbow|hiza|hiji", re.IGNORECASE)
 
 COND_FIELDS = (
     "joints_names", "parents", "offsets", "scale_factor", "orientation_quat",
-    "translation_root_index", "contact_joints", "joint_side_labels", "symmetry_partner_indices",
+    "translation_root_index", JOINT_CONTACT_KEY, "joint_side_labels", "symmetry_partner_indices",
     "kinematic_chains", "species_tags", "axial_avg_len", "canonical_joint_names",
     "forward_joint_index", "forward_base_joint_index",
 )

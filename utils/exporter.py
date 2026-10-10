@@ -650,12 +650,13 @@ def _ground_root_on_lowest_contacts(
     position is ``rest_offset + rest_rotation . location`` and a world-space
     shift ``d`` is ``rest_rotation^-1 . d`` in its location channel.
 
+    The rig is an external one with no joint_parts.jsonl row, so its contacts
+    come from the prefill heuristic.
+
     Returns ``(root_translation, report)``; *report* is ``None`` when the rig
     has no detectable contact joints and the root is returned unchanged.
     """
-    from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
-        infer_contact_joints,
-    )
+    from data_loaders.truebones.truebones_utils.joint_parts import prefill_contacts
 
     parents = np.asarray(parents, dtype=np.int32)
     rest_offsets = np.asarray(rest_offsets, dtype=np.float64)
@@ -674,9 +675,7 @@ def _ground_root_on_lowest_contacts(
         rest_offsets,
         rest_rotations,
     )
-    contact_indices, _contact_source = infer_contact_joints(
-        list(names), parents, rest_positions[0],
-    )
+    contact_indices = prefill_contacts(list(names), parents, rest_positions[0])
     contact_indices = [int(j) for j in contact_indices if 0 <= int(j) < joint_count]
     if not contact_indices:
         return root_translation, None

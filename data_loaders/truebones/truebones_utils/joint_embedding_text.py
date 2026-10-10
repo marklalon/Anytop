@@ -19,7 +19,6 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 )
 from .joint_name_canonical import (
     EMBED_TEXT_CREATURE_TOKENS,
-    EMBED_TEXT_HEAD_FEATURE_TOKENS,
     build_joint_name_inspection_rows,
     canonicalize_joint_name,
     infer_species_joint_name_prefixes,
@@ -288,6 +287,17 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
     'lips': 'Lip',
     'btm': 'Bottom',
 }
+# Parts on the head other than the head itself, matched on the refined tokens
+# (after synonyms, so "Snout" counts as "Nose"). A name holding one gets a
+# trailing "HeadFeature" category word: alone, a sided "Left Ear" or "Left Jaw"
+# sits next to the limbs in T5 space, because the side word dominates a short
+# text. The specific word stays, so Eye, Ear and Jaw remain apart.
+_EMBED_TEXT_HEAD_PART_TOKENS = frozenset({
+    'beak', 'beard', 'cheek', 'crest', 'crown', 'ear', 'eye', 'eyeball', 'eyebrow',
+    'eyelid', 'face', 'fang', 'fangs', 'horn', 'horns', 'jaw', 'lip', 'lure',
+    'mouth', 'nose', 'nostril', 'pupil', 'teeth', 'tongue', 'tooth', 'trunk',
+    'wattle',
+})
 
 
 # Bump whenever the text build_joint_embedding_texts produces for a joint can
@@ -295,7 +305,7 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
 # or refinement, or what goes into the sentence. Stored name embeddings are keyed
 # by this version, so a bump makes the loader reject stale cond files until
 # preprocessing re-runs.
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 19
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 21
 
 
 # Adjacent tokens that name one part together ("upper leg" -> Thigh). Applied
@@ -316,9 +326,10 @@ _EMBED_TEXT_TOKEN_PAIR_MERGES = {
     ('lower', 'reg'): 'Calf',
     # 3ds Max Biped's digitigrade link, Thigh -> Calf -> HorseLink -> Foot
     ('horse', 'link'): 'Ankle',
-    # keeps an eyelid from reading as "Eye" (HeadFeature) + "Lid"
+    # keeps an eyelid from reading as "Eye" + "Lid"
     ('eye', 'lid'): 'Eyelid',
     ('eye', 'lids'): 'Eyelid',
+    ('eye', 'ball'): 'Eyeball',
 }
 
 
@@ -363,7 +374,7 @@ _EMBED_TEXT_BARE_LEG_TOKENS = frozenset({'leg', 'reg'})
 _BARE_LEG_CONTEXT_MAX_LINKS = 4
 
 
-def _bare_leg_means_calf(joint_names, parents, end_effector_joints=(), additional_prefixes=()):
+def _bare_leg_means_calf(joint_names, parents, additional_prefixes=()):
     """Per-joint flag: is this bare "Leg" the segment *below* a named thigh?
 
     The leg-side counterpart of ``_bare_arm_means_upper_arm``. In Mixamo-style
@@ -397,14 +408,13 @@ def _bare_leg_means_calf(joint_names, parents, end_effector_joints=(), additiona
         )
 
     children = child_lists(parents)
-    end_effectors = {int(joint_index) for joint_index in (end_effector_joints or ())}
     flags = [False] * joint_count
     for joint_index in range(joint_count):
         own_tokens = tokens_per_joint[joint_index]
         if len(own_tokens) != 1 or own_tokens[0] not in _EMBED_TEXT_BARE_LEG_TOKENS:
             continue
         # A bare "Leg" with nothing below it is the foot, not the shank.
-        if joint_index in end_effectors or not children[joint_index]:
+        if not children[joint_index]:
             continue
 
         ancestor = int(parents[joint_index])
@@ -470,6 +480,50 @@ def _mouth_code_below_head(joint_names, parents, additional_prefixes=()):
     return flags
 
 
+# Synonym words that name a bone only inside a limb: a hoofed leg's "Cannon"
+# below the tibia, against a gun barrel mounted on the back.
+_EMBED_TEXT_LIMB_ONLY_SYNONYM_TOKENS = frozenset({'cannon'})
+# Segment words, after synonym folding, that put a joint inside a limb.
+_EMBED_TEXT_LIMB_SEGMENT_TOKENS = frozenset({
+    'Thigh', 'Calf', 'Knee', 'Ankle', 'Foot', 'Leg', 'UpperLeg',
+    'UpperArm', 'Forearm', 'Elbow', 'Wrist', 'Hand', 'Arm',
+})
+
+
+def _limb_only_word_outside_limb(joint_names, parents, additional_prefixes=()):
+    """Per-joint flag: does this limb-only word sit off any limb?
+
+    The context is the first ancestor outside the joint's own chain
+    ("Cannon3_R" -> "Cannon2_R" -> "Cannon1_R" -> "Spine1"). A name that also
+    spells a limb segment carries its own context. A flagged joint names no body
+    part.
+    """
+    joint_count = len(joint_names)
+    if parents is None or len(parents) != joint_count:
+        return [False] * joint_count
+
+    parents = np.asarray(parents, dtype=np.int64)
+    token_sets = [
+        frozenset(_body_clean_tokens(str(name), additional_prefixes=additional_prefixes)[1])
+        for name in joint_names
+    ]
+    def limb_segments(tokens):
+        return {
+            _EMBED_TEXT_SYNONYM_TOKENS.get(token, token.capitalize())
+            for token in tokens - _EMBED_TEXT_LIMB_ONLY_SYNONYM_TOKENS
+        } & _EMBED_TEXT_LIMB_SEGMENT_TOKENS
+
+    flags = [False] * joint_count
+    for joint_index, tokens in enumerate(token_sets):
+        if not tokens & _EMBED_TEXT_LIMB_ONLY_SYNONYM_TOKENS or limb_segments(tokens):
+            continue
+        ancestor = int(parents[joint_index])
+        while ancestor >= 0 and token_sets[ancestor] == tokens:
+            ancestor = int(parents[ancestor])
+        flags[joint_index] = ancestor < 0 or not limb_segments(token_sets[ancestor])
+    return flags
+
+
 def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
                                    quadrant_codes_name_a_limb=False,
                                    digit_limb=None, bare_leg_is_calf=False,
@@ -515,12 +569,6 @@ def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
         return ['UpperLeg']
     if clean_token == 'clip':
         return ['Appendage']
-    if clean_token in EMBED_TEXT_HEAD_FEATURE_TOKENS:
-        # Emit the specific word *and* the shared category. The category token
-        # keeps every head appendage close together in T5 space (the point of
-        # the grouping), while the specific word stops Jaguar's Eye, Ear and
-        # Beard from collapsing onto one identical "HeadFeature Right".
-        return [clean_token.capitalize(), 'HeadFeature']
     return [clean_token.capitalize()]
 
 
@@ -668,7 +716,10 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
         if position == 0 or token != merged_tokens[position - 1]
     ]
     if deduped_tokens:
-        return _drop_redundant_limb_carrier(deduped_tokens)
+        refined_tokens = _drop_redundant_limb_carrier(deduped_tokens)
+        if any(token.lower() in _EMBED_TEXT_HEAD_PART_TOKENS for token in refined_tokens):
+            refined_tokens = [*refined_tokens, 'HeadFeature']
+        return refined_tokens
 
     # Nothing survived, so hand back the raw canonical tokens -- minus the side
     # word, which build_joint_embedding_texts is about to re-attach from the
@@ -712,7 +763,6 @@ def build_joint_embedding_texts(object_cond):
     bare_leg_flags = _bare_leg_means_calf(
         base_joint_names,
         object_cond.get('parents'),
-        end_effector_joints=object_cond.get('end_effector_joints') or (),
         additional_prefixes=species_prefixes,
     )
     mouth_code_flags = _mouth_code_below_head(
@@ -720,9 +770,14 @@ def build_joint_embedding_texts(object_cond):
         object_cond.get('parents'),
         additional_prefixes=species_prefixes,
     )
+    off_limb_flags = _limb_only_word_outside_limb(
+        base_joint_names,
+        object_cond.get('parents'),
+        additional_prefixes=species_prefixes,
+    )
     texts = []
     for joint_index, joint_name in enumerate(base_joint_names):
-        if joint_name_is_helper_node(joint_name, additional_prefixes=species_prefixes):
+        if off_limb_flags[joint_index] or joint_name_is_helper_node(joint_name, additional_prefixes=species_prefixes):
             texts.append('')
             continue
         refined_tokens = _refine_joint_embedding_name(
@@ -945,13 +1000,19 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
     # cond keys are '<namespace>/<species>', which cannot go into a filename;
     # the file token degrades to the plain species name whenever it is unique.
     from .dataset_sources import build_species_file_tokens
+    # Imported here: joint_parts builds on this module's texts.
+    from .joint_parts import JOINT_PARTS_FILE, read_joint_parts_sidecar, species_of
     file_tokens = build_species_file_tokens(cond)
+    part_rows = read_joint_parts_sidecar(pjoin(save_dir, JOINT_PARTS_FILE))
     for object_type in sorted(cond):
         object_cond = cond[object_type]
         embedding_texts = embedding_texts_by_object[object_type]
         inspection_path = pjoin(inspection_dir, f'{file_tokens[object_type]}.json')
+        rows = build_joint_name_inspection_rows(
+            object_cond, embedding_texts, part_rows.get(species_of(object_cond)),
+        )
         with open(inspection_path, 'w', encoding='utf-8') as inspection_file:
-            json.dump(build_joint_name_inspection_rows(object_cond, embedding_texts), inspection_file, indent=2)
+            json.dump(rows, inspection_file, indent=2)
 
     if write_collision_report:
         write_joint_name_collision_report(cond, save_dir)

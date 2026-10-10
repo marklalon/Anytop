@@ -79,8 +79,10 @@ def _validate_motion(path: str) -> Optional[np.ndarray]:
     return motion.astype(np.float32)
 
 
-def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> Path:
-    """Register an optional custom cond.npy for novel query species."""
+def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str, motion_paths) -> Path:
+    """Register an optional custom cond.npy for novel query species. Their part
+    annotation is the ``joint_parts.jsonl`` beside the query motions, which must
+    therefore come from one generation output directory."""
     resolved = Path(cond_path).expanduser()
     if not resolved.is_absolute():
         resolved = resolved.resolve()
@@ -91,7 +93,13 @@ def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str)
     if not isinstance(cond_dict, dict):
         raise ValueError(f"Expected cond.npy to contain a dict, got {type(cond_dict).__name__}")
 
-    scorer.register_cond(cond_dict)
+    motion_dirs = {Path(path).resolve().parent for path in motion_paths}
+    if len(motion_dirs) != 1:
+        raise ValueError(
+            "--cond-path motions must come from one generation output directory "
+            f"(its joint_parts.jsonl), got {len(motion_dirs)}"
+        )
+    scorer.register_cond(cond_dict, joint_parts_dir=next(iter(motion_dirs)))
     return resolved
 
 
@@ -359,7 +367,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     scorer = DistributionMotionQualityScorer(dataset_root=args.dataset_root)
     if args.cond_path:
         try:
-            _register_cond_path(scorer, args.cond_path)
+            _register_cond_path(scorer, args.cond_path, motion_paths)
         except (FileNotFoundError, ValueError, OSError) as exc:
             print(f"[error] failed to load --cond-path: {exc}", file=sys.stderr)
             return 1

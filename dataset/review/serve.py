@@ -13,7 +13,8 @@ dataset::
     {"namespace": "truebones/zoo", "path": "dataset/truebones/zoo/truebones_processed"}
 
 ``path`` is relative to the Anytop tree that holds this ``dataset/`` folder.
-Each processed dir must carry ``action_labels.jsonl``; that dataset's review
+A processed dir is listed once it has ``cond.npy``; the label grid shows the
+ones that also carry ``action_labels.jsonl``. That dataset's review
 GIFs are expected under ``<processed>/review/gif/`` (produced by
 ``render_gifs.py`` next to this file, which reads the same manifest).  A
 dataset whose GIFs have not been rendered yet simply shows each card's
@@ -73,6 +74,17 @@ every configured dataset when this server starts. This keeps the dataset
 loadable immediately, not just after the next preprocess. Every source move is appended to
 ``<trash>/soft_deleted.jsonl`` so it can be traced back and undone by hand.
 
+``/parts`` is the second page: each species' joints on its cond t-pose, with
+the body part and ground contact of ``<processed>/joint_parts.jsonl`` (see
+``truebones_utils/joint_parts.py``). A species without a row, or whose row was
+written for another skeleton (stale), is shown with the prefill proposal; its
+first edit writes that proposal into the sidecar together with the edit. Every
+edited joint becomes ``"src": "manual"``, which a later prefill never touches.
+The t-pose is a single-frame BVH written from cond (``truebones_utils
+.tpose_bvh``) and cached under ``<processed>/bvh_tpose/``; it is rebuilt when
+cond.npy is newer. The page can also play a species' clips from
+``<processed>/bvhs/``, listed through ``motion_metadata.json``.
+
     python serve.py [--port 8765] [--datasets ../datasets.jsonl] [--no-browser]
 
 ``/api/labels`` accepts optional ``q``, ``field=label|clip|both``,
@@ -100,6 +112,8 @@ THIS_DIR = Path(__file__).resolve().parent      # .../dataset/review
 DATASET_ROOT = THIS_DIR.parent                  # .../dataset
 ANYTOP_ROOT = DATASET_ROOT.parent               # .../Anytop
 INDEX = THIS_DIR / "index.html"
+PARTS_PAGE = THIS_DIR / "parts.html"
+VENDOR_DIR = THIS_DIR / "vendor"
 DEFAULT_DATASETS = DATASET_ROOT / "datasets.jsonl"
 
 # serve.py is commonly started by path from outside the Anytop directory.  Add
@@ -109,8 +123,32 @@ DEFAULT_DATASETS = DATASET_ROOT / "datasets.jsonl"
 if str(ANYTOP_ROOT) not in sys.path:
     sys.path.insert(0, str(ANYTOP_ROOT))
 
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
+from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
+    build_species_file_tokens,
+)
 from data_loaders.truebones.truebones_utils.fbx_filename_rules import (  # noqa: E402
     _is_tpose_reference_path,
+)
+from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noqa: E402
+    build_joint_embedding_texts,
+)
+from data_loaders.truebones.truebones_utils.joint_parts import (  # noqa: E402
+    ALL_PART_LABELS,
+    HELPER_PART,
+    JOINT_PARTS_FILE,
+    JointPartsError,
+    PART_SOURCES,
+    merge_prefill,
+    prefill_joint_parts,
+    read_joint_parts_sidecar,
+    skeleton_signature,
+    species_of,
+    write_joint_parts_sidecar,
+)
+from data_loaders.truebones.truebones_utils.tpose_bvh import (  # noqa: E402
+    tpose_dfs_order,
+    write_tpose_bvh,
 )
 from data_loaders.truebones.truebones_utils.loop_verdict import (  # noqa: E402
     rewrite_terminal_row,
@@ -431,7 +469,11 @@ def _prune_dataset_species_tags(ds):
 
 
 def discover_datasets(datasets_file):
-    """Read datasets.jsonl into dataset descriptors (labels file must exist)."""
+    """Read datasets.jsonl into dataset descriptors (cond.npy must exist).
+
+    ``labels`` is None for a dataset with no ``action_labels.jsonl`` yet: the
+    parts page lists it, the label grid does not.
+    """
     out = []
     f = Path(datasets_file)
     if not f.is_file():
@@ -449,9 +491,9 @@ def discover_datasets(datasets_file):
             continue
         ns = entry.get("namespace") or entry.get("name") or Path(rel).name
         processed = (ANYTOP_ROOT / rel).resolve()
-        labels = processed / "action_labels.jsonl"
-        if not labels.is_file():
+        if not (processed / "cond.npy").is_file():
             continue
+        labels = processed / "action_labels.jsonl"
         gif_dir = processed / "review" / "gif"
         raw = entry.get("raw")
         out.append({
@@ -459,10 +501,12 @@ def discover_datasets(datasets_file):
             "name": ns,
             "processed": str(processed),
             "raw": (ANYTOP_ROOT / raw).resolve() if raw else None,
-            "labels": labels,
+            "labels": labels if labels.is_file() else None,
             "gif_dir": gif_dir,
             "metadata": processed / "motion_metadata.json",
             "species_tags": processed / "species_tags.jsonl",
+            "cond": processed / "cond.npy",
+            "joint_parts": processed / JOINT_PARTS_FILE,
         })
     return out
 
@@ -681,10 +725,303 @@ class LabelStore:
             return changed
 
 
+def _parts_status(row, sig):
+    if row is None:
+        return "missing"
+    if row["skeleton_sig"] != sig:
+        return "stale"
+    return "reviewed" if row["reviewed"] else "auto"
+
+
+class PartsStore:
+    """One dataset's ``cond.npy`` and ``joint_parts.jsonl``, for the parts page.
+
+    Both are re-read when their mtime changes, so a prefill run or a regen in
+    another shell shows up on the next request. Edits reload the sidecar first
+    and are applied joint by joint, so two tabs editing different joints of the
+    same species do not undo each other; the whole file is then rewritten
+    atomically.
+    """
+
+    def __init__(self, ds):
+        self.ds = ds
+        self.cond_path = Path(ds["cond"])
+        self.path = Path(ds["joint_parts"])
+        self.bvh_dir = Path(ds["processed"]) / "bvh_tpose"
+        self.clip_dir = Path(ds["processed"]) / "bvhs"
+        self.metadata_path = Path(ds["metadata"])
+        self.clips_by_species = {}   # object_type -> clip stems (from motion_metadata.json)
+        self.metadata_mtime = None
+        self.lock = threading.Lock()
+        self.cond = {}
+        self.cond_mtime = None
+        self.by_species = {}     # species -> cond key
+        self.file_tokens = {}
+        self.texts = {}          # cond key -> embedding texts (cached per cond load)
+        self.prefills = {}       # cond key -> prefill proposal (cached per cond load)
+        self.rows = {}
+        self.mtime = None
+
+    # -- loading ---------------------------------------------------------
+    def _refresh(self):
+        cond_mtime = self.cond_path.stat().st_mtime_ns
+        if cond_mtime != self.cond_mtime:
+            self.cond = load_cond(self.cond_path)
+            self.by_species = {species_of(entry): key for key, entry in self.cond.items()}
+            self.file_tokens = build_species_file_tokens(self.cond)
+            self.texts = {}
+            self.prefills = {}
+            self.cond_mtime = cond_mtime
+        mtime = self.path.stat().st_mtime_ns if self.path.is_file() else None
+        if mtime != self.mtime:
+            self.rows = read_joint_parts_sidecar(self.path)
+            self.mtime = mtime
+
+    def _write(self):
+        write_joint_parts_sidecar(self.path, self.rows.values())
+        self.mtime = self.path.stat().st_mtime_ns
+
+    def _entry(self, species):
+        key = self.by_species.get(species)
+        if key is None:
+            raise KeyError(species)
+        return key, self.cond[key]
+
+    def _embedding_texts(self, key):
+        if key not in self.texts:
+            self.texts[key] = build_joint_embedding_texts(self.cond[key])
+        return self.texts[key]
+
+    def _prefill(self, species):
+        key, entry = self._entry(species)
+        if key not in self.prefills:
+            self.prefills[key] = prefill_joint_parts(entry)
+        return self.prefills[key]
+
+    def _proposal(self, species, entry):
+        """``(row, sig, added, removed)``: the row the page shows for ``species``.
+
+        A missing or stale row is shown as what writing it would produce --
+        the prefill merged over any manual joints -- and is not written until
+        the first edit.
+        """
+        sig = skeleton_signature(entry["joints_names"], entry["parents"])
+        row = self.rows.get(species)
+        if row is not None and row["skeleton_sig"] == sig:
+            return row, sig, [], []
+        merged, _ = merge_prefill(row, self._prefill(species), species, sig)
+        names = set(entry["joints_names"])
+        old = set(row["joints"]) if row else set()
+        added = [name for name in entry["joints_names"] if row is not None and name not in old]
+        removed = sorted(name for name in old if name not in names)
+        return merged, sig, added, removed
+
+    # -- reads -----------------------------------------------------------
+    def species_count(self):
+        with self.lock:
+            self._refresh()
+            return len(self.by_species)
+
+    def species_list(self):
+        with self.lock:
+            self._refresh()
+            out = []
+            for species, key in sorted(self.by_species.items(), key=lambda item: item[0].lower()):
+                entry = self.cond[key]
+                sig = skeleton_signature(entry["joints_names"], entry["parents"])
+                status = _parts_status(self.rows.get(species), sig)
+                joints = list(self._proposal(species, entry)[0]["joints"].values())
+                counts = {}
+                for joint in joints:
+                    counts[joint["part"]] = counts.get(joint["part"], 0) + 1
+                out.append({
+                    "species": species,
+                    "joints": len(entry["joints_names"]),
+                    "status": status,
+                    "geometry": sum(1 for joint in joints if joint["src"] == "geometry"),
+                    "inherit": sum(1 for joint in joints if joint["src"] == "inherit"),
+                    "manual": sum(1 for joint in joints if joint["src"] == "manual"),
+                    "contact": sum(joint["contact"] for joint in joints),
+                    "parts": counts,
+                })
+            orphans = sorted(species for species in self.rows if species not in self.by_species)
+            return out, orphans
+
+    def tpose_bvh(self, species):
+        with self.lock:
+            self._refresh()
+            key, entry = self._entry(species)
+            path = self.bvh_dir / f"{self.file_tokens[key]}.bvh"
+            if not path.is_file() or path.stat().st_mtime_ns < self.cond_mtime:
+                write_tpose_bvh(entry, path)
+            return path.read_bytes()
+
+    def clips(self, species):
+        """Stems of ``species``' clips that have a BVH under ``bvhs/``, sorted."""
+        with self.lock:
+            self._refresh()
+            self._entry(species)
+            mtime = self.metadata_path.stat().st_mtime_ns if self.metadata_path.is_file() else None
+            if mtime != self.metadata_mtime:
+                motions = {}
+                if mtime is not None:
+                    payload = json.loads(self.metadata_path.read_text(encoding="utf-8"))
+                    motions = payload.get("motions") or {}
+                self.clips_by_species = {}
+                for clip, meta in motions.items():
+                    self.clips_by_species.setdefault(meta.get("object_type"), []).append(clip_stem(clip))
+                self.metadata_mtime = mtime
+            stems = self.clips_by_species.get(species, [])
+            return sorted((s for s in stems if (self.clip_dir / f"{s}.bvh").is_file()), key=str.lower)
+
+    def clip_bvh(self, species, clip):
+        """A clip's BVH; ``clip`` must be one of ``species``' clips."""
+        if clip not in self.clips(species):
+            raise KeyError(clip)
+        return (self.clip_dir / f"{clip}.bvh").read_bytes()
+
+    def skeleton(self, species):
+        with self.lock:
+            self._refresh()
+            return self._skeleton_payload(species)
+
+    def _species_dir(self, species):
+        """The species' source folder under the dataset's raw root, relative to Anytop, or None."""
+        raw = self.ds.get("raw")
+        if raw is None or not raw.is_dir():
+            return None
+        found = raw / species
+        if not found.is_dir():
+            folded = species.casefold()
+            found = next((d for d in raw.iterdir() if d.is_dir() and d.name.casefold() == folded), None)
+            if found is None:
+                return None
+        try:
+            return found.relative_to(ANYTOP_ROOT).as_posix()
+        except ValueError:
+            return str(found)
+
+    def _skeleton_payload(self, species):
+        key, entry = self._entry(species)
+        row, sig, added, removed = self._proposal(species, entry)
+        stored = self.rows.get(species)
+        status = _parts_status(stored, sig)
+        names = [str(name) for name in entry["joints_names"]]
+        canonical = list(entry.get("canonical_joint_names") or names)
+        texts = self._embedding_texts(key)
+        sides = list(entry.get("joint_side_labels") or ["center"] * len(names))
+        twins = list(entry.get("symmetry_partner_indices") or [-1] * len(names))
+        parents = [int(parent) for parent in entry["parents"]]
+        joints = []
+        for index, name in enumerate(names):
+            joint = row["joints"][name]
+            joints.append({
+                "index": index,
+                "name": name,
+                "canonical": str(canonical[index]),
+                "text": texts[index] if index < len(texts) else "",
+                "parent": parents[index],
+                "side": sides[index],
+                "twin": int(twins[index]),
+                "part": joint["part"],
+                "contact": int(joint["contact"]),
+                "src": joint["src"],
+                "why": joint.get("why", ""),
+                "added": name in added,
+            })
+        return {
+            "species": species,
+            "object_type": key,
+            "species_tags": list(entry.get("species_tags") or ()),
+            "path": self._species_dir(species),
+            "status": status,
+            "reviewed": bool(stored and status == "reviewed"),
+            "skeleton_sig": sig,
+            "bvh_order": tpose_dfs_order(parents),
+            "added": added,
+            "removed": removed,
+            "joints": joints,
+        }
+
+    # -- writes ----------------------------------------------------------
+    def update(self, species, edits, reviewed=None):
+        """Apply ``{joint name: {part?, contact?, src?, why?}}`` and/or ``reviewed``.
+
+        An edit without ``src`` marks the joint ``manual``; the page sends the
+        old ``src``/``why`` back only when it undoes an edit.
+        """
+        with self.lock:
+            self._refresh()
+            _, entry = self._entry(species)
+            row, sig, _, _ = self._proposal(species, entry)
+            joints = {name: dict(joint) for name, joint in row["joints"].items()}
+            for name, edit in (edits or {}).items():
+                if name not in joints:
+                    raise JointPartsError(f"{species} has no joint {name!r}")
+                joint = joints[name]
+                if "part" in edit:
+                    if edit["part"] not in ALL_PART_LABELS:
+                        raise JointPartsError(f"unknown part {edit['part']!r}")
+                    joint["part"] = edit["part"]
+                    if joint["part"] == HELPER_PART:
+                        joint["contact"] = 0
+                if "contact" in edit:
+                    if edit["contact"] not in (0, 1, True, False):
+                        raise JointPartsError("contact must be 0 or 1")
+                    if edit["contact"] and joint["part"] == HELPER_PART:
+                        raise JointPartsError(f"{name}: a helper joint cannot be a contact")
+                    joint["contact"] = int(bool(edit["contact"]))
+                joint["src"] = edit.get("src", "manual")
+                if joint["src"] not in PART_SOURCES:
+                    raise JointPartsError(f"unknown src {joint['src']!r}")
+                if "why" in edit:
+                    joint["why"] = str(edit["why"])
+            new_row = {
+                "species": species,
+                "skeleton_sig": sig,
+                "reviewed": bool(row["reviewed"]) if reviewed is None else bool(reviewed),
+                "joints": joints,
+            }
+            self.rows[species] = new_row
+            self._write()
+            return self._skeleton_payload(species)
+
+    def prefill(self, species, apply):
+        """Re-run the prefill over ``species``, keeping its ``manual`` joints.
+
+        Returns the per-joint diff; with ``apply`` the row is written, and it
+        loses its reviewed mark when anything changed.
+        """
+        with self.lock:
+            self._refresh()
+            _, entry = self._entry(species)
+            sig = skeleton_signature(entry["joints_names"], entry["parents"])
+            old = self.rows.get(species)
+            # Unreviewed for the merge: a reviewed row would otherwise be kept whole.
+            base = dict(old, reviewed=False) if old else None
+            row, _ = merge_prefill(base, self._prefill(species), species, sig)
+            current, _, _, _ = self._proposal(species, entry)
+            diff = []
+            for name in entry["joints_names"]:
+                before, after = current["joints"].get(name), row["joints"][name]
+                if before is None or (before["part"], before["contact"]) != (after["part"], after["contact"]):
+                    diff.append({"name": name, "before": before, "after": after})
+            if apply:
+                stale = old is not None and old["skeleton_sig"] != sig
+                row["reviewed"] = bool(old and old["reviewed"] and not stale and not diff)
+                # Own copies: the proposal entries are shared with the prefill cache.
+                row["joints"] = {name: dict(joint) for name, joint in row["joints"].items()}
+                self.rows[species] = row
+                self._write()
+            return {"diff": diff, "skeleton": self._skeleton_payload(species)}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    datasets = []       # list of dataset descriptors (see discover_datasets)
+    datasets = []       # datasets with action_labels.jsonl (see discover_datasets)
     stores = {}         # dataset id -> LabelStore
+    parts_datasets = [] # every dataset with cond.npy
+    parts_stores = {}   # dataset id -> PartsStore
 
     def log_message(self, fmt, *args):  # keep the console readable
         if self.command != "GET" or not self.path.startswith("/gif/"):
@@ -746,6 +1083,24 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self._send_json(500, {"error": f"missing {INDEX}"})
             return self._send(200, body, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+
+        if path in ("/parts", "/parts.html"):
+            try:
+                body = PARTS_PAGE.read_bytes()
+            except OSError:
+                return self._send_json(500, {"error": f"missing {PARTS_PAGE}"})
+            return self._send(200, body, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+
+        if path.startswith("/vendor/"):
+            name = os.path.basename(path)
+            file = VENDOR_DIR / name
+            if not name.endswith(".js") or not file.is_file():
+                return self._send_json(404, {"error": "no such vendor file"})
+            return self._send(200, file.read_bytes(), "text/javascript; charset=utf-8",
+                              {"Cache-Control": "max-age=86400"})
+
+        if path.startswith("/api/parts/"):
+            return self._parts_get(path)
 
         if path == "/api/datasets":
             payload = []
@@ -847,16 +1202,90 @@ class Handler(BaseHTTPRequestHandler):
 
         return self._send_json(404, {"error": "not found"})
 
+    def _parts_store(self, ds_id):
+        store = self.parts_stores.get(ds_id)
+        if store is None and not ds_id and self.parts_datasets:
+            store = self.parts_stores.get(self.parts_datasets[0]["id"])
+        return store
+
+    def _parts_get(self, path):
+        params = self._query()
+        if path == "/api/parts/datasets":
+            payload = []
+            for d in self.parts_datasets:
+                try:
+                    count = self.parts_stores[d["id"]].species_count()
+                except (JointPartsError, ValueError, OSError):
+                    count = None
+                payload.append({"id": d["id"], "name": d["name"],
+                                "joint_parts": str(d["joint_parts"]), "species": count})
+            return self._send_json(200, {"datasets": payload})
+        store = self._parts_store(params.get("ds"))
+        if store is None:
+            return self._send_json(404, {"error": f"unknown dataset: {params.get('ds')}"})
+        species = params.get("species", "")
+        try:
+            if path == "/api/parts/species":
+                rows, orphans = store.species_list()
+                return self._send_json(200, {"dataset": store.ds["id"], "species": rows,
+                                             "orphans": orphans,
+                                             "parts": list(ALL_PART_LABELS)})
+            if path == "/api/parts/tpose.bvh":
+                return self._send(200, store.tpose_bvh(species), "text/plain; charset=utf-8",
+                                  {"Cache-Control": "no-store"})
+            if path == "/api/parts/skeleton":
+                return self._send_json(200, store.skeleton(species))
+            if path == "/api/parts/clips":
+                return self._send_json(200, {"species": species, "clips": store.clips(species)})
+            if path == "/api/parts/clip.bvh":
+                clip = params.get("clip", "")
+                # clips() raises KeyError for a species missing from cond.
+                if clip not in store.clips(species):
+                    return self._send_json(404, {"error": f"no clip {clip!r} for {species}"})
+                return self._send(200, store.clip_bvh(species, clip),
+                                  "text/plain; charset=utf-8", {"Cache-Control": "no-store"})
+        except KeyError:
+            return self._send_json(404, {"error": f"species not in cond: {species}"})
+        except (JointPartsError, ValueError) as exc:
+            return self._send_json(500, {"error": str(exc)})
+        except OSError as exc:
+            return self._send_json(500, {"error": f"read failed: {exc}"})
+        return self._send_json(404, {"error": "not found"})
+
+    def _parts_post(self, route, payload):
+        store = self._parts_store(payload.get("ds"))
+        if store is None:
+            return self._send_json(404, {"error": f"unknown dataset: {payload.get('ds')}"})
+        species = payload.get("species") or ""
+        try:
+            if route == "/api/parts/update":
+                edits = payload.get("joints") or {}
+                if not isinstance(edits, dict):
+                    return self._send_json(400, {"error": "joints must be an object"})
+                reviewed = payload.get("reviewed")
+                if reviewed is not None and not isinstance(reviewed, bool):
+                    return self._send_json(400, {"error": "reviewed must be true or false"})
+                return self._send_json(200, store.update(species, edits, reviewed))
+            return self._send_json(200, store.prefill(species, bool(payload.get("apply"))))
+        except KeyError:
+            return self._send_json(404, {"error": f"species not in cond: {species}"})
+        except JointPartsError as exc:
+            return self._send_json(400, {"error": str(exc)})
+        except OSError as exc:
+            return self._send_json(500, {"error": f"write failed: {exc}"})
+
     def do_POST(self):
         route = urlparse(self.path).path
         if route not in ("/api/update", "/api/mark-pending", "/api/clean",
-                         "/api/clear-autofill"):
+                         "/api/clear-autofill", "/api/parts/update", "/api/parts/prefill"):
             return self._send_json(404, {"error": "not found"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
             payload = json.loads(self.rfile.read(length) or b"{}")
         except (ValueError, TypeError) as exc:
             return self._send_json(400, {"error": f"bad request: {exc}"})
+        if route.startswith("/api/parts/"):
+            return self._parts_post(route, payload)
         if route == "/api/clean":
             return self._clean(payload)
         if route == "/api/mark-pending":
@@ -1157,10 +1586,12 @@ def main():
 
     TRASH_ROOT = Path(args.trash).expanduser()
 
-    Handler.datasets = discover_datasets(args.datasets)
-    if not Handler.datasets:
+    Handler.parts_datasets = discover_datasets(args.datasets)
+    if not Handler.parts_datasets:
         print(f"no datasets found in {args.datasets} -- check the manifest", file=os.sys.stderr)
         raise SystemExit(1)
+    Handler.parts_stores = {d["id"]: PartsStore(d) for d in Handler.parts_datasets}
+    Handler.datasets = [d for d in Handler.parts_datasets if d["labels"] is not None]
     register_raw_mirrors(Handler.datasets)
     for d in Handler.datasets:
         try:
@@ -1192,6 +1623,7 @@ def main():
             f"{f', {autofill} autofill' if autofill else ''}, {gifs} gifs"
         )
     print(f"labels manifest : {Path(args.datasets).resolve()}")
+    print(f"joint parts page: {url}parts")
     print(f"clean trash dir : {TRASH_ROOT}")
     print(f"serving: {url}   (ctrl-c to stop)")
 

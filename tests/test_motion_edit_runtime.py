@@ -174,8 +174,10 @@ def _reference(package: EditPackage):
     from utils.npy_restore import build_skeleton_only_context, restore_animation_from_features
 
     cond = decode_json(package["source_cond"])
+    contacts = package.manifest["contacts"]["source"]["cond"]
     restored = restore_animation_from_features(
-        package["source_features"], build_skeleton_only_context(cond), restore_space="hml",
+        package["source_features"], build_skeleton_only_context(cond, contact_joints=contacts),
+        restore_space="hml",
         fullbody_ik=package.manifest["fullbody_ik"], stretch_factor=package.manifest["stretch_factor"],
         fps=package.fps)
     return restored.animation.rotations.qs, positions_global(restored.animation)
@@ -268,7 +270,7 @@ def test_redecompose_with_zero_stretch_is_rigid(packages):
     parents = rigid["parents"]
     cond = decode_json(rigid["source_cond"])
     kept = {rigid.root, *trunk_joint_indices(parents, cond["joint_side_labels"],
-                                             cond["contact_joints"]).tolist()}
+                                             rigid.manifest["contacts"]["source"]["cond"]).tolist()}
     child = np.flatnonzero((parents >= 0) & ~np.isin(parents, sorted(kept)))
     rest = np.linalg.norm(rigid["anim_offsets"][child], axis=-1)
     lengths = np.linalg.norm(rigid["base_pos"][:, child], axis=-1)
@@ -1483,7 +1485,9 @@ def test_skinned_export_matches_restore_glb(packages, tmp_path):
                               str(tmp_path / "mine.glb"), HORSE_TPOSE)
     cond = load_cond(os.path.join(HORSE_ROOT, "cond.npy"))[HORSE_KEY]
     restored = restore_animation_from_features(
-        package["source_features"], build_mesh_restore_context(cond, HORSE_TPOSE, HORSE_KEY),
+        package["source_features"],
+        build_mesh_restore_context(cond, HORSE_TPOSE, HORSE_KEY,
+                                   contact_joints=package.manifest["contacts"]["source"]["cond"]),
         restore_space="native", fullbody_ik=True, stretch_factor=package.manifest["stretch_factor"],
         fps=package.fps)
     inputs = animation_to_exporter_inputs(restored.animation, restored.skeleton)

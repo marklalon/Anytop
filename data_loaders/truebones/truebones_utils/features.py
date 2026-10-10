@@ -21,10 +21,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     MAX_JOINTS,
 )
 from utils.rotation_conversions import rotation_6d_to_matrix_np
-from .physics_joint_annotation import (
-    infer_contact_joints,
-    detect_joint_side,
-)
+from .physics_joint_annotation import detect_joint_side
 from .face_orientation import (
     resolve_face_joints,
     calculate_root_quat,
@@ -449,21 +446,40 @@ def get_common_features_from_rest_pose(
     # re-applied here because at load time the drops above had not run yet -- a
     # ``Dummy_Root`` whose only other children are prop sockets was kept there,
     # while the same rig without sockets lost it.
-    if promote_root_depth is None:
-        from motion_lib.root_collapse import wrapper_root_depth
+    #
+    # A detached control root left on top after that fold -- a ground-level joint
+    # with the body standing above it (``detached_root_depth``) -- is measured on
+    # the folded skeleton. The rest-pose-only case folds it here too; with
+    # clips, phase 1 adds it to the depth it records, so the fold stays one
+    # frozen number in cond.
+    from motion_lib.root_collapse import detached_root_depth, wrapper_root_depth
+    rest_pose_only = promote_root_depth is None
+    if rest_pose_only:
         promote_root_depth = wrapper_root_depth(
             rest_pose_names, reference_anim.parents, reference_anim.offsets,
         )
-    if promote_root_depth:
-        reference_anim, rest_pose_names, _kept_after_promote = (
-            promote_translation_root_to_hierarchy_root(
-                reference_anim,
-                rest_pose_names,
-                promote_root_depth,
-                context=rest_pose_context,
-            )
+
+    def _fold_roots(anim, names, joints, depth):
+        anim, names, kept = promote_translation_root_to_hierarchy_root(
+            anim, names, depth, context=rest_pose_context,
         )
-        face_joints = _remap_joint_indices(face_joints, _kept_after_promote)
+        return anim, names, _remap_joint_indices(joints, kept)
+
+    if promote_root_depth:
+        reference_anim, rest_pose_names, face_joints = _fold_roots(
+            reference_anim, rest_pose_names, face_joints, promote_root_depth,
+        )
+    detached_depth = detached_root_depth(
+        rest_pose_names,
+        reference_anim.parents,
+        positions_global(reference_anim)[0],
+    )
+    if rest_pose_only and detached_depth:
+        reference_anim, rest_pose_names, face_joints = _fold_roots(
+            reference_anim, rest_pose_names, face_joints, detached_depth,
+        )
+        promote_root_depth += detached_depth
+        detached_depth = 0
     # Crop oversized skeletons down to max_joints BEFORE any face/contact/offset
     # inference, so every downstream rest-pose artifact is built on the cropped
     # skeleton. Leaves are removed deepest-first, same-depth ties prefer shorter
@@ -539,15 +555,9 @@ def get_common_features_from_rest_pose(
     scaled_positions = positions_global(scaled)
     scaled_rest_positions = scaled_positions[0]
     offsets = offsets_from_positions(scaled_rest_positions, scaled.parents)
-    suspected_foot_indices, contact_joint_source = infer_contact_joints(
-        rest_pose_names,
-        scaled.parents,
-        scaled_rest_positions,
-    )
     return TPoseFeatures(
         scale_factor=scale_factor,
         offsets=offsets,
-        foot_indices=suspected_foot_indices,
         tpos_rots=scaled.rotations,
         names=rest_pose_names,
         tpos_anim=scaled,
@@ -555,11 +565,11 @@ def get_common_features_from_rest_pose(
         orientation_quat=rest_pose_orientation_quat,
         forward_joint_index=forward_joint_index,
         forward_base_joint_index=forward_base_joint_index,
-        contact_joint_source=contact_joint_source,
         axial_avg_len=axial_avg_len,
         prop_socket_names=prop_socket_names,
         end_site_names=end_site_names,
         promote_root_depth=int(promote_root_depth),
+        detached_root_depth=int(detached_depth),
     )
 
 
@@ -568,7 +578,7 @@ def get_common_features_from_T_pose(*args, **kwargs):
     return get_common_features_from_rest_pose(*args, **kwargs)
 
 
-def tpose_features_from_cond(cond_entry, object_type=None):
+def tpose_features_from_cond(cond_entry, object_type=None, contact_joints=()):
     """Reconstruct TPoseFeatures from a prebuilt cond.npy entry — no mesh access.
 
     Every field the retarget / reference-preprocessing paths consume is already
@@ -577,8 +587,10 @@ def tpose_features_from_cond(cond_entry, object_type=None):
 
       offsets, parents, joint names, bind-pose local rotations
       (``tpose_rest_rotations``), orientation_quat, forward joint indices, face
-      joints, contact (foot) joints, per-character scale factor and axial bone
-      length.
+      joints, per-character scale factor and axial bone length.
+
+    Contacts are not in cond: a caller that grounds on them passes
+    ``contact_joints`` from the species' ``joint_parts.jsonl`` row.
 
     Note ``tpose_rest_rotations`` (the scaled/oriented skeleton's per-joint bind
     LOCAL rotations) is a distinct quantity from ``rest_pose[:, 3:9]`` (the
@@ -622,7 +634,7 @@ def tpose_features_from_cond(cond_entry, object_type=None):
     return TPoseFeatures(
         scale_factor=float(cond_entry['scale_factor']),
         offsets=offsets,
-        foot_indices=list(cond_entry.get('contact_joints') or []),
+        foot_indices=[int(index) for index in contact_joints],
         tpos_rots=tpos_rots,
         names=names,
         tpos_anim=tpos_anim,
@@ -630,7 +642,6 @@ def tpose_features_from_cond(cond_entry, object_type=None):
         orientation_quat=orientation_quat,
         forward_joint_index=cond_entry.get('forward_joint_index'),
         forward_base_joint_index=cond_entry.get('forward_base_joint_index'),
-        contact_joint_source=cond_entry.get('contact_joint_source', 'cond'),
         axial_avg_len=float(cond_entry.get('axial_avg_len', 0.0)),
     )
 
@@ -644,7 +655,6 @@ class TPoseFeatures:
     """
     scale_factor: float
     offsets: np.ndarray
-    foot_indices: list
     tpos_rots: np.ndarray
     names: list
     tpos_anim: Animation
@@ -652,8 +662,10 @@ class TPoseFeatures:
     orientation_quat: np.ndarray
     forward_joint_index: int
     forward_base_joint_index: int
-    contact_joint_source: str
     axial_avg_len: float
+    # Ground-contact joints, from the joint_parts annotation (tpose_features_from_cond's
+    # caller). Empty when the caller does not ground on them.
+    foot_indices: list = ()
     # Rest-pose names of the prop-socket joints removed from this skeleton, so
     # every motion clip of the character drops exactly the same joints. Empty for
     # a cond-reconstructed rest pose: cond was already built on the filtered
@@ -667,6 +679,9 @@ class TPoseFeatures:
     # How many wrapper joints above the real root this skeleton already had
     # folded away, so every motion clip of the character drops the same ones.
     promote_root_depth: int = 0
+    # Detached control roots still on top of this skeleton after that fold
+    # (``detached_root_depth``); phase 1 adds them to the depth it records.
+    detached_root_depth: int = 0
 
 
 def extract_motion_features_from_aligned_anims(

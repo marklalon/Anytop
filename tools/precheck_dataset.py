@@ -34,8 +34,8 @@ Content     a skin exists; animation present, one per file, at 30 fps, long
 Consistency every file of a species carries the same joints, hierarchy and
             bind pose.
 Contact     a limb end (hoof, toe, foot, wrist ...) standing on the floor at rest
-            that contact inference leaves out -- the contact flags would mark
-            only some of the feet the rig stands on.
+            that the contact prefill leaves out -- the joint_parts.jsonl
+            proposal would mark only some of the feet the rig stands on.
 Joint names (the main one) duplicate / empty / non-ASCII / over-long names;
             each joint is run through the pipeline canonicalizer and its T5
             embedding text is checked against the words the training corpus
@@ -110,8 +110,11 @@ from data_loaders.truebones.truebones_utils.face_orientation import (  # noqa: E
     resolve_forward_reference_joints,
 )
 from data_loaders.truebones.truebones_utils.ignore_warnings import skip_orientation_detection  # noqa: E402
+from data_loaders.truebones.truebones_utils.joint_parts import (  # noqa: E402
+    _CONTACT_EXCLUDE_TOKENS,
+    prefill_contacts,
+)
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  # noqa: E402
-    _END_EFFECTOR_EXCLUDE_TOKENS,
     _joint_semantic_text,
     _text_matches_keywords,
     detect_joint_side,
@@ -1034,9 +1037,10 @@ def _pipeline_pruned_skeleton(skeleton: Skeleton, promote_depth: int = 0) -> tup
     return skeleton, removed
 
 
-def floor_limb_ends_missing_contact(cond: dict) -> list[int]:
+def floor_limb_ends_missing_contact(cond: dict, contact_joints=None) -> list[int]:
     """Leaves that stand on the floor at rest, are named as a limb end, and
-    are not covered by the inferred contact joints.
+    are not covered by ``contact_joints`` (default: the prefilled contacts,
+    ``prefill_contacts``).
 
     Named as a limb end: the leaf's own name carries a limb-end word, or its
     parent's does -- a tip joint often has no word of its own ("Pad" under
@@ -1048,20 +1052,22 @@ def floor_limb_ends_missing_contact(cond: dict) -> list[int]:
     lift every foot out of the margin.
 
     Covered means the leaf is a contact joint, a contact joint's parent, or has
-    one among its three nearest ancestors -- the contact chain the inference
+    one among its three nearest ancestors -- the contact chain the prefill
     grows from a toe tip up a foot. The usual cause of a hit is a naming rule
-    that drops the joint before contact inference sees it, or a rig whose
-    limbs carry no word the inference reads.
+    that drops the joint before the prefill sees it, or a rig whose limbs
+    carry no word the prefill reads.
     """
     parents = np.asarray(cond["parents"], dtype=np.int64)
     names = list(cond["joints_names"])
     rest = rest_positions_from_offsets(cond["offsets"], parents)
     height = max(float(np.ptp(rest[:, 1])), 1e-6)
-    contact = {int(index) for index in cond.get("contact_joints") or []}
+    if contact_joints is None:
+        contact_joints = prefill_contacts(names, parents, rest)
+    contact = {int(index) for index in contact_joints}
     has_child = np.zeros(len(parents), dtype=bool)
     has_child[parents[parents >= 0]] = True
     texts = [_joint_semantic_text(name) for name in names]
-    excluded = [_text_matches_keywords(text, _END_EFFECTOR_EXCLUDE_TOKENS) for text in texts]
+    excluded = [_text_matches_keywords(text, _CONTACT_EXCLUDE_TOKENS) for text in texts]
     limb_word = [_text_matches_keywords(text, CONTACT_LIMB_END_TOKENS) for text in texts]
 
     def named_limb_end(index: int) -> bool:
@@ -1102,13 +1108,14 @@ def _check_contact_coverage(species: str, cond: dict, report: Report, source: st
     missing = floor_limb_ends_missing_contact(cond)
     if not missing:
         return
-    contact_names = list(cond.get("contact_joint_names") or [])
+    rest = rest_positions_from_offsets(cond["offsets"], cond["parents"])
+    contact_names = [names[index] for index in prefill_contacts(names, cond["parents"], rest)]
     report.add(WARN, species, "contact",
-               f"floor-level limb end(s) not inferred as ground contact: "
+               f"floor-level limb end(s) not prefilled as ground contact: "
                f"{', '.join(names[index] for index in missing)} "
                f"(contact joints: {', '.join(contact_names) if contact_names else 'none'}); "
-               "the model's contact flags will leave them out -- check the joint names "
-               "against the contact/end-effector keyword rules", source)
+               "mark them in the joint_parts review, or check the joint names "
+               "against the contact keyword rules", source)
 
 
 def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | None, t5: T5Pieces,
