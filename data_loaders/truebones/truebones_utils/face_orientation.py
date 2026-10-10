@@ -100,6 +100,7 @@ _FACE_JOINT_UPPER_PRIORITIES = (
 _FORWARD_REFERENCE_PRIORITIES = (
     ('nose', 'snout', 'muzzle', 'beak'),
     ('head',),
+    ('mouth',),
     ('neck',),
 )
 _BODY_AXIS_FORWARD_PRIORITIES = (
@@ -431,13 +432,18 @@ def _face_pairs_are_named(joint_names, face_joint_indx):
     ``resolve_face_joints`` falls back to rest-pose mirror symmetry when a rig
     names no sides; that pair pins the lateral axis but its right/left is
     arbitrary, so an across-vector built from it faces either way. Without joint
-    names the pairs are trusted as named.
+    names the pairs are trusted as named. Ears, feet and other distal tips alone
+    are too pose-dependent to determine front versus back.
     """
     if not face_joint_indx:
         return False
     if joint_names is None:
         return True
-    return all(detect_joint_side(joint_names[int(index)]) is not None for index in face_joint_indx)
+    return (all(detect_joint_side(joint_names[int(index)]) is not None
+                for index in face_joint_indx)
+            and any(all(_face_joint_name_allowed(joint_names[int(index)])
+                        for index in face_joint_indx[start:start + 2])
+                    for start in (0, 2)))
 
 
 def _vector_angle_deg(vector_a, vector_b):
@@ -534,8 +540,8 @@ def _get_facing_candidates_with_diagnostics(
     face_joint_indx=None,
     forward_joint_index=None,
     forward_base_joint_index=None,
-    emit_warnings=True,
     parents=None,
+    joint_names=None,
 ):
     candidates = {}
     near_y_candidates = {}
@@ -557,17 +563,38 @@ def _get_facing_candidates_with_diagnostics(
             candidates['torso_head'] = torso_head
             near_y_candidates['torso_head'] = torso_head_near_y
 
-    tail_spine, tail_spine_near_y = _get_head_forward(
-        joints,
-        face_joint_indx,
-        forward_joint_index,
-        forward_base_joint_index=forward_base_joint_index,
-    )
-    if tail_spine is not None:
-        candidates['tail_spine'] = tail_spine
-        near_y_candidates['tail_spine'] = tail_spine_near_y
+    if forward_base_joint_index is not None:
+        tail_spine, tail_spine_near_y = _get_head_forward(
+            joints,
+            face_joint_indx,
+            forward_joint_index,
+            forward_base_joint_index=forward_base_joint_index,
+        )
+        if tail_spine is not None:
+            candidates['tail_spine'] = tail_spine
+            near_y_candidates['tail_spine'] = tail_spine_near_y
 
     across_forward = _get_across_forward(joints, face_joint_indx)
+    if joint_names is not None and parents is not None and _face_pairs_are_named(joint_names, face_joint_indx):
+        # A single girdle joint can be misplaced or crossed (ORA_Lion's
+        # clavicles). Use matching descendants as independent lateral readings.
+        pairs = _collect_homologous_pairs(joint_names, parents, allow_noisy=False)
+        if len(pairs) >= 2:
+            vectors = np.stack([joints[:, right] - joints[:, left]
+                                for _, right, left in pairs], axis=0)
+            # The median rejects a misplaced pair without allowing long distal
+            # limbs to dominate the direction by their length.
+            per_pair = _project_forward_to_xz(
+                np.cross(np.array([0.0, 1.0, 0.0]), vectors, axis=-1))
+            if per_pair is not None:
+                median = np.median(per_pair, axis=0)
+                consensus = _project_forward_to_xz(median)
+                if consensus is not None and np.all(np.linalg.norm(median, axis=-1) >= 0.5):
+                    across_forward = consensus
+                else:
+                    # Opposing pair readings give no trustworthy sign. Let a
+                    # head/tail reference decide, or keep the source's +Z.
+                    across_forward = None
     if across_forward is not None:
         candidates['across'] = across_forward
         near_y_candidates['across'] = False
@@ -591,8 +618,8 @@ def _get_facing_candidates(
     face_joint_indx=None,
     forward_joint_index=None,
     forward_base_joint_index=None,
-    emit_warnings=True,
     parents=None,
+    joint_names=None,
 ):
     candidates, _near_y_candidates = _get_facing_candidates_with_diagnostics(
         joints,
@@ -600,8 +627,8 @@ def _get_facing_candidates(
         face_joint_indx=face_joint_indx,
         forward_joint_index=forward_joint_index,
         forward_base_joint_index=forward_base_joint_index,
-        emit_warnings=emit_warnings,
         parents=parents,
+        joint_names=joint_names,
     )
     return candidates
 
@@ -690,8 +717,8 @@ def _get_facing_forward(
         face_joint_indx=face_joint_indx,
         forward_joint_index=forward_joint_index,
         forward_base_joint_index=forward_base_joint_index,
-        emit_warnings=emit_warnings,
         parents=parents,
+        joint_names=joint_names,
     )
     _, forward = _choose_facing_forward(
         candidates,
@@ -717,6 +744,7 @@ def _collect_homologous_pairs(joint_names, parents, *, allow_noisy):
     depths = joint_depths(parents)
     replacements = effective_canonical_replacements(joint_names)
     by_signature = {}
+    by_relaxed = {}
 
     for joint_index, joint_name in enumerate(joint_names):
         if not allow_noisy and not _face_joint_name_allowed(joint_name):
@@ -730,6 +758,16 @@ def _collect_homologous_pairs(joint_names, parents, *, allow_noisy):
         bucket = by_signature.setdefault(signature, {'right': [], 'left': []})
         bucket[side].append((depths[joint_index], joint_index))
 
+        # Some glTF exporters append a unique node id to *every* joint name:
+        # LF Calf_013 corresponds to RF Calf_06, not to a missing RF Calf_013.
+        # Keep exact signatures first (important for rigs with several legs of
+        # the same kind); use a stripped id only when it identifies one joint
+        # on each side unambiguously.
+        relaxed = re.sub(r'\s+\d+$', '', signature)
+        if relaxed and relaxed != signature:
+            relaxed_bucket = by_relaxed.setdefault(relaxed, {'right': [], 'left': []})
+            relaxed_bucket[side].append((depths[joint_index], joint_index))
+
     pairs = []
     for sides in by_signature.values():
         if not sides['right'] or not sides['left']:
@@ -737,6 +775,15 @@ def _collect_homologous_pairs(joint_names, parents, *, allow_noisy):
         right_depth, right_index = min(sides['right'])
         left_depth, left_index = min(sides['left'])
         pairs.append((max(right_depth, left_depth), right_index, left_index))
+
+    paired_indices = {index for _, right, left in pairs for index in (right, left)}
+    for sides in by_relaxed.values():
+        if len(sides['right']) != 1 or len(sides['left']) != 1:
+            continue
+        right_depth, right_index = sides['right'][0]
+        left_depth, left_index = sides['left'][0]
+        if right_index not in paired_indices and left_index not in paired_indices:
+            pairs.append((max(right_depth, left_depth), right_index, left_index))
 
     pairs.sort()
     return pairs
@@ -856,7 +903,14 @@ def _find_mirror_symmetry_pair(rest_positions):
 
 def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints=None, rest_positions=None):
     if face_joints:
-        if joint_names is not None and isinstance(face_joints[0], str):
+        if any(isinstance(joint, str) for joint in face_joints):
+            if not all(isinstance(joint, str) for joint in face_joints):
+                raise ValueError(f"{object_type}: face_joints must contain either names or indices, not both.")
+            if joint_names is None:
+                raise ValueError(f"{object_type}: joint_names is required to resolve face_joints names.")
+            missing = list(dict.fromkeys(name for name in face_joints if name not in joint_names))
+            if missing:
+                raise ValueError(f"{object_type}: face_joints names not found in joint_names: {missing}.")
             return [joint_names.index(name) for name in face_joints]
         return list(face_joints)
 
