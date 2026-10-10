@@ -100,6 +100,74 @@ def test_composite_body_rule_leaves_other_rigs_alone(raw_names):
     assert infer_species_joint_name_prefixes(raw_names, None) == ()
 
 
+def _canonical_names(raw_names, species_name=None):
+    metadata = build_semantic_metadata(
+        joint_names=raw_names,
+        parents=np.array([-1] + [0] * (len(raw_names) - 1), dtype=np.int64),
+        offsets=np.zeros((len(raw_names), 3), dtype=np.float64),
+        species_name=species_name,
+    )
+    return metadata["canonical_joint_names"]
+
+
+def test_fbx_namespace_is_removed():
+    assert strip_joint_name_prefix("mixamorig:LeftArm") == "LeftArm"
+    assert strip_joint_name_prefix("mixamorig7:Hips_01") == "Hips_01"
+    assert _canonical_names(["mixamorig:Hips", "mixamorig:LeftUpLeg"]) == ["Hips", "Left Up Leg"]
+
+
+def test_sketchfab_armature_stamp_is_removed_at_either_end():
+    raw_names = [
+        "Hawksbill.armature_rootJoint", "Root_Hawksbill.armature",
+        "Head.001_Hawksbill.armature", "Hind_L.001_Hawksbill.armature",
+    ]
+    assert infer_species_joint_name_prefixes(raw_names, "ORA_Hawksbill") == ("Hawksbill.armature",)
+    assert _canonical_names(raw_names, "ORA_Hawksbill") == ["Root Joint", "Root", "Head 001", "Hind Left 001"]
+
+
+def test_trailing_stamp_never_takes_anatomy_or_a_side():
+    assert infer_species_joint_name_prefixes(["Arm_L", "Hand_L", "Finger_L"], None) == ()
+    assert infer_species_joint_name_prefixes(["Front_Tail", "Back_Tail", "Mid_Tail"], None) == ()
+
+
+@pytest.mark.parametrize("role", ["IK", "Control", "FX", "Target"])
+def test_trailing_joint_role_is_not_treated_as_a_rig_stamp(role):
+    raw_names = [f"Root_{role}", f"Hand_{role}", f"Foot_{role}"]
+    assert infer_species_joint_name_prefixes(raw_names) == ()
+    assert _canonical_names(raw_names) == [f"Root {role.capitalize()}", f"Hand {role.capitalize()}", f"Foot {role.capitalize()}"]
+
+
+def test_biped_root_name_stamp_extends_the_species_word():
+    raw_names = ["Cat Shorthair Pelvis", "Cat Shorthair Spine1", "Cat Shorthair L Thigh", "Cat Shorthair Head"]
+    assert _canonical_names(raw_names, "ORA_Cat") == ["Pelvis", "Spine 1", "Left Thigh", "Head"]
+    raw_names = ["Base HumanPelvis_01", "Base HumanLThigh_02", "Base HumanSpine1_03", "Base HumanHead_04"]
+    assert _canonical_names(raw_names) == ["Pelvis 01", "Left Thigh 02", "Spine 1 03", "Head 04"]
+
+
+@pytest.mark.parametrize("raw_names", [
+    # One body part repeated along a chain.
+    ["Root", "Tail1", "Tail2", "Tail3", "Tail4", "Tail5"],
+    # A single leading word on most joints is as often anatomy as a stamp.
+    ["Root", "Tentacle_A_01", "Tentacle_A_02", "Tentacle_B_01", "Tentacle_B_02", "Tentacle_C_01"],
+    # A two-word anatomy run.
+    ["Root", "Tail_Fin_A", "Tail_Fin_B", "Tail_Fin_C", "Tail_Fin_D"],
+])
+def test_multi_word_stamp_leaves_anatomy_chains_alone(raw_names):
+    assert infer_species_joint_name_prefixes(raw_names, None) == ()
+
+
+def test_species_stamp_tolerates_unstamped_extra_bones():
+    raw_names = [f"SPARROW_ {part}" for part in ("Pelvis", "Spine", "Neck", "Head", "L Thigh", "R Thigh", "L Foot", "R Foot")]
+    raw_names += ["WingLeftFeatherA", "WingRightFeatherA"]
+    assert infer_species_joint_name_prefixes(raw_names, "ORA_Sparrow") == ("Sparrow",)
+    assert _canonical_names(raw_names, "ORA_Sparrow")[:2] == ["Pelvis", "Spine"]
+
+
+def test_rig_suffix_and_armature_prefix_are_removed():
+    assert _canonical_names(["Hip_JNT", "Neck_1_JNT", "Ear_R_END_JNT"]) == ["Hip", "Neck 1", "Ear Right End"]
+    assert strip_joint_name_prefix("Armature_Bone.001") == "_Bone.001"
+
+
 def test_species_prefix_is_removed_before_duplicate_name_disambiguation():
     object_cond = {
         "object_type": "unitybundles/IAC_Caveman",

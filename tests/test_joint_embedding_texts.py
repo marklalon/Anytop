@@ -139,6 +139,33 @@ def test_limb_code_keeps_fore_hind_apart_while_side_comes_from_geometry():
     assert texts[4].startswith('Right Back Leg'), texts[4]
 
 
+def test_rear_limb_codes_decode_like_back_codes():
+    texts = _embedding_texts(
+        ['Root', 'Bone LF Calf', 'Bone RF Calf', 'Bone LR Calf', 'Bone RR Calf'],
+        [-1, 0, 0, 0, 0],
+        offsets=[[0, 0, 0], [-1, -1, 2], [1, -1, 2], [-1, -1, -2], [1, -1, -2]],
+    )
+    assert texts[1:] == ['Left Front Calf', 'Right Front Calf', 'Left Back Calf', 'Right Back Calf'], texts
+
+
+def test_a_joint_named_only_by_its_rig_stamp_is_blanked():
+    texts = _embedding_texts(
+        ['SPARROW__02', 'SPARROW_ Pelvis_03', 'SPARROW_ Spine_04', 'SPARROW_ Head_05', 'WingLeftFeather_06'],
+        [-1, 0, 1, 2, 2],
+        species_name='ORA_Sparrow',
+    )
+    assert texts[0] == '', texts
+    assert texts[1:4] == ['Pelvis', 'Spine', 'Head'], texts
+
+
+def test_shared_ik_suffix_still_blanks_helper_texts():
+    texts = _embedding_texts(
+        ['Root_IK', 'Hand_IK', 'Foot_IK'],
+        [-1, 0, 0],
+    )
+    assert texts == ['', '', ''], texts
+
+
 def test_wing_and_middle_leg_quadrant_codes_decode_like_leg_codes():
     # A cicada's fore/hind wings and middle legs (integrate_20260924 Cicada).
     texts = _embedding_texts(

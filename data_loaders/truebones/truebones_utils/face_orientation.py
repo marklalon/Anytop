@@ -161,7 +161,7 @@ def _canonicalize_joint_name(name, replacements=None):
 # swapped spellings (Fl/Fr, Bl/Br) plus the hexapod middle pair (Lm/Rm) are kept
 # in sync with it for the same reason.
 _LIMB_CODE_SIGNATURE_TOKENS = {
-    'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b',
+    'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b', 'lr': 'b', 'rr': 'b',
     'fl': 'f', 'fr': 'f', 'bl': 'b', 'br': 'b',
     'lm': 'm', 'rm': 'm', 'ml': 'm', 'mr': 'm',
     'tl': 't', 'tr': 't',

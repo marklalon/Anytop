@@ -24,18 +24,21 @@ from .joint_name_canonical import (
     infer_species_joint_name_prefixes,
     normalize_joint_name,
     refresh_joint_metadata_in_object_cond,
+    strip_joint_name_prefix,
     write_joint_name_collision_report,
 )
 from .joint_struct_features import child_lists
 
 
-# Quadruped limb codes (Lf/Rf/Lb/Rb = left/right fore/hind), decoded to their
-# fore/hind half; the side comes from the geometry label.
+# Quadruped limb codes (Lf/Rf = left/right fore, Lb/Rb or Lr/Rr = hind),
+# decoded to their fore/hind half; the side comes from the geometry label.
 EMBED_TEXT_LIMB_CODE_TOKENS = {
     'lf': 'Front',
     'rf': 'Front',
     'lb': 'Back',
     'rb': 'Back',
+    'lr': 'Back',
+    'rr': 'Back',
 }
 # The same codes spelled fore/hind first (Fl/Br) plus a hexapod's middle pair
 # (Lm/Rm, Ml/Mr). Ambiguous alone ("MouthBL" is bottom-left), so read only when
@@ -305,7 +308,7 @@ _EMBED_TEXT_HEAD_PART_TOKENS = frozenset({
 # or refinement, or what goes into the sentence. Stored name embeddings are keyed
 # by this version, so a bump makes the loader reject stale cond files until
 # preprocessing re-runs.
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 21
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 22
 
 
 # Adjacent tokens that name one part together ("upper leg" -> Thigh). Applied
@@ -792,6 +795,14 @@ def build_joint_embedding_texts(object_cond):
         # ("BN_P", "Bip01"), which a bare .lower() cannot match against the set.
         lowered_tokens = {clean_embedding_token(token) for token in refined_tokens}
         if lowered_tokens & _EMBED_TEXT_NON_ANATOMICAL_TOKENS:
+            texts.append('')
+            continue
+        # Named by its rig stamp alone ("SPARROW__02", "LION_"): nothing but an
+        # index is left once the stamp is stripped.
+        raw_name = raw_joint_names[joint_index] if joint_index < len(raw_joint_names) else joint_name
+        if species_prefixes and not re.search(
+            r'[a-z]', normalize_joint_name(strip_joint_name_prefix(raw_name, species_prefixes)),
+        ) and re.search(r'[a-z]', normalize_joint_name(strip_joint_name_prefix(raw_name))):
             texts.append('')
             continue
 

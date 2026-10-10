@@ -27,11 +27,13 @@ _CANONICAL_NAME_PREFIXES = (
     'BN',
     'jt',
     'Elk',
+    'Armature',
 )
 # Trailing rig suffixes stripped from joint names during canonicalization.
 # Matched case-insensitively against the raw (pre-lowercased) name.
 _CANONICAL_NAME_SUFFIXES = (
     'SHJnt',
+    'JNT',
 )
 JAPANESE_NAME_REPLACEMENTS = {
     'momo': 'Thigh',
@@ -85,6 +87,10 @@ CANONICAL_SPELLING_REPLACEMENTS = {
     'eyeild': 'Eyelid',
     'eyei': 'Eye',
     'dn': 'Down',
+    'tangue': 'Tongue',
+    'foraerm': 'Forearm',
+    'clavical': 'Clavicle',
+    'thumg': 'Thumb',
 }
 
 EMBED_TEXT_HEAD_FEATURE_TOKENS = {
@@ -202,31 +208,151 @@ def _has_joint_name_prefix(name, prefix, *, case_sensitive=True):
     )
 
 
-def infer_species_joint_name_prefixes(joint_names, species_name=None):
-    """Infer a character/species prefix shared by the whole skeleton.
-
-    Dataset identifiers commonly include a pack code (``IAC_Caveman``), while
-    their bones use only the species suffix (``Caveman Pelvis``).  Generate all
-    separator-preserving suffix forms and accept only the longest form that is
-    a complete leading token on *every* joint.  The all-joints gate is what keeps
-    an anatomical name such as ``HorseLink`` intact on an ordinary Horse rig.
-    Failing that, the body words of a composite rig
-    (``_infer_composite_body_joint_name_prefixes``) and then a ``Bone_<code>``
-    stamp (``_infer_bone_code_joint_name_prefixes``) are looked for; neither
-    needs the species name.
-    """
-    names = [] if joint_names is None else [str(name or '') for name in joint_names]
-    if not names:
-        return ()
+def _has_joint_name_suffix(name, suffix):
+    """Return whether *suffix* trails *name* after a separator (case-insensitive)."""
     return (
-        _infer_species_name_joint_name_prefixes(names, species_name)
-        or _infer_composite_body_joint_name_prefixes(names)
-        or _infer_bone_code_joint_name_prefixes(names)
+        bool(suffix)
+        and len(name) > len(suffix)
+        and name[-len(suffix):].casefold() == suffix.casefold()
+        and not name[-len(suffix) - 1].isalnum()
     )
 
 
+def _strip_joint_name_namespace(name):
+    """Drop an FBX namespace ("mixamorig:Hips", "mixamorig7:Hips" -> "Hips")."""
+    _, separator, local_name = str(name).rpartition(':')
+    return local_name if separator and local_name else str(name)
+
+
+# Share of the skeleton a stamp must lead for the majority rules: a pack's extra
+# bones (wing feathers, props) can lack it, a body part never reaches it.
+_STAMP_MIN_COVERAGE = 0.8
+_STAMP_SIDE_WORDS = frozenset({'l', 'r', 'left', 'right'})
+# These describe a joint's role even when every joint carries the same suffix.
+# Removing them would erase IK helper markers and control labels.
+_STAMP_TRAILING_ROLE_WORDS = frozenset({
+    'cg', 'cog', 'com', 'control', 'controler', 'ctrl', 'dummy', 'fx',
+    'helper', 'ik', 'locator', 'node', 'null', 'point', 'pole', 'target',
+})
+
+
+def _is_stamp_word(token):
+    """A word that can be part of a rig stamp: not anatomy, a modifier or a side."""
+    return (
+        (len(token) > 1 or token.isdigit())
+        and token not in _COMPOUND_SPLIT_VOCABULARY
+        and token not in EMBED_TEXT_HEAD_FEATURE_TOKENS
+        and token not in _STAMP_SIDE_WORDS
+    )
+
+
+def _has_body_word(tokens):
+    return any(token.isalpha() and len(token) > 1 and token not in _STAMP_SIDE_WORDS for token in tokens)
+
+
+def infer_species_joint_name_prefixes(joint_names, species_name=None):
+    """Infer the character/pack stamps shared by the whole skeleton.
+
+    A stamp is stripped wherever it sits on a name, leading or trailing (see
+    ``strip_joint_name_prefix``). Names are read after their FBX namespace.
+
+    Dataset identifiers commonly include a pack code (``IAC_Caveman``), while
+    their bones use only the species suffix (``Caveman Pelvis``).  Generate all
+    separator-preserving suffix forms and accept the longest form that leads
+    nearly every joint (``_STAMP_MIN_COVERAGE``).  The coverage gate is what
+    keeps an anatomical name such as ``HorseLink`` intact on an ordinary Horse
+    rig. Failing that, the body words of a composite rig
+    (``_infer_composite_body_joint_name_prefixes``), a ``Bone_<code>`` stamp
+    (``_infer_bone_code_joint_name_prefixes``) and then a multi-word stamp
+    (``_infer_multi_word_stamp_joint_name_prefixes``) are looked for; none
+    needs the species name. A trailing stamp
+    (``_infer_trailing_stamp_joint_name_suffixes``) is added to any of them.
+    """
+    names = [] if joint_names is None else [_strip_joint_name_namespace(name or '') for name in joint_names]
+    if not names:
+        return ()
+    species_stamp = _infer_species_name_joint_name_prefixes(names, species_name)
+    multi_word_stamp = _infer_multi_word_stamp_joint_name_prefixes(names)
+    # The species leads a longer stamp ("Cat" in "Cat Shorthair Pelvis").
+    if species_stamp and multi_word_stamp and all(
+        len(stamp) > len(species_stamp[0]) and _has_joint_name_prefix(stamp, species_stamp[0], case_sensitive=False)
+        for stamp in multi_word_stamp
+    ):
+        species_stamp = multi_word_stamp
+    leading = (
+        species_stamp
+        or _infer_composite_body_joint_name_prefixes(names)
+        or _infer_bone_code_joint_name_prefixes(names)
+        or multi_word_stamp
+    )
+    trailing = tuple(
+        stamp for stamp in _infer_trailing_stamp_joint_name_suffixes(names)
+        if stamp not in leading
+    )
+    return leading + trailing
+
+
+def _infer_multi_word_stamp_joint_name_prefixes(names):
+    """A leading run of two or more non-anatomy words on nearly every joint.
+
+    3ds Max Biped and CAT prefix each bone with the rig's root name ("Cat
+    Shorthair Pelvis", "Base HumanLThigh"). Single words are left out: a lone
+    leading word on most joints is as often a body part ("Tentacle_03",
+    "Petal_A") as a stamp. A joint counts only when a body word follows the
+    stamp, so a chain of one part ("Tail1".."Tail9") never reads as one.
+    """
+    token_lists = [normalize_joint_name(name).split() for name in names]
+    counts = Counter()
+    for tokens in token_lists:
+        for length in range(1, len(tokens)):
+            if not _is_stamp_word(tokens[length - 1]):
+                break
+            if length >= 2 and _has_body_word(tokens[length:]):
+                counts[tuple(tokens[:length])] += 1
+    candidates = [
+        stamp for stamp, count in counts.items()
+        if count >= _STAMP_MIN_COVERAGE * len(names)
+        and sum(token.isalpha() for token in stamp) >= 2
+    ]
+    if not candidates:
+        return ()
+    stamp = max(candidates, key=lambda value: (len(value), counts[value]))
+
+    prefix_pattern = re.compile(r'[^0-9A-Za-z]*'.join(re.escape(token) for token in stamp), re.IGNORECASE)
+    prefixes = set()
+    for name in names:
+        match = prefix_pattern.match(name)
+        if match is not None and _has_joint_name_prefix(name, match.group(0), case_sensitive=False):
+            prefixes.add(match.group(0))
+    return tuple(sorted(prefixes, key=len, reverse=True))
+
+
+def _infer_trailing_stamp_joint_name_suffixes(names):
+    """A ``_<stamp>`` that trails every joint.
+
+    Sketchfab's glTF export appends the armature name to each bone
+    ("Head.003_Hawksbill.armature") and names the armature root
+    "<armature>_rootJoint", which the leading match strips. The stamp must hold
+    a word and no anatomy, so a shared side or chain tag is never taken.
+    """
+    body_names = [name for name in names if not name.endswith('_rootJoint')]
+    if len(body_names) < 2:
+        return ()
+    first = body_names[0]
+    candidates = [first[index + 1:] for index, character in enumerate(first) if character == '_']
+    for stamp in sorted(candidates, key=len, reverse=True):
+        tokens = normalize_joint_name(stamp).split()
+        if (not _has_body_word(tokens)
+                or not all(_is_stamp_word(token) for token in tokens)
+                or any(token in _STAMP_TRAILING_ROLE_WORDS for token in tokens)):
+            continue
+        if all(_has_joint_name_suffix(name, stamp) for name in body_names):
+            return (stamp,)
+    return ()
+
+
 def _infer_species_name_joint_name_prefixes(names, species_name):
-    """The longest suffix form of the species name that leads every joint."""
+    """The longest suffix form of the species name that leads nearly every joint."""
     if not species_name:
         return ()
     bare_species = str(species_name).replace('\\', '/').rsplit('/', 1)[-1]
@@ -244,11 +370,12 @@ def _infer_species_name_joint_name_prefixes(names, species_name):
         })
 
     for candidate in sorted(candidates, key=lambda value: (len(value), value), reverse=True):
-        if all(
+        covered = sum(
             len(name) > len(candidate)
             and _has_joint_name_prefix(name, candidate, case_sensitive=False)
             for name in names
-        ):
+        )
+        if covered >= _STAMP_MIN_COVERAGE * len(names):
             return (candidate,)
     return ()
 
@@ -368,7 +495,13 @@ def _infer_bone_code_joint_name_prefixes(names):
 
 
 def strip_joint_name_prefix(name, additional_prefixes=()):
-    stripped = name
+    """Strip the FBX namespace, one rig prefix and one rig suffix.
+
+    *additional_prefixes* are the skeleton's inferred stamps
+    (``infer_species_joint_name_prefixes``); each is stripped where it sits,
+    leading or trailing.
+    """
+    stripped = _strip_joint_name_namespace(name)
     prefixes = (
         *((prefix, False) for prefix in tuple(additional_prefixes or ())),
         *((prefix, True) for prefix in _CANONICAL_NAME_PREFIXES),
@@ -381,6 +514,10 @@ def strip_joint_name_prefix(name, additional_prefixes=()):
         # especially important for the short Unity prefix "Rig".
         if _has_joint_name_prefix(stripped, prefix, case_sensitive=case_sensitive):
             stripped = stripped[len(prefix):]
+            break
+    for stamp in sorted(tuple(additional_prefixes or ()), key=len, reverse=True):
+        if _has_joint_name_suffix(stripped, stamp):
+            stripped = stripped[:-len(stamp)]
             break
     # Strip known rig suffixes (case-insensitive), but never reduce the name
     # to an empty string (e.g. a joint literally named "SHJnt").
