@@ -351,7 +351,7 @@ def test_twenty_percent_probability_gate(monkeypatch, draw, expected):
         assert called == [.1]
 
 
-@pytest.mark.parametrize('split', ['val', 'test'])
+@pytest.mark.parametrize('split', ['val'])
 def test_eval_rejects_random_bone_shapes(split):
     from data_loaders.get_data import get_dataset
     cond_path = Path(__file__).resolve().parents[1] / 'dataset/merged/cond.npy'

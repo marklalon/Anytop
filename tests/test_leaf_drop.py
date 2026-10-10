@@ -189,7 +189,7 @@ def test_standalone_body_part_leaves_are_not_dropped(species, clip, body_parts):
 
 
 @_needs_merged
-@pytest.mark.parametrize('split', ['val', 'test'])
+@pytest.mark.parametrize('split', ['val'])
 def test_evaluation_splits_refuse_the_augmentation(split):
     from data_loaders.get_data import get_dataset
 

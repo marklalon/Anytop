@@ -91,7 +91,9 @@ def test_canonical_variant_suffix_never_enters_embedding_text():
 
     assert object_cond['canonical_joint_names'] == ['Root', 'Jaw', 'Jaw Variant2']
     texts = build_joint_embedding_texts(object_cond)
-    assert texts == ['Root', 'Jaw', 'Jaw']
+    # A head part gets the trailing "HeadFeature" category word (schema 22);
+    # the variant suffix must still never leak in.
+    assert texts == ['Root', 'Jaw HeadFeature', 'Jaw HeadFeature']
     assert all('Variant' not in text for text in texts)
 
 
@@ -332,8 +334,8 @@ def test_lm_rm_on_a_head_decodes_as_the_mouth_corners():
         [-1, 0, 1, 1],
         offsets=[[0, 0, 0], [0, 0, 1], [0.05, -0.07, 0.12], [-0.05, -0.07, 0.12]],
     )
-    assert texts[2] == 'Left Head Mouth', texts[2]
-    assert texts[3] == 'Right Head Mouth', texts[3]
+    assert texts[2] == 'Left Head Mouth HeadFeature', texts[2]
+    assert texts[3] == 'Right Head Mouth HeadFeature', texts[3]
 
 
 def test_mirrored_name_typo_folds_onto_the_segment_its_twin_uses():

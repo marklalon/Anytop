@@ -1,4 +1,5 @@
-{"namespace": "truebones/zoo",         "path": "dataset/truebones/zoo/truebones_processed",          "raw": "dataset/truebones/zoo/Truebone_Z-OO"}
-{"namespace": "truebones/zoo_upgrade", "path": "dataset/truebones/zoo_upgrade/clean_processed",      "raw": "dataset/truebones/zoo_upgrade/clean"}
-{"namespace": "unitybundles",          "path": "dataset/unitybundles/processed",                    "raw": "dataset/unitybundles/raw"}
-{"namespace": "integrate_20260924",    "path": "dataset/integrate_20260924/processed",              "raw": "dataset/integrate_20260924/raw"}
+{"namespace": "truebones/zoo",         "path": "dataset/truebones/zoo/truebones_processed",          "raw": "dataset/truebones/zoo/Truebone_Z-OO", "split": "train"}
+{"namespace": "truebones/zoo_upgrade", "path": "dataset/truebones/zoo_upgrade/clean_processed",      "raw": "dataset/truebones/zoo_upgrade/clean", "split": "train"}
+{"namespace": "unitybundles",          "path": "dataset/unitybundles/processed",                     "raw": "dataset/unitybundles/raw", "split": "train"}
+{"namespace": "integrate_20260924",    "path": "dataset/integrate_20260924/processed",               "raw": "dataset/integrate_20260924/raw", "split": "train"}
+{"namespace": "validation",            "path": "dataset/validation/processed",                       "raw": "dataset/validation/raw", "split": "val", "enabled": false}

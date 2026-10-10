@@ -127,7 +127,7 @@ def _check_source_consistency(per_source_entries, reference=None):
 # Statistics recomputation
 # ---------------------------------------------------------------------------
 def _recompute_canonical_stats(merged_cond, sources) -> dict[str, tuple]:
-    """Recompute per-object_subset standardization stats over every source's clips.
+    """Recompute per-object_subset standardization stats from training clips.
 
     Same accumulation as ``regenerate_dataset_artifacts._compute_canonical_stats_per_object_subset``,
     but bucketed across datasets: a merged run trains one shared normalization
@@ -149,6 +149,8 @@ def _recompute_canonical_stats(merged_cond, sources) -> dict[str, tuple]:
     used = 0
     skipped = 0
     for source in sources:
+        if source.split != "train":
+            continue
         motion_dir = Path(source.motion_dir)
         if not motion_dir.is_dir():
             raise SystemExit(
@@ -202,7 +204,7 @@ def _recompute_canonical_stats(merged_cond, sources) -> dict[str, tuple]:
     )
     if unresolved:
         raise SystemExit(
-            "Cannot compute per-object_subset canonical stats: no usable clips for the "
+            "Cannot compute training-only per-object_subset canonical stats: no usable train clips for the "
             "object_subset(s) of these species:\n  " + "\n  ".join(unresolved)
         )
 
@@ -210,7 +212,7 @@ def _recompute_canonical_stats(merged_cond, sources) -> dict[str, tuple]:
         mean, std = subset_stats[subset_of[key]]
         set_canonical_global_stats(entry, mean, std)
 
-    print(f"[OK] recomputed canonical stats over {used} clip(s) ({skipped} skipped)")
+    print(f"[OK] recomputed canonical stats over {used} train clip(s) ({skipped} skipped)")
     return subset_stats
 
 
@@ -281,6 +283,8 @@ def merge_dataset_cond(manifest_path, out_path, recompute_stats=True, dry_run=Fa
             species_tags=species_tags,
             store_root=True,
         )
+        for entry in entries.values():
+            entry["dataset_split"] = source.split
         entries = {
             key: entry for key, entry in entries.items()
             if source.accepts(entry["species_name"])

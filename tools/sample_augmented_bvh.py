@@ -47,7 +47,7 @@ Arguments
   --loop-tile-single-prob  Floor on P(loop tile count == 1) (default: 0.5; 0.0 = uniform)
   --no-real-time      Export the model window instead of the default real 30 fps tempo
   --objects-subset    Subset name or single species name (default: "all")
-  --split             train / test / all (default: "all")
+  --split             train / val / all (default: "all")
   --seed              RNG seed for reproducibility (default: 1234)
   --dataset-dir       Dataset root (auto-detected if omitted)
   --output-dir        Where to write BVH files (default: ./augmented_bvh_samples)
@@ -211,7 +211,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--objects-subset", default="all",
                    help="Predefined subset name or single species (e.g. 'quadropeds_test', 'Horse').")
     p.add_argument("--split", default="all",
-                   help="Dataset split: train / test / all.")
+                   help="Dataset split: train / val / all.")
     p.add_argument("--seed", type=int, default=1234,
                    help="RNG seed for reproducible sampling.")
     p.add_argument("--cond-path", dest="cond_path", default="",

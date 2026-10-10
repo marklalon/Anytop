@@ -296,7 +296,7 @@ def add_model_options(parser):
                             "joint_struct, the relation matrices and the length scale L are rebuilt for the "
                             "smaller rig. Teaches invariance to optional terminators and shorter distal "
                             "chains, and keeps the --topology_cond pool from keying on each species' exact "
-                            "topology. Training splits only (the dataset refuses it for val/test). "
+                            "topology. Training split only (the dataset refuses it for val). "
                             "Loader-only: no regen, no model change, no CKPT_VERSION bump.")
     group.add_argument("--bone_length_aug_prob", default=0.0, type=float,
                        help="Probability of symmetric body-proportion augmentation; training only (0 = off).")
@@ -422,9 +422,9 @@ def add_data_options(parser, training=False):
     :func:`apply_checkpoint_action_group`.
     """
     group = parser.add_argument_group('dataset')
-    group.add_argument("--train_split", default='train', choices=['train', 'val', 'test', 'all'], type=str,
+    group.add_argument("--train_split", default='train', choices=['train', 'val', 'all'], type=str,
                        dest='train_split',
-                       help="Data split to use for training. 'train'=training set, 'val'=validation set, 'test'=test set, 'all'=use all data.")
+                       help="Dataset selection: 'train'=all non-validation datasets, 'val'=validation dataset, 'all'=all datasets.")
     group.add_argument("--objects_subset", default='all', type=str,
                        help="Object subset. Can be a predefined category (e.g. 'all', 'quadruped', 'winged', 'biped', 'multiped', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
     if training:

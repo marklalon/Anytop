@@ -1173,18 +1173,6 @@ def run_validation(
     except ValidationError as e:
         print(f"[WARN] dataset validation warning: {e}")
         return 1
-    finally:
-        # Force-delete split manifests so they are regenerated on next training run.
-        # This ensures train/val/test.txt always reflect the current motion files.
-        # Execute this after validation (even if validation failed).
-        try:
-            for split_name in ("train", "val", "test"):
-                split_path = dataset_dir / f"{split_name}.txt"
-                if split_path.exists():
-                    split_path.unlink()
-                    print(f"[OK] deleted {split_path.name} (will be regenerated on next training)")
-        except Exception as e:
-            print(f"[WARN] failed to delete split manifests: {e}")
 
 
 def parse_args() -> argparse.Namespace:

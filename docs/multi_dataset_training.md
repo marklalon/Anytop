@@ -34,7 +34,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 
 | 契约 | 组成 | 消费者 |
 |---|---|---|
-| **训练契约** | `cond.npy` + 它所引用的各数据集目录下的 `motions/`、`motion_metadata.json`、`action_labels.jsonl`、`species_tags.jsonl`、`train/val/test.txt`（+ `--action_label_cond` 时全局一份 `dataset/action_word_embeddings.npy`） | `train_anytop.py`、`Truebones` dataset |
+| **训练契约** | `cond.npy` + 它所引用的各数据集目录下的 `motions/`、`motion_metadata.json`、`action_labels.jsonl`、`species_tags.jsonl`（+ `--action_label_cond` 时全局一份 `dataset/action_word_embeddings.npy`） | `train_anytop.py`、`Truebones` dataset |
 | **推理契约** | `cond.npy` **单文件**（自足，不依赖任何数据集目录） | `generate.py`、`server/`、`process_new_skeleton`、跨骨架 retarget |
 
 `cond.npy` 是唯一入口：训练时它告诉加载器「有哪些物种、动作数据在哪」；推理时它自带全部条件（含烘焙的 species tags）。
@@ -211,8 +211,7 @@ opt.sources   = tuple[DatasetSource]   # 由 cond entry 的 dataset_root 去重�
    `data_dict` / `name_list` 的 key 改为 `f"{namespace}/{filename}"`，例如 `truebones/zoo/Horse_Idle_1.npy`。
    entry 内保留 `motion_path`（绝对路径）、`object_type`（规范键）、`source`。
 2. **去掉文件名前缀匹配**。[dataset.py](../data_loaders/truebones/data/dataset.py) 里两处 `name.startswith(f'{object_type}_')`（枚举与归属各一处）在合并后会让 `Horse_Idle_1.npy` 同时归属两个 Horse。改为：枚举时按 `source` + `species_name` 前缀，归属时直接读 `data_dict[name]['object_type']`。
-3. **split 按源各自划分再取并集**。split 是逐 clip 按名字哈希（加盐 SHA-1，见 `assign_clips_to_splits`）分配的：一个 clip 的 split 只取决于它自己的名字，与加载了哪些源无关，所以逐源调用 `load_motion_names_for_split_with_action_group` 得到的 manifest 与单源运行逐字节一致；唯一例外是 val 资格门槛（`VAL_BUCKET_MIN_CLIPS`）的桶计数取所有源的并集（`val_eligible_motion_names`）。结果并集后转成复合 clip id。
-   > 注意：每次加载都会按当前 clip 集合现算 split 并覆写 `train.txt` / `val.txt` / `test.txt`（`write_split_manifests`），不读取旧 manifest。
+3. **按数据集指定用途**。`datasets.jsonl` 的每行必须有 `split: "train"` 或 `split: "val"`；合并工具将其写入 cond 的 `dataset_split`，训练据此选择整个数据集。归一化统计只从 train 数据集计算。仍按 `action_group` 过滤 clip，但不再逐 clip 划分，也不生成或读取 `train.txt` / `val.txt` / `test.txt`。`validation` 行暂设 `enabled: false`；处理完成后启用并重新合并 cond，即可开启训练中的验证。目前验证集为空时，训练继续进行，验证损失计算自动关闭。
 4. `cache/motion_lengths.npy` 保持**每源一份**，key 仍是裸文件名（源内唯一）。
 5. `motion_metadata.json` / `action_labels.jsonl` 按源分别加载，join 时用裸文件名。
    动作词表 `dataset/action_word_embeddings.npy` **只有一份**：它按受控词表的**词**索引，
@@ -350,7 +349,7 @@ v4 打戳集中在**唯一的落盘点** `_save_cond_with_tpose_sidecar` / `rege
 验证方式：在 HEAD 的 git worktree 里用改造前的代码跑同一份数据（cond 临时降级回裸名键），
 导出 `name_list` / `pointer` / `length_arr` / sampler 权重与新代码逐项比对。
 
-- [x] `train.txt` / `val.txt` / `test.txt` 内容完全一致（三份 diff 为空）
+- [x] 各源的 clip 按数据集用途完整归入 train 或 val
 - [x] `MotionDataset.name_list` 顺序、`pointer`、`length_arr` 一致（268 clip 全等）
 - [x] `TruebonesSampler` 权重向量逐元素一致（maxdiff = 0.0）
 - [x] 生成输出文件名与今天一致（`Horse_0.npy`）

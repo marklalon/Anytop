@@ -9,6 +9,7 @@ plain dict union*: every entry is keyed by ``<namespace>/<species>`` and carries
                                   meaning "the directory holding this cond.npy"
                                   (what a single-dataset cond stores, so it stays
                                   portable)
+``dataset_split``        str    -- ``"train"`` or ``"val"`` in a merged cond
 ``species_name``         str    -- the bare name, used to join
                                   ``motion_metadata.json`` / ``species_tags.jsonl``
                                   and to prefix ``motions/{species_name}_*.npy``

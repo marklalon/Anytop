@@ -1,10 +1,10 @@
 @echo off
 setlocal
 REM ----------------------------------------------------------------------
-REM Preprocess every dataset listed in dataset\datasets.jsonl (incremental by
+REM Preprocess every enabled dataset listed in dataset\datasets.jsonl (incremental by
 REM default) and merge them into a single training cond.
 REM
-REM   1) each row of dataset\datasets.jsonl, in file order:
+REM   1) each enabled row of dataset\datasets.jsonl, in file order:
 REM        preprocess_and_validate.py --raw-data-dir <raw> --dataset-dir <path>
 REM   2) merge -> dataset\merged\cond.npy
 REM
@@ -30,7 +30,7 @@ pushd "%SCRIPT_DIR%"
 
 REM ---- 1) read the manifest into namespace|path|raw lines ------------------
 set DATASET_LIST=%TEMP%\anytop_datasets_%RANDOM%.txt
-"%PYTHON_EXE%" -c "import json,sys; rows=[json.loads(l) for l in open(sys.argv[1],encoding='utf-8') if l.strip()]; [print(r['namespace']+'|'+r['path']+'|'+r.get('raw','')) for r in rows]" "%DATASETS_FILE%" > "%DATASET_LIST%"
+"%PYTHON_EXE%" -c "import json,sys; rows=[json.loads(l) for l in open(sys.argv[1],encoding='utf-8') if l.strip() and not l.lstrip().startswith('#')]; [print(r['namespace']+'|'+r['path']+'|'+r.get('raw','')) for r in rows if r.get('enabled',True)]" "%DATASETS_FILE%" > "%DATASET_LIST%"
 if errorlevel 1 goto :fail
 
 REM ---- 2) preprocess each dataset -------------------------------------------

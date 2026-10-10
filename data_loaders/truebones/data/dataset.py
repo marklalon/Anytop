@@ -6,7 +6,6 @@ import os
 from collections import OrderedDict, defaultdict
 from os.path import join as pjoin
 from pathlib import Path
-import hashlib
 import math
 import random
 import re
@@ -75,21 +74,8 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 
 
 
-# Clips are dealt into splits individually, by a hash of the clip name (see
-# assign_clips_to_splits), NOT species-by-species: val is a held-out sample of
-# the same species/action mix train sees, which is what a val loss is for.
-# Holding out whole species measured cross-species generalization instead, and
-# with one species per 2% it was a noisy, single-rig measurement.  The hash
-# keeps a clip's split fixed across dataset regens, so val curves stay
-# comparable when clips are added or removed.
-DEFAULT_SPLIT_RATIOS = {"train": 0.98, "val": 0.02, "test": 0.0}
-# Salt of the split hash.  Changing it re-deals EVERY clip.
-DEFAULT_SPLIT_SEED = 3407
-# A clip may leave train for val only if its action_label bucket (its head
-# words, see action_label_split_bucket) holds MORE than this many clips over
-# the whole training population.  Rare buckets stay whole in train.
-VAL_BUCKET_MIN_CLIPS = 30
-SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
+# The merged cond records each source's train/val assignment from datasets.jsonl.
+SUPPORTED_SPLITS = ("train", "val")
 ALL_SPLIT_NAME = "all"
 
 # Sampling is uniform over clips, with two deviations, both keyed on the
@@ -647,111 +633,6 @@ def _list_motion_files(motion_dir: str) -> list[str]:
     return sorted(path.name for path in Path(motion_dir).glob("*.npy"))
 
 
-def action_label_split_bucket(motion_metadata, clip_name: str = "?"):
-    """The head-word bucket a clip's label falls in: its HEAD_VOCAB words in
-    written order (``attack, jump, spin, right`` -> ``("attack",
-    "jump")``).
-
-    The key the val gate counts on.  Modifier and direction words are
-    left out: they refine how the head is performed, and counting them would
-    fragment one action into buckets too small to ever clear the gate.  A clip
-    with no label has no bucket (``None``) and is never val-eligible.
-    """
-    label = str((motion_metadata or {}).get("action_label") or "")
-    if not label:
-        return None
-    try:
-        words = parse_action_label(label)
-    except ActionLabelError as exc:
-        raise RuntimeError(
-            f"clip {clip_name!r} carries action_label {label!r}, which cannot be "
-            f"parsed, so it cannot be bucketed for the split: {exc}"
-        ) from exc
-    return tuple(head_words_in(words))
-
-
-def val_eligible_motion_names(
-    motion_names_by_namespace: dict[str, set[str]],
-    metadata_by_namespace: dict[str, dict[str, dict[str, object]]],
-) -> dict[str, set[str]]:
-    """Per source, the clips whose label bucket holds more than
-    VAL_BUCKET_MIN_CLIPS clips ACROSS ALL SOURCES -- the only ones the split
-    may hand to val.
-
-    Counted over the whole training population, not per source: training sees
-    the union, and a bucket of 60 clips spread over three sources is one
-    bucket of 60.  A rare bucket is kept whole in train because the model
-    needs every clip of it, and a val loss over one or two clips of a label
-    measures nothing.
-    """
-    bucket_counts: dict[tuple, int] = defaultdict(int)
-    bucket_of: dict[str, dict[str, tuple | None]] = {}
-    for namespace, motion_names in motion_names_by_namespace.items():
-        lookup = metadata_by_namespace[namespace]
-        bucket_of[namespace] = {}
-        for motion_name in motion_names:
-            bucket = action_label_split_bucket(lookup.get(motion_name), motion_name)
-            bucket_of[namespace][motion_name] = bucket
-            if bucket is not None:
-                bucket_counts[bucket] += 1
-    return {
-        namespace: {
-            motion_name
-            for motion_name, bucket in buckets.items()
-            if bucket is not None and bucket_counts[bucket] > VAL_BUCKET_MIN_CLIPS
-        }
-        for namespace, buckets in bucket_of.items()
-    }
-
-
-def clip_split_coordinate(motion_name: str) -> float:
-    """Where in [0, 1) a clip falls, a pure function of its name.
-
-    A salted SHA-1 of the bare filename, so the value is the same on every
-    machine and every regen; the split ratios are cut points on this axis.
-    """
-    digest = hashlib.sha1(f"{DEFAULT_SPLIT_SEED}:{motion_name}".encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big") / float(1 << 64)
-
-
-def assign_clips_to_splits(motion_names, val_eligible=None) -> dict[str, list[str]]:
-    """Deal ``motion_names`` into train/val/test clip by clip, by name hash.
-
-    Each clip's split depends on its own name only (clip_split_coordinate
-    against the DEFAULT_SPLIT_RATIOS cut points), so adding or removing clips
-    in a regen never moves any other clip between splits; the exact split
-    sizes are therefore binomial around the ratios rather than exact.
-
-    ``val_eligible`` (see val_eligible_motion_names) is the set of clips the
-    hash may take out of train; every other clip stays in train whatever its
-    coordinate.  ``None`` means every clip is eligible.  A split with a
-    non-zero ratio that the hash left empty is handed the lowest-coordinate
-    eligible clip, so a tiny group still has a val clip if it has any
-    eligible one; with no eligible clip at all the split stays empty.
-    """
-    nonzero_splits = [split for split in SUPPORTED_SPLITS if DEFAULT_SPLIT_RATIOS[split] > 0]
-    upper_cuts = list(np.cumsum([DEFAULT_SPLIT_RATIOS[split] for split in nonzero_splits]))
-    upper_cuts[-1] = float("inf")  # the last split absorbs rounding slack at 1.0
-
-    def split_of(coordinate: float) -> str:
-        return next(split for split, hi in zip(nonzero_splits, upper_cuts) if coordinate < hi)
-
-    manifests: dict[str, list[str]] = {split: [] for split in SUPPORTED_SPLITS}
-    eligible_in_train: list[str] = []  # in coordinate order
-    for name in sorted(motion_names, key=lambda name: (clip_split_coordinate(name), name)):
-        eligible = val_eligible is None or name in val_eligible
-        split = split_of(clip_split_coordinate(name)) if eligible else "train"
-        manifests[split].append(name)
-        if eligible and split == "train":
-            eligible_in_train.append(name)
-    for split in nonzero_splits:
-        if split != "train" and not manifests[split] and eligible_in_train and len(manifests["train"]) > 1:
-            moved = eligible_in_train.pop(0)
-            manifests["train"].remove(moved)
-            manifests[split].append(moved)
-    return {split: sorted(names) for split, names in manifests.items()}
-
-
 def resolve_motion_object_type(
     motion_name: str,
     data_root: str,
@@ -792,22 +673,7 @@ def resolve_motion_object_type(
 
 
 class EmptySplitError(RuntimeError):
-    """A requested split holds no clip in any source.
-
-    For ``val`` this is a legal outcome of the VAL_BUCKET_MIN_CLIPS gate (no
-    label bucket large enough to spare a clip), which is why it is its own
-    type: a caller can turn validation off instead of dying.
-    """
-
-
-def write_split_manifests(data_root: str, manifests: dict[str, list[str]]) -> dict[str, Path]:
-    """Write ``<split>.txt`` under ``data_root`` for manual verification."""
-    data_root_path = Path(data_root)
-    split_paths = {split: data_root_path / f"{split}.txt" for split in SUPPORTED_SPLITS}
-    for split, split_path in split_paths.items():
-        split_path.write_text("\n".join(sorted(manifests[split])) + "\n", encoding="utf-8")
-    print(f"Generated dataset split manifests under {data_root_path}")
-    return split_paths
+    """A requested split has no clips; val may still be a placeholder."""
 
 
 def load_motion_names_for_split_with_action_group(
@@ -816,11 +682,8 @@ def load_motion_names_for_split_with_action_group(
     motion_dir: str,
     raw_action_group,
     motion_metadata_lookup,
-    val_eligible=None,
 ) -> set[str]:
-    """One source's clips in ``split``: the ``action_group`` filter picks the
-    population, assign_clips_to_splits deals it (``val_eligible`` gating what
-    may leave train), and the manifests are rewritten alongside."""
+    """Select every clip of a source after the action-group filter."""
     filtered_motion_names = filter_motion_names_by_action_group(
         set(_list_motion_files(motion_dir)),
         raw_action_group,
@@ -831,20 +694,12 @@ def load_motion_names_for_split_with_action_group(
             raise RuntimeError(f"Split '{split}' is empty: {motion_dir}")
         return filtered_motion_names
 
-    manifests = assign_clips_to_splits(filtered_motion_names, val_eligible)
-    write_split_manifests(data_root, manifests)
-    selected_motion_names = set(manifests[split])
-    if not selected_motion_names:
+    if not filtered_motion_names:
         requested_action_group = resolve_requested_action_group(raw_action_group)
         suffix = f" after filtering action_group={requested_action_group!r}" if requested_action_group else ""
-        # A val empty here is the legal outcome of the VAL_BUCKET_MIN_CLIPS
-        # gate (a small --action_group can have no eligible clip), so it is
-        # EmptySplitError -- catchable by type, no message matching -- while
-        # train/test empty means the corpus itself is missing and stays a
-        # plain RuntimeError.
         exc_type = EmptySplitError if split == "val" else RuntimeError
         raise exc_type(f"Split '{split}' is empty under {Path(data_root)}{suffix}")
-    return selected_motion_names
+    return filtered_motion_names
 
 
 def clip_id(namespace: str, motion_name: str) -> str:
@@ -865,27 +720,13 @@ def load_allowed_motion_names_per_source(
     raw_action_group,
     metadata_by_namespace: dict[str, dict[str, dict[str, object]]],
 ) -> dict[str, set[str]]:
-    """Resolve the split for each source, then union the results.
-
-    The clip-name hash keeps a clip's split fixed whatever other sources are
-    loaded, so each dataset's manifests come out byte-identical to a
-    single-dataset run's -- except for the val gate, whose label-bucket counts
-    are taken over the union of the sources (val_eligible_motion_names): a
-    clip that is val-eligible only alongside the other sources' clips of its
-    bucket goes to train when its source is loaded alone.  A source with no
-    val clip is fine as long as some source has one.
-    """
-    filtered_by_namespace = {
-        source.namespace: filter_motion_names_by_action_group(
-            set(_list_motion_files(source.motion_dir)),
-            raw_action_group,
-            metadata_by_namespace[source.namespace],
-        )
-        for source in sources
-    }
-    eligible_by_namespace = val_eligible_motion_names(filtered_by_namespace, metadata_by_namespace)
+    """Use complete datasets according to each source's configured split."""
     allowed: dict[str, set[str]] = {}
     for source in sources:
+        source_split = source.split
+        if split != ALL_SPLIT_NAME and split != source_split:
+            allowed[source.namespace] = set()
+            continue
         try:
             allowed[source.namespace] = load_motion_names_for_split_with_action_group(
                 split,
@@ -893,20 +734,12 @@ def load_allowed_motion_names_per_source(
                 source.motion_dir,
                 raw_action_group,
                 metadata_by_namespace[source.namespace],
-                eligible_by_namespace[source.namespace],
             )
         except EmptySplitError:
-            # One source may legitimately have no val clip (its label buckets
-            # all under the gate); some other source may still have one.
             allowed[source.namespace] = set()
     if not any(allowed.values()):
-        raise EmptySplitError(
-            f"Split '{split}' is empty across every source"
-            + (
-                f": no action_label bucket holds more than {VAL_BUCKET_MIN_CLIPS} clips"
-                if split == "val" else ""
-            )
-        )
+        exc_type = EmptySplitError if split == "val" else RuntimeError
+        raise exc_type(f"Split '{split}' is empty across every source")
     return allowed
 
 
@@ -1800,10 +1633,7 @@ class Truebones(data.Dataset):
             source.namespace: load_motion_metadata(source.root)
             for source in opt.sources
         }
-        self.split_files = (
-            [pjoin(source.root, f'{split}.txt') for source in opt.sources]
-            if split != ALL_SPLIT_NAME else []
-        )
+        self.split_files = []
         allowed_motion_names = load_allowed_motion_names_per_source(
             split,
             opt.sources,

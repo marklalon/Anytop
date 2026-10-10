@@ -296,9 +296,7 @@ class TrainLoop:
         self._ema_persistent_buffer_names = None
 
     def _build_val_loader(self):
-        """The val-split loader, or ``None`` (validation off) when the split is
-        empty: with VAL_BUCKET_MIN_CLIPS gating what may leave train, a small
-        --action_group can legitimately have no val clip."""
+        """The dedicated validation dataset, or None while it is a placeholder."""
         try:
             return get_dataset_loader(
                 cond_path=self.args.cond_path,
