@@ -123,6 +123,15 @@ def wrapper_root_depth(joint_names, parents, offsets) -> int:
 DETACHED_ROOT_MAX_HEIGHT_SHARE = 0.12
 DETACHED_ROOT_MIN_RISE_SHARE = 0.15
 
+# An outlier control root hangs off the body on a bone no real bone comes close
+# to: Eagle's ``Hips`` floating far above its ``Bip01_Pelvis``. Its bone to its
+# only child must be at least MIN_BONE_RATIO times the median of the other bone
+# lengths, and the root must sit outside the rest body's bounding box by at least
+# MIN_OUTSIDE_SHARE of the body's largest joint span. A long first bone inside
+# the body (a fish's body_1) or a head perched just above it stays.
+OUTLIER_ROOT_MIN_BONE_RATIO = 5.0
+OUTLIER_ROOT_MIN_OUTSIDE_SHARE = 0.15
+
 
 def _chain_branches(parents, joint: int) -> bool:
     """Whether the single-child chain down from ``joint`` reaches a branch."""
@@ -134,12 +143,48 @@ def _chain_branches(parents, joint: int) -> bool:
         joint = int(children[0])
 
 
+def _is_outlier_root(parents, rest_positions, root: int, child: int, folded) -> bool:
+    """Whether ``root`` hangs off the body on an outsized bone (``OUTLIER_ROOT_*``).
+
+    ``folded`` holds the root-chain joints already counted, which take no part
+    in the body's bounds or bone lengths.
+    """
+    excluded = set(folded) | {root}
+    body = [j for j in range(len(parents)) if j not in excluded]
+    if len(body) < 2:
+        return False
+    body_positions = rest_positions[body]
+    deltas = body_positions[:, None, :] - body_positions[None, :, :]
+    body_span = float(np.sqrt((deltas ** 2).sum(-1)).max())
+    if body_span <= 0.0:
+        return False
+    other_bones = np.array([
+        np.linalg.norm(rest_positions[j] - rest_positions[parents[j]])
+        for j in body
+        if j != child and parents[j] >= 0 and parents[j] not in excluded
+    ])
+    other_bones = other_bones[other_bones > 0.0]
+    if other_bones.size == 0:
+        return False
+    root_bone = float(np.linalg.norm(rest_positions[child] - rest_positions[root]))
+    low, high = body_positions.min(0), body_positions.max(0)
+    outside = float(np.linalg.norm(
+        np.maximum(low - rest_positions[root], 0.0)
+        + np.maximum(rest_positions[root] - high, 0.0)
+    ))
+    return (
+        root_bone >= OUTLIER_ROOT_MIN_BONE_RATIO * float(np.median(other_bones))
+        and outside >= OUTLIER_ROOT_MIN_OUTSIDE_SHARE * body_span
+    )
+
+
 def detached_root_depth(joint_names, parents, rest_positions) -> int:
     """How many detached control roots sit on top of the skeleton.
 
-    The run down the single-child root chain of joints that stand on the ground
-    with their child well above them (``DETACHED_ROOT_*_SHARE``), measured in the
-    Y-up rest pose. Each one is folded with :func:`promote_root_once`, which is
+    The run down the single-child root chain of joints that either stand on the
+    ground with their child well above them (``DETACHED_ROOT_*_SHARE``) or hang
+    off the body on an outsized bone (``OUTLIER_ROOT_*``), measured in the Y-up
+    rest pose. Each one is folded with :func:`promote_root_once`, which is
     lossless: the child inherits its rotation and its transport.
     """
     names = list(joint_names)
@@ -154,6 +199,7 @@ def detached_root_depth(joint_names, parents, rest_positions) -> int:
     floor = float(rest_positions[:, 1].min())
     depth = 0
     root = 0
+    folded = []
     while root < len(names) - 1:
         children = np.flatnonzero(parents == root)
         children = children[children != root]
@@ -166,11 +212,15 @@ def detached_root_depth(joint_names, parents, rest_positions) -> int:
             break
         height = rest_positions[root, 1] - floor
         rise = rest_positions[child, 1] - rest_positions[root, 1]
-        if (
-            height > DETACHED_ROOT_MAX_HEIGHT_SHARE * span
-            or rise < DETACHED_ROOT_MIN_RISE_SHARE * span
+        grounded_mover = (
+            height <= DETACHED_ROOT_MAX_HEIGHT_SHARE * span
+            and rise >= DETACHED_ROOT_MIN_RISE_SHARE * span
+        )
+        if not grounded_mover and not _is_outlier_root(
+            parents, rest_positions, root, child, folded,
         ):
             break
+        folded.append(root)
         depth += 1
         root = child
     return depth
