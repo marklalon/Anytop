@@ -45,3 +45,12 @@ def test_branching_root_is_kept():
     parents = PARENTS.copy()
     parents[5] = 0
     assert detached_root_depth(NAMES, parents, REST) == 0
+
+
+def test_short_body_chain_is_kept():
+    # OneEyeAlien: a deforming Root under an unbranched Spine -> Head. The
+    # height rule alone would fold Root as a detached control root.
+    names = ["Root", "Spine", "Head"]
+    parents = np.array([-1, 0, 1])
+    rest = np.array([[0.0, 0.159, 0.0], [0.0, 0.568, 0.0], [0.0, 1.0, 0.0]])
+    assert detached_root_depth(names, parents, rest) == 0

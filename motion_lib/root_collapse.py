@@ -117,10 +117,21 @@ def wrapper_root_depth(joint_names, parents, offsets) -> int:
 # it: Crow's ``Pelvis`` under its ``Spine``. Both shares are of the rest
 # skeleton's largest joint span. The root must sit at most MAX_HEIGHT above the
 # lowest rest joint, and its only child at least MIN_RISE above the root. A
-# Biped ``Bip01`` on its pelvis (no rise) and a body root that merely sits low
-# (no ground contact) both stay.
+# Biped ``Bip01`` on its pelvis (no rise), a body root that merely sits low
+# (no ground contact) and an unbranched body (``Root -> Spine -> Head``, where
+# the root chain never reaches a body to stand above) all stay.
 DETACHED_ROOT_MAX_HEIGHT_SHARE = 0.12
 DETACHED_ROOT_MIN_RISE_SHARE = 0.15
+
+
+def _chain_branches(parents, joint: int) -> bool:
+    """Whether the single-child chain down from ``joint`` reaches a branch."""
+    while True:
+        children = np.flatnonzero(parents == joint)
+        children = children[children != joint]
+        if len(children) != 1:
+            return len(children) > 1
+        joint = int(children[0])
 
 
 def detached_root_depth(joint_names, parents, rest_positions) -> int:
@@ -149,6 +160,10 @@ def detached_root_depth(joint_names, parents, rest_positions) -> int:
         if len(children) != 1:
             break
         child = int(children[0])
+        # The folded skeleton must still branch below the child: an unbranched
+        # body has the same height pattern but its root is a deforming joint.
+        if not _chain_branches(parents, child):
+            break
         height = rest_positions[root, 1] - floor
         rise = rest_positions[child, 1] - rest_positions[root, 1]
         if (
