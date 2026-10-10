@@ -682,6 +682,25 @@ def test_spread_moves_the_limb_tips_outward(packages, kind, group):
         assert moved[~arms].max() < 1e-9
 
 
+KI_RUN = os.path.join(ANYTOP, "outputs", "edit_packages", "KI_Human_Run01Forwards.edit")
+
+
+@pytest.mark.skipif(not os.path.isdir(KI_RUN), reason="KI_Human_Run01Forwards package not built")
+def test_spread_steps_off_midline_roots():
+    # a Rigify shoulder starts both arms at one point on the sternum: the arms turn at the
+    # upper arms, and their tips move sideways, not forward
+    package = EditPackage.load(KI_RUN)
+    runtime = EditRuntime(package)
+    names = [str(n) for n in package["names"]]
+    arms = [l for l in runtime.spread_limbs() if l.group == "arms"]
+    assert sorted(names[l.pivot] for l in arms) == ["B-upper_arm.L", "B-upper_arm.R"]
+    base = runtime.apply(compose=True).global_positions
+    result = runtime.apply({"spread.arms": 0.3})
+    for limb in arms:
+        move = result.global_positions[:, limb.tip] - base[:, limb.tip]
+        assert np.median(limb.sign * move[:, 0]) > 0.5 * np.median(np.abs(move[:, 2]))
+
+
 def test_groups_follow_the_parts():
     # a skirt hanging off the pelvis beside the legs is soft: it groups with the small
     # attachments; the same chain labelled as arms is an arm

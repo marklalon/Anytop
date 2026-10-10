@@ -148,7 +148,7 @@
       <button id="groundApply" class="apply" hidden>应用</button>
     </div>
     <div class="controls">
-      <label class="chk" title="编辑骨架的关节按部位着色，接触关节画白环（关闭时：接触黄色、次级运动紫色）"><input id="colorByPart" type="checkbox" checked>按部位着色</label>
+      <label class="chk" title="编辑骨架的关节和骨骼按部位着色，接触关节画白环（关闭时：骨骼蓝色，接触关节黄色、次级运动紫色）"><input id="colorByPart" type="checkbox" checked>按部位着色</label>
       <span class="meta" id="partsSummary"></span>
     </div>
     <div class="palette" id="palette"
@@ -258,9 +258,9 @@ scene.add(ghostRoot, editRoot, anchorRoot);
 
 // Skeletons draw over the mesh: no depth test, and transparent so they all go in
 // the pass after the opaque mesh, ordered by renderOrder.
-function makeSkeleton(color, opacity) {
+function makeSkeleton(opacity) {
   const lines = new THREE.LineSegments(new THREE.BufferGeometry(),
-    new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthTest: false, depthWrite: false }));
+    new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity, depthTest: false, depthWrite: false }));
   const points = new THREE.Points(new THREE.BufferGeometry(),
     new THREE.PointsMaterial({ size: 6, sizeAttenuation: false, vertexColors: true,
       transparent: true, opacity, depthTest: false, depthWrite: false }));
@@ -341,8 +341,8 @@ function poseMesh(P, Q, offset) {
   }
 }
 
-const ghost = makeSkeleton(css('--original'), 0.35);
-const edit = makeSkeleton(css('--edited'), 1);
+const ghost = makeSkeleton(0.35);
+const edit = makeSkeleton(1);
 ghostRoot.add(ghost.lines, ghost.points);
 editRoot.add(edit.lines, edit.points);
 
@@ -413,6 +413,7 @@ function setupSkeleton(sk, J, parents) {
   for (let j = 0; j < J; j++) if (parents[j] >= 0) bones.push(parents[j], j);
   sk.bones = bones;
   sk.lines.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(bones.length * 3), 3));
+  sk.lines.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(bones.length * 3), 3));
   sk.points.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(J * 3), 3));
   sk.points.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(J * 3), 3));
 }
@@ -428,19 +429,21 @@ function sampleFrame(arr, J, n, t, loop) {
   return out;
 }
 
-function updateSkeleton(sk, P, offset, colorOf) {
+// a bone takes the colour boneColorOf gives its child joint
+function updateSkeleton(sk, P, offset, colorOf, boneColorOf = colorOf) {
   const { J } = state.pkg;
   const lp = sk.lines.geometry.attributes.position, pp = sk.points.geometry.attributes.position;
-  const pc = sk.points.geometry.attributes.color;
+  const lc = sk.lines.geometry.attributes.color, pc = sk.points.geometry.attributes.color;
   for (let i = 0; i < sk.bones.length; i++) {
     const o = sk.bones[i] * 3;
     lp.setXYZ(i, P[o] + offset[0], P[o + 1], P[o + 2] + offset[1]);
+    const c = boneColorOf(sk.bones[i | 1]); lc.setXYZ(i, c.r, c.g, c.b);
   }
   for (let j = 0; j < J; j++) {
     pp.setXYZ(j, P[j * 3] + offset[0], P[j * 3 + 1], P[j * 3 + 2] + offset[1]);
     const c = colorOf(j); pc.setXYZ(j, c.r, c.g, c.b);
   }
-  lp.needsUpdate = pp.needsUpdate = pc.needsUpdate = true;
+  lp.needsUpdate = lc.needsUpdate = pp.needsUpdate = pc.needsUpdate = true;
   sk.lines.geometry.computeBoundingSphere(); sk.points.geometry.computeBoundingSphere();
 }
 
@@ -1402,8 +1405,9 @@ function draw() {
   const oE = [dE[0] + side / 2, dE[1]];
   const PE = sampleFrame(state.edited.positions, J, Fe, t, pkg.loop);
   const byPart = $('colorByPart').checked;
-  updateSkeleton(edit, PE, oE, (j) => byPart ? PART_THREE[state.partsDraft[j].part]
-    : pkg.isContact.has(j) ? cContact : pkg.isPassive.has(j) ? cPassive : cEdit);
+  const partColor = (j) => PART_THREE[state.partsDraft[j].part];
+  updateSkeleton(edit, PE, oE, (j) => byPart ? partColor(j)
+    : pkg.isContact.has(j) ? cContact : pkg.isPassive.has(j) ? cPassive : cEdit, byPart ? partColor : () => cEdit);
   const meshView = $('meshView').value;
   if (state.mesh) {
     const gr = state.edited.globalRotations;

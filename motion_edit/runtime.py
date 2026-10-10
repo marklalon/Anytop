@@ -91,6 +91,10 @@ _SPREAD = {f"spread.{g}": ParamSpec(0.0, -1.0, 1.0, "spread") for g in SPREAD_GR
 # stub), or whose first joint is named as a shoulder girdle, turns at the joint below it.
 SPREAD_SHORT_ROOT = 0.2
 SPREAD_GIRDLE_KEYWORDS = ("clavicle", "collar", "scapula")
+# A group whose left and right roots lie closer than this fraction of the limb (both
+# sides' girdle bones starting at one point on the midline, as a Rigify shoulder) turns
+# its limbs at the first joints below that part.
+SPREAD_MIDLINE_GAP = 0.05
 # The slider scaling each group's chain offsets; tail joints that cannot swing follow the
 # tail's weight as a plain gain.
 GROUP_GAIN = {**{g: f"amp.{g}" for g in AMP_GROUPS}, "tail": "tail_weight"}
@@ -997,7 +1001,24 @@ class EditRuntime:
                     continue
                 reach = {k: bone[path(j, k)[1:]].sum() for k in members}
                 out.append(limb(group, j, max(members, key=lambda k: (reach[k], -k))))
-            self._spread_limbs = [l for l in out if l is not None and l.length > 0.0]
+            out = [l for l in out if l is not None and l.length > 0.0]
+
+            # roots on the midline cannot tell left from right, nor swing a limb out
+            pos = self.original_positions()
+            for group in SPREAD_GROUPS:
+                pair = [l for l in out if l.group == group]
+                if {l.sign for l in pair} != {1.0, -1.0}:
+                    continue
+                while all(len(path(l.pivot, l.tip)) > 2 for l in pair):
+                    left = pos[:, [l.pivot for l in pair if l.sign > 0]].mean(axis=1)
+                    right = pos[:, [l.pivot for l in pair if l.sign < 0]].mean(axis=1)
+                    gap = np.linalg.norm(left - right, axis=-1).mean()
+                    if gap >= SPREAD_MIDLINE_GAP * np.mean([l.length for l in pair]):
+                        break
+                    for l in pair:
+                        l.pivot = path(l.pivot, l.tip)[1]
+                        l.length = float(bone[path(l.pivot, l.tip)[1:]].sum())
+            self._spread_limbs = out
         return self._spread_limbs
 
     def _spread_lateral(self, group: str, times: np.ndarray) -> Optional[np.ndarray]:
