@@ -47,7 +47,7 @@
 {"species": "MU01_Sting", "species_tags": ["Winged", "Fluttering"]}
 {"species": "MU01_Toadstool", "species_tags": ["Biped", "Waddling"]}
 {"species": "MU01_VampireBat", "species_tags": ["Drifting", "Flapping"]}
-{"species": "MU04_Earthworm", "species_tags": ["Serpentine", "Slithering"]}
+{"species": "MU04_Earthworm", "species_tags": ["Serpentine", "Crawling"]}
 {"species": "MU04_Gloom", "species_tags": ["Drifting", "Hovering"]}
 {"species": "MU04_GolemEarth", "species_tags": ["Drifting", "Hovering"]}
 {"species": "MU04_GolemFire", "species_tags": ["Drifting", "Hovering"]}
@@ -55,12 +55,12 @@
 {"species": "MU04_GrimReaper", "species_tags": ["Drifting", "Hovering"]}
 {"species": "MU04_PlantChewer", "species_tags": ["Biped", "Waddling"]}
 {"species": "MU04_Pollen", "species_tags": ["Drifting", "Hovering"]}
-{"species": "MU04_QueenWorm", "species_tags": ["Serpentine", "Slithering"]}
+{"species": "MU04_QueenWorm", "species_tags": ["Serpentine", "Crawling"]}
 {"species": "MU04_Scorpion", "species_tags": ["Multiped", "Scuttling"]}
 {"species": "MU04_ScorpionKing", "species_tags": ["Multiped", "Scuttling"]}
 {"species": "MU04_Scorpling", "species_tags": ["Multiped", "Scuttling"]}
 {"species": "MU04_Spore", "species_tags": ["Biped", "Waddling"]}
-{"species": "MU04_Worm", "species_tags": ["Serpentine", "Slithering"]}
+{"species": "MU04_Worm", "species_tags": ["Serpentine", "Crawling"]}
 {"species": "MU04_Wraith", "species_tags": ["Drifting", "Hovering"]}
 {"species": "MU06_Angel", "species_tags": ["Drifting", "Flapping"]}
 {"species": "MU06_AngelMage", "species_tags": ["Drifting", "Flapping"]}
