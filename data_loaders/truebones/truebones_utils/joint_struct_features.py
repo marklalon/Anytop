@@ -29,14 +29,14 @@ import numpy as np
 # Recorded in args.json at train time and re-checked at resume/generation: a
 # checkpoint fitted on schema N cannot read schema N+1 features, and a pure
 # reordering would leave every shape lining up.
-JOINT_STRUCT_FEATURE_SCHEMA_VERSION = 2
+JOINT_STRUCT_FEATURE_SCHEMA_VERSION = 3
 
 # Order is the channel order of the returned array; changing it is a schema bump.
 JOINT_STRUCT_FEATURE_NAMES = (
     'depth_norm',        # (k + 1) / L      -- position along its branch-free run
     'run_len_inv',       # 1 / L            -- bounded run length, pairs with depth_norm
     'is_leaf',           # no children
-    'height_n',          # (y - y_min) / y_span
+    'height_n',          # (y - floor) / y_span   -- floor: see rest_floor_height
     'lateral_signed',    # (x - x_root) / scale   -- signed, so left != right
     'fore_aft_n',        # (z - z_mean) / scale
     'attach_h_n',        # height_n of the run's first joint -- where the limb attaches
@@ -195,6 +195,19 @@ def _subtree_sizes(parents, children):
     return sizes
 
 
+def rest_floor_height(heights):
+    """The rest pose's ground: the authored floor y=0, clamped into the body's
+    own height range.
+
+    A legged rig is authored standing on y=0, so this is where its feet are
+    even when a tail or wing tip hangs below them -- taking the lowest joint
+    instead would put such a rig's feet in mid-air. A rig wholly above y=0 (a
+    hovering spirit) or wholly below it falls back to its nearest extreme.
+    """
+    heights = np.asarray(heights, dtype=np.float64)
+    return float(np.clip(0.0, heights.min(), heights.max()))
+
+
 def build_joint_struct_features(object_cond, source='cond entry'):
     """``[J, JOINT_STRUCT_DIM]`` float32 structural descriptors for one species.
 
@@ -214,9 +227,9 @@ def build_joint_struct_features(object_cond, source='cond entry'):
     # A degenerate rig (every joint at one point) floors at _EPS rather than
     # dividing by zero, and lands on the all-equal features that describes.
     scale = float(max(spans.max(), _EPS))
-    y_min = float(rest_pos[:, 1].min())
+    floor = rest_floor_height(rest_pos[:, 1])
     y_span = float(max(spans[1], _EPS))
-    height_n = (rest_pos[:, 1] - y_min) / y_span
+    height_n = (rest_pos[:, 1] - floor) / y_span
     lateral_signed = (rest_pos[:, 0] - float(rest_pos[0, 0])) / scale
     fore_aft_n = (rest_pos[:, 2] - float(rest_pos[:, 2].mean())) / scale
 

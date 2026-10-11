@@ -66,20 +66,24 @@ S 和 T 构成主方案；A 风险更高，单独验证后再启用。
 LeftThigh → LeftShin → LeftFoot → LeftToeBase
 ```
 
-#### 每关节 10 维描述子（schema 2）
+#### 每关节 10 维描述子（schema 3）
 
 设关节位于长度为 `L` 的 run 中，第 `k` 个位置从 0 开始；`J` 是骨架关节数。几何尺度定义为：
 
 ```python
 scale = max(x_span, y_span, z_span, eps)
+floor = clip(0, y_min, y_max)
+height_n = (y - floor) / max(y_span, eps)
 ```
+
+`floor` 将 y=0 作为骨架作者定义的地面；若整个骨架都高于或低于 y=0，则分别取最低点或最高点作为基准。这样悬垂到地面以下的尾巴不会把脚的高度基准一起拉低，因此 `height_n` 可能小于 0。
 
 | 特征 | 定义 | 作用 |
 |---|---|---|
 | `depth_norm` | `(k + 1) / L` | run 内相对位置 |
 | `run_len_inv` | `1 / L` | 为相对位置提供有界的 run 长度信息 |
 | `is_leaf` | 当前关节是否无 child | 提供末端身份 |
-| `height_n` | `(y - y_min) / max(y_span, eps)` | 归一化高度 |
+| `height_n` | `(y - floor) / max(y_span, eps)`，`floor = clip(0, y_min, y_max)` | 相对地面基准的归一化高度 |
 | `lateral_signed` | `(x - x_root) / scale` | 相对 root 的左右位置 |
 | `fore_aft_n` | `(z - z_mean) / scale` | 前后位置 |
 | `attach_h_n` | run 起点的 `height_n` | 肢体连接高度 |

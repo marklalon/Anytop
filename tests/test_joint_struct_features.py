@@ -123,6 +123,24 @@ class Shape(unittest.TestCase):
         self.assertAlmostEqual(float(subtree[2]), 1 / 9)
         self.assertAlmostEqual(float(subtree[3]), 3 / 9)
 
+    def test_feet_stay_on_the_floor_under_a_hanging_tail(self):
+        """The floor is the authored y=0, not the lowest joint: a tail drooping
+        below the feet must not lift the feet into mid-air."""
+        rest = np.vstack([_BIPED_REST, [[0.0, -0.6, -0.5]]]).astype(np.float32)
+        features = build_joint_struct_features(_biped(
+            parents=np.asarray(_BIPED_PARENTS + [0], dtype=np.int64), rest_pos_ric_hml=rest,
+        ))
+        height = _channel(features, 'height_n')
+        self.assertAlmostEqual(float(height[5]), 0.0)  # LFoot still on the floor
+        self.assertLess(float(height[9]), 0.0)         # the tail hangs below it
+
+    def test_a_hovering_rig_floors_on_its_lowest_joint(self):
+        lifted = _BIPED_REST + np.array([0.0, 3.0, 0.0], dtype=np.float32)
+        np.testing.assert_allclose(
+            build_joint_struct_features(_biped(rest_pos_ric_hml=lifted)),
+            build_joint_struct_features(_biped()), atol=1e-6,
+        )
+
     def test_lateral_is_signed_so_left_and_right_never_coincide(self):
         features = build_joint_struct_features(_biped())
         lateral = _channel(features, 'lateral_signed')
