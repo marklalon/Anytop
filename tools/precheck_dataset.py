@@ -120,6 +120,8 @@ DEFAULT_REFERENCE_COND = _ANYTOP_DIR / "dataset" / "merged" / "cond.npy"
 MOTION_EXTENSIONS = {".glb", ".gltf", ".fbx"}
 TARGET_FPS = 30.0
 FPS_TOLERANCE = 0.1
+FRAME_INTERVAL_REL_TOLERANCE = 0.05
+FRAME_INTERVAL_ABS_TOLERANCE = 1e-4
 # Mirrors the preprocessing defaults: shorter clips are filtered out.
 MIN_FRAMES = 10
 # Blender stores a bone name in a fixed 64-byte buffer (63 + NUL); a longer
@@ -328,6 +330,32 @@ class FileFacts:
     error: str = ""
 
 
+def _irregular_frame_intervals(times: np.ndarray) -> dict | None:
+    """Find off-grid intervals in one channel without mixing channel key grids."""
+    if len(times) < MIN_FRAMES:
+        return None
+    deltas = np.diff(times)
+    if np.any(deltas <= 1e-6):
+        return None
+    median_dt = float(np.median(deltas))
+    tolerance = max(FRAME_INTERVAL_ABS_TOLERANCE, median_dt * FRAME_INTERVAL_REL_TOLERANCE)
+    bad = np.flatnonzero(np.abs(deltas - median_dt) > tolerance)
+    if not bad.size:
+        return None
+    first = int(bad[0])
+    return {
+        "count": int(bad.size),
+        "total": int(deltas.size),
+        "first": first,
+        "first_dt": float(deltas[first]),
+        "median_dt": median_dt,
+        "tolerance": tolerance,
+        "min_dt": float(np.min(deltas)),
+        "max_dt": float(np.max(deltas)),
+        "max_relative_error": float(np.max(np.abs(deltas - median_dt)) / median_dt),
+    }
+
+
 def _read_file_facts(path: Path) -> FileFacts:
     facts = FileFacts(path=path)
     if path.suffix.lower() == ".fbx":
@@ -474,6 +502,7 @@ def _read_file_facts(path: Path) -> FileFacts:
     for anim_index, animation in enumerate(doc.get("animations", [])):
         samplers = animation.get("samplers", [])
         times: list[np.ndarray] = []
+        time_inputs: dict[int, np.ndarray] = {}
         moving = False
         targets_skeleton = 0
         for channel in animation.get("channels", []):
@@ -485,7 +514,10 @@ def _read_file_facts(path: Path) -> FileFacts:
             sampler = samplers[int(channel["sampler"])]
             if kept:
                 targets_skeleton += 1
-                times.append(gltf.accessor(int(sampler["input"]))[:, 0])
+                input_index = int(sampler["input"])
+                if input_index not in time_inputs:
+                    time_inputs[input_index] = gltf.accessor(input_index)[:, 0]
+                times.append(time_inputs[input_index])
             path = target.get("path")
             if path not in ("rotation", "translation", "scale"):
                 continue
@@ -505,6 +537,9 @@ def _read_file_facts(path: Path) -> FileFacts:
         deltas = np.diff(all_times)
         deltas = deltas[deltas > 1e-6]
         fps = float(1.0 / np.median(deltas)) if deltas.size else 0.0
+        interval_issues = [_irregular_frame_intervals(t) for t in time_inputs.values()]
+        interval_issue = max((issue for issue in interval_issues if issue is not None),
+                             key=lambda issue: issue["max_relative_error"], default=None)
         facts.animations.append({
             "index": anim_index,
             "name": animation.get("name", ""),
@@ -512,6 +547,7 @@ def _read_file_facts(path: Path) -> FileFacts:
             "frames": int(all_times.size),
             "duration": float(all_times[-1] - all_times[0]) if all_times.size else 0.0,
             "fps": fps,
+            "irregular_intervals": interval_issue,
             "moving": moving,
         })
     for root in [main_root] + [r for r in candidate_roots if r != main_root]:
@@ -724,6 +760,15 @@ def _check_file_content(species: str, facts: FileFacts, is_reference: bool, repo
         return
     if anim["fps"] and abs(anim["fps"] - TARGET_FPS) > FPS_TOLERANCE:
         report.add(WARN, species, "content", f"{anim['fps']:.2f} fps, expected {TARGET_FPS:.0f}", name)
+    issue = anim["irregular_intervals"]
+    if issue is not None:
+        report.add(WARN, species, "content",
+                   f"irregular key-frame intervals: {issue['count']}/{issue['total']} differ from the "
+                   f"median {issue['median_dt'] * 1000:.2f} ms by more than "
+                   f"{issue['tolerance'] * 1000:.2f} ms "
+                   f"(first at frames {issue['first']}-{issue['first'] + 1}: "
+                   f"{issue['first_dt'] * 1000:.2f} ms; range "
+                   f"{issue['min_dt'] * 1000:.2f}-{issue['max_dt'] * 1000:.2f} ms)", name)
     if anim["frames"] < MIN_FRAMES:
         report.add(ERROR, species, "content",
                    f"only {anim['frames']} key frame(s); clips under {MIN_FRAMES} frames are filtered out", name)
