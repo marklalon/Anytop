@@ -420,7 +420,7 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 |---|---|
 | geodesic | 预测/目标 6D rotation 转 SO(3) 后的角距离 |
 | velocity consistency | position finite difference 与 velocity channel 一致 |
-| bone vector | 父→子骨向量相对 GT 的差（同时管长度和方向），按 rest 骨长归一化（下限为 L 的一个比例），按 `alphas_cumprod[t]` 加权 |
+| bone vector | 父→子骨向量相对 GT 的差（同时管长度和方向），按 rest 骨长归一化（下限为 L 的一个比例），按 `alphas_cumprod[t]` 加权；每个叶子关节另加一根局部坐标系下的单位虚拟子骨，方向各向同性（`‖R_pred − R_gt‖_F / √3`），让叶子的旋转和有子关节的关节一样受约束 |
 | loop wrap | loop 首尾闭合 |
 | loop root XZ closure | 根 XZ 速度整周期积分为零 |
 | temporal-span seam | span 边界附近 position 二阶差分匹配 GT |

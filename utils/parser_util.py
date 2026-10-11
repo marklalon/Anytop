@@ -255,6 +255,8 @@ def add_model_options(parser):
                             "length (floored at a fraction of the skeleton length scale) so short/distal bones, "
                             "which l_simple leaves nearly unconstrained, get proportionally larger gradient. "
                             "Anchoring on GT (not rest) preserves genuinely animated bone-length deformation. "
+                            "Every leaf joint adds a virtual unit child bone in its local frame (isotropic: "
+                            "|R_pred - R_gt|_F / sqrt(3)), so a leaf's rotation is held like a joint with a child. "
                             "Weighted by alphas_cumprod[t] so it fades out at high noise. Computed on "
                             "denormalized outputs; recommended range ~0.1-0.3.")
     group.add_argument("--motion_speed_aug", default=1.0, type=float,

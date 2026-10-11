@@ -95,6 +95,15 @@ class _CaptureDecoder(nn.Module):
         return kwargs["tgt"]
 
 
+_IDENTITY_6D = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+
+def _rot_z_6d(angle):
+    c, s = float(np.cos(angle)), float(np.sin(angle))
+    # First two columns of Rz(angle), the 6D layout rotation_6d_to_matrix reads.
+    return (c, s, 0.0, -s, c, 0.0)
+
+
 class BoneVectorLossTests(unittest.TestCase):
     """Tests for bone_vector_consistency_loss.
 
@@ -125,6 +134,7 @@ class BoneVectorLossTests(unittest.TestCase):
         }
         target = torch.zeros(1, n, 12, n_frames)
         target[:, :, 0:3, :] = torch.from_numpy(rest_pos).view(1, n, 3, 1).expand(1, n, 3, n_frames)
+        target[:, :, 3:9, :] = torch.tensor(_IDENTITY_6D).view(1, 1, 6, 1)
         return y, target, torch.ones(1, 1, 1, n)
 
     def test_direction_error_with_exact_length_is_penalized(self):
@@ -134,8 +144,9 @@ class BoneVectorLossTests(unittest.TestCase):
         # Swing bone 1->2 by 90 degrees about z: same length, wrong direction.
         pred[0, 2, 0:3, :] = torch.tensor([1.0, 1.0, 0.0]).view(3, 1)
         loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
-        # |dv| = sqrt(2), rest = 1 -> linear Huber branch: sqrt(2) - 0.05, over 2 bones.
-        expected = (np.sqrt(2.0) - 0.05) / 2.0
+        # |dv| = sqrt(2), rest = 1 -> linear Huber branch: sqrt(2) - 0.05, over
+        # 2 bones and the leaf's virtual bone (rotation unchanged, so 0).
+        expected = (np.sqrt(2.0) - 0.05) / 3.0
         self.assertAlmostEqual(loss.item(), expected, places=5)
 
     def test_rigid_translation_is_free(self):
@@ -154,7 +165,7 @@ class BoneVectorLossTests(unittest.TestCase):
         pred[0, 2, 0, :] += 0.005
         loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
         rel = 0.005 / 0.1  # floored rest, not 0.005 / 0.01
-        expected = (0.5 * rel * rel / 0.1) / 2.0
+        expected = (0.5 * rel * rel / 0.1) / 3.0
         self.assertAlmostEqual(loss.item(), expected, places=5)
 
     def test_gradient_is_finite_on_exact_and_padded_bones(self):
@@ -213,6 +224,41 @@ class BoneVectorLossTests(unittest.TestCase):
         exact = diffusion.bone_vector_consistency_loss(target, target, spat_mask, y)
         self.assertEqual(exact.item(), 0.0)
 
+    def test_leaf_rotation_is_penalized_through_virtual_bone(self):
+        diffusion = self._make_diffusion()
+        y, target, spat_mask = self._chain([[0, 0, 0], [1, 0, 0], [2, 0, 0]])
+        pred = target.clone()
+        # Rotate only the leaf (joint 2): positions untouched, so no real bone moves.
+        angle = np.pi / 2
+        pred[0, 2, 3:9, :] = torch.tensor(_rot_z_6d(angle)).view(6, 1)
+        loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
+        # |R - I|_F = 2*sqrt(2)*sin(angle/2) about any axis; /sqrt(3) is the
+        # RMS tip error over unit directions. Linear Huber branch, over 3 entries.
+        leaf_rel = 2.0 * np.sqrt(2.0) * np.sin(angle / 2) / np.sqrt(3.0)
+        self.assertAlmostEqual(loss.item(), (leaf_rel - 0.05) / 3.0, places=5)
+
+    def test_non_leaf_rotation_has_no_virtual_bone(self):
+        diffusion = self._make_diffusion()
+        y, target, spat_mask = self._chain([[0, 0, 0], [1, 0, 0], [2, 0, 0]])
+        pred = target.clone()
+        # Joint 1 has a child: its rotation reaches this loss only through that
+        # child's position, which is left unchanged here.
+        pred[0, 1, 3:9, :] = torch.tensor(_rot_z_6d(np.pi / 2)).view(6, 1)
+        loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
+        self.assertAlmostEqual(loss.item(), 0.0, places=6)
+
+    def test_padded_joint_is_not_a_leaf(self):
+        diffusion = self._make_diffusion()
+        y, target, _ = self._chain([[0, 0, 0], [1, 0, 0], [2, 0, 0]])
+        n_frames = target.shape[-1]
+        target = torch.cat([target, torch.zeros(1, 1, 12, n_frames)], dim=1)
+        y["rest_pos_ric_hml"] = torch.cat([y["rest_pos_ric_hml"], torch.zeros(1, 1, 3)], dim=1)
+        spat_mask = torch.tensor([1.0, 1.0, 1.0, 0.0]).view(1, 1, 1, 4)
+        pred = target.clone()
+        pred[0, 3, 3:9, :] = torch.tensor(_rot_z_6d(1.0)).view(6, 1)
+        loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
+        self.assertAlmostEqual(loss.item(), 0.0, places=6)
+
     def test_bone_loss_rejects_canonical_rest_pose_only(self):
         diffusion = self._make_diffusion()
         parents = np.array([-1, 0, 1], dtype=np.int64)
@@ -258,6 +304,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         model_var_type: ModelVarType,
         lambda_geo: float = 0.0,
         lambda_vel: float = 0.0,
+        lambda_bone: float = 0.0,
         temporal_span_seam_loss_weight: float = 0.0,
         temporal_span_seam_width: int = 0,
         renoise_same_level_prob: float = 1.0,
@@ -269,6 +316,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             loss_type=LossType.MSE,
             lambda_geo=lambda_geo,
             lambda_vel=lambda_vel,
+            lambda_bone=lambda_bone,
             temporal_span_seam_loss_weight=temporal_span_seam_loss_weight,
             temporal_span_seam_width=temporal_span_seam_width,
             renoise_same_level_prob=renoise_same_level_prob,
@@ -319,6 +367,43 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertEqual(terms["geodesic_loss"].dtype, torch.float32)
         self.assertEqual(terms["vel_loss"].dtype, torch.float32)
         self.assertEqual(terms["loss"].dtype, torch.float32)
+
+    def test_geodesic_and_bone_losses_share_one_rotation_conversion(self):
+        batch_size, n_joints, n_feats, n_frames = 2, 3, 12, 5
+        diffusion = self._make_diffusion(
+            model_var_type=ModelVarType.FIXED_LARGE, lambda_geo=0.25, lambda_bone=0.5,
+        )
+        x_start = torch.randn(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
+        t = torch.tensor([0, 1], dtype=torch.int64)
+        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
+        model_kwargs["y"]["parents"] = [np.array([-1, 0, 1])] * batch_size
+        y_rest = model_kwargs["y"]["rest_pos_ric_hml"]
+        model_kwargs["y"]["rest_pos_ric_hml"] = y_rest.unsqueeze(0).expand(batch_size, -1, -1)
+        noise = torch.randn_like(x_start)
+
+        convert = GaussianDiffusion._physical_rotation_matrices
+        with patch.object(
+            GaussianDiffusion, "_physical_rotation_matrices", side_effect=convert,
+        ) as counted:
+            terms = diffusion.training_losses(
+                _RecordingModel(output_mode="zero"), x_start, t, model_kwargs=model_kwargs, noise=noise,
+            )
+        # One conversion each for the target and the prediction, not one per loss.
+        self.assertEqual(counted.call_count, 2)
+
+        # Same values as each loss converting on its own.
+        y = model_kwargs["y"]
+        from diffusion.gaussian_diffusion import canonical_to_physical_hml
+        target_physical = canonical_to_physical_hml(x_start, y)
+        pred_physical = canonical_to_physical_hml(torch.zeros_like(x_start), y)
+        spat_mask = y["joints_padding_mask"][:, :, :, 1, 1:].float()
+        geo = diffusion.geodesic_loss(
+            target_physical, pred_physical, spat_mask,
+            y["lengths"].float(), y["n_joints"].float(),
+        )
+        bone = diffusion.bone_vector_consistency_loss(pred_physical, target_physical, spat_mask, y, t=t)
+        torch.testing.assert_close(terms["geodesic_loss"], geo)
+        torch.testing.assert_close(terms["bone_loss"], bone)
 
     def test_extract_into_tensor_keeps_fp32_broadcast_semantics(self):
         arr = np.array([0.25, 0.5, 0.75], dtype=np.float64)

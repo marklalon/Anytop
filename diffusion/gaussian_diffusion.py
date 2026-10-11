@@ -406,11 +406,13 @@ class GaussianDiffusion:
         """Local rotation matrices [bs, T, J, 3, 3] of a physical [bs, J, F, T] feature."""
         return rotation_6d_to_matrix_safe(physical.permute(0, 3, 1, 2)[..., 3:9].float())
 
-    def geodesic_loss(self, a, b, spat_mask, lengths, n_joints):
+    def geodesic_loss(self, a, b, spat_mask, lengths, n_joints, rotations=None):
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
         # assuming spat_mask.shape == bs, 1, 1, max_joints
-        rots_target = self._physical_rotation_matrices(a)
-        rots_pred = self._physical_rotation_matrices(b)
+        # rotations: optional (target, pred) _physical_rotation_matrices of a, b
+        if rotations is None:
+            rotations = (self._physical_rotation_matrices(a), self._physical_rotation_matrices(b))
+        rots_target, rots_pred = rotations
         loss = geodesic_distance(rots_pred, rots_target).permute(0, 2, 3, 1)
         spat_masked_loss = (loss * spat_mask.float().transpose(1,3))
         loss = sum_flat(spat_masked_loss)  # gives \sigma_euclidean over unmasked elements
@@ -544,7 +546,7 @@ class GaussianDiffusion:
             huber = huber * weight
         return (huber * mask).sum() / denom
 
-    def bone_vector_consistency_loss(self, pred_physical, target_physical, spat_mask, y, t=None):
+    def bone_vector_consistency_loss(self, pred_physical, target_physical, spat_mask, y, t=None, rotations=None):
         """Target-relative, rest-length-normalized parent->child bone-vector loss.
 
         For every bone ``v_j = p_j - p_parent`` on the position channel it
@@ -571,6 +573,20 @@ class GaussianDiffusion:
         holding those to a GT bone vector fights ``l_simple``. The weight fades
         the term out where the signal fraction is small. ``t=None`` means
         unweighted.
+
+        ``rotations`` optionally passes the (target, pred)
+        ``_physical_rotation_matrices`` already computed for another loss.
+
+        Leaf virtual bones: a joint's rotation is only visible on the position
+        channel through its children, so a leaf's rotation (a hand, a foot, a
+        head, a single-bone wing -- end sites are dropped in preprocessing) has
+        no bone above to carry it and is held only by its own rotation channel.
+        Every non-root leaf therefore adds one virtual child bone of unit length
+        in its local frame, entering the same average as a real bone. Its
+        direction is unknown (the mesh it carries is not in the features), so it
+        is isotropic: ``|R_pred - R_gt|_F / sqrt(3)``, the RMS tip error over all
+        unit directions, which is the sphere average of a real bone's relative
+        direction error under the same rotation.
 
         Returns a scalar loss.
         """
@@ -638,7 +654,22 @@ class GaussianDiffusion:
         inv_rest = (1.0 / th.maximum(rest_len, rest_floor)).unsqueeze(-1)       # [bs, J, 1]
 
         rel = (vec_pred - vec_tgt).norm(dim=2) * inv_rest                     # [bs, J, T]
-        valid_bt = bone_valid.unsqueeze(-1).to(pred_physical.dtype).expand(-1, -1, n_frames)
+
+        # Leaf virtual bones (see docstring): a real, non-root joint no real
+        # joint names as its parent.
+        child_count = th.zeros(bs, max_joints, dtype=pred_physical.dtype, device=device)
+        child_count.scatter_add_(1, parents_idx, (joint_valid & parent_is_bone).to(pred_physical.dtype))
+        leaf = joint_valid & parent_is_bone & (child_count == 0)                # [bs, J]
+        if rotations is None:
+            rotations = (
+                self._physical_rotation_matrices(target_physical),
+                self._physical_rotation_matrices(pred_physical),
+            )
+        rot_tgt, rot_pred = rotations                                         # [bs, T, J, 3, 3]
+        leaf_rel = ((rot_pred - rot_tgt).flatten(-2).norm(dim=-1) / math.sqrt(3.0)).transpose(1, 2)  # [bs, J, T]
+
+        rel = th.cat([rel, leaf_rel.to(rel.dtype)], dim=1)
+        valid_bt = th.cat([bone_valid, leaf], dim=1).unsqueeze(-1).to(pred_physical.dtype).expand(-1, -1, n_frames)
         signal = None
         if t is not None:
             signal = extract_into_tensor(self.alphas_cumprod, t, (bs, 1, 1)).to(pred_physical.dtype)
@@ -1960,10 +1991,18 @@ class GaussianDiffusion:
                                 + self.temporal_span_seam_loss_weight * terms["temporal_span_seam_loss"]
                             )
 
+                # The geodesic and bone losses read the same rotation matrices.
+                rotations = None
+                if self.lambda_geo > 0. and self.lambda_bone > 0.:
+                    rotations = (
+                        self._physical_rotation_matrices(target_physical),
+                        self._physical_rotation_matrices(model_output_physical),
+                    )
+
                 if self.lambda_geo > 0.:
                     terms["geodesic_loss"] = self.geodesic_loss(
                         target_physical, model_output_physical, joints_padding_mask_fp32,
-                        lengths_fp32, actual_joints_fp32,
+                        lengths_fp32, actual_joints_fp32, rotations=rotations,
                     )
                     terms["loss"] = terms["loss"] + self.lambda_geo * terms["geodesic_loss"]
 
@@ -1976,7 +2015,7 @@ class GaussianDiffusion:
                 if self.lambda_bone > 0.:
                     terms["bone_loss"] = self.bone_vector_consistency_loss(
                         model_output_physical, target_physical,
-                        joints_padding_mask_fp32, y_for_decode, t=t,
+                        joints_padding_mask_fp32, y_for_decode, t=t, rotations=rotations,
                     )
                     terms["loss"] = terms["loss"] + self.lambda_bone * terms["bone_loss"]
 
