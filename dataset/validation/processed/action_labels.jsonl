@@ -1,6 +1,5 @@
 {"clip": "ORA_ArtDoll_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "ORA_BatToon_Fall", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
-{"clip": "ORA_Bear_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "ORA_Beetle_Rear", "action_group": "stationary", "action_label": "roar", "is_loop": false, "reviewed": true}
 {"clip": "ORA_Beetle_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "ORA_BlackSpider_Attack", "action_group": "stationary", "action_label": "attack, swat", "is_loop": true, "reviewed": true}

@@ -108,14 +108,14 @@
 {"species": "RU01_JellyfishRobot", "species_tags": ["Drifting", "Undulating"]}
 {"species": "RU01_MetalRobot", "species_tags": ["Biped", "Striding"]}
 {"species": "RU01_NexusRobot", "species_tags": ["Drifting", "Hovering"]}
-{"species": "RU01_TankerRobot", "species_tags": ["Biped", "Striding"]}
+{"species": "RU01_TankerRobot", "species_tags": ["Biped", "Clanking"]}
 {"species": "RU01_TechRobot", "species_tags": ["Biped", "Striding"]}
 {"species": "RU01_TentaclesRobot", "species_tags": ["Drifting", "Undulating"]}
 {"species": "RU02_DragonBot", "species_tags": ["Winged", "Flapping"]}
 {"species": "RU02_DragonPredatorRobot", "species_tags": ["Winged", "Flapping"]}
 {"species": "RU02_DragonRobot", "species_tags": ["Winged", "Flapping"]}
 {"species": "RU02_GalaxyRobot", "species_tags": ["Drifting", "Hovering"]}
-{"species": "RU02_NoseRobot", "species_tags": ["Biped", "Striding"]}
+{"species": "RU02_NoseRobot", "species_tags": ["Biped", "Clanking"]}
 {"species": "RU02_RazorRobot", "species_tags": ["Multiped", "Scuttling"]}
 {"species": "RU02_SpiderQueenRobot", "species_tags": ["Multiped", "Scuttling"]}
 {"species": "RU02_SpiderRobot", "species_tags": ["Multiped", "Scuttling"]}

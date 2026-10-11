@@ -105,6 +105,7 @@ OBJECT_SUBSET_CHOICES = ("all",) + CANONICAL_OBJECT_SUBSETS
 # training, so a word outside this list has no T5 vector anywhere. Adding one
 # means rebuilding the table and retraining.
 SPECIES_LOCOMOTIONS = (
+    "Clanking",
     "Crawling",
     "Flapping",
     "Fluttering",
