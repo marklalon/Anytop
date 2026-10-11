@@ -28,6 +28,7 @@ from data_loaders.truebones.data.dataset import (
     _circular_roll_motion,
     _drop_loop_closing_frame,
     resample_motion_features,
+    resample_time_scaled_window,
     time_scale_motion_features,
     _tile_loop_motion,
 )
@@ -860,10 +861,17 @@ def test_motion_speed_aug_is_transparent_to_roll_tile_crop_and_resample() -> Non
     motion, motion_metadata, aug_info = prepare(scaled_len)
 
     # The time-scaled clip is just a shorter source clip: the window is the
-    # ordinary loop path (terminal wrap kept) applied to it, and
-    # resample_speed_cond reports ITS length -- the model is told nothing else.
-    scaled_raw, speed = time_scale_motion_features(raw, scaled_len, periodic=True)
-    expected = _resample_raw_then_normalize(scaled_raw, cond, NUM_FRAMES, periodic=True)
+    # ordinary loop path (terminal wrap kept) applied to it, interpolated from
+    # the source once, and resample_speed_cond reports ITS length -- the model
+    # is told nothing else.
+    _scaled_raw, speed = time_scale_motion_features(raw, scaled_len, periodic=True)
+    expected = _normalize_motion(
+        resample_time_scaled_window(
+            _drop_loop_closing_frame(raw), scaled_len, scaled_len, NUM_FRAMES,
+            source_periodic=True, window_periodic=True,
+        ),
+        cond,
+    )
     assert_close("time-scaled loop window", motion, expected, atol=3e-5)
     assert np.isclose(float(aug_info["resample_speed_cond"]), float(scaled_len) / float(NUM_FRAMES))
     assert np.isclose(float(aug_info["motion_speed_applied"]), speed)
@@ -879,20 +887,51 @@ def test_motion_speed_aug_is_transparent_to_roll_tile_crop_and_resample() -> Non
     assert not any(key.startswith("motion_speed") and key != "motion_speed_applied" for key in cond_batch["y"])
 
     # What the augmentation changes in the window: the pose/rotation CONTENT
-    # is the same clip compressed into the same T frames (identical up to one
-    # extra linear interpolation), the velocity channels scale with the speed
-    # and resample_speed_cond shrinks by it. That is the whole mechanism --
-    # it spreads the resample_speed a given content is seen at, it does not
-    # invent new poses.
+    # is the same cycle in the same T frames -- the window's time map does not
+    # depend on the scaled length when nothing is rolled, tiled or cropped --
+    # the velocity channels scale with the speed and resample_speed_cond
+    # shrinks by it. That is the whole mechanism -- it spreads the
+    # resample_speed a given content is seen at, it does not invent new poses.
     base, _base_metadata, base_info = prepare(raw_len)
     assert np.isclose(float(base_info["motion_speed_applied"]), 1.0)
-    pose_diff = np.abs(motion[..., :9] - base[..., :9]).mean()
-    pose_step = np.abs(np.diff(base[..., :9], axis=0)).mean()
-    assert pose_diff < 0.15 * pose_step, (pose_diff, pose_step)
+    assert_close("time-scaled loop pose content", motion[..., :9], base[..., :9], atol=3e-5)
     live = np.abs(base[..., 9:12]) > 1e-2
     vel_ratio = np.median(np.abs(motion[..., 9:12][live]) / np.abs(base[..., 9:12][live]))
     assert abs(vel_ratio - speed) < 0.05 * speed, (vel_ratio, speed)
     assert float(aug_info["resample_speed_cond"]) < float(base_info["resample_speed_cond"])
+
+
+def test_time_scaled_loop_roll_and_tiles_are_one_interpolation() -> None:
+    dataset = _build_truebones(
+        split="train",
+        num_frames=NUM_FRAMES,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=2,
+    )
+    motion_dataset = dataset.motion_dataset
+    data = motion_dataset.data_dict[LOOP_MOTION]
+    cond = motion_dataset.cond_dict[data["object_type"]]
+    raw = _drop_loop_closing_frame(np.load(data["motion_path"]).astype(np.float32, copy=False))
+    scaled_len = int(round(raw.shape[0] * 1.2))
+    offset = 5
+    assert 2 * scaled_len <= NUM_FRAMES * MAX_SOURCE_FRAMES_MULT
+
+    with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=2),             patch.object(motion_dataset, '_sample_motion_speed_target_length', return_value=scaled_len):
+        sample = motion_dataset._prepare_sample(
+            LOOP_MOTION, data, target_num_frames=NUM_FRAMES, loop_offset=offset, return_aug_info=True,
+        )
+    motion, aug_info = sample[0], sample[-1]
+    assert aug_info["loop_applied"] is True and aug_info["loop_tile_count"] == 2
+    assert np.isclose(float(aug_info["resample_speed_cond"]), 2 * scaled_len / NUM_FRAMES)
+    # The roll is in scaled frames, i.e. a fractional shift of the source.
+    expected = _normalize_motion(
+        resample_time_scaled_window(
+            raw, scaled_len, 2 * scaled_len, NUM_FRAMES,
+            source_periodic=True, window_periodic=True, shift=offset,
+        ),
+        cond,
+    )
+    assert_close("rolled + tiled time-scaled loop", motion, expected, atol=3e-5)
 
 
 class _SpeedOpt:
@@ -1021,8 +1060,15 @@ def test_long_phase_anchored_clip_is_fitted_whole_not_cropped() -> None:
     long_raw, motion, aug_info = prepare(
         BUDGET_FRAMES + 30, randint=lambda *_: (_ for _ in ()).throw(AssertionError("must not crop")),
     )
-    fitted_raw, speed = time_scale_motion_features(long_raw, BUDGET_FRAMES)
-    assert_close("fitted anchored window", motion, _resample_raw_then_normalize(fitted_raw, cond, NUM_FRAMES), atol=3e-5)
+    _fitted_raw, speed = time_scale_motion_features(long_raw, BUDGET_FRAMES)
+    expected = _normalize_motion(
+        resample_time_scaled_window(
+            long_raw, BUDGET_FRAMES, BUDGET_FRAMES, NUM_FRAMES,
+            source_periodic=False, window_periodic=False,
+        ),
+        cond,
+    )
+    assert_close("fitted anchored window", motion, expected, atol=3e-5)
     assert np.isclose(float(aug_info["motion_speed_applied"]), speed) and speed > 1.0
     assert np.isclose(float(aug_info["resample_speed_cond"]), MAX_SOURCE_FRAMES_MULT)
 
@@ -1030,9 +1076,12 @@ def test_long_phase_anchored_clip_is_fitted_whole_not_cropped() -> None:
     window_start = 3
     beyond = int(MAX_FIT_SPEEDUP * BUDGET_FRAMES) + 20
     long_raw, motion, aug_info = prepare(beyond, randint=lambda *_: window_start)
-    scaled_raw, _speed = time_scale_motion_features(long_raw, int(round(beyond / MAX_FIT_SPEEDUP)))
-    expected = _resample_raw_then_normalize(
-        scaled_raw[window_start:window_start + BUDGET_FRAMES], cond, NUM_FRAMES
+    expected = _normalize_motion(
+        resample_time_scaled_window(
+            long_raw, int(round(beyond / MAX_FIT_SPEEDUP)), BUDGET_FRAMES, NUM_FRAMES,
+            source_periodic=False, window_periodic=False, shift=window_start,
+        ),
+        cond,
     )
     assert_close("capped anchored crop", motion, expected, atol=3e-5)
     assert np.isclose(float(aug_info["resample_speed_cond"]), MAX_SOURCE_FRAMES_MULT)

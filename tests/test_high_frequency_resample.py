@@ -7,8 +7,12 @@ import pytest
 
 from data_loaders.truebones.data.dataset import (
     MotionDataset,
+    _circular_roll_motion,
+    _tile_loop_motion,
     invert_resample_motion_features,
     resample_motion_features,
+    resample_time_scaled_window,
+    time_scale_motion_features,
 )
 from data_loaders.truebones.truebones_utils.high_frequency import (
     HIGH_FREQUENCY_SCORE_THRESHOLD,
@@ -116,4 +120,136 @@ def test_slow_only_excludes_fit_budget():
     with pytest.raises(ValueError):
         MotionDataset._sample_motion_speed_target_length(
             _sampler(), 30, False, WINDOW, fit_budget=True, slow_only=True
+        )
+
+
+# ── One interpolation for time-scale + shift + window resample ──
+
+def _reference_pose_window(clip, scaled, window_frames, *, source_periodic, window_periodic, shift):
+    """Pose channels by np.interp on the source's piecewise-linear curve, at the
+    composed times computed in floating point."""
+    source = clip.shape[0]
+    t = np.arange(WINDOW, dtype=np.float64)
+    if window_periodic:
+        u = t * window_frames / WINDOW + shift
+    else:
+        u = t * (window_frames - 1) / (WINDOW - 1) + shift
+    if source_periodic:
+        s = (u % scaled) * source / scaled
+        grid = np.arange(source + 1)
+        curve = np.concatenate([clip, clip[:1]], axis=0)
+    else:
+        s = u * (source - 1) / (scaled - 1)
+        grid = np.arange(source)
+        curve = clip
+    flat = curve[:, :, :9].reshape(curve.shape[0], -1)
+    out = np.stack([np.interp(s, grid, flat[:, k]) for k in range(flat.shape[1])], axis=1)
+    return out.reshape(WINDOW, clip.shape[1], 9)
+
+
+@pytest.mark.parametrize('source,scaled,tiles,shift', [
+    (26, 31, 1, 0), (26, 31, 1, 7), (20, 23, 2, 5), (31, 24, 2, 11), (35, 41, 1, 40),
+])
+def test_composed_loop_window_matches_the_continuous_curve(source, scaled, tiles, shift):
+    clip = _clip(source)
+    out = resample_time_scaled_window(
+        clip, scaled, scaled * tiles, WINDOW,
+        source_periodic=True, window_periodic=True, shift=shift,
+    )
+    ref = _reference_pose_window(
+        clip, scaled, scaled * tiles, source_periodic=True, window_periodic=True, shift=shift,
+    )
+    np.testing.assert_allclose(out[:, :, :9], ref, atol=1e-5)
+
+
+@pytest.mark.parametrize('source,scaled,window,shift,source_periodic', [
+    (51, 66, 60, 3, False), (40, 33, 30, 2, False), (45, 52, 120, 9, True),
+])
+def test_composed_open_window_matches_the_continuous_curve(source, scaled, window, shift, source_periodic):
+    # An open window: a non-loop clip's crop, or a loop downgraded by its crop.
+    clip = _clip(source)
+    out = resample_time_scaled_window(
+        clip, scaled, window, WINDOW,
+        source_periodic=source_periodic, window_periodic=False, shift=shift,
+    )
+    ref = _reference_pose_window(
+        clip, scaled, window, source_periodic=source_periodic, window_periodic=False, shift=shift,
+    )
+    np.testing.assert_allclose(out[:, :, :9], ref, atol=1e-5)
+
+
+@pytest.mark.parametrize('periodic', [False, True])
+def test_composed_window_equals_two_steps_when_the_speed_step_is_exact(periodic):
+    # Doubling a periodic clip (or (L-1)*2+1 an open one) puts every source key
+    # on a scaled frame, so the second interpolation cuts no corner and the two
+    # pipelines must agree on every channel -- roll and tiles included.
+    source = 26
+    clip = _clip(source)
+    scaled = 2 * source if periodic else 2 * (source - 1) + 1
+    two_step, _speed = time_scale_motion_features(clip, scaled, periodic=periodic)
+    if periodic:
+        shift, tiles = 9, 2
+        two_step = _tile_loop_motion(_circular_roll_motion(two_step, shift), tiles)
+        window = scaled * tiles
+    else:
+        shift, window = 4, scaled - 6
+        two_step = two_step[shift:shift + window]
+    two_step = resample_motion_features(two_step, WINDOW, periodic=periodic)
+    composed = resample_time_scaled_window(
+        clip, scaled, window, WINDOW, source_periodic=periodic, window_periodic=periodic, shift=shift,
+    )
+    np.testing.assert_allclose(composed, two_step, atol=1e-5)
+
+
+def _consistent_loop(frames, joints=2, seed=1):
+    """A loop whose position channel is its own velocity integral, closing on
+    itself (zero drift per cycle), as a root-relative RIC position is."""
+    rng = np.random.default_rng(seed)
+    clip = rng.normal(size=(frames, joints, 12))
+    steps = rng.normal(size=(frames, joints, 3))
+    steps -= steps.mean(axis=0, keepdims=True)
+    clip[:, :, 9:12] = steps
+    clip[:, :, 0:3] = np.concatenate([np.zeros((1, joints, 3)), np.cumsum(steps, axis=0)[:-1]], axis=0)
+    return clip
+
+
+@pytest.mark.parametrize('scaled,tiles,shift', [(31, 1, 0), (23, 2, 5), (37, 1, 12)])
+def test_composed_velocity_steps_match_the_positions(scaled, tiles, shift):
+    # The contract velocity_consistency_loss checks: vel[t] * step == the
+    # window's position delta, the wrap step included.
+    clip = _consistent_loop(26)
+    window = scaled * tiles
+    out = resample_time_scaled_window(
+        clip, scaled, window, WINDOW, source_periodic=True, window_periodic=True, shift=shift,
+    )
+    step = window / WINDOW
+    deltas = np.roll(out[:, :, 0:3], -1, axis=0) - out[:, :, 0:3]
+    np.testing.assert_allclose(out[:, :, 9:12] * step, deltas, atol=1e-9)
+
+
+def test_composed_window_keeps_a_wing_beat_the_two_step_pipeline_flattens():
+    # A period-4 triangle beat, slowed 1.15x into a single-cycle window: both
+    # steps upsample, yet two interpolations in a row cut the peaks.
+    source = 26
+    beat = np.minimum(np.arange(source) % 4, 4 - np.arange(source) % 4) * 22.5
+    clip = np.zeros((source, 1, 12))
+    clip[:, 0, 3] = beat
+    scaled = 30
+    composed = resample_time_scaled_window(
+        clip, scaled, scaled, WINDOW, source_periodic=True, window_periodic=True,
+    )[:, 0, 3]
+    two_step = resample_motion_features(
+        time_scale_motion_features(clip, scaled, periodic=True)[0], WINDOW, periodic=True,
+    )[:, 0, 3]
+    direct = resample_motion_features(clip, WINDOW, periodic=True)[:, 0, 3]
+    # A loop played slower into the same window is the same content.
+    np.testing.assert_allclose(composed, direct, atol=1e-5)
+    # The two-step window misses individual peaks by several degrees.
+    assert np.abs(two_step - composed).max() > 3.0
+
+
+def test_composed_window_rejects_an_open_crop_past_the_clip():
+    with pytest.raises(ValueError):
+        resample_time_scaled_window(
+            _clip(30), 40, 30, WINDOW, source_periodic=False, window_periodic=False, shift=11,
         )

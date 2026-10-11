@@ -528,6 +528,117 @@ def time_scale_motion_features(motion, target_num_frames, *, periodic=False):
     return scaled, speed
 
 
+def _sample_frames_at(motion, num, den, *, periodic):
+    """Linear interpolation of ``motion`` at source times ``num / den``
+    (integer numerators, one integer denominator, so a time that is an integer
+    lands on its frame exactly). A periodic clip wraps frame ``L`` to frame 0;
+    an open one is read inside ``[0, L - 1]``."""
+    source_frames = int(motion.shape[0])
+    if periodic:
+        num = num % (source_frames * den)
+    lo = num // den
+    w = ((num - lo * den) / den)[:, None, None]
+    if periodic:
+        hi = (lo + 1) % source_frames
+    else:
+        lo = lo.clip(0, source_frames - 1)
+        hi = np.minimum(lo + 1, source_frames - 1)
+    return motion[lo] * (1.0 - w) + motion[hi] * w
+
+
+def _sample_velocity_path_at(velocity, num, den, *, periodic):
+    """Position path of ``velocity`` (node ``k`` = displacement after ``k``
+    rows) at source times ``num / den``. A periodic clip's path runs past
+    node ``L`` through its terminal (wrap) row and repeats with that cycle's
+    drift, which is what tiling the clip does; an open one has no step past
+    node ``L - 1``."""
+    source_frames = int(velocity.shape[0])
+    path = np.zeros((source_frames + 1,) + velocity.shape[1:], dtype=np.float64)
+    path[1:] = np.cumsum(velocity, axis=0)
+    if periodic:
+        cycles = num // (source_frames * den)
+        num = num - cycles * source_frames * den
+        lo = num // den
+        hi = lo + 1
+        drift = cycles[:, None, None] * path[source_frames]
+    else:
+        last_node = source_frames - 1
+        lo = (num // den).clip(0, last_node)
+        hi = np.minimum(lo + 1, last_node)
+        drift = 0.0
+    w = ((num - lo * den) / den)[:, None, None]
+    return path[lo] * (1.0 - w) + path[hi] * w + drift
+
+
+def resample_time_scaled_window(motion, scaled_frames, window_source_frames, target_num_frames,
+                                *, source_periodic, window_periodic, shift=0):
+    """The loader's time-scale, shift and window resample as ONE interpolation.
+
+    Equivalent to ``time_scale_motion_features(motion, scaled_frames)``, then
+    taking ``window_source_frames`` frames of the scaled clip from scaled frame
+    ``shift`` on (a loop's roll + tiles + crop: frame ``v`` is scaled frame
+    ``(v + shift) mod scaled_frames``; an open clip's crop: ``v + shift``),
+    then ``resample_motion_features(..., target_num_frames,
+    periodic=window_periodic)`` -- except that the source is interpolated
+    once. Two linear resamples in a row cut every source key that falls
+    between two intermediate frames, which flattens content at a period of a
+    few source frames even when both steps upsample; every step here is a
+    linear map of time, so their composition is one.
+
+    Times are exact rationals (window ``t`` -> scaled ``(t*a + shift*b)/b`` ->
+    source ``*c/d``), so a time that lands on a source frame reads it exactly.
+    The velocity channels keep the window contract of
+    ``resample_motion_features``: displacement per scaled frame, rebuilt
+    from the source's position path.
+    """
+    source_frames = int(motion.shape[0])
+    scaled_frames = int(scaled_frames)
+    window_source_frames = int(window_source_frames)
+    target_num_frames = int(target_num_frames)
+    shift = int(shift)
+    if source_frames < 2 or scaled_frames < 2 or target_num_frames < 2 or window_source_frames < 1:
+        raise ValueError(
+            "resample_time_scaled_window needs at least 2 source, scaled and target frames, got "
+            f"{source_frames}, {scaled_frames}, {target_num_frames} (window {window_source_frames})."
+        )
+    if window_periodic and not source_periodic:
+        raise ValueError("A periodic window needs a periodic source clip.")
+    if not source_periodic and (shift < 0 or shift + window_source_frames > scaled_frames):
+        raise ValueError(
+            f"An open clip's window [{shift}, {shift + window_source_frames}) "
+            f"must lie inside its {scaled_frames} scaled frames."
+        )
+    # Window frame t -> scaled time (t*a + shift*b) / b.
+    if window_periodic:
+        a, b = window_source_frames, target_num_frames
+    else:
+        a, b = window_source_frames - 1, target_num_frames - 1
+    # Scaled time u -> source time u * c / d (time_scale_motion_features' map).
+    if source_periodic:
+        c, d = source_frames, scaled_frames
+    else:
+        c, d = source_frames - 1, scaled_frames - 1
+    den = b * d
+    path_count = target_num_frames + 1 if window_periodic else target_num_frames
+    num = (np.arange(path_count, dtype=np.int64) * a + shift * b) * c
+
+    resampled = _sample_frames_at(
+        motion.astype(np.float64, copy=False), num[:target_num_frames], den, periodic=source_periodic
+    )
+    if motion.shape[-1] >= 12:
+        positions = _sample_velocity_path_at(
+            motion[:, :, 9:12].astype(np.float64, copy=False), num, den, periodic=source_periodic
+        )
+        step_scale = resample_step_scale(window_source_frames, target_num_frames, periodic=window_periodic)
+        rebuilt_velocity = np.diff(positions, axis=0) / step_scale
+        if window_periodic:
+            resampled[:, :, 9:12] = rebuilt_velocity
+        else:
+            resampled[:-1, :, 9:12] = rebuilt_velocity
+            resampled[-1, :, 9:12] = rebuilt_velocity[-1]
+    return resampled.astype(motion.dtype, copy=False)
+
+
 def _circular_roll_motion(motion, offset):
     length = int(motion.shape[0])
     if length <= 0:
@@ -1359,7 +1470,16 @@ class MotionDataset(data.Dataset):
         # A phase-anchored clip (any label loop_is_phase_free rejects, loop or
         # not) is also sped up toward the budget here, so it enters the window
         # whole instead of being cropped mid-event (see the sampler).
+        #
+        # The stages from here to the window resample are linear maps of time,
+        # so none of them is materialized: the speed draw only sets the scaled
+        # length, roll / tile / crop only move a frame shift (in scaled frames)
+        # and the window length, and the source is interpolated once at the
+        # end (resample_time_scaled_window). Two resamples in a row would cut
+        # every source key between two intermediate frames.
         label_phase_free = loop_is_phase_free(motion_metadata.get('action_label'))
+        source_motion = motion
+        source_length = int(m_length)
         motion_speed_applied = 1.0
         time_scaled_length = self._sample_motion_speed_target_length(
             m_length, is_loop, max_source_length,
@@ -1367,18 +1487,21 @@ class MotionDataset(data.Dataset):
             slow_only=high_frequency,
         )
         if time_scaled_length != m_length:
-            motion, motion_speed_applied = time_scale_motion_features(
-                motion, time_scaled_length, periodic=bool(is_loop)
+            motion_speed_applied = resample_step_scale(
+                m_length, time_scaled_length, periodic=bool(is_loop)
             )
-            m_length = int(motion.shape[0])
+            m_length = int(time_scaled_length)
+        scaled_length = int(m_length)
+        frame_shift = 0
         # ── Loop-aware data augmentation (PHASE-FREE is_loop motions only) ──
         # Circular roll shifts the temporal phase so the model sees every loop
         # from a random starting frame.  Random tiling repeats the clip up to
         # 2× target length so the subsequent resample has enough source frames
         # to produce a clean stretched/clipped result without heavy speed
-        # distortion.  Both are pure temporal operations on feature arrays —
+        # distortion.  Both are pure temporal operations on feature arrays --
         # they preserve per-frame feature semantics (see _tile_loop_motion and
-        # _circular_roll_motion for consistency guarantees).
+        # _circular_roll_motion, which they are equivalent to) -- and are kept
+        # here as the frame shift and window length only.
         # A phase-anchored loop (loop_is_phase_free: an attack, a roar -- an
         # event that leaves a ready pose and returns to it) keeps frame 0 at
         # the ready pose and one event per window: under the circular time
@@ -1389,12 +1512,10 @@ class MotionDataset(data.Dataset):
         if is_loop:
             if loop_phase_free or loop_offset is not None:
                 loop_phase_offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
-            if loop_phase_offset != 0:
-                motion = _circular_roll_motion(motion, loop_phase_offset)
+            frame_shift += int(loop_phase_offset)
             if loop_phase_free:
                 loop_tile_count = self._sample_loop_tile_count(m_length, max_source_length)
-            motion = _tile_loop_motion(motion, loop_tile_count)
-            m_length = int(motion.shape[0])
+            m_length = int(m_length) * int(loop_tile_count)
 
         if m_length > max_source_length:
             # A clip longer than the source budget (n*MAX_SOURCE_FRAMES_MULT, or
@@ -1410,8 +1531,8 @@ class MotionDataset(data.Dataset):
                 loop_uncond = True
             loop_condition_active = False
             ind = random.randint(0, m_length - max_source_length)
-            motion = motion[ind: ind + max_source_length]
-            m_length = int(motion.shape[0])
+            frame_shift += int(ind)
+            m_length = int(max_source_length)
 
         source_len_for_resample_speed = int(m_length)
         resample_speed_cond = float(source_len_for_resample_speed) / float(target_num_frames)
@@ -1420,13 +1541,28 @@ class MotionDataset(data.Dataset):
         # step is L/T = resample_speed_cond; everything else, including a loop
         # the model is told is not one, is open, at step (L-1)/(T-1). The loss
         # reads which one from y['is_loop'] (_physical_velocity_step_scale).
-        if m_length != target_num_frames:
-            motion = resample_motion_features(
-                motion,
-                target_num_frames,
-                periodic=loop_condition_active,
+        if scaled_length != source_length:
+            motion = resample_time_scaled_window(
+                source_motion, scaled_length, m_length, target_num_frames,
+                source_periodic=bool(is_loop), window_periodic=loop_condition_active,
+                shift=frame_shift,
             )
-            m_length = target_num_frames
+        else:
+            # No speed change: the shift and window are whole source frames
+            # (a loop's roll and tiles wrap it), and the window resample is the
+            # only interpolation.
+            frames = np.arange(m_length, dtype=np.int64) + frame_shift
+            if is_loop:
+                frames %= source_length
+            if m_length != source_length or frame_shift != 0:
+                motion = source_motion[frames]
+            if m_length != target_num_frames:
+                motion = resample_motion_features(
+                    motion,
+                    target_num_frames,
+                    periodic=loop_condition_active,
+                )
+        m_length = target_num_frames
 
         motion = np.nan_to_num(
             physical_hml_to_canonical(motion, cond)

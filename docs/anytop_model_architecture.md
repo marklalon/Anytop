@@ -385,6 +385,13 @@ clip 的强制加速（改为裁剪，事件可能不完整）。超过窗口长
 checkpoint 的窗口，超过窗口的高频 loop 按非 loop 计票，所以不会替这类动作选出训练里没见过的长度
 或 loop 条件。
 
+**变速、roll、tile、裁剪和窗口重采样只插值一次。** 这几步都是时间的线性映射，loader 不逐步生成
+中间 clip：变速只定下变速后的长度，roll、tile、裁剪只改一个帧偏移（以变速后的帧计，对源可以是
+小数）和窗口长度，最后由 `resample_time_scaled_window` 按复合映射（精确有理数）从源 clip 插值一次，
+速度通道沿源的位置路径采样后差分，契约与 `resample_motion_features` 相同。两次线性插值连做时，
+即使两步都是放大采样，第二步也会切掉落在两个中间帧之间的源关键帧，周期几帧的内容会被削平。
+不变速的 clip 不经过它：roll、tile、裁剪按整数帧取下标，窗口重采样是唯一一次插值。
+
 ### 6.3 损失侧
 
 - `loop_wrap_loss`：loop 首尾的 position、rotation 和 terminal velocity 闭合；
