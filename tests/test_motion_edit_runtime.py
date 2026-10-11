@@ -203,6 +203,7 @@ def _with_contacts(package: EditPackage, joints) -> EditPackage:
     return with_parts(package, {name: {"contact": int(j in set(joints))} for j, name in enumerate(names)})
 
 
+@requires_horse
 def test_an_edit_cannot_make_a_helper_a_contact(packages):
     package = packages["loop"]
     names = [str(n) for n in package["names"]]
@@ -1390,34 +1391,68 @@ def test_tail_and_passive_parts_share_one_treatment(packages):
 # ── export (M6) ────────────────────────────────────────────────────────────
 
 def _serve(root: str):
-    import threading
-    from http.server import ThreadingHTTPServer
+    """A server that handles requests on the test's (main) thread, one per ``_call``, so an
+    export run in-process (``_inprocess_export``) gets the main thread bpy needs."""
+    from http.server import HTTPServer
 
     from motion_edit.ui.serve import Handler, PackageStore
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = HTTPServer(("127.0.0.1", 0), Handler)
     server.store = PackageStore(root)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    server.timeout = 120   # a client that never connects fails the test instead of hanging it
     return server
 
 
 def _call(server, path: str, body=None):
+    import threading
     import urllib.request
 
     request = urllib.request.Request(
         f"http://127.0.0.1:{server.server_port}{path}", method="GET" if body is None else "POST",
         data=None if body is None else json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(request) as response:
-        raw = response.read()
-        return json.loads(raw) if response.headers.get_content_type() == "application/json" else raw
+    out = {}
+
+    def client():
+        try:
+            with urllib.request.urlopen(request) as response:
+                raw = response.read()
+                out["value"] = json.loads(raw) if response.headers.get_content_type() == "application/json" else raw
+        except BaseException as exc:
+            out["error"] = exc
+
+    thread = threading.Thread(target=client, daemon=True)
+    thread.start()
+    server.handle_request()
+    thread.join()
+    if "error" in out:
+        raise out["error"]
+    return out["value"]
+
+
+def _inprocess_export(monkeypatch):
+    """Run the page's ``python -m motion_edit.apply_edit`` command as ``apply_edit.main`` in
+    this process: the same argv without the interpreter start-up and torch / bpy imports."""
+    import subprocess
+
+    from motion_edit.apply_edit import main as apply_main
+
+    real_run = subprocess.run
+
+    def run(command, *args, **kwargs):
+        if list(command[:3]) != [sys.executable, "-m", "motion_edit.apply_edit"]:
+            return real_run(command, *args, **kwargs)
+        code = apply_main([str(a) for a in command[3:]])
+        return subprocess.CompletedProcess(command, code, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
 
 
 @requires_horse
-def test_ui_export_matches_the_command_line(packages, tmp_path):
+def test_ui_export_matches_the_command_line(packages, tmp_path, monkeypatch):
     """The page's export and ``apply_edit --sidecar <sidecar>`` write the same bytes (checked
-    on the edit, with moved strike events and root motion); all defaults export the
-    package's own decode."""
+    on the edit, with moved strike events and root motion, as a real subprocess); all
+    defaults export the package's own decode."""
     from motion_edit.apply_edit import export_result
     from motion_edit.apply_edit import main as apply_main
 
@@ -1429,6 +1464,8 @@ def test_ui_export_matches_the_command_line(packages, tmp_path):
         cases = {"edit": ({"force": 1.5, "tempo": 1.2}, {"impact": strike["impact"] + 1}, True),
                  "default": ({}, None, False)}
         for name, (params, events, root_motion) in cases.items():
+            if name != "edit":
+                _inprocess_export(monkeypatch)
             out = _call(server, "/api/export", {"id": "attack.edit", "params": params, "events": events,
                                                 "root_motion": root_motion, "name": name})
             with open(out["sidecar"], "r", encoding="utf-8") as handle:
@@ -1449,7 +1486,6 @@ def test_ui_export_matches_the_command_line(packages, tmp_path):
         with open(replay, "rb") as a, open(str(tmp_path / "attack.edit" / "exports" / "default.glb"), "rb") as b:
             assert a.read() == b.read()
     finally:
-        server.shutdown()
         server.server_close()
 
 
@@ -1475,7 +1511,7 @@ requires_horse_mesh = pytest.mark.skipif(not os.path.isfile(HORSE_TPOSE), reason
 
 @requires_horse
 @requires_horse_mesh
-def test_mesh_preview_drives_bones_like_the_skinned_export(packages, tmp_path):
+def test_mesh_preview_drives_bones_like_the_skinned_export(packages, tmp_path, monkeypatch):
     """A bone at ``W_joint(t) · C`` (the page's skinning) is where the skinned export puts it,
     up to the export's fixed similarity; the UI's skinned export is the command line's."""
     from motion_edit.apply_edit import main as apply_main
@@ -1492,6 +1528,7 @@ def test_mesh_preview_drives_bones_like_the_skinned_export(packages, tmp_path):
     redecompose(package, 0.0).save(directory)
     assert mesh_source(directory) is not None
 
+    _inprocess_export(monkeypatch)
     server = _serve(str(tmp_path))
     try:
         payload = _call(server, "/api/package/run.edit")["mesh"]
@@ -1501,7 +1538,6 @@ def test_mesh_preview_drives_bones_like_the_skinned_export(packages, tmp_path):
                                             "mesh": True, "name": "skinned"})
         assert "--mesh" in out["command"]
     finally:
-        server.shutdown()
         server.server_close()
     cli = str(tmp_path / "cli.glb")
     assert apply_main([directory, "--sidecar", out["sidecar"], "--mesh", "--glb", cli]) == 0
