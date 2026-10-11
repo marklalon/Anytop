@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -86,8 +87,38 @@ def print_info(message: str) -> None:
     print(f"[INFO] {message}")
 
 
+# Lower-cased substrings from a dataset's ignore_warnings.txt "#" lines, active
+# only inside _suppressing_warnings.
+_suppress_patterns: tuple[str, ...] = ()
+
+
+class _SuppressedCount:
+    count = 0
+
+
+_suppressed = _SuppressedCount()
+
+
 def print_warn(message: str) -> None:
+    if _suppress_patterns:
+        key = str(message).lower()
+        if any(pattern in key for pattern in _suppress_patterns):
+            _suppressed.count += 1
+            return
     print(f"\033[33m[WARN] {message}\033[0m")
+
+
+@contextmanager
+def _suppressing_warnings(patterns):
+    """Drop print_warn messages containing any of *patterns* within the block."""
+    global _suppress_patterns, _suppressed
+    previous = (_suppress_patterns, _suppressed)
+    _suppress_patterns = tuple(str(pattern).lower() for pattern in patterns)
+    _suppressed = _SuppressedCount()
+    try:
+        yield _suppressed
+    finally:
+        _suppress_patterns, _suppressed = previous
 
 
 def require_valid(condition: bool, message: str) -> None:
@@ -771,90 +802,97 @@ def validate_motion_files(
         print_warn(f"failed to load {MOTION_METADATA_FILE}: {exc}")
         return
 
-    for motion_path in files_to_validate:
-        try:
-            motion = np.load(motion_path)
-            require_valid(motion.ndim == 3, f"{motion_path.name} must be rank-3, got {motion.ndim}")
-            require_valid(motion.shape[0] > 0, f"{motion_path.name} has zero frames")
-            require_valid(motion.shape[1] > 0, f"{motion_path.name} has zero joints")
+    # Per-clip warnings honour the sidecar's "#" substring lines too, so one
+    # benign warning kind can be dropped without silencing every check on the
+    # clip the way a bare stem does.
+    with _suppressing_warnings(ignore_warnings.load(motions_dir.parent).patterns) as suppressed:
+        for motion_path in files_to_validate:
+            try:
+                motion = np.load(motion_path)
+                require_valid(motion.ndim == 3, f"{motion_path.name} must be rank-3, got {motion.ndim}")
+                require_valid(motion.shape[0] > 0, f"{motion_path.name} has zero frames")
+                require_valid(motion.shape[1] > 0, f"{motion_path.name} has zero joints")
 
-            object_type = _match_object_type(motion_path.stem, cond)
-            expected_joints = len(cond[object_type]["parents"])
-            require_valid(motion.shape[1] <= MAX_JOINTS, f"{motion_path.name} exceeds MAX_JOINTS: {motion.shape[1]} (original skeleton: {expected_joints})")
-            motion_metadata = motion_metadata_lookup.get(motion_path.name)
-            require_valid(isinstance(motion_metadata, dict), f"{motion_path.name} missing metadata entry in {MOTION_METADATA_FILE}")
-            translation_root_index = motion_metadata.get("translation_root_index")
-            require_valid(
-                isinstance(translation_root_index, int) and 0 <= translation_root_index < expected_joints,
-                f"{motion_path.name} invalid translation_root_index in {MOTION_METADATA_FILE}: {translation_root_index}",
-            )
+                object_type = _match_object_type(motion_path.stem, cond)
+                expected_joints = len(cond[object_type]["parents"])
+                require_valid(motion.shape[1] <= MAX_JOINTS, f"{motion_path.name} exceeds MAX_JOINTS: {motion.shape[1]} (original skeleton: {expected_joints})")
+                motion_metadata = motion_metadata_lookup.get(motion_path.name)
+                require_valid(isinstance(motion_metadata, dict), f"{motion_path.name} missing metadata entry in {MOTION_METADATA_FILE}")
+                translation_root_index = motion_metadata.get("translation_root_index")
+                require_valid(
+                    isinstance(translation_root_index, int) and 0 <= translation_root_index < expected_joints,
+                    f"{motion_path.name} invalid translation_root_index in {MOTION_METADATA_FILE}: {translation_root_index}",
+                )
 
-            require_valid(motion.shape[2] == FEATS_LEN, f"{motion_path.name} feature dim mismatch: {motion.shape[2]}")
-            require_valid(np.isfinite(motion).all(), f"{motion_path.name} contains NaN/Inf")
-            require_valid(motion.shape[1] == expected_joints, f"{motion_path.name} joints mismatch: {motion.shape[1]} vs {expected_joints}")
+                require_valid(motion.shape[2] == FEATS_LEN, f"{motion_path.name} feature dim mismatch: {motion.shape[2]}")
+                require_valid(np.isfinite(motion).all(), f"{motion_path.name} contains NaN/Inf")
+                require_valid(motion.shape[1] == expected_joints, f"{motion_path.name} joints mismatch: {motion.shape[1]} vs {expected_joints}")
 
-            root_matches_features = _validate_translation_root_feature_alignment(
-                motion,
-                motion_path.name,
-                translation_root_index,
-            )
+                root_matches_features = _validate_translation_root_feature_alignment(
+                    motion,
+                    motion_path.name,
+                    translation_root_index,
+                )
 
-            if not root_matches_features:
-                # Recovery and orientation checks would both read trajectory
-                # channels from the wrong joint and only add misleading follow-on
-                # warnings.  The root/feature error above is the actionable cause.
-                continue
+                if not root_matches_features:
+                    # Recovery and orientation checks would both read trajectory
+                    # channels from the wrong joint and only add misleading follow-on
+                    # warnings.  The root/feature error above is the actionable cause.
+                    continue
 
-            _validate_root_xz_ceiling(
-                motion,
-                motion_path.name,
-                translation_root_index,
-                ignored_stems=ignored_stems,
-            )
-
-            _validate_root_transport_carrier(
-                motion,
-                motion_path.name,
-                translation_root_index,
-                ignored_stems=ignored_stems,
-            )
-
-            uses_locomotion_root_xz_policy = motion_path.stem in locomotion_clips
-
-            if uses_locomotion_root_xz_policy:
                 _validate_root_xz_ceiling(
                     motion,
                     motion_path.name,
                     translation_root_index,
-                    limit=ROOT_XZ_LOCOMOTION_LIMIT,
                     ignored_stems=ignored_stems,
-                    bound_name="locomotion extent bound",
                 )
 
-            if uses_locomotion_root_xz_policy:
-                _validate_root_motion_drift(
+                _validate_root_transport_carrier(
                     motion,
-                    object_type,
                     motion_path.name,
-                    root_motion_threshold,
-                    translation_root_index,
-                    ignored_stems=ignored_stems,
-                    parents=cond[object_type].get("parents"),
-                    offsets=cond[object_type].get("offsets"),
-                )
-
-            if check_motion_orientation:
-                _validate_motion_orientation(
-                    motion,
-                    object_type,
-                    cond[object_type],
-                    motion_path.name,
-                    motion_orientation_threshold,
                     translation_root_index,
                     ignored_stems=ignored_stems,
                 )
-        except ValidationError as e:
-            print_warn(f"validation error: {motion_path.name}: {e}")
+
+                uses_locomotion_root_xz_policy = motion_path.stem in locomotion_clips
+
+                if uses_locomotion_root_xz_policy:
+                    _validate_root_xz_ceiling(
+                        motion,
+                        motion_path.name,
+                        translation_root_index,
+                        limit=ROOT_XZ_LOCOMOTION_LIMIT,
+                        ignored_stems=ignored_stems,
+                        bound_name="locomotion extent bound",
+                    )
+
+                if uses_locomotion_root_xz_policy:
+                    _validate_root_motion_drift(
+                        motion,
+                        object_type,
+                        motion_path.name,
+                        root_motion_threshold,
+                        translation_root_index,
+                        ignored_stems=ignored_stems,
+                        parents=cond[object_type].get("parents"),
+                        offsets=cond[object_type].get("offsets"),
+                    )
+
+                if check_motion_orientation:
+                    _validate_motion_orientation(
+                        motion,
+                        object_type,
+                        cond[object_type],
+                        motion_path.name,
+                        motion_orientation_threshold,
+                        translation_root_index,
+                        ignored_stems=ignored_stems,
+                    )
+            except ValidationError as e:
+                print_warn(f"validation error: {motion_path.name}: {e}")
+
+    if suppressed.count:
+        print_ok(f"{suppressed.count} per-clip warning(s) suppressed by ignore_warnings.txt patterns")
 
     scope = "all" if sample_limit <= 0 else str(len(files_to_validate))
     if has_paired_bvhs:
