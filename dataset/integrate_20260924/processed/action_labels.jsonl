@@ -190,7 +190,7 @@
 {"clip": "Insect_Cicada_FlyStart", "action_group": "transition", "action_label": "takeoff", "is_loop": false, "reviewed": true}
 {"clip": "Insect_Dragonfly_Eat", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Insect_Dragonfly_Fly01", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
-{"clip": "Insect_Dragonfly_Fly02", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
+{"clip": "Insect_Dragonfly_Fly02", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
 {"clip": "Insect_Dragonfly_FlyAttack01", "action_group": "stationary", "action_label": "attack, hover", "is_loop": false, "reviewed": true}
 {"clip": "Insect_Dragonfly_FlyAttack02", "action_group": "stationary", "action_label": "attack, hover", "is_loop": false, "reviewed": true}
 {"clip": "Insect_Dragonfly_FlyEnd", "action_group": "transition", "action_label": "land, hover", "is_loop": false, "reviewed": true}
@@ -301,7 +301,7 @@
 {"clip": "PP_Dove_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "PP_Dove_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "PP_Eagle_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
-{"clip": "PP_Eagle_FlyIdle", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
+{"clip": "PP_Eagle_FlyIdle", "action_group": "locomotion", "action_label": "fly, forward, fast, glide", "is_loop": true, "reviewed": true}
 {"clip": "PP_Eagle_Flying", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
 {"clip": "PP_Eagle_FlyingAttack", "action_group": "stationary", "action_label": "attack, hover, catch", "is_loop": true, "reviewed": true}
 {"clip": "PP_Eagle_FlyStart", "action_group": "transition", "action_label": "takeoff", "is_loop": false, "reviewed": true}
@@ -356,7 +356,7 @@
 {"clip": "PP_Penguin_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "PP_Rooster_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "PP_Rooster_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
-{"clip": "PP_Rooster_Fly", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
+{"clip": "PP_Rooster_Fly", "action_group": "locomotion", "action_label": "fly, forward, fast, glide", "is_loop": true, "reviewed": true}
 {"clip": "PP_Rooster_Idle2", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "PP_Rooster_Idle3", "action_group": "stationary", "action_label": "idle, shake", "is_loop": true, "reviewed": true}
 {"clip": "PP_Rooster_IdleBreathing", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
