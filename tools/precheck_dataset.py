@@ -44,7 +44,8 @@ Joint names (the main one) duplicate / empty / non-ASCII / over-long names;
             side codes the side detector does not read ("LegMR" stays
             'center'), name side vs geometry side conflicts, unpaired
             left/right names, unpaired sided joints on the midline (an
-            ERROR: the side is a naming mistake), blanked joints that parent anatomy, IK helpers
+            ERROR: the side is a naming mistake), a root off the rest pose's
+            midline (an exporter wrapper node the loader keeps), blanked joints that parent anatomy, IK helpers
             that pass for a body part ("Foot_IK" -> "Foot"), canonical-name
             collisions, and Japanese romaji words whose gated mapping stays off.
 
@@ -107,6 +108,7 @@ from data_loaders.truebones.truebones_utils.face_orientation import (  # noqa: E
     resolve_face_joints,
     resolve_forward_reference_joints,
 )
+from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
 from data_loaders.truebones.truebones_utils.ignore_warnings import skip_orientation_detection  # noqa: E402
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  # noqa: E402
     detect_joint_side,
@@ -117,6 +119,7 @@ from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noq
 )
 
 DEFAULT_REFERENCE_COND = _ANYTOP_DIR / "dataset" / "merged" / "cond.npy"
+DATASETS_MANIFEST = _ANYTOP_DIR / "dataset" / "datasets.jsonl"
 MOTION_EXTENSIONS = {".glb", ".gltf", ".fbx"}
 TARGET_FPS = 30.0
 FPS_TOLERANCE = 0.1
@@ -163,6 +166,11 @@ SIDE_COUNT_SLACK = 2
 # width of the midline is a centre joint carrying a wrong side code in its name
 # (Spider "NPC_L_MagicNode", a one-legged rig's "RigLLeg1").
 MIDLINE_SIDE_TOLERANCE = 0.015
+# The root must lie within this share of the rig extent of the rest pose's
+# midline. A root outside it is no body joint; a single-child one above an
+# on-midline child is an exporter wrapper node carrying the armature object's
+# placement (Hawksbill "armature_rootJoint").
+ROOT_OFF_MIDLINE_SHARE = 0.03
 # Blanked joints this close to the root are rig roots / centre-of-gravity nodes.
 ROOT_HELPER_MAX_DEPTH = 2
 # Name tokens that mark an IK / control helper rather than a body part.
@@ -572,6 +580,36 @@ def _load_reference_vocabulary(path: Path) -> tuple[Counter, set[str]]:
         words = {word for text in texts for word in str(text).split()}
         word_species.update(words)
     return word_species, species_names
+
+
+def _processed_dir_for_raw(dataset_dir: Path) -> Path | None:
+    """The processed directory ``datasets.jsonl`` pairs with this raw directory."""
+    if not DATASETS_MANIFEST.is_file():
+        return None
+    raw = dataset_dir.resolve()
+    for line in DATASETS_MANIFEST.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        row = json.loads(line)
+        if row.get("raw") and (_ANYTOP_DIR / row["raw"]).resolve() == raw:
+            return _ANYTOP_DIR / row["path"]
+    return None
+
+
+def _configure_dataset_sidecars(processed_dir: Path | None) -> str:
+    """Point the facing rules at this dataset's own sidecars.
+
+    ``chain_forward_joints.jsonl`` indices and the ``ignore_warnings.txt``
+    directives belong to one dataset's skeletons. Left unconfigured, the
+    process falls back to the default dataset's, and a species sharing a name
+    with one there (zoo_upgrade "Crow") is faced by the other rig's chain. A
+    dataset with no processed sidecars yet gets none at all.
+    """
+    if processed_dir is not None and (processed_dir / dataset_tags.SPECIES_TAGS_FILE).is_file():
+        dataset_tags.configure(dataset_dir=str(processed_dir))
+        return str(processed_dir)
+    dataset_tags.configure_from_cond({})
+    return "none"
 
 
 def _load_reference_root_promote_depths(path: Path, dataset_dir: Path) -> dict[str, int]:
@@ -1264,6 +1302,35 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
                    f"rename them without the side code: {', '.join(on_midline[:10])}"
                    f"{' ...' if len(on_midline) > 10 else ''}", source)
 
+    # The facing-aligned frame puts the root on the vertical axis, so its
+    # lateral offset is the midline seen from the root. The midline comes from
+    # the mirror pairs nearest the root (hips, shoulders), which a turned head
+    # or a raised wing in the rest pose does not drag sideways.
+    pairs = [
+        index for index in range(len(names))
+        if side_labels[index] == "left" and int(partners[index]) >= 0
+    ]
+    if pairs:
+        nearest = min(depths[index] for index in pairs)
+        midline = float(np.median([
+            0.5 * (lateral[index] + lateral[int(partners[index])])
+            for index in pairs if depths[index] == nearest
+        ]))
+        rest_extent = float(np.ptp(_rest_positions_from_offsets(offsets, skeleton.parents), axis=0).max())
+        tolerance = ROOT_OFF_MIDLINE_SHARE * rest_extent
+        root = int(np.flatnonzero(skeleton.parents < 0)[0])
+        root_offset = abs(lateral[root] - midline)
+        if rest_extent > 0 and root_offset > tolerance:
+            root_children = np.flatnonzero(skeleton.parents == root)
+            hint = " -- check the root is a real body joint"
+            if len(root_children) == 1 and abs(lateral[root_children[0]] - midline) <= tolerance:
+                hint = (f"; its only child '{names[root_children[0]]}' is on it, so the root is a wrapper "
+                        "with a non-zero translation the loader cannot fold -- move its translation into the "
+                        "child (static value, keys and inverse bind) so it folds")
+            report.add(WARN, species, "joint-names",
+                       f"root '{names[root]}' lies {root_offset:.4g} ({root_offset / rest_extent:.1%} of rig "
+                       f"extent) off the rest pose's midline{hint}", source)
+
     collisions = [c for c in canonical if " Variant" in c]
     if collisions:
         report.add(WARN, species, "joint-names",
@@ -1358,6 +1425,10 @@ def main() -> int:
     parser.add_argument("--reference-cond", type=Path, default=DEFAULT_REFERENCE_COND,
                         help="cond.npy whose joint embedding texts define the known vocabulary "
                              "(default: dataset/merged/cond.npy); 'none' disables the unseen-word check")
+    parser.add_argument("--processed-dir", type=Path,
+                        help="processed dataset directory whose sidecars (chain_forward_joints, "
+                             "ignore_warnings) the facing rules read (default: the row of "
+                             "dataset/datasets.jsonl whose raw is dataset_dir; none when absent)")
     parser.add_argument("--joints", action="store_true", help="print the per-joint name table of every species")
     parser.add_argument("--no-info", action="store_true", help="hide INFO findings")
     parser.add_argument("--report", type=Path, help="write the full report (findings + joint tables) as JSON")
@@ -1370,6 +1441,13 @@ def main() -> int:
     root = args.dataset_dir
     if not root.is_dir():
         parser.error(f"not a directory: {root}")
+
+    # A directory named on the command line must carry the sidecars; only an
+    # inferred one may come up empty (a dataset not preprocessed yet).
+    if args.processed_dir is not None and not (args.processed_dir / dataset_tags.SPECIES_TAGS_FILE).is_file():
+        parser.error(f"--processed-dir has no {dataset_tags.SPECIES_TAGS_FILE}: {args.processed_dir}")
+    sidecars = _configure_dataset_sidecars(args.processed_dir or _processed_dir_for_raw(root))
+    print(f"dataset sidecars: {sidecars}", file=sys.stderr)
 
     vocabulary = None
     promote_depths: dict[str, int] = {}
