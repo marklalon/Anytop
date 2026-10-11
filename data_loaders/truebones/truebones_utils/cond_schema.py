@@ -9,6 +9,7 @@ plain dict union*: every entry is keyed by ``<namespace>/<species>`` and carries
                                   meaning "the directory holding this cond.npy"
                                   (what a single-dataset cond stores, so it stays
                                   portable)
+``dataset_split``        str    -- ``"train"`` or ``"val"`` in a merged cond
 ``species_name``         str    -- the bare name, used to join
                                   ``motion_metadata.json`` / ``species_tags.jsonl``
                                   and to prefix ``motions/{species_name}_*.npy``
@@ -51,6 +52,14 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
 )
 
 SPECIES_TAGS_FILE = "species_tags.jsonl"
+
+# Per-joint contact / end-effector / body-part fields a cond entry must not
+# carry: they are not dataset data (motion_edit prefills parts and contacts).
+STALE_JOINT_ANNOTATION_KEYS = (
+    "contact_joints", "contact_joint_names", "contact_joint_source",
+    "end_effector_joints", "end_effector_names",
+    "joint_parts", "joint_contact", "joint_parts_reviewed", "joint_parts_sig",
+)
 
 
 def cond_schema_version(cond_dict: Mapping[str, Mapping]) -> int:

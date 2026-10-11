@@ -49,7 +49,7 @@ S 和 T 构成主方案；A 风险更高，单独验证后再启用。
 - `parents`；
 - 物理 rest position，即 `cond['rest_pos_ric_hml']` 或 `cond['rest_pose'][:, :3]`。
 
-不能使用传给 `InputProcess` 的 canonical rest token，也不能读取 joint name 文本。接触也不进结构通道：它是辅助头的训练目标（见 `joint_part_annotation_aux_head.md`），作为条件会把答案直接交给模型。
+不能使用传给 `InputProcess` 的 canonical rest token，也不能读取 joint name 文本。接触也不进结构通道：它是启发式猜测，作为条件会把猜错的部分原样交给模型。
 
 #### 无分叉段
 

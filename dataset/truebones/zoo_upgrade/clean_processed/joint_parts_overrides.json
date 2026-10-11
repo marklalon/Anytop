@@ -1,0 +1,416 @@
+{
+ "truebones/zoo_upgrade/Bear": {
+  "joints": {
+   "LBLegAnkle": {
+    "contact": 0
+   },
+   "LFLegAnkle": {
+    "contact": 0
+   },
+   "RBLegAnkle": {
+    "contact": 0
+   },
+   "RFLegAnkle": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "fb1ee4b532ffae89f17e537f74989855e1c95a2b"
+ },
+ "truebones/zoo_upgrade/Boar": {
+  "joints": {
+   "LEFT_FrontLeg_AnkleSHJnt": {
+    "contact": 0
+   },
+   "LEFT_HindLeg_AnkleSHJnt": {
+    "contact": 0
+   },
+   "RIGHT_FrontLeg_AnkleSHJnt": {
+    "contact": 0
+   },
+   "RIGHT_HindLeg_AnkleSHJnt": {
+    "contact": 0
+   },
+   "SpineCrest_01_01SHJnt": {
+    "part": "soft"
+   },
+   "SpineCrest_01_02SHJnt": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "d1828d3c4540b5ccab3849045ff9f5e6b8759923"
+ },
+ "truebones/zoo_upgrade/Camel": {
+  "joints": {
+   "L_B_foot": {
+    "part": "leg"
+   },
+   "L_B_toe_J01": {
+    "contact": 0
+   },
+   "L_F_foot": {
+    "part": "arm"
+   },
+   "L_F_toe_J01": {
+    "contact": 0
+   },
+   "R_B_foot": {
+    "part": "leg"
+   },
+   "R_B_toe_J01": {
+    "contact": 0
+   },
+   "R_F_foot": {
+    "part": "arm"
+   },
+   "R_F_toe_J01": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "1ac5ef7a03ebaabbfcd46491a3c31a2b49e8718f"
+ },
+ "truebones/zoo_upgrade/Crow": {
+  "joints": {
+   "LEFT_Leg_BallSHJnt": {
+    "contact": 0
+   },
+   "RIGHT_Leg_BallSHJnt": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "62dc20e3cd9672239ef41501301accc7419dd698"
+ },
+ "truebones/zoo_upgrade/Deer_Buck": {
+  "joints": {
+   "l_ball": {
+    "contact": 0
+   },
+   "l_clav": {
+    "part": "soft"
+   },
+   "l_scap": {
+    "part": "soft"
+   },
+   "r_ball": {
+    "contact": 0
+   },
+   "r_clav": {
+    "part": "soft"
+   },
+   "r_scap": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "7d4bdaa8e697027388ceeea96d63c84dd62523e4"
+ },
+ "truebones/zoo_upgrade/Dinosaur": {
+  "joints": {
+   "LB_foot": {
+    "contact": 1
+   },
+   "LF_foot": {
+    "contact": 1
+   },
+   "RB_foot": {
+    "contact": 1
+   },
+   "RF_foot": {
+    "contact": 1
+   },
+   "tongue_1": {
+    "part": "soft"
+   },
+   "tongue_2": {
+    "part": "soft"
+   },
+   "tongue_3": {
+    "part": "soft"
+   },
+   "tongue_4": {
+    "part": "soft"
+   },
+   "tongue_5": {
+    "part": "soft"
+   },
+   "tongue_6": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "09516581768d6aef4a756c485fa33a6abce2daea"
+ },
+ "truebones/zoo_upgrade/Donkey": {
+  "joints": {
+   "L_Ankle": {
+    "contact": 0
+   },
+   "L_Back_Ankle": {
+    "contact": 0
+   },
+   "R_Ankle": {
+    "contact": 0
+   },
+   "R_Back_Ankle": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "8eb985d87ec38d01fcc433030ccba77e5e59a3ac"
+ },
+ "truebones/zoo_upgrade/Elephant": {
+  "joints": {
+   "L_B_legfat": {
+    "part": "leg"
+   },
+   "R_B_legfat": {
+    "part": "leg"
+   },
+   "trunk_1": {
+    "part": "soft"
+   },
+   "trunk_2": {
+    "part": "soft"
+   },
+   "trunk_3": {
+    "part": "soft"
+   },
+   "trunk_4": {
+    "part": "soft"
+   },
+   "trunk_5": {
+    "part": "soft"
+   },
+   "trunk_6": {
+    "part": "soft"
+   },
+   "trunk_7": {
+    "part": "soft"
+   },
+   "trunk_8": {
+    "part": "soft"
+   },
+   "trunk_9": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "6d054ae335cca2fd7babd6c7f75a9176b5ea7709"
+ },
+ "truebones/zoo_upgrade/Hen": {
+  "joints": {
+   "LeftFoot": {
+    "contact": 1
+   },
+   "RightFoot": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "8d7f839fd15c15b402677e7635ffa26c1aa4e3e8"
+ },
+ "truebones/zoo_upgrade/Horse": {
+  "joints": {
+   "L_Back_Ankle": {
+    "contact": 0
+   },
+   "L_Front_Ankle": {
+    "contact": 0
+   },
+   "R_Back_Ankle": {
+    "contact": 0
+   },
+   "R_Front_Ankle": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "8a3f5741923d853eca9a829c1107eaa6badcc33c"
+ },
+ "truebones/zoo_upgrade/Hyena": {
+  "joints": {
+   "L_ankle": {
+    "contact": 0
+   },
+   "R_ankle": {
+    "contact": 0
+   },
+   "tongue_1": {
+    "part": "soft"
+   },
+   "tongue_2": {
+    "part": "soft"
+   },
+   "tongue_3": {
+    "part": "soft"
+   },
+   "tongue_4": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "8012f44d9987c1aec96d5aa1ed2242bb854196e6"
+ },
+ "truebones/zoo_upgrade/Kappa_gorilla": {
+  "joints": {
+   "L_gorilla_finger1_J02": {
+    "contact": 1
+   },
+   "L_gorilla_finger2_J01": {
+    "contact": 1
+   },
+   "L_gorilla_finger2_J02": {
+    "contact": 1
+   },
+   "L_gorilla_finger3_J01": {
+    "contact": 1
+   },
+   "L_gorilla_finger3_J02": {
+    "contact": 1
+   },
+   "L_gorilla_finger4_J01": {
+    "contact": 1
+   },
+   "L_gorilla_finger4_J02": {
+    "contact": 1
+   },
+   "L_gorilla_finger5_J01": {
+    "contact": 1
+   },
+   "L_gorilla_finger5_J02": {
+    "contact": 1
+   },
+   "R_gorilla_finger1_J02": {
+    "contact": 1
+   },
+   "R_gorilla_finger2_J01": {
+    "contact": 1
+   },
+   "R_gorilla_finger2_J02": {
+    "contact": 1
+   },
+   "R_gorilla_finger3_J01": {
+    "contact": 1
+   },
+   "R_gorilla_finger3_J02": {
+    "contact": 1
+   },
+   "R_gorilla_finger4_J01": {
+    "contact": 1
+   },
+   "R_gorilla_finger4_J02": {
+    "contact": 1
+   },
+   "R_gorilla_finger5_J01": {
+    "contact": 1
+   },
+   "R_gorilla_finger5_J02": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "929aa5d2d412efff7ec2f44b5c8ea04016b27080"
+ },
+ "truebones/zoo_upgrade/Locust_monster": {
+  "joints": {
+   "L_arm_J04": {
+    "contact": 1
+   },
+   "L_lowertongue_J002": {
+    "part": "soft"
+   },
+   "L_lowertongue_J003": {
+    "part": "soft"
+   },
+   "L_lowertongue_J004": {
+    "part": "soft"
+   },
+   "L_lowertongue_J005": {
+    "part": "soft"
+   },
+   "L_lowertongue_J01": {
+    "part": "soft"
+   },
+   "R_arm_J04": {
+    "contact": 1
+   },
+   "R_lowertongue_J002": {
+    "part": "soft"
+   },
+   "R_lowertongue_J003": {
+    "part": "soft"
+   },
+   "R_lowertongue_J004": {
+    "part": "soft"
+   },
+   "R_lowertongue_J005": {
+    "part": "soft"
+   },
+   "R_lowertongue_J01": {
+    "part": "soft"
+   },
+   "uppertongue_J002": {
+    "part": "soft"
+   },
+   "uppertongue_J003": {
+    "part": "soft"
+   },
+   "uppertongue_J004": {
+    "part": "soft"
+   },
+   "uppertongue_J005": {
+    "part": "soft"
+   },
+   "uppertongue_J01": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "bfabbf96e8a753a3dcf5c7bbbb1d5b402892e98f"
+ },
+ "truebones/zoo_upgrade/Ostrich": {
+  "joints": {
+   "L_foot": {
+    "part": "leg"
+   },
+   "L_toe": {
+    "contact": 0
+   },
+   "R_foot": {
+    "part": "leg"
+   },
+   "R_toe": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "a4264e0fab83c42895726800823aa07bb3e2a62c"
+ },
+ "truebones/zoo_upgrade/Seagull": {
+  "joints": {
+   "LEFT_Leg_AnkleSHJnt": {
+    "contact": 0
+   },
+   "RIGHT_Leg_AnkleSHJnt": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "7b37851ad92de931200213a63203447369738c10"
+ },
+ "truebones/zoo_upgrade/scorpion": {
+  "joints": {
+   "L_claw_1": {
+    "part": "arm"
+   },
+   "L_claw_2": {
+    "part": "hand",
+    "contact": 0
+   },
+   "L_claw_3": {
+    "part": "hand",
+    "contact": 0
+   },
+   "R_claw_1": {
+    "part": "arm"
+   },
+   "R_claw_2": {
+    "part": "hand",
+    "contact": 0
+   },
+   "R_claw_3": {
+    "part": "hand",
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "346188290cbaf7ca8dcb0fb976f19adcd4aa551b"
+ }
+}

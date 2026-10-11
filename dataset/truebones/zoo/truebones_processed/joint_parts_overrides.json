@@ -1,0 +1,934 @@
+{
+ "truebones/zoo/Ant": {
+  "joints": {
+   "BN_Clip_L_01": {
+    "part": "arm"
+   },
+   "BN_Clip_L_02": {
+    "part": "arm"
+   },
+   "BN_Clip_R_01": {
+    "part": "arm"
+   },
+   "BN_Clip_R_02": {
+    "part": "arm"
+   }
+  },
+  "skeleton_hash": "89f5ca6025acdc659c5f2e58d89f68af304fd5bd"
+ },
+ "truebones/zoo/Bat": {
+  "joints": {
+   "Bip01_L_Toe0": {
+    "contact": 0
+   },
+   "Bip01_L_Toe01": {
+    "contact": 0
+   },
+   "Bip01_L_Toe0Nub": {
+    "contact": 0
+   },
+   "Bip01_L_Toe1": {
+    "contact": 0
+   },
+   "Bip01_L_Toe11": {
+    "contact": 0
+   },
+   "Bip01_L_Toe1Nub": {
+    "contact": 0
+   },
+   "Bip01_R_Toe0": {
+    "contact": 0
+   },
+   "Bip01_R_Toe01": {
+    "contact": 0
+   },
+   "Bip01_R_Toe0Nub": {
+    "contact": 0
+   },
+   "Bip01_R_Toe1": {
+    "contact": 0
+   },
+   "Bip01_R_Toe11": {
+    "contact": 0
+   },
+   "Bip01_R_Toe1Nub": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "33c08dbedc04a2c263d1f9137484432dae83a323"
+ },
+ "truebones/zoo/Bear": {
+  "joints": {
+   "NPC_LIndex01": {
+    "contact": 1
+   },
+   "NPC_LIndex02": {
+    "contact": 1
+   },
+   "NPC_LLegAnkle": {
+    "contact": 0
+   },
+   "NPC_LMiddle01": {
+    "contact": 1
+   },
+   "NPC_LMiddle02": {
+    "contact": 1
+   },
+   "NPC_LPinky01": {
+    "contact": 1
+   },
+   "NPC_LPinky02": {
+    "contact": 1
+   },
+   "NPC_LRing01": {
+    "contact": 1
+   },
+   "NPC_LRing02": {
+    "contact": 1
+   },
+   "NPC_RIndex01": {
+    "contact": 1
+   },
+   "NPC_RIndex02": {
+    "contact": 1
+   },
+   "NPC_RLegAnkle": {
+    "contact": 0
+   },
+   "NPC_RMiddle01": {
+    "contact": 1
+   },
+   "NPC_RMiddle02": {
+    "contact": 1
+   },
+   "NPC_RPinky01": {
+    "contact": 1
+   },
+   "NPC_RPinky02": {
+    "contact": 1
+   },
+   "NPC_RRing01": {
+    "contact": 1
+   },
+   "NPC_RRing02": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "870907933496d3eaabdf449cb28d87ee80e67b19"
+ },
+ "truebones/zoo/Buffalo": {
+  "joints": {
+   "Bip01_L_Finger0": {
+    "contact": 0
+   },
+   "Bip01_R_Finger0": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "77dd8f4cd6028fdd3883b118fcb241a62d1d7372"
+ },
+ "truebones/zoo/Centipede": {
+  "joints": {
+   "BN_Calf_L_02": {
+    "part": "tail"
+   },
+   "BN_Calf_R_02": {
+    "part": "tail"
+   },
+   "BN_Foot_L01": {
+    "part": "leg"
+   },
+   "BN_Foot_L_02": {
+    "part": "tail"
+   },
+   "BN_Foot_R_01": {
+    "part": "leg"
+   },
+   "BN_Foot_R_02": {
+    "part": "tail"
+   },
+   "BN_Piers_L_01": {
+    "part": "soft"
+   },
+   "BN_Piers_L_03": {
+    "part": "soft"
+   },
+   "BN_Piers_L_04": {
+    "part": "soft"
+   },
+   "BN_Piers_L_05": {
+    "part": "soft"
+   },
+   "BN_Piers_L_06": {
+    "part": "soft"
+   },
+   "BN_Piers_R_03": {
+    "part": "soft"
+   },
+   "BN_Piers_R_04": {
+    "part": "soft"
+   },
+   "BN_Piers_R_05": {
+    "part": "soft"
+   },
+   "BN_Piers_R_06": {
+    "part": "soft"
+   },
+   "BN_Pliers_L_02": {
+    "part": "soft"
+   },
+   "BN_Pliers_R_01": {
+    "part": "soft"
+   },
+   "BN_Pliers_R_02": {
+    "part": "soft"
+   },
+   "BN_Thigh_L_02": {
+    "part": "tail"
+   },
+   "BN_Thigh_R_02": {
+    "part": "tail"
+   },
+   "BN_Toe01_L_01": {
+    "contact": 1
+   },
+   "BN_Toe01_R_01": {
+    "contact": 1
+   },
+   "BN_Toe0_L_01": {
+    "part": "leg"
+   },
+   "BN_Toe0_R_01": {
+    "part": "leg"
+   },
+   "Bip01_L_Clavicle": {
+    "part": "arm"
+   },
+   "Bip01_L_Finger0": {
+    "part": "hand"
+   },
+   "Bip01_L_Finger0Nub": {
+    "part": "hand"
+   },
+   "Bip01_L_Foot": {
+    "part": "leg"
+   },
+   "Bip01_L_Forearm": {
+    "part": "arm"
+   },
+   "Bip01_L_Hand": {
+    "part": "arm"
+   },
+   "Bip01_L_Toe0": {
+    "part": "leg"
+   },
+   "Bip01_L_UpperArm": {
+    "part": "arm"
+   },
+   "Bip01_R_Clavicle": {
+    "part": "arm"
+   },
+   "Bip01_R_Finger0": {
+    "part": "hand"
+   },
+   "Bip01_R_Finger0Nub": {
+    "part": "hand"
+   },
+   "Bip01_R_Foot": {
+    "part": "leg"
+   },
+   "Bip01_R_Forearm": {
+    "part": "arm"
+   },
+   "Bip01_R_Hand": {
+    "part": "arm"
+   },
+   "Bip01_R_Toe0": {
+    "part": "leg"
+   },
+   "Bip01_R_UpperArm": {
+    "part": "arm"
+   }
+  },
+  "skeleton_hash": "2c3cbb5887af2c2d8e441aaefee08df0eab0cedd"
+ },
+ "truebones/zoo/Chicken": {
+  "joints": {
+   "BN_Finger_L_01": {
+    "part": "wing"
+   },
+   "BN_Finger_L_02": {
+    "part": "wing"
+   },
+   "BN_Finger_R_01": {
+    "part": "wing"
+   },
+   "BN_Finger_R_02": {
+    "part": "wing"
+   }
+  },
+  "skeleton_hash": "309a336469c385ecb8992c39b263ed48841621b4"
+ },
+ "truebones/zoo/Comodoa": {
+  "joints": {
+   "BN_dorsal01": {
+    "part": "soft"
+   },
+   "BN_dorsal02": {
+    "part": "soft"
+   },
+   "BN_dorsal03": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "9f7a78e30c1139bf962045f05a3bf980d7b6e828"
+ },
+ "truebones/zoo/Cricket": {
+  "joints": {
+   "BN_Feeler_L_05": {
+    "part": "tail"
+   },
+   "BN_Feeler_L_06": {
+    "part": "tail"
+   },
+   "BN_Feeler_L_07": {
+    "part": "tail"
+   },
+   "BN_Feeler_R_05": {
+    "part": "tail"
+   },
+   "BN_Feeler_R_06": {
+    "part": "tail"
+   },
+   "BN_Feeler_R_07": {
+    "part": "tail"
+   },
+   "BN_Wings_01": {
+    "part": "tail"
+   },
+   "BN_Wings_02": {
+    "part": "tail"
+   }
+  },
+  "skeleton_hash": "4ab3dde22320789b6c94f163df498fd9b3a005b8"
+ },
+ "truebones/zoo/Deer": {
+  "joints": {
+   "ElkLLargeCannon": {
+    "part": "leg"
+   },
+   "ElkLPhalanxPrima": {
+    "contact": 0
+   },
+   "ElkRLargeCannon": {
+    "part": "leg"
+   },
+   "ElkRPhalanxPrima": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "d47432d747068eb042f45ecb2121bb5a18656756"
+ },
+ "truebones/zoo/Dog": {
+  "joints": {
+   "Bip01_L_Foot": {
+    "part": "leg"
+   },
+   "Bip01_L_Toe0": {
+    "contact": 0
+   },
+   "Bip01_R_Foot": {
+    "part": "leg"
+   },
+   "Bip01_R_Toe0": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "83177a6bc74659b40e67de88ec2b18b6fcac48f1"
+ },
+ "truebones/zoo/Dog-2": {
+  "joints": {
+   "Bip01_L_Foot": {
+    "part": "leg"
+   },
+   "Bip01_L_Toe0": {
+    "contact": 0
+   },
+   "Bip01_R_Foot": {
+    "part": "leg"
+   },
+   "Bip01_R_Toe0": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "1f90d6914641dfaf9ebc15eb3021f768563094b8"
+ },
+ "truebones/zoo/Elephant": {
+  "joints": {
+   "BN_Nose_01": {
+    "part": "soft"
+   },
+   "BN_Nose_02": {
+    "part": "soft"
+   },
+   "BN_Nose_03": {
+    "part": "soft"
+   },
+   "BN_Nose_04": {
+    "part": "soft"
+   },
+   "BN_Nose_05": {
+    "part": "soft"
+   },
+   "BN_Nose_06": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "8be29716ea4bef008616cfffa161d520d82a3d40"
+ },
+ "truebones/zoo/Flamingo": {
+  "joints": {
+   "BN_Back_01": {
+    "part": "soft"
+   },
+   "BN_Back_02": {
+    "part": "soft"
+   },
+   "BN_Forearm_L_01": {
+    "part": "wing"
+   },
+   "BN_Forearm_L_02": {
+    "part": "wing"
+   },
+   "BN_Forearm_L_03": {
+    "part": "wing"
+   },
+   "BN_Forearm_L_04": {
+    "part": "wing"
+   },
+   "BN_Forearm_R_01": {
+    "part": "wing"
+   },
+   "BN_Forearm_R_02": {
+    "part": "wing"
+   },
+   "BN_Forearm_R_03": {
+    "part": "wing"
+   },
+   "BN_Forearm_R_04": {
+    "part": "wing"
+   }
+  },
+  "skeleton_hash": "012c1fa0c4d6e5ae2e98ff20e599bc96372be435"
+ },
+ "truebones/zoo/Gazelle": {
+  "joints": {
+   "Bip01_L_Finger0": {
+    "contact": 0
+   },
+   "Bip01_L_Hand": {
+    "part": "arm"
+   },
+   "Bip01_R_Finger0": {
+    "contact": 0
+   },
+   "Bip01_R_Hand": {
+    "part": "arm"
+   }
+  },
+  "skeleton_hash": "90a089c2dc101b538f281ee7964a0b763742dada"
+ },
+ "truebones/zoo/Giantbee": {
+  "joints": {
+   "BN_Foot_L_01": {
+    "contact": 0
+   },
+   "BN_Foot_L_02": {
+    "contact": 0
+   },
+   "BN_Foot_R_01": {
+    "contact": 0
+   },
+   "BN_Foot_R_02": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "86693cc4cd1fe828b66a1e5e036546ba9c6b86dc"
+ },
+ "truebones/zoo/Hamster": {
+  "joints": {
+   "Bip01_L_Hand": {
+    "contact": 1
+   },
+   "Bip01_R_Hand": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "fc1c8641c6576a175d19a113fb6b5cbe222f9e6c"
+ },
+ "truebones/zoo/HermitCrab": {
+  "joints": {
+   "BN_Crab_pincers_L_01": {
+    "part": "arm"
+   },
+   "BN_Crab_pincers_L_02": {
+    "part": "arm"
+   },
+   "BN_Crab_pincers_R_01": {
+    "part": "arm"
+   },
+   "BN_Crab_pincers_R_02": {
+    "part": "arm"
+   },
+   "BN_Piers_L_01": {
+    "part": "soft"
+   },
+   "BN_Piers_L_02": {
+    "part": "soft"
+   },
+   "BN_Piers_L_03": {
+    "part": "soft"
+   },
+   "BN_Piers_R_01": {
+    "part": "soft"
+   },
+   "BN_Piers_R_02": {
+    "part": "soft"
+   },
+   "BN_Piers_R_03": {
+    "part": "soft"
+   },
+   "BN_Shell": {
+    "part": "helper"
+   },
+   "BN_Tentacles_L_01": {
+    "part": "soft"
+   },
+   "BN_Tentacles_L_02": {
+    "part": "soft"
+   },
+   "BN_Tentacles_L_03": {
+    "part": "soft"
+   },
+   "BN_Tentacles_L_04": {
+    "part": "soft"
+   },
+   "BN_Tentacles_L_05": {
+    "part": "soft"
+   },
+   "BN_Tentacles_L_06": {
+    "part": "soft"
+   },
+   "BN_Tentacles_L_07": {
+    "part": "soft"
+   },
+   "BN_Tentacles_L_08": {
+    "part": "soft"
+   },
+   "BN_Tentacles_R_01": {
+    "part": "soft"
+   },
+   "BN_Tentacles_R_02": {
+    "part": "soft"
+   },
+   "BN_Tentacles_R_03": {
+    "part": "soft"
+   },
+   "BN_Tentacles_R_04": {
+    "part": "soft"
+   },
+   "BN_Tentacles_R_05": {
+    "part": "soft"
+   },
+   "BN_Tentacles_R_06": {
+    "part": "soft"
+   },
+   "BN_Tentacles_R_07": {
+    "part": "soft"
+   },
+   "BN_Tentacles_R_08": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "840895a67ab35119e204774831ec9e377134c482"
+ },
+ "truebones/zoo/Hippopotamus": {
+  "joints": {
+   "Bip01_L_Finger0": {
+    "contact": 0
+   },
+   "Bip01_R_Finger0": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "973d534057009cb16a4f8be0600ee847bd46f7ce"
+ },
+ "truebones/zoo/Horse": {
+  "joints": {
+   "Bip01_L_Finger0": {
+    "contact": 0
+   },
+   "Bip01_R_Finger0": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "d56a9528db17305c585a9a09d091d87a422d1ab4"
+ },
+ "truebones/zoo/Hound": {
+  "joints": {
+   "BN_Tongue_01": {
+    "part": "soft"
+   },
+   "BN_Tongue_02": {
+    "part": "soft"
+   },
+   "BN_Tongue_03": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "e6a19ade59568960c5f1745c00243ca1869becf8"
+ },
+ "truebones/zoo/Isopetra": {
+  "joints": {
+   "Bip01_L_Finger0": {
+    "part": "leg"
+   },
+   "Bip01_L_Finger01": {
+    "contact": 0
+   },
+   "Bip01_L_Finger02": {
+    "contact": 0
+   },
+   "Bip01_L_Foot": {
+    "part": "leg"
+   },
+   "Bip01_L_Hand": {
+    "part": "leg"
+   },
+   "Bip01_L_Toe0": {
+    "contact": 0
+   },
+   "Bip01_L_Toe01": {
+    "contact": 0
+   },
+   "Bip01_R_Finger0": {
+    "part": "leg"
+   },
+   "Bip01_R_Finger01": {
+    "contact": 0
+   },
+   "Bip01_R_Finger02": {
+    "contact": 0
+   },
+   "Bip01_R_Foot": {
+    "part": "leg"
+   },
+   "Bip01_R_Hand": {
+    "part": "leg"
+   },
+   "Bip01_R_Toe0": {
+    "contact": 0
+   },
+   "Bip01_R_Toe01": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "96ad6d15d0d16f730d082a2ee483cba8bcba8695"
+ },
+ "truebones/zoo/Mammoth": {
+  "joints": {
+   "BN_Nose_01": {
+    "part": "soft"
+   },
+   "BN_Nose_02": {
+    "part": "soft"
+   },
+   "BN_Nose_03": {
+    "part": "soft"
+   },
+   "BN_Nose_04": {
+    "part": "soft"
+   },
+   "BN_Nose_05": {
+    "part": "soft"
+   },
+   "BN_Nose_06": {
+    "part": "soft"
+   },
+   "BN_Nose_07": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "0c9854c830548e4c9964153a4b35382838f79a9b"
+ },
+ "truebones/zoo/Ostrich": {
+  "joints": {
+   "BN_Forearm_L_01": {
+    "part": "wing"
+   },
+   "BN_Forearm_L_02": {
+    "part": "wing"
+   },
+   "BN_Forearm_L_03": {
+    "part": "wing"
+   },
+   "BN_Forearm_L_04": {
+    "part": "wing"
+   },
+   "BN_Forearm_L_05": {
+    "part": "wing"
+   },
+   "BN_Forearm_L_06": {
+    "part": "wing"
+   },
+   "BN_Forearm_L_07": {
+    "part": "wing"
+   },
+   "BN_Forearm_L_08": {
+    "part": "wing"
+   },
+   "BN_Forearm_R_01": {
+    "part": "wing"
+   },
+   "BN_Forearm_R_02": {
+    "part": "wing"
+   },
+   "BN_Forearm_R_03": {
+    "part": "wing"
+   },
+   "BN_Forearm_R_04": {
+    "part": "wing"
+   },
+   "BN_Forearm_R_05": {
+    "part": "wing"
+   },
+   "BN_Forearm_R_06": {
+    "part": "wing"
+   },
+   "BN_Forearm_R_07": {
+    "part": "wing"
+   },
+   "BN_Forearm_R_08": {
+    "part": "wing"
+   }
+  },
+  "skeleton_hash": "d16d6e27335d8ed651c3b7ae079a08b08620ea4a"
+ },
+ "truebones/zoo/Pigeon": {
+  "joints": {
+   "Spine": {
+    "part": "head"
+   }
+  },
+  "skeleton_hash": "f77fbf9cf18e5f86708347bb3683c4dc0bc6f46d"
+ },
+ "truebones/zoo/Pirrana": {
+  "joints": {
+   "obire": {
+    "part": "tail"
+   },
+   "obireA": {
+    "part": "tail"
+   },
+   "obireB": {
+    "part": "tail"
+   }
+  },
+  "skeleton_hash": "94175b24510199bdafac617df1cb788f46f08c80"
+ },
+ "truebones/zoo/Pteranodon": {
+  "joints": {
+   "jt_ClawBack2_L": {
+    "contact": 1
+   },
+   "jt_ClawBack2_R": {
+    "contact": 1
+   },
+   "jt_ClawBack_L": {
+    "contact": 1
+   },
+   "jt_ClawBack_R": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "ac188bc88c9ef45f244ef05488e5a2354dd3af99"
+ },
+ "truebones/zoo/Raindeer": {
+  "joints": {
+   "Bip01_L_Finger0": {
+    "contact": 0
+   },
+   "Bip01_L_Hand": {
+    "part": "arm"
+   },
+   "Bip01_R_Finger0": {
+    "contact": 0
+   },
+   "Bip01_R_Hand": {
+    "part": "arm"
+   }
+  },
+  "skeleton_hash": "b213cffcb309f9ddb9a2e0f7821673eddd85d350"
+ },
+ "truebones/zoo/Raptor2": {
+  "joints": {
+   "jt_Ankle_L": {
+    "part": "leg"
+   },
+   "jt_Ankle_R": {
+    "part": "leg"
+   }
+  },
+  "skeleton_hash": "4288ce08b5f167345d2fb916a2230f29af6733ec"
+ },
+ "truebones/zoo/Raptor3": {
+  "joints": {
+   "jt_Ankle_L": {
+    "part": "leg"
+   },
+   "jt_Ankle_R": {
+    "part": "leg"
+   }
+  },
+  "skeleton_hash": "10fc42e43f5a6cfc5864f14ff7582ae1c92b7684"
+ },
+ "truebones/zoo/Rhino": {
+  "joints": {
+   "Bip01_L_Finger0": {
+    "contact": 0
+   },
+   "Bip01_R_Finger0": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "988e59e64bb1575a7c8674e369573a06a6ce9761"
+ },
+ "truebones/zoo/Roach": {
+  "joints": {
+   "Bip01_L_ForearmNub": {
+    "contact": 1
+   },
+   "Bip01_R_ForearmNub": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "06c7f32fbbb34759b335e3af35de44d62c7e71c7"
+ },
+ "truebones/zoo/SabreToothTiger": {
+  "joints": {
+   "Sabrecat_Finger4_LF04_": {
+    "contact": 0
+   },
+   "Sabrecat_Finger4_RF04_": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "1e73612ded5ab9c89a80ce129d7c889930cc4a3a"
+ },
+ "truebones/zoo/Scorpion": {
+  "joints": {
+   "Bip01_L_Clavicle": {
+    "part": "arm"
+   },
+   "Bip01_L_Finger0": {
+    "part": "hand",
+    "contact": 0
+   },
+   "Bip01_L_Forearm": {
+    "part": "arm"
+   },
+   "Bip01_L_Hand": {
+    "part": "hand"
+   },
+   "Bip01_L_UpperArm": {
+    "part": "arm"
+   },
+   "Bip01_R_Clavicle": {
+    "part": "arm"
+   },
+   "Bip01_R_Finger0": {
+    "part": "hand",
+    "contact": 0
+   },
+   "Bip01_R_Forearm": {
+    "part": "arm"
+   },
+   "Bip01_R_Hand": {
+    "part": "hand"
+   },
+   "Bip01_R_UpperArm": {
+    "part": "arm"
+   },
+   "Bip01_SpineL": {
+    "part": "head"
+   },
+   "Bip01_SpineR": {
+    "part": "head"
+   }
+  },
+  "skeleton_hash": "e954579fbcbc44151ebc95d40f77a560b9970c02"
+ },
+ "truebones/zoo/SpiderG": {
+  "joints": {
+   "BN_hand_L_01": {
+    "part": "arm"
+   },
+   "BN_hand_L_02": {
+    "part": "arm"
+   },
+   "BN_hand_L_03": {
+    "part": "arm"
+   },
+   "BN_hand_L_04": {
+    "part": "hand"
+   },
+   "BN_hand_L_05": {
+    "part": "hand"
+   },
+   "BN_hand_R_01": {
+    "part": "arm"
+   },
+   "BN_hand_R_02": {
+    "part": "arm"
+   },
+   "BN_hand_R_03": {
+    "part": "arm"
+   },
+   "BN_hand_R_04": {
+    "part": "hand"
+   },
+   "BN_hand_R_05": {
+    "part": "hand"
+   },
+   "Bip01_L_Foot": {
+    "part": "leg"
+   },
+   "Bip01_R_Foot": {
+    "part": "leg"
+   }
+  },
+  "skeleton_hash": "c45ddace26835534860de74563321313f2af2b03"
+ },
+ "truebones/zoo/Trex": {
+  "joints": {
+   "jt_Ankle_L": {
+    "contact": 0
+   },
+   "jt_Ankle_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "26295185fb8308e51732773d15608142c189ea83"
+ },
+ "truebones/zoo/Tukan": {
+  "joints": {
+   "L_momo": {
+    "contact": 1
+   },
+   "R_momo": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "867b58f476c00bc28a946b4d42c0e13d8f93465f"
+ }
+}

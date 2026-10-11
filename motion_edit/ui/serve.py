@@ -21,16 +21,16 @@ API::
     POST /api/apply   {id, params, events,         edited frames + diagnostics (full path);
                        globals}                    ``events`` moves the strike events / chain,
                                                    ``globals`` adds world rotations (mesh skinning)
-    POST /api/contacts {id, joints, species}       another contact joint set; ``species``
-                                                   also writes it to contact_overrides.json
+    POST /api/parts   {id, joints, species}        joints' parts / contacts, {name: {part,
+                                                   contact}}; ``species`` also writes them to
+                                                   joint_parts_overrides.json
     POST /api/contacts {id, mask}                  hand-edited contact intervals, (K, F) 0/1
-    POST /api/passive {id, joints, species}        another passive joint set; ``species``
-                                                   also writes it to passive_overrides.json
+    POST /api/contacts {id, ground_height}         another ground height
     POST /api/export  {id, params, events,         ``motion_edit.apply_edit --sidecar --glb`` on a
                        root_motion, mesh, name}    sidecar in the package's exports/; download link
     GET  /api/download?id=&file=                   an exported file
 
-Contact and passive edits rewrite the package in place.
+Part and contact edits rewrite the package in place.
 """
 
 from __future__ import annotations
@@ -55,7 +55,6 @@ import numpy as np  # noqa: E402
 
 from motion_edit.mesh import mesh_calibration, mesh_source, preview_path  # noqa: E402
 from motion_edit.package import EditPackage, find_packages, is_package_dir  # noqa: E402
-from motion_edit.profile.skeleton import passive_layer  # noqa: E402
 from motion_edit.runtime import (  # noqa: E402
     PARAM_SPECS,
     EditRuntime,
@@ -144,17 +143,15 @@ def mesh_payload(package_dir: str, package_id: str) -> dict | None:
 
 
 def package_payload(runtime: EditRuntime, package_dir: str, package_id: str) -> dict:
+    from motion_edit.package import decode_json
+
     pkg = runtime.package
     original = runtime.apply()
+    partners = decode_json(pkg["source_cond"]).get("symmetry_partner_indices")
     manifest = json.loads(json.dumps(pkg.manifest))
     # this server's parameter set, not the decomposer's
     manifest["available_params"] = [n for n in PARAM_SPECS if n in runtime.available]
     manifest["params"] = param_manifest(manifest["available_params"])
-    source = manifest["contacts"]["source"]
-    origin = {}
-    for j in pkg["contact_joints"].tolist():
-        origin[j] = ("package" if j in source.get("package_add", []) else
-                     "species" if j in source.get("species_add", []) else "cond")
     return {
         "manifest": manifest,
         "species_writable": bool(pkg.manifest.get("dataset_root")),
@@ -164,11 +161,15 @@ def package_payload(runtime: EditRuntime, package_dir: str, package_id: str) -> 
             "bvh_names": [str(n) for n in pkg["bvh_names"]],
             "groups": [str(g) for g in pkg["chain_group"]],
             "roles": [str(r) for r in pkg["profile_role"]],
+            "sides": [str(s) for s in pkg["sides"]],
+            # each joint's mirror twin (-1 for none), for the part editor's left -> right copy
+            "partners": ([int(j) for j in partners] if partners is not None
+                         else [-1] * pkg.joint_count),
         },
+        "parts": manifest["parts"],
         "original": {"positions": _flat(original.global_positions, POSITION_DECIMALS)},
         "contacts": {
             "joints": pkg["contact_joints"].tolist(),
-            "origin": [origin[j] for j in pkg["contact_joints"].tolist()],
             "mask": pkg["contact_mask"].astype(np.uint8).T.tolist(),
             "plants": pkg["plant_intervals"].tolist(),
             "anchors": _flat(pkg["plant_anchor"], POSITION_DECIMALS),
@@ -181,14 +182,10 @@ def package_payload(runtime: EditRuntime, package_dir: str, package_id: str) -> 
 
 
 def passive_payload(pkg: EditPackage) -> dict:
-    """Passive joints with where each came from, and the candidates a click may add."""
+    """Passive joints (the soft ones that can swing) and the joints that can."""
     m = pkg.manifest.get("passive") or {}
-    source = m.get("source") or {}
     joints = [int(j) for j in np.flatnonzero(pkg["profile_passive"])] if "profile_passive" in pkg.arrays else []
-    origin = ["package" if j in source.get("package_add", []) else
-              "species" if j in source.get("species_add", []) else "name" for j in joints]
-    return {"joints": joints, "origin": origin, "candidates": m.get("candidates", []),
-            "promotable": bool(source.get("package_add") or source.get("package_remove"))}
+    return {"joints": joints, "candidates": m.get("candidates", [])}
 
 
 def apply_payload(runtime: EditRuntime, params: dict, events: dict | None = None,
@@ -350,9 +347,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/contacts":
                 with self.store.edit_lock:
                     return self._json(200, self._contacts(package_id, body))
-            if path == "/api/passive":
+            if path == "/api/parts":
                 with self.store.edit_lock:
-                    return self._json(200, self._passive(package_id, body))
+                    return self._json(200, self._parts(package_id, body))
             if path == "/api/export":
                 return self._json(200, self._export(package_id, body))
             self._error(404, "not found")
@@ -384,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
         command = [sys.executable, "-m", "motion_edit.apply_edit", package_dir, "--sidecar", sidecar,
                    *(["--root_motion"] if root_motion else []), *(["--mesh"] if mesh else []),
                    "--glb", path]
-        # the subprocess reads the package from disk: hold off contact / passive rewrites
+        # the subprocess reads the package from disk: hold off part / contact rewrites
         with self.store.edit_lock:
             done = subprocess.run(command, cwd=ANYTOP_ROOT, capture_output=True, text=True,
                                   encoding="utf-8", errors="replace")
@@ -396,7 +393,7 @@ class Handler(BaseHTTPRequestHandler):
                 "url": f"/api/download?id={quote(package_id)}&file={quote(name)}"}
 
     def _contacts(self, package_id: str, body: dict) -> dict:
-        from motion_edit.decompose import with_contact_joints, with_contact_mask, with_ground_height
+        from motion_edit.decompose import with_contact_mask, with_ground_height
 
         package = self.store.runtime(package_id).package
         if body.get("ground_height") is not None:
@@ -406,66 +403,32 @@ class Handler(BaseHTTPRequestHandler):
             edited = with_ground_height(package, height)
         elif body.get("mask") is not None:
             edited = with_contact_mask(package, np.asarray(body["mask"], dtype=bool).T)
-        elif body.get("joints") is not None:
-            joints = sorted({int(j) for j in body["joints"]})
-            if any(j < 0 or j >= package.joint_count for j in joints):
-                raise ValueError("contact joint index out of range")
-            if body.get("species"):
-                edited = self._write_species(package, joints)
-            else:
-                edited = with_contact_joints(package, joints)
         else:
-            raise ValueError("send 'joints', 'mask' or 'ground_height'")
+            raise ValueError("send 'mask' or 'ground_height'")
         self.store.replace(package_id, edited)
         return self.store.payload(package_id)
 
-    def _passive(self, package_id: str, body: dict) -> dict:
-        from motion_edit.decompose import with_passive_joints
+    def _parts(self, package_id: str, body: dict) -> dict:
+        """Set joints' parts / contacts for this package, or (``species``) for the species:
+        its ``joint_parts_overrides.json`` row is rewritten against the prefill."""
+        from motion_edit.decompose import with_parts
+        from motion_edit.profile.data import write_species_override
+        from motion_edit.profile.parts import JOINT_PARTS_OVERRIDES_FILE
 
         package = self.store.runtime(package_id).package
-        if body.get("joints") is None:
-            raise ValueError("send 'joints'")
-        joints = {int(j) for j in body["joints"]}
-        if any(j < 0 or j >= package.joint_count for j in joints):
-            raise ValueError("passive joint index out of range")
-        # taken as sent: the page closes an addition over its subtree itself
-        joints = sorted(joints)
-        candidates = set((package.manifest.get("passive") or {}).get("candidates", []))
-        outside = [str(package["names"][j]) for j in joints if j not in candidates]
-        if outside:
-            raise ValueError(f"a support joint hangs below: {', '.join(outside)}")
+        joints = body.get("joints")
+        if not isinstance(joints, dict):
+            raise ValueError("send 'joints': {name: {part, contact}}")
+        edited = with_parts(package, joints, species=bool(body.get("species")))
         if body.get("species"):
-            add, remove = passive_layer(package["parents"], package.manifest["passive"]["named"], joints)
-            self._write_override(package, "passive", add, remove)
-            edited = with_passive_joints(package, joints, species_add=add, species_remove=remove)
-        else:
-            edited = with_passive_joints(package, joints)
+            root = package.manifest.get("dataset_root")
+            if not root or not os.path.isdir(root):
+                raise ValueError("package does not know its dataset; re-decompose it with "
+                                 "decompose_clip from a dataset to write a species override")
+            write_species_override(root, JOINT_PARTS_OVERRIDES_FILE, package.manifest["object_type"],
+                                   edited.manifest["parts"]["species"], package.manifest["skeleton_hash"])
         self.store.replace(package_id, edited)
         return self.store.payload(package_id)
-
-    @staticmethod
-    def _write_override(package, kind: str, add: list[int], remove: list[int]) -> None:
-        """Write the species' ``contact`` / ``passive`` override row (joint names)."""
-        from motion_edit.profile.data import CONTACT_OVERRIDES_FILE, PASSIVE_OVERRIDES_FILE, write_species_override
-
-        root = package.manifest.get("dataset_root")
-        if not root or not os.path.isdir(root):
-            raise ValueError("package does not know its dataset; re-decompose it with "
-                             "decompose_clip from a dataset to write a species override")
-        names = [str(n) for n in package["names"]]
-        write_species_override(root, CONTACT_OVERRIDES_FILE if kind == "contact" else PASSIVE_OVERRIDES_FILE,
-                               package.manifest["object_type"], [names[j] for j in add],
-                               [names[j] for j in remove], package.manifest["skeleton_hash"])
-
-    def _write_species(self, package, joints):
-        """Record ``joints`` against cond as the species' contact override, then use it."""
-        from motion_edit.decompose import with_contact_joints
-
-        cond = set(package.manifest["contacts"]["source"]["cond"])
-        add = sorted(set(joints) - cond)
-        remove = sorted(cond - set(joints))
-        self._write_override(package, "contact", add, remove)
-        return with_contact_joints(package, joints, species_add=add, species_remove=remove)
 
 
 def main(argv=None) -> int:

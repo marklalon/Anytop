@@ -12,7 +12,6 @@ from utils.device_transfer import host_to_device
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     JOINT_STRUCT_DIM,
 )
-from data_loaders.truebones.truebones_utils.joint_parts import JOINT_PARTS
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_LABEL_SLOTS,
     HEAD_SLOT_PRIMARY_WEIGHT,
@@ -106,13 +105,6 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"joint_name_drop_prob must be in [0, 1], got {self.joint_name_drop_prob}"
             )
-        # Whole-skeleton name dropout: every name of the sample at once, unioned
-        # with the per-joint draw. Same defaults contract as joint_name_drop_prob.
-        self.skeleton_name_drop_prob=float(kargs.get('skeleton_name_drop_prob', 0.0))
-        if not 0.0 <= self.skeleton_name_drop_prob <= 1.0:
-            raise ValueError(
-                f"skeleton_name_drop_prob must be in [0, 1], got {self.skeleton_name_drop_prob}"
-            )
         # Training-only; validated by GraphMotionDecoder.
         self.mirror_twin_drop_prob=float(kargs.get('mirror_twin_drop_prob', 0.0))
         # Action-label conditioning: a single pathway -- the frozen T5 vectors of
@@ -160,15 +152,6 @@ class AnyTop(nn.Module):
         # decoder layer (TopologyConditioner). Built last in __init__, so the
         # flag does not reorder the other parameters' initialisation.
         self.topology_cond = bool(kargs.get('topology_cond', False))
-        # Auxiliary part / contact heads (JointPartHead): training targets read
-        # off one decoder layer, never a condition. part_head_layer counts the
-        # decoder layers run before the tap; 0 is the middle.
-        self.part_head = bool(kargs.get('part_head', False))
-        self.part_head_layer = int(kargs.get('part_head_layer', 0)) or max(1, self.num_layers // 2)
-        if not 1 <= self.part_head_layer <= self.num_layers:
-            raise ValueError(
-                f"part_head_layer must be in [1, {self.num_layers}], got {self.part_head_layer}"
-            )
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if not 0.0 <= self.joint_mask_budget <= 1.0:
@@ -325,9 +308,6 @@ class AnyTop(nn.Module):
             TopologyConditioner(self.latent_dim, self.num_layers, self.num_heads)
             if self.topology_cond else None
         )
-        # Built after everything else, so the flag does not reorder the other
-        # parameters' initialisation.
-        self.joint_part_head = JointPartHead(self.latent_dim, len(JOINT_PARTS)) if self.part_head else None
 
     @staticmethod
     def _prepare_unreliable_mask(raw_mask, bs, nframes, njoints, device, dtype):
@@ -1039,18 +1019,11 @@ class AnyTop(nn.Module):
             raw_std, 'canonical_feature_std', batch_size, device, dtype)
         return run_in_fp32(self.canonical_frame_projection, torch.cat([mean, std], dim=-1))
 
-    def forward(self, x, timesteps, y=None, train_step=None, return_aux=False, **unused_kwargs):
+    def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
-
-        ``return_aux`` (training, a Python constant) also returns a dict with
-        the part head's ``part_logits`` [B, J, C] and ``contact_logit`` [B, J],
-        and the ``joint_name_drop`` [B, J] mask this pass blanked names with.
         """
-        if return_aux and self.joint_part_head is None:
-            raise ValueError("return_aux needs the part head: build the model with part_head=True.")
-
         joints_padding_mask = y['joints_padding_mask'].to(x.device)
         rest_pose = y['rest_pose'].to(x.device).unsqueeze(0)
 
@@ -1147,51 +1120,26 @@ class AnyTop(nn.Module):
             # modulates by the null embedding rather than skipping the head.
             action_adaln_cond=action_label_token if self.action_label_adaln else None,
             topology_adaln=topology_adaln,
-            return_layer=self.part_head_layer if return_aux else None,
         )
-        if return_aux:
-            output, tapped = output
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
-        if not return_aux:
-            return output
-        frame_valid = (
-            torch.arange(nframes, device=x.device).unsqueeze(0)
-            < torch.as_tensor(y['lengths'], device=x.device).reshape(-1, 1)
-        )
-        part_logits, contact_logit = self.joint_part_head(tapped, frame_valid)
-        if joint_name_drop is None:
-            joint_name_drop = torch.zeros(bs, njoints, dtype=torch.bool, device=x.device)
-        return output, {
-            'part_logits': part_logits,
-            'contact_logit': contact_logit,
-            'joint_name_drop': joint_name_drop,
-        }
+        return output
 
     def _sample_joint_name_drop(self, batch_size, joint_count, device):
         """Whole-joint name dropout mask, ``[B, J]`` bool, or None when off.
 
-        In training, the union of a per-(sample, joint) Bernoulli at
-        ``joint_name_drop_prob`` (some names unknown, as when
-        ``process_new_skeleton`` blanks unseen texts) and a per-sample Bernoulli
-        at ``skeleton_name_drop_prob`` that hides every name of the sample (a
-        rig with no recognisable name, and no neighbour's name to read the
-        species off). InputProcess zeroes the selected name rows, and the part
-        loss reads the same mask (the part is learned only where the name is
-        hidden). Padding rows are zero already, so they need no exclusion. Eval
-        keeps every name.
+        In training, a per-(sample, joint) Bernoulli at ``joint_name_drop_prob``
+        (some names unknown, as when ``process_new_skeleton`` blanks unseen
+        texts). InputProcess zeroes the selected name rows. Padding rows are zero
+        already, so they need no exclusion. Eval keeps every name.
 
         Branch-free on tensor values (``torch.rand`` + compare, no ``.any()`` in a
         python ``if``) so it does not break torch.compile or cudagraph capture.
         """
         if not self.training:
             return None
-        if self.joint_name_drop_prob <= 0.0 and self.skeleton_name_drop_prob <= 0.0:
+        if self.joint_name_drop_prob <= 0.0:
             return None
-        drop = torch.rand(batch_size, joint_count, device=device) < self.joint_name_drop_prob
-        if self.skeleton_name_drop_prob > 0.0:
-            whole = torch.rand(batch_size, 1, device=device) < self.skeleton_name_drop_prob
-            drop = drop | whole
-        return drop
+        return torch.rand(batch_size, joint_count, device=device) < self.joint_name_drop_prob
 
 
     def _apply(self, fn):
@@ -1230,8 +1178,7 @@ class InputProcess(nn.Module):
         # carry. Padding never reaches a live joint (the attention mask and the
         # loss both exclude it), so sharing the zero row costs nothing, and it
         # leaves inference a parameter-free way to feed a joint with no name.
-        # The mask is drawn by AnyTop (_sample_joint_name_drop), which hands it
-        # to the part loss as well.
+        # The mask is drawn by AnyTop (_sample_joint_name_drop).
         # When --species_joint_cond, the species descriptor FiLM-modulates each
         # per-joint name embedding: gamma/beta are produced from the *concatenation*
         # of that joint's embedding and the species descriptor, so the modulation is
@@ -1357,39 +1304,6 @@ class InputProcess(nn.Module):
         if return_topology_tokens:
             return x, topology_tokens
         return x
-
-
-class JointPartHead(nn.Module):
-    """Per-joint body-part logits and ground-contact logit from one decoder layer.
-
-    Each joint is read as its rest token (frame 0) next to the mean of its
-    valid frames, so the head sees the joint's place in the skeleton and how
-    it moves. Computed in fp32: two small MLPs on [B, J] rows.
-    """
-
-    def __init__(self, latent_dim, num_parts):
-        super().__init__()
-        width = 2 * latent_dim
-        self.part_norm = nn.LayerNorm(width)
-        self.part_mlp = nn.Sequential(
-            nn.Linear(width, latent_dim // 2), nn.GELU(), nn.Linear(latent_dim // 2, num_parts),
-        )
-        self.contact_norm = nn.LayerNorm(width)
-        self.contact_mlp = nn.Sequential(
-            nn.Linear(width, latent_dim // 2), nn.GELU(), nn.Linear(latent_dim // 2, 1),
-        )
-
-    def forward(self, tokens, frame_valid):
-        """``tokens`` [T+1, B, J, d] (row 0 the rest token), ``frame_valid`` [B, T]."""
-        with torch.autocast(device_type=tokens.device.type, enabled=False):
-            tokens = tokens.float()
-            weights = frame_valid.t().to(tokens.dtype)                       # [T, B]
-            weights = weights / weights.sum(dim=0, keepdim=True).clamp_min(1.0)
-            motion = (tokens[1:] * weights[:, :, None, None]).sum(dim=0)     # [B, J, d]
-            joint = torch.cat([tokens[0], motion], dim=-1)                  # [B, J, 2d]
-            part_logits = self.part_mlp(self.part_norm(joint))
-            contact_logit = self.contact_mlp(self.contact_norm(joint)).squeeze(-1)
-        return part_logits, contact_logit
 
 
 class OutputProcess(nn.Module):

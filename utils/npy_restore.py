@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
@@ -91,9 +90,7 @@ class RestoreSkeletonContext:
     export_rest_rotations: np.ndarray
     export_offsets_space: str = "hml"
     mesh_bone_names: Optional[list[str]] = None
-    # Contact joints (the species' joint_parts.jsonl row) and side labels: they
-    # locate the trunk full-body IK leaves alone. Full-body IK refuses None.
-    contact_joints: Optional[list[int]] = None
+    # Side labels locate the trunk full-body IK leaves alone: where the sided limbs branch off.
     joint_side_labels: Optional[list[str]] = None
 
     @property
@@ -128,10 +125,9 @@ def _check_feature_joint_count(feature_joint_count: Optional[int], joint_names: 
         )
 
 
-def _trunk_fields(cond_entry: dict, contact_joints) -> dict:
+def _trunk_fields(cond_entry: dict) -> dict:
     sides = cond_entry.get("joint_side_labels")
     return {
-        "contact_joints": [int(j) for j in contact_joints] if contact_joints is not None else None,
         "joint_side_labels": [str(s) for s in sides] if sides is not None else None,
     }
 
@@ -142,7 +138,6 @@ def build_skeleton_only_context(
     object_type: Optional[str] = None,
     export_joint_names: Optional[list[str]] = None,
     feature_joint_count: Optional[int] = None,
-    contact_joints: Optional[list[int]] = None,
 ) -> RestoreSkeletonContext:
     """Skeleton context from cond.npy alone -- no mesh, identity rest.
 
@@ -178,7 +173,7 @@ def build_skeleton_only_context(
         export_rest_rotations=identity_rest.copy(),
         export_offsets_space="hml",
         mesh_bone_names=None,
-        **_trunk_fields(cond_entry, contact_joints),
+        **_trunk_fields(cond_entry),
     )
 
 
@@ -313,7 +308,6 @@ def build_mesh_restore_context(
     object_type: str,
     *,
     feature_joint_count: Optional[int] = None,
-    contact_joints: Optional[list[int]] = None,
 ) -> RestoreSkeletonContext:
     """Skeleton context for a skinned / mesh-rig export.
 
@@ -366,7 +360,7 @@ def build_mesh_restore_context(
         export_rest_rotations=np.asarray(export_rest_rotations, dtype=np.float32),
         export_offsets_space="native",
         mesh_bone_names=list(tpose_meta["raw_joint_names"]),
-        **_trunk_fields(cond_entry, contact_joints),
+        **_trunk_fields(cond_entry),
     )
 
 
@@ -586,11 +580,6 @@ def restore_animation_from_features(
         export_offsets = (export_offsets * ctx.scale_factor).astype(np.float32)
 
     ik_error = None
-    if fullbody_ik and ctx.contact_joints is None:
-        raise ValueError(
-            "full-body IK needs the skeleton's contact joints: pass contact_joints "
-            "(utils.npy_restore.motion_contact_joints)."
-        )
     if fullbody_ik:
         _log(log, f"Full-body IK reconstruction on export skeleton (stretch_factor={stretch_factor:.2f})...")
         # The trunk keeps the decoded pose, local translations included: a rigid trunk
@@ -598,7 +587,7 @@ def restore_animation_from_features(
         # carry every limb off its target.  Each limb starts from its decoded attachment
         # point and is rebuilt rigidly from there, where mesh deformation shows.
         export_parents = np.asarray(ctx.export_parents, dtype=np.int32)
-        trunk = trunk_joint_indices(export_parents, ctx.joint_side_labels, ctx.contact_joints)
+        trunk = trunk_joint_indices(export_parents, ctx.joint_side_labels)
         kept_rotations = sorted({translation_root_index, *trunk.tolist()})
         attachments = np.flatnonzero(np.isin(export_parents, kept_rotations)).tolist()
         export_anim, ik_mean_error, ik_max_error = rebuild_fullbody_animation_with_ik(
@@ -658,25 +647,6 @@ def restore_animation_from_features(
     )
 
 
-def motion_contact_joints(npy_path, cond_entry) -> list[int]:
-    """Contact joints of the motion at ``npy_path``.
-
-    A dataset species carries its annotation baked into cond. A skeleton without
-    one (a ``process_new_skeleton`` cond) reads the ``joint_parts.jsonl`` row its
-    generation run wrote beside the motion.
-    """
-    from data_loaders.truebones.truebones_utils.joint_parts import (
-        cond_contact_joints,
-        has_joint_parts,
-        load_joint_parts,
-        species_of,
-    )
-
-    if has_joint_parts(cond_entry):
-        return cond_contact_joints(cond_entry)
-    return load_joint_parts(Path(npy_path).resolve().parent, species_of(cond_entry), cond_entry).contact_joints
-
-
 # ── Writers ───────────────────────────────────────────────────────────────────
 
 def export_animation_bvh(restored: RestoredAnimation, output_bvh: str) -> None:
@@ -706,7 +676,6 @@ def write_feature_bvh(
     joint_names: Optional[list[str]] = None,
     fullbody_ik: bool = False,
     stretch_factor: float = DEFAULT_IK_STRETCH_FACTOR,
-    contact_joints: Optional[list[int]] = None,
     log: LogFn = None,
 ) -> RestoredAnimation:
     """BVH preview of a feature tensor on its cond skeleton (HML space, identity rest).
@@ -723,7 +692,6 @@ def write_feature_bvh(
         object_type=object_type,
         export_joint_names=list(joint_names),
         feature_joint_count=int(features.shape[1]) if features.ndim == 3 else None,
-        contact_joints=contact_joints,
     )
     restored = restore_animation_from_features(
         features,

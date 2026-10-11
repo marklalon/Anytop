@@ -1138,7 +1138,6 @@ def run_validation(
         validate_cond_file,
         validate_motion_files,
         validate_motion_metadata,
-        validate_positions_error_file,
     )
 
     try:
@@ -1148,7 +1147,7 @@ def run_validation(
             sample_count,
         )
 
-        motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = read_required_artifacts(dataset_dir)
+        motions_dir, bvhs_dir, cond_path, metadata_path = read_required_artifacts(dataset_dir)
         cond = validate_cond_file(cond_path, objects_subset)
         motion_files = sorted(motions_dir.glob("*.npy"))
         validate_metadata(metadata_path, motion_files, cond)
@@ -1165,26 +1164,12 @@ def run_validation(
         from validate_anytop_dataset import validate_tpose_orientation
         validate_tpose_orientation(cond, orientation_threshold_deg)
 
-        validate_positions_error_file(positions_error_path)
-
         print(f"[OK] total motions: {len(motion_files)}")
         print("[PASS] dataset validation completed successfully")
         return 0
     except ValidationError as e:
         print(f"[WARN] dataset validation warning: {e}")
         return 1
-    finally:
-        # Force-delete split manifests so they are regenerated on next training run.
-        # This ensures train/val/test.txt always reflect the current motion files.
-        # Execute this after validation (even if validation failed).
-        try:
-            for split_name in ("train", "val", "test"):
-                split_path = dataset_dir / f"{split_name}.txt"
-                if split_path.exists():
-                    split_path.unlink()
-                    print(f"[OK] deleted {split_path.name} (will be regenerated on next training)")
-        except Exception as e:
-            print(f"[WARN] failed to delete split manifests: {e}")
 
 
 def parse_args() -> argparse.Namespace:

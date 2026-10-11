@@ -1,20 +1,17 @@
 """Symmetric body-proportion augmentation in physical feature space.
 
-One or two anatomical groups get one constant multiplier per clip. Topology,
-names and subset statistics stay fixed. Local translations (including authored
-deformation) are scaled, not discarded. All action labels are accepted. Rigs
-without anatomical groups use topology-chain groups. Contact IK is disabled:
-local rotations are preserved; grounding is left to generated-motion postprocessing.
+One or two topology groups -- branch-free bone chains, mirror chains merged --
+get one constant multiplier per clip. Topology, names and subset statistics
+stay fixed. Local translations (including authored deformation) are scaled, not
+discarded. All action labels are accepted. Contact IK is disabled: local
+rotations are preserved, and the lowest point of the rest pose and of the clip
+keeps its height.
 """
 from __future__ import annotations
 
 import random
-import re
 
 import numpy as np
-
-from data_loaders.truebones.truebones_utils.joint_parts import cond_contact_joints
-from motion_edit.ik import build_limbs
 
 # Relative group-scale range when a caller does not choose one.
 DEFAULT_BONE_LENGTH_AUG = 0.1
@@ -55,7 +52,8 @@ def _scale_positions(source, parents, order, scales):
 
 
 def _topology_groups(cond, order, children, tri):
-    """Branch-free bone chains, with annotated mirror chains grouped together."""
+    """Branch-free bone chains, with annotated mirror chains grouped together.
+    Zero offsets and the translation carrier are never anatomy to stretch."""
     parents = np.asarray(cond['parents'])
     lengths = np.linalg.norm(np.asarray(cond['offsets']), axis=-1)
     threshold = max(1e-6, float(lengths[parents >= 0].max(initial=0.0)) * 1e-4)
@@ -102,45 +100,10 @@ def validate_bone_length_aug(probability, magnitude):
 
 
 def body_groups(cond):
-    """Anatomical groups, or topology chains when names/contacts are insufficient.
-
-    The limb attachment offset is left alone: changing shoulder/hip width is
-    not changing leg length. Canonical name tokens identify axial bones only.
-    """
+    """The topology groups of ``cond``'s skeleton (``_topology_groups``)."""
     parents = np.asarray(cond['parents'], dtype=np.int64)
     order, children = _parent_order(parents)
-    return _body_groups(cond, parents, order, children)
-
-
-def _body_groups(cond, parents, order, children):
-    names = list(cond.get('canonical_joint_names') or cond.get('joints_names') or [])
-    sides = list(cond.get('joint_side_labels') or ['center'] * len(parents))
-    contacts = cond_contact_joints(cond)
-    limbs, _ = build_limbs(parents, sides, contacts, int(cond.get('translation_root_index', 0)))
-    groups = {}
-    legs = sorted({j for limb in limbs for j in [*limb.chain[1:], limb.foot]})
-    partners = cond.get('symmetry_partner_indices', [])
-    if legs and len(partners) == len(parents):
-        legs = sorted(set(legs) | {int(partners[j]) for j in legs if int(partners[j]) >= 0})
-    if legs:
-        groups['legs'] = legs
-    for group, tokens in (
-        ('trunk', {'spine', 'chest', 'torso', 'stomach'}),
-        ('neck', {'neck'}), ('tail', {'tail'}),
-    ):
-        joints = [j for j, name in enumerate(names)
-                  if parents[j] >= 0 and sides[j] == 'center'
-                  and set(re.findall(r'[a-z]+', str(name).lower())) & tokens]
-        if joints:
-            groups[group] = joints
-    # Zero offsets and the translation carrier are never anatomy to stretch.
-    lengths = np.linalg.norm(np.asarray(cond['offsets']), axis=-1)
-    threshold = max(1e-6, float(lengths[parents >= 0].max(initial=0.0)) * 1e-4)
-    tri = int(cond.get('translation_root_index', 0))
-    groups = {group: [j for j in joints if j != tri and lengths[j] > threshold]
-            for group, joints in groups.items()
-            if any(j != tri and lengths[j] > threshold for j in joints)}
-    return groups or _topology_groups(cond, order, children, tri)
+    return _topology_groups(cond, order, children, int(cond.get('translation_root_index', 0)))
 
 
 def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_AUG, *, rng=random):
@@ -165,7 +128,7 @@ def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_A
     tri = int(metadata.get('translation_root_index', cond.get('translation_root_index', 0)))
     if not 0 <= tri < len(parents):
         raise ValueError('Invalid bone-length augmentation translation root index.')
-    groups = _body_groups(cond, parents, order, children)
+    groups = _topology_groups(cond, order, children, tri)
     if not groups:
         # There is no length to scale on a zero-offset/one-joint rig. Export it
         # too, but report that it is unchanged instead of inventing a bone.
@@ -184,10 +147,8 @@ def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_A
     offsets = old_offsets * scales[:, None]
     old_rest = np.asarray(cond['rest_pos_ric_hml'], dtype=np.float64)
     rest = _scale_positions(old_rest, parents, order, scales)
-    # Add rest bone-vector changes to preserve the rest's grounding convention.
-    contacts = cond_contact_joints(cond)
-    height_shift = float(np.mean(old_rest[contacts, 1] - rest[contacts, 1])) if contacts else 0.0
-    rest[:, 1] += height_shift
+    # The rest's lowest joint keeps its height (its grounding convention).
+    rest[:, 1] += float(old_rest[:, 1].min() - rest[:, 1].min())
     new_cond = dict(cond)
     new_cond['offsets'] = offsets.astype(np.float32)
     new_cond['rest_pos_ric_hml'] = rest.astype(np.float32)
@@ -202,7 +163,8 @@ def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_A
     # without world recovery, 6D->quaternion conversion, or a second FK pass.
     source = np.asarray(motion[..., :3], dtype=np.float64)
     target = _scale_positions(source, parents, order, scales)
-    target[..., 1] += height_shift
+    # So does the clip's lowest point: a foot that reached the floor still does.
+    target[..., 1] += float(source[..., 1].min() - target[..., 1].min())
     periodic = bool(metadata.get('is_loop', False))
 
     out = np.array(motion, dtype=np.float32, copy=True)

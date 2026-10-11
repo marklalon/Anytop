@@ -85,8 +85,14 @@ def remap_legacy_state_dict_keys(state_dict):
     return remapped
 
 
+# Prefixes of training-only modules a checkpoint may still carry and the model
+# no longer builds; their weights never reached the motion output.
+_DROPPED_STATE_DICT_PREFIXES = ('joint_part_head.',)
+
+
 def load_model(model, state_dict):
     state_dict = remap_legacy_state_dict_keys(state_dict)
+    state_dict = {k: v for k, v in state_dict.items() if not k.startswith(_DROPPED_STATE_DICT_PREFIXES)}
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert len(unexpected_keys) == 0, f"Unexpected keys in checkpoint: {unexpected_keys}"
     # QK-norm params (added to bound attention logits) are absent from older
@@ -205,15 +211,11 @@ def get_gmdm_args(args):
             'species_cfg_drop_prob': getattr(args, 'species_cfg_drop_prob', 0.15),
             'species_joint_cond': getattr(args, 'species_joint_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
-            'skeleton_name_drop_prob': getattr(args, 'skeleton_name_drop_prob', 0.0),
             'mirror_twin_drop_prob': getattr(args, 'mirror_twin_drop_prob', 0.2),
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
             'action_label_adaln': getattr(args, 'action_label_adaln', False),
             'topology_cond': getattr(args, 'topology_cond', False),
-            'part_head': (getattr(args, 'lambda_part', 0.0) > 0.0
-                          or getattr(args, 'lambda_contact', 0.0) > 0.0),
-            'part_head_layer': getattr(args, 'part_head_layer', 0),
             'direction_slot_drop_prob': getattr(args, 'direction_slot_drop_prob', 0.0),
             'modifier_slot_drop_prob': getattr(args, 'modifier_slot_drop_prob', 0.0),
             # The training entry point builds one bundle and hands the same
@@ -259,9 +261,6 @@ def create_gaussian_diffusion(args):
         lambda_loop_wrap=getattr(args, 'lambda_loop_wrap', 0.0),
         lambda_loop_root_closure=getattr(args, 'lambda_loop_root_closure', 0.0),
         lambda_bone=getattr(args, 'lambda_bone', 0.0),
-        lambda_part=getattr(args, 'lambda_part', 0.0),
-        lambda_contact=getattr(args, 'lambda_contact', 0.0),
-        part_class_weights=getattr(args, 'part_class_weights', None),
         temporal_span_seam_loss_weight=getattr(args, 'temporal_span_seam_loss_weight', 0.0),
         temporal_span_seam_width=getattr(args, 'temporal_span_seam_width', 2),
         renoise_same_level_prob=getattr(args, 'renoise_same_level_prob', 1.0),

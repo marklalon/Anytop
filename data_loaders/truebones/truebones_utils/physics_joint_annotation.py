@@ -20,7 +20,7 @@ from .joint_embedding_text import (
 # and the fore/hind/middle (or top/bottom) half kept, so LfLeg01 pairs only with
 # RfLeg01 and MouthTL only with MouthTR.
 _LIMB_CODE_SIGNATURE_TOKENS = {
-    'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b',
+    'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b', 'lr': 'b', 'rr': 'b',
     'fl': 'f', 'fr': 'f', 'bl': 'b', 'br': 'b',
     'lm': 'm', 'rm': 'm', 'ml': 'm', 'mr': 'm',
     'tl': 't', 'tr': 't',
@@ -177,12 +177,12 @@ def detect_joint_side(name):
         return 'left'
 
     # Quadruped limb codes. Both halves of the rig use them -- Lf/Rf for the fore
-    # limbs, Lb/Rb for the hind -- but only the fore pair was ever read, so every
+    # limbs, Lb/Rb or Lr/Rr for the hind -- but only the fore pair was ever read, so every
     # Lb*/Rb* joint in Bear, Dinosaur, Tiger, antilope and rhino (52 joints) came
     # back 'center' and lost its side, taking its symmetry pairing with it.
     # Fires only on an unambiguous single side, same as the explicit markers above.
-    right_codes = tokens & {'rf', 'rb'}
-    left_codes = tokens & {'lf', 'lb'}
+    right_codes = tokens & {'rf', 'rb', 'rr'}
+    left_codes = tokens & {'lf', 'lb', 'lr'}
     if right_codes and not left_codes:
         return 'right'
     if left_codes and not right_codes:

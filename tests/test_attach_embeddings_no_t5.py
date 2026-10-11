@@ -42,7 +42,7 @@ def test_blank_unseen_path_uses_cache_and_zero_blank(tmp_path, stub_text_builder
 
     jet.attach_t5_embeddings_to_cond(
         cond, str(tmp_path), embedding_cache_cond=reference,
-        blank_unseen_joint_names=True, write_collision_report=False,
+        blank_unseen_joint_names=True, report_collisions=False,
     )
 
     embs = cond["New"]["joints_names_embs"]

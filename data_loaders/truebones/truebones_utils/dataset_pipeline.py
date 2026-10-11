@@ -1144,13 +1144,6 @@ def _print_dataset_summary(max_joints, files_counter, frames_counter):
     print('max joints: %d' %(max_joints))
 
 
-def _write_positions_error_file(save_dir, squared_positions_error):
-    with open(pjoin(save_dir, 'positions_error_rate.txt'), 'w', encoding='utf-8') as error_file:
-        error_file.write('Position squared error per source clip:\n')
-        for source_clip, squared_error in squared_positions_error.items():
-            error_file.write('%s: %f\n' %(source_clip, squared_error))
-
-
 def _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs=None):
     """Persist cond.npy plus the ``TPOSE_REFERENCE_SIDECAR`` file
     (JSONL, one ``{"object_type": ..., "path": ...}`` per line).
@@ -1183,7 +1176,6 @@ def _write_preprocess_seed_artifacts(save_dir, cond, motion_metadata, max_joints
     # Seed artifacts are the minimum inputs regeneration needs to rebuild the
     # full side-artifact set after motion export completes.
     _print_dataset_summary(max_joints, files_counter, frames_counter)
-    _write_positions_error_file(save_dir, squared_positions_error)
     _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs)
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
@@ -1197,8 +1189,6 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
         text_file.write('~~~~ objects_counts - Total: %d ~~~~\n' %(files_counter) )
         for obj in objects_counter:
             text_file.write('%s: %d\n' %(obj, objects_counter[obj]))
-
-    _write_positions_error_file(save_dir, squared_positions_error)
 
     attach_t5_embeddings_to_cond(cond, save_dir, embedding_cache_cond=embedding_cache_cond,
                                  blank_unseen_joint_names=True)

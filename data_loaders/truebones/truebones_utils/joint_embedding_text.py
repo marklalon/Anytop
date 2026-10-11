@@ -24,18 +24,21 @@ from .joint_name_canonical import (
     infer_species_joint_name_prefixes,
     normalize_joint_name,
     refresh_joint_metadata_in_object_cond,
-    write_joint_name_collision_report,
+    strip_joint_name_prefix,
+    report_joint_name_collisions,
 )
 from .joint_struct_features import child_lists
 
 
-# Quadruped limb codes (Lf/Rf/Lb/Rb = left/right fore/hind), decoded to their
-# fore/hind half; the side comes from the geometry label.
+# Quadruped limb codes (Lf/Rf = left/right fore, Lb/Rb or Lr/Rr = hind),
+# decoded to their fore/hind half; the side comes from the geometry label.
 EMBED_TEXT_LIMB_CODE_TOKENS = {
     'lf': 'Front',
     'rf': 'Front',
     'lb': 'Back',
     'rb': 'Back',
+    'lr': 'Back',
+    'rr': 'Back',
 }
 # The same codes spelled fore/hind first (Fl/Br) plus a hexapod's middle pair
 # (Lm/Rm, Ml/Mr). Ambiguous alone ("MouthBL" is bottom-left), so read only when
@@ -305,7 +308,7 @@ _EMBED_TEXT_HEAD_PART_TOKENS = frozenset({
 # or refinement, or what goes into the sentence. Stored name embeddings are keyed
 # by this version, so a bump makes the loader reject stale cond files until
 # preprocessing re-runs.
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 21
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 22
 
 
 # Adjacent tokens that name one part together ("upper leg" -> Thigh). Applied
@@ -794,6 +797,14 @@ def build_joint_embedding_texts(object_cond):
         if lowered_tokens & _EMBED_TEXT_NON_ANATOMICAL_TOKENS:
             texts.append('')
             continue
+        # Named by its rig stamp alone ("SPARROW__02", "LION_"): nothing but an
+        # index is left once the stamp is stripped.
+        raw_name = raw_joint_names[joint_index] if joint_index < len(raw_joint_names) else joint_name
+        if species_prefixes and not re.search(
+            r'[a-z]', normalize_joint_name(strip_joint_name_prefix(raw_name, species_prefixes)),
+        ) and re.search(r'[a-z]', normalize_joint_name(strip_joint_name_prefix(raw_name))):
+            texts.append('')
+            continue
 
         # Side leads, so the text opens as a plain English noun phrase
         # ("Right Finger") -- a construction T5 saw in pretraining.
@@ -887,7 +898,7 @@ def _blank_unseen_joint_texts(embedding_texts_by_object, known_texts):
     return blanked_by_object
 
 
-def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True,
+def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', report_collisions=True,
                                   t5_conditioner=None, embedding_cache_cond=None,
                                   blank_unseen_joint_names=False):
     """Bake joint-name T5 embeddings into every entry of *cond*.
@@ -1000,19 +1011,14 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
     # cond keys are '<namespace>/<species>', which cannot go into a filename;
     # the file token degrades to the plain species name whenever it is unique.
     from .dataset_sources import build_species_file_tokens
-    # Imported here: joint_parts builds on this module's texts.
-    from .joint_parts import JOINT_PARTS_FILE, read_joint_parts_sidecar, species_of
     file_tokens = build_species_file_tokens(cond)
-    part_rows = read_joint_parts_sidecar(pjoin(save_dir, JOINT_PARTS_FILE))
     for object_type in sorted(cond):
         object_cond = cond[object_type]
         embedding_texts = embedding_texts_by_object[object_type]
         inspection_path = pjoin(inspection_dir, f'{file_tokens[object_type]}.json')
-        rows = build_joint_name_inspection_rows(
-            object_cond, embedding_texts, part_rows.get(species_of(object_cond)),
-        )
+        rows = build_joint_name_inspection_rows(object_cond, embedding_texts)
         with open(inspection_path, 'w', encoding='utf-8') as inspection_file:
             json.dump(rows, inspection_file, indent=2)
 
-    if write_collision_report:
-        write_joint_name_collision_report(cond, save_dir)
+    if report_collisions:
+        report_joint_name_collisions(cond)

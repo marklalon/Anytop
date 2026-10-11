@@ -3,8 +3,7 @@
 Two contracts run through this module:
 
 * **Training contract** -- a ``cond.npy`` plus the dataset directories its
-  entries point at (``motions/``, ``motion_metadata.json``, the tag sidecars,
-  the split manifests).
+  entries point at (``motions/``, ``motion_metadata.json``, the tag sidecars).
 * **Inference contract** -- the ``cond.npy`` alone, self-sufficient because
   every entry carries its own baked ``species_tags``.
 
@@ -36,6 +35,13 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 COND_SCHEMA_VERSION = 4
 
 COND_FILE = "cond.npy"
+DATASET_SPLITS = ("train", "val")
+
+
+def normalize_dataset_split(split) -> str:
+    if split not in DATASET_SPLITS:
+        raise ValueError(f"Invalid dataset split {split!r}; expected 'train' or 'val'.")
+    return split
 
 # A namespace is one or more ``[A-Za-z0-9_-]`` segments joined by ``/``.
 _NAMESPACE_RE = re.compile(r"^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$")
@@ -182,6 +188,7 @@ class DatasetSource:
 
     namespace: str
     root: str
+    split: str = "train"
     species_include: tuple[str, ...] = field(default=())
     species_exclude: tuple[str, ...] = field(default=())
 
@@ -213,10 +220,11 @@ class DatasetSource:
         return canonical_key(self.namespace, species_name)
 
 
-def make_source(namespace, root, species_include=(), species_exclude=()) -> DatasetSource:
+def make_source(namespace, root, species_include=(), species_exclude=(), split="train") -> DatasetSource:
     return DatasetSource(
         namespace=normalize_namespace(namespace),
         root=str(resolve_anytop_path(root)),
+        split=normalize_dataset_split(split),
         species_include=tuple(str(name).strip() for name in species_include or ()),
         species_exclude=tuple(str(name).strip() for name in species_exclude or ()),
     )
@@ -245,12 +253,15 @@ def load_datasets_manifest(manifest_path) -> list[DatasetSource]:
             raise ValueError(f"{path.name}:{line_no} is not valid JSON: {exc}") from exc
         if "namespace" not in record or "path" not in record:
             raise ValueError(f"{path.name}:{line_no} must define both 'namespace' and 'path'.")
+        if "split" not in record:
+            raise ValueError(f"{path.name}:{line_no} must define 'split' as 'train' or 'val'.")
         try:
             source = make_source(
                 record["namespace"],
                 record["path"],
                 species_include=record.get("species_include") or (),
                 species_exclude=record.get("species_exclude") or (),
+                split=record["split"],
             )
         except ValueError as exc:
             raise ValueError(f"{path.name}:{line_no}: {exc}") from exc
@@ -296,6 +307,7 @@ def sources_from_cond(
     ordered: dict[str, DatasetSource] = {}
     for entry in cond_dict.values():
         namespace = normalize_namespace(entry["dataset_namespace"])
+        split = normalize_dataset_split(entry.get("dataset_split", "train"))
         stored_root = entry.get("dataset_root")
         root = str(resolve(stored_root)) if stored_root else fallback_root
         if root is None:
@@ -305,11 +317,11 @@ def sources_from_cond(
             )
         existing = ordered.get(namespace)
         if existing is None:
-            ordered[namespace] = DatasetSource(namespace=namespace, root=root)
-        elif existing.root != root:
+            ordered[namespace] = DatasetSource(namespace=namespace, root=root, split=split)
+        elif existing.root != root or existing.split != split:
             raise ValueError(
-                f"cond namespace {namespace!r} maps to two dataset roots: "
-                f"{existing.root!r} and {root!r}."
+                f"cond namespace {namespace!r} has conflicting roots or splits: "
+                f"{(existing.root, existing.split)!r} and {(root, split)!r}."
             )
     if not ordered:
         raise ValueError("cond dict is empty; cannot derive dataset sources.")

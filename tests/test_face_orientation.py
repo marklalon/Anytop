@@ -19,6 +19,8 @@ from data_loaders.truebones.truebones_utils import face_orientation
 from data_loaders.truebones.truebones_utils.face_orientation import (
     _choose_facing_forward,
     _get_facing_candidates,
+    _get_facing_candidates_with_diagnostics,
+    calculate_root_quat,
     resolve_face_joints,
     resolve_forward_reference_joints,
 )
@@ -421,6 +423,83 @@ class FaceOrientationChainForwardTest(unittest.TestCase):
             'else stays +Z. Provide --face-joints-names explicitly if a different '
             'orientation is needed.'
         )
+
+    def test_crossed_clavicles_do_not_reverse_the_rest_of_a_lion(self):
+        names = ['Hips', 'Spine', 'Head',
+                 'R_Thigh_08', 'L_Thigh_013', 'R_Calf_09', 'L_Calf_00',
+                 'R_Clavicle_019', 'L_Clavicle_024',
+                 'R_UpperArm_020', 'L_UpperArm_025']
+        parents = np.array([-1, 0, 1, 0, 0, 3, 4, 1, 1, 7, 8])
+        joints = np.array([[[0, 0, 0], [0, 0, .3], [0, 0, 1],
+                            [-.2, 0, 0], [.2, 0, 0],
+                            [-.2, 0, 0], [.2, 0, 0],
+                            [.2, 0, .5], [-.2, 0, .5],
+                            [-.2, 0, .5], [.2, 0, .5]]], dtype=float)
+        face = resolve_face_joints('LionLike', names, parents, rest_positions=joints)
+        forward, base = resolve_forward_reference_joints(names, parents, rest_positions=joints)
+        candidates, _ = _get_facing_candidates_with_diagnostics(
+            joints, 'LionLike', face, forward, base, parents=parents, joint_names=names)
+        np.testing.assert_allclose(candidates['across'][0], [0, 0, 1])
+
+    def test_numbered_limb_codes_and_mouth_find_beetle_front(self):
+        names = ['Root', 'Spine', 'LF_Calf_013', 'RF_Calf_06',
+                 'LR_Calf_015', 'RR_Calf_04', 'Mouth_02']
+        parents = np.array([-1, 0, 1, 1, 1, 1, 1])
+        joints = np.array([[[0, 0, -.6], [0, 1, -.3],
+                            [.3, .3, -.2], [-.3, .3, -.2],
+                            [.3, .3, -1], [-.3, .3, -1],
+                            [0, .4, .1]]], dtype=float)
+        face = resolve_face_joints('BeetleLike', names, parents, rest_positions=joints)
+        self.assertIn({face[0], face[1]}, ({2, 3}, {4, 5}))
+        forward, base = resolve_forward_reference_joints(names, parents, rest_positions=joints)
+        self.assertEqual(forward, 6)
+        self.assertIsNone(base)
+        candidates, _ = _get_facing_candidates_with_diagnostics(
+            joints, 'BeetleLike', face, forward, base, parents=parents, joint_names=names)
+        np.testing.assert_allclose(candidates['across'][0], [0, 0, 1])
+        np.testing.assert_allclose(candidates['torso_head'][0], [0, 0, 1])
+
+    def test_ears_and_vertical_head_leave_ambiguous_rig_at_plus_z(self):
+        names = ['Hip', 'Neck', 'Head', 'Ear_R', 'Ear_L']
+        parents = np.array([-1, 0, 1, 2, 2])
+        joints = np.array([[[0, 0, 0], [0, .2, .02], [0, .4, .02],
+                            [.1, .5, .02], [-.1, .5, .02]]], dtype=float)
+        face = resolve_face_joints('GhostLike', names, parents, rest_positions=joints)
+        forward, base = resolve_forward_reference_joints(names, parents, rest_positions=joints)
+        quat = calculate_root_quat(joints, 'GhostLike', face, forward, base,
+                                   joint_names=names, parents=parents)
+        np.testing.assert_allclose(quat.qs[0], [1, 0, 0, 0], atol=1e-8)
+
+    def test_opposing_named_pairs_without_head_keep_plus_z(self):
+        names = ['Root', 'R_Thigh_01', 'L_Thigh_02',
+                 'R_Arm_03', 'L_Arm_04']
+        parents = np.array([-1, 0, 0, 0, 0])
+        joints = np.array([[[0, 0, 0], [-1, 0, 0], [1, 0, 0],
+                            [1, 1, 0], [-1, 1, 0]]], dtype=float)
+        face = resolve_face_joints('Ambiguous', names, parents, rest_positions=joints)
+        candidates, _ = _get_facing_candidates_with_diagnostics(
+            joints, 'Ambiguous', face, parents=parents, joint_names=names)
+        self.assertNotIn('across', candidates)
+        quat = calculate_root_quat(joints, 'Ambiguous', face,
+                                   joint_names=names, parents=parents)
+        np.testing.assert_allclose(quat.qs[0], [1, 0, 0, 0], atol=1e-8)
+
+    def test_explicit_face_joint_names_report_all_missing_names(self):
+        with self.assertRaisesRegex(ValueError, "LionLike: face_joints names not found in joint_names: \\['MissingR', 'MissingL'\\]"):
+            resolve_face_joints(
+                'LionLike', ['HipR', 'HipL'],
+                face_joints=['HipR', 'MissingR', 'MissingL', 'MissingR'],
+            )
+
+    def test_explicit_face_joints_reject_mixed_names_and_indices(self):
+        for face_joints in ([0, 'HipL'], ['HipR', 1]):
+            with self.subTest(face_joints=face_joints):
+                with self.assertRaisesRegex(ValueError, 'face_joints must contain either names or indices'):
+                    resolve_face_joints('LionLike', ['HipR', 'HipL'], face_joints=face_joints)
+
+    def test_explicit_face_joint_names_require_joint_names(self):
+        with self.assertRaisesRegex(ValueError, 'joint_names is required'):
+            resolve_face_joints('LionLike', face_joints=['HipR', 'HipL'])
 
 
 if __name__ == '__main__':

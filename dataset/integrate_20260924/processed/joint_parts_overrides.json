@@ -1,0 +1,883 @@
+{
+ "integrate_20260924/Aquatic_Bannerfish": {
+  "joints": {
+   "Bone002": {
+    "part": "tail"
+   },
+   "Bone003": {
+    "part": "tail"
+   },
+   "Bone004": {
+    "part": "tail"
+   }
+  },
+  "skeleton_hash": "4253433d6ca75cbf8187696adecdc748e1f2bbe0"
+ },
+ "integrate_20260924/Aquatic_Lanternfish": {
+  "joints": {
+   "Lure1": {
+    "part": "soft"
+   },
+   "Lure2": {
+    "part": "soft"
+   },
+   "Lure3": {
+    "part": "soft"
+   },
+   "Lure4": {
+    "part": "soft"
+   },
+   "Lure5": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "f4ef6580c7f8a01b708153e8c6180a220840b1c7"
+ },
+ "integrate_20260924/Aquatic_SeaTurtle": {
+  "joints": {
+   "L_Foot": {
+    "contact": 1
+   },
+   "R_Foot": {
+    "contact": 1
+   }
+  },
+  "skeleton_hash": "4dccb5b8b1a20bd095fd3f6e8158e7da5fed5c21"
+ },
+ "integrate_20260924/DMM_Boss01": {
+  "joints": {
+   "Cannon1_L": {
+    "part": "helper"
+   },
+   "Cannon1_R": {
+    "part": "helper"
+   },
+   "Cannon2_L": {
+    "part": "helper"
+   },
+   "Cannon2_R": {
+    "part": "helper"
+   },
+   "Cannon3_L": {
+    "part": "helper"
+   },
+   "Cannon3_R": {
+    "part": "helper"
+   },
+   "Cannon4_L": {
+    "part": "helper"
+   },
+   "Cannon4_R": {
+    "part": "helper"
+   }
+  },
+  "skeleton_hash": "8ebdda6dd8f1b99c750793d2333d406d423cde0b"
+ },
+ "integrate_20260924/DMM_Boss02": {
+  "joints": {
+   "TailPlate_R": {
+    "part": "helper"
+   }
+  },
+  "skeleton_hash": "6809f57d3200e0153306d4fdf4ecbe8c6e1b4dfc"
+ },
+ "integrate_20260924/DMM_Dog02": {
+  "joints": {
+   "Bip001 L Finger0": {
+    "contact": 0
+   },
+   "Bip001 R Finger0": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "053da9e736dc0a4744b6ed4013cc263fb5f17051"
+ },
+ "integrate_20260924/DMM_Dog06": {
+  "joints": {
+   "L_Ear1": {
+    "part": "soft"
+   },
+   "L_Ear2": {
+    "part": "soft"
+   },
+   "L_Ear3": {
+    "part": "soft"
+   },
+   "L_Ear4": {
+    "part": "soft"
+   },
+   "L_Ear5": {
+    "part": "soft"
+   },
+   "R_Ear1": {
+    "part": "soft"
+   },
+   "R_Ear2": {
+    "part": "soft"
+   },
+   "R_Ear3": {
+    "part": "soft"
+   },
+   "R_Ear4": {
+    "part": "soft"
+   },
+   "R_Ear5": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "f1578886c8325cdb6ad0dd669c3203452bf31690"
+ },
+ "integrate_20260924/DMM_Dog07": {
+  "joints": {
+   "Tongue1": {
+    "part": "soft"
+   },
+   "Tongue2": {
+    "part": "soft"
+   },
+   "Tongue3": {
+    "part": "soft"
+   },
+   "Tongue4": {
+    "part": "soft"
+   },
+   "Tongue5": {
+    "part": "soft"
+   },
+   "Tongue6": {
+    "part": "soft"
+   },
+   "Tongue7": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "f81f8cf3ca4d0e2a3d96a8942e8af25a76d9bdaf"
+ },
+ "integrate_20260924/DMM_Police01": {
+  "joints": {
+   "Bone002": {
+    "part": "soft"
+   },
+   "Bone003": {
+    "part": "soft"
+   },
+   "Bone004": {
+    "part": "soft"
+   },
+   "Bone005": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "f93897cf0223aaac229e4b460cb7644c6be8c6df"
+ },
+ "integrate_20260924/DMM_Police04": {
+  "joints": {
+   "L_Chest_1": {
+    "part": "soft"
+   },
+   "L_Chest_2": {
+    "part": "soft"
+   },
+   "R_Chest_1": {
+    "part": "soft"
+   },
+   "R_Chest_2": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "0ccd419939c7c247e6800c0459972a5f15eaa9aa"
+ },
+ "integrate_20260924/Insect_Butterfly": {
+  "joints": {
+   "trap_Bone01": {
+    "part": "soft"
+   },
+   "trap_Bone02": {
+    "part": "soft"
+   },
+   "trap_Bone03": {
+    "part": "soft"
+   },
+   "trap_Bone04": {
+    "part": "soft"
+   },
+   "trap_Bone05": {
+    "part": "soft"
+   },
+   "trap_Bone06": {
+    "part": "soft"
+   },
+   "trap_Bone07": {
+    "part": "soft"
+   },
+   "trap_Bone08": {
+    "part": "soft"
+   },
+   "trap_Bone09": {
+    "part": "soft"
+   },
+   "trap_Bone10": {
+    "part": "soft"
+   },
+   "trap_Bone11": {
+    "part": "soft"
+   },
+   "trap_Bone12": {
+    "part": "soft"
+   },
+   "trap_Bone13": {
+    "part": "soft"
+   },
+   "trap_Bone14": {
+    "part": "soft"
+   },
+   "trap_Bone15": {
+    "part": "soft"
+   },
+   "trap_Bone16": {
+    "part": "soft"
+   },
+   "trap_Bone17": {
+    "part": "soft"
+   },
+   "trap_Bone18": {
+    "part": "soft"
+   },
+   "trap_Bone19": {
+    "part": "soft"
+   },
+   "trap_Bone20": {
+    "part": "soft"
+   },
+   "trap_Bone21": {
+    "part": "soft"
+   },
+   "trap_Bone22": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "90c44e1c54e43203e770c282a3489f0360f87879"
+ },
+ "integrate_20260924/Insect_Cicada": {
+  "joints": {
+   "Bone_-needle00": {
+    "part": "soft"
+   },
+   "Bone_-needle01": {
+    "part": "soft"
+   },
+   "Bone_-needle02": {
+    "part": "soft"
+   },
+   "Bone_-needle03": {
+    "part": "soft"
+   },
+   "Bone_-needle04": {
+    "part": "soft"
+   },
+   "Bone_-needle05": {
+    "part": "soft"
+   },
+   "Bone_sound_L": {
+    "part": "wing"
+   },
+   "Bone_sound_R": {
+    "part": "wing"
+   }
+  },
+  "skeleton_hash": "e52becca50c8eefc9f98cc35503d3a66e1116623"
+ },
+ "integrate_20260924/Insect_Dragonfly": {
+  "joints": {
+   "Bone_Leg_LF04": {
+    "contact": 0
+   },
+   "Bone_Leg_RF04": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "47b1b804f605d97063d5c0dede2647101584b986"
+ },
+ "integrate_20260924/Insect_KingStagBeetle": {
+  "joints": {
+   "Bone_KSB_L_Leg04": {
+    "part": "leg"
+   },
+   "Bone_KSB_L_Leg05": {
+    "part": "leg"
+   },
+   "Bone_KSB_L_Leg06": {
+    "part": "foot"
+   },
+   "Bone_KSB_R_Leg04": {
+    "part": "leg"
+   },
+   "Bone_KSB_R_Leg05": {
+    "part": "leg"
+   },
+   "Bone_KSB_R_Leg06": {
+    "part": "foot"
+   }
+  },
+  "skeleton_hash": "30520adacfdb4a727ae2c5b17c0cd90552edb700"
+ },
+ "integrate_20260924/Insect_Sawyer": {
+  "joints": {
+   "Bone_Sawyer_L_Horn01": {
+    "part": "soft"
+   },
+   "Bone_Sawyer_L_Horn02": {
+    "part": "soft"
+   },
+   "Bone_Sawyer_L_Horn03": {
+    "part": "soft"
+   },
+   "Bone_Sawyer_L_Horn04": {
+    "part": "soft"
+   },
+   "Bone_Sawyer_L_Horn05": {
+    "part": "soft"
+   },
+   "Bone_Sawyer_L_Leg04": {
+    "part": "leg"
+   },
+   "Bone_Sawyer_L_Leg05": {
+    "part": "leg"
+   },
+   "Bone_Sawyer_L_Leg06": {
+    "part": "foot"
+   },
+   "Bone_Sawyer_R_Horn01": {
+    "part": "soft"
+   },
+   "Bone_Sawyer_R_Horn02": {
+    "part": "soft"
+   },
+   "Bone_Sawyer_R_Horn03": {
+    "part": "soft"
+   },
+   "Bone_Sawyer_R_Horn04": {
+    "part": "soft"
+   },
+   "Bone_Sawyer_R_Horn05": {
+    "part": "soft"
+   },
+   "Bone_Sawyer_R_Leg04": {
+    "part": "leg"
+   },
+   "Bone_Sawyer_R_Leg05": {
+    "part": "leg"
+   },
+   "Bone_Sawyer_R_Leg06": {
+    "part": "foot"
+   }
+  },
+  "skeleton_hash": "8fb4ea0849a82bf0e59a2a546c302831d83e842b"
+ },
+ "integrate_20260924/Knight_Barbarianwarrior": {
+  "joints": {
+   "Bip001 L Toe0": {
+    "contact": 0
+   },
+   "Bip001 R Toe0": {
+    "contact": 0
+   },
+   "Horn1_L": {
+    "part": "soft"
+   },
+   "Horn1_R": {
+    "part": "soft"
+   },
+   "Horn2_L": {
+    "part": "soft"
+   },
+   "Horn2_R": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "480a6b431a8ea70b3b5d4315e57371f00ca1b5a8"
+ },
+ "integrate_20260924/PP_Anteater": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   },
+   "Tounge1_M": {
+    "part": "soft"
+   },
+   "Tounge2_M": {
+    "part": "soft"
+   },
+   "Tounge3_M": {
+    "part": "soft"
+   },
+   "Tounge4_M": {
+    "part": "soft"
+   },
+   "Tounge5_M": {
+    "part": "soft"
+   },
+   "Tounge6_M": {
+    "part": "soft"
+   },
+   "Wrist_L": {
+    "contact": 0
+   },
+   "Wrist_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "b28ab4b13036c18573393e7699efd3d951c0df95"
+ },
+ "integrate_20260924/PP_Beaver": {
+  "joints": {
+   "Fingers1_L": {
+    "contact": 0
+   },
+   "Fingers1_R": {
+    "contact": 0
+   },
+   "Wrist_L": {
+    "contact": 0
+   },
+   "Wrist_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "14b447779414eed6558d7db6bc6485e4852beb11"
+ },
+ "integrate_20260924/PP_Chimpanzee": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   },
+   "Wrist_L": {
+    "contact": 0
+   },
+   "Wrist_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "3e9eeba615402a31f2d77c0d4a1f46f8087c7fcc"
+ },
+ "integrate_20260924/PP_Dolphin": {
+  "joints": {
+   "BackB_M": {
+    "part": "tail"
+   },
+   "BackC_M": {
+    "part": "tail"
+   },
+   "BackD_M": {
+    "part": "tail"
+   },
+   "BackE_M": {
+    "part": "tail"
+   },
+   "BackF_M": {
+    "part": "tail"
+   },
+   "TailFinUpper_1_M": {
+    "part": "tail"
+   },
+   "TailFinUpper_2_M": {
+    "part": "tail"
+   },
+   "TailFinUpper_M": {
+    "part": "tail"
+   }
+  },
+  "skeleton_hash": "8333d9395e303c7c67927304df4a8279e1040ff0"
+ },
+ "integrate_20260924/PP_Eagle": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "2741aa571ed205bcb8286d9f6a534ee8addb6cde"
+ },
+ "integrate_20260924/PP_Giraffe": {
+  "joints": {
+   "Toes1_L": {
+    "contact": 0
+   },
+   "Toes1_R": {
+    "contact": 0
+   },
+   "Wrist_L": {
+    "contact": 0
+   },
+   "Wrist_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "b9be71d4cc800eaf1ee9035efd4941ccbcacc8e9"
+ },
+ "integrate_20260924/PP_Goose": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "9f49b0588206fd5e81a5013b01923a3f61d50a3d"
+ },
+ "integrate_20260924/PP_Gorilla": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   },
+   "Wrist_L": {
+    "contact": 0
+   },
+   "Wrist_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "54da7ae42cca459e53e66a0b6de1a6a4929aa41d"
+ },
+ "integrate_20260924/PP_Hen": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "5442659f45bdc8fddad255e16027c3723c29706d"
+ },
+ "integrate_20260924/PP_Orca": {
+  "joints": {
+   "BackB_M": {
+    "part": "tail"
+   },
+   "BackC_M": {
+    "part": "tail"
+   },
+   "BackD_M": {
+    "part": "tail"
+   },
+   "BackE_M": {
+    "part": "tail"
+   },
+   "BackF_M": {
+    "part": "tail"
+   },
+   "TailFin1_L": {
+    "part": "tail"
+   },
+   "TailFin1_R": {
+    "part": "tail"
+   },
+   "TailFin2_L": {
+    "part": "tail"
+   },
+   "TailFin2_R": {
+    "part": "tail"
+   },
+   "TailFin3_L": {
+    "part": "tail"
+   },
+   "TailFin3_R": {
+    "part": "tail"
+   }
+  },
+  "skeleton_hash": "08cd6886fe91f788f78091696dae3fa65cc7e9c5"
+ },
+ "integrate_20260924/PP_Parrot": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "8e98f757db0ec0b61d275860f854dcf9c6a06d70"
+ },
+ "integrate_20260924/PP_Penguin": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "4d27825c004b27c598a8aa7caee00dbb4112d201"
+ },
+ "integrate_20260924/PP_Rooster": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "14611e2de1673d45f5e4e157b75a207b2208998c"
+ },
+ "integrate_20260924/PP_Squid": {
+  "joints": {
+   "Leg_6_L": {
+    "contact": 0
+   },
+   "Leg_6_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "22dec0028c4c4238815cc611e6cc7845f8b2e159"
+ },
+ "integrate_20260924/PP_Squirrel": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   },
+   "Toes1_L": {
+    "contact": 0
+   },
+   "Toes1_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "b541dcb909311f9245110e96274ace4211ef233c"
+ },
+ "integrate_20260924/PP_StarFish": {
+  "joints": {
+   "joint21_R": {
+    "part": "arm"
+   },
+   "joint22_R": {
+    "part": "arm"
+   },
+   "joint23_R": {
+    "part": "arm"
+   },
+   "joint24_R": {
+    "part": "arm"
+   },
+   "joint2_R": {
+    "part": "arm"
+   },
+   "joint351_R": {
+    "part": "arm"
+   },
+   "joint352_R": {
+    "part": "arm"
+   },
+   "joint353_R": {
+    "part": "arm"
+   },
+   "joint354_R": {
+    "part": "arm"
+   },
+   "joint35_R": {
+    "part": "arm"
+   }
+  },
+  "skeleton_hash": "ba2a9934eaac4d1e7a9bc730c032632cec85f1e0"
+ },
+ "integrate_20260924/PP_Tapir": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   },
+   "Trunk_1_M": {
+    "part": "soft"
+   },
+   "Trunk_2_M": {
+    "part": "soft"
+   },
+   "Trunk_3_M": {
+    "part": "soft"
+   },
+   "Trunk_M": {
+    "part": "soft"
+   },
+   "Wrist_L": {
+    "contact": 0
+   },
+   "Wrist_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "14a2cd35274502a62af83a26d5593f75d1542df0"
+ },
+ "integrate_20260924/PP_Tucan": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "b4a259982af434e1c34a97c41d2cb2ae4f035898"
+ },
+ "integrate_20260924/PP_Vulture": {
+  "joints": {
+   "Ankle_L": {
+    "contact": 0
+   },
+   "Ankle_R": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "4b4a31e9a9574b806b3bda7df3d1e2b3df8f2327"
+ },
+ "integrate_20260924/Pet_Goldfish": {
+  "joints": {
+   "Bone_body_C_01": {
+    "part": "head"
+   },
+   "Bone_body_C_03": {
+    "part": "tail"
+   },
+   "Bone_body_C_04": {
+    "part": "tail"
+   },
+   "Bone_body_C_05": {
+    "part": "tail"
+   }
+  },
+  "skeleton_hash": "1d438b6cab2d1abc5d5b65e8917ea85da77d09e3"
+ },
+ "integrate_20260924/Pet_Ignas": {
+  "joints": {
+   "Bip001-L-Finger0": {
+    "contact": 0
+   },
+   "Bip001-L-Finger1": {
+    "contact": 0
+   },
+   "Bip001-R-Finger0": {
+    "contact": 0
+   },
+   "Bip001-R-Finger1": {
+    "contact": 0
+   }
+  },
+  "skeleton_hash": "53d517e29575b5d15708ba4037547d92f6f4b124"
+ },
+ "integrate_20260924/Pet_Miho": {
+  "joints": {
+   "B_Ear_L01": {
+    "part": "soft"
+   },
+   "B_Ear_L02": {
+    "part": "soft"
+   },
+   "B_Ear_R01": {
+    "part": "soft"
+   },
+   "B_Ear_R02": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "43aa989049fdab2fa9ad9792e2043a75c6535399"
+ },
+ "integrate_20260924/Pet_Penny": {
+  "joints": {
+   "Bip001-L-Hand": {
+    "contact": 0
+   },
+   "Bip001-R-Hand": {
+    "contact": 0
+   },
+   "L_Ear": {
+    "part": "soft"
+   },
+   "R_Ear": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "4e191bed36a809c1ebed599cadfa77b5051aea01"
+ },
+ "integrate_20260924/Pet_Proce": {
+  "joints": {
+   "Bone_ear_L_01": {
+    "part": "soft"
+   },
+   "Bone_ear_L_02": {
+    "part": "soft"
+   },
+   "Bone_ear_R_01": {
+    "part": "soft"
+   },
+   "Bone_ear_R_02": {
+    "part": "soft"
+   }
+  },
+  "skeleton_hash": "e627bd025e4e4093acbc20b12afc5fff7cd108b3"
+ },
+ "integrate_20260924/Pet_Will": {
+  "joints": {
+   "Bone_leaf_01": {
+    "part": "helper"
+   },
+   "Bone_leaf_02": {
+    "part": "helper"
+   },
+   "Bone_leaf_03": {
+    "part": "helper"
+   },
+   "Point_apple_01": {
+    "part": "helper"
+   },
+   "Point_apple_02": {
+    "part": "helper"
+   },
+   "Point_apple_03": {
+    "part": "helper"
+   },
+   "Ring": {
+    "part": "helper"
+   }
+  },
+  "skeleton_hash": "2208d57a83ecf86351b85d186f3a6220992e8701"
+ },
+ "integrate_20260924/Pet_Yulia": {
+  "joints": {
+   "Bone_body_C_01": {
+    "part": "tail"
+   },
+   "Bone_body_C_02": {
+    "part": "tail"
+   }
+  },
+  "skeleton_hash": "0958e20866d928b614043b61c2864ba97db5d49b"
+ },
+ "integrate_20260924/Voxel_Chicken": {
+  "joints": {
+   "Bone001": {
+    "part": "tail"
+   },
+   "Bone002": {
+    "part": "tail"
+   }
+  },
+  "skeleton_hash": "505b6a64e1369adf60a4c0f91f221b306cef82c4"
+ }
+}

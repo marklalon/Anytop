@@ -1,33 +1,18 @@
-"""Per-joint body-part annotation: what each joint is, and whether it stands on the ground.
+"""Per-joint body parts: what each joint is, and whether it stands on the ground.
 
-The annotation is a training *target*, never a condition: the model is asked to
-predict it from the names, geometry and motion it is already given. It lives in
-one sidecar per dataset, ``<processed>/joint_parts.jsonl``, which is what people
-edit; the dataset's ``cond.npy`` carries a baked copy (:func:`bake_joint_parts`)
-that the loader, the checkpoint and the readers of dataset clips use. A
-generation run writes the same sidecar format next to its ``.npy`` output for
-the skeletons whose cond has no baked annotation.
+:func:`prefill_joint_parts` proposes ``{part, contact, src, why}`` for every
+joint of a skeleton from names first, then inheritance down the tree, then
+geometry, and takes the contact flags from :func:`prefill_contacts`. Limbs are
+labelled by fore/hind position, not by use: a quadruped's foreleg is
+``arm``/``hand``, a multiped's walking legs are all ``leg``/``foot``; standing on
+a limb is what the separate ``contact`` bit says.
 
-Rows are keyed by species and their joints by **name**, not index: a joint set
-that changes (cropping, prop-socket removal, leaf cleanup) would silently shift
-every index after the edit. ``skeleton_sig`` pins the skeleton a row was written
-for; a row whose signature no longer matches the cond skeleton is stale and is
-refused until it is reviewed again.
-
-:func:`prefill_joint_parts` proposes a row from names first, then inheritance
-down the tree, then geometry, and takes the contact flags from
-:func:`prefill_contacts`. Limbs are labelled by fore/hind position, not by
-use: a quadruped's foreleg is ``arm``/``hand``, a multiped's walking legs are all
-``leg``/``foot``; standing on a limb is what the separate ``contact`` bit says.
+Nothing here is stored with a dataset. motion_edit runs the prefill as the
+default of its per-species part overrides; grounding steps (retarget, native
+GLB export) read the ``foot`` chains and the contact ``hand`` chains off it.
 """
 
 from __future__ import annotations
-
-import hashlib
-import json
-import os
-from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
@@ -41,16 +26,12 @@ from .joint_name_canonical import infer_species_joint_name_prefixes, normalize_j
 from .physics_joint_annotation import (
     _joint_semantic_text,
     _text_matches_keywords,
+    build_semantic_metadata,
     infer_symmetry_metadata,
     rest_positions_from_offsets,
 )
 from .joint_struct_features import child_lists
 
-# Bumped whenever a part is added, removed, renamed or reordered: part ids are
-# the classifier's output channels.
-JOINT_PART_SCHEMA_VERSION = 1
-
-# Order is the class-id order of the auxiliary head.
 JOINT_PARTS = (
     'trunk',
     'neck',
@@ -64,312 +45,68 @@ JOINT_PARTS = (
     'fin',
     'soft',
 )
-# A definite "not a body part" verdict (IK targets, props). Kept
-# out of the class ids: it is shown and reviewed, never trained on.
+# A definite "not a body part" verdict (IK targets, props).
 HELPER_PART = 'helper'
-HELPER_PART_ID = 255
-PART_IDS = {name: index for index, name in enumerate(JOINT_PARTS)}
-PART_IDS[HELPER_PART] = HELPER_PART_ID
 ALL_PART_LABELS = JOINT_PARTS + (HELPER_PART,)
 
-# Provenance of a joint's entry. ``manual`` is a person's edit and is never
-# overwritten by a later prefill; ``model`` is a generation run's prediction and
-# ``annotation`` a generation run's copy of a dataset's baked annotation.
-PART_SOURCES = ('name', 'inherit', 'geometry', 'manual', 'model', 'annotation')
-
-JOINT_PARTS_FILE = 'joint_parts.jsonl'
+# Provenance of a joint's part: the prefill pass that decided it, or a person's edit.
+PART_SOURCES = ('name', 'inherit', 'geometry', 'manual')
 
 
-class JointPartsError(ValueError):
-    """A joint-parts sidecar is malformed or does not fit its skeleton."""
+def skeleton_entry(joint_names, parents, rest_positions, species_name=None) -> dict:
+    """A cond-like entry for a rig outside every dataset (an external GLB/FBX),
+    enough for :func:`prefill_joint_parts`. ``rest_positions`` are world
+    positions, Y up."""
+    parents = np.asarray(parents, dtype=np.int64)
+    rest = np.asarray(rest_positions, dtype=np.float64)
+    offsets = rest - np.where(parents[:, None] >= 0, rest[np.maximum(parents, 0)], 0.0)
+    names = [str(name) for name in joint_names]
+    entry = {'joints_names': names, 'parents': parents, 'offsets': offsets}
+    if species_name:
+        entry['species_name'] = str(species_name)
+    entry.update(build_semantic_metadata(names, parents, offsets, rest_positions=rest,
+                                         species_name=species_name))
+    return entry
 
 
-# ---------------------------------------------------------------------------
-# Sidecar I/O and binding
-# ---------------------------------------------------------------------------
-
-def skeleton_signature(joint_names, parents) -> str:
-    """Stable fingerprint of a skeleton's joint names and topology."""
-    payload = json.dumps(
-        [[str(name) for name in joint_names], [int(parent) for parent in parents]],
-        separators=(',', ':'),
-    )
-    return hashlib.sha1(payload.encode('utf-8')).hexdigest()[:16]
-
-
-def species_of(cond_entry) -> str:
-    """The sidecar key of a cond entry: its bare species name."""
-    name = cond_entry.get('species_name') or str(cond_entry.get('object_type', '')).rsplit('/', 1)[-1]
-    if not name:
-        raise JointPartsError('cond entry has neither species_name nor object_type.')
-    return str(name)
-
-
-def _validate_row(row, where):
-    species = row.get('species')
-    if not isinstance(species, str) or not species.strip():
-        raise JointPartsError(f'{where}: missing species.')
-    if not isinstance(row.get('skeleton_sig'), str):
-        raise JointPartsError(f'{where} ({species}): missing skeleton_sig.')
-    if not isinstance(row.get('reviewed'), bool):
-        raise JointPartsError(f'{where} ({species}): reviewed must be true or false.')
-    joints = row.get('joints')
-    if not isinstance(joints, dict) or not joints:
-        raise JointPartsError(f'{where} ({species}): joints must be a non-empty object.')
-    for joint_name, entry in joints.items():
-        part = entry.get('part')
-        if part not in ALL_PART_LABELS:
-            raise JointPartsError(f'{where} ({species}/{joint_name}): unknown part {part!r}.')
-        if entry.get('contact') not in (0, 1):
-            raise JointPartsError(f'{where} ({species}/{joint_name}): contact must be 0 or 1.')
-        if part == HELPER_PART and entry['contact']:
-            raise JointPartsError(f'{where} ({species}/{joint_name}): a helper joint cannot be a contact.')
-        if entry.get('src') not in PART_SOURCES:
-            raise JointPartsError(f'{where} ({species}/{joint_name}): unknown src {entry.get("src")!r}.')
-
-
-def read_joint_parts_sidecar(path) -> dict[str, dict]:
-    """``{species: row}`` from a ``joint_parts.jsonl``; empty when the file is absent."""
-    path = Path(path)
-    if not path.is_file():
-        return {}
-    stamp = path.stat().st_mtime_ns
-    cached = _SIDECAR_CACHE.get(str(path))
-    if cached is not None and cached[0] == stamp:
-        return cached[1]
-    rows = _parse_joint_parts_sidecar(path)
-    _SIDECAR_CACHE[str(path)] = (stamp, rows)
-    return rows
-
-
-# Parsed sidecars by path, invalidated by mtime: readers that resolve many
-# species of one dataset (the loader, an export run) parse the file once.
-_SIDECAR_CACHE: dict[str, tuple[int, dict[str, dict]]] = {}
-
-
-def _parse_joint_parts_sidecar(path) -> dict[str, dict]:
-    rows: dict[str, dict] = {}
-    for line_no, line in enumerate(path.read_text(encoding='utf-8').splitlines(), start=1):
-        text = line.strip()
-        if not text:
+def foot_chains(parents, parts, contact=None) -> list[list[int]]:
+    """Joints of each foot a rig stands on, one sorted list per foot: every
+    connected run of ``foot`` joints, plus each connected run of ``hand``
+    joints holding a ``contact`` joint (a quadruped's fore hooves). ``parts``
+    is one part name per joint, ``contact`` one flag per joint (None: no hand
+    stands)."""
+    parents = np.asarray(parents, dtype=np.int64)
+    chains: dict[int, list[int]] = {}
+    top_of: dict[int, int] = {}
+    for index in _topological_order(parents)[0]:
+        if parts[index] not in ('foot', 'hand'):
             continue
-        where = f'{path.name}:{line_no}'
-        try:
-            row = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise JointPartsError(f'{where} is not valid JSON: {exc}') from exc
-        _validate_row(row, where)
-        if row['species'] in rows:
-            raise JointPartsError(f'{where} duplicates species {row["species"]!r}.')
-        rows[row['species']] = row
-    return rows
+        parent = int(parents[index])
+        same_run = parent >= 0 and parent in top_of and parts[parent] == parts[index]
+        top = top_of[parent] if same_run else index
+        top_of[index] = top
+        chains.setdefault(top, []).append(int(index))
+    return [
+        sorted(chain) for top, chain in sorted(chains.items())
+        if parts[top] == 'foot' or (contact is not None and any(contact[j] for j in chain))
+    ]
 
 
-def write_joint_parts_sidecar(path, rows) -> None:
-    """Atomically rewrite ``path`` with ``rows`` (an iterable of row dicts), one per line."""
-    path = Path(path)
-    lines = []
-    for row in rows:
-        _validate_row(row, path.name)
-        lines.append(json.dumps(row, ensure_ascii=False, separators=(', ', ': ')))
-    tmp_path = path.with_name(path.name + '.tmp')
-    tmp_path.write_text(''.join(line + '\n' for line in lines), encoding='utf-8')
-    os.replace(tmp_path, path)
+def prefill_foot_chains(cond_entry) -> list[list[int]]:
+    """:func:`foot_chains` of the prefilled parts and contacts of ``cond_entry``."""
+    prefill = prefill_joint_parts(cond_entry)
+    rows = [prefill[str(name)] for name in cond_entry['joints_names']]
+    return foot_chains(cond_entry['parents'], [row['part'] for row in rows],
+                       [bool(row['contact']) for row in rows])
 
 
-@dataclass(frozen=True)
-class BoundJointParts:
-    """One sidecar row bound onto a skeleton, in cond joint order."""
-    part_ids: np.ndarray   # (J,) int16; HELPER_PART_ID for helpers
-    contact: np.ndarray    # (J,) bool
-    reviewed: bool
-    source: str            # the row's ``source`` when it has one ("annotation" / "model")
-
-    @property
-    def contact_joints(self) -> list[int]:
-        return [int(index) for index in np.flatnonzero(self.contact)]
-
-
-def row_is_stale(row, joint_names, parents) -> bool:
-    return row['skeleton_sig'] != skeleton_signature(joint_names, parents)
-
-
-def bind_joint_parts(row, joint_names, parents) -> BoundJointParts:
-    """Arrays for ``row`` on the skeleton ``joint_names`` / ``parents``.
-
-    Refuses a stale row and a row that misses any joint: a partial binding would
-    hand the loss or a grounding step a joint whose label nobody wrote.
-    """
-    species = row['species']
-    if row_is_stale(row, joint_names, parents):
-        raise JointPartsError(
-            f"joint_parts row for {species!r} was written for another skeleton "
-            f"(skeleton_sig {row['skeleton_sig']} != {skeleton_signature(joint_names, parents)}); "
-            f"re-run tools/prefill_joint_parts.py and review it."
-        )
-    joints = row['joints']
-    missing = [name for name in joint_names if name not in joints]
-    if missing:
-        raise JointPartsError(f'joint_parts row for {species!r} has no entry for {missing[:8]}.')
-    part_ids = np.array([PART_IDS[joints[name]['part']] for name in joint_names], dtype=np.int16)
-    contact = np.array([bool(joints[name]['contact']) for name in joint_names], dtype=bool)
-    return BoundJointParts(part_ids, contact, bool(row['reviewed']), str(row.get('source', 'annotation')))
-
-
-def load_joint_parts(sidecar_dir, species, cond_entry) -> BoundJointParts:
-    """The parts of ``species`` from ``<sidecar_dir>/joint_parts.jsonl``, bound to ``cond_entry``.
-
-    ``sidecar_dir`` is a processed dataset when baking its cond, or a
-    generation output directory for the motions written there.
-    """
-    path = Path(sidecar_dir) / JOINT_PARTS_FILE
-    rows = read_joint_parts_sidecar(path)
-    if species not in rows:
-        raise JointPartsError(
-            f'{path} has no row for {species!r}; run tools/prefill_joint_parts.py first.'
-        )
-    return bind_joint_parts(rows[species], list(cond_entry['joints_names']), cond_entry['parents'])
-
-
-# Per-joint arrays a dataset cond entry carries, baked from its sidecar row by
-# tools/regenerate_dataset_artifacts.py. Leaf removal and bone-length
-# augmentation keep them aligned with the joints they edit.
-JOINT_PARTS_KEY = 'joint_parts'
-JOINT_CONTACT_KEY = 'joint_contact'
-JOINT_PARTS_REVIEWED_KEY = 'joint_parts_reviewed'
-# Fingerprint of the row content the arrays were baked from; a validator
-# compares it with the sidecar to catch an annotation edited after the bake.
-JOINT_PARTS_SIG_KEY = 'joint_parts_sig'
-BAKED_JOINT_PARTS_KEYS = (JOINT_PARTS_KEY, JOINT_CONTACT_KEY, JOINT_PARTS_REVIEWED_KEY, JOINT_PARTS_SIG_KEY)
-
-
-def joint_parts_row_signature(row, joint_names) -> str:
-    """Fingerprint of what a bake takes from ``row``: skeleton, review flag, part and contact."""
-    joints = row['joints']
-    payload = json.dumps(
-        [row['skeleton_sig'], bool(row['reviewed']),
-         [[joints[name]['part'], int(joints[name]['contact'])] for name in joint_names]],
-        separators=(',', ':'),
-    )
-    return hashlib.sha1(payload.encode('utf-8')).hexdigest()[:16]
-
-
-def bake_joint_parts(cond_entry, row) -> None:
-    """Write ``row``, bound to ``cond_entry``'s skeleton, into the entry's baked keys."""
-    joint_names = list(cond_entry['joints_names'])
-    bound = bind_joint_parts(row, joint_names, cond_entry['parents'])
-    cond_entry[JOINT_PARTS_KEY] = bound.part_ids
-    cond_entry[JOINT_CONTACT_KEY] = bound.contact
-    cond_entry[JOINT_PARTS_REVIEWED_KEY] = bound.reviewed
-    cond_entry[JOINT_PARTS_SIG_KEY] = joint_parts_row_signature(row, joint_names)
-
-
-def strip_joint_parts(cond_entry) -> None:
-    for key in BAKED_JOINT_PARTS_KEYS:
-        cond_entry.pop(key, None)
-
-
-def has_joint_parts(cond_entry) -> bool:
-    """True for a dataset species with a baked annotation; a skeleton outside every
-    dataset (``process_new_skeleton``) has none."""
-    return cond_entry.get(JOINT_CONTACT_KEY) is not None
-
-
-def cond_contact_joints(cond_entry) -> list[int]:
-    """Contact joints baked into a dataset cond entry."""
-    if not has_joint_parts(cond_entry):
-        raise JointPartsError(
-            f'cond entry {cond_entry.get("object_type")!r} carries no {JOINT_CONTACT_KEY!r}; '
-            f'run tools/prefill_joint_parts.py, review the row, then '
-            f'tools/regenerate_dataset_artifacts.py --joint-parts-only and merge the cond.'
-        )
-    return [int(index) for index in np.flatnonzero(np.asarray(cond_entry[JOINT_CONTACT_KEY], dtype=bool))]
-
-
-def retarget_target_contacts(cond_entry) -> list[int]:
-    """Contacts a retarget grounds its target on.
-
-    A dataset species uses its annotation. A skeleton outside every dataset
-    is an external rig and takes the prefill heuristic.
-    """
-    if has_joint_parts(cond_entry):
-        return cond_contact_joints(cond_entry)
-    parents = np.asarray(cond_entry['parents'], dtype=np.int64)
-    rest = rest_positions_from_offsets(cond_entry['offsets'], parents)
-    return prefill_contacts(list(cond_entry['joints_names']), parents, rest)
-
-
-def part_class_weights(counts) -> list[float]:
-    """Per-class weights of the part loss from joint counts over the training clips.
-
-    Inverse square root of the frequency, scaled so the expected weight of a
-    labelled joint is 1; a class with no joints gets 0.
-    """
-    counts = np.asarray(counts, dtype=np.float64)
-    if counts.shape != (len(JOINT_PARTS),) or counts.sum() <= 0:
-        raise JointPartsError(f'part counts must be {len(JOINT_PARTS)} non-negative numbers with a positive sum.')
-    frequency = counts / counts.sum()
-    weights = np.where(counts > 0, 1.0 / np.sqrt(np.maximum(frequency, 1e-12)), 0.0)
-    weights /= float((frequency * weights).sum())
-    return [float(value) for value in weights]
-
-
-def joint_parts_row(species, joint_names, parents, part_ids, contact, *, source, src,
-                    part_prob=None, contact_prob=None) -> dict:
-    """A sidecar row for one skeleton from per-joint arrays.
-
-    ``part_prob`` (J, C) and ``contact_prob`` (J,) are recorded per joint when
-    given; :func:`bind_joint_parts` ignores them.
-    """
-    names_by_id = {PART_IDS[name]: name for name in ALL_PART_LABELS}
-    joints = {}
-    for index, name in enumerate(joint_names):
-        part = names_by_id[int(part_ids[index])]
-        entry = {
-            'part': part,
-            'contact': int(bool(contact[index]) and part != HELPER_PART),
-            'src': src,
-            'why': '',
-        }
-        if part_prob is not None:
-            entry['part_prob'] = [round(float(value), 4) for value in part_prob[index]]
-        if contact_prob is not None:
-            entry['contact_prob'] = round(float(contact_prob[index]), 4)
-        joints[str(name)] = entry
-    return {
-        'species': str(species),
-        'skeleton_sig': skeleton_signature(joint_names, parents),
-        'reviewed': False,
-        'source': source,
-        'joints': joints,
-    }
-
-
-def write_output_joint_parts(out_dir, rows) -> list[str]:
-    """Merge ``rows`` into ``<out_dir>/joint_parts.jsonl``; returns warnings.
-
-    A row whose species is already there with the same ``skeleton_sig`` is left
-    as it is, so every motion exported into one directory sees one labelling.
-    One with a different signature (the skeleton changed) is replaced.
-    """
-    path = Path(out_dir) / JOINT_PARTS_FILE
-    existing = dict(read_joint_parts_sidecar(path))
-    warnings = []
-    changed = False
-    for row in rows:
-        old = existing.get(row['species'])
-        if old is not None and old['skeleton_sig'] == row['skeleton_sig']:
-            continue
-        if old is not None:
-            warnings.append(
-                f"{path}: replacing the {row['species']!r} row written for another skeleton "
-                f"({old['skeleton_sig']} -> {row['skeleton_sig']})."
-            )
-        existing[row['species']] = row
-        changed = True
-    if changed:
-        write_joint_parts_sidecar(path, existing.values())
-    return warnings
+def ground_floors(lowest_heights, chains) -> np.ndarray:
+    """Floor height of each foot chain: its lowest joint's ``lowest_heights``
+    entry. Without foot chains, the single lowest joint stands in."""
+    lowest_heights = np.asarray(lowest_heights, dtype=np.float64)
+    if not chains:
+        return np.array([float(lowest_heights.min())])
+    return np.array([float(lowest_heights[chain].min()) for chain in chains])
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +270,8 @@ def prefill_joint_parts(cond_entry) -> dict[str, dict]:
     sides = list(cond_entry.get('joint_side_labels') or ['center'] * joint_count)
     tags = [str(tag).lower() for tag in (cond_entry.get('species_tags') or ())]
     body_plan = tags[0] if tags else ''
-    prefixes = infer_species_joint_name_prefixes(raw_names, species_of(cond_entry))
+    prefixes = infer_species_joint_name_prefixes(
+        raw_names, cond_entry.get('species_name') or cond_entry.get('object_type'))
     texts = build_joint_embedding_texts(cond_entry)
     tokens = [_text_tokens(text) for text in texts]
     order, children = _topological_order(parents)
@@ -763,32 +501,6 @@ def _is_descendant(index, ancestor, parents):
             return True
         current = int(parents[current])
     return False
-
-
-def merge_prefill(existing_row, prefill, species, skeleton_sig):
-    """The row a prefill run writes, and the joint names whose entry changed.
-
-    Kept from ``existing_row``: every ``manual`` joint, and every joint of a
-    reviewed, non-stale row. A stale row loses its ``reviewed`` mark: its
-    skeleton changed under it.
-    """
-    old_joints = dict(existing_row['joints']) if existing_row else {}
-    stale = bool(existing_row) and existing_row['skeleton_sig'] != skeleton_sig
-    keep_all = bool(existing_row) and existing_row['reviewed'] and not stale
-    joints = {}
-    changed = []
-    for name, proposal in prefill.items():
-        old = old_joints.get(name)
-        if old is not None and (keep_all or old['src'] == 'manual'):
-            joints[name] = old
-            continue
-        joints[name] = proposal
-        if old != proposal:
-            changed.append(name)
-    changed.extend(name for name in old_joints if name not in prefill)
-    reviewed = bool(existing_row) and existing_row['reviewed'] and not stale
-    row = {'species': species, 'skeleton_sig': skeleton_sig, 'reviewed': reviewed, 'joints': joints}
-    return row, changed
 
 
 # ---------------------------------------------------------------------------
@@ -1140,11 +852,7 @@ def _infer_contact_joints_from_geometry(joint_names, rest_positions, parents):
 
 def prefill_contacts(joint_names, parents, rest_positions) -> list[int]:
     """Heuristic ground-contact joints of a skeleton: geometry first, then names.
-
-    The contact prefill of :func:`prefill_joint_parts`, and the only contact
-    source for a rig that has no sidecar row (an external GLB/FBX being
-    exported or retargeted from).
-    """
+    The contact prefill of :func:`prefill_joint_parts`."""
     contact_joints = _infer_contact_joints_from_geometry(joint_names, rest_positions, parents)
     if contact_joints:
         return contact_joints

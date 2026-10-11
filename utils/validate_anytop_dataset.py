@@ -48,23 +48,9 @@ from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E40
 )
 from utils.misc import infer_object_type_from_filename  # noqa: E402
 from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE  # noqa: E402
-from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
-from data_loaders.truebones.truebones_utils.joint_parts import (  # noqa: E402
-    JOINT_CONTACT_KEY,
-    JOINT_PARTS_FILE,
-    JOINT_PARTS_KEY,
-    JOINT_PARTS_REVIEWED_KEY,
-    JOINT_PARTS_SIG_KEY,
-    has_joint_parts,
-    joint_parts_row_signature,
-    read_joint_parts_sidecar,
-    species_of,
-)
-
-# Inferred contact fields cond must not carry: contacts are baked from joint_parts.jsonl.
-_CONTACT_COND_KEYS = (
-    "contact_joints", "contact_joint_names", "contact_joint_source",
-    "end_effector_joints", "end_effector_names",
+from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
+    STALE_JOINT_ANNOTATION_KEYS,
+    load_cond,
 )
 from data_loaders.truebones.truebones_utils.topology_relations import (  # noqa: E402
     NUM_EDGE_CODES,
@@ -119,19 +105,18 @@ def resolve_dataset_dir(raw_value: str | None) -> Path:
     return path.resolve()
 
 
-def read_required_artifacts(dataset_dir: Path, silent: bool = False) -> tuple[Path, Path, Path, Path, Path]:
+def read_required_artifacts(dataset_dir: Path, silent: bool = False) -> tuple[Path, Path, Path, Path]:
     motions_dir = dataset_dir / MOTION_DIR
     bvhs_dir = dataset_dir / BVHS_DIR
     cond_path = dataset_dir / "cond.npy"
     metadata_path = dataset_dir / "metadata.txt"
-    positions_error_path = dataset_dir / "positions_error_rate.txt"
 
-    for path in [dataset_dir, motions_dir, cond_path, metadata_path, positions_error_path]:
+    for path in [dataset_dir, motions_dir, cond_path, metadata_path]:
         require_valid(path.exists(), f"missing required artifact: {path}")
 
     if not silent:
         print_ok(f"required artifacts found under {dataset_dir}")
-    return motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path
+    return motions_dir, bvhs_dir, cond_path, metadata_path
 
 
 def _validate_optional_semantic_metadata(object_type: str, object_cond: dict, n_joints: int) -> None:
@@ -148,11 +133,11 @@ def _validate_optional_semantic_metadata(object_type: str, object_cond: dict, n_
             if invalid_labels:
                 print_warn(f"validation error: {object_type} joint_side_labels contain invalid values: {invalid_labels}")
 
-    stale_keys = [key for key in _CONTACT_COND_KEYS if key in object_cond]
+    stale_keys = [key for key in STALE_JOINT_ANNOTATION_KEYS if key in object_cond]
     if stale_keys:
         print_warn(
-            f"validation error: {object_type} cond still carries {stale_keys}; contacts are baked "
-            f"from {JOINT_PARTS_FILE} -- regenerate cond (tools/regenerate_dataset_artifacts.py)"
+            f"validation error: {object_type} cond still carries {stale_keys}; contacts and body "
+            f"parts are not dataset data -- regenerate cond (tools/regenerate_dataset_artifacts.py)"
         )
 
     symmetry_partner_indices = object_cond.get("symmetry_partner_indices")
@@ -215,24 +200,6 @@ def _validate_optional_semantic_metadata(object_type: str, object_cond: dict, n_
             print_warn(f"validation error: {object_type} {key} out of range: {index}")
 
 
-def _validate_baked_joint_parts(object_cond: dict, n_joints: int, rows: dict) -> None:
-    """The baked part / contact arrays exist, fit the skeleton and match the sidecar row."""
-    rebake = "tools/regenerate_dataset_artifacts.py --joint-parts-only"
-    if not has_joint_parts(object_cond):
-        raise ValueError(f"no baked {JOINT_PARTS_FILE} annotation; prefill and review it, then run {rebake}")
-    for key in (JOINT_PARTS_KEY, JOINT_CONTACT_KEY):
-        if np.asarray(object_cond[key]).shape != (n_joints,):
-            raise ValueError(f"{key} shape {np.asarray(object_cond[key]).shape} != ({n_joints},)")
-    row = rows.get(species_of(object_cond))
-    if row is None:
-        raise ValueError(f"baked annotation has no row in {JOINT_PARTS_FILE} any more")
-    names = list(object_cond["joints_names"])
-    if not all(name in row["joints"] for name in names) or (
-        joint_parts_row_signature(row, names) != object_cond.get(JOINT_PARTS_SIG_KEY)
-    ):
-        raise ValueError(f"{JOINT_PARTS_FILE} row changed after the bake; run {rebake} and re-merge")
-
-
 def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
     cond = load_cond(cond_path)
     
@@ -271,8 +238,6 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
         "translation_root_index",
     }
 
-    unreviewed_parts = []
-    joint_parts_rows = read_joint_parts_sidecar(Path(cond_path).parent / JOINT_PARTS_FILE)
     for object_type in objects_to_validate:
         try:
             object_cond = cond[object_type]
@@ -384,17 +349,9 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
                 print_warn(f"validation error: {msg}")
 
             _validate_optional_semantic_metadata(object_type, object_cond, n_joints)
-            _validate_baked_joint_parts(object_cond, n_joints, joint_parts_rows)
-            if not object_cond[JOINT_PARTS_REVIEWED_KEY]:
-                unreviewed_parts.append(object_type)
         except Exception as e:
             msg = f"{object_type}: {e}"
             print_warn(f"validation error: {msg}")
-    if unreviewed_parts:
-        print_warn(
-            f"{JOINT_PARTS_FILE}: {len(unreviewed_parts)} species not reviewed yet "
-            f"(dataset/review parts page): {', '.join(sorted(unreviewed_parts)[:10])}"
-        )
     
     print_ok(f"cond.npy validated for {len(cond)} object types")
     return cond
@@ -1286,7 +1243,7 @@ def prepare_dataset_for_validation(
     objects_subset: str,
     sample_count: int,
 ) -> None:
-    motions_dir, bvhs_dir, cond_path, _metadata_path, _positions_error_path = read_required_artifacts(dataset_dir, silent=True)
+    motions_dir, bvhs_dir, cond_path, _metadata_path = read_required_artifacts(dataset_dir, silent=True)
     cond = load_cond(cond_path)
 
     deleted_joint_stems = _prune_excess_joint_motions(motions_dir, bvhs_dir, cond, sample_count)
@@ -1302,21 +1259,6 @@ def prepare_dataset_for_validation(
         regenerate_dataset_artifacts(str(dataset_dir))
         cond = load_cond(cond_path)
 
-    validate_positions_error_file(_positions_error_path)
-
-
-def validate_positions_error_file(positions_error_path: Path) -> None:
-    """Validate that positions_error_rate.txt exists and has the expected format."""
-    try:
-        content = positions_error_path.read_text(encoding="utf-8").strip()
-        require_valid(content.startswith("Position squared error per source clip:"), "positions_error_rate.txt has unexpected header")
-        if len(content.splitlines()) == 1:
-            print_warn("positions_error_rate.txt has no per-file entries")
-        else:
-            print_ok("positions_error_rate.txt contains per-file error entries")
-    except ValidationError as e:
-        print_warn(f"validation error: {e}")
-        raise
 
 
 def parse_args() -> argparse.Namespace:
@@ -1380,7 +1322,7 @@ def _validate_one_dataset(dataset_dir: Path, args) -> None:
         args.sample_count,
     )
 
-    motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = read_required_artifacts(dataset_dir)
+    motions_dir, bvhs_dir, cond_path, metadata_path = read_required_artifacts(dataset_dir)
     cond = validate_cond_file(cond_path, args.objects_subset)
 
     motion_files = sorted(motions_dir.glob("*.npy"))
@@ -1397,8 +1339,6 @@ def _validate_one_dataset(dataset_dir: Path, args) -> None:
     )
     
     validate_tpose_orientation(cond, args.orientation_threshold_deg)
-
-    validate_positions_error_file(positions_error_path)
 
     print("[PASS] dataset validation completed successfully")
 

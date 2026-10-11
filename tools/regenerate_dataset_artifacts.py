@@ -11,7 +11,6 @@ Options:
     --dataset-dir PATH      Path to dataset directory (uses default if not specified)
     --t5-model NAME         T5 model name to use (default: t5-base)
     --no-rest-reseat        Skip the rest-vs-clip geometry re-seat (normally always on)
-    --joint-parts-only      Only re-bake joint_parts.jsonl into cond.npy (after a review)
 
 Examples:
     # Regenerate sidecar artifacts with default settings
@@ -22,9 +21,6 @@ Examples:
 
     # Re-encode with different T5 model
     python tools/regenerate_dataset_artifacts.py --t5-model t5-large
-
-    # Re-bake the reviewed part / contact annotation (then re-merge the cond)
-    python tools/regenerate_dataset_artifacts.py --dataset-dir PATH --joint-parts-only
 """
 
 import argparse
@@ -53,7 +49,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     attach_t5_embeddings_to_cond,
-    write_joint_name_collision_report,
+    report_joint_name_collisions,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
     mark_canonical_cond_entry,
@@ -63,6 +59,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa:
     set_canonical_global_stats,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
+    STALE_JOINT_ANNOTATION_KEYS,
     load_cond,
     save_cond,
     stamp_dataset_cond,
@@ -86,20 +83,9 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
 )
 from tools.build_action_label_embeddings import build_word_table  # noqa: E402
 from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
-from data_loaders.truebones.truebones_utils.joint_parts import (  # noqa: E402
-    JOINT_PARTS_FILE,
-    bake_joint_parts,
-    read_joint_parts_sidecar,
-    row_is_stale,
-    species_of,
-    strip_joint_parts,
-)
 
 
-from utils.misc import (
-    infer_object_type_from_filename,
-    normalize_identifier as _normalize_identifier,
-)
+from utils.misc import infer_object_type_from_filename
 from utils.clip_length_prior import (  # noqa: E402
     COND_KEY as CLIP_LENGTH_PRIOR_COND_KEY,
     build_clip_length_prior,
@@ -127,39 +113,6 @@ def _write_metadata_summary(
         handle.write(f"~~~~ objects_counts - Total: {total_clips} ~~~~\n")
         for object_type in sorted(object_counts):
             handle.write(f"{object_type}: {object_counts[object_type]}\n")
-
-
-def _rewrite_positions_error_file(dataset_dir_path: Path, motion_entries: dict[str, dict[str, object]]) -> None:
-    positions_error_path = dataset_dir_path / "positions_error_rate.txt"
-    existing_lines: list[str] = []
-    if positions_error_path.exists():
-        existing_lines = positions_error_path.read_text(encoding="utf-8").splitlines()
-
-    header = "Position squared error per source clip:"
-    existing_entries: list[str] = []
-    if existing_lines:
-        first_line = existing_lines[0].strip()
-        if first_line.startswith(header):
-            trailing_entry = first_line[len(header):].strip()
-            if trailing_entry:
-                existing_entries.append(trailing_entry)
-        existing_entries.extend(line.strip() for line in existing_lines[1:] if line.strip())
-
-    motion_signatures = [
-        _normalize_identifier(str(entry.get("object_type", "")))
-        for entry in motion_entries.values()
-    ]
-    filtered_lines: list[str] = []
-    for line in existing_entries:
-        normalized_line = _normalize_identifier(line)
-        if any(obj and obj in normalized_line for obj in motion_signatures):
-            filtered_lines.append(line)
-
-    output_lines = ["Position squared error per source clip:__artifact_regenerated__: 0.000000"]
-    output_lines.extend(filtered_lines)
-    if len(output_lines) == 1:
-        output_lines.append("__artifact_regenerated_placeholder__: 0.000000")
-    positions_error_path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
 
 
 def _infer_object_type_from_motion_name(
@@ -338,49 +291,6 @@ def _compute_canonical_stats_per_object_subset(
             print(
                 f"     [{subset}] {usable_accs[subset]['count']} frames-joints"
             )
-
-
-def _bake_joint_parts(cond_dict: dict[str, dict], dataset_dir_path: Path) -> None:
-    """Bake each species' joint_parts.jsonl row into its cond entry.
-
-    A species without a current row is left without the baked keys and only
-    reported: a new species can be prefilled only once this run has written its
-    cond entry, and the loader refuses it until it is baked."""
-    rows = read_joint_parts_sidecar(dataset_dir_path / JOINT_PARTS_FILE)
-    problems = []
-    unreviewed = 0
-    for object_type, object_cond in sorted(cond_dict.items()):
-        strip_joint_parts(object_cond)
-        row = rows.get(species_of(object_cond))
-        if row is None:
-            problems.append(f"{object_type}: no row")
-        elif row_is_stale(row, object_cond["joints_names"], object_cond["parents"]):
-            problems.append(f"{object_type}: stale (skeleton changed)")
-        else:
-            bake_joint_parts(object_cond, row)
-            unreviewed += not row["reviewed"]
-    print(f"[OK] {JOINT_PARTS_FILE} baked into {len(cond_dict) - len(problems)}/{len(cond_dict)} cond entries")
-    if problems:
-        print(
-            f"[WARN] {JOINT_PARTS_FILE} does not cover the cond skeletons ({len(problems)}): "
-            + "; ".join(problems[:10])
-            + ". Run tools/prefill_joint_parts.py, review the rows in dataset/review, then "
-            "re-run with --joint-parts-only before training."
-        )
-    if unreviewed:
-        print(f"[WARN] {JOINT_PARTS_FILE}: {unreviewed} species not reviewed yet")
-
-
-def rebake_joint_parts(dataset_dir: str | Path | None = None) -> Path:
-    """Re-bake joint_parts.jsonl into an existing cond.npy, touching nothing else."""
-    dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
-    cond_path = dataset_dir_path / "cond.npy"
-    if not cond_path.exists():
-        raise RuntimeError(f"cond.npy not found at {cond_path}")
-    cond = dict(np.load(cond_path, allow_pickle=True).item())
-    _bake_joint_parts(cond, dataset_dir_path)
-    save_cond(cond_path, cond)
-    return dataset_dir_path
 
 
 def _compute_clip_length_prior(
@@ -626,9 +536,8 @@ def _regenerate_dataset_artifacts(
         object_cond.pop("action_words", None)
         object_cond.pop("loop_period_by_action", None)
         object_cond.pop("loop_period_median", None)
-        # Contacts are baked from joint_parts.jsonl, not inferred.
-        for key in ("contact_joints", "contact_joint_names", "contact_joint_source",
-                    "end_effector_joints", "end_effector_names"):
+        # Contacts and body parts are not dataset data (motion_edit prefills them).
+        for key in STALE_JOINT_ANNOTATION_KEYS:
             object_cond.pop(key, None)
     _mark_object_feature_spaces(rebuilt_cond)
 
@@ -655,18 +564,15 @@ def _regenerate_dataset_artifacts(
     inspection_dir = dataset_dir_path / "joint_name_inspection"
     if inspection_dir.exists():
         shutil.rmtree(inspection_dir)
-    collision_report_path = dataset_dir_path / "joint_name_collision_report.json"
-    if collision_report_path.exists():
-        collision_report_path.unlink()
 
     attach_t5_embeddings_to_cond(
         rebuilt_cond,
         str(dataset_dir_path),
         t5_name=t5_model,
-        write_collision_report=False,
+        report_collisions=False,
     )
     print(f"[OK] T5 embeddings attached in {time.time() - t0:.1f}s")
-    write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))
+    report_joint_name_collisions(rebuilt_cond)
 
     if reseat_rest:
         t0 = time.time()
@@ -676,8 +582,6 @@ def _regenerate_dataset_artifacts(
     t0 = time.time()
     _compute_canonical_stats_per_object_subset(rebuilt_cond, motion_files)
     print(f"[OK] per-object_subset canonical stats computed in {time.time() - t0:.1f}s")
-
-    _bake_joint_parts(rebuilt_cond, dataset_dir_path)
 
     # Re-stamp on write: this is the dataset's own cond, so entries stay keyed
     # <namespace>/<species> with dataset_root=None ("wherever this file lives").
@@ -713,7 +617,6 @@ def _regenerate_dataset_artifacts(
         total_frames,
     )
     write_motion_metadata(dataset_dir_path, rebuilt_motion_metadata, len(motion_files))
-    _rewrite_positions_error_file(dataset_dir_path, rebuilt_motion_metadata)
 
     return dataset_dir_path
 
@@ -756,12 +659,6 @@ def main() -> int:
              "the animation never puts them). The step is idempotent and normally always "
              "on; this is an escape hatch for reproducing an older build.",
     )
-    parser.add_argument(
-        "--joint-parts-only",
-        action="store_true",
-        help="Only re-bake joint_parts.jsonl into the existing cond.npy (after reviewing "
-             "rows in dataset/review); re-merge dataset/merged/cond.npy afterwards.",
-    )
     args = parser.parse_args()
 
     print("\n" + "=" * 70)
@@ -775,9 +672,6 @@ def main() -> int:
             species_tags_file=args.species_tags_file,
             chain_forward_joints_file=args.chain_forward_joints_file,
         )
-        if args.joint_parts_only:
-            rebake_joint_parts(args.dataset_dir)
-            return 0
         dataset_dir_path = regenerate_dataset_artifacts(
             args.dataset_dir,
             t5_model=args.t5_model,

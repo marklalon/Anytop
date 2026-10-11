@@ -578,7 +578,7 @@ def get_common_features_from_T_pose(*args, **kwargs):
     return get_common_features_from_rest_pose(*args, **kwargs)
 
 
-def tpose_features_from_cond(cond_entry, object_type=None, contact_joints=()):
+def tpose_features_from_cond(cond_entry, object_type=None, foot_chains=None):
     """Reconstruct TPoseFeatures from a prebuilt cond.npy entry — no mesh access.
 
     Every field the retarget / reference-preprocessing paths consume is already
@@ -589,8 +589,8 @@ def tpose_features_from_cond(cond_entry, object_type=None, contact_joints=()):
       (``tpose_rest_rotations``), orientation_quat, forward joint indices, face
       joints, per-character scale factor and axial bone length.
 
-    Contacts are not in cond: a caller that grounds on them passes
-    ``contact_joints`` from the species' ``joint_parts.jsonl`` row.
+    A caller that grounds a retarget onto this skeleton passes its
+    ``foot_chains`` (``joint_parts.prefill_foot_chains``).
 
     Note ``tpose_rest_rotations`` (the scaled/oriented skeleton's per-joint bind
     LOCAL rotations) is a distinct quantity from ``rest_pose[:, 3:9]`` (the
@@ -634,7 +634,7 @@ def tpose_features_from_cond(cond_entry, object_type=None, contact_joints=()):
     return TPoseFeatures(
         scale_factor=float(cond_entry['scale_factor']),
         offsets=offsets,
-        foot_indices=[int(index) for index in contact_joints],
+        foot_chains=None if foot_chains is None else [[int(j) for j in chain] for chain in foot_chains],
         tpos_rots=tpos_rots,
         names=names,
         tpos_anim=tpos_anim,
@@ -663,9 +663,9 @@ class TPoseFeatures:
     forward_joint_index: int
     forward_base_joint_index: int
     axial_avg_len: float
-    # Ground-contact joints, from the joint_parts annotation (tpose_features_from_cond's
-    # caller). Empty when the caller does not ground on them.
-    foot_indices: list = ()
+    # Joints of each foot a retarget grounds this skeleton on (joint_parts.foot_chains);
+    # an empty list grounds on the lowest joint, None leaves the skeleton where it is.
+    foot_chains: list | None = None
     # Rest-pose names of the prop-socket joints removed from this skeleton, so
     # every motion clip of the character drops exactly the same joints. Empty for
     # a cond-reconstructed rest pose: cond was already built on the filtered

@@ -240,21 +240,8 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     (inspection_dir / "Cat.json").write_text('{"object_type": "Cat", "stale": true}', encoding="utf-8")
     (inspection_dir / "Dog.json").write_text('{"object_type": "Dog", "stale": true}', encoding="utf-8")
     (inspection_dir / "Stale.json").write_text('{"object_type": "Stale", "stale": true}', encoding="utf-8")
-    (dataset_dir / "joint_name_collision_report.json").write_text('{"stale": true}', encoding="utf-8")
-    (dataset_dir / "positions_error_rate.txt").write_text(
-        "\n".join(
-            [
-                "Position squared error per source clip: previous_run: 0.100000",
-                "Cat run clip: 0.010000",
-                "Dog jump clip: 0.020000",
-                "Stale idle clip: 0.030000",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", report_collisions=True):
         inspection_output_dir = Path(save_dir) / "joint_name_inspection"
         inspection_output_dir.mkdir(parents=True, exist_ok=True)
         # Mirrors the real encoder: cond keys carry '/', so inspection files are
@@ -274,17 +261,11 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
                 encoding="utf-8",
             )
 
-    def fake_write_collision_report(cond, save_dir):
-        report_path = Path(save_dir) / "joint_name_collision_report.json"
-        tokens = build_species_file_tokens(cond)
-        report_path.write_text(
-            json.dumps({"num_objects": len(cond), "objects": sorted(tokens.values())}),
-            encoding="utf-8",
-        )
+    def fake_report_collisions(cond):
         return []
 
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "report_joint_name_collisions", fake_report_collisions)
 
     _write_species_tags(dataset_dir)
     dataset_dir_path = regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
@@ -315,14 +296,8 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     assert all("is_loop" not in entry for entry in rewritten["motions"].values())
 
     assert sorted(path.stem for path in inspection_dir.glob("*.json")) == ["Cat", "Dog"]
-    collision_report = json.loads((dataset_dir / "joint_name_collision_report.json").read_text(encoding="utf-8"))
-    assert collision_report == {"num_objects": 2, "objects": ["Cat", "Dog"]}
-
-    positions_error_lines = (dataset_dir / "positions_error_rate.txt").read_text(encoding="utf-8").splitlines()
-    assert positions_error_lines[0] == "Position squared error per source clip:__artifact_regenerated__: 0.000000"
-    assert "Cat run clip: 0.010000" in positions_error_lines
-    assert "Dog jump clip: 0.020000" in positions_error_lines
-    assert all("Stale" not in line for line in positions_error_lines)
+    assert not (dataset_dir / "joint_name_collision_report.json").exists()
+    assert not (dataset_dir / "positions_error_rate.txt").exists()
 
     metadata_summary = (dataset_dir / "metadata.txt").read_text(encoding="utf-8")
     assert "max joints: 4" in metadata_summary
@@ -373,17 +348,17 @@ def test_regenerate_dataset_artifacts_rejects_inconsistent_translation_roots(
         {"Cat_Run_001.npy": ("locomotion", "run"), "Cat_Idle_002.npy": ("stationary", "idle")},
     )
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", report_collisions=True):
         for object_cond in cond.values():
             joint_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
             object_cond["joints_names_embs_meta"] = {"t5_name": t5_name}
 
-    def fake_write_collision_report(cond, save_dir):
+    def fake_report_collisions(cond):
         return []
 
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "report_joint_name_collisions", fake_report_collisions)
 
     _write_species_tags(dataset_dir)
     with pytest.raises(RuntimeError, match="motion metadata disagrees"):
@@ -495,7 +470,7 @@ def test_incremental_prepare_scans_only_new_source_and_reuses_alignment(monkeypa
     parents = np.array([-1, 0], dtype=np.int64)
     tp = SimpleNamespace(
         offsets=np.zeros((2, 3), dtype=np.float32),
-        foot_indices=[],
+        foot_chains=None,
         tpos_rots=object(),
         orientation_quat=object(),
         prop_socket_names=(),
@@ -590,7 +565,7 @@ def test_incremental_prepare_rejects_new_source_root_mismatch(monkeypatch, tmp_p
     parents = np.array([-1, 0], dtype=np.int64)
     tp = SimpleNamespace(
         offsets=np.zeros((2, 3), dtype=np.float32),
-        foot_indices=[],
+        foot_chains=None,
         tpos_rots=object(),
         orientation_quat=object(),
         prop_socket_names=(),
@@ -656,7 +631,7 @@ def test_incremental_prepare_accepts_a_new_source_rooted_above_the_frozen_joint(
     parents = np.array([-1, 0, 1], dtype=np.int64)
     tp = SimpleNamespace(
         offsets=np.zeros((3, 3), dtype=np.float32),
-        foot_indices=[],
+        foot_chains=None,
         tpos_rots=object(),
         orientation_quat=object(),
         prop_socket_names=(),
@@ -745,17 +720,17 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
     )
     _write_action_labels(dataset_dir, {"Cat_Run_001.npy": ("locomotion", "run")})
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", report_collisions=True):
         for object_cond in cond.values():
             joint_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
             object_cond["joints_names_embs_meta"] = {"t5_name": t5_name}
 
-    def fake_write_collision_report(cond, save_dir):
+    def fake_report_collisions(cond):
         return []
 
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "report_joint_name_collisions", fake_report_collisions)
 
     _write_species_tags(dataset_dir)
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
@@ -798,17 +773,17 @@ def test_regenerate_dataset_artifacts_backfills_missing_cond_root_from_unanimous
         {f"Bear_Run_{idx:03d}.npy": ("locomotion", "run") for idx in range(4)},
     )
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", report_collisions=True):
         for object_cond in cond.values():
             joint_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
             object_cond["joints_names_embs_meta"] = {"t5_name": t5_name}
 
-    def fake_write_collision_report(cond, save_dir):
+    def fake_report_collisions(cond):
         return []
 
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "report_joint_name_collisions", fake_report_collisions)
 
     _write_species_tags(dataset_dir)
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
@@ -852,13 +827,13 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
         },
     )
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", report_collisions=True):
         for object_cond in cond.values():
             joint_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
             object_cond["joints_names_embs_meta"] = {"t5_name": t5_name}
 
-    def fake_write_collision_report(cond, save_dir):
+    def fake_report_collisions(cond):
         return []
 
     calls: list[str] = []
@@ -871,7 +846,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
         }
 
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "report_joint_name_collisions", fake_report_collisions)
     monkeypatch.setattr(
         regenerate_dataset_artifacts_module,
         "build_motion_labels",
@@ -938,10 +913,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
     motion_metadata = load_motion_metadata(dataset_dir)
     assert motion_metadata['Cat_Run_001.npy']['translation_root_index'] == 1
 
-    positions_error_lines = (dataset_dir / 'positions_error_rate.txt').read_text(encoding='utf-8').splitlines()
-    assert positions_error_lines[0] == 'Position squared error per source clip:'
-    assert 'Cat run clip: 0.010000' in positions_error_lines
-
+    assert not (dataset_dir / 'positions_error_rate.txt').exists()
     assert not (dataset_dir / 'metadata.txt').exists()
     assert not (dataset_dir / 'joint_name_inspection').exists()
 

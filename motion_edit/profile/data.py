@@ -16,9 +16,10 @@ ANYTOP_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__
 DATASETS_MANIFEST = os.path.join(ANYTOP_ROOT, "dataset", "datasets.jsonl")
 
 PROFILES_FILE = "skeleton_profiles.json"
+# Bumped whenever a profile's content changes meaning; files of another schema are
+# rebuilt by build_profiles and refused by load_profiles.
+SCHEMA_VERSION = 3
 REPORT_FILE = "skeleton_profiles_report.md"
-CONTACT_OVERRIDES_FILE = "contact_overrides.json"
-PASSIVE_OVERRIDES_FILE = "passive_overrides.json"
 
 
 @dataclass(frozen=True)
@@ -146,7 +147,7 @@ class SpeciesOverride:
 def load_species_sidecar(root: str, file_name: str) -> dict[str, SpeciesOverride]:
     """``{cond key: SpeciesOverride}`` from ``<root>/<file_name>``.
 
-    Rows are ``{"<cond key>": {"skeleton_hash": ..., <lists of joint names>}}``.
+    Rows are ``{"<cond key>": {"skeleton_hash": ..., "joints": {name: {...}}}}``.
     """
     rows = _read_json(os.path.join(root, file_name))
     out = {}
@@ -157,19 +158,36 @@ def load_species_sidecar(root: str, file_name: str) -> dict[str, SpeciesOverride
     return out
 
 
+class ProfileSchemaError(ValueError):
+    pass
+
+
+def read_profiles_file(path: str) -> dict:
+    """``{cond key: profile}`` of a ``skeleton_profiles.json``; empty when it does not
+    exist, ``ProfileSchemaError`` when it was written with another ``SCHEMA_VERSION``."""
+    data = _read_json(path)
+    if not data:
+        return {}
+    version = data.get("schema_version")
+    if version != SCHEMA_VERSION:
+        raise ProfileSchemaError(
+            f"{path} has profile schema {version}, expected {SCHEMA_VERSION}; "
+            "rebuild it with python -m motion_edit.build_profiles")
+    return data.get("profiles", {})
+
+
 def load_profiles(root: str) -> dict:
-    data = _read_json(os.path.join(root, PROFILES_FILE))
-    return data.get("profiles", {}) if data else {}
+    return read_profiles_file(os.path.join(root, PROFILES_FILE))
 
 
-def write_species_override(root: str, file_name: str, cond_key: str, add: list[str], remove: list[str],
+def write_species_override(root: str, file_name: str, cond_key: str, joints: dict,
                            current_hash: str) -> str:
-    """Set (or, with nothing to add or remove, drop) one species' row of a name-keyed
-    override sidecar (``contact_overrides.json``, ``passive_overrides.json``)."""
+    """Set (or, with no joint, drop) one species' row of a name-keyed override sidecar
+    (``joint_parts_overrides.json``)."""
     path = os.path.join(root, file_name)
     rows = _read_json(path)
-    if add or remove:
-        rows[cond_key] = {"add": sorted(add), "remove": sorted(remove), "skeleton_hash": current_hash}
+    if joints:
+        rows[cond_key] = {"joints": dict(sorted(joints.items())), "skeleton_hash": current_hash}
     else:
         rows.pop(cond_key, None)
     tmp = path + ".tmp"

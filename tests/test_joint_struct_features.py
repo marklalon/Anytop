@@ -103,7 +103,7 @@ class BranchFreeRuns(unittest.TestCase):
 
 class Shape(unittest.TestCase):
     def test_a_contact_annotation_changes_nothing(self):
-        """Contacts are the auxiliary head's target, never a condition."""
+        """Contacts are never a condition."""
         baseline = build_joint_struct_features(_biped())
         annotated = build_joint_struct_features(_biped(
             contact_joints=[5, 8], joint_contact=np.array([0, 0, 0, 0, 0, 1, 0, 0, 1], dtype=bool),

@@ -33,9 +33,6 @@ Content     a skin exists; animation present, one per file, at 30 fps, long
             (the kept one is an arbitrary pick, the others' motion is lost).
 Consistency every file of a species carries the same joints, hierarchy and
             bind pose.
-Contact     a limb end (hoof, toe, foot, wrist ...) standing on the floor at rest
-            that the contact prefill leaves out -- the joint_parts.jsonl
-            proposal would mark only some of the feet the rig stands on.
 Joint names (the main one) duplicate / empty / non-ASCII / over-long names;
             each joint is run through the pipeline canonicalizer and its T5
             embedding text is checked against the words the training corpus
@@ -46,7 +43,9 @@ Joint names (the main one) duplicate / empty / non-ASCII / over-long names;
             stamped on most joints of a rig, texts left with no body-part word,
             side codes the side detector does not read ("LegMR" stays
             'center'), name side vs geometry side conflicts, unpaired
-            left/right names, blanked joints that parent anatomy, IK helpers
+            left/right names, unpaired sided joints on the midline (an
+            ERROR: the side is a naming mistake), a root off the rest pose's
+            midline (an exporter wrapper node the loader keeps), blanked joints that parent anatomy, IK helpers
             that pass for a body part ("Foot_IK" -> "Foot"), canonical-name
             collisions, and Japanese romaji words whose gated mapping stays off.
 
@@ -109,16 +108,10 @@ from data_loaders.truebones.truebones_utils.face_orientation import (  # noqa: E
     resolve_face_joints,
     resolve_forward_reference_joints,
 )
+from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
 from data_loaders.truebones.truebones_utils.ignore_warnings import skip_orientation_detection  # noqa: E402
-from data_loaders.truebones.truebones_utils.joint_parts import (  # noqa: E402
-    _CONTACT_EXCLUDE_TOKENS,
-    prefill_contacts,
-)
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  # noqa: E402
-    _joint_semantic_text,
-    _text_matches_keywords,
     detect_joint_side,
-    rest_positions_from_offsets,
 )
 from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noqa: E402
     clean_embedding_token,
@@ -126,9 +119,12 @@ from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noq
 )
 
 DEFAULT_REFERENCE_COND = _ANYTOP_DIR / "dataset" / "merged" / "cond.npy"
+DATASETS_MANIFEST = _ANYTOP_DIR / "dataset" / "datasets.jsonl"
 MOTION_EXTENSIONS = {".glb", ".gltf", ".fbx"}
 TARGET_FPS = 30.0
 FPS_TOLERANCE = 0.1
+FRAME_INTERVAL_REL_TOLERANCE = 0.05
+FRAME_INTERVAL_ABS_TOLERANCE = 1e-4
 # Mirrors the preprocessing defaults: shorter clips are filtered out.
 MIN_FRAMES = 10
 # Blender stores a bone name in a fixed 64-byte buffer (63 + NUL); a longer
@@ -137,17 +133,6 @@ BLENDER_NAME_MAX_BYTES = 63
 # A still clip moves no channel further than this (radians / rig-relative units).
 STILL_ROTATION_EPS = 1e-3
 STILL_TRANSLATION_EPS = 1e-3
-# A leaf whose rest height is within this fraction of the rig's height above the
-# lowest limb end stands on the floor.
-CONTACT_FLOOR_MARGIN_RATIO = 0.05
-# Words that make a floor-level leaf a limb end, i.e. something the rig stands on
-# (a hoof, a toe tip) rather than a tail or a hem lying low. "Digit" is left out:
-# it names the fingers of an arm or a wing, which may rest low without bearing
-# weight.
-CONTACT_LIMB_END_TOKENS = (
-    'hoof', 'foot', 'feet', 'toe', 'paw', 'claw', 'ball', 'heel', 'phalanx',
-    'ankle', 'leg', 'hand', 'finger', 'thumb', 'wrist',
-)
 
 
 def _channel_spread(values: np.ndarray, path: str) -> float:
@@ -177,6 +162,15 @@ SHORT_CODE_MAX_LEN = 3
 RIG_STAMP_RATIO = 0.5
 # Left/right name counts may differ by this much before it is worth a warning.
 SIDE_COUNT_SLACK = 2
+# An unpaired left/right joint lying within this share of the rig's lateral
+# width of the midline is a centre joint carrying a wrong side code in its name
+# (Spider "NPC_L_MagicNode", a one-legged rig's "RigLLeg1").
+MIDLINE_SIDE_TOLERANCE = 0.015
+# The root must lie within this share of the rig extent of the rest pose's
+# midline. A root outside it is no body joint; a single-child one above an
+# on-midline child is an exporter wrapper node carrying the armature object's
+# placement (Hawksbill "armature_rootJoint").
+ROOT_OFF_MIDLINE_SHARE = 0.03
 # Blanked joints this close to the root are rig roots / centre-of-gravity nodes.
 ROOT_HELPER_MAX_DEPTH = 2
 # Name tokens that mark an IK / control helper rather than a body part.
@@ -344,6 +338,32 @@ class FileFacts:
     error: str = ""
 
 
+def _irregular_frame_intervals(times: np.ndarray) -> dict | None:
+    """Find off-grid intervals in one channel without mixing channel key grids."""
+    if len(times) < MIN_FRAMES:
+        return None
+    deltas = np.diff(times)
+    if np.any(deltas <= 1e-6):
+        return None
+    median_dt = float(np.median(deltas))
+    tolerance = max(FRAME_INTERVAL_ABS_TOLERANCE, median_dt * FRAME_INTERVAL_REL_TOLERANCE)
+    bad = np.flatnonzero(np.abs(deltas - median_dt) > tolerance)
+    if not bad.size:
+        return None
+    first = int(bad[0])
+    return {
+        "count": int(bad.size),
+        "total": int(deltas.size),
+        "first": first,
+        "first_dt": float(deltas[first]),
+        "median_dt": median_dt,
+        "tolerance": tolerance,
+        "min_dt": float(np.min(deltas)),
+        "max_dt": float(np.max(deltas)),
+        "max_relative_error": float(np.max(np.abs(deltas - median_dt)) / median_dt),
+    }
+
+
 def _read_file_facts(path: Path) -> FileFacts:
     facts = FileFacts(path=path)
     if path.suffix.lower() == ".fbx":
@@ -490,6 +510,7 @@ def _read_file_facts(path: Path) -> FileFacts:
     for anim_index, animation in enumerate(doc.get("animations", [])):
         samplers = animation.get("samplers", [])
         times: list[np.ndarray] = []
+        time_inputs: dict[int, np.ndarray] = {}
         moving = False
         targets_skeleton = 0
         for channel in animation.get("channels", []):
@@ -501,7 +522,10 @@ def _read_file_facts(path: Path) -> FileFacts:
             sampler = samplers[int(channel["sampler"])]
             if kept:
                 targets_skeleton += 1
-                times.append(gltf.accessor(int(sampler["input"]))[:, 0])
+                input_index = int(sampler["input"])
+                if input_index not in time_inputs:
+                    time_inputs[input_index] = gltf.accessor(input_index)[:, 0]
+                times.append(time_inputs[input_index])
             path = target.get("path")
             if path not in ("rotation", "translation", "scale"):
                 continue
@@ -521,6 +545,9 @@ def _read_file_facts(path: Path) -> FileFacts:
         deltas = np.diff(all_times)
         deltas = deltas[deltas > 1e-6]
         fps = float(1.0 / np.median(deltas)) if deltas.size else 0.0
+        interval_issues = [_irregular_frame_intervals(t) for t in time_inputs.values()]
+        interval_issue = max((issue for issue in interval_issues if issue is not None),
+                             key=lambda issue: issue["max_relative_error"], default=None)
         facts.animations.append({
             "index": anim_index,
             "name": animation.get("name", ""),
@@ -528,6 +555,7 @@ def _read_file_facts(path: Path) -> FileFacts:
             "frames": int(all_times.size),
             "duration": float(all_times[-1] - all_times[0]) if all_times.size else 0.0,
             "fps": fps,
+            "irregular_intervals": interval_issue,
             "moving": moving,
         })
     for root in [main_root] + [r for r in candidate_roots if r != main_root]:
@@ -552,6 +580,36 @@ def _load_reference_vocabulary(path: Path) -> tuple[Counter, set[str]]:
         words = {word for text in texts for word in str(text).split()}
         word_species.update(words)
     return word_species, species_names
+
+
+def _processed_dir_for_raw(dataset_dir: Path) -> Path | None:
+    """The processed directory ``datasets.jsonl`` pairs with this raw directory."""
+    if not DATASETS_MANIFEST.is_file():
+        return None
+    raw = dataset_dir.resolve()
+    for line in DATASETS_MANIFEST.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        row = json.loads(line)
+        if row.get("raw") and (_ANYTOP_DIR / row["raw"]).resolve() == raw:
+            return _ANYTOP_DIR / row["path"]
+    return None
+
+
+def _configure_dataset_sidecars(processed_dir: Path | None) -> str:
+    """Point the facing rules at this dataset's own sidecars.
+
+    ``chain_forward_joints.jsonl`` indices and the ``ignore_warnings.txt``
+    directives belong to one dataset's skeletons. Left unconfigured, the
+    process falls back to the default dataset's, and a species sharing a name
+    with one there (zoo_upgrade "Crow") is faced by the other rig's chain. A
+    dataset with no processed sidecars yet gets none at all.
+    """
+    if processed_dir is not None and (processed_dir / dataset_tags.SPECIES_TAGS_FILE).is_file():
+        dataset_tags.configure(dataset_dir=str(processed_dir))
+        return str(processed_dir)
+    dataset_tags.configure_from_cond({})
+    return "none"
 
 
 def _load_reference_root_promote_depths(path: Path, dataset_dir: Path) -> dict[str, int]:
@@ -740,6 +798,15 @@ def _check_file_content(species: str, facts: FileFacts, is_reference: bool, repo
         return
     if anim["fps"] and abs(anim["fps"] - TARGET_FPS) > FPS_TOLERANCE:
         report.add(WARN, species, "content", f"{anim['fps']:.2f} fps, expected {TARGET_FPS:.0f}", name)
+    issue = anim["irregular_intervals"]
+    if issue is not None:
+        report.add(WARN, species, "content",
+                   f"irregular key-frame intervals: {issue['count']}/{issue['total']} differ from the "
+                   f"median {issue['median_dt'] * 1000:.2f} ms by more than "
+                   f"{issue['tolerance'] * 1000:.2f} ms "
+                   f"(first at frames {issue['first']}-{issue['first'] + 1}: "
+                   f"{issue['first_dt'] * 1000:.2f} ms; range "
+                   f"{issue['min_dt'] * 1000:.2f}-{issue['max_dt'] * 1000:.2f} ms)", name)
     if anim["frames"] < MIN_FRAMES:
         report.add(ERROR, species, "content",
                    f"only {anim['frames']} key frame(s); clips under {MIN_FRAMES} frames are filtered out", name)
@@ -928,6 +995,17 @@ def _parent_offsets(skeleton: Skeleton) -> np.ndarray:
     return offsets
 
 
+def _rest_positions_from_offsets(offsets: np.ndarray, parents: np.ndarray) -> np.ndarray:
+    positions = np.zeros_like(offsets)
+    done = np.asarray(parents) < 0
+    positions[done] = offsets[done]
+    while not done.all():
+        ready = ~done & done[np.maximum(parents, 0)]
+        positions[ready] = positions[parents[ready]] + offsets[ready]
+        done |= ready
+    return positions
+
+
 def _facing_aligned_offsets(skeleton: Skeleton, species: str) -> np.ndarray:
     """``_parent_offsets`` turned into the frame preprocessing builds the joint
     metadata in: the rest pose rotated by the same facing correction
@@ -1037,87 +1115,6 @@ def _pipeline_pruned_skeleton(skeleton: Skeleton, promote_depth: int = 0) -> tup
     return skeleton, removed
 
 
-def floor_limb_ends_missing_contact(cond: dict, contact_joints=None) -> list[int]:
-    """Leaves that stand on the floor at rest, are named as a limb end, and
-    are not covered by ``contact_joints`` (default: the prefilled contacts,
-    ``prefill_contacts``).
-
-    Named as a limb end: the leaf's own name carries a limb-end word, or its
-    parent's does -- a tip joint often has no word of its own ("Pad" under
-    "BackLeg", "Joint 4" under "Inner Toe 2"). A name with an excluded word
-    (an IK helper, a prop container) does not count.
-
-    The floor is the lowest of those limb ends and the contact joints, not the
-    lowest joint: a tail, a trunk or a tongue can hang below the feet and would
-    lift every foot out of the margin.
-
-    Covered means the leaf is a contact joint, a contact joint's parent, or has
-    one among its three nearest ancestors -- the contact chain the prefill
-    grows from a toe tip up a foot. The usual cause of a hit is a naming rule
-    that drops the joint before the prefill sees it, or a rig whose limbs
-    carry no word the prefill reads.
-    """
-    parents = np.asarray(cond["parents"], dtype=np.int64)
-    names = list(cond["joints_names"])
-    rest = rest_positions_from_offsets(cond["offsets"], parents)
-    height = max(float(np.ptp(rest[:, 1])), 1e-6)
-    if contact_joints is None:
-        contact_joints = prefill_contacts(names, parents, rest)
-    contact = {int(index) for index in contact_joints}
-    has_child = np.zeros(len(parents), dtype=bool)
-    has_child[parents[parents >= 0]] = True
-    texts = [_joint_semantic_text(name) for name in names]
-    excluded = [_text_matches_keywords(text, _CONTACT_EXCLUDE_TOKENS) for text in texts]
-    limb_word = [_text_matches_keywords(text, CONTACT_LIMB_END_TOKENS) for text in texts]
-
-    def named_limb_end(index: int) -> bool:
-        if excluded[index]:
-            return False
-        parent = int(parents[index])
-        return limb_word[index] or (limb_word[parent] and not excluded[parent])
-
-    limb_ends = [
-        index for index in range(len(names))
-        if parents[index] >= 0 and not has_child[index] and named_limb_end(index)
-    ]
-    grounded_pool = limb_ends + sorted(contact)
-    if not grounded_pool:
-        return []
-    floor = float(rest[grounded_pool, 1].min())
-
-    def covered(index: int) -> bool:
-        if any(int(parents[c]) == index for c in contact):
-            return True
-        cursor = index
-        for _ in range(4):
-            if cursor in contact:
-                return True
-            cursor = int(parents[cursor])
-            if cursor < 0:
-                return False
-        return False
-
-    return [
-        index for index in limb_ends
-        if rest[index, 1] <= floor + CONTACT_FLOOR_MARGIN_RATIO * height and not covered(index)
-    ]
-
-
-def _check_contact_coverage(species: str, cond: dict, report: Report, source: str) -> None:
-    names = list(cond["joints_names"])
-    missing = floor_limb_ends_missing_contact(cond)
-    if not missing:
-        return
-    rest = rest_positions_from_offsets(cond["offsets"], cond["parents"])
-    contact_names = [names[index] for index in prefill_contacts(names, cond["parents"], rest)]
-    report.add(WARN, species, "contact",
-               f"floor-level limb end(s) not prefilled as ground contact: "
-               f"{', '.join(names[index] for index in missing)} "
-               f"(contact joints: {', '.join(contact_names) if contact_names else 'none'}); "
-               "mark them in the joint_parts review, or check the joint names "
-               "against the contact keyword rules", source)
-
-
 def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | None, t5: T5Pieces,
                        report: Report, promote_depth: int = 0) -> list[dict]:
     source = facts.path.name
@@ -1141,7 +1138,6 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
         "species_name": species,
     }
     refresh_joint_metadata_in_object_cond(cond)
-    _check_contact_coverage(species, cond, report, source)
     texts = build_joint_embedding_texts(cond)
     canonical = cond["canonical_joint_names"]
     side_labels = cond["joint_side_labels"]
@@ -1291,6 +1287,50 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
         report.add(level, species, "joint-names",
                    f"{len(left)} left vs {len(right)} right joints{details}", source)
 
+    # Blanked joints count here too: the side label still reaches the cond.
+    lateral = _rest_positions_from_offsets(offsets, skeleton.parents)[:, 0]
+    width = float(np.ptp(lateral))
+    on_midline = [
+        f"{raw} ({side_labels[index]}, x={lateral[index]:+.4f})"
+        for index, raw in enumerate(names)
+        if side_labels[index] in ("left", "right") and int(partners[index]) < 0
+        and width > 0 and abs(lateral[index]) <= MIDLINE_SIDE_TOLERANCE * width
+    ]
+    if on_midline:
+        report.add(ERROR, species, "joint-names",
+                   f"{len(on_midline)} unpaired joint(s) on the midline carry a side from their name -- "
+                   f"rename them without the side code: {', '.join(on_midline[:10])}"
+                   f"{' ...' if len(on_midline) > 10 else ''}", source)
+
+    # The facing-aligned frame puts the root on the vertical axis, so its
+    # lateral offset is the midline seen from the root. The midline comes from
+    # the mirror pairs nearest the root (hips, shoulders), which a turned head
+    # or a raised wing in the rest pose does not drag sideways.
+    pairs = [
+        index for index in range(len(names))
+        if side_labels[index] == "left" and int(partners[index]) >= 0
+    ]
+    if pairs:
+        nearest = min(depths[index] for index in pairs)
+        midline = float(np.median([
+            0.5 * (lateral[index] + lateral[int(partners[index])])
+            for index in pairs if depths[index] == nearest
+        ]))
+        rest_extent = float(np.ptp(_rest_positions_from_offsets(offsets, skeleton.parents), axis=0).max())
+        tolerance = ROOT_OFF_MIDLINE_SHARE * rest_extent
+        root = int(np.flatnonzero(skeleton.parents < 0)[0])
+        root_offset = abs(lateral[root] - midline)
+        if rest_extent > 0 and root_offset > tolerance:
+            root_children = np.flatnonzero(skeleton.parents == root)
+            hint = " -- check the root is a real body joint"
+            if len(root_children) == 1 and abs(lateral[root_children[0]] - midline) <= tolerance:
+                hint = (f"; its only child '{names[root_children[0]]}' is on it, so the root is a wrapper "
+                        "with a non-zero translation the loader cannot fold -- move its translation into the "
+                        "child (static value, keys and inverse bind) so it folds")
+            report.add(WARN, species, "joint-names",
+                       f"root '{names[root]}' lies {root_offset:.4g} ({root_offset / rest_extent:.1%} of rig "
+                       f"extent) off the rest pose's midline{hint}", source)
+
     collisions = [c for c in canonical if " Variant" in c]
     if collisions:
         report.add(WARN, species, "joint-names",
@@ -1385,6 +1425,10 @@ def main() -> int:
     parser.add_argument("--reference-cond", type=Path, default=DEFAULT_REFERENCE_COND,
                         help="cond.npy whose joint embedding texts define the known vocabulary "
                              "(default: dataset/merged/cond.npy); 'none' disables the unseen-word check")
+    parser.add_argument("--processed-dir", type=Path,
+                        help="processed dataset directory whose sidecars (chain_forward_joints, "
+                             "ignore_warnings) the facing rules read (default: the row of "
+                             "dataset/datasets.jsonl whose raw is dataset_dir; none when absent)")
     parser.add_argument("--joints", action="store_true", help="print the per-joint name table of every species")
     parser.add_argument("--no-info", action="store_true", help="hide INFO findings")
     parser.add_argument("--report", type=Path, help="write the full report (findings + joint tables) as JSON")
@@ -1397,6 +1441,13 @@ def main() -> int:
     root = args.dataset_dir
     if not root.is_dir():
         parser.error(f"not a directory: {root}")
+
+    # A directory named on the command line must carry the sidecars; only an
+    # inferred one may come up empty (a dataset not preprocessed yet).
+    if args.processed_dir is not None and not (args.processed_dir / dataset_tags.SPECIES_TAGS_FILE).is_file():
+        parser.error(f"--processed-dir has no {dataset_tags.SPECIES_TAGS_FILE}: {args.processed_dir}")
+    sidecars = _configure_dataset_sidecars(args.processed_dir or _processed_dir_for_raw(root))
+    print(f"dataset sidecars: {sidecars}", file=sys.stderr)
 
     vocabulary = None
     promote_depths: dict[str, int] = {}

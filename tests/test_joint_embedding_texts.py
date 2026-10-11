@@ -91,7 +91,9 @@ def test_canonical_variant_suffix_never_enters_embedding_text():
 
     assert object_cond['canonical_joint_names'] == ['Root', 'Jaw', 'Jaw Variant2']
     texts = build_joint_embedding_texts(object_cond)
-    assert texts == ['Root', 'Jaw', 'Jaw']
+    # A head part gets the trailing "HeadFeature" category word (schema 22);
+    # the variant suffix must still never leak in.
+    assert texts == ['Root', 'Jaw HeadFeature', 'Jaw HeadFeature']
     assert all('Variant' not in text for text in texts)
 
 
@@ -137,6 +139,33 @@ def test_limb_code_keeps_fore_hind_apart_while_side_comes_from_geometry():
     assert texts[2].startswith('Right Front Leg'), texts[2]
     assert texts[3].startswith('Left Back Leg'), texts[3]
     assert texts[4].startswith('Right Back Leg'), texts[4]
+
+
+def test_rear_limb_codes_decode_like_back_codes():
+    texts = _embedding_texts(
+        ['Root', 'Bone LF Calf', 'Bone RF Calf', 'Bone LR Calf', 'Bone RR Calf'],
+        [-1, 0, 0, 0, 0],
+        offsets=[[0, 0, 0], [-1, -1, 2], [1, -1, 2], [-1, -1, -2], [1, -1, -2]],
+    )
+    assert texts[1:] == ['Left Front Calf', 'Right Front Calf', 'Left Back Calf', 'Right Back Calf'], texts
+
+
+def test_a_joint_named_only_by_its_rig_stamp_is_blanked():
+    texts = _embedding_texts(
+        ['SPARROW__02', 'SPARROW_ Pelvis_03', 'SPARROW_ Spine_04', 'SPARROW_ Head_05', 'WingLeftFeather_06'],
+        [-1, 0, 1, 2, 2],
+        species_name='ORA_Sparrow',
+    )
+    assert texts[0] == '', texts
+    assert texts[1:4] == ['Pelvis', 'Spine', 'Head'], texts
+
+
+def test_shared_ik_suffix_still_blanks_helper_texts():
+    texts = _embedding_texts(
+        ['Root_IK', 'Hand_IK', 'Foot_IK'],
+        [-1, 0, 0],
+    )
+    assert texts == ['', '', ''], texts
 
 
 def test_wing_and_middle_leg_quadrant_codes_decode_like_leg_codes():
@@ -305,8 +334,8 @@ def test_lm_rm_on_a_head_decodes_as_the_mouth_corners():
         [-1, 0, 1, 1],
         offsets=[[0, 0, 0], [0, 0, 1], [0.05, -0.07, 0.12], [-0.05, -0.07, 0.12]],
     )
-    assert texts[2] == 'Left Head Mouth', texts[2]
-    assert texts[3] == 'Right Head Mouth', texts[3]
+    assert texts[2] == 'Left Head Mouth HeadFeature', texts[2]
+    assert texts[3] == 'Right Head Mouth HeadFeature', texts[3]
 
 
 def test_mirrored_name_typo_folds_onto_the_segment_its_twin_uses():

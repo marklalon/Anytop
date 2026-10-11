@@ -1,3 +1,9 @@
 # Cobra: no named left-right joint pairs
 # impman: orientation calculation fell back to the across-vector heuristic
 # scorpion: no head/neck forward reference was found
+# Cobra_Atk.npy: failed to resolve geometric facing
+# Cobra_Atk2.npy: failed to resolve geometric facing
+# Cobra_Death.npy: failed to resolve geometric facing
+# Cobra_Idle.npy: failed to resolve geometric facing
+# Cobra_Sprint.npy: failed to resolve geometric facing
+# Cobra_Walk.npy: failed to resolve geometric facing
