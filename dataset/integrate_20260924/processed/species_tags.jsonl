@@ -125,3 +125,4 @@
 {"species": "ORA_UndeadDragon", "species_tags": ["Quadruped", "Lumbering"]}
 {"species": "ORA_VoxelHumanoid", "species_tags": ["Biped", "Striding"]}
 {"species": "ORA_Whale", "species_tags": ["Aquatic", "Swimming"]}
+{"species": "SYN_Worm", "species_tags": ["Serpentine", "Crawling"]}
