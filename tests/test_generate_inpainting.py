@@ -142,8 +142,9 @@ _EXPORT_WEIGHT_EPS = 1e-9
 def _export_support(output_frames: int, window_frames: int, loop: bool) -> np.ndarray:
     """``[M, T]`` weights of each window frame in each exported output frame.
 
-    Read off the REAL export path (``_resample_window_to_output`` ->
-    ``resample_motion_features``) rather than a hand-copied mapping: window
+    Read off the REAL export path a frame-range inpaint takes
+    (``_resample_window_to_output(invert=False)`` -> ``resample_motion_features``)
+    rather than a hand-copied mapping: window
     frame ``t`` is handed a one-hot basis vector, so a non-zero cell in the
     exported result means the export read that window frame. If the export
     mapping ever moves, these tests move with it.
@@ -153,7 +154,9 @@ def _export_support(output_frames: int, window_frames: int, loop: bool) -> np.nd
     if weights is None:
         basis = np.zeros((window_frames, window_frames, 12), dtype=np.float32)
         basis[np.arange(window_frames), np.arange(window_frames), 0] = 1.0
-        exported = _resample_window_to_output(basis, output_frames, window_frames, loop)
+        exported = _resample_window_to_output(
+            basis, output_frames, window_frames, loop, invert=False,
+        )
         weights = np.abs(np.asarray(exported, dtype=np.float64)[:, :, 0])
         _EXPORT_SUPPORT_CACHE[key] = weights
     return weights

@@ -11,7 +11,10 @@ import sys
 
 import numpy as np
 
-from data_loaders.truebones.data.dataset import resample_motion_features
+from data_loaders.truebones.data.dataset import (
+    invert_resample_motion_features,
+    resample_motion_features,
+)
 from data_loaders.truebones.truebones_utils.animation_utils import detect_loop_from_features
 from data_loaders.truebones.truebones_utils.loop_verdict import stored_loop_verdict
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
@@ -96,6 +99,7 @@ def resolve_loop_condition(
     target_type,
     action_condition,
     *,
+    window_frames,
     reference_features=None,
     translation_root_index=0,
     fallback_cond_loader=None,
@@ -122,7 +126,8 @@ def resolve_loop_condition(
 
     ``target_type`` ``None`` asks for the corpus-wide answer (``--object_type
     all`` is resolved per species by :func:`_all_species_output_lengths`
-    instead).
+    instead). ``window_frames`` is the checkpoint's native window: a
+    high-frequency loop longer than it is trained open (``auto_loop``).
     """
     if isinstance(loop_mode, bool):
         return loop_mode
@@ -147,6 +152,7 @@ def resolve_loop_condition(
                 target_type,
                 action_group=action_condition['action_group'],
                 action_label=action_condition['action_label'],
+                window_frames=window_frames,
             ),
         )
     if resolved is not None:
@@ -260,6 +266,7 @@ def _resolve_auto_output_lengths(
                 loop=loop,
                 min_frames=min_length,
                 max_frames=MAX_SOURCE_FRAMES_MULT * internal_num_frames,
+                window_frames=internal_num_frames,
             ),
         )
 
@@ -304,6 +311,7 @@ def _all_species_output_lengths(
     for species in cond_dict:
         is_loop = resolve_loop_condition(
             loop_mode, cond_dict, species, action_condition,
+            window_frames=internal_num_frames,
             fallback_cond_loader=fallback_cond_loader,
             verbose=False,
         )
@@ -336,7 +344,7 @@ def _all_species_output_lengths(
     return lengths
 
 
-def _resample_window_to_output(motion_np, target_output_frames, output_frame_count, loop):
+def _resample_window_to_output(motion_np, target_output_frames, output_frame_count, loop, *, invert=True):
     """Rescale a sampled window (``output_frame_count`` frames) to the requested
     output length.
 
@@ -356,10 +364,30 @@ def _resample_window_to_output(motion_np, target_output_frames, output_frame_cou
     inpaint mask is therefore built over the union of both preimages
     (``_map_frame_ranges_to_internal``), and an inpaint holding both clip ends
     forces the export open so the clamped region is not resampled at all.
+
+    An output shorter than the window is the source of a window the loader
+    would have upsampled, so it is solved from the window
+    (``invert_resample_motion_features``) rather than interpolated out of it:
+    interpolation misses every output frame that falls between two window
+    frames and flattens content at a period of a few frames. A longer output
+    was downsampled into the window, which is not invertible, and is
+    interpolated.
+
+    ``invert=False`` keeps the interpolation for every length. A frame-range
+    inpaint or outpaint needs it: its mask frees exactly the window frames each
+    requested output frame interpolates from and clamps the rest to the
+    reference, while every solved output frame reads (with decaying weight)
+    the whole window, so clamped reference frames would pick up the
+    regenerated ones.
     """
     target_output_frames = int(target_output_frames)
-    if target_output_frames == int(output_frame_count):
+    output_frame_count = int(output_frame_count)
+    if target_output_frames == output_frame_count:
         return motion_np
+    if invert and 2 <= target_output_frames < output_frame_count:
+        return invert_resample_motion_features(
+            motion_np, target_output_frames, periodic=bool(loop),
+        )
     return resample_motion_features(
         motion_np, target_output_frames, periodic=bool(loop),
     )

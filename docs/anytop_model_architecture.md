@@ -374,6 +374,17 @@ eval loader 固定 1.0。另一处降级是超出源帧预算被裁剪的 clip�
 里抽，两者是同一次变速。这个下限是数据准备而不是增广，eval loader 同样生效。无固定相位的 clip
 （步态、呼吸等，任意一段仍是同一动作）按录制速度裁剪，不受影响。
 
+**高频 clip 永不降采样。** 某个关节的旋转在周期不超过几帧的频段里能量足够大（逐帧锁定的昆虫
+振翅、一两帧完成的急速动作；判据见 `truebones_utils/high_frequency.py`，分数随 clip 长度一起缓存在
+`cache/motion_lengths.npy`），线性插值一旦把它压到更少的帧就会混叠：周期 4 帧的振翅变成慢拍频，
+周期 2 帧的几乎静止。这类 clip 的源帧预算等于窗口本身：变速只减速、且不减速出窗口，tile
+不超过窗口，超长的按 `resample_speed = 1` 裁剪到窗口长度而不是压进窗口，也不走上面有固定相位
+clip 的强制加速（改为裁剪，事件可能不完整）。超过窗口长度的高频 loop 因此总被裁开、按非 loop
+告知。代价是这类 clip 只出现在 `resample_speed <= 1` 的区间。生成端自动选长度和 `--loop auto`
+用的 clip-length prior（`utils/clip_length_prior.py`）按同一规则读表：高频 clip 的长度上限是
+checkpoint 的窗口，超过窗口的高频 loop 按非 loop 计票，所以不会替这类动作选出训练里没见过的长度
+或 loop 条件。
+
 ### 6.3 损失侧
 
 - `loop_wrap_loss`：loop 首尾的 position、rotation 和 terminal velocity 闭合；
@@ -425,6 +436,14 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 - cross-skeleton reference：先在采样前 retarget 到目标骨架特征空间，再进入上述流程。
 
 因此这些编辑能力不增加 AnyTop forward 的参数量。
+
+**窗口到输出长度。** 模型总是生成固定的内部窗口，再换算成请求的 M 帧（`_resample_window_to_output`）。
+M 小于窗口时，窗口是 loader 会把 M 帧源动作放大成的样子，所以输出按最小二乘**反解**训练时的线性
+插值（`invert_resample_motion_features`，速度通道沿位置路径反解），而不是再插值一次：插值会漏掉
+落在两个窗口帧之间的源帧，削平几帧周期的内容，反解对精确的窗口逐帧还原、对有噪声的窗口做平均。
+M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参考的 inpaint/outpaint 也保留线性插值：
+它的 mask 只放开每个输出帧插值所读的那两个窗口帧，而反解的每个输出帧都以衰减权重读整个窗口，
+会把重新生成的帧漏进被 clamp 的参考帧。
 
 ## 10. 代码入口
 

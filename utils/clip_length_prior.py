@@ -13,7 +13,8 @@ It has two halves that share one on-disk contract:
 * **Baking** (``build_clip_length_prior``, run by
   ``tools/regenerate_dataset_artifacts.py``) walks the dataset's clips and
   writes a per-species table of clip lengths, split by action group + canonical
-  action label and by whether the clip is a loop.
+  action label, by whether the clip is a loop and by whether it is
+  high-frequency (``truebones_utils/high_frequency.py``).
 * **Lookup** (``auto_num_frames`` and ``auto_loop``, run by
   ``sample/generate.py``) reads that table back out of ``cond.npy`` and returns
   the median length for the requested label, or whether the corpus animates
@@ -29,7 +30,10 @@ The length recorded is the clip's *source* length as the loader sees it, i.e.
 after a loop's redundant closing key is dropped, so a loop entry is one period.
 Everything the loader does downstream of that (speed augmentation, tiling, the
 crop to the source-frame budget) spreads the distribution around this value
-rather than moving it.
+rather than moving it -- except for a high-frequency clip, whose source budget
+is the window itself: one longer than the window is cropped to it, and a loop
+that is cropped is trained as an open clip. The lookup applies that rule
+(:func:`_effective_buckets`), so it needs the checkpoint's window.
 """
 
 from __future__ import annotations
@@ -47,11 +51,19 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
 # that meets a newer schema than it knows ignores the table instead of guessing
 # at its shape.
 COND_KEY = "clip_length_prior"
-PRIOR_SCHEMA_VERSION = 1
+PRIOR_SCHEMA_VERSION = 2
 
-# Bucket names inside one label entry.
+# Bucket names inside one label entry: (is_loop, high_frequency) -> name.
 LOOP_BUCKET = "loop"
 ONESHOT_BUCKET = "oneshot"
+HIGH_FREQUENCY_LOOP_BUCKET = "loop_high_frequency"
+HIGH_FREQUENCY_ONESHOT_BUCKET = "oneshot_high_frequency"
+_BUCKETS = {
+    (True, False): LOOP_BUCKET,
+    (False, False): ONESHOT_BUCKET,
+    (True, True): HIGH_FREQUENCY_LOOP_BUCKET,
+    (False, True): HIGH_FREQUENCY_ONESHOT_BUCKET,
+}
 
 # Widening past the target species stops as soon as the pool holds this many
 # clips, and never looks at more than this many neighbours. Small on purpose:
@@ -81,21 +93,22 @@ def split_label_key(key) -> tuple[str, str]:
 
 
 # -- Baking ------------------------------------------------------------------
-def build_clip_length_prior(records: Iterable[tuple[str, str, bool, int]]) -> dict:
-    """Assemble one species' table from ``(group, label, is_loop, length)`` rows.
+def build_clip_length_prior(records: Iterable[tuple[str, str, bool, int, bool]]) -> dict:
+    """Assemble one species' table from ``(group, label, is_loop, length,
+    high_frequency)`` rows.
 
     Lengths are kept as a sorted tuple rather than reduced to a median here: the
     lookup pools several species (and several labels) before it takes one, and a
     median of medians is not the median of the pool.
     """
     by_label: dict[str, dict[str, list[int]]] = {}
-    for action_group, action_label, is_loop, length in records:
+    for action_group, action_label, is_loop, length, high_frequency in records:
         length = int(length)
         if length <= 0:
             continue
         key = label_key(action_group, action_label)
-        buckets = by_label.setdefault(key, {LOOP_BUCKET: [], ONESHOT_BUCKET: []})
-        buckets[LOOP_BUCKET if is_loop else ONESHOT_BUCKET].append(length)
+        buckets = by_label.setdefault(key, {name: [] for name in _BUCKETS.values()})
+        buckets[_BUCKETS[(bool(is_loop), bool(high_frequency))]].append(length)
     return {
         "schema": PRIOR_SCHEMA_VERSION,
         "by_label": {
@@ -189,28 +202,42 @@ def merge_prior_pool(primary, fallback) -> dict:
     return pool
 
 
-def _buckets_for(cond_entry, matches):
+def _effective_buckets(cond_entry, matches, window_frames):
     """The ``(loop_lengths, oneshot_lengths)`` of one species under the labels
-    ``matches`` accepts, pooled across those labels."""
+    ``matches`` accepts, pooled across those labels, as the loader trains them.
+
+    A high-frequency clip is never downsampled, so its source budget is the
+    window: one longer than ``window_frames`` contributes the window, and a
+    loop that long is cropped open and counts as a one-shot. Every other clip
+    keeps its recorded length (the generation's range clamp handles the rest).
+    """
+    window_frames = int(window_frames)
     loops: list[int] = []
     oneshots: list[int] = []
     for key, buckets in _table_for(cond_entry).items():
         if not matches(key) or not isinstance(buckets, Mapping):
             continue
-        loops.extend(int(value) for value in (buckets.get(LOOP_BUCKET) or ()))
-        oneshots.extend(int(value) for value in (buckets.get(ONESHOT_BUCKET) or ()))
+        for (is_loop, high_frequency), name in _BUCKETS.items():
+            for value in buckets.get(name) or ():
+                value = int(value)
+                if high_frequency and value > window_frames:
+                    oneshots.append(window_frames)
+                elif is_loop:
+                    loops.append(value)
+                else:
+                    oneshots.append(value)
     return loops, oneshots
 
 
-def _lengths_for(cond_entry, matches, loop_only: bool) -> list[int]:
-    """Every recorded length of one species under the labels ``matches`` accepts."""
-    loops, oneshots = _buckets_for(cond_entry, matches)
+def _lengths_for(cond_entry, matches, loop_only: bool, window_frames) -> list[int]:
+    """Every effective length of one species under the labels ``matches`` accepts."""
+    loops, oneshots = _effective_buckets(cond_entry, matches, window_frames)
     return loops if loop_only else loops + oneshots
 
 
-def _loop_flags_for(cond_entry, matches) -> list[bool]:
-    """One ``is_loop`` per recorded clip of one species under ``matches``."""
-    loops, oneshots = _buckets_for(cond_entry, matches)
+def _loop_flags_for(cond_entry, matches, window_frames) -> list[bool]:
+    """One trained ``is_loop`` per recorded clip of one species under ``matches``."""
+    loops, oneshots = _effective_buckets(cond_entry, matches, window_frames)
     return [True] * len(loops) + [False] * len(oneshots)
 
 
@@ -382,6 +409,7 @@ def auto_num_frames(
     loop: bool,
     min_frames: int,
     max_frames: int,
+    window_frames: int,
 ) -> Optional[tuple[int, str]]:
     """Median training clip length for ``action_label``, or ``None``.
 
@@ -393,6 +421,9 @@ def auto_num_frames(
     ``loop`` restricts every tier to loop clips, whose recorded length is one
     period: a one-shot clip's length is not a period and would hand ``--loop`` a
     window several cycles long (or a fraction of one).
+
+    ``window_frames`` is the checkpoint's native window, the source budget of a
+    high-frequency clip (see :func:`_effective_buckets`).
     """
     matchers = _matchers_for(action_group, action_label)
     if not matchers:
@@ -400,7 +431,7 @@ def auto_num_frames(
     loop_only = bool(loop)
     found = _first_pool(
         cond_dict, target_type, matchers,
-        lambda entry, matches: _lengths_for(entry, matches, loop_only),
+        lambda entry, matches: _lengths_for(entry, matches, loop_only, window_frames),
     )
     if found is None:
         return None
@@ -414,6 +445,7 @@ def auto_loop(
     *,
     action_group: str,
     action_label: str,
+    window_frames: int,
 ) -> Optional[tuple[bool, str]]:
     """Whether the corpus animates ``action_label`` as a loop, or ``None``.
 
@@ -428,11 +460,17 @@ def auto_loop(
     the corpus holds only as loops (``"jump, up"``, say) has nothing behind the
     open-window pairing and samples off-distribution there. A tie keeps the
     open window, the convention every earlier run defaulted to.
+
+    A high-frequency loop longer than ``window_frames`` is trained open (the
+    loader crops it), so it votes open here.
     """
     matchers = _matchers_for(action_group, action_label)
     if not matchers:
         return None
-    found = _first_pool(cond_dict, target_type, matchers, _loop_flags_for)
+    found = _first_pool(
+        cond_dict, target_type, matchers,
+        lambda entry, matches: _loop_flags_for(entry, matches, window_frames),
+    )
     if found is None:
         return None
     flags, explanation = found

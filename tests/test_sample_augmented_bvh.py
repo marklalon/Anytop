@@ -62,13 +62,16 @@ def test_speed_mode_preserves_training_fit_flag(monkeypatch):
     dataset.opt = SimpleNamespace(preview_mode="motion-speed", motion_speed_aug=1.3)
     captured = {}
 
-    def sampler(self, length, is_loop, budget, *, fit_budget):
+    def sampler(self, length, is_loop, budget, *, fit_budget, slow_only):
         captured["fit_budget"] = fit_budget
+        captured["slow_only"] = slow_only
         return 250
 
     monkeypatch.setattr(MotionDataset, "_sample_motion_speed_target_length", sampler)
     assert dataset._sample_motion_speed_target_length(300, False, 120, fit_budget=True) == 250
-    assert captured["fit_budget"] is True
+    assert captured == {"fit_budget": True, "slow_only": False}
+    assert dataset._sample_motion_speed_target_length(30, False, 60, slow_only=True) == 250
+    assert captured == {"fit_budget": False, "slow_only": True}
 
 
 def test_speed_preview_default(monkeypatch):

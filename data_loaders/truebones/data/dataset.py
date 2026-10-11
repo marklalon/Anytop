@@ -62,6 +62,12 @@ from data_loaders.truebones.truebones_utils.leaf_drop import (
     drop_joints_from_cond,
     sample_leaf_drop,
 )
+from data_loaders.truebones.truebones_utils.high_frequency import (
+    HIGH_FREQUENCY_SCORE_THRESHOLD,
+    HIGH_FREQUENCY_SCORE_VERSION,
+    high_frequency_score,
+    is_high_frequency,
+)
 from data_loaders.truebones.truebones_utils.bone_length_aug import (
     DEFAULT_BONE_LENGTH_AUG,
     augment_bone_lengths,
@@ -330,17 +336,8 @@ def resample_motion_features(motion, target_num_frames, *, periodic=False):
         return motion
 
     step_scale = resample_step_scale(source_frames, target_num_frames, periodic=periodic)
-    # float64 sample positions, and t * L before the division: t * L / T must
-    # land exactly on the source frame whenever it is an integer.
-    if periodic:
-        src = np.arange(target_num_frames, dtype=np.float64) * source_frames / target_num_frames
-        lo = np.floor(src).astype(np.int64).clip(0, source_frames - 1)
-        hi = (lo + 1) % source_frames
-    else:
-        src = np.linspace(0.0, float(source_frames - 1), target_num_frames, endpoint=True, dtype=np.float64)
-        lo = np.floor(src).astype(np.int64).clip(0, source_frames - 1)
-        hi = np.minimum(lo + 1, source_frames - 1)
-    w = (src - lo)[:, None, None].astype(np.float32)
+    lo, hi, w = _resample_frame_weights(source_frames, target_num_frames, periodic=periodic)
+    w = w[:, None, None].astype(np.float32)
     resampled = (motion[lo] * (1.0 - w) + motion[hi] * w).astype(motion.dtype, copy=False)
 
     if resampled.shape[-1] >= 12:
@@ -362,17 +359,10 @@ def resample_motion_features(motion, target_num_frames, *, periodic=False):
         velocity = motion[:, :, 9:12].astype(np.float64, copy=False)
         source_velocity_path = np.zeros((source_frames + 1, motion.shape[1], 3), dtype=np.float64)
         source_velocity_path[1:] = np.cumsum(velocity, axis=0)
-        if periodic:
-            path_src = np.arange(target_num_frames + 1, dtype=np.float64) * source_frames / target_num_frames
-            last_node = source_frames
-        else:
-            # Never past frame L-1, so the terminal row (not a step of an open
-            # clip) is never read.
-            path_src = src
-            last_node = source_frames - 1
-        path_lo = np.floor(path_src).astype(np.int64).clip(0, last_node)
-        path_hi = np.minimum(path_lo + 1, last_node)
-        path_w = (path_src - path_lo)[:, None, None]
+        path_lo, path_hi, path_w, _ = _resample_path_weights(
+            source_frames, target_num_frames, periodic=periodic
+        )
+        path_w = path_w[:, None, None]
         resampled_velocity_path = (
             source_velocity_path[path_lo] * (1.0 - path_w)
             + source_velocity_path[path_hi] * path_w
@@ -389,6 +379,108 @@ def resample_motion_features(motion, target_num_frames, *, periodic=False):
             resampled[0, :, 9:12] = 0.0
 
     return resampled.astype(motion.dtype, copy=False)
+
+
+def _resample_frame_weights(source_frames, target_num_frames, *, periodic=False):
+    """Where ``resample_motion_features`` samples the source: target frame
+    ``t`` is ``(1 - w[t]) * source[lo[t]] + w[t] * source[hi[t]]``."""
+    # float64 sample positions, and t * L before the division: t * L / T must
+    # land exactly on the source frame whenever it is an integer.
+    if periodic:
+        src = np.arange(target_num_frames, dtype=np.float64) * source_frames / target_num_frames
+        lo = np.floor(src).astype(np.int64).clip(0, source_frames - 1)
+        hi = (lo + 1) % source_frames
+    else:
+        src = np.linspace(0.0, float(source_frames - 1), target_num_frames, endpoint=True, dtype=np.float64)
+        lo = np.floor(src).astype(np.int64).clip(0, source_frames - 1)
+        hi = np.minimum(lo + 1, source_frames - 1)
+    return lo, hi, src - lo
+
+
+def _resample_path_weights(source_frames, target_num_frames, *, periodic=False):
+    """Where ``resample_motion_features`` samples the velocity path (node ``k``
+    = position after ``k`` source steps), plus the number of source nodes it
+    reads. A periodic clip samples ``T + 1`` positions up to node ``L`` (so its
+    terminal target row is the wrap delta); an open one samples its ``T``
+    frame positions and never reads past node ``L - 1``, so the terminal row
+    (not a step of an open clip) is never used."""
+    if periodic:
+        path_src = np.arange(target_num_frames + 1, dtype=np.float64) * source_frames / target_num_frames
+        last_node = source_frames
+    else:
+        path_src = np.linspace(0.0, float(source_frames - 1), target_num_frames, endpoint=True, dtype=np.float64)
+        last_node = source_frames - 1
+    path_lo = np.floor(path_src).astype(np.int64).clip(0, last_node)
+    path_hi = np.minimum(path_lo + 1, last_node)
+    return path_lo, path_hi, path_src - path_lo, last_node + 1
+
+
+def _interpolation_matrix(lo, hi, w, columns):
+    matrix = np.zeros((len(lo), int(columns)), dtype=np.float64)
+    rows = np.arange(len(lo))
+    np.add.at(matrix, (rows, lo), 1.0 - w)
+    np.add.at(matrix, (rows, hi), w)
+    return matrix
+
+
+def invert_resample_motion_features(window, source_frames, *, periodic=False):
+    """Least-squares inverse of ``resample_motion_features``: the
+    ``source_frames``-frame clip whose resample to ``window``'s ``T`` frames is
+    closest to ``window``.
+
+    Resampling a window back down by linear interpolation misses every source
+    key that falls between two window frames, which flattens content at a
+    period of a few source frames (a period-4 wing beat loses 5-10 degrees of
+    its swing, a period-2 one 10-20). The forward resample is a full-rank
+    linear map when it upsamples, so solving it instead recovers the source
+    exactly from an exact window and averages a noisy one. Only defined for
+    ``source_frames <= T``; the caller falls back to linear resampling above.
+
+    The velocity channels are inverted through their position path, the same
+    way the forward resample builds them, so they keep the "per source frame"
+    contract.
+    """
+    target_num_frames = int(window.shape[0])
+    source_frames = int(source_frames)
+    if source_frames == target_num_frames:
+        return window
+    if not 2 <= source_frames < target_num_frames:
+        raise ValueError(
+            f"invert_resample_motion_features needs 2 <= source_frames < window frames, "
+            f"got {source_frames} and {target_num_frames}."
+        )
+    lo, hi, w = _resample_frame_weights(source_frames, target_num_frames, periodic=periodic)
+    frame_matrix = _interpolation_matrix(lo, hi, w, source_frames)
+    flat = window.reshape(target_num_frames, -1).astype(np.float64)
+    source = np.linalg.lstsq(frame_matrix, flat, rcond=None)[0]
+    source = source.reshape((source_frames,) + window.shape[1:])
+
+    if window.shape[-1] >= 12:
+        step_scale = resample_step_scale(source_frames, target_num_frames, periodic=periodic)
+        velocity = window[:, :, 9:12].astype(np.float64)
+        # Window path nodes, in positions: a periodic window's T rows are its T
+        # steps (the last one the wrap); an open window's last row repeats the
+        # one before it and is not a step.
+        steps = velocity if periodic else velocity[:-1]
+        window_path = np.zeros((steps.shape[0] + 1,) + velocity.shape[1:], dtype=np.float64)
+        window_path[1:] = np.cumsum(steps * step_scale, axis=0)
+        path_lo, path_hi, path_w, source_nodes = _resample_path_weights(
+            source_frames, target_num_frames, periodic=periodic
+        )
+        path_matrix = _interpolation_matrix(path_lo, path_hi, path_w, source_nodes)
+        # Node 0 is the path origin on both sides; solve for the rest.
+        source_path = np.zeros((source_nodes,) + velocity.shape[1:], dtype=np.float64)
+        source_path[1:] = np.linalg.lstsq(
+            path_matrix[:, 1:], window_path.reshape(window_path.shape[0], -1), rcond=None
+        )[0].reshape((source_nodes - 1,) + velocity.shape[1:])
+        source_velocity = np.diff(source_path, axis=0)
+        if periodic:
+            source[:, :, 9:12] = source_velocity
+        else:
+            source[:-1, :, 9:12] = source_velocity
+            source[-1, :, 9:12] = source_velocity[-1]
+
+    return source.astype(window.dtype, copy=False)
 
 
 def time_scale_motion_features(motion, target_num_frames, *, periodic=False):
@@ -766,7 +858,7 @@ def _motion_length_cache_path(data_root: str) -> Path:
     return cache_dir / "motion_lengths.npy"
 
 
-def _load_motion_length_cache(cache_path: Path) -> dict[str, dict[str, int]]:
+def _load_motion_length_cache(cache_path: Path) -> dict[str, dict]:
     if not cache_path.exists():
         return {}
     try:
@@ -781,13 +873,14 @@ def _load_motion_length_cache(cache_path: Path) -> dict[str, dict[str, int]]:
     return entries
 
 
-def _save_motion_length_cache(cache_path: Path, entries: dict[str, dict[str, int]]) -> None:
+def _save_motion_length_cache(cache_path: Path, entries: dict[str, dict]) -> None:
     np.save(cache_path, {"entries": entries}, allow_pickle=True)
 
 
-def _read_motion_length(motion_path: str) -> int:
+def _read_motion_stats(motion_path: str) -> tuple[int, float]:
+    """(frame count, high_frequency_score) of a stored clip."""
     motion = np.load(motion_path, mmap_mode='r')
-    return len(motion)
+    return len(motion), high_frequency_score(motion)
 
 
 def ensure_joint_name_embeddings(
@@ -936,14 +1029,22 @@ class MotionDataset(data.Dataset):
                         motion_path = pjoin(source.motion_dir, name)
                         stat = os.stat(motion_path)
                         cache_entry = motion_length_cache.get(name)
-                        if cache_entry is not None and cache_entry.get('mtime_ns') == stat.st_mtime_ns and cache_entry.get('size_bytes') == stat.st_size:
+                        if (
+                            cache_entry is not None
+                            and cache_entry.get('mtime_ns') == stat.st_mtime_ns
+                            and cache_entry.get('size_bytes') == stat.st_size
+                            and cache_entry.get('hf_score_version') == HIGH_FREQUENCY_SCORE_VERSION
+                        ):
                             motion_length = int(cache_entry['length'])
+                            hf_score = float(cache_entry['hf_score'])
                         else:
-                            motion_length = _read_motion_length(motion_path)
+                            motion_length, hf_score = _read_motion_stats(motion_path)
                             motion_length_cache[name] = {
                                 'length': int(motion_length),
                                 'mtime_ns': int(stat.st_mtime_ns),
                                 'size_bytes': int(stat.st_size),
+                                'hf_score': float(hf_score),
+                                'hf_score_version': HIGH_FREQUENCY_SCORE_VERSION,
                             }
                             cache_dirty = True
                         key = clip_id(namespace, name)
@@ -954,6 +1055,7 @@ class MotionDataset(data.Dataset):
                                             'motion_metadata': motion_metadata,
                                             'source_namespace': namespace,
                                             'motion_name': name,
+                                            'high_frequency': is_high_frequency(hf_score),
                                            }
 
                         new_name_list.append(key)
@@ -993,6 +1095,11 @@ class MotionDataset(data.Dataset):
         self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
         self.name_list = name_list
+        high_frequency_count = sum(bool(entry['high_frequency']) for entry in data_dict.values())
+        print(
+            f"[dataset] high-frequency clips (score >= {HIGH_FREQUENCY_SCORE_THRESHOLD}): "
+            f"{high_frequency_count} / {len(data_dict)}, never downsampled"
+        )
         self.reset_min_len(self.min_length)
 
     def reset_min_len(self, length):
@@ -1046,7 +1153,7 @@ class MotionDataset(data.Dataset):
             return 1
         return int(random.randint(2, max_tile_count))
 
-    def _sample_motion_speed_target_length(self, length, is_loop, max_source_length, *, fit_budget=False):
+    def _sample_motion_speed_target_length(self, length, is_loop, max_source_length, *, fit_budget=False, slow_only=False):
         """Pick the frame count a clip is time-scaled to before any other
         augmentation, or ``length`` for no change.
 
@@ -1076,6 +1183,11 @@ class MotionDataset(data.Dataset):
         it can. The augmentation then draws in ``[floor, max(R, floor)]``, so
         the speed-up and the augmentation are one time-scale, not two.
 
+        ``slow_only`` marks a high-frequency clip (see high_frequency.py),
+        which must never be resampled to fewer frames: the draw is capped at
+        speed 1, and a clip that fits the budget -- loop or not -- is never
+        slowed past it. It excludes ``fit_budget``, which is a speed-up.
+
         The narrowed interval is sampled directly rather than clipped into,
         so no probability mass piles up at the bounds (which would just be a
         new spike).
@@ -1088,6 +1200,8 @@ class MotionDataset(data.Dataset):
             raise ValueError(f"motion_speed_aug must be >= 1.0 (1.0 = off), got {ratio}.")
         if not 0.0 <= prob <= 1.0:
             raise ValueError(f"motion_speed_aug_prob must be in [0, 1], got {prob}.")
+        if fit_budget and slow_only:
+            raise ValueError("fit_budget (a forced speed-up) and slow_only are exclusive.")
         if length < 2:
             return length
         floor_length = max(2, min(int(self.min_length), length))
@@ -1099,7 +1213,7 @@ class MotionDataset(data.Dataset):
             fit_speed = min(float(length) / float(budget), float(MAX_FIT_SPEEDUP))
             if length <= MAX_FIT_SPEEDUP * budget:
                 ceil_length = budget
-        elif is_loop and length <= budget:
+        elif (is_loop or slow_only) and length <= budget:
             ceil_length = budget
 
         def scaled_length(speed):
@@ -1114,6 +1228,8 @@ class MotionDataset(data.Dataset):
         # speed > 1 shortens the clip.
         speed_lo = max(1.0 / ratio, fit_speed)
         speed_hi = max(min(ratio, float(length) / float(floor_length)), fit_speed)
+        if slow_only:
+            speed_hi = min(speed_hi, 1.0)
         if ceil_length is not None:
             speed_lo = max(speed_lo, float(length) / float(ceil_length))
         if speed_lo >= speed_hi:
@@ -1218,7 +1334,17 @@ class MotionDataset(data.Dataset):
             motion = _drop_loop_closing_frame(motion)
             m_length = int(motion.shape[0])
 
-        max_source_length = target_num_frames * MAX_SOURCE_FRAMES_MULT
+        # A high-frequency clip (high_frequency.py) is never resampled to fewer
+        # frames, so its source budget is the window itself: the speed draw
+        # only slows it down and never past the window, tiling stays within
+        # the window, and an over-long one is cropped to the window at
+        # resample_speed 1 instead of squeezed into it. It also skips the
+        # phase-anchored speed-up and is cropped mid-event instead.
+        high_frequency = bool(data.get('high_frequency', False))
+        if high_frequency:
+            max_source_length = target_num_frames
+        else:
+            max_source_length = target_num_frames * MAX_SOURCE_FRAMES_MULT
         # ── Motion-speed augmentation (applies to every clip) ──
         # Runs ahead of the loop augmentations and is invisible to everything
         # after it: the time-scaled clip is simply a shorter/longer source clip
@@ -1236,7 +1362,9 @@ class MotionDataset(data.Dataset):
         label_phase_free = loop_is_phase_free(motion_metadata.get('action_label'))
         motion_speed_applied = 1.0
         time_scaled_length = self._sample_motion_speed_target_length(
-            m_length, is_loop, max_source_length, fit_budget=not label_phase_free
+            m_length, is_loop, max_source_length,
+            fit_budget=not label_phase_free and not high_frequency,
+            slow_only=high_frequency,
         )
         if time_scaled_length != m_length:
             motion, motion_speed_applied = time_scale_motion_features(
@@ -1269,16 +1397,15 @@ class MotionDataset(data.Dataset):
             m_length = int(motion.shape[0])
 
         if m_length > max_source_length:
-            # A clip longer than the n*MAX_SOURCE_FRAMES_MULT budget is cropped
-            # (a phase-anchored one only past MAX_FIT_SPEEDUP of it: below that
-            # the speed sampler already fitted it),
-            # which breaks the closed loop, so a loop is downgraded to non-loop here
-            # and told so.
+            # A clip longer than the source budget (n*MAX_SOURCE_FRAMES_MULT, or
+            # n for a high-frequency clip) is cropped (a phase-anchored one only
+            # past MAX_FIT_SPEEDUP of it: below that the speed sampler already
+            # fitted it), which breaks the closed loop, so a loop is downgraded
+            # to non-loop here and told so.
             # The crop LENGTH is fixed at the full budget -- every over-long
-            # clip contributes n*MAX_SOURCE_FRAMES_MULT source frames, resampled
-            # to the target length below at resample_speed MAX_SOURCE_FRAMES_MULT --
-            # while the window POSITION stays random so repeated epochs still
-            # see the whole clip.
+            # clip contributes budget source frames, resampled to the target
+            # length below at resample_speed budget/n -- while the window
+            # POSITION stays random so repeated epochs still see the whole clip.
             if loop_condition_active:
                 loop_uncond = True
             loop_condition_active = False

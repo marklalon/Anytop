@@ -570,6 +570,7 @@ def main(args=None, cond_dict=None, runtime=None):
             cond_dict,
             object_type,
             _action_condition,
+            window_frames=internal_num_frames,
             fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file),
         )
     if requested_output_frames is None and not reference_motion_path:
@@ -653,6 +654,7 @@ def main(args=None, cond_dict=None, runtime=None):
             cond_dict,
             object_type,
             _action_condition,
+            window_frames=internal_num_frames,
             reference_features=ref_features_full,
             translation_root_index=int(cond_dict[object_type].get('translation_root_index', 0)),
         )
@@ -901,6 +903,9 @@ def main(args=None, cond_dict=None, runtime=None):
         inpaint_y_anchor_spans(inpaint_frames_arg, target_output_frames)
         if user_inpaint_active else None
     )
+    # A frame-range clamp (inpaint frames, outpaint) is built on the export's
+    # interpolation preimage, so it keeps the interpolating export.
+    export_inverts_window = not (inpaint_frames_arg or outpaint_active)
     export_tasks = []
     mark_canonical_cond_entry(cond_dict[object_type])
     for sample_idx, motion in enumerate(sample):
@@ -914,6 +919,7 @@ def main(args=None, cond_dict=None, runtime=None):
 
         motion_np = _resample_window_to_output(
             motion_np, target_output_frames, output_frame_count, loop_condition,
+            invert=export_inverts_window,
         )
 
         # The per-species translation root (the joint carrying the locomotion
@@ -936,6 +942,7 @@ def main(args=None, cond_dict=None, runtime=None):
             # pairs these two frame by frame.
             ref_motion_np = _resample_window_to_output(
                 ref_motion_np, target_output_frames, output_frame_count, loop_condition,
+                invert=export_inverts_window,
             )
             reseat_delta = _reground_inpaint_joint_y(
                 motion_np, ref_motion_np, reseat_free_joints, parents,

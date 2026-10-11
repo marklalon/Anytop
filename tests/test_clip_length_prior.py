@@ -31,14 +31,19 @@ from utils.clip_length_prior import (
 )
 
 
+def _rows(records):
+    """Test rows may omit the trailing high_frequency flag (False)."""
+    return [tuple(row) + (False,) * (5 - len(row)) for row in records]
+
+
 def _entry(records, **extra):
-    entry = {COND_KEY: build_clip_length_prior(records)}
+    entry = {COND_KEY: build_clip_length_prior(_rows(records))}
     entry.update(extra)
     return entry
 
 
 def _ask(cond, target, label, *, group="locomotion", loop=False,
-         min_frames=20, max_frames=120):
+         min_frames=20, max_frames=120, window_frames=60):
     return auto_num_frames(
         cond,
         target,
@@ -47,17 +52,18 @@ def _ask(cond, target, label, *, group="locomotion", loop=False,
         loop=loop,
         min_frames=min_frames,
         max_frames=max_frames,
+        window_frames=window_frames,
     )
 
 
 # -- Baking ------------------------------------------------------------------
 def test_build_splits_loop_and_oneshot_per_label():
-    table = build_clip_length_prior([
+    table = build_clip_length_prior(_rows([
         ("locomotion", "walk, forward", True, 41),
         ("locomotion", "walk, forward", False, 130),
         ("locomotion", "walk, forward", True, 45),
         ("stationary", "idle", True, 121),
-    ])
+    ]))
     assert table["schema"] == PRIOR_SCHEMA_VERSION
     walk = table["by_label"][label_key("locomotion", "walk, forward")]
     assert walk[LOOP_BUCKET] == (41, 45)
@@ -68,7 +74,7 @@ def test_build_splits_loop_and_oneshot_per_label():
 
 
 def test_build_drops_nonpositive_lengths():
-    table = build_clip_length_prior([("locomotion", "walk", True, 0)])
+    table = build_clip_length_prior(_rows([("locomotion", "walk", True, 0)]))
     assert table["by_label"] == {}
 
 
@@ -354,10 +360,12 @@ def test_auto_output_lengths_falls_back_to_the_checkpoint_cond(capsys):
 
 
 # -- --loop auto ---------------------------------------------------------------
-def _ask_loop(cond, target, label, *, group="transition"):
+def _ask_loop(cond, target, label, *, group="transition", window_frames=60):
     from utils.clip_length_prior import auto_loop
 
-    return auto_loop(cond, target, action_group=group, action_label=label)
+    return auto_loop(
+        cond, target, action_group=group, action_label=label, window_frames=window_frames,
+    )
 
 
 def test_auto_loop_follows_the_majority_of_the_labels_clips():
@@ -407,7 +415,7 @@ def test_resolve_loop_condition_modes(capsys):
 
     cond = {"ns/Horse": _entry([("transition", "jump, up", True, 20)] * 3)}
     label = {"action_group": "transition", "action_label": "jump, up"}
-    common = {}
+    common = {"window_frames": 60}
     # Explicit modes never consult the corpus.
     assert resolve_loop_condition("on", {}, "ns/Horse", None, **common) is True
     assert resolve_loop_condition("off", cond, "ns/Horse", label, **common) is False
@@ -419,6 +427,7 @@ def test_resolve_loop_condition_modes(capsys):
     open_clip = _clip_with_verdict(False)
     assert resolve_loop_condition(
         "auto", cond, "ns/Horse", label, reference_features=open_clip, translation_root_index=0,
+        **common,
     ) is False
     assert "stored loop verdict" in capsys.readouterr().out
     # ...and is off with nothing to key on.
@@ -440,6 +449,7 @@ def test_resolve_loop_condition_borrows_the_checkpoint_cond(capsys):
     label = {"action_group": "transition", "action_label": "jump, up"}
     assert resolve_loop_condition(
         "auto", narrow, "ns/NewRig", label, fallback_cond_loader=lambda: full,
+        window_frames=60,
     ) is True
     assert "from the checkpoint's cond" in capsys.readouterr().out
 
@@ -606,3 +616,62 @@ def test_all_species_lengths_resolve_loop_per_species(capsys):
         loop_mode="on",
     )
     assert lengths == {"ns/Horse": (30, 0.5, True), "ns/Frog": (30, 0.5, True)}
+
+
+# -- High-frequency clips -----------------------------------------------------
+def test_build_files_high_frequency_clips_in_their_own_buckets():
+    from utils.clip_length_prior import (
+        HIGH_FREQUENCY_LOOP_BUCKET,
+        HIGH_FREQUENCY_ONESHOT_BUCKET,
+    )
+
+    table = build_clip_length_prior([
+        ("stationary", "hover", True, 40, False),
+        ("stationary", "hover", True, 103, True),
+        ("stationary", "hover", False, 72, True),
+    ])
+    hover = table["by_label"][label_key("stationary", "hover")]
+    assert hover[LOOP_BUCKET] == (40,)
+    assert hover[HIGH_FREQUENCY_LOOP_BUCKET] == (103,)
+    assert hover[HIGH_FREQUENCY_ONESHOT_BUCKET] == (72,)
+
+
+def test_high_frequency_lengths_are_capped_at_the_window():
+    # Giantbee-like: every hover clip beats its wings and runs past the window.
+    # The loader crops those to the window, so that is the length it trained.
+    cond = {"ns/Bee": _entry([
+        ("stationary", "hover", True, 103, True),
+        ("stationary", "hover", False, 79, True),
+        ("stationary", "hover", False, 90, True),
+    ])}
+    frames, _ = _ask(cond, "ns/Bee", "hover", group="stationary", window_frames=60)
+    assert frames == 60
+    # The same lengths without the flag only meet the 2T clamp.
+    plain = {"ns/Bee": _entry([
+        ("stationary", "hover", True, 103),
+        ("stationary", "hover", False, 79),
+        ("stationary", "hover", False, 90),
+    ])}
+    assert _ask(plain, "ns/Bee", "hover", group="stationary", window_frames=60)[0] == 90
+
+
+def test_high_frequency_loop_past_the_window_counts_as_a_oneshot():
+    cond = {"ns/Bee": _entry([
+        ("stationary", "hover", True, 40, True),   # fits: trained as a loop
+        ("stationary", "hover", True, 103, True),  # cropped: trained open
+        ("stationary", "hover", True, 72, True),   # cropped: trained open
+    ])}
+    # The loop pool keeps only the clip that stayed a loop...
+    assert _ask(cond, "ns/Bee", "hover", group="stationary", loop=True)[0] == 40
+    # ...and the loop verdict follows what the loader told the model.
+    is_loop, explanation = _ask_loop(cond, "ns/Bee", "hover", group="stationary")
+    assert is_loop is False
+    assert explanation.startswith("1 of 3")
+    # A wider window keeps them all loops.
+    assert _ask_loop(cond, "ns/Bee", "hover", group="stationary", window_frames=120)[0] is True
+
+
+def test_an_old_schema_table_is_ignored():
+    entry = _entry([("stationary", "hover", True, 40)])
+    entry[COND_KEY] = dict(entry[COND_KEY], schema=1)
+    assert not has_clip_length_prior({"ns/Bee": entry})
