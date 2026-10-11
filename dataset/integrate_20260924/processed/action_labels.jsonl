@@ -120,7 +120,7 @@
 {"clip": "DMM_Police05_ToolAttack01", "action_group": "stationary", "action_label": "idle, pull", "is_loop": false, "reviewed": true}
 {"clip": "DMM_Thief01_Anger", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief01_Cast", "action_group": "stationary", "action_label": "attack, throw", "is_loop": false, "reviewed": true}
-{"clip": "DMM_Thief01_Crawl", "action_group": "locomotion", "action_label": "crawl, forward", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief01_Crawl", "action_group": "locomotion", "action_label": "crawl, hurt, forward", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief01_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "DMM_Thief01_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief01_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
@@ -135,7 +135,7 @@
 {"clip": "DMM_Thief01_ToolAttack01", "action_group": "stationary", "action_label": "idle, pull", "is_loop": false, "reviewed": true}
 {"clip": "DMM_Thief01_Unlock", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief04_Cast", "action_group": "stationary", "action_label": "attack, throw", "is_loop": false, "reviewed": true}
-{"clip": "DMM_Thief04_Crawl", "action_group": "locomotion", "action_label": "crawl, forward", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief04_Crawl", "action_group": "locomotion", "action_label": "crawl, hurt, forward", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief04_Dead", "action_group": "stationary", "action_label": "crawl, idle", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief04_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "DMM_Thief04_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
@@ -149,7 +149,7 @@
 {"clip": "DMM_Thief04_Throw", "action_group": "stationary", "action_label": "attack, throw", "is_loop": false, "reviewed": true}
 {"clip": "DMM_Thief04_ToolAttack01", "action_group": "stationary", "action_label": "idle, pull", "is_loop": false, "reviewed": true}
 {"clip": "DMM_Thief04_Unlock", "action_group": "stationary", "action_label": "work, crouch", "is_loop": true, "reviewed": true}
-{"clip": "DMM_Thief06_Crawl", "action_group": "locomotion", "action_label": "crawl, forward", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief06_Crawl", "action_group": "locomotion", "action_label": "crawl, hurt, forward", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief06_Dead", "action_group": "stationary", "action_label": "crawl, idle", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief06_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "DMM_Thief06_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}

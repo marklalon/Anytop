@@ -320,7 +320,7 @@
 {"clip": "KI_Soldier_Crawling01CombatIdle01", "action_group": "stationary", "action_label": "idle, crawl, aim", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Crawling01Death01", "action_group": "transition", "action_label": "die, crawl", "is_loop": false, "reviewed": true}
 {"clip": "KI_Soldier_Crawling01DrawWeapon01", "action_group": "transition", "action_label": "draw, crawl", "is_loop": false, "reviewed": true}
-{"clip": "KI_Soldier_Crawling01Forward", "action_group": "locomotion", "action_label": "crawl, forward", "is_loop": true, "reviewed": true}
+{"clip": "KI_Soldier_Crawling01Forward", "action_group": "locomotion", "action_label": "crawl, forward, weapon", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Crawling01Grenade01", "action_group": "stationary", "action_label": "attack, crawl, left, throw", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Crawling01Idle01", "action_group": "stationary", "action_label": "idle, crawl", "is_loop": true, "reviewed": true}
 {"clip": "KI_Soldier_Crawling01Shot01", "action_group": "stationary", "action_label": "attack, crawl, gun", "is_loop": true, "reviewed": true}
