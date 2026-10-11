@@ -46,7 +46,7 @@ from .joint_name_canonical import (  # noqa: F401  re-exported
     _disambiguate_duplicate_canonical_names,
     assign_canonical_joint_names,
     collect_joint_name_collision_groups,
-    write_joint_name_collision_report,
+    report_joint_name_collisions,
     refresh_joint_metadata_in_object_cond,
     refresh_joint_metadata_in_cond_dict,
 )

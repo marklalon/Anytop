@@ -175,9 +175,6 @@ for entry in blank[:60]:
 ### 1.5 唯一性与家族分布
 
 ```bash
-# canonical 名撞车报告（预处理会自动写并在控制台告警）
-cat dataset/<新数据集>/joint_name_collision_report.json
-
 # 解剖家族分布：看「家族数 / 关节数」的比例，和现有数据集同量级即可；
 # 比例暴涨说明有一整类名字没被归并
 python tools/family_keys_stats.py           # 在仓库根运行

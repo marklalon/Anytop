@@ -8,9 +8,7 @@ Re-exported by ``animation_utils``.
 """
 
 from collections import Counter, defaultdict
-import json
 import numpy as np
-from os.path import join as pjoin
 import re
 
 
@@ -873,22 +871,13 @@ def collect_joint_name_collision_groups(cond):
     return collision_groups
 
 
-def write_joint_name_collision_report(cond, save_dir):
+def report_joint_name_collisions(cond):
     collision_groups = collect_joint_name_collision_groups(cond)
-    report = {
-        'num_objects': int(len(cond)),
-        'num_collision_groups': int(len(collision_groups)),
-        'collision_groups': collision_groups,
-    }
-    report_path = pjoin(save_dir, 'joint_name_collision_report.json')
-    with open(report_path, 'w', encoding='utf-8') as report_file:
-        json.dump(report, report_file, indent=2)
-
     if collision_groups:
         # Looked up at call time: the warning collectors monkey-patch
         # ``animation_utils._warn``.
         from . import animation_utils as _animation_utils
-        _animation_utils._warn(f'canonical joint-name collision scan found {len(collision_groups)} group(s); report: {report_path}')
+        _animation_utils._warn(f'canonical joint-name collision scan found {len(collision_groups)} group(s)')
         for group in collision_groups[:20]:
             raw_names = ' | '.join(row['raw_name'] for row in group['rows'])
             print(f"  - {group['object_type']}: {group['canonical_name']} <- {raw_names}")

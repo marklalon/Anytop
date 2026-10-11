@@ -49,7 +49,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     attach_t5_embeddings_to_cond,
-    write_joint_name_collision_report,
+    report_joint_name_collisions,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
     mark_canonical_cond_entry,
@@ -85,10 +85,7 @@ from tools.build_action_label_embeddings import build_word_table  # noqa: E402
 from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
 
 
-from utils.misc import (
-    infer_object_type_from_filename,
-    normalize_identifier as _normalize_identifier,
-)
+from utils.misc import infer_object_type_from_filename
 from utils.clip_length_prior import (  # noqa: E402
     COND_KEY as CLIP_LENGTH_PRIOR_COND_KEY,
     build_clip_length_prior,
@@ -116,39 +113,6 @@ def _write_metadata_summary(
         handle.write(f"~~~~ objects_counts - Total: {total_clips} ~~~~\n")
         for object_type in sorted(object_counts):
             handle.write(f"{object_type}: {object_counts[object_type]}\n")
-
-
-def _rewrite_positions_error_file(dataset_dir_path: Path, motion_entries: dict[str, dict[str, object]]) -> None:
-    positions_error_path = dataset_dir_path / "positions_error_rate.txt"
-    existing_lines: list[str] = []
-    if positions_error_path.exists():
-        existing_lines = positions_error_path.read_text(encoding="utf-8").splitlines()
-
-    header = "Position squared error per source clip:"
-    existing_entries: list[str] = []
-    if existing_lines:
-        first_line = existing_lines[0].strip()
-        if first_line.startswith(header):
-            trailing_entry = first_line[len(header):].strip()
-            if trailing_entry:
-                existing_entries.append(trailing_entry)
-        existing_entries.extend(line.strip() for line in existing_lines[1:] if line.strip())
-
-    motion_signatures = [
-        _normalize_identifier(str(entry.get("object_type", "")))
-        for entry in motion_entries.values()
-    ]
-    filtered_lines: list[str] = []
-    for line in existing_entries:
-        normalized_line = _normalize_identifier(line)
-        if any(obj and obj in normalized_line for obj in motion_signatures):
-            filtered_lines.append(line)
-
-    output_lines = ["Position squared error per source clip:__artifact_regenerated__: 0.000000"]
-    output_lines.extend(filtered_lines)
-    if len(output_lines) == 1:
-        output_lines.append("__artifact_regenerated_placeholder__: 0.000000")
-    positions_error_path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
 
 
 def _infer_object_type_from_motion_name(
@@ -600,18 +564,15 @@ def _regenerate_dataset_artifacts(
     inspection_dir = dataset_dir_path / "joint_name_inspection"
     if inspection_dir.exists():
         shutil.rmtree(inspection_dir)
-    collision_report_path = dataset_dir_path / "joint_name_collision_report.json"
-    if collision_report_path.exists():
-        collision_report_path.unlink()
 
     attach_t5_embeddings_to_cond(
         rebuilt_cond,
         str(dataset_dir_path),
         t5_name=t5_model,
-        write_collision_report=False,
+        report_collisions=False,
     )
     print(f"[OK] T5 embeddings attached in {time.time() - t0:.1f}s")
-    write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))
+    report_joint_name_collisions(rebuilt_cond)
 
     if reseat_rest:
         t0 = time.time()
@@ -656,7 +617,6 @@ def _regenerate_dataset_artifacts(
         total_frames,
     )
     write_motion_metadata(dataset_dir_path, rebuilt_motion_metadata, len(motion_files))
-    _rewrite_positions_error_file(dataset_dir_path, rebuilt_motion_metadata)
 
     return dataset_dir_path
 

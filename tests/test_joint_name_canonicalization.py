@@ -1,9 +1,7 @@
-import json
 import numpy as np
 import pytest
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -12,7 +10,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     collect_joint_name_collision_groups,
     canonical_name_for_bvh,
     refresh_joint_metadata_in_object_cond,
-    write_joint_name_collision_report,
+    report_joint_name_collisions,
 )
 from data_loaders.truebones.truebones_utils.animation_utils import (
     _joint_disambiguation_tokens,
@@ -315,7 +313,7 @@ def test_refresh_joint_metadata_disambiguates_duplicate_canonical_names():
     assert object_cond["canonical_bvh_joint_names"] == ["Hips", "HipsJoint", "Tail01", "Tail01Copy"]
 
 
-def test_joint_name_collision_report_is_empty_after_disambiguation():
+def test_joint_name_collisions_are_empty_after_disambiguation():
     object_cond = {
         "object_type": "Scorpion-2",
         "joints_names": ["Hips", "jt_Hips_C", "jt_Tail01_C", "jt_Tail01x_C"],
@@ -327,13 +325,7 @@ def test_joint_name_collision_report_is_empty_after_disambiguation():
 
     assert collect_joint_name_collision_groups(cond) == []
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        report_groups = write_joint_name_collision_report(cond, temp_dir)
-        report_path = Path(temp_dir) / "joint_name_collision_report.json"
-        assert report_groups == []
-        assert report_path.exists()
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        assert report["num_collision_groups"] == 0
+    assert report_joint_name_collisions(cond) == []
 
 
 def test_translated_romaji_is_not_reused_as_a_collision_suffix():
@@ -369,7 +361,7 @@ if __name__ == "__main__":
         test_toe_root_indices_are_preserved_for_parallel_digits,
         test_refresh_joint_metadata_rewrites_stale_canonical_names,
         test_refresh_joint_metadata_disambiguates_duplicate_canonical_names,
-        test_joint_name_collision_report_is_empty_after_disambiguation,
+        test_joint_name_collisions_are_empty_after_disambiguation,
         test_translated_romaji_is_not_reused_as_a_collision_suffix,
     ]
 

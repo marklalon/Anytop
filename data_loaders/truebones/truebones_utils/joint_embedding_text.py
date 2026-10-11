@@ -25,7 +25,7 @@ from .joint_name_canonical import (
     normalize_joint_name,
     refresh_joint_metadata_in_object_cond,
     strip_joint_name_prefix,
-    write_joint_name_collision_report,
+    report_joint_name_collisions,
 )
 from .joint_struct_features import child_lists
 
@@ -898,7 +898,7 @@ def _blank_unseen_joint_texts(embedding_texts_by_object, known_texts):
     return blanked_by_object
 
 
-def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True,
+def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', report_collisions=True,
                                   t5_conditioner=None, embedding_cache_cond=None,
                                   blank_unseen_joint_names=False):
     """Bake joint-name T5 embeddings into every entry of *cond*.
@@ -1020,5 +1020,5 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
         with open(inspection_path, 'w', encoding='utf-8') as inspection_file:
             json.dump(rows, inspection_file, indent=2)
 
-    if write_collision_report:
-        write_joint_name_collision_report(cond, save_dir)
+    if report_collisions:
+        report_joint_name_collisions(cond)

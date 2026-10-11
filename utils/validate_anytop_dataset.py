@@ -105,19 +105,18 @@ def resolve_dataset_dir(raw_value: str | None) -> Path:
     return path.resolve()
 
 
-def read_required_artifacts(dataset_dir: Path, silent: bool = False) -> tuple[Path, Path, Path, Path, Path]:
+def read_required_artifacts(dataset_dir: Path, silent: bool = False) -> tuple[Path, Path, Path, Path]:
     motions_dir = dataset_dir / MOTION_DIR
     bvhs_dir = dataset_dir / BVHS_DIR
     cond_path = dataset_dir / "cond.npy"
     metadata_path = dataset_dir / "metadata.txt"
-    positions_error_path = dataset_dir / "positions_error_rate.txt"
 
-    for path in [dataset_dir, motions_dir, cond_path, metadata_path, positions_error_path]:
+    for path in [dataset_dir, motions_dir, cond_path, metadata_path]:
         require_valid(path.exists(), f"missing required artifact: {path}")
 
     if not silent:
         print_ok(f"required artifacts found under {dataset_dir}")
-    return motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path
+    return motions_dir, bvhs_dir, cond_path, metadata_path
 
 
 def _validate_optional_semantic_metadata(object_type: str, object_cond: dict, n_joints: int) -> None:
@@ -1244,7 +1243,7 @@ def prepare_dataset_for_validation(
     objects_subset: str,
     sample_count: int,
 ) -> None:
-    motions_dir, bvhs_dir, cond_path, _metadata_path, _positions_error_path = read_required_artifacts(dataset_dir, silent=True)
+    motions_dir, bvhs_dir, cond_path, _metadata_path = read_required_artifacts(dataset_dir, silent=True)
     cond = load_cond(cond_path)
 
     deleted_joint_stems = _prune_excess_joint_motions(motions_dir, bvhs_dir, cond, sample_count)
@@ -1260,21 +1259,6 @@ def prepare_dataset_for_validation(
         regenerate_dataset_artifacts(str(dataset_dir))
         cond = load_cond(cond_path)
 
-    validate_positions_error_file(_positions_error_path)
-
-
-def validate_positions_error_file(positions_error_path: Path) -> None:
-    """Validate that positions_error_rate.txt exists and has the expected format."""
-    try:
-        content = positions_error_path.read_text(encoding="utf-8").strip()
-        require_valid(content.startswith("Position squared error per source clip:"), "positions_error_rate.txt has unexpected header")
-        if len(content.splitlines()) == 1:
-            print_warn("positions_error_rate.txt has no per-file entries")
-        else:
-            print_ok("positions_error_rate.txt contains per-file error entries")
-    except ValidationError as e:
-        print_warn(f"validation error: {e}")
-        raise
 
 
 def parse_args() -> argparse.Namespace:
@@ -1338,7 +1322,7 @@ def _validate_one_dataset(dataset_dir: Path, args) -> None:
         args.sample_count,
     )
 
-    motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = read_required_artifacts(dataset_dir)
+    motions_dir, bvhs_dir, cond_path, metadata_path = read_required_artifacts(dataset_dir)
     cond = validate_cond_file(cond_path, args.objects_subset)
 
     motion_files = sorted(motions_dir.glob("*.npy"))
@@ -1355,8 +1339,6 @@ def _validate_one_dataset(dataset_dir: Path, args) -> None:
     )
     
     validate_tpose_orientation(cond, args.orientation_threshold_deg)
-
-    validate_positions_error_file(positions_error_path)
 
     print("[PASS] dataset validation completed successfully")
 

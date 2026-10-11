@@ -1138,7 +1138,6 @@ def run_validation(
         validate_cond_file,
         validate_motion_files,
         validate_motion_metadata,
-        validate_positions_error_file,
     )
 
     try:
@@ -1148,7 +1147,7 @@ def run_validation(
             sample_count,
         )
 
-        motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = read_required_artifacts(dataset_dir)
+        motions_dir, bvhs_dir, cond_path, metadata_path = read_required_artifacts(dataset_dir)
         cond = validate_cond_file(cond_path, objects_subset)
         motion_files = sorted(motions_dir.glob("*.npy"))
         validate_metadata(metadata_path, motion_files, cond)
@@ -1164,8 +1163,6 @@ def run_validation(
 
         from validate_anytop_dataset import validate_tpose_orientation
         validate_tpose_orientation(cond, orientation_threshold_deg)
-
-        validate_positions_error_file(positions_error_path)
 
         print(f"[OK] total motions: {len(motion_files)}")
         print("[PASS] dataset validation completed successfully")
