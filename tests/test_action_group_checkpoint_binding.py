@@ -48,6 +48,11 @@ def _checkpoint_dir(tmp_dir, **args_json):
 _MISSING = object()
 
 
+def _label(recorded):
+    """A subTest label for ``recorded``: plain values only, so pytest-xdist can ship the report."""
+    return 'missing' if recorded is _MISSING else recorded
+
+
 def _generate_args(model_path, *extra):
     return generate_args(argv=['--model_path', model_path, *extra])
 
@@ -225,7 +230,7 @@ class VersionIsBoundToTheCheckpoint(unittest.TestCase):
         with a different meaning behind them."""
         for key in joint_condition_schema_versions():
             for recorded in (_MISSING, 0):
-                with self.subTest(key=key, recorded=recorded):
+                with self.subTest(key=key, recorded=_label(recorded)):
                     overrides = dict(joint_condition_schema_versions())
                     if recorded is _MISSING:
                         del overrides[key]
@@ -262,7 +267,7 @@ class ResumeCannotCrossAVersion(unittest.TestCase):
         # A resume rewrites args.json wholesale, so it would restamp old weights
         # as current -- the one case the generation-side guard cannot catch.
         for recorded in (_MISSING, CKPT_VERSION - 1):
-            with self.subTest(recorded=recorded):
+            with self.subTest(recorded=_label(recorded)):
                 with self.assertRaises(SystemExit):
                     self._assert_resume(recorded)
 

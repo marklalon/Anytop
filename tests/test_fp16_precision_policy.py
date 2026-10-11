@@ -63,7 +63,7 @@ class CrossKFp32IslandTests(unittest.TestCase):
     def test_cross_k_runs_in_fp32_under_autocast(self):
         block = self._block()
         for dtype in (torch.bfloat16, torch.float16):
-            with self.subTest(dtype=dtype):
+            with self.subTest(dtype=str(dtype)):
                 _, seen = self._run_and_record(block, dtype)
                 self.assertEqual(seen['cross_k_norm'], torch.float32)
                 self.assertEqual(seen['cross_k_attn'], torch.float32)
