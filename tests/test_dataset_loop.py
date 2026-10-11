@@ -8,6 +8,7 @@ This script verifies loop padding behavior.
 
 from __future__ import annotations
 
+import copy
 import glob
 import os
 import random
@@ -42,6 +43,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
+from data_loaders.truebones.truebones_utils.joint_name_canonical import refresh_joint_metadata_in_cond_dict
 from data_loaders.truebones.truebones_utils.joint_embedding_text import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
 )
@@ -192,9 +194,23 @@ def _load_cond_stamped_with_the_current_schema(*args, **kwargs):
     return cond_dict
 
 
+_REFRESHED_CONDS: dict[tuple, dict] = {}
+
+
+def _load_refreshed_cond(*args, **kwargs):
+    """``_load_cond_stamped_with_the_current_schema`` with the dataset's joint-metadata
+    refresh already applied: the refresh is deterministic in the cond on disk, so it runs
+    once per session and every dataset gets its own copy."""
+    key = (args, tuple(sorted(kwargs.items())))
+    if key not in _REFRESHED_CONDS:
+        _REFRESHED_CONDS[key] = refresh_joint_metadata_in_cond_dict(
+            _load_cond_stamped_with_the_current_schema(*args, **kwargs))
+    return copy.deepcopy(_REFRESHED_CONDS[key])
+
+
 def _build_truebones(**kwargs) -> Truebones:
     enriched_lookup = _get_enriched_motion_metadata_lookup()
-    with patch.object(dataset_module, 'load_motion_metadata', return_value=enriched_lookup),             patch.object(dataset_module, 'load_cond', _load_cond_stamped_with_the_current_schema):
+    with patch.object(dataset_module, 'load_motion_metadata', return_value=enriched_lookup),             patch.object(dataset_module, 'load_cond', _load_refreshed_cond),             patch.object(dataset_module, 'refresh_joint_metadata_in_cond_dict', lambda cond_dict: cond_dict):
         return Truebones(**kwargs)
 
 

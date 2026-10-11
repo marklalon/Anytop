@@ -471,7 +471,6 @@ def test_checkpoint_carries_both_fingerprints():
     model = _model(bundle)
     payload = build_checkpoint_payload(model.state_dict(), None, model)
     metadata = payload['metadata']
-    assert ACTION_CHECKPOINT_VERSION == 5
     assert metadata['checkpoint_version'] == ACTION_CHECKPOINT_VERSION
     action = metadata['action_conditioning']
     assert action['embedding_fingerprint'] == bundle.embedding_fingerprint

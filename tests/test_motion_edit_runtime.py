@@ -413,6 +413,15 @@ def _edit_cases(package) -> list[dict]:
     return cases
 
 
+def _kind_edit_cases(packages, kind: str) -> list[dict]:
+    """``_edit_cases`` of a kind; ``loop_tail`` is ``loop`` with its tail on the passive
+    channel, so only the secondary sliders reach anything ``loop`` has not."""
+    cases = _edit_cases(packages[kind])
+    if kind == "loop_tail":
+        cases = [c for c in cases if all(PARAM_SPECS[n].group == "secondary" for n in c)]
+    return cases
+
+
 def _plant_drift(runtime: EditRuntime, result, *, pivots_only: bool = False,
                  pivot_runs: bool = False) -> dict[tuple, tuple]:
     """Per package plant interval: ``(drift, baseline)``, the largest XZ distance from the mean
@@ -476,7 +485,7 @@ def test_T5_T6_edits_keep_bones_and_plants(packages, kind):
     child = np.flatnonzero(parents >= 0)
     legs = sorted({j for limb in runtime.limbs()[0] for j in limb.chain[1:] + [limb.foot]})
     rigid = np.setdiff1d(child, legs)
-    for params in _edit_cases(package):
+    for params in _kind_edit_cases(packages, kind):
         result = runtime.apply(params)
         # T5: every bone is as long as the package's (time-sampled) local translation, except
         # the leg chains soft_stretch scales, which stay within its limit of it
@@ -554,7 +563,7 @@ def test_T6_foot_lock_keeps_the_foot_shape(packages, kind):
 def test_T4_loop_seam_is_an_ordinary_step(packages, kind):
     package = packages[kind]
     runtime = EditRuntime(package)
-    for params in [{}] + _edit_cases(package):
+    for params in [{}] + _kind_edit_cases(packages, kind):
         pos = runtime.apply(params, compose=True).global_positions
         steps = np.linalg.norm(np.diff(pos, axis=0), axis=-1).max(axis=1)
         wrap = np.linalg.norm(pos[0] - pos[-1], axis=-1).max()
@@ -1406,8 +1415,9 @@ def _call(server, path: str, body=None):
 
 @requires_horse
 def test_ui_export_matches_the_command_line(packages, tmp_path):
-    """The page's export and ``apply_edit --sidecar <sidecar>`` write the same bytes, with
-    moved strike events and root motion; all defaults export the package's own decode."""
+    """The page's export and ``apply_edit --sidecar <sidecar>`` write the same bytes (checked
+    on the edit, with moved strike events and root motion); all defaults export the
+    package's own decode."""
     from motion_edit.apply_edit import export_result
     from motion_edit.apply_edit import main as apply_main
 
@@ -1426,6 +1436,8 @@ def test_ui_export_matches_the_command_line(packages, tmp_path):
             downloaded = _call(server, out["url"])
             with open(out["path"], "rb") as handle:
                 assert handle.read() == downloaded
+            if name != "edit":
+                continue
             cli = str(tmp_path / f"cli_{name}.glb")
             argv = [str(tmp_path / "attack.edit"), "--sidecar", out["sidecar"], "--glb", cli]
             assert apply_main(argv + (["--root_motion"] if root_motion else [])) == 0

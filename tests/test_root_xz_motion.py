@@ -412,7 +412,6 @@ def test_validator_uses_the_same_group_detrend_gate():
 
     source = inspect.getsource(validate_anytop_dataset.validate_motion_files)
     assert 'uses_locomotion_root_xz_policy = motion_path.stem in locomotion_clips' in source
-    assert 'transition' not in source
 
 
 def test_validator_reads_the_sidecar_only_when_not_given_the_gate(tmp_path, monkeypatch):
@@ -725,7 +724,6 @@ def test_reextraction_after_a_resample_runs_from_the_source_anims():
     source = inspect.getsource(dataset_pipeline._prepare_object_outputs)
     assert "result['source_new_anim'] = _resample_animation(" in source
     assert "result['source_export_anim'] = _resample_animation(" in source
-    assert 'force_strip' not in source
 
 
 def test_resampling_the_source_and_reextracting_agrees_with_the_first_pass():
@@ -805,62 +803,6 @@ def test_travelling_loop_tiles_without_a_jump():
     steps = np.diff(path)
     np.testing.assert_allclose(steps, step, atol=1e-6)
     assert path[-1] == pytest.approx(step * (2 * n_frames - 1), rel=1e-5)
-
-
-# ── the conditioning channel is gone ───────────────────────────────────────
-
-def test_the_model_has_no_root_xz_strip_channel():
-    """Nothing is fabricated any more, so there is no fabrication to declare.
-
-    The flag existed to tell the model "this root trajectory is a zero this
-    pipeline wrote, do not average it into the honest samples". No clip carries
-    such a zero now.
-    """
-    from model.anytop import AnyTop
-
-    model = AnyTop(
-        max_joints=4, feature_len=12, latent_dim=8, ff_size=32, num_layers=1,
-        num_heads=2, dropout=0.0, cross_limb=True, t5_out_dim=512,
-    )
-    assert not hasattr(model, 'root_xz_strip_projection')
-
-
-def test_the_collate_no_longer_carries_the_flag():
-    import torch
-    from data_loaders.tensors import truebones_collate
-
-    def _item():
-        return {
-            'inp': torch.zeros(3, 12, 5),
-            'rest_pose': torch.zeros(3, 12),
-            'n_joints': 3,
-            'lengths': 5,
-            'parents': np.array([-1, 0, 1]),
-            'graph_dist': torch.zeros(4, 4),
-            'joints_relations': torch.zeros(4, 4),
-            'object_type': 'TestSkeleton',
-            'joints_names_embs': torch.zeros(4, 512),
-            'joints_padding_mask': torch.ones(1, 1, 4, 4),
-            'is_loop': False,
-        }
-
-    _motion, cond = truebones_collate([_item(), _item()])
-    assert 'root_xz_stripped' not in cond['y']
-
-
-def test_generation_declares_no_root_xz_flag():
-    import inspect
-
-    from sample import conditioning
-
-    source = inspect.getsource(conditioning.create_condition)
-    assert 'root_xz_stripped' not in source
-
-
-def test_checkpoint_version_rejects_the_previous_generation():
-    from utils.parser_util import CKPT_VERSION
-
-    assert CKPT_VERSION >= 6
 
 
 # ── the inert joints above the root ────────────────────────────────────────

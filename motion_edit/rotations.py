@@ -14,8 +14,18 @@ from motion_lib.Quaternions import Quaternions
 
 
 def quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    a, b = np.broadcast_arrays(np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64))
-    return (Quaternions(a) * Quaternions(b)).qs
+    """Hamilton product ``a * b``, broadcasting; the arithmetic of ``Quaternions.__mul__``
+    written out, so the result is bit-identical to it (a 1-D product comes back (1, 4))."""
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    q0, q1, q2, q3 = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
+    r0, r1, r2, r3 = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
+    out = np.empty(np.broadcast(q0, r0).shape + (4,))
+    out[..., 0] = r0 * q0 - r1 * q1 - r2 * q2 - r3 * q3
+    out[..., 1] = r0 * q1 + r1 * q0 - r2 * q3 + r3 * q2
+    out[..., 2] = r0 * q2 + r1 * q3 + r2 * q0 - r3 * q1
+    out[..., 3] = r0 * q3 - r1 * q2 + r2 * q1 + r3 * q0
+    return out[None] if out.ndim == 1 else out
 
 
 def quat_inv(q: np.ndarray) -> np.ndarray:
@@ -28,8 +38,20 @@ def quat_rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     v = np.asarray(v, dtype=np.float64)
     w = q[..., :1]
     u = q[..., 1:]
-    t = 2.0 * np.cross(u, v)
-    return v + w * t + np.cross(u, t)
+    t = 2.0 * cross(u, v)
+    return v + w * t + cross(u, t)
+
+
+def cross(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """``np.cross`` of float64 3-vectors, broadcasting, without its per-call axis handling
+    (which dominates on the small per-joint arrays FK feeds it); same arithmetic, same bits."""
+    a0, a1, a2 = a[..., 0], a[..., 1], a[..., 2]
+    b0, b1, b2 = b[..., 0], b[..., 1], b[..., 2]
+    out = np.empty(np.broadcast(a0, b0).shape + (3,))
+    out[..., 0] = a1 * b2 - a2 * b1
+    out[..., 1] = a2 * b0 - a0 * b2
+    out[..., 2] = a0 * b1 - a1 * b0
+    return out
 
 
 def rotvec_from_quat(q: np.ndarray) -> np.ndarray:

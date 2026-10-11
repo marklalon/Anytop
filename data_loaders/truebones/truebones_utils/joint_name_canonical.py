@@ -8,6 +8,7 @@ Re-exported by ``animation_utils``.
 """
 
 from collections import Counter, defaultdict
+from functools import lru_cache
 import numpy as np
 import re
 
@@ -178,6 +179,7 @@ def _split_glued_compound_token(token):
     return parts if parts is not None and len(parts) >= 2 else None
 
 
+@lru_cache(maxsize=65536)
 def normalize_joint_name(name):
     # Split on lowercase→UPPER (e.g. "ElkRFemur" → "Elk RFemur")
     split_name = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
@@ -499,6 +501,11 @@ def strip_joint_name_prefix(name, additional_prefixes=()):
     (``infer_species_joint_name_prefixes``); each is stripped where it sits,
     leading or trailing.
     """
+    return _strip_joint_name_prefix(name, tuple(additional_prefixes or ()))
+
+
+@lru_cache(maxsize=65536)
+def _strip_joint_name_prefix(name, additional_prefixes):
     stripped = _strip_joint_name_namespace(name)
     prefixes = (
         *((prefix, False) for prefix in tuple(additional_prefixes or ())),

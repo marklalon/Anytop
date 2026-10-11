@@ -273,27 +273,45 @@ def sample_quat(values: np.ndarray, times: np.ndarray, periodic: bool) -> np.nda
     return quat_slerp(values[lo], values[hi], a)
 
 
+def _depth_levels(parents, joints) -> list[tuple[np.ndarray, np.ndarray]]:
+    """``joints`` (index order, none a root) grouped by tree depth, shallowest first, each
+    group with its parents: a group's parents are outside ``joints`` or in an earlier group."""
+    parents = np.asarray(parents)
+    depth = np.zeros(len(parents), dtype=np.int64)
+    for j, parent in enumerate(parents):
+        if parent >= 0:
+            depth[j] = depth[parent] + 1
+    joints = np.asarray(joints, dtype=np.int64)
+    levels = []
+    for d in np.unique(depth[joints]):
+        level = joints[depth[joints] == d]
+        levels.append((level, parents[level]))
+    return levels
+
+
+def _fk_levels(levels, rotations, local_positions, g, p) -> None:
+    for joints, parent in levels:
+        g[:, joints] = quat_mul(g[:, parent], rotations[:, joints])
+        p[:, joints] = p[:, parent] + quat_rotate(g[:, parent], local_positions[:, joints])
+
+
 def forward_kinematics(parents, rotations: np.ndarray, local_positions: np.ndarray):
-    """Global rotations and positions; parents precede children."""
+    """Global rotations and positions; parents precede children.  A whole depth level is
+    one vectorised step: same arithmetic per joint as walking them one by one."""
+    parents = np.asarray(parents)
     g = np.empty_like(rotations)
     p = np.empty_like(local_positions)
-    for j, parent in enumerate(parents):
-        if parent < 0:
-            g[:, j] = rotations[:, j]
-            p[:, j] = local_positions[:, j]
-        else:
-            g[:, j] = quat_mul(g[:, parent], rotations[:, j])
-            p[:, j] = p[:, parent] + quat_rotate(g[:, parent], local_positions[:, j])
+    roots = parents < 0
+    g[:, roots] = rotations[:, roots]
+    p[:, roots] = local_positions[:, roots]
+    _fk_levels(_depth_levels(parents, np.flatnonzero(~roots)), rotations, local_positions, g, p)
     return g, p
 
 
 def _refresh_fk(parents, rotations, local_positions, g, p, joints) -> None:
     """``forward_kinematics`` redone in place for ``joints`` (index order, none the root),
     their parents' globals already current."""
-    for j in joints:
-        parent = parents[j]
-        g[:, j] = quat_mul(g[:, parent], rotations[:, j])
-        p[:, j] = p[:, parent] + quat_rotate(g[:, parent], local_positions[:, j])
+    _fk_levels(_depth_levels(parents, joints), rotations, local_positions, g, p)
 
 
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
@@ -1331,9 +1349,10 @@ class EditRuntime:
         positions = np.array(positions, copy=True)
         fixed = scale is not None
         scale = np.array(scale, copy=True) if fixed else np.ones((frames, len(solvers)))
+        # kept current in place: each limb only moves its own subtree
+        glob_rot, glob_pos = forward_kinematics(parents, rotations, positions)
         for index, solver in enumerate(solvers):
             limb = solver.limb
-            glob_rot, glob_pos = forward_kinematics(parents, rotations, positions)
             planted = pid[:, limb.columns] >= 0                            # (F, n)
             if not planted.any():
                 continue
@@ -1394,9 +1413,9 @@ class EditRuntime:
             chain_rot, _ = solver.solve(glob_rot[:, parent], glob_pos[:, parent], rotations[:, chain],
                                         positions[:, chain + [limb.foot]], foot_target, self.leg)
             rotations[:, chain] = chain_rot
-            glob_rot, glob_pos = forward_kinematics(parents, rotations, positions)
+            _refresh_fk(parents, rotations, positions, glob_rot, glob_pos, self._subtree(chain[0]))
             rotations[:, limb.foot] = world_to_local(glob_rot[:, int(parents[limb.foot])], foot_world)
-            glob_rot, glob_pos = forward_kinematics(parents, rotations, positions)
+            _refresh_fk(parents, rotations, positions, glob_rot, glob_pos, self._subtree(limb.foot))
             pivot[stance, p_col[stance]] = True
             gap = glob_pos[rows, p_joint, 1] - p_target[:, 1]
             gaps[stance] = np.fmax(gaps[stance], gap[stance])

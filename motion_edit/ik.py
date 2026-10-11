@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from motion_edit.rotations import quat_from_rotvec, quat_inv, quat_mul, quat_rotate
+from motion_edit.rotations import cross, quat_from_rotvec, quat_inv, quat_mul, quat_rotate
 
 # Profiles below this confidence constrain nothing: the joint is solved as a ball.
 MIN_DOF_CONFIDENCE = 0.3
@@ -195,7 +195,7 @@ class LimbSolver:
                 g_parent = parent_rot if i == 0 else rots[i - 1]
                 for axis, weight in zip(self.axes[i], self.weights[i]):
                     world = quat_rotate(g_parent, np.broadcast_to(axis, (frames, 3)))
-                    columns.append(weight * np.cross(world, foot - poss[i]))
+                    columns.append(weight * cross(world, foot - poss[i]))
             jac = np.stack(columns, axis=-1)                       # (F, 3, 3n), weighted
             jjt = jac @ np.swapaxes(jac, 1, 2) + lam2 * np.eye(3)
             step = np.swapaxes(jac, 1, 2) @ np.linalg.solve(jjt, err[..., None])
