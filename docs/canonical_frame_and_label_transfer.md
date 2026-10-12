@@ -474,7 +474,7 @@ D + 杠杆 2 拆掉的是"坐标系错配导致的形变"这一层，Buffalo 的
 ### 8.2 §5 步骤 2 — cond 重生成 + §6.1 硬判据
 
 三个 processed 数据集各跑一次 `regenerate_dataset_artifacts`，再跑
-`merge_dataset_cond` → `dataset/merged/cond.npy`（260 物种 / 4028 clip）。
+`merge_dataset_cond` → `dataset/cond.npy`（260 物种 / 4028 clip）。
 先只带本节改动跑了一遍，逐 key 比对旧 cond：**只有 `canonical_feature_std` 变了**，
 其余字段与 `motion_metadata.json` / `metadata.txt` 逐字节相同，重生成是幂等的。
 （最终这一版还带上了 §8.5 的 rest re-seat，所以 5 个物种的 `rest_pose` / `offsets` /

@@ -118,7 +118,7 @@ from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noq
     build_joint_embedding_texts,
 )
 
-DEFAULT_REFERENCE_COND = _ANYTOP_DIR / "dataset" / "merged" / "cond.npy"
+DEFAULT_REFERENCE_COND = _ANYTOP_DIR / "dataset" / "cond.npy"
 DATASETS_MANIFEST = _ANYTOP_DIR / "dataset" / "datasets.jsonl"
 MOTION_EXTENSIONS = {".glb", ".gltf", ".fbx"}
 TARGET_FPS = 30.0
@@ -1424,7 +1424,7 @@ def main() -> int:
                         help="comma-separated case-insensitive globs restricting the species checked")
     parser.add_argument("--reference-cond", type=Path, default=DEFAULT_REFERENCE_COND,
                         help="cond.npy whose joint embedding texts define the known vocabulary "
-                             "(default: dataset/merged/cond.npy); 'none' disables the unseen-word check")
+                             "(default: dataset/cond.npy); 'none' disables the unseen-word check")
     parser.add_argument("--processed-dir", type=Path,
                         help="processed dataset directory whose sidecars (chain_forward_joints, "
                              "ignore_warnings) the facing rules read (default: the row of "

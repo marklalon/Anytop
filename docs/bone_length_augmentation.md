@@ -31,7 +31,7 @@ CLI 和通用 loader 默认关闭（概率为 0），以保持已有调用及验
 从 `Anytop` 目录运行：
 
 ```powershell
-..\.venv\Scripts\python.exe tools/sample_augmented_bvh.py --mode bone-length --objects-subset Horse --cond-path dataset/merged/cond.npy --output-dir outputs/bone_length_preview --seed 1234
+..\.venv\Scripts\python.exe tools/sample_augmented_bvh.py --mode bone-length --objects-subset Horse --cond-path dataset/cond.npy --output-dir outputs/bone_length_preview --seed 1234
 ```
 
 此模式强制尝试增强，抽样池包括全部动作和骨架，关闭随机变速、leaf-drop 和

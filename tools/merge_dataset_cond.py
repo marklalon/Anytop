@@ -18,7 +18,7 @@ datasets' own ``cond.npy`` files are never modified.
 Usage:
     python tools/merge_dataset_cond.py \
         --datasets dataset/datasets.jsonl \
-        --out dataset/merged/cond.npy \
+        --out dataset/cond.npy \
         [--no-recompute-stats] [--dry-run]
 """
 

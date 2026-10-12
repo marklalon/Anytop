@@ -57,7 +57,7 @@ token = `E·j_i + c(s)`，每个 token 都同时携带 j 和 s，下游 8 层 / 
 - `species_cond_no_lsimple_effect`：species 条件此前对 l_simple 无影响，诊断的**第一条原因是
   "与 joint-name embedding 冗余"**——FiLM 不解决这条。模型已看到每关节完整 T5 名字嵌入、
   拓扑边关系、rest pose、骨长；`species_emb` 在很大程度上是这些信息的有损摘要。
-- **描述符碰撞**：`dataset/merged/cond.npy` 中 260 个物种只有 **121 个不同的 `species_emb`**，
+- **描述符碰撞**：`dataset/cond.npy` 中 260 个物种只有 **121 个不同的 `species_emb`**，
   196 个（75%）与他人共用描述符。这压低了任何 species 通路的天花板。
   （但对 FiLM 的**相对**优势是中性偏正：Bat 与 Crow 共用 `s`，加性路发给它们字面同一个向量，
   FiLM 因 `j` 不同仍能分开。）
@@ -181,7 +181,7 @@ concat 让物种保持独立通道、已大幅缓解。**若实测 `--species_ta
 ### base arm（已存在，无需重跑）
 
 `save/merged_locomotion_v1` —— 200k 步已完成（08-30 23:36 → 08-31 10:10，约 10.6h），
-`species_joint_cond=True`（加性），跑在 08-30 重生成的 `dataset/merged/cond.npy` 上，
+`species_joint_cond=True`（加性），跑在 08-30 重生成的 `dataset/cond.npy` 上，
 **晚于 scale-normalization 修复，不是陈旧 checkpoint**。
 
 ### film arm（本次重训）
@@ -192,7 +192,7 @@ base 相对 parser 默认值的全部非默认项：
 ```
 --action_group locomotion --action_label_cond --action_label_coarse_prob 0.3
 --amp_dtype bf16 --auto_resume --balanced --compile default   # 注意：--balanced 已于 2026-09-21 删除，见 head_word_weights_and_modifier_dropout.md
---cond_path dataset/merged/cond.npy
+--cond_path dataset/cond.npy
 --cross_limb_dim 128 --cross_limb_last_n 4
 --ema_rate 0.995 --use_ema --ff_size 2048 --layers 8 --latent_dim 256
 --global_energy_cond --global_energy_cfg_drop_prob 0.3   # 已删除，见 global_energy_removal.md
@@ -240,7 +240,7 @@ print("对照被破坏的键:", d or "无 — 配置严格可比")
 ```bash
 python -c "
 import numpy as np, collections
-c=np.load('dataset/merged/cond.npy',allow_pickle=True).item()
+c=np.load('dataset/cond.npy',allow_pickle=True).item()
 h=collections.defaultdict(list)
 for k,v in c.items(): h[np.asarray(v['species_emb'],dtype=np.float32).tobytes()].append(k)
 print('\n'.join(sorted(g[0] for g in h.values() if len(g)==1)))"

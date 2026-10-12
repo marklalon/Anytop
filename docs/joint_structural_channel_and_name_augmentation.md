@@ -249,7 +249,7 @@ A 的目标是降低模型对 canonical 名称点的过拟合。它不能保证�
 
 ### 离线验证结果
 
-`tools/audit_joint_conditioning.py --cond dataset/merged/cond.npy`，260 个物种 / 9699 个关节：
+`tools/audit_joint_conditioning.py --cond dataset/cond.npy`，260 个物种 / 9699 个关节：
 
 - 确定性、改名后逐位相同、全部 finite、`max |feature| = 1.0`；
 - slim 文本平均 1.898 token（上限 2），最长 4 token（`Left Lower Front Lip`），无结构派生词；

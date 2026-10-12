@@ -15,7 +15,7 @@ if /i not "%VSCMD_ARG_TGT_ARCH%"=="x64" call "C:\Program Files\Microsoft Visual 
 pushd "%SCRIPT_DIR%"
 
 %PYTHON_EXE% train/train_anytop.py ^
-	--cond_path dataset/merged/cond.npy ^
+	--cond_path dataset/cond.npy ^
 	--save_dir save/%RUN_NAME% ^
 	--save_interval 10000 ^
 	--log_interval 100 ^

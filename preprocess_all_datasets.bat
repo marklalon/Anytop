@@ -6,7 +6,7 @@ REM default) and merge them into a single training cond.
 REM
 REM   1) each enabled row of dataset\datasets.jsonl, in file order:
 REM        preprocess_and_validate.py --raw-data-dir <raw> --dataset-dir <path>
-REM   2) merge -> dataset\merged\cond.npy
+REM   2) merge -> dataset\cond.npy
 REM
 REM A row without a "raw" field is only merged, not preprocessed. Adding a
 REM dataset to the manifest is all it takes to preprocess and merge it here.
@@ -42,12 +42,12 @@ for /f "usebackq tokens=1-3 delims=|" %%A in ("%DATASET_LIST%") do (
 REM ---- 3) merge every dataset into one training cond ----------------------
 "%PYTHON_EXE%" tools\merge_dataset_cond.py ^
 	--datasets "%DATASETS_FILE%" ^
-	--out dataset\merged\cond.npy
+	--out dataset\cond.npy
 if errorlevel 1 goto :fail
 
 del "%DATASET_LIST%" 2>nul
 echo.
-echo [OK] Every dataset in %DATASETS_FILE% preprocessed and merged into dataset\merged\cond.npy
+echo [OK] Every dataset in %DATASETS_FILE% preprocessed and merged into dataset\cond.npy
 popd
 exit /b 0
 
