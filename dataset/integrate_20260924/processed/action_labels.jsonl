@@ -276,9 +276,9 @@
 {"clip": "ORA_Ballora_Charge", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "ORA_Bat_Fly", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}
 {"clip": "ORA_Bee_Hover", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hover"}
-{"clip": "ORA_Bee_Idle", "action_group": "stationary", "reviewed": true, "action_label": "idle", "autofill": true, "is_loop": true}
-{"clip": "ORA_Bee_TakeOffAndLand_slice1", "action_group": "transition", "reviewed": true, "action_label": "takeoff", "autofill": true, "is_loop": false}
-{"clip": "ORA_Bee_TakeOffAndLand_slice2", "action_group": "transition", "reviewed": true, "action_label": "land, hover", "autofill": true, "is_loop": false}
+{"clip": "ORA_Bee_Idle", "action_group": "stationary", "reviewed": true, "action_label": "idle", "is_loop": true}
+{"clip": "ORA_Bee_TakeOffAndLand_slice1", "action_group": "transition", "reviewed": true, "action_label": "takeoff", "is_loop": false}
+{"clip": "ORA_Bee_TakeOffAndLand_slice2", "action_group": "transition", "reviewed": true, "action_label": "land, hover", "is_loop": false}
 {"clip": "ORA_Birdman_Attack01", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, hover, right, swat"}
 {"clip": "ORA_Birdman_Attack02", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, hover, cast"}
 {"clip": "ORA_Birdman_Damage", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt, hover"}
@@ -293,35 +293,35 @@
 {"clip": "ORA_BlockRobot_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "ORA_BoxHeadRobot_Sway", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
 {"clip": "ORA_ChibiBeast_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, charge, headbutt"}
-{"clip": "ORA_ChibiBeast_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, headbutt", "autofill": true}
-{"clip": "ORA_ChibiBeast_Damage", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt", "autofill": true}
-{"clip": "ORA_ChibiBeast_Down", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, backward", "autofill": true}
-{"clip": "ORA_ChibiBeast_Eat", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, eat", "autofill": true}
+{"clip": "ORA_ChibiBeast_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, headbutt"}
+{"clip": "ORA_ChibiBeast_Damage", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt"}
+{"clip": "ORA_ChibiBeast_Down", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, backward"}
+{"clip": "ORA_ChibiBeast_Eat", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, eat"}
 {"clip": "ORA_ChibiBeast_GetUp", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup, turn"}
 {"clip": "ORA_ChibiBeast_Guard", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt, block"}
-{"clip": "ORA_ChibiBeast_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle", "autofill": true}
+{"clip": "ORA_ChibiBeast_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "ORA_ChibiBeast_Move", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
-{"clip": "ORA_ChibiBeast_Win", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "idle, happy", "autofill": true}
+{"clip": "ORA_ChibiBeast_Win", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "idle, happy"}
 {"clip": "ORA_ChibiHumanoid_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
 {"clip": "ORA_CoCHero_StandUp", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup, crouch"}
 {"clip": "ORA_Crawly_Alert", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "roar"}
 {"clip": "ORA_Crawly_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, charge"}
-{"clip": "ORA_Crawly_Damaged", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt", "autofill": true}
-{"clip": "ORA_Crawly_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die", "autofill": true}
-{"clip": "ORA_Crawly_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle", "autofill": true}
-{"clip": "ORA_Crawly_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward", "autofill": true}
+{"clip": "ORA_Crawly_Damaged", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
+{"clip": "ORA_Crawly_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}
+{"clip": "ORA_Crawly_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "ORA_Crawly_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "ORA_CubeHumanoid_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
-{"clip": "ORA_DickTum_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall", "autofill": true}
+{"clip": "ORA_DickTum_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
 {"clip": "ORA_DickTum_Attack", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "roar"}
-{"clip": "ORA_DickTum_Damage", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt", "autofill": true}
-{"clip": "ORA_DickTum_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die", "autofill": true}
+{"clip": "ORA_DickTum_Damage", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt"}
+{"clip": "ORA_DickTum_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}
 {"clip": "ORA_DickTum_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, dead"}
 {"clip": "ORA_DickTum_Fall", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, fall"}
-{"clip": "ORA_DickTum_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle", "autofill": true}
-{"clip": "ORA_DickTum_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward", "autofill": true}
-{"clip": "ORA_DickTum_Stand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup", "autofill": true}
-{"clip": "ORA_DickTum_Stun", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, sleep", "autofill": true}
-{"clip": "ORA_DickTum_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward", "autofill": true}
+{"clip": "ORA_DickTum_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "ORA_DickTum_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "ORA_DickTum_Stand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
+{"clip": "ORA_DickTum_Stun", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, sleep"}
+{"clip": "ORA_DickTum_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
 {"clip": "ORA_DinoBiped_Attack02", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
 {"clip": "ORA_DinoBiped_Damage", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt"}
 {"clip": "ORA_DinoBiped_Down", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}
@@ -337,49 +337,49 @@
 {"clip": "ORA_Gargoyle_Crouch", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "kneel"}
 {"clip": "ORA_GlovedHumanoid_Jump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
 {"clip": "ORA_Goat_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
-{"clip": "ORA_Goat_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward", "autofill": true}
+{"clip": "ORA_Goat_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "ORA_GrappleGuardian_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
-{"clip": "ORA_Gumiho_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall", "autofill": true}
-{"clip": "ORA_Gumiho_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite", "autofill": true}
-{"clip": "ORA_Gumiho_Damage", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt", "autofill": true}
-{"clip": "ORA_Gumiho_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, left", "autofill": true}
+{"clip": "ORA_Gumiho_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
+{"clip": "ORA_Gumiho_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
+{"clip": "ORA_Gumiho_Damage", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
+{"clip": "ORA_Gumiho_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, left"}
 {"clip": "ORA_Gumiho_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, dead"}
 {"clip": "ORA_Gumiho_Fall", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, fall"}
 {"clip": "ORA_Gumiho_Fly", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
-{"clip": "ORA_Gumiho_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hover", "autofill": true}
+{"clip": "ORA_Gumiho_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hover"}
 {"clip": "ORA_Gumiho_FlySprint", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward, glide"}
-{"clip": "ORA_Gumiho_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle", "autofill": true}
+{"clip": "ORA_Gumiho_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "ORA_Gumiho_Skill", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "jump, roll, backward"}
-{"clip": "ORA_Gumiho_Stand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup", "autofill": true}
-{"clip": "ORA_Gumiho_Stun", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, sleep", "autofill": true}
-{"clip": "ORA_Gumiho_Taming", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, crouch", "autofill": true}
+{"clip": "ORA_Gumiho_Stand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
+{"clip": "ORA_Gumiho_Stun", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, sleep"}
+{"clip": "ORA_Gumiho_Taming", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, crouch"}
 {"clip": "ORA_Gumiho_TamingSuccess", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, yawn"}
-{"clip": "ORA_Gumiho_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward", "autofill": true}
+{"clip": "ORA_Gumiho_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
 {"clip": "ORA_Hen_Peck", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, eat"}
 {"clip": "ORA_Hinata_Kick", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, kick"}
-{"clip": "ORA_Hound_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall", "autofill": true}
-{"clip": "ORA_Hound_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite", "autofill": true}
-{"clip": "ORA_Hound_Damage", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt", "autofill": true}
-{"clip": "ORA_Hound_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, right", "autofill": true}
+{"clip": "ORA_Hound_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
+{"clip": "ORA_Hound_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
+{"clip": "ORA_Hound_Damage", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
+{"clip": "ORA_Hound_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, right"}
 {"clip": "ORA_Hound_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, dead"}
 {"clip": "ORA_Hound_Fall", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, fall"}
-{"clip": "ORA_Hound_FlyAvoid", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "hover, flip"}
-{"clip": "ORA_Hound_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hover", "autofill": true}
+{"clip": "ORA_Hound_FlyAvoid", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, flip"}
+{"clip": "ORA_Hound_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hover"}
 {"clip": "ORA_Hound_FlySprint", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward, glide"}
-{"clip": "ORA_Hound_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle", "autofill": true}
-{"clip": "ORA_Hound_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward", "autofill": true}
+{"clip": "ORA_Hound_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "ORA_Hound_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "ORA_Hound_Skill", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
 {"clip": "ORA_Hound_Skill2", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
-{"clip": "ORA_Hound_Stand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup", "autofill": true}
-{"clip": "ORA_Hound_Stun", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, sleep", "autofill": true}
+{"clip": "ORA_Hound_Stand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
+{"clip": "ORA_Hound_Stun", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, sleep"}
 {"clip": "ORA_Hound_Taming", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, happy"}
 {"clip": "ORA_Hound_TamingSuccess", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, yawn"}
-{"clip": "ORA_Hound_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward", "autofill": true}
-{"clip": "ORA_Kargoyle_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall", "autofill": true}
-{"clip": "ORA_Kargoyle_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, firebreath", "autofill": true}
+{"clip": "ORA_Hound_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
+{"clip": "ORA_Kargoyle_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
+{"clip": "ORA_Kargoyle_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, firebreath"}
 {"clip": "ORA_Kargoyle_Avoid", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "fly, flip"}
-{"clip": "ORA_Kargoyle_Damage", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt, hover", "autofill": true}
-{"clip": "ORA_Kargoyle_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, right", "autofill": true}
+{"clip": "ORA_Kargoyle_Damage", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt, hover"}
+{"clip": "ORA_Kargoyle_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, right"}
 {"clip": "ORA_Kargoyle_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, dead"}
 {"clip": "ORA_Kargoyle_Fall", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, fall"}
 {"clip": "ORA_Kargoyle_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hover"}
@@ -392,7 +392,7 @@
 {"clip": "ORA_Kargoyle_SkillG2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, hover, spin"}
 {"clip": "ORA_Kargoyle_Sprint", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward, glide"}
 {"clip": "ORA_Kargoyle_Stand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup, hover"}
-{"clip": "ORA_Kargoyle_TamingSuccess", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, happy", "autofill": true}
+{"clip": "ORA_Kargoyle_TamingSuccess", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, happy"}
 {"clip": "ORA_Lizardman_Attack01", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, hover, bite"}
 {"clip": "ORA_Lizardman_Attack02", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, hover, spin"}
 {"clip": "ORA_Lizardman_Damage", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt, hover"}
@@ -436,49 +436,49 @@
 {"clip": "ORA_PaperBlockHumanoid_Kneel", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "kneel"}
 {"clip": "ORA_PeterRabbit_Jump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
 {"clip": "ORA_Pigeon_FlyFast", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}
-{"clip": "ORA_Pigeon_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hover", "autofill": true}
+{"clip": "ORA_Pigeon_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hover"}
 {"clip": "ORA_Pigeon_Headbutt", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
-{"clip": "ORA_Pigeon_HitReact", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt", "autofill": true}
-{"clip": "ORA_Pigeon_No", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, talk", "autofill": true}
-{"clip": "ORA_Pigeon_Yes", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, talk", "autofill": true}
+{"clip": "ORA_Pigeon_HitReact", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
+{"clip": "ORA_Pigeon_No", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, talk"}
+{"clip": "ORA_Pigeon_Yes", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, talk"}
 {"clip": "ORA_PinkFish_Swim", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, idle"}
 {"clip": "ORA_PlayerHumanoid_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, forward, left"}
 {"clip": "ORA_Raccoon_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
-{"clip": "ORA_Raccoon_StandDown", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "rear, down", "autofill": true}
-{"clip": "ORA_Raccoon_StandIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, rear", "autofill": true}
+{"clip": "ORA_Raccoon_StandDown", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "rear, down"}
+{"clip": "ORA_Raccoon_StandIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, rear"}
 {"clip": "ORA_Raccoon_StandUp", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "rear, up"}
-{"clip": "ORA_Raccoon_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward", "autofill": true}
+{"clip": "ORA_Raccoon_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
 {"clip": "ORA_ReadyPlayerMe_Jump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fall, jump"}
 {"clip": "ORA_ShortFacedBear_Idle", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "idle, look"}
-{"clip": "ORA_ShortFacedBear_StandDown", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "rear, down", "autofill": true}
-{"clip": "ORA_ShortFacedBear_StandIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, rear", "autofill": true}
+{"clip": "ORA_ShortFacedBear_StandDown", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "rear, down"}
+{"clip": "ORA_ShortFacedBear_StandIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, rear"}
 {"clip": "ORA_ShortFacedBear_StandUp", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "rear, up"}
-{"clip": "ORA_ShortFacedBear_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward", "autofill": true}
+{"clip": "ORA_ShortFacedBear_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
 {"clip": "ORA_SmallSwimmer_Swim", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fall"}
 {"clip": "ORA_Snail_Move", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
 {"clip": "ORA_SnakeWolf_Angry", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "roar"}
-{"clip": "ORA_SnakeWolf_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle", "autofill": true}
-{"clip": "ORA_SnakeWolf_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward", "autofill": true}
-{"clip": "ORA_SnakeWolf_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward", "autofill": true}
+{"clip": "ORA_SnakeWolf_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "ORA_SnakeWolf_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "ORA_SnakeWolf_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
 {"clip": "ORA_Sonic_Swim", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
 {"clip": "ORA_Spider_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
-{"clip": "ORA_Spider_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, backward", "autofill": true}
-{"clip": "ORA_Spider_Die2", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, forward", "autofill": true}
-{"clip": "ORA_Spider_Jump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up", "autofill": true}
-{"clip": "ORA_Spider_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward", "autofill": true}
-{"clip": "ORA_Spider_RunBack", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, backward", "autofill": true}
-{"clip": "ORA_Spider_RunLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, left", "autofill": true}
-{"clip": "ORA_Spider_RunRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, right", "autofill": true}
-{"clip": "ORA_Spider_Wait", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle", "autofill": true}
-{"clip": "ORA_Spider_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward", "autofill": true}
-{"clip": "ORA_Spider_WalkBack", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, backward", "autofill": true}
-{"clip": "ORA_Spider_WalkLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, left", "autofill": true}
-{"clip": "ORA_Spider_WalkRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, right", "autofill": true}
+{"clip": "ORA_Spider_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, backward"}
+{"clip": "ORA_Spider_Die2", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, forward"}
+{"clip": "ORA_Spider_Jump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
+{"clip": "ORA_Spider_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "ORA_Spider_RunBack", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, backward"}
+{"clip": "ORA_Spider_RunLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, left"}
+{"clip": "ORA_Spider_RunRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, right"}
+{"clip": "ORA_Spider_Wait", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "ORA_Spider_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
+{"clip": "ORA_Spider_WalkBack", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, backward"}
+{"clip": "ORA_Spider_WalkLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, left"}
+{"clip": "ORA_Spider_WalkRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, right"}
 {"clip": "ORA_SpiderGuardian_Move", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
 {"clip": "ORA_SpiderRobot_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
-{"clip": "ORA_SpiderRobot_Jump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up", "autofill": true}
-{"clip": "ORA_SpiderRobot_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward", "autofill": true}
-{"clip": "ORA_SpiderRobot_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward", "autofill": true}
+{"clip": "ORA_SpiderRobot_Jump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
+{"clip": "ORA_SpiderRobot_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "ORA_SpiderRobot_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
 {"clip": "ORA_SwimmerHumanoid_Swim", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
 {"clip": "ORA_Tiger_Run", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, punch"}
 {"clip": "ORA_ToonHumanoid_Roar", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "roar"}
@@ -490,22 +490,22 @@
 {"clip": "ORA_WingedHumanoid_Attack", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, swat"}
 {"clip": "ORA_WingedHumanoid_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
 {"clip": "ORA_WingedHumanoid_Down", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, hover"}
-{"clip": "ORA_WingedHumanoid_GetUp", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup", "autofill": true}
+{"clip": "ORA_WingedHumanoid_GetUp", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
 {"clip": "ORA_WingedHumanoid_Guard", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt, block"}
-{"clip": "ORA_WingedHumanoid_Hurt", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt", "autofill": true}
-{"clip": "ORA_WingedHumanoid_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle", "autofill": true}
+{"clip": "ORA_WingedHumanoid_Hurt", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt"}
+{"clip": "ORA_WingedHumanoid_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "ORA_WingedHumanoid_Idle2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, eat"}
 {"clip": "ORA_WingedHumanoid_Ready", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "idle, happy"}
 {"clip": "ORA_WingedHumanoid_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}
 {"clip": "ORA_WingedRaptor_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, headbutt"}
 {"clip": "ORA_WingedRaptor_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "roar"}
-{"clip": "ORA_WingedRaptor_Damage", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt", "autofill": true}
-{"clip": "ORA_WingedRaptor_Down", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die", "autofill": true}
-{"clip": "ORA_WingedRaptor_Eat", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, eat", "autofill": true}
+{"clip": "ORA_WingedRaptor_Damage", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
+{"clip": "ORA_WingedRaptor_Down", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}
+{"clip": "ORA_WingedRaptor_Eat", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, eat"}
 {"clip": "ORA_WingedRaptor_GetUp", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup, turn"}
-{"clip": "ORA_WingedRaptor_Glad", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, happy", "autofill": true}
+{"clip": "ORA_WingedRaptor_Glad", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, happy"}
 {"clip": "ORA_WingedRaptor_Guard", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt, block"}
-{"clip": "ORA_WingedRaptor_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle", "autofill": true}
+{"clip": "ORA_WingedRaptor_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "ORA_WingedRaptor_Move", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "ORA_WingedRaptor_Special", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, projectile"}
 {"clip": "ORA_YellowTang_Swim", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, idle"}
@@ -523,7 +523,7 @@
 {"clip": "Pet_Gate_Idle02", "action_group": "stationary", "action_label": "hover, jump, spin", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Gate_Pose", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Goldfish_Idle01", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Goldfish_Idle02", "action_group": "locomotion", "action_label": "swim, roll, right", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Goldfish_Idle02", "action_group": "locomotion", "action_label": "swim, flip", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Goldfish_Pose", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Hamperor_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Hamperor_Idle02", "action_group": "stationary", "action_label": "hover, eat", "is_loop": true, "reviewed": true}

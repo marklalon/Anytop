@@ -430,7 +430,7 @@
 {"clip": "KI_Warrior_Attack02", "action_group": "stationary", "action_label": "attack, slash", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Attack03", "action_group": "stationary", "action_label": "attack, smash", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Attack04", "action_group": "stationary", "action_label": "attack, right, spin, slash", "is_loop": true, "reviewed": true}
-{"clip": "KI_Warrior_Block01HitShield", "action_group": "stationary", "action_label": "hurt, shield", "is_loop": true, "reviewed": true}
+{"clip": "KI_Warrior_Block01HitShield", "action_group": "stationary", "action_label": "hurt, block", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Block01HoldShield", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Block01Shield", "action_group": "stationary", "action_label": "idle, shield", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_CombatIdle01", "action_group": "stationary", "action_label": "idle, taunt, weapon", "is_loop": true, "reviewed": true}
