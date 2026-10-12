@@ -31,7 +31,9 @@ Rules:
     * A species already in cond.npy keeps its frozen translation root (as an
       incremental build does) and only its pending sources are loaded; a
       species not in cond yet is scanned in full, because the root contract
-      is fixed from every clip's transport carrier.
+      is fixed from every clip's transport carrier. A species whose rest
+      reference changed since it was built is scanned in full too: its cond
+      root is a joint index into the old skeleton.
     * A source file with no row in action_labels.jsonl is reported and left
       alone: label it first (step 2). A clip shorter than --filter-min-length
       is reported too -- preprocessing drops it, so its row should go.
@@ -163,6 +165,7 @@ def plan_objects(
     """
     cond_path = dataset_dir / "cond.npy"
     existing_cond = load_cond(cond_path) if cond_path.exists() else {}
+    existing_meta = dataset_pipeline._load_motion_metadata_raw(dataset_dir)
     reviewed = _reviewed_clips(dataset_dir) if rejudge else set()
 
     plans: list[ObjectPlan] = []
@@ -191,6 +194,18 @@ def plan_objects(
         if not pending:
             continue
         frozen_root, promote_depth = dataset_pipeline.frozen_root_contract(existing_cond, object_type)
+        if frozen_root is not None:
+            stale_reason = dataset_pipeline.stale_root_contract_reason(
+                existing_meta, object_type, dataset_dir, raw_data_dir
+            )
+            if stale_reason:
+                # The cond entry describes the old skeleton: judge the species
+                # the way a fresh one is, from every source.
+                warnings.append(
+                    f"{object_type}: {stale_reason}; ignoring its frozen cond root "
+                    f"and scanning every source (rebuild it with --overwrite --filter {object_type})"
+                )
+                frozen_root, promote_depth = None, None
         skip = None
         if frozen_root is not None:
             skip = {

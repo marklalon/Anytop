@@ -8,6 +8,7 @@ Depends on: features.py, animation_utils.py
 """
 
 from motion_lib import BVH, FBX
+import hashlib
 import json
 import numpy as np
 import os
@@ -531,6 +532,69 @@ def frozen_root_contract(existing_cond, object_type):
     return int(frozen_root), int(existing_cond[existing_key].get('root_promote_depth') or 0)
 
 
+# Per-clip motion_metadata key: sha1 of the rest-pose reference file the clip
+# was encoded against. The frozen cond root is a joint index into that rest
+# skeleton, so it only holds while the reference file is unchanged.
+REST_REFERENCE_SHA1_KEY = 'rest_reference_sha1'
+
+
+def rest_reference_sha1(path):
+    digest = hashlib.sha1()
+    with open(path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def object_rest_reference_path(object_type, raw_data_dir=None):
+    """The rest-pose reference file a build of ``object_type`` would encode against, or None."""
+    fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
+    if not os.path.isdir(fbxs_dir):
+        return None
+    anim_files = sorted(
+        pjoin(fbxs_dir, f) for f in os.listdir(fbxs_dir)
+        if f.lower().endswith(('.fbx', '.glb', '.gltf'))
+    )
+    return find_tpose_reference_path(anim_files) if anim_files else None
+
+
+def stale_root_contract_reason(existing_meta, object_type, dataset_dir, raw_data_dir=None):
+    """Why the cond root contract frozen for ``object_type`` no longer fits its raw rest reference.
+
+    None when it still fits, or when there is nothing to compare (no clips on
+    disk, no reference file). Clips that recorded ``REST_REFERENCE_SHA1_KEY``
+    are compared by content. Metadata written before the key existed falls back
+    to timestamps: a reference file newer than every clip of the species was
+    edited after its last build.
+    """
+    reference = object_rest_reference_path(object_type, raw_data_dir)
+    if reference is None:
+        return None
+    entries = {
+        name: entry for name, entry in existing_meta.items()
+        if str(entry.get('object_type', '')) == object_type
+    }
+    if not entries:
+        return None
+    reference_name = os.path.basename(reference)
+    recorded = {entry[REST_REFERENCE_SHA1_KEY] for entry in entries.values()
+                if entry.get(REST_REFERENCE_SHA1_KEY)}
+    if recorded:
+        if recorded == {rest_reference_sha1(reference)}:
+            return None
+        return f"rest reference {reference_name} changed since its clips were built"
+    # Heuristic: a checkout, copy or touch of an unchanged reference also trips it;
+    # clips rebuilt once record the sha and leave this path.
+    clip_mtimes = [
+        os.path.getmtime(path)
+        for path in (pjoin(str(dataset_dir), MOTION_DIR, name) for name in entries)
+        if os.path.isfile(path)
+    ]
+    if clip_mtimes and os.path.getmtime(reference) > max(clip_mtimes) + SOURCE_MTIME_SLACK:
+        return f"rest reference {reference_name} is newer than every built clip"
+    return None
+
+
 def _require_loop_verdicts(objects, loop_verdicts, raw_data_dir=None, per_object_skip=None):
     """Refuse a build whose target clips are not all judged for ``is_loop``.
 
@@ -586,6 +650,9 @@ def _build_motion_metadata_entry(result, motion_file_name):
     source_fbx_path = result.get('source_fbx_path')
     if source_fbx_path:
         motion_labels['source_fbx_path'] = os.path.abspath(source_fbx_path)
+
+    if result.get(REST_REFERENCE_SHA1_KEY):
+        motion_labels[REST_REFERENCE_SHA1_KEY] = result[REST_REFERENCE_SHA1_KEY]
 
     source_frame_range = result.get('slice_range')
     if source_frame_range is not None:
@@ -754,6 +821,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         # removes a static reference file from anim_files, as it should be used only for
         # extracting common characteristics. If this is not the case, disable this part
         anim_files.remove(t_pos_path)
+    reference_sha1 = rest_reference_sha1(t_pos_path)
     if max_files is not None:
         anim_files = anim_files[:max_files]
 
@@ -1048,6 +1116,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             # pickled back from an object worker.
             result.pop('source_new_anim', None)
             result.pop('source_export_anim', None)
+            result[REST_REFERENCE_SHA1_KEY] = reference_sha1
             prepared_results.append(result)
 
     if len(prepared_results) == 0:
@@ -1327,6 +1396,7 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
     per_object_stale_clips = {}
     per_object_frozen_roots = {}
     per_object_promote_depth = {}
+    stale_contracts = []
     if incremental:
         existing_meta = _load_motion_metadata_raw(target_dataset_dir)
         cond_path = pjoin(target_dataset_dir, 'cond.npy')
@@ -1345,6 +1415,20 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
             if frozen_root is not None:
                 per_object_frozen_roots[object_type] = frozen_root
                 per_object_promote_depth[object_type] = promote_depth
+                stale_reason = stale_root_contract_reason(
+                    existing_meta, object_type, target_dataset_dir, raw_data_dir
+                )
+                if stale_reason:
+                    stale_contracts.append(f"{object_type}: {stale_reason}")
+        if stale_contracts:
+            raise DatasetPreprocessingError(
+                [
+                    "[FAIL] the frozen cond root contract was built on a rest skeleton "
+                    "that has since changed, so its joint indices no longer apply: "
+                    + "; ".join(stale_contracts)
+                    + ". Re-run with --overwrite --filter <those species> to rebuild them."
+                ]
+            )
 
     # Locomotion clips receive detrend + the tighter extent bound; no other
     # group enters that path.

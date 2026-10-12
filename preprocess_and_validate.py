@@ -612,6 +612,27 @@ def check_and_clean_old_data(
             find_orphan_clips,
             find_source_changes,
         )
+        from data_loaders.truebones.truebones_utils.dataset_pipeline import (
+            _load_motion_metadata_raw,
+            stale_root_contract_reason,
+        )
+
+        # A species whose rest reference changed keeps an incremental run from
+        # touching it at all (its clips' own sources may be untouched), while its
+        # cond still describes the old skeleton. Only a rebuild fixes that.
+        existing_meta = _load_motion_metadata_raw(str(dataset_dir_path))
+        stale_contracts = [
+            f"{obj}: {reason}" for obj in target_object_types
+            if (reason := stale_root_contract_reason(
+                existing_meta, obj, str(dataset_dir_path), raw_data_dir or None))
+        ]
+        if stale_contracts:
+            print("\n[FAIL] rest skeleton changed since these species were built; their cond "
+                  "(joint indices, root contract) is stale and an incremental run cannot fix it:")
+            for line in stale_contracts:
+                print(f"  {line}")
+            print("Re-run with --overwrite --filter <those species> to rebuild them.")
+            return False, PreservedSideArtifacts(), (), False
 
         patterns = _parse_filter_patterns(object_filter)
         orphans = find_orphan_clips(

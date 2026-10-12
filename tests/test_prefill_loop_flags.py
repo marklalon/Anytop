@@ -188,6 +188,76 @@ def test_plans_only_the_species_with_pending_rows_under_the_frozen_root(tmp_path
     assert len(warnings) == 1 and warnings[0].startswith("Cat_Idle: no row")
 
 
+def _built_species(tmp_path, tpose_bytes, entry_extra):
+    """Cat built once: TPose + Walk raw sources, one clip on disk with its metadata entry."""
+    raw = tmp_path / "raw"
+    _raw_species(raw, "Cat", ["Walk"])
+    (raw / "Cat" / "TPose.glb").write_bytes(tpose_bytes)
+    dataset_dir = tmp_path / "dataset"
+    (dataset_dir / "motions").mkdir(parents=True)
+    (dataset_dir / "motions" / "Cat_Walk.npy").write_bytes(b"")
+    (dataset_dir / "motion_metadata.json").write_text(json.dumps({"motions": {
+        "Cat_Walk.npy": {"object_type": "Cat",
+                         "source_fbx_path": str(raw / "Cat" / "Walk.glb"), **entry_extra},
+    }}), encoding="utf-8")
+    return raw, dataset_dir
+
+
+def _stale_reason(raw, dataset_dir):
+    meta = dataset_pipeline._load_motion_metadata_raw(dataset_dir)
+    return dataset_pipeline.stale_root_contract_reason(meta, "Cat", dataset_dir, str(raw))
+
+
+def test_root_contract_goes_stale_when_the_recorded_rest_reference_changes(tmp_path):
+    raw, dataset_dir = _built_species(tmp_path, b"skeleton v1", {})
+    sha_v1 = dataset_pipeline.rest_reference_sha1(raw / "Cat" / "TPose.glb")
+    meta_path = dataset_dir / "motion_metadata.json"
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    payload["motions"]["Cat_Walk.npy"][dataset_pipeline.REST_REFERENCE_SHA1_KEY] = sha_v1
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert _stale_reason(raw, dataset_dir) is None
+    (raw / "Cat" / "TPose.glb").write_bytes(b"skeleton v2")
+    assert "TPose.glb changed" in _stale_reason(raw, dataset_dir)
+
+
+def test_legacy_metadata_falls_back_to_the_rest_reference_mtime(tmp_path):
+    raw, dataset_dir = _built_species(tmp_path, b"skeleton", {})
+    clip = dataset_dir / "motions" / "Cat_Walk.npy"
+    tpose = raw / "Cat" / "TPose.glb"
+    built = os.path.getmtime(clip)
+
+    os.utime(tpose, (built - 100, built - 100))
+    assert _stale_reason(raw, dataset_dir) is None
+    os.utime(tpose, (built + 100, built + 100))
+    assert "newer than every built clip" in _stale_reason(raw, dataset_dir)
+
+
+def test_plans_a_species_with_a_stale_root_contract_like_a_new_one(tmp_path):
+    raw, dataset_dir = _built_species(
+        tmp_path, b"skeleton v2", {dataset_pipeline.REST_REFERENCE_SHA1_KEY: "sha-of-v1"},
+    )
+    _raw_species(raw, "Cat", ["Run"])
+    _write_rows(dataset_dir / "action_labels.jsonl", [
+        {"clip": "Cat_Walk", "action_group": "locomotion", "action_label": "walk", "is_loop": True},
+        {"clip": "Cat_Run", "action_group": "locomotion", "action_label": "run"},
+    ])
+    np.save(dataset_dir / "cond.npy", {
+        "Cat": {"object_type": "Cat", "joints_names": ["Root", "Tail"],
+                "parents": np.array([-1, 0]), "offsets": np.zeros((2, 3)),
+                "translation_root_index": 1, "root_promote_depth": 0},
+    })
+    labels = dataset_pipeline.load_action_labels(dataset_dir)
+
+    plans, warnings, _ = prefill_loop_flags.plan_objects(dataset_dir, str(raw), ("Cat",), labels)
+
+    (cat,) = plans
+    assert cat.pending == {"Cat_Run"}
+    # The old root indexes a skeleton that no longer exists: every source is scanned.
+    assert cat.frozen_translation_root_index is None and cat.skip_source_paths is None
+    assert any("ignoring its frozen cond root" in w for w in warnings)
+
+
 def test_rejudge_plans_every_clip_except_the_reviewed_ones(tmp_path):
     raw = tmp_path / "raw"
     _raw_species(raw, "Cat", ["Walk", "Run"])

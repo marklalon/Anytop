@@ -487,13 +487,30 @@ def iter_action_fcurves(action):
     return all_fcurves
 
 
+# Key times (in scene frames) closer than this are one sample. A glTF clip can
+# key its channels through several time accessors that hold the same instants
+# up to float32 noise; once the importer scales seconds to frames those land a
+# hair apart, and keeping both doubles the frame as a frozen duplicate.
+SAMPLE_TIME_MERGE_TOL = 1e-3
+
+
+def merge_sample_times(key_times, tol: float = SAMPLE_TIME_MERGE_TOL) -> list[float]:
+    """Sort ``key_times`` and collapse runs closer than ``tol`` to their first time."""
+    merged: list[float] = []
+    for t in sorted(float(t) for t in key_times):
+        if merged and t - merged[-1] < tol:
+            continue
+        merged.append(t)
+    return merged
+
+
 def get_action_sample_times(armature) -> list[float]:
     action = armature.animation_data.action if armature.animation_data else None
-    key_times = sorted({
-        round(float(keyframe.co[0]), 6)
+    key_times = merge_sample_times(
+        keyframe.co[0]
         for fcurve in iter_action_fcurves(action)
         for keyframe in fcurve.keyframe_points
-    })
+    )
     return key_times or [0.0]
 
 
