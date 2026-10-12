@@ -790,7 +790,7 @@ cross-attn」的情形不同）。
 | `eval_checkpoint.py` | 删除 `_SCORE_ACTION_WORDS`，新增 `_extract_action_label()`：每个 task 用**自己**的 `--action_label` 打分，没写就回退默认 |
 | `training_loop.py` | 删除 `_eval_action_words()`，改用 `reference_prior_words()` |
 | `parser_util.py` | 删除 `--action_words`（并从 `preserve_cli_args` 移除）；`param_utils.parse_action_words` 随之删除 |
-| `tests/test_evaluate_motion_quality.py` / `tests/test_motion_quality_scorer.py` | 新增 6 个用例：label -> 先验词派生、违约 label 报错、空 label 被拒、无 label 走默认、`_extract_action_label()` 的四种输入 |
+| `tests/test_evaluate_motion_quality.py` / `tests/test_reference_bank.py` | 新增 6 个用例：label -> 先验词派生、违约 label 报错、空 label 被拒、无 label 走默认、`_extract_action_label()` 的四种输入 |
 
 **校验交给 label 契约。** 先验词用 `parse_action_label()` 解析，与 `generate.py` 对
 `--action_label` 的要求同一套：未知 token / 无 head 词 / head 超 2 个 / 重复 token / 超

@@ -1,13 +1,16 @@
 #!/usr/bin/env python
 """
-Low-Shot Weighted-Reference Motion Quality Evaluator
-====================================================
+Motion Quality Evaluator
+========================
 
-Evaluates one or more motion clips by comparing them against a weighted
-reference prior built from dataset motions whose action_label shares a head
-word (walk, run, attack, ...) with the label the clips were generated with.
-The prior is pooled over every dataset in ``dataset/datasets.jsonl`` unless
-``--dataset_root`` says otherwise.
+Scores motion clips on two dimensions (see ``eval/motion_quality/quality.py``):
+physical plausibility -- rigid bones, smooth parts, no frame jumps -- and
+data-prior conformity -- limb symmetry, coordination and tempo against real
+clips whose action_label shares a head word with the label the clips were
+generated with. A clip's quality is the geometric mean of the two; the clips of
+one species are reported together (median over clips). The reference is pooled
+over every dataset in ``dataset/datasets.jsonl`` unless ``--dataset_root`` says
+otherwise.
 
 Usage
 -----
@@ -32,7 +35,7 @@ import os
 import sys
 import textwrap
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -42,11 +45,10 @@ if str(_ANYTOP_DIR) not in sys.path:
     sys.path.insert(0, str(_ANYTOP_DIR))
 
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
-from eval.motion_quality.reference_bank import DEFAULT_MIN_REFERENCE_CLIPS
-from eval.motion_quality.scorer import DistributionEvalReport, DistributionMotionQualityScorer
+from eval.motion_quality.quality import DIMENSIONS, MotionQualityReport, MotionQualityScorer
 from utils.misc import infer_object_type_from_filename
 
-# The datasets the reference prior is pooled over by default: every processed
+# The datasets the reference is pooled over by default: every processed
 # dataset the training cond was merged from.
 _DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets.jsonl"
 
@@ -79,7 +81,7 @@ def _validate_motion(path: str) -> Optional[np.ndarray]:
     return motion.astype(np.float32)
 
 
-def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> Path:
+def _register_cond_path(scorer: MotionQualityScorer, cond_path: str) -> Path:
     """Register an optional custom cond.npy for novel query species."""
     resolved = Path(cond_path).expanduser()
     if not resolved.is_absolute():
@@ -112,131 +114,27 @@ def _bar(score: float, width: int = 20) -> str:
     return "#" * filled + "." * (width - filled)
 
 
-def _print_per_file_summary(
-    results: list[tuple[str, DistributionEvalReport]],
-    use_color: bool,
-    quiet: bool,
-) -> None:
-    """Print per-file scores and average."""
+def _print_report(report: MotionQualityReport, use_color: bool, quiet: bool) -> None:
+    score_text = _color(report.score, f"{report.score:.4f}", use_color)
     if quiet:
-        for path, report in results:
-            name = os.path.basename(path)
-            print(
-                f"{name:<50s} "
-                f"score={_color(report.overall_score, f'{report.overall_score:.4f}', use_color)}"
-            )
-        if len(results) > 1:
-            avg_score = np.mean([r.overall_score for _, r in results])
-            print(
-                f"{'AVERAGE':<50s} "
-                f"score={_color(avg_score, f'{avg_score:.4f}', use_color)}"
-            )
+        dims = "  ".join(f"{dim}={report.dimensions[dim]:.4f}" for dim in DIMENSIONS)
+        print(f"{report.object_type:<40s} clips={report.n_clips:<3d} quality={score_text}  {dims}")
         return
-
-    # Verbose mode
-    clr = lambda value, text: _color(value, text, use_color)
-
-    def _round4_dict(values: dict) -> dict:
-        return {
-            key: (round(float(value), 4) if isinstance(value, (int, float, np.floating)) else value)
-            for key, value in values.items()
-        }
-
-    def _avg_dict(dicts: list[dict]) -> dict:
-        """Average a list of dicts with the same keys."""
-        if not dicts:
-            return {}
-        keys = list(dicts[0].keys())
-        return {k: round(float(np.mean([d[k] for d in dicts])), 4) for k in keys}
-
-    is_multi = len(results) > 1
-
     print()
     print(f"{'=' * 74}")
-    if is_multi:
-        print(f"  Evaluating {len(results)} motion(s) — Per-File Scores")
-    else:
-        print("  Motion Quality Report")
+    print(f"  {report.object_type} ({report.subset})  |  {report.action_label}  |  {report.n_clips} clip(s)")
     print(f"{'=' * 74}")
+    print(f"    {'Quality':<20s} {score_text}  {_bar(report.score)}")
+    for dim in DIMENSIONS:
+        value = report.dimensions[dim]
+        terms = "  ".join(f"{k}={v:.3f}" for k, v in report.terms[dim].items())
+        print(f"    {dim.capitalize():<20s} {_color(value, f'{value:.4f}', use_color)}  {terms}")
+    if report.worst:
+        print(f"    {'Weakest':<20s} " + "  ".join(f"{k}={v:.3f}" for k, v in report.worst))
     print()
-
-    for path, report in results:
-        name = os.path.basename(path)
-        if is_multi:
-            # Multi-file: only score line per file
-            print(
-                f"  {name:<50s} "
-                f"score={clr(report.overall_score, f'{report.overall_score:.4f}')}",
-            )
-        else:
-            # Single file: full detailed report
-            print(f"  {name}")
-            print(
-                f"    {'Overall Score':<32s} "
-                f"{clr(report.overall_score, f'{report.overall_score:.4f}')}  "
-                f"{_bar(report.overall_score)}"
-            )
-            component_scores = report.raw.get("component_scores")
-            if component_scores:
-                print(f"    Metric scores  : {json.dumps(_round4_dict(component_scores))}")
-            joint_group_scores = report.raw.get("joint_group_scores")
-            if joint_group_scores:
-                print(f"    Joint groups   : {json.dumps(_round4_dict(joint_group_scores), sort_keys=True)}")
-            bone_length_drift_stats = report.raw.get("bone_length_drift_stats")
-            if bone_length_drift_stats:
-                print(f"    Bone length drift    : max_abs={bone_length_drift_stats['max_abs_drift_pct']:.2f}%  mean_abs={bone_length_drift_stats['mean_abs_drift_pct']:.2f}%  median_abs={bone_length_drift_stats['median_abs_drift_pct']:.2f}%")
-            print()
-
-    if is_multi:
-        # ── Average summary with full detail ──────────────────────────────
-        avg_score = np.mean([r.overall_score for _, r in results])
-
-        raw_list = [r.raw for _, r in results]
-        comp = raw_list[0].get("component_scores") if raw_list else None
-        jg = raw_list[0].get("joint_group_scores") if raw_list else None
-        avg_comp = _avg_dict([r.raw.get("component_scores", {}) for _, r in results]) if comp else None
-        avg_jg = _avg_dict([r.raw.get("joint_group_scores", {}) for _, r in results]) if jg else None
-
-        print()
-        print(f"{'─' * 74}")
-        print(f"  AVERAGE ({len(results)} files)")
-        print()
-        print(
-            f"    {'Overall Score':<32s} "
-            f"{clr(avg_score, f'{avg_score:.4f}')}  "
-            f"{_bar(avg_score)}"
-        )
-        if avg_comp:
-            print(f"    Metric scores  : {json.dumps(avg_comp)}")
-        if avg_jg:
-            print(f"    Joint groups   : {json.dumps(avg_jg, sort_keys=True)}")
-
-        # Average bone length drift across files
-        drift_stats_list = [r.raw.get("bone_length_drift_stats") for _, r in results
-                            if r.raw.get("bone_length_drift_stats")]
-        if drift_stats_list:
-            avg_max = np.mean([s["max_abs_drift_pct"] for s in drift_stats_list])
-            avg_mean = np.mean([s["mean_abs_drift_pct"] for s in drift_stats_list])
-            avg_median = np.mean([s["median_abs_drift_pct"] for s in drift_stats_list])
-            print(
-                f"    Bone length drift    : max_abs={avg_max:.2f}%  "
-                f"mean_abs={avg_mean:.2f}%  "
-                f"median_abs={avg_median:.2f}%"
-            )
-        print()
-
-    # Print reference species from the first report
-    if results:
-        report = results[0][1]
-        print("  Reference species:")
-        for species in report.reference_species:
-            print(
-                "    "
-                f"{species['object_type']:<36} weight={species['species_weight']:.4f} "
-                f"distance={species['combined_distance']:.4f} (tags={species['tag_distance']:.2f} "
-                f"parts={species['jaccard']:.2f}) clips={species['clip_count']} frames={species['total_frames']}"
-            )
-        print()
+    for clip in report.clips:
+        print(f"    {clip['file']:<40s} quality={clip['score']:.4f}  physics={clip['physics']:.4f}  prior={clip['prior']:.4f}")
+    print()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -245,21 +143,17 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=textwrap.dedent(
             """\
-            Low-Shot Weighted-Reference Motion Quality Evaluator
-            ─────────────────────────────────────────────────────
-            Compares one or more query motions against a weighted reference prior
-            assembled from dataset motions whose action_label names the same actions.
+            Motion Quality Evaluator
+            ────────────────────────
+            Scores clips on two dimensions, each in [0, 1]:
 
-            Reference construction:
-              • dataset motions whose action_label shares a head word with --action_label
-              • Top-K species nearest the query skeleton by motion tags / body parts /
-                topology, widened until the prior holds --min_reference_clips clips
-              • species weights distributed across reference clips by frame count
+              • physics: bone rigidity, per-part smoothness and frame continuity,
+                against real clips of the query's body plan (label-free)
+              • prior: left/right symmetry, limb coordination and part tempo,
+                against real clips sharing a head word with --action_label (never
+                the query's own species), calibrated so a typical real clip scores 1
 
-            Scores:
-              • Local joint naturalness      — robust deviation of spectral/smoothness summaries
-
-            Score range: 0.0 (worst) → 1.0 (best match to the weighted reference prior).
+            A clip's quality is the geometric mean of the two.
             """
         ),
     )
@@ -269,7 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         required=True,
         metavar="PATTERN",
-        help="Glob pattern(s) for query motion .npy files.",
+        help="Glob pattern(s) for query motion .npy files; the files of one species are reported together.",
     )
     parser.add_argument(
         "--object_type", "--object-type",
@@ -283,17 +177,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="FILE",
         help="Optional custom cond.npy for novel query species. This is used only for query-side skeleton metadata; "
-             "reference action distributions still come from the default dataset cond.npy.",
+             "the reference distribution still comes from the dataset corpus.",
     )
     parser.add_argument(
         "--action_label", "--action-label",
         required=True,
         metavar="LABEL",
         help="Required. The action_label the query motions were generated with, spelled like "
-             "generate.py's --action_label (e.g. 'run' or 'fly, forward'). The reference prior is "
-             "every dataset clip whose action_label shares a head word with it -- not the "
-             "action_group, which would widen the prior to a whole third of the corpus. There is "
-             "no default: for clips generated without a label, name the action of their reference clip.",
+             "generate.py's --action_label (e.g. 'run' or 'fly, forward'). There is no default: "
+             "for clips generated without a label, name the action of their reference clip.",
     )
     parser.add_argument(
         "--dataset_root", "--dataset-root",
@@ -304,25 +196,10 @@ def build_parser() -> argparse.ArgumentParser:
              "reference distribution over every dataset it lists. Default: dataset/datasets.jsonl.",
     )
     parser.add_argument(
-        "--min_reference_clips", "--min-reference-clips",
-        type=int,
-        default=DEFAULT_MIN_REFERENCE_CLIPS,
-        metavar="N",
-        help="Widen the prior past --top_k_species, nearest species first, until it holds at "
-             "least N reference clips. Default: %(default)s.",
-    )
-    parser.add_argument(
-        "--top_k_species", "--top-k-species",
-        type=int,
-        default=3,
-        metavar="N",
-        help="Number of nearest species (by motion tags / body parts / topology) in the weighted reference prior (default: 3).",
-    )
-    parser.add_argument(
         "--output_json",
         default=None,
         metavar="FILE",
-        help="Write the report as JSON.",
+        help="Write the reports as JSON.",
     )
     parser.add_argument(
         "--quiet",
@@ -347,84 +224,65 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[error] No query motion files found.", file=sys.stderr)
         return 1
 
-    # ── Resolve object_type strategy ────────────────────────────────────────
-    # An explicit --object_type applies to every file. Otherwise the type is
-    # inferred per file from its name, so a single end-of-workflow run can score
-    # a mixed output tree containing several species. The reference prior is
-    # cached per (object_type, action_label), so files that share a type only pay
-    # the dataset-loading cost once.
-    explicit_object_type = args.object_type
-
-    # ── Evaluate each motion file independently ────────────────────────────
-    scorer = DistributionMotionQualityScorer(dataset_root=args.dataset_root)
+    scorer = MotionQualityScorer(dataset_root=args.dataset_root)
     if args.cond_path:
         try:
             _register_cond_path(scorer, args.cond_path)
         except (FileNotFoundError, ValueError, OSError) as exc:
             print(f"[error] failed to load --cond-path: {exc}", file=sys.stderr)
             return 1
-    results: list[tuple[str, DistributionEvalReport]] = []
-    skipped = 0
-    # Filename inference is validated against the scorer's species, so a
-    # multi-token name ("FEP_MagmaDemon_Attack01_1.npy") is not cut at the first
-    # underscore.
-    species_lookup = (
-        scorer.species_lookup() if explicit_object_type is None else None
-    )
 
-    print(f"Evaluating {len(motion_paths)} motion(s) ...")
+    # An explicit --object_type applies to every file. Otherwise the type is
+    # inferred per file from its name (validated against the scorer's species, so
+    # a multi-token name is not cut at its first underscore) and each species'
+    # files are scored as their own set.
+    species_lookup = scorer.species_lookup() if args.object_type is None else None
+    groups: Dict[str, List[tuple[str, np.ndarray]]] = {}
+    skipped = 0
     for path in motion_paths:
-        if explicit_object_type is not None:
-            object_type = explicit_object_type
-        else:
-            object_type = infer_object_type_from_filename(
-                path, valid_types=species_lookup
+        object_type = args.object_type or infer_object_type_from_filename(path, valid_types=species_lookup)
+        if object_type is None:
+            print(
+                f"[warn] cannot auto-detect object_type from "
+                f"'{os.path.basename(path)}' - skipping (pass --object_type to override)",
+                file=sys.stderr,
             )
-            if object_type is None:
-                print(
-                    f"[warn] cannot auto-detect object_type from "
-                    f"'{os.path.basename(path)}' - skipping (pass --object_type to override)",
-                    file=sys.stderr,
-                )
-                skipped += 1
-                continue
+            skipped += 1
+            continue
         motion = _validate_motion(path)
         if motion is None:
             skipped += 1
             continue
+        groups.setdefault(object_type, []).append((path, motion))
+
+    print(f"Evaluating {sum(len(g) for g in groups.values())} motion(s) in {len(groups)} set(s) ...")
+    results: list[tuple[List[str], MotionQualityReport]] = []
+    for object_type, members in groups.items():
         try:
             report = scorer.evaluate(
-                motions=[motion],
-                object_type=object_type,
-                action_label=args.action_label,
-                top_k_species=args.top_k_species,
-                min_reference_clips=args.min_reference_clips,
+                [motion for _, motion in members], object_type, args.action_label,
+                names=[os.path.basename(path) for path, _ in members],
             )
         except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:
-            print(f"[warn] evaluation failed for {path}: {exc}", file=sys.stderr)
-            skipped += 1
+            print(f"[warn] evaluation failed for {object_type}: {exc}", file=sys.stderr)
+            skipped += len(members)
             continue
-        results.append((path, report))
+        paths = [path for path, _ in members]
+        results.append((paths, report))
+        _print_report(report, use_color, args.quiet)
 
     if skipped:
-        print(f"[info] skipped {skipped} invalid file(s)", file=sys.stderr)
+        print(f"[info] skipped {skipped} file(s)", file=sys.stderr)
     if not results:
         print("[error] No valid motion evaluations were produced.", file=sys.stderr)
         return 1
 
-    # ── Print results ──────────────────────────────────────────────────────
-    _print_per_file_summary(results, use_color, args.quiet)
-
     if args.output_json:
-        # Write combined JSON with per-file scores
         combined = {
-            "per_file": [
-                {"file": os.path.basename(path), "score": report.as_dict()}
-                for path, report in results
+            "sets": [
+                {"files": [os.path.basename(path) for path in paths], "score": report.as_dict()}
+                for paths, report in results
             ],
-            "average": {
-                "overall_score": round(float(np.mean([r.overall_score for _, r in results])), 4),
-            },
         }
         with open(args.output_json, "w", encoding="utf-8") as handle:
             json.dump(combined, handle, indent=2)

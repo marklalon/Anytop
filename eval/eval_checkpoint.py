@@ -11,9 +11,12 @@ evaluator, and write a self-contained HTML report.
 Generation tasks call ``sample.generate`` in-process with a shared generation
 runtime, so the checkpoint/model is loaded once for the whole battery. Tasks
 use ``batch_size=4 --amp_dtype fp32``.
-Generated clips are scored in-process with the motion quality scorer, whose
-reference prior is pooled over every dataset in ``--dataset_root`` (default
-``dataset/datasets.jsonl``) and indexed once for the whole battery.
+Each task's clips are scored in-process with the motion quality scorer
+(``eval/motion_quality/quality.py``): every clip gets a physical-plausibility
+and a data-prior score in [0, 1], its quality is their geometric mean, and a
+task's is the median over its clips. The reference statistics are pooled over
+every dataset in ``--dataset_root`` (default ``dataset/datasets.jsonl``) and
+indexed once for the whole battery.
 
 Every task must name the label its clips are scored against: its own
 ``--action_label``, or -- for a task that generates without one (unconditional,
@@ -27,7 +30,7 @@ Output layout::
         <Category>/task<N>/        # one dir per generation task
             <ObjectType>_0.npy / .bvh ...
             generate.log
-            scores.json            # machine-readable per-clip scores
+            scores.json            # machine-readable task score
         eval_report.html
 
 The run folder defaults to ``<RUN_NAME>`` and can be overridden with
@@ -94,20 +97,19 @@ if str(_ANYTOP_DIR) not in sys.path:
     sys.path.insert(0, str(_ANYTOP_DIR))
 
 from eval.motion_quality.reference_bank import reference_prior_words
-from eval.motion_quality.scorer import DistributionMotionQualityScorer
+from eval.motion_quality.quality import DIMENSIONS, MotionQualityScorer
 from sample.generate import main as generate_main
 from sample.generation_runtime import prepare_generation_runtime
 from utils.parser_util import generate_args
 
 # Sentinel resolved at run time to the first output .npy of the previous task.
 _LAST_OUTPUT = "$LAST_OUTPUT"
-_SCORE_TOP_K_SPECIES = 3
 
 # Default task battery, loaded when --task_config is omitted. The batch entry
 # point requires this path explicitly; the Python default is kept for direct
 # invocations. The shipped battery is eval/eval_tasks.json.
 _DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks.json"
-# The datasets the scorer's reference prior is pooled over: every processed
+# The datasets the quality reference is pooled over: every processed
 # dataset the training cond was merged from, not just the first one.
 _DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets.jsonl"
 # generate.py flags whose following value is a filesystem path. Their values are
@@ -461,7 +463,7 @@ def _task_score_label(extra_args: list, eval_label: str | None) -> str:
     return label
 
 
-def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> dict | None:
+def _register_cond_path(scorer: MotionQualityScorer, cond_path: str) -> dict | None:
     """Load a cond.npy and register its entries as query skeleton metadata.
 
     Returns the loaded cond dict (None when it could not be loaded) so the
@@ -554,7 +556,7 @@ def _build_record_from_existing(
     task_dir: Path,
     category: str,
     index: int,
-    scorer: DistributionMotionQualityScorer,
+    scorer: MotionQualityScorer,
     root: Path,
     score_label: str,
 ) -> dict:
@@ -568,8 +570,8 @@ def _build_record_from_existing(
         "index": index,
         "task_dir": task_dir,
         "command": "",
-        "scores": {},
-        "median": None,
+        "score": None,
+        "quality": None,
         "status": "ok",
         "first_npy": None,
         "reference_motion": None,
@@ -608,13 +610,13 @@ def _build_record_from_existing(
     # Re-score existing clips.
     if file_token:
         object_type = _task_object_type(file_token, task_cond)
-        record["scores"] = _score_task(scorer, task_dir, file_token, object_type, score_label)
+        record["score"] = _score_task(scorer, task_dir, file_token, object_type, score_label)
     else:
         print(f"    [WARN] {category}/task{index}: could not determine object_type; skipping scoring")
 
-    if record["scores"]:
-        record["median"] = float(np.median(list(record["scores"].values())))
-        print(f"  {category}/task{index}: scored {len(record['scores'])} clip(s); median={record['median']:.4f}")
+    if record["score"]:
+        record["quality"] = record["score"]["score"]
+        print(f"  {category}/task{index}: {_score_summary(record['score'])}")
     else:
         record["status"] = "ok (no scores)"
 
@@ -622,64 +624,46 @@ def _build_record_from_existing(
 
 
 def _score_task(
-    scorer: DistributionMotionQualityScorer,
+    scorer: MotionQualityScorer,
     task_dir: Path,
     file_token: str,
     object_type: str,
     score_label: str,
-) -> dict[str, float]:
-    """Score a task's clips in-process so the reference-bank cache is reused.
+) -> dict | None:
+    """Score a task's clips together and write ``scores.json``; the report dict, or None.
 
     ``file_token`` is the species token the clips are named with (selects the
     files); ``object_type`` is the cond key they are scored as (see
-    ``_task_object_type``). ``score_label`` selects the reference prior (see
+    ``_task_object_type``). ``score_label`` selects the reference (see
     ``_task_score_label``).
     """
     out_json = task_dir / "scores.json"
     motion_paths = sorted(task_dir.glob(f"{file_token}_*.npy"))
     if not motion_paths:
         print(f"    [WARN] no generated .npy files found for object_type={object_type!r}")
-        return {}
+        return None
 
-    per_file: list[dict] = []
-    scores: dict[str, float] = {}
-    skipped = 0
-    for path in motion_paths:
-        motion = _load_motion_for_scoring(path)
-        if motion is None:
-            skipped += 1
-            continue
-        try:
-            report = scorer.evaluate(
-                motions=[motion],
-                object_type=object_type,
-                action_label=score_label,
-                top_k_species=_SCORE_TOP_K_SPECIES,
-            )
-        except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:
-            print(f"    [WARN] evaluation failed for {path.name}: {exc}")
-            skipped += 1
-            continue
-        report_dict = report.as_dict()
-        per_file.append({"file": path.name, "score": report_dict})
-        scores[path.name] = float(report.overall_score)
-
-    if skipped:
-        print(f"    [WARN] skipped {skipped} invalid clip(s)")
-    if per_file:
-        payload = {
-            "per_file": per_file,
-            "average": {
-                "overall_score": round(float(np.mean(list(scores.values()))), 4),
-            },
-        }
-        out_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return scores
+    loaded = [(path.name, _load_motion_for_scoring(path)) for path in motion_paths]
+    names = [name for name, motion in loaded if motion is not None]
+    motions = [motion for _name, motion in loaded if motion is not None]
+    if len(motions) < len(motion_paths):
+        print(f"    [WARN] skipped {len(motion_paths) - len(motions)} invalid clip(s)")
+    if not motions:
+        return None
+    try:
+        report = scorer.evaluate(motions, object_type, score_label, names=names)
+    except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:
+        print(f"    [WARN] evaluation failed: {exc}")
+        return None
+    payload = report.as_dict()
+    payload["files"] = names
+    out_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return payload
 
 
 def run_task(
     runtime,
-    scorer: DistributionMotionQualityScorer,
+    scorer: MotionQualityScorer,
     model_path: Path,
     category: str,
     index: int,
@@ -722,8 +706,8 @@ def run_task(
         "index": index,
         "task_dir": task_dir,
         "command": display_cmd,
-        "scores": {},
-        "median": None,
+        "score": None,
+        "quality": None,
         "status": "ok",
         "first_npy": None,
         "reference_motion": _extract_reference_motion(extra_args),
@@ -773,25 +757,23 @@ def run_task(
     file_token = _extract_object_type(first_npy) if first_npy else None
 
     # Register custom cond_path into the scorer so novel skeleton types
-    # (e.g., 'dragon') can be resolved for query grouping and bone-length
-    # scoring while reference comparisons still use the default cond baseline.
+    # (e.g., 'dragon') can be featurised as the query, while the reference
+    # still comes from the dataset corpus.
     task_cond: dict | None = None
     task_cond_path = _extract_cond_path(extra_args)
     if task_cond_path:
         task_cond = _register_cond_path(scorer, task_cond_path)
 
     # Score the generated clips in-process (scores.json per task).
-    scores: dict[str, float] = {}
     if file_token:
         object_type = _task_object_type(file_token, task_cond)
-        scores = _score_task(scorer, task_dir, file_token, object_type, score_label)
+        record["score"] = _score_task(scorer, task_dir, file_token, object_type, score_label)
     else:
         print("  [WARN] could not determine object_type; skipping scoring")
 
-    record["scores"] = scores
-    if scores:
-        record["median"] = float(np.median(list(scores.values())))
-        print(f"  scored {len(scores)} clip(s); median={record['median']:.4f}")
+    if record["score"]:
+        record["quality"] = record["score"]["score"]
+        print(f"  {_score_summary(record['score'])}")
     else:
         record["status"] = "ok (no scores)"
         print("  [WARN] no scores produced for this task")
@@ -801,6 +783,11 @@ def run_task(
 
 def _pct(values: list[float], p: float) -> float:
     return float(np.percentile(values, p)) if values else float("nan")
+
+
+def _score_summary(score: dict) -> str:
+    dims = "  ".join(f"{dim}={score[dim]:.4f}" for dim in DIMENSIONS)
+    return f"{score['meta']['n_clips']} clip(s); quality={score['score']:.4f}  {dims}"
 
 
 def write_html_report(
@@ -813,20 +800,31 @@ def write_html_report(
 ) -> None:
     root = report_path.parent
     n_tasks = len(records)
-    n_ok = sum(1 for r in records if r["scores"])
+    n_ok = sum(1 for r in records if r["quality"] is not None)
 
+    columns = {"quality": all_scores}
+    for dim in DIMENSIONS:
+        columns[dim] = [r["score"][dim] for r in records if r["quality"] is not None]
     if all_scores:
-        med, p25, p75 = _pct(all_scores, 50), _pct(all_scores, 25), _pct(all_scores, 75)
+        stats = [
+            ("mean", lambda v: float(np.mean(v))),
+            ("median (p50)", lambda v: _pct(v, 50)),
+            ("p25", lambda v: _pct(v, 25)),
+            ("p75", lambda v: _pct(v, 75)),
+            ("min", min),
+            ("max", max),
+        ]
+        header = "".join(f"<th>{html.escape(name)}</th>" for name in columns)
+        body = "".join(
+            f"<tr><td>{label}</td>" + "".join(f'<td class="val">{fn(v):.4f}</td>' for v in columns.values()) + "</tr>"
+            for label, fn in stats
+        )
         overall_html = (
-            f'<tr><td>median (p50)</td><td class="val">{med:.4f}</td></tr>'
-            f'<tr><td>p25</td><td class="val">{p25:.4f}</td></tr>'
-            f'<tr><td>p75</td><td class="val">{p75:.4f}</td></tr>'
-            f'<tr><td>min</td><td class="val">{min(all_scores):.4f}</td></tr>'
-            f'<tr><td>max</td><td class="val">{max(all_scores):.4f}</td></tr>'
-            f'<tr><td>clips scored</td><td class="val">{len(all_scores)}</td></tr>'
+            f"<tr><th></th>{header}</tr>{body}"
+            f'<tr><td>tasks scored</td><td class="val" colspan="{len(columns)}">{len(all_scores)}</td></tr>'
         )
     else:
-        overall_html = '<tr><td colspan="2">No scores produced.</td></tr>'
+        overall_html = f'<tr><td colspan="{len(DIMENSIONS) + 2}">No scores produced.</td></tr>'
 
     def _row(rank: int, r: dict) -> str:
         label = f'{r["category"]}/task{r["index"]}'
@@ -881,9 +879,9 @@ def write_html_report(
         else:
             motion_cell = '<span class="muted">—</span>'
 
-        if r["median"] is not None:
-            score = r["median"]
-            bg = "#d4edda" if score >= 0.7 else ("#fff3cd" if score >= 0.4 else "#f8d7da")
+        if r["quality"] is not None:
+            score = r["quality"]
+            bg = "#d4edda" if score >= 0.8 else ("#fff3cd" if score >= 0.6 else "#f8d7da")
             score_cell = f'<span class="val">{score:.4f}</span>'
         else:
             bg = "#f4f4f4"
@@ -942,10 +940,10 @@ def write_html_report(
   Tasks: {n_ok}/{n_tasks} scored &nbsp;|&nbsp; Generated: {generated}
 </p>
 
-<h2>Overall score (all generated clips)</h2>
+<h2>Overall quality (one score per task)</h2>
 <div class="stat-grid">
   <div class="stat-box">
-    <h3>Joint-naturalness quality score — 0.0 (worst) → 1.0 (best)</h3>
+    <h3>Task quality: median over clips of sqrt(physics × prior); 1.0 = as natural as a typical real clip</h3>
     <table>{overall_html}</table>
   </div>
 </div>
@@ -958,7 +956,7 @@ def write_html_report(
   <th>task</th>
   <th>command</th>
   <th>first output motion</th>
-  <th>score (median)</th>
+  <th>quality</th>
 </tr>
 </thead>
 <tbody>
@@ -1010,7 +1008,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--dataset_root", "--dataset-root", default=str(_DEFAULT_DATASET_ROOT),
-        help="Datasets the scorer's reference prior is pooled over: a processed "
+        help="Datasets the quality reference is pooled over: a processed "
              "dataset dir or a datasets.jsonl manifest (absolute, or relative to "
              "the Anytop dir). Default: dataset/datasets.jsonl.",
     )
@@ -1067,7 +1065,7 @@ def main() -> int:
     if not dataset_root.exists():
         print(f"ERROR: dataset root not found: {dataset_root}", file=sys.stderr)
         return 1
-    scorer = DistributionMotionQualityScorer(dataset_root=str(dataset_root))
+    scorer = MotionQualityScorer(dataset_root=str(dataset_root))
     print(f"Python      : {sys.executable}")
     print(f"Checkpoint  : {model_path}")
     print(f"Task config : {task_config}")
@@ -1132,7 +1130,7 @@ def main() -> int:
                 print(f"  [ERROR] {category}/task{index} rescore raised: {exc}")
                 record = {
                     "category": category, "index": index, "task_dir": task_dir,
-                    "command": "", "scores": {}, "median": None,
+                    "command": "", "score": None, "quality": None,
                     "status": f"harness error: {exc}", "first_npy": _first_output_npy(task_dir),
                     "reference_motion": None,
                 }
@@ -1166,7 +1164,7 @@ def main() -> int:
                 "category": category, "index": index,
                 "task_dir": task_dir,
                 "command": "generate.py " + " ".join(extra_args),
-                "scores": {}, "median": None,
+                "score": None, "quality": None,
                 "status": f"harness error: {exc}", "first_npy": None,
                 "reference_motion": _extract_reference_motion(extra_args),
             }
@@ -1187,9 +1185,7 @@ def main() -> int:
     if not args.overwrite:
         print(f"\n[increment] generated {n_generated} new task(s); reused {n_skipped} existing task(s)")
 
-    all_scores: list[float] = []
-    for r in records:
-        all_scores.extend(r["scores"].values())
+    all_scores = [r["quality"] for r in records if r["quality"] is not None]
 
     # Return non-zero if any task failed — skip report/overall scores.
     failed = sum(1 for r in records if not r["status"].startswith("ok"))
@@ -1203,9 +1199,9 @@ def main() -> int:
     print("\n" + "=" * 60)
     if all_scores:
         print(
-            f"Overall score  median={_pct(all_scores, 50):.4f}  "
+            f"Quality  mean={float(np.mean(all_scores)):.4f}  median={_pct(all_scores, 50):.4f}  "
             f"p25={_pct(all_scores, 25):.4f}  p75={_pct(all_scores, 75):.4f}  "
-            f"(n={len(all_scores)} clips)"
+            f"(n={len(all_scores)} tasks)"
         )
     else:
         print("No scores were produced.")

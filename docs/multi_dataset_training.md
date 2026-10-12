@@ -298,7 +298,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 保持「既能单个数据集、也能清单」：
 
 - `eval/evaluate_motion_quality.py` 的 `--dataset_root` 按扩展名判定 —— 目录 = 单源（当前行为不变），`.jsonl` = 清单多源
-- `DistributionMotionQualityScorer(dataset_root=...)` 内部统一转成 `sources` 列表
+- `MotionQualityScorer(dataset_root=...)` 内部统一转成 `sources` 列表
 - [offline_reference_dataset.py](../data_loaders/truebones/offline_reference_dataset.py) 提供多源版本；`_matches_object_subset` 的文件名前缀匹配改为读 `motion_metadata`
 - [reference_bank.py](../eval/motion_quality/reference_bank.py) 参考池 = 各源并集，clip id 复合化，缓存 key 含全部源路径
 - 训练中的验证（`--eval_interval`）只算 val split 上的 loss，不采样、不打分，因此不依赖参考分布；打分只在 `eval_checkpoint.py` / `evaluate_motion_quality.py` 离线做

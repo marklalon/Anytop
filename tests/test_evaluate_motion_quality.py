@@ -19,7 +19,7 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
 
 
 import eval.evaluate_motion_quality as eval_mod
-from eval.motion_quality.scorer import DistributionEvalReport
+from eval.motion_quality.quality import MotionQualityReport
 
 
 def _make_cond_entry(embedding: np.ndarray) -> dict:
@@ -42,28 +42,22 @@ def _fake_scorer_class(captured: dict[str, object]):
         def species_lookup(self):
             return {}
 
-        def evaluate(self, motions, object_type, action_label, top_k_species, min_reference_clips):
+        def evaluate(self, motions, object_type, action_label, names=None):
             captured["object_type"] = object_type
             captured["action_label"] = action_label
-            captured["top_k_species"] = top_k_species
-            captured["min_reference_clips"] = min_reference_clips
             captured["n_motions"] = len(motions)
-            return DistributionEvalReport(
+            captured["names"] = list(names or [])
+            return MotionQualityReport(
                 object_type=object_type,
                 action_label=action_label,
-                n_input=1,
-                n_reference=1,
-                input_total_frames=int(motions[0].shape[0]),
-                reference_total_frames=8,
-                scoring_mode="test",
-                top_k_species=top_k_species,
-                reference_species=[],
-                overall_score=0.5,
-                spectral_flatness_score=0.5,
-                jerk_score=0.5,
-                snap_score=0.5,
-                bone_length_score=0.5,
-                raw={},
+                subset="quadruped",
+                score=0.5,
+                dimensions={"physics": 0.25, "prior": 1.0},
+                terms={"physics": {"rigidity": 0.25}, "prior": {"coordination": 1.0}},
+                clips=[
+                    {"file": name, "score": 0.5, "physics": 0.25, "prior": 1.0}
+                    for name in (names or [str(i) for i in range(len(motions))])
+                ],
             )
 
     return FakeScorer
@@ -78,7 +72,7 @@ def test_main_registers_cond_path_for_novel_query_species(tmp_path, monkeypatch)
     np.save(cond_path, cond_dict, allow_pickle=True)
 
     captured: dict[str, object] = {}
-    monkeypatch.setattr(eval_mod, "DistributionMotionQualityScorer", _fake_scorer_class(captured))
+    monkeypatch.setattr(eval_mod, "MotionQualityScorer", _fake_scorer_class(captured))
 
     exit_code = eval_mod.main([
         "--motions", str(motion_path),
@@ -100,8 +94,6 @@ def test_main_registers_cond_path_for_novel_query_species(tmp_path, monkeypatch)
     )
     assert captured["object_type"] == "dragon"
     assert captured["action_label"] == "fly, forward"
-    assert captured["top_k_species"] == 3
-    assert captured["min_reference_clips"] == 12
     assert captured["n_motions"] == 1
     # The prior is pooled over every dataset by default.
     assert str(captured["dataset_root"]).replace("\\", "/").endswith("dataset/datasets.jsonl")
@@ -112,7 +104,7 @@ def test_main_without_action_label_is_rejected(tmp_path, monkeypatch, capsys) ->
     np.save(motion_path, np.zeros((8, 2, 12), dtype=np.float32))
 
     captured: dict[str, object] = {}
-    monkeypatch.setattr(eval_mod, "DistributionMotionQualityScorer", _fake_scorer_class(captured))
+    monkeypatch.setattr(eval_mod, "MotionQualityScorer", _fake_scorer_class(captured))
 
     # argparse exits before anything is scored: there is no default prior.
     with pytest.raises(SystemExit) as exc_info:
@@ -228,3 +220,29 @@ def test_eval_checkpoint_config_rejects_an_empty_output_dir(tmp_path) -> None:
     config_path.write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(ValueError, match="checkpoint.OUTPUT_DIR must be a non-empty string"):
         eval_checkpoint._load_task_config(config_path)
+
+
+def test_main_scores_the_files_of_one_species_as_one_set(tmp_path, monkeypatch) -> None:
+    for i in range(3):
+        np.save(tmp_path / f"Buffalo_{i}.npy", np.zeros((8, 2, 12), dtype=np.float32))
+    output_json = tmp_path / "out.json"
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(eval_mod, "MotionQualityScorer", _fake_scorer_class(captured))
+
+    exit_code = eval_mod.main([
+        "--motions", str(tmp_path / "Buffalo_*.npy"),
+        "--object-type", "Buffalo",
+        "--action-label", "run, forward",
+        "--output_json", str(output_json),
+        "--no_color",
+    ])
+
+    assert exit_code == 0
+    assert captured["n_motions"] == 3
+    assert captured["names"] == ["Buffalo_0.npy", "Buffalo_1.npy", "Buffalo_2.npy"]
+    payload = json.loads(output_json.read_text(encoding="utf-8"))
+    assert len(payload["sets"]) == 1
+    assert payload["sets"][0]["files"] == ["Buffalo_0.npy", "Buffalo_1.npy", "Buffalo_2.npy"]
+    assert payload["sets"][0]["score"]["score"] == 0.5
+    assert payload["sets"][0]["score"]["physics"] == 0.25

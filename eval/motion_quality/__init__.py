@@ -1,5 +1,5 @@
-"""Low-shot weighted-reference motion quality evaluation — no trained model required."""
+"""Motion quality: physical plausibility and data-prior conformity of generated clips."""
 
-from .scorer import DistributionMotionQualityScorer, DistributionEvalReport
+from .quality import MotionQualityReport, MotionQualityScorer
 
-__all__ = ["DistributionMotionQualityScorer", "DistributionEvalReport"]
+__all__ = ["MotionQualityReport", "MotionQualityScorer"]
