@@ -1,2 +1,0 @@
-!skip-orientation-detection
-#BVH end-site joint(s) for

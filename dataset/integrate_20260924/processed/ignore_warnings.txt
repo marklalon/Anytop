@@ -6,3 +6,7 @@
 #skeleton exceeds MAX_JOINTS (113 > 100) for Knight_Barbarianwarrior
 #BVH end-site joint(s) for ORA_ReadyPlayerMe
 Pet_Miho_Idle02
+#BVH end-site joint(s) for ORA_BatToon
+#BVH end-site joint(s) for ORA_MantisMan
+#BVH end-site joint(s) for ORA_PinkTurtle
+#BVH end-site joint(s) for ORA_Seagull
