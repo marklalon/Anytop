@@ -8,16 +8,17 @@
   :root {
     color-scheme: dark;
     --bg: #303030;
-    --panel: #2a2a2a;
+    --panel: #2c2c2c;
+    --field: #3d3d3d;
     --bar: #262626;
     --edge: #4a4a4a;
     --text: #e6e6e6;
     --dim: #9a9a9a;
     --accent: #6fa8ff;
     --bad: #e0704a;
-    --row-hover: #353535;
-    --row-sel: #2d4466;
-    --view-bg: #1f1f1f;
+    --row-hover: #454545;
+    --row-sel: #28405e;
+    --view-bg: #202020;
     --grid: #3a3a3a;
   }
   * { box-sizing: border-box; }
@@ -38,13 +39,14 @@
     gap: 10px;
     padding: 8px 14px;
     background: var(--bar);
-    border-bottom: 1px solid var(--edge);
+    border-bottom: 1px solid #1c1c1c;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
   }
-  footer { border-top: 1px solid var(--edge); border-bottom: 0; }
+  footer { border-top: 1px solid #1c1c1c; border-bottom: 0; box-shadow: 0 -2px 8px rgba(0,0,0,.4); }
   .spacer { flex: 1; }
   label.f { color: var(--dim); font-size: 12px; }
   select, input[type=search], button {
-    background: var(--panel);
+    background: var(--field);
     color: var(--text);
     border: 1px solid var(--edge);
     border-radius: 4px;
