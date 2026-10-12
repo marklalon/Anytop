@@ -59,7 +59,7 @@
 {"species": "ORA_FemaleHumanoid", "species_tags": ["Biped", "Striding"]}
 {"species": "ORA_Gargoyle", "species_tags": ["Biped", "Striding"]}
 {"species": "ORA_GlovedHumanoid", "species_tags": ["Biped", "Striding"]}
-{"species": "ORA_Goat", "species_tags": ["Quadruped", "Trotting"]}
+{"species": "ORA_Goat", "species_tags": ["Quadruped", "Scurrying"]}
 {"species": "ORA_GrappleGuardian", "species_tags": ["Biped", "Striding"]}
 {"species": "ORA_Gumiho", "species_tags": ["Quadruped", "Galloping"]}
 {"species": "ORA_Hen", "species_tags": ["Biped", "Striding"]}
