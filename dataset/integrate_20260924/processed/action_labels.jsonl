@@ -536,7 +536,7 @@
 {"clip": "ORA_PaperBlockHumanoid_Kneel", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "kneel"}
 {"clip": "ORA_PeterRabbit_Jump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
 {"clip": "ORA_PinkFish_Swim", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "swim, idle"}
-{"clip": "ORA_PlayerHumanoid_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, forward"}
+{"clip": "ORA_PlayerHumanoid_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, forward, left"}
 {"clip": "ORA_ReadyPlayerMe_Jump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fall, jump"}
 {"clip": "ORA_SmallSwimmer_Swim", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fall"}
 {"clip": "ORA_Snail_Move", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
