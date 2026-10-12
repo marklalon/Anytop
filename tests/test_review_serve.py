@@ -406,3 +406,125 @@ def test_joint_names_clips_list_only_the_species_clips_that_have_a_bvh(tmp_path,
             store.clip_bvh("Synthetic", clip)
     with pytest.raises(KeyError):
         store.clips("Missing")
+
+
+def _species_dataset(tmp_path, tag_lines, motions):
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    tags = processed / "species_tags.jsonl"
+    tags.write_bytes(tag_lines.encode("utf-8"))
+    metadata = processed / "motion_metadata.json"
+    metadata.write_text(json.dumps({"motions": motions}), encoding="utf-8")
+    return {"species_tags": tags, "metadata": metadata}
+
+
+def test_species_tag_store_maps_clips_through_metadata_and_prefix(tmp_path):
+    ds = _species_dataset(
+        tmp_path,
+        '{"species": "Big_Cat", "species_tags": ["Quadruped", "Stalking"]}\n'
+        '{"species": "Big", "species_tags": ["Biped", "Striding"]}\n',
+        # The clip name does not carry its species; metadata decides.
+        {"Roar01.npy": {"object_type": "Big_Cat"}},
+    )
+    store = review.SpeciesTagStore(ds)
+    rows = store.annotate([{"clip": "Roar01"}, {"clip": "Big_Cat_Walk"}, {"clip": "Nobody_Walk"}])
+    assert [r["_species"] for r in rows] == ["Big_Cat", "Big_Cat", None]
+    assert rows[0]["_species_tags"] == ["Quadruped", "Stalking"]
+    assert rows[2]["_species_tags"] is None
+
+
+def test_species_tag_store_update_rewrites_one_row_and_validates(tmp_path):
+    original_dog = '{"species":"Dog","species_tags":["Quadruped","Trotting"]}'
+    ds = _species_dataset(
+        tmp_path,
+        '{"species": "Cat", "species_tags": ["Quadruped", "Stalking"]}\r\n' + original_dog + '\r\n',
+        {"Cat_Walk.npy": {"object_type": "Cat"}, "Ghost_Idle.npy": {"object_type": "Ghost"}},
+    )
+    store = review.SpeciesTagStore(ds)
+    row, changed = store.update("Cat", ["biped", "striding"])
+    assert changed and row == {"species": "Cat", "species_tags": ["Biped", "Striding"]}
+    lines = ds["species_tags"].read_bytes().decode("utf-8").split("\r\n")
+    assert json.loads(lines[0])["species_tags"] == ["Biped", "Striding"]
+    assert lines[1] == original_dog          # untouched row keeps its text
+    assert lines[2] == ""                    # CRLF + final newline preserved
+
+    with pytest.raises(ValueError):
+        store.update("Cat", ["Biped", "Moonwalking"])
+    with pytest.raises(KeyError):
+        store.update("Unknown", ["Biped", "Striding"])
+
+    # A species with clips but no row gets one appended.
+    _, changed = store.update("Ghost", "Drifting, Hovering")
+    assert changed
+    assert store.annotate([{"clip": "Ghost_Idle"}])[0]["_species_tags"] == ["Drifting", "Hovering"]
+    assert store.update("Ghost", ["Drifting", "Hovering"])[1] is False
+
+
+def test_species_tag_store_reports_invalid_rows_and_repairs_them(tmp_path):
+    ds = _species_dataset(
+        tmp_path,
+        '{"species": "Cat", "species_tags": ["Quadruped", "Large", "Stalking"]}\n',
+        {"Cat_Walk.npy": {"object_type": "Cat"}},
+    )
+    store = review.SpeciesTagStore(ds)
+    row = store.annotate([{"clip": "Cat_Walk"}])[0]
+    assert "_species_error" in row
+    fixed, changed = store.update("Cat", ["Quadruped", "Stalking"])
+    assert changed and "error" not in fixed
+
+
+def test_species_tag_store_reports_duplicate_rows_and_drops_them_on_edit(tmp_path):
+    ds = _species_dataset(
+        tmp_path,
+        '{"species": "Cat", "species_tags": ["Quadruped", "Stalking"]}\n'
+        '{"species": "Dog", "species_tags": ["Quadruped", "Trotting"]}\n'
+        '{"species": "Cat", "species_tags": ["Biped", "Striding"]}\n',
+        {"Cat_Walk.npy": {"object_type": "Cat"}},
+    )
+    store = review.SpeciesTagStore(ds)
+    row = store.annotate([{"clip": "Cat_Walk"}])[0]
+    assert row["_species_tags"] == ["Quadruped", "Stalking"]   # first row wins
+    assert "duplicates line 1" in row["_species_error"]
+    # Same tags as the kept row still rewrites: the duplicate must go.
+    fixed, changed = store.update("Cat", ["Quadruped", "Stalking"])
+    assert changed and "error" not in fixed
+    rows = [json.loads(line) for line in ds["species_tags"].read_text(encoding="utf-8").splitlines()]
+    assert [r["species"] for r in rows] == ["Cat", "Dog"]
+
+
+def test_species_tag_store_rejects_a_row_that_is_not_an_object(tmp_path):
+    ds = _species_dataset(tmp_path, '["Cat"]\n', {"Cat_Walk.npy": {"object_type": "Cat"}})
+    store = review.SpeciesTagStore(ds)
+    with pytest.raises(ValueError, match="not a JSON object"):
+        store.annotate([{"clip": "Cat_Walk"}])
+
+
+def test_update_api_returns_the_row_with_its_species_fields(tmp_path):
+    ds = _species_dataset(
+        tmp_path,
+        '{"species": "ORA_PlayerHumanoid", "species_tags": ["Biped", "Striding"]}\n',
+        {"ORA_PlayerHumanoid_Run.npy": {"object_type": "ORA_PlayerHumanoid"}},
+    )
+    processed = ds["metadata"].parent
+    labels = processed / "action_labels.jsonl"
+    labels.write_text(json.dumps(
+        {"clip": "ORA_PlayerHumanoid_Run", "action_group": "locomotion", "action_label": "walk"}
+    ) + "\n", encoding="utf-8")
+    dataset = dict(ds, id="sample", name="sample", processed=str(processed), labels=labels,
+                   gif_dir=processed / "review" / "gif")
+    handler = object.__new__(review.Handler)
+    handler.datasets = [dataset]
+    handler.stores = {"sample": review.LabelStore(labels)}
+    handler.species_stores = {"sample": review.SpeciesTagStore(dataset)}
+    handler._send_json = lambda status, payload: (status, payload)
+    body = json.dumps({"dataset": "sample", "clip": "ORA_PlayerHumanoid_Run",
+                       "action_label": "run"}).encode("utf-8")
+    handler.path = "/api/update"
+    handler.headers = {"Content-Length": str(len(body))}
+    handler.rfile = BytesIO(body)
+
+    status, payload = handler.do_POST()
+    assert status == 200
+    # The page adopts this row wholesale; the species bar must survive a label edit.
+    assert payload["row"]["_species"] == "ORA_PlayerHumanoid"
+    assert payload["row"]["_species_tags"] == ["Biped", "Striding"]

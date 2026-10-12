@@ -288,6 +288,18 @@
   }
   .tick:hover { color: var(--warn); background: #454545; border-color: var(--warn); }
 
+  /* Mode toggle: which annotation the card's bottom bar shows and edits. */
+  .mode-toggle { display: inline-flex; border: 1px solid var(--accent); border-radius: 4px; overflow: hidden; }
+  .mode-toggle button { border: none; border-radius: 0; background: #3d3d3d; color: var(--dim); }
+  .mode-toggle button + button { border-left: 1px solid var(--accent); }
+  .mode-toggle button[aria-pressed="true"] { background: #28405e; color: var(--text); }
+  .species-tags { color: #c9dcff; }
+  .species-tags .sp { color: var(--dim); font-size: 11px; }
+  .species-tags.missing { color: #ffcf8f; }
+  .tag-edit { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .tag-edit select { width: 100%; padding: 2px 4px; }
+  .tag-edit select.bad { border-color: #ef5350; }
+
   .empty { grid-column: 1 / -1; padding: 60px; text-align: center; color: var(--dim); }
 
   #toast {
@@ -369,6 +381,10 @@
       <button id="markFiltered" disabled title="将当前筛选中尚未标记的动作批量标记为待删除（覆盖所有分页）">标记当前筛选为待删除</button>
     </div>
   </details>
+  <div class="mode-toggle" role="group" aria-label="模式">
+    <button type="button" id="modeLabel" aria-pressed="true" title="卡片底部显示并编辑 action_label">action label</button>
+    <button type="button" id="modeSpecies" aria-pressed="false" title="卡片底部显示并编辑物种的 species_tags（同一物种的所有动作共享）">species tags</button>
+  </div>
   <button id="clean" disabled title="清理当前数据集所有标记为待删除的动作">清理待删除</button>
 
   <a href="/joints" style="color:var(--accent);text-decoration:none" title="关节名 / EmbedText 预览页">关节名 ↗</a>
@@ -398,6 +414,10 @@ let view = [];      // current filtered subset
 let page = 1;
 let trashRoot = '';  // where "清理待删除" parks source files (server's --trash)
 let labelContract = null; // vocabulary/order supplied by the shared Python contract
+let speciesContract = null; // {body_plans, locomotions}: species_tags' closed vocabularies
+const MODE_KEY = 'actionReview.mode';
+const SPECIES_MODE = 'species';
+let mode = (() => { try { return localStorage.getItem(MODE_KEY) || 'label'; } catch (err) { return 'label'; } })();
 
 // A page holds 100 animated GIFs; decoding them all at once is what kills the
 // tab. Only cards near the viewport carry a src -- the rest stay empty boxes.
@@ -700,7 +720,12 @@ async function load(keepView) {
     return;
   }
   labelContract = data.label_contract;
+  speciesContract = data.species_contract;
+  // index.html is re-read per request but the API is the running process:
+  // a server started before species-tags mode existed sends no contract.
+  if (!speciesContract) toast('serve.py 进程是旧版本，不支持 species tags 模式，请重启 serve.py');
   rows = data.rows;
+  for (const e of (data.species_errors || [])) toast('读取 species_tags 失败：' + e);
   refreshGroups();
   applyFilters(keepView, keepView);
 }
@@ -874,14 +899,7 @@ function card(row) {
 
   const bar = document.createElement('div');
   bar.className = 'row';
-  const label = document.createElement('div');
-  label.className = 'label' + (row.label_error ? ' invalid' : '');
-  label.textContent = row.action_label;
-  label.title = row.label_error
-    ? '非法 action label：' + row.label_error + '。点击修改'
-    : '点击修改（保存时检查词表并自动按 canonical order 排序）';
-  label.onclick = () => edit(el, row, label);
-  bar.appendChild(label);
+  bar.appendChild(mode === SPECIES_MODE ? speciesBar(el, row) : labelBar(el, row));
 
   if (isReviewed(row)) {
     const tick = document.createElement('button');
@@ -902,6 +920,115 @@ function card(row) {
 
   el.append(thumb, bar);
   return el;
+}
+
+function labelBar(el, row) {
+  const label = document.createElement('div');
+  label.className = 'label' + (row.label_error ? ' invalid' : '');
+  label.textContent = row.action_label;
+  label.title = row.label_error
+    ? '非法 action label：' + row.label_error + '。点击修改'
+    : '点击修改（保存时检查词表并自动按 canonical order 排序）';
+  label.onclick = () => edit(el, row, label);
+  return label;
+}
+
+// species_tags of the clip's species: [body plan, locomotion]. One row per
+// species, so an edit here changes every clip of that species.
+function speciesBar(el, row) {
+  const label = document.createElement('div');
+  const tags = row._species_tags;
+  const bad = !!row._species_error;
+  label.className = 'label species-tags' + (bad ? ' invalid' : '') + (tags ? '' : ' missing');
+  const sp = document.createElement('div');
+  sp.className = 'sp';
+  sp.textContent = row._species || '（未识别物种）';
+  label.append(tags ? tags.join(' · ') : '（无 species_tags）', sp);
+  if (!row._species) {
+    label.title = '在 motion_metadata.json 中找不到该 clip 的 object_type，也没有物种名前缀匹配';
+    label.style.cursor = 'default';
+    return label;
+  }
+  label.title = (bad ? '非法 species_tags：' + row._species_error + '\n' : '') +
+    '物种 ' + row._species + '：点击修改（该物种所有动作共享；改后需重新生成 cond.npy）';
+  label.onclick = () => editSpecies(row, label);
+  return label;
+}
+
+// Two closed slots, so two <select>s instead of free text. Picking a value
+// saves at once; Escape or leaving the editor cancels.
+function editSpecies(row, label) {
+  if (!speciesContract) { toast('species_tags 词表尚未加载'); return; }
+  const box = document.createElement('div');
+  box.className = 'tag-edit';
+  const current = row._species_tags || [];
+  const pick = (options, value, title) => {
+    const sel = document.createElement('select');
+    sel.title = title;
+    const known = options.includes(value);
+    if (!known) {
+      const blank = new Option(value ? '⚠ ' + value : '—', '', true, true);
+      blank.disabled = true;
+      sel.add(blank);
+      sel.classList.add('bad');
+    }
+    for (const o of options) sel.add(new Option(o, o, false, o === value));
+    return sel;
+  };
+  const plan = pick(speciesContract.body_plans, current[0], 'body plan');
+  const loco = pick(speciesContract.locomotions, current[1], 'locomotion');
+  box.append(plan, loco);
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    box.replaceWith(label);
+  };
+  const commit = () => {
+    if (!plan.value || !loco.value) return;   // wait for the other slot
+    const next = [plan.value, loco.value];
+    close();
+    if (next.join('|') !== current.join('|') || row._species_error) saveSpecies(row, next);
+  };
+  plan.onchange = loco.onchange = commit;
+  box.onkeydown = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  box.addEventListener('focusout', (ev) => {
+    if (!box.contains(ev.relatedTarget)) close();
+  });
+  label.replaceWith(box);
+  plan.focus();
+}
+
+// Write a species' tags, then adopt them on every loaded row of that species.
+async function saveSpecies(row, tags) {
+  const owner = row._dataset || ds;
+  const species = row._species;
+  const siblings = rows.filter(r => (r._dataset || ds) === owner && r._species === species);
+  try {
+    const res = await fetch('api/species-tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataset: owner, species, species_tags: tags })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+    for (const r of siblings) {
+      r._species_tags = data.row.species_tags;
+      if (data.row.error) r._species_error = data.row.error;
+      else delete r._species_error;
+    }
+    render(true);
+  } catch (err) {
+    toast('保存 species_tags 失败：' + err.message);
+  }
+}
+
+function setMode(next) {
+  mode = next === SPECIES_MODE ? SPECIES_MODE : 'label';
+  try { localStorage.setItem(MODE_KEY, mode); } catch (err) { /* per-viewer convenience only */ }
+  $('modeLabel').setAttribute('aria-pressed', String(mode !== SPECIES_MODE));
+  $('modeSpecies').setAttribute('aria-pressed', String(mode === SPECIES_MODE));
+  if (rows.length) render(true);
 }
 
 function edit(el, row, label) {
@@ -1244,6 +1371,9 @@ function onDatasetChange() {
 }
 
 $('dataset').onchange = onDatasetChange;
+$('modeLabel').onclick = () => setMode('label');
+$('modeSpecies').onclick = () => setMode(SPECIES_MODE);
+setMode(mode);
 $('group').onchange = () => applyFilters();
 $('state').onchange = () => applyFilters();
 $('loop').onchange = () => applyFilters();

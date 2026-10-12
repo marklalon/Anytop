@@ -74,6 +74,13 @@ every configured dataset when this server starts. This keeps the dataset
 loadable immediately, not just after the next preprocess. Every source move is appended to
 ``<trash>/soft_deleted.jsonl`` so it can be traced back and undone by hand.
 
+The page's second mode shows each clip's species descriptor
+(``species_tags.jsonl``: body plan, locomotion) in place of its label and edits
+it through ``/api/species-tags``. Every clip of a species shares the one row,
+looked up through ``motion_metadata.json``'s ``object_type``. The tags are
+baked into ``cond.npy`` (``species_emb``), so an edit needs a cond regen
+(``tools/regenerate_dataset_artifacts.py``) before training sees it.
+
 ``/joints`` is the second page, read-only: each species' joints on its cond
 t-pose with their canonical name, the T5 embedding text the model reads
 (``build_joint_embedding_texts``), side and mirror twin. The t-pose is a
@@ -123,6 +130,12 @@ if str(ANYTOP_ROOT) not in sys.path:
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
 from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
     build_species_file_tokens,
+)
+from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
+    SPECIES_BODY_PLANS,
+    SPECIES_LOCOMOTIONS,
+    check_species_tags,
+    parse_species_tags,
 )
 from data_loaders.truebones.truebones_utils.fbx_filename_rules import (  # noqa: E402
     _is_tpose_reference_path,
@@ -708,6 +721,143 @@ class LabelStore:
             return changed
 
 
+class SpeciesTagStore:
+    """One dataset's ``species_tags.jsonl`` plus the clip -> species map.
+
+    The page's species-tags mode shows each clip's species descriptor and edits
+    it in place; every clip of a species reads the same row, so one edit applies
+    to all of them. Rows are kept as the file's text and only an edited row is
+    re-serialized, so the rest of the sidecar diffs clean. A row whose tags fail
+    ``check_species_tags`` is kept verbatim and reported, like an invalid
+    action label, so this page can repair it.
+
+    Clip membership comes from ``motion_metadata.json`` (``object_type``); a clip
+    not preprocessed yet falls back to the longest species name that prefixes
+    its stem.
+    """
+
+    def __init__(self, ds):
+        self.path = Path(ds["species_tags"])
+        self.metadata_path = Path(ds["metadata"])
+        self.lock = threading.Lock()
+        self.lines = []         # file text, one entry per line (blank lines kept)
+        self.line_of = {}       # species -> index into self.lines
+        self.tags = {}          # species -> [tag, ...] as written
+        self.errors = {}        # species -> validation error
+        self.duplicates = {}    # species -> indices of its rows after the first
+        self.mtime = None
+        self.newline = "\n"
+        self.final_newline = True
+        self.clip_species = {}  # clip stem -> object_type
+        self.metadata_mtime = None
+
+    def _refresh(self):
+        mtime = self.path.stat().st_mtime_ns if self.path.is_file() else None
+        if mtime != self.mtime:
+            raw = self.path.read_bytes() if mtime is not None else b""
+            self.newline = "\r\n" if b"\r\n" in raw else "\n"
+            self.final_newline = not raw or raw.endswith((b"\n", b"\r"))
+            self.lines = raw.decode("utf-8").splitlines()
+            self.line_of, self.tags, self.errors, self.duplicates = {}, {}, {}, {}
+            for index, line in enumerate(self.lines):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError(f"{self.path.name} line {index + 1}: not a JSON object")
+                species = str(row.get("species") or "").strip()
+                tags = row.get("species_tags") or []
+                if isinstance(tags, str):
+                    tags = parse_species_tags(tags)
+                elif not isinstance(tags, list):
+                    raise ValueError(f"{self.path.name} line {index + 1}: species_tags is not a list")
+                tags = list(tags)
+                if species in self.line_of:
+                    # load_species_tags rejects the file; keep the first row and
+                    # report, so one edit here rewrites it and drops the rest.
+                    self.duplicates.setdefault(species, []).append(index)
+                    self.errors[species] = (
+                        f"line {index + 1} duplicates line {self.line_of[species] + 1}"
+                    )
+                    continue
+                self.line_of[species] = index
+                self.tags[species] = tags
+                try:
+                    check_species_tags(tuple(str(t) for t in tags), f"line {index + 1}")
+                except ValueError as exc:
+                    self.errors[species] = str(exc)
+            self.mtime = mtime
+        mtime = self.metadata_path.stat().st_mtime_ns if self.metadata_path.is_file() else None
+        if mtime != self.metadata_mtime:
+            motions = {}
+            if mtime is not None:
+                motions = json.loads(self.metadata_path.read_text(encoding="utf-8")).get("motions") or {}
+            self.clip_species = {
+                clip_stem(clip): str(entry.get("object_type") or "").rsplit("/", 1)[-1]
+                for clip, entry in motions.items()
+                if isinstance(entry, dict) and entry.get("object_type")
+            }
+            self.metadata_mtime = mtime
+
+    def _species_of_clip(self, clip):
+        stem = clip_stem(clip)
+        species = self.clip_species.get(stem)
+        if species:
+            return species
+        prefixes = [s for s in self.tags if stem.casefold().startswith(s.casefold() + "_")]
+        return max(prefixes, key=len) if prefixes else None
+
+    def _row(self, species):
+        item = {"species": species, "species_tags": self.tags.get(species)}
+        if species in self.errors:
+            item["error"] = self.errors[species]
+        return item
+
+    def annotate(self, rows):
+        """Add ``_species`` / ``_species_tags`` (and ``_species_error``) to label rows in place."""
+        with self.lock:
+            self._refresh()
+            for row in rows:
+                species = self._species_of_clip(row["clip"])
+                row["_species"] = species
+                row["_species_tags"] = self.tags.get(species) if species else None
+                if species in self.errors:
+                    row["_species_error"] = self.errors[species]
+        return rows
+
+    def update(self, species, raw_tags):
+        """Validate and write one species' tags; appends a row for a species without one.
+
+        Returns ``(row, changed)``.
+        """
+        tags = list(parse_species_tags(raw_tags))
+        check_species_tags(tags, species)
+        with self.lock:
+            self._refresh()
+            known = species in self.tags or species in self.clip_species.values()
+            if not known:
+                raise KeyError(species)
+            if self.tags.get(species) == tags and species not in self.errors:
+                return self._row(species), False
+            line = json.dumps({"species": species, "species_tags": tags}, ensure_ascii=False)
+            lines = list(self.lines)
+            if species in self.line_of:
+                lines[self.line_of[species]] = line
+            else:
+                lines.append(line)
+            drop = set(self.duplicates.get(species, ()))
+            lines = [kept for index, kept in enumerate(lines) if index not in drop]
+            text = self.newline.join(lines)
+            if lines and (self.final_newline or species not in self.line_of):
+                text += self.newline
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            tmp.write_text(text, encoding="utf-8", newline="")
+            os.replace(tmp, self.path)
+            self.mtime = None       # re-read on the next access
+            self._refresh()
+            return self._row(species), True
+
+
 def _species_of(entry, key):
     return str(entry.get("species_name") or key.rsplit("/", 1)[-1])
 
@@ -859,6 +1009,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     datasets = []       # datasets with action_labels.jsonl (see discover_datasets)
     stores = {}         # dataset id -> LabelStore
+    species_stores = {} # dataset id -> SpeciesTagStore
     joint_datasets = [] # every dataset with cond.npy
     joint_stores = {}   # dataset id -> JointNamesStore
 
@@ -978,14 +1129,22 @@ class Handler(BaseHTTPRequestHandler):
             # routed to the right store instead of whichever dataset is selected
             # globally in the browser.
             rows = []
+            species_errors = []
             for selected_ds in selected:
                 selected_store = self.stores.get(selected_ds["id"])
                 if selected_store is None:
                     continue
-                for row in selected_store.snapshot():
+                ds_rows = selected_store.snapshot()
+                for row in ds_rows:
                     row["_dataset"] = selected_ds["id"]
                     row["bvhview"] = _bvhview_href(selected_ds, row["clip"])
-                    rows.append(row)
+                species_store = self.species_stores.get(selected_ds["id"])
+                try:
+                    if species_store is not None:
+                        species_store.annotate(ds_rows)
+                except (OSError, ValueError) as exc:
+                    species_errors.append(f"{selected_ds['id']}: {exc}")
+                rows.extend(ds_rows)
 
             group = params.get("group", "").strip()
             if group:
@@ -1013,6 +1172,11 @@ class Handler(BaseHTTPRequestHandler):
                     "max_words": ACTION_LABEL_MAX_WORDS,
                     "max_heads": ACTION_LABEL_MAX_HEADS,
                 },
+                "species_contract": {
+                    "body_plans": list(SPECIES_BODY_PLANS),
+                    "locomotions": list(SPECIES_LOCOMOTIONS),
+                },
+                "species_errors": species_errors,
                 "rows": rows,
             })
 
@@ -1089,7 +1253,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = urlparse(self.path).path
-        if route not in ("/api/update", "/api/mark-pending", "/api/clean", "/api/clear-autofill"):
+        if route not in ("/api/update", "/api/mark-pending", "/api/clean", "/api/clear-autofill",
+                         "/api/species-tags"):
             return self._send_json(404, {"error": "not found"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -1102,6 +1267,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._mark_pending(payload)
         if route == "/api/clear-autofill":
             return self._clear_autofill(payload)
+        if route == "/api/species-tags":
+            return self._species_tags(payload)
 
         ds, store = self._store_and_dataset(payload.get("dataset") or payload.get("ds"))
         if ds is None:
@@ -1156,6 +1323,14 @@ class Handler(BaseHTTPRequestHandler):
         out = dict(row)
         out["_dataset"] = ds["id"]
         out["bvhview"] = _bvhview_href(ds, out["clip"])
+        # Same for the species fields: the page adopts this row wholesale, so
+        # leaving them out would blank the card's species-tags bar.
+        species_store = self.species_stores.get(ds["id"])
+        if species_store is not None:
+            try:
+                species_store.annotate([out])
+            except (OSError, ValueError) as exc:
+                notes.append(f"读取 species_tags 失败：{exc}")
         return self._send_json(200, {"row": out, "dataset": ds["id"], "notes": notes})
 
     def _mark_pending(self, payload):
@@ -1184,6 +1359,33 @@ class Handler(BaseHTTPRequestHandler):
             "requested": len(unique_clips),
             "marked": marked,
             "already_marked": len(unique_clips) - marked,
+        })
+
+    def _species_tags(self, payload):
+        """Set one species' ``[body plan, locomotion]`` in its dataset's sidecar."""
+        requested_ds = payload.get("dataset") or payload.get("ds")
+        ds = self._dataset(requested_ds)
+        if ds is None:
+            return self._send_json(404, {"error": f"unknown dataset: {requested_ds}"})
+        species = str(payload.get("species") or "").strip()
+        if not species:
+            return self._send_json(400, {"error": "species is required"})
+        tags = payload.get("species_tags")
+        if not isinstance(tags, (list, str)):
+            return self._send_json(400, {"error": "species_tags must be a list or a string"})
+        species_store = self.species_stores.get(ds["id"])
+        if species_store is None:
+            return self._send_json(404, {"error": f"no species_tags store for {ds['id']}"})
+        try:
+            row, changed = species_store.update(species, tags)
+        except KeyError:
+            return self._send_json(404, {"error": f"species not in {ds['id']}: {species}"})
+        except ValueError as exc:
+            return self._send_json(400, {"error": str(exc)})
+        except OSError as exc:
+            return self._send_json(500, {"error": f"write failed: {exc}"})
+        return self._send_json(200, {
+            "dataset": ds["id"], "row": row, "changed": changed,
         })
 
     def _clear_autofill(self, payload):
@@ -1414,6 +1616,7 @@ def main():
                     f"  {d['id']}: removed stale species tags: " + ", ".join(removed_species)
                 )
         Handler.stores[d["id"]] = LabelStore(d["labels"])
+        Handler.species_stores[d["id"]] = SpeciesTagStore(d)
 
     url = f"http://{args.host}:{args.port}/"
     for d in Handler.datasets:
@@ -1440,6 +1643,10 @@ def main():
     class Server(ThreadingHTTPServer):
         daemon_threads = True
         request_queue_size = 128   # a fresh page asks for ~30 GIFs at once
+        # On Windows SO_REUSEADDR lets a second server bind the same port
+        # silently while the first keeps answering, so a restart that forgot
+        # to stop the old process would serve stale code. Fail loudly instead.
+        allow_reuse_address = os.name != "nt"
 
     httpd = Server((args.host, args.port), Handler)
     if not args.no_browser:
