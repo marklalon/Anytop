@@ -56,7 +56,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 )
 
 # Per-species motion descriptor (body-plan, locomotion). One object per line:
-#   {"species": "Cat", "species_tags": ["Quadruped", "Stalking"]}
+#   {"species": "Cat", "species_tags": ["Quadruped", "Galloping"]}
 # Single source of truth for the species condition and the object subsets; the
 # species->tags mapping is never duplicated in code.
 SPECIES_TAGS_FILE = "species_tags.jsonl"
@@ -110,13 +110,11 @@ SPECIES_LOCOMOTIONS = (
     "Flapping",
     "Fluttering",
     "Galloping",
-    "Hopping",
     "Hovering",
     "Lumbering",
     "Scurrying",
     "Scuttling",
     "Slithering",
-    "Stalking",
     "Striding",
     "Swimming",
     "Trotting",

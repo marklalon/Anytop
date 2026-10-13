@@ -145,14 +145,14 @@ def test_a_stale_three_slot_row_is_rejected(tmp_path):
     """A sidecar still carrying the size slot fails instead of encoding other text."""
     path = tmp_path / "species_tags.jsonl"
     path.write_text(
-        '{"species": "Cat", "species_tags": ["Quadruped", "Small", "Stalking"]}\n',
+        '{"species": "Cat", "species_tags": ["Quadruped", "Small", "Galloping"]}\n',
         encoding="utf-8",
     )
     dt.configure(species_tags_file=path)
     with pytest.raises(ValueError, match="species_tags must be 2"):
         dt.dataset_tags()
     with pytest.raises(ValueError, match="species_tags must be 2"):
-        dt.register_species_tags("Cat", ("Quadruped", "Small", "Stalking"))
+        dt.register_species_tags("Cat", ("Quadruped", "Small", "Galloping"))
 
 
 def test_a_cond_baked_from_an_older_sidecar_is_rejected(tmp_path):

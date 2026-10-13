@@ -700,7 +700,7 @@ TAG 2 -- locomotion, closed set: {locomotions}
   pick the nearest one.
   IT IS NOT THE GAIT IN THE CLIP. The clip is one arbitrary sample and is usually
   a walk cycle. A horse is Galloping even when the clip shows it walking; a bear
-  is Lumbering even in a slow plod; a cat is Stalking even when it trots past.
+  is Lumbering even in a slow plod; a cat is Galloping even when it trots past.
   A robot or mechanical construct that steps on its legs is Clanking: stiff,
   rigid-jointed, metronomic steps. A hovering robot is Hovering, not Clanking.
 

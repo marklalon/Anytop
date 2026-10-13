@@ -421,7 +421,7 @@ def _species_dataset(tmp_path, tag_lines, motions):
 def test_species_tag_store_maps_clips_through_metadata_and_prefix(tmp_path):
     ds = _species_dataset(
         tmp_path,
-        '{"species": "Big_Cat", "species_tags": ["Quadruped", "Stalking"]}\n'
+        '{"species": "Big_Cat", "species_tags": ["Quadruped", "Galloping"]}\n'
         '{"species": "Big", "species_tags": ["Biped", "Striding"]}\n',
         # The clip name does not carry its species; metadata decides.
         {"Roar01.npy": {"object_type": "Big_Cat"}},
@@ -429,7 +429,7 @@ def test_species_tag_store_maps_clips_through_metadata_and_prefix(tmp_path):
     store = review.SpeciesTagStore(ds)
     rows = store.annotate([{"clip": "Roar01"}, {"clip": "Big_Cat_Walk"}, {"clip": "Nobody_Walk"}])
     assert [r["_species"] for r in rows] == ["Big_Cat", "Big_Cat", None]
-    assert rows[0]["_species_tags"] == ["Quadruped", "Stalking"]
+    assert rows[0]["_species_tags"] == ["Quadruped", "Galloping"]
     assert rows[2]["_species_tags"] is None
 
 
@@ -437,7 +437,7 @@ def test_species_tag_store_update_rewrites_one_row_and_validates(tmp_path):
     original_dog = '{"species":"Dog","species_tags":["Quadruped","Trotting"]}'
     ds = _species_dataset(
         tmp_path,
-        '{"species": "Cat", "species_tags": ["Quadruped", "Stalking"]}\r\n' + original_dog + '\r\n',
+        '{"species": "Cat", "species_tags": ["Quadruped", "Galloping"]}\r\n' + original_dog + '\r\n',
         {"Cat_Walk.npy": {"object_type": "Cat"}, "Ghost_Idle.npy": {"object_type": "Ghost"}},
     )
     store = review.SpeciesTagStore(ds)
@@ -463,30 +463,30 @@ def test_species_tag_store_update_rewrites_one_row_and_validates(tmp_path):
 def test_species_tag_store_reports_invalid_rows_and_repairs_them(tmp_path):
     ds = _species_dataset(
         tmp_path,
-        '{"species": "Cat", "species_tags": ["Quadruped", "Large", "Stalking"]}\n',
+        '{"species": "Cat", "species_tags": ["Quadruped", "Large", "Galloping"]}\n',
         {"Cat_Walk.npy": {"object_type": "Cat"}},
     )
     store = review.SpeciesTagStore(ds)
     row = store.annotate([{"clip": "Cat_Walk"}])[0]
     assert "_species_error" in row
-    fixed, changed = store.update("Cat", ["Quadruped", "Stalking"])
+    fixed, changed = store.update("Cat", ["Quadruped", "Galloping"])
     assert changed and "error" not in fixed
 
 
 def test_species_tag_store_reports_duplicate_rows_and_drops_them_on_edit(tmp_path):
     ds = _species_dataset(
         tmp_path,
-        '{"species": "Cat", "species_tags": ["Quadruped", "Stalking"]}\n'
+        '{"species": "Cat", "species_tags": ["Quadruped", "Galloping"]}\n'
         '{"species": "Dog", "species_tags": ["Quadruped", "Trotting"]}\n'
         '{"species": "Cat", "species_tags": ["Biped", "Striding"]}\n',
         {"Cat_Walk.npy": {"object_type": "Cat"}},
     )
     store = review.SpeciesTagStore(ds)
     row = store.annotate([{"clip": "Cat_Walk"}])[0]
-    assert row["_species_tags"] == ["Quadruped", "Stalking"]   # first row wins
+    assert row["_species_tags"] == ["Quadruped", "Galloping"]   # first row wins
     assert "duplicates line 1" in row["_species_error"]
     # Same tags as the kept row still rewrites: the duplicate must go.
-    fixed, changed = store.update("Cat", ["Quadruped", "Stalking"])
+    fixed, changed = store.update("Cat", ["Quadruped", "Galloping"])
     assert changed and "error" not in fixed
     rows = [json.loads(line) for line in ds["species_tags"].read_text(encoding="utf-8").splitlines()]
     assert [r["species"] for r in rows] == ["Cat", "Dog"]

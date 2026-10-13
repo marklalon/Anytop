@@ -47,7 +47,7 @@ from data_loaders.truebones.truebones_utils.get_opt import get_opt  # noqa: E402
 # directory says today. They differ on purpose: whichever one a run picked up is
 # then unambiguous from the tags alone.
 BAKED_TAGS = ("Quadruped", "Galloping")
-SIDECAR_TAGS = ("Biped", "Hopping")
+SIDECAR_TAGS = ("Biped", "Waddling")
 
 # A path segment that appears in no real directory, so the watcher can match a
 # relative dataset_root however it ends up being resolved (under the cwd, under
@@ -66,7 +66,7 @@ def restore_default_configuration():
 def _write_sidecar(dataset_dir):
     dataset_dir.mkdir(parents=True, exist_ok=True)
     (dataset_dir / dt.SPECIES_TAGS_FILE).write_text(
-        '{"species": "Horse", "species_tags": ["Biped", "Hopping"]}\n',
+        '{"species": "Horse", "species_tags": ["Biped", "Waddling"]}\n',
         encoding="utf-8",
     )
     return dataset_dir

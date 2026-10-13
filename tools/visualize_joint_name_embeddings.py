@@ -192,7 +192,7 @@ def per_animal_species_embedding(cond: dict, normalize: bool) -> dict:
     Returns per-animal species embeddings (species_emb) from cond.npy.
 
     Each animal has exactly one species_emb vector encoding its motion-relevant
-    body-plan descriptor (e.g. "Quadruped Small Stalking").
+    body-plan descriptor (e.g. "Quadruped Small Galloping").
     """
     animals = sorted(cond.keys())
 

@@ -360,10 +360,10 @@
   <select id="searchField" title="选择搜索字段">
     <option value="label" selected>label</option>
     <option value="clip">clip</option>
-    <option value="both">both</option>
+    <option value="species_tags">species tags</option>
   </select>
   <input type="search" id="q" placeholder="搜索 label">
-  <button id="wholeWord" class="search-toggle" type="button" title="Match whole word（label 完全匹配；clip 按单词匹配）" aria-label="Match whole word" aria-pressed="false">
+  <button id="wholeWord" class="search-toggle" type="button" title="Match whole word（label 完全匹配；clip 按单词匹配；species tags 按整个 tag 匹配）" aria-label="Match whole word" aria-pressed="false">
     <svg viewBox="0 0 32 20" aria-hidden="true" focusable="false">
       <path d="M2 2v16M30 2v16" fill="none" stroke="currentColor" stroke-width="2"/>
       <text x="16" y="14.5" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700" font-family="sans-serif">ab</text>
@@ -775,9 +775,16 @@ function applyFilters(keepPage, keepScroll) {
         ? String(r.action_label || '').trim().toLowerCase() === q
         : containsSearchTerm(r.action_label, q, false);
       const inClip = containsSearchTerm(r.clip, q, wholeWord);
+      if (searchField === 'species_tags') {
+        const tags = (r._species_tags || []).map(t => String(t).toLowerCase());
+        // "a, b" = every term must hit some tag (AND).
+        const terms = q.split(/[,，]/).map(t => t.trim()).filter(Boolean);
+        const inTags = terms.every(term =>
+          wholeWord ? tags.includes(term) : tags.some(t => t.includes(term)));
+        if (!inTags) return false;
+      }
       if (searchField === 'label' && !inLabel) return false;
       if (searchField === 'clip' && !inClip) return false;
-      if (searchField === 'both' && !inLabel && !inClip) return false;
     }
     return true;
   });
@@ -1379,7 +1386,7 @@ $('state').onchange = () => applyFilters();
 $('loop').onchange = () => applyFilters();
 $('searchField').onchange = () => {
   const field = $('searchField').value;
-  $('q').placeholder = field === 'both' ? '搜索 label / clip' : '搜索 ' + field;
+  $('q').placeholder = '搜索 ' + field.replace('_', ' ');
   applyFilters();
 };
 $('q').oninput = () => {                 // debounce: a keystroke must not rebuild 100 cards
