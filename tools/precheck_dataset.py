@@ -1261,7 +1261,7 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
                    f"{len(blanked)} joint(s) blanked as non-anatomical (zero name embedding): "
                    f"{', '.join(blanked[:14])}{' ...' if len(blanked) > 14 else ''}", source)
     if anatomical_parents:
-        report.add(WARN, species, "joint-names",
+        report.add(INFO, species, "joint-names",
                    "blanked joint(s) that parent named anatomy -- check they are not a real body part: "
                    f"{', '.join(anatomical_parents)}", source)
 
