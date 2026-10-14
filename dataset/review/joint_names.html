@@ -343,7 +343,11 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 view.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(40, 1, 0.001, 1000);
+// Front / side / top use the orthographic camera, the perspective view the perspective one;
+// `camera` is whichever is current and OrbitControls follows it.
+const perspCamera = new THREE.PerspectiveCamera(40, 1, 0.001, 1000);
+const orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.001, 1000);
+let camera = perspCamera, orthoHeight = 1;   // orthoHeight: half the visible height at zoom 1
 const controls = new OrbitControls(camera, renderer.domElement);
 // Left button is selection; rotate on middle (Shift+middle pans), pan on right.
 controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
@@ -369,12 +373,43 @@ const clock = new THREE.Clock();
 
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
+// Axes gizmo: bottom-left overlay that follows the camera orientation (X red, Y green, Z blue).
+const GIZMO_PX = 96, GIZMO_MARGIN = 12;
+const gizmoScene = new THREE.Scene();
+const gizmoCam = new THREE.OrthographicCamera(-1.6, 1.6, 1.6, -1.6, 0.1, 10);
+const gizmoAxes = [[0xe5484d, [1, 0, 0]], [0x46c46a, [0, 1, 0]], [0x3e7bf0, [0, 0, 1]]];
+for (const [color, d] of gizmoAxes) {
+  gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(...d), new THREE.Vector3(), 1, color, 0.28, 0.16));
+}
+for (const m of gizmoScene.children) if (m.line) { m.line.material.depthTest = false; m.cone.material.depthTest = false; }
+function renderGizmo() {
+  gizmoCam.position.copy(camera.position).sub(controls.target).setLength(5);
+  gizmoCam.quaternion.copy(camera.quaternion);
+  renderer.autoClear = false;
+  renderer.clearDepth();
+  renderer.setScissorTest(true);
+  const bottom = $('transport').hidden ? 32 : 70;   // above the title line (and the transport bar)
+  renderer.setScissor(GIZMO_MARGIN, bottom, GIZMO_PX, GIZMO_PX);
+  renderer.setViewport(GIZMO_MARGIN, bottom, GIZMO_PX, GIZMO_PX);
+  renderer.render(gizmoScene, gizmoCam);
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, view.clientWidth, view.clientHeight);
+  renderer.autoClear = true;
+}
+
 function resize() {
   const { clientWidth: w, clientHeight: h } = view;
   if (!w || !h) return;
   renderer.setSize(w, h);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
+  perspCamera.aspect = w / h;
+  perspCamera.updateProjectionMatrix();
+  fitOrtho();
+}
+function fitOrtho() {
+  const aspect = perspCamera.aspect;
+  orthoCamera.left = -orthoHeight * aspect; orthoCamera.right = orthoHeight * aspect;
+  orthoCamera.top = orthoHeight; orthoCamera.bottom = -orthoHeight;
+  orthoCamera.updateProjectionMatrix();
 }
 new ResizeObserver(resize).observe(view);
 
@@ -466,13 +501,16 @@ function buildSkeleton(bvhText, payload) {
   skel.radius = skel.diag * 0.011;
 
   const group = new THREE.Group();
-  const sphere = new THREE.SphereGeometry(1, 16, 12);
   const count = positions.length;
+  // Lit solid spheres sized by the skeleton's extent; selected ones are wrapped in a yellow
+  // halo, the twin of a selected joint in a blue one (instanced).
+  const sphere = new THREE.SphereGeometry(1, 16, 12);
   skel.solid = new THREE.InstancedMesh(sphere, new THREE.MeshStandardMaterial({ roughness: .55 }), count);
   skel.halo = new THREE.InstancedMesh(sphere, new THREE.MeshBasicMaterial({ color: 0xffd23f, side: THREE.BackSide }), count);
   skel.twinHalo = new THREE.InstancedMesh(sphere, new THREE.MeshBasicMaterial({ color: 0x6fa8ff, side: THREE.BackSide }), count);
   for (const mesh of [skel.solid, skel.halo, skel.twinHalo]) {
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.frustumCulled = false;
     group.add(mesh);
   }
 
@@ -484,27 +522,26 @@ function buildSkeleton(bvhText, payload) {
   skel.lines.userData.segments = segments.map((j) => j.index);
   group.add(skel.lines);
 
-  // Floor grid at Y=0, the processed data's ground.
-  const grid = new THREE.GridHelper(skel.diag * 2, 20, cssVar('--grid'), cssVar('--grid'));
-  grid.position.set(skel.center.x, 0, skel.center.z);
-  grid.material.transparent = true;
-  grid.material.opacity = .6;
-  group.add(grid);
+  // Camera box: the rest pose until a clip is loaded (then the box over every frame).
+  skel.extent = Math.max(...box.getSize(new THREE.Vector3()).toArray(), 1e-6);   // the body's size, sphere scale
+  skel.view = { extent: skel.extent, center: skel.center.toArray() };
+  buildGrids(group);
 
   scene.add(group);
   skel.group = group;
   applyPose();
 }
 
+const tmpColor = new THREE.Color();
 const tmpMatrix = new THREE.Matrix4();
 const zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
-const tmpColor = new THREE.Color();
+const SPHERE_RADIUS = 0.018, HALO_SCALE = 1.3;
 
 function refreshVisuals() {
   if (!skel.group || !state.current) return;
   const joints = state.current.joints;
   const twins = new Set([...state.selected].map((i) => joints[i].twin).filter((t) => t >= 0 && !state.selected.has(t)));
-  const r = skel.radius, hr = r * 1.55;
+  const r = skel.extent * SPHERE_RADIUS, hr = r * HALO_SCALE;
   joints.forEach((j) => {
     const p = skel.positions[j.index];
     skel.solid.setMatrixAt(j.index, tmpMatrix.makeScale(r, r, r).setPosition(p));
@@ -517,8 +554,8 @@ function refreshVisuals() {
   for (const mesh of [skel.solid, skel.halo, skel.twinHalo]) {
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    mesh.computeBoundingSphere();
   }
+  skel.solid.computeBoundingSphere();   // the raycaster culls against it when picking
   const colors = skel.lines.geometry.getAttribute('color');
   skel.lines.userData.segments.forEach((child, s) => {
     tmpColor.set(SIDE_COLORS[joints[child].side] || SIDE_COLORS.center);
@@ -528,22 +565,88 @@ function refreshVisuals() {
   colors.needsUpdate = true;
 }
 
+// The floor grid is edge-on (invisible) from the front and side, so those views get a
+// vertical grid behind the skeleton instead, with its axis line at the ground (y = 0).
+let viewKind = 'persp', floorGrid = null, wallGrids = {};
+function updateGrids() {
+  if (floorGrid) floorGrid.visible = viewKind === 'persp' || viewKind === 'top';
+  for (const [kind, g] of Object.entries(wallGrids)) g.visible = kind === viewKind;
+}
+
+function buildGrids(group) {
+  for (const g of [floorGrid, ...Object.values(wallGrids)]) if (g) { group.remove(g); g.dispose(); }
+  const { extent, center } = skel.view;
+  const cell = extent / 8, cells = 100;   // room for a few root-motion loops
+  const make = () => {
+    const g = new THREE.GridHelper(cell * cells, cells, cssVar('--grid'), cssVar('--grid'));
+    g.material.transparent = true;
+    g.material.opacity = .6;
+    return g;
+  };
+  floorGrid = make();
+  // front looks down -Z: XY plane behind the skeleton; side looks down -X: ZY plane
+  wallGrids = { front: make().rotateX(Math.PI / 2), side: make().rotateZ(Math.PI / 2) };
+  // centred on the world origin, so the axis lines sit at 0 (ground height is fixed at 0)
+  wallGrids.front.position.set(0, 0, center[2] - extent);
+  wallGrids.side.position.set(center[0] - extent, 0, 0);
+  group.add(floorGrid, ...Object.values(wallGrids));
+  updateGrids();
+}
+
+// Camera offset from the skeleton centre, in units of its extent. Front looks
+// down -Z, side down -X, top straight down (a hair off so OrbitControls keeps its up axis).
+const VIEW_OFFSETS = {
+  front: [0, 0, 2.2], side: [2.2, 0, 0], top: [0, 2.2, 0.0001], persp: [1.4, 0.6, 1.8],
+};
+
+// Switching species keeps the camera when the new box is close to the old one: its
+// extent and its centre (as a fraction of the old extent) each differ by at most 50%.
+const VIEW_KEEP_TOLERANCE = 0.5;
+function viewsAlike(prev, next) {
+  const shift = Math.hypot(...next.center.map((c, a) => c - prev.center[a]));
+  return Math.abs(next.extent - prev.extent) <= VIEW_KEEP_TOLERANCE * prev.extent
+    && shift <= VIEW_KEEP_TOLERANCE * prev.extent;
+}
+
 function setView(kind) {
   if (!skel.group) return;
-  const dist = skel.diag * 1.25;
-  const dirs = {
-    front: new THREE.Vector3(0, 0, 1), side: new THREE.Vector3(1, 0, 0),
-    top: new THREE.Vector3(0, 1, 0.0001), fit: new THREE.Vector3(0.8, 0.45, 1).normalize(),
-  };
-  camera.near = skel.diag / 500;
-  camera.far = skel.diag * 50;
-  camera.updateProjectionMatrix();
-  controls.target.copy(skel.center);
-  camera.position.copy(skel.center).addScaledVector(dirs[kind], dist);
+  const { extent, center } = skel.view;
+  const [x, y, z] = VIEW_OFFSETS[kind];
+  viewKind = kind;
+  updateGrids();
+  camera = kind === 'persp' ? perspCamera : orthoCamera;
+  controls.object = camera;
+  if (camera === orthoCamera) {
+    // same apparent size as the perspective camera at this distance
+    orthoHeight = Math.hypot(x, y, z) * extent * Math.tan(THREE.MathUtils.degToRad(perspCamera.fov / 2));
+    camera.zoom = 1;
+    fitOrtho();
+  }
+  controls.target.set(center[0], center[1], center[2]);
+  camera.position.set(center[0] + extent * x, center[1] + extent * y, center[2] + extent * z);
+  camera.near = extent / 500; camera.far = extent * 500; camera.updateProjectionMatrix();
   controls.update();
 }
 
-document.querySelectorAll('.viewbtns button[data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+// Orbiting out of an orthographic view drops into the perspective camera at the distance
+// where the visible height matches, so the picture barely changes as the rotation starts.
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (e.button !== 1 || e.shiftKey || e.ctrlKey || e.metaKey || camera !== orthoCamera) return;
+  const dir = camera.position.clone().sub(controls.target).normalize();
+  const dist = (orthoHeight / camera.zoom) / Math.tan(THREE.MathUtils.degToRad(perspCamera.fov / 2));
+  perspCamera.position.copy(controls.target).addScaledVector(dir, dist);
+  perspCamera.near = camera.near; perspCamera.far = camera.far; perspCamera.updateProjectionMatrix();
+  camera = perspCamera;
+  controls.object = camera;
+  viewKind = 'persp';
+  updateGrids();
+  controls.update();
+}, { capture: true });
+
+document.querySelectorAll('.viewbtns button[data-view]').forEach((b) => b.addEventListener('click', () => {
+  b.blur();
+  setView(b.dataset.view);
+}));
 
 // Move bones and spheres to skel.positions.
 function applyPose() {
@@ -687,10 +790,13 @@ function applyMode() {
   const meshShown = shownMode() !== 'skeleton' && !!skel.mesh;
   if (skel.mesh) skel.mesh.group.visible = meshShown;
   if (skel.group) {
-    for (const obj of [skel.solid, skel.halo, skel.twinHalo, skel.lines]) {
+    // the spheres hide the bones behind them, except over a shown mesh
+    // Without a depth test draw order decides: bones, then the halos, then the spheres on
+    // top, or a halo would cover its own sphere.
+    for (const [obj, order] of [[skel.lines, 1], [skel.halo, 2], [skel.twinHalo, 2], [skel.solid, 3]]) {
       obj.visible = !skeletonHidden();
       obj.material.depthTest = !meshShown;
-      obj.renderOrder = meshShown ? 1 : 0;
+      obj.renderOrder = meshShown ? order : 0;
     }
   }
 }
@@ -782,12 +888,34 @@ function fillClipOptions(clips, species) {
   sel.disabled = !clips.length;
 }
 
+// The camera box of a clip is the box over every frame; the camera stays put when it is
+// close to the previous one (same rule as switching species).
+function frameClip(bvh, order) {
+  const pts = order.map(() => new THREE.Vector3());
+  const box = new THREE.Box3();
+  for (let f = 0; f < bvh.frames; f++) {
+    sampleBVH(bvh, f, order, pts);
+    pts.forEach((p) => box.expandByPoint(p));
+  }
+  const size = box.getSize(new THREE.Vector3());
+  const next = { extent: Math.max(size.x, size.y, size.z, 1e-6), center: box.getCenter(new THREE.Vector3()).toArray() };
+  const prev = skel.view;
+  skel.view = next;
+  buildGrids(skel.group);
+  if (!viewsAlike(prev, next)) setView(viewKind);
+}
+
 async function playClip(clip) {
   stopClip();
   if (!state.current || !skel.group) return;
   if (!clip) {
     skel.rest.forEach((p, index) => skel.positions[index].copy(p));
     applyPose();
+    const rest = new THREE.Box3().setFromPoints(skel.rest), size = rest.getSize(new THREE.Vector3());
+    const prev = skel.view;
+    skel.view = { extent: Math.max(size.x, size.y, size.z, 1e-6), center: rest.getCenter(new THREE.Vector3()).toArray() };
+    buildGrids(skel.group);
+    if (!viewsAlike(prev, skel.view)) setView(viewKind);
     return;
   }
   const token = clipToken;
@@ -800,6 +928,7 @@ async function playClip(clip) {
     const order = state.current.bvh_order;
     const bvh = parseBVH(text, order.length);
     anim = { bvh, order, time: 0, playing: true };
+    frameClip(bvh, order);
     syncMode();
     $('scrub').max = lastFrame();
     $('transport').hidden = false;
@@ -824,6 +953,7 @@ function animate() {
     syncTransport();
   }
   renderer.render(scene, camera);
+  renderGizmo();
 }
 animate();
 
@@ -1042,9 +1172,13 @@ async function openSpecies({ ds, species }) {
     fillClipOptions(clips, species);
     state.selected = new Set();
     state.anchor = null;
+    const prevView = skel.group && skel.view;
     buildSkeleton(bvh, payload);
     if (viewMode !== 'skeleton') loadMesh();
-    setView('fit');
+    if (prevView && viewsAlike(prevView, skel.view)) {
+      // keep the camera, but the fresh grids need the current view's visibility
+      updateGrids();
+    } else setView(viewKind);
     renderTable();
     renderTitle();
     renderSpecies();
@@ -1132,11 +1266,36 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   if (event.ctrlKey || event.metaKey || event.altKey) return;
-  const views = { Numpad1: 'front', Numpad3: 'side', Numpad7: 'top', NumpadDecimal: 'fit' };
+  const views = { Numpad1: 'front', Numpad3: 'side', Numpad7: 'top', NumpadDecimal: 'persp' };
   if (views[event.code]) { event.preventDefault(); setView(views[event.code]); return; }
   if (event.key === 'Escape') { select([], 'set'); return; }
   if (event.key === ' ') { event.preventDefault(); if (anim) setPlaying(!anim.playing); return; }
   if (event.key === ',' || event.key === '.') stepFrame(event.key === '.' ? 1 : -1);
+});
+
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
+  else {   // plain-http fallback
+    const t = document.createElement('textarea');
+    t.value = text; document.body.append(t); t.select();
+    const ok = document.execCommand('copy'); t.remove();
+    if (!ok) throw new Error('copy failed');
+  }
+}
+
+// Ctrl+C copies the selected joints' names (one per line, in table order); leaves real text
+// selections and text fields to the browser
+window.addEventListener('keydown', async (e) => {
+  if (e.code !== 'KeyC' || !(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+  if (!state.current || !state.selected.size) return;
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+  if (String(window.getSelection())) return;
+  e.preventDefault();
+  const names = [...state.selected].sort((a, b) => a - b).map((i) => state.current.joints[i].name);
+  try {
+    await copyText(names.join('\n'));
+    setStatus(`已复制关节名：${names.length > 3 ? names.slice(0, 3).join(', ') + ` 等 ${names.length} 个` : names.join(', ')}`);
+  } catch (err) { setStatus(`复制失败：${err.message}`, true); }
 });
 
 $('dataset').addEventListener('change', (e) => switchDataset(e.target.value));
