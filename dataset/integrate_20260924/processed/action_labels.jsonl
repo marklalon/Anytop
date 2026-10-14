@@ -254,7 +254,7 @@
 {"clip": "Knight_Lux_DoubleJump", "action_group": "locomotion", "action_label": "roll, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Jump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
-{"clip": "Knight_Lux_Parry", "action_group": "stationary", "action_label": "attack, run, slash", "is_loop": true, "reviewed": true}
+{"clip": "Knight_Lux_Parry", "action_group": "locomotion", "action_label": "run, attack", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Prepare", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
 {"clip": "Knight_Lux_Respawn", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "Knight_Lux_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
@@ -269,6 +269,149 @@
 {"clip": "Knight_MeiSha_Respawn", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "Knight_MeiSha_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_MeiSha_Sprint", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "LOL_Ahri_Crit", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, cast"}
+{"clip": "LOL_Ahri_Death", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, backward, spin"}
+{"clip": "LOL_Ahri_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "LOL_Ahri_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
+{"clip": "LOL_Ahri_Spell1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
+{"clip": "LOL_Ahri_Spell2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, spin"}
+{"clip": "LOL_Ahri_Spell3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
+{"clip": "LOL_Ahri_Spell4", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, run, left"}
+{"clip": "LOL_Akali_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, slash"}
+{"clip": "LOL_Akali_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, punch"}
+{"clip": "LOL_Akali_Crit", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, cast"}
+{"clip": "LOL_Akali_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, weapon"}
+{"clip": "LOL_Akali_Idle2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, weapon"}
+{"clip": "LOL_Akali_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
+{"clip": "LOL_Akali_Run2", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
+{"clip": "LOL_Akali_Spell4", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, spin"}
+{"clip": "LOL_Ashe_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, bow"}
+{"clip": "LOL_Ashe_Death", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, backward, spin"}
+{"clip": "LOL_Ashe_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, bow"}
+{"clip": "LOL_Ashe_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, bow"}
+{"clip": "LOL_Ashe_RunJog", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, bow"}
+{"clip": "LOL_Ashe_RunWalk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward, trot, bow"}
+{"clip": "LOL_Ashe_Spell2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, bow"}
+{"clip": "LOL_Blitzcrank_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, punch"}
+{"clip": "LOL_Blitzcrank_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, punch"}
+{"clip": "LOL_Blitzcrank_Attack3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, smash"}
+{"clip": "LOL_Blitzcrank_Death", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, backward"}
+{"clip": "LOL_Blitzcrank_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "LOL_Blitzcrank_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "LOL_Caitlyn_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, gun"}
+{"clip": "LOL_Caitlyn_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, gun"}
+{"clip": "LOL_Caitlyn_Death", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, forward"}
+{"clip": "LOL_Caitlyn_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, gun"}
+{"clip": "LOL_Caitlyn_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
+{"clip": "LOL_Fiora_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, slash"}
+{"clip": "LOL_Fiora_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, slash"}
+{"clip": "LOL_Fiora_Crit", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, stab"}
+{"clip": "LOL_Fiora_Death", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, forward"}
+{"clip": "LOL_Fiora_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, weapon"}
+{"clip": "LOL_Fiora_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
+{"clip": "LOL_Fiora_Spell1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, charge"}
+{"clip": "LOL_Fiora_Spell2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, charge, stab"}
+{"clip": "LOL_Jinx_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, gun"}
+{"clip": "LOL_Jinx_Attack4", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, gun"}
+{"clip": "LOL_Jinx_Death", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, backward"}
+{"clip": "LOL_Jinx_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, gun"}
+{"clip": "LOL_Jinx_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
+{"clip": "LOL_Jinx_Run2", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
+{"clip": "LOL_Jinx_Spell2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, gun"}
+{"clip": "LOL_Jinx_Spell3", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, throw"}
+{"clip": "LOL_Jinx_Taunt", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, happy"}
+{"clip": "LOL_Leona_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, swat"}
+{"clip": "LOL_Leona_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, slash"}
+{"clip": "LOL_Leona_Attack3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, punch"}
+{"clip": "LOL_Leona_Crit", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, shield"}
+{"clip": "LOL_Leona_Death", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, forward"}
+{"clip": "LOL_Leona_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, taunt"}
+{"clip": "LOL_Leona_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, shield"}
+{"clip": "LOL_Leona_Spell1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, shield"}
+{"clip": "LOL_Leona_Spell2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, shield"}
+{"clip": "LOL_Leona_Spell2Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, throw"}
+{"clip": "LOL_Leona_Spell2Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, block"}
+{"clip": "LOL_Leona_Spell2Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, backward, shield"}
+{"clip": "LOL_Leona_Spell3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, shield"}
+{"clip": "LOL_Leona_Spell4", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
+{"clip": "LOL_Lux_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, swat"}
+{"clip": "LOL_Lux_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, swat"}
+{"clip": "LOL_Lux_Death", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, backward"}
+{"clip": "LOL_Lux_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, taunt"}
+{"clip": "LOL_Lux_Idle4", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, yawn"}
+{"clip": "LOL_Lux_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
+{"clip": "LOL_Lux_Spell1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
+{"clip": "LOL_MasterYi_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, slash"}
+{"clip": "LOL_MasterYi_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, slash"}
+{"clip": "LOL_MasterYi_AttackTwice", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, slash"}
+{"clip": "LOL_MasterYi_Crit", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, up, slash"}
+{"clip": "LOL_MasterYi_Death", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, left"}
+{"clip": "LOL_MasterYi_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, weapon"}
+{"clip": "LOL_MasterYi_Idle2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, weapon"}
+{"clip": "LOL_MasterYi_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
+{"clip": "LOL_MasterYi_RunFast", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, fast, weapon"}
+{"clip": "LOL_MasterYi_RunHaste", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
+{"clip": "LOL_MissFortune_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, gun"}
+{"clip": "LOL_MissFortune_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, run, right"}
+{"clip": "LOL_MissFortune_Death", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, forward"}
+{"clip": "LOL_MissFortune_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, taunt"}
+{"clip": "LOL_MissFortune_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "LOL_MissFortune_RunPassive", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
+{"clip": "LOL_Nasus_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, slash"}
+{"clip": "LOL_Nasus_Death", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, backward"}
+{"clip": "LOL_Nasus_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, taunt"}
+{"clip": "LOL_Nasus_Run1", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
+{"clip": "LOL_Nasus_Spell1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, smash"}
+{"clip": "MXO_Human_Backflip", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, jump, backward"}
+{"clip": "MXO_Human_Boxing", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, punch"}
+{"clip": "MXO_Human_BreathingIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "MXO_Human_ClimbingARope", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "climb, up"}
+{"clip": "MXO_Human_ClimbingLadder", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "climb, up"}
+{"clip": "MXO_Human_ClimbingUpWall", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "climb, up"}
+{"clip": "MXO_Human_CrouchDeath", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, backward"}
+{"clip": "MXO_Human_CrouchWalk", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "walk, forward, crouch"}
+{"clip": "MXO_Human_Death", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, backward"}
+{"clip": "MXO_Human_DeathFromTheBack", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, forward"}
+{"clip": "MXO_Human_DrawAGreatSword2", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "draw"}
+{"clip": "MXO_Human_DrawingGun", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "draw, gun"}
+{"clip": "MXO_Human_DrawSword2", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "draw"}
+{"clip": "MXO_Human_FallingForwardDeath", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}
+{"clip": "MXO_Human_FallingToLanding", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, jump"}
+{"clip": "MXO_Human_FishingCast", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, fishing"}
+{"clip": "MXO_Human_FishingIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, fishing"}
+{"clip": "MXO_Human_ForwardJump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, forward"}
+{"clip": "MXO_Human_GettingUp", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup, crawl"}
+{"clip": "MXO_Human_IdleCrouchingAiming", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, crouch, aim"}
+{"clip": "MXO_Human_JoggingWithBox", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, carry"}
+{"clip": "MXO_Human_LowCrawl", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "crawl, forward"}
+{"clip": "MXO_Human_PistolStandToKneel", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "kneel, gun"}
+{"clip": "MXO_Human_ProneFiringRifle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, crawl, gun"}
+{"clip": "MXO_Human_ProneReloading", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, crawl, reload"}
+{"clip": "MXO_Human_PushStop", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "walk, forward, push"}
+{"clip": "MXO_Human_Reload1", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "run, reload"}
+{"clip": "MXO_Human_Reloading", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, reload"}
+{"clip": "MXO_Human_RifleBackwardRunToStop", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "run, backward, gun"}
+{"clip": "MXO_Human_RifleKneelToProne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "laydown, gun"}
+{"clip": "MXO_Human_RifleProneToKneel", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup, crouch, gun"}
+{"clip": "MXO_Human_RiflePutAway", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "sheathe, gun"}
+{"clip": "MXO_Human_RollLeft", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "roll, crawl, left, gun"}
+{"clip": "MXO_Human_RoundhouseKick", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, kick"}
+{"clip": "MXO_Human_RunForward", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "MXO_Human_SheathingSword", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "sheathe"}
+{"clip": "MXO_Human_ShootingArrow", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, bow"}
+{"clip": "MXO_Human_SleepingIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest"}
+{"clip": "MXO_Human_Snatch", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "pickup"}
+{"clip": "MXO_Human_Stabbing", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, stab"}
+{"clip": "MXO_Human_StableSwordInwardSlash", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, slash"}
+{"clip": "MXO_Human_StandToSit", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "sitdown"}
+{"clip": "MXO_Human_Swimming", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
+{"clip": "MXO_Human_SwordAndShieldCrouchBlock1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt, crouch, block"}
+{"clip": "MXO_Human_TwoHandSpellCasting", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
+{"clip": "MXO_Human_WalkBackward", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, backward"}
+{"clip": "MXO_Human_WalkForward", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward, weapon"}
+{"clip": "MXO_Human_WalkStrafeLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, left"}
+{"clip": "MXO_Human_Waving", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, wave"}
+{"clip": "MXO_Human_Yawn", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, yawn"}
 {"clip": "ORA_Alien_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "ORA_ArmoredCatfish_Swim", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "ORA_ArmoredCatfish_SwimFast", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
@@ -373,7 +516,7 @@
 {"clip": "ORA_Gumiho_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hover"}
 {"clip": "ORA_Gumiho_FlySprint", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward, glide"}
 {"clip": "ORA_Gumiho_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
-{"clip": "ORA_Gumiho_Skill", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "jump, roll, backward"}
+{"clip": "ORA_Gumiho_Skill", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, jump, backward"}
 {"clip": "ORA_Gumiho_Stand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
 {"clip": "ORA_Gumiho_Stun", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, sleep"}
 {"clip": "ORA_Gumiho_Taming", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, crouch"}
@@ -389,13 +532,13 @@
 {"clip": "ORA_Hound_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, right"}
 {"clip": "ORA_Hound_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, dead"}
 {"clip": "ORA_Hound_Fall", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, fall"}
-{"clip": "ORA_Hound_FlyAvoid", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, flip"}
+{"clip": "ORA_Hound_FlyAvoid", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, run, left"}
 {"clip": "ORA_Hound_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hover"}
 {"clip": "ORA_Hound_FlySprint", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward, glide"}
 {"clip": "ORA_Hound_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "ORA_Hound_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "ORA_Hound_Skill", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
-{"clip": "ORA_Hound_Skill2", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
+{"clip": "ORA_Hound_Skill2", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "jump, up"}
 {"clip": "ORA_Hound_Stand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
 {"clip": "ORA_Hound_Stun", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, sleep"}
 {"clip": "ORA_Hound_Taming", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, happy"}
@@ -404,7 +547,7 @@
 {"clip": "ORA_Humpback_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
 {"clip": "ORA_Kargoyle_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
 {"clip": "ORA_Kargoyle_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, firebreath"}
-{"clip": "ORA_Kargoyle_Avoid", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "fly, flip"}
+{"clip": "ORA_Kargoyle_Avoid", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "roll, fly, left"}
 {"clip": "ORA_Kargoyle_Damage", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt, hover"}
 {"clip": "ORA_Kargoyle_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, right"}
 {"clip": "ORA_Kargoyle_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, dead"}
@@ -575,7 +718,7 @@
 {"clip": "Pet_Bentley_Idle02", "action_group": "stationary", "action_label": "hover, shake", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Bentley_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Chick_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Chick_Idle02", "action_group": "stationary", "action_label": "hover, roll, backward", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Chick_Idle02", "action_group": "locomotion", "action_label": "roll, hover, backward", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Chick_Pose", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Fafnir_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Fafnir_Idle02", "action_group": "stationary", "action_label": "attack, hover, spin", "is_loop": true, "reviewed": true}
@@ -584,7 +727,7 @@
 {"clip": "Pet_Gate_Idle02", "action_group": "locomotion", "action_label": "jump, spin", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Gate_Pose", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Goldfish_Idle01", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
-{"clip": "Pet_Goldfish_Idle02", "action_group": "locomotion", "action_label": "swim, flip", "is_loop": true, "reviewed": true}
+{"clip": "Pet_Goldfish_Idle02", "action_group": "locomotion", "action_label": "roll, right", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Goldfish_Pose", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Hamperor_Idle01", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "Pet_Hamperor_Idle02", "action_group": "stationary", "action_label": "hover, eat", "is_loop": true, "reviewed": true}
@@ -754,6 +897,130 @@
 {"clip": "PP_Walrus_Idle2", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "PP_Walrus_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "PP_Walrus_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "SC2_Baneling_Burrow", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "burrow"}
+{"clip": "SC2_Baneling_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Baneling_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "SC2_Baneling_Spawn", "action_group": "transition", "is_loop": false, "action_label": "spawn", "reviewed": true}
+{"clip": "SC2_BroodLord_Fly", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}
+{"clip": "SC2_BroodLord_Hover", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Drone_Attack01", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, swat"}
+{"clip": "SC2_Drone_Eat", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "idle, eat"}
+{"clip": "SC2_Drone_FallLand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, jump"}
+{"clip": "SC2_Drone_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Drone_Spawn", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "spawn"}
+{"clip": "SC2_Hydralisk_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
+{"clip": "SC2_Hydralisk_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, smash"}
+{"clip": "SC2_Hydralisk_Attack3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, swat"}
+{"clip": "SC2_Hydralisk_FallLand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, jump"}
+{"clip": "SC2_Hydralisk_Hurt1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt"}
+{"clip": "SC2_Hydralisk_Hurt2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt"}
+{"clip": "SC2_Hydralisk_Hurt3", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt"}
+{"clip": "SC2_Hydralisk_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Hydralisk_Idle2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
+{"clip": "SC2_Hydralisk_Idle3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, scratch"}
+{"clip": "SC2_Hydralisk_Idle4", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Hydralisk_Idle5", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Hydralisk_Roar", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "roar"}
+{"clip": "SC2_Hydralisk_Roar3", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "roar"}
+{"clip": "SC2_Hydralisk_Spawn", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "spawn"}
+{"clip": "SC2_Hydralisk_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
+{"clip": "SC2_InfestedMarine_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, gun"}
+{"clip": "SC2_InfestedMarine_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, gun"}
+{"clip": "SC2_InfestedMarine_FallLand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, jump"}
+{"clip": "SC2_InfestedMarine_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_InfestedMarine_Spawn", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "spawn"}
+{"clip": "SC2_InfestedMarine_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
+{"clip": "SC2_Infestor_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, spit"}
+{"clip": "SC2_Infestor_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, spit"}
+{"clip": "SC2_Infestor_Attack3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, headbutt"}
+{"clip": "SC2_Infestor_Burrow", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "burrow"}
+{"clip": "SC2_Infestor_FallLand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, jump"}
+{"clip": "SC2_Infestor_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Infestor_Idle2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
+{"clip": "SC2_Infestor_Idle3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, shake"}
+{"clip": "SC2_Infestor_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "SC2_Infestor_RunLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, left"}
+{"clip": "SC2_Infestor_RunRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, right"}
+{"clip": "SC2_Infestor_Spawn", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "spawn"}
+{"clip": "SC2_Larva_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
+{"clip": "SC2_Larva_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
+{"clip": "SC2_Larva_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}
+{"clip": "SC2_Larva_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Larva_Idle2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Larva_Roar", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "roar"}
+{"clip": "SC2_Lurker_Burrow", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "burrow"}
+{"clip": "SC2_Lurker_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Lurker_Idle2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, shake"}
+{"clip": "SC2_Lurker_Idle3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
+{"clip": "SC2_Lurker_Run", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "run, forward"}
+{"clip": "SC2_Lurker_RunJump", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "run, jump, forward"}
+{"clip": "SC2_Mutalisk_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, hover, sting"}
+{"clip": "SC2_Mutalisk_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, hover, sting"}
+{"clip": "SC2_Mutalisk_Fly1", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}
+{"clip": "SC2_Mutalisk_Fly2", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "fly, forward"}
+{"clip": "SC2_Mutalisk_Fly3", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}
+{"clip": "SC2_Mutalisk_Fly4", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}
+{"clip": "SC2_Overlord_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Overlord_Idle2", "action_group": "stationary", "is_loop": true, "action_label": "idle", "reviewed": true}
+{"clip": "SC2_Overlord_Idle3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Overseer_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Overseer_Idle2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Overseer_Idle3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
+{"clip": "SC2_Queen_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, swat"}
+{"clip": "SC2_Queen_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
+{"clip": "SC2_Queen_Attack3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
+{"clip": "SC2_Queen_Attack4", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
+{"clip": "SC2_Queen_Attack5", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, swat"}
+{"clip": "SC2_Queen_Burrow", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "burrow"}
+{"clip": "SC2_Queen_Eat", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, eat"}
+{"clip": "SC2_Queen_FallLand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, jump"}
+{"clip": "SC2_Queen_Hurt", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
+{"clip": "SC2_Queen_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Queen_Idle2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Queen_Idle3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
+{"clip": "SC2_Queen_Run", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "walk, forward"}
+{"clip": "SC2_Queen_Spawn", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "spawn"}
+{"clip": "SC2_Roach_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, swat"}
+{"clip": "SC2_Roach_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, swat"}
+{"clip": "SC2_Roach_Attack3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, swat"}
+{"clip": "SC2_Roach_Attack4", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, smash"}
+{"clip": "SC2_Roach_Attack5", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
+{"clip": "SC2_Roach_Attack6", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, jump"}
+{"clip": "SC2_Roach_FallLand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, jump"}
+{"clip": "SC2_Roach_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Roach_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, fast"}
+{"clip": "SC2_Roach_Shake", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, shake"}
+{"clip": "SC2_Roach_Spawn", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "spawn"}
+{"clip": "SC2_Roach_WalkLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, left"}
+{"clip": "SC2_Roach_WalkRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, right"}
+{"clip": "SC2_Symbiote_Hover", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "fly, forward"}
+{"clip": "SC2_Symbiote_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Symbiote_Run", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "run, forward"}
+{"clip": "SC2_Ultralisk_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, swat"}
+{"clip": "SC2_Ultralisk_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, swat"}
+{"clip": "SC2_Ultralisk_Attack3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, swat"}
+{"clip": "SC2_Ultralisk_Attack4", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, charge, swat"}
+{"clip": "SC2_Ultralisk_Attack5", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, charge, swat"}
+{"clip": "SC2_Ultralisk_Dance", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, happy"}
+{"clip": "SC2_Ultralisk_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}
+{"clip": "SC2_Ultralisk_FallLand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, jump"}
+{"clip": "SC2_Ultralisk_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Ultralisk_Idle2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Ultralisk_Roar", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "roar"}
+{"clip": "SC2_Ultralisk_Roar2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "roar"}
+{"clip": "SC2_Ultralisk_Run", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "run, forward"}
+{"clip": "SC2_Ultralisk_Run2", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "SC2_Ultralisk_Spawn", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "spawn"}
+{"clip": "SC2_Zergling_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, swat"}
+{"clip": "SC2_Zergling_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, jump"}
+{"clip": "SC2_Zergling_Attack3", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "roll, jump, backward"}
+{"clip": "SC2_Zergling_Burrow", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "burrow"}
+{"clip": "SC2_Zergling_FallLand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, jump"}
+{"clip": "SC2_Zergling_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Zergling_Idle2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
+{"clip": "SC2_Zergling_Idle3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, scratch"}
+{"clip": "SC2_Zergling_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "SC2_Zergling_Spawn", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "spawn"}
 {"clip": "SYN_Worm_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
 {"clip": "SYN_Worm_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "SYN_Worm_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
