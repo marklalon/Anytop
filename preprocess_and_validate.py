@@ -317,7 +317,7 @@ class _WarnCollector:
             self._summarizing = False
 
     def _load_suppress_patterns(self):
-        """Load the ``#`` substring patterns from the dataset's ignore_warnings.txt.
+        """Load the ``#`` patterns from the dataset's ignore_warnings.txt.
 
         If any pattern matches a warning message, that warning is suppressed
         from the summary output.
@@ -339,7 +339,7 @@ class _WarnCollector:
             key = msg.strip().lower()
             if key not in seen:
                 if self._suppress_patterns and any(
-                    pat in key for pat in self._suppress_patterns
+                    ignore_warnings.matches_pattern(key, pat) for pat in self._suppress_patterns
                 ):
                     suppressed_count += 1
                     seen.add(key)  # still dedupe

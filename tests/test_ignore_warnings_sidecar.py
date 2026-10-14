@@ -67,6 +67,31 @@ def test_directive_line_is_not_read_as_a_motion_stem_or_pattern():
     assert sidecar.patterns == ()
 
 
+def test_warning_pattern_star_matches_joint_counts_for_one_character():
+    pattern = "skeleton exceeds MAX_JOINTS (*) for Knight_Barbarianwarrior"
+
+    assert iw.matches_pattern(
+        "skeleton exceeds MAX_JOINTS (113 > 100) for Knight_Barbarianwarrior rest pose 'TPose.glb'",
+        pattern,
+    )
+    assert iw.matches_pattern(
+        "skeleton exceeds MAX_JOINTS (114 > 100) for Knight_Barbarianwarrior 'Run.glb'",
+        pattern,
+    )
+    assert not iw.matches_pattern(
+        "skeleton exceeds MAX_JOINTS (114 > 100) for Other_Character 'Run.glb'",
+        pattern,
+    )
+    assert not iw.matches_pattern(
+        "dropping 1 prop-socket joint(s) for Knight_Barbarianwarrior 'Run.glb'",
+        pattern,
+    )
+    assert iw.matches_pattern(
+        "dropping 1 prop-socket joint(s) for LOL_Akali rest pose 'TPose.glb'",
+        "prop-socket joint(s) for LOL_Akali",
+    )
+
+
 def test_sidecar_falls_back_to_the_parent_directory(tmp_path):
     dataset_dir = _make_dataset_dir(
         tmp_path, "!skip-orientation-detection\n", sidecar_in_parent=True

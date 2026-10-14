@@ -87,7 +87,7 @@ def print_info(message: str) -> None:
     print(f"[INFO] {message}")
 
 
-# Lower-cased substrings from a dataset's ignore_warnings.txt "#" lines, active
+# Lower-cased patterns from a dataset's ignore_warnings.txt "#" lines, active
 # only inside _suppressing_warnings.
 _suppress_patterns: tuple[str, ...] = ()
 
@@ -102,7 +102,7 @@ _suppressed = _SuppressedCount()
 def print_warn(message: str) -> None:
     if _suppress_patterns:
         key = str(message).lower()
-        if any(pattern in key for pattern in _suppress_patterns):
+        if any(ignore_warnings.matches_pattern(key, pattern) for pattern in _suppress_patterns):
             _suppressed.count += 1
             return
     print(f"\033[33m[WARN] {message}\033[0m")
@@ -110,7 +110,7 @@ def print_warn(message: str) -> None:
 
 @contextmanager
 def _suppressing_warnings(patterns):
-    """Drop print_warn messages containing any of *patterns* within the block."""
+    """Drop print_warn messages matching any of *patterns* within the block."""
     global _suppress_patterns, _suppressed
     previous = (_suppress_patterns, _suppressed)
     _suppress_patterns = tuple(str(pattern).lower() for pattern in patterns)

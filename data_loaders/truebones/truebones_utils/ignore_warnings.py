@@ -5,8 +5,8 @@ Blank lines are skipped; every other line is one entry of three kinds:
 * ``!directive`` -- a switch that applies to the whole dataset.  The only one
   today is ``!skip-orientation-detection`` (see below).  Separators are free:
   ``!skip_orientation_detection`` is the same switch.
-* ``#pattern``  -- a case-insensitive substring.  Any warning whose text
-  contains it is dropped from a run's warning summary.
+* ``#pattern``  -- a case-insensitive substring; ``*`` matches any text.
+  Any matching warning is dropped from a run's warning summary.
 * ``name``      -- a motion stem (``Horse_Run_1``, with or without ``.npy``)
   whose per-clip validation warnings are ignored.
 
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from data_loaders.truebones.truebones_utils.param_utils import get_dataset_dir
 
@@ -107,6 +108,12 @@ def parse(text: str, path: Path | None = None) -> IgnoreWarnings:
         directives=frozenset(directives),
         unknown_directives=tuple(unknown),
     )
+
+
+def matches_pattern(message: str, pattern: str) -> bool:
+    """Match a warning against a case-insensitive substring with optional ``*``."""
+    expression = re.escape(pattern).replace(r"\*", ".*")
+    return re.search(expression, message, flags=re.IGNORECASE) is not None
 
 
 def load(dataset_dir=None) -> IgnoreWarnings:

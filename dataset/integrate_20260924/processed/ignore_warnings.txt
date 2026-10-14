@@ -3,10 +3,12 @@
 #prop-socket joint(s) for Pet_Kiki
 #prop-socket joint(s) for Pet_Proce
 #prop-socket joint(s) for Pet_Yulia
-#skeleton exceeds MAX_JOINTS (113 > 100) for Knight_Barbarianwarrior
+#skeleton exceeds MAX_JOINTS (*) for Knight_Barbarianwarrior
 #BVH end-site joint(s) for ORA_ReadyPlayerMe
 Pet_Miho_Idle02
 #BVH end-site joint(s) for ORA_BatToon
 #BVH end-site joint(s) for ORA_MantisMan
 #BVH end-site joint(s) for ORA_PinkTurtle
 #BVH end-site joint(s) for ORA_Seagull
+#prop-socket joint(s) for LOL_Akali
+#BVH end-site joint(s) for LOL_Jinx

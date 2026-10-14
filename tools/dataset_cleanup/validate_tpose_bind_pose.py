@@ -136,7 +136,7 @@ def _warning_sort_key(message: str) -> tuple[str, str]:
 
 
 def _load_symmetry_suppress_patterns(dataset_dir: Path) -> list[str]:
-    """Load the ``#`` substring patterns from the dataset's ``ignore_warnings.txt``.
+    """Load the ``#`` patterns from the dataset's ``ignore_warnings.txt``.
 
     If any pattern matches a symmetry-warning message, that warning is
     suppressed from the final report.
@@ -150,13 +150,15 @@ def _filter_suppressed_warnings(
     warnings: list[str],
     suppress_patterns: list[str],
 ) -> tuple[list[str], int]:
-    """Return ``(remaining, suppressed_count)`` after filtering by substring patterns."""
+    """Return ``(remaining, suppressed_count)`` after filtering by patterns."""
     if not suppress_patterns or not warnings:
         return warnings, 0
     remaining: list[str] = []
     suppressed = 0
+    from data_loaders.truebones.truebones_utils import ignore_warnings
+
     for msg in warnings:
-        if any(pat in msg.lower() for pat in suppress_patterns):
+        if any(ignore_warnings.matches_pattern(msg, pat) for pat in suppress_patterns):
             suppressed += 1
         else:
             remaining.append(msg)
