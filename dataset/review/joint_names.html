@@ -108,6 +108,9 @@
   #box[hidden] { display: none; }
   .viewbtns { position: absolute; top: 8px; left: 8px; display: flex; gap: 4px; z-index: 4; }
   .viewbtns button { padding: 2px 8px; font-size: 12px; opacity: .85; }
+  .viewbtns button#meshView { color: var(--dim); background: rgba(255,255,255,.04); border-color: var(--edge); }
+  .viewbtns button#meshView.on { color: #fff; background: rgba(255,255,255,.28); border-color: #cfcfcf; opacity: 1; }
+  .viewbtns button#meshView:disabled { opacity: .4; }
   .legend { position: absolute; top: 8px; right: 10px; z-index: 4; display: flex; gap: 10px;
     font-size: 12px; color: var(--dim); }
   #title {
@@ -183,7 +186,7 @@
       <button data-view="front" title="正视（小键盘 1）">正</button>
       <button data-view="side" title="侧视（小键盘 3）">侧</button>
       <button data-view="top" title="俯视（小键盘 7）">俯</button>
-      <button data-view="fit" title="重新取景（小键盘 .）">⤢</button>
+      <button id="meshView" title="骨架 / Mesh+骨架 / Mesh（点击切换）">骨架</button>
     </div>
     <div class="legend" id="legend"></div>
     <div id="transport" hidden>
@@ -228,6 +231,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { BVHLoader } from 'three/addons/BVHLoader.js';
+import { GLTFLoader } from 'three/addons/GLTFLoader.js';
 
 const SIDE_COLORS = { left: '#4f8fe6', right: '#e05a5a', center: '#b8b8b8' };
 const SIDE_LABELS = { left: '左', right: '右', center: '中' };
@@ -285,7 +289,7 @@ function renderSpecies() {
     const div = document.createElement('div');
     div.className = 'sp' + (speciesKey(s) === activeKey() ? ' active' : '');
     const where = state.ds === ALL_DATASETS ? `${datasetName(s.ds)}\n` : '';
-    div.title = `${where}${s.joints} 关节，${s.blank} 个 EmbedText 为空`;
+    div.title = `${where}${s.joints} 关节`;
     div.innerHTML = `<span class="nm"></span><span class="n">${s.joints}</span>`;
     div.querySelector('.nm').textContent = s.species;
     div.addEventListener('click', () => openSpecies(s));
@@ -353,7 +357,11 @@ scene.add(sun);
 const skel = {
   group: null, positions: [], rest: [], radius: 0.01, diag: 1, center: new THREE.Vector3(),
   solid: null, halo: null, twinHalo: null, lines: null,
+  mesh: null,   // { group } once the T-pose GLB is attached (see attachMesh)
 };
+const MESH_VIEWS = { skeleton: '骨架', both: 'Mesh+骨架', mesh: 'Mesh' };   // click order
+let viewMode = recall('mode') in MESH_VIEWS ? recall('mode') : 'skeleton';
+let meshToken = 0;
 // The clip playing in the viewport (see parseBVH).
 let anim = null;      // { bvh (parseBVH), order, time, playing }
 let clipToken = 0;
@@ -375,14 +383,17 @@ $('legend').innerHTML = Object.entries(SIDE_COLORS)
   .map(([side, color]) => `<span><span class="sw" style="background:${color}"></span> ${SIDE_LABELS[side]}</span>`).join('');
 
 function disposeSkeleton() {
-  stopClip();
-  if (!skel.group) return;
-  skel.group.traverse((obj) => {
-    if (obj.geometry) obj.geometry.dispose();
-    if (obj.material) obj.material.dispose();
-  });
-  scene.remove(skel.group);
-  skel.group = null;
+  meshToken++;
+  skel.mesh = null;
+  if (skel.group) {
+    skel.group.traverse((obj) => {
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) [].concat(obj.material).forEach((material) => material.dispose());
+    });
+    scene.remove(skel.group);
+    skel.group = null;
+  }
+  stopClip();   // after the teardown, so its mode sync does not fetch a mesh for the old skeleton
 }
 
 // Parse a BVH into its joints (ENDSITEs dropped) and per-frame local poses.
@@ -532,7 +543,7 @@ function setView(kind) {
   controls.update();
 }
 
-document.querySelectorAll('.viewbtns button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+document.querySelectorAll('.viewbtns button[data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
 
 // Move bones and spheres to skel.positions.
 function applyPose() {
@@ -549,6 +560,167 @@ function applyPose() {
   refreshVisuals();
 }
 
+// ---------------------------------------------------------------------------
+// Mesh: the species' raw T-pose GLB in its bind pose, shown on the t-pose only.
+// A clip BVH keeps joint positions but not each bone's twist, so it cannot skin
+// the raw mesh faithfully; a playing clip shows the skeleton alone.
+// ---------------------------------------------------------------------------
+
+// Rotation + uniform scale + translation taking points ``from`` onto ``to``
+// (Horn's closed form; the rotation is the top eigenvector of a 4x4 matrix).
+function similarityFit(from, to) {
+  const n = from.length;
+  const cf = new THREE.Vector3(), ct = new THREE.Vector3();
+  from.forEach((p) => cf.add(p));
+  to.forEach((p) => ct.add(p));
+  cf.divideScalar(n);
+  ct.divideScalar(n);
+  const S = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  let spp = 0;
+  for (let k = 0; k < n; k++) {
+    const p = from[k].clone().sub(cf).toArray(), q = to[k].clone().sub(ct).toArray();
+    for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) S[a][b] += p[a] * q[b];
+    spp += p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+  }
+  const N = [
+    [S[0][0] + S[1][1] + S[2][2], S[1][2] - S[2][1], S[2][0] - S[0][2], S[0][1] - S[1][0]],
+    [S[1][2] - S[2][1], S[0][0] - S[1][1] - S[2][2], S[0][1] + S[1][0], S[2][0] + S[0][2]],
+    [S[2][0] - S[0][2], S[0][1] + S[1][0], -S[0][0] + S[1][1] - S[2][2], S[1][2] + S[2][1]],
+    [S[0][1] - S[1][0], S[2][0] + S[0][2], S[1][2] + S[2][1], -S[0][0] - S[1][1] + S[2][2]],
+  ];
+  // Jacobi eigen-decomposition of the symmetric 4x4.
+  const V = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
+  for (let sweep = 0; sweep < 50; sweep++) {
+    let off = 0;
+    for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) off += N[i][j] * N[i][j];
+    if (off < 1e-24) break;
+    for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) {
+      if (Math.abs(N[i][j]) < 1e-30) continue;
+      const theta = (N[j][j] - N[i][i]) / (2 * N[i][j]);
+      const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+      const c = 1 / Math.sqrt(t * t + 1), s = t * c;
+      for (let k = 0; k < 4; k++) {
+        const a = N[k][i], b = N[k][j];
+        N[k][i] = c * a - s * b; N[k][j] = s * a + c * b;
+      }
+      for (let k = 0; k < 4; k++) {
+        const a = N[i][k], b = N[j][k];
+        N[i][k] = c * a - s * b; N[j][k] = s * a + c * b;
+      }
+      for (let k = 0; k < 4; k++) {
+        const a = V[k][i], b = V[k][j];
+        V[k][i] = c * a - s * b; V[k][j] = s * a + c * b;
+      }
+    }
+  }
+  let best = 0;
+  for (let i = 1; i < 4; i++) if (N[i][i] > N[best][best]) best = i;
+  const quat = new THREE.Quaternion(V[1][best], V[2][best], V[3][best], V[0][best]).normalize();
+  let dot = 0;
+  for (let k = 0; k < n; k++) {
+    dot += to[k].clone().sub(ct).dot(from[k].clone().sub(cf).applyQuaternion(quat));
+  }
+  const scale = spp > 0 ? dot / spp : 1;
+  const matrix = new THREE.Matrix4().compose(new THREE.Vector3(), quat, new THREE.Vector3(scale, scale, scale));
+  matrix.setPosition(ct.clone().sub(cf.clone().applyMatrix4(matrix)));
+  return matrix;
+}
+
+// Put the loaded GLB scene in the skeleton's space. Its bones are matched to the
+// joints by name (the joint names come from the same raw files); the similarity
+// fit of those bones' bind positions onto the t-pose skeleton absorbs the
+// preprocessing's scale and heading.
+function attachMesh(glbScene) {
+  const byName = new Map(state.current.joints.map((j) => [j.name, j.index]));
+  glbScene.updateMatrixWorld(true);
+  const matched = [];
+  glbScene.traverse((obj) => {
+    const joint = obj.isBone ? byName.get(obj.userData.name || obj.name) : undefined;
+    if (joint !== undefined) matched.push({ joint, bind: new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld) });
+  });
+  if (matched.length < 3) throw new Error('Mesh 的骨骼和关节名对不上');
+  const align = similarityFit(matched.map((b) => b.bind), matched.map((b) => skel.rest[b.joint]));
+  glbScene.traverse((obj) => {
+    if (!obj.isMesh) return;
+    obj.frustumCulled = false;
+    [].concat(obj.material).forEach((material) => {
+      // blended surfaces become hashed alpha tests that write depth: opaque look, no sorting
+      if (material.transparent || material.opacity < 1) {
+        material.transparent = false; material.alphaHash = true; material.depthWrite = true; material.needsUpdate = true;
+      }
+    });
+  });
+  const group = new THREE.Group();
+  group.matrixAutoUpdate = false;
+  group.matrix.copy(align);
+  group.add(glbScene);
+  skel.group.add(group);
+  skel.mesh = { group };
+  applyMode();
+}
+
+async function loadMesh() {
+  if (!state.current || !skel.group || skel.mesh) return;
+  const token = ++meshToken;
+  const { ds, species } = state.current;
+  setStatus('加载 Mesh…');
+  try {
+    const res = await fetch(`/api/joints/mesh.glb?ds=${encodeURIComponent(ds)}&species=${encodeURIComponent(species)}`);
+    if (!res.ok) throw new Error((await res.json()).error);
+    const gltf = await new GLTFLoader().parseAsync(await res.arrayBuffer(), '');
+    if (token !== meshToken) return;
+    attachMesh(gltf.scene);
+    setStatus('');
+  } catch (err) {
+    if (token !== meshToken) return;
+    setStatus(`Mesh 加载失败：${err.message}`, true);
+  }
+}
+
+// ``viewMode`` is the chosen view; a playing clip shows the skeleton alone (see the
+// Mesh section) without changing it, and the t-pose brings it back.
+const shownMode = () => (anim ? 'skeleton' : viewMode);
+// The skeleton hides only behind a mesh that is actually shown (mesh-only view); over a
+// shown mesh it draws on top of it: no depth test, after the opaque mesh.
+const skeletonHidden = () => shownMode() === 'mesh' && !!skel.mesh;
+function applyMode() {
+  const meshShown = shownMode() !== 'skeleton' && !!skel.mesh;
+  if (skel.mesh) skel.mesh.group.visible = meshShown;
+  if (skel.group) {
+    for (const obj of [skel.solid, skel.halo, skel.twinHalo, skel.lines]) {
+      obj.visible = !skeletonHidden();
+      obj.material.depthTest = !meshShown;
+      obj.renderOrder = meshShown ? 1 : 0;
+    }
+  }
+}
+
+// Refresh the mesh button and the scene for the shown mode, loading the mesh on first need.
+function syncMode() {
+  const mode = shownMode();
+  const btn = $('meshView');
+  btn.textContent = MESH_VIEWS[mode];
+  btn.classList.toggle('on', mode !== 'skeleton');
+  btn.disabled = !!anim;
+  btn.title = anim ? '播放动作时只显示骨架（BVH 不含骨骼 twist，无法还原蒙皮）'
+    : '骨架 / Mesh+骨架 / Mesh（点击切换）';
+  if (skel.mesh) applyMode();
+  else if (mode !== 'skeleton') loadMesh();
+  if (skeletonHidden()) hoverIndex = null;
+}
+
+function setMode(mode) {
+  viewMode = mode;
+  remember('mode', mode);
+  syncMode();
+}
+
+$('meshView').onclick = () => {
+  const order = Object.keys(MESH_VIEWS);
+  setMode(order[(order.indexOf(viewMode) + 1) % order.length]);
+};
+setMode(viewMode);
+
 // Pose the joints from the clip at ``anim.time``.
 function poseFromClip() {
   const { bvh } = anim;
@@ -561,6 +733,7 @@ function stopClip() {
   anim = null;
   $('transport').hidden = true;
   $('play').textContent = '⏸';
+  syncMode();
 }
 
 function setPlaying(on) {
@@ -627,6 +800,7 @@ async function playClip(clip) {
     const order = state.current.bvh_order;
     const bvh = parseBVH(text, order.length);
     anim = { bvh, order, time: 0, playing: true };
+    syncMode();
     $('scrub').max = lastFrame();
     $('transport').hidden = false;
     setPlaying(true);
@@ -658,7 +832,7 @@ const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 
 function pick(event) {
-  if (!skel.group) return null;
+  if (!skel.group || skeletonHidden()) return null;
   const rect = renderer.domElement.getBoundingClientRect();
   pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
   raycaster.setFromCamera(pointer, camera);
@@ -724,7 +898,7 @@ renderer.domElement.addEventListener('pointerup', (event) => {
     const x0 = Math.min(start.x, event.clientX - rect.left), x1 = Math.max(start.x, event.clientX - rect.left);
     const y0 = Math.min(start.y, event.clientY - rect.top), y1 = Math.max(start.y, event.clientY - rect.top);
     const inside = [];
-    skel.positions.forEach((p, index) => {
+    if (!skeletonHidden()) skel.positions.forEach((p, index) => {
       const s = p.clone().project(camera);
       const x = (s.x + 1) / 2 * rect.width, y = (1 - s.y) / 2 * rect.height;
       if (s.z < 1 && x >= x0 && x <= x1 && y >= y0 && y <= y1) inside.push(index);
@@ -869,6 +1043,7 @@ async function openSpecies({ ds, species }) {
     state.selected = new Set();
     state.anchor = null;
     buildSkeleton(bvh, payload);
+    if (viewMode !== 'skeleton') loadMesh();
     setView('fit');
     renderTable();
     renderTitle();

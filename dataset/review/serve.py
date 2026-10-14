@@ -916,12 +916,7 @@ class JointNamesStore:
             self._refresh()
             out = []
             for species, key in sorted(self.by_species.items(), key=lambda item: item[0].lower()):
-                texts = self._embedding_texts(key)
-                out.append({
-                    "species": species,
-                    "joints": len(self.cond[key]["joints_names"]),
-                    "blank": sum(1 for text in texts if not text),
-                })
+                out.append({"species": species, "joints": len(self.cond[key]["joints_names"])})
             return out
 
     def tpose_bvh(self, species):
@@ -962,8 +957,8 @@ class JointNamesStore:
             self._refresh()
             return self._skeleton_payload(species)
 
-    def _species_dir(self, species):
-        """The species' source folder under the dataset's raw root, relative to Anytop, or None."""
+    def _species_path(self, species):
+        """The species' source folder under the dataset's raw root, or None."""
         raw = self.ds.get("raw")
         if raw is None or not raw.is_dir():
             return None
@@ -971,8 +966,24 @@ class JointNamesStore:
         if not found.is_dir():
             folded = species.casefold()
             found = next((d for d in raw.iterdir() if d.is_dir() and d.name.casefold() == folded), None)
-            if found is None:
+        return found
+
+    def mesh_glb(self, species):
+        """The species' raw T-pose GLB (skinned mesh), or None without one."""
+        with self.lock:
+            self._refresh()
+            self._entry(species)
+            folder = self._species_path(species)
+            if folder is None:
                 return None
+            tposes = sorted(p for p in folder.glob("*.glb") if "tpose" in p.name.casefold())
+            return tposes[0].read_bytes() if tposes else None
+
+    def _species_dir(self, species):
+        """The species' source folder under the dataset's raw root, relative to Anytop, or None."""
+        found = self._species_path(species)
+        if found is None:
+            return None
         try:
             return found.relative_to(ANYTOP_ROOT).as_posix()
         except ValueError:
@@ -1232,6 +1243,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/joints/tpose.bvh":
                 return self._send(200, store.tpose_bvh(species), "text/plain; charset=utf-8",
                                   {"Cache-Control": "no-store"})
+            if path == "/api/joints/mesh.glb":
+                body = store.mesh_glb(species)
+                if body is None:
+                    return self._send_json(404, {"error": f"no T-pose mesh for {species}"})
+                return self._send(200, body, "model/gltf-binary", {"Cache-Control": "no-store"})
             if path == "/api/joints/skeleton":
                 return self._send_json(200, store.skeleton(species))
             if path == "/api/joints/clips":

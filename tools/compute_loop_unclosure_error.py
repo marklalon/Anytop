@@ -26,12 +26,14 @@ Usage:
     python tools/compute_loop_unclosure_error.py
     python tools/compute_loop_unclosure_error.py --data-root dataset/truebones/zoo_upgrade/clean_processed
     python tools/compute_loop_unclosure_error.py --data-root <root> --object-type Buffalo
+    python tools/compute_loop_unclosure_error.py --filter "Horse,Raptor*,*Bear*"
 
 ``--data-root`` defaults to the truebones zoo dataset
 (``dataset/truebones/zoo/truebones_processed``).
 """
 
 import argparse
+import fnmatch
 import json
 import sys
 from pathlib import Path
@@ -241,6 +243,7 @@ Runtime gap tolerance  = clamp({LOOP_DETECTION_GAP_RATIO} * transition_envelope,
 Root XZ tolerance      = {LOOP_DETECTION_ROOT_XZ_TOLERANCE}  (absolute)
 Transition envelope    = p65 of the step magnitudes in a fixed 5-frame window at each end
 Object-type filter     = {args.object_type or '(none)'}
+Object filter (glob)   = {args.object_filter or '(none)'}
 </pre>
 
 <h2>Summary ({label})</h2>
@@ -328,6 +331,12 @@ def main():
         help="Filter to a specific object type (e.g. Buffalo)"
     )
     parser.add_argument(
+        "--filter", dest="object_filter", type=str, default="",
+        help="Comma/semicolon-separated case-insensitive glob pattern(s) restricting "
+             "which object names are reported (e.g. 'Horse', 'Raptor*', '*Bear*,Cat'). "
+             "Without it every object is reported."
+    )
+    parser.add_argument(
         "--output-dir", type=str, default=None,
         help="Directory for HTML report (default: Anytop/outputs/compute_loop_unclosure_error)"
     )
@@ -349,6 +358,21 @@ def main():
             name: meta for name, meta in all_motions.items()
             if name.startswith(f"{args.object_type}_")
         }
+
+    patterns = [
+        p.strip().lower()
+        for p in args.object_filter.replace(";", ",").split(",") if p.strip()
+    ]
+    if patterns:
+        all_motions = {
+            name: meta for name, meta in all_motions.items()
+            if any(
+                fnmatch.fnmatch(str(meta.get("object_type", "")).lower(), p)
+                for p in patterns
+            )
+        }
+        if not all_motions:
+            print(f"[INFO] --filter '{args.object_filter}' matched no objects.")
 
     summary_label = "motions"
 

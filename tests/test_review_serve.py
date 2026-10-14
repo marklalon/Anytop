@@ -378,7 +378,7 @@ def _joint_store(tmp_path, monkeypatch):
 def test_joint_names_page_lists_species_and_their_embedding_texts(tmp_path, monkeypatch):
     store, entry = _joint_store(tmp_path, monkeypatch)
     [listed] = store.species_list()
-    assert listed == {"species": "Synthetic", "joints": len(entry["joints_names"]), "blank": 0}
+    assert listed == {"species": "Synthetic", "joints": len(entry["joints_names"])}
     shown = store.skeleton("Synthetic")
     joints = {j["name"]: j for j in shown["joints"]}
     assert joints["Head"]["text"] == "Head" and joints["Head"]["side"] == "center"
