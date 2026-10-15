@@ -84,7 +84,6 @@
 {"species": "ORA_Fish", "species_tags": ["Aquatic", "Swimming"]}
 {"species": "ORA_Gargoyle", "species_tags": ["Biped", "Striding"]}
 {"species": "ORA_GhostWorm", "species_tags": ["Drifting", "Hovering"]}
-{"species": "ORA_GlovedHumanoid", "species_tags": ["Biped", "Striding"]}
 {"species": "ORA_Goat", "species_tags": ["Quadruped", "Trotting"]}
 {"species": "ORA_GrappleGuardian", "species_tags": ["Biped", "Trotting"]}
 {"species": "ORA_Gumiho", "species_tags": ["Quadruped", "Galloping"]}

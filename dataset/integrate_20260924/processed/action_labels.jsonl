@@ -246,14 +246,14 @@
 {"clip": "Knight_GerryFinn_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "Knight_GerryFinn_DoubleJump", "action_group": "locomotion", "action_label": "roll, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_GerryFinn_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "Knight_GerryFinn_Jump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Knight_GerryFinn_Jump", "action_group": "locomotion", "action_label": "run, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_GerryFinn_Landjet", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_GerryFinn_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Airjet", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "Knight_Lux_DoubleJump", "action_group": "locomotion", "action_label": "roll, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "Knight_Lux_Jump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Knight_Lux_Jump", "action_group": "locomotion", "action_label": "run, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Parry", "action_group": "locomotion", "action_label": "run, attack", "is_loop": true, "reviewed": true}
 {"clip": "Knight_Lux_Prepare", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
 {"clip": "Knight_Lux_Respawn", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
@@ -263,7 +263,7 @@
 {"clip": "Knight_MeiSha_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "Knight_MeiSha_DoubleJump", "action_group": "locomotion", "action_label": "roll, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_MeiSha_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "Knight_MeiSha_Jump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Knight_MeiSha_Jump", "action_group": "locomotion", "action_label": "run, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "Knight_MeiSha_Longjuanfeng", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
 {"clip": "Knight_MeiSha_Prepare", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
 {"clip": "Knight_MeiSha_Respawn", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
@@ -502,7 +502,6 @@
 {"clip": "ORA_Fish_Turn", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "ORA_Gargoyle_Crouch", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "kneel"}
 {"clip": "ORA_GhostWorm_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "ORA_GlovedHumanoid_Jump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
 {"clip": "ORA_Goat_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
 {"clip": "ORA_Goat_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "ORA_GrappleGuardian_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
@@ -785,7 +784,7 @@
 {"clip": "PP_Dolphin_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "PP_Dolphin_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "PP_Dolphin_Idle2", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "PP_Dolphin_SwimJump", "action_group": "locomotion", "action_label": "swim, jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "PP_Dolphin_SwimJump", "action_group": "locomotion", "action_label": "swim, jump", "is_loop": true, "reviewed": true}
 {"clip": "PP_Dolphin_Swimming", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
 {"clip": "PP_Dove_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "PP_Dove_Death", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}

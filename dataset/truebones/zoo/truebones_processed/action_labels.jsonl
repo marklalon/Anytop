@@ -357,7 +357,6 @@
 {"clip": "FireAnt_AntFeel", "action_group": "stationary", "action_label": "idle, sniff", "is_loop": true, "reviewed": true}
 {"clip": "FireAnt_AntForwardMarch", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "FireAnt_AntIdle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "FireAnt_AntJump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": false, "reviewed": true}
 {"clip": "FireAnt_AntLeft", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
 {"clip": "FireAnt_AntRight", "action_group": "locomotion", "action_label": "walk, right", "is_loop": true, "reviewed": true}
 {"clip": "FireAnt_AntRipFlesh2", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
@@ -463,7 +462,7 @@
 {"clip": "Horse_Rearing", "action_group": "stationary", "action_label": "idle, rear", "is_loop": false, "reviewed": true}
 {"clip": "Horse_Restless3", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Horse_Restless", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
-{"clip": "Horse_RunJump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": false, "reviewed": true}
+{"clip": "Horse_RunJump", "action_group": "locomotion", "action_label": "run, jump, forward", "is_loop": false, "reviewed": true}
 {"clip": "Horse_RunLoop", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Horse_RunToStop", "action_group": "transition", "action_label": "stop", "is_loop": false, "reviewed": true}
 {"clip": "Horse_SlowIdle", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
@@ -776,7 +775,6 @@
 {"clip": "Scorpion-2_OnBackDying", "action_group": "stationary", "action_label": "hurt, flopping", "is_loop": false, "reviewed": true}
 {"clip": "Scorpion-2_PissedFangs", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Scorpion-2_RisingWalk", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
-{"clip": "Scorpion-2_RunAttack", "action_group": "locomotion", "action_label": "run, jump, forward", "is_loop": false, "reviewed": true}
 {"clip": "Scorpion-2_RunToAttrack", "action_group": "transition", "action_label": "stop", "is_loop": false, "reviewed": true}
 {"clip": "Scorpion-2_SettleBack", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
 {"clip": "Scorpion-2_SlideBack", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
