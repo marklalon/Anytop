@@ -20,6 +20,7 @@
     --row-sel: #28405e;
     --view-bg: #202020;
     --grid: #3a3a3a;
+    --grid-axis: #555555;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -577,12 +578,7 @@ function buildGrids(group) {
   for (const g of [floorGrid, ...Object.values(wallGrids)]) if (g) { group.remove(g); g.dispose(); }
   const { extent, center } = skel.view;
   const cell = extent / 8, cells = 100;   // room for a few root-motion loops
-  const make = () => {
-    const g = new THREE.GridHelper(cell * cells, cells, cssVar('--grid'), cssVar('--grid'));
-    g.material.transparent = true;
-    g.material.opacity = .6;
-    return g;
-  };
+  const make = () => new THREE.GridHelper(cell * cells, cells, cssVar('--grid-axis'), cssVar('--grid'));
   floorGrid = make();
   // front looks down -Z: XY plane behind the skeleton; side looks down -X: ZY plane
   wallGrids = { front: make().rotateX(Math.PI / 2), side: make().rotateZ(Math.PI / 2) };
