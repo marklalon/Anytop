@@ -800,7 +800,7 @@ def process_new_skeleton_args():
                             "When omitted, the tpos-path file stem minus trailing pose "
                             "tokens (e.g. 'Pet_Kiki_A_Tpose.glb' -> 'Pet_Kiki_A').")
     group.add_argument("--crop-enabled", action='store_true', default=False,
-                       help="Enable automatic skeleton cropping to MAX_JOINTS=100. "
+                       help="Enable automatic skeleton cropping to MAX_JOINTS=128. "
                             "Off by default because inference has no joint cap; "
                             "enable for training-compatible preprocessing.")
     group.add_argument("--species-tags", required=True, type=str,

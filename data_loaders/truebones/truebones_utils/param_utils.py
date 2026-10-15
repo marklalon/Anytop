@@ -117,22 +117,9 @@ ROOT_Y_SOFT_CLAMP_KNEE = -0.1
 ROOT_Y_MIN_HEIGHT = -0.3
 
 
-MAX_JOINTS=100
-# Joint-count ceilings the training loader pads batches to (the last one is
-# always MAX_JOINTS). A batch holds rigs of one bucket only and is padded to
-# that bucket's ceiling, so the run sees one static shape (one torch.compile
-# graph) per bucket instead of every batch padded to MAX_JOINTS. Chosen from
-# the corpus: median 38 joints, 68% of clips fit in 48, 92% in 64, 8% need
-# 65-100. Step time is ~linear in the padded width (training config, compile,
-# fp16, batch 16: 72 ms at 48, 102 at 64, 164 at 100), so this split runs an
-# epoch ~1.9x faster than padding everything to 100 (2 buckets (64, 100): 1.5x;
-# a 4th bucket at 32 adds only ~7% and drops more trailing clips). Keep
-# ceilings at multiples of 16 -- 56 measured well off the line. Loader-only;
-# the model, losses and checkpoints do not depend on the padded width (outputs
-# on the real joints are identical either way), so it can change between runs
-# without a retrain; each ceiling costs one cold torch.compile (~75 s) at
-# start. () disables bucketing.
-JOINT_BUCKETS = (48, 64, MAX_JOINTS)
+MAX_JOINTS=128
+# Training batch padding widths; the final bucket must match MAX_JOINTS.
+JOINT_BUCKETS = (48, 72, MAX_JOINTS)
 # Source-frame budget as a multiple of the target window n: clips longer than
 # n * MAX_SOURCE_FRAMES_MULT are cropped (random window) and resampled to n,
 # pinning their resample_speed condition to this value. Inference uses the same

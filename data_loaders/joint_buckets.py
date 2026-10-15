@@ -1,9 +1,9 @@
 """Joint-count bucketing for the training loader.
 
 Every batch is padded to one joint count. Padding all of them to the global
-``MAX_JOINTS`` (100) wastes most of the decoder: the corpus median is ~38
-joints and 92% of clips fit in 64, yet spatial attention runs over 100x100
-slots per frame and every per-token layer over 100 slots. Bucketing draws the
+``MAX_JOINTS`` (128) wastes most of the decoder: the corpus median is ~38
+joints and 92% of clips fit in 64, yet spatial attention runs over 128x128
+slots per frame and every per-token layer over 128 slots. Bucketing draws the
 epoch's indices from the ordinary sampler, groups them by joint count and pads
 each batch only to its bucket's ceiling, so the loader emits a small fixed set
 of shapes -- one static ``torch.compile`` graph per bucket -- instead of one

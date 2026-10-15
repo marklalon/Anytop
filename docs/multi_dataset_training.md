@@ -154,7 +154,7 @@ python tools/merge_dataset_cond.py \
    - `feature_space` / `physical_feature_space` 一致
    - `joints_names_embs_meta` 的 `schema_version` / `t5_name` / `embedding_dim` 一致
    - `species_emb_meta.t5_name` 一致
-   - `len(parents) <= MAX_JOINTS`（**zoo 的 Dragon 已顶到 100 上限**，新数据集越界必须立刻报错）
+   - `len(parents) <= MAX_JOINTS`（新数据集超过当前 128 上限必须立刻报错）
    - 该源 `species_tags.jsonl` 覆盖其 cond 中全部物种
 3. re-key 成 `<namespace>/<species>`，写入 §3 的新字段（`species_tags` 从该源 `species_tags.jsonl` 读入烘焙）
 4. 冲突检测：`namespace` 重复 → 报错；规范键重复 → 报错（正常不会发生）
