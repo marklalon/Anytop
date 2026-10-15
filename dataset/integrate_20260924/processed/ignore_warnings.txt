@@ -4,6 +4,8 @@
 #prop-socket joint(s) for Pet_Proce
 #prop-socket joint(s) for Pet_Yulia
 #skeleton exceeds MAX_JOINTS (*) for Knight_Barbarianwarrior
+#skeleton exceeds MAX_JOINTS (*) for DNL_Devil
+#skeleton exceeds MAX_JOINTS (*) for DNL_Voidray
 #BVH end-site joint(s) for ORA_ReadyPlayerMe
 Pet_Miho_Idle02
 #BVH end-site joint(s) for ORA_BatToon

@@ -167,7 +167,7 @@
 {"clip": "Cat_StretchYawnIdle_slice1", "action_group": "stationary", "action_label": "idle, yawn", "is_loop": false, "reviewed": true}
 {"clip": "Cat_StretchYawnIdle_slice2", "action_group": "stationary", "action_label": "idle, sit", "is_loop": false, "reviewed": true}
 {"clip": "Cat_IdlePurr_slice1", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
-{"clip": "Cat_IdlePurr_slice2", "action_group": "stationary", "action_label": "idle, rest", "is_loop": false, "reviewed": true}
+{"clip": "Cat_IdlePurr_slice2", "action_group": "stationary", "action_label": "idle, crouch", "is_loop": false, "reviewed": true}
 {"clip": "Cat_IdlePurr_slice3", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "Cat_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Centipede_Attack1", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}

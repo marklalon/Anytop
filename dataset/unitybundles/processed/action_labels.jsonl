@@ -1772,7 +1772,7 @@
 {"clip": "RTH_Hero_Attack04Spinning", "action_group": "stationary", "action_label": "attack, spin", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_BowAndArrowAttack01", "action_group": "stationary", "action_label": "attack, bow", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_CarryMoveIdle", "action_group": "stationary", "action_label": "idle, carry", "is_loop": true, "reviewed": true}
-{"clip": "RTH_Hero_CarryStart", "action_group": "transition", "action_label": "pickup", "is_loop": false, "reviewed": true}
+{"clip": "RTH_Hero_CarryStart", "action_group": "stationary", "action_label": "pickup", "is_loop": false, "reviewed": true}
 {"clip": "RTH_Hero_Challenging", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_ClimbDown", "action_group": "locomotion", "action_label": "climb, down", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_ClimbUp", "action_group": "locomotion", "action_label": "climb, up", "is_loop": true, "reviewed": true}
