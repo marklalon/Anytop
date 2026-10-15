@@ -799,9 +799,11 @@ def extract_motion_features_from_aligned_anims(
         # nearly all of them, and ROOT_Y_MIN_HEIGHT becomes a bound on what
         # actually ships. ``export_anim`` is the same anim process_anim used to
         # produce, so the band's boundaries are unchanged.
-        object_subset, body_length = vertical_band_inputs(export_anim, object_type)
+        object_subset, body_length, standing_height = vertical_band_inputs(
+            export_anim, object_type, feature_translation_root_index,
+        )
         target_root_y, _vertical_clamped = clamp_vertical_height_track(
-            target_root_y, object_subset, body_length,
+            target_root_y, object_subset, body_length, standing_height,
         )
 
     motion_anim = new_anim

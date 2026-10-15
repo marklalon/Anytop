@@ -400,3 +400,53 @@ def test_clearing_the_knee_by_a_hair_barely_moves_the_clip():
 
     assert root_y.max() == pytest.approx(min_h + 1e-9, abs=1e-14)
 
+
+
+def _long_legged_root_y(values, leg=1.0, neck=0.5):
+    """``Root(0)`` with a leg hanging ``leg`` below it and a neck ``neck`` above.
+
+    The rest pose stands the root ``leg`` above its lowest joint, higher than
+    ``VERTICAL_CLAMP_MIN_RATIO`` of the ``leg + neck`` span -- a flamingo's stance.
+    """
+    frames = len(values)
+    parents = np.array([-1, 0, 0], dtype=np.int32)
+    offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, float(neck), 0.0],
+            [0.0, -float(leg), 0.0],
+        ],
+        dtype=np.float64,
+    )
+    positions = np.repeat(offsets[None, :, :], frames, axis=0)
+    positions[:, 0, 1] = np.asarray(values, dtype=np.float64)
+    return Animation(
+        Quaternions.id((frames, len(parents))),
+        positions,
+        Quaternions.id(len(parents)),
+        offsets,
+        parents,
+    )
+
+
+def test_the_band_never_compresses_a_long_legged_stance():
+    """A stance above ``min_ratio`` of the span is not flight; its feet stay on the floor."""
+    leg, span = 1.0, 1.5
+    assert leg > span * VERTICAL_CLAMP_MIN_RATIO
+    anim = _long_legged_root_y([leg, leg - 0.05, leg], leg=leg)
+
+    assert clamp_vertical_trajectory(anim, "Pteranodon") is anim
+
+
+def test_the_band_lifted_to_the_stance_keeps_its_width():
+    leg, span = 1.0, 1.5
+    knee, asymptote = leg, leg + span * (VERTICAL_CLAMP_MAX_RATIO - VERTICAL_CLAMP_MIN_RATIO)
+    heights = np.array([leg, leg + 0.2, leg + 2.0])
+    anim = _long_legged_root_y(heights, leg=leg)
+
+    root_y = positions_global(clamp_vertical_trajectory(anim, "Pteranodon"))[:, 0, 1]
+
+    assert root_y[0] == pytest.approx(knee, abs=1e-12)
+    scale = _expected_band_scale(heights.max(), knee, asymptote)
+    np.testing.assert_allclose(root_y[1:], knee + (heights[1:] - knee) * scale, atol=1e-12)
+    assert root_y.max() < asymptote

@@ -393,6 +393,18 @@ def _get_reference_body_length(anim):
     return max_joint_span(positions_global(rest_pose_animation(anim))[0])
 
 
+def _get_reference_standing_height(anim, translation_root_index):
+    """Height of the translation root above the rest pose's lowest joint.
+
+    The root height the species stands at, so the vertical band can tell flight
+    from a tall stance. Read off the rest pose like the body length, which keeps
+    it a species property. The rest pose is FK'd from ``orients`` and so skips
+    ``orientation_quat``; that rotation is a pure yaw, which leaves heights alone.
+    """
+    rest_positions = positions_global(rest_pose_animation(anim))[0]
+    return max(float(rest_positions[int(translation_root_index), 1] - rest_positions[:, 1].min()), 0.0)
+
+
 def _excursion_scale(extent, min_h, max_h):
     """The factor an excursion reaching ``extent`` is scaled by.
 
@@ -481,11 +493,11 @@ def _soft_clamp_min_height(values, knee, min_height):
 _VERTICAL_BAND_SUBSETS = ('winged', 'aquatic')
 
 
-def vertical_band_inputs(anim, object_type):
-    """Return ``(object_subset, body_length)`` for the vertical clamp.
+def vertical_band_inputs(anim, object_type, translation_root_index):
+    """Return ``(object_subset, body_length, standing_height)`` for the vertical clamp.
 
-    ``body_length`` is ``None`` for the subsets whose band does not need it, so
-    the rest-pose FK behind :func:`_get_reference_body_length` is only paid by the
+    ``body_length`` and ``standing_height`` are ``None`` for the subsets whose
+    band does not need them, so the rest-pose FK behind them is only paid by the
     species that use it -- the same laziness the single-function version had.
 
     Split out so the two callers agree by construction: preprocessing reads these
@@ -495,17 +507,33 @@ def vertical_band_inputs(anim, object_type):
     # object_subset_for accepts a bare species name or a canonical
     # '<namespace>/<species>' key, unlike a raw subset_members membership test.
     object_subset = dataset_tags().object_subset_for(object_type)
-    body_length = (
-        _get_reference_body_length(anim)
-        if object_subset in _VERTICAL_BAND_SUBSETS else None
+    if object_subset not in _VERTICAL_BAND_SUBSETS:
+        return object_subset, None, None
+    return (
+        object_subset,
+        _get_reference_body_length(anim),
+        _get_reference_standing_height(anim, translation_root_index),
     )
-    return object_subset, body_length
+
+
+def _positive_band(body_length, standing_height, min_ratio, max_ratio):
+    """``(knee, asymptote)`` of the upward band.
+
+    The band bounds flight, so its knee never sits below the height the species
+    stands at: a long-legged bird's pelvis rides above ``min_ratio`` of its span
+    while it walks, and a knee under that compressed the stance itself and sank
+    the feet into the floor. Lifting the knee keeps the band's width, so the
+    excursion above the stance is bounded exactly as before.
+    """
+    knee = max(body_length * min_ratio, standing_height or 0.0)
+    return knee, knee + body_length * (max_ratio - min_ratio)
 
 
 def clamp_vertical_height_track(
     world_y,
     object_subset,
     body_length,
+    standing_height=None,
     min_ratio=VERTICAL_CLAMP_MIN_RATIO,
     max_ratio=VERTICAL_CLAMP_MAX_RATIO,
     root_y_min_height=ROOT_Y_MIN_HEIGHT,
@@ -524,25 +552,27 @@ def clamp_vertical_height_track(
     nearly every one of them, and the root-Y lower bound -- which runs last --
     becomes a bound on what actually ships instead of on an intermediate.
 
-    ``object_subset`` and ``body_length`` come from :func:`vertical_band_inputs`.
+    ``object_subset``, ``body_length`` and ``standing_height`` come from
+    :func:`vertical_band_inputs`.
     """
     world_y = np.asarray(world_y, dtype=np.float64).reshape(-1)
     clamped_world_y = world_y.copy()
     changed = False
     if object_subset == 'winged':
-        min_h = body_length * min_ratio
-        max_h = body_length * max_ratio
+        min_h, max_h = _positive_band(body_length, standing_height, min_ratio, max_ratio)
         clamped_world_y, changed = _compress_positive_excursion(clamped_world_y, min_h, max_h)
     elif object_subset == 'aquatic':
-        positive_min_h = body_length * min_ratio
-        positive_max_h = body_length * max_ratio
+        positive_min_h, positive_max_h = _positive_band(
+            body_length, standing_height, min_ratio, max_ratio,
+        )
         clamped_world_y, changed_pos = _compress_positive_excursion(
             clamped_world_y,
             positive_min_h,
             positive_max_h,
         )
-        negative_min_h = -positive_min_h
-        negative_max_h = -positive_max_h
+        # Swim depth is measured from the floor, so the stance never moves it.
+        negative_min_h = -body_length * min_ratio
+        negative_max_h = -body_length * max_ratio
         clamped_world_y, changed_neg = _compress_below_negative_band(
             clamped_world_y,
             negative_min_h,
@@ -572,10 +602,11 @@ def clamp_vertical_trajectory(
     """Constrain the processed translation-root vertical trajectory.
 
     What this compresses is the root's ABSOLUTE height, not its excursion: once
-    the peak passes ``min_ratio`` of the body span, everything above ``min_ratio``
-    is scaled by one factor that sends the peak toward ``max_ratio`` without ever
-    reaching it. The band is calibrated on flight, where an unbounded climb is the
-    thing worth bounding.
+    the peak passes the knee -- ``min_ratio`` of the body span, or the species'
+    standing height when that is higher -- everything above the knee is scaled
+    by one factor that sends the peak toward the asymptote ``max_ratio -
+    min_ratio`` spans above the knee, without ever reaching it. The band is
+    calibrated on flight, where an unbounded climb is the thing worth bounding.
 
     ``drifting`` deliberately does NOT take this branch, though it too leaves the
     ground. A drifting species holds a near-constant hover height that is a trait
@@ -610,11 +641,14 @@ def clamp_vertical_trajectory(
     global_pos = positions_global(processed_anim)
     world_y = global_pos[:, trans_root, 1]
 
-    object_subset, body_length = vertical_band_inputs(processed_anim, object_type)
+    object_subset, body_length, standing_height = vertical_band_inputs(
+        processed_anim, object_type, trans_root,
+    )
     clamped_world_y, changed = clamp_vertical_height_track(
         world_y,
         object_subset,
         body_length,
+        standing_height,
         min_ratio=min_ratio,
         max_ratio=max_ratio,
         root_y_min_height=root_y_min_height,
