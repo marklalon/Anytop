@@ -416,7 +416,7 @@
 {"clip": "Goat_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Goat_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Hamster_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "Hamster_RollAttack", "action_group": "stationary", "action_label": "attack, roll, charge", "is_loop": true, "reviewed": true}
+{"clip": "Hamster_RollAttack", "action_group": "stationary", "action_label": "attack, roll", "is_loop": true, "reviewed": true}
 {"clip": "Hamster_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "Hamster_Sniff", "action_group": "stationary", "action_label": "idle, sniff", "is_loop": true, "reviewed": true}
 {"clip": "Hamster_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
@@ -746,7 +746,7 @@
 {"clip": "SabreToothTiger_Startwalk", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "SabreToothTiger_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
 {"clip": "SabreToothTiger_Trot", "action_group": "locomotion", "action_label": "walk, forward, trot", "is_loop": true, "reviewed": true}
-{"clip": "SandMouse_Attack2", "action_group": "stationary", "action_label": "attack, roll, charge", "is_loop": true, "reviewed": true}
+{"clip": "SandMouse_Attack2", "action_group": "stationary", "action_label": "attack, roll", "is_loop": true, "reviewed": true}
 {"clip": "SandMouse_Attack", "action_group": "stationary", "action_label": "attack, jump, swat", "is_loop": true, "reviewed": true}
 {"clip": "SandMouse_Die2", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
 {"clip": "SandMouse_Die3", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
@@ -909,7 +909,7 @@
 {"clip": "Tukan_Sqwak", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "Tukan_WingScratch", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true}
 {"clip": "Turtle_Attack2", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": true, "reviewed": true}
-{"clip": "Turtle_Attack3", "action_group": "stationary", "action_label": "attack, roll, charge", "is_loop": false, "reviewed": true}
+{"clip": "Turtle_Attack3", "action_group": "stationary", "action_label": "attack, roll", "is_loop": false, "reviewed": true}
 {"clip": "Turtle_Attack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "Turtle_Hide", "action_group": "stationary", "action_label": "idle, shield", "is_loop": true, "reviewed": true}
 {"clip": "Turtle_Idle2", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}

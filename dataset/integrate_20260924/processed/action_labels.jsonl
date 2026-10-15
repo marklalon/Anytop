@@ -362,7 +362,17 @@
 {"clip": "LOL_Nasus_Idle1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, taunt"}
 {"clip": "LOL_Nasus_Run1", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
 {"clip": "LOL_Nasus_Spell1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, smash"}
+{"clip": "MVN_Puppet_SwimBreaststroke", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
+{"clip": "MVN_Puppet_SwimBreaststrokeDash", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward, fast"}
+{"clip": "MVN_Puppet_SwimBreaststrokeUnderwater", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
+{"clip": "MVN_Puppet_SwimBreaststrokeUnderwater2", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
+{"clip": "MVN_Puppet_SwimCrawl", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
+{"clip": "MVN_Puppet_SwimCrawlLeftBreathing", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
+{"clip": "MVN_Puppet_SwimCrawlRightBreathing", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
+{"clip": "MVN_Puppet_SwimIdle", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, idle"}
 {"clip": "MXO_Human_Backflip", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, jump, backward"}
+{"clip": "MXO_Human_BackwardJump", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "jump, backward, gun"}
+{"clip": "MXO_Human_BigJump", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "roll, jump, forward"}
 {"clip": "MXO_Human_Boxing", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, punch"}
 {"clip": "MXO_Human_BreathingIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "MXO_Human_ClimbingARope", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "climb, up"}
@@ -383,7 +393,20 @@
 {"clip": "MXO_Human_GettingUp", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup, crawl"}
 {"clip": "MXO_Human_IdleCrouchingAiming", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, crouch, aim"}
 {"clip": "MXO_Human_JoggingWithBox", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, carry"}
+{"clip": "MXO_Human_Jump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
+{"clip": "MXO_Human_JumpAttack", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, jump"}
+{"clip": "MXO_Human_JumpBackward", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, backward"}
+{"clip": "MXO_Human_JumpDownForwardRoll", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "roll, forward"}
+{"clip": "MXO_Human_JumpForward", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, forward"}
+{"clip": "MXO_Human_JumpForwardOfficial", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, forward, gun"}
+{"clip": "MXO_Human_JumpOver", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
+{"clip": "MXO_Human_JumpSideToSideLeft", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "jump, left"}
+{"clip": "MXO_Human_JumpSideToSideRight", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "jump, right"}
+{"clip": "MXO_Human_Leap", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
+{"clip": "MXO_Human_LeftStrafeJump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, left, gun"}
+{"clip": "MXO_Human_LeftStrafingJump", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "walk, jump, left, gun"}
 {"clip": "MXO_Human_LowCrawl", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "crawl, forward"}
+{"clip": "MXO_Human_PistolJump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up, gun"}
 {"clip": "MXO_Human_PistolStandToKneel", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "kneel, gun"}
 {"clip": "MXO_Human_ProneFiringRifle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, crawl, gun"}
 {"clip": "MXO_Human_ProneReloading", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, crawl, reload"}
@@ -391,22 +414,32 @@
 {"clip": "MXO_Human_Reload1", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "run, reload"}
 {"clip": "MXO_Human_Reloading", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, reload"}
 {"clip": "MXO_Human_RifleBackwardRunToStop", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "run, backward, gun"}
+{"clip": "MXO_Human_RifleJumpInPlace", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up, gun"}
 {"clip": "MXO_Human_RifleKneelToProne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "laydown, gun"}
 {"clip": "MXO_Human_RifleProneToKneel", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup, crouch, gun"}
 {"clip": "MXO_Human_RiflePutAway", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "sheathe, gun"}
+{"clip": "MXO_Human_RollForward", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, forward"}
 {"clip": "MXO_Human_RollLeft", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "roll, crawl, left, gun"}
 {"clip": "MXO_Human_RoundhouseKick", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, kick"}
 {"clip": "MXO_Human_RunForward", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "MXO_Human_RunningJump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, forward"}
 {"clip": "MXO_Human_SheathingSword", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "sheathe"}
 {"clip": "MXO_Human_ShootingArrow", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, bow"}
 {"clip": "MXO_Human_SleepingIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest"}
 {"clip": "MXO_Human_Snatch", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "pickup"}
 {"clip": "MXO_Human_Stabbing", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, stab"}
 {"clip": "MXO_Human_StableSwordInwardSlash", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, slash"}
+{"clip": "MXO_Human_StandingHighJump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
+{"clip": "MXO_Human_StandingJump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
 {"clip": "MXO_Human_StandToSit", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "sitdown"}
+{"clip": "MXO_Human_StartledJumpBack", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, backward"}
+{"clip": "MXO_Human_SwimIdle", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, idle"}
+{"clip": "MXO_Human_SwimIdle2", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, idle"}
 {"clip": "MXO_Human_Swimming", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
 {"clip": "MXO_Human_SwordAndShieldCrouchBlock1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt, crouch, block"}
 {"clip": "MXO_Human_TwoHandSpellCasting", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
+{"clip": "MXO_Human_UnarmedJump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
+{"clip": "MXO_Human_UnarmedRunningJump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, forward"}
 {"clip": "MXO_Human_WalkBackward", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, backward"}
 {"clip": "MXO_Human_WalkForward", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward, weapon"}
 {"clip": "MXO_Human_WalkStrafeLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, left"}
