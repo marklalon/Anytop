@@ -1280,8 +1280,8 @@
 {"clip": "DNL_Leonopteryx_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hover"}
 {"clip": "DNL_Leonopteryx_FlyLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, left"}
 {"clip": "DNL_Leonopteryx_FlyRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, right"}
-{"clip": "DNL_Leonopteryx_FlyRollLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, roll, left"}
-{"clip": "DNL_Leonopteryx_FlyRollRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, roll, right"}
+{"clip": "DNL_Leonopteryx_FlyRollLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, fly, left"}
+{"clip": "DNL_Leonopteryx_FlyRollRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, fly, right"}
 {"clip": "DNL_Leonopteryx_GroundAttack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
 {"clip": "DNL_Leonopteryx_GroundHurtLeft", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "DNL_Leonopteryx_GroundHurtRight", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}

@@ -13,4 +13,5 @@ Pet_Miho_Idle02
 #BVH end-site joint(s) for ORA_PinkTurtle
 #BVH end-site joint(s) for ORA_Seagull
 #prop-socket joint(s) for LOL_Akali
+#prop-socket joint(s) for DNL_Centaur
 #BVH end-site joint(s) for LOL_Jinx
