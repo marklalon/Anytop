@@ -352,10 +352,12 @@ Loop 不是单一布尔 token，而是模型、数据和损失共同组成的一
 真实 loop clip 会做随机 circular roll 和随机 tile，然后统一 resample 到内部窗口。tile count
 和 phase offset 只用于诊断，不直接喂给模型。
 roll 和 tile 只作用于**无固定相位**的 loop：label 的每个 head 都在 `PHASE_FREE_LOOP_HEADS`
-（步态、振翅、呼吸、保持姿态）里。其余 loop 是**有固定相位**的（attack、roar、hurt、jump 这类
-从备战姿态出发又回到备战姿态的事件）：仍然闭合、仍用 circular table 和 wrap 损失，但 offset
-固定为 0、tile 固定为 1——窗口第 0 帧是备战姿态、窗口里只有一次事件，这正是推理端对这类动作
-开 `--loop` 时要生成的东西。白名单外的 head 默认按有固定相位处理。
+（步态、振翅、呼吸、保持姿态）里，且每个 modifier 都在 `PHASE_FREE_LOOP_MODIFIERS`（步态/速度、
+持续的姿态如 sit/sleep、手持物）里。其余 loop 是**有固定相位**的（attack、roar、hurt、jump 这类
+从备战姿态出发又回到备战姿态的事件，以及叠在 idle/hover 上的 look、eat、shake、yawn 这类事件
+modifier）：仍然闭合、仍用 circular table 和 wrap 损失，但 offset 固定为 0、tile 固定为 1——窗口
+第 0 帧是备战姿态、窗口里只有一次事件，这正是推理端对这类动作开 `--loop` 时要生成的东西。
+两张白名单外的词默认按有固定相位处理。`--loop auto` 用同一条规则。
 k 份 tile 经周期重采样后是 k 份逐位相同的拷贝（周期 T/k 帧），是 loop 任务里容易的一侧；
 `--loop_tile_single_prob` 给单周期窗口（推理端 loop 条件为真、又用自动长度时所在的 regime）的概率设一个下限，
 其余质量在 2..max 上仍均匀，默认 0.5；0 即原来的均匀抽签。

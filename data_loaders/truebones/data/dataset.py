@@ -1502,8 +1502,9 @@ class MotionDataset(data.Dataset):
         # they preserve per-frame feature semantics (see _tile_loop_motion and
         # _circular_roll_motion, which they are equivalent to) -- and are kept
         # here as the frame shift and window length only.
-        # A phase-anchored loop (loop_is_phase_free: an attack, a roar -- an
-        # event that leaves a ready pose and returns to it) keeps frame 0 at
+        # A phase-anchored loop (loop_is_phase_free: an attack, a roar, an
+        # idle with a glance or a bite of food -- an event that leaves a ready
+        # pose and returns to it) keeps frame 0 at
         # the ready pose and one event per window: under the circular time
         # table its phase 0 IS the wind-up, and on the loop_uncond path it
         # stays an ordinary one-shot clip instead of a strike at a random

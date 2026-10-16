@@ -21,6 +21,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     head_words_in,
     loop_is_phase_free,
     parse_action_label,
+    phase_anchoring_words,
 )
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
 from utils.clip_length_prior import (
@@ -115,12 +116,13 @@ def resolve_loop_condition(
     loop when the clip closes (:func:`reference_loop_verdict`). The reference
     sets the window, so the label's habit is beside the point here.
 
-    ``'auto'`` without one follows the ``--action_label`` head words: a
-    loop when every head is phase-free (:func:`loop_is_phase_free` -- a gait
-    cycle, a wingbeat, an idle), the same rule that decides which loop clips
-    the loader rolls and tiles. A phase-anchored head (jump, attack, roar ...)
-    is one event in an open window. Without a label there is nothing to key
-    the verdict on, so ``'off'``.
+    ``'auto'`` without one follows the ``--action_label``: a loop when the
+    label is phase-free (:func:`loop_is_phase_free` -- a gait cycle, a
+    wingbeat, an idle, a held posture), the same rule that decides which loop
+    clips the loader rolls and tiles. A phase-anchored head (jump, attack,
+    roar ...) or event modifier (look, eat, shake ...) is one event in an open
+    window. Without a label there is nothing to key the verdict on, so
+    ``'off'``.
     """
     if isinstance(loop_mode, bool):
         return loop_mode
@@ -143,9 +145,12 @@ def resolve_loop_condition(
     label = action_condition['action_label']
     is_loop = loop_is_phase_free(label)
     if verbose:
-        heads = ', '.join(head_words_in(parse_action_label(label))) or 'none'
-        kind = 'phase-free' if is_loop else 'phase-anchored'
-        print(f'  loop (auto) -> {"on" if is_loop else "off"} (head word(s) {heads}: {kind})')
+        if is_loop:
+            heads = ', '.join(head_words_in(parse_action_label(label)))
+            reason = f'head word(s) {heads}: phase-free'
+        else:
+            reason = f'phase-anchored by {", ".join(phase_anchoring_words(label)) or "an empty label"}'
+        print(f'  loop (auto) -> {"on" if is_loop else "off"} ({reason})')
     return is_loop
 
 

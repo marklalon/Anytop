@@ -34,7 +34,7 @@ from data_loaders.truebones.data.dataset import (
     _tile_loop_motion,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.truebones_utils.motion_labels import loop_is_phase_free
+from data_loaders.truebones.truebones_utils.motion_labels import loop_is_phase_free, phase_anchoring_words
 from data_loaders.truebones.truebones_utils.param_utils import MAX_FIT_SPEEDUP, MAX_SOURCE_FRAMES_MULT
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
 from data_loaders.truebones.truebones_utils.canonical_features import (
@@ -348,6 +348,21 @@ def test_loop_is_phase_free_needs_every_head_phase_free() -> None:
     assert not loop_is_phase_free("attack, hover")
     assert not loop_is_phase_free("")
     assert not loop_is_phase_free(None)
+
+
+def test_event_modifier_anchors_a_phase_free_head() -> None:
+    # Gait, held posture and held object keep the state phase-free.
+    assert loop_is_phase_free("walk, forward, trot")
+    assert loop_is_phase_free("idle, crouch, sleep")
+    assert loop_is_phase_free("idle, sit")
+    assert loop_is_phase_free("run, forward, weapon")
+    # An event layered on the state anchors it.
+    assert not loop_is_phase_free("idle, look")
+    assert not loop_is_phase_free("hover, eat")
+    assert not loop_is_phase_free("idle, scratch, sit")
+    assert phase_anchoring_words("idle, look, crouch") == ["look"]
+    assert phase_anchoring_words("attack, hover, bite") == ["attack", "bite"]
+    assert phase_anchoring_words("walk, left, slow") == []
 
 
 @pytest.mark.parametrize("loop_cond_prob", [1.0, 0.0])

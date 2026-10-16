@@ -616,9 +616,11 @@ def add_sampling_options(parser):
                             "clamped overrides this to 'off': there is no closure for the model to make, and "
                             "a periodic export would resample those clamped ends. "
                             "'off': an open window. 'auto' (default): with a --reference_motion, follow its own "
-                            "loop verdict; else, with --action_label and no reference, 'on' when every head "
-                            "word is phase-free (walk, run, swim, fly, idle ... -- the loader's roll/tile "
-                            "whitelist) and 'off' for an anchored event (jump, attack ...); else 'off'.")
+                            "loop verdict; else, with --action_label and no reference, 'on' when the label "
+                            "is phase-free (heads walk, run, swim, fly, idle ... with only gait / posture / "
+                            "held-object modifiers -- the loader's roll/tile whitelist) and 'off' for an "
+                            "anchored event (heads jump, attack ...; modifiers look, eat, shake ...); "
+                            "else 'off'.")
     group.add_argument("--fullbody_ik", action='store_true',
                        help="Decode the BVH preview with the same full-body IK as restore_glb_from_npy --fullbody-ik: "
                             "rotations are re-solved on the rigid cond skeleton so the position channels are honoured "
