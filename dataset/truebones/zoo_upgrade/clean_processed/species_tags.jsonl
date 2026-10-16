@@ -1,5 +1,5 @@
 {"species": "antilope", "species_tags": ["Quadruped", "Galloping"]}
-{"species": "bat_demon", "species_tags": ["Winged", "Striding"]}
+{"species": "bat_demon", "species_tags": ["Biped", "Striding"]}
 {"species": "Bear", "species_tags": ["Quadruped", "Lumbering"]}
 {"species": "Boar", "species_tags": ["Quadruped", "Galloping"]}
 {"species": "Camel", "species_tags": ["Quadruped", "Lumbering"]}
@@ -18,7 +18,7 @@
 {"species": "Kappa_gorilla", "species_tags": ["Biped", "Crawling"]}
 {"species": "Locust_monster", "species_tags": ["Multiped", "Scuttling"]}
 {"species": "Oscafish", "species_tags": ["Aquatic", "Swimming"]}
-{"species": "Ostrich", "species_tags": ["Winged", "Trotting"]}
+{"species": "Ostrich", "species_tags": ["Winged", "Flapping"]}
 {"species": "pikefish", "species_tags": ["Aquatic", "Swimming"]}
 {"species": "Rabbit", "species_tags": ["Quadruped", "Scurrying"]}
 {"species": "Rabbit2", "species_tags": ["Quadruped", "Scurrying"]}

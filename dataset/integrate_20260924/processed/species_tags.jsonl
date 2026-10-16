@@ -84,7 +84,7 @@
 {"species": "ORA_FemaleHumanoid", "species_tags": ["Biped", "Striding"]}
 {"species": "ORA_Fish", "species_tags": ["Aquatic", "Swimming"]}
 {"species": "ORA_Gargoyle", "species_tags": ["Biped", "Striding"]}
-{"species": "ORA_GhostWorm", "species_tags": ["Drifting", "Hovering"]}
+{"species": "ORA_GhostWorm", "species_tags": ["Serpentine", "Hovering"]}
 {"species": "ORA_Goat", "species_tags": ["Quadruped", "Trotting"]}
 {"species": "ORA_GrappleGuardian", "species_tags": ["Biped", "Trotting"]}
 {"species": "ORA_Gumiho", "species_tags": ["Quadruped", "Galloping"]}
@@ -97,7 +97,7 @@
 {"species": "ORA_Kargoyle", "species_tags": ["Winged", "Flapping"]}
 {"species": "ORA_Larva", "species_tags": ["Serpentine", "Crawling"]}
 {"species": "ORA_Lion2", "species_tags": ["Quadruped", "Galloping"]}
-{"species": "ORA_Lizardman", "species_tags": ["Winged", "Fluttering"]}
+{"species": "ORA_Lizardman", "species_tags": ["Quadruped", "Hovering"]}
 {"species": "ORA_Lostronaut", "species_tags": ["Biped", "Lumbering"]}
 {"species": "ORA_LowPolyHumanoid", "species_tags": ["Biped", "Striding"]}
 {"species": "ORA_MantisMan", "species_tags": ["Biped", "Striding"]}
@@ -148,7 +148,7 @@
 {"species": "ORA_Whale", "species_tags": ["Aquatic", "Swimming"]}
 {"species": "ORA_WingedHumanoid", "species_tags": ["Biped", "Clanking"]}
 {"species": "ORA_WingedLion", "species_tags": ["Quadruped", "Galloping"]}
-{"species": "ORA_WingedRaptor", "species_tags": ["Winged", "Striding"]}
+{"species": "ORA_WingedRaptor", "species_tags": ["Winged", "Flapping"]}
 {"species": "ORA_Woodpecker", "species_tags": ["Winged", "Flapping"]}
 {"species": "ORA_Wyvern", "species_tags": ["Winged", "Flapping"]}
 {"species": "ORA_YellowTang", "species_tags": ["Aquatic", "Swimming"]}

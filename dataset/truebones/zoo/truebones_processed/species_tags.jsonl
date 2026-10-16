@@ -34,8 +34,8 @@
 {"species": "Comodoa", "species_tags": ["Quadruped", "Crawling"]}
 {"species": "Turtle", "species_tags": ["Quadruped", "Crawling"]}
 {"species": "Monkey", "species_tags": ["Biped", "Crawling"]}
-{"species": "Ostrich", "species_tags": ["Winged", "Trotting"]}
-{"species": "Flamingo", "species_tags": ["Winged", "Trotting"]}
+{"species": "Ostrich", "species_tags": ["Winged", "Flapping"]}
+{"species": "Flamingo", "species_tags": ["Winged", "Flapping"]}
 {"species": "Chicken", "species_tags": ["Biped", "Trotting"]}
 {"species": "Raptor", "species_tags": ["Biped", "Trotting"]}
 {"species": "Raptor2", "species_tags": ["Biped", "Trotting"]}
