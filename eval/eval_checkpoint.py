@@ -6,7 +6,7 @@ Checkpoint evaluation harness
 Given a single checkpoint path, run a fixed battery of generation tasks
 (plain generation, energy-conditioned loops, convert-to-loop, frame/joint
 inpainting, outpaint), score every generated clip with the motion quality
-evaluator, and write a self-contained HTML report.
+evaluator, and write a portable HTML motion review report.
 
 Generation tasks call ``sample.generate`` in-process with a shared generation
 runtime, so the checkpoint/model is loaded once for the whole battery. Tasks
@@ -31,7 +31,11 @@ Output layout::
             <ObjectType>_0.npy / .bvh ...
             generate.log
             scores.json            # machine-readable task score
-        eval_report.html
+        eval_report.html          # review UI
+        eval_report.json          # task manifest and automatic summary
+        report_assets/            # offline Three.js, UI scripts and styles
+        serve_report.py           # python serve_report.py --open
+        human_scores.json         # created on first human rating
 
 The run folder defaults to ``<RUN_NAME>`` and can be overridden with
 ``checkpoint.OUTPUT_DIR`` in the task config, so several batteries of one
@@ -47,6 +51,10 @@ checksummed into a ``task_params.json`` sidecar; if a task's parameters change
 (e.g. its entry in the task config is edited, or a reference file is modified
 in place), the stale output is wiped and the task is regenerated.  Pass
 ``--overwrite`` to wipe the output root and regenerate everything.
+
+After a successful evaluation, a separate local review server starts on an
+available port and the report opens in the browser. Pass ``--no_review`` to
+generate the report without starting the server or opening a browser.
 
 The checkpoint and task battery are loaded from a JSON config (``--task_config``,
 default ``eval/eval_tasks.json``) so they can be tuned without
@@ -75,10 +83,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import datetime as _dt
 import fnmatch
 import hashlib
-import html
 import io
 import json
 import os
@@ -798,180 +804,14 @@ def write_html_report(
     records: list[dict],
     all_scores: list[float],
 ) -> None:
-    root = report_path.parent
-    n_tasks = len(records)
-    n_ok = sum(1 for r in records if r["quality"] is not None)
+    """Write the portable motion review UI, assets, and local rating server."""
+    from eval.checkpoint_report import write_report
 
-    columns = {"quality": all_scores}
-    for dim in DIMENSIONS:
-        columns[dim] = [r["score"][dim] for r in records if r["quality"] is not None]
-    if all_scores:
-        stats = [
-            ("mean", lambda v: float(np.mean(v))),
-            ("median (p50)", lambda v: _pct(v, 50)),
-            ("p25", lambda v: _pct(v, 25)),
-            ("p75", lambda v: _pct(v, 75)),
-            ("min", min),
-            ("max", max),
-        ]
-        header = "".join(f"<th>{html.escape(name)}</th>" for name in columns)
-        body = "".join(
-            f"<tr><td>{label}</td>" + "".join(f'<td class="val">{fn(v):.4f}</td>' for v in columns.values()) + "</tr>"
-            for label, fn in stats
-        )
-        overall_html = (
-            f"<tr><th></th>{header}</tr>{body}"
-            f'<tr><td>tasks scored</td><td class="val" colspan="{len(columns)}">{len(all_scores)}</td></tr>'
-        )
-    else:
-        overall_html = f'<tr><td colspan="{len(DIMENSIONS) + 2}">No scores produced.</td></tr>'
-
-    def _row(rank: int, r: dict) -> str:
-        label = f'{r["category"]}/task{r["index"]}'
-        raw_cmd = r["command"]
-        ref_motion = r.get("reference_motion")
-
-        # Build command cell: if there is a --reference_motion path, make it a
-        # clickable bvhview link directly in-place (no extra appended content).
-        if ref_motion == _LAST_OUTPUT:
-            # $LAST_OUTPUT sentinel — link to the resolved previous task output.
-            resolved_path = r.get("last_output_resolved")
-            if resolved_path:
-                resolved_bvh = Path(resolved_path).with_suffix(".bvh")
-                if resolved_bvh.is_file():
-                    href = f"bvhview://open?--reuse&url={resolved_bvh.as_uri()}"
-                    idx = raw_cmd.find(_LAST_OUTPUT)
-                    if idx != -1:
-                        before = html.escape(raw_cmd[:idx])
-                        after = html.escape(raw_cmd[idx + len(_LAST_OUTPUT):])
-                        link = f'<a href="{href}">{_LAST_OUTPUT}</a>'
-                        cmd_html = before + link + after
-                    else:
-                        cmd_html = html.escape(raw_cmd)
-                else:
-                    cmd_html = html.escape(raw_cmd)
-            else:
-                cmd_html = html.escape(raw_cmd)
-        elif ref_motion:
-            ref_bvh = _find_reference_bvh(ref_motion)
-            if ref_bvh is not None and ref_bvh.is_file():
-                href = f"bvhview://open?--reuse&url={ref_bvh.as_uri()}"
-                idx = raw_cmd.find(ref_motion)
-                if idx != -1:
-                    before = html.escape(raw_cmd[:idx])
-                    after = html.escape(raw_cmd[idx + len(ref_motion):])
-                    link = f'<a href="{href}">{html.escape(ref_motion)}</a>'
-                    cmd_html = before + link + after
-                else:
-                    cmd_html = html.escape(raw_cmd)
-            else:
-                cmd_html = html.escape(raw_cmd)
-        else:
-            cmd_html = html.escape(raw_cmd)
-
-        cmd_cell = f'<pre class="cmd">{cmd_html}</pre>'
-
-        first = r["first_npy"]
-        if first is not None and first.is_file():
-            rel = os.path.relpath(first, root).replace(os.sep, "/")
-            href = _bvh_href(first)
-            motion_cell = f'<a href="{href}">{html.escape(rel)}</a>'
-        else:
-            motion_cell = '<span class="muted">—</span>'
-
-        if r["quality"] is not None:
-            score = r["quality"]
-            bg = "#d4edda" if score >= 0.8 else ("#fff3cd" if score >= 0.6 else "#f8d7da")
-            score_cell = f'<span class="val">{score:.4f}</span>'
-        else:
-            bg = "#f4f4f4"
-            score_cell = '<span class="muted">—</span>'
-
-        status = r["status"]
-        status_html = "" if status.startswith("ok") and status == "ok" else \
-            f'<br><span class="status">{html.escape(status)}</span>'
-
-        return (
-            f"<tr>"
-            f'<td style="text-align:right">{rank}</td>'
-            f"<td>{html.escape(label)}{status_html}</td>"
-            f'<td>{cmd_cell}</td>'
-            f"<td>{motion_cell}</td>"
-            f'<td style="text-align:right;background:{bg}">{score_cell}</td>'
-            f"</tr>"
-        )
-
-    rows = "\n".join(_row(i + 1, r) for i, r in enumerate(records))
-    generated = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    doc = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Checkpoint Eval Report — {html.escape(run_name)}/{html.escape(model_name)}</title>
-<style>
-  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-         max-width: 1280px; margin: 24px auto; padding: 0 16px; color: #1e1e1e; }}
-  h1 {{ font-size: 1.4rem; margin-bottom: 4px; }}
-  h2 {{ font-size: 1.1rem; margin: 24px 0 8px; }}
-  table {{ border-collapse: collapse; width: 100%; font-size: 0.9rem; }}
-  th {{ background: #e8e8e8; position: sticky; top: 0; }}
-  th, td {{ padding: 6px 10px; border: 1px solid #ddd; text-align: left; vertical-align: top; }}
-  tr:hover {{ background: #f0f6ff; }}
-  a {{ color: #0969da; text-decoration: none; }}
-  a:hover {{ text-decoration: underline; }}
-  .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }}
-  .stat-box {{ background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; }}
-  .stat-box h3 {{ font-size: 0.85rem; margin: 0 0 6px; color: #555; }}
-  .val {{ font-family: 'Cascadia Code', Consolas, monospace; font-weight: 600; }}
-  .path {{ color: #888; font-size: 0.75rem; font-family: Consolas, monospace; }}
-  .muted {{ color: #bbb; }}
-  .status {{ color: #b00; font-size: 0.78rem; }}
-  pre.cmd {{ background: #f4f4f4; padding: 8px; border-radius: 6px; margin: 0;
-            white-space: pre-wrap; word-break: break-all; font-size: 0.78rem; }}
-  .meta {{ color: #555; font-size: 0.85rem; }}
-</style>
-</head>
-<body>
-<h1>Checkpoint Evaluation Report</h1>
-<p class="meta">
-  Run: <b>{html.escape(run_name)}</b> &nbsp;|&nbsp; Model: <b>{html.escape(model_name)}</b><br>
-  Checkpoint: <span class="path">{html.escape(str(model_path))}</span><br>
-  Tasks: {n_ok}/{n_tasks} scored &nbsp;|&nbsp; Generated: {generated}
-</p>
-
-<h2>Overall quality (one score per task)</h2>
-<div class="stat-grid">
-  <div class="stat-box">
-    <h3>Task quality: median over clips of sqrt(physics × prior); 1.0 = as natural as a typical real clip</h3>
-    <table>{overall_html}</table>
-  </div>
-</div>
-
-<h2>Task details</h2>
-<table>
-<thead>
-<tr>
-  <th>#</th>
-  <th>task</th>
-  <th>command</th>
-  <th>first output motion</th>
-  <th>quality</th>
-</tr>
-</thead>
-<tbody>
-{rows}
-</tbody>
-</table>
-
-<p style="margin-top:32px; color:#888; font-size:0.8rem;">
-  Motion links use the <code>bvhview://open?url=...</code> protocol (opens the BVH viewer app).<br>
-  Per-task generate logs: <code>&lt;Category&gt;/task&lt;N&gt;/generate.log</code>.
-</p>
-</body>
-</html>"""
-
-    report_path.write_text(doc, encoding="utf-8")
+    records = [dict(record, reference_bvh=_find_reference_bvh(
+        record.get("last_output_resolved") or record.get("reference_motion")
+    )) for record in records]
+    write_report(report_path, model_path, run_name, model_name, records, all_scores,
+                 dimensions=DIMENSIONS)
 
 
 def main() -> int:
@@ -1011,6 +851,10 @@ def main() -> int:
         help="Datasets the quality reference is pooled over: a processed "
              "dataset dir or a datasets.jsonl manifest (absolute, or relative to "
              "the Anytop dir). Default: dataset/datasets.jsonl.",
+    )
+    parser.add_argument(
+        "--no_review", "--no-review", action="store_true",
+        help="Generate the report without automatically starting its local server or opening a browser.",
     )
     args = parser.parse_args()
 
@@ -1206,6 +1050,15 @@ def main() -> int:
     else:
         print("No scores were produced.")
     print(f"HTML report : {report_path}")
+    print(f'Review      : python "{root / "serve_report.py"}" --port 0 --open')
+    if not args.no_review:
+        from eval.checkpoint_report import launch_review
+
+        try:
+            url = launch_review(root)
+            print(f"Review URL  : {url}")
+        except (OSError, RuntimeError) as exc:
+            print(f"[WARN] Could not start report preview: {exc}", file=sys.stderr)
     return 0
 
 

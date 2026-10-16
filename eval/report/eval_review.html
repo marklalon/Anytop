@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Checkpoint Review — __REPORT_TITLE__</title>
+  <link rel="stylesheet" href="./report_assets/eval_review.css">
+  <script type="importmap">{"imports":{"three":"./report_assets/vendor/three.module.min.js","three/addons/":"./report_assets/vendor/"}}</script>
+</head>
+<body>
+  <header>
+    <input id="search" type="search" placeholder="搜索任务名、command 参数…" aria-label="搜索任务名和参数">
+    <span id="task-count" class="muted"></span>
+    <span id="report-name"></span>
+    <span class="spacer"></span>
+    <span id="rated-count" class="muted"></span>
+    <button id="summary-open">Summary</button>
+  </header>
+  <div id="connection" role="status">正在连接评分服务…</div>
+  <main>
+    <nav id="tasks" aria-label="任务列表"></nav>
+    <section id="center">
+      <div id="view-heading"><b id="task-title">选择任务</b><span id="clip-count" class="muted"></span><span id="frame-info" class="muted"></span></div>
+      <div id="views-scroll"><div id="views"></div></div>
+      <div id="transport">
+        <button id="play" title="空格：播放 / 暂停" disabled>暂停</button>
+        <button id="step-back" title="上一帧" disabled>‹</button>
+        <button id="step-forward" title="下一帧" disabled>›</button>
+        <input id="scrub" type="range" min="0" max="1" step="any" value="0" aria-label="所有动作统一播放进度" disabled>
+        <span id="time">0.00 / 0.00 s</span>
+        <select id="speed" aria-label="播放速度">
+          <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option><option value="2">2×</option>
+        </select>
+      </div>
+    </section>
+    <aside>
+      <section id="auto-score"><div class="eyebrow">自动评分 · 仅供参考</div><div id="quality">—</div><div id="dimensions" class="muted"></div></section>
+      <section>
+        <div class="panel-heading"><b>人工评分</b><span id="current-rating" class="muted">未评分</span></div>
+        <div id="rating-buttons" role="group" aria-label="人工评分 1 到 9 分"></div>
+        <div class="legend"><span class="red">1–2 红</span><span class="orange">3–4 橙</span><span class="yellow">5–6 黄</span><span class="green">7–9 绿</span></div>
+        <button id="clear-rating" disabled>清除评分</button>
+        <div id="save-status" role="status" class="muted">连接后可评分</div>
+      </section>
+      <section id="task-details"><b>任务信息</b><div id="task-status"></div><div id="score-label" class="muted"></div><pre id="command"></pre><a id="reference" hidden>打开参考动作 ↗</a></section>
+      <section class="help muted">中键旋转 · 滚轮缩放 · 右键或 Shift+中键平移<br>每个视图的相机独立；下方时间轴控制全部动作。短动作播放到末尾后等待本轮结束。<br>空格播放 / 暂停，↑ ↓ 切换任务，小键盘 1–9 评分。</section>
+    </aside>
+  </main>
+  <dialog id="summary">
+    <div class="dialog-heading"><h2>Summary</h2><button id="summary-close" aria-label="关闭 Summary">关闭</button></div>
+    <div id="summary-body"></div>
+  </dialog>
+  <script id="report-data" type="application/json">__REPORT_DATA__</script>
+  <script>
+    if (location.protocol === 'file:') {
+      document.getElementById('connection').textContent = '请在报告目录运行 python serve_report.py --open，通过本地服务预览动作并自动保存评分。';
+      document.getElementById('connection').classList.add('error');
+    }
+  </script>
+  <script type="module" src="./report_assets/eval_review.js"></script>
+</body>
+</html>
