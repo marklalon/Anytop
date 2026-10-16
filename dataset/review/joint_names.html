@@ -902,7 +902,10 @@ function frameClip(bvh, order) {
 }
 
 async function playClip(clip) {
-  stopClip();
+  // Switching clip to clip keeps the old clip (and so the skeleton-only view) up while the
+  // new one loads; dropping `anim` first would flash the chosen mesh view during the fetch.
+  if (clip && anim) clipToken++;
+  else stopClip();
   if (!state.current || !skel.group) return;
   if (!clip) {
     skel.rest.forEach((p, index) => skel.positions[index].copy(p));
@@ -936,6 +939,7 @@ async function playClip(clip) {
   } catch (err) {
     if (token !== clipToken) return;
     $('clip').value = '';
+    stopClip();
     setStatus(`动作加载失败：${err.message}`, true);
   }
 }
