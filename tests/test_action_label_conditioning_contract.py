@@ -48,9 +48,9 @@ def test_slot_source_rank_covers_the_full_domain_and_projection_width():
     # to the vocabulary size.
     assert report["total_rank"] == 92
     assert {name: item["rank"] for name, item in report["slots"].items()} == {
-        "head": 33,
+        "head": 32,
         "direction": 6,
-        "modifier": 53,
+        "modifier": 54,
     }
     assert sum(report["slots"][name]["rank"] for name in report["slots"]) == len(
         CONTROLLED_VOCAB
@@ -132,6 +132,19 @@ def test_absent_slot_does_not_renormalise_the_others():
             assert np.linalg.norm(without[slot]) == pytest.approx(1.0)
 
 
+def test_hover_is_a_modifier_and_preserves_the_base_action_channel():
+    table = _word_table()
+    hover = table[CONTROLLED_VOCAB.index("hover")]
+    for head in ("idle", "attack", "hurt", "land", "turn", "rear"):
+        base, _ = _channels((head,), table)
+        hovering, present = _channels((head, "hover"), table)
+        assert np.array_equal(base[SLOT_HEAD], hovering[SLOT_HEAD])
+        assert present[SLOT_MODIFIER]
+        assert np.allclose(hovering[SLOT_MODIFIER], hover / np.linalg.norm(hover))
+    with pytest.raises(ValueError, match="head words"):
+        action_label_slots(("hover",))
+
+
 def test_every_head_word_pools_into_the_head_channel_first_one_weighted():
     """The head channel is every head word, the first one weighted above the rest.
 
@@ -141,17 +154,17 @@ def test_every_head_word_pools_into_the_head_channel_first_one_weighted():
     """
     table = _word_table()
     attack = table[CONTROLLED_VOCAB.index("attack")]
-    hover = table[CONTROLLED_VOCAB.index("hover")]
-    expected = HEAD_SLOT_PRIMARY_WEIGHT * attack + hover
+    jump = table[CONTROLLED_VOCAB.index("jump")]
+    expected = HEAD_SLOT_PRIMARY_WEIGHT * attack + jump
     expected = expected / np.linalg.norm(expected)
-    channels, present = _channels(("attack", "hover"), table)
+    channels, present = _channels(("attack", "jump"), table)
     assert np.allclose(channels[SLOT_HEAD], expected)
     # The later head word left the modifier slot entirely: a word feeds exactly
     # one channel, which is what keeps the rank report a sum over disjoint blocks.
     assert not present[SLOT_MODIFIER]
     # A true modifier still pools on its own, unweighted, and does not touch the
     # head channel.
-    with_bite, bite_present = _channels(("attack", "hover", "bite"), table)
+    with_bite, bite_present = _channels(("attack", "jump", "bite"), table)
     assert np.allclose(with_bite[SLOT_HEAD], expected)
     assert bite_present[SLOT_MODIFIER]
     bite = table[CONTROLLED_VOCAB.index("bite")]
@@ -169,8 +182,8 @@ def test_written_head_order_still_decides_the_condition():
     """
     assert HEAD_SLOT_PRIMARY_WEIGHT != 1.0
     table = _word_table()
-    first, _ = _channels(("attack", "hover"), table)
-    second, _ = _channels(("hover", "attack"), table)
+    first, _ = _channels(("attack", "jump"), table)
+    second, _ = _channels(("jump", "attack"), table)
     assert not np.allclose(first[SLOT_HEAD], second[SLOT_HEAD])
     # A single-head label is unchanged by the weight: one member, and the
     # channel is L2-normalised, so only the ratio between members can reach it.
@@ -182,14 +195,14 @@ def test_written_head_order_still_decides_the_condition():
 def test_only_the_weight_ratio_reaches_the_channel():
     """Scaling every weight of a slot is a no-op, so the constant is a ratio."""
     table = _word_table()
-    slots = action_label_slots(("attack", "hover"))
+    slots = action_label_slots(("attack", "jump"))
     weights = slot_member_weights(slots["slot_ids"])
     assert weights == (HEAD_SLOT_PRIMARY_WEIGHT, 1.0)
     channels, _ = assemble_slot_channels(table, slots)
     scaled = (table * 1.0)
     doubled = np.stack(
         [HEAD_SLOT_PRIMARY_WEIGHT * 2 * scaled[CONTROLLED_VOCAB.index("attack")]
-         + 2 * scaled[CONTROLLED_VOCAB.index("hover")]]
+         + 2 * scaled[CONTROLLED_VOCAB.index("jump")]]
     )[0]
     assert np.allclose(channels[SLOT_HEAD], doubled / np.linalg.norm(doubled))
 
@@ -232,7 +245,8 @@ def test_conditioning_contract_carries_no_role_material():
     # 5: hand0 retired (an empty hands slot is empty hands), direction dropout.
     # 6: later head words rejoined the head slot, weighted below the first.
     # 7: the hands axis retired outright -- no hand words, no fourth slot.
-    assert payload["parser_contract_version"] == 7
+    # 8: hover moved from head to modifier.
+    assert payload["parser_contract_version"] == 8
 
 
 def test_embedding_change_propagates_into_conditioning_fingerprint():

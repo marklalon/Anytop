@@ -7,10 +7,13 @@
 > 1. **没有做消融，本文不声称任何「相对旧表示的增益」。** 评测全是绝对读数——对着该物种自己真实
 >    clip 的测量地板读，不对着另一个 checkpoint 读（唯一现成对照组的 cond 和语料都不同，逐格比无法归因）。
 > 2. **主词顺序进入条件**：head 通道装标签的**全部**主词，但**首词权重 1.5、后续主词权重 1.0**
->    （`HEAD_SLOT_PRIMARY_WEIGHT`），所以 `attack, hover` 与 `hover, attack` 是两个条件。
+>    （`HEAD_SLOT_PRIMARY_WEIGHT`），所以 `attack, jump` 与 `jump, attack` 是两个条件。
 >    主词顺序不编码**方向**——方向写进词表（`draw` / `sheathe` / `stop` / `kneel`…）。
 >    *（2026-09-19 修订，契约版本 6。此前为"只装第一个主词、后续主词进 modifier 槽"，
 >    见 §6「主词槽的三次取值」。）*
+>    *（2026-10-16 修订，契约版本 8：`hover` 改为 modifier；悬停待机写 `idle, hover`，
+>    `attack, hover` 的 head 仅含 `attack`，modifier 含 `hover`。迁移细节见
+>    [hover 修饰词迁移](hover_modifier_migration.md)。）*
 > 3. **改条件语义就要重训**：每次改动都会让旧 checkpoint 被两层指纹拒绝加载，不会静默读成「质量回退」。
 >    推理端默认：语料内标签 CFG scale 2，未见过的词组合用 1。
 
@@ -42,6 +45,7 @@ direction / modifier 两个槽**是集合**（词序不进条件）。**三个�
 **为什么权重是 1.5 而不是 1.0**：L2 归一化让**只有比值**到达模型，所以这是一个纯比值参数。
 r=1（平均）是唯一**不允许**的取值——`a, b` 与 `b, a` 的 head 通道会逐位相同，词序彻底消失
 （源行线性无关时 (r,1) 与 (1,r) 成比例当且仅当 r=1）。r 越大首词越纯、第二主词越淡。
+以下为 `hover` 仍是 head 时的历史测量，契约版本 8 不再适用于含 `hover` 的例子。
 在冻结词表上实测（null 带 |cos| p95 = 0.19）：r=1.5 时 cos(head, 首词)=0.83、cos(head, 第二主词)=0.61、
 `idle,hover` vs `attack,hover` = 0.36、`a,b` vs `b,a` = 0.92。它是**契约常量不是旗标**：
 推理端必须复现同一个值，conditioning 指纹负责拒绝用别的值训出来的 checkpoint。
@@ -73,8 +77,9 @@ r=1（平均）是唯一**不允许**的取值——`a, b` 与 `b, a` 的 head �
 - 空标签 = 无条件分支，走 null embedding，不编码空文本。
 
 **为什么 crouch / dead / sit / sleep 是修饰词而非主词**：语料里它们只出现在次位（限定姿态，不是标签
-「关于」的东西）。其余次位主词（hover / turn / jump / rear / roll…）每一个也都当过首词，无法按词降级，
-只能按位置路由（§2、§6）。
+「关于」的东西）。`hover` 同样是限定悬停状态的修饰词：待机写 `idle, hover`，转向写
+`turn, left, hover`，攻击写 `attack, hover`。其余次位主词（turn / jump / rear / roll…）
+仍然可以独立作为动作主词，全部留在 head 槽（§2、§6）。
 
 ## 4. 数据契约与 sidecar（概念）
 
@@ -99,6 +104,8 @@ r=1（平均）是唯一**不允许**的取值——`a, b` 与 `b, a` 的 head �
 - 当前满秩值见 `slot_source_rank_report`（`action_label_conditioning_contract.py`）的返回，本文不固化。
 
 ## 6. 决策历史（只留「为什么」和不变量，去掉实现细节）
+
+> 本节记录历史表示的比较；其中 hover 作为 head 的分析在契约版本 8 已被取代。
 
 ### direction 的 ∅ = 边缘分布，靠训练侧 dropout 教（2026-09-18）
 

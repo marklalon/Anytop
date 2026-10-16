@@ -7,11 +7,24 @@ ANYTOP_ROOT = Path(__file__).resolve().parents[1]
 if str(ANYTOP_ROOT) not in sys.path:
     sys.path.insert(0, str(ANYTOP_ROOT))
 
+from dataset.review import llm_annotate  # noqa: E402
 from dataset.review.llm_annotate import Sink  # noqa: E402
+from data_loaders.truebones.truebones_utils.motion_labels import MODIFIER_VOCAB  # noqa: E402
 
 
 def _rows(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_startup_vocab_check_and_prompt_cover_all_modifiers():
+    llm_annotate._check_vocab()
+    blocks = llm_annotate.modifier_blocks()
+    assert tuple(word for _, words in blocks for word in words) == MODIFIER_VOCAB
+    prompt = llm_annotate.vocab_block_text()
+    for _, words in blocks:
+        assert "    " + ", ".join(words) in prompt.splitlines()
+    assert "hover" in blocks[0][1]
+    assert "hover" not in llm_annotate.HEAD_VOCAB
 
 
 def test_overwrite_invalidation_removes_old_contract_but_keeps_review_history(tmp_path):

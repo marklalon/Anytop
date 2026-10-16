@@ -63,7 +63,9 @@ def _find_motion(pattern: str) -> str:
 
 
 LOOP_MOTION = _find_motion("Ostrich_Run.npy")
-LOOP_SUBSET = "biped"
+# Select the fixture species directly: its current Winged/Flapping tags do
+# not put it in the biped subset, and loop behavior must not depend on tags.
+LOOP_SUBSET = "Ostrich"
 # A PHASE-FREE loop authored WITH its closing key: its last frame repeats frame
 # 0, so the loader drops it and the cycle it augments is one frame shorter.
 # Ostrich_Run above ends 0.6 of a step short of frame 0 and keeps all its
@@ -341,6 +343,7 @@ def test_loop_is_phase_free_needs_every_head_phase_free() -> None:
     assert loop_is_phase_free("walk, forward")
     assert loop_is_phase_free("idle, sleep")
     assert loop_is_phase_free("fly, hover")
+    assert loop_is_phase_free("idle, hover")
     assert not loop_is_phase_free("attack, projectile")
     assert not loop_is_phase_free("roar")
     # One anchored head anchors the clip, in either position.
@@ -358,7 +361,7 @@ def test_event_modifier_anchors_a_phase_free_head() -> None:
     assert loop_is_phase_free("run, forward, weapon")
     # An event layered on the state anchors it.
     assert not loop_is_phase_free("idle, look")
-    assert not loop_is_phase_free("hover, eat")
+    assert not loop_is_phase_free("idle, hover, eat")
     assert not loop_is_phase_free("idle, scratch, sit")
     assert phase_anchoring_words("idle, look, crouch") == ["look"]
     assert phase_anchoring_words("attack, hover, bite") == ["attack", "bite"]

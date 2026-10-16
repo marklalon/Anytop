@@ -569,11 +569,11 @@ def test_build_files_high_frequency_clips_in_their_own_buckets():
     )
 
     table = build_clip_length_prior([
-        ("stationary", "hover", True, 40, False),
-        ("stationary", "hover", True, 103, True),
-        ("stationary", "hover", False, 72, True),
+        ("stationary", "idle, hover", True, 40, False),
+        ("stationary", "idle, hover", True, 103, True),
+        ("stationary", "idle, hover", False, 72, True),
     ])
-    hover = table["by_label"][label_key("stationary", "hover")]
+    hover = table["by_label"][label_key("stationary", "idle, hover")]
     assert hover[LOOP_BUCKET] == (40,)
     assert hover[HIGH_FREQUENCY_LOOP_BUCKET] == (103,)
     assert hover[HIGH_FREQUENCY_ONESHOT_BUCKET] == (72,)
@@ -583,32 +583,32 @@ def test_high_frequency_lengths_are_capped_at_the_window():
     # Giantbee-like: every hover clip beats its wings and runs past the window.
     # The loader crops those to the window, so that is the length it trained.
     cond = {"ns/Bee": _entry([
-        ("stationary", "hover", True, 103, True),
-        ("stationary", "hover", False, 79, True),
-        ("stationary", "hover", False, 90, True),
+        ("stationary", "idle, hover", True, 103, True),
+        ("stationary", "idle, hover", False, 79, True),
+        ("stationary", "idle, hover", False, 90, True),
     ])}
-    frames, _ = _ask(cond, "ns/Bee", "hover", group="stationary", window_frames=60)
+    frames, _ = _ask(cond, "ns/Bee", "idle, hover", group="stationary", window_frames=60)
     assert frames == 60
     # The same lengths without the flag only meet the 2T clamp.
     plain = {"ns/Bee": _entry([
-        ("stationary", "hover", True, 103),
-        ("stationary", "hover", False, 79),
-        ("stationary", "hover", False, 90),
+        ("stationary", "idle, hover", True, 103),
+        ("stationary", "idle, hover", False, 79),
+        ("stationary", "idle, hover", False, 90),
     ])}
-    assert _ask(plain, "ns/Bee", "hover", group="stationary", window_frames=60)[0] == 90
+    assert _ask(plain, "ns/Bee", "idle, hover", group="stationary", window_frames=60)[0] == 90
 
 
 def test_high_frequency_loop_past_the_window_counts_as_a_oneshot():
     cond = {"ns/Bee": _entry([
-        ("stationary", "hover", True, 40, True),   # fits: trained as a loop
-        ("stationary", "hover", True, 103, True),  # cropped: trained open
-        ("stationary", "hover", True, 72, True),   # cropped: trained open
+        ("stationary", "idle, hover", True, 40, True),   # fits: trained as a loop
+        ("stationary", "idle, hover", True, 103, True),  # cropped: trained open
+        ("stationary", "idle, hover", True, 72, True),   # cropped: trained open
     ])}
     # The loop pool keeps only the clip that stayed a loop.
-    assert _ask(cond, "ns/Bee", "hover", group="stationary", loop=True)[0] == 40
+    assert _ask(cond, "ns/Bee", "idle, hover", group="stationary", loop=True)[0] == 40
 
 
 def test_an_old_schema_table_is_ignored():
-    entry = _entry([("stationary", "hover", True, 40)])
+    entry = _entry([("stationary", "idle, hover", True, 40)])
     entry[COND_KEY] = dict(entry[COND_KEY], schema=1)
     assert not has_clip_length_prior({"ns/Bee": entry})

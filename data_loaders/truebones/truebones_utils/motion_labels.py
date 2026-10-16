@@ -62,11 +62,11 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # maintained controlled set, not a fixed list.
 #
 # HEAD_VOCAB is the closed set of words a label can be ABOUT: a state the body
-# is in (idle, run, hover, rear ...) or an event that is the whole clip (die,
+# is in (idle, run, rear ...) or an event that is the whole clip (die,
 # getup, land, draw, sheathe, stop ...). Words are spelled in WRITTEN order;
 # tuple position decides nothing. Every head word feeds the head slot, the
 # FIRST weighted above the later ones (see slot_member_weights), so head order
-# IS the condition: "attack, hover" and "hover, attack" are two labels, and one
+# IS the condition: "attack, jump" and "jump, attack" are two labels, and one
 # word set has only one head order per group
 # (_validate_head_order_consistency). Head order carries no DIRECTION. At most
 # ACTION_LABEL_MAX_HEADS heads per label.
@@ -77,15 +77,16 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # (see canonical_action_label).
 HEAD_VOCAB: tuple[str, ...] = (
     "attack", "burrow", "climb", "crawl", "die", "draw", "fall",
-    "fly", "getup", "hover", "hurt", "idle", "jump", "kneel", "land", "laydown",
+    "fly", "getup", "hurt", "idle", "jump", "kneel", "land", "laydown",
     "lift", "pickup", "putdown", "rear", "rest", "roar", "roll", "run", "sheathe",
     "sitdown", "spawn", "stop", "swim", "takeoff", "turn", "walk", "work",
 )
 
 # Blocks order the spelling only; nothing weights a word by its block.
 MODIFIER_VOCAB: tuple[str, ...] = (
-    # -- block A: how the head is executed (gait, speed, wing state) --
-    "trot", "fast", "glide", "slow", "dive", "flopping",
+    # -- block A: how the head is executed (suspension, gait, speed, wing state) --
+    # hover is a held suspension state; hovering at rest is "idle, hover".
+    "hover", "trot", "fast", "glide", "slow", "dive", "flopping",
     # -- block B: secondary action layered on the head --
     "bite", "eat", "look", "shake", "throw", "taunt",
     "sniff", "yawn", "sting", "kick", "scratch",
@@ -279,7 +280,7 @@ ACTION_LABEL_MAX_HEADS = 2
 # phase-free loop only forgoes augmentation, while rolling an anchored one
 # scrambles the event's timing.
 PHASE_FREE_LOOP_HEADS: tuple[str, ...] = (
-    "climb", "crawl", "fall", "fly", "hover", "idle", "rest", "roll", "run", "swim",
+    "climb", "crawl", "fall", "fly", "idle", "rest", "roll", "run", "swim",
     "walk",
 )
 _PHASE_FREE_LOOP_HEAD_SET: frozenset[str] = frozenset(PHASE_FREE_LOOP_HEADS)
@@ -298,7 +299,7 @@ assert _PHASE_FREE_LOOP_HEAD_SET <= _HEAD_VOCAB_SET, (
 # reason as the heads: a new modifier defaults to anchored. Direction words are
 # not modifiers and never anchor.
 PHASE_FREE_LOOP_MODIFIERS: tuple[str, ...] = (
-    "trot", "fast", "glide", "slow", "flopping",
+    "hover", "trot", "fast", "glide", "slow", "flopping",
     "crouch", "dead", "sit", "sleep",
     "aim", "carry",
     "bow", "gun", "hammer", "shield", "weapon",
@@ -326,7 +327,7 @@ def loop_is_phase_free(label) -> bool:
     True only when every head word is in :data:`PHASE_FREE_LOOP_HEADS` and
     every modifier in :data:`PHASE_FREE_LOOP_MODIFIERS`; one anchored head
     ("idle, rear", "attack, hover") or one event modifier ("idle, look",
-    "hover, eat") anchors the clip. An empty label has no evidence either way
+    "idle, hover, eat") anchors the clip. An empty label has no evidence either way
     and is anchored.
     """
     words = parse_action_label(label)

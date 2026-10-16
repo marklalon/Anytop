@@ -151,7 +151,7 @@ def log(message):
 # the prompt shows them as blocks, so the split is read back out of the tuple at
 # these leaders. A leader that moved is a loud failure, not a wrong prompt.
 MODIFIER_BLOCKS = (
-    ("trot", "how the head is executed (gait, speed, wing state)"),
+    ("hover", "how the head is executed (suspension, gait, speed, wing state)"),
     ("bite", "secondary action layered on the head"),
     ("spin", "how a strike is delivered"),
     ("happy", "affect / social gesture"),

@@ -287,30 +287,40 @@ def test_absent_slot_is_a_zero_row_and_leaves_the_others_alone():
     assert torch.equal(with_direction[:, :width], without[:, :width])
 
 
+def test_hover_modifier_preserves_model_head_channel():
+    model = _model(make_test_bundle())
+    width = model.action_word_embeddings.shape[1]
+    for head in ('idle', 'attack', 'hurt', 'land', 'turn', 'rear'):
+        alone = _channels(model, [head], ['stationary'])
+        hovering = _channels(model, [head + ', hover'], ['stationary'])
+        assert torch.equal(alone[:, :width], hovering[:, :width])
+        assert torch.count_nonzero(hovering[:, 2 * width:]) > 0
+
+
 def test_first_head_word_leads_in_every_group():
     """The first head word leads the head channel; a second one joins it below.
 
-    So "land, hover" and "hover, land" are two conditions in every group alike
+    So "land, jump" and "jump, land" are two conditions in every group alike
     (the loader's head-order consistency gate keeps the corpus from spelling
-    one kind of clip both ways), and the head channel of "land, hover" leans
+    one kind of clip both ways), and the head channel of "land, jump" leans
     towards "land" without being it.
     """
     model = _model(make_test_bundle())
     width = model.action_word_embeddings.shape[1]
     table = model.action_word_embeddings.to(torch.float64)
     for group in ('transition', 'stationary', 'locomotion'):
-        first = _channels(model, ['land, hover'], [group])
-        second = _channels(model, ['hover, land'], [group])
+        first = _channels(model, ['land, jump'], [group])
+        second = _channels(model, ['jump, land'], [group])
         assert not torch.equal(first[:, :width], second[:, :width])
         alone = _channels(model, ['land'], [group])
         assert not torch.equal(first[:, :width], alone[:, :width])
-        # It leans towards the word that leads: closer to "land" than "hover",
+        # It leans towards the word that leads: closer to "land" than "jump",
         # and closer to "land" than the other spelling is.
         head = first[0, :width]
         land = table[CONTROLLED_VOCAB.index('land')]
-        hover = table[CONTROLLED_VOCAB.index('hover')]
-        land, hover = land / land.norm(), hover / hover.norm()
-        assert float(head @ land) > float(head @ hover)
+        jump = table[CONTROLLED_VOCAB.index('jump')]
+        land, jump = land / land.norm(), jump / jump.norm()
+        assert float(head @ land) > float(head @ jump)
         assert float(head @ land) > float(second[0, :width] @ land)
         # Both head words left the modifier block, which stays empty for either
         # spelling -- a word feeds exactly one channel.
@@ -319,8 +329,8 @@ def test_first_head_word_leads_in_every_group():
     # The group itself is not part of the condition: one label is the same
     # channel vector whichever checkpoint it is fed to.
     assert torch.equal(
-        _channels(model, ['land, hover'], ['transition']),
-        _channels(model, ['land, hover'], ['stationary']),
+        _channels(model, ['land, jump'], ['transition']),
+        _channels(model, ['land, jump'], ['stationary']),
     )
 
 

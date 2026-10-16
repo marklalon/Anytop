@@ -59,7 +59,7 @@
     { "category": "Syn_Human_DragonTail", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Human_DragonTail/cond.npy", "--action_label", "run, forward"] },
     { "category": "Syn_Human_DragonTail", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Human_DragonTail/cond.npy", "--action_label", "jump, up"] },
 
-    { "category": "Syn_Human_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Human_DragonWings/cond.npy", "--action_label", "hover", "--species_tags", "Winged,Flapping"] },
+    { "category": "Syn_Human_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Human_DragonWings/cond.npy", "--action_label", "idle, hover", "--species_tags", "Winged,Flapping"] },
     { "category": "Syn_Human_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Human_DragonWings/cond.npy", "--action_label", "jump, up"] },
     { "category": "Syn_Human_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Human_DragonWings/cond.npy", "--action_label", "run, forward"] },
 

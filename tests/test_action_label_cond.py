@@ -165,10 +165,10 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             self.assertNotIn(absent, HEAD_VOCAB, absent)
         # Posture states that only ever qualified a head (crouch / dead / sit /
         # sleep) are modifiers: a label is never ABOUT them.
-        for absent in ('crouch', 'dead', 'sit', 'sleep'):
+        for absent in ('crouch', 'dead', 'sit', 'sleep', 'hover'):
             self.assertNotIn(absent, HEAD_VOCAB, absent)
             self.assertIn(absent, MODIFIER_VOCAB, absent)
-        for present in ('idle', 'attack', 'rear', 'hover', 'draw', 'sheathe',
+        for present in ('idle', 'attack', 'rear', 'draw', 'sheathe',
                         'stop', 'kneel'):
             self.assertIn(present, HEAD_VOCAB, present)
 
@@ -275,6 +275,8 @@ class ActionLabelVocabularyTest(unittest.TestCase):
                       'land, fly', 'getup, crouch', 'draw', 'sheathe', 'stop',
                       'walk, forward, slow', 'rear, roar',
                       'run, turn, right, fast', 'turn, left, hover',
+                      'idle, hover', 'idle, hover, look', 'rear, hover',
+                      'attack, right, hover, swat',
                       'attack, spin, bow', 'roar'):
             self.assertEqual(canonical_action_label(parse_action_label(label)), label)
 
@@ -286,7 +288,9 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             ('walk, , forward', 'empty comma segment'),
             ('walk, walk', 'repeated token'),
             ('forward', 'no head word'),
-            ('idle, hover, rear', 'three head words'),
+            ('hover', 'hover requires an explicit action head'),
+            ('hover, look', 'modifiers alone do not supply an action head'),
+            ('idle, jump, rear', 'three head words'),
             ('idle, hand1', 'a hand-state token, which is not vocabulary'),
             ('idle, hand0', 'a hand-state token, which is not vocabulary'),
             ('walk, forward, hand2', 'a hand-state token, which is not vocabulary'),
