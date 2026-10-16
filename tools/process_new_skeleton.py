@@ -6,7 +6,7 @@ The output cond.npy is designed to be passed via ``--cond-path`` to ``generate.p
 
 .. warning::
    The generated data is **not suitable for training**. Skeleton cropping
-   (MAX_JOINTS=128) is disabled by default (``--crop-enabled`` to enable). Use
+   (MAX_JOINTS=100) is disabled by default (``--crop-enabled`` to enable). Use
    ``preprocess_and_validate.py`` for training dataset creation.
 
 While designed to be as generic as possible, some skeleton-specific adjustments may be
@@ -25,7 +25,7 @@ species-tags      - Comma-separated species tags (motion descriptor) for --objec
                     default dataset's species_tags.jsonl. Only the tags are
                     baked; generation looks their vector up in the checkpoint's
                     species descriptor table (no T5 runs here).
-crop-enabled      - Enable skeleton cropping to MAX_JOINTS=128.
+crop-enabled      - Enable skeleton cropping to MAX_JOINTS=100.
                     Off by default (inference has no joint cap).
 reference-cond-path - REQUIRED. cond.npy to inherit the per-object_subset
                     standardization statistics from. Those statistics belong to a
@@ -211,7 +211,7 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
         )
 
     # Skeleton cropping: off by default (inference has no joint cap).
-    # Use --crop-enabled to enable MAX_JOINTS=128 cropping.
+    # Use --crop-enabled to enable MAX_JOINTS=100 cropping.
     crop_enabled = args.crop_enabled
 
     # ── Species tags (required) ────────────────────────────────────────────

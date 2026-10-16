@@ -117,9 +117,9 @@ ROOT_Y_SOFT_CLAMP_KNEE = -0.1
 ROOT_Y_MIN_HEIGHT = -0.3
 
 
-MAX_JOINTS=128
+MAX_JOINTS=100
 # Training batch padding widths; the final bucket must match MAX_JOINTS.
-JOINT_BUCKETS = (48, 72, MAX_JOINTS)
+JOINT_BUCKETS = (48, 64, MAX_JOINTS)
 # Source-frame budget as a multiple of the target window n: clips longer than
 # n * MAX_SOURCE_FRAMES_MULT are cropped (random window) and resampled to n,
 # pinning their resample_speed condition to this value. Inference uses the same
