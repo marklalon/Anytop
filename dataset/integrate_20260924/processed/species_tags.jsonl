@@ -188,7 +188,7 @@
 {"species": "PP_Seal", "species_tags": ["Quadruped", "Crawling"]}
 {"species": "PP_Squid", "species_tags": ["Aquatic", "Undulating"]}
 {"species": "PP_Squirrel", "species_tags": ["Quadruped", "Scurrying"]}
-{"species": "PP_StarFish", "species_tags": ["Multiped", "Crawling"]}
+{"species": "PP_StarFish", "species_tags": ["Multiped", "Scuttling"]}
 {"species": "PP_Tapir", "species_tags": ["Quadruped", "Trotting"]}
 {"species": "PP_Tucan", "species_tags": ["Winged", "Flapping"]}
 {"species": "PP_Vulture", "species_tags": ["Winged", "Flapping"]}
