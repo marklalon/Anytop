@@ -608,7 +608,9 @@ SLOT_PAD_ID = -1
 #    canonical_frame_projection is one Linear instead of a two-layer MLP.
 # 5: the hands slot is gone, so the word table has two fewer rows and
 #    action_label_projection's first Linear loses that slot's 2 code columns.
-ACTION_CHECKPOINT_VERSION = 5
+# 6: rarely used words left the vocabulary, so the word table has fewer rows
+#    and action_label_projection's first Linear is narrower.
+ACTION_CHECKPOINT_VERSION = 6
 
 
 class ActionConditioningError(RuntimeError):

@@ -99,10 +99,10 @@ STRIKE_HEADS = ("attack", "hurt")
 # is picked among the chains holding joints of the first of these part sets the rig has.
 _HEAD, _ARM, _LEG, _TAIL = ("head", "neck"), ("arm", "hand"), ("leg", "foot"), ("tail",)
 STRIKE_WORD_PARTS = {
-    "bite": (_HEAD,), "headbutt": (_HEAD,), "firebreath": (_HEAD,), "spit": (_HEAD,),
+    "bite": (_HEAD,), "headbutt": (_HEAD,), "firebreath": (_HEAD,),
     "kick": (_LEG,),
     "punch": (_ARM, _LEG), "swat": (_ARM, _LEG), "slash": (_ARM, _LEG),
-    "stab": (_ARM, _LEG), "catch": (_ARM, _LEG), "smash": (_ARM, _LEG),
+    "stab": (_ARM, _LEG), "smash": (_ARM, _LEG),
     "sting": (_TAIL,), "whip": (_TAIL,),
 }
 # The editing group of each part (``CHAIN_GROUPS``); the translation root is "root".

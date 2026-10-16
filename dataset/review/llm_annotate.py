@@ -987,7 +987,7 @@ locomotion -- the character TRAVELS; the ground slides underneath it.
     flying: it is walk or run by pace.
   - Gait and manner are modifiers: "walk, forward, trot" (between walking and
     running), "run, forward, fast" (sprint, dash), "fly, forward, glide" (held
-    wings), "walk, backward, retreat" (backing away). A sideways step with the
+    wings). Backing away is just "walk, backward". A sideways step with the
     body still facing ahead is just "walk, left" / "walk, right".
   - The label MUST name a direction, even for a clip authored in place: the
     heading the gait is trying to go. A hover held in place is exempt.
@@ -1003,7 +1003,7 @@ stationary -- the character acts WITHOUT travelling across the ground.
     "idle, talk", "idle, sit", "idle, rear".
   - Attacks name the strike whenever one is visible: bite, headbutt, kick, swat
     (unarmed lateral sweep of paw / claw / tail), sting, stab, slash, punch,
-    smash (heavy overhead or ground slam), throw, spit, cast (magic),
+    smash (heavy overhead or ground slam), throw, cast (magic),
     firebreath, projectile, charge (wind-up or lunge in place), spin; and the
     implement when the strike IS its motion: bow, gun, hammer, shield; any
     other held weapon: weapon.

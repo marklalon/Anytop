@@ -1733,7 +1733,7 @@
 {"clip": "RMW_Slime_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Spider_Attack01", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Spider_Attack02", "action_group": "locomotion", "action_label": "roll, forward", "is_loop": true, "reviewed": true}
-{"clip": "RMW_Spider_Attack03", "action_group": "stationary", "action_label": "attack, spit", "is_loop": true, "reviewed": true}
+{"clip": "RMW_Spider_Attack03", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Spider_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "RMW_Spider_Dizzy", "action_group": "stationary", "action_label": "idle, sleep", "is_loop": true, "reviewed": true}
 {"clip": "RMW_Spider_GetHit", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}

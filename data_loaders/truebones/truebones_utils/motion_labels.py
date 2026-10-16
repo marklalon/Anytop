@@ -85,13 +85,13 @@ HEAD_VOCAB: tuple[str, ...] = (
 # Blocks order the spelling only; nothing weights a word by its block.
 MODIFIER_VOCAB: tuple[str, ...] = (
     # -- block A: how the head is executed (gait, speed, wing state) --
-    "trot", "fast", "glide", "slow", "retreat", "dive", "flopping",
+    "trot", "fast", "glide", "slow", "dive", "flopping",
     # -- block B: secondary action layered on the head --
     "bite", "eat", "look", "shake", "throw", "taunt",
-    "sniff", "yawn", "catch", "sting", "kick", "spit", "wag", "scratch",
+    "sniff", "yawn", "sting", "kick", "scratch",
     "crouch", "dead", "sit", "sleep",
     # -- block C: how a strike is delivered (manner before strike type) --
-    "spin", "flip", "charge",
+    "spin", "charge",
     "headbutt", "punch", "swat", "slash", "stab", "smash", "whip",
     "block", "cast", "firebreath", "projectile",
     # -- block D: affect / social gesture --
@@ -328,7 +328,6 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "draw": "drawing a weapon",          # bare "draw" is pulling a line or a card
     "cry": "weeping",                    # bare "cry" reads as shouting out
     "firebreath": "breathing fire",      # glued compound is no English word; T5 splits it into subword shards
-    "flip": "somersault",                # bare "flip" is a coin or a switch
     "land": "touching down",             # bare "land" is terrain -- overwhelmingly
     "punch": "punching",                 # bare "punch" is the drink
     "rear": "rearing up",                # bare "rear" is the back side

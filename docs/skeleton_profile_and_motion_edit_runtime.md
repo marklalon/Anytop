@@ -92,7 +92,7 @@ Profile 构建和分解读同一份「预填 + 物种层」。预填只看 cond 
 | `tail_weight` / `tail_stiffness` | `tail` 中能摆动的关节 |
 | `passive_*`、`gravity` | `soft` 中能摆动的关节 |
 | `spread.arms` / `spread.legs` | arms / legs 组里挂在其他组关节上的肢体；带 IK 肢体的从 IK 肢体根部转、移动其着地目标 |
-| 发力链的标签先验 | bite / headbutt / firebreath / spit → `head`、`neck`；kick → `leg`、`foot`；punch / swat / slash / stab / catch / smash → `arm`、`hand`，没有再找 `leg`、`foot`；sting / whip → `tail` |
+| 发力链的标签先验 | bite / headbutt / firebreath → `head`、`neck`；kick → `leg`、`foot`；punch / swat / slash / stab / smash → `arm`、`hand`，没有再找 `leg`、`foot`；sting / whip → `tail` |
 
 ## 3. Edit Package：动作的可编辑表示
 

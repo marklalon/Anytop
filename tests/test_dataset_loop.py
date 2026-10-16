@@ -341,7 +341,7 @@ def test_loop_is_phase_free_needs_every_head_phase_free() -> None:
     assert loop_is_phase_free("walk, forward")
     assert loop_is_phase_free("idle, sleep")
     assert loop_is_phase_free("fly, hover")
-    assert not loop_is_phase_free("attack, spit")
+    assert not loop_is_phase_free("attack, projectile")
     assert not loop_is_phase_free("roar")
     # One anchored head anchors the clip, in either position.
     assert not loop_is_phase_free("idle, rear")
