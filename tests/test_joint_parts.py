@@ -118,7 +118,7 @@ def test_multiped_walking_arm_is_a_leg_but_pincers_stay():
         joints += _limb(side, x, 'Hips', 0.0, ['UpperArm', 'Forearm', 'Finger'], 0.3)
         joints += _limb(side, x, 'Hips', -0.2, ['Thigh', 'Calf', 'Toe'], 0.3)
         joints += [(f'{side}_Pincers1', 'Head', (x, 0.3, 0.45)), (f'{side}_Pincers2', f'{side}_Pincers1', (x, 0.3, 0.55))]
-    entry = _entry(joints, ('Multiped', 'Scuttling'))
+    entry = _entry(joints, ('Multiped', 'Crawling'))
     parts, proposal = _parts(entry)
     assert proposal['L_Finger']['contact'] == 1
     assert parts['L_UpperArm'] == 'leg' and parts['L_Finger'] == 'foot'

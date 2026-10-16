@@ -113,7 +113,6 @@ SPECIES_LOCOMOTIONS = (
     "Hovering",
     "Lumbering",
     "Scurrying",
-    "Scuttling",
     "Slithering",
     "Striding",
     "Swimming",
