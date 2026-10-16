@@ -53,7 +53,7 @@
 {"species": "LOL_Nasus", "species_tags": ["Biped", "Striding"]}
 {"species": "MVN_Puppet", "species_tags": ["Biped", "Striding"]}
 {"species": "MXO_Human", "species_tags": ["Biped", "Striding"]}
-{"species": "ORA_Alien", "species_tags": ["Multiped", "Galloping"]}
+{"species": "ORA_Alien", "species_tags": ["Quadruped", "Galloping"]}
 {"species": "ORA_ArmoredCatfish", "species_tags": ["Aquatic", "Swimming"]}
 {"species": "ORA_ArtDoll", "species_tags": ["Biped", "Striding"]}
 {"species": "ORA_BabySheegoth", "species_tags": ["Biped", "Lumbering"]}
@@ -133,7 +133,6 @@
 {"species": "ORA_SpiderHero", "species_tags": ["Biped", "Striding"]}
 {"species": "ORA_SpiderRobot", "species_tags": ["Multiped", "Clanking"]}
 {"species": "ORA_SpikyBrute", "species_tags": ["Biped", "Striding"]}
-{"species": "ORA_StripedCritter", "species_tags": ["Quadruped", "Waddling"]}
 {"species": "ORA_SwimmerHumanoid", "species_tags": ["Biped", "Striding"]}
 {"species": "ORA_SwordMaiden", "species_tags": ["Biped", "Striding"]}
 {"species": "ORA_Tiger", "species_tags": ["Biped", "Striding"]}
@@ -216,9 +215,9 @@
 {"species": "DNL_Boa", "species_tags": ["Serpentine", "Slithering"]}
 {"species": "DNL_Centaur", "species_tags": ["Quadruped", "Galloping"]}
 {"species": "DNL_Cyclops", "species_tags": ["Biped", "Lumbering"]}
-{"species": "DNL_Devil", "species_tags": ["Biped", "Striding"]}
+{"species": "DNL_Devil", "species_tags": ["Biped", "Trotting"]}
 {"species": "DNL_Goblin", "species_tags": ["Biped", "Striding"]}
-{"species": "DNL_Harpy", "species_tags": ["Biped", "Flapping"]}
+{"species": "DNL_Harpy", "species_tags": ["Biped", "Trotting"]}
 {"species": "DNL_Leonopteryx", "species_tags": ["Winged", "Flapping"]}
 {"species": "DNL_M0002", "species_tags": ["Biped", "Striding"]}
 {"species": "DNL_M0019", "species_tags": ["Biped", "Striding"]}

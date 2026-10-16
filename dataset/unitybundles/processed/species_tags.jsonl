@@ -77,7 +77,7 @@
 {"species": "MU06_Whirlwind", "species_tags": ["Drifting", "Hovering"]}
 {"species": "MU06_Wind", "species_tags": ["Drifting", "Hovering"]}
 {"species": "MU06_WindMage", "species_tags": ["Drifting", "Hovering"]}
-{"species": "PC_PolygonalDragon", "species_tags": ["Quadruped", "Flapping"]}
+{"species": "PC_PolygonalDragon", "species_tags": ["Quadruped", "Trotting"]}
 {"species": "PC_PolygonalGiantBee", "species_tags": ["Winged", "Fluttering"]}
 {"species": "PC_PolygonalGolem", "species_tags": ["Biped", "Lumbering"]}
 {"species": "PC_PolygonalKingCobra", "species_tags": ["Serpentine", "Slithering"]}
@@ -98,13 +98,13 @@
 {"species": "RMW_TurtleShell", "species_tags": ["Drifting", "Crawling"]}
 {"species": "RTH_Hero", "species_tags": ["Biped", "Striding"]}
 {"species": "RU01_BallRobot", "species_tags": ["Drifting", "Hovering"]}
-{"species": "RU01_BlastRobot", "species_tags": ["Quadruped", "Scuttling"]}
+{"species": "RU01_BlastRobot", "species_tags": ["Multiped", "Clanking"]}
 {"species": "RU01_BotRobot", "species_tags": ["Drifting", "Hovering"]}
 {"species": "RU01_BoxyRobot", "species_tags": ["Drifting", "Hovering"]}
 {"species": "RU01_DeliveryRobot", "species_tags": ["Drifting", "Hovering"]}
 {"species": "RU01_GridRobot", "species_tags": ["Drifting", "Hovering"]}
 {"species": "RU01_GripperRobot", "species_tags": ["Drifting", "Hovering"]}
-{"species": "RU01_HermitRobot", "species_tags": ["Quadruped", "Scuttling"]}
+{"species": "RU01_HermitRobot", "species_tags": ["Multiped", "Clanking"]}
 {"species": "RU01_JellyfishRobot", "species_tags": ["Drifting", "Undulating"]}
 {"species": "RU01_MetalRobot", "species_tags": ["Biped", "Clanking"]}
 {"species": "RU01_NexusRobot", "species_tags": ["Drifting", "Hovering"]}
