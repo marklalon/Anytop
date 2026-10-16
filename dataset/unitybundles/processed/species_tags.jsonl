@@ -90,7 +90,7 @@
 {"species": "RMW_Dragon", "species_tags": ["Winged", "Flapping"]}
 {"species": "RMW_EvilMage", "species_tags": ["Drifting", "Crawling"]}
 {"species": "RMW_Golem", "species_tags": ["Drifting", "Hovering"]}
-{"species": "RMW_MonsterPlant", "species_tags": ["Multiped", "Waddling"]}
+{"species": "RMW_MonsterPlant", "species_tags": ["Multiped", "Scuttling"]}
 {"species": "RMW_Orc", "species_tags": ["Biped", "Lumbering"]}
 {"species": "RMW_Skeleton", "species_tags": ["Biped", "Striding"]}
 {"species": "RMW_Slime", "species_tags": ["Drifting", "Hovering"]}

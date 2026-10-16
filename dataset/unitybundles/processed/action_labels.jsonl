@@ -1299,7 +1299,7 @@
 {"clip": "MU06_Angel_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
 {"clip": "MU06_AngelMage_CastSpell01", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "MU06_AngelMage_CastSpell02", "action_group": "stationary", "action_label": "attack, spin, cast", "is_loop": true, "reviewed": true}
-{"clip": "MU06_AngelMage_ChannelingAttack", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
+{"clip": "MU06_AngelMage_ChannelingAttack", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "MU06_AngelMage_DashForward", "action_group": "locomotion", "action_label": "fly, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "MU06_AngelMage_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "MU06_AngelMage_FlyForward", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
@@ -1313,7 +1313,7 @@
 {"clip": "MU06_AngelMage_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MU06_AngelMage_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MU06_AngelMage_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
-{"clip": "MU06_AngelMage_WindAttack", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
+{"clip": "MU06_AngelMage_WindAttack", "action_group": "stationary", "action_label": "hover", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Archangel_CastSpell", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Archangel_DashForward", "action_group": "locomotion", "action_label": "fly, forward, fast", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Archangel_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
