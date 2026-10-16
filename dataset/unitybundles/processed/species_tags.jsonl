@@ -24,7 +24,7 @@
 {"species": "MLS_Knome", "species_tags": ["Biped", "Waddling"]}
 {"species": "MLS_RockGolem", "species_tags": ["Biped", "Lumbering"]}
 {"species": "MLS_Treeant", "species_tags": ["Biped", "Lumbering"]}
-{"species": "MU01_Bat", "species_tags": ["Winged", "Flapping"]}
+{"species": "MU01_Bat", "species_tags": ["Drifting", "Flapping"]}
 {"species": "MU01_BatLord", "species_tags": ["Winged", "Flapping"]}
 {"species": "MU01_Bee", "species_tags": ["Winged", "Fluttering"]}
 {"species": "MU01_Bird", "species_tags": ["Winged", "Flapping"]}
@@ -73,11 +73,11 @@
 {"species": "MU06_Ice", "species_tags": ["Drifting", "Hovering"]}
 {"species": "MU06_IceMage", "species_tags": ["Drifting", "Hovering"]}
 {"species": "MU06_Icicle", "species_tags": ["Drifting", "Hovering"]}
-{"species": "MU06_Nightmare", "species_tags": ["Drifting", "Undulating"]}
+{"species": "MU06_Nightmare", "species_tags": ["Aquatic", "Undulating"]}
 {"species": "MU06_Whirlwind", "species_tags": ["Drifting", "Hovering"]}
 {"species": "MU06_Wind", "species_tags": ["Drifting", "Hovering"]}
 {"species": "MU06_WindMage", "species_tags": ["Drifting", "Hovering"]}
-{"species": "PC_PolygonalDragon", "species_tags": ["Quadruped", "Trotting"]}
+{"species": "PC_PolygonalDragon", "species_tags": ["Winged", "Flapping"]}
 {"species": "PC_PolygonalGiantBee", "species_tags": ["Winged", "Fluttering"]}
 {"species": "PC_PolygonalGolem", "species_tags": ["Biped", "Lumbering"]}
 {"species": "PC_PolygonalKingCobra", "species_tags": ["Serpentine", "Slithering"]}
@@ -105,12 +105,11 @@
 {"species": "RU01_GridRobot", "species_tags": ["Drifting", "Hovering"]}
 {"species": "RU01_GripperRobot", "species_tags": ["Drifting", "Hovering"]}
 {"species": "RU01_HermitRobot", "species_tags": ["Multiped", "Clanking"]}
-{"species": "RU01_JellyfishRobot", "species_tags": ["Drifting", "Undulating"]}
+{"species": "RU01_JellyfishRobot", "species_tags": ["Aquatic", "Undulating"]}
 {"species": "RU01_MetalRobot", "species_tags": ["Biped", "Clanking"]}
 {"species": "RU01_NexusRobot", "species_tags": ["Drifting", "Hovering"]}
 {"species": "RU01_TankerRobot", "species_tags": ["Biped", "Clanking"]}
 {"species": "RU01_TechRobot", "species_tags": ["Biped", "Clanking"]}
-{"species": "RU01_TentaclesRobot", "species_tags": ["Drifting", "Undulating"]}
 {"species": "RU02_DragonBot", "species_tags": ["Winged", "Flapping"]}
 {"species": "RU02_DragonPredatorRobot", "species_tags": ["Winged", "Flapping"]}
 {"species": "RU02_DragonRobot", "species_tags": ["Winged", "Flapping"]}

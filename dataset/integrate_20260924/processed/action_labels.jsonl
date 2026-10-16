@@ -445,7 +445,6 @@
 {"clip": "MXO_Human_WalkStrafeLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, left"}
 {"clip": "MXO_Human_Waving", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, wave"}
 {"clip": "MXO_Human_Yawn", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, yawn"}
-{"clip": "ORA_Alien_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "ORA_ArmoredCatfish_Swim", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "ORA_ArmoredCatfish_SwimFast", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
 {"clip": "ORA_ArtDoll_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
@@ -534,7 +533,7 @@
 {"clip": "ORA_FemaleHumanoid_Gesture", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, taunt"}
 {"clip": "ORA_Fish_Turn", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "ORA_Gargoyle_Crouch", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "kneel"}
-{"clip": "ORA_GhostWorm_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "ORA_GhostWorm_Idle", "action_group": "stationary", "action_label": "idle, hover", "is_loop": true, "reviewed": true}
 {"clip": "ORA_Goat_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
 {"clip": "ORA_Goat_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "ORA_GrappleGuardian_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
@@ -933,12 +932,12 @@
 {"clip": "SC2_Baneling_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "SC2_Baneling_Spawn", "action_group": "transition", "is_loop": false, "action_label": "spawn", "reviewed": true}
 {"clip": "SC2_BroodLord_Fly", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}
-{"clip": "SC2_BroodLord_Hover", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
-{"clip": "SC2_Drone_Attack01", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, swat"}
-{"clip": "SC2_Drone_Eat", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "idle, eat"}
+{"clip": "SC2_BroodLord_Hover", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
+{"clip": "SC2_Drone_Attack01", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, hover, swat"}
+{"clip": "SC2_Drone_Eat", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "idle, hover, eat"}
 {"clip": "SC2_Drone_FallLand", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, jump"}
-{"clip": "SC2_Drone_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
-{"clip": "SC2_Drone_Spawn", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "spawn"}
+{"clip": "SC2_Drone_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
+{"clip": "SC2_Drone_Spawn", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "spawn, hover"}
 {"clip": "SC2_Hydralisk_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
 {"clip": "SC2_Hydralisk_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, punch"}
 {"clip": "SC2_Hydralisk_Attack3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, swat"}
@@ -1025,7 +1024,7 @@
 {"clip": "SC2_Roach_WalkLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, left"}
 {"clip": "SC2_Roach_WalkRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, right"}
 {"clip": "SC2_Symbiote_Hover", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "fly, forward"}
-{"clip": "SC2_Symbiote_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
+{"clip": "SC2_Symbiote_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
 {"clip": "SC2_Symbiote_Run", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "run, forward"}
 {"clip": "SC2_Ultralisk_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, swat"}
 {"clip": "SC2_Ultralisk_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, swat"}
