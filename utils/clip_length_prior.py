@@ -15,10 +15,9 @@ It has two halves that share one on-disk contract:
   writes a per-species table of clip lengths, split by action group + canonical
   action label, by whether the clip is a loop and by whether it is
   high-frequency (``truebones_utils/high_frequency.py``).
-* **Lookup** (``auto_num_frames`` and ``auto_loop``, run by
-  ``sample/generate.py``) reads that table back out of ``cond.npy`` and returns
-  the median length for the requested label, or whether the corpus animates
-  that label as a loop.
+* **Lookup** (``auto_num_frames``, run by ``sample/generate.py``) reads that
+  table back out of ``cond.npy`` and returns the median length for the
+  requested label.
 
 The table lives in ``cond.npy`` and nowhere else, because cond.npy is the whole
 inference contract: generation reads no dataset directory. (The retired
@@ -235,12 +234,6 @@ def _lengths_for(cond_entry, matches, loop_only: bool, window_frames) -> list[in
     return loops if loop_only else loops + oneshots
 
 
-def _loop_flags_for(cond_entry, matches, window_frames) -> list[bool]:
-    """One trained ``is_loop`` per recorded clip of one species under ``matches``."""
-    loops, oneshots = _effective_buckets(cond_entry, matches, window_frames)
-    return [True] * len(loops) + [False] * len(oneshots)
-
-
 def _group_matches(key_group, wanted_group) -> bool:
     """Does a table key's group satisfy the request's?
 
@@ -437,43 +430,3 @@ def auto_num_frames(
         return None
     lengths, explanation = found
     return _pooled_median(lengths, min_frames, max_frames), f"median of {explanation}"
-
-
-def auto_loop(
-    cond_dict: Mapping[str, Mapping[str, object]],
-    target_type: Optional[str],
-    *,
-    action_group: str,
-    action_label: str,
-    window_frames: int,
-) -> Optional[tuple[bool, str]]:
-    """Whether the corpus animates ``action_label`` as a loop, or ``None``.
-
-    Returns ``(is_loop, explanation)``; ``None`` means no training clip carries
-    this label (or a label sharing its head words) and the caller keeps its own
-    default. Same ladder and same pool as :func:`auto_num_frames`, so the loop
-    verdict and the length it then gates are read off the same clips.
-
-    The verdict is the pool's majority. ``is_loop`` is a conditioning input the
-    model only ever saw paired with the label the way the corpus authored it --
-    every loop clip is trained as a loop, every one-shot as open -- so a label
-    the corpus holds only as loops (``"jump, up"``, say) has nothing behind the
-    open-window pairing and samples off-distribution there. A tie keeps the
-    open window, the convention every earlier run defaulted to.
-
-    A high-frequency loop longer than ``window_frames`` is trained open (the
-    loader crops it), so it votes open here.
-    """
-    matchers = _matchers_for(action_group, action_label)
-    if not matchers:
-        return None
-    found = _first_pool(
-        cond_dict, target_type, matchers,
-        lambda entry, matches: _loop_flags_for(entry, matches, window_frames),
-    )
-    if found is None:
-        return None
-    flags, explanation = found
-    loops = sum(1 for flag in flags if flag)
-    is_loop = loops * 2 > len(flags)
-    return is_loop, f"{loops} of {explanation} are loops"

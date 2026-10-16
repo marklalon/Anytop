@@ -367,9 +367,9 @@ def main(args=None, cond_dict=None, runtime=None):
     # resample), and the sampled window is exported with the matching periodic
     # resample so nothing downstream breaks the cycle open. A reference is not
     # part of that: it only supplies the verdict under 'auto' and is otherwise a
-    # one-shot clip. 'auto' needs the action label and the target species
-    # (resolve_loop_condition), so the bool is fixed further down, right before
-    # the length that depends on it.
+    # one-shot clip. 'auto' needs the action label (resolve_loop_condition),
+    # so the bool is fixed further down, right before the length that depends
+    # on it.
     loop_mode = getattr(args, 'loop', 'auto')
 
     # ── Resolve --object_type ───────────────────────────────────────────────
@@ -565,14 +565,7 @@ def main(args=None, cond_dict=None, runtime=None):
     _action_condition = _resolve_action_condition(args, model)
     loop_condition = None
     if not reference_motion_path:
-        loop_condition = resolve_loop_condition(
-            loop_mode,
-            cond_dict,
-            object_type,
-            _action_condition,
-            window_frames=internal_num_frames,
-            fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file),
-        )
+        loop_condition = resolve_loop_condition(loop_mode, _action_condition)
     if requested_output_frames is None and not reference_motion_path:
         # A reference outranks the label: with one present the length is its own
         # R, finalized from the loaded reference further down.
@@ -651,10 +644,7 @@ def main(args=None, cond_dict=None, runtime=None):
         # cycle is the model's job.
         loop_condition = resolve_loop_condition(
             loop_mode,
-            cond_dict,
-            object_type,
             _action_condition,
-            window_frames=internal_num_frames,
             reference_features=ref_features_full,
             translation_root_index=int(cond_dict[object_type].get('translation_root_index', 0)),
         )

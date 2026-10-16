@@ -17,9 +17,13 @@ from data_loaders.truebones.data.dataset import (
 )
 from data_loaders.truebones.truebones_utils.animation_utils import detect_loop_from_features
 from data_loaders.truebones.truebones_utils.loop_verdict import stored_loop_verdict
+from data_loaders.truebones.truebones_utils.motion_labels import (
+    head_words_in,
+    loop_is_phase_free,
+    parse_action_label,
+)
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
 from utils.clip_length_prior import (
-    auto_loop,
     auto_num_frames,
     has_clip_length_prior,
     merge_prior_pool,
@@ -95,14 +99,10 @@ def reference_loop_verdict(reference_features, translation_root_index):
 
 def resolve_loop_condition(
     loop_mode,
-    cond_dict,
-    target_type,
     action_condition,
     *,
-    window_frames,
     reference_features=None,
     translation_root_index=0,
-    fallback_cond_loader=None,
     verbose=True,
 ):
     """The ``is_loop`` condition a generation runs with, from ``--loop``.
@@ -115,19 +115,12 @@ def resolve_loop_condition(
     loop when the clip closes (:func:`reference_loop_verdict`). The reference
     sets the window, so the label's habit is beside the point here.
 
-    ``'auto'`` without one follows the training corpus: the majority of the
-    clips carrying ``--action_label`` (the same lookup that picks the auto
-    ``--num_frames``, so both are read off the same clips) decides. ``is_loop``
-    is a conditioning input the model only ever saw paired with a label the
-    way that label's clips were authored, so for a label the corpus holds only
-    as loops the open-window pairing is off-distribution -- an unflagged
-    ``"jump, up"`` is the case in point. Without a label there is nothing to
-    key the verdict on, so ``'off'`` -- the behaviour every earlier run had.
-
-    ``target_type`` ``None`` asks for the corpus-wide answer (``--object_type
-    all`` is resolved per species by :func:`_all_species_output_lengths`
-    instead). ``window_frames`` is the checkpoint's native window: a
-    high-frequency loop longer than it is trained open (``auto_loop``).
+    ``'auto'`` without one follows the ``--action_label`` head words: a
+    loop when every head is phase-free (:func:`loop_is_phase_free` -- a gait
+    cycle, a wingbeat, an idle), the same rule that decides which loop clips
+    the loader rolls and tiles. A phase-anchored head (jump, attack, roar ...)
+    is one event in an open window. Without a label there is nothing to key
+    the verdict on, so ``'off'``.
     """
     if isinstance(loop_mode, bool):
         return loop_mode
@@ -143,26 +136,17 @@ def resolve_loop_condition(
             print(f'  loop (auto) -> {"on" if is_loop else "off"} ({explanation})')
         return is_loop
 
-    resolved, pool = None, cond_dict
-    if action_condition is not None:
-        resolved, pool = _ask_prior(
-            cond_dict, fallback_cond_loader,
-            lambda candidates: auto_loop(
-                candidates,
-                target_type,
-                action_group=action_condition['action_group'],
-                action_label=action_condition['action_label'],
-                window_frames=window_frames,
-            ),
-        )
-    if resolved is not None:
-        is_loop, explanation = resolved
+    if action_condition is None:
         if verbose:
-            print(f'  loop (auto) -> {"on" if is_loop else "off"} ({explanation})')
-        return bool(is_loop)
+            print('  loop (auto) -> off (no --action_label to infer from)')
+        return False
+    label = action_condition['action_label']
+    is_loop = loop_is_phase_free(label)
     if verbose:
-        print(f'  loop (auto) -> off ({_no_prior_reason(pool, action_condition)})')
-    return False
+        heads = ', '.join(head_words_in(parse_action_label(label))) or 'none'
+        kind = 'phase-free' if is_loop else 'phase-anchored'
+        print(f'  loop (auto) -> {"on" if is_loop else "off"} (head word(s) {heads}: {kind})')
+    return is_loop
 
 
 def fit_reference_to_output(reference_features, requested_frames):
@@ -304,17 +288,12 @@ def _all_species_output_lengths(
     not a hint. Otherwise each species is resolved on its own prior: one shared
     median would time every species but the average one wrongly, and the length
     is free to differ because it is per-sample in the batch anyway. ``--loop``
-    is resolved per species the same way (``loop_mode`` is the raw flag), since
-    ``is_loop`` is per-sample too.
+    (``loop_mode``, the raw flag) depends on the label only, so every species
+    gets the same verdict.
     """
     lengths = {}
     for species in cond_dict:
-        is_loop = resolve_loop_condition(
-            loop_mode, cond_dict, species, action_condition,
-            window_frames=internal_num_frames,
-            fallback_cond_loader=fallback_cond_loader,
-            verbose=False,
-        )
+        is_loop = resolve_loop_condition(loop_mode, action_condition, verbose=False)
         if explicit is not None:
             target, speed = explicit
         else:
