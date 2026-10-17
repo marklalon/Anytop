@@ -12,6 +12,11 @@ from utils.device_transfer import host_to_device
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     JOINT_STRUCT_DIM,
 )
+from data_loaders.truebones.truebones_utils.canonical_features import (
+    JOINT_MODEL_CHANNELS,
+    ROOT_MODEL_CHANNELS,
+    ROOT_VEL_CHANNELS,
+)
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_LABEL_SLOTS,
     HEAD_SLOT_PRIMARY_WEIGHT,
@@ -55,7 +60,7 @@ def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 
 class AnyTop(nn.Module):
     def __init__(self, max_joints, feature_len,
                  latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
-                 activation="gelu", t5_out_dim = 512, root_input_feats=12,
+                 activation="gelu", t5_out_dim = 512,
                  **kargs):
         super().__init__()
 
@@ -67,8 +72,11 @@ class AnyTop(nn.Module):
         self.num_heads = num_heads
         self.dropout = dropout
         self.activation = activation
-        self.input_feats = self.feature_len
-        self.root_input_feats = root_input_feats
+        # feature_len is the tensor width; the model reads and writes only the
+        # channels canonical_features keeps (the derived velocity is not a
+        # model channel).
+        self.input_feats = len(JOINT_MODEL_CHANNELS)
+        self.root_input_feats = len(ROOT_MODEL_CHANNELS)
         self.cond_mode = kargs.get('cond_mode', 'no_cond')
         self.value_emb=kargs.get('value_emb', False)
         self.cross_limb=kargs.get('cross_limb', True)
@@ -248,7 +256,9 @@ class AnyTop(nn.Module):
                                                         mirror_twin_drop_prob=self.mirror_twin_drop_prob)
             
         
-        self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
+        self.output_process = OutputProcess(
+            self.feature_len, self.input_feats, self.root_input_feats, self.max_joints, self.latent_dim
+        )
         self.topology_conditioner = (
             TopologyConditioner(self.latent_dim, self.num_layers, self.num_heads)
             if self.topology_cond else None
@@ -1039,7 +1049,9 @@ class InputProcess(nn.Module):
         self.root_input_feats = root_input_feats
         self.species_joint_cond = species_joint_cond
         self.root_embedding = nn.Linear(self.root_input_feats, self.latent_dim)
-        self.tpos_root_embedding = nn.Linear(self.root_input_feats, self.latent_dim)
+        # The rest pose has no velocity, so the root's rest token reads the
+        # joint channels only.
+        self.tpos_root_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.tpos_joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.joints_names_dropout = nn.Dropout(p=dropout_prob)
@@ -1110,10 +1122,15 @@ class InputProcess(nn.Module):
         """
         # x.shape = [batch_size, joints, feature_len, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
-        rest_pose_all_joints_except_root = self.tpos_joint_embedding(rest_pose[:, :, 1:])
-        rest_pose_root_data = self.tpos_root_embedding(rest_pose[:, :, 0:1])
-        all_joints_except_root = self.joint_embedding(x[:, :, 1:])
-        root_data = self.root_embedding(x[:, :, 0:1])
+        n_joint_channels = len(JOINT_MODEL_CHANNELS)
+        rest_pose_all_joints_except_root = self.tpos_joint_embedding(rest_pose[:, :, 1:, :n_joint_channels])
+        rest_pose_root_data = self.tpos_root_embedding(rest_pose[:, :, 0:1, :n_joint_channels])
+        all_joints_except_root = self.joint_embedding(x[:, :, 1:, :n_joint_channels])
+        # Slices, not an index list: a list index uploads to the device per call.
+        root_x = x[:, :, 0:1]
+        root_data = self.root_embedding(torch.cat(
+            [root_x[..., :n_joint_channels]] + [root_x[..., c:c + 1] for c in ROOT_VEL_CHANNELS], dim=-1
+        ))
         tpos_embedded = torch.cat([rest_pose_root_data, rest_pose_all_joints_except_root], dim=2)
         x_embedded = torch.cat([root_data, all_joints_except_root], dim=2)
         x = torch.cat([tpos_embedded, x_embedded], dim=0)
@@ -1191,14 +1208,19 @@ class InputProcess(nn.Module):
 
 
 class OutputProcess(nn.Module):
-    def __init__(self, feature_len, root_feature_len, max_joints, latent_dim):
+    """Predicts the kept channels and writes them into a ``feature_len``-wide
+    tensor whose derived velocity channels are zero (canonical_features,
+    "Derived velocity")."""
+
+    def __init__(self, feature_len, joint_feature_len, root_feature_len, max_joints, latent_dim):
         super().__init__()
         self.feature_len = feature_len
         self.max_joints = max_joints
         self.latent_dim = latent_dim
+        self.joint_feature_len = joint_feature_len
         self.root_feature_len = root_feature_len
         self.root_dembedding = nn.Linear(self.latent_dim, self.root_feature_len)
-        self.joint_dembedding = nn.Linear(self.latent_dim, self.feature_len)
+        self.joint_dembedding = nn.Linear(self.latent_dim, self.joint_feature_len)
 
     def forward(self, output):
         # output shape [frames, batch_size, joints, latent_dim]
@@ -1207,8 +1229,14 @@ class OutputProcess(nn.Module):
         # flatness (docs/bf16_precision_issues.md). Two small linears, so fp32 is free.
         with torch.autocast(device_type=output.device.type, enabled=False):
             output = output.float()
-            root_data = self.root_dembedding(output[:, :, 0])
-            all_joints = self.joint_dembedding(output[:, :, 1:])
+            root_kept = self.root_dembedding(output[:, :, 0])
+            joints_kept = self.joint_dembedding(output[:, :, 1:])
+        n_joint_channels = self.joint_feature_len
+        root_data = root_kept.new_zeros(root_kept.shape[:-1] + (self.feature_len,))
+        root_data[..., :n_joint_channels] = root_kept[..., :n_joint_channels]
+        for offset, channel in enumerate(ROOT_VEL_CHANNELS):
+            root_data[..., channel] = root_kept[..., n_joint_channels + offset]
+        all_joints = nn.functional.pad(joints_kept, (0, self.feature_len - n_joint_channels))
         output = torch.cat([root_data.unsqueeze(2), all_joints], dim=-2)
         output = output.permute(1, 2, 3, 0)[..., 1:]  # [bs, njoints, nfeats, nframes]
         return output

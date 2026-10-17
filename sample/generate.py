@@ -19,10 +19,11 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from data_loaders.truebones.data.dataset import ensure_joint_name_embeddings
+from data_loaders.truebones.data.dataset import ensure_joint_name_embeddings, resample_step_scale
 from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
+    rebuild_derived_velocity,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import (
@@ -56,12 +57,10 @@ from sample.generation_runtime import (
     prepare_generation_runtime,
 )
 from sample.inpaint import (
-    _reanchor_inpaint_root_y_via_velocity,
     _reground_inpaint_joint_y,
     _resolve_inpaint_joint_indices,
     build_inpaint_mask,
     check_full_coverage_inpaint_early,
-    inpaint_y_anchor_spans,
     resolve_inpaint_policy,
 )
 from sample.output_lengths import (
@@ -88,6 +87,16 @@ from utils import dist_util
 from utils.fixseed import fixseed
 from utils.misc import infer_object_type_from_filename
 from utils.parser_util import generate_args
+
+
+def _with_derived_velocity(motion_np, resample_speed, loop):
+    """Fill the derived velocity rows of a decoded ``[T, J, F]`` window, at the
+    window's own step (``vel * step`` is a window-frame step), so the export
+    resample and every reader of the saved rows see full physical velocity."""
+    n_frames = motion_np.shape[0]
+    speed = 1.0 if resample_speed is None else float(resample_speed)
+    step = resample_step_scale(speed * n_frames, n_frames, periodic=bool(loop))
+    return rebuild_derived_velocity(motion_np, is_loop=bool(loop), step_scale=step)
 
 
 def _generate_all_species(
@@ -199,7 +208,10 @@ def _generate_all_species(
                 motion = motion[:n_joints]
                 # Decode with full cond entry (carries rest geometry + global standardization stats).
                 motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), sp_entry)[0]
-                motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
+                motion_np = _with_derived_velocity(
+                    motion_physical.cpu().permute(2, 0, 1).numpy(),
+                    species_output_lengths[sp][1], species_output_lengths[sp][2],
+                )
 
                 motion_np = _resample_window_to_output(
                     motion_np, species_output_lengths[sp][0], output_frame_count,
@@ -887,12 +899,6 @@ def main(args=None, cond_dict=None, runtime=None):
         cond_dict[object_type]['joints_names'],
     ))
     preview_options = _bvh_preview_options(args)
-    # Inpaint Y-anchor spans, applied per joint via vel_y integration with
-    # dual-end ramp anchoring once the motion is back in output frames.
-    inpaint_y_spans = (
-        inpaint_y_anchor_spans(inpaint_frames_arg, target_output_frames)
-        if user_inpaint_active else None
-    )
     # A frame-range clamp (inpaint frames, outpaint) is built on the export's
     # interpolation preimage, so it keeps the interpolating export.
     export_inverts_window = not (inpaint_frames_arg or outpaint_active)
@@ -905,7 +911,9 @@ def main(args=None, cond_dict=None, runtime=None):
         # Decode with the full per-species cond entry (rest geometry + global
         # standardization stats), not a minimal dict that would drop the stats.
         motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), cond_dict[object_type])[0]
-        motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
+        motion_np = _with_derived_velocity(
+            motion_physical.cpu().permute(2, 0, 1).numpy(), resample_speed_cond_value, loop_condition,
+        )
 
         motion_np = _resample_window_to_output(
             motion_np, target_output_frames, output_frame_count, loop_condition,
@@ -920,9 +928,9 @@ def main(args=None, cond_dict=None, runtime=None):
             fallback=cond_dict[object_type].get('translation_root_index', 0),
         )
 
-        if inpaint_y_spans:
-            _reanchor_inpaint_root_y_via_velocity(motion_np, inpaint_y_spans)
-        elif reseat_reference is not None:
+        # A frame-range inpaint keeps the clamped frames' own ground; only a
+        # joint subset needs re-seating onto the reference.
+        if reseat_reference is not None and not (user_inpaint_active and inpaint_frames_arg):
             ref_phys = canonical_to_physical_hml(
                 reseat_reference[sample_idx][:n_joints].to(motion.device).unsqueeze(0),
                 cond_dict[object_type],

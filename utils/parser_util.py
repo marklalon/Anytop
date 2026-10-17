@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 29
+CKPT_VERSION = 30
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -225,17 +225,23 @@ def add_model_options(parser):
     group.add_argument("--species_film_bottleneck", default=128, type=int,
                        help="Hidden width of the joint x species FiLM head (default 128; 0 = latent_dim).")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
-    group.add_argument("--lambda_vel", default=0.0, type=float,
-                       help="Weight for velocity-position consistency loss (0.0=off)."
-                            " Penalizes |pos[t+1]-pos[t] - (vel[t] - vel_root[t])|^2 on denormalized outputs,"
-                            " the root's velocity subtracted on X/Z only (RIC positions are root-XZ-relative,"
-                            " velocities are world deltas), so the residual is exactly zero on real data."
-                            " Couples position and velocity feature groups to prevent independent memorization.")
+    # Root velocity keeps its former loss share; position steps use a lower
+    # weight because temporal differences amplify position gradients.
+    group.add_argument("--lambda_root_vel", default=0.05, type=float,
+                       help="Weight of the root's X/Z velocity MSE, the only velocity the model "
+                            "predicts: every other joint's velocity is its own position step plus the root's, "
+                            "so the canonical space drops it. Per sample, in canonical units, scaled by the "
+                            "species' root_vel_loss_weight from cond.npy.")
+    group.add_argument("--lambda_dpos", default=0.1, type=float,
+                       help="Weight of the frame-to-frame position-step MSE against the target, "
+                            "in units of the corpus position-step RMS; a loop sample also counts its wrap "
+                            "step pos[0]-pos[-1]. It is the position supervision the dropped non-root "
+                            "velocity channels used to carry. Scaled by the species' dpos_loss_weight.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
-                       help="Weight for the loop-only seam continuity loss on denormalized outputs: the "
-                            "terminal velocity row equals the wrap delta pos[0]-pos[-1], and the wrap "
-                            "step's rotation angle matches its neighbouring steps. A loop window's last "
-                            "frame is one step before frame 0, never a copy of it.")
+                       help="Weight for the loop-only rotation seam continuity loss on denormalized "
+                            "outputs: the wrap step's rotation angle matches its neighbouring steps. A loop "
+                            "window's last frame is one step before frame 0, never a copy of it; the "
+                            "position seam is --lambda_dpos's wrap step.")
     group.add_argument("--lambda_loop_root_closure", default=0.0, type=float,
                        help="Weight for the loop-only full-cycle closure of the translation root's XZ "
                             "velocity (0.0=off): ||sum_t vel_xz[t] * step||^2 over ALL rows, the terminal "
@@ -533,7 +539,7 @@ def add_training_options(parser):
                        help="Maximum length of each sampled training-time temporal span perturbation. "
                             "Must be >= temporal_span_mask_min_frames.")
     group.add_argument("--temporal_span_seam_loss_weight", default=0.0, type=float,
-                       help="Weight of a target-relative acceleration (2nd temporal difference) penalty on the position channel, applied in a Gaussian seam band around sampled temporal-span boundaries. Suppresses inpainting-seam acceleration spikes that l_simple and vel_loss do not catch. 0 disables it.")
+                       help="Weight of a target-relative acceleration (2nd temporal difference) penalty on the position channel, applied in a Gaussian seam band around sampled temporal-span boundaries. Suppresses inpainting-seam acceleration spikes that l_simple and dpos_loss do not catch. 0 disables it.")
     group.add_argument("--temporal_span_seam_width", default=2, type=int,
                        help="Radius of the Gaussian seam band on each side of a sampled temporal-span boundary frame.")
     group.add_argument("--renoise_same_level_prob", default=1.0, type=float,

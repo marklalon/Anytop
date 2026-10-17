@@ -34,6 +34,11 @@ from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.data.dataset import EmptySplitError
 from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
 from train.sample_loss_limit import SampleLossLimiter
+from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
+
+# Per-sample loss terms also logged per object_subset ("subset/<name>/<term>"),
+# so one body plan owning a term shows up in the logs.
+SUBSET_LOGGED_TERMS = ('l_pos', 'l_rot', 'root_vel_loss', 'dpos_loss')
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
@@ -293,6 +298,10 @@ class TrainLoop:
             self._compile_forward_model(compile_mode)
         self._interval_loss_sums = {}
         self._interval_loss_counts = {}
+        self._subset_names = []
+        self._subset_index_of_species = {}
+        self._subset_loss_sums = {}
+        self._subset_sample_counts = {}
         self._ema_persistent_buffer_names = None
 
     def _build_val_loader(self):
@@ -686,6 +695,39 @@ class TrainLoop:
                 self._interval_loss_sums[key] = mean_value.clone()
                 self._interval_loss_counts[key] = 1
 
+    def _subset_index(self, object_type):
+        index = self._subset_index_of_species.get(object_type)
+        if index is None:
+            subset = dataset_tags().object_subset_for(object_type) or 'untagged'
+            if subset not in self._subset_names:
+                self._subset_names.append(subset)
+            index = self._subset_names.index(subset)
+            self._subset_index_of_species[object_type] = index
+        return index
+
+    def _accumulate_subset_losses(self, losses, object_types):
+        """Sum SUBSET_LOGGED_TERMS per object_subset on the device; the sample
+        counts are host ints, so nothing here synchronizes."""
+        if not object_types:
+            return
+        indices = [self._subset_index(object_type) for object_type in object_types]
+        n_subsets = len(self._subset_names)
+        index_t = None
+        for key in SUBSET_LOGGED_TERMS:
+            value = losses.get(key)
+            if not torch.is_tensor(value) or value.ndim != 1 or value.numel() != len(indices):
+                continue
+            if index_t is None:
+                index_t = torch.as_tensor(indices, dtype=torch.long).to(value.device, non_blocking=True)
+            sums = torch.zeros(n_subsets, device=value.device, dtype=torch.float32)
+            sums.index_add_(0, index_t, value.detach().float())
+            previous = self._subset_loss_sums.get(key)
+            if previous is not None and previous.numel() < n_subsets:
+                previous = torch.nn.functional.pad(previous, (0, n_subsets - previous.numel()))
+            self._subset_loss_sums[key] = sums if previous is None else previous + sums
+        for index in indices:
+            self._subset_sample_counts[index] = self._subset_sample_counts.get(index, 0) + 1
+
     def _flush_interval_loss_metrics(self):
         metrics = {}
         for key, total in self._interval_loss_sums.items():
@@ -693,6 +735,13 @@ class TrainLoop:
             metrics[key] = float((total / count).item())
         self._interval_loss_sums.clear()
         self._interval_loss_counts.clear()
+        for key, sums in self._subset_loss_sums.items():
+            values = sums.cpu().tolist()
+            for index, count in self._subset_sample_counts.items():
+                if index < len(values) and count > 0:
+                    metrics[f'subset/{self._subset_names[index]}/{key}'] = values[index] / count
+        self._subset_loss_sums.clear()
+        self._subset_sample_counts.clear()
         return metrics
 
     def _validation_losses(self, model, batch, cond, t, noise):
@@ -880,6 +929,7 @@ class TrainLoop:
 
             loss = (losses["loss"] * weights).mean()
             self._accumulate_interval_losses({k: v * weights for k, v in losses.items()})
+            self._accumulate_subset_losses(losses, micro_cond['y'].get('object_type'))
             if self.spike_capture:
                 self._stash_spike_ctx(losses, t)
             self.mp_trainer.backward(loss)

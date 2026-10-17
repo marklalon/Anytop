@@ -189,16 +189,6 @@ def resolve_inpaint_policy(
     return loop
 
 
-def inpaint_y_anchor_spans(frames_arg, output_frames):
-    """Contiguous ``[(a, b)]`` runs of the user's ``--inpaint_frames``, in OUTPUT
-    frames -- already the axis ``_reanchor_inpaint_root_y_via_velocity`` walks,
-    since it runs on the exported motion. Empty when no range was given.
-    """
-    if not frames_arg:
-        return None
-    return _contiguous_frame_runs(_parse_frame_ranges(frames_arg, output_frames))
-
-
 def _map_frame_ranges_to_internal(spec, source_frames, target_frames, loop=False):
     """Map a frame range given in OUTPUT frames onto the sampler's window.
 
@@ -278,38 +268,6 @@ def _frame_runs_to_spec(runs):
     return ','.join(
         f'{start}-{end}' if start != end else str(start) for start, end in runs
     )
-
-
-def _reanchor_inpaint_root_y_via_velocity(motion_np, spans):
-    """Fix inpaint Y misalignment per joint via vel-Y integral + linear ramp.
-
-    For each inpaint span [a, b], replaces pos[..., 1] with cumulative vel-Y
-    from a-1 anchored to pos_y[a-1], then ramps to match pos_y[b+1]. This
-    closes the Y seam while preserving per-frame articulation.
-
-    No-op when a span touches frame 0 or F-1 (no neighbour on one side).
-    """
-    if not spans:
-        return
-    F, J, C = motion_np.shape
-    if C < 11 or J == 0:
-        return
-    # Slice views -> writes propagate to motion_np.
-    pos_y = motion_np[:, :, 1]   # (F, J) world Y
-    vel_y = motion_np[:, :, 10]  # (F, J) vel[f] = pos[f+1] - pos[f]
-    for a, b in spans:
-        if a < 1 or b > F - 2 or a > b:
-            continue  # no clamped anchor on both sides
-        L = b - a + 1
-        integrated = pos_y[a - 1:a] + np.cumsum(
-            vel_y[a - 1:b], axis=0, dtype=np.float64,
-        )  # (L, J)
-        integrated_at_b_plus_1 = integrated[-1] + vel_y[b]
-        adjust = pos_y[b + 1] - integrated_at_b_plus_1  # (J,) residual to close
-        ramp = (np.arange(1, L + 1, dtype=np.float64) / float(L + 1))[:, None]  # (L, 1)
-        pos_y[a:b + 1] = (integrated + adjust[None, :] * ramp).astype(
-            pos_y.dtype, copy=False,
-        )
 
 
 def _reground_inpaint_joint_y(motion_np, ref_motion_np, free_joint_indices, parents):

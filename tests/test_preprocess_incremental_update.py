@@ -1362,6 +1362,7 @@ def _cond_entry_with_stats(object_type, mean_fill, std_fill):
     entry = _make_cond_entry(object_type)
     entry["canonical_feature_mean"] = np.full((FEATS_LEN,), mean_fill, dtype=np.float32)
     entry["canonical_feature_std"] = np.full((FEATS_LEN,), std_fill, dtype=np.float32)
+    entry["canonical_dpos_std"] = np.float32(0.1 * std_fill)
     return entry
 
 
@@ -1378,6 +1379,8 @@ def test_inherit_canonical_stats_copies_global_frame_without_species_tags(tmp_pa
     )
     np.testing.assert_array_equal(target["canonical_feature_mean"], np.full(FEATS_LEN, 0.5))
     np.testing.assert_array_equal(target["canonical_feature_std"], np.full(FEATS_LEN, 2.0))
+    assert np.isclose(float(target["canonical_dpos_std"]), 0.2)
+    assert float(target["root_vel_loss_weight"]) == 1.0 and float(target["dpos_loss_weight"]) == 1.0
 
 
 @pytest.mark.parametrize("mean_fill,std_fill", [(0.7, 2.0), (0.5, 3.0)])
@@ -1414,6 +1417,7 @@ def test_merge_copies_global_canonical_stats_onto_any_new_species(tmp_path):
     for name in ("Dog", "Dragon"):
         np.testing.assert_allclose(merged[name]["canonical_feature_mean"], np.full((FEATS_LEN,), 0.5, dtype=np.float32))
         np.testing.assert_allclose(merged[name]["canonical_feature_std"], np.full((FEATS_LEN,), 2.0, dtype=np.float32))
+        assert np.isclose(float(merged[name]["canonical_dpos_std"]), 0.2)
 
 
 def test_merge_still_fast_fails_when_no_species_carries_stats(tmp_path):

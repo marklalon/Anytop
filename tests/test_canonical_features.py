@@ -33,7 +33,7 @@ def _cond(with_stats=True):
     cond = mark_canonical_cond_entry({"rest_pose": rest_pose})
     if with_stats:
         mean, std = _global_stats()
-        set_canonical_global_stats(cond, mean, std)
+        set_canonical_global_stats(cond, mean, std, 0.1)
     return cond
 
 
@@ -44,16 +44,20 @@ def test_canonical_feature_roundtrip_numpy():
     canonical = physical_hml_to_canonical(physical, cond)
     recovered = canonical_to_physical_hml(canonical, cond)
 
-    # Exact inversion is the contract that every call site depends on.
-    np.testing.assert_allclose(recovered, physical, atol=1e-5)
+    # Exact inversion on every kept channel is the contract that every call
+    # site depends on; the derived velocity channels decode to zero.
+    np.testing.assert_allclose(recovered, cf.zero_derived_velocity(physical), atol=1e-5)
+    np.testing.assert_allclose(canonical[:, 1:, 9:12], 0.0)
+    np.testing.assert_allclose(canonical[:, 0, 10], 0.0)
     # Rotation channels (size-independent, no rest) are pure global standardization.
     mean = cond["canonical_feature_mean"]
     std = cond["canonical_feature_std"]
     np.testing.assert_allclose(
         canonical[..., 3:9], (physical[..., 3:9] - mean[3:9]) / std[3:9], atol=1e-5
     )
-    # Velocity is rescaled by L and standardized -> must differ from the input.
-    assert not np.allclose(canonical[..., 9:12], physical[..., 9:12])
+    # The root's X/Z velocity is rescaled by L and standardized -> must differ
+    # from the input.
+    assert not np.allclose(canonical[:, 0, [9, 11]], physical[:, 0, [9, 11]])
 
 
 def test_lnorm_scale_uses_per_skeleton_length():
@@ -120,7 +124,7 @@ def test_canonical_decode_torch_batch_layout():
     canonical = physical_hml_to_canonical(physical, y)
     recovered = canonical_to_physical_hml(canonical, y)
 
-    torch.testing.assert_close(recovered, physical, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(recovered, cf.zero_derived_velocity(physical), atol=1e-4, rtol=1e-4)
 
 
 def test_canonical_decode_torch_multi_skeleton_batch():
@@ -143,7 +147,7 @@ def test_canonical_decode_torch_multi_skeleton_batch():
     canonical = physical_hml_to_canonical(physical, y)
     recovered = canonical_to_physical_hml(canonical, y)
 
-    torch.testing.assert_close(recovered, physical, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(recovered, cf.zero_derived_velocity(physical), atol=1e-4, rtol=1e-4)
     # different skeleton sizes -> different encoded position magnitudes per sample
     assert not torch.allclose(
         canonical[0, :, 0:3].abs().mean(), canonical[1, :, 0:3].abs().mean()
@@ -255,7 +259,7 @@ def test_canonical_roundtrip_is_exact_for_a_floored_rig():
         lnorm[..., 9:12], physical[..., 9:12] / cf.REST_LENGTH_SCALE_FLOOR, rtol=1e-5
     )
     recovered = canonical_to_physical_hml(physical_hml_to_canonical(physical, cond), cond)
-    np.testing.assert_allclose(recovered, physical, atol=1e-5)
+    np.testing.assert_allclose(recovered, cf.zero_derived_velocity(physical), atol=1e-5)
 
 
 def test_length_scale_numpy_batch_ignores_padding_rows():
@@ -361,8 +365,8 @@ def test_collated_padded_batch_decodes_like_each_unpadded_sample():
     rest_b = [[0.0, 0.0, 0.0], [3.0, 1.0, -0.5]]
     max_joints = 7
     mean, std = _global_stats()
-    cond_a = set_canonical_global_stats(mark_canonical_cond_entry({}), mean, std)
-    cond_b = set_canonical_global_stats(mark_canonical_cond_entry({}), mean + 0.25, std * 1.5)
+    cond_a = set_canonical_global_stats(mark_canonical_cond_entry({}), mean, std, 0.1)
+    cond_b = set_canonical_global_stats(mark_canonical_cond_entry({}), mean + 0.25, std * 1.5, 0.1)
     _motion, batch_cond = truebones_batch_collate([
         _collate_item(cond_a, rest_a, max_joints, "A"),
         _collate_item(cond_b, rest_b, max_joints, "B"),
@@ -455,16 +459,18 @@ def _raw_subset_stats():
         dtype=np.float32,
     )
     return {
-        "quadruped": (np.arange(12, dtype=np.float32) * 0.01, quadruped_std),
-        "aquatic": (np.arange(12, dtype=np.float32) * -0.02, aquatic_std),
+        "quadruped": (np.arange(12, dtype=np.float32) * 0.01, quadruped_std, np.float32(0.2)),
+        "aquatic": (np.arange(12, dtype=np.float32) * -0.02, aquatic_std, np.float32(0.05)),
     }
 
 
 def test_pool_global_stats_weights_subsets_equally_per_block():
     raw = _raw_subset_stats()
-    mean, std = cf.pool_global_stats(raw)
+    mean, std, dpos_std = cf.pool_global_stats(raw)
 
     assert mean.shape == (12,) and std.shape == (12,)
+    # The position-step RMS is pooled like a block scalar.
+    np.testing.assert_allclose(dpos_std, 0.1, rtol=1e-6)
     # mean is the plain average of the subset means, whatever the clip counts.
     np.testing.assert_allclose(
         mean, (raw["quadruped"][0] + raw["aquatic"][0]) / 2.0, rtol=1e-6
@@ -480,26 +486,76 @@ def test_pool_global_stats_weights_subsets_equally_per_block():
 
 def test_pool_global_stats_tolerates_degenerate_blocks():
     raw = {
-        "serpentine": (np.zeros(12, dtype=np.float32), np.zeros(12, dtype=np.float32)),
+        "serpentine": (np.zeros(12, dtype=np.float32), np.zeros(12, dtype=np.float32), np.float32(0.0)),
         "aquatic": _raw_subset_stats()["aquatic"],
     }
-    _mean, std = cf.pool_global_stats(raw)
+    _mean, std, dpos_std = cf.pool_global_stats(raw)
+    np.testing.assert_allclose(dpos_std, 0.05, rtol=1e-6)
     # The constant subset contributes nothing usable; the other subset sets every block.
     np.testing.assert_allclose(std[0], raw["aquatic"][1][0:3].mean(), rtol=1e-6)
 
-    _mean, std = cf.pool_global_stats({"serpentine": raw["serpentine"]})
+    _mean, std, dpos_std = cf.pool_global_stats({"serpentine": raw["serpentine"]})
     # Nothing usable at all: unit std, never a zero divide.
     np.testing.assert_allclose(std, 1.0)
+    np.testing.assert_allclose(dpos_std, 1.0)
     with pytest.raises(ValueError):
         cf.pool_global_stats({})
 
 
 def test_assert_single_canonical_frame_rejects_mixed_frames():
-    mean, std = cf.pool_global_stats(_raw_subset_stats())
-    cond = {name: set_canonical_global_stats({}, mean, std) for name in ("Dog", "Bat")}
+    mean, std, dpos_std = cf.pool_global_stats(_raw_subset_stats())
+    cond = {name: set_canonical_global_stats({}, mean, std, dpos_std) for name in ("Dog", "Bat")}
     cond["Bare"] = {}
     cf.assert_single_canonical_frame(cond)
 
-    set_canonical_global_stats(cond["Bat"], mean + 0.1, std)
+    set_canonical_global_stats(cond["Bat"], mean + 0.1, std, dpos_std)
     with pytest.raises(ValueError, match="2 different"):
         cf.assert_single_canonical_frame(cond)
+
+    # A different position-step RMS is a different frame too.
+    set_canonical_global_stats(cond["Bat"], mean, std, dpos_std * 2.0)
+    with pytest.raises(ValueError, match="2 different"):
+        cf.assert_single_canonical_frame(cond)
+
+
+def test_rebuild_derived_velocity_matches_the_stored_world_steps():
+    # A stored clip's velocity rows are world steps (RIC removes the root's
+    # world XZ from every joint). Decoding keeps the root's X/Z and rebuilds
+    # the rest from positions; the result equals the stored rows.
+    rng = np.random.default_rng(7)
+    n_frames, n_joints, step = 6, 3, 0.75
+    world = np.cumsum(rng.normal(size=(n_frames, n_joints, 3)), axis=0).astype(np.float64)
+    ric = world.copy()
+    ric[:, :, [0, 2]] -= world[:, 0:1, [0, 2]]
+    motion = np.zeros((n_frames, n_joints, 12), dtype=np.float32)
+    motion[..., 0:3] = ric
+    motion[:-1, :, 9:12] = (world[1:] - world[:-1]) / step
+    motion[-1, :, 9:12] = motion[-2, :, 9:12]
+
+    rebuilt = cf.rebuild_derived_velocity(cf.zero_derived_velocity(motion), is_loop=False, step_scale=step)
+    np.testing.assert_allclose(rebuilt, motion, atol=1e-5)
+
+    # A loop's terminal row is the wrap step.
+    looped = motion.copy()
+    looped[-1, :, 9:12] = (world[0] - world[-1]) / step
+    looped[-1, 0, [9, 11]] = (world[0, 0, [0, 2]] - world[-1, 0, [0, 2]]) / step
+    rebuilt_loop = cf.rebuild_derived_velocity(cf.zero_derived_velocity(looped), is_loop=True, step_scale=step)
+    np.testing.assert_allclose(rebuilt_loop, looped, atol=1e-5)
+
+
+def test_species_aux_loss_weights_only_scale_down():
+    mean = np.zeros(12, dtype=np.float32)
+    std = np.ones(12, dtype=np.float32)
+    acc = None
+    slow = np.zeros((5, 2, 12), dtype=np.float32)
+    slow[:, 0, 9] = 0.1
+    fast = np.zeros((5, 2, 12), dtype=np.float32)
+    fast[:, 0, 9] = 10.0
+    fast[:, :, 0] = np.arange(5, dtype=np.float32)[:, None] * 10.0
+    cond = mark_canonical_cond_entry({"rest_pose": np.zeros((2, 12), dtype=np.float32)})
+    acc = cf.accumulate_lnorm_stats(slow, cond, acc=acc, species="slow")
+    acc = cf.accumulate_lnorm_stats(fast, cond, acc=acc, species="fast")
+    weights = cf.species_aux_loss_weights([acc], mean, std, dpos_std=1.0)
+    assert weights["slow"] == (1.0, 1.0)
+    root_weight, step_weight = weights["fast"]
+    assert 0.0 < root_weight < 1.0 and 0.0 < step_weight < 1.0

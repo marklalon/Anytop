@@ -220,8 +220,7 @@ def get_gmdm_args(args):
             # The training entry point builds one bundle and hands the same
             # object to the loader and to the model. Absent at inference: there
             # the checkpoint's own buffers are the word table.
-            'action_conditioning': getattr(args, 'action_conditioning', None),
-            'root_input_feats': 12}
+            'action_conditioning': getattr(args, 'action_conditioning', None)}
 
 def create_gaussian_diffusion(args):
     # default params
@@ -256,7 +255,8 @@ def create_gaussian_diffusion(args):
         loss_type=loss_type,
         rescale_timesteps=rescale_timesteps,
         lambda_geo=args.lambda_geo,
-        lambda_vel=getattr(args, 'lambda_vel', 0.0),
+        lambda_root_vel=getattr(args, 'lambda_root_vel', 0.0),
+        lambda_dpos=getattr(args, 'lambda_dpos', 0.0),
         lambda_loop_wrap=getattr(args, 'lambda_loop_wrap', 0.0),
         lambda_loop_root_closure=getattr(args, 'lambda_loop_root_closure', 0.0),
         lambda_bone=getattr(args, 'lambda_bone', 0.0),

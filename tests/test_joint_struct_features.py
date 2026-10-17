@@ -28,6 +28,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
 )
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa: E402
 from model.anytop import InputProcess  # noqa: E402
+from data_loaders.truebones.truebones_utils.canonical_features import JOINT_MODEL_CHANNELS, ROOT_MODEL_CHANNELS
 
 
 def _channel(features, name):
@@ -282,7 +283,7 @@ class PaddingSurvivesTheProjection(unittest.TestCase):
         """The MLP has biases, so a zero input row does NOT stay zero through it;
         the mask has to be reapplied on the output side."""
         torch.manual_seed(0)
-        process = InputProcess(FEATS_LEN, FEATS_LEN, 16, 32, dropout_prob=0.0).eval()
+        process = InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS), 16, 32, dropout_prob=0.0).eval()
         valid = torch.tensor([[True, True, False, False]])
         struct = torch.randn(1, 4, JOINT_STRUCT_DIM) * valid.unsqueeze(-1)
         with torch.no_grad():
@@ -292,7 +293,7 @@ class PaddingSurvivesTheProjection(unittest.TestCase):
         self.assertEqual(float(masked[0, 2:].abs().max()), 0.0)
 
     def test_input_process_refuses_to_run_without_the_descriptors(self):
-        process = InputProcess(FEATS_LEN, FEATS_LEN, 16, 32, dropout_prob=0.0).eval()
+        process = InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS), 16, 32, dropout_prob=0.0).eval()
         with self.assertRaises(ValueError):
             process(
                 torch.randn(1, 4, FEATS_LEN, 3), torch.randn(1, 1, 4, FEATS_LEN),
