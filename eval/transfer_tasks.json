@@ -1,6 +1,9 @@
 {
   "_comment": "Cross-species transfer battery. T1_L*: species B generates an action X that no species sharing B's skeleton performs in training (L1..L4 = common..rare by number of species performing X; meta.distance D0/D1/D2 = B's body plan is the one performing X most / some species of it perform X / none does). T2_S*: B generates an action it already has with --species_tags overridden to a descriptor its skeleton never carries (S1..S3 = common..rare by number of species carrying it; meta.magnitude M1 locomotion only / M2 body plan only / M3 both). meta is ignored by eval_checkpoint.py and only describes the task.",
-  "checkpoint": {"RUN_NAME": "merged_all_v48", "OUTPUT_DIR": "merged_all_v48_transfer"},
+  "checkpoint": {
+    "RUN_NAME": "merged_all_v49",
+    "OUTPUT_DIR": "merged_all_v49_transfer"
+  },
   "tasks": [
     {"category": "T1_L1", "args": ["--object_type", "Trex", "--action_label", "die"], "meta": {"native_tags": ["Biped", "Trotting"], "distance": "D0"}},
     {"category": "T1_L1", "args": ["--object_type", "MLH_Worker", "--action_label", "attack"], "meta": {"native_tags": ["Biped", "Waddling"], "distance": "D0"}},
