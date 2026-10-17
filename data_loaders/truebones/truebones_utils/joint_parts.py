@@ -7,9 +7,9 @@ labelled by fore/hind position, not by use: a quadruped's foreleg is
 ``arm``/``hand``, a multiped's walking legs are all ``leg``/``foot``; standing on
 a limb is what the separate ``contact`` bit says.
 
-Nothing here is stored with a dataset. motion_edit runs the prefill as the
-default of its per-species part overrides; grounding steps (retarget, native
-GLB export) read the ``foot`` chains and the contact ``hand`` chains off it.
+Nothing here is stored with a dataset. Grounding steps (retarget, native
+GLB export) read the ``foot`` chains and the contact ``hand`` chains from
+the skeleton prefill.
 """
 
 from __future__ import annotations

@@ -542,7 +542,7 @@ def _regenerate_dataset_artifacts(
         object_cond.pop("action_words", None)
         object_cond.pop("loop_period_by_action", None)
         object_cond.pop("loop_period_median", None)
-        # Contacts and body parts are not dataset data (motion_edit prefills them).
+        # Contacts and body parts are derived from the skeleton, not dataset data.
         for key in STALE_JOINT_ANNOTATION_KEYS:
             object_cond.pop(key, None)
     _mark_object_feature_spaces(rebuilt_cond)

@@ -182,14 +182,10 @@ def test_contact_quality_does_not_reject_sample():
     assert out is not motion and new_cond is not cond
 
 
-def test_contact_ik_is_never_called_and_rotations_are_unchanged(monkeypatch):
+def test_bone_length_changes_preserve_rotations_without_contact_ik():
     motion, cond, metadata = fixture()
     # A bent source previously triggered contact IK after length changes.
     motion[:, 3, 0] += .1
-    from motion_edit.ik import LimbSolver
-    def failed_solve(*args, **kwargs):
-        pytest.fail('Bone-length augmentation must not call contact IK')
-    monkeypatch.setattr(LimbSolver, 'solve', failed_solve)
     out, new_cond, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(3))
     assert info['applied'] and np.isfinite(out).all()
     assert info['contact_ik_applied'] is False

@@ -54,7 +54,7 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
 SPECIES_TAGS_FILE = "species_tags.jsonl"
 
 # Per-joint contact / end-effector / body-part fields a cond entry must not
-# carry: they are not dataset data (motion_edit prefills parts and contacts).
+# carry: parts and contacts are derived from the skeleton, not dataset data.
 STALE_JOINT_ANNOTATION_KEYS = (
     "contact_joints", "contact_joint_names", "contact_joint_source",
     "end_effector_joints", "end_effector_names",
