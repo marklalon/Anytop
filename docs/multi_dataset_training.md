@@ -159,24 +159,21 @@ python tools/merge_dataset_cond.py \
 3. re-key 成 `<namespace>/<species>`，写入 §3 的新字段（`species_tags` 从该源 `species_tags.jsonl` 读入烘焙）
 4. 冲突检测：`namespace` 重复 → 报错；规范键重复 → 报错（正常不会发生）
 5. **统计量重算**（默认开，见 §4.2）
-6. 输出报告：每源物种数 / clip 数、裸名冲突表、每 object_subset 统计量 before→after
+6. 输出报告：每源物种数 / clip 数、裸名冲突表
 7. 原子写（temp + rename）
 
 ### 4.2 归一化统计量重算（关键）
 
-`canonical_feature_mean/std` 是 **per-object_subset** 的常量，两个数据集各自独立统计，实测差异明显：
+`canonical_feature_mean/std` 是**全语料唯一**的一对常量（所有物种同一个 canonical frame），
+但每个数据集各自统计时只看得到自己的 clip，结果各不相同。
 
-```
-quadruped   zoo:         mean[0]=0.0098  std[0]=0.4691
-            zoo_upgrade: mean[0]=0.0573  std[0]=0.4013
-```
-
-不重算不会崩（每个物种自洽反标准化），但同一个 subset 桶里会存在两套标准化空间，削弱 AnyTop 赖以泛化的跨物种共享。
+不重算不会崩（每个物种自洽反标准化），但合并 cond 里会存在多套标准化空间，削弱 AnyTop 赖以泛化的跨物种共享；
+训练 loader 的 `assert_single_canonical_frame` 会直接拒绝这样的 cond。
 
 合并工具是唯一同时看得到所有源 motions 的地方，因此在这里重算：
 
-- 遍历所有源的 `motions/*.npy`，按物种的 object_subset 分桶
-- 复用 [canonical_features.accumulate_lnorm_stats](../data_loaders/truebones/truebones_utils/canonical_features.py) / `finalize_lnorm_stats` 增量累积（与 [regenerate_dataset_artifacts._compute_canonical_stats_per_object_subset](../tools/regenerate_dataset_artifacts.py) 同一套逻辑）
+- 遍历所有源的 `motions/*.npy`，按物种的 object_subset 分桶（分桶只为让 `pool_global_stats` 给每个 subset 等权）
+- 复用 [canonical_features.accumulate_lnorm_stats](../data_loaders/truebones/truebones_utils/canonical_features.py) / `finalize_lnorm_stats` 增量累积，再经 `pool_global_stats` 合成一套全局统计量（与 [regenerate_dataset_artifacts._compute_canonical_stats](../tools/regenerate_dataset_artifacts.py) 同一套逻辑）
 - 结果写回**合并 cond 的所有 entry**；各源自己的 `cond.npy` 不动
 
 `--no-recompute-stats` 保留为逃生口（快速验证管线用）。
@@ -285,7 +282,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 | 位置 | 现状 | 改为 |
 |---|---|---|
 | [generate.py](../sample/generate.py) `_load_default_cond_cache` | 回读 `DEFAULT_DATASET_DIR/cond.npy` 找 retarget 源物种 | 回读 **checkpoint 同目录的 `cond.npy`** |
-| [dataset_pipeline.py](../data_loaders/truebones/truebones_utils/dataset_pipeline.py) `_inherit_canonical_stats_from_dataset` | 从 `DEFAULT_DATASET_DIR/cond.npy` 继承 subset 统计量 | 参数改为直接收 cond.npy 路径，默认 checkpoint 同目录 |
+| [dataset_pipeline.py](../data_loaders/truebones/truebones_utils/dataset_pipeline.py) `_inherit_canonical_stats_from_dataset` | 从 `DEFAULT_DATASET_DIR/cond.npy` 继承统计量 | 参数改为直接收 cond.npy 路径，默认 checkpoint 同目录 |
 
 ### 6.4 输出命名
 
@@ -362,7 +359,7 @@ v4 打戳集中在**唯一的落盘点** `_save_cond_with_tpose_sidecar` / `rege
 - [x] 10 组重名物种各自持有正确的 parents/offsets
 - [x] `Horse` 裸名解析到清单首个源；`zoo_upgrade/Horse` 精确命中
 - [x] 生成的 BVH 关节数与对应源一致（zoo Horse 79 / upgrade Horse 39）
-- [x] 每 object_subset 的统计量在合并 cond 中唯一
+- [x] 合并 cond 中只有一套 canonical 统计量
 
 ---
 
@@ -375,7 +372,7 @@ v4 打戳集中在**唯一的落盘点** `_save_cond_with_tpose_sidecar` / `rege
 | D1 | **不做按数据集的采样权重调节** | 清单无 `weight` 字段，cond 无 `dataset_weight` 字段；`TruebonesSampler` 的 `sqrt(clip数)` 逻辑原样保留（§5.4） |
 | D2 | **cond key 一律为规范键**，单数据集也不例外（`Horse` → `truebones/zoo/Horse`） | CLI 与输出文件名靠裸名解析 + 文件名 token 保持不变；但**任何直接写 `cond['Horse']` 的外部脚本会失效**，需随 P0 一并排查改造（§2.1 / §2.3） |
 | D3 | **`dataset_root` 存 Anytop-root-relative 路径，不提供 override 逃生口** | 换机器训练需要 Anytop 目录下相同的数据集结构；合并 cond 不做跨机器路径重映射（§3） |
-| D4 | **统计量重算默认开启** | `tools/merge_dataset_cond.py` 默认遍历全部源 clip 重算 per-object_subset 统计量（实测 ~1400 clip，约数分钟）；`--no-recompute-stats` 仅作快速验证管线的逃生口（§4.2） |
+| D4 | **统计量重算默认开启** | `tools/merge_dataset_cond.py` 默认遍历全部源 clip 重算全局 canonical 统计量（实测 ~1400 clip，约数分钟）；`--no-recompute-stats` 仅作快速验证管线的逃生口（§4.2） |
 | D5 | **namespace 不得是另一个 namespace 的路径前缀** | 清单加载时校验：同时出现 `truebones` 与 `truebones/zoo` 直接报错，保证 §2.2 的后缀匹配无歧义 |
 
 ### D2 的排查范围

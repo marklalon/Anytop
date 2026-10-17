@@ -219,12 +219,15 @@ def test_kept_rows_decode_to_the_stored_motion():
 
     # Only clips whose every temporal stage is deterministic: a loop's roll/tile
     # and an over-budget clip's crop draw from the same RNG the leaf drop
-    # advances, so the two paths would see different windows.
+    # advances, so the two paths would see different windows. High-frequency
+    # clips have a one-window source budget rather than MAX_SOURCE_FRAMES_MULT.
     budget = 60 * MAX_SOURCE_FRAMES_MULT
     names = [
         name for name in motion_dataset.name_list[motion_dataset.pointer:]
         if not motion_dataset.data_dict[name]['motion_metadata'].get('is_loop')
-        and motion_dataset.data_dict[name]['length'] <= budget
+        and motion_dataset.data_dict[name]['length'] <= (
+            60 if motion_dataset.data_dict[name].get('high_frequency', False) else budget
+        )
     ]
     checked = 0
     try:

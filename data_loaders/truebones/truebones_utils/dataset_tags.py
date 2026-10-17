@@ -189,9 +189,8 @@ class DatasetTags:
     def object_subset_for(self, object_type) -> str | None:
         """``object_subset`` key for a species -- its lower-cased first motion tag.
 
-        The per-object_subset canonical standardization statistics are bucketed on
-        this value, so held-out species inherit the stats of their object_subset.
-        Returns ``None`` when the species carries no tags entry.
+        The global canonical standardization statistics weight the subsets equally
+        by bucketing clips on this value. Returns ``None`` when the species carries no tags entry.
         """
         tags = self.tags_for(object_type)
         return tags[0].strip().lower() if tags else None

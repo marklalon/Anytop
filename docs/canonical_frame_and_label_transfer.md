@@ -1,5 +1,9 @@
 # 强化 action label 跨物种迁移：canonical 坐标系改造
 
+> **现行规则（2026-10-17，§9）**：canonical frame 已统一为**全语料一套**。逐 object_subset 的
+> rot / vel 增益与 mean 全部取消，`canonical_frame_projection`（§3 杠杆 2）已删除。下文 §1–§8
+> 描述的是逐 subset 坐标系时代的诊断与过渡方案，阅读时以 §9 为准。
+
 > **后续变更提示（v3 → v4）**：本文记录的是 `canonical_motion_v3` 时代的设计，文中所有
 > "13 维 / index 12 是 contact / `feature_space` 版本号不变"的表述**已被后续改动取代**：
 > 逐帧二值 foot contact 通道（index 12）整体删除，`FEATS_LEN` 13 → 12，
@@ -652,3 +656,71 @@ Dog / Dog-2 的 `Bip01_Ponytail3Nub`、`Bip01_Head2_Eyeleds` 在只看 8 个 cli
   `SystemExit`——那个 checkpoint 已经无法加载，不是本次改动造成的。
   探针 E 要等 v3 训出来（那时它量的是"改完之后还漏不漏"，与原设计的"改之前漏不漏"不是同一个问题）。
 - §6.3 的重训后几何对照同样要等 v3。
+
+
+---
+
+## 9. 统一 canonical frame（2026-10-17）
+
+### 9.1 动机
+
+方案 D 之后 pos 增益已全局共享，但 rot / vel 增益与 mean 仍逐 subset：
+
+| subset | rot 增益 | vel 增益 | pos_y mean |
+|---|---|---|---|
+| biped | 0.271 | 0.100 | −0.303 |
+| quadruped | 0.194 | 0.063 | −0.145 |
+| winged | 0.241 | 0.097 | +0.235 |
+| drifting | 0.187 | 0.201 | +0.052 |
+| multiped | 0.235 | 0.080 | +0.142 |
+| aquatic | 0.142 | 0.104 | +0.222 |
+| serpentine | 0.179 | 0.064 | +0.147 |
+
+两个问题：
+
+1. **跨 subset 动作迁移**：同一物理旋转在 aquatic 与 biped 之间归一化幅度差 1.9×，同一速度在
+   drifting 与 quadruped 之间差 3.2×。action 词表是物种无关的，同一个标签却要在不同 subset 里
+   写出不同尺度的数，"动作 → 幅度"只能绑定在 subset 身份上。
+2. **body plan 泄露**：`canonical_frame_projection` 的输入只有 7 个取值，实质是一个不可 CFG-drop
+   的 object_subset one-hot，绕过了可 drop 的 species 描述子；无条件分支也知道 body plan，
+   "swim ⇔ aquatic 坐标系"一类捷径可直接学到。新体型还会因为缺少同 subset donor 而无法建 cond。
+
+### 9.2 实施
+
+- `canonical_features.pool_global_stats(subset_stats) -> (mean, std)` 取代 `collapse_stat_blocks`：
+  clip 仍按 object_subset 分桶，但只为**等权**；`mean` = 各 subset mean 的算术平均，
+  pos / rot / vel 每块一个标量 = 各 subset 块标量的几何平均。
+- `regenerate_dataset_artifacts._compute_canonical_stats` 与 `merge_dataset_cond._recompute_canonical_stats`
+  把同一对向量写到每个 entry；无 object_subset 标签的物种不参与统计，但照样拿到全局统计量，不再报错。
+- `assert_single_canonical_frame`：训练 loader 与 `validate_anytop_dataset` 都校验 cond 中只有一套
+  统计量，旧的逐 subset cond 直接被拒。
+- 新物种继承（`_merge_object_into_cond` / `_inherit_canonical_stats_from_dataset`）：从任意 entry 复制，
+  删除同 subset donor 规则与跨 subset 借用 warning。
+- 模型：删除 `canonical_frame_projection`；两个 key 仍随 `y` collate，供只读 `y` 的解码使用。
+- key、形状、`feature_space=canonical_motion_v4` 不变（纯数值变化，loader 的单 frame 校验兜底）；
+  `CKPT_VERSION` 28 → 29。**需要重训**；合并 cond 已用 `merge_dataset_cond.py` 重算，
+  各源自己的 `cond.npy` 仍是旧的逐 subset 统计量，下次 `regenerate_dataset_artifacts` 时自然更新。
+
+### 9.3 实测（统一空间，`dataset/cond.npy`，4964 clip）
+
+全局 `std` = pos 0.734 / rot 0.203 / vel 0.094；编解码往返 max|err| 3.6e-7。
+
+| subset | pos std | rot std | vel std | pos mean (x, y, z) | rot 最大 DC |
+|---|---|---|---|---|---|
+| aquatic | 1.03 | 0.71 | 1.12 | −0.02, 0.23, −0.06 | 0.24 |
+| biped | 1.23 | 1.35 | 1.07 | −0.02, −0.48, 0.18 | 0.29 |
+| drifting | 1.20 | 0.93 | 2.21 | 0.02, 0.00, 0.02 | 0.12 |
+| multiped | 0.94 | 1.17 | 0.89 | 0.01, 0.12, −0.08 | 0.10 |
+| quadruped | 0.82 | 1.01 | 0.70 | 0.02, −0.27, −0.13 | 0.13 |
+| serpentine | 0.90 | 0.96 | 0.71 | −0.05, 0.13, 0.19 | 0.21 |
+| winged | 1.23 | 1.20 | 1.04 | 0.03, 0.25, −0.12 | 0.12 |
+
+代价是各 subset 单位方差散布在 0.7–2.2 之间，DC ≤ 0.5σ，量级与方案 D 已接受的 pos 散布相同，
+远小于 no_mean_std 那次的 ~3σ rot DC。最大的一项是 drifting 的 vel（2.2×，在 `l_simple` 里权重偏大）；
+若重训后 drifting 出现速度相关问题，再考虑单独调 vel 的合成方式。
+
+### 9.4 重训后要看的
+
+- 泄露探针：species 条件 drop 时，用 latent 线性探针预测 object_subset，与旧 checkpoint 对比。
+- 跨 subset 标签迁移：四足 swim、非 winged 物种的飞行类动作、留出物种。
+- loss 与旧特征空间不可比，不作判据。

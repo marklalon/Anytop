@@ -47,6 +47,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_FEATURE_SPACE,
+    assert_single_canonical_frame,
     build_canonical_rest_feature,
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
@@ -1889,9 +1890,10 @@ class Truebones(data.Dataset):
                 raise RuntimeError(
                     f"cond entry '{object_type}' is missing canonical_feature_mean/std. "
                     "Regenerate cond.npy (python tools/regenerate_dataset_artifacts.py) to "
-                    "compute the per-object_subset canonical standardization statistics."
+                    "compute the global canonical standardization statistics."
                 )
             cond['joint_mask_candidate_roots'] = _build_joint_mask_candidate_roots(cond)
+        assert_single_canonical_frame(cond_dict, source=opt.cond_file)
 
         motion_metadata_lookup = {
             source.namespace: load_motion_metadata(source.root)

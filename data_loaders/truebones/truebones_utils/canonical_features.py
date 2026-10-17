@@ -12,34 +12,27 @@ model feature space via three prior-free, exactly-invertible steps:
      ``REST_LENGTH_SCALE_FLOOR``: a rig of a few clustered joints (MU04_Pollen,
      4 joints, L=0.03) has almost no joint spread, and dividing its body-scale
      root trajectory by that spread blew a 1.7-unit fall up to ~70 std.
-  3. Per-object_subset standardization: subtract a per-channel mean and divide
-     by a *block-collapsed* std (12-vectors). These statistics are computed at
-     preprocessing time in the L-normalized space of step (2), pooled across all
-     joints / frames / clips / species *within each object_subset* (quadruped /
-     biped / multiped / serpentine / aquatic / winged / drifting). They are
-     therefore a
-     cross-species constant *per object_subset* (NOT a per-species motion prior):
-     a held-out species inherits the stats of its object_subset, so the
-     standardization generalizes while giving each object_subset its own
-     zero-mean / unit-std calibration (winged flapping and quadruped locomotion
-     have very different velocity / rotation scales). They are stored in ``cond``
-     per species (``canonical_feature_mean`` / ``canonical_feature_std``); species
-     sharing an object_subset carry the same 12-vectors.
+  3. Global standardization: subtract a per-channel mean and divide by a
+     *block-collapsed* std (12-vectors). One pair of vectors for the whole
+     corpus, computed at preprocessing time in the L-normalized space of step
+     (2) by :func:`pool_global_stats`: clips are first pooled per object_subset,
+     then the subsets are combined with equal weight so the largest subsets do
+     not set the scale for the rest. Every species is written in the same
+     canonical frame, so the frame carries no body-plan information and the
+     same physical motion has the same feature amplitude on every skeleton.
+     The vectors are stored on every cond entry (``canonical_feature_mean`` /
+     ``canonical_feature_std``) and are identical across entries; a new
+     species copies them from any entry of the training cond.
 
-     The raw per-channel std is passed through :func:`collapse_stat_blocks`
-     before it is stored: each block (position / rotation-6d / velocity) is
-     collapsed to one scalar, and the position scalar is shared by every
-     object_subset. Bone lengths are a function of the position channel alone,
-     so a globally shared position gain makes an object_subset mismatch
-     structurally unable to deform a skeleton. ``mean`` stays per-channel
-     and per-subset (a mean mismatch is a rigid translation, bone-length exact).
+     Each block (position / rotation-6d / velocity) of ``std`` is one scalar,
+     so ``l_simple`` weights every joint and axis of a block uniformly.
 
 Channel layout per joint (n_feats == 12):
     0:3   position   (rest-centered residual)
     3:9   rotation 6d
     9:12  local velocity
 
-Every channel belongs to exactly one of the three blocks, so ``collapse_stat_blocks``
+Every channel belongs to exactly one of the three blocks, so ``pool_global_stats``
 covers the whole vector.
 
 """
@@ -59,11 +52,10 @@ except Exception:  # pragma: no cover - torch is present in training/runtime.
 CANONICAL_FEATURE_SPACE = "canonical_motion_v4"
 PHYSICAL_FEATURE_SPACE = "hml_like_v_current"
 
-# Keys under which the per-object_subset per-channel standardization statistics
-# are stored in each cond entry. The 12-vectors are shared by species within the
-# same object_subset (quadruped / winged / ...). Computed at preprocessing time
-# over the L-normalized training distribution -- see
-# ``_compute_canonical_stats_per_object_subset``.
+# Keys under which the global per-channel standardization statistics are stored
+# on each cond entry. Every entry carries the same 12-vectors. Computed at
+# preprocessing time over the L-normalized training distribution -- see
+# ``pool_global_stats``.
 CANONICAL_MEAN_KEY = "canonical_feature_mean"
 CANONICAL_STD_KEY = "canonical_feature_std"
 
@@ -312,7 +304,7 @@ def _apply_L_scale(feature, cond_entry, inverse: bool):
 
 
 def get_canonical_global_stats(cond_entry):
-    """Return ``(mean, std)`` per-object_subset standardization vectors from a
+    """Return ``(mean, std)`` global standardization vectors from a
     cond entry, or ``None`` when absent (cond predates the stats, e.g. tests).
     """
     if cond_entry is None:
@@ -325,7 +317,7 @@ def get_canonical_global_stats(cond_entry):
 
 
 def set_canonical_global_stats(cond_entry, mean, std):
-    """Store the per-object_subset mean/std (12-vectors) on a cond entry,
+    """Store the global mean/std (12-vectors) on a cond entry,
     flooring near-constant channels to unit std so the encode divide is safe.
     """
     mean = np.asarray(mean, dtype=np.float32).reshape(-1)
@@ -340,8 +332,8 @@ def _check_per_sample_stat(stat_rows: int, feature_shape):
     """A per-sample ``[B, F]`` stat must line up with a ``[B, J, F, T]`` feature.
 
     A ``[B, F]`` stat broadcasts silently against a single-sample ``[1, J, F, T]``
-    feature (the result grows to ``B`` and ``[0]`` reads row 0's object_subset
-    for every sample), so a row count that matches neither 1 nor the feature
+    feature (the result grows to ``B`` and ``[0]`` reads row 0's stats for
+    every sample), so a row count that matches neither 1 nor the feature
     batch is an error, not a broadcast.
     """
     if len(feature_shape) != 4:
@@ -385,8 +377,8 @@ def _view_stat_numpy(stat, feature_shape, n_feats: int):
 
 def _apply_global_stats(feature, cond_entry, inverse: bool):
     """Standardize (encode: ``(x - mean) / std``) or de-standardize
-    (decode: ``x * std + mean``) every channel by the per-object_subset
-    statistics stored on ``cond_entry``.
+    (decode: ``x * std + mean``) every channel by the global statistics
+    stored on ``cond_entry``.
 
     Raises if the statistics are absent. Silently skipping standardization would
     leave the features in the L-normalized space (wrong scale) without any error
@@ -400,10 +392,10 @@ def _apply_global_stats(feature, cond_entry, inverse: bool):
     if stats is None:
         raise KeyError(
             f"cond entry is missing {CANONICAL_MEAN_KEY!r}/{CANONICAL_STD_KEY!r}; "
-            "cannot (de)standardize canonical features. Pass the per-object_subset "
-            "stats (from the cond entry or the collated y dict), or regenerate "
-            "cond.npy. A freshly built new-skeleton cond inherits these stats from "
-            "a same-object_subset species in the dataset cond.npy."
+            "cannot (de)standardize canonical features. Pass the global stats "
+            "(from the cond entry or the collated y dict), or regenerate "
+            "cond.npy. A freshly built new-skeleton cond copies these stats from "
+            "the dataset cond.npy."
         )
     mean, std = stats
 
@@ -415,9 +407,8 @@ def _apply_global_stats(feature, cond_entry, inverse: bool):
         # possibly on CUDA (collated into y for the training aux-loss decode).
         # Convert without round-tripping through numpy so a CUDA tensor is safe.
         # A 1D ``[F]`` vector is broadcast over the whole batch (single-sample
-        # decode, or a homogeneous batch). A 2D ``[B, F]`` vector is per-sample:
-        # each batch element carries its own object_subset's stats (the collate stacks
-        # them in batch order), which a mixed-species batch requires.
+        # decode). A 2D ``[B, F]`` vector is per-sample, as the collate stacks
+        # each item's stats in batch order.
         mean_t = (mean if _is_torch_tensor(mean) else torch.as_tensor(np.asarray(mean, dtype=np.float32))) \
             .to(device=out.device, dtype=out.dtype)
         std_t = (std if _is_torch_tensor(std) else torch.as_tensor(np.asarray(std, dtype=np.float32))) \
@@ -483,7 +474,7 @@ def physical_hml_to_canonical(feature, cond_entry):
 
     Encode order: subtract rest from the position channel, divide the
     position/velocity channels by ``L``, then standardize every channel by the
-    per-object_subset mean/std.
+    global mean/std.
     """
     lnorm = physical_hml_to_lnorm(feature, cond_entry)
     return _apply_global_stats(lnorm, cond_entry, inverse=False)
@@ -493,7 +484,7 @@ def canonical_to_physical_hml(feature, cond_entry):
     """Decode canonical model features back to HML-like physical features.
 
     Decode order (exact inverse of encode): de-standardize by the
-    per-object_subset mean/std, multiply the position/velocity channels by
+    global mean/std, multiply the position/velocity channels by
     ``L``, then add rest back onto the position channel.
     """
     lnorm = _apply_global_stats(feature, cond_entry, inverse=True)
@@ -574,73 +565,74 @@ def _block_std_scalar(std, block):
     return float(values.mean())
 
 
-def collapse_stat_blocks(subset_stats):
-    """Collapse each object_subset's std inside feature blocks and share the
-    position gain across every subset.
+def pool_global_stats(subset_stats):
+    """Combine per-object_subset L-normalized stats into the one global frame.
 
-    ``subset_stats``: ``{object_subset: (mean12, std12)}`` -> a new dict of the
-    same keys and shapes. Only ``std`` is touched; ``mean`` is returned as-is.
+    ``subset_stats``: ``{object_subset: (mean12, std12)}`` -> ``(mean12, std12)``.
 
-    Two changes:
+    Every subset gets equal weight, whatever its clip count:
 
-    1. **Block collapse.** Within each block (position / rotation-6d / velocity)
-       the per-channel stds are averaged into one scalar. ``l_simple`` is
-       computed in this standardized space, so ``1 / std`` is an implicit
-       per-channel loss weight: an anisotropic block systematically under-
-       penalizes whichever axis has the largest std (measured up to 4.1x on the
-       vertical position axis). This restores the invariant the pre-v3
-       ``get_mean_std`` held (it collapsed each block with ``.mean()``), so
-       ``l_simple`` again weights every joint *and* axis uniformly.
+    * ``mean`` is the average of the subset means.
+    * ``std``: within each subset, each block (position / rotation-6d /
+      velocity) is collapsed to the mean of its per-channel stds, and the block
+      scalar is the geometric mean of those subset scalars (a gain is
+      multiplicative, so the geometric mean spreads every subset's resulting
+      variance symmetrically around one in log space).
 
-    2. **Shared position gain.** The position block scalar is then shared by
-       every subset, as the geometric mean of the per-subset scalars (a gain is
-       multiplicative, so the geometric mean is the average that is not dragged
-       by the largest subset). Bone lengths are decided by the position channel
-       alone (the exporter overrides the FK joint placement with the RIC
-       position channel), and the decode is ``x * std + mean``: a ``mean``
-       mismatch translates the whole skeleton rigidly and leaves every bone
-       length exact, so once the position *gain* is a single global constant,
-       decoding a clip through the wrong subset's statistics cannot deform it at
-       all. Rotation / velocity gains stay per-subset -- they cannot change bone
-       lengths, and each body plan keeps its own unit-variance calibration where
-       it costs nothing.
-
-    The three blocks tile the whole 12-channel vector, so every channel is
-    covered and nothing falls through to the per-channel raw std.
+    ``l_simple`` is computed in this standardized space, so ``1 / std`` is an
+    implicit per-channel loss weight; a single scalar per block weights every
+    joint and axis of the block uniformly.
     """
     if not subset_stats:
-        return {}
+        raise ValueError("pool_global_stats needs at least one object_subset's stats.")
 
-    blocks = (_POS_SLICE, _ROT_SLICE, _VEL_SLICE)
-    per_subset_scalars = {
-        subset: [_block_std_scalar(std, block) for block in blocks]
-        for subset, (_mean, std) in subset_stats.items()
-    }
+    means = [np.asarray(mean, dtype=np.float64).reshape(-1) for mean, _std in subset_stats.values()]
+    if len({m.shape for m in means}) != 1:
+        raise ValueError("object_subset stats disagree on the feature width.")
+    mean_out = np.mean(np.stack(means, axis=0), axis=0)
 
-    pos_scalars = [
-        scalars[0] for scalars in per_subset_scalars.values() if scalars[0] is not None
-    ]
-    shared_pos_gain = (
-        float(np.exp(np.mean(np.log(np.asarray(pos_scalars, dtype=np.float64)))))
-        if pos_scalars else None
-    )
-
-    collapsed = {}
-    for subset, (mean, std) in subset_stats.items():
-        std_out = np.asarray(std, dtype=np.float64).reshape(-1).copy()
-        n_feats = std_out.shape[0]
-        block_values = list(per_subset_scalars[subset])
-        if shared_pos_gain is not None:
-            block_values[0] = shared_pos_gain
-        for block, value in zip(blocks, block_values):
-            if value is None or block.start >= n_feats:
-                continue
-            std_out[block.start:min(block.stop, n_feats)] = value
-        collapsed[subset] = (
-            np.asarray(mean, dtype=np.float32).reshape(-1),
-            std_out.astype(np.float32),
+    std_out = np.ones_like(mean_out)
+    n_feats = std_out.shape[0]
+    for block in (_POS_SLICE, _ROT_SLICE, _VEL_SLICE):
+        if block.start >= n_feats:
+            continue
+        scalars = [
+            value for value in (_block_std_scalar(std, block) for _mean, std in subset_stats.values())
+            if value is not None
+        ]
+        if not scalars:
+            continue
+        std_out[block.start:min(block.stop, n_feats)] = float(
+            np.exp(np.mean(np.log(np.asarray(scalars, dtype=np.float64))))
         )
-    return collapsed
+    return mean_out.astype(np.float32), std_out.astype(np.float32)
+
+
+def assert_single_canonical_frame(cond_dict, source="cond.npy"):
+    """Raise unless every entry of ``cond_dict`` carries the same mean/std.
+
+    The model is trained in one global canonical frame; a cond whose entries
+    disagree was built by a per-object_subset (or otherwise stale) stats pass and
+    would silently write some species in a frame the model never saw. Entries
+    without stats are left to the callers' own missing-stats checks.
+    """
+    frames = {}
+    for key, entry in cond_dict.items():
+        stats = get_canonical_global_stats(entry) if isinstance(entry, dict) else None
+        if stats is None:
+            continue
+        frame = tuple(
+            np.asarray(stat, dtype=np.float32).reshape(-1).tobytes() for stat in stats
+        )
+        frames.setdefault(frame, []).append(key)
+    if len(frames) > 1:
+        examples = ", ".join(sorted(keys)[0] for keys in frames.values())
+        raise ValueError(
+            f"{source} holds {len(frames)} different canonical_feature_mean/std frames "
+            f"(e.g. {examples}); every species must share the one global frame. "
+            "Regenerate it (tools/regenerate_dataset_artifacts.py for a dataset, "
+            "tools/merge_dataset_cond.py for the merged training cond)."
+        )
 
 
 def mark_canonical_cond_entry(cond_entry):
@@ -663,6 +655,6 @@ def validate_feature_space(cond_entry, expected=CANONICAL_FEATURE_SPACE):
         raise ValueError(
             f"cond entry is missing {CANONICAL_MEAN_KEY!r}/{CANONICAL_STD_KEY!r}. "
             "Regenerate cond.npy (regenerate_dataset_artifacts) to compute the "
-            "per-object_subset canonical standardization statistics."
+            "global canonical standardization statistics."
         )
     return True

@@ -146,7 +146,6 @@ padding 已被 attention mask 和 loss 排除，不会混淆）。它不同于�
 ```text
 timestep
   + resample_speed
-  + canonical_feature_mean/std
   + action_label
 ```
 
@@ -211,8 +210,10 @@ action token，而标签集的 slot-source 秩只有 ~137，头再宽也用不�
 
 ### 4.3 Canonical frame 与 resample speed
 
-`canonical_feature_mean/std` 定义模型写入的输出坐标/标准化空间。这两组向量经
-zero-init MLP 投影并始终注入，不可 CFG-drop；缺失时 forward 直接失败。
+`canonical_feature_mean/std` 定义模型写入的输出坐标/标准化空间。全语料只有一套：每个
+cond entry 携带同一对向量（loader 用 `assert_single_canonical_frame` 校验），所以它不是
+模型输入——输出空间对所有物种相同，也就不携带任何 body plan 信息。它们仍随 `y` collate，
+供只读 `y` 的解码路径（训练 aux-loss）反标准化。
 
 `resample_speed_cond = source_frames / internal_frames`，经另一条 MLP 注入。它告诉模型当前
 时间窗口相对源动作的压缩/拉伸程度。数据侧的 `motion_speed_aug` 是另一项无显式条件的数据
@@ -496,7 +497,6 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 | `action_label_projection` | 0.74M | 读 compact slot channels（768+6+768=1542） |
 | `input_process` | 0.86M | per-joint species FiLM 0.39M、joint-name 投影 0.30M、structural 0.15M、动作/rest 投影 0.02M |
 | `resample_speed_projection` | 0.15M | |
-| `canonical_frame_projection` | 0.01M | 单层 Linear(24→384) |
 | `output_process` | 0.01M | |
 | relation/topology embedding tables | 0.02M | 各层共享 |
 
@@ -511,6 +511,4 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 - **species 描述子**：259 个物种向量秩 94、有效秩 52；per-joint FiLM 的隐层取 128。
 - **`action_label_projection`**：direction 槽的正交码只占 6 个轴，其余 762 列的输入恒为 0，
   是结构性死参数；投影只读 `compact_slot_channels`（768+6+768=1542）。
-- **`canonical_frame_projection`**：输入只有 7 个不同取值（object_subset），单层
-  Linear(24→384) 已足够。
 - **cross-limb**：proj 有效秩 108–118/128，宽度用满。

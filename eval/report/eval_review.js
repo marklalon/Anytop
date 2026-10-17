@@ -85,7 +85,8 @@ function updateRatingsPanel() {
   $('rated-count').textContent = `已评分 ${Object.keys(ratings).length} / ${report.tasks.length}`;
 }
 
-for (let score = 1; score <= 9; score++) {
+// Lay out the buttons like a numpad: 7-8-9 / 4-5-6 / 1-2-3.
+for (const score of [7, 8, 9, 4, 5, 6, 1, 2, 3]) {
   const button = el('button', String(score), 'rating');
   button.dataset.score = score;
   button.style.setProperty('--rating-color', color(score));

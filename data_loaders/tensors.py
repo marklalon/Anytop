@@ -172,13 +172,12 @@ def truebones_collate(batch):
             ])
         })
 
-    # Canonical standardization stats are a cross-species constant *per object_subset*
-    # (quadruped / winged / ... each get their own FEATS_LEN-vector), so a mixed-species
-    # batch needs per-sample stats. Stack them in batch order into [B, F] so the
-    # training-time aux-loss decode (canonical_to_physical_hml reads y) de-standardizes
-    # each sample with its own object_subset's stats. Only stack when every item carries
-    # the stat; a partially-populated batch would misalign sample<->stat (and the
-    # fail-fast loader guarantees all training items have it).
+    # Canonical standardization stats, stacked in batch order into [B, F] for the
+    # y-only decoders (the training-time aux-loss decode, canonical_to_physical_hml
+    # reading y). Every species carries the same global vectors; stacking keeps the
+    # per-sample decode contract instead of assuming it. Only stack when every item
+    # carries the stat; a partially-populated batch would misalign sample<->stat
+    # (and the fail-fast loader guarantees all training items have it).
     for stat_key in ('canonical_feature_mean', 'canonical_feature_std'):
         stat_vals = [batch_item.get(stat_key) for batch_item in notnone_batches]
         if all(v is not None for v in stat_vals):
