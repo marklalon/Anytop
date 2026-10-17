@@ -72,8 +72,8 @@ CANONICAL_DPOS_STD_KEY = "canonical_dpos_std"
 
 # Per-species weights of the root-velocity and position-step losses: a species
 # whose own energy in that term exceeds ``AUX_LOSS_ENERGY_CAP`` (in the global
-# canonical units) is scaled down to it, never up. Fast movers relative to their
-# own size (e.g. hovering drifters) would otherwise own those terms.
+# canonical units) is weighted by sqrt(cap / energy), never up. This softens
+# the influence of fast movers without capping their weighted loss energy.
 ROOT_VEL_LOSS_WEIGHT_KEY = "root_vel_loss_weight"
 DPOS_LOSS_WEIGHT_KEY = "dpos_loss_weight"
 AUX_LOSS_ENERGY_CAP = 2.0
@@ -729,11 +729,11 @@ def _term_energy(term_acc, mean, std, dpos_std):
 
 def species_aux_loss_weights(accs, mean, std, dpos_std):
     """``{species: (root_vel_weight, dpos_weight)}`` from the per-species sums
-    of one or more accumulators: ``min(1, AUX_LOSS_ENERGY_CAP / energy)``."""
+    of one or more accumulators: ``min(1, sqrt(AUX_LOSS_ENERGY_CAP / energy))``."""
     def weight(energy):
         if energy is None or not np.isfinite(energy) or energy <= AUX_LOSS_ENERGY_CAP:
             return 1.0
-        return AUX_LOSS_ENERGY_CAP / energy
+        return float(np.sqrt(AUX_LOSS_ENERGY_CAP / energy))
 
     weights = {}
     for acc in accs:

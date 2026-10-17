@@ -754,7 +754,9 @@ Dog / Dog-2 的 `Bip01_Ponytail3Nub`、`Bip01_Head2_Eyeleds` 在只看 8 个 cli
   增强根轨迹监督并降低位置差分的相对贡献，待训练对照验证。
   `--lambda_vel` 与 `velocity_consistency_loss` 删除。
 - **按物种权重**：`root_vel_loss_weight` / `dpos_loss_weight` 写在每个 cond entry 上，
-  `min(1, AUX_LOSS_ENERGY_CAP / 该物种在该项的能量)`，只降不升，cap = 2。
+  `min(1, sqrt(AUX_LOSS_ENERGY_CAP / 该物种在该项的能量))`，只降不升，cap = 2。
+  能量超过 2 才开始降权；平方根形式比初始的 `cap / energy` 更温和，
+  近似平衡误差幅度随目标 RMS 增长时的输出梯度，而非封顶加权损失能量。
   合并 cond 中有 128/476 个物种被降权。
 
 | cap | root_vel：被降权物种数 / drifting 占比 | dpos：被降权物种数 / drifting 占比 |
@@ -764,7 +766,8 @@ Dog / Dog-2 的 `Bip01_Ponytail3Nub`、`Bip01_Head2_Eyeleds` 在只看 8 个 cli
 | **2** | **91 / 28%** | **103 / 23%** |
 | 3 | 65 / 33% | 71 / 28% |
 
-  （按 clip 加权的 E[x²]；drifting 的 clip 占比是 12%。）
+  （上表为初始 `cap / energy` 公式的历史测量，非当前平方根公式的结果；
+  按 clip 加权的 E[x²]，drifting 的 clip 占比是 12%。）
 - **推理**：`generate` 解码后用 `rebuild_derived_velocity` 按窗口步长重建完整的 vel 行，再进入 export 重采样，
   保存的 npy 布局不变。`--inpaint_frames` 的 vel-Y 积分重锚（`_reanchor_inpaint_root_y_via_velocity`）
   依赖模型独立预测的 vel Y，重建后会退化为恒等，因此一并删除。

@@ -553,9 +553,13 @@ def test_species_aux_loss_weights_only_scale_down():
     fast[:, 0, 9] = 10.0
     fast[:, :, 0] = np.arange(5, dtype=np.float32)[:, None] * 10.0
     cond = mark_canonical_cond_entry({"rest_pose": np.zeros((2, 12), dtype=np.float32)})
+    cond[cf.REST_LENGTH_SCALE_KEY] = np.float32(1.0)
     acc = cf.accumulate_lnorm_stats(slow, cond, acc=acc, species="slow")
     acc = cf.accumulate_lnorm_stats(fast, cond, acc=acc, species="fast")
     weights = cf.species_aux_loss_weights([acc], mean, std, dpos_std=1.0)
     assert weights["slow"] == (1.0, 1.0)
     root_weight, step_weight = weights["fast"]
     assert 0.0 < root_weight < 1.0 and 0.0 < step_weight < 1.0
+    # Root X/Z energy is (100 + 0) / 2 = 50; XYZ step energy is 100 / 3.
+    np.testing.assert_allclose(root_weight, 0.2, rtol=1e-6)
+    np.testing.assert_allclose(step_weight, np.sqrt(0.06), rtol=1e-6)
