@@ -460,68 +460,46 @@ def _raw_subset_stats():
     }
 
 
-def test_collapse_stat_blocks_flattens_blocks_and_shares_position_gain():
+def test_pool_global_stats_weights_subsets_equally_per_block():
     raw = _raw_subset_stats()
-    collapsed = cf.collapse_stat_blocks(raw)
+    mean, std = cf.pool_global_stats(raw)
 
-    assert set(collapsed) == set(raw)
-    for subset, (mean, std) in collapsed.items():
-        # mean is never touched -- a mean mismatch is a rigid translation.
-        np.testing.assert_allclose(mean, raw[subset][0], atol=0)
-        # Every block is isotropic after the collapse.
-        assert len(set(std[0:3].tolist())) == 1
-        assert len(set(std[3:9].tolist())) == 1
-        assert len(set(std[9:12].tolist())) == 1
-        # rot / vel keep their own subset's calibration (block mean of the raw std).
-        np.testing.assert_allclose(std[3], raw[subset][1][3:9].mean(), rtol=1e-6)
-        np.testing.assert_allclose(std[9], raw[subset][1][9:12].mean(), rtol=1e-6)
-
-    # The position gain is ONE constant shared by every subset ...
-    pos_gains = {float(std[0]) for _mean, std in collapsed.values()}
-    assert len(pos_gains) == 1
-    # ... and it is the geometric mean of the per-subset block scalars.
-    expected = float(np.exp(np.mean(np.log([
-        raw["quadruped"][1][0:3].mean(), raw["aquatic"][1][0:3].mean()
-    ]))))
-    np.testing.assert_allclose(pos_gains.pop(), expected, rtol=1e-6)
-
-    # The three blocks tile the whole vector -- nothing is left per-channel.
-    for _mean, std in collapsed.values():
-        assert std.shape == (12,)
-        assert len(set(std[0:3].tolist())) == 1
-        assert len(set(std[3:9].tolist())) == 1
-        assert len(set(std[9:12].tolist())) == 1
-
-
-def test_collapse_stat_blocks_makes_subset_mismatch_bone_length_exact():
-    """Decoding through the WRONG subset's stats must not change any bone length.
-
-    This is the whole point of the shared position gain: the residual mismatch is
-    a per-channel mean, which translates the entire skeleton rigidly.
-    """
-    collapsed = cf.collapse_stat_blocks(_raw_subset_stats())
-
-    rest_pose = np.zeros((4, 12), dtype=np.float32)
-    rest_pose[:, 0:3] = np.array(
-        [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.5, 1.5, 0.0], [1.0, 1.5, 0.3]],
-        dtype=np.float32,
+    assert mean.shape == (12,) and std.shape == (12,)
+    # mean is the plain average of the subset means, whatever the clip counts.
+    np.testing.assert_allclose(
+        mean, (raw["quadruped"][0] + raw["aquatic"][0]) / 2.0, rtol=1e-6
     )
-    parents = [-1, 0, 1, 2]
-
-    def _decode(subset):
-        cond = mark_canonical_cond_entry({"rest_pose": rest_pose})
-        set_canonical_global_stats(cond, *collapsed[subset])
-        canonical = np.random.default_rng(7).normal(size=(6, 4, 12)).astype(np.float32)
-        physical = canonical_to_physical_hml(canonical, cond)
-        pos = physical[..., 0:3]
-        return np.linalg.norm(pos[:, 1:] - pos[:, parents[1:]], axis=-1)
-
-    np.testing.assert_allclose(_decode("quadruped"), _decode("aquatic"), rtol=1e-5)
+    # Every block is one scalar: the geometric mean of the subsets' block means.
+    for block in (slice(0, 3), slice(3, 9), slice(9, 12)):
+        assert len(set(std[block].tolist())) == 1
+        expected = float(np.exp(np.mean(np.log([
+            raw["quadruped"][1][block].mean(), raw["aquatic"][1][block].mean()
+        ]))))
+        np.testing.assert_allclose(std[block.start], expected, rtol=1e-6)
 
 
-def test_collapse_stat_blocks_tolerates_degenerate_blocks():
-    raw = {"serpentine": (np.zeros(12, dtype=np.float32), np.zeros(12, dtype=np.float32))}
-    collapsed = cf.collapse_stat_blocks(raw)
-    # Nothing usable to average: the std is left alone for the floor to handle.
-    np.testing.assert_allclose(collapsed["serpentine"][1], 0.0)
-    assert cf.collapse_stat_blocks({}) == {}
+def test_pool_global_stats_tolerates_degenerate_blocks():
+    raw = {
+        "serpentine": (np.zeros(12, dtype=np.float32), np.zeros(12, dtype=np.float32)),
+        "aquatic": _raw_subset_stats()["aquatic"],
+    }
+    _mean, std = cf.pool_global_stats(raw)
+    # The constant subset contributes nothing usable; the other subset sets every block.
+    np.testing.assert_allclose(std[0], raw["aquatic"][1][0:3].mean(), rtol=1e-6)
+
+    _mean, std = cf.pool_global_stats({"serpentine": raw["serpentine"]})
+    # Nothing usable at all: unit std, never a zero divide.
+    np.testing.assert_allclose(std, 1.0)
+    with pytest.raises(ValueError):
+        cf.pool_global_stats({})
+
+
+def test_assert_single_canonical_frame_rejects_mixed_frames():
+    mean, std = cf.pool_global_stats(_raw_subset_stats())
+    cond = {name: set_canonical_global_stats({}, mean, std) for name in ("Dog", "Bat")}
+    cond["Bare"] = {}
+    cf.assert_single_canonical_frame(cond)
+
+    set_canonical_global_stats(cond["Bat"], mean + 0.1, std)
+    with pytest.raises(ValueError, match="2 different"):
+        cf.assert_single_canonical_frame(cond)

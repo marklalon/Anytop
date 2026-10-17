@@ -6,12 +6,11 @@ dataset it came from, merging is a plain union -- **no motion file is copied**.
 The output is a single ``cond.npy``; training then differs from a single-dataset
 run only in which ``--cond_path`` it is given.
 
-The one thing that genuinely has to be recomputed is the per-object_subset
-canonical standardization statistics.  Each dataset computes them over its own
-clips, and they differ noticeably (quadruped mean[0] 0.0098 vs 0.0573), so a
-naive union would leave one subset bucket holding two different normalization
-spaces -- exactly the cross-species sharing AnyTop's generalization rests on.
-This tool is the only place that can see every source's clips at once, so it
+The one thing that genuinely has to be recomputed is the global canonical
+standardization statistics.  Each dataset computes them over its own clips, so
+a naive union would leave the merged cond holding several normalization frames
+-- exactly the cross-species sharing AnyTop's generalization rests on.  This
+tool is the only place that can see every source's clips at once, so it
 recomputes them here and writes the result onto every merged entry.  The source
 datasets' own ``cond.npy`` files are never modified.
 
@@ -39,8 +38,8 @@ sys.path.insert(0, str(ANYTOP_DIR))
 
 from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
     accumulate_lnorm_stats,
-    collapse_stat_blocks,
     finalize_lnorm_stats,
+    pool_global_stats,
     set_canonical_global_stats,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
@@ -126,12 +125,13 @@ def _check_source_consistency(per_source_entries, reference=None):
 # ---------------------------------------------------------------------------
 # Statistics recomputation
 # ---------------------------------------------------------------------------
-def _recompute_canonical_stats(merged_cond, sources) -> dict[str, tuple]:
-    """Recompute per-object_subset standardization stats from training clips.
+def _recompute_canonical_stats(merged_cond, sources) -> tuple:
+    """Recompute the global standardization stats from training clips.
 
-    Same accumulation as ``regenerate_dataset_artifacts._compute_canonical_stats_per_object_subset``,
-    but bucketed across datasets: a merged run trains one shared normalization
-    space per body plan, not one per (dataset, body plan).
+    Same accumulation as ``regenerate_dataset_artifacts._compute_canonical_stats``,
+    but over every source at once: a merged run trains one normalization frame,
+    not one per dataset. Clips are bucketed by object_subset only so that
+    ``pool_global_stats`` can weight the subsets equally.
     """
     subset_of: dict[str, str] = {}
     for namespace_tags, source in ((load_species_tags(Path(s.root) / SPECIES_TAGS_FILE), s) for s in sources):
@@ -171,7 +171,7 @@ def _recompute_canonical_stats(merged_cond, sources) -> dict[str, tuple]:
             motion = np.load(motion_path).astype(np.float32, copy=False)
             # Exact width, not "at least": the stats table this loop builds is
             # written straight into cond as canonical_feature_mean/std, and
-            # neither collapse_stat_blocks nor set_canonical_global_stats
+            # neither pool_global_stats nor set_canonical_global_stats
             # validates its length -- a stale 13-channel (v3) clip would
             # silently produce a 13-wide table on a canonical_motion_v4 cond.
             if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN:
@@ -188,32 +188,19 @@ def _recompute_canonical_stats(merged_cond, sources) -> dict[str, tuple]:
             used += 1
 
     usable = {subset: acc for subset, acc in subset_accs.items() if acc and acc["count"] > 0}
+    if not usable:
+        raise SystemExit("Cannot compute canonical stats: no usable train clips in any source.")
     subset_stats = {subset: finalize_lnorm_stats(acc) for subset, acc in usable.items()}
-    # Same block collapse + globally shared position gain as
-    # regenerate_dataset_artifacts; the merged run is where the shared position
-    # gain has to be computed over every source's subsets at once.
-    subset_stats = collapse_stat_blocks(subset_stats)
+    mean, std = pool_global_stats(subset_stats)
 
-    # No global-pooled fallback: the model only ever sees per-object_subset
-    # normalized features, so a species standardized with pooled stats would be
-    # out of distribution at inference.
-    unresolved = sorted(
-        f"{key} (object_subset={subset_of.get(key)!r})"
-        for key in merged_cond
-        if subset_of.get(key) not in subset_stats
-    )
-    if unresolved:
-        raise SystemExit(
-            "Cannot compute training-only per-object_subset canonical stats: no usable train clips for the "
-            "object_subset(s) of these species:\n  " + "\n  ".join(unresolved)
-        )
-
-    for key, entry in merged_cond.items():
-        mean, std = subset_stats[subset_of[key]]
+    for entry in merged_cond.values():
         set_canonical_global_stats(entry, mean, std)
 
-    print(f"[OK] recomputed canonical stats over {used} train clip(s) ({skipped} skipped)")
-    return subset_stats
+    print(
+        f"[OK] recomputed canonical stats over {used} train clip(s) ({skipped} skipped), "
+        f"pooled over {len(usable)} object_subset(s)"
+    )
+    return mean, std
 
 
 def _match_species(motion_name: str, species_by_name: dict[str, str]) -> str | None:
@@ -314,8 +301,8 @@ def merge_dataset_cond(manifest_path, out_path, recompute_stats=True, dry_run=Fa
     else:
         print(
             f"{_COLOR_YELLOW}[WARN] --no-recompute-stats: each species keeps its own dataset's "
-            f"normalization statistics, so one object_subset bucket spans two standardization "
-            f"spaces. For pipeline validation only, never for a real training run.{_COLOR_RESET}"
+            f"normalization statistics, so the merged cond spans several standardization "
+            f"frames. For pipeline validation only, never for a real training run.{_COLOR_RESET}"
         )
 
     _report(sources, merged_cond)
@@ -349,7 +336,7 @@ def main() -> int:
     parser.add_argument(
         "--no-recompute-stats",
         action="store_true",
-        help="Keep each source's own per-object_subset statistics. Escape hatch for quickly "
+        help="Keep each source's own canonical statistics. Escape hatch for quickly "
              "validating the pipeline; not valid for a real training run.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Report only; write nothing.")

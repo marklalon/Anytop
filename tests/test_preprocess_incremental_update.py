@@ -1365,48 +1365,62 @@ def _cond_entry_with_stats(object_type, mean_fill, std_fill):
     return entry
 
 
-def test_merge_inherits_canonical_stats_from_same_object_subset(tmp_path):
+def test_inherit_canonical_stats_copies_global_frame_without_species_tags(tmp_path):
+    reference_path = tmp_path / "cond.npy"
+    np.save(reference_path, {
+        "Cat": _cond_entry_with_stats("Cat", 0.5, 2.0),
+        "Dog": _cond_entry_with_stats("Dog", 0.5, 2.0),
+    })
+    target = _make_cond_entry("NewWingedSpecies")
+
+    assert dataset_pipeline_mod._inherit_canonical_stats_from_dataset(
+        "NewWingedSpecies", target, reference_cond_path=reference_path,
+    )
+    np.testing.assert_array_equal(target["canonical_feature_mean"], np.full(FEATS_LEN, 0.5))
+    np.testing.assert_array_equal(target["canonical_feature_std"], np.full(FEATS_LEN, 2.0))
+
+
+@pytest.mark.parametrize("mean_fill,std_fill", [(0.7, 2.0), (0.5, 3.0)])
+def test_inherit_canonical_stats_rejects_mixed_reference_frames(tmp_path, mean_fill, std_fill):
+    reference_path = tmp_path / "cond.npy"
+    np.save(reference_path, {
+        "Cat": _cond_entry_with_stats("Cat", 0.5, 2.0),
+        "Dog": _cond_entry_with_stats("Dog", mean_fill, std_fill),
+    })
+    target = _make_cond_entry("NewWingedSpecies")
+
+    with pytest.raises(ValueError, match="2 different canonical_feature_mean/std frames"):
+        dataset_pipeline_mod._inherit_canonical_stats_from_dataset(
+            "NewWingedSpecies", target, reference_cond_path=reference_path,
+        )
+    assert "canonical_feature_mean" not in target
+    assert "canonical_feature_std" not in target
+
+
+def test_merge_copies_global_canonical_stats_onto_any_new_species(tmp_path):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir(parents=True)
-    # Existing quadruped (Cat) carries stats; add a new quadruped (Dog) without.
+    # The stats are one corpus-wide frame: a new quadruped (Dog) and a new winged
+    # species (Dragon) both copy the quadruped Cat's vectors, with no
+    # same-object_subset donor required.
     np.save(dataset_dir / "cond.npy", {"Cat": _cond_entry_with_stats("Cat", 0.5, 2.0)})
 
-    dataset_pipeline_mod._merge_object_into_cond(
-        str(dataset_dir), "Dog", _make_cond_entry("Dog")
-    )
+    for name in ("Dog", "Dragon"):
+        dataset_pipeline_mod._merge_object_into_cond(
+            str(dataset_dir), name, _make_cond_entry(name)
+        )
 
     merged = _cond_by_species(dataset_dir)
-    np.testing.assert_allclose(merged["Dog"]["canonical_feature_mean"], np.full((FEATS_LEN,), 0.5, dtype=np.float32))
-    np.testing.assert_allclose(merged["Dog"]["canonical_feature_std"], np.full((FEATS_LEN,), 2.0, dtype=np.float32))
-
-
-def test_merge_warns_and_borrows_when_no_same_object_subset_donor(tmp_path, capsys):
-    dataset_dir = tmp_path / "dataset"
-    dataset_dir.mkdir(parents=True)
-    # Only a quadruped carries stats; a new winged species (Dragon) has no
-    # same-object_subset donor. This used to fast-fail as out-of-distribution.
-    # Since the position gain became one globally shared constant, the whole
-    # cross-subset delta is a mean (a rigid translation) plus rot/vel gains (an
-    # amplitude bias) -- neither can deform the skeleton -- so a brand-new body
-    # plan now builds, with a warning naming the donor.
-    np.save(dataset_dir / "cond.npy", {"Cat": _cond_entry_with_stats("Cat", 0.5, 2.0)})
-
-    dataset_pipeline_mod._merge_object_into_cond(
-        str(dataset_dir), "Dragon", _make_cond_entry("Dragon")
-    )
-
-    warning = capsys.readouterr().out
-    assert "winged" in warning and "Cat" in warning
-    merged = _cond_by_species(dataset_dir)
-    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_mean"], np.full((FEATS_LEN,), 0.5, dtype=np.float32))
-    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_std"], np.full((FEATS_LEN,), 2.0, dtype=np.float32))
+    for name in ("Dog", "Dragon"):
+        np.testing.assert_allclose(merged[name]["canonical_feature_mean"], np.full((FEATS_LEN,), 0.5, dtype=np.float32))
+        np.testing.assert_allclose(merged[name]["canonical_feature_std"], np.full((FEATS_LEN,), 2.0, dtype=np.float32))
 
 
 def test_merge_still_fast_fails_when_no_species_carries_stats(tmp_path):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir(parents=True)
-    # Nothing to borrow from at all is still unrecoverable: there is no
-    # standardization space to land in, whatever the body plan.
+    # Nothing to copy from at all is unrecoverable: there is no
+    # standardization space to land in.
     np.save(dataset_dir / "cond.npy", {"Cat": _make_cond_entry("Cat")})
 
     with pytest.raises(ValueError, match="canonical standardization stats"):

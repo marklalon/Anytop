@@ -5,7 +5,7 @@ REM Usage: train_tiny.bat [run_name]
 REM See docs/tiny_locomotion_baseline.md for the fixed ablation protocol.
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
-set "RUN_NAME=zoo_locomotion_tiny_v4"
+set "RUN_NAME=zoo_locomotion_tiny_v5"
 if not "%~1"=="" set "RUN_NAME=%~1"
 
 if not exist "%PYTHON_EXE%" (
@@ -28,7 +28,6 @@ REM Keep the full 215-clip locomotion pool; no ordered sample_limit truncation.
     --seed 10 ^
     --save_interval 10000 ^
     --log_interval 100 ^
-    --eval_interval 0 ^
     --auto_resume ^
     --ml_platform_type TensorboardPlatform ^
     --objects_subset all ^

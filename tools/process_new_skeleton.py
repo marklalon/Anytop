@@ -27,7 +27,7 @@ species-tags      - Comma-separated species tags (motion descriptor) for --objec
                     species descriptor table (no T5 runs here).
 crop-enabled      - Enable skeleton cropping to MAX_JOINTS=100.
                     Off by default (inference has no joint cap).
-reference-cond-path - REQUIRED. cond.npy to inherit the per-object_subset
+reference-cond-path - REQUIRED. cond.npy to inherit the global canonical
                     standardization statistics from. Those statistics belong to a
                     trained checkpoint, so pass the checkpoint's own cond.npy
                     snapshot. There is no fallback to the processed dataset dir.
@@ -135,7 +135,7 @@ def process_new_skeleton(
     This is the programmatic equivalent of the CLI entry point and keeps the
     CLI behaviour unchanged while allowing server-side worker reuse.
 
-    ``reference_cond_path`` is required: the per-object_subset standardization
+    ``reference_cond_path`` is required: the global canonical standardization
     statistics are inherited from a trained checkpoint's cond.npy snapshot (there
     is no fallback to the processed dataset directory).
     """

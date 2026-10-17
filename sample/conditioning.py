@@ -329,10 +329,9 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         # these same stats and raises a named KeyError when they are absent.
         canonical_mean, canonical_std = get_canonical_global_stats(cond_dict[object_type])
         batch.append({
-            # The output coordinate frame is an UNCONDITIONAL model input (see
-            # AnyTop.canonical_frame_projection), so generation must carry it just
-            # like training does -- the collate stacks it per sample. Decoding the
-            # sample back to physical still uses the full cond entry, not y.
+            # The canonical stats travel in y for the y-only decoders, as in
+            # training -- the collate stacks them per sample. Decoding the sample
+            # back to physical still uses the full cond entry, not y.
             'canonical_feature_mean': canonical_mean,
             'canonical_feature_std': canonical_std,
             'rest_pose_physical': cond_dict[object_type]['rest_pose'],

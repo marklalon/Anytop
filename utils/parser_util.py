@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 28
+CKPT_VERSION = 29
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -472,7 +472,7 @@ def add_training_options(parser):
                        help="LR at the end of the cosine decay (only with --lr_decay_start).")
 
     group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")
-    group.add_argument("--eval_interval", default=1_000, type=int,
+    group.add_argument("--eval_interval", default=0, type=int,
                        help="Compute the loss over the val split every N training steps (and at the "
                             "last step), logged under Val/. 0 disables validation.")
     group.add_argument("--val_t_strata", default=4, type=int,
@@ -802,7 +802,7 @@ def process_new_skeleton_args():
                             "the default dataset's species_tags.jsonl, so it must be supplied "
                             "explicitly.")
     group.add_argument("--reference-cond-path", required=True, type=str,
-                       help="REQUIRED. cond.npy to inherit the per-object_subset "
+                       help="REQUIRED. cond.npy to inherit the global canonical "
                             "standardization statistics from. Those statistics belong to a "
                             "trained checkpoint, so this must be the checkpoint's own "
                             "cond.npy snapshot (there is no fallback to the processed "
