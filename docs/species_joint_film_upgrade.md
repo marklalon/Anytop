@@ -1,3 +1,7 @@
+> 本文记录早期升级。CKPT 28 已删除 timestep `species_cond`，
+> 将 CFG drop 移到 per-joint FiLM，joint × species bottleneck 默认 128；
+> 当前合同见 [模型架构](anytop_model_architecture.md)。
+
 # species 条件通路改造方案：per-joint 加性 → per-joint FiLM
 
 > 状态：**方案 A 代码已实施（2026-08-31），重训与验证（§6）未开始**

@@ -34,7 +34,6 @@ pushd "%SCRIPT_DIR%"
 	--action_label_cond ^
 	--action_label_adaln ^
 	--action_adaln_bottleneck 128 ^
-	--species_cond ^
 	--species_film_bottleneck 128 ^
 	--species_joint_cond ^
 	--leaf_drop_prob 0.2 ^

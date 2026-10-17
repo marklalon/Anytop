@@ -268,7 +268,7 @@ def bootstrap_species_descriptor_table(args, cond_file, save_dir):
     Like the action bundle, it is a runtime object handed to the loaders, never
     written to args.json.
     """
-    if not (getattr(args, 'species_cond', False) or getattr(args, 'species_joint_cond', False)):
+    if not getattr(args, 'species_joint_cond', False):
         args.species_descriptor_table = None
         return None
     shipped = os.path.join(save_dir, SPECIES_DESCRIPTOR_TABLE_FILE)

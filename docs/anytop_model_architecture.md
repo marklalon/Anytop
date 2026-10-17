@@ -1,3 +1,9 @@
+> CKPT 28：删除 `species_cond` / timestep species FiLM，仅保留 `species_joint_cond`。
+> `species_film_bottleneck` 现控制 joint × species FiLM，默认 128（0 为 latent_dim）。
+> CFG drop 按样本绕过整个 per-joint FiLM，保留原始 joint-name embedding；
+> 推理的 `species_active=False` 使用同一路径。旧 checkpoint 需重新训练，cond.npy 无需重生成。
+> 下方历史参数预算表仍记录对应旧版本。
+
 # AnyTop 模型架构
 
 本文档描述 AnyTop 的模型结构：输入特征、条件总线、decoder、训练扰动与损失，以及参考动作在
@@ -10,7 +16,7 @@
 ```text
 带噪动作 x_t [B, J, F, T]（F = 每个关节的动作特征维）
   + rest pose（第 0 个时间 token）
-  + T5 joint-name embedding
+  + T5 joint-name embedding（可选 per-joint species FiLM 后投影）
   + joint structural embedding
   + absolute frame embedding
                     │
@@ -25,14 +31,12 @@
              预测干净动作 x_0
 ```
 
-每层都会重新注入同一个条件总线：
+每层都会重新注入同一个 timestep 条件总线（loop 使用独立通路，见 §6.1）：
 
 ```text
 diffusion timestep
-  → species FiLM
   + resample-speed condition
   + canonical output-frame condition
-  + loop condition
   + action-label condition
 ```
 
@@ -60,7 +64,7 @@ attention，最后由因子化注意力输出的预测就是干净动作。骨�
 - Perceiver 式 cross-limb temporal pathway，让不同肢体交换完整的运动节奏；
 - loop 条件、圆周相位、loop 数据增强与闭合损失；
 - per-joint structural channel 和 whole-joint name dropout；
-- 全局 species FiLM 与 per-joint species × joint FiLM；
+- per-joint species × joint FiLM 与 species CFG；
 - 四槽 action-label 条件与 action CFG；
 - canonical output-frame 和 resample-speed 条件；
 - 可选的 global topology conditioner（骨架汇总 → 每层 AdaLN，见 §4.4）；
@@ -77,7 +81,7 @@ x_t [B, J, F, T]
   │
   ├─ motion projection（root / non-root 分开）
   ├─ rest-pose projection，作为第 0 个时间 token
-  ├─ frozen-T5 joint-name embedding → trainable projection
+  ├─ frozen-T5 joint-name embedding → 可选 species FiLM → trainable projection
   ├─ joint structural descriptor → MLP
   └─ absolute sinusoidal frame PE
   │
@@ -86,7 +90,6 @@ tokens [T+1, B, J, D]
   │
   │  timestep condition bus
   │    sinusoidal diffusion timestep
-  │      → species FiLM
   │      + resample-speed token
   │      + canonical-frame token
   │      + action-label token
@@ -119,8 +122,8 @@ root / non-root output projections
 ### 3.2 关节名称
 
 T5 编码发生在预处理阶段，模型不会在每次 forward 中运行 T5。`cond.npy` 携带
-`joints_names_embs`，`InputProcess.text_embedding` 再把它投影到 latent width，并沿全部
-时间位置加到对应关节 token。
+`joints_names_embs`；启用 `species_joint_cond` 时，先经过第 4.1 节的 per-joint FiLM，
+再由 `InputProcess.text_embedding` 投影到 latent width，并沿全部时间位置加到对应关节 token。
 
 `joint_name_drop_prob>0` 时，训练会把整个关节名称向量置零（与 padding 行同为全零，
 padding 已被 attention mask 和 loss 排除，不会混淆）。它不同于普通 element-wise dropout：目的是真正隐藏关节名字，让模型
@@ -149,7 +152,6 @@ padding 已被 attention mask 和 loss 排除，不会混淆）。它不同于�
 
 ```text
 timestep
-  → species FiLM
   + resample_speed
   + canonical_feature_mean/std
   + action_label
@@ -157,15 +159,37 @@ timestep
 
 组合后的 condition 在每个 decoder layer 中经该层自己的 `embed_timesteps` 再注入残差流。
 
-### 4.1 Species 的两条通路
+### 4.1 Per-joint species FiLM 与 CFG
 
 | 通路 | 输入 | 作用位置 | drop 语义 |
 |---|---|---|---|
-| `species_cond` | species T5 descriptor | timestep 的 FiLM：`gamma*t + beta` | 可由 `species_cfg_drop_prob` bypass 到 identity |
-| `species_joint_cond` | `[joint_name || species]` | 每个 joint-name embedding 的 FiLM | 始终存在，不做 CFG drop |
+| `species_joint_cond` | `[joint_name || species]` → bottleneck 128 | 每个 joint-name embedding 的 FiLM | `species_cfg_drop_prob` 按样本 bypass 到 identity |
 
-两条 FiLM 的最后一层都以 identity 语义初始化。需要注意：只关闭 timestep species FiLM
-并不构成完全的 species-unconditional forward，因为 per-joint species FiLM 仍然开启。
+Species descriptor 只通过这条输入层通路调制关节名，不进入 timestep condition bus。
+设 T5 embedding 宽度为 `D_t5`，FiLM 头的结构为：
+
+```text
+[joint_name_emb || species_emb]
+  → Linear(2 * D_t5, 128) → GELU → Linear(128, 2 * D_t5)
+  → gamma_residual, beta
+
+modulated_name = (1 + gamma_residual) * joint_name_emb + beta
+  → text_embedding → latent width
+```
+
+隐藏宽度由 `species_film_bottleneck` 控制，默认 128，设为 0 时使用 `latent_dim`。
+最后一层权重和偏置初始化为零，因此初始调制为 identity。
+
+训练时，`species_cfg_drop_prob` 按样本独立抽样；被丢弃样本的所有关节绕过整条 FiLM，
+直接将关节名 embedding 送入 `text_embedding`。推理时 `species_active=False` 使用同一条
+identity 分支，CFG 按 `uncond + scale * (cond - uncond)` 组合预测。这里的 uncond 仅移除
+显式 species 调制，关节名、骨架和其他条件仍保留。
+
+`joint_name_drop_prob` 则按关节独立抽样，在 FiLM 之前把整条名字向量清零，FiLM 也读取
+清零后的名字；它与 species CFG drop 独立。只丢名字时，FiLM 仍可从 `[0 || species_emb]`
+产生 beta；两者都丢时，进入 `text_embedding` 的名字向量为零。普通 element-wise name
+dropout 位于 whole-joint name drop 之后；FiLM 头读取 element-wise dropout 之前的名字，
+而调制作用于 element-wise dropout 之后的名字。
 
 ### 4.2 Action label
 
@@ -468,7 +492,11 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 | leaf-drop 拓扑增强 | `data_loaders/truebones/truebones_utils/leaf_drop.py` |
 | reference/inpainting/outpainting | `sample/generate.py` |
 
-## 11. 参数预算（2026-09-21 普查）
+## 11. 历史参数预算（2026-09-21 起的普查）
+
+本节记录对应旧版本的结构、配置和测量结果，不代表 CKPT 28 的当前参数预算。
+其中 `species_film` 是已删除的全局头；当时的 `species_film_bottleneck` 只控制该头，
+`species_film_j` 的隐藏宽度固定为 `latent_dim`。当前参数含义与默认值见第 4.1 节。
 
 `train_all.bat` v24 配置（d=384 / ff=2048 / 8 层 / cross-limb 后 4 层 d_cl=128）共 29.5M。
 v22 同主干、头全宽是 33.5M；v23 把主干砍到 d=320 是 25.8M。
@@ -494,7 +522,7 @@ v22 同主干、头全宽是 33.5M；v23 把主干砍到 d=320 是 25.8M。
 - 各块 gate：cross-limb `time_emb_scale` 全 ≈0（已删）；`cross_k_scale` −0.05~−0.08；
   `temporal_phase_scale` 只在前三层非零。
 
-三个开关默认 0 = 旧全宽布局，老 checkpoint 形状不变地重建；但 `time_emb_scale` 的删除让
+当时三个开关默认 0 = 旧全宽布局，老 checkpoint 形状不变地重建；但 `time_emb_scale` 的删除让
 CKPT ≤19 的 state_dict 多出四个键，所以版本升到 20，之前的权重只能作历史结果读。
 
 ### v25（2026-09-22，对 v24 300k 步权重 + Adam 状态的复查）

@@ -43,8 +43,7 @@ REM Keep the full 215-clip locomotion pool; no ordered sample_limit truncation.
     --action_label_cond ^
     --action_label_adaln ^
     --action_adaln_bottleneck 64 ^
-    --species_cond ^
-    --species_film_bottleneck 64 ^
+    --species_film_bottleneck 128 ^
     --species_joint_cond ^
     --leaf_drop_prob 0.2 ^
     --bone_length_aug_prob 0.3 ^
