@@ -38,8 +38,10 @@ from data_loaders.truebones.truebones_utils.motion_labels import loop_is_phase_f
 from data_loaders.truebones.truebones_utils.param_utils import MAX_FIT_SPEEDUP, MAX_SOURCE_FRAMES_MULT
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
 from data_loaders.truebones.truebones_utils.canonical_features import (
+    ROOT_VEL_CHANNELS,
     canonical_to_physical_hml,
     physical_hml_to_canonical,
+    rebuild_derived_velocity,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
@@ -317,8 +319,12 @@ def test_loop_with_closing_key_is_augmented_as_its_clean_period() -> None:
     assert m_length == NUM_FRAMES
     assert np.isclose(float(aug_info["resample_speed_cond"]), float(period.shape[0]) / float(NUM_FRAMES))
     assert_close("closing-key loop, single cycle", motion, expected, atol=3e-5)
-    # The seam is one ordinary frame step, not the ~zero wrap the stored clip carries.
-    physical = canonical_to_physical_hml(motion, cond)
+    # The seam is one ordinary frame step, not the ~zero wrap the stored clip
+    # carries. The window holds no derived velocity; rebuild it from positions.
+    physical = rebuild_derived_velocity(
+        canonical_to_physical_hml(motion, cond), is_loop=True,
+        step_scale=float(aug_info["resample_speed_cond"]),
+    )
     seam = float(np.linalg.norm(physical[-1, :, 9:12], axis=-1).max())
     typical = float(np.median(np.linalg.norm(physical[:-1, :, 9:12], axis=-1).max(axis=1)))
     assert seam > 0.3 * typical, f"wrap velocity {seam} still reads as a stall against a typical step {typical}"
@@ -563,10 +569,14 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     assert motion.shape[0] == NUM_FRAMES, f"expected random-offset loop fill to keep {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"effective length should remain {NUM_FRAMES}, got {m_length}"
     assert_close("loop-filled motion with wraparound offset", motion, expected, atol=3e-5)
-    # Pure circular roll preserves the velocity ring; the terminal velocity
-    # (channels 9-12, i.e. the wrap-around delta) must equal the expected
-    # terminal velocity after resample — it is NOT forced to zero/copy.
-    assert_close("rolled loop terminal velocity", raw_motion[-1, :, 9:12], expected_raw[-1, :, 9:12], atol=3e-5)
+    # Pure circular roll preserves the velocity ring; the root's terminal X/Z
+    # velocity (the wrap-around delta, the only velocity the window keeps) must
+    # equal the expected terminal velocity after resample -- it is NOT forced
+    # to zero/copy.
+    assert_close(
+        "rolled loop terminal velocity",
+        raw_motion[-1, 0, list(ROOT_VEL_CHANNELS)], expected_raw[-1, 0, list(ROOT_VEL_CHANNELS)], atol=3e-5,
+    )
 
 
 def test_long_motion_crops_fixed_length_random_window() -> None:
@@ -929,8 +939,11 @@ def test_motion_speed_aug_is_transparent_to_roll_tile_crop_and_resample() -> Non
     base, _base_metadata, base_info = prepare(raw_len)
     assert np.isclose(float(base_info["motion_speed_applied"]), 1.0)
     assert_close("time-scaled loop pose content", motion[..., :9], base[..., :9], atol=3e-5)
-    live = np.abs(base[..., 9:12]) > 1e-2
-    vel_ratio = np.median(np.abs(motion[..., 9:12][live]) / np.abs(base[..., 9:12][live]))
+    # Physical root X/Z velocity: the standardized one carries the mean offset.
+    root_vel = lambda window: canonical_to_physical_hml(window, cond)[:, 0, list(ROOT_VEL_CHANNELS)]
+    base_vel, scaled_vel = root_vel(base), root_vel(motion)
+    live = np.abs(base_vel) > 0.1 * np.abs(base_vel).max()
+    vel_ratio = np.median(np.abs(scaled_vel[live]) / np.abs(base_vel[live]))
     assert abs(vel_ratio - speed) < 0.05 * speed, (vel_ratio, speed)
     assert float(aug_info["resample_speed_cond"]) < float(base_info["resample_speed_cond"])
 

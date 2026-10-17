@@ -46,7 +46,12 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (
+    CANONICAL_DPOS_STD_KEY,
     CANONICAL_FEATURE_SPACE,
+    CANONICAL_MEAN_KEY,
+    CANONICAL_STD_KEY,
+    DPOS_LOSS_WEIGHT_KEY,
+    ROOT_VEL_LOSS_WEIGHT_KEY,
     assert_single_canonical_frame,
     build_canonical_rest_feature,
     canonical_to_physical_hml,
@@ -225,11 +230,29 @@ def parse_head_word_weights(spec) -> dict[str, float]:
     return weights
 
 
+# Every training cond entry carries these (the loss reads them from y).
+_REQUIRED_CANONICAL_KEYS = (
+    CANONICAL_MEAN_KEY,
+    CANONICAL_STD_KEY,
+    CANONICAL_DPOS_STD_KEY,
+    ROOT_VEL_LOSS_WEIGHT_KEY,
+    DPOS_LOSS_WEIGHT_KEY,
+)
+
+
 def _copy_required_motion_metadata(motion_name: str, motion_metadata) -> dict[str, object]:
     if not isinstance(motion_metadata, dict):
         raise KeyError(f"Motion '{motion_name}' is missing explicit motion metadata.")
     if 'translation_root_index' not in motion_metadata:
         raise KeyError(f"Motion '{motion_name}' metadata is missing translation_root_index.")
+    # The canonical space keeps velocity on joint 0 alone (canonical_features,
+    # "Derived velocity"), so joint 0 must be the one carrying the locomotion.
+    if int(motion_metadata['translation_root_index']) != 0:
+        raise ValueError(
+            f"Motion '{motion_name}' has translation_root_index="
+            f"{motion_metadata['translation_root_index']}; the canonical feature space "
+            "requires the translation root at joint 0."
+        )
     copied_motion_metadata = dict(motion_metadata)
     copied_motion_metadata.setdefault('motion_name', motion_name)
     return copied_motion_metadata
@@ -1598,6 +1621,9 @@ class MotionDataset(data.Dataset):
                 'rest_pos_ric_hml': cond['rest_pos_ric_hml'],
                 'canonical_feature_mean': cond.get('canonical_feature_mean'),
                 'canonical_feature_std': cond.get('canonical_feature_std'),
+                CANONICAL_DPOS_STD_KEY: cond.get(CANONICAL_DPOS_STD_KEY),
+                ROOT_VEL_LOSS_WEIGHT_KEY: cond.get(ROOT_VEL_LOSS_WEIGHT_KEY),
+                DPOS_LOSS_WEIGHT_KEY: cond.get(DPOS_LOSS_WEIGHT_KEY),
                 'feature_space': cond.get('feature_space', CANONICAL_FEATURE_SPACE),
             }, {
                 'loop_applied': bool(loop_condition_active),
@@ -1620,6 +1646,9 @@ class MotionDataset(data.Dataset):
             'rest_pos_ric_hml': cond['rest_pos_ric_hml'],
             'canonical_feature_mean': cond.get('canonical_feature_mean'),
             'canonical_feature_std': cond.get('canonical_feature_std'),
+            CANONICAL_DPOS_STD_KEY: cond.get(CANONICAL_DPOS_STD_KEY),
+            ROOT_VEL_LOSS_WEIGHT_KEY: cond.get(ROOT_VEL_LOSS_WEIGHT_KEY),
+            DPOS_LOSS_WEIGHT_KEY: cond.get(DPOS_LOSS_WEIGHT_KEY),
             'feature_space': cond.get('feature_space', CANONICAL_FEATURE_SPACE),
         }
     
@@ -1886,11 +1915,11 @@ class Truebones(data.Dataset):
         cond_dict = ensure_joint_name_embeddings(cond_dict, cond_source=opt.cond_file)
         for object_type, cond in cond_dict.items():
             mark_canonical_cond_entry(cond)
-            if cond.get('canonical_feature_mean') is None or cond.get('canonical_feature_std') is None:
+            if any(cond.get(key) is None for key in _REQUIRED_CANONICAL_KEYS):
                 raise RuntimeError(
-                    f"cond entry '{object_type}' is missing canonical_feature_mean/std. "
-                    "Regenerate cond.npy (python tools/regenerate_dataset_artifacts.py) to "
-                    "compute the global canonical standardization statistics."
+                    f"cond entry '{object_type}' is missing one of {_REQUIRED_CANONICAL_KEYS}. "
+                    "Regenerate cond.npy (tools/merge_dataset_cond.py for a merged cond, "
+                    "tools/regenerate_dataset_artifacts.py for a dataset)."
                 )
             cond['joint_mask_candidate_roots'] = _build_joint_mask_candidate_roots(cond)
         assert_single_canonical_frame(cond_dict, source=opt.cond_file)

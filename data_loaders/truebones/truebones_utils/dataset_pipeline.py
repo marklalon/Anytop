@@ -63,8 +63,12 @@ from .features import (
 )
 from .topology_relations import create_topology_edge_relations
 from .canonical_features import (
+    DPOS_LOSS_WEIGHT_KEY,
+    ROOT_VEL_LOSS_WEIGHT_KEY,
     assert_single_canonical_frame,
     mark_canonical_cond_entry,
+    get_canonical_dpos_std,
+    set_aux_loss_weights,
     set_canonical_global_stats,
 )
 from .dataset_sources import resolve_species_key
@@ -1596,7 +1600,7 @@ def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_co
     """
     from .canonical_features import get_canonical_global_stats
 
-    if get_canonical_global_stats(object_cond) is not None:
+    if get_canonical_global_stats(object_cond) is not None and get_canonical_dpos_std(object_cond) is not None:
         return True
 
     # The stats belong to a *checkpoint*, so the reference must be that
@@ -1623,8 +1627,10 @@ def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_co
         if not isinstance(sibling_cond, dict):
             continue
         stats = get_canonical_global_stats(sibling_cond)
-        if stats is not None:
-            set_canonical_global_stats(object_cond, stats[0], stats[1])
+        dpos_std = get_canonical_dpos_std(sibling_cond)
+        if stats is not None and dpos_std is not None:
+            set_canonical_global_stats(object_cond, stats[0], stats[1], dpos_std)
+            set_aux_loss_weights(object_cond)
             print(f"[process_skeleton] inherited canonical stats for '{object_name}' "
                   f"from {ref_cond_path}")
             return True
@@ -1662,10 +1668,11 @@ def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_
         ]
         chosen = next(
             (
-                (entry['canonical_feature_mean'], entry['canonical_feature_std'])
+                (entry['canonical_feature_mean'], entry['canonical_feature_std'], get_canonical_dpos_std(entry))
                 for entry in donors
                 if entry.get('canonical_feature_mean') is not None
                 and entry.get('canonical_feature_std') is not None
+                and get_canonical_dpos_std(entry) is not None
             ),
             None,
         )
@@ -1677,8 +1684,11 @@ def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_
                 "Run regenerate_dataset_artifacts first to compute the global "
                 "standardization statistics before merging new skeletons."
             )
-        object_cond['canonical_feature_mean'] = np.asarray(chosen[0], dtype=np.float32)
-        object_cond['canonical_feature_std'] = np.asarray(chosen[1], dtype=np.float32)
+        set_canonical_global_stats(object_cond, *chosen)
+    # Until the next stats pass measures this species' clips, its root-velocity
+    # and position-step losses keep full weight.
+    if object_cond.get(ROOT_VEL_LOSS_WEIGHT_KEY) is None or object_cond.get(DPOS_LOSS_WEIGHT_KEY) is None:
+        set_aux_loss_weights(object_cond)
     # tpose_reference_path is None for retarget/direct-input updates that reuse the
     # target's existing sidecar entry (preserved by _save_cond_with_tpose_sidecar).
     tpose_refs = {object_name: tpose_reference_path} if tpose_reference_path else None

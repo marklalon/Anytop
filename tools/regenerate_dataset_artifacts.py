@@ -56,7 +56,9 @@ from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa:
     accumulate_lnorm_stats,
     finalize_lnorm_stats,
     pool_global_stats,
+    set_aux_loss_weights,
     set_canonical_global_stats,
+    species_aux_loss_weights,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
     STALE_JOINT_ANNOTATION_KEYS,
@@ -232,7 +234,9 @@ def _compute_canonical_stats(
         if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN:
             continue
         try:
-            subset_accs[subset] = accumulate_lnorm_stats(motion, object_cond, acc=subset_accs.get(subset))
+            subset_accs[subset] = accumulate_lnorm_stats(
+                motion, object_cond, acc=subset_accs.get(subset), species=object_type
+            )
         except (KeyError, ValueError):
             # cond entry lacks rest geometry (e.g. minimal synthetic fixtures);
             # such clips cannot be encoded, so skip them.
@@ -245,15 +249,18 @@ def _compute_canonical_stats(
         return
 
     subset_stats = {subset: finalize_lnorm_stats(acc) for subset, acc in usable_accs.items()}
-    mean, std = pool_global_stats(subset_stats)
-    for object_cond in rebuilt_cond.values():
-        set_canonical_global_stats(object_cond, mean, std)
+    mean, std, dpos_std = pool_global_stats(subset_stats)
+    aux_weights = species_aux_loss_weights(usable_accs.values(), mean, std, dpos_std)
+    for object_type, object_cond in rebuilt_cond.items():
+        set_canonical_global_stats(object_cond, mean, std, dpos_std)
+        set_aux_loss_weights(object_cond, *aux_weights.get(object_type, (1.0, 1.0)))
 
     with np.printoptions(precision=3, suppress=True, linewidth=160):
         print(f"[OK] global canonical stats over {used} clip(s), "
               f"{len(usable_accs)} object_subset(s) weighted equally:")
         print(f"     mean {mean}")
         print(f"     std  {std}")
+        print(f"     dpos_std {float(dpos_std):.4f}")
 
 
 def _compute_clip_length_prior(

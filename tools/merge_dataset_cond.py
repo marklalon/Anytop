@@ -40,7 +40,9 @@ from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa:
     accumulate_lnorm_stats,
     finalize_lnorm_stats,
     pool_global_stats,
+    set_aux_loss_weights,
     set_canonical_global_stats,
+    species_aux_loss_weights,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
     load_cond,
@@ -180,7 +182,7 @@ def _recompute_canonical_stats(merged_cond, sources) -> tuple:
             subset = subset_of[object_key]
             try:
                 subset_accs[subset] = accumulate_lnorm_stats(
-                    motion, merged_cond[object_key], acc=subset_accs.get(subset)
+                    motion, merged_cond[object_key], acc=subset_accs.get(subset), species=object_key
                 )
             except (KeyError, ValueError):
                 skipped += 1
@@ -191,15 +193,18 @@ def _recompute_canonical_stats(merged_cond, sources) -> tuple:
     if not usable:
         raise SystemExit("Cannot compute canonical stats: no usable train clips in any source.")
     subset_stats = {subset: finalize_lnorm_stats(acc) for subset, acc in usable.items()}
-    mean, std = pool_global_stats(subset_stats)
+    mean, std, dpos_std = pool_global_stats(subset_stats)
+    aux_weights = species_aux_loss_weights(usable.values(), mean, std, dpos_std)
 
-    for entry in merged_cond.values():
-        set_canonical_global_stats(entry, mean, std)
+    for key, entry in merged_cond.items():
+        set_canonical_global_stats(entry, mean, std, dpos_std)
+        set_aux_loss_weights(entry, *aux_weights.get(key, (1.0, 1.0)))
 
     print(
         f"[OK] recomputed canonical stats over {used} train clip(s) ({skipped} skipped), "
         f"pooled over {len(usable)} object_subset(s)"
     )
+    _report_aux_loss_weights(aux_weights)
     return mean, std
 
 
@@ -211,6 +216,15 @@ def _match_species(motion_name: str, species_by_name: dict[str, str]) -> str | N
         if motion_name.startswith(f"{species}_") and len(species) > best_len:
             best_key, best_len = key, len(species)
     return best_key
+
+
+def _report_aux_loss_weights(aux_weights) -> None:
+    capped = sorted(
+        (key, weights) for key, weights in aux_weights.items() if min(weights) < 1.0
+    )
+    print(f"[OK] root-velocity / position-step loss weights: {len(capped)} species scaled down")
+    for key, (root_vel_weight, dpos_weight) in capped:
+        print(f"     {key}: root_vel {root_vel_weight:.3f}  dpos {dpos_weight:.3f}")
 
 
 # ---------------------------------------------------------------------------

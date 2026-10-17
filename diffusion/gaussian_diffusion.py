@@ -19,6 +19,12 @@ from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geo
 from utils.device_transfer import host_to_device
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
 from data_loaders.truebones.truebones_utils.canonical_features import (
+    CANONICAL_DPOS_STD_KEY,
+    CANONICAL_STD_KEY,
+    DPOS_LOSS_WEIGHT_KEY,
+    JOINT_MODEL_CHANNELS,
+    ROOT_VEL_CHANNELS,
+    ROOT_VEL_LOSS_WEIGHT_KEY,
     _length_scale_from_cond,
     canonical_to_physical_hml,
 )
@@ -174,7 +180,8 @@ class GaussianDiffusion:
         loss_type,
         rescale_timesteps=False,
         lambda_geo=0.,
-        lambda_vel=0.,
+        lambda_root_vel=0.,
+        lambda_dpos=0.,
         lambda_loop_wrap=0.,
         lambda_loop_root_closure=0.,
         lambda_bone=0.,
@@ -187,7 +194,8 @@ class GaussianDiffusion:
         self.loss_type = loss_type
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
-        self.lambda_vel = lambda_vel
+        self.lambda_root_vel = float(lambda_root_vel)
+        self.lambda_dpos = float(lambda_dpos)
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_loop_root_closure = float(lambda_loop_root_closure)
         self.lambda_bone = float(lambda_bone)
@@ -357,12 +365,12 @@ class GaussianDiffusion:
         # target / model_output: [bs, njoints, nfeats, nframes] (denormalized).
         # Penalize the prediction's second-order temporal difference
         # (acceleration) of the position channel against the target's, weighted
-        # by the seam band. This is target-relative on purpose: l_simple already
-        # matches per-frame values and vel_loss only enforces pos/vel channel
-        # self-consistency (a synchronized jump satisfies it), so neither stops
-        # the inpainting seam from injecting an acceleration spike absent from
-        # ground truth. Matching GT acceleration kills that spike without
-        # over-smoothing genuinely sharp motion.
+        # by the seam band. This is target-relative on purpose: l_simple matches
+        # per-frame values and dpos_loss matches steps averaged over the whole
+        # window, so neither concentrates on the inpainting seam, where an
+        # acceleration spike absent from ground truth appears. Matching GT
+        # acceleration in the band kills that spike without over-smoothing
+        # genuinely sharp motion.
         n_frames = model_output.shape[-1]
         if n_frames < 3 or model_output.shape[2] < 3:
             return None
@@ -467,68 +475,73 @@ class GaussianDiffusion:
         open_step = ((source_frames - 1.0) / float(n_frames - 1)).clamp_min(0.0)
         return th.where(is_loop, resample_speed, open_step)
 
-    def _root_relative_velocity(self, vel, n_joints, y):
-        """Velocity channels re-expressed in the frame the RIC positions live in.
+    def _per_sample_y_scalar(self, y, key, batch_size, device, default=None):
+        """A ``[B]`` float tensor from ``y[key]`` (``default`` when absent)."""
+        value = y.get(key) if isinstance(y, dict) else None
+        if value is None:
+            if default is None:
+                raise KeyError(
+                    f"y[{key!r}] is missing; the training loader collates it from cond.npy "
+                    "(regenerate the cond if it predates root-only velocity)."
+                )
+            return th.full((batch_size,), float(default), device=device, dtype=th.float32)
+        value = value if torch.is_tensor(value) else th.as_tensor(np.asarray(value, dtype=np.float32))
+        value = value.to(device=device, dtype=th.float32).reshape(-1)
+        if value.numel() == 1 and batch_size != 1:
+            value = value.expand(batch_size)
+        return value
 
-        ``get_rifke`` subtracts the translation root's world X/Z from EVERY
-        joint's position (Y is left alone), while the velocity channel is each
-        joint's WORLD delta. So the delta a joint's stored RIC path shows is
-        its world velocity minus the root's XZ velocity:
-
-            ric[t+1] - ric[t] == vel[t] - vel_root[t]     (X and Z only)
-
-        Comparing position deltas against the raw world velocity therefore has
-        a NON-ZERO residual on the ground truth itself -- exactly the root's
-        XZ velocity, i.e. the in-place sway the root_xz refactor deliberately
-        keeps in the data (p90 ~0.017 on loop clips, against a per-joint XZ
-        velocity signal of p90 ~0.032). Subtracting the root's XZ velocity
-        makes the residual identically zero on real data for every joint, the
-        root row included (its RIC XZ is structurally zero and vel - vel == 0),
-        so no channel mask is needed on top.
-
-        ``vel``: [bs, njoints, 3, nframes]. A translation root index outside
-        the sample's real joints leaves that sample's velocity untouched.
-        """
-        batch_size, max_joints = vel.shape[0], vel.shape[1]
-        root_indices = self._coerce_index_batch(
-            (y or {}).get('translation_root_index'), batch_size, vel.device
+    def root_velocity_loss(self, target, model_output, y):
+        """Per-sample MSE of the root's X/Z velocity, the one velocity the
+        model writes, in canonical units. Scaled by the species'
+        ``root_vel_loss_weight``. ``[B]``."""
+        channels = [target[:, 0, c, :] for c in ROOT_VEL_CHANNELS]
+        predicted = [model_output[:, 0, c, :] for c in ROOT_VEL_CHANNELS]
+        err = sum((p - t) ** 2 for p, t in zip(predicted, channels))       # [B, T]
+        per_sample = err.mean(dim=-1) / float(len(ROOT_VEL_CHANNELS))
+        weight = self._per_sample_y_scalar(
+            y, ROOT_VEL_LOSS_WEIGHT_KEY, target.shape[0], target.device, default=1.0
         )
-        n_joints_long = th.as_tensor(
-            n_joints, device=vel.device, dtype=th.long
-        ).reshape(-1).clamp(min=0, max=max_joints)
-        root_valid = (
-            (root_indices >= 0) & (root_indices < n_joints_long)
-        ).to(dtype=vel.dtype)
-        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
-        batch_indices = th.arange(batch_size, device=vel.device)
-        xz_only = vel.new_zeros(1, 3, 1)
-        xz_only[:, 0::2] = 1.0
-        root_xz_vel = (
-            vel[batch_indices, root_indices_clamped] * xz_only * root_valid.view(batch_size, 1, 1)
-        )                                                       # [bs, 3, nframes]
-        return vel - root_xz_vel.unsqueeze(1)
+        return per_sample * weight
 
-    def velocity_consistency_loss(self, model_output, spat_mask, n_joints, y=None):
-        # model_output: [bs, njoints, nfeats, nframes] (denormalized)
-        # vel[t] carries physical-frame units. Scale it into the current
-        # resampled window step before comparing with position deltas.
-        batch_size, max_joints, _n_feats, n_frames = model_output.shape
-        pos = model_output[:, :, 0:3, :]    # [bs, njoints, 3, nframes]
-        vel = self._root_relative_velocity(model_output[:, :, 9:12, :], n_joints, y)
-        finite_diff = pos[:, :, :, 1:] - pos[:, :, :, :-1]  # [bs, njoints, 3, nframes-1]
-        step_scale = self._physical_velocity_step_scale(
-            y or {},
-            batch_size,
-            n_frames,
-            model_output.device,
-            model_output.dtype,
-        ).view(batch_size, 1, 1, 1)
-        pred_vel = vel[:, :, :, :-1] * step_scale              # [bs, njoints, 3, nframes-1]
-        loss = (finite_diff - pred_vel) ** 2
-        valid_joints = spat_mask.float().transpose(1, 3)        # [bs, njoints, 1, 1]
-        valid = valid_joints.expand(-1, -1, 3, loss.shape[-1])
-        loss_val = (loss * valid).sum() / valid.sum().clamp(min=1)
-        return loss_val
+    def position_step_loss(self, target, model_output, spat_mask, n_joints, y):
+        """Per-sample MSE of every joint's frame-to-frame position step against
+        the target's, in units of the corpus position-step RMS. A loop sample
+        also counts its wrap step ``pos[0] - pos[-1]``. This is the
+        supervision the non-root velocity channels used to give the positions,
+        without the root's step repeated on every joint. Scaled by the
+        species' ``dpos_loss_weight``. ``[B]``."""
+        batch_size, _max_joints, _n_feats, n_frames = target.shape
+        device = target.device
+        if n_frames < 2:
+            return target.new_zeros(batch_size)
+        y = y if isinstance(y, dict) else {}
+        pos_std = y.get(CANONICAL_STD_KEY)
+        if pos_std is None:
+            raise KeyError(f"y[{CANONICAL_STD_KEY!r}] is missing; the position-step loss needs it.")
+        pos_std = pos_std.to(device=device, dtype=th.float32)
+        pos_std = (pos_std.reshape(1, -1).expand(batch_size, -1) if pos_std.dim() == 1
+                   else pos_std.reshape(batch_size, -1))[:, 0:3]
+        dpos_std = self._per_sample_y_scalar(y, CANONICAL_DPOS_STD_KEY, batch_size, device)
+        scale = (pos_std / dpos_std.clamp_min(1e-8).unsqueeze(1)).view(batch_size, 1, 3, 1)
+
+        def steps(x):
+            pos = x[:, :, 0:3, :]
+            inner = pos[..., 1:] - pos[..., :-1]
+            wrap = pos[..., 0:1] - pos[..., -1:]
+            return th.cat([inner, wrap], dim=-1)                         # [B, J, 3, T]
+
+        err = ((steps(model_output) - steps(target)) * scale) ** 2
+        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
+        frame_weight = th.ones(batch_size, n_frames, device=device, dtype=err.dtype)
+        frame_weight[:, -1] = is_loop.to(dtype=err.dtype)
+        joint_weight = spat_mask.float().transpose(1, 3).reshape(batch_size, -1, 1, 1)
+        weighted = err * joint_weight * frame_weight.view(batch_size, 1, 1, n_frames)
+        n_joints_f = th.as_tensor(n_joints, device=device, dtype=err.dtype).reshape(-1)
+        denom = (frame_weight.sum(dim=1) * n_joints_f * 3.0).clamp_min(1.0)
+        per_sample = sum_flat(weighted) / denom
+        weight = self._per_sample_y_scalar(y, DPOS_LOSS_WEIGHT_KEY, batch_size, device, default=1.0)
+        return per_sample * weight
 
     def _masked_smooth_l1(self, x, mask, beta=0.1, weight=None):
         """Smooth-L1 (Huber) of ``x`` averaged over entries where ``mask`` > 0.
@@ -702,50 +715,33 @@ class GaussianDiffusion:
         return result
 
     def loop_wrap_loss(self, model_output, y, n_joints):
-        """Seam continuity of loop samples, on denormalized outputs.
+        """Rotation seam continuity of loop samples, on denormalized outputs.
 
         A loop window holds no closing key (dataset._drop_loop_closing_frame)
         and is resampled periodically, so its last frame is one ordinary step
         BEFORE frame 0 -- the seam is a frame step like any other, not a
-        repeated pose. Both terms are written for that convention:
-
-        * terminal velocity: ``pos[0] - pos[-1] == vel[-1] * step_scale``, the
-          wrap delta the stored terminal row carries;
-        * rotation: the wrap step's geodesic angle ``(R[-1], R[0])`` matches
-          the mean of its neighbours ``(R[-2], R[-1])`` and ``(R[0], R[1])``.
-
-        There is no pose term. The one this replaced pulled ``pos[-1]`` onto
-        ``pos[0]`` (the old closing-key convention, as did the rotation term),
-        contradicting the terminal term and the data; the terminal term already
-        closes the position seam.
+        repeated pose. The wrap step's geodesic angle ``(R[-1], R[0])`` must
+        match the mean of its neighbours ``(R[-2], R[-1])`` and ``(R[0], R[1])``.
+        The position seam is position_step_loss's wrap step.
         """
-        batch_size, max_joints, n_feats, n_frames = model_output.shape
+        batch_size, max_joints, _n_feats, n_frames = model_output.shape
         device = model_output.device
         zero = model_output.new_zeros(())
         if n_frames < 2:
             return {
                 'loop_wrap_loss': zero,
                 'loop_wrap_rot': zero,
-                'loop_wrap_terminal_vel': zero,
             }
         active = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
         n_joints_long = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1)
-        root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
 
         valid_joints = n_joints_long.clamp(min=0, max=max_joints)
         active_valid = active & (valid_joints > 0)
         active_weight = active_valid.to(dtype=model_output.dtype)
         active_denom = active_weight.sum().clamp(min=1.0)
 
-        first_frame = model_output[..., 0:1]
-        last_frame = model_output[..., -1:]
-
         joint_mask = th.arange(max_joints, device=device).view(1, max_joints) < valid_joints.view(batch_size, 1)
         joint_weight = joint_mask.to(dtype=model_output.dtype)
-
-        batch_indices = th.arange(batch_size, device=device)
-        root_valid = ((root_indices >= 0) & (root_indices < valid_joints)).to(dtype=model_output.dtype)
-        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
 
         # Stacked, not indexed with a host list (a blocking upload per step).
         # At n_frames == 2 both neighbours are the wrap step itself and the
@@ -768,37 +764,9 @@ class GaussianDiffusion:
         rot_per_sample = th.where(active_valid, rot_per_sample, th.zeros_like(rot_per_sample))
         rot_loss = (rot_per_sample * active_weight).sum() / active_denom
 
-        terminal_vel_loss = zero
-        if n_feats >= 12:
-            step_scale = self._physical_velocity_step_scale(
-                y,
-                batch_size,
-                n_frames,
-                device,
-                model_output.dtype,
-            ).view(batch_size, 1, 1)
-            terminal_residual = (
-                first_frame[:, :, 0:3, 0]
-                - last_frame[:, :, 0:3, 0]
-                - last_frame[:, :, 9:12, 0] * step_scale
-            )
-            # The root's RIC X/Z are structurally zero, so the residual
-            # collapses to last_vel*step_scale there -- a pull of the terminal
-            # root XZ velocity toward zero, against the gait's genuine last
-            # step. Mask out (loop_root_xz_closure_loss covers the root's XZ).
-            terminal_weight = joint_weight[:, :, None].expand(-1, -1, 3).clone()
-            terminal_weight[batch_indices, root_indices_clamped, 0] *= 1.0 - root_valid
-            terminal_weight[batch_indices, root_indices_clamped, 2] *= 1.0 - root_valid
-            terminal_per_sample = ((terminal_residual ** 2) * terminal_weight).sum(dim=(1, 2))
-            terminal_per_sample = terminal_per_sample / terminal_weight.sum(dim=(1, 2)).clamp(min=1.0)
-            terminal_per_sample = th.where(active_valid, terminal_per_sample, th.zeros_like(terminal_per_sample))
-            terminal_vel_loss = (terminal_per_sample * active_weight).sum() / active_denom
-
-        total = rot_loss + terminal_vel_loss
         return {
-            'loop_wrap_loss': total,
+            'loop_wrap_loss': rot_loss,
             'loop_wrap_rot': rot_loss,
-            'loop_wrap_terminal_vel': terminal_vel_loss,
         }
 
     def loop_root_xz_closure_loss(self, model_output, y, n_joints):
@@ -1964,12 +1932,26 @@ class GaussianDiffusion:
                 lengths_fp32 = lengths.float()
                 actual_joints_fp32 = actual_joints.float()
 
+                # Position and rotation only: the root's X/Z velocity has its
+                # own term and every other velocity channel is derived.
+                n_joint_channels = len(JOINT_MODEL_CHANNELS)
                 terms["l_simple"] = self.spatial_masked_l2(
-                    target_fp32, model_output_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
+                    target_fp32[:, :, :n_joint_channels], model_output_fp32[:, :, :n_joint_channels],
+                    joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32,
                 )
                 terms["loss"] = terms["l_simple"].clone()
 
                 y_for_decode = (model_kwargs or {}).get('y', {})
+                if self.lambda_root_vel > 0.:
+                    terms["root_vel_loss"] = self.root_velocity_loss(target_fp32, model_output_fp32, y_for_decode)
+                    terms["loss"] = terms["loss"] + self.lambda_root_vel * terms["root_vel_loss"]
+                if self.lambda_dpos > 0.:
+                    terms["dpos_loss"] = self.position_step_loss(
+                        target_fp32, model_output_fp32, joints_padding_mask_fp32,
+                        actual_joints_fp32, y_for_decode,
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_dpos * terms["dpos_loss"]
+
                 target_physical = canonical_to_physical_hml(target_fp32, y_for_decode)
                 model_output_physical = canonical_to_physical_hml(model_output_fp32, y_for_decode)
 
@@ -2005,12 +1987,6 @@ class GaussianDiffusion:
                         lengths_fp32, actual_joints_fp32, rotations=rotations,
                     )
                     terms["loss"] = terms["loss"] + self.lambda_geo * terms["geodesic_loss"]
-
-                if self.lambda_vel > 0.:
-                    terms["vel_loss"] = self.velocity_consistency_loss(
-                        model_output_physical, joints_padding_mask_fp32, actual_joints_fp32, y_for_decode
-                    )
-                    terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
 
                 if self.lambda_bone > 0.:
                     terms["bone_loss"] = self.bone_vector_consistency_loss(

@@ -206,77 +206,6 @@ class NativeLoopTests(unittest.TestCase):
         for key, value in source.state_dict().items():
             self.assertTrue(torch.equal(restored.state_dict()[key], value), key)
 
-    def test_velocity_consistency_compares_root_relative_xz_at_physical_step_scale(self):
-        # Joint 0 is the translation root, joint 1 a child. The root sways in
-        # world X (vel ch9) while its RIC X stays structurally zero; the child's
-        # RIC X path advances by its WORLD velocity minus the root's sway, and
-        # every Y path by its own velocity (get_rifke leaves Y alone). At
-        # resample_speed 4/7 over 7 frames the physical step scale is 0.5.
-        diffusion = self._make_diffusion()
-        n_frames = 7
-        step_scale = 0.5
-        ramp = torch.arange(n_frames, dtype=torch.float32)
-        model_output = torch.zeros(1, 2, 12, n_frames, dtype=torch.float32)
-        model_output[0, 0, 9, :] = 0.25
-        model_output[0, 0, 10, :] = 0.5
-        model_output[0, 0, 1, :] = ramp * 0.5 * step_scale
-        model_output[0, 1, 9, :] = 1.0
-        model_output[0, 1, 0, :] = ramp * (1.0 - 0.25) * step_scale
-        model_output[0, 1, 10, :] = 0.5
-        model_output[0, 1, 1, :] = ramp * 0.5 * step_scale
-        spat_mask = torch.ones(1, 1, 1, 2, dtype=torch.float32)
-        n_joints = torch.tensor([2])
-        y = {
-            'resample_speed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
-            'translation_root_index': [0],
-        }
-
-        loss = diffusion.velocity_consistency_loss(model_output, spat_mask, n_joints, y=y)
-        self.assertLess(float(loss.item()), 1e-6)
-
-        # Negative controls, so the pass above cannot come from a mask: the
-        # same tensor read at resample_speed 1 ...
-        loss_unit_step = diffusion.velocity_consistency_loss(
-            model_output, spat_mask, n_joints, y={'translation_root_index': [0]},
-        )
-        self.assertGreater(float(loss_unit_step.item()), 1e-3)
-        # ... or with the child's RIC X following its world velocity as if the
-        # root did not move.
-        world_frame = model_output.clone()
-        world_frame[0, 1, 0, :] = ramp * 1.0 * step_scale
-        loss_world = diffusion.velocity_consistency_loss(world_frame, spat_mask, n_joints, y=y)
-        self.assertGreater(float(loss_world.item()), 1e-3)
-
-    def test_velocity_consistency_is_zero_on_a_stored_clip_layout(self):
-        # Ground-truth tensors satisfy ric[t+1]-ric[t] == vel[t]-vel_root[t]
-        # (XZ) exactly, for every joint including the root. Build one the way
-        # preprocessing does -- world positions, then get_rifke and world deltas
-        # -- with the root as joint 1 to cover a non-zero translation_root_index.
-        diffusion = self._make_diffusion()
-        rng = np.random.default_rng(0)
-        n_frames, n_joints, root = 9, 3, 1
-        world = rng.normal(size=(n_frames, n_joints, 3)).astype(np.float32)
-        ric = world.copy()
-        ric[..., 0] -= world[:, root:root + 1, 0]
-        ric[..., 2] -= world[:, root:root + 1, 2]
-        vel = np.zeros_like(world)
-        vel[:-1] = world[1:] - world[:-1]
-        feats = np.zeros((n_frames, n_joints, 12), dtype=np.float32)
-        feats[..., 0:3] = ric
-        feats[..., 9:12] = vel
-        model_output = torch.as_tensor(feats).permute(1, 2, 0).unsqueeze(0)
-        spat_mask = torch.ones(1, 1, 1, n_joints, dtype=torch.float32)
-
-        loss = diffusion.velocity_consistency_loss(
-            model_output, spat_mask, torch.tensor([n_joints]), y={'translation_root_index': [root]},
-        )
-        self.assertLess(float(loss.item()), 1e-10)
-
-        wrong_root = diffusion.velocity_consistency_loss(
-            model_output, spat_mask, torch.tensor([n_joints]), y={'translation_root_index': [0]},
-        )
-        self.assertGreater(float(wrong_root.item()), 1e-3)
-
     def test_loop_wrap_loss_skips_non_loop_samples(self):
         diffusion = self._make_diffusion()
         model_output = torch.zeros(2, 3, 12, 6, dtype=torch.float32)
@@ -333,8 +262,8 @@ class NativeLoopTests(unittest.TestCase):
         self.assertNotIn('loop_wrap_pose', terms)
         self.assertNotIn('loop_wrap_vel', terms)
         self.assertNotIn('loop_wrap_contact', terms)
+        self.assertNotIn('loop_wrap_terminal_vel', terms)
         self.assertLess(float(terms['loop_wrap_rot'].item()), 1e-5)
-        self.assertLess(float(terms['loop_wrap_terminal_vel'].item()), 1e-10)
 
     def test_loop_wrap_rotation_penalizes_a_stalled_seam(self):
         # The last frame copying frame 0 is what the old period and pose/rot
@@ -368,33 +297,37 @@ class NativeLoopTests(unittest.TestCase):
         expected = torch.tensor([1.5, (90.0 - 1.0) / 59.0, 0.75], dtype=torch.float32)
         self.assertTrue(torch.allclose(step, expected, atol=1e-6), step)
 
-    def test_loop_wrap_terminal_velocity_uses_physical_step_scale(self):
-        # The root's RIC X/Z are structurally zero and masked out of the
-        # terminal term, so the seam has to be checked on a child joint (X)
-        # and on the root's height (Y): pos[0] - pos[-1] == vel[-1] * 0.5 at
-        # resample_speed 0.5 -- a loop window's step is L/T itself.
+    def test_position_step_loss_counts_the_wrap_step_only_on_loops(self):
+        # Moving the last frame by one unit changes two steps: the last inner
+        # step and the wrap step pos[0] - pos[-1]. A loop sample pays for both,
+        # a one-shot only for the inner one.
         diffusion = self._make_diffusion()
-        model_output = torch.zeros(1, 2, 12, 7, dtype=torch.float32)
-        model_output[:, :, 3, :] = 1.0
-        model_output[:, :, 7, :] = 1.0
-        model_output[0, 1, 0, -1] = -0.5
-        model_output[0, 1, 9, -1] = 1.0
-        model_output[0, 0, 1, -1] = -0.25
-        model_output[0, 0, 10, -1] = 0.5
+        n_frames, n_joints = 6, 2
+        target = torch.zeros(2, n_joints, 12, n_frames, dtype=torch.float32)
+        target[:, :, 0, :] = torch.arange(n_frames, dtype=torch.float32)
+        prediction = target.clone()
+        prediction[:, :, 0, -1] += 1.0
         y = {
-            'is_loop': torch.tensor([True]),
-            'translation_root_index': [0],
-            'resample_speed_cond': torch.tensor([0.5], dtype=torch.float32),
+            'is_loop': torch.tensor([True, False]),
+            'canonical_feature_std': torch.ones(12, dtype=torch.float32),
+            'canonical_dpos_std': torch.ones(2, dtype=torch.float32),
         }
+        spat_mask = torch.ones(2, 1, 1, n_joints, dtype=torch.float32)
+        per_sample = diffusion.position_step_loss(
+            target, prediction, spat_mask, torch.tensor([n_joints, n_joints]), y,
+        )
+        self.assertAlmostEqual(float(per_sample[0]), 2.0 * n_joints / (n_frames * n_joints * 3), places=6)
+        self.assertAlmostEqual(float(per_sample[1]), 1.0 * n_joints / ((n_frames - 1) * n_joints * 3), places=6)
 
-        terms = diffusion.loop_wrap_loss(model_output, y, n_joints=torch.tensor([2]))
-        self.assertLess(float(terms['loop_wrap_terminal_vel'].item()), 1e-6)
-
-        # Same tensor at resample_speed 1 leaves the seam open.
-        y_unit = dict(y)
-        y_unit.pop('resample_speed_cond')
-        terms_unit = diffusion.loop_wrap_loss(model_output, y_unit, n_joints=torch.tensor([2]))
-        self.assertGreater(float(terms_unit['loop_wrap_terminal_vel'].item()), 1e-3)
+        # The species weight scales the term; a matching prediction costs nothing.
+        y['dpos_loss_weight'] = torch.tensor([0.5, 0.5])
+        weighted = diffusion.position_step_loss(
+            target, prediction, spat_mask, torch.tensor([n_joints, n_joints]), y,
+        )
+        self.assertTrue(torch.allclose(weighted, 0.5 * per_sample))
+        self.assertEqual(float(diffusion.position_step_loss(
+            target, target, spat_mask, torch.tensor([n_joints, n_joints]), y,
+        ).abs().max()), 0.0)
 
     def _closure_output(self, root_vel_x, *, n_joints=2, root_index=0):
         """[1, n_joints, 12, T] physical output whose root X velocity rows are ``root_vel_x``."""
@@ -556,7 +489,6 @@ class NativeLoopTests(unittest.TestCase):
             timestep_respacing = ''
             sigma_small = True
             lambda_geo = 0.0
-            lambda_vel = 0.0
             lambda_loop_wrap = 0.75
             lambda_loop_root_closure = 1.5
             temporal_span_seam_loss_weight = 0.0

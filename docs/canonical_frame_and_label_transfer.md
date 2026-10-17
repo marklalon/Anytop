@@ -724,3 +724,57 @@ Dog / Dog-2 的 `Bip01_Ponytail3Nub`、`Bip01_Head2_Eyeleds` 在只看 8 个 cli
 - 泄露探针：species 条件 drop 时，用 latent 线性探针预测 object_subset，与旧 checkpoint 对比。
 - 跨 subset 标签迁移：四足 swim、非 winged 物种的飞行类动作、留出物种。
 - loss 与旧特征空间不可比，不作判据。
+
+## 10. 派生速度移出模型通道（2026-10-17）
+
+### 10.1 动机
+
+统一 frame 后，drifting 的 vel 在 l_simple 里的权重明显偏大：全语料 E[x²] 下 drifting 只占 12% 的 clip，
+却贡献了约 40% 的 vel 能量，单个 drifting 样本的 l_simple 中 vel 占 58%（其他 subset 为 15–20%）。
+根因是表示上的冗余：每个关节的 vel 是世界位移，等于自身 RIC 位置的步长加上 root 的 XZ 步长
+（`ric[t+1] − ric[t] == vel[t] − vel_root[t]`，XZ 方向；Y 方向直接等于 Δpos），在真实数据上精确成立。
+因此非 root 关节的 vel 只是把 root 平移和 Δpos 又监督了一遍；解码也只读 root 的 ch9/ch11。
+
+### 10.2 实施
+
+- **通道契约**（`canonical_features`）：只有 root（0 号关节，所有 cond 骨架的 translation root）的 X/Z vel
+  保留（`ROOT_VEL_CHANNELS`），其余 vel 通道在编码和解码后都为 0（`zero_derived_velocity`）。
+  磁盘上的 npy 仍是 `[T, J, 12]`，不需要重新预处理。loader 断言 `translation_root_index == 0`。
+- **模型**：root 读写 11 维（pos、rot、vel XZ），其余关节读写 9 维；`OutputProcess` 把派生通道补 0。
+  rest token 不含速度，root 和其他关节的 rest embedding 都只读 9 维。
+- **统计量**：vel 块的 mean/std 只在 root X/Z 上统计（全局 vel std 0.094 → 0.0448）；新增
+  `canonical_dpos_std`（单帧位置步长的 RMS，与块 std 同样按 subset 几何平均，0.0904）。
+- **loss**：`l_simple` 只算 pos+rot（J×9）。新增两项：
+  - `--lambda_root_vel`（默认 0.1）：root X/Z vel 的 MSE；
+  - `--lambda_dpos`（默认 0.04）：全关节 Δpos 对 GT 的 MSE，以 `canonical_dpos_std` 为单位；
+    loop 样本另计 wrap 步 `pos[0] − pos[-1]`，因此 `loop_wrap_loss` 只保留旋转项。
+  root 初始值 0.05 按旧 l_simple 中对应部分的占比推出：`(2/9)·(σ_root/σ_vel_old)²`；
+  Δpos 按 `(1/3)·(σ_dpos/σ_vel_old)²` 推出的初始值为 0.3，考虑位置差分对梯度的放大，
+  曾降为 0.1。结合 tiny v6 的损失日志，当前将 root 提高为 0.1、Δpos 降为 0.04，
+  增强根轨迹监督并降低位置差分的相对贡献，待训练对照验证。
+  `--lambda_vel` 与 `velocity_consistency_loss` 删除。
+- **按物种权重**：`root_vel_loss_weight` / `dpos_loss_weight` 写在每个 cond entry 上，
+  `min(1, sqrt(AUX_LOSS_ENERGY_CAP / 该物种在该项的能量))`，只降不升，cap = 2。
+  能量超过 2 才开始降权；平方根形式比初始的 `cap / energy` 更温和，
+  近似平衡误差幅度随目标 RMS 增长时的输出梯度，而非封顶加权损失能量。
+  合并 cond 中有 128/476 个物种被降权。
+
+| cap | root_vel：被降权物种数 / drifting 占比 | dpos：被降权物种数 / drifting 占比 |
+|---|---|---|
+| 不设 | 0 / 58% | 0 / 44% |
+| 1.5 | 121 / 25% | 136 / 20% |
+| **2** | **91 / 28%** | **103 / 23%** |
+| 3 | 65 / 33% | 71 / 28% |
+
+  （上表为初始 `cap / energy` 公式的历史测量，非当前平方根公式的结果；
+  按 clip 加权的 E[x²]，drifting 的 clip 占比是 12%。）
+- **推理**：`generate` 解码后用 `rebuild_derived_velocity` 按窗口步长重建完整的 vel 行，再进入 export 重采样，
+  保存的 npy 布局不变。`--inpaint_frames` 的 vel-Y 积分重锚（`_reanchor_inpaint_root_y_via_velocity`）
+  依赖模型独立预测的 vel Y，重建后会退化为恒等，因此一并删除。
+- `CKPT_VERSION` 29 → 30。合并 cond 和四个源 cond 都已重算；**需要重训**。
+
+### 10.3 重训后要看的
+
+- 分 subset 的 `root_vel_loss` / `dpos_loss` 是否仍由 drifting 主导。
+- root 轨迹误差、滑步、关节 jerk 与 v29 对比（`dpos_loss` 接替了原先非 root vel 对位置时间导数的约束）。
+- 帧段 inpaint 的接缝在 Y 方向是否有错位（vel-Y 重锚已删除）。
