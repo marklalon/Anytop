@@ -803,6 +803,7 @@ def write_html_report(
     model_name: str,
     records: list[dict],
     all_scores: list[float],
+    task_config: Path | None = None,
 ) -> None:
     """Write the portable motion review UI, assets, and local rating server."""
     from eval.checkpoint_report import write_report
@@ -811,7 +812,7 @@ def write_html_report(
         record.get("last_output_resolved") or record.get("reference_motion")
     )) for record in records]
     write_report(report_path, model_path, run_name, model_name, records, all_scores,
-                 dimensions=DIMENSIONS)
+                 dimensions=DIMENSIONS, task_config=task_config)
 
 
 def main() -> int:
@@ -1038,7 +1039,7 @@ def main() -> int:
         return 1
 
     report_path = root / "eval_report.html"
-    write_html_report(report_path, model_path, run_name, model_name, records, all_scores)
+    write_html_report(report_path, model_path, run_name, model_name, records, all_scores, task_config)
 
     print("\n" + "=" * 60)
     if all_scores:

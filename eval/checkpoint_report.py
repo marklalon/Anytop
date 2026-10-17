@@ -63,7 +63,7 @@ def _stats(values):
 
 
 def write_report(report_path, model_path, run_name, model_name, records, all_scores,
-                 dimensions=("physics", "prior")):
+                 dimensions=("physics", "prior"), task_config=None):
     report_path = Path(report_path).resolve()
     root = report_path.parent
     root.mkdir(parents=True, exist_ok=True)
@@ -126,12 +126,17 @@ def write_report(report_path, model_path, run_name, model_name, records, all_sco
     columns.update({dim: [task["dimensions"][dim] for task in tasks if task["quality"] is not None]
                     for dim in dimensions})
     data = dict(version=1, report=report_path.name, run_name=run_name, model_name=model_name,
+                task_config=str(task_config) if task_config is not None else None,
+                task_config_name=Path(task_config).name if task_config is not None else None,
                 model_path=str(model_path), generated=dt.datetime.now().astimezone().isoformat(timespec="seconds"),
                 summary={name: _stats(values) for name, values in columns.items()}, tasks=tasks)
     # JSON in script elements must not contain a literal closing script tag.
     embedded = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c")
     template = (source / "report" / "eval_review.html").read_text(encoding="utf-8")
-    doc = template.replace("__REPORT_TITLE__", html.escape(f"{run_name} / {model_name}"))
+    title = f"{run_name} / {model_name}"
+    if data["task_config_name"]:
+        title += f" / {data['task_config_name']}"
+    doc = template.replace("__REPORT_TITLE__", html.escape(title))
     doc = doc.replace("__REPORT_DATA__", embedded)
     atomic_json(root / "eval_report.json", data)
     report_path.write_text(doc, encoding="utf-8")

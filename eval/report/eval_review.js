@@ -36,7 +36,7 @@ try {
   $('connection').classList.add('error');
 }
 
-$('report-name').textContent = `${report.run_name} / ${report.model_name}`;
+$('report-name').textContent = [report.run_name, report.model_name, report.task_config_name].filter(Boolean).join(' / ');
 $('report-name').title = $('report-name').textContent;
 
 function visibleTasks() {
@@ -439,6 +439,7 @@ function showSummary() {
   const body = $('summary-body'); body.replaceChildren();
   body.append(el('div', `Run: ${report.run_name} | Model: ${report.model_name}`, 'meta'),
     el('div', `Checkpoint: ${report.model_path}`, 'meta'),
+    ...(report.task_config ? [el('div', `Task config: ${report.task_config}`, 'meta')] : []),
     el('div', `Generated: ${report.generated}`, 'meta'));
   const values = Object.values(ratings).map(rating => rating.score).sort((a, b) => a - b);
   const cards = el('div', undefined, 'summary-cards');
