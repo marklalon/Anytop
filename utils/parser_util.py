@@ -225,14 +225,14 @@ def add_model_options(parser):
     group.add_argument("--species_film_bottleneck", default=128, type=int,
                        help="Hidden width of the joint x species FiLM head (default 128; 0 = latent_dim).")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
-    # Root velocity keeps its former loss share; position steps use a lower
-    # weight because temporal differences amplify position gradients.
-    group.add_argument("--lambda_root_vel", default=0.05, type=float,
+    # Increase root-trajectory supervision and reduce position-step weight
+    # relative to the initial loss-share estimates; validate with training runs.
+    group.add_argument("--lambda_root_vel", default=0.1, type=float,
                        help="Weight of the root's X/Z velocity MSE, the only velocity the model "
                             "predicts: every other joint's velocity is its own position step plus the root's, "
                             "so the canonical space drops it. Per sample, in canonical units, scaled by the "
                             "species' root_vel_loss_weight from cond.npy.")
-    group.add_argument("--lambda_dpos", default=0.1, type=float,
+    group.add_argument("--lambda_dpos", default=0.04, type=float,
                        help="Weight of the frame-to-frame position-step MSE against the target, "
                             "in units of the corpus position-step RMS; a loop sample also counts its wrap "
                             "step pos[0]-pos[-1]. It is the position supervision the dropped non-root "

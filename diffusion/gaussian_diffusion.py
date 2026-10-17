@@ -1940,13 +1940,6 @@ class GaussianDiffusion:
                     joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32,
                 )
                 terms["loss"] = terms["l_simple"].clone()
-                # Diagnostics only (no gradient): l_simple split into its blocks.
-                with th.no_grad():
-                    for key, block in (("l_pos", slice(0, 3)), ("l_rot", slice(3, n_joint_channels))):
-                        terms[key] = self.spatial_masked_l2(
-                            target_fp32[:, :, block], model_output_fp32[:, :, block],
-                            joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32,
-                        )
 
                 y_for_decode = (model_kwargs or {}).get('y', {})
                 if self.lambda_root_vel > 0.:

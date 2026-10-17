@@ -745,12 +745,14 @@ Dog / Dog-2 的 `Bip01_Ponytail3Nub`、`Bip01_Head2_Eyeleds` 在只看 8 个 cli
 - **统计量**：vel 块的 mean/std 只在 root X/Z 上统计（全局 vel std 0.094 → 0.0448）；新增
   `canonical_dpos_std`（单帧位置步长的 RMS，与块 std 同样按 subset 几何平均，0.0904）。
 - **loss**：`l_simple` 只算 pos+rot（J×9）。新增两项：
-  - `--lambda_root_vel`（默认 0.05）：root X/Z vel 的 MSE；
-  - `--lambda_dpos`（默认 0.1）：全关节 Δpos 对 GT 的 MSE，以 `canonical_dpos_std` 为单位；
+  - `--lambda_root_vel`（默认 0.1）：root X/Z vel 的 MSE；
+  - `--lambda_dpos`（默认 0.04）：全关节 Δpos 对 GT 的 MSE，以 `canonical_dpos_std` 为单位；
     loop 样本另计 wrap 步 `pos[0] − pos[-1]`，因此 `loop_wrap_loss` 只保留旋转项。
-  root 默认值按旧 l_simple 中对应部分的占比推出：`(2/9)·(σ_root/σ_vel_old)²`；
+  root 初始值 0.05 按旧 l_simple 中对应部分的占比推出：`(2/9)·(σ_root/σ_vel_old)²`；
   Δpos 按 `(1/3)·(σ_dpos/σ_vel_old)²` 推出的初始值为 0.3，考虑位置差分对梯度的放大，
-  默认值调整为 0.1，待训练对照验证。`--lambda_vel` 与 `velocity_consistency_loss` 删除。
+  曾降为 0.1。结合 tiny v6 的损失日志，当前将 root 提高为 0.1、Δpos 降为 0.04，
+  增强根轨迹监督并降低位置差分的相对贡献，待训练对照验证。
+  `--lambda_vel` 与 `velocity_consistency_loss` 删除。
 - **按物种权重**：`root_vel_loss_weight` / `dpos_loss_weight` 写在每个 cond entry 上，
   `min(1, AUX_LOSS_ENERGY_CAP / 该物种在该项的能量)`，只降不升，cap = 2。
   合并 cond 中有 128/476 个物种被降权。
