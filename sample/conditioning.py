@@ -58,10 +58,10 @@ def _resolve_species_emb_override(args, model, cond_dict, object_type, species_t
 
     # Fast-fail if checkpoint ignores species descriptor.
     unwrapped = unwrap_anytop_model(model)
-    if not (getattr(unwrapped, 'species_cond', False) or getattr(unwrapped, 'species_joint_cond', False)):
+    if not getattr(unwrapped, 'species_joint_cond', False):
         sys.exit(
             'ERROR: --species_tags was passed but this checkpoint was trained without '
-            '--species_cond or --species_joint_cond; the species descriptor is unused, so '
+            '--species_joint_cond; the species descriptor is unused, so '
             'the tags would have no effect.'
         )
     if species_table is None:
@@ -220,10 +220,9 @@ def _wrap_species_cfg(model, args):
     if scale == 1.0:
         return model
     unwrapped = unwrap_anytop_model(model)
-    if not getattr(unwrapped, 'species_cond', False):
+    if not getattr(unwrapped, 'species_joint_cond', False):
         sys.exit(
-            "ERROR: --species_cfg_scale requires a checkpoint trained with --species_cond. "
-            "--species_joint_cond alone has no droppable species branch."
+            "ERROR: --species_cfg_scale requires a checkpoint trained with --species_joint_cond. "
         )
     if float(getattr(args, 'species_cfg_drop_prob', 0.0) or 0.0) <= 0.0:
         sys.exit(

@@ -77,11 +77,9 @@ class ClassifierFreeActionModel(nn.Module):
 
 
 class ClassifierFreeSpeciesModel(ClassifierFreeActionModel):
-    """Guide the droppable species FiLM while retaining all other conditions.
+    """Guide per-joint species FiLM using its trained identity bypass.
 
-    In particular, species_joint_cond stays active in both passes, matching its
-    always-on training path. The model's species_active mask only gates the
-    timestep FiLM trained with species_cfg_drop_prob.
+    Other conditions, including the joint names, remain active in both passes.
     """
 
     def forward(self, x, timesteps, y=None, **kwargs):

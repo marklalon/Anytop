@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 27
+CKPT_VERSION = 28
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -222,9 +222,8 @@ def add_model_options(parser):
                        help="Hidden width of the --action_label_adaln head (0 = latent_dim). "
                             "The action label set has slot-source rank ~137, so ~192 "
                             "loses nothing and halves the model's largest matrix.")
-    group.add_argument("--species_film_bottleneck", default=0, type=int,
-                       help="Hidden width of the --species_cond FiLM head (0 = latent_dim). "
-                            "The species descriptors span rank 94; 128 is enough.")
+    group.add_argument("--species_film_bottleneck", default=128, type=int,
+                       help="Hidden width of the joint x species FiLM head (default 128; 0 = latent_dim).")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     group.add_argument("--lambda_vel", default=0.0, type=float,
                        help="Weight for velocity-position consistency loss (0.0=off)."
@@ -345,23 +344,13 @@ def add_model_options(parser):
                             "(sibling / sibling_limb / cousin), so a skeleton whose symmetry pairing "
                             "missed some twins stays in distribution. Both directions of a pair drop "
                             "together. Inference never drops.")
-    group.add_argument("--species_cond", action='store_true',
-                       help="Enable per-species FiLM conditioning: the T5-derived species descriptor "
-                            "modulates the timestep token multiplicatively (gamma=1+res, beta; zero-init "
-                            "so it starts at identity), which every decoder layer re-injects. CFG-droppable "
-                            "(see --species_cfg_drop_prob). Requires cond.npy regenerated with 'species_emb'.")
     group.add_argument("--species_cfg_drop_prob", default=0.15, type=float,
-                       help="Per-sample probability of hard-dropping the species FiLM condition during "
-                            "training (replaced by identity modulation gamma=1, beta=0), enabling "
-                            "classifier-free guidance over the species descriptor. Default 0.15.")
+                       help="Per-sample probability of bypassing per-joint species FiLM during training "
+                            "(identity modulation), enabling species classifier-free guidance.")
     group.add_argument("--species_joint_cond", action='store_true',
-                       help="Also fuse the species descriptor into the per-joint name embedding: a FiLM "
-                            "head reads [joint_name_emb || species_emb] and emits (gamma, beta) per joint, "
-                            "shifting and rescaling joint semantics toward the body-plan context of the "
-                            "species. Zero-initialized, so it starts at identity. Never CFG-dropped -- it "
-                            "is the always-on species channel. Per-joint structural conditioning, "
-                            "orthogonal to (and combinable with) the --species_cond FiLM on the timestep "
-                            "token. Requires 'species_emb'.")
+                       help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_emb]. "
+                            "Zero-initialized to identity; CFG-droppable via --species_cfg_drop_prob. "
+                            "Requires 'species_emb'.")
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the clip's action_label ('run, forward, "
                             "left, fast' -- controlled keywords, not prose) is split into words, pooled "
@@ -750,14 +739,14 @@ def add_generate_options(parser):
                             "locomotion vocabulary; no T5 runs at generation); its row replaces the species "
                             "descriptor baked into cond.npy (default from species_tags.jsonl), letting you "
                             "restyle the generated motion (e.g. make a Winged Dragon walk on the ground). "
-                            "Requires a checkpoint trained with --species_cond and/or --species_joint_cond. "
+                            "Requires a checkpoint trained with --species_joint_cond. "
                             "Incompatible with --object_type all.")
     group.add_argument("--species_cfg_scale", default=1.0, type=float,
                        help="Classifier-free guidance scale over the species descriptor's "
                             "droppable FiLM path. 1.0 (default) uses one forward; any other "
                             "scale uses two (four when action-label CFG is also enabled). "
-                            "The per-joint species path stays active in both. "
-                            "Requires a checkpoint trained with --species_cond and non-zero "
+                            "The unconditional pass bypasses per-joint species FiLM. "
+                            "Requires a checkpoint trained with --species_joint_cond and non-zero "
                             "--species_cfg_drop_prob. Uses --species_tags when supplied, otherwise "
                             "the target species' baked descriptor.")
 

@@ -111,7 +111,7 @@ def _resolve_generation_cond_path(args):
 
 def _load_checkpoint_species_table(args):
     """The descriptor table next to the checkpoint, or None when species cond is off."""
-    if not (getattr(args, 'species_cond', False) or getattr(args, 'species_joint_cond', False)):
+    if not getattr(args, 'species_joint_cond', False):
         return None
     table = load_checkpoint_species_descriptor_table(args.model_path, 'the checkpoint')
     if table.embedding_dim != int(args.t5_out_dim):

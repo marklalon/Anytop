@@ -206,7 +206,30 @@ function resetCamera(view, kind = 'persp') {
   view.camera.far = view.extent * 1000;
   view.camera.updateProjectionMatrix();
   view.controls.target.copy(view.center);
+  // Remember the framing, so user camera moves can be mirrored onto other views.
+  view.homePosition = view.camera.position.clone();
+  view.homeTarget = view.controls.target.clone();
   view.controls.update();
+}
+
+// Mirror a view's camera onto every other view. Each view keeps its own
+// framing scale, so clips whose motion spans a different area stay visible
+// while sharing the exact orientation and relative zoom.
+let cameraSource = null;
+const syncPosition = new THREE.Vector3(), syncTarget = new THREE.Vector3();
+function syncCameras(source) {
+  if (!source.homePosition || !source.homeTarget) return;
+  cameraSource = source;
+  syncPosition.copy(source.camera.position).sub(source.homePosition);
+  syncTarget.copy(source.controls.target).sub(source.homeTarget);
+  for (const view of views) {
+    if (view === source || !view.homePosition || !view.homeTarget) continue;
+    const scale = view.extent / source.extent;
+    view.camera.position.copy(view.homePosition).addScaledVector(syncPosition, scale);
+    view.controls.target.copy(view.homeTarget).addScaledVector(syncTarget, scale);
+    view.camera.lookAt(view.controls.target);
+    view.camera.updateMatrixWorld();
+  }
 }
 
 function setupView(view, text) {
@@ -247,8 +270,12 @@ function setupView(view, text) {
   // Match dataset/review/joint_names.html, including modifier-key panning.
   view.controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
   view.controls.enableDamping = false;
+  view.controls.addEventListener('change', () => syncCameras(view));
   view.message.hidden = true;
+  const previousSource = cameraSource;
   resetCamera(view);
+  // A clip that finishes loading later adopts the camera the user already moved.
+  if (previousSource && previousSource !== view && previousSource.homePosition) syncCameras(previousSource);
 }
 
 function disposeViews() {
@@ -262,6 +289,7 @@ function disposeViews() {
   }
   renderer?.renderLists.dispose();
   views = [];
+  cameraSource = null;
   $('views').replaceChildren();
 }
 
