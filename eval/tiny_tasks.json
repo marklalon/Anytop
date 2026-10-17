@@ -1,0 +1,30 @@
+{
+  "_comment": "Quick battery for train_tiny.bat. Basic = zoo species/action probes (Buffalo jump is a cross-species transfer probe); T1 = actions absent from the target species zoo locomotion clips (species-level novelty); T2 = species-tag overrides, including Dog restyled as Biped,Trotting. Tasks omit seed and num_frames and use generation defaults / automatic lengths. Harness supplies batch_size=4 and fp32. Score with --dataset_root dataset/truebones/zoo/truebones_processed. Training-corpus diagnostics and species-style stress tests are not held-out accuracy. Outpaint without num_frames keeps the reference length and does not test extension. meta is descriptive and ignored by the harness.",
+  "checkpoint": {
+    "RUN_NAME": "merged_all_v49",  
+    "OUTPUT_DIR": "merged_all_v49_tiny"
+  },
+  "tasks": [
+    {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Buffalo", "--action_label", "run, forward"]},
+    {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Buffalo", "--action_label", "jump, up"]},
+    {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Camel", "--action_label", "run, forward"]},
+    {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Camel", "--action_label", "jump, up"]},
+    {"category": "Basic_Biped", "args": ["--object_type", "truebones/zoo/Monkey", "--action_label", "walk, forward"]},
+    {"category": "Basic_Biped", "args": ["--object_type", "truebones/zoo/Monkey", "--action_label", "jump, up"]},
+    {"category": "Basic_Biped", "args": ["--object_type", "truebones/zoo/Monkey", "--action_label", "swim, forward"]},
+    {"category": "Basic_Multiped", "args": ["--object_type", "truebones/zoo/Spider", "--action_label", "run, forward"]},
+    {"category": "Basic_Multiped", "args": ["--object_type", "truebones/zoo/Spider", "--action_label", "jump, up"]},
+    {"category": "Basic_Winged", "args": ["--object_type", "truebones/zoo/Eagle", "--action_label", "fly, forward"]},
+    {"category": "Basic_Winged", "args": ["--object_type", "truebones/zoo/Eagle", "--action_label", "walk, forward"]},
+    {"category": "Basic_Winged", "args": ["--object_type", "truebones/zoo/Flamingo", "--action_label", "fly, forward"]},
+    {"category": "Basic_Winged", "args": ["--object_type", "truebones/zoo/Flamingo", "--action_label", "run, forward"]},
+    {"category": "Basic_Aquatic", "args": ["--object_type", "truebones/zoo/Jaws", "--action_label", "swim, forward"]},
+    {"category": "Basic_Aquatic", "args": ["--object_type", "truebones/zoo/Jaws", "--action_label", "jump, forward"]},
+    {"category": "Basic_Serpentine", "args": ["--object_type", "truebones/zoo/Anaconda", "--action_label", "walk, forward"]},
+    {"category": "T2_SpeciesOverride", "args": ["--object_type", "truebones/zoo/Dog", "--action_label", "run, forward", "--species_tags", "Biped,Striding"]},
+    {"category": "T2_SpeciesOverride", "args": ["--object_type", "truebones/zoo/Dog", "--action_label", "walk, forward", "--species_tags", "Biped,Trotting"]},
+    {"category": "InpaintFrames", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop.npy", "--inpaint_frames", "20-30"], "eval_label": "run, forward"},
+    {"category": "InpaintJoints", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop.npy", "--inpaint_joints", "Bip01_R_Thigh,Bip01_L_Thigh", "--skip_timesteps", "0", "--action_label", "run, forward"]},
+    {"category": "Outpaint", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop.npy", "--num_frames", "120", "--action_label", "run", "--outpaint", "--skip_timesteps", "99"]}
+  ]
+}
