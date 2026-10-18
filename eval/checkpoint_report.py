@@ -109,14 +109,12 @@ def write_report(report_path, model_path, run_name, model_name, records, all_sco
                 digest.update(path.read_bytes())
         score = record.get("score") or {}
         reference = record.get("reference_bvh") or record.get("last_output_resolved") or record.get("reference_motion")
-        reference_link = None
         reference_clip = None
         if reference and reference != "$LAST_OUTPUT":
             bvh = Path(reference).resolve()
             if bvh.suffix.lower() not in (".bvh", ".glb"):
                 bvh = bvh.with_suffix(".bvh")
             if bvh.is_file():
-                reference_link = "bvhview://open?--reuse&url=" + quote(bvh.as_uri(), safe="/:")
                 # Copy external references into the report so HTTP serving and
                 # moving the report to another machine both keep working.
                 reference_bytes = bvh.read_bytes()
@@ -134,8 +132,7 @@ def write_report(report_path, model_path, run_name, model_name, records, all_sco
             status=record["status"], revision=digest.hexdigest(), clips=clips,
             quality=_finite(record.get("quality")),
             dimensions={dim: _finite(score.get(dim)) for dim in dimensions},
-            score_label=record.get("score_label", ""), reference_link=reference_link,
-            reference_clip=reference_clip,
+            score_label=record.get("score_label", ""), reference_clip=reference_clip,
         ))
     columns = {"quality": [_finite(v) for v in all_scores]}
     columns.update({dim: [task["dimensions"][dim] for task in tasks if task["quality"] is not None]

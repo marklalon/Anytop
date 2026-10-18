@@ -370,8 +370,6 @@ async function selectTask(task) {
   $('task-status').textContent = task?.status || '';
   $('score-label').textContent = task?.score_label ? `评估标签：${task.score_label}` : '';
   $('command').textContent = task?.command || '';
-  $('reference').hidden = !task?.reference_link;
-  if (task?.reference_link) $('reference').href = task.reference_link;
   if (!saving && connected) {
     $('save-status').textContent = '评分自动保存到 human_scores.json';
     $('save-status').classList.remove('error');

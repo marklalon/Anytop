@@ -139,6 +139,17 @@ _COMMON_GENERATE_ARGS = ("--batch_size", "4", "--amp_dtype", "fp32")
 # Path-valued flags (see ``_PATH_FLAGS``) accept either an absolute path or a
 # path relative to the Anytop dir; the "$LAST_OUTPUT" sentinel passes through
 # unchanged. See eval/eval_tasks.json for the default battery.
+class _ResolvedPath(str):
+    """Resolved path string that remembers the text written in the task config."""
+
+    raw: str
+
+
+def _display_args(args: list[str]) -> list[str]:
+    """Task args as written in the config (resolved paths shown unresolved)."""
+    return [getattr(a, "raw", a) for a in args]
+
+
 def _resolve_arg_path(value: str, base_dir: Path) -> str:
     """Resolve a path-valued task arg.
 
@@ -228,6 +239,9 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
                         f"Task #{i} in {config_path}: {args[j]} points to "
                         f"non-existent file: {resolved}"
                     )
+                if resolved != _LAST_OUTPUT:
+                    resolved = _ResolvedPath(resolved)
+                    resolved.raw = args[j + 1]
                 args[j + 1] = resolved
         tasks.append((category, args, score_label))
 
@@ -704,7 +718,7 @@ def run_task(
     ]
     # Display command: only show differentiated (extra) args, not boilerplate flags.
     display_cmd = " ".join(
-        f'"{a}"' if " " in a else a for a in extra_args
+        f'"{a}"' if " " in a else a for a in _display_args(extra_args)
     )
 
     record = {
@@ -1008,7 +1022,7 @@ def main() -> int:
             record = {
                 "category": category, "index": index,
                 "task_dir": task_dir,
-                "command": "generate.py " + " ".join(extra_args),
+                "command": "generate.py " + " ".join(_display_args(extra_args)),
                 "score": None, "quality": None,
                 "status": f"harness error: {exc}", "first_npy": None,
                 "reference_motion": _extract_reference_motion(extra_args),
