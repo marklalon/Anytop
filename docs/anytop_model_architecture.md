@@ -1,7 +1,7 @@
 # AnyTop 模型架构
 
 本文档描述 AnyTop 的模型结构：输入特征、条件总线、decoder、训练扰动与损失，以及参考动作在
-采样侧的使用方式。层数、宽度、各种概率和损失权重由训练配置决定；正文以结构与数据流为主，
+采样侧与可选编码器中的使用方式。层数、宽度、各种概率和损失权重由训练配置决定；正文以结构与数据流为主，
 参考配置的参数预算见 §11。实现细节以代码为准。
 
 ## 速览
@@ -33,12 +33,17 @@ diffusion timestep
   + action-label condition
 ```
 
-参考动作不经过 reference encoder 或 cross-attention。它只在采样器侧用于：
+默认 `--reference_mode retarget` 的参考只在采样器侧用于：
 
 - `skip_timesteps` 的 img2img 初始化；
 - 每步 clamp 已知区域的 inpainting；
 - clamp 已有帧、生成新增帧的 outpainting；
 - 必要时在采样前先 retarget 到目标骨架。
+
+训练时启用 `--ref_encoder` 后，也可用 `--reference_mode encode`：参考在源骨架上进入独立的
+MotionEncoder，逐帧输出固定 K 个槽。每层 spatial 之后读取这些槽，共享 FFN 之后经过独立
+ref FFN；两个分支各有零初始化标量 gate。无参考时硬旁路，完整设计与验证边界见
+[reference_motion_encoder.md](reference_motion_encoder.md)。
 
 基础训练目标是 `MSE(predicted_x0, target_x0)`，不是噪声预测。temporal attention 是全窗口
 注意力；loop 使用条件 token、圆周相位、数据增强与闭合损失，不使用 temporal mask。
@@ -64,8 +69,8 @@ attention，最后由因子化注意力输出的预测就是干净动作。骨�
 - subtree / temporal-span 混合噪声训练；
 - full temporal attention、QK-Norm 和细分的拓扑关系码。
 
-参考动作不进入主干：它只在扩散采样器侧用于 img2img 初始化、inpainting clamp 和
-outpainting（见第 9 节）。
+参考支持采样器编辑路径与编码器条件路径。前者用于 img2img、inpainting、outpainting；后者
+通过独立参考分支影响共享 decoder（见第 9 节）。
 
 ## 2. 总体数据流
 
@@ -449,9 +454,9 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 | loop root XZ closure | 根 XZ 速度整周期积分为零 |
 | temporal-span seam | span 边界附近 position 二阶差分匹配 GT |
 
-## 9. 参考动作与编辑（采样侧）
+## 9. 参考动作与编辑
 
-参考动作不进入 decoder，不产生 `reference_memory`，也不做 cross-attention。它只用于：
+默认的 `--reference_mode retarget` 不把参考送入 decoder，用途为：
 
 - plain reference generation：参考动作作为 `init_image`，从 `skip_timesteps` 指定的噪声等级
   开始 img2img；
@@ -460,6 +465,21 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 - cross-skeleton reference：先在采样前 retarget 到目标骨架特征空间，再进入上述流程。
 
 因此这些编辑能力不增加 AnyTop forward 的参数量。
+
+`--reference_mode encode` 要求从头训练的 `--ref_encoder` checkpoint（版本 31）。它不经过
+retarget，也不使用 img2img 初始化或 clamp：参考在自己的骨架上提取干净特征，经独立的
+64 宽、2 层 spatial/temporal encoder 和每帧 learned-query 池化，默认得到 `[B,T,2,8]`。
+编码器只读取 position/rotation 和 translation root 的 XZ velocity，不读取 species descriptor。
+目标 decoder 仍保留自己的骨架条件和 per-joint species FiLM。
+
+参考模型的层内顺序为 `spatial → ref cross-attn → temporal → cross-limb → FFN → ref FFN`。
+参考分支不调制 rest token；两处残差都按 `ref_active` 屏蔽，含 bias。训练只增强编码器副本；
+`ref_cfg_drop_prob` 独立于 action/species dropout。验证保留原 `Val/l_simple` 为 ref-null，
+另记 `Val/reference_l_simple`，两者使用相同目标、timestep 和 noise。
+
+encode 的 CFG 顺序计算无参考无文字、参考无文字、参考加文字（有 label 才计算第三次），
+所有分支保持同一 species 状态。`--species_active false` 用于整个目标 per-joint FiLM 的消融；
+该路径不嵌套 action/species CFG，也不接受 skip/inpaint/outpaint 参数。
 
 **窗口到输出长度。** 模型总是生成固定的内部窗口，再换算成请求的 M 帧（`_resample_window_to_output`）。
 M 小于窗口时，窗口是 loader 会把 M 帧源动作放大成的样子，所以输出按最小二乘**反解**训练时的线性
@@ -482,6 +502,9 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 | loop roll/tile/resample | `data_loaders/truebones/data/dataset.py` |
 | leaf-drop 拓扑增强 | `data_loaders/truebones/truebones_utils/leaf_drop.py` |
 | reference/inpainting/outpainting | `sample/generate.py` |
+| 源骨架参考编码器 | `model/motion_encoder.py` |
+| 编码器侧增强与固定字段 | `data_loaders/reference.py` |
+| 容量统计与固定交换消融 | `eval/reference_motion.py` |
 
 ## 11. 参数预算与设计依据
 

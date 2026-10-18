@@ -305,6 +305,10 @@ def create_training_data_loader(args):
         motion_speed_aug_prob=getattr(args, 'motion_speed_aug_prob', 1.0),
         loop_tile_single_prob=getattr(args, 'loop_tile_single_prob', 0.5),
         leaf_drop_prob=getattr(args, 'leaf_drop_prob', 0.0),
+        **{key: getattr(args, key, default) for key, default in (
+            ('ref_encoder', False), ('ref_leaf_drop_prob', 0.2),
+            ('ref_bone_length_aug_prob', 0.2), ('ref_bone_length_aug', 0.1),
+            ('ref_joint_name_drop_prob', 0.15))},
         bone_length_aug_prob=getattr(args, 'bone_length_aug_prob', 0.0),
         bone_length_aug=getattr(args, 'bone_length_aug', DEFAULT_BONE_LENGTH_AUG),
         species_table=getattr(args, 'species_descriptor_table', None),
@@ -371,6 +375,7 @@ def run_training(args):
     print(f"[INFO] Train split '{train_split}': {num_motions} motions")
 
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
+    print(f'[model] parameter budget: {model.reference_parameter_budget()}')
     model.to(dist_util.dev())
     ml_platform.watch_model(model)
     print("Training...")

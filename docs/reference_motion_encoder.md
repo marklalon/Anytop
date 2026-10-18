@@ -1,8 +1,8 @@
 # 参考动作编码器：免 retarget 的跨物种动作迁移
 
-> 状态：设计稿，未实现。
-> 现状见 [anytop_model_architecture.md](anytop_model_architecture.md) §9：参考动作不进入 decoder，跨骨架时只能先 retarget
-> 到目标骨架，再走 img2img / inpainting。本文提出一条与它并存的新路径。
+> 状态：首版已实现，已完成四组 100 步 GPU 工程验证；迁移质量尚未验收，详见 §11。
+> [anytop_model_architecture.md](anytop_model_architecture.md) §9 保留默认 retarget + img2img / inpainting，
+> 本文的 encode 路径与其并存。§10 是实现前的方案核验记录。
 
 ---
 
@@ -237,3 +237,97 @@ out = x0(∅, ∅)
 - **实际输入容量**：核对 `canonical_features.py` 的 `JOINT_MODEL_CHANNELS=0..8`、`ROOT_VEL_CHANNELS=(9,11)` 及 `InputProcess.forward` 的切片，确认每帧读取 `9·J_valid+2` 维。20 关节输入 182 维，256 维 z 的比值约 1.407，原起点不满足明显压缩。
 - **species 契约**：核对 `AnyTop.forward` 与 `InputProcess.forward`，仅存在 per-joint species FiLM；运行 `python -m unittest discover -s tests -p test_species_cond_hybrid.py -v`，13 项全部通过，覆盖整个调制旁路、训练 dropout 和 species CFG。§5.4 已按此修正，未新增或恢复全局 FiLM。
 - **验证边界**：本轮为方案与现有实现契约核验，未实现 E、未运行容量扫描或迁移训练；数据分布与跨骨架迁移效果仍待实施阶段取得。
+
+## 11. 首版实施记录（2026-10-18）
+
+### 已实现
+
+- `MotionEncoder` 独立投影、较窄的 spatial/temporal decoder、按有效关节池化的 K 个 query。
+  默认 `ref_width=64`、`ref_layers=2`、`ref_slots=2`、`ref_dim=8`；编码器宽度必须小于共享主干。
+- 每层独立的 reference cross-attention、Pre-LN FFN（默认 256 宽）和各自的零初始化 gate。
+  `ref_active=False` 屏蔽两条完整残差；null batch 使用安全的零哨兵避免全 masked attention 产生 NaN。
+- loader 在完成时间采样后复制源数据，仅增强编码器侧；目标及目标 cond 保持原样。
+  默认编码器 leaf-drop / 骨长增强概率为 0.2 / 0.2，骨长幅度 0.1，整关节名丢弃概率 0.15。
+  reference 训练拒绝原有 decoder 侧 leaf-drop / 骨长增强参数，防止合成形态进入目标。
+  所有 collate batch 都有固定的 `ref_*` tensor 字段；参考 CFG dropout 默认 0.4，在模型内独立抽样。
+- NPY 按源 cond 编码；原始 FBX/GLB/GLTF 复用预处理的根检测、wrapper 折叠、姿态对齐与特征提取，
+  使用 checkpoint 的全局统计和关节名向量缓存，未知关节名置空，不加载 T5，不经过 retarget。
+  `--reference_source_type` 可显式指定 NPY 源骨架；encode 不会静默把未知源当成目标骨架。
+- `--reference_mode retarget` 仍是默认；encode 使用独立的 2 / 3 次顺序 CFG，species 状态固定。
+  `--species_active true/false` 可用于目标 FiLM 消融，默认 true。
+- CKPT_VERSION 从 30 提升到 31；不对旧模型做 warm start。训练打印完整参数预算。
+  验证同时计算同噪声、同 timestep 的 ref-null 和 reference loss，前者保留原 `Val/*` 名称，
+  后者使用 `Val/reference_*`。
+- `eval/reference_motion.py` 提供容量审计和固定参考交换、ref-null、species 开关评测，支持额外目标
+  `cond_path`。比较 L 归一化根速度、全身运动能量、人工标注的骨盆到胸部轴俯仰；不比较跨骨架关节角。
+  `--score` 同时计算 MotionQualityScorer；支撑方式、相位及脚滑仍需人工查看 BVH。
+
+### 本地容量审计
+
+本轮审计的训练数据含 4964 个
+clip、476 副骨架。clip 加权的有效关节数 min / P10 / P50 / P90 / max 为
+`2 / 16 / 43 / 80.8 / 100`；对应输入维度 `20 / 146 / 389 / 729.2 / 902`。
+
+| K × d_z | r 的 min / P10 / P50 / P90 / max | z 维度不小于输入的 clip 数 |
+|---|---|---:|
+| 2 × 8 | .0177 / .0220 / .0411 / .1096 / .8 | 0 |
+| 4 × 8 | .0355 / .0439 / .0823 / .2192 / 1.6 | 45 |
+| 4 × 16 | .0710 / .0878 / .1645 / .4384 / 3.2 | 118 |
+| 8 × 32 | .2838 / .3513 / .6581 / 1.7534 / 12.8 | 1279 |
+
+报告也逐骨架统计，并列出默认 r > .5 的 `weak_compression_at_default` 骨架；它们不满足明显压缩
+假设。默认 2 × 8 只是工程起点，未按短训重建误差选择更大容量。
+
+**数据缺口**：当前 `dataset/datasets.jsonl` 的所有来源都是 train，val 为空；未移动真实数据、未把
+训练骨架当成未见骨架。固定的 [reference_tasks.json](../eval/reference_tasks.json) 明确标为工程评测，
+包含同骨架、犬→马的参考交换、人→犬、鸟→鹰。未见骨架验收仍需要独立 val 来源。
+
+### 已运行的实验与边界
+
+使用项目 `../.venv/Scripts/python.exe` 和 RTX PRO 6000，在全部真实训练 clip 上从头运行四个候选，
+每个 100 步：D=128、4 层、FFN=256、window=32、batch=4、BF16、20 diffusion steps、seed=10。
+checkpoint 保存在 `save/reference_encoder_smoke_20261018_{2x8,4x8,4x16,8x32}`。
+每个模型执行 5 组固定任务 × species on/off × ref/null，共 80 个生成 clip（10-step DDIM），并运行
+MotionQualityScorer。另跑通原始 `Dog-Attack.glb` + `attack, bite` 文字 → Horse 的三分支 encode 推理。
+
+逐任务报告保存在
+`outputs/reference_encoder_eval_20261018_<候选>/report.json`，对应 NPY 与 BVH 留在同目录树中。
+
+| K × d_z | 总参数 | 同骨架生成 MSE：ref / null | 固定马骨架交换犬参考的输出 RMS |
+|---|---:|---|---:|
+| 2 × 8 | 2,694,128 | 1.6770 / 1.6501 | .00558 |
+| 4 × 8 | 2,694,256 | 1.0707 / 1.0624 | .00296 |
+| 4 × 16 | 2,702,968 | 1.0486 / 1.0523 | .00472 |
+| 8 × 32 | 2,720,648 | 1.1216 / 1.1035 | .00939 |
+
+MSE 按 canonical 的 9·J+2 个模型通道计算，来自一个训练骨架上的完整生成样本，**不是 val l_simple**。
+RMS 是生成物理特征的数值差，只确认参考改变了输出；不证明运动语义被正确迁移。100 步后参考 gate
+已经非零，但自重建尚未稳定优于 null，不能据此选容量、断言纯文本不退化或迁移成功。
+未启用 §4.3：当前还没有满足「同骨架重建可用」的证据。
+
+参数预算：D=384、8 层、共享 FFN=2048、最后一层 FFN=256、cross-limb 后4层宽128、
+action/species head bottleneck=128、ref 2×8 时，总计 30,992,258；共享 26,761,768；
+编码器 219,466；全部参考分支 4,011,024（含 attention、FFN、归一化、gate、bias）。
+
+测试覆盖 gate 起点、混合 batch 的完整硬旁路、null 的零参考梯度、激活样本的共享主干与编码器梯度、
+有效关节池化、非根关节排列不变性、padding、9/11 维通道契约、独立参考 dropout、2/3 次 CFG、
+species 状态、增强隔离、源骨架 resample、容量/指标与配对验证。`torch.compile` 的 eager 后端
+fullgraph 跟踪同时通过 reference/null；实际 GPU 训练验证使用 eager BF16，未据此宣称 Inductor 性能。
+
+最终回归：Anytop 全套 1412 项测试、61 项子测试通过，另有 7 项服务端兼容测试通过。
+仅目标骨架的窄 cond + checkpoint 源 cond 回退的 encode 推理也已实跑通过。
+同骨架默认 retarget 模式的 img2img 生成与导出也已实跑通过。
+旧路径的跨骨架 retarget 实跑在已有的关节匹配 LLM 服务处连接被拒绝，未完成该项端到端验证；
+没有为本改动替换其关节匹配或服务配置。
+
+### 复现入口
+
+```powershell
+../.venv/Scripts/python.exe train/train_anytop.py --cond_path dataset/cond.npy --save_dir save/ref_2x8_new --objects_subset all --action_group all --action_label_cond --action_label_adaln --species_joint_cond --ref_encoder --ref_slots 2 --ref_dim 8 --latent_dim 128 --ff_size 256 --layers 4 --cross_limb_last_n 2 --num_frames 32 --batch_size 4 --diffusion_steps 20 --num_steps 100 --save_interval 100 --log_interval 25 --amp_dtype bf16 --seed 10
+../.venv/Scripts/python.exe -m eval.reference_motion capacity --cond_path dataset/cond.npy --output outputs/reference_motion_capacity.json
+../.venv/Scripts/python.exe -m eval.reference_motion evaluate --model_path save/reference_encoder_smoke_20261018_2x8/model000000100.pt --tasks eval/reference_tasks.json --output outputs/reference_eval_new --sampling_steps 10 --score
+```
+
+延长训练时使用新的 save_dir，从头训练，并保持 decoder 侧 `leaf_drop_prob=0`、
+`bone_length_aug_prob=0`，用 `ref_leaf_drop_prob` / `ref_bone_length_aug_prob` 调整编码器侧增强。
+下一步需要独立 val 骨架、充分收敛的候选与同训练预算的文本基线，按 §6 验收后才能选择容量或触发 §4.3。

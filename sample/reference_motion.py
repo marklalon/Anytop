@@ -1,12 +1,12 @@
-"""``--reference_motion`` handling: source-species resolution, cross-species
-retarget, and packing the reference into the sampler's window.
+"""``--reference_motion`` handling: retarget/edit and source-encoder paths.
 
 A reference is either a preprocessed ``.npy`` in feature space (its source
 skeleton must be a cond species, retargeted when it differs from the target)
 or a raw ``.fbx/.glb/.gltf`` (cond-free source, always retargeted). Either way
 the result is a feature-space clip on the TARGET skeleton, which
 ``_prepare_img2img_reference_bundle`` turns into the ``[B, J, F, T]`` tensor
-the sampler clamps to / starts from.
+the sampler clamps to / starts from in retarget mode. Encode mode extracts
+features on the source rig and routes them only to the motion encoder.
 """
 import os
 
@@ -362,3 +362,85 @@ def _prepare_img2img_reference_bundle(
         'reference_source_frame_count': reference_source_frame_count,
         'loaded_reference_joint_count': loaded_reference_joint_count,
     }
+
+
+def _load_raw_encoder_reference(path, reference_cond_path, cache_cond):
+    """Run source skeleton preprocessing and feature extraction, with no retarget."""
+    from data_loaders.truebones.truebones_utils.dataset_pipeline import (
+        _build_rest_pose_cond, _prepare_motion_file_for_root_detection,
+        _encode_prepared_motion_file, _inherit_canonical_stats_from_dataset,
+        _select_species_translation_root,
+    )
+    from data_loaders.truebones.truebones_utils.joint_embedding_text import (
+        _build_t5_text_cache, build_joint_embedding_texts,
+    )
+    # Use the same wrapper-folding fixed point as dataset preprocessing, so the
+    # transport root is joint zero, as required by InputProcess.
+    name = os.path.splitext(os.path.basename(path))[0]
+    depth = 0
+    for _ in range(4):
+        cond, tp, _, _, _, scale, _, max_joints, _ = _build_rest_pose_cond(
+            name, path, None, crop_enabled=False, promote_root_depth=depth)
+        prepared = _prepare_motion_file_for_root_detection(
+            path, name, tp.offsets, tp.tpos_rots, scale, tp.orientation_quat,
+            crop_enabled=False, prop_socket_names=tp.prop_socket_names,
+            end_site_names=tp.end_site_names, promote_root_depth=depth,
+        )
+        if prepared is None:
+            raise ValueError(f'Could not preprocess reference animation: {path}')
+        root, _ = _select_species_translation_root(
+            name, [prepared['translation_root_index']], [prepared['chain_xz_travel']])
+        if root == 0:
+            break
+        depth += root
+    else:
+        raise ValueError('Source reference transport root did not converge')
+    encoded = _encode_prepared_motion_file(
+        prepared, name, max_joints, tp.offsets, tp.tpos_rots, scale, tp.orientation_quat, root)
+    if not encoded['results']:
+        raise ValueError(f"Reference feature extraction failed: {encoded['motion_errors']}")
+    cond['translation_root_index'] = root
+    _inherit_canonical_stats_from_dataset(name, cond, reference_cond_path)
+    first = next(iter(cache_cond.values()))
+    cache = _build_t5_text_cache(cache_cond, first['joints_names_embs_meta']['t5_name'])
+    width = np.asarray(first['joints_names_embs']).shape[-1]
+    cond['joints_names_embs'] = np.stack([
+        cache.get(text, np.zeros(width, np.float32)) for text in build_joint_embedding_texts(cond)
+    ])
+    return encoded['results'][0]['motion'], cond
+
+
+def _prepare_encoder_reference_bundle(features, source_cond, *, batch_size, n_frames,
+                                      visible_frames, min_length=20):
+    """Source features use the existing window resampling rule on their own rig."""
+    from data_loaders.reference import collate_reference
+    from data_loaders.truebones.truebones_utils.canonical_features import build_canonical_rest_feature
+    from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM, build_joint_struct_features
+    if features.ndim != 3 or features.shape[1] != len(source_cond['parents']):
+        raise ValueError('Reference features do not match the source skeleton')
+    if int(source_cond.get('translation_root_index', 0)) != 0:
+        raise ValueError('Reference source must use the canonical joint-zero translation root; reprocess the source')
+    if features.shape[2] != 12 or not np.isfinite(features).all() or len(features) < 1:
+        raise ValueError('Reference requires finite [T, J_source, 12] features')
+    # This packs canonical features using SOURCE statistics / rest, never target
+    # indices. The existing crop budget and endpoint interpolation are shared.
+    bundle = _prepare_img2img_reference_bundle(
+        None, None, source_cond, max_joints=features.shape[1], target_feature_len=12,
+        batch_size=1, requested_output_frame_count=n_frames,
+        requested_visible_frame_count=visible_frames, min_length=min_length,
+        preloaded_features=features,
+    )
+    sample = {
+        'feats': bundle['reference_motion'][0].permute(2, 0, 1).numpy(),
+        'rest_pose': build_canonical_rest_feature(source_cond),
+        'joints_names_embs': source_cond['joints_names_embs'],
+        'joint_struct': build_joint_struct_features(source_cond),
+        'graph_dist': source_cond['joints_graph_dist'],
+        'joints_relations': source_cond['joint_relations'],
+    }
+    canvas = bundle['reference_motion'].expand(batch_size, -1, -1, -1)
+    return collate_reference(
+        [sample] * batch_size, canvas,
+        canvas.new_zeros(batch_size, canvas.shape[1], source_cond['joints_names_embs'].shape[-1]),
+        canvas.new_zeros(batch_size, canvas.shape[1], JOINT_STRUCT_DIM),
+    )

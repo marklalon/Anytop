@@ -211,6 +211,10 @@ def get_gmdm_args(args):
             'species_cfg_drop_prob': getattr(args, 'species_cfg_drop_prob', 0.15),
             'species_joint_cond': getattr(args, 'species_joint_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
+            **{key: getattr(args, key, default) for key, default in (
+                ('ref_encoder', False), ('ref_slots', 2), ('ref_dim', 8),
+                ('ref_width', 64), ('ref_layers', 2), ('ref_ff_dim', 256),
+                ('ref_cfg_drop_prob', 0.4))},
             'mirror_twin_drop_prob': getattr(args, 'mirror_twin_drop_prob', 0.2),
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),

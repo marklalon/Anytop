@@ -1589,6 +1589,11 @@ class MotionDataset(data.Dataset):
                 )
         m_length = target_num_frames
 
+        reference = None
+        if getattr(self.opt, 'ref_encoder', False):
+            from data_loaders.reference import prepare_reference_sample
+            reference_metadata = dict(motion_metadata, is_loop=loop_condition_active)
+            reference = prepare_reference_sample(motion, cond, reference_metadata, self.opt)
         motion = np.nan_to_num(
             physical_hml_to_canonical(motion, cond)
         ).astype(np.float32, copy=False)
@@ -1614,6 +1619,7 @@ class MotionDataset(data.Dataset):
 
         if return_aug_info:
             return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
+                'reference': reference,
                 'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
                 'joint_struct': joint_struct,
                 'species_emb': cond.get('species_emb'),
@@ -1639,6 +1645,7 @@ class MotionDataset(data.Dataset):
                 'object_cond': cond,  # Exact per-sample skeleton for augmentation previews.
             }
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
+            'reference': reference,
             'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
             'joint_struct': joint_struct,
             'species_emb': cond.get('species_emb'),
@@ -1871,6 +1878,18 @@ class Truebones(data.Dataset):
             )
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
         self.opt.leaf_drop_prob = float(kwargs.get('leaf_drop_prob', 0.0))
+        self.opt.ref_encoder = bool(kwargs.get('ref_encoder', False))
+        for key, default in (('ref_leaf_drop_prob', 0.2), ('ref_bone_length_aug_prob', 0.2),
+                             ('ref_joint_name_drop_prob', 0.15)):
+            value = float(kwargs.get(key, default))
+            if not 0 <= value <= 1:
+                raise ValueError(f'{key} must be in [0, 1]')
+            setattr(self.opt, key, value if split in ('train', ALL_SPLIT_NAME) else 0.0)
+        self.opt.ref_bone_length_aug = float(kwargs.get('ref_bone_length_aug', 0.1))
+        validate_bone_length_aug(self.opt.ref_bone_length_aug_prob, self.opt.ref_bone_length_aug)
+        if self.opt.ref_encoder and (self.opt.leaf_drop_prob or kwargs.get('bone_length_aug_prob', 0.0)):
+            raise ValueError('Reference training keeps real targets: use ref_leaf_drop_prob / '
+                             'ref_bone_length_aug_prob instead of target skeleton augmentation')
         self.opt.bone_length_aug_prob = float(kwargs.get('bone_length_aug_prob', 0.0))
         self.opt.bone_length_aug = float(kwargs.get('bone_length_aug', DEFAULT_BONE_LENGTH_AUG))
         validate_bone_length_aug(self.opt.bone_length_aug_prob, self.opt.bone_length_aug)

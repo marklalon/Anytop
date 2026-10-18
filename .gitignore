@@ -47,6 +47,8 @@ save/
 logs/
 outputs
 outputs/
+docs/reference_motion_capacity.json
+docs/reference_motion_smoke.json
 tmp/
 
 # Models (optional - you may want to track these)

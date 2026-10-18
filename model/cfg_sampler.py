@@ -92,3 +92,26 @@ class ClassifierFreeSpeciesModel(ClassifierFreeActionModel):
         )
         uncond_out = self.model(x, timesteps, y=uncond_y, **kwargs)
         return uncond_out + self.guidance_scale * (cond_out - uncond_out)
+
+
+class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
+    """Sequential ref/text composition, keeping target species identical in all passes."""
+    def __init__(self, model, ref_scale=1.0, text_scale=1.0, use_text=False):
+        super().__init__(model, ref_scale)
+        if not math.isfinite(float(text_scale)) or float(text_scale) < 0:
+            raise ValueError('text_scale must be finite and >= 0')
+        self.text_scale, self.use_text = float(text_scale), bool(use_text)
+
+    def forward(self, x, timesteps, y=None, **kwargs):
+        null_y = dict(y or {})
+        null_y['ref_active'] = torch.zeros(x.shape[0], dtype=torch.bool, device=x.device)
+        null_y['action_label_active'] = torch.zeros_like(null_y['ref_active'])
+        base = self.model(x, timesteps, y=null_y, **kwargs)
+        ref_y = dict(y or {})
+        ref_y['action_label_active'] = null_y['action_label_active']
+        ref = self.model(x, timesteps, y=ref_y, **kwargs)
+        out = base + self.guidance_scale * (ref - base)
+        if self.use_text:
+            full = self.model(x, timesteps, y=y, **kwargs)
+            out = out + self.text_scale * (full - ref)
+        return out

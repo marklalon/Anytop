@@ -1,11 +1,11 @@
 @echo off
 setlocal EnableExtensions
-REM Quick zoo-only locomotion baseline. Optional first argument: a NEW run name.
+REM Zoo-only locomotion reference-encoder experiment. Optional first argument: a NEW run name.
 REM Usage: train_tiny.bat [run_name]
 REM See docs/tiny_locomotion_baseline.md for the fixed ablation protocol.
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
-set "RUN_NAME=zoo_locomotion_tiny_v10"
+set "RUN_NAME=zoo_locomotion_tiny_v11"
 if not "%~1"=="" set "RUN_NAME=%~1"
 
 if not exist "%PYTHON_EXE%" (
@@ -20,13 +20,14 @@ if not exist "dataset\truebones\zoo\truebones_processed\cond.npy" (
     exit /b 1
 )
 
-REM Eager AMP avoids cold-start Triton/MSVC compilation for this short run.
+REM A new run trains the reference encoder from scratch; auto_resume continues this run.
+REM Topology and bone-length augmentation apply only to the reference input.
 REM Keep the full 215-clip locomotion pool; no ordered sample_limit truncation.
 "%PYTHON_EXE%" train/train_anytop.py ^
     --cond_path dataset/truebones/zoo/truebones_processed/cond.npy ^
     --save_dir "save/%RUN_NAME%" ^
     --seed 10 ^
-    --save_interval 10000 ^
+    --save_interval 2000 ^
     --log_interval 100 ^
     --auto_resume ^
     --ml_platform_type TensorboardPlatform ^
@@ -44,9 +45,17 @@ REM Keep the full 215-clip locomotion pool; no ordered sample_limit truncation.
     --action_adaln_bottleneck 64 ^
     --species_film_bottleneck 64 ^
     --species_joint_cond ^
-    --leaf_drop_prob 0.2 ^
-    --bone_length_aug_prob 0.3 ^
-    --bone_length_aug 0.2 ^
+    --ref_encoder ^
+    --ref_slots 2 ^
+    --ref_dim 8 ^
+    --ref_width 64 ^
+    --ref_layers 2 ^
+    --ref_ff_dim 256 ^
+    --ref_cfg_drop_prob 0.4 ^
+    --ref_leaf_drop_prob 0.2 ^
+    --ref_bone_length_aug_prob 0.3 ^
+    --ref_bone_length_aug 0.2 ^
+    --ref_joint_name_drop_prob 0.15 ^
     --motion_speed_aug 1.3 ^
     --loop_cond_prob 0.8 ^
     --cross_limb_dim 64 ^

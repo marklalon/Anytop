@@ -287,6 +287,14 @@ def truebones_collate(batch):
     cond['y'].update({'joints_relations': torch.stack(jointsrelationsbatch)})
     cond['y'].update({'graph_dist': torch.stack(graphdistbatch)})
 
+    from data_loaders.reference import collate_reference
+    # The null fields are tensors too, so compiled batches never change keys.
+    struct = cond['y'].get('joint_struct', motion.new_zeros(
+        motion.shape[0], motion.shape[1], JOINT_STRUCT_DIM))
+    cond['y'].update(collate_reference(
+        [item.get('reference') for item in notnone_batches], motion,
+        cond['y']['joints_names_embs'], struct,
+    ))
     return motion, cond
 
 def truebones_batch_collate(batch, joint_buckets=None):
@@ -355,6 +363,8 @@ def truebones_batch_collate(batch, joint_buckets=None):
             'joints_names_embs': joints_names_embs,
             'rest_pose': rest_pose,
         }
+        if extra_cond is not None:
+            item['reference'] = extra_cond.get('reference')
         if extra_cond is not None and 'joint_mask_candidate_roots' in extra_cond:
             raw_candidates = np.asarray(extra_cond['joint_mask_candidate_roots'], dtype=np.bool_)
             padded_candidate_roots = torch.zeros((max_joints,), dtype=torch.bool)

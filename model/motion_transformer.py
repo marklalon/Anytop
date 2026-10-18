@@ -1182,7 +1182,9 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             cross_limb_unreliable_mask: Optional[Tensor] = None,
             loop_phase_mask: Optional[Tensor] = None,
             action_adaln_cond: Optional[Tensor] = None,
-            topology_adaln: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            topology_adaln: Optional[Tensor] = None,
+            ref_z: Optional[Tensor] = None,
+            ref_active: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._resolve_edge_codes(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._expand_relation_heads(edge_rel)
@@ -1248,7 +1250,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     cross_limb_block=cl_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     loop_phase_embedding=loop_phase_embedding,
-                    action_adaln=None if action_adaln is None else action_adaln[:, layer_ind])
+                    action_adaln=None if action_adaln is None else action_adaln[:, layer_ind],
+                    ref_z=ref_z, ref_active=ref_active)
         if self.norm is not None:
             output = self.norm(output)
         return output
@@ -1275,6 +1278,30 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         # modulation in a single matmul, and each layer is handed its own
         # (B, 4, d_model) slice.
         self.temporal_phase_scale = nn.Parameter(torch.zeros(1))
+
+    def enable_reference(self, ref_dim, hidden=256):
+        """Allocate independently per layer, after all shared parameters exist."""
+        self.ref_norm = nn.LayerNorm(self.d_model)
+        self.ref_attn = nn.MultiheadAttention(
+            self.d_model, self.heads, dropout=self.dropout1.p,
+            kdim=ref_dim, vdim=ref_dim, batch_first=True,
+        )
+        self.ref_ff_norm = nn.LayerNorm(self.d_model)
+        self.ref_ff = nn.Sequential(nn.Linear(self.d_model, hidden), nn.GELU(),
+                                    nn.Linear(hidden, self.d_model))
+        self.ref_attn_gate = nn.Parameter(torch.zeros(()))
+        self.ref_ff_gate = nn.Parameter(torch.zeros(()))
+
+    def _read_reference(self, x, z, active):
+        frames, batch, joints, width = x.shape
+        if z.shape[:2] != (batch, frames - 1):
+            raise ValueError('Reference and output windows must be frame aligned')
+        queries = self.ref_norm(x[1:]).reshape((frames - 1) * batch, joints, width)
+        values = z.permute(1, 0, 2, 3).reshape((frames - 1) * batch, z.shape[2], z.shape[3])
+        out, _ = self.ref_attn(queries, values, values, need_weights=False)
+        out = out.reshape(frames - 1, batch, joints, width)
+        out = torch.cat([torch.zeros_like(x[:1]), out], dim=0)
+        return x + torch.where(active, self.ref_attn_gate * out, torch.zeros_like(out))
 
     # spatial attention block
     def _spatial_mha_block(self, x: Tensor, topology_rel: Optional[Tensor], edge_rel: Optional[Tensor], edge_key_emb, edge_query_emb, edge_value_emb,
@@ -1339,13 +1366,20 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         cross_limb_block: Optional[nn.Module] = None,
         cross_limb_unreliable_mask: Optional[Tensor] = None,
         loop_phase_embedding: Optional[Tensor] = None,
-        action_adaln: Optional[Tensor] = None) -> Tensor:
+        action_adaln: Optional[Tensor] = None,
+        ref_z: Optional[Tensor] = None,
+        ref_active: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
         bs = x.shape[1]
         x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
         spatial_attn_output = self._spatial_mha_block(x, topology_rel, edge_rel, edge_key_emb, edge_query_emb, edge_value_emb,
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
+        if ref_z is not None:
+            active = ref_active.view(1, bs, 1, 1)
+            # Rest token remains skeleton-only in both reference sublayers.
+            active = active & (torch.arange(x.shape[0], device=x.device)[:, None, None, None] > 0)
+            x = self._read_reference(x, ref_z, active)
         # Branch input only; the residual adds to the unmodulated x. The
         # modulation lands BEFORE the circular phase, which _temporal_mha_block
         # sums in, so a loop sample's phase is never scaled by the label.
@@ -1359,4 +1393,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 unreliable_mask=cross_limb_unreliable_mask,
             )
         x = self.norm3(x + self._ff_block(_modulate(x, action_adaln, ADALN_FF)))
+        if ref_z is not None:
+            delta = self.ref_ff_gate * self.ref_ff(self.ref_ff_norm(x))
+            x = x + torch.where(active, delta, torch.zeros_like(delta))
         return x

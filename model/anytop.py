@@ -263,6 +263,49 @@ class AnyTop(nn.Module):
             TopologyConditioner(self.latent_dim, self.num_layers, self.num_heads)
             if self.topology_cond else None
         )
+        self.ref_encoder = bool(kargs.get('ref_encoder', False))
+        self.ref_cfg_drop_prob = float(kargs.get('ref_cfg_drop_prob', 0.4))
+        if not 0 <= self.ref_cfg_drop_prob <= 1:
+            raise ValueError('ref_cfg_drop_prob must be in [0, 1]')
+        self.motion_encoder = None
+        if self.ref_encoder:
+            from model.motion_encoder import MotionEncoder
+            ref_dim = int(kargs.get('ref_dim', 8))
+            ref_ff_dim = int(kargs.get('ref_ff_dim', 256))
+            ref_width = int(kargs.get('ref_width', 64))
+            if ref_ff_dim < 1:
+                raise ValueError('ref_ff_dim must be positive')
+            if ref_width >= self.latent_dim:
+                raise ValueError('ref_width must be smaller than the shared decoder latent_dim')
+            self.motion_encoder = MotionEncoder(
+                t5_out_dim, slots=int(kargs.get('ref_slots', 2)), ref_dim=ref_dim,
+                width=ref_width, layers=int(kargs.get('ref_layers', 2)),
+                dropout=self.dropout,
+            )
+            for layer in self.seqTransDecoder.layers:
+                layer.enable_reference(ref_dim, ref_ff_dim)
+
+    def reference_parameter_budget(self):
+        encoder = sum(p.numel() for p in self.motion_encoder.parameters()) if self.motion_encoder else 0
+        branches = sum(p.numel() for n, p in self.seqTransDecoder.named_parameters()
+                       if '.ref_' in n)
+        total = sum(p.numel() for p in self.parameters())
+        return dict(total=total, shared=total - encoder - branches,
+                    reference_encoder=encoder, reference_branches=branches)
+
+    def _reference_condition(self, y, batch_size, frames, device):
+        if self.motion_encoder is None:
+            return None, None
+        active = torch.as_tensor(y['ref_active'], device=device, dtype=torch.bool).reshape(-1)
+        if active.numel() != batch_size:
+            raise ValueError('ref_active must have shape [B]')
+        active = active & y['ref_mask'].to(device).any(-1)
+        if self.training:
+            active = active & (torch.rand(batch_size, device=device) >= self.ref_cfg_drop_prob)
+        ref_y = {k: v.to(device) for k, v in y.items() if k.startswith('ref_') and torch.is_tensor(v)}
+        if ref_y['ref_feats'].shape[-1] != frames:
+            raise ValueError('Reference and output windows must be frame aligned')
+        return self.motion_encoder(ref_y), active
 
     @staticmethod
     def _prepare_unreliable_mask(raw_mask, bs, nframes, njoints, device, dtype):
@@ -918,6 +961,7 @@ class AnyTop(nn.Module):
         rest_pose = y['rest_pose'].to(x.device).unsqueeze(0)
 
         bs, njoints, nfeats, nframes = x.shape
+        ref_z, ref_active = self._reference_condition(y, bs, nframes, x.device)
         n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
         joint_key_padding_mask = self._build_joint_key_padding_mask(njoints, n_joints, x.device)
         # joint-mask subtree perturbation is applied OUTSIDE this
@@ -1008,6 +1052,8 @@ class AnyTop(nn.Module):
             # modulates by the null embedding rather than skipping the head.
             action_adaln_cond=action_label_token if self.action_label_adaln else None,
             topology_adaln=topology_adaln,
+            ref_z=ref_z,
+            ref_active=ref_active,
         )
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
         return output

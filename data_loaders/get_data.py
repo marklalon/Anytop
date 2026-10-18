@@ -82,6 +82,11 @@ def get_dataset(
     bone_length_aug=DEFAULT_BONE_LENGTH_AUG,
     cond_path=None,
     species_table=None,
+    ref_encoder=False,
+    ref_leaf_drop_prob=0.2,
+    ref_bone_length_aug_prob=0.2,
+    ref_bone_length_aug=0.1,
+    ref_joint_name_drop_prob=0.15,
 ):
     dataset = Truebones(
         split=split,
@@ -105,6 +110,11 @@ def get_dataset(
         bone_length_aug=bone_length_aug,
         cond_path=cond_path,
         species_table=species_table,
+        ref_encoder=ref_encoder,
+        ref_leaf_drop_prob=ref_leaf_drop_prob,
+        ref_bone_length_aug_prob=ref_bone_length_aug_prob,
+        ref_bone_length_aug=ref_bone_length_aug,
+        ref_joint_name_drop_prob=ref_joint_name_drop_prob,
     )
     return dataset
 
@@ -138,6 +148,11 @@ def get_dataset_loader(
     cond_path=None,
     joint_buckets=JOINT_BUCKETS,
     species_table=None,
+    ref_encoder=False,
+    ref_leaf_drop_prob=0.2,
+    ref_bone_length_aug_prob=0.2,
+    ref_bone_length_aug=0.1,
+    ref_joint_name_drop_prob=0.15,
 ):
     """``joint_buckets``: joint-count ceilings (param_utils.JOINT_BUCKETS by
     default). Batches are grouped by rig size and padded to their bucket's
@@ -166,6 +181,11 @@ def get_dataset_loader(
         bone_length_aug=bone_length_aug,
         cond_path=cond_path,
         species_table=species_table,
+        ref_encoder=ref_encoder,
+        ref_leaf_drop_prob=ref_leaf_drop_prob,
+        ref_bone_length_aug_prob=ref_bone_length_aug_prob,
+        ref_bone_length_aug=ref_bone_length_aug,
+        ref_joint_name_drop_prob=ref_joint_name_drop_prob,
     )
     collate = truebones_batch_collate
     sampler = None

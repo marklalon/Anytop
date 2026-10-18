@@ -1,0 +1,100 @@
+{
+  "_comment": "Fixed engineering smoke pairs. These skeletons are in the current TRAIN cond; they do not satisfy the unseen-skeleton acceptance test. Add held-out cond skeletons once a validation source exists. Same target and seed for swapped references; species-on/off and ref-null variants are produced automatically. Add source_torso / target_torso [base, tip] annotations to enable pitch metrics, and inspect support phase / sliding in exported BVHs.",
+  "tasks": [
+    {
+      "id": "self_dog_walk",
+      "source_type": "truebones/zoo/Dog",
+      "target_type": "truebones/zoo/Dog",
+      "reference_motion": "dataset/truebones/zoo/truebones_processed/motions/Dog_Walk.npy",
+      "eval_label": "walk, forward",
+      "num_frames": 32,
+      "seeds": [
+        10
+      ],
+      "source_torso": [
+        1,
+        22
+      ],
+      "target_torso": [
+        1,
+        22
+      ]
+    },
+    {
+      "id": "dog_walk_to_horse",
+      "source_type": "truebones/zoo/Dog",
+      "target_type": "truebones/zoo/Horse",
+      "reference_motion": "dataset/truebones/zoo/truebones_processed/motions/Dog_Walk.npy",
+      "eval_label": "walk, forward",
+      "num_frames": 32,
+      "seeds": [
+        10
+      ],
+      "source_torso": [
+        1,
+        22
+      ],
+      "target_torso": [
+        1,
+        23
+      ]
+    },
+    {
+      "id": "dog_run_to_horse",
+      "source_type": "truebones/zoo/Dog",
+      "target_type": "truebones/zoo/Horse",
+      "reference_motion": "dataset/truebones/zoo/truebones_processed/motions/Dog_Running.npy",
+      "eval_label": "run, forward",
+      "num_frames": 32,
+      "seeds": [
+        10
+      ],
+      "source_torso": [
+        1,
+        22
+      ],
+      "target_torso": [
+        1,
+        23
+      ]
+    },
+    {
+      "id": "trex_to_elephant",
+      "source_type": "truebones/zoo/Trex",
+      "target_type": "truebones/zoo/Elephant",
+      "reference_motion": "dataset/truebones/zoo/truebones_processed/motions/Trex_WalkLoop.npy",
+      "eval_label": "walk, forward",
+      "num_frames": 32,
+      "seeds": [
+        10
+      ],
+      "source_torso": [
+        29,
+        2
+      ],
+      "target_torso": [
+        1,
+        16
+      ]
+    },
+    {
+      "id": "trex_to_cat",
+      "source_type": "truebones/zoo/Trex",
+      "target_type": "truebones/zoo/Cat",
+      "reference_motion": "dataset/truebones/zoo/truebones_processed/motions/Trex_WalkLoop.npy",
+      "eval_label": "walk, forward",
+      "num_frames": 32,
+      "seeds": [
+        10
+      ],
+      "source_torso": [
+        29,
+        2
+      ],
+      "target_torso": [
+        1,
+        20
+      ]
+    }
+  ]
+}

@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 30
+CKPT_VERSION = 31
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -205,6 +205,17 @@ def add_base_options(parser):
 
 def add_model_options(parser):
     group = parser.add_argument_group('model')
+    group.add_argument('--ref_encoder', action='store_true', help='Train a frame-aligned reference motion encoder.')
+    group.add_argument('--ref_slots', type=int, default=2)
+    group.add_argument('--ref_dim', type=int, default=8)
+    group.add_argument('--ref_width', type=int, default=64)
+    group.add_argument('--ref_layers', type=int, default=2)
+    group.add_argument('--ref_ff_dim', type=int, default=256)
+    group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4)
+    group.add_argument('--ref_leaf_drop_prob', type=float, default=0.2)
+    group.add_argument('--ref_bone_length_aug_prob', type=float, default=0.2)
+    group.add_argument('--ref_bone_length_aug', type=float, default=0.1)
+    group.add_argument('--ref_joint_name_drop_prob', type=float, default=0.15)
     group.add_argument("--layers", default=4, type=int,
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
@@ -628,8 +639,20 @@ def add_sampling_options(parser):
                             "which also makes the BVH rotation-only). Same meaning as restore_glb_from_npy --stretch-factor.")
 
 
+def _bool_argument(value):
+    if str(value).lower() not in ('true', 'false'):
+        raise argparse.ArgumentTypeError('Expected true or false')
+    return str(value).lower() == 'true'
+
+
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
+    group.add_argument('--reference_mode', choices=('retarget', 'encode'), default='retarget')
+    group.add_argument('--reference_source_type', default='', help='Source cond species for an encode-mode NPY reference.')
+    group.add_argument('--ref_cfg_scale', type=float, default=1.0)
+    group.add_argument('--species_active', type=_bool_argument,
+                       choices=(True, False), default=True,
+                       help='Target per-joint species FiLM ablation; true / false.')
     group.add_argument("--num_frames", default=None, type=int,
                        help="The number of frames in the sampled motion. Omit it to let "
                             "generation pick one, in this priority order: --reference_motion's "
