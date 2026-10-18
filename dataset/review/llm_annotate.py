@@ -101,6 +101,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     VERTICAL_WORDS,
     canonical_action_label,
     clip_key,
+    decamel,
     head_words_in,
     mirror_label,
     parse_action_label,
@@ -287,17 +288,6 @@ def load_clips(ds):
 
 
 # ═══════════════════════════ names ══════════════════════════════════════════
-_CAMEL_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|\d+")
-
-
-def decamel(text):
-    """'PolygonalOneEyedBat' -> 'polygonal one eyed bat' (prompt-facing name)."""
-    parts = []
-    for chunk in re.split(r"[^A-Za-z0-9]+", str(text)):
-        parts.extend(_CAMEL_RE.findall(chunk))
-    return " ".join(p.lower() for p in parts if p)
-
-
 def readable_species(species):
     """'MU01_Ghost' -> 'ghost': the pack code carries no species information."""
     code, _, rest = str(species).partition("_")

@@ -22,10 +22,13 @@ from data_loaders.truebones.truebones_utils.param_utils import ACTION_LABELS_FIL
 from pathlib import Path
 from . import dataset_tags as _dataset_tags
 from .motion_labels import (
+    ACTION_GROUPS,
     LOOP_FLAG_KEY,
     build_motion_labels,
+    clip_name_is_locomotion,
     load_action_labels,
     load_motion_metadata,
+    normalize_action_group,
     write_motion_metadata,
 )
 from .physics_joint_annotation import (
@@ -62,6 +65,7 @@ from .features import (
     get_hml_aligned_anim,
 )
 from .topology_relations import create_topology_edge_relations
+from .rest_geometry import reseat_rest_onto_clips
 from .canonical_features import (
     DPOS_LOSS_WEIGHT_KEY,
     ROOT_VEL_LOSS_WEIGHT_KEY,
@@ -756,20 +760,135 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     return object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, squared_positions_error, max_joints, tpose_reference_path
 
 
-def encode_motion_files_on_rest_pose(object_type, rest_pose_path, motion_paths, *, crop_enabled=False):
+def _root_fold(tp, translation_root_index):
+    """``(fold_count, kind)`` of the joints still above the species root.
+
+    ``(0, None)`` is the fixed point: the species travels on joint 0 and that
+    joint is not a detached control root.
+    """
+    if translation_root_index == 0:
+        if not tp.detached_root_depth:
+            return 0, None
+        # The species travels on its root, but that root is a detached control
+        # node (Crow's ground-level ``Pelvis``). Folding it hands its transport
+        # to the child, so the next pass settles on joint 0 again.
+        return int(tp.detached_root_depth), "detached control root(s)"
+    # Everything above the joint this species travels on is an inert control node.
+    return int(translation_root_index), "wrapper joint(s)"
+
+
+def _encode_rest_on_root(tp, object_type, max_joints, scale_factor, translation_root_index, errors):
+    """The rest pose re-encoded on the settled species root.
+
+    The provisional root of ``_build_rest_pose_cond`` comes from a static pose,
+    which has no animated translation to detect a motion root from.
+    """
+    fixed_rest = get_motion(
+        tp.tpos_anim,
+        object_type,
+        max_joints,
+        tp.offsets,
+        tp.tpos_rots,
+        errors,
+        scale_factor=scale_factor,
+        orientation_quat=tp.orientation_quat,
+        animation_input_is_tpose_aligned=False,
+        translation_root_index=translation_root_index,
+    )
+    if fixed_rest[0] is None:
+        raise DatasetPreprocessingError(
+            [f"[FAIL] Object '{object_type}': failed to encode rest pose with translation root {translation_root_index}"]
+        )
+    return fixed_rest[0][0]
+
+
+def _resample_short_result(result, resample_min_length, object_type, max_joints, orientation_quat):
+    """Bring a clip shorter than ``resample_min_length`` up to it, in place."""
+    if resample_min_length <= 0 or result['motion'].shape[0] >= resample_min_length:
+        return
+    # Resample the animation (slerp rotations / linear positions), then
+    # RECOMPUTE the feature tensor from it. Interpolating the precomputed
+    # feature tensor directly would corrupt every channel: velocity is
+    # per-frame displacement (so it must shrink as frames are added),
+    # and the 6D rotation rep is not closed under linear interpolation.
+    # Re-extraction keeps vel = diff(pos) and valid rotations — both
+    # physically consistent with the resampled motion.
+    # Re-extract from the anims as AUTHORED, not from pass 1's
+    # output. Feeding a flattened anim back in would measure drift on
+    # a trajectory whose drift was just removed; running the source
+    # through instead decides once, applies once, and leaves features,
+    # anims and verdict consistent by construction.
+    result['source_new_anim'] = _resample_animation(result['source_new_anim'], resample_min_length)
+    result['source_export_anim'] = _resample_animation(result['source_export_anim'], resample_min_length)
+    (motion, _, motion_anim, motion_export_anim, is_loop,
+     root_xz_flattened, root_y_flattened) = extract_motion_features_from_aligned_anims(
+        result['source_new_anim'],
+        result['source_export_anim'],
+        object_type,
+        max_joints,
+        orientation_quat,
+        result['translation_root_index'],
+        flatten_root_travel=bool(result.get('flatten_root_travel')),
+        clamp_root_extent=True,
+        is_loop=result.get('loop_verdict'),
+    )
+    result['motion'] = motion
+    # Keep the stored anims the ones the features were built from, as
+    # the first pass does -- the BVH export must not drift from them.
+    result['new_anim'] = motion_anim
+    result['export_anim'] = motion_export_anim
+    result['is_loop'] = is_loop
+    result['root_xz_flattened'] = bool(root_xz_flattened)
+    result['root_y_flattened'] = bool(root_y_flattened)
+
+
+def locomotion_clips_for_files(object_type, motion_paths, action_group=None):
+    """Clip names of ``motion_paths`` that take the locomotion root policy.
+
+    Stands in for the action_labels sidecar where there is none: an explicit
+    ``action_group`` applies to every file, otherwise each file's name decides
+    (:func:`clip_name_is_locomotion`).
+    """
+    group = normalize_action_group(action_group)
+    if group and group not in ACTION_GROUPS:
+        raise ValueError(f"action_group must be one of {', '.join(ACTION_GROUPS)}, got '{action_group}'")
+    return frozenset(
+        source_clip_name(object_type, path)
+        for path in motion_paths
+        if (group == 'locomotion' if group
+            else clip_name_is_locomotion(os.path.splitext(os.path.basename(path))[0]))
+    )
+
+
+def encode_motion_files_on_rest_pose(object_type, rest_pose_path, motion_paths, *, crop_enabled=False,
+                                     action_group=None, resample_min_length=20):
     """Rest-pose cond plus the feature encoding of every motion file on it.
 
     ``rest_pose_path`` supplies the bind/rest pose (it may be one of the motion
-    files: a self-contained animation carries its own bind pose). The species
-    transport root is resolved over ALL the clips, as dataset preprocessing does,
-    by folding wrapper roots until the carrier sits at joint zero, which is the
-    root InputProcess requires. Returns ``(cond, max_joints, tpose_reference_path,
-    results)`` where ``results`` is one encoded payload per motion file; the cond
-    holds the resolved ``translation_root_index`` and ``root_promote_depth``.
+    files: a self-contained animation carries its own bind pose). Each step
+    follows dataset preprocessing, with the sidecar annotations replaced:
+
+    * the species transport root is resolved over ALL the clips, folding
+      wrapper and detached control roots until the carrier sits at joint zero
+      (the root InputProcess requires), and the rest pose is re-encoded on it;
+    * the locomotion root policy (detrend + extent bound) comes from
+      ``action_group`` or each file's name (:func:`locomotion_clips_for_files`);
+      the loop verdict is left to the detector;
+    * a clip shorter than ``resample_min_length`` is resampled up to it;
+    * the rest is re-seated onto the clips' geometry
+      (:func:`rest_geometry.reseat_rest_onto_clips`).
+
+    Returns ``(cond, max_joints, tpose_reference_path, results)`` where
+    ``results`` is one encoded payload per motion file; the cond holds the
+    resolved ``translation_root_index`` and ``root_promote_depth``.
     """
+    locomotion_clips = locomotion_clips_for_files(object_type, motion_paths, action_group)
+    print(f"[OK] {object_type}: locomotion root policy for {len(locomotion_clips)}/{len(motion_paths)} clip(s)"
+          + (f" ({', '.join(sorted(locomotion_clips))})" if locomotion_clips else "")
+          + (f" from action_group={action_group}" if action_group else " from file names"))
     depth = 0
     for _ in range(4):
-        cond, tp, _, _, _, scale, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
+        cond, tp, _, _, _, scale, errors, max_joints, tpose_reference_path = _build_rest_pose_cond(
             object_type, rest_pose_path, None, crop_enabled=crop_enabled, promote_root_depth=depth)
         prepared = []
         for path in motion_paths:
@@ -784,20 +903,31 @@ def encode_motion_files_on_rest_pose(object_type, rest_pose_path, motion_paths, 
         root, _ = _select_species_translation_root(
             object_type, [item['translation_root_index'] for item in prepared],
             [item['chain_xz_travel'] for item in prepared])
-        if root == 0:
+        fold_count, kind = _root_fold(tp, root)
+        if not fold_count:
             break
-        depth += root
+        print(f"[OK] {object_type}: folding {fold_count} {kind} {list(tp.names[:fold_count])}")
+        depth += fold_count
     else:
         raise ValueError('Transport root did not converge')
     results = []
     for item in prepared:
         encoded = _encode_prepared_motion_file(
-            item, object_type, max_joints, tp.offsets, tp.tpos_rots, scale, tp.orientation_quat, root)
+            item, object_type, max_joints, tp.offsets, tp.tpos_rots, scale, tp.orientation_quat, root,
+            locomotion_clips=locomotion_clips)
         if not encoded['results']:
             raise ValueError(f"Feature extraction failed: {encoded['motion_errors']}")
-        results.append(encoded['results'][0])
+        result = encoded['results'][0]
+        _resample_short_result(result, resample_min_length, object_type, max_joints, tp.orientation_quat)
+        results.append(result)
     cond['translation_root_index'] = root
     cond['root_promote_depth'] = int(depth)
+    cond['rest_pose'] = _encode_rest_on_root(tp, object_type, max_joints, scale, root, errors)
+    mark_canonical_cond_entry(cond)
+    reseated = reseat_rest_onto_clips(cond, [result['motion'] for result in results])
+    if reseated:
+        print(f"[OK] {object_type}: re-seated {len(reseated)} rest joint(s) onto clip geometry: "
+              f"{', '.join(candidate['name'] for candidate in reseated)}")
     return cond, max_joints, tpose_reference_path, results
 
 
@@ -1014,19 +1144,9 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 )
             break
 
-        if translation_root_index == 0:
-            if not tp.detached_root_depth:
-                break
-            # The species travels on its root, but that root is a detached
-            # control node (Crow's ground-level ``Pelvis``). Folding it hands its
-            # transport to the child, so the next pass settles on joint 0 again.
-            fold_count = int(tp.detached_root_depth)
-            kind = "detached control root(s)"
-        else:
-            # Everything above the joint this species travels on is an inert
-            # control node.
-            fold_count = translation_root_index
-            kind = "wrapper joint(s)"
+        fold_count, kind = _root_fold(tp, translation_root_index)
+        if not fold_count:
+            break
 
         # Fold into the real root and measure again on that skeleton.
         folded = list(tp.names[:fold_count])
@@ -1062,30 +1182,14 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         flush=True,
     )
 
-    # Re-encode the rest-pose conditioning with the same root contract used by
-    # every action.  The provisional T-pose detection above cannot establish a
-    # motion root because a rest pose has no animated translation.
-    fixed_rest = get_motion(
-        tp.tpos_anim,
-        object_type,
-        max_joints,
-        tp.offsets,
-        tp.tpos_rots,
-        squared_positions_error,
-        scale_factor=character_scale_factor,
-        orientation_quat=tp.orientation_quat,
-        animation_input_is_tpose_aligned=False,
-        translation_root_index=translation_root_index,
-    )
-    if fixed_rest[0] is None:
-        raise DatasetPreprocessingError(
-            [f"[FAIL] Object '{object_type}': failed to encode rest pose with translation root {translation_root_index}"]
-        )
     object_cond['translation_root_index'] = int(translation_root_index)
     # Recorded so an incremental run folds exactly the same joints away instead
     # of re-deriving a depth from a subset of the species' clips.
     object_cond['root_promote_depth'] = int(promote_root_depth)
-    object_cond['rest_pose'] = fixed_rest[0][0]
+    object_cond['rest_pose'] = _encode_rest_on_root(
+        tp, object_type, max_joints, character_scale_factor, translation_root_index,
+        squared_positions_error,
+    )
 
     # Animation loading via bpy is single-threaded inside a process because clear_scene
     # mutates global Blender state, so file-level parallelism is intentionally removed.
@@ -1125,41 +1229,8 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             num_frames = result['motion'].shape[0]
             if num_frames < filter_min_length:
                 continue
-            if resample_min_length > 0 and num_frames < resample_min_length:
-                # Resample the animation (slerp rotations / linear positions), then
-                # RECOMPUTE the feature tensor from it. Interpolating the precomputed
-                # feature tensor directly would corrupt every channel: velocity is
-                # per-frame displacement (so it must shrink as frames are added),
-                # and the 6D rotation rep is not closed under linear interpolation.
-                # Re-extraction keeps vel = diff(pos) and valid rotations — both
-                # physically consistent with the resampled motion.
-                # Re-extract from the anims as AUTHORED, not from pass 1's
-                # output. Feeding a flattened anim back in would measure drift on
-                # a trajectory whose drift was just removed; running the source
-                # through instead decides once, applies once, and leaves features,
-                # anims and verdict consistent by construction.
-                result['source_new_anim'] = _resample_animation(result['source_new_anim'], resample_min_length)
-                result['source_export_anim'] = _resample_animation(result['source_export_anim'], resample_min_length)
-                (motion, _, motion_anim, motion_export_anim, is_loop,
-                 root_xz_flattened, root_y_flattened) = extract_motion_features_from_aligned_anims(
-                    result['source_new_anim'],
-                    result['source_export_anim'],
-                    object_type,
-                    max_joints,
-                    tp.orientation_quat,
-                    result['translation_root_index'],
-                    flatten_root_travel=bool(result.get('flatten_root_travel')),
-                    clamp_root_extent=True,
-                    is_loop=result.get('loop_verdict'),
-                )
-                result['motion'] = motion
-                # Keep the stored anims the ones the features were built from, as
-                # the first pass does -- the BVH export must not drift from them.
-                result['new_anim'] = motion_anim
-                result['export_anim'] = motion_export_anim
-                result['is_loop'] = is_loop
-                result['root_xz_flattened'] = bool(root_xz_flattened)
-                result['root_y_flattened'] = bool(root_y_flattened)
+            _resample_short_result(
+                result, resample_min_length, object_type, max_joints, tp.orientation_quat)
             result['canonical_names'] = list(object_cond['canonical_bvh_joint_names'])
             # The pre-flatten anims exist only for the resample re-extraction just
             # above. Dropping them here keeps them out of the payload that gets
@@ -1913,7 +1984,7 @@ def find_orphan_clips(dataset_dir=None, raw_data_dir=None, species_filter=None):
 
 
 def process_skeleton(object_name, face_joints, save_dir, tpose_path, reference_cond_path,
-                     crop_enabled=True, motion_paths=None):
+                     crop_enabled=True, motion_paths=None, action_group=None):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
@@ -1932,7 +2003,8 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, reference_c
         # Animation files: the species root is resolved over them and each is
         # encoded on the rest pose of ``tpose_path`` (the file's own bind pose).
         object_cond, max_joints, tpose_reference_path, encoded_motions = encode_motion_files_on_rest_pose(
-            object_name, tpose_path, list(motion_paths), crop_enabled=crop_enabled)
+            object_name, tpose_path, list(motion_paths), crop_enabled=crop_enabled,
+            action_group=action_group)
     else:
         # Rest-pose only: generate cond.npy without motion file processing.
         object_cond, max_joints, tpose_reference_path = _build_rest_pose_only_cond(

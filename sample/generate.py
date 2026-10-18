@@ -698,7 +698,8 @@ def main(args=None, cond_dict=None, runtime=None):
     if reference_encode:
         if reference_is_raw_anim:
             ref_features, source_cond = _load_raw_encoder_reference(
-                reference_motion_path, actual_cond_file, cond_dict)
+                reference_motion_path, actual_cond_file, cond_dict,
+                action_group=getattr(args, 'reference_action_group', None))
         else:
             source_conds = _build_source_cond_dict(cond_dict, source_type, _default_cond_cache)
             if source_type_used_target_fallback:
@@ -726,6 +727,7 @@ def main(args=None, cond_dict=None, runtime=None):
         effective_reference_path = _extract_edit_reference(
             reference_motion_path, cond_dict[object_type], object_type,
             actual_cond_file, cond_dict, out_path,
+            action_group=getattr(args, 'reference_action_group', None),
         )
     elif reference_motion_path:
         effective_reference_path = prepared_reference_path

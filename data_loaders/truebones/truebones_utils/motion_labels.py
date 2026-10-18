@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -552,6 +553,49 @@ def canonical_action_label(words) -> str:
         if head == direction_anchor:
             canonical.extend(directions)
     return ", ".join(canonical + modifiers)
+
+
+# ---------------------------------------------------------------------------
+# Clip-name words
+# ---------------------------------------------------------------------------
+
+_CAMEL_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|\d+")
+
+
+def decamel(text):
+    """'PolygonalOneEyedBat' -> 'polygonal one eyed bat' (prompt-facing name)."""
+    parts = []
+    for chunk in re.split(r"[^A-Za-z0-9]+", str(text)):
+        parts.extend(_CAMEL_RE.findall(chunk))
+    return " ".join(p.lower() for p in parts if p)
+
+
+# Clip-name words that spell a gait, e.g. "Run01Forwards", "TrotLeft".
+LOCOMOTION_NAME_WORDS: frozenset[str] = frozenset({
+    "walk", "walking", "run", "running", "fly", "flying", "swim", "swimming",
+    "jump", "jumping", "roll", "rolling", "crawl", "crawling", "climb", "climbing",
+    "fall", "falling", "move", "moving", "dash", "sprint", "strafe", "trot",
+    "trotting", "jog", "jogging", "gallop", "galloping", "glide", "gliding",
+    "leap", "hop", "hopping", "slither", "charge",
+})
+
+# Words that turn a gait-named clip into an event or a held state, e.g.
+# "FlyAttack", "FallLand", "RunToStop".
+NON_LOCOMOTION_NAME_WORDS: frozenset[str] = frozenset({
+    "attack", "idle", "start", "end", "land", "landing", "death", "die", "dead",
+    "hurt", "hit", "damage", "take", "stop", "spell", "cast", "defend", "aim",
+    "shoot", "shot", "punch", "recover", "startled", "getup", "to", "draw", "grenade",
+})
+
+
+def clip_name_is_locomotion(name) -> bool:
+    """Whether a clip NAME reads as the locomotion group.
+
+    The default for a clip with no ``action_labels.jsonl`` row (an inference
+    reference, a new skeleton): the name spells a gait and no event word.
+    """
+    words = set(decamel(name).split())
+    return bool(words & LOCOMOTION_NAME_WORDS) and not words & NON_LOCOMOTION_NAME_WORDS
 
 
 # ---------------------------------------------------------------------------

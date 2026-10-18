@@ -721,7 +721,7 @@ def test_reextraction_after_a_resample_runs_from_the_source_anims():
 
     from data_loaders.truebones.truebones_utils import dataset_pipeline
 
-    source = inspect.getsource(dataset_pipeline._prepare_object_outputs)
+    source = inspect.getsource(dataset_pipeline._resample_short_result)
     assert "result['source_new_anim'] = _resample_animation(" in source
     assert "result['source_export_anim'] = _resample_animation(" in source
 

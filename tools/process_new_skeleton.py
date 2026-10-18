@@ -151,6 +151,7 @@ def process_new_skeleton(
     object_type: str | None = None,
     crop_enabled: bool = False,
     species_tags: str | None = None,
+    action_group: str | None = None,
     yes: bool = False,
     export_tpose_bvh: bool = False,
 ) -> dict[str, Any]:
@@ -170,6 +171,7 @@ def process_new_skeleton(
         "motion_path": motion_paths,
         "crop_enabled": crop_enabled,
         "species_tags": species_tags,
+        "action_group": action_group,
         "reference_cond_path": reference_cond_path,
         "yes": yes,
         "export_tpose_bvh": export_tpose_bvh,
@@ -273,6 +275,7 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
         args.reference_cond_path,
         crop_enabled=crop_enabled,
         motion_paths=motion_paths,
+        action_group=getattr(args, 'action_group', None),
     )
 
     tpose_bvh = None

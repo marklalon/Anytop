@@ -648,6 +648,11 @@ def _bool_argument(value):
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
     group.add_argument('--reference_source_type', default='', help='Source cond species for an encoded NPY --reference_motion.')
+    group.add_argument('--reference_action_group', default=None, choices=ACTION_GROUPS,
+                       help="Action group of a raw .fbx/.glb/.gltf --reference_motion. Only 'locomotion' "
+                            "changes its encoding: the root-travel detrend and extent bound, as in dataset "
+                            "preprocessing. Default: decided from the file name (e.g. 'Run01Forwards' is "
+                            "locomotion, 'FlyAttack' is not).")
     group.add_argument('--ref_cfg_scale', type=float, default=1.0)
     group.add_argument('--species_active', type=_bool_argument,
                        choices=(True, False), default=None,
@@ -808,7 +813,7 @@ def generate_args(argv=None):
     # There is deliberately no --action_group here: the group belongs to the
     # weights, so apply_checkpoint_action_group() sets args.action_group from the
     # checkpoint's own args.json.
-    preserve_cli_args = {'action_label', 'species_tags'}
+    preserve_cli_args = {'action_label', 'species_tags', 'reference_action_group'}
     args = parse_and_load_from_model(
         parser, argv=argv,
         preserve_cli_args=preserve_cli_args,
@@ -853,6 +858,11 @@ def process_new_skeleton_args():
                             "in the checkpoint's species descriptor table). There is no fallback to "
                             "the default dataset's species_tags.jsonl, so it must be supplied "
                             "explicitly.")
+    group.add_argument("--action-group", default=None, choices=ACTION_GROUPS,
+                       help="Action group of every --motion-path clip. Only 'locomotion' changes the "
+                            "encoding: those clips take the root-travel detrend and extent bound, as in "
+                            "dataset preprocessing. Default: decided per clip from its file name "
+                            "(e.g. 'Run01Forwards' is locomotion, 'FlyAttack' is not).")
     group.add_argument("--reference-cond-path", required=True, type=str,
                        help="REQUIRED. cond.npy to inherit the global canonical "
                             "standardization statistics from. Those statistics belong to a "

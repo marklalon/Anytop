@@ -169,8 +169,12 @@ def _prepare_img2img_reference_bundle(
     }
 
 
-def _load_raw_encoder_reference(path, reference_cond_path, cache_cond):
-    """Run source skeleton preprocessing and feature extraction, with no retarget."""
+def _load_raw_encoder_reference(path, reference_cond_path, cache_cond, action_group=None):
+    """Run source skeleton preprocessing and feature extraction, with no retarget.
+
+    ``action_group`` overrides the file-name decision of whether the clip takes
+    the locomotion root policy.
+    """
     from data_loaders.truebones.truebones_utils.dataset_pipeline import (
         encode_motion_files_on_rest_pose, _inherit_canonical_stats_from_dataset,
     )
@@ -180,7 +184,7 @@ def _load_raw_encoder_reference(path, reference_cond_path, cache_cond):
     # Use the same wrapper-folding fixed point as dataset preprocessing, so the
     # transport root is joint zero, as required by InputProcess.
     name = os.path.splitext(os.path.basename(path))[0]
-    cond, _, _, results = encode_motion_files_on_rest_pose(name, path, [path])
+    cond, _, _, results = encode_motion_files_on_rest_pose(name, path, [path], action_group=action_group)
     motion = results[0]['motion']
     _inherit_canonical_stats_from_dataset(name, cond, reference_cond_path)
     first = next(iter(cache_cond.values()))
@@ -193,7 +197,7 @@ def _load_raw_encoder_reference(path, reference_cond_path, cache_cond):
 
 
 def _extract_edit_reference(reference_motion_path, target_cond, target_type,
-                            reference_cond_path, cond_dict, output_dir):
+                            reference_cond_path, cond_dict, output_dir, action_group=None):
     """Raw animation -> feature ``.npy`` on the target skeleton, for an edit.
 
     The file's own bind pose is its rest pose, so the clip is self-contained: it
@@ -202,7 +206,7 @@ def _extract_edit_reference(reference_motion_path, target_cond, target_type,
     the target's own.
     """
     features, source_cond = _load_raw_encoder_reference(
-        reference_motion_path, reference_cond_path, cond_dict)
+        reference_motion_path, reference_cond_path, cond_dict, action_group=action_group)
     source_parents = np.asarray(source_cond['parents'])
     target_parents = np.asarray(target_cond['parents'])
     if source_parents.shape != target_parents.shape or not np.array_equal(source_parents, target_parents):
