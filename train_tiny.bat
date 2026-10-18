@@ -63,6 +63,7 @@ REM Keep the full 215-clip locomotion pool; no ordered sample_limit truncation.
     --num_steps 50000 ^
     --dropout_prob 0.1 ^
     --action_label_cfg_drop_prob 0.2 ^
+    --species_cfg_drop_prob 0.2 ^
     --joint_mask_prob 0.3 ^
     --joint_mask_budget 0.15 ^
     --unreliable_mask_drop_prob 0.2 ^
@@ -75,7 +76,7 @@ REM Keep the full 215-clip locomotion pool; no ordered sample_limit truncation.
     --lambda_loop_wrap 0.04 ^
     --lambda_loop_root_closure 0.04 ^
     --lambda_root_vel 0.1 ^
-    --lambda_dpos 0.04 ^
+    --lambda_dpos 0.05 ^
     --lambda_geo 0.1 ^
     --lambda_bone 0.06 ^
     --motion_cache_size 32768 ^
