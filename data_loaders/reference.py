@@ -8,31 +8,41 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 from data_loaders.truebones.truebones_utils.joint_struct_features import build_joint_struct_features
 
 
-def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True):
-    """Copy and augment physical features only on the encoder side, after time sampling."""
+def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, shared=None):
+    """Augment physical features only on the encoder side, after time sampling.
+
+    ``shared`` holds the target's ``feats`` / ``rest_pose`` / ``joint_struct``
+    for this same motion and cond; they are reused while no augmentation
+    changes the skeleton. The augmentations return new arrays, so the caller's
+    motion and cond are never written.
+    """
     import random
     from data_loaders.truebones.truebones_utils.leaf_drop import sample_leaf_drop, drop_joints_from_cond
     from data_loaders.truebones.truebones_utils.bone_length_aug import augment_bone_lengths
 
-    motion = np.array(motion, dtype=np.float32, copy=True)
-    cond = dict(cond)
     metadata = dict(metadata)
     leaf_prob = getattr(opt, 'ref_leaf_drop_prob', 0.0) if augment else 0.0
     bone_prob = getattr(opt, 'ref_bone_length_aug_prob', 0.0) if augment else 0.0
+    changed = False
     if leaf_prob and random.random() < leaf_prob:
         dropped = sample_leaf_drop(cond, motion, metadata['translation_root_index'])
         if dropped:
             keep, cond = drop_joints_from_cond(cond, dropped)
             motion = motion[:, keep]
             metadata['translation_root_index'] = int(np.searchsorted(keep, metadata['translation_root_index']))
+            changed = True
     if bone_prob and random.random() < bone_prob:
-        motion, cond, _ = augment_bone_lengths(
+        motion, cond, info = augment_bone_lengths(
             motion, cond, metadata, getattr(opt, 'ref_bone_length_aug', 0.1))
-    names = np.array(cond['joints_names_embs'], dtype=np.float32, copy=True)
+        changed = changed or info['applied']
+    names = np.asarray(cond['joints_names_embs'], dtype=np.float32)
     prob = getattr(opt, 'ref_joint_name_drop_prob', 0.0) if augment else 0.0
     if prob:
-        names[np.array([random.random() < prob for _ in names])] = 0
-    return reference_sample(motion, cond, names)
+        drop = np.array([random.random() < prob for _ in names], dtype=bool)
+        if drop.any():
+            names = names.copy()
+            names[drop] = 0
+    return reference_sample(motion, cond, names, **({} if changed else (shared or {})))
 
 
 # A bone shorter than this fraction of the rig's longest rest bone is a
@@ -68,20 +78,22 @@ def bone_directions(positions, parents, rest_positions):
     return np.nan_to_num(out)
 
 
-def reference_sample(motion, cond, names):
+def reference_sample(motion, cond, names, *, feats=None, rest_pose=None, joint_struct=None):
     """One encoder input from physical features on their own skeleton.
 
     The single builder for both the loader and generation, so the two never
-    hand the encoder differently derived channels.
+    hand the encoder differently derived channels. ``feats`` / ``rest_pose`` /
+    ``joint_struct`` may be passed in when already derived from this same
+    motion and cond.
     """
+    if feats is None:
+        feats = np.nan_to_num(physical_hml_to_canonical(motion, cond)).astype(np.float32)
     return {
-        'feats': np.nan_to_num(physical_hml_to_canonical(motion, cond)).astype(np.float32),
+        'feats': feats,
         'bone_dir': bone_directions(motion[..., :3], cond['parents'], rest_pos_from_cond(cond)),
-        'rest_pose': build_canonical_rest_feature(cond),
+        'rest_pose': build_canonical_rest_feature(cond) if rest_pose is None else rest_pose,
         'joints_names_embs': names,
-        'joint_struct': build_joint_struct_features(cond),
-        'graph_dist': cond['joints_graph_dist'],
-        'joints_relations': cond['joint_relations'],
+        'joint_struct': build_joint_struct_features(cond) if joint_struct is None else joint_struct,
     }
 
 
@@ -100,8 +112,6 @@ def collate_reference(samples, motion, names, joint_struct):
         'ref_rest_pose': motion.new_zeros(batch, joints, feats),
         'ref_joints_names_embs': torch.zeros_like(names),
         'ref_joint_struct': torch.zeros_like(joint_struct),
-        'ref_graph_dist': motion.new_zeros(batch, joints, joints),
-        'ref_joints_relations': motion.new_zeros(batch, joints, joints),
     }
     for i, sample in enumerate(samples):
         if sample is None:
@@ -124,6 +134,4 @@ def collate_reference(samples, motion, names, joint_struct):
         result['ref_active'][i] = True
         for key in ('rest_pose', 'joints_names_embs', 'joint_struct'):
             result['ref_' + key][i, :count] = torch.as_tensor(sample[key], device=motion.device)
-        for key in ('graph_dist', 'joints_relations'):
-            result['ref_' + key][i, :count, :count] = torch.as_tensor(sample[key], device=motion.device)
     return result

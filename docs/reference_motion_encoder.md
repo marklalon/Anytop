@@ -1,6 +1,6 @@
 # 参考动作编码器：免 retarget 的跨物种动作迁移
 
-> 状态：第二版已实现（骨骼方向输入、去掉参考专用 FFN，CKPT 32），需从头重训；首版记录见 §11，改动依据见 §12。
+> 状态：第三版已实现（训练性能优化，CKPT 33），需从头重训；首版记录见 §11，第二版改动见 §12，第三版见 §13。
 > [anytop_model_architecture.md](anytop_model_architecture.md) §9 保留同物种的 img2img / inpainting / outpainting 编辑，
 > 本文的 encode 路径与其并存。§10 是实现前的方案核验记录。
 
@@ -65,7 +65,7 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 
 **结构**：
 - 输入：参考 clip 的干净特征 x0 `[J_s, F, T]`，以及参考骨架自己的 rest token、关节名 embedding、structural channel。复用 InputProcess 的同类投影，权重独立。
-- 少量层 spatial + temporal attention，复用 `GraphMotionDecoder` 的层实现，宽度小于主干。
+- 少量层 spatial + temporal attention，复用 `GraphMotionDecoder` 的层实现，宽度小于主干。spatial attention 不带拓扑 / 边关系偏置（`graph_relations=False`），走普通 SDPA；骨架身份只经关节名、rest 几何、structural channel 与骨骼方向进入 E。
 - 每帧用 K 个 learned query 对全部有效关节做 cross-attention 池化，输出 `z [T, K, d_z]`。
 
 沿用当前模型通道契约：普通关节读取 position + rotation 共 9 维，仅 translation root 额外读取 XZ velocity 两维；不把派生速度当作额外独立输入。E 不读取 species descriptor，也不启用自己的 species FiLM。
@@ -89,7 +89,7 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 
 两种模式共享现有 spatial / temporal attention、cross-limb block、FFN、输入输出投影及文字条件模块，全部参与联合训练。底层运动规律继续由主干学习；每层只额外增加一个独立的 `ref cross-attn`，负责读取参考。
 
-- **ref cross-attn**：放在 spatial attention 之后，第 t 帧的每个关节 token 作为 query，读取 z[t] 的 K 个槽，经独立标量 gate 加入残差。
+- **ref cross-attn**：放在 spatial attention 之后，第 t 帧的每个关节 token 作为 query，读取 z[t] 的 K 个槽，经独立标量 gate 加入残差。按折叠形式参数化：每个头把槽的 key / value 直接映射到 d_model，打分是一次 `[D, H·K]` 乘法、读取是一次 `[H·K, D]` 乘法，没有 D×D 的 query / output 投影；它能表达每个头秩 ≤ d_z 的全部 query-key 双线性形式。
 - 每层的参考分支各自持有参数；gate 初始化为零，attention 本身采用普通初始化，避免 gate 与分支输出同时为零。参考分支的残差仅对 `ref_active=True` 的样本生效。
 
 层内顺序为：`共享 spatial → ref cross-attn → 共享 temporal → 共享 cross-limb（若启用）→ 共享 FFN`。原有共享子层及其归一化保持原结构。
@@ -116,7 +116,7 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 ### 4.1 目标与 dropout
 
 - **编码器输入**：同一个 clip，干净的 x0（经过 §4.2 的增强）。**解码器目标**：同一个 clip 的原始版本。
-- 新增 `--ref_cfg_drop_prob`，对 ref 做硬丢弃，建议 0.3–0.5。与现有的 `--action_label_cfg_drop_prob` 和 `--species_cfg_drop_prob` 各自独立抽签。
+- 新增 `--ref_cfg_drop_prob`，对 ref 做硬丢弃，建议 0.3–0.5。与现有的 `--action_label_cfg_drop_prob` 和 `--species_cfg_drop_prob` 各自独立抽签。每个 batch 随机保留固定的 `B − round(B·p)` 行，编码器只对这些行前向（形状静态，可编译）；被丢弃的行被硬旁路，其 z 不会被读取。
 - 共享主干不冻结、不对参考样本做 stop-gradient：两种模式共同更新共享参数；E、ref cross-attn 及其 gate 仅由参考激活样本训练。ref 丢弃时旁路参考子层。
 
 **理由**：
@@ -348,3 +348,19 @@ fullgraph 跟踪同时通过 reference/null；实际 GPU 训练验证使用 eage
 **改动**：E 增加 `ref_bone_dir` 输入（§3.1）；删除每层 ref FFN 及 `--ref_ff_dim`（§3.2）；CKPT_VERSION 31 → 32。推理的参考样本改为与 loader 共用 `reference_sample`。
 
 **待验收**：与 v11 相同设置、相同步数重训，复测 Cat_Walk → Dog 的尾巴仰角、分部位去噪增益和交换测试，与 v11 对比。
+
+## 13. 第三版改动：训练性能（2026-10-18）
+
+**依据**：train_tiny 配置（B=16、60 帧、D=256、8 层、`--compile default`）实测，开启参考后真实 step 从 110.4 ms 升到 124.6 ms。消融定位：
+
+- **编码器 E 约 8 ms**：graph attention 的拓扑 / 边偏置需要 4 次 `[T·B, H, J, J]` gather 与 fp32 累加，完整加性 mask 也让 SDPA 用不上融合 kernel；这部分与宽度无关，E 的 2 层约等于主干 2 层。且 `ref_cfg_drop_prob` 丢弃的行仍完整前向。
+- **数据侧约 5 ms**：每个样本重算 joint_struct、rest token；未增强时参考的 canonical 特征与目标完全相同却再算一遍。取数线程每 batch 多 12 ms CPU，经 GIL 拖慢训练线程。
+- **ref cross-attn 约 1 ms**，另占约 3 GB 显存：K·d_z 只有 32 维，却做 D×D 的 query / output 投影。
+
+**改动**：
+1. 数据侧：未增强的参考直接复用目标的 canonical 特征、rest token 与 structural channel；只有 leaf-drop 或骨长增强生效时重算。`reference_sample` 可接收已算好的这三项。
+2. 参考 dropout 改为每 batch 固定保留行数，编码器只对保留行前向（§4.1）。每个样本被丢弃的概率为 `round(B·p)/B`。
+3. E 的 spatial attention 去掉拓扑 / 边关系偏置（§3.1），`ref_graph_dist` / `ref_joints_relations` 字段删除。
+4. ref cross-attn 改为折叠参数化（§3.2）。
+
+CKPT_VERSION 32 → 33，需从头重训。

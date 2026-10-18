@@ -25,9 +25,12 @@ class MotionEncoder(nn.Module):
         # Facing-frame bone directions, one embedding for rest and motion rows:
         # the pose channel whose meaning is shared across skeletons.
         self.bone_dir_embedding = nn.Linear(3, width)
+        # Plain spatial attention, no topology / edge bias: that bias costs as
+        # much as in the shared decoder whatever the width. Skeleton identity
+        # reaches the encoder through names, rest geometry and bone directions.
         self.decoder = GraphMotionDecoder(
             GraphMotionDecoderLayer(width, heads, width * 4, dropout, 'gelu'),
-            layers, cross_limb=False,
+            layers, cross_limb=False, graph_relations=False,
         )
         self.queries = nn.Parameter(torch.randn(slots, width) * width ** -0.5)
         self.pool_norm = nn.LayerNorm(width)
@@ -53,8 +56,7 @@ class MotionEncoder(nn.Module):
         tokens = tokens + self.bone_dir_embedding(bone_dir.permute(3, 0, 1, 2))
         tokens = self.decoder(
             tokens, tokens.new_zeros(batch, tokens.shape[-1]), None,
-            tgt_key_padding_mask=~safe_valid,
-            y={'graph_dist': y['ref_graph_dist'], 'joints_relations': y['ref_joints_relations']},
+            tgt_key_padding_mask=~safe_valid, y={},
         )[1:]  # Rest token is context, never a motion slot.
         values = self.pool_norm(tokens).reshape(frames * batch, joints, -1)
         queries = self.queries[None].expand(frames * batch, -1, -1)

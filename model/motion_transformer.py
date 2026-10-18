@@ -742,6 +742,17 @@ class GraphMultiHeadAttention(nn.Module):
             additive_mask = additive_mask + padding_bias
         return additive_mask
 
+    def _merged_plain_mask(self, mask, key_padding_mask, q):
+        batch_size, _, length, _ = q.shape
+        additive = self._key_padding_mask_to_additive(key_padding_mask, device=q.device, dtype=q.dtype)
+        mask_bias = self._pairwise_mask_to_additive(
+            mask, batch_size=batch_size, tgt_len=length, src_len=length,
+            device=q.device, dtype=q.dtype,
+        )
+        if mask_bias is not None:
+            additive = mask_bias if additive is None else additive + mask_bias
+        return additive
+
     def _graph_scaled_dot_product_attention(
         self,
         q: Tensor,
@@ -808,6 +819,18 @@ class GraphMultiHeadAttention(nn.Module):
         # logits can't run away into softmax saturation.
         q = self.q_norm(q)
         k = self.k_norm(k)
+
+        if distance is None:
+            # No graph relations: plain attention, so SDPA can take its fused
+            # kernels (no [B, H, J, J] bias to gather and add).
+            x = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=self._merged_plain_mask(mask, key_padding_mask, q),
+                dropout_p=self.dropout.p if self.training else 0.0,
+                scale=self.scale,
+            )
+            x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.nheads * d_v)
+            return self.output_layer(x).float()
 
         sequence_length = v.shape[2]
         use_sdpa = value_hop_emb is None and value_edge_emb is None
@@ -1035,9 +1058,14 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
                  cross_limb_last_n=0, action_label_adaln=False,
                  action_adaln_bottleneck=0, last_layer_ff=0,
-                 mirror_twin_drop_prob=0.0):
+                 mirror_twin_drop_prob=0.0, graph_relations=True):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
+        # graph_relations=False: spatial attention without the topology / edge
+        # bias and without relation tables (the reference encoder).
+        self.graph_relations = bool(graph_relations)
+        if value_emb and not self.graph_relations:
+            raise ValueError('value_emb needs graph_relations')
 
         # --mirror_twin_drop_prob: per twin pair, the chance in training that
         # the pair reads as its plain topological code instead of mirror_twin,
@@ -1074,10 +1102,14 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # Table sizes come from ``topology_relations`` rather than being written
         # here: the dataset emits those indices, and a mismatch surfaces only as an
         # out-of-bounds gather deep inside the attention bias.
-        self.topology_key_emb = nn.Embedding(num_topology_codes, self.d_model)
-        self.edge_key_emb = nn.Embedding(num_edge_codes, self.d_model)
-        self.topology_query_emb = nn.Embedding(num_topology_codes, self.d_model)
-        self.edge_query_emb = nn.Embedding(num_edge_codes, self.d_model)
+        if self.graph_relations:
+            self.topology_key_emb = nn.Embedding(num_topology_codes, self.d_model)
+            self.edge_key_emb = nn.Embedding(num_edge_codes, self.d_model)
+            self.topology_query_emb = nn.Embedding(num_topology_codes, self.d_model)
+            self.edge_query_emb = nn.Embedding(num_edge_codes, self.d_model)
+        else:
+            self.topology_key_emb = self.edge_key_emb = None
+            self.topology_query_emb = self.edge_query_emb = None
         self.value_emb_flag = value_emb
         if value_emb:
             self.topology_value_emb = nn.Embedding(num_topology_codes, self.d_model)
@@ -1185,9 +1217,11 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             topology_adaln: Optional[Tensor] = None,
             ref_z: Optional[Tensor] = None,
             ref_active: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
-        topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
-        edge_rel = self._resolve_edge_codes(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
-        edge_rel = self._expand_relation_heads(edge_rel)
+        topology_rel = edge_rel = None
+        if self.graph_relations:
+            topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
+            edge_rel = self._resolve_edge_codes(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
+            edge_rel = self._expand_relation_heads(edge_rel)
         output = tgt
         T, B = tgt.shape[0], tgt.shape[1]
         # The loop phase table is built once here and shared by every layer:
@@ -1280,24 +1314,50 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.temporal_phase_scale = nn.Parameter(torch.zeros(1))
 
     def enable_reference(self, ref_dim):
-        """Allocate independently per layer, after all shared parameters exist."""
+        """Allocate independently per layer, after all shared parameters exist.
+
+        Each frame offers only ``K`` slots of ``ref_dim`` values, so the
+        attention is parameterized in folded form: per head, a slot's key and
+        value map straight to ``d_model``. Scoring a joint token is one
+        ``[d_model, H*K]`` product and reading is one ``[H*K, d_model]``
+        product, with no ``d_model x d_model`` query / output projections.
+        This expresses every per-head bilinear query-key form of rank
+        <= ref_dim; a query bias term constant over slots cancels in softmax.
+        """
         self.ref_norm = nn.LayerNorm(self.d_model)
-        self.ref_attn = nn.MultiheadAttention(
-            self.d_model, self.heads, dropout=self.dropout1.p,
-            kdim=ref_dim, vdim=ref_dim, batch_first=True,
-        )
+        self.ref_key = nn.Linear(ref_dim, self.heads * self.d_model, bias=False)
+        self.ref_key_bias = nn.Linear(ref_dim, self.heads, bias=False)
+        self.ref_value = nn.Linear(ref_dim, self.heads * self.d_model, bias=False)
+        self.ref_out_bias = nn.Parameter(torch.zeros(self.d_model))
         self.ref_attn_gate = nn.Parameter(torch.zeros(()))
 
     def _read_reference(self, x, z, active):
+        """``x`` [F, B, J, D] with the rest token at frame 0, ``z`` [B, F-1, K, d_z].
+
+        ``active`` [B] bool. The rest token and inactive rows receive nothing,
+        bias included (hard bypass).
+        """
         frames, batch, joints, width = x.shape
         if z.shape[:2] != (batch, frames - 1):
             raise ValueError('Reference and output windows must be frame aligned')
-        queries = self.ref_norm(x[1:]).reshape((frames - 1) * batch, joints, width)
-        values = z.permute(1, 0, 2, 3).reshape((frames - 1) * batch, z.shape[2], z.shape[3])
-        out, _ = self.ref_attn(queries, values, values, need_weights=False)
-        out = out.reshape(frames - 1, batch, joints, width)
-        out = torch.cat([torch.zeros_like(x[:1]), out], dim=0)
-        return x + torch.where(active, self.ref_attn_gate * out, torch.zeros_like(out))
+        slots = z.shape[2]
+        # A zero slot row for the rest token keeps one static product over all
+        # frames; its output is masked below.
+        z = F.pad(z.transpose(0, 1), (0, 0, 0, 0, 0, 0, 1, 0))  # [F, B, K, d_z]
+
+        def per_head(t):  # [F, B, K, H*D] -> [F, B, H*K, D]
+            t = t.view(frames, batch, slots, self.heads, width).transpose(2, 3)
+            return t.reshape(frames, batch, self.heads * slots, width)
+
+        keys, values = per_head(self.ref_key(z)), per_head(self.ref_value(z))
+        bias = self.ref_key_bias(z).transpose(2, 3).reshape(frames, batch, 1, self.heads * slots)
+        scores = torch.matmul(self.ref_norm(x), keys.transpose(-1, -2)) * (width ** -0.5) + bias
+        weights = torch.softmax(scores.float().view(frames, batch, joints, self.heads, slots), dim=-1)
+        weights = F.dropout(weights, self.dropout1.p, self.training).to(values.dtype)
+        out = torch.matmul(weights.view(frames, batch, joints, self.heads * slots), values)
+        out = out + self.ref_out_bias
+        live = (torch.arange(frames, device=x.device)[:, None] > 0) & active.view(1, batch)
+        return x + out * (self.ref_attn_gate * live.to(out.dtype)).view(frames, batch, 1, 1)
 
     # spatial attention block
     def _spatial_mha_block(self, x: Tensor, topology_rel: Optional[Tensor], edge_rel: Optional[Tensor], edge_key_emb, edge_query_emb, edge_value_emb,
@@ -1308,8 +1368,10 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         if key_padding_mask is not None:
             key_padding_mask = key_padding_mask.unsqueeze(0).expand(frames, bs, njoints).reshape(-1, njoints)
         
-        attn_output = self.spatial_attn(x, x, x, topology_query_emb.weight, edge_query_emb.weight, topology_key_emb.weight, edge_key_emb.weight, None if topology_value_emb is None else topology_value_emb.weight, 
-        None if edge_value_emb is None else edge_value_emb.weight, topology_rel, edge_rel, attn_mask, key_padding_mask=key_padding_mask)
+        def weight(emb):
+            return None if emb is None else emb.weight
+        attn_output = self.spatial_attn(x, x, x, weight(topology_query_emb), weight(edge_query_emb), weight(topology_key_emb), weight(edge_key_emb), weight(topology_value_emb),
+        weight(edge_value_emb), topology_rel, edge_rel, attn_mask, key_padding_mask=key_padding_mask)
         attn_output = attn_output.reshape(frames, bs, njoints, feature_len) # njoints, bs, frames, feature_len
         return self.dropout1(attn_output)
     
@@ -1372,10 +1434,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
         if ref_z is not None:
-            active = ref_active.view(1, bs, 1, 1)
             # Rest token remains skeleton-only in the reference sublayer.
-            active = active & (torch.arange(x.shape[0], device=x.device)[:, None, None, None] > 0)
-            x = self._read_reference(x, ref_z, active)
+            x = self._read_reference(x, ref_z, ref_active)
         # Branch input only; the residual adds to the unmodulated x. The
         # modulation lands BEFORE the circular phase, which _temporal_mha_block
         # sums in, so a loop sample's phase is never scaled by the label.

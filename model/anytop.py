@@ -297,12 +297,24 @@ class AnyTop(nn.Module):
         if active.numel() != batch_size:
             raise ValueError('ref_active must have shape [B]')
         active = active & y['ref_mask'].to(device).any(-1)
-        if self.training:
-            active = active & (torch.rand(batch_size, device=device) >= self.ref_cfg_drop_prob)
         ref_y = {k: v.to(device) for k, v in y.items() if k.startswith('ref_') and torch.is_tensor(v)}
         if ref_y['ref_feats'].shape[-1] != frames:
             raise ValueError('Reference and output windows must be frame aligned')
-        return self.motion_encoder(ref_y), active
+        if not self.training or self.ref_cfg_drop_prob == 0:
+            return self.motion_encoder(ref_y), active
+        # Reference dropout keeps a fixed number of randomly chosen rows per
+        # batch, so the encoder runs on those rows only (static shape for
+        # compile); a dropped row is hard-bypassed and its z is never read.
+        keep = batch_size - round(batch_size * self.ref_cfg_drop_prob)
+        encoder = self.motion_encoder
+        if keep == 0:
+            z = ref_y['ref_feats'].new_zeros(batch_size, frames, encoder.slots, encoder.ref_dim)
+            return z, torch.zeros_like(active)
+        rows = torch.randperm(batch_size, device=device)[:keep]
+        z = encoder({k: v[rows] for k, v in ref_y.items()})
+        z = z.new_zeros((batch_size,) + z.shape[1:]).index_copy(0, rows, z)
+        kept = torch.zeros_like(active).index_fill(0, rows, True)
+        return z, active & kept
 
     @staticmethod
     def _prepare_unreliable_mask(raw_mask, bs, nframes, njoints, device, dtype):

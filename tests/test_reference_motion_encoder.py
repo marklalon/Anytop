@@ -43,9 +43,7 @@ def inputs(batch=2, joints=4, frames=5, source_joints=6):
              ref_active=torch.ones(batch, dtype=torch.bool),
              ref_rest_pose=torch.randn(batch, source_joints, 12),
              ref_joints_names_embs=torch.randn(batch, source_joints, 4),
-             ref_joint_struct=torch.randn(batch, source_joints, JOINT_STRUCT_DIM),
-             ref_graph_dist=torch.zeros(batch, source_joints, source_joints),
-             ref_joints_relations=torch.zeros(batch, source_joints, source_joints))
+             ref_joint_struct=torch.randn(batch, source_joints, JOINT_STRUCT_DIM))
     return x, y
 
 
@@ -64,7 +62,7 @@ def test_zero_gates_match_shared_path_and_are_independent():
     torch.testing.assert_close(active, null, rtol=0, atol=0)
     a, b = m.seqTransDecoder.layers
     assert a.ref_attn_gate is not b.ref_attn_gate
-    assert a.ref_attn.q_proj_weight.data_ptr() != b.ref_attn.q_proj_weight.data_ptr()
+    assert a.ref_key.weight.data_ptr() != b.ref_key.weight.data_ptr()
     assert not any('ref_ff' in n for n, _ in m.named_parameters())
 
 
@@ -125,8 +123,6 @@ def test_encoder_permutation_invariance_padding_and_actual_channel_contract():
     for k in ('ref_feats', 'ref_bone_dir', 'ref_mask', 'ref_rest_pose', 'ref_joints_names_embs',
               'ref_joint_struct'):
         permuted[k] = y[k][:, permutation]
-    for k in ('ref_graph_dist', 'ref_joints_relations'):
-        permuted[k] = y[k][:, permutation][:, :, permutation]
     torch.testing.assert_close(z, encoder(permuted), rtol=1e-5, atol=1e-6)
     changed = copy.deepcopy(y)
     changed['ref_feats'][:, 1:, 9:] = 100
@@ -139,8 +135,6 @@ def test_encoder_permutation_invariance_padding_and_actual_channel_contract():
         shape = list(y[k].shape)
         shape[1] = 3
         padded[k] = torch.cat([y[k], y[k].new_zeros(shape)], dim=1)
-    for k in ('ref_graph_dist', 'ref_joints_relations'):
-        padded[k] = torch.nn.functional.pad(y[k], (0, 3, 0, 3))
     torch.testing.assert_close(z, encoder(padded), rtol=1e-5, atol=1e-6)
 
 
@@ -187,6 +181,66 @@ def test_collate_rejects_bone_direction_frame_mismatch():
     with pytest.raises(ValueError, match='bone directions'):
         collate_reference([sample], torch.zeros(1, 7, 12, 30), torch.zeros(1, 7, 4),
                           torch.zeros(1, 7, JOINT_STRUCT_DIM))
+
+
+def test_encoder_attention_has_no_graph_relations():
+    m = model()
+    names = [n for n, _ in m.motion_encoder.named_parameters()]
+    assert not any('topology' in n or 'edge_' in n for n in names)
+    assert m.seqTransDecoder.topology_key_emb is not None
+
+
+def test_reference_dropout_keeps_fixed_rows_and_encodes_only_those(monkeypatch):
+    m = model(ref_cfg_drop_prob=.5).train()
+    x, y = inputs(batch=4)
+    seen = []
+    forward = m.motion_encoder.forward
+    monkeypatch.setattr(m.motion_encoder, 'forward',
+                        lambda ref_y: seen.append(ref_y['ref_feats'].shape[0]) or forward(ref_y))
+    z, active = m._reference_condition(y, 4, 5, x.device)
+    assert seen == [2] and int(active.sum()) == 2
+    assert z[~active].abs().sum() == 0 and z[active].abs().sum() > 0
+    y['ref_active'][:] = False
+    assert not m._reference_condition(y, 4, 5, x.device)[1].any()
+
+
+def test_folded_reference_read_matches_explicit_attention():
+    m = model(ref_cfg_drop_prob=0).eval()
+    layer = m.seqTransDecoder.layers[0]
+    torch.manual_seed(3)
+    with torch.no_grad():
+        for p in (layer.ref_key_bias.weight, layer.ref_out_bias):
+            p.normal_()
+        layer.ref_attn_gate.fill_(1.)
+    frames, batch, joints, width, slots, heads = 6, 2, 3, 16, 2, 4
+    x = torch.randn(frames, batch, joints, width)
+    z = torch.randn(batch, frames - 1, slots, 8)
+    active = torch.tensor([True, False])
+    out = layer._read_reference(x, z, active)
+    xn = layer.ref_norm(x[1:, 0])  # [T, J, D], active row only
+    zt = z[0]  # [T, K, d_z]
+    keys = layer.ref_key(zt).view(frames - 1, slots, heads, width)
+    values = layer.ref_value(zt).view(frames - 1, slots, heads, width)
+    scores = torch.einsum('tjd,tkhd->tjhk', xn, keys) * width ** -.5
+    scores = scores + layer.ref_key_bias(zt).permute(0, 2, 1)[:, None]
+    read = torch.einsum('tjhk,tkhd->tjd', scores.softmax(-1), values) + layer.ref_out_bias
+    torch.testing.assert_close(out[1:, 0], x[1:, 0] + read, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(out[0], x[0], rtol=0, atol=0)
+    torch.testing.assert_close(out[:, 1], x[:, 1], rtol=0, atol=0)
+
+
+def test_unaugmented_reference_reuses_shared_target_channels():
+    motion, cond, metadata = fixture()
+    fresh = prepare_reference_sample(motion, cond, metadata, SimpleNamespace(), augment=False)
+    shared = {k: fresh[k] for k in ('feats', 'rest_pose', 'joint_struct')}
+    reused = prepare_reference_sample(motion, cond, metadata, SimpleNamespace(), augment=False,
+                                      shared=shared)
+    assert all(reused[k] is shared[k] for k in shared)
+    np.testing.assert_array_equal(reused['bone_dir'], fresh['bone_dir'])
+    options = SimpleNamespace(ref_bone_length_aug_prob=1, ref_bone_length_aug=.2)
+    random.seed(5)
+    augmented = prepare_reference_sample(motion, cond, metadata, options, shared=shared)
+    assert all(augmented[k] is not shared[k] for k in shared)
 
 
 def test_reference_dropout_extremes_and_frame_mismatch():

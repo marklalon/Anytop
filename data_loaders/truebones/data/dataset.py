@@ -1589,14 +1589,19 @@ class MotionDataset(data.Dataset):
                 )
         m_length = target_num_frames
 
+        physical_motion = motion
+        motion = np.nan_to_num(
+            physical_hml_to_canonical(motion, cond)
+        ).astype(np.float32, copy=False)
         reference = None
         if getattr(self.opt, 'ref_encoder', False):
             from data_loaders.reference import prepare_reference_sample
             reference_metadata = dict(motion_metadata, is_loop=loop_condition_active)
-            reference = prepare_reference_sample(motion, cond, reference_metadata, self.opt)
-        motion = np.nan_to_num(
-            physical_hml_to_canonical(motion, cond)
-        ).astype(np.float32, copy=False)
+            # An unaugmented reference shares the target's skeleton, so its
+            # canonical features, rest token and structural channel are these.
+            reference = prepare_reference_sample(
+                physical_motion, cond, reference_metadata, self.opt,
+                shared=dict(feats=motion, rest_pose=rest_pose, joint_struct=joint_struct))
 
         # is_loop is the whole loop condition the model sees: a closed window.
         # The tile count is deliberately NOT passed on -- generation has no
