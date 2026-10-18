@@ -172,8 +172,8 @@ out = x0(∅, ∅)
     + s_txt · (x0(ref, txt) − x0(ref, ∅))
 ```
 
-- 不给 label 时：去掉第三项，两次前向。
-- 给 label 时：三次前向，顺序执行。
+- 不给 label 时：去掉第三项，通常两次前向；`ref_cfg_scale=1` 时仅计算参考分支，一次前向；为 0 时仅计算无条件分支。
+- 给 label 时：按 `(1-s_ref)·base + (s_ref-s_text)·ref + s_text·full` 跳过系数为零的分支，其余顺序执行，最多三次前向。两个 scale 都为 1 时仅计算 full，一次前向。
 - 实现为一个新 wrapper，不与现有 action / species wrapper 嵌套，避免前向次数相乘。
 
 ### 5.4 推荐默认（干净迁移）
@@ -189,7 +189,7 @@ out = x0(∅, ∅)
 
 **推荐依据与验证边界**：目标 descriptor 包含 body plan 和步态信息，可能与参考中的直立姿态、支撑方式等运动内容冲突。关闭是减少条件冲突的实验起点，尚未证明迁移质量更好。encode 的正式推理入口固定关闭；未来若做开关对照，应使用独立实验入口。旁路应由非零 `species_cfg_drop_prob` 的训练覆盖。关闭 FiLM 不会消除关节名、几何及共享主干已有的运动先验。参考编码器 E 的输入仍按 §3.1，不读取 descriptor。
 
-**CFG 行为**：encode 的所有 reference CFG 分支固定关闭 species，不嵌套 species guidance。encode 模式或 retarget 下 `--species_active false` 时忽略 `species_cfg_scale`，不构造 species CFG wrapper，不增加 species 前向，也不检查 species CFG 的训练前提。关闭 species 不改变 reference/text CFG 本身的 2 / 3 次前向。
+**CFG 行为**：encode 的所有 reference CFG 分支固定关闭 species，不嵌套 species guidance。encode 模式或 retarget 下 `--species_active false` 时忽略 `species_cfg_scale`，不构造 species CFG wrapper，不增加 species 前向，也不检查 species CFG 的训练前提。reference/text CFG 按上述分支系数执行 1–3 次前向，关闭 species 不改变其次数。
 
 ---
 
@@ -260,7 +260,7 @@ out = x0(∅, ∅)
 - NPY 按源 cond 编码；原始 FBX/GLB/GLTF 复用预处理的根检测、wrapper 折叠、姿态对齐与特征提取，
   使用 checkpoint 的全局统计和关节名向量缓存，未知关节名置空，不加载 T5，不经过 retarget。
   `--reference_source_type` 可显式指定 NPY 源骨架；encode 不会静默把未知源当成目标骨架。
-- `--reference_mode retarget` 仍是默认；encode 使用独立的 2 / 3 次顺序 CFG，species 状态固定。
+- `--reference_mode retarget` 仍是默认；encode 使用独立的顺序 CFG，跳过系数为零的分支，species 状态固定。
   encode 固定关闭目标 species FiLM，且与 `--species_active` 参数互斥；retarget 默认开启，可用 `--species_active true/false` 控制。
 - CKPT_VERSION 从 30 提升到 31；不对旧模型做 warm start。训练打印完整参数预算。
   验证同时计算同噪声、同 timestep 的 ref-null 和 reference loss，前者保留原 `Val/*` 名称，

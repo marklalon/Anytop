@@ -103,15 +103,28 @@ class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
         self.text_scale, self.use_text = float(text_scale), bool(use_text)
 
     def forward(self, x, timesteps, y=None, **kwargs):
+        # Expand the composition so branches with zero weight need no forward:
+        # (1 - ref_scale) * base + (ref_scale - text_scale) * ref
+        # + text_scale * full. Without a text prompt, text_scale is zero.
+        text_scale = self.text_scale if self.use_text else 0.0
+        base_weight = 1.0 - self.guidance_scale
+        ref_weight = self.guidance_scale - text_scale
+        out = None
+
         null_y = dict(y or {})
         null_y['ref_active'] = torch.zeros(x.shape[0], dtype=torch.bool, device=x.device)
         null_y['action_label_active'] = torch.zeros_like(null_y['ref_active'])
-        base = self.model(x, timesteps, y=null_y, **kwargs)
-        ref_y = dict(y or {})
-        ref_y['action_label_active'] = null_y['action_label_active']
-        ref = self.model(x, timesteps, y=ref_y, **kwargs)
-        out = base + self.guidance_scale * (ref - base)
-        if self.use_text:
+        if base_weight != 0.0:
+            base = self.model(x, timesteps, y=null_y, **kwargs)
+            out = base_weight * base
+        if ref_weight != 0.0:
+            ref_y = dict(y or {})
+            ref_y['action_label_active'] = null_y['action_label_active']
+            ref = self.model(x, timesteps, y=ref_y, **kwargs)
+            term = ref_weight * ref
+            out = term if out is None else out + term
+        if text_scale != 0.0:
             full = self.model(x, timesteps, y=y, **kwargs)
-            out = out + self.text_scale * (full - ref)
+            term = text_scale * full
+            out = term if out is None else out + term
         return out

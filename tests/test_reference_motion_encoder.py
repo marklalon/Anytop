@@ -178,6 +178,33 @@ def test_cfg_algebra_sequential_pass_count_and_species_state(use_text, expected,
 
 
 @pytest.mark.parametrize('use_text', [False, True])
+@pytest.mark.parametrize('ref_scale', [0., 1., 2., 0.5])
+@pytest.mark.parametrize('text_scale', [0., 1., 2., 3.])
+def test_reference_cfg_skips_zero_weight_branches(use_text, ref_scale, text_scale):
+    inner = Echo()
+    wrapper = ClassifierFreeReferenceModel(inner, ref_scale, text_scale, use_text)
+    x = torch.zeros(2, 1, 1, 1)
+    species = torch.tensor([False, True])
+    y = dict(ref_active=torch.ones(2, dtype=torch.bool), species_active=species)
+    out = wrapper(x, torch.zeros(2), y)
+    effective_text_scale = text_scale if use_text else 0.
+    base = 1 + species.float() * 7
+    expected = base + ref_scale * 2 + effective_text_scale * 3
+    torch.testing.assert_close(out, expected[:, None, None, None])
+    expected_branches = []
+    if ref_scale != 1.:
+        expected_branches.append((False, False))
+    if ref_scale != effective_text_scale:
+        expected_branches.append((True, False))
+    if effective_text_scale != 0.:
+        expected_branches.append((True, True))
+    assert [(bool(ref.all()), bool(text.all())) for ref, text, _ in inner.calls] == expected_branches
+    assert all(call[2] is species for call in inner.calls)
+    assert 'action_label_active' not in y
+    assert y['ref_active'].all()
+
+
+@pytest.mark.parametrize('use_text', [False, True])
 def test_reference_cfg_ignores_species_scale_only_when_disabled(use_text):
     from sample.conditioning import _wrap_reference_cfg
     inner = Echo()
