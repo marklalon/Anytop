@@ -255,30 +255,6 @@ def test_compile_full_graph_keeps_reference_and_null_tensor_contract():
     torch.testing.assert_close(compiled(x, torch.zeros(2), null_y), m(x, torch.zeros(2), null_y))
 
 
-def test_capacity_counts_real_channels_and_marks_overcomplete_candidates():
-    from eval.reference_motion import capacity_distribution
-    report = capacity_distribution([2, 20])
-    assert report['input_dim_quantiles'][0] == 20
-    assert report['input_dim_quantiles'][-1] == 182
-    assert report['candidates']['8x32']['uncompressed_samples'] == 2
-    assert report['candidates']['2x8']['max_ratio'] == .8
-
-
-def test_transfer_metrics_are_length_normalized_and_do_not_compare_joint_angles():
-    from eval.reference_motion import motion_curves, compare_curves
-    motion, cond, _ = fixture()
-    motion[:, :, 9] = .01
-    a = motion_curves(motion, cond, torso=[0, 1])
-    scaled = motion.copy()
-    scaled[:, :, :3] *= 3
-    scaled[:, :, 9:12] *= 3
-    scaled_cond = dict(cond, rest_pos_ric_hml=cond['rest_pos_ric_hml'] * 3)
-    b = motion_curves(scaled, scaled_cond, torso=[0, 1])
-    for value in compare_curves(a, b).values():
-        assert value['rmse'] < 1e-5
-    assert 'torso_pitch' not in motion_curves(motion, cond)
-
-
 def test_validation_pairs_reference_and_null_with_same_noise_and_target():
     from train.training_loop import TrainLoop
     import contextlib

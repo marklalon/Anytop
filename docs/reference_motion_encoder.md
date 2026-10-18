@@ -258,9 +258,6 @@ out = x0(∅, ∅)
 - CKPT_VERSION 从 30 提升到 31；不对旧模型做 warm start。训练打印完整参数预算。
   验证同时计算同噪声、同 timestep 的 ref-null 和 reference loss，前者保留原 `Val/*` 名称，
   后者使用 `Val/reference_*`。
-- `eval/reference_motion.py` 提供容量审计和固定参考交换、ref-null、species 开关评测，支持额外目标
-  `cond_path`。比较 L 归一化根速度、全身运动能量、人工标注的骨盆到胸部轴俯仰；不比较跨骨架关节角。
-  `--score` 同时计算 MotionQualityScorer；支撑方式、相位及脚滑仍需人工查看 BVH。
 
 ### 本地容量审计
 
@@ -279,8 +276,8 @@ clip、476 副骨架。clip 加权的有效关节数 min / P10 / P50 / P90 / max
 假设。默认 2 × 8 只是工程起点，未按短训重建误差选择更大容量。
 
 **数据缺口**：当前 `dataset/datasets.jsonl` 的所有来源都是 train，val 为空；未移动真实数据、未把
-训练骨架当成未见骨架。固定的 [reference_tasks.json](../eval/reference_tasks.json) 明确标为工程评测，
-包含同骨架、犬→马的参考交换、人→犬、鸟→鹰。未见骨架验收仍需要独立 val 来源。
+训练骨架当成未见骨架。当前 [tiny_tasks.json](../eval/tiny_tasks.json) 中的 `ReferenceMotion` 任务
+覆盖同骨架、犬→马和鸟→其他物种的 encode 模式工程冒烟检查。未见骨架验收仍需要独立 val 来源。
 
 ### 已运行的实验与边界
 
@@ -311,7 +308,7 @@ action/species head bottleneck=128、ref 2×8 时，总计 30,992,258；共享 2
 
 测试覆盖 gate 起点、混合 batch 的完整硬旁路、null 的零参考梯度、激活样本的共享主干与编码器梯度、
 有效关节池化、非根关节排列不变性、padding、9/11 维通道契约、独立参考 dropout、2/3 次 CFG、
-species 状态、增强隔离、源骨架 resample、容量/指标与配对验证。`torch.compile` 的 eager 后端
+species 状态、增强隔离、源骨架 resample 与配对验证。`torch.compile` 的 eager 后端
 fullgraph 跟踪同时通过 reference/null；实际 GPU 训练验证使用 eager BF16，未据此宣称 Inductor 性能。
 
 最终回归：Anytop 全套 1412 项测试、61 项子测试通过，另有 7 项服务端兼容测试通过。
@@ -320,12 +317,10 @@ fullgraph 跟踪同时通过 reference/null；实际 GPU 训练验证使用 eage
 旧路径的跨骨架 retarget 实跑在已有的关节匹配 LLM 服务处连接被拒绝，未完成该项端到端验证；
 没有为本改动替换其关节匹配或服务配置。
 
-### 复现入口
+### 训练入口
 
 ```powershell
 ../.venv/Scripts/python.exe train/train_anytop.py --cond_path dataset/cond.npy --save_dir save/ref_2x8_new --objects_subset all --action_group all --action_label_cond --action_label_adaln --species_joint_cond --ref_encoder --ref_slots 2 --ref_dim 8 --latent_dim 128 --ff_size 256 --layers 4 --cross_limb_last_n 2 --num_frames 32 --batch_size 4 --diffusion_steps 20 --num_steps 100 --save_interval 100 --log_interval 25 --amp_dtype bf16 --seed 10
-../.venv/Scripts/python.exe -m eval.reference_motion capacity --cond_path dataset/cond.npy --output outputs/reference_motion_capacity.json
-../.venv/Scripts/python.exe -m eval.reference_motion evaluate --model_path save/reference_encoder_smoke_20261018_2x8/model000000100.pt --tasks eval/reference_tasks.json --output outputs/reference_eval_new --sampling_steps 10 --score
 ```
 
 延长训练时使用新的 save_dir，从头训练，并保持 decoder 侧 `leaf_drop_prob=0`、

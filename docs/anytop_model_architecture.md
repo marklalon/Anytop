@@ -504,7 +504,6 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 | reference/inpainting/outpainting | `sample/generate.py` |
 | 源骨架参考编码器 | `model/motion_encoder.py` |
 | 编码器侧增强与固定字段 | `data_loaders/reference.py` |
-| 容量统计与固定交换消融 | `eval/reference_motion.py` |
 
 ## 11. 参数预算与设计依据
 
