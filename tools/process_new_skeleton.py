@@ -14,7 +14,12 @@ needed since it was originally tailored for Truebones (joint-name-based foot
 classification). Tested on FBX from Mixamo and other sources.
 
 Input Arguments:
-tpos-path         - An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base (required).
+tpos-path         - An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base.
+                    Optional when --motion-path is given: the first motion file's own
+                    bind pose is used, so the animation file is self-contained.
+motion-path       - Animation FBX/GLB/GLTF file(s) or directories of them. Each is encoded
+                    onto the skeleton and written to motions/<object_type>_<action>.npy
+                    (physical features, the format --reference_motion takes).
 save-dir          - Output directory (required).
 object_type       - Species/type name (e.g. "Dragon"). Inferred from the tpos-path file stem
                     when omitted: the whole stem minus trailing pose tokens
@@ -40,6 +45,8 @@ Output (under save_dir/):
   cond.npy    - Skeleton representation (joint name embeddings, graph conditions,
                 canonical feature-space metadata)
                 consumed by AnyTop inference via ``--cond-path``.
+  motions/    - Optional (``--motion-path``) feature .npy per animation file, encoded on
+                the cond skeleton.
   bvh_tpose/<object_type>.bvh - Optional (``--export-tpose-bvh``) t-pose preview
                 built from the cond.npy rest offsets, in the canonical frame/units.
 """
@@ -87,6 +94,22 @@ def species_from_tpose_stem(tpose_path: str) -> str | None:
     name = name.strip("_-. ")
     return name or None
 
+def _collect_motion_paths(motion_path) -> list[str]:
+    """Animation files from ``--motion-path`` entries (files or directories)."""
+    exts = ('.fbx', '.glb', '.gltf')
+    found: list[str] = []
+    for entry in motion_path or []:
+        if os.path.isdir(entry):
+            found += sorted(
+                os.path.join(entry, f) for f in os.listdir(entry) if f.lower().endswith(exts)
+            )
+        elif os.path.isfile(entry) and entry.lower().endswith(exts):
+            found.append(entry)
+        else:
+            raise FileNotFoundError(f"--motion-path entry is not an FBX/GLB/GLTF file or directory: {entry}")
+    return found
+
+
 def _upsert_species_tags_sidecar(save_dir: str, species: str, tags) -> str:
     """Write/update the ``species_tags.jsonl`` sidecar for one species.
 
@@ -122,8 +145,9 @@ def _upsert_species_tags_sidecar(save_dir: str, species: str, tags) -> str:
 def process_new_skeleton(
     *,
     save_dir: str,
-    tpos_path: str,
+    tpos_path: str | None = None,
     reference_cond_path: str,
+    motion_paths: list[str] | None = None,
     object_type: str | None = None,
     crop_enabled: bool = False,
     species_tags: str | None = None,
@@ -143,6 +167,7 @@ def process_new_skeleton(
         "save_dir": save_dir,
         "object_type": object_type,
         "tpos_path": tpos_path,
+        "motion_path": motion_paths,
         "crop_enabled": crop_enabled,
         "species_tags": species_tags,
         "reference_cond_path": reference_cond_path,
@@ -192,10 +217,14 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
     else:
         os.makedirs(save_dir, exist_ok=True)
 
+    motion_paths = _collect_motion_paths(getattr(args, 'motion_path', None))
     tpose_path = args.tpos_path
+    if not tpose_path and motion_paths:
+        tpose_path = motion_paths[0]
+        print(f"[process_new_skeleton] No --tpos-path: using the bind pose of {tpose_path}")
     if not tpose_path:
-        raise FileNotFoundError("--tpos-path is required. Provide a FBX/GLB/GLTF file whose "
-                                "bind/rest pose defines the skeleton.")
+        raise FileNotFoundError("--tpos-path or --motion-path is required. Provide a FBX/GLB/GLTF "
+                                "file whose bind/rest pose defines the skeleton.")
 
     object_type = args.object_type
     if object_type is None:
@@ -243,6 +272,7 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
         tpose_path,
         args.reference_cond_path,
         crop_enabled=crop_enabled,
+        motion_paths=motion_paths,
     )
 
     tpose_bvh = None
@@ -256,6 +286,7 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
         "tpose_path": tpose_path,
         "cond_npy": os.path.join(save_dir, "cond.npy"),
         "tpose_bvh": tpose_bvh,
+        "motions": [os.path.join(save_dir, "motions", f"{object_type}_*.npy")] if motion_paths else [],
     }
 
 

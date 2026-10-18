@@ -79,7 +79,7 @@ def reference_loop_verdict(reference_features, translation_root_index):
 
     Every stored clip carries its verdict in its terminal velocity row (see
     ``loop_verdict``): the hand-verified sidecar flag for a dataset clip, the
-    detector's proposal for a clip preprocessed or retargeted on the way in.
+    detector's proposal for a clip preprocessed on the way in.
     That is read first, since it is the annotation the clip was stored under.
     A tensor with no verdict row -- a generated sample, say -- is judged by the
     same geometric detector preprocessing proposes with (endpoint pose gap

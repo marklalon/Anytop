@@ -622,6 +622,10 @@ def _build_record_from_existing(
         m = re.search(r'--cond_path\s+(?:"([^"]*)"|(\S+))', record["command"])
         if m:
             task_cond = _register_cond_path(scorer, m.group(1) or m.group(2))
+    if task_cond is None:
+        adopted = task_dir / "_reference_cond" / "cond.npy"
+        if adopted.is_file():
+            task_cond = _register_cond_path(scorer, str(adopted))
 
     first_npy = _first_output_npy(task_dir)
     record["first_npy"] = first_npy
@@ -747,6 +751,7 @@ def run_task(
     # Capture stdout for the per-task log; let stderr (tqdm/progress bars) pass through.
     stdout = io.StringIO()
     returncode = 0
+    task_args = None
     try:
         task_args = generate_args(generate_argv)
         with contextlib.redirect_stdout(stdout):
@@ -780,7 +785,10 @@ def run_task(
     # (e.g., 'dragon') can be featurised as the query, while the reference
     # still comes from the dataset corpus.
     task_cond: dict | None = None
-    task_cond_path = _extract_cond_path(extra_args)
+    # generate.py adopts the cond of a raw reference file on its own skeleton and
+    # records it in args.cond_path, so the scorer sees it without a --cond_path flag.
+    task_cond_path = _extract_cond_path(extra_args) or (
+        getattr(task_args, 'cond_path', None) or None)
     if task_cond_path:
         task_cond = _register_cond_path(scorer, task_cond_path)
 

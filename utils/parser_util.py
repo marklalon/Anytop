@@ -648,13 +648,13 @@ def _bool_argument(value):
 
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
-    group.add_argument('--reference_mode', choices=('retarget', 'encode'), default='retarget')
-    group.add_argument('--reference_source_type', default='', help='Source cond species for an encode-mode NPY reference.')
+    group.add_argument('--reference_source_type', default='', help='Source cond species for an encoded NPY --reference_motion.')
     group.add_argument('--ref_cfg_scale', type=float, default=1.0)
     group.add_argument('--species_active', type=_bool_argument,
                        choices=(True, False), default=None,
                        help='Target per-joint species FiLM; true / false. '
-                            'Defaults to true. Cannot be supplied with reference_mode encode, '
+                            'Defaults to true. Cannot be supplied with an encoded '
+                            '--reference_motion (one without skip_timesteps / inpaint / outpaint), '
                             'which always disables species FiLM.')
     group.add_argument("--num_frames", default=None, type=int,
                        help="The number of frames in the sampled motion. Omit it to let "
@@ -682,7 +682,8 @@ def add_generate_options(parser):
                             "containing a single species (that species is used). Otherwise "
                             "required for pure-random generation. When both flags are provided "
                             "and the inferred type differs from this value, the reference motion "
-                            "is auto-retargeted to this skeleton.")
+                            "drives this skeleton through the motion encoder (no retargeting), "
+                            "or, with skip_timesteps / inpaint / outpaint, must be the same species.")
     group.add_argument("--sampling_method", default="ddpm", choices=["p", "ddpm", "ddim"],
                        help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (default). 'ddim' = DDIM. "
                             "Both cost the same at the same --sampling_steps. DDIM is deterministic "
@@ -696,11 +697,12 @@ def add_generate_options(parser):
     group.add_argument("--reference_motion", default=None, type=str,
                        help="Path to a reference motion .npy/.fbx/.glb/.gltf file. Non-NPY inputs are "
                            "preprocessed into the same 12-channel feature-space NPY used by training, then "
-                           "noised to an intermediate timestep (img2img-style). If --object_type is not given, "
-                           "it is inferred from the reference filename. If --object_type is given and differs "
-                           "from the reference's inferred type, the reference is auto-retargeted to the requested "
-                           "skeleton before noising. When filename inference is invalid, the target object_type "
-                           "is used as a fallback. "
+                           "then either ENCODED (default; the reference may be another species, the sample "
+                           "starts from noise and needs a --ref_encoder checkpoint) or EDITED (with "
+                           "--skip_timesteps / --inpaint_* / --outpaint: noised or clamped on the target "
+                           "skeleton, so the reference must be the same rig: a preprocessed .npy, or a .glb/.fbx whose own bind pose is its rest pose). If --object_type is "
+                           "not given, it is inferred from the reference filename. When filename inference "
+                           "is invalid, the target object_type is used as a fallback. "
                             "Omit for pure random generation.")
     group.add_argument("--skip_timesteps", default=None, type=int,
                        help="Number of timesteps to skip when using --reference_motion (img2img). Higher = more faithful to reference. "
@@ -812,18 +814,29 @@ def generate_args(argv=None):
         parser, argv=argv,
         preserve_cli_args=preserve_cli_args,
     )
-    if args.reference_mode == 'encode' and args.species_active is not None:
-        parser.error('--reference_mode encode cannot be combined with --species_active; '
+    encoded_reference = bool(args.reference_motion) and (
+        args.skip_timesteps is None and not args.outpaint
+        and not str(args.inpaint_joints or '').strip()
+        and not str(args.inpaint_frames or '').strip()
+    )
+    if encoded_reference and args.species_active is not None:
+        parser.error('an encoded --reference_motion cannot be combined with --species_active; '
                      'encode always disables species FiLM')
     if args.species_active is None:
-        args.species_active = args.reference_mode != 'encode'
+        args.species_active = not encoded_reference
     return args
 
 def process_new_skeleton_args():
     parser = ArgumentParser()
     group = parser.add_argument_group('process_new_skeleton')
-    group.add_argument("--tpos-path", required=True, type=str,
-                       help="An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base.")
+    group.add_argument("--tpos-path", default=None, type=str,
+                       help="An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base. "
+                            "Optional with --motion-path: the first motion file's own bind pose is used.")
+    group.add_argument("--motion-path", nargs='+', default=None, type=str,
+                       help="Animation FBX/GLB/GLTF file(s), or directories of them, of this skeleton. "
+                            "Each is encoded into motions/<object_type>_<action>.npy alongside cond.npy, on "
+                            "the --tpos-path rest pose (default: the first file's own bind pose), so a "
+                            "self-contained animation yields its cond and its feature clip in one run.")
     group.add_argument("--save-dir", required=True, type=str,
                        help="Output directory.")
     group.add_argument("--object-type", default=None, type=str,

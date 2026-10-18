@@ -33,14 +33,16 @@ diffusion timestep
   + action-label condition
 ```
 
-默认 `--reference_mode retarget` 的参考只在采样器侧用于：
+`--reference_motion` 有两种用法，由是否带 `--skip_timesteps` / `--inpaint_*` / `--outpaint` 区分。
+带这些参数时是编辑，参考只在采样器侧用于：
 
 - `skip_timesteps` 的 img2img 初始化；
 - 每步 clamp 已知区域的 inpainting；
-- clamp 已有帧、生成新增帧的 outpainting；
-- 必要时在采样前先 retarget 到目标骨架。
+- clamp 已有帧、生成新增帧的 outpainting。
 
-训练时启用 `--ref_encoder` 后，也可用 `--reference_mode encode`：参考在源骨架上进入独立的
+编辑在目标骨架上进行，参考必须是目标同一套骨架：已预处理的 `.npy`，或以文件自带 bind pose 为 rest pose 的 `.glb/.fbx`（骨架层级与目标不一致时报错），不做 retarget。
+
+不带这些参数时是 encode；训练时启用 `--ref_encoder` 后可用：参考在源骨架上进入独立的
 MotionEncoder，逐帧输出固定 K 个槽。每层 spatial 之后读取这些槽，共享 FFN 之后经过独立
 ref FFN；两个分支各有零初始化标量 gate。无参考时硬旁路，完整设计与验证边界见
 [reference_motion_encoder.md](reference_motion_encoder.md)。
@@ -456,17 +458,16 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 
 ## 9. 参考动作与编辑
 
-默认的 `--reference_mode retarget` 不把参考送入 decoder，用途为：
+编辑用法（带 `--skip_timesteps` / `--inpaint_*` / `--outpaint`）不把参考送入 decoder，参考必须与目标同物种，用途为：
 
 - plain reference generation：参考动作作为 `init_image`，从 `skip_timesteps` 指定的噪声等级
   开始 img2img；
 - inpainting：被编辑区域自由生成，已知区域在每一步投影回相应噪声等级的 reference；
-- outpainting：已有帧 clamp，新增帧从纯噪声生成；需要时使用两阶段流程；
-- cross-skeleton reference：先在采样前 retarget 到目标骨架特征空间，再进入上述流程。
+- outpainting：已有帧 clamp，新增帧从纯噪声生成；需要时使用两阶段流程。
 
 因此这些编辑能力不增加 AnyTop forward 的参数量。
 
-`--reference_mode encode` 要求从头训练的 `--ref_encoder` checkpoint（版本 31）。它不经过
+不带编辑参数的 `--reference_motion`（encode）要求从头训练的 `--ref_encoder` checkpoint（版本 31）。它不经过
 retarget，也不使用 img2img 初始化或 clamp：参考在自己的骨架上提取干净特征，经独立的
 64 宽、2 层 spatial/temporal encoder 和每帧 learned-query 池化，默认得到 `[B,T,2,8]`。
 编码器只读取 position/rotation 和 translation root 的 XZ velocity，不读取 species descriptor。

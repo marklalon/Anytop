@@ -379,7 +379,7 @@ v4 打戳集中在**唯一的落盘点** `_save_cond_with_tpose_sidecar` / `rege
 
 P0 阶段需要把所有「按裸名直接索引 cond」的写法改为走 `resolve_species_key`：
 
-- `sample/generate.py` 的 `_lookup_object_type_case_insensitive` / `_build_retarget_cond_dict`
+- `sample/generate.py` 的 `_lookup_object_type_case_insensitive` / `_build_source_cond_dict`
 - `eval/motion_quality/reference_bank.py` 的 `_resolve_lookup_key`
 - `tools/check_bone_length_drift.py`、`tools/restore_glb_from_npy.py`、`tools/simulate_corrupted_motion.py`、`tools/visualize_joint_name_embeddings.py`
 - `tests/` 中以 `cond['Horse']` / `cond['Dragon']` 等字面量取 entry 的用例

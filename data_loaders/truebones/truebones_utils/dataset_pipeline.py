@@ -756,6 +756,51 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     return object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, squared_positions_error, max_joints, tpose_reference_path
 
 
+def encode_motion_files_on_rest_pose(object_type, rest_pose_path, motion_paths, *, crop_enabled=False):
+    """Rest-pose cond plus the feature encoding of every motion file on it.
+
+    ``rest_pose_path`` supplies the bind/rest pose (it may be one of the motion
+    files: a self-contained animation carries its own bind pose). The species
+    transport root is resolved over ALL the clips, as dataset preprocessing does,
+    by folding wrapper roots until the carrier sits at joint zero, which is the
+    root InputProcess requires. Returns ``(cond, max_joints, tpose_reference_path,
+    results)`` where ``results`` is one encoded payload per motion file; the cond
+    holds the resolved ``translation_root_index`` and ``root_promote_depth``.
+    """
+    depth = 0
+    for _ in range(4):
+        cond, tp, _, _, _, scale, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
+            object_type, rest_pose_path, None, crop_enabled=crop_enabled, promote_root_depth=depth)
+        prepared = []
+        for path in motion_paths:
+            item = _prepare_motion_file_for_root_detection(
+                path, object_type, tp.offsets, tp.tpos_rots, scale, tp.orientation_quat,
+                crop_enabled=crop_enabled, prop_socket_names=tp.prop_socket_names,
+                end_site_names=tp.end_site_names, promote_root_depth=depth,
+            )
+            if item is None:
+                raise ValueError(f'Could not preprocess animation: {path}')
+            prepared.append(item)
+        root, _ = _select_species_translation_root(
+            object_type, [item['translation_root_index'] for item in prepared],
+            [item['chain_xz_travel'] for item in prepared])
+        if root == 0:
+            break
+        depth += root
+    else:
+        raise ValueError('Transport root did not converge')
+    results = []
+    for item in prepared:
+        encoded = _encode_prepared_motion_file(
+            item, object_type, max_joints, tp.offsets, tp.tpos_rots, scale, tp.orientation_quat, root)
+        if not encoded['results']:
+            raise ValueError(f"Feature extraction failed: {encoded['motion_errors']}")
+        results.append(encoded['results'][0])
+    cond['translation_root_index'] = root
+    cond['root_promote_depth'] = int(depth)
+    return cond, max_joints, tpose_reference_path, results
+
+
 def build_tpose_cond(*args, **kwargs):
     """Backward-compatible alias; cond is now built from the file bind/rest pose."""
     return _build_rest_pose_cond(*args, **kwargs)
@@ -1868,7 +1913,7 @@ def find_orphan_clips(dataset_dir=None, raw_data_dir=None, species_filter=None):
 
 
 def process_skeleton(object_name, face_joints, save_dir, tpose_path, reference_cond_path,
-                     crop_enabled=True):
+                     crop_enabled=True, motion_paths=None):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
@@ -1882,13 +1927,20 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, reference_c
     cond = dict()
     motion_metadata = {}
 
-    # Rest-pose only: generate cond.npy without motion file processing.
-    object_cond, max_joints, tpose_reference_path = _build_rest_pose_only_cond(
-        object_name,
-        tpose_path,
-        face_joints,
-        crop_enabled=crop_enabled,
-    )
+    encoded_motions = []
+    if motion_paths:
+        # Animation files: the species root is resolved over them and each is
+        # encoded on the rest pose of ``tpose_path`` (the file's own bind pose).
+        object_cond, max_joints, tpose_reference_path, encoded_motions = encode_motion_files_on_rest_pose(
+            object_name, tpose_path, list(motion_paths), crop_enabled=crop_enabled)
+    else:
+        # Rest-pose only: generate cond.npy without motion file processing.
+        object_cond, max_joints, tpose_reference_path = _build_rest_pose_only_cond(
+            object_name,
+            tpose_path,
+            face_joints,
+            crop_enabled=crop_enabled,
+        )
     # Rest-pose-only builds have no clips to calibrate the global
     # standardization stats from. Copy them from the trained checkpoint's cond
     # (reference_cond_path, required) so the cond is usable for inference;
@@ -1897,6 +1949,22 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, reference_c
         object_name, object_cond, reference_cond_path=reference_cond_path
     )
     cond[object_name] = object_cond
+    written_motions = []
+    for result in encoded_motions:
+        # Clips whose action names collide get a numeric suffix, so none overwrites another.
+        motion_name = f"{object_name}_{result['action']}.npy"
+        suffix = 1
+        while motion_name in written_motions:
+            suffix += 1
+            motion_name = f"{object_name}_{result['action']}_{suffix}.npy"
+        np.save(pjoin(save_dir, MOTION_DIR, motion_name), result['motion'].astype(np.float32))
+        written_motions.append(motion_name)
+        files_counter += 1
+        frames_counter += int(result['motion'].shape[0])
+    if written_motions:
+        objects_counter[object_name] = len(written_motions)
+        print(f"[process_skeleton] wrote {len(written_motions)} motion clip(s) to "
+              f"{pjoin(save_dir, MOTION_DIR)}: {', '.join(written_motions)}")
     # The checkpoint's cond already holds T5 vectors for its joint-name texts;
     # any text the new skeleton shares with it is reused, and a joint text it
     # never saw gets the blank name the model is trained to read as "unknown",
