@@ -1,8 +1,8 @@
 {
   "_comment": "Quick battery for train_tiny.bat.",
   "checkpoint": {
-    "RUN_NAME": "zoo_locomotion_tiny_v12",
-    "OUTPUT_DIR": "zoo_locomotion_tiny_v12_tiny"
+    "RUN_NAME": "zoo_locomotion_tiny_v14",
+    "OUTPUT_DIR": "zoo_locomotion_tiny_v14_tiny"
   },
   "tasks": [
     {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Buffalo", "--action_label", "run, forward"]},
@@ -35,6 +35,6 @@
     {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Parrot2", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Parrot_Fly.npy"], "eval_label": "fly, forward"},
     {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Eagle", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Giantbee_Fly.npy", "--ref_cfg_scale", "2"], "eval_label": "fly, forward"},
     {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Elephant", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Dog-2_Swimturn.npy", "--ref_cfg_scale", "2"], "eval_label": "swim, turn"},
-    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Cat", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Raptor2_Run.npy"], "eval_label": "run, forward"}
+    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Cat", "--reference_motion", "dataset/unitybundles/raw/KI_Human/Run01Forwards.glb"], "eval_label": "run, forward"}
   ]
 }
