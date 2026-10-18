@@ -204,6 +204,30 @@ def test_reference_dropout_keeps_fixed_rows_and_encodes_only_those(monkeypatch):
     assert not m._reference_condition(y, 4, 5, x.device)[1].any()
 
 
+def test_reference_rows_bypass_species_film(monkeypatch):
+    m = model(ref_cfg_drop_prob=0, species_joint_cond=True, species_cfg_drop_prob=0).eval()
+    x, y = inputs()
+    y['ref_active'][1] = False
+    y['species_active'] = torch.ones(2, dtype=torch.bool)
+    y['species_emb'] = torch.randn(2, 4)
+    seen = []
+    forward = m.input_process.forward
+    monkeypatch.setattr(m.input_process, 'forward',
+                        lambda *a, **k: seen.append(k['species_active'].clone()) or forward(*a, **k))
+    m(x, torch.zeros(2), y)
+    assert seen[0].tolist() == [False, True]
+
+
+def test_reference_rows_use_their_own_label_drop_prob():
+    m = model(ref_label_drop_prob=1, action_label_cfg_drop_prob=0).train()
+    ref_active = torch.tensor([True, False, True, False])
+    active = m._resolve_action_label_active(None, 4, 'cpu', ref_active)
+    assert active.tolist() == [False, True, False, True]
+    m = model(ref_label_drop_prob=0, action_label_cfg_drop_prob=1).train()
+    assert m._resolve_action_label_active(None, 4, 'cpu', ref_active).tolist() == [True, False, True, False]
+    assert m.eval()._resolve_action_label_active(None, 4, 'cpu', ref_active).all()
+
+
 def test_folded_reference_read_matches_explicit_attention():
     m = model(ref_cfg_drop_prob=0).eval()
     layer = m.seqTransDecoder.layers[0]
@@ -314,7 +338,7 @@ def test_reference_cfg_ignores_species_scale_only_when_disabled(use_text):
     inner = Echo()
     inner.ref_encoder = True
     inner.ref_cfg_drop_prob = .4
-    inner.action_label_cfg_drop_prob = .15
+    inner.ref_label_drop_prob = .5
     args = SimpleNamespace(species_active=False, species_cfg_scale=2.,
                            ref_cfg_scale=2., action_label_cfg_scale=3.)
     action = {'action_label': 'walk'} if use_text else None

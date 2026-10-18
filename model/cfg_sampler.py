@@ -95,7 +95,13 @@ class ClassifierFreeSpeciesModel(ClassifierFreeActionModel):
 
 
 class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
-    """Sequential ref/text composition, keeping target species identical in all passes."""
+    """Sequential ref/text composition.
+
+    The model bypasses the species FiLM on every reference-active row, so the
+    reference and full passes run with species off. The null-reference base pass
+    keeps whatever ``y['species_active']`` says; encode sets it False, which makes
+    species identical across all passes.
+    """
     def __init__(self, model, ref_scale=1.0, text_scale=1.0, use_text=False):
         super().__init__(model, ref_scale)
         if not math.isfinite(float(text_scale)) or float(text_scale) < 0:

@@ -267,6 +267,11 @@ class AnyTop(nn.Module):
         self.ref_cfg_drop_prob = float(kargs.get('ref_cfg_drop_prob', 0.4))
         if not 0 <= self.ref_cfg_drop_prob <= 1:
             raise ValueError('ref_cfg_drop_prob must be in [0, 1]')
+        # Action-label hard-drop probability for reference-active training rows;
+        # rows without a reference keep action_label_cfg_drop_prob.
+        self.ref_label_drop_prob = float(kargs.get('ref_label_drop_prob', 0.5))
+        if not 0 <= self.ref_label_drop_prob <= 1:
+            raise ValueError('ref_label_drop_prob must be in [0, 1]')
         self.motion_encoder = None
         if self.ref_encoder:
             from model.motion_encoder import MotionEncoder
@@ -627,13 +632,15 @@ class AnyTop(nn.Module):
             word_mask, slot_ids, SLOT_MODIFIER, self.modifier_slot_drop_prob, batch_size, device
         )
 
-    def _resolve_action_label_active(self, raw_action_label_active, batch_size, device):
+    def _resolve_action_label_active(self, raw_action_label_active, batch_size, device,
+                                     ref_active=None):
         """Per-sample CFG mask for the action condition (True == conditional).
 
         An explicit ``y['action_label_active']`` wins (used at inference to force
         the unconditional branch). Otherwise, training samples a Bernoulli keep
         per sample so the condition is hard-dropped with probability
-        ``action_label_cfg_drop_prob``; eval/inference keeps every sample.
+        ``action_label_cfg_drop_prob``, or ``ref_label_drop_prob`` on rows whose
+        reference is active; eval/inference keeps every sample.
         """
         if raw_action_label_active is not None:
             active = torch.as_tensor(raw_action_label_active, device=device, dtype=torch.bool).reshape(-1)
@@ -645,6 +652,10 @@ class AnyTop(nn.Module):
                     f"{active.numel()} for batch {batch_size}"
                 )
             return active
+        if self.training and ref_active is not None:
+            draw = torch.rand(batch_size, device=device)
+            return torch.where(ref_active, draw >= self.ref_label_drop_prob,
+                               draw >= self.action_label_cfg_drop_prob)
         if self.training and self.action_label_cfg_drop_prob > 0.0:
             return torch.rand(batch_size, device=device) >= self.action_label_cfg_drop_prob
         return torch.ones(batch_size, device=device, dtype=torch.bool)
@@ -671,7 +682,7 @@ class AnyTop(nn.Module):
             return torch.zeros(batch_size, device=device, dtype=torch.bool)
         return word_mask.any(dim=-1)
 
-    def _action_condition(self, y, batch_size, device, dtype):
+    def _action_condition(self, y, batch_size, device, dtype, ref_active=None):
         """``(channels [B, S*D], active [B])`` for the action condition, or ``None``.
 
         ``active`` folds together the CFG hard-drop mask and "does this row carry
@@ -701,18 +712,18 @@ class AnyTop(nn.Module):
                 self._assemble_action_slot_channels(word_ids, slot_ids, word_mask, dtype)
             )
         active = self._resolve_action_label_active(
-            y.get('action_label_active'), batch_size, device
+            y.get('action_label_active'), batch_size, device, ref_active
         )
         active = active & self._resolve_action_label_valid(
             y, batch_size, device, word_mask
         )
         return channels, active
 
-    def _build_action_label_token(self, y, batch_size, device, dtype):
+    def _build_action_label_token(self, y, batch_size, device, dtype, ref_active=None):
         """The action token added to the timestep embedding, or ``None`` when off."""
         if self.action_label_projection is None:
             return None
-        resolved = self._action_condition(y, batch_size, device, dtype)
+        resolved = self._action_condition(y, batch_size, device, dtype, ref_active)
         if resolved is None:
             return None
         channels, action_active = resolved
@@ -990,7 +1001,7 @@ class AnyTop(nn.Module):
         )
         timesteps_emb = timesteps_emb + run_in_fp32(
             self.resample_speed_projection, resample_speed_condition)
-        action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype)
+        action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype, ref_active)
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token
 
@@ -1001,6 +1012,10 @@ class AnyTop(nn.Module):
             self._resolve_species_active(y.get('species_active'), bs, x.device)
             if self.species_joint_cond else None
         )
+        # A reference supplies the motion content, so the target species FiLM is
+        # bypassed on every reference-active row, in training and at inference.
+        if species_active is not None and ref_active is not None:
+            species_active = species_active & ~ref_active
         # Per-joint validity for the whole-joint name dropout: joints_padding_mask is
         # the outer product valid[i]*valid[j] over max_joints+1 slots whose slot 0 is
         # the always-present leading token, so joint j lives at slot j+1 and the

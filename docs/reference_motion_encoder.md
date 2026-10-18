@@ -116,11 +116,12 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 ### 4.1 目标与 dropout
 
 - **编码器输入**：同一个 clip，干净的 x0（经过 §4.2 的增强）。**解码器目标**：同一个 clip 的原始版本。
-- 新增 `--ref_cfg_drop_prob`，对 ref 做硬丢弃，建议 0.3–0.5。与现有的 `--action_label_cfg_drop_prob` 和 `--species_cfg_drop_prob` 各自独立抽签。每个 batch 随机保留固定的 `B − round(B·p)` 行，编码器只对这些行前向（形状静态，可编译）；被丢弃的行被硬旁路，其 z 不会被读取。
+- 新增 `--ref_cfg_drop_prob`，对 ref 做硬丢弃，建议 0.3–0.5。参考生效的行：species FiLM 一律旁路（`species_active=False`），action_label 按 `--ref_label_drop_prob`（默认 0.5）丢弃；无参考的行仍按 `--action_label_cfg_drop_prob` 与 `--species_cfg_drop_prob` 抽签。每个 batch 随机保留固定的 `B − round(B·p)` 行，编码器只对这些行前向（形状静态，可编译）；被丢弃的行被硬旁路，其 z 不会被读取。
 - 共享主干不冻结、不对参考样本做 stop-gradient：两种模式共同更新共享参数；E、ref cross-attn 及其 gate 仅由参考激活样本训练。ref 丢弃时旁路参考子层。
 
 **理由**：
-- 独立 dropout 让「只有参考」「参考 + 文字」「只有文字」「无条件」四种组合都成为训练过的模式，推理时任选。
+- 训练分布对齐推理：encode 固定关闭 species，所以「参考 + species」不训练；独立抽签时它占约一半样本，而 encode 的默认组合（参考、无 label、无 species）只占约 2%。「只有参考」「参考 + 文字」「只有文字」「无条件」四种组合仍都被训练，推理时任选。
+- 自重建中参考、label 与 descriptor 来自同一 clip，训练时并无冲突；旁路 species 也不阻止 z 编码源骨架身份（E 本来不读 descriptor），它只让 body plan / 步态由 z 与目标骨架结构提供。
 - ref drop 不能太低。z 携带的信息远比 label 丰富，有 z 时 label 通路几乎拿不到梯度。label 通路要靠 z 缺席的样本继续学习，纯文本质量取决于此。
 
 ### 4.2 编码器侧增强（只作用于编码器输入，目标永不改变）
@@ -183,7 +184,7 @@ out = x0(∅, ∅)
 
 **训练时开启 species conditioning，干净迁移推理时关闭 species 调制。** 两个阶段使用不同开关：
 
-- **训练**：传入 `--species_joint_cond`，构造并训练 species FiLM；保持 `species_cfg_drop_prob > 0`（默认 0.15），让模型同时学习调制开启和硬旁路两种状态。
+- **训练**：传入 `--species_joint_cond`，构造并训练 species FiLM；保持 `species_cfg_drop_prob > 0`（默认 0.15），让模型同时学习调制开启和硬旁路两种状态。参考生效的行由模型强制旁路 species FiLM（§4.1），species FiLM 只由无参考的行训练。
 - **推理**：加载上述 checkpoint，保留其 `species_joint_cond=True`；encode（不带编辑参数的 `--reference_motion`）固定关闭 species FiLM，让参考提供运动内容。encode 与 `--species_active` 参数互斥，传入 true 或 false 都会报错；无需另传关闭参数。不要把 checkpoint 的 `species_joint_cond` 改为 False。
 - action_label 不给；
 - 编辑与无参考生成仍默认 `species_active=True`，可用 `--species_active true/false` 控制。

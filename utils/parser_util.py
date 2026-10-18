@@ -211,6 +211,10 @@ def add_model_options(parser):
     group.add_argument('--ref_width', type=int, default=64)
     group.add_argument('--ref_layers', type=int, default=2)
     group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4)
+    group.add_argument('--ref_label_drop_prob', type=float, default=0.5,
+                       help='Action-label CFG drop probability on reference-active training rows '
+                            '(rows without a reference use --action_label_cfg_drop_prob). '
+                            'Reference-active rows always bypass the species FiLM.')
     group.add_argument('--ref_leaf_drop_prob', type=float, default=0.2)
     group.add_argument('--ref_bone_length_aug_prob', type=float, default=0.2)
     group.add_argument('--ref_bone_length_aug', type=float, default=0.1)
