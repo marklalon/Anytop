@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import types
 import unittest
+from unittest.mock import Mock
 from pathlib import Path
 
 import torch
@@ -252,6 +253,22 @@ class SpeciesHybridTest(unittest.TestCase):
             _wrap_species_cfg(_make_model(species_joint_cond=True), args),
             ClassifierFreeSpeciesModel,
         )
+
+    def test_disabled_species_cfg_preserves_forward_count(self):
+        from sample.conditioning import _wrap_species_cfg
+        from model.cfg_sampler import ClassifierFreeActionModel
+        for scale in (0.0, 2.0, float('nan')):
+            for action_cfg in (False, True):
+                with self.subTest(scale=scale, action_cfg=action_cfg):
+                    inner = Mock(return_value=torch.ones(2, 1, 1, 1))
+                    model = ClassifierFreeActionModel(inner, 2.0) if action_cfg else inner
+                    args = types.SimpleNamespace(species_active=False, species_cfg_scale=scale,
+                                                 species_cfg_drop_prob=0.0)
+                    wrapped = _wrap_species_cfg(model, args)
+                    self.assertIs(wrapped, model)
+                    y = {'species_active': torch.zeros(2, dtype=torch.bool)}
+                    wrapped(torch.zeros(2, 1, 1, 1), torch.zeros(2), y=y)
+                    self.assertEqual(inner.call_count, 2 if action_cfg else 1)
 
 
 if __name__ == '__main__':

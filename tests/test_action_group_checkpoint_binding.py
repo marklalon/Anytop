@@ -57,6 +57,28 @@ def _generate_args(model_path, *extra):
     return generate_args(argv=['--model_path', model_path, *extra])
 
 
+class SpeciesDefaultFollowsReferenceMode(unittest.TestCase):
+
+    def test_defaults_and_explicit_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = _checkpoint_dir(tmp, species_active=True)
+            self.assertIs(_generate_args(model_path).species_active, True)
+            for mode in ('retarget', 'encode'):
+                for override in (None, 'true', 'false'):
+                    with self.subTest(mode=mode, override=override):
+                        flags = ['--reference_mode', mode]
+                        if override is not None:
+                            flags += ['--species_active', override]
+                        if mode == 'encode' and override is not None:
+                            with self.assertRaises(SystemExit) as error:
+                                _generate_args(model_path, *flags)
+                            self.assertEqual(error.exception.code, 2)
+                            continue
+                        args = _generate_args(model_path, *flags)
+                        expected = mode != 'encode' if override is None else override == 'true'
+                        self.assertIs(args.species_active, expected)
+
+
 class ActionGroupIsBoundToTheCheckpoint(unittest.TestCase):
 
     def test_parser_groups_match_the_dataset_definition(self):

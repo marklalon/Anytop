@@ -177,12 +177,19 @@ out = x0(∅, ∅)
 - 实现为一个新 wrapper，不与现有 action / species wrapper 嵌套，避免前向次数相乘。
 
 ### 5.4 推荐默认（干净迁移）
+
+**训练时开启 species conditioning，干净迁移推理时关闭 species 调制。** 两个阶段使用不同开关：
+
+- **训练**：传入 `--species_joint_cond`，构造并训练 species FiLM；保持 `species_cfg_drop_prob > 0`（默认 0.15），让模型同时学习调制开启和硬旁路两种状态。
+- **推理**：加载上述 checkpoint，保留其 `species_joint_cond=True`；`--reference_mode encode` 固定关闭 species FiLM，让参考提供运动内容。encode 与 `--species_active` 参数互斥，传入 true 或 false 都会报错；无需另传关闭参数。不要把 checkpoint 的 `species_joint_cond` 改为 False。
 - action_label 不给；
-- 目标解码器保持现有 `species_joint_cond=True`，默认 `species_active=True`，使用目标物种 descriptor。
+- `--reference_mode retarget`（默认模式）仍默认 `species_active=True`，可用 `--species_active true/false` 控制。
 
 **当前实现契约**：全局 species FiLM 已移除，唯一的 species FiLM 是 `InputProcess.species_film_j`。它读取关节名 embedding 与 species descriptor 的拼接；`species_joint_cond` 控制是否构造/启用模块，`species_active` 控制每个样本是否应用整个调制。`species_active=False` 会旁路全部 per-joint 调制，保留原始关节名、rest pose 和 structural channel；不存在「关闭全局 FiLM，同时保持 per-joint FiLM」这一组合。
 
-**消融而非默认关闭**：目标 descriptor 可能影响步态先验，但影响的方向与程度尚待验证。§6 固定参考、目标骨架与随机种子，对比 `species_active=True/False`；后者利用现有 `species_cfg_drop_prob` 训练的硬旁路。CFG 的所有分支保持同一 species 状态，不嵌套 species guidance。只有交换评测证明关闭更好，才针对对应场景推荐关闭；不新增全局 species 分支。参考编码器 E 的输入仍按 §3.1，不读取 descriptor。
+**推荐依据与验证边界**：目标 descriptor 包含 body plan 和步态信息，可能与参考中的直立姿态、支撑方式等运动内容冲突。关闭是减少条件冲突的实验起点，尚未证明迁移质量更好。encode 的正式推理入口固定关闭；未来若做开关对照，应使用独立实验入口。旁路应由非零 `species_cfg_drop_prob` 的训练覆盖。关闭 FiLM 不会消除关节名、几何及共享主干已有的运动先验。参考编码器 E 的输入仍按 §3.1，不读取 descriptor。
+
+**CFG 行为**：encode 的所有 reference CFG 分支固定关闭 species，不嵌套 species guidance。encode 模式或 retarget 下 `--species_active false` 时忽略 `species_cfg_scale`，不构造 species CFG wrapper，不增加 species 前向，也不检查 species CFG 的训练前提。关闭 species 不改变 reference/text CFG 本身的 2 / 3 次前向。
 
 ---
 
@@ -254,7 +261,7 @@ out = x0(∅, ∅)
   使用 checkpoint 的全局统计和关节名向量缓存，未知关节名置空，不加载 T5，不经过 retarget。
   `--reference_source_type` 可显式指定 NPY 源骨架；encode 不会静默把未知源当成目标骨架。
 - `--reference_mode retarget` 仍是默认；encode 使用独立的 2 / 3 次顺序 CFG，species 状态固定。
-  `--species_active true/false` 可用于目标 FiLM 消融，默认 true。
+  encode 固定关闭目标 species FiLM，且与 `--species_active` 参数互斥；retarget 默认开启，可用 `--species_active true/false` 控制。
 - CKPT_VERSION 从 30 提升到 31；不对旧模型做 warm start。训练打印完整参数预算。
   验证同时计算同噪声、同 timestep 的 ref-null 和 reference loss，前者保留原 `Val/*` 名称，
   后者使用 `Val/reference_*`。

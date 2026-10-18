@@ -215,7 +215,7 @@ def _wrap_reference_cfg(model, args, action_condition):
     from model.cfg_sampler import ClassifierFreeReferenceModel
     if not getattr(unwrap_anytop_model(model), 'ref_encoder', False):
         raise ValueError('reference_mode encode requires a checkpoint trained with --ref_encoder')
-    if float(getattr(args, 'species_cfg_scale', 1.0)) != 1.0:
+    if getattr(args, 'species_active', True) and float(getattr(args, 'species_cfg_scale', 1.0)) != 1.0:
         raise ValueError('Reference CFG keeps species fixed; species_cfg_scale must be 1')
     if float(getattr(model, 'ref_cfg_drop_prob', 0.0)) <= 0:
         raise ValueError('Reference CFG requires training with ref_cfg_drop_prob > 0')
@@ -229,6 +229,10 @@ def _wrap_reference_cfg(model, args, action_condition):
 
 def _wrap_species_cfg(model, args):
     """Guide the species FiLM descriptor, leaving structural channels active."""
+    # Both CFG branches would use the same species bypass. Keep any existing
+    # action wrapper, without adding a redundant species forward or checks.
+    if not getattr(args, 'species_active', True):
+        return model
     raw_scale = getattr(args, 'species_cfg_scale', None)
     scale = 1.0 if raw_scale is None else float(raw_scale)
     if not math.isfinite(scale) or scale < 0.0:

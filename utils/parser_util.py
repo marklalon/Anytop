@@ -651,8 +651,10 @@ def add_generate_options(parser):
     group.add_argument('--reference_source_type', default='', help='Source cond species for an encode-mode NPY reference.')
     group.add_argument('--ref_cfg_scale', type=float, default=1.0)
     group.add_argument('--species_active', type=_bool_argument,
-                       choices=(True, False), default=True,
-                       help='Target per-joint species FiLM ablation; true / false.')
+                       choices=(True, False), default=None,
+                       help='Target per-joint species FiLM; true / false. '
+                            'Defaults to true. Cannot be supplied with reference_mode encode, '
+                            'which always disables species FiLM.')
     group.add_argument("--num_frames", default=None, type=int,
                        help="The number of frames in the sampled motion. Omit it to let "
                             "generation pick one, in this priority order: --reference_motion's "
@@ -777,6 +779,7 @@ def add_generate_options(parser):
                             "droppable FiLM path. 1.0 (default) uses one forward; any other "
                             "scale uses two (four when action-label CFG is also enabled). "
                             "The unconditional pass bypasses per-joint species FiLM. "
+                            "Ignored when --species_active false, with no extra species forwards. "
                             "Requires a checkpoint trained with --species_joint_cond and non-zero "
                             "--species_cfg_drop_prob. Uses --species_tags when supplied, otherwise "
                             "the target species' baked descriptor.")
@@ -808,6 +811,11 @@ def generate_args(argv=None):
         parser, argv=argv,
         preserve_cli_args=preserve_cli_args,
     )
+    if args.reference_mode == 'encode' and args.species_active is not None:
+        parser.error('--reference_mode encode cannot be combined with --species_active; '
+                     'encode always disables species FiLM')
+    if args.species_active is None:
+        args.species_active = args.reference_mode != 'encode'
     return args
 
 def process_new_skeleton_args():

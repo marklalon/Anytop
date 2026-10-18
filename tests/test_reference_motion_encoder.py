@@ -177,6 +177,28 @@ def test_cfg_algebra_sequential_pass_count_and_species_state(use_text, expected,
     assert 'action_label_active' not in y
 
 
+@pytest.mark.parametrize('use_text', [False, True])
+def test_reference_cfg_ignores_species_scale_only_when_disabled(use_text):
+    from sample.conditioning import _wrap_reference_cfg
+    inner = Echo()
+    inner.ref_encoder = True
+    inner.ref_cfg_drop_prob = .4
+    inner.action_label_cfg_drop_prob = .15
+    args = SimpleNamespace(species_active=False, species_cfg_scale=2.,
+                           ref_cfg_scale=2., action_label_cfg_scale=3.)
+    action = {'action_label': 'walk'} if use_text else None
+    wrapper = _wrap_reference_cfg(inner, args, action)
+    species = torch.zeros(2, dtype=torch.bool)
+    wrapper(torch.zeros(2, 1, 1, 1), torch.zeros(2),
+            y=dict(ref_active=torch.ones(2, dtype=torch.bool), species_active=species,
+                   action_label_active=torch.ones(2, dtype=torch.bool)))
+    assert len(inner.calls) == (3 if use_text else 2)
+    assert all(c[2] is species for c in inner.calls)
+    args.species_active = True
+    with pytest.raises(ValueError, match='species_cfg_scale must be 1'):
+        _wrap_reference_cfg(inner, args, action)
+
+
 def test_augmentation_has_independent_cond_and_target_is_untouched():
     motion, cond, metadata = fixture()
     before_motion, before_cond = motion.copy(), copy.deepcopy(cond)
