@@ -32,6 +32,16 @@ pushd "%SCRIPT_DIR%"
 	--action_adaln_bottleneck 128 ^
 	--species_film_bottleneck 128 ^
 	--species_joint_cond ^
+	--ref_encoder ^
+	--ref_slots 4 ^
+	--ref_dim 8 ^
+	--ref_width 128 ^
+	--ref_layers 2 ^
+	--ref_cfg_drop_prob 0.5 ^
+	--ref_leaf_drop_prob 0.1 ^
+	--ref_bone_length_aug_prob 0.3 ^
+	--ref_bone_length_aug 0.2 ^
+	--ref_joint_name_drop_prob 0.15 ^
 	--leaf_drop_prob 0.2 ^
 	--bone_length_aug_prob 0.3 ^
 	--bone_length_aug 0.2 ^
@@ -41,7 +51,7 @@ pushd "%SCRIPT_DIR%"
 	--cross_limb_last_n 4 ^
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
-	--batch_size 20 ^
+	--batch_size 16 ^
 	--lr 1e-4 ^
 	--lr_final 3e-5 ^
 	--lr_decay_start 0 ^
@@ -51,6 +61,7 @@ pushd "%SCRIPT_DIR%"
 	--num_steps 300000 ^
 	--dropout_prob 0.1 ^
 	--action_label_cfg_drop_prob 0.2 ^
+	--species_cfg_drop_prob 0.2 ^
 	--joint_mask_prob 0.3 ^
 	--joint_mask_budget 0.15 ^
 	--unreliable_mask_drop_prob 0.2 ^
@@ -63,7 +74,7 @@ pushd "%SCRIPT_DIR%"
 	--lambda_loop_wrap 0.04 ^
 	--lambda_loop_root_closure 0.04 ^
 	--lambda_root_vel 0.1 ^
-	--lambda_dpos 0.04 ^
+	--lambda_dpos 0.05 ^
 	--lambda_geo 0.1 ^
 	--lambda_bone 0.06 ^
 	--motion_cache_size 32768 ^
