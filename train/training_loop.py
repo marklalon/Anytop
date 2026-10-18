@@ -370,6 +370,9 @@ class TrainLoop:
             pass
         torch.set_float32_matmul_precision('high')
         try:
+            from utils.torch_compile_compat import fix_windows_triton_launcher
+            if fix_windows_triton_launcher():
+                logger.log("Applied Windows Triton launcher C11 initializer compatibility fix.")
             compile_kwargs = {'dynamic': False}
             if mode and mode != 'default':
                 compile_kwargs['mode'] = mode
