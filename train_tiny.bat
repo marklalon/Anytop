@@ -5,7 +5,7 @@ REM Usage: train_tiny.bat [run_name]
 REM See docs/tiny_locomotion_baseline.md for the fixed ablation protocol.
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
-set "RUN_NAME=zoo_locomotion_tiny_v11"
+set "RUN_NAME=zoo_locomotion_tiny_v12"
 if not "%~1"=="" set "RUN_NAME=%~1"
 
 if not exist "%PYTHON_EXE%" (
@@ -47,12 +47,12 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --species_film_bottleneck 64 ^
     --species_joint_cond ^
     --ref_encoder ^
-    --ref_slots 2 ^
+    --ref_slots 4 ^
     --ref_dim 8 ^
     --ref_width 64 ^
     --ref_layers 2 ^
     --ref_ff_dim 256 ^
-    --ref_cfg_drop_prob 0.4 ^
+    --ref_cfg_drop_prob 0.5 ^
     --ref_leaf_drop_prob 0.2 ^
     --ref_bone_length_aug_prob 0.3 ^
     --ref_bone_length_aug 0.2 ^
