@@ -326,6 +326,8 @@ def add_model_options(parser):
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
+    group.add_argument("--cross_limb", default=1, type=int, choices=[0, 1],
+                       help="Enable cross-limb temporal blocks (1 = on, 0 = off).")
     group.add_argument("--cross_limb_latents", default=8, type=int,
                        help="Number of latent tokens K in the cross-limb temporal block.")
     group.add_argument("--cross_limb_dim", default=64, type=int,

@@ -1,8 +1,8 @@
 {
   "_comment": "Quick battery for train_tiny.bat. Basic = zoo species/action probes (Buffalo jump is a cross-species transfer probe); T1 = actions absent from the target species zoo locomotion clips (species-level novelty); T2 = species-tag overrides, including Dog restyled as Biped,Trotting. Tasks omit seed and num_frames and use generation defaults / automatic lengths. Harness supplies batch_size=4 and fp32. Score with --dataset_root dataset/truebones/zoo/truebones_processed. Training-corpus diagnostics and species-style stress tests are not held-out accuracy. Outpaint without num_frames keeps the reference length and does not test extension. meta is descriptive and ignored by the harness.",
   "checkpoint": {
-    "RUN_NAME": "zoo_locomotion_tiny_v6",  
-    "OUTPUT_DIR": "zoo_locomotion_tiny_v6_tiny"
+    "RUN_NAME": "zoo_locomotion_tiny_v7",  
+    "OUTPUT_DIR": "zoo_locomotion_tiny_v7_tiny"
   },
   "tasks": [
     {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Buffalo", "--action_label", "run, forward"]},
