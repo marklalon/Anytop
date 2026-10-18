@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 31
+CKPT_VERSION = 32
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -210,7 +210,6 @@ def add_model_options(parser):
     group.add_argument('--ref_dim', type=int, default=8)
     group.add_argument('--ref_width', type=int, default=64)
     group.add_argument('--ref_layers', type=int, default=2)
-    group.add_argument('--ref_ff_dim', type=int, default=256)
     group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4)
     group.add_argument('--ref_leaf_drop_prob', type=float, default=0.2)
     group.add_argument('--ref_bone_length_aug_prob', type=float, default=0.2)

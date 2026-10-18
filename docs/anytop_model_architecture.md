@@ -43,8 +43,8 @@ diffusion timestep
 编辑在目标骨架上进行，参考必须是目标同一套骨架：已预处理的 `.npy`，或以文件自带 bind pose 为 rest pose 的 `.glb/.fbx`（骨架层级与目标不一致时报错），不做 retarget。
 
 不带这些参数时是 encode；训练时启用 `--ref_encoder` 后可用：参考在源骨架上进入独立的
-MotionEncoder，逐帧输出固定 K 个槽。每层 spatial 之后读取这些槽，共享 FFN 之后经过独立
-ref FFN；两个分支各有零初始化标量 gate。无参考时硬旁路，完整设计与验证边界见
+MotionEncoder，逐帧输出固定 K 个槽。每层 spatial 之后读取这些槽，经独立的零初始化标量
+gate 加入残差；不设参考专用 FFN。无参考时硬旁路，完整设计与验证边界见
 [reference_motion_encoder.md](reference_motion_encoder.md)。
 
 基础训练目标是 `MSE(predicted_x0, target_x0)`，不是噪声预测。temporal attention 是全窗口
@@ -467,14 +467,15 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 
 因此这些编辑能力不增加 AnyTop forward 的参数量。
 
-不带编辑参数的 `--reference_motion`（encode）要求从头训练的 `--ref_encoder` checkpoint（版本 31）。它不经过
+不带编辑参数的 `--reference_motion`（encode）要求从头训练的 `--ref_encoder` checkpoint（版本 32）。它不经过
 retarget，也不使用 img2img 初始化或 clamp：参考在自己的骨架上提取干净特征，经独立的
 64 宽、2 层 spatial/temporal encoder 和每帧 learned-query 池化，默认得到 `[B,T,2,8]`。
-编码器只读取 position/rotation 和 translation root 的 XZ velocity，不读取 species descriptor。
+编码器读取 position/rotation、translation root 的 XZ velocity，以及每个关节在骨架规范化
+静止朝向系下的父→子单位骨骼方向 `ref_bone_dir`（rest 行 + 逐帧行）；不读取 species descriptor。
 目标 decoder 仍保留自己的骨架条件和 per-joint species FiLM。
 
-参考模型的层内顺序为 `spatial → ref cross-attn → temporal → cross-limb → FFN → ref FFN`。
-参考分支不调制 rest token；两处残差都按 `ref_active` 屏蔽，含 bias。训练只增强编码器副本；
+参考模型的层内顺序为 `spatial → ref cross-attn → temporal → cross-limb → FFN`。
+参考分支不调制 rest token；残差按 `ref_active` 屏蔽，含 bias。训练只增强编码器副本；
 `ref_cfg_drop_prob` 独立于 action/species dropout。验证保留原 `Val/l_simple` 为 ref-null，
 另记 `Val/reference_l_simple`，两者使用相同目标、timestep 和 noise。
 

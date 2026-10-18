@@ -183,7 +183,13 @@ def rebuild_derived_velocity(motion, *, is_loop, step_scale=1.0):
     return out
 
 
-def _rest_pos_from_cond(cond_entry, *, like=None):
+def rest_pos_from_cond(cond_entry, *, like=None):
+    """The skeleton's physical rest-pose positions, ``[J, 3]``.
+
+    Public: the reference encoder's bone-direction channel reads this same
+    position channel, so it is part of the feature contract, not an internal
+    helper.
+    """
     if cond_entry is None:
         raise KeyError("cond_entry is required for canonical feature conversion.")
 
@@ -334,7 +340,7 @@ def _length_scale_from_cond(cond_entry, *, like=None):
         return L
     n_joints = cond_entry.get("n_joints") if hasattr(cond_entry, "get") else None
     return _length_scale_from_rest(
-        _rest_pos_from_cond(cond_entry, like=like), n_joints=n_joints
+        rest_pos_from_cond(cond_entry, like=like), n_joints=n_joints
     )
 
 
@@ -543,7 +549,7 @@ def _apply_global_stats(feature, cond_entry, inverse: bool):
 
 
 def _apply_rest_pos(feature, cond_entry, sign: float):
-    rest_pos = _rest_pos_from_cond(cond_entry, like=feature)
+    rest_pos = rest_pos_from_cond(cond_entry, like=feature)
     out = feature.clone() if _is_torch_tensor(feature) else np.asarray(feature, dtype=np.float32).copy()
 
     if _is_torch_tensor(out):

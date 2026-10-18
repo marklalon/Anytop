@@ -3,7 +3,7 @@ import numpy as np
 import torch
 
 from data_loaders.truebones.truebones_utils.canonical_features import (
-    build_canonical_rest_feature, physical_hml_to_canonical,
+    build_canonical_rest_feature, physical_hml_to_canonical, rest_pos_from_cond,
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import build_joint_struct_features
 
@@ -32,8 +32,51 @@ def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True):
     prob = getattr(opt, 'ref_joint_name_drop_prob', 0.0) if augment else 0.0
     if prob:
         names[np.array([random.random() < prob for _ in names])] = 0
+    return reference_sample(motion, cond, names)
+
+
+# A bone shorter than this fraction of the rig's longest rest bone is a
+# coincident helper joint; its direction is noise, so it reads as zero.
+BONE_DIRECTION_MIN_REST_FRACTION = 1e-3
+
+
+def bone_directions(positions, parents, rest_positions):
+    """``[T + 1, J, 3]`` unit parent->child directions; row 0 is the rest pose.
+
+    Physical positions sit in the skeleton-canonicalized rest-facing frame
+    (every rest faces +Z; per-frame root yaw is not removed) with absolute
+    height, so a direction means the same world direction on every skeleton
+    ("points up", "points back"), unlike the rest-centered position residual or
+    the local rotation. Roots and coincident joints are zero.
+    """
+    positions = np.concatenate([np.asarray(rest_positions, np.float32)[None],
+                                np.asarray(positions, np.float32)], axis=0)
+    parents = np.asarray(parents)
+    out = np.zeros_like(positions)
+    child = np.flatnonzero(parents >= 0)
+    if not len(child):
+        return out
+    vec = positions[:, child] - positions[:, parents[child]]
+    norm = np.linalg.norm(vec, axis=-1, keepdims=True)
+    rest_norm = norm[0, :, 0]
+    keep = rest_norm > BONE_DIRECTION_MIN_REST_FRACTION * max(float(rest_norm.max()), 1e-12)
+    # Non-finite positions are tolerated by the ``feats`` path (nan_to_num), so
+    # they must not leave a NaN here: inf/inf in the divide is NaN.
+    with np.errstate(invalid='ignore', over='ignore'):
+        unit = np.divide(vec, norm, out=np.zeros_like(vec), where=norm > 1e-12)
+        out[:, child] = unit * keep[None, :, None]
+    return np.nan_to_num(out)
+
+
+def reference_sample(motion, cond, names):
+    """One encoder input from physical features on their own skeleton.
+
+    The single builder for both the loader and generation, so the two never
+    hand the encoder differently derived channels.
+    """
     return {
         'feats': np.nan_to_num(physical_hml_to_canonical(motion, cond)).astype(np.float32),
+        'bone_dir': bone_directions(motion[..., :3], cond['parents'], rest_pos_from_cond(cond)),
         'rest_pose': build_canonical_rest_feature(cond),
         'joints_names_embs': names,
         'joint_struct': build_joint_struct_features(cond),
@@ -51,6 +94,7 @@ def collate_reference(samples, motion, names, joint_struct):
     batch, joints, feats, frames = motion.shape
     result = {
         'ref_feats': torch.zeros_like(motion),
+        'ref_bone_dir': motion.new_zeros(batch, joints, 3, frames + 1),
         'ref_mask': torch.zeros(batch, joints, dtype=torch.bool, device=motion.device),
         'ref_active': torch.zeros(batch, dtype=torch.bool, device=motion.device),
         'ref_rest_pose': motion.new_zeros(batch, joints, feats),
@@ -69,6 +113,13 @@ def collate_reference(samples, motion, names, joint_struct):
         if not 0 < count <= joints:
             raise ValueError('Reference joints exceed their source canvas / loader bucket')
         result['ref_feats'][i, :count] = data.permute(1, 2, 0)
+        bone_dir = torch.as_tensor(sample['bone_dir'], dtype=motion.dtype, device=motion.device)
+        if bone_dir.shape != (frames + 1, count, 3):
+            raise ValueError(
+                'Reference bone directions must have shape [frames + 1, source joints, 3], '
+                f'got {tuple(bone_dir.shape)} for {frames} frames and {count} joints'
+            )
+        result['ref_bone_dir'][i, :count] = bone_dir.permute(1, 2, 0)
         result['ref_mask'][i, :count] = True
         result['ref_active'][i] = True
         for key in ('rest_pose', 'joints_names_embs', 'joint_struct'):

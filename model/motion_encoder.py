@@ -22,6 +22,9 @@ class MotionEncoder(nn.Module):
         self.slots, self.ref_dim = slots, ref_dim
         self.input_process = InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS),
                                           width, t5_out_dim, dropout_prob=dropout)
+        # Facing-frame bone directions, one embedding for rest and motion rows:
+        # the pose channel whose meaning is shared across skeletons.
+        self.bone_dir_embedding = nn.Linear(3, width)
         self.decoder = GraphMotionDecoder(
             GraphMotionDecoderLayer(width, heads, width * 4, dropout, 'gelu'),
             layers, cross_limb=False,
@@ -46,6 +49,8 @@ class MotionEncoder(nn.Module):
             feats, y['ref_rest_pose'].unsqueeze(0), y['ref_joints_names_embs'],
             joint_valid=valid, joint_struct=y['ref_joint_struct'],
         )
+        bone_dir = y['ref_bone_dir'].masked_fill(~valid[:, :, None, None], 0)
+        tokens = tokens + self.bone_dir_embedding(bone_dir.permute(3, 0, 1, 2))
         tokens = self.decoder(
             tokens, tokens.new_zeros(batch, tokens.shape[-1]), None,
             tgt_key_padding_mask=~safe_valid,

@@ -271,10 +271,7 @@ class AnyTop(nn.Module):
         if self.ref_encoder:
             from model.motion_encoder import MotionEncoder
             ref_dim = int(kargs.get('ref_dim', 8))
-            ref_ff_dim = int(kargs.get('ref_ff_dim', 256))
             ref_width = int(kargs.get('ref_width', 64))
-            if ref_ff_dim < 1:
-                raise ValueError('ref_ff_dim must be positive')
             if ref_width >= self.latent_dim:
                 raise ValueError('ref_width must be smaller than the shared decoder latent_dim')
             self.motion_encoder = MotionEncoder(
@@ -283,7 +280,7 @@ class AnyTop(nn.Module):
                 dropout=self.dropout,
             )
             for layer in self.seqTransDecoder.layers:
-                layer.enable_reference(ref_dim, ref_ff_dim)
+                layer.enable_reference(ref_dim)
 
     def reference_parameter_budget(self):
         encoder = sum(p.numel() for p in self.motion_encoder.parameters()) if self.motion_encoder else 0

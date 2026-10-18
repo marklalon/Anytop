@@ -161,6 +161,7 @@ def _prepare_img2img_reference_bundle(
     ref_motion = ref_tensor.unsqueeze(0).expand(batch_size, -1, -1, -1)
     return {
         'reference_motion': ref_motion,
+        'reference_physical': ref_raw,
         'output_frame_count': output_frame_count,
         'loaded_reference_frame_count': loaded_reference_frame_count,
         'reference_source_frame_count': reference_source_frame_count,
@@ -221,9 +222,8 @@ def _extract_edit_reference(reference_motion_path, target_cond, target_type,
 def _prepare_encoder_reference_bundle(features, source_cond, *, batch_size, n_frames,
                                       visible_frames, min_length=20):
     """Source features use the existing window resampling rule on their own rig."""
-    from data_loaders.reference import collate_reference
-    from data_loaders.truebones.truebones_utils.canonical_features import build_canonical_rest_feature
-    from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM, build_joint_struct_features
+    from data_loaders.reference import collate_reference, reference_sample
+    from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
     if features.ndim != 3 or features.shape[1] != len(source_cond['parents']):
         raise ValueError('Reference features do not match the source skeleton')
     if int(source_cond.get('translation_root_index', 0)) != 0:
@@ -238,14 +238,8 @@ def _prepare_encoder_reference_bundle(features, source_cond, *, batch_size, n_fr
         requested_visible_frame_count=visible_frames, min_length=min_length,
         preloaded_features=features,
     )
-    sample = {
-        'feats': bundle['reference_motion'][0].permute(2, 0, 1).numpy(),
-        'rest_pose': build_canonical_rest_feature(source_cond),
-        'joints_names_embs': source_cond['joints_names_embs'],
-        'joint_struct': build_joint_struct_features(source_cond),
-        'graph_dist': source_cond['joints_graph_dist'],
-        'joints_relations': source_cond['joint_relations'],
-    }
+    sample = reference_sample(bundle['reference_physical'], source_cond,
+                              source_cond['joints_names_embs'])
     canvas = bundle['reference_motion'].expand(batch_size, -1, -1, -1)
     return collate_reference(
         [sample] * batch_size, canvas,

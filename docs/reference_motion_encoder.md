@@ -1,6 +1,6 @@
 # 参考动作编码器：免 retarget 的跨物种动作迁移
 
-> 状态：首版已实现，已完成四组 100 步 GPU 工程验证；迁移质量尚未验收，详见 §11。
+> 状态：第二版已实现（骨骼方向输入、去掉参考专用 FFN，CKPT 32），需从头重训；首版记录见 §11，改动依据见 §12。
 > [anytop_model_architecture.md](anytop_model_architecture.md) §9 保留同物种的 img2img / inpainting / outpainting 编辑，
 > 本文的 encode 路径与其并存。§10 是实现前的方案核验记录。
 
@@ -70,6 +70,10 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 
 沿用当前模型通道契约：普通关节读取 position + rotation 共 9 维，仅 translation root 额外读取 XZ velocity 两维；不把派生速度当作额外独立输入。E 不读取 species descriptor，也不启用自己的 species FiLM。
 
+此外，E 读取每个关节在骨架规范化静止朝向系下的父→子骨骼单位方向 `ref_bone_dir [J_s, 3, T+1]`：第 0 行是 rest pose，其余行逐帧对应动作。它经独立线性投影后加到同一 token 上。根关节和与父关节重合的 helper 关节为零。该通道由 `data_loaders/reference.py` 的 `reference_sample` 统一构造，训练 loader 和推理共用这一个函数。
+
+**为什么加骨骼方向**：position 通道是相对各自 rest 的残差，rotation 是局部旋转，同样是「尾巴朝上」，在不同骨架上数值不同。物理位置位于骨架规范化后的静止朝向系（所有 rest 朝 +Z；逐帧不做 root yaw 去旋转），高度为绝对值，因此一个方向向量在所有骨架上表示同一个世界方向。rest 行让 E 能对照源骨架自己的静止姿态。
+
 **理由**：
 - **K 个 query 池化**让 z 的形状与关节数无关，任何源骨架都映射到同一个空间。cross-limb block 已经用这个结构表达「全身节奏」，被验证过可用。
 - **为什么输出逐帧 z**：参考和输出处在同一个时间窗口里，帧对齐是恒等映射。逐帧 z 让模型不必学习时间对齐。时间上下文由编码器的 temporal attention 写进每一帧。
@@ -83,24 +87,23 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 
 ### 3.2 解码器：共享主干 + 参考专用分支
 
-两种模式共享现有 spatial / temporal attention、cross-limb block、FFN、输入输出投影及文字条件模块，全部参与联合训练。底层运动规律继续由主干学习；每层额外增加独立的 `ref cross-attn` 和 `ref FFN`，为参考重建提供专属解码容量。
+两种模式共享现有 spatial / temporal attention、cross-limb block、FFN、输入输出投影及文字条件模块，全部参与联合训练。底层运动规律继续由主干学习；每层只额外增加一个独立的 `ref cross-attn`，负责读取参考。
 
 - **ref cross-attn**：放在 spatial attention 之后，第 t 帧的每个关节 token 作为 query，读取 z[t] 的 K 个槽，经独立标量 gate 加入残差。
-- **ref FFN**：放在该层原有共享 FFN 之后，采用独立的 Pre-LayerNorm 与 `Linear(D,H_ref) → GELU → Linear(H_ref,D)`，经另一个独立标量 gate 加入残差。它读取已经融合 z 的隐藏状态，负责参考模式额外的非线性解码。首版 `H_ref=256`，不缩减原有共享 FFN 的宽度。
-- 每层的参考分支各自持有参数；两个 gate 都初始化为零，attention / FFN 本身采用普通初始化，避免 gate 与分支输出同时为零。参考分支的残差仅对 `ref_active=True` 的样本生效。
+- 每层的参考分支各自持有参数；gate 初始化为零，attention 本身采用普通初始化，避免 gate 与分支输出同时为零。参考分支的残差仅对 `ref_active=True` 的样本生效。
 
-层内顺序为：`共享 spatial → ref cross-attn → 共享 temporal → 共享 cross-limb（若启用）→ 共享 FFN → ref FFN`。原有共享子层及其归一化保持原结构。
+层内顺序为：`共享 spatial → ref cross-attn → 共享 temporal → 共享 cross-limb（若启用）→ 共享 FFN`。原有共享子层及其归一化保持原结构。
 
 **理由**：
 - **可学习的读取关系**：query 带着目标关节的名字和几何，可以学习从 z 提取运动信息。但 learned query 槽没有预设的「支撑肢」或「上肢」语义，同骨架训练也不保证槽位在不同 body plan 间一致。后腿能否读取正确的支撑运动，由 §6 的交换实验验收，不以 attention 图作为语义对应成立的证明。
 - **为什么放在 spatial 之后**：同一帧内先完成关节间通信，再读参考，之后的 temporal attention 负责把读到的内容沿时间整合。
-- **独立解码容量**：仅增加 E 和 cross-attn，仍可能让主干承担大部分参考重建变换。ref FFN 给这部分变换增加专属参数，缓解两种任务对共享容量的竞争，但不保证训练会自动把所有参考专属计算分配到该分支。
+- **不设参考专用 FFN**：参考信息只能经 cross-attn 进入残差，专用 FFN 读的是隐藏状态，不增加信息。它只对参考样本生效，会学成一个与参考内容无关的「参考模式」偏置；CFG 的 `s_ref·(x0(ref)−x0(∅))` 在 s_ref>1 时会连这个偏置一起放大。非线性解码由共享 FFN 承担。
 - **零初始化 gate**：给定相同主干参数，新增分支在训练起点为零贡献。是否真正利用参考，以更换参考后的输出变化判断，gate 大小仅作辅助观察。
 - **为什么不复用 cross-limb block**：cross-limb 只在后几层启用，语义是「目标肢体之间交换节奏」。把 z 混进去，两者的作用就无法分开测量，也无法单独关闭。
 
 ### 3.3 Null 语义：硬旁路
 
-`ref_active=False` 时，ref cross-attn 和 ref FFN 的残差均置零，不使用 learned null token。混合 batch 按样本屏蔽整个新增残差，包含其 bias；不能只把 z 置零。
+`ref_active=False` 时，ref cross-attn 的残差置零，不使用 learned null token。混合 batch 按样本屏蔽整个新增残差，包含其 bias；不能只把 z 置零。
 
 **理由与边界**：没有参考时，仅使用原有共享路径；参考分支的参数不直接影响该次输出。共享主干仍会同时收到有参考和无参考样本的梯度，因此这能增加容量并隔离专属参数，但不能严格保证纯文本不退化，仍按 §6 做基线对比。
 
@@ -114,7 +117,7 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 
 - **编码器输入**：同一个 clip，干净的 x0（经过 §4.2 的增强）。**解码器目标**：同一个 clip 的原始版本。
 - 新增 `--ref_cfg_drop_prob`，对 ref 做硬丢弃，建议 0.3–0.5。与现有的 `--action_label_cfg_drop_prob` 和 `--species_cfg_drop_prob` 各自独立抽签。
-- 共享主干不冻结、不对参考样本做 stop-gradient：两种模式共同更新共享参数；E、ref cross-attn、ref FFN 及其 gate 仅由参考激活样本训练。ref 丢弃时同时旁路两类参考子层。
+- 共享主干不冻结、不对参考样本做 stop-gradient：两种模式共同更新共享参数；E、ref cross-attn 及其 gate 仅由参考激活样本训练。ref 丢弃时旁路参考子层。
 
 **理由**：
 - 独立 dropout 让「只有参考」「参考 + 文字」「只有文字」「无条件」四种组合都成为训练过的模式，推理时任选。
@@ -146,7 +149,7 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 
 ### 4.4 参数与版本
 
-- 新增参数包括编码器、每层 ref cross-attn、ref FFN、独立归一化及 gate。ref FFN 的主要参数量约为 `层数 × 2·D·H_ref`；例如 D=384、8 层、H_ref=256 时约 1.57M，另计 bias、归一化和 gate。实现时汇总完整参数预算。
+- 新增参数包括编码器（含骨骼方向投影）、每层 ref cross-attn、独立归一化及 gate。实现时汇总完整参数预算。
 - state_dict 新增键，CKPT 版本 +1。
 - 从头训练，不 warm start。
 
@@ -225,11 +228,11 @@ out = x0(∅, ∅)
 | 文件 | 改动 |
 |---|---|
 | `model/motion_encoder.py` | 新增：编码器 E |
-| `model/motion_transformer.py` | decoder layer 加入 ref cross-attn、独立 ref FFN / LayerNorm 与各自的零初始化 gate |
+| `model/motion_transformer.py` | decoder layer 加入 ref cross-attn、独立 LayerNorm 与零初始化 gate |
 | `model/anytop.py` | 调用 E；解析 `ref_active`；硬旁路；CKPT 版本 +1 |
 | `model/cfg_sampler.py` | 组合式 ref/text CFG wrapper |
-| `data_loaders/truebones/data/dataset.py` + collate | 编码器侧增强副本、`ref_*` 字段、ref dropout |
-| `utils/parser_util.py` | `--ref_encoder`、`--ref_slots`、`--ref_dim`、`--ref_ff_dim`、`--ref_cfg_drop_prob`、编码器侧增强概率；推理侧的 `--ref_cfg_scale` |
+| `data_loaders/reference.py`、`data_loaders/truebones/data/dataset.py` + collate | 编码器侧增强副本、骨骼方向、`ref_*` 字段、ref dropout |
+| `utils/parser_util.py` | `--ref_encoder`、`--ref_slots`、`--ref_dim`、`--ref_width`、`--ref_layers`、`--ref_cfg_drop_prob`、编码器侧增强概率；推理侧的 `--ref_cfg_scale` |
 | `sample/generate.py`、`sample/reference_motion.py` | encode 模式：源骨架上的特征 → E → z |
 | `eval/` | 跨物种评测对 |
 
@@ -333,3 +336,15 @@ fullgraph 跟踪同时通过 reference/null；实际 GPU 训练验证使用 eage
 延长训练时使用新的 save_dir，从头训练，并保持 decoder 侧 `leaf_drop_prob=0`、
 `bone_length_aug_prob=0`，用 `ref_leaf_drop_prob` / `ref_bone_length_aug_prob` 调整编码器侧增强。
 下一步需要独立 val 骨架、充分收敛的候选与同训练预算的文本基线，按 §6 验收后才能选择容量或触发 §4.3。
+
+## 12. 第二版改动（2026-10-18）
+
+**依据**：在 `zoo_locomotion_tiny_v11`（50k 步）、`v12` / `v13`（20k 步）上做了诊断，全部使用训练 clip 和 EMA 权重。
+
+- **参考容量不是瓶颈。** 在同为 20k 步的点上，v11 / v12 / v13 有参考与无参考的分部位去噪误差差值基本相同。从 z 线性回归，尾巴/头颈运动的 R² 达到 0.84–0.94，v13 的 z 携带的信息更多，但去噪增益没有变化。v11 训到 50k 后，t=90 时的增益从约 18% 升到约 50%，尾巴与四肢的相对增益接近。
+- **Cat_Walk → Dog 尾巴不翘的原因是跨骨架姿态。** 测量尾根→尾尖的仰角：Cat_Walk +89°，Cat→Cat encode +107°；Dog 无参考 −24°，ref_cfg_scale=1 时 −6°，=3 时 0°；Dog 的 33 个训练 clip 最高 +49°。参考的方向能迁移过去，但幅度被压回 Dog 的数据分布。Cat 与 Dog 在 rest pose 下的尾巴方向几乎相同，Cat_Walk 中尾巴朝上；这一差别在新的骨骼方向通道中可以直接读出。
+- **参考专用 FFN 主要提供模式偏置。** 换参考时，ref cross-attn 的输出完全改变（相对变化约 1.29），ref FFN 只变 30–62%。
+
+**改动**：E 增加 `ref_bone_dir` 输入（§3.1）；删除每层 ref FFN 及 `--ref_ff_dim`（§3.2）；CKPT_VERSION 31 → 32。推理的参考样本改为与 loader 共用 `reference_sample`。
+
+**待验收**：与 v11 相同设置、相同步数重训，复测 Cat_Walk → Dog 的尾巴仰角、分部位去噪增益和交换测试，与 v11 对比。

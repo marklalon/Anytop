@@ -13,7 +13,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from model.anytop import AnyTop
 from model.cfg_sampler import ClassifierFreeReferenceModel
-from data_loaders.reference import collate_reference, prepare_reference_sample
+from data_loaders.reference import (
+    bone_directions, collate_reference, prepare_reference_sample, reference_sample,
+)
+from data_loaders.truebones.data.dataset import resample_motion_features
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from sample.reference_motion import _prepare_encoder_reference_bundle
 from test_bone_length_aug import fixture, make_dataset
@@ -34,6 +37,8 @@ def inputs(batch=2, joints=4, frames=5, source_joints=6):
              graph_dist=torch.zeros(batch, joints, joints),
              joints_relations=torch.zeros(batch, joints, joints))
     y.update(ref_feats=torch.randn(batch, source_joints, 12, frames),
+             ref_bone_dir=torch.nn.functional.normalize(
+                 torch.randn(batch, source_joints, 3, frames + 1), dim=2),
              ref_mask=torch.ones(batch, source_joints, dtype=torch.bool),
              ref_active=torch.ones(batch, dtype=torch.bool),
              ref_rest_pose=torch.randn(batch, source_joints, 12),
@@ -48,7 +53,6 @@ def open_gates(m):
     with torch.no_grad():
         for layer in m.seqTransDecoder.layers:
             layer.ref_attn_gate.fill_(0.7)
-            layer.ref_ff_gate.fill_(0.6)
 
 
 def test_zero_gates_match_shared_path_and_are_independent():
@@ -59,9 +63,9 @@ def test_zero_gates_match_shared_path_and_are_independent():
     null = m(x, torch.zeros(2), dict(y, ref_active=torch.zeros(2, dtype=torch.bool)))
     torch.testing.assert_close(active, null, rtol=0, atol=0)
     a, b = m.seqTransDecoder.layers
-    assert a.ref_attn_gate is not a.ref_ff_gate
-    assert a.ref_ff[0].weight.data_ptr() != b.ref_ff[0].weight.data_ptr()
-    assert a.linear1.out_features == 32 and a.ref_ff[0].out_features == 256
+    assert a.ref_attn_gate is not b.ref_attn_gate
+    assert a.ref_attn.q_proj_weight.data_ptr() != b.ref_attn.q_proj_weight.data_ptr()
+    assert not any('ref_ff' in n for n, _ in m.named_parameters())
 
 
 def test_mixed_hard_bypass_includes_bias_and_source_changes_only_active_rows():
@@ -74,7 +78,7 @@ def test_mixed_hard_bypass_includes_bias_and_source_changes_only_active_rows():
     second = m(x, torch.zeros(2), other)
     torch.testing.assert_close(first[0], second[0], rtol=0, atol=0)
     assert not torch.allclose(first[1], second[1])
-    # Compare against physically removing the two reference branches.
+    # Compare against physically removing the reference branch.
     saved = m.motion_encoder
     m.motion_encoder = None
     plain = m(x, torch.zeros(2), y)
@@ -103,7 +107,6 @@ def test_gates_start_learning_then_encoder_receives_gradient():
     m(x, torch.zeros(2), y).square().mean().backward()
     for layer in m.seqTransDecoder.layers:
         assert layer.ref_attn_gate.grad.abs() > 0
-        assert layer.ref_ff_gate.grad.abs() > 0
     m.zero_grad(set_to_none=True)
     open_gates(m)
     m(x, torch.zeros(2), y).square().mean().backward()
@@ -119,7 +122,8 @@ def test_encoder_permutation_invariance_padding_and_actual_channel_contract():
     assert z.shape == (2, 5, 2, 8)
     permutation = torch.tensor([0, 4, 1, 5, 2, 3])  # transport root remains zero
     permuted = dict(y)
-    for k in ('ref_feats', 'ref_mask', 'ref_rest_pose', 'ref_joints_names_embs', 'ref_joint_struct'):
+    for k in ('ref_feats', 'ref_bone_dir', 'ref_mask', 'ref_rest_pose', 'ref_joints_names_embs',
+              'ref_joint_struct'):
         permuted[k] = y[k][:, permutation]
     for k in ('ref_graph_dist', 'ref_joints_relations'):
         permuted[k] = y[k][:, permutation][:, :, permutation]
@@ -130,13 +134,59 @@ def test_encoder_permutation_invariance_padding_and_actual_channel_contract():
     changed['species_emb'] = torch.randn(2, 99)
     torch.testing.assert_close(z, encoder(changed), rtol=0, atol=0)
     padded = dict(y)
-    for k in ('ref_feats', 'ref_mask', 'ref_rest_pose', 'ref_joints_names_embs', 'ref_joint_struct'):
+    for k in ('ref_feats', 'ref_bone_dir', 'ref_mask', 'ref_rest_pose', 'ref_joints_names_embs',
+              'ref_joint_struct'):
         shape = list(y[k].shape)
         shape[1] = 3
         padded[k] = torch.cat([y[k], y[k].new_zeros(shape)], dim=1)
     for k in ('ref_graph_dist', 'ref_joints_relations'):
         padded[k] = torch.nn.functional.pad(y[k], (0, 3, 0, 3))
     torch.testing.assert_close(z, encoder(padded), rtol=1e-5, atol=1e-6)
+
+
+def test_encoder_reads_bone_directions_including_rest_row():
+    m = model().eval()
+    _, y = inputs()
+    z = m.motion_encoder(y)
+    for rows in (slice(0, 1), slice(1, None)):
+        changed = copy.deepcopy(y)
+        changed['ref_bone_dir'][..., rows] = -changed['ref_bone_dir'][..., rows]
+        assert not torch.allclose(z, m.motion_encoder(changed))
+
+
+def test_bone_directions_are_facing_frame_units_with_rest_row():
+    parents = np.array([-1, 0, 1, 1])
+    rest = np.array([[0, 1, 0], [0, 1, 0], [0, 1, -1], [0, 1.0005, -1]], np.float32)
+    positions = np.repeat(rest[None], 2, axis=0)
+    positions[1, 2] = [0, 3, 0]  # second frame: tail raised straight up
+    out = bone_directions(positions, parents, rest)
+    assert out.shape == (3, 4, 3)
+    np.testing.assert_array_equal(out[:, 0], 0)  # root
+    np.testing.assert_array_equal(out[:, 1], 0)  # coincident with its parent
+    np.testing.assert_allclose(out[0, 2], [0, 0, -1])
+    np.testing.assert_allclose(out[1, 2], [0, 0, -1])
+    np.testing.assert_allclose(out[2, 2], [0, 1, 0])
+    np.testing.assert_allclose(np.linalg.norm(out[:, 3], axis=-1), 1, rtol=1e-6)
+
+
+def test_bone_directions_sanitize_non_finite_positions():
+    parents = np.array([-1, 0])
+    rest = np.array([[0, 1, 0], [0, 2, 0]], np.float32)
+    positions = np.array([[[0, 1, 0], [np.inf, 2, 0]],
+                          [[0, 1, 0], [np.nan, 2, 0]]], np.float32)
+    out = bone_directions(positions, parents, rest)
+    assert out.shape == (3, 2, 3)
+    assert np.isfinite(out).all()
+
+
+def test_collate_rejects_bone_direction_frame_mismatch():
+    motion, cond, _ = fixture()
+    sample = prepare_reference_sample(motion, cond, {'translation_root_index': 0},
+                                      SimpleNamespace(), augment=False)
+    sample['bone_dir'] = sample['bone_dir'][:-1]
+    with pytest.raises(ValueError, match='bone directions'):
+        collate_reference([sample], torch.zeros(1, 7, 12, 30), torch.zeros(1, 7, 4),
+                          torch.zeros(1, 7, JOINT_STRUCT_DIM))
 
 
 def test_reference_dropout_extremes_and_frame_mismatch():
@@ -252,16 +302,30 @@ def test_augmentation_has_independent_cond_and_target_is_untouched():
 
 def test_encode_packs_source_geometry_and_resamples_time():
     motion, cond, _ = fixture()
-    packed = _prepare_encoder_reference_bundle(motion, cond, batch_size=2,
+    # The fixture is static, which cannot show whether inference derives the
+    # encoder channels before or after the window resample. Move one joint so
+    # the bone directions vary over time.
+    moving = motion.copy()
+    moving[:, 3, 0] += np.linspace(0.0, 1.0, len(moving), dtype=np.float32)
+    packed = _prepare_encoder_reference_bundle(moving, cond, batch_size=2,
                                                n_frames=20, visible_frames=30)
     assert packed['ref_feats'].shape == (2, 7, 12, 20)
+    assert packed['ref_bone_dir'].shape == (2, 7, 3, 21)
+    # Loader and inference must agree on every row, not just the rest row:
+    # both derive them from the same post-resample physical features.
+    expected = reference_sample(resample_motion_features(moving, 20), cond,
+                                cond['joints_names_embs'])
+    assert packed['ref_bone_dir'][0].numpy() == pytest.approx(
+        expected['bone_dir'].transpose(1, 2, 0), abs=1e-6)
+    assert packed['ref_feats'][0].numpy() == pytest.approx(
+        expected['feats'].transpose(1, 2, 0), abs=1e-6)
     assert packed['ref_active'].all()
     with pytest.raises(ValueError, match='source skeleton'):
-        _prepare_encoder_reference_bundle(motion[:, :-1], cond, batch_size=2,
+        _prepare_encoder_reference_bundle(moving[:, :-1], cond, batch_size=2,
                                           n_frames=20, visible_frames=30)
 
 
-@pytest.mark.parametrize('kwargs', [dict(ref_dim=0), dict(ref_slots=0), dict(ref_ff_dim=0),
+@pytest.mark.parametrize('kwargs', [dict(ref_dim=0), dict(ref_slots=0),
                                    dict(ref_cfg_drop_prob=float('nan'))])
 def test_invalid_reference_configuration(kwargs):
     with pytest.raises(ValueError):

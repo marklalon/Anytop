@@ -1279,18 +1279,14 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         # (B, 4, d_model) slice.
         self.temporal_phase_scale = nn.Parameter(torch.zeros(1))
 
-    def enable_reference(self, ref_dim, hidden=256):
+    def enable_reference(self, ref_dim):
         """Allocate independently per layer, after all shared parameters exist."""
         self.ref_norm = nn.LayerNorm(self.d_model)
         self.ref_attn = nn.MultiheadAttention(
             self.d_model, self.heads, dropout=self.dropout1.p,
             kdim=ref_dim, vdim=ref_dim, batch_first=True,
         )
-        self.ref_ff_norm = nn.LayerNorm(self.d_model)
-        self.ref_ff = nn.Sequential(nn.Linear(self.d_model, hidden), nn.GELU(),
-                                    nn.Linear(hidden, self.d_model))
         self.ref_attn_gate = nn.Parameter(torch.zeros(()))
-        self.ref_ff_gate = nn.Parameter(torch.zeros(()))
 
     def _read_reference(self, x, z, active):
         frames, batch, joints, width = x.shape
@@ -1377,7 +1373,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         x = self.norm1(x + spatial_attn_output)
         if ref_z is not None:
             active = ref_active.view(1, bs, 1, 1)
-            # Rest token remains skeleton-only in both reference sublayers.
+            # Rest token remains skeleton-only in the reference sublayer.
             active = active & (torch.arange(x.shape[0], device=x.device)[:, None, None, None] > 0)
             x = self._read_reference(x, ref_z, active)
         # Branch input only; the residual adds to the unmodulated x. The
@@ -1393,7 +1389,4 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 unreliable_mask=cross_limb_unreliable_mask,
             )
         x = self.norm3(x + self._ff_block(_modulate(x, action_adaln, ADALN_FF)))
-        if ref_z is not None:
-            delta = self.ref_ff_gate * self.ref_ff(self.ref_ff_norm(x))
-            x = x + torch.where(active, delta, torch.zeros_like(delta))
         return x
