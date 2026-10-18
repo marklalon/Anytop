@@ -310,7 +310,33 @@ def create_training_data_loader(args):
         species_table=getattr(args, 'species_descriptor_table', None),
     )
 
+def set_training_process_priority():
+    """Prefer timely CPU scheduling for Windows training, including in background."""
+    if os.name != 'nt':
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.SetPriorityClass.restype = wintypes.BOOL
+        above_normal_priority_class = 0x00008000
+        if not kernel32.SetPriorityClass(
+            kernel32.GetCurrentProcess(), above_normal_priority_class
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+    except OSError as exc:
+        print(f'[WARNING] Could not set training process priority to AboveNormal: {exc}')
+    else:
+        print('[INFO] Training process priority: AboveNormal')
+
+
 def run_training(args):
+    set_training_process_priority()
     fixseed(args.seed)
     save_dir = prepare_save_dir(args)
     # The recorded action_group is the checkpoint's inference contract (it is the
