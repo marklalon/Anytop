@@ -340,6 +340,9 @@ def set_training_process_priority():
 
 
 def run_training(args):
+    if getattr(args, 'compile', None) not in (None, '', 'None'):
+        from utils.compile_util import configure_triton_c_compiler
+        configure_triton_c_compiler()
     set_training_process_priority()
     fixseed(args.seed)
     save_dir = prepare_save_dir(args)

@@ -12,6 +12,9 @@ from utils import compile_util
 
 @pytest.fixture
 def triton_install(tmp_path, monkeypatch):
+    from torch._inductor import config
+    monkeypatch.setattr(config, 'cpp_wrapper', True)
+    monkeypatch.setattr(config, 'disable_cpp_codegen', False)
     root = tmp_path / 'triton'
     compiler = root / 'runtime' / 'tcc' / 'tcc.exe'
     compiler.parent.mkdir(parents=True)
@@ -43,23 +46,35 @@ def test_msvc_switches_to_bundled_tcc_and_invalidates_cached_selection(triton_in
 
 
 @pytest.mark.parametrize('name', ['tcc.exe', 'clang.exe', 'clang-cl.exe', 'gcc'])
-def test_non_msvc_compilers_are_preserved(triton_install, monkeypatch, name):
+def test_inherited_compilers_are_overridden(triton_install, monkeypatch, name):
     compiler, build = triton_install
     existing = str(compiler.parent / name)
     build.get_cc.return_value = existing
     monkeypatch.setenv('CC', existing)
-    assert compile_util.configure_triton_c_compiler() is None
-    assert compile_util.os.environ['CC'] == existing
-    build.get_cc.cache_clear.assert_not_called()
+    assert compile_util.configure_triton_c_compiler() == str(compiler)
+    assert compile_util.os.environ['CC'] == str(compiler)
+    build.get_cc.assert_not_called()
+    build.get_cc.cache_clear.assert_called_once_with()
 
 
-def test_missing_bundled_compiler_keeps_existing_setup(triton_install):
+def test_missing_bundled_compiler_fails_without_msvc_fallback(triton_install):
     compiler, build = triton_install
     compiler.unlink()
     previous = compile_util.os.environ['CC']
-    assert compile_util.configure_triton_c_compiler() is None
+    with pytest.raises(RuntimeError, match='requires bundled TinyCC'):
+        compile_util.configure_triton_c_compiler()
     assert compile_util.os.environ['CC'] == previous
     build.get_cc.cache_clear.assert_not_called()
+
+
+def test_unset_cc_does_not_probe_msvc_and_disables_cpp_codegen(triton_install, monkeypatch):
+    from torch._inductor import config
+    compiler, build = triton_install
+    monkeypatch.delenv('CC')
+    assert compile_util.configure_triton_c_compiler() == str(compiler)
+    build.get_cc.assert_not_called()
+    assert config.cpp_wrapper is False
+    assert config.disable_cpp_codegen is True
 
 
 def test_non_windows_does_not_import_triton(monkeypatch):
@@ -87,3 +102,17 @@ def test_training_selects_compiler_before_lazy_compile(monkeypatch, tmp_path):
     TrainLoop._compile_forward_model(loop)
     assert events == ['compiler', 'compile']
     assert loop.forward_model is model
+
+
+def test_training_does_not_swallow_compiler_setup_failure(monkeypatch):
+    import torch
+    from train.training_loop import TrainLoop
+    def configure():
+        raise RuntimeError('requires bundled TinyCC')
+    compile_model = Mock()
+    monkeypatch.setattr(compile_util, 'configure_triton_c_compiler', configure)
+    monkeypatch.setattr(torch, 'compile', compile_model)
+    loop = types.SimpleNamespace(forward_model=object())
+    with pytest.raises(RuntimeError, match='requires bundled TinyCC'):
+        TrainLoop._compile_forward_model(loop)
+    compile_model.assert_not_called()

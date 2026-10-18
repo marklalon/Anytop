@@ -23,6 +23,7 @@ if not exist "dataset\truebones\zoo\truebones_processed\cond.npy" (
 REM A new run trains the reference encoder from scratch; auto_resume continues this run.
 REM Topology and bone-length augmentation apply only to the reference input.
 REM Keep the full 215-clip locomotion pool; no ordered sample_limit truncation.
+REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
 "%PYTHON_EXE%" train/train_anytop.py ^
     --cond_path dataset/truebones/zoo/truebones_processed/cond.npy ^
     --save_dir "save/%RUN_NAME%" ^

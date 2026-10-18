@@ -478,8 +478,9 @@ def add_training_options(parser):
                        help="Wrap the transformer decoder with torch.compile to fuse the many tiny "
                             "per-layer kernels (training is kernel-launch-bound). "
                             "Mode: 'None' (no compile), 'default' (torch.compile default), "
-                            "'max-autotune-no-cudagraphs'. Requires the MSVC build env "
-                            "(start_torch_compile_env.ps1). First step pays a one-time compile "
+                            "'max-autotune-no-cudagraphs'. On Windows, requires Triton's bundled "
+                            "TinyCC; MSVC is not used and C++ codegen is disabled. "
+                            "First step pays a one-time compile "
                             "cost; shapes are static so no recompile thrashing afterward "
                             "(one graph per JOINT_BUCKETS joint bucket).")
     group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")

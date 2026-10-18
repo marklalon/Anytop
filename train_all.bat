@@ -1,20 +1,16 @@
 @echo off
-REM setlocal scopes the environment vcvars64 builds (PATH/INCLUDE/LIB) to this
-REM script, so chained calls cannot overflow cmd.exe's 8191-character limit.
 setlocal
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
 set RUN_NAME=merged_all_v50
 set TORCH_LOGS=recompiles,graph_breaks
 
-REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize the
-REM VS 2022 x64 dev env pinned to 14.41, unless an x64 VS dev env is already
-REM active (re-initializing it only lengthens PATH and can abort the script).
-if /i not "%VSCMD_ARG_TGT_ARCH%"=="x64" call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" -vcvars_ver=14.41
+REM train_anytop requires bundled TinyCC for --compile, overriding inherited CC.
+REM Inductor C++ codegen is disabled; no Visual Studio environment is needed.
 
 pushd "%SCRIPT_DIR%"
 
-%PYTHON_EXE% train/train_anytop.py ^
+"%PYTHON_EXE%" train/train_anytop.py ^
 	--cond_path dataset/cond.npy ^
 	--save_dir save/%RUN_NAME% ^
 	--save_interval 10000 ^
@@ -75,4 +71,6 @@ pushd "%SCRIPT_DIR%"
 	--main_process_prefetch_batches 64 ^
 	--compile default
 
+set "EXIT_CODE=%ERRORLEVEL%"
 popd
+endlocal & exit /b %EXIT_CODE%

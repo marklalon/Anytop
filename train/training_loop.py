@@ -370,14 +370,11 @@ class TrainLoop:
         except Exception:  # pragma: no cover - dynamo always present with compile
             pass
         torch.set_float32_matmul_precision('high')
+        from utils.compile_util import configure_triton_c_compiler
+        launcher_compiler = configure_triton_c_compiler()
+        if launcher_compiler:
+            logger.log(f'Triton C launcher compiler: {launcher_compiler} (TinyCC; C++ codegen disabled)')
         try:
-            from utils.compile_util import configure_triton_c_compiler
-            launcher_compiler = configure_triton_c_compiler()
-            if launcher_compiler:
-                logger.log(
-                    f'Triton C launcher compiler: {launcher_compiler} '
-                    '(bundled TinyCC; avoids MSVC C2059 on empty C initializers)'
-                )
             compile_kwargs = {'dynamic': False}
             if mode and mode != 'default':
                 compile_kwargs['mode'] = mode
@@ -386,7 +383,7 @@ class TrainLoop:
         except Exception as exc:  # pragma: no cover - depends on build toolchain
             logger.log(
                 f"torch.compile unavailable ({exc}); falling back to eager. "
-                "Ensure the MSVC build env is active (start_torch_compile_env.ps1)."
+                "Check the PyTorch/Triton installation and bundled TinyCC."
             )
             return
         bucket_note = (
