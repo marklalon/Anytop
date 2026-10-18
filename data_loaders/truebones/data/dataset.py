@@ -1414,6 +1414,11 @@ class MotionDataset(data.Dataset):
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
         cond = self.cond_dict[object_type]
         joint_struct = self._joint_struct_cache[object_type]
+        # The reference encoder's input draws its own skeleton augmentation, so
+        # it starts from the stored rig, not from the target's augmented one.
+        ref_source = None
+        if getattr(self.opt, 'ref_encoder', False):
+            ref_source = (motion, cond, joint_struct, int(motion_metadata['translation_root_index']))
         # ── Leaf-drop augmentation (topology; see leaf_drop.py) ──
         # Runs on the stored clip, before any temporal stage: from here on the
         # sample IS a rig without those leaves, so every later stage and the
@@ -1468,6 +1473,12 @@ class MotionDataset(data.Dataset):
         if is_loop:
             motion = _drop_loop_closing_frame(motion)
             m_length = int(motion.shape[0])
+        target_skeleton_changed = bool(leaf_drop_count or bone_length_info['applied'])
+        if ref_source is not None and target_skeleton_changed:
+            # The target's verdict, so both sides share one time axis below.
+            ref_motion = ref_source[0][:m_length]
+        elif ref_source is not None:
+            ref_motion = motion
 
         # A high-frequency clip (high_frequency.py) is never resampled to fewer
         # frames, so its source budget is the window itself: the speed draw
@@ -1566,13 +1577,13 @@ class MotionDataset(data.Dataset):
         # step is L/T = resample_speed_cond; everything else, including a loop
         # the model is told is not one, is open, at step (L-1)/(T-1). The loss
         # reads which one from y['is_loop'] (_physical_velocity_step_scale).
-        if scaled_length != source_length:
-            motion = resample_time_scaled_window(
-                source_motion, scaled_length, m_length, target_num_frames,
-                source_periodic=bool(is_loop), window_periodic=loop_condition_active,
-                shift=frame_shift,
-            )
-        else:
+        def sample_window(clip):
+            if scaled_length != source_length:
+                return resample_time_scaled_window(
+                    clip, scaled_length, m_length, target_num_frames,
+                    source_periodic=bool(is_loop), window_periodic=loop_condition_active,
+                    shift=frame_shift,
+                )
             # No speed change: the shift and window are whole source frames
             # (a loop's roll and tiles wrap it), and the window resample is the
             # only interpolation.
@@ -1580,28 +1591,38 @@ class MotionDataset(data.Dataset):
             if is_loop:
                 frames %= source_length
             if m_length != source_length or frame_shift != 0:
-                motion = source_motion[frames]
+                clip = clip[frames]
             if m_length != target_num_frames:
-                motion = resample_motion_features(
-                    motion,
+                clip = resample_motion_features(
+                    clip,
                     target_num_frames,
                     periodic=loop_condition_active,
                 )
-        m_length = target_num_frames
+            return clip
 
+        motion = sample_window(source_motion)
         physical_motion = motion
         motion = np.nan_to_num(
             physical_hml_to_canonical(motion, cond)
         ).astype(np.float32, copy=False)
         reference = None
-        if getattr(self.opt, 'ref_encoder', False):
+        if ref_source is not None:
             from data_loaders.reference import prepare_reference_sample
-            reference_metadata = dict(motion_metadata, is_loop=loop_condition_active)
-            # An unaugmented reference shares the target's skeleton, so its
-            # canonical features, rest token and structural channel are these.
-            reference = prepare_reference_sample(
-                physical_motion, cond, reference_metadata, self.opt,
-                shared=dict(feats=motion, rest_pose=rest_pose, joint_struct=joint_struct))
+            _, ref_cond, ref_joint_struct, ref_root_index = ref_source
+            reference_metadata = dict(motion_metadata, is_loop=loop_condition_active,
+                                      translation_root_index=ref_root_index)
+            if target_skeleton_changed:
+                reference = prepare_reference_sample(
+                    sample_window(ref_motion), ref_cond, reference_metadata, self.opt,
+                    shared=dict(joint_struct=ref_joint_struct))
+            else:
+                # The target kept the stored rig, so the reference starts from
+                # the same window and reuses its derived channels until its own
+                # augmentation changes the skeleton.
+                reference = prepare_reference_sample(
+                    physical_motion, cond, reference_metadata, self.opt,
+                    shared=dict(feats=motion, rest_pose=rest_pose, joint_struct=joint_struct))
+        m_length = target_num_frames
 
         # is_loop is the whole loop condition the model sees: a closed window.
         # The tile count is deliberately NOT passed on -- generation has no
@@ -1892,9 +1913,6 @@ class Truebones(data.Dataset):
             setattr(self.opt, key, value if split in ('train', ALL_SPLIT_NAME) else 0.0)
         self.opt.ref_bone_length_aug = float(kwargs.get('ref_bone_length_aug', 0.1))
         validate_bone_length_aug(self.opt.ref_bone_length_aug_prob, self.opt.ref_bone_length_aug)
-        if self.opt.ref_encoder and (self.opt.leaf_drop_prob or kwargs.get('bone_length_aug_prob', 0.0)):
-            raise ValueError('Reference training keeps real targets: use ref_leaf_drop_prob / '
-                             'ref_bone_length_aug_prob instead of target skeleton augmentation')
         self.opt.bone_length_aug_prob = float(kwargs.get('bone_length_aug_prob', 0.0))
         self.opt.bone_length_aug = float(kwargs.get('bone_length_aug', DEFAULT_BONE_LENGTH_AUG))
         validate_bone_length_aug(self.opt.bone_length_aug_prob, self.opt.bone_length_aug)

@@ -436,6 +436,50 @@ def test_loader_reference_augmentation_keeps_target_and_metadata_identical(monke
     assert x.shape[1] == dataset.opt.max_joints
 
 
+def test_target_augmentation_leaves_reference_on_stored_rig(monkeypatch):
+    from data_loaders.tensors import truebones_batch_collate
+    import data_loaders.truebones.data.dataset as dataset_module
+    dataset, data = make_dataset()
+    dataset.opt.bone_length_aug_prob = 0
+    dataset.opt.ref_encoder = True
+    dataset.opt.ref_leaf_drop_prob = 0
+    dataset.opt.ref_bone_length_aug_prob = 0
+    dataset.opt.ref_joint_name_drop_prob = 0
+    random.seed(2)
+    plain = dataset._prepare_sample('test', data)
+    stored_joints = plain[0].shape[1]
+    dataset.opt.leaf_drop_prob = 1
+    monkeypatch.setattr(dataset_module, 'sample_leaf_drop', lambda *a: [3])
+    sample = dataset._prepare_sample('test', data)
+    reference = sample[12]['reference']
+    assert sample[0].shape[1] == stored_joints - 1
+    assert reference['feats'].shape == (sample[0].shape[0], stored_joints, sample[0].shape[2])
+    # The reference is wider than its target: the bucket must hold it.
+    _, kwargs = truebones_batch_collate([sample], joint_buckets=(stored_joints - 1, stored_joints))
+    assert kwargs['y']['ref_mask'].shape[1] == stored_joints
+    assert kwargs['y']['ref_mask'].sum() == stored_joints
+
+
+def test_target_augmentation_keeps_loop_reference_time_aligned(monkeypatch):
+    import data_loaders.truebones.data.dataset as dataset_module
+    dataset, data = make_dataset()
+    dataset.opt.bone_length_aug_prob = 0
+    dataset.opt.ref_encoder = True
+    dataset.opt.ref_leaf_drop_prob = 0
+    dataset.opt.ref_bone_length_aug_prob = 0
+    dataset.opt.ref_joint_name_drop_prob = 0
+    dataset.opt.leaf_drop_prob = 1
+    data['motion_metadata']['is_loop'] = True
+    monkeypatch.setattr(dataset_module, 'sample_leaf_drop', lambda *a: [3])
+    random.seed(4)
+    sample = dataset._prepare_sample('test', data)
+    reference = sample[12]['reference']
+    assert reference['feats'].shape[0] == sample[0].shape[0]
+    assert reference['feats'].shape[1] == sample[0].shape[1] + 1
+    kept = [j for j in range(reference['feats'].shape[1]) if j != 3]
+    np.testing.assert_allclose(reference['feats'][:, kept], sample[0], atol=1e-4)
+
+
 def test_compile_full_graph_keeps_reference_and_null_tensor_contract():
     m = model().eval()
     open_gates(m)

@@ -115,7 +115,7 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 
 ### 4.1 目标与 dropout
 
-- **编码器输入**：同一个 clip，干净的 x0（经过 §4.2 的增强）。**解码器目标**：同一个 clip 的原始版本。
+- **编码器输入**：同一个 clip 的同一时间窗，干净的 x0（经过 §4.2 的编码器侧增强）。**解码器目标**：同一个 clip，按主干自己的 `--leaf_drop_prob` / `--bone_length_aug_prob` 独立抽签增强。
 - 新增 `--ref_cfg_drop_prob`，对 ref 做硬丢弃，建议 0.3–0.5。参考生效的行：species FiLM 一律旁路（`species_active=False`），action_label 按 `--ref_label_drop_prob`（默认 0.5）丢弃；无参考的行仍按 `--action_label_cfg_drop_prob` 与 `--species_cfg_drop_prob` 抽签。每个 batch 随机保留固定的 `B − round(B·p)` 行，编码器只对这些行前向（形状静态，可编译）；被丢弃的行被硬旁路，其 z 不会被读取。
 - 共享主干不冻结、不对参考样本做 stop-gradient：两种模式共同更新共享参数；E、ref cross-attn 及其 gate 仅由参考激活样本训练。ref 丢弃时旁路参考子层。
 
@@ -124,7 +124,7 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 - 自重建中参考、label 与 descriptor 来自同一 clip，训练时并无冲突；旁路 species 也不阻止 z 编码源骨架身份（E 本来不读 descriptor），它只让 body plan / 步态由 z 与目标骨架结构提供。
 - ref drop 不能太低。z 携带的信息远比 label 丰富，有 z 时 label 通路几乎拿不到梯度。label 通路要靠 z 缺席的样本继续学习，纯文本质量取决于此。
 
-### 4.2 编码器侧增强（只作用于编码器输入，目标永不改变）
+### 4.2 骨架增强（编码器输入与目标各自独立抽签）
 
 | 增强 | 现有实现 | 打破的是什么 |
 |---|---|---|
@@ -134,7 +134,9 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 
 **理由与限制**：这些增强保留时间对应，鼓励编码器从变化后的输入恢复原始运动；它们提供的是形态扰动鲁棒性，不强制 z 不变，也不建立不同 body plan 的对应。骨长增强保留局部旋转，但会改变末端位置、速度和可能的接触状态；leaf-drop 也会丢失被删末端的运动。因此必须控制强度，并比较增强前后的动作内容与交换结果，不能假定运动信息完全无损。
 
-**实现要点**：loader 为编码器单独生成一份增强副本（独立的 cond 切片），解码器侧的 cond 和目标不受影响。leaf-drop 只删不增，副本的关节数不超过原骨架，可以落在同一个 joint bucket 里。
+**目标侧也做**：主干在非参考训练里本来就用 leaf-drop 和骨长增强；参考训练沿用同一组 `--leaf_drop_prob` / `--bone_length_aug_prob`，两侧抽签互相独立。于是源和目标的形态差异两个方向都有：参考关节比目标少（编码器侧 leaf-drop），也有参考关节比目标多（目标侧 leaf-drop），后者对应推理时源骨架比目标多出尾巴、手指的情形。
+
+**实现要点**：目标侧增强在时间采样前作用于存储 clip（与非参考训练完全相同）；编码器输入从存储骨架出发，复用目标的 closing-key 判定和同一时间窗，再做自己的增强。两侧都没改骨架时，编码器输入复用目标的 canonical 特征。参考可能比目标宽，collate 按两者中较宽的关节数选 joint bucket；存储骨架的关节数决定 sampler 的 bucket，所以仍落在同一 bucket 里。
 
 **不做时间增强**：编码器输入与目标必须逐帧对齐（§3.1）。
 
@@ -257,9 +259,8 @@ out = x0(∅, ∅)
   默认 `ref_width=64`、`ref_layers=2`、`ref_slots=2`、`ref_dim=8`；编码器宽度必须小于共享主干。
 - 每层独立的 reference cross-attention、Pre-LN FFN（默认 256 宽）和各自的零初始化 gate。
   `ref_active=False` 屏蔽两条完整残差；null batch 使用安全的零哨兵避免全 masked attention 产生 NaN。
-- loader 在完成时间采样后复制源数据，仅增强编码器侧；目标及目标 cond 保持原样。
+- loader 用目标的时间窗从存储骨架生成编码器输入，再独立增强编码器侧；目标侧增强与非参考训练相同。
   默认编码器 leaf-drop / 骨长增强概率为 0.2 / 0.2，骨长幅度 0.1，整关节名丢弃概率 0.15。
-  reference 训练拒绝原有 decoder 侧 leaf-drop / 骨长增强参数，防止合成形态进入目标。
   所有 collate batch 都有固定的 `ref_*` tensor 字段；参考 CFG dropout 默认 0.4，在模型内独立抽样。
 - NPY 按源 cond 编码；原始 FBX/GLB/GLTF 复用预处理的根检测、wrapper 折叠、姿态对齐与特征提取，
   使用 checkpoint 的全局统计和关节名向量缓存，未知关节名置空，不加载 T5，不经过 retarget。
@@ -334,8 +335,8 @@ fullgraph 跟踪同时通过 reference/null；实际 GPU 训练验证使用 eage
 ../.venv/Scripts/python.exe train/train_anytop.py --cond_path dataset/cond.npy --save_dir save/ref_2x8_new --objects_subset all --action_group all --action_label_cond --action_label_adaln --species_joint_cond --ref_encoder --ref_slots 2 --ref_dim 8 --latent_dim 128 --ff_size 256 --layers 4 --cross_limb_last_n 2 --num_frames 32 --batch_size 4 --diffusion_steps 20 --num_steps 100 --save_interval 100 --log_interval 25 --amp_dtype bf16 --seed 10
 ```
 
-延长训练时使用新的 save_dir，从头训练，并保持 decoder 侧 `leaf_drop_prob=0`、
-`bone_length_aug_prob=0`，用 `ref_leaf_drop_prob` / `ref_bone_length_aug_prob` 调整编码器侧增强。
+延长训练时使用新的 save_dir，从头训练。`leaf_drop_prob` / `bone_length_aug_prob` 调整目标侧增强，
+`ref_leaf_drop_prob` / `ref_bone_length_aug_prob` 调整编码器侧增强，两侧独立。
 下一步需要独立 val 骨架、充分收敛的候选与同训练预算的文本基线，按 §6 验收后才能选择容量或触发 §4.3。
 
 ## 12. 第二版改动（2026-10-18）

@@ -9,12 +9,13 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import build_j
 
 
 def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, shared=None):
-    """Augment physical features only on the encoder side, after time sampling.
+    """Augment the encoder input's skeleton after time sampling.
 
-    ``shared`` holds the target's ``feats`` / ``rest_pose`` / ``joint_struct``
-    for this same motion and cond; they are reused while no augmentation
-    changes the skeleton. The augmentations return new arrays, so the caller's
-    motion and cond are never written.
+    The draws are independent of the target's own skeleton augmentation;
+    ``motion`` / ``cond`` are the stored rig's window. ``shared`` holds
+    channels already derived from this same motion and cond; they are reused
+    while no augmentation changes the skeleton. The augmentations return new
+    arrays, so the caller's motion and cond are never written.
     """
     import random
     from data_loaders.truebones.truebones_utils.leaf_drop import sample_leaf_drop, drop_joints_from_cond
@@ -98,7 +99,7 @@ def reference_sample(motion, cond, names, *, feats=None, rest_pose=None, joint_s
 
 
 def collate_reference(samples, motion, names, joint_struct):
-    """Use the target joint bucket for loader copies; source rigs only lose leaves.
+    """Use the batch joint bucket for loader copies; it holds target and reference rigs.
 
     Inference passes a source-sized canvas, independent of the target rig.
     Every batch has the same key set, including ref-null batches.

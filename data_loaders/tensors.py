@@ -297,6 +297,20 @@ def truebones_collate(batch):
     ))
     return motion, cond
 
+
+def _sample_joint_width(b):
+    """Joints a raw sample needs on the canvas: its rig, or a wider reference.
+
+    Target and reference skeletons are augmented independently, so the
+    reference can keep leaves the target dropped.
+    """
+    width = b[0].shape[1]
+    for extra in b[10:]:
+        if isinstance(extra, dict) and extra.get('reference') is not None:
+            width = max(width, np.asarray(extra['reference']['feats']).shape[1])
+    return width
+
+
 def truebones_batch_collate(batch, joint_buckets=None):
     """Collate a raw batch from MotionDataset into the format for truebones_collate.
 
@@ -326,7 +340,7 @@ def truebones_batch_collate(batch, joint_buckets=None):
     """
     max_joints = batch[0][9]
     if joint_buckets is not None:
-        max_joints = bucket_ceiling(max(b[0].shape[1] for b in batch), joint_buckets)
+        max_joints = bucket_ceiling(max(_sample_joint_width(b) for b in batch), joint_buckets)
     adapted_batch = []
     for b in batch:  
         max_len, n_joints, n_feats = b[0].shape

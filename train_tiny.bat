@@ -21,7 +21,7 @@ if not exist "dataset\truebones\zoo\truebones_processed\cond.npy" (
 )
 
 REM A new run trains the reference encoder from scratch; auto_resume continues this run.
-REM Topology and bone-length augmentation apply only to the reference input.
+REM Target and reference input draw topology and bone-length augmentation independently.
 REM Keep the full 215-clip locomotion pool; no ordered sample_limit truncation.
 REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
 "%PYTHON_EXE%" train/train_anytop.py ^
@@ -56,6 +56,9 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --ref_bone_length_aug_prob 0.3 ^
     --ref_bone_length_aug 0.2 ^
     --ref_joint_name_drop_prob 0.15 ^
+    --leaf_drop_prob 0.2 ^
+    --bone_length_aug_prob 0.3 ^
+    --bone_length_aug 0.2 ^
     --motion_speed_aug 1.3 ^
     --loop_cond_prob 0.8 ^
     --cross_limb_dim 64 ^
