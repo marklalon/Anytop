@@ -73,18 +73,89 @@ def test_block_preserves_shape_is_finite_and_trains():
     assert out.shape == (T, B, J, D)
     assert torch.isfinite(out).all()
 
-    out.sum().backward()
+    (out * torch.randn_like(out)).mean().backward()
     # Every sub-path must receive gradient (no dead branch / no detach).
     for name, p in [
-        ("latents", blk.latents),
-        ("cross_in", blk.cross_in_attn.in_proj_weight),
+        ("routing", blk.routing.weight),
         ("temporal", blk.temporal_attn.in_proj_weight),
-        ("cross_out", blk.cross_out_attn.in_proj_weight),
         ("norm_cl", blk.norm_cl.weight),
     ]:
         assert p.grad is not None, f"{name} got no grad"
         assert p.grad.abs().sum() > 0, f"{name} grad is all zero"
     assert x.grad is not None and torch.isfinite(x.grad).all()
+    # Both read and write halves learn; sharing the linear must not detach one.
+    assert all(g.abs().sum() > 0 for g in blk.routing.weight.grad.chunk(2))
+
+
+def test_routing_is_invariant_to_positive_score_weight_rescaling():
+    blk = _block()
+    x = torch.randn(T, 1, J, D)
+    kpm = _kpm(1, [J])
+    before = blk(x, kpm)
+    with torch.no_grad():
+        blk.routing.weight.mul_(100)
+    assert torch.allclose(before, blk(x, kpm), atol=1e-5)
+
+
+def test_joint_permutation_equivariance_with_padding_and_reliability():
+    blk = _block(latent_width=8)
+    blk.reliability_bias.data.fill_(-2.)
+    x = torch.randn(T, B, J, D)
+    kpm = _kpm(B, [J, J - 1, J - 2])
+    unreliable = _unreliable_mask(B, per_batch_pattern=True)
+    permutation = torch.randperm(J)
+    expected = blk(x, kpm, unreliable)[:, :, permutation]
+    actual = blk(x[:, :, permutation], kpm[:, permutation], unreliable[:, :, permutation])
+    assert torch.allclose(expected, actual, atol=1e-5)
+
+
+def test_other_joint_in_another_frame_influences_prediction():
+    blk = _block(latent_width=8)
+    x = torch.randn(T, 1, J, D, requires_grad=True)
+    output = blk(x, _kpm(1, [J]))
+    (output[-1, 0, 2] * torch.randn(D)).sum().backward()
+    assert x.grad[1, 0, 0].norm() > 1e-7
+
+
+def test_entirely_padded_sample_does_not_poison_other_samples_or_gradients():
+    blk = _block(latent_width=8)
+    x = torch.randn(T, B, J, D, requires_grad=True)
+    kpm = _kpm(B, [J, 0, J - 2])
+    output = blk(x, kpm)
+    assert torch.isfinite(output).all()
+    (output * torch.randn_like(output)).sum().backward()
+    assert torch.isfinite(x.grad).all()
+    assert all(p.grad is None or torch.isfinite(p.grad).all() for p in blk.parameters())
+
+
+def test_fullgraph_compile_matches_eager_with_reliability():
+    blk = _block(latent_width=8)
+    x = torch.randn(T, B, J, D)
+    kpm = _kpm(B, [J, J - 1, J - 2])
+    mask = _unreliable_mask(B, per_batch_pattern=True)
+    blk.reliability_bias.data.fill_(-2.)
+    blk.temporal_reliability_bias.data.fill_(-1.)
+    compiled = torch.compile(blk, backend='eager', fullgraph=True)
+    assert torch.allclose(blk(x, kpm, mask), compiled(x, kpm, mask), atol=1e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA AMP test')
+def test_cuda_fp16_amp_has_finite_gradients():
+    blk = _block(latent_width=8).cuda().train()
+    blk.cross_k_scale.data.fill_(0.3)
+    x = torch.randn(T, B, J, D, device='cuda', requires_grad=True)
+    mask = _unreliable_mask(B, per_batch_pattern=True).cuda()
+    with torch.autocast('cuda', dtype=torch.float16):
+        out = blk(x, _kpm(B, [J, J - 1, J - 2]).cuda(), mask)
+        loss = (out * torch.randn_like(out)).mean()
+    scaler = torch.amp.GradScaler('cuda')
+    optimizer = torch.optim.AdamW(blk.parameters(), lr=1e-3)
+    scaler.scale(loss).backward()
+    scaler.unscale_(optimizer)
+    assert torch.isfinite(out).all() and torch.isfinite(x.grad).all()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in blk.parameters())
+    scaler.step(optimizer)
+    scaler.update()
 
 
 @pytest.mark.parametrize("latent_width", [D, 8])  # full-width (Identity) + bottleneck
@@ -278,7 +349,7 @@ def _cross_out_kv_after_perturbing_one_latent(
     after temporal attention, and return the (K, T*B, d) key/value tensor
     that reaches cross-out -- i.e. the latents AFTER cross-K."""
     orig_temporal = blk.temporal_attn.forward
-    orig_cross_out = blk.cross_out_attn.forward
+    orig_cross_out = blk._write_context
     captured = {}
 
     # Non-uniform across channels on purpose: cross-K is Pre-Norm, and a
@@ -292,17 +363,17 @@ def _cross_out_kv_after_perturbing_one_latent(
             out[:, 0 * blk.num_latents + latent, :] += bump   # (T, B*K, d), b=0
         return out, w
 
-    def cross_out_capture(query, key, value, *a, **kw):
-        captured["kv"] = key.detach().clone()
-        return orig_cross_out(query, key, value, *a, **kw)
+    def cross_out_capture(scores, context):
+        captured["kv"] = context.permute(2, 0, 1, 3).reshape(blk.num_latents, -1, blk.latent_dim).detach().clone()
+        return orig_cross_out(scores, context)
 
     blk.temporal_attn.forward = temporal_with_bump
-    blk.cross_out_attn.forward = cross_out_capture
+    blk._write_context = cross_out_capture
     try:
         blk(x, kpm)
     finally:
         blk.temporal_attn.forward = orig_temporal
-        blk.cross_out_attn.forward = orig_cross_out
+        blk._write_context = orig_cross_out
     return captured["kv"]
 
 

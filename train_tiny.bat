@@ -2,10 +2,9 @@
 setlocal EnableExtensions
 REM Quick zoo-only locomotion baseline. Optional first argument: a NEW run name.
 REM Usage: train_tiny.bat [run_name]
-REM See docs/tiny_locomotion_baseline.md for the fixed ablation protocol.
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
-set "RUN_NAME=zoo_locomotion_tiny_v7"
+set "RUN_NAME=zoo_locomotion_tiny_v8"
 if not "%~1"=="" set "RUN_NAME=%~1"
 
 if not exist "%PYTHON_EXE%" (
@@ -49,9 +48,10 @@ REM Keep the full 215-clip locomotion pool; no ordered sample_limit truncation.
     --bone_length_aug 0.2 ^
     --motion_speed_aug 1.3 ^
     --loop_cond_prob 0.8 ^
-    --cross_limb 0 ^
+    --cross_limb 1 ^
+    --cross_limb_latents 4 ^
     --cross_limb_dim 64 ^
-    --cross_limb_last_n 4 ^
+    --cross_limb_last_n 2 ^
     --diffusion_steps 100 ^
     --num_frames 60 ^
     --batch_size 16 ^

@@ -374,7 +374,7 @@ def circular_phase_embedding(
 
 
 class CrossLimbTemporalBlock(nn.Module):
-    """Perceiver-style cross-limb temporal pathway (one independent instance
+    """Lightweight cross-limb temporal pathway (one independent instance
     per active decoder layer; post-norm sublayer).
 
     The base decoder factorizes attention into spatial (per-frame, across
@@ -383,13 +383,13 @@ class CrossLimbTemporalBlock(nn.Module):
     inter-limb frequency/phase coupling is only weak/implicit -- which is why
     an inpainted limb drifts out of sync with the clamped limbs.
 
-    This block adds the missing path: K learned latent tokens pool ALL joints
-    per frame (cross-in), attend over time with the SAME windowed temporal mask
-    (latent temporal self-attention), exchange information across the K
-    latents of a frame (cross-K self-attention), then write a whole-body
-    rhythm context back to every joint (cross-out). Reuses
-    SelectiveMultiheadAttention; the final residual is post-norm to stay
-    consistent with norm1/2/3 of the layer.
+    K learned score vectors pool all valid joints per frame. These K latent
+    trajectories attend globally over time, exchange information through
+    Cross-K attention, then each joint selects its own mixture of the K
+    contexts. Read/write routing shares one narrow score projection, with
+    independent vectors and softmax axes (read over joints, write over K).
+    Values use the shared input projection directly: there are no cross-in
+    or cross-out Q/K/V/output projections. The final residual stays post-norm.
 
     Reliability (``unreliable_mask``, (T, B, J), 1 == being re-drawn) enters
     at two levels, because a scalar bias on the cross-in logits alone cannot
@@ -415,13 +415,11 @@ class CrossLimbTemporalBlock(nn.Module):
     zero-init, so a fresh block starts as the plain cross-in / temporal /
     cross-out path.
 
-    Efficiency: the latent pathway runs at a *narrow* bottleneck width
-    ``latent_width`` (Perceiver latents are meant to be a narrow information
-    bottleneck, not full model width). Joints are projected d_model -> d_cl
-    once (shared by cross-in K/V and cross-out Q), all three attentions run at
-    d_cl, and the whole-body context is projected d_cl -> d_model on the way
-    out. Cross-limb parameter cost scales with the number of active layers
-    (controlled by ``cross_limb_last_n``).
+    Joints are projected d_model -> d_cl once; routing costs O(T*B*J*K*d_cl).
+    Only temporal and Cross-K attention retain full attention projections,
+    operating on K trajectories at bottleneck width. The context is projected
+    d_cl -> d_model on the way out. Cost also scales with active layer count
+    (``cross_limb_last_n``).
 
     x flows as (T, B, J, d) where T = nframes+1 (index 0 is the T-pose token).
     """
@@ -435,24 +433,30 @@ class CrossLimbTemporalBlock(nn.Module):
         # Bottleneck width: <= d_model and a multiple of nhead (>= nhead).
         d_cl = max(nhead, (min(latent_width, d_model) // nhead) * nhead)
         self.latent_dim = d_cl
-        self.latents = nn.Parameter(torch.empty(num_latents, d_cl))
-        nn.init.normal_(self.latents, std=0.02)
-        # Shared joint <-> latent-space projection (read for cross-in K/V and
-        # write-query for cross-out); identity when no bottleneck is needed.
+        if num_latents < 1:
+            raise ValueError("num_latents must be positive")
+        # Shared projection for routing and values; identity at full width.
         self.proj_in = nn.Linear(d_model, d_cl) if d_cl != d_model else nn.Identity()
         self.proj_out = nn.Linear(d_cl, d_model) if d_cl != d_model else nn.Identity()
-        self.cross_in_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
+        # Independent read/write score vectors in one small projection. Unlike
+        # full cross-attention, values need no additional K/V/output projections.
+        self.routing = nn.Linear(d_cl, 2 * num_latents, bias=False)
+        self.routing_dropout = nn.Dropout(dropout)
         self.temporal_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         # Cross-K: the same attention dropout as the other three sub-layers.
         # SelectiveMultiheadAttention defaults to 0.0, so leaving it out would
         # silently make this one sub-layer un-regularized under --dropout_prob.
         self.cross_k_norm = nn.LayerNorm(d_cl)
         self.cross_k_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
-        self.cross_out_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         self.reliability_bias = nn.Parameter(torch.zeros(1))
         self.temporal_reliability_bias = nn.Parameter(torch.zeros(1))
         self.cross_k_scale = nn.Parameter(torch.zeros(1))
         self.norm_cl = nn.LayerNorm(d_model)
+
+    def _write_context(self, write_scores: Tensor, context: Tensor) -> Tensor:
+        """Mix K context vectors separately for each joint, in narrow space."""
+        weights = self.routing_dropout(write_scores.softmax(dim=-1)).to(context.dtype)
+        return torch.matmul(weights, context)
 
     def forward(
         self,
@@ -469,12 +473,13 @@ class CrossLimbTemporalBlock(nn.Module):
         # key/value and as cross-out query.
         xd = self.proj_in(x)                                               # (T, B, J, d_cl)
 
-        # --- Cross-in: latents (query) attend over joints (key/value), per frame.
-        # Flatten so attention batch = T*B with index (t*B + b).
-        kv = xd.permute(2, 0, 1, 3).reshape(J, T * B, d)                   # (J, T*B, d_cl)
-        q = self.latents.unsqueeze(1).expand(K, T * B, d)                  # (K, T*B, d_cl)
-        kpm = joints_key_padding_mask.unsqueeze(0).expand(T, B, J).reshape(T * B, J)  # (T*B, J)
-        reliability_attn_mask = None
+        # Bounded cosine logits avoid routing saturation as projection weights
+        # grow. Normalize in fp32, then let the tiny linear use outer AMP.
+        score_input = F.normalize(xd.float(), dim=-1, eps=1e-6).to(xd.dtype)
+        score_weight = F.normalize(self.routing.weight.float(), dim=-1, eps=1e-6).to(xd.dtype)
+        scores = F.linear(score_input, score_weight).float() * math.sqrt(d)
+        read_scores, write_scores = scores.split(K, dim=-1)
+        read_scores = read_scores.transpose(-1, -2)  # (T,B,K,J)
         temporal_key_bias = None
         if unreliable_mask is not None:
             if unreliable_mask.shape != (T, B, J):
@@ -482,8 +487,7 @@ class CrossLimbTemporalBlock(nn.Module):
                     f"unreliable_mask must have shape {(T, B, J)}, got {tuple(unreliable_mask.shape)}"
                 )
             unreliable_mask = unreliable_mask.to(device=xd.device, dtype=xd.dtype)
-            reliability_attn_mask = self.reliability_bias * unreliable_mask.reshape(T * B, J)
-            reliability_attn_mask = reliability_attn_mask.unsqueeze(1).expand(T * B, K, J)
+            read_scores = read_scores + self.reliability_bias * unreliable_mask.unsqueeze(2)
             # Per-frame unreliability = fraction of VALID joints flagged, so a
             # padded joint neither counts as reliable nor as unreliable. Laid
             # out (B*K, T) to match the temporal attention batch (b*K + k).
@@ -494,19 +498,17 @@ class CrossLimbTemporalBlock(nn.Module):
             )                                                              # (T, B)
             temporal_key_bias = self.temporal_reliability_bias * frame_unreliable.transpose(0, 1)
             temporal_key_bias = temporal_key_bias.unsqueeze(1).expand(B, K, T).reshape(B * K, T)
-        bz, _ = self.cross_in_attn(
-            q,
-            kv,
-            kv,
-            attn_mask=reliability_attn_mask,
-            key_padding_mask=kpm,
-            need_weights=False,
-        )
-        bz = bz.reshape(K, T, B, d)
+        padded = joints_key_padding_mask[None, :, None, :]
+        # Finite minimum also handles an entirely padded sample: its weights
+        # become zero after masking rather than softmax(-inf,...,-inf) -> NaN.
+        read_weights = read_scores.masked_fill(padded, torch.finfo(torch.float32).min).softmax(dim=-1)
+        read_weights = read_weights.masked_fill(padded, 0.0)
+        values = xd.masked_fill(joints_key_padding_mask[None, :, :, None], 0.0)
+        bz = torch.matmul(self.routing_dropout(read_weights).to(xd.dtype), values)  # (T,B,K,d)
 
         # --- Latent temporal self-attention across T, unmasked (every latent
         # token sees the whole window). attention batch = B*K, index (b*K + k).
-        zt_in = bz.permute(1, 2, 0, 3).reshape(T, B * K, d)               # (T, B*K, d_cl)
+        zt_in = bz.reshape(T, B * K, d)                                 # (T, B*K,d)
         # No time table of its own. The latents inherit the frame's absolute PE
         # through cross-in: every joint token of frame t carries the same PE_t
         # from InputProcess, proj_in is linear and the attention output is a
@@ -548,11 +550,10 @@ class CrossLimbTemporalBlock(nn.Module):
             zk_delta, _ = self.cross_k_attn(zk_norm, zk_norm, zk_norm, need_weights=False)
             kv_out = kv_out + self.cross_k_scale * zk_delta
 
-        # --- Cross-out: joints (query) attend over latents (key/value), per frame.
-        # Both flattened to attention batch = T*B with index (t*B + b).
-        q_out = xd.permute(2, 0, 1, 3).reshape(J, T * B, d)               # (J, T*B, d_cl)
-        delta, _ = self.cross_out_attn(q_out, kv_out, kv_out, need_weights=False)
-        delta = delta.reshape(J, T, B, d).permute(1, 2, 0, 3)            # (T, B, J, d_cl)
+        # Joint-dependent mixture: each joint chooses among K whole-body
+        # trajectories, rather than receiving a single broadcast context.
+        context = kv_out.transpose(0, 1).reshape(T, B, K, d).to(xd.dtype)
+        delta = self._write_context(write_scores, context)              # (T,B,J,d)
 
         return self.norm_cl(x + self.proj_out(delta))
 

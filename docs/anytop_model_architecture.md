@@ -2,7 +2,7 @@
 
 本文档描述 AnyTop 的模型结构：输入特征、条件总线、decoder、训练扰动与损失，以及参考动作在
 采样侧的使用方式。层数、宽度、各种概率和损失权重由训练配置决定；正文以结构与数据流为主，
-参考配置的参数预算见 §11。实现细节以代码为准。
+实现细节以代码为准。
 
 ## 速览
 
@@ -29,7 +29,6 @@
 ```text
 diffusion timestep
   + resample-speed condition
-  + canonical output-frame condition
   + action-label condition
 ```
 
@@ -41,7 +40,7 @@ diffusion timestep
 - 必要时在采样前先 retarget 到目标骨架。
 
 基础训练目标是 `MSE(predicted_x0, target_x0)`，不是噪声预测。temporal attention 是全窗口
-注意力；loop 使用条件 token、圆周相位、数据增强与闭合损失，不使用 temporal mask。
+注意力；loop 使用圆周相位、数据增强与闭合损失，不使用 temporal mask。
 
 下面各节展开说明。
 
@@ -54,12 +53,12 @@ attention，最后由因子化注意力输出的预测就是干净动作。骨�
 
 在主干之上，模型还包含：
 
-- Perceiver 式 cross-limb temporal pathway，让不同肢体交换完整的运动节奏；
-- loop 条件、圆周相位、loop 数据增强与闭合损失；
+- 基于全身轨迹池化的 cross-limb temporal pathway，让不同肢体交换运动节奏；
+- loop 圆周相位、loop 数据增强与闭合损失；
 - per-joint structural channel 和 whole-joint name dropout；
 - per-joint species × joint FiLM 与 species CFG；
-- 四槽 action-label 条件与 action CFG；
-- canonical output-frame 和 resample-speed 条件；
+- 三槽 action-label 条件与 action CFG；
+- resample-speed 条件；
 - 可选的 global topology conditioner（骨架汇总 → 每层 AdaLN，见 §4.4）；
 - subtree / temporal-span 混合噪声训练；
 - full temporal attention、QK-Norm 和细分的拓扑关系码。
@@ -77,6 +76,7 @@ x_t [B, J, F, T]
   ├─ frozen-T5 joint-name embedding → 可选 species FiLM → trainable projection
   ├─ joint structural descriptor → MLP
   └─ absolute sinusoidal frame PE
+  + unreliable_embedding（按待重绘区域的 mask 加入）
   │
   ▼
 tokens [T+1, B, J, D]
@@ -84,7 +84,6 @@ tokens [T+1, B, J, D]
   │  timestep condition bus
   │    sinusoidal diffusion timestep
   │      + resample-speed token
-  │      + canonical-frame token
   │      + action-label token
   │    (is_loop 不进这条总线，见 §6.1)
   │
@@ -111,6 +110,11 @@ root / non-root output projections
 
 根关节和普通关节分别使用线性投影。rest pose 也有独立的 root/non-root 投影，并作为领先
 时间 token 拼到动作帧前面。因此 decoder 实际处理 `T+1` 个时间位置，输出时再删除第 0 个。
+
+输入与输出采用统一的 canonical 特征空间，每个关节有 12 个通道：位置残差 0:3、
+6D rotation 3:9、速度 9:12。位置相对 rest pose 表达，并按骨架长度尺度与全语料统计量
+归一化；速度只保留根关节 X/Z 两个通道，其他速度通道为零。普通关节的模型投影读写
+前 9 个通道，根关节另外读写 X/Z 速度。
 
 ### 3.2 关节名称
 
@@ -185,15 +189,15 @@ dropout 位于 whole-joint name drop 之后；FiLM 头读取 element-wise dropou
 
 ### 4.2 Action label
 
-Action label 使用受控词表，不接收自由文本。每个词先查 checkpoint 内冻结的 T5 word table，
-再按四个角色槽聚合：
+Action label 使用受控词表，不接收自由文本。词向量表作为冻结 buffer 保存在 checkpoint
+内；head 和 modifier 使用预计算的 T5 向量，direction 使用正交方向码。按三个角色槽聚合：
 
 1. head/action；
 2. direction；
-3. modifier；
-4. hands。
+3. modifier。
 
-四个槽拼接后由 MLP 投影并加到 timestep condition。训练时
+各槽独立计算归一化加权均值，空槽为零；head 槽的首词权重为 1.5，其余词权重为 1。
+direction 槽只读取方向码的有效轴。三个槽拼接后由 MLP 投影并加到 timestep condition。训练时
 `action_label_cfg_drop_prob` 把部分样本送到 learned null embedding；推理时
 `action_label_cfg_scale>1` 用 conditional/unconditional 两次 forward 做 CFG。
 
@@ -201,14 +205,11 @@ Action label 使用受控词表，不接收自由文本。每个词先查 checkp
 `GraphMotionDecoder.action_adaln` 一次 matmul 出全部层的 (γ, β)，每层拿自己的
 (B, 4, d) 切片，在 temporal 与 FFN 的**分支输入**上做 `(1+γ)·x + β`；残差流和 spatial 分支不碰。
 零初始化，驱动向量与加性路径共用，所以 CFG 的无条件分支自动走 null。
-设计细节见 [conditional_modulation_upgrade.md](conditional_modulation_upgrade.md) §3。
 
-`--action_adaln_bottleneck` 设这个头的隐层宽（0 表示使用 `latent_dim`）。它的输入是
-action token，而标签集的 slot-source 秩只有 ~137，头再宽也用不满：d=384 的模型训完后输出
-矩阵有效秩约 130。参考配置取 128，不损失表达力，同时把模型里最大的单个矩阵（384→12288）
-减半。见 §11。
+`--action_adaln_bottleneck` 设置这个头的隐层宽度，0 表示使用 `latent_dim`。
+它以 action token 为输入，经 bottleneck 生成各层的调制参数。
 
-### 4.3 Canonical frame 与 resample speed
+### 4.3 输出特征空间与 resample speed
 
 `canonical_feature_mean/std` 定义模型写入的输出坐标/标准化空间。全语料只有一套：每个
 cond entry 携带同一对向量（loader 用 `assert_single_canonical_frame` 校验），所以它不是
@@ -267,7 +268,7 @@ x + embedded timestep/conditions
 
 方括号里的两处只在 `--action_label_adaln` 下存在，见 §4.2。
 
-该层沿用了 `nn.TransformerDecoderLayer` 的外形，但不含 encoder-decoder memory attention：
+该层使用 `nn.TransformerDecoderLayer` 的接口，但不含 encoder-decoder memory attention：
 `self_attn` 位置换成 graph/temporal 两条路径，`multihead_attn` 不使用。
 
 ### 5.1 Graph-aware spatial attention
@@ -305,43 +306,51 @@ mask。
 ### 5.3 Cross-limb temporal block
 
 基础的因子化 spatial/temporal attention 没有一条让“某条腿的完整时间轨迹”直接观察
-“另一条腿的完整时间轨迹”的短路径。Cross-limb block 用 K 个 learned latents 补上它：
+“另一条腿的完整时间轨迹”的短路径。Cross-limb block 用 K 条 learned pooling 轨迹补上它：
 
 ```text
-每帧全部 joints --cross-in--> K 个全身 latents
+每帧全部 joints --可学习加权池化--> K 个全身 latents
 全身 latents ------时间自注意--> 跨时间节奏上下文
-每帧全部 joints <--cross-out--- K 个全身 latents
+每帧全部 joints <--关节相关的 K 路混合--- K 个全身 latents
 ```
 
 该路径在窄 bottleneck `cross_limb_dim` 中运行，只在部分层启用，每个启用的层有独立 block；
 latent 数量与维度由配置决定。
 
-latent **没有自己的时间表**。每帧所有关节 token 都带着 InputProcess 写入的同一个绝对帧 PE，
-`proj_in` 是线性的、cross-in 的输出是 value 的凸组合，所以 `proj_in(PE_t)` 原样穿到 latent。
-因此不需要 per-block 的正弦/圆周时间表，也没有额外的时间表门控。
+共享一次 `proj_in` 后，`routing: Linear(d_cl, 2K, bias=False)` 的前 K 个向量
+预测读取分数（softmax 沿关节轴），
+后 K 个向量预测写回分数（softmax 沿 latent 轴）；两组向量独立学习。输入与 score 向量
+先做 fp32 L2 归一化，余弦分数乘 `sqrt(d_cl)`，限制 logit 幅度；投影值不归一化。
+两次加权混合均在窄空间内完成；读取和写回使用池化与混合，时序和 Cross-K 使用多头注意力。
+读取与写回权重都使用 block 的 dropout；padding 不参与池化或帧不可靠比例统计。
+
+latent 的帧位置信息来自关节 token。池化使用线性投影后的 value，因此可以汇聚其中的
+绝对帧 PE 和主干相位信号；block 内没有独立的正弦/圆周时间表或时间表门控。
 
 完整的 block 顺序（`CrossLimbTemporalBlock.forward`）：
 
 ```text
-cross-in（per-joint reliability_bias 加在 logits 上）
+learned pooling（per-joint reliability_bias 加在 logits 上）
   → latent temporal self-attention（per-frame temporal_reliability_bias 作为 additive key bias）
   → cross-K self-attention（同一帧的 K 个 latent 互相注意；Pre-Norm + 零初始化 cross_k_scale）
-  → cross-out
+  → joint-dependent K-way mixture → proj_out → residual + LayerNorm
 ```
 
 “哪些区域不可靠”这条信号分三层进入网络：
 
 - `AnyTop.unreliable_embedding`：全局一个 `d_model` 向量，在 InputProcess 之后按
   `unreliable_mask` 加到输入 token 上，整个 trunk（spatial/temporal attention、FFN，
-  以及 cross-limb 的 value/query）都能看到重绘区域；
-- cross-in 的标量 `reliability_bias`：做帧内的关节级选择；
+  以及 cross-limb 的投影值与路由分数）都能看到重绘区域；
+- 池化的标量 `reliability_bias`：做帧内的关节级选择；
 - latent temporal attention 的标量 `temporal_reliability_bias`：乘以“该帧被标记的有效关节
-  占比”作为 key bias，做帧级选择。只有 cross-in 的标量 bias 时，整帧被标记会被 softmax 的
-  平移不变性抵消，整帧 inpaint 和 temporal span 对这条路径等于不存在。
+  占比”作为 key bias，做帧级选择。帧内统一的关节偏置会被 softmax 的平移不变性抵消，
+  时序偏置则能区分哪些帧需要重绘。
 
-cross-K attention 让同一帧的 K 个 latent 在 cross-out 之前直接交换信息，而不必绕
-“cross-out → 下一层 spatial attention → 下一层 cross-in”。这些标量都零初始化，
+Cross-K attention 让同一帧的 K 个 latent 在写回前直接交换信息。这些标量都零初始化，
 `cross_k_norm`/`cross_k_attn` 藏在零 gate 之后，训练起点等价于没有 cross-K。
+
+`--cross_limb 0` 时不创建分支模块或参数；`unreliable_embedding` 仍作为主干信号保留。
+`cross_limb_last_n=0` 表示所有 decoder 层启用，正数表示只启用最后 N 层。
 
 ## 6. Loop 路径
 
@@ -349,18 +358,14 @@ Loop 不是单一布尔 token，而是模型、数据和损失共同组成的一
 
 ### 6.1 模型内
 
-- `is_loop` **不**进 timestep condition。语料里这个 flag 与内容强相关（loop 类 2/3 是
-  stationary idle；同一 species-tag 簇里 loop 标注的步态与 one-shot 标注的步态不同）。
-  一旦把它作为全局 token 加到 condition bus，模型就会把它学成内容键：推理时 `--loop on`
-  的 Buffalo/Bear run 会借同簇其它 loop 的小幅度、相位散乱步态，而不是本物种 one-shot run
-  的步态。一个闭合窗口是时间拓扑的陈述，phase table 是唯一能表达它的地方；
+- `is_loop` 控制窗口的时间拓扑，不进入 timestep condition bus；
 - 主 temporal path 使用 absolute PE，并在 loop 样本上额外加入 circular phase embedding；
-- cross-limb latents 通过 cross-in 继承关节 token 里的帧 PE（§5.3），没有自己的
+- cross-limb latents 通过池化汇聚关节 token 里的帧位置信息（§5.3），没有自己的
   loop/absolute 时间表；
 - circular table 在窗口的第一个和最后一个动作帧闭合；第 0 行 rest-pose token 为零。
 
-每层的 phase scale（`temporal_phase_scale`）是 learned scalar，以 0 初始化；训练后通常只有
-前几层学到非零值，圆周相位在前三层就被消费完。
+每层的 phase scale（`temporal_phase_scale`）是以 0 初始化的 learned scalar，控制该层
+圆周相位信号的强度。
 
 ### 6.2 数据侧
 
@@ -437,13 +442,15 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 
 ## 8. 损失
 
-模型预测 `x_0`。基础 `l_simple` 是按有效关节、有效帧计算的 MSE；其余项均为可选，是否启用
+模型预测 `x_0`。基础 `l_simple` 是按有效关节、有效帧计算的位置和 6D rotation MSE；
+根速度由单独的辅助项约束。其余项均为可选，是否启用
 与权重由训练配置决定：
 
 | 损失 | 约束 |
 |---|---|
 | geodesic | 预测/目标 6D rotation 转 SO(3) 后的角距离 |
-| velocity consistency | position finite difference 与 velocity channel 一致 |
+| root velocity | 根关节 X/Z 速度相对 GT 的误差，按物种权重缩放 |
+| position step | position 相邻帧差分相对 GT 的误差，按 canonical 步长统计与物种权重缩放 |
 | bone vector | 父→子骨向量相对 GT 的差（同时管长度和方向），按 rest 骨长归一化（下限为 L 的一个比例），按 `alphas_cumprod[t]` 加权；每个叶子关节另加一根局部坐标系下的单位虚拟子骨，方向各向同性（`‖R_pred − R_gt‖_F / √3`），让叶子的旋转和有子关节的关节一样受约束 |
 | loop wrap | loop 首尾闭合 |
 | loop root XZ closure | 根 XZ 速度整周期积分为零 |
@@ -482,33 +489,3 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 | loop roll/tile/resample | `data_loaders/truebones/data/dataset.py` |
 | leaf-drop 拓扑增强 | `data_loaders/truebones/truebones_utils/leaf_drop.py` |
 | reference/inpainting/outpainting | `sample/generate.py` |
-
-## 11. 参数预算与设计依据
-
-参考训练配置（`train_all.bat`：d=384 / ff=2048 / 8 层 / cross-limb 后 4 层 d_cl=128 /
-`last_layer_ff=256` / `action_adaln_bottleneck=128` / `species_film_bottleneck=128`）约
-26.8M 可训练参数；冻结的 T5 词表以 buffer 形式保存，不计入。
-
-| 模块 | 参数量 | 说明 |
-|---|---:|---|
-| 8 层 decoder 主干 | 21.89M | L0–L6 全宽 FFN 2048；末层 256 |
-| `action_adaln` 头 | 1.63M | 隐层 128 |
-| cross-limb ×4 | 1.46M | d_cl=128 |
-| `action_label_projection` | 0.74M | 读 compact slot channels（768+6+768=1542） |
-| `input_process` | 0.86M | per-joint species FiLM 0.39M、joint-name 投影 0.30M、structural 0.15M、动作/rest 投影 0.02M |
-| `resample_speed_projection` | 0.15M | |
-| `output_process` | 0.01M | |
-| relation/topology embedding tables | 0.02M | 各层共享 |
-
-这些宽度由训练后权重的秩与单元参与率决定：
-
-- **中间层是饱和的**：L1–L6 FFN 的 2048 个隐单元参与率 1850–1990，注意力 q/k/v/o 有效秩
-  225–300 / 384。宽度没有余量，因此主干保持全宽。
-- **末层 FFN 坍缩**：单元增益中位数 0.014（其余层 0.7–0.9），参与率 464/2048。末层之后只有
-  `LayerNorm → Linear(d→12)` 的线性读出，不需要 2048 个隐单元，因此用 256。
-- **AdaLN 头有效秩约 130**，被标签集的秩（~137）封顶；隐层 128 已足够，且把模型里最大的
-  单个矩阵（384→12288）压到最小。
-- **species 描述子**：259 个物种向量秩 94、有效秩 52；per-joint FiLM 的隐层取 128。
-- **`action_label_projection`**：direction 槽的正交码只占 6 个轴，其余 762 列的输入恒为 0，
-  是结构性死参数；投影只读 `compact_slot_channels`（768+6+768=1542）。
-- **cross-limb**：proj 有效秩 108–118/128，宽度用满。

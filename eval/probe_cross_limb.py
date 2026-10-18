@@ -22,6 +22,7 @@ from data_loaders.truebones.truebones_utils.species_descriptor_table import load
 from utils.model_util import (bind_checkpoint_action_conditioning,
                               create_model_and_diffusion_general_skeleton,
                               load_checkpoint_weights, load_model)
+from utils.parser_util import assert_checkpoint_version
 
 
 def move(value, device):
@@ -36,6 +37,7 @@ def move(value, device):
 
 def load_checkpoint(path, device):
     args = argparse.Namespace(**json.loads((path.parent / 'args.json').read_text()))
+    assert_checkpoint_version(vars(args), str(path.parent / 'args.json'))
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
     payload = torch.load(path, map_location='cpu', weights_only=False)
     state, _, metadata = load_checkpoint_weights(payload, str(path), prefer_ema=True)
