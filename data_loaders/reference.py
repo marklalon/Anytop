@@ -3,7 +3,7 @@ import numpy as np
 import torch
 
 from data_loaders.truebones.truebones_utils.canonical_features import (
-    build_canonical_rest_feature, physical_hml_to_canonical, rest_pos_from_cond,
+    _length_scale_from_cond, physical_hml_to_canonical, rest_pos_from_cond,
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import build_joint_struct_features
 
@@ -50,27 +50,31 @@ def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, share
 # coincident helper joint; its direction is noise, so it reads as zero.
 BONE_DIRECTION_MIN_REST_FRACTION = 1e-3
 
+# Per-joint encoder pose: unit bone direction (3) and height over ``L`` (1).
+REFERENCE_POSE_CHANNELS = 4
+
 
 def bone_directions(positions, parents, rest_positions):
-    """``[T + 1, J, 3]`` unit parent->child directions; row 0 is the rest pose.
+    """``[T, J, 3]`` unit parent->child directions, one row per frame.
 
     Physical positions sit in the skeleton-canonicalized rest-facing frame
     (every rest faces +Z; per-frame root yaw is not removed) with absolute
     height, so a direction means the same world direction on every skeleton
     ("points up", "points back"), unlike the rest-centered position residual or
-    the local rotation. Roots and coincident joints are zero.
+    the local rotation. The rest pose only decides which bones are coincident
+    helpers; it is never an output row. Roots and coincident joints are zero.
     """
-    positions = np.concatenate([np.asarray(rest_positions, np.float32)[None],
-                                np.asarray(positions, np.float32)], axis=0)
+    positions = np.asarray(positions, np.float32)
+    rest_positions = np.asarray(rest_positions, np.float32)
     parents = np.asarray(parents)
     out = np.zeros_like(positions)
     child = np.flatnonzero(parents >= 0)
     if not len(child):
         return out
+    rest_norm = np.linalg.norm(rest_positions[child] - rest_positions[parents[child]], axis=-1)
+    keep = rest_norm > BONE_DIRECTION_MIN_REST_FRACTION * max(float(rest_norm.max()), 1e-12)
     vec = positions[:, child] - positions[:, parents[child]]
     norm = np.linalg.norm(vec, axis=-1, keepdims=True)
-    rest_norm = norm[0, :, 0]
-    keep = rest_norm > BONE_DIRECTION_MIN_REST_FRACTION * max(float(rest_norm.max()), 1e-12)
     # Non-finite positions are tolerated by the ``feats`` path (nan_to_num), so
     # they must not leave a NaN here: inf/inf in the divide is NaN.
     with np.errstate(invalid='ignore', over='ignore'):
@@ -79,20 +83,33 @@ def bone_directions(positions, parents, rest_positions):
     return np.nan_to_num(out)
 
 
-def reference_sample(motion, cond, names, *, feats=None, rest_pose=None, joint_struct=None):
+def reference_pose(motion, cond):
+    """``[T, J, REFERENCE_POSE_CHANNELS]`` rest-free encoder pose.
+
+    Bone directions plus each joint's absolute height over the rig's ``L``
+    (ground contact and posture height, comparable across body sizes).
+    """
+    positions = np.asarray(motion, np.float32)[..., :3]
+    height = positions[..., 1:2] / float(_length_scale_from_cond(cond))
+    pose = np.concatenate([bone_directions(positions, cond['parents'], rest_pos_from_cond(cond)),
+                           height], axis=-1)
+    return np.nan_to_num(pose).astype(np.float32)
+
+
+def reference_sample(motion, cond, names, *, feats=None, joint_struct=None):
     """One encoder input from physical features on their own skeleton.
 
     The single builder for both the loader and generation, so the two never
-    hand the encoder differently derived channels. ``feats`` / ``rest_pose`` /
-    ``joint_struct`` may be passed in when already derived from this same
-    motion and cond.
+    hand the encoder differently derived channels. ``feats`` / ``joint_struct``
+    may be passed in when already derived from this same motion and cond.
+    ``feats`` is the canonical window; the encoder reads only its root XZ
+    velocity, the one canonical channel that is not rest-centered.
     """
     if feats is None:
         feats = np.nan_to_num(physical_hml_to_canonical(motion, cond)).astype(np.float32)
     return {
         'feats': feats,
-        'bone_dir': bone_directions(motion[..., :3], cond['parents'], rest_pos_from_cond(cond)),
-        'rest_pose': build_canonical_rest_feature(cond) if rest_pose is None else rest_pose,
+        'pose': reference_pose(motion, cond),
         'joints_names_embs': names,
         'joint_struct': build_joint_struct_features(cond) if joint_struct is None else joint_struct,
     }
@@ -107,10 +124,9 @@ def collate_reference(samples, motion, names, joint_struct):
     batch, joints, feats, frames = motion.shape
     result = {
         'ref_feats': torch.zeros_like(motion),
-        'ref_bone_dir': motion.new_zeros(batch, joints, 3, frames + 1),
+        'ref_pose': motion.new_zeros(batch, joints, REFERENCE_POSE_CHANNELS, frames),
         'ref_mask': torch.zeros(batch, joints, dtype=torch.bool, device=motion.device),
         'ref_active': torch.zeros(batch, dtype=torch.bool, device=motion.device),
-        'ref_rest_pose': motion.new_zeros(batch, joints, feats),
         'ref_joints_names_embs': torch.zeros_like(names),
         'ref_joint_struct': torch.zeros_like(joint_struct),
     }
@@ -124,15 +140,15 @@ def collate_reference(samples, motion, names, joint_struct):
         if not 0 < count <= joints:
             raise ValueError('Reference joints exceed their source canvas / loader bucket')
         result['ref_feats'][i, :count] = data.permute(1, 2, 0)
-        bone_dir = torch.as_tensor(sample['bone_dir'], dtype=motion.dtype, device=motion.device)
-        if bone_dir.shape != (frames + 1, count, 3):
+        pose = torch.as_tensor(sample['pose'], dtype=motion.dtype, device=motion.device)
+        if pose.shape != (frames, count, REFERENCE_POSE_CHANNELS):
             raise ValueError(
-                'Reference bone directions must have shape [frames + 1, source joints, 3], '
-                f'got {tuple(bone_dir.shape)} for {frames} frames and {count} joints'
+                f'Reference pose must have shape [frames, source joints, {REFERENCE_POSE_CHANNELS}], '
+                f'got {tuple(pose.shape)} for {frames} frames and {count} joints'
             )
-        result['ref_bone_dir'][i, :count] = bone_dir.permute(1, 2, 0)
+        result['ref_pose'][i, :count] = pose.permute(1, 2, 0)
         result['ref_mask'][i, :count] = True
         result['ref_active'][i] = True
-        for key in ('rest_pose', 'joints_names_embs', 'joint_struct'):
+        for key in ('joints_names_embs', 'joint_struct'):
             result['ref_' + key][i, :count] = torch.as_tensor(sample[key], device=motion.device)
     return result

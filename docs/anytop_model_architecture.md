@@ -435,8 +435,9 @@ root 的 XZ velocity 有单独的项，其余速度通道是派生量，不直�
 不带编辑参数的 `--reference_motion`（encode）要求以 `--ref_encoder` 从头训练的 checkpoint。它不经过
 retarget，也不使用 img2img 初始化或 clamp：参考在自己的骨架上提取干净特征，经独立的、
 比主干窄的 spatial/temporal encoder 和每帧 learned-query 池化，得到 `[B,T,K,d_z]`。
-编码器读取 position/rotation、translation root 的 XZ velocity，以及每个关节在骨架规范化
-静止朝向系下的父→子单位骨骼方向 `ref_bone_dir`（rest 行 + 逐帧行）；不读取 species descriptor。
+编码器只读与源骨架 rest 无关的量：每个关节在骨架规范化静止朝向系下的父→子单位骨骼方向与
+绝对高度 / L（`ref_pose`）、translation root 的 XZ velocity、关节名和 structural channel 的拓扑列；
+不读 rest token、残差 position、局部 rotation，也不读取 species descriptor。
 目标 decoder 仍保留自己的骨架条件和 per-joint species FiLM。
 
 参考模型的层内顺序为 `spatial → ref cross-attn → temporal → cross-limb → FFN`。

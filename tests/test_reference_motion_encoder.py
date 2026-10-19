@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from model.anytop import AnyTop
 from model.cfg_sampler import ClassifierFreeReferenceModel
 from data_loaders.reference import (
-    bone_directions, collate_reference, prepare_reference_sample, reference_sample,
+    REFERENCE_POSE_CHANNELS, bone_directions, collate_reference, prepare_reference_sample,
+    reference_pose, reference_sample,
 )
 from data_loaders.truebones.data.dataset import resample_motion_features
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
@@ -36,12 +37,12 @@ def inputs(batch=2, joints=4, frames=5, source_joints=6):
              joints_padding_mask=torch.ones(batch, 1, 1, joints+1, joints+1),
              graph_dist=torch.zeros(batch, joints, joints),
              joints_relations=torch.zeros(batch, joints, joints))
+    pose = torch.randn(batch, source_joints, REFERENCE_POSE_CHANNELS, frames)
+    pose[:, :, :3] = torch.nn.functional.normalize(pose[:, :, :3], dim=2)
     y.update(ref_feats=torch.randn(batch, source_joints, 12, frames),
-             ref_bone_dir=torch.nn.functional.normalize(
-                 torch.randn(batch, source_joints, 3, frames + 1), dim=2),
+             ref_pose=pose,
              ref_mask=torch.ones(batch, source_joints, dtype=torch.bool),
              ref_active=torch.ones(batch, dtype=torch.bool),
-             ref_rest_pose=torch.randn(batch, source_joints, 12),
              ref_joints_names_embs=torch.randn(batch, source_joints, 4),
              ref_joint_struct=torch.randn(batch, source_joints, JOINT_STRUCT_DIM))
     return x, y
@@ -72,7 +73,7 @@ def test_mixed_hard_bypass_includes_bias_and_source_changes_only_active_rows():
     x, y = inputs()
     y['ref_active'][0] = False
     first = m(x, torch.zeros(2), y)
-    other = dict(y, ref_feats=torch.randn_like(y['ref_feats']) * 5)
+    other = dict(y, ref_pose=torch.randn_like(y['ref_pose']) * 5)
     second = m(x, torch.zeros(2), other)
     torch.testing.assert_close(first[0], second[0], rtol=0, atol=0)
     assert not torch.allclose(first[1], second[1])
@@ -120,47 +121,81 @@ def test_encoder_permutation_invariance_padding_and_actual_channel_contract():
     assert z.shape == (2, 5, 2, 8)
     permutation = torch.tensor([0, 4, 1, 5, 2, 3])  # transport root remains zero
     permuted = dict(y)
-    for k in ('ref_feats', 'ref_bone_dir', 'ref_mask', 'ref_rest_pose', 'ref_joints_names_embs',
-              'ref_joint_struct'):
+    for k in ('ref_feats', 'ref_pose', 'ref_mask', 'ref_joints_names_embs', 'ref_joint_struct'):
         permuted[k] = y[k][:, permutation]
     torch.testing.assert_close(z, encoder(permuted), rtol=1e-5, atol=1e-6)
+    # Only the root XZ velocity of the canonical window is read: the
+    # rest-centered positions, rotations and other velocities never are.
     changed = copy.deepcopy(y)
-    changed['ref_feats'][:, 1:, 9:] = 100
+    changed['ref_feats'][:, 1:] = 100
+    changed['ref_feats'][:, 0, :9] = 100
     changed['ref_feats'][:, 0, 10] = 100
     changed['species_emb'] = torch.randn(2, 99)
+    changed['ref_rest_pose'] = torch.randn(2, 6, 12)
     torch.testing.assert_close(z, encoder(changed), rtol=0, atol=0)
+    moved = copy.deepcopy(y)
+    moved['ref_feats'][:, 0, 9] += 1
+    assert not torch.allclose(z, encoder(moved))
     padded = dict(y)
-    for k in ('ref_feats', 'ref_bone_dir', 'ref_mask', 'ref_rest_pose', 'ref_joints_names_embs',
-              'ref_joint_struct'):
+    for k in ('ref_feats', 'ref_pose', 'ref_mask', 'ref_joints_names_embs', 'ref_joint_struct'):
         shape = list(y[k].shape)
         shape[1] = 3
         padded[k] = torch.cat([y[k], y[k].new_zeros(shape)], dim=1)
     torch.testing.assert_close(z, encoder(padded), rtol=1e-5, atol=1e-6)
 
 
-def test_encoder_reads_bone_directions_including_rest_row():
+def test_encoder_reads_bone_directions_and_height():
     m = model().eval()
     _, y = inputs()
     z = m.motion_encoder(y)
-    for rows in (slice(0, 1), slice(1, None)):
+    for channels in (slice(0, 3), slice(3, 4)):
         changed = copy.deepcopy(y)
-        changed['ref_bone_dir'][..., rows] = -changed['ref_bone_dir'][..., rows]
+        changed['ref_pose'][:, :, channels] = -changed['ref_pose'][:, :, channels]
         assert not torch.allclose(z, m.motion_encoder(changed))
 
 
-def test_bone_directions_are_facing_frame_units_with_rest_row():
+def test_encoder_reads_topology_and_side_but_not_rest_geometry():
+    from data_loaders.truebones.truebones_utils.joint_struct_features import (
+        JOINT_STRUCT_FEATURE_NAMES,
+    )
+    m = model().eval()
+    _, y = inputs()
+    z = m.motion_encoder(y)
+    column = JOINT_STRUCT_FEATURE_NAMES.index
+    geometry = copy.deepcopy(y)
+    for name in ('height_n', 'fore_aft_n', 'attach_h_n'):
+        geometry['ref_joint_struct'][..., column(name)] = torch.randn(2, 6)
+    side = geometry['ref_joint_struct'][..., column('lateral_signed')]
+    side.copy_(side.sign() * (side.abs() + torch.rand_like(side)))  # magnitude only
+    torch.testing.assert_close(z, m.motion_encoder(geometry), rtol=0, atol=0)
+    flipped = copy.deepcopy(y)
+    flipped['ref_joint_struct'][..., column('lateral_signed')] *= -1
+    assert not torch.allclose(z, m.motion_encoder(flipped))
+
+
+def test_bone_directions_are_facing_frame_units():
     parents = np.array([-1, 0, 1, 1])
     rest = np.array([[0, 1, 0], [0, 1, 0], [0, 1, -1], [0, 1.0005, -1]], np.float32)
     positions = np.repeat(rest[None], 2, axis=0)
     positions[1, 2] = [0, 3, 0]  # second frame: tail raised straight up
     out = bone_directions(positions, parents, rest)
-    assert out.shape == (3, 4, 3)
+    assert out.shape == (2, 4, 3)
     np.testing.assert_array_equal(out[:, 0], 0)  # root
     np.testing.assert_array_equal(out[:, 1], 0)  # coincident with its parent
     np.testing.assert_allclose(out[0, 2], [0, 0, -1])
-    np.testing.assert_allclose(out[1, 2], [0, 0, -1])
-    np.testing.assert_allclose(out[2, 2], [0, 1, 0])
+    np.testing.assert_allclose(out[1, 2], [0, 1, 0])
     np.testing.assert_allclose(np.linalg.norm(out[:, 3], axis=-1), 1, rtol=1e-6)
+
+
+def test_reference_pose_is_rest_free():
+    # Same world pose on two rigs with equal L but different rest geometry:
+    # the encoder pose must not tell them apart.
+    motion, cond, _ = fixture()
+    other = copy.deepcopy(cond)
+    rest = np.asarray(cond['rest_pos_ric_hml'], np.float32).copy()
+    rest[:, 0] = -rest[:, 0]  # mirrored rest: same spread, different geometry
+    other['rest_pos_ric_hml'] = rest
+    np.testing.assert_allclose(reference_pose(motion, cond), reference_pose(motion, other), atol=1e-6)
 
 
 def test_bone_directions_sanitize_non_finite_positions():
@@ -169,7 +204,7 @@ def test_bone_directions_sanitize_non_finite_positions():
     positions = np.array([[[0, 1, 0], [np.inf, 2, 0]],
                           [[0, 1, 0], [np.nan, 2, 0]]], np.float32)
     out = bone_directions(positions, parents, rest)
-    assert out.shape == (3, 2, 3)
+    assert out.shape == (2, 2, 3)
     assert np.isfinite(out).all()
 
 
@@ -177,8 +212,8 @@ def test_collate_rejects_bone_direction_frame_mismatch():
     motion, cond, _ = fixture()
     sample = prepare_reference_sample(motion, cond, {'translation_root_index': 0},
                                       SimpleNamespace(), augment=False)
-    sample['bone_dir'] = sample['bone_dir'][:-1]
-    with pytest.raises(ValueError, match='bone directions'):
+    sample['pose'] = sample['pose'][:-1]
+    with pytest.raises(ValueError, match='Reference pose'):
         collate_reference([sample], torch.zeros(1, 7, 12, 30), torch.zeros(1, 7, 4),
                           torch.zeros(1, 7, JOINT_STRUCT_DIM))
 
@@ -256,11 +291,11 @@ def test_folded_reference_read_matches_explicit_attention():
 def test_unaugmented_reference_reuses_shared_target_channels():
     motion, cond, metadata = fixture()
     fresh = prepare_reference_sample(motion, cond, metadata, SimpleNamespace(), augment=False)
-    shared = {k: fresh[k] for k in ('feats', 'rest_pose', 'joint_struct')}
+    shared = {k: fresh[k] for k in ('feats', 'joint_struct')}
     reused = prepare_reference_sample(motion, cond, metadata, SimpleNamespace(), augment=False,
                                       shared=shared)
     assert all(reused[k] is shared[k] for k in shared)
-    np.testing.assert_array_equal(reused['bone_dir'], fresh['bone_dir'])
+    np.testing.assert_array_equal(reused['pose'], fresh['pose'])
     options = SimpleNamespace(ref_bone_length_aug_prob=1, ref_bone_length_aug=.2)
     random.seed(5)
     augmented = prepare_reference_sample(motion, cond, metadata, options, shared=shared)
@@ -366,7 +401,10 @@ def test_augmentation_has_independent_cond_and_target_is_untouched():
     np.testing.assert_array_equal(cond['rest_pose'], before_cond['rest_pose'])
     assert np.all(cond['joints_names_embs'] == 1)
     assert not sample['joints_names_embs'].any()
-    assert not np.allclose(sample['rest_pose'][:, :3], before_cond['rest_pose'][:, :3])
+    # This fixture's draw scales its one chain, i.e. the whole rig: invisible
+    # to the encoder pose, which is rest-free and normalized by L.
+    unaugmented = reference_pose(motion, before_cond)
+    np.testing.assert_allclose(sample['pose'], unaugmented, atol=1e-5)
     canvas = torch.zeros(2, 10, 12, 30)
     refs = collate_reference([sample, None], canvas, torch.zeros(2, 10, 4),
                              torch.zeros(2, 10, JOINT_STRUCT_DIM))
@@ -388,13 +426,13 @@ def test_encode_packs_source_geometry_and_resamples_time():
     packed = _prepare_encoder_reference_bundle(moving, cond, batch_size=2,
                                                n_frames=20, visible_frames=30)
     assert packed['ref_feats'].shape == (2, 7, 12, 20)
-    assert packed['ref_bone_dir'].shape == (2, 7, 3, 21)
-    # Loader and inference must agree on every row, not just the rest row:
-    # both derive them from the same post-resample physical features.
+    assert packed['ref_pose'].shape == (2, 7, REFERENCE_POSE_CHANNELS, 20)
+    # Loader and inference must agree on every row: both derive them from the
+    # same post-resample physical features.
     expected = reference_sample(resample_motion_features(moving, 20), cond,
                                 cond['joints_names_embs'])
-    assert packed['ref_bone_dir'][0].numpy() == pytest.approx(
-        expected['bone_dir'].transpose(1, 2, 0), abs=1e-6)
+    assert packed['ref_pose'][0].numpy() == pytest.approx(
+        expected['pose'].transpose(1, 2, 0), abs=1e-6)
     assert packed['ref_feats'][0].numpy() == pytest.approx(
         expected['feats'].transpose(1, 2, 0), abs=1e-6)
     assert packed['ref_active'].all()

@@ -1621,7 +1621,7 @@ class MotionDataset(data.Dataset):
                 # augmentation changes the skeleton.
                 reference = prepare_reference_sample(
                     physical_motion, cond, reference_metadata, self.opt,
-                    shared=dict(feats=motion, rest_pose=rest_pose, joint_struct=joint_struct))
+                    shared=dict(feats=motion, joint_struct=joint_struct))
         m_length = target_num_frames
 
         # is_loop is the whole loop condition the model sees: a closed window.

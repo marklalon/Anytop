@@ -65,15 +65,15 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 ### 3.1 运动编码器 E（`model/motion_encoder.py`）
 
 **结构**：
-- 输入：参考 clip 的干净特征 x0 `[J_s, F, T]`，以及参考骨架自己的 rest token、关节名 embedding、structural channel。复用 InputProcess 的同类投影，权重独立。
-- 少量层 spatial + temporal attention，复用 `GraphMotionDecoder` 的层实现，宽度小于主干（构造时校验）。spatial attention 不带拓扑 / 边关系偏置（`graph_relations=False`），走普通 SDPA；骨架身份只经关节名、rest 几何、structural channel 与骨骼方向进入 E。
+- 输入：只有与源骨架 rest 无关的量（见下文「为什么不读 rest」）。逐帧逐关节读 `ref_pose [J_s, 4, T]`：父→子骨骼单位方向 + 关节绝对高度 / L；根关节额外读 canonical 特征里的根 XZ 速度。逐关节静态读关节名 embedding 与 structural channel 的拓扑列（链上位置、链长、是否叶子、子树大小、兄弟序、兄弟数）加左右侧符号。投影权重独立，不复用 InputProcess。
+- 少量层 spatial + temporal attention，复用 `GraphMotionDecoder` 的层实现，宽度小于主干（构造时校验）。spatial attention 不带拓扑 / 边关系偏置（`graph_relations=False`），走普通 SDPA；骨架身份只经关节名、structural channel 的拓扑列与骨骼方向进入 E。
 - 每帧用 K 个 learned query 对全部有效关节做 cross-attention 池化，输出 `z [T, K, d_z]`。
 
-沿用主干的通道契约：普通关节读取 position + rotation，仅 translation root 额外读取 XZ velocity；不把派生速度当作额外独立输入。E 不读取 species descriptor，也不启用自己的 species FiLM。
+E 不读取 species descriptor，也不启用自己的 species FiLM。`ref_pose` 由 `data_loaders/reference.py` 的 `reference_sample` 统一构造，训练 loader 和推理共用这一个函数。根关节和与父关节重合的 helper 关节的骨骼方向为零。
 
-此外，E 读取每个关节在骨架规范化静止朝向系下的父→子骨骼单位方向 `ref_bone_dir [J_s, 3, T+1]`：第 0 行是 rest pose，其余行逐帧对应动作。它经独立线性投影后加到同一 token 上。根关节和与父关节重合的 helper 关节为零。该通道由 `data_loaders/reference.py` 的 `reference_sample` 统一构造，训练 loader 和推理共用这一个函数。
+**为什么用骨骼方向和绝对高度**：物理位置位于骨架规范化后的静止朝向系（所有 rest 朝同一方向；逐帧不做 root yaw 去旋转），高度为绝对值，因此一个方向向量在所有骨架上表示同一个世界方向，「脚着地」在所有骨架上都是高度≈0。除以 L 让不同体型的高度可比。
 
-**为什么加骨骼方向**：position 通道是相对各自 rest 的残差，rotation 是局部旋转，同样是「尾巴朝上」，在不同骨架上数值不同。物理位置位于骨架规范化后的静止朝向系（所有 rest 朝同一方向；逐帧不做 root yaw 去旋转），高度为绝对值，因此一个方向向量在所有骨架上表示同一个世界方向。rest 行让 E 能对照源骨架自己的静止姿态。
+**为什么不读 rest**：position 通道是相对各自 rest 的残差，rotation 是局部旋转，rest token、rest 行和 structural 的几何列（高度、横向 / 前后偏移、附着高度）都描述源骨架的静止姿态。只要 E 能看到源 rest，自重建就奖励「编码相对自己 rest 的偏移」（§2 的 `A_S·m`），解码器再把这个偏移施加到目标 rest 上。实测：人跑参考（T-pose → 跑步是双手大幅内收）驱动猫时，猫同名的 `UpperArm/Forearm/Hand` 前肢照搬内收而左右交叉；人的躯干「保持 rest」，猫的躯干也保持水平。E 只读绝对量后，「前臂朝下」对人和猫是同一个值，从 rest 换算到目标残差的工作只能由解码器按目标 rest 完成。代价是单位方向不含骨骼扭转，同骨架重建会略损失；本方案本来不追求逐关节复现。左右只保留符号，没有名字的关节仍能区分左右而不暴露横向偏移量。
 
 **为什么用 K 个 query 池化**：z 的形状与关节数无关，任何源骨架都映射到同一个空间。cross-limb block 已经用这个结构表达「全身节奏」，被验证过可用。
 
@@ -119,7 +119,7 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 
 ### 4.1 目标与 dropout
 
-- **编码器输入**：同一个 clip 的同一时间窗，干净的 x0（经过 §4.2 的编码器侧增强）。**解码器目标**：同一个 clip，按主干自己的 `--leaf_drop_prob` / `--bone_length_aug_prob` 独立抽签增强。
+- **编码器输入**：同一个 clip 的同一时间窗，干净的物理特征（经过 §4.2 的编码器侧增强）按 §3.1 转成编码器输入。**解码器目标**：同一个 clip，按主干自己的 `--leaf_drop_prob` / `--bone_length_aug_prob` 独立抽签增强。
 - `--ref_cfg_drop_prob` 对 ref 做硬丢弃。参考生效的行：species FiLM 一律旁路（`species_active=False`），action_label 按 `--ref_label_drop_prob` 丢弃；无参考的行仍按 `--action_label_cfg_drop_prob` 与 `--species_cfg_drop_prob` 抽签。
 - 每个 batch 随机保留固定数量（由丢弃概率换算）的参考行，编码器只对这些行前向（形状静态，可编译）；被丢弃的行被硬旁路，其 z 不会被读取。
 - 共享主干不冻结、不对参考样本做 stop-gradient：两种模式共同更新共享参数；E、ref cross-attn 及其 gate 仅由参考激活样本训练。
@@ -145,7 +145,7 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 
 **实现要点**：
 - 目标侧增强在时间采样前作用于存储 clip（与非参考训练完全相同）；编码器输入从存储骨架出发，复用目标的 closing-key 判定和同一时间窗，再做自己的增强。
-- 编码器侧没有增强生效时，直接复用目标的 canonical 特征、rest token 与 structural channel（`reference_sample` 可接收已算好的这三项），只有 leaf-drop 或骨长增强生效时才重算。
+- 编码器侧没有增强生效时，直接复用目标的 canonical 特征与 structural channel（`reference_sample` 可接收已算好的这两项），只有 leaf-drop 或骨长增强生效时才重算。
 - 参考可能比目标宽，collate 按两者中较宽的关节数选 joint bucket；存储骨架的关节数决定 sampler 的 bucket，所以仍落在同一 bucket 里。
 
 **不做时间增强**：编码器输入与目标必须逐帧对齐（§3.1）。
@@ -255,7 +255,7 @@ out = x0(∅, ∅)
 | `model/motion_transformer.py` | decoder layer 中的 ref cross-attn、独立 LayerNorm 与零初始化 gate |
 | `model/anytop.py` | 调用 E；解析 `ref_active`；硬旁路 |
 | `model/cfg_sampler.py` | 组合式 ref/text CFG wrapper |
-| `data_loaders/reference.py`、`data_loaders/truebones/data/dataset.py` + collate | 编码器侧增强副本、骨骼方向、`ref_*` 字段、ref dropout |
+| `data_loaders/reference.py`、`data_loaders/truebones/data/dataset.py` + collate | 编码器侧增强副本、`ref_pose`（骨骼方向 + 高度）、`ref_*` 字段、ref dropout |
 | `utils/parser_util.py` | 训练侧 `--ref_*` 参数；推理侧 `--ref_cfg_scale` |
 | `sample/generate.py`、`sample/reference_motion.py` | encode 模式：源骨架上的特征 → E → z |
 | `eval/` | 跨物种评测对 |
