@@ -724,6 +724,8 @@ class TrainLoop:
                 noise=noise,
             )
             if ref_enabled:
+                # Reads only the reference, so it is zero on the ref-null pass.
+                losses.pop('ref_desc_loss', None)
                 ref_losses = self.diffusion.training_losses(
                     model, batch, t, model_kwargs=self._with_train_step(cond, self.total_step()), noise=noise)
                 losses.update({'reference_' + key: value for key, value in ref_losses.items()

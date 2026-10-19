@@ -215,6 +215,12 @@ def add_model_options(parser):
                        help='Action-label CFG drop probability on reference-active training rows '
                             '(rows without a reference use --action_label_cfg_drop_prob). '
                             'Reference-active rows always bypass the species FiLM.')
+    group.add_argument('--lambda_ref_desc', type=float, default=0.0,
+                       help='Weight of the reference descriptor loss (0 = off, no head built): a linear '
+                            'head on the encoder z regresses skeleton-free posture descriptors '
+                            '(centre-of-mass / lowest / highest height, uprightness, horizontal '
+                            'elongation) of the reference, standardized Huber over every reference row. '
+                            'Trains the encoder and the head only.')
     group.add_argument('--ref_leaf_drop_prob', type=float, default=0.2)
     group.add_argument('--ref_bone_length_aug_prob', type=float, default=0.2)
     group.add_argument('--ref_bone_length_aug', type=float, default=0.1)

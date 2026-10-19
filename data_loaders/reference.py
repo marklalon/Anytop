@@ -96,6 +96,70 @@ def reference_pose(motion, cond):
     return np.nan_to_num(pose).astype(np.float32)
 
 
+REFERENCE_DESCRIPTOR_NAMES = ('com_height', 'min_height', 'max_height', 'uprightness',
+                              'horizontal_elongation')
+REFERENCE_DESCRIPTOR_CHANNELS = len(REFERENCE_DESCRIPTOR_NAMES)
+# Swimming, burrowing and perched clips put a joint far below the ground; the
+# lowest-joint height is clipped so those few clips do not set its scale.
+REFERENCE_MIN_HEIGHT_RANGE = (-1.0, 3.0)
+
+
+def reference_descriptors(motion, cond):
+    """``[T, REFERENCE_DESCRIPTOR_CHANNELS]`` skeleton-free posture descriptors.
+
+    The body is a set of uniform segments, one per bone, each weighted by its
+    rest length (coincident helpers weigh nothing). Per frame: centre-of-mass,
+    lowest and highest joint height over ``L``, then two ratios of the mass
+    covariance ``C`` (each segment adds its own ``l^2/12``): ``C_yy / tr C``
+    (how upright the body is) and the gap between the horizontal block's two
+    eigenvalues over ``tr C`` (how elongated it lies). All are independent of
+    yaw and of joint correspondence, so one linear head reads them off any rig.
+    """
+    positions = np.asarray(motion, np.float64)[..., :3]
+    parents = np.asarray(cond['parents'])
+    rest = np.asarray(rest_pos_from_cond(cond), np.float64)
+    out = np.zeros((positions.shape[0], REFERENCE_DESCRIPTOR_CHANNELS), np.float32)
+    child = np.flatnonzero(parents >= 0)
+    if not len(child):
+        return out
+    rest_norm = np.linalg.norm(rest[child] - rest[parents[child]], axis=-1)
+    keep = rest_norm > BONE_DIRECTION_MIN_REST_FRACTION * max(float(rest_norm.max()), 1e-12)
+    child, weight = child[keep], rest_norm[keep]
+    parent = parents[child]
+    head, tail = positions[:, parent], positions[:, child]
+    mid, bone = 0.5 * (head + tail), tail - head
+    total = weight.sum()
+    com = np.einsum('b,tbi->ti', weight, mid) / total
+    offset = mid - com[:, None]
+    cov = (np.einsum('b,tbi,tbj->tij', weight, offset, offset)
+           + np.einsum('b,tbi,tbj->tij', weight, bone, bone) / 12) / total
+    trace = np.trace(cov, axis1=1, axis2=2) + 1e-12
+    height = positions[:, np.union1d(child, parent), 1] / float(_length_scale_from_cond(cond))
+    out[:, 0] = com[:, 1] / float(_length_scale_from_cond(cond))
+    out[:, 1] = np.clip(height.min(1), *REFERENCE_MIN_HEIGHT_RANGE)
+    out[:, 2] = height.max(1)
+    out[:, 3] = cov[:, 1, 1] / trace
+    out[:, 4] = np.hypot(cov[:, 0, 0] - cov[:, 2, 2], 2 * cov[:, 0, 2]) / trace
+    return np.nan_to_num(out)
+
+
+def reference_descriptor_stats(clips):
+    """Per-channel ``(mean, std)`` of ``reference_descriptors`` over ``(motion, cond)`` pairs, every frame."""
+    total = np.zeros(REFERENCE_DESCRIPTOR_CHANNELS)
+    square = np.zeros(REFERENCE_DESCRIPTOR_CHANNELS)
+    count = 0
+    for motion, cond in clips:
+        values = reference_descriptors(motion, cond).astype(np.float64)
+        total += values.sum(0)
+        square += (values ** 2).sum(0)
+        count += len(values)
+    if not count:
+        raise ValueError('No frames to measure reference descriptors on')
+    mean = total / count
+    std = np.sqrt(np.maximum(square / count - mean ** 2, 0.0))
+    return mean.astype(np.float32), np.maximum(std, 1e-3).astype(np.float32)
+
+
 def reference_sample(motion, cond, names, *, feats=None, joint_struct=None):
     """One encoder input from physical features on their own skeleton.
 
@@ -103,13 +167,16 @@ def reference_sample(motion, cond, names, *, feats=None, joint_struct=None):
     hand the encoder differently derived channels. ``feats`` / ``joint_struct``
     may be passed in when already derived from this same motion and cond.
     ``feats`` is the canonical window; the encoder reads only its root XZ
-    velocity, the one canonical channel that is not rest-centered.
+    velocity, the one canonical channel that is not rest-centered. ``desc`` is
+    not an encoder input: it is the descriptor head's target, taken from the
+    same (augmented) motion and cond the encoder reads.
     """
     if feats is None:
         feats = np.nan_to_num(physical_hml_to_canonical(motion, cond)).astype(np.float32)
     return {
         'feats': feats,
         'pose': reference_pose(motion, cond),
+        'desc': reference_descriptors(motion, cond),
         'joints_names_embs': names,
         'joint_struct': build_joint_struct_features(cond) if joint_struct is None else joint_struct,
     }
@@ -125,6 +192,7 @@ def collate_reference(samples, motion, names, joint_struct):
     result = {
         'ref_feats': torch.zeros_like(motion),
         'ref_pose': motion.new_zeros(batch, joints, REFERENCE_POSE_CHANNELS, frames),
+        'ref_desc': motion.new_zeros(batch, REFERENCE_DESCRIPTOR_CHANNELS, frames),
         'ref_mask': torch.zeros(batch, joints, dtype=torch.bool, device=motion.device),
         'ref_active': torch.zeros(batch, dtype=torch.bool, device=motion.device),
         'ref_joints_names_embs': torch.zeros_like(names),
@@ -147,6 +215,10 @@ def collate_reference(samples, motion, names, joint_struct):
                 f'got {tuple(pose.shape)} for {frames} frames and {count} joints'
             )
         result['ref_pose'][i, :count] = pose.permute(1, 2, 0)
+        desc = torch.as_tensor(sample['desc'], dtype=motion.dtype, device=motion.device)
+        if desc.shape != (frames, REFERENCE_DESCRIPTOR_CHANNELS):
+            raise ValueError(f'Reference descriptors must have shape [frames, {REFERENCE_DESCRIPTOR_CHANNELS}]')
+        result['ref_desc'][i] = desc.T
         result['ref_mask'][i, :count] = True
         result['ref_active'][i] = True
         for key in ('joints_names_embs', 'joint_struct'):

@@ -277,14 +277,66 @@ class AnyTop(nn.Module):
             )
             for layer in self.seqTransDecoder.layers:
                 layer.enable_reference(ref_dim)
+        self.ref_desc_head = None
+        if kargs.get('ref_desc_head', False):
+            if self.motion_encoder is None:
+                raise ValueError('The reference descriptor head needs --ref_encoder')
+            from data_loaders.reference import REFERENCE_DESCRIPTOR_CHANNELS
+            # Linear on purpose: one shared linear readout of the same absolute
+            # quantities from every rig pins those directions of z to one
+            # meaning; an MLP head could learn a per-skeleton remap instead.
+            self.ref_desc_head = nn.Linear(self.motion_encoder.slots * self.motion_encoder.ref_dim,
+                                           REFERENCE_DESCRIPTOR_CHANNELS)
+            # Training-corpus statistics of the targets, set once before
+            # training (set_reference_descriptor_stats) and saved with the weights.
+            self.register_buffer('ref_desc_mean', torch.zeros(REFERENCE_DESCRIPTOR_CHANNELS))
+            self.register_buffer('ref_desc_std', torch.ones(REFERENCE_DESCRIPTOR_CHANNELS))
+
+    def set_reference_descriptor_stats(self, mean, std):
+        self.ref_desc_mean.copy_(torch.as_tensor(mean, dtype=self.ref_desc_mean.dtype))
+        self.ref_desc_std.copy_(torch.as_tensor(std, dtype=self.ref_desc_std.dtype))
+
+    def reference_descriptor_prediction(self, y):
+        """``(prediction, target, active, rows)`` of the descriptor head for the rows the forward encoded.
+
+        Reads the z the model forward left in ``y`` (see ``_share_reference_z``),
+        so it must run after that forward. Under reference dropout those rows
+        are the random kept subset; reference dropout only chooses which rows
+        feed the decoder, so the subset is an unbiased sample of the batch.
+        ``prediction`` / ``target`` are ``[len(rows), T, C]`` standardized. The
+        gradient reaches the encoder and the head only.
+        """
+        if 'ref_desc_z' not in y:
+            raise RuntimeError('reference_descriptor_prediction needs the model forward to run first on this y')
+        z, rows = y['ref_desc_z'], y['ref_desc_rows']
+        ref_desc = y['ref_desc'].to(z.device)[rows]
+        active = (y['ref_active'].to(z.device).to(torch.bool).reshape(-1)
+                  & y['ref_mask'].to(z.device).any(-1))[rows]
+        prediction = self.ref_desc_head(z.flatten(2))
+        target = (ref_desc.transpose(1, 2) - self.ref_desc_mean) / self.ref_desc_std
+        return prediction, target, active, rows
 
     def reference_parameter_budget(self):
         encoder = sum(p.numel() for p in self.motion_encoder.parameters()) if self.motion_encoder else 0
+        if self.ref_desc_head is not None:
+            encoder += sum(p.numel() for p in self.ref_desc_head.parameters())
         branches = sum(p.numel() for n, p in self.seqTransDecoder.named_parameters()
                        if '.ref_' in n)
         total = sum(p.numel() for p in self.parameters())
         return dict(total=total, shared=total - encoder - branches,
                     reference_encoder=encoder, reference_branches=branches)
+
+    def _share_reference_z(self, y, z, rows):
+        """Hand the descriptor loss the z this forward already computed.
+
+        ``z`` is ``[len(rows), T, K, d_z]`` for the batch rows the encoder ran
+        on, still attached to the graph, so the descriptor head costs no second
+        encoder pass. Passed through ``y`` (a per-call copy), which a compiled
+        forward replays as an input mutation.
+        """
+        if self.ref_desc_head is not None:
+            y['ref_desc_z'] = z
+            y['ref_desc_rows'] = rows
 
     def _reference_condition(self, y, batch_size, frames, device):
         if self.motion_encoder is None:
@@ -297,7 +349,9 @@ class AnyTop(nn.Module):
         if ref_y['ref_feats'].shape[-1] != frames:
             raise ValueError('Reference and output windows must be frame aligned')
         if not self.training or self.ref_cfg_drop_prob == 0:
-            return self.motion_encoder(ref_y), active
+            z = self.motion_encoder(ref_y)
+            self._share_reference_z(y, z, torch.arange(batch_size, device=device))
+            return z, active
         # Reference dropout keeps a fixed number of randomly chosen rows per
         # batch, so the encoder runs on those rows only (static shape for
         # compile); a dropped row is hard-bypassed and its z is never read.
@@ -305,9 +359,11 @@ class AnyTop(nn.Module):
         encoder = self.motion_encoder
         if keep == 0:
             z = ref_y['ref_feats'].new_zeros(batch_size, frames, encoder.slots, encoder.ref_dim)
+            self._share_reference_z(y, z[:0], torch.arange(0, device=device))
             return z, torch.zeros_like(active)
         rows = torch.randperm(batch_size, device=device)[:keep]
         z = encoder({k: v[rows] for k, v in ref_y.items()})
+        self._share_reference_z(y, z, rows)
         z = z.new_zeros((batch_size,) + z.shape[1:]).index_copy(0, rows, z)
         kept = torch.zeros_like(active).index_fill(0, rows, True)
         return z, active & kept

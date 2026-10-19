@@ -185,6 +185,7 @@ class GaussianDiffusion:
         lambda_loop_wrap=0.,
         lambda_loop_root_closure=0.,
         lambda_bone=0.,
+        lambda_ref_desc=0.,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
         renoise_same_level_prob=1.0,
@@ -199,6 +200,9 @@ class GaussianDiffusion:
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_loop_root_closure = float(lambda_loop_root_closure)
         self.lambda_bone = float(lambda_bone)
+        self.lambda_ref_desc = float(lambda_ref_desc)
+        if self.lambda_ref_desc < 0.0:
+            raise ValueError(f"lambda_ref_desc must be >= 0, got {self.lambda_ref_desc}")
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
         self.renoise_same_level_prob = float(renoise_same_level_prob)
@@ -1840,6 +1844,23 @@ class GaussianDiffusion:
             unwrapped_model = next_model
         return unwrapped_model
 
+    @staticmethod
+    def reference_descriptor_loss(model, y):
+        """``[B]`` Huber loss of the reference descriptor head, mean over frames and channels.
+
+        Runs after the model forward on the same ``y`` and reads the z that
+        forward computed, so it adds no encoder pass. Only the rows the encoder
+        ran on carry loss, scaled by ``B / len(rows)`` so the mean over the
+        batch estimates the all-rows loss. Zero on rows without a reference.
+        Independent of ``x_t`` and ``t``: it reads only the reference.
+        """
+        from utils.model_util import unwrap_anytop_model
+        prediction, target, active, rows = unwrap_anytop_model(model).reference_descriptor_prediction(y)
+        batch = y['ref_active'].shape[0]
+        loss = th.nn.functional.smooth_l1_loss(prediction.float(), target.float(), reduction="none").mean((1, 2))
+        loss = loss * active.to(loss.dtype) * (batch / max(rows.numel(), 1))
+        return loss.new_zeros(batch).index_copy(0, rows.to(loss.device), loss)
+
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
         Compute training losses for a single timestep.
@@ -2021,6 +2042,10 @@ class GaussianDiffusion:
                             terms["loss"]
                             + self.lambda_loop_root_closure * terms["loop_root_xz_closure"]
                         )
+
+            if self.lambda_ref_desc > 0.0:
+                terms["ref_desc_loss"] = self.reference_descriptor_loss(model, model_kwargs['y'])
+                terms["loss"] = terms["loss"] + self.lambda_ref_desc * terms["ref_desc_loss"]
 
         else:
             raise NotImplementedError(self.loss_type)
