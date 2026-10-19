@@ -508,7 +508,10 @@ def add_training_options(parser):
     group.add_argument("--motion_cache_size", default=0, type=int,
                        help="Number of entries to keep in in-memory LRU cache for raw motion clips per dataset instance. 0 disables the cache.")
     group.add_argument("--main_process_prefetch_batches", default=4, type=int,
-                       help="Prefetch this many batches on background thread for main-thread data loading to overlap with GPU compute. 0 disables it.")
+                       help="Number of training batches kept ready ahead of the GPU (spread across --num_workers when it is > 0). 0 selects the default of 4.")
+    group.add_argument("--num_workers", default=0, type=int,
+                       help="Training data worker processes. 0 prepares batches on a background thread of the training "
+                            "process, sharing its GIL; N > 0 runs N persistent worker processes. Validation always uses the thread.")
     group.add_argument("--detect_anomaly", action='store_true',
                        help="Enable PyTorch autograd anomaly detection. Useful for debugging, but significantly slows training.")
     # Spike-capture probe is always on (hardcoded in TrainLoop) and always

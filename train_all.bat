@@ -77,9 +77,10 @@ pushd "%SCRIPT_DIR%"
 	--lambda_dpos 0.05 ^
 	--lambda_geo 0.1 ^
 	--lambda_bone 0.06 ^
-	--motion_cache_size 32768 ^
+	--motion_cache_size 16384 ^
 	--amp_dtype fp16 ^
 	--main_process_prefetch_batches 64 ^
+	--num_workers 2 ^
 	--compile default
 
 set "EXIT_CODE=%ERRORLEVEL%"
