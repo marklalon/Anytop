@@ -651,7 +651,9 @@ def add_generate_options(parser):
                             "changes its encoding: the root-travel detrend and extent bound, as in dataset "
                             "preprocessing. Default: decided from the file name (e.g. 'Run01Forwards' is "
                             "locomotion, 'FlyAttack' is not).")
-    group.add_argument('--ref_cfg_scale', type=float, default=1.0)
+    group.add_argument('--ref_cfg_scale', type=float, default=1.0,
+                       help='Reference CFG scale on the high-noise half of the steps, where global '
+                            'posture (facing, body height) is decided; the detail steps use 1.')
     group.add_argument('--species_active', type=_bool_argument,
                        choices=(True, False), default=None,
                        help='Target per-joint species FiLM; true / false. '

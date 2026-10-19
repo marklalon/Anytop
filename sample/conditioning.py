@@ -224,6 +224,7 @@ def _wrap_reference_cfg(model, args, action_condition):
     return ClassifierFreeReferenceModel(
         model, getattr(args, 'ref_cfg_scale', 1.0),
         getattr(args, 'action_label_cfg_scale', 1.0), use_text=action_condition is not None,
+        num_timesteps=args.diffusion_steps,
     )
 
 

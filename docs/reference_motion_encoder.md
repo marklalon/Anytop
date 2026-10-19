@@ -183,7 +183,7 @@ E 不读取 species descriptor，也不启用自己的 species FiLM。`ref_pose`
 
 ### 5.2 参数
 - 无 `--reference_mode`：带 `--skip_timesteps` / `--inpaint_*` / `--outpaint` 的 `--reference_motion` 走同物种编辑，否则走 encode。
-- `--ref_cfg_scale` 控制参考引导强度。
+- `--ref_cfg_scale` 控制参考引导强度，只作用于 `t >= T/2` 的高噪声步（躯干朝向、身高等全局姿态在这里定下）；低噪声细节步固定为 1（`ClassifierFreeReferenceModel.REF_CFG_SWITCH` / `REF_CFG_LATE_SCALE`）。这样能拿到高 scale 的姿态，细节步不带高 scale 的伪影；无 label 时后段只需一次前向。
 
 ### 5.3 CFG（组合式，x0 上的代数与现有实现相同）
 
