@@ -315,24 +315,6 @@ def create_training_data_loader(args):
         species_table=getattr(args, 'species_descriptor_table', None),
     )
 
-def bind_reference_descriptor_stats(model, dataset):
-    """Standardize the descriptor head's targets by the training clips' own statistics.
-
-    Every frame of every stored training clip, before augmentation. Stored as
-    model buffers, so a resume reads back the values the weights were fitted to.
-    """
-    if model.ref_desc_head is None:
-        return
-    import numpy as np
-    from data_loaders.reference import REFERENCE_DESCRIPTOR_NAMES, reference_descriptor_stats
-    motion_dataset = dataset.motion_dataset
-    clips = ((np.load(entry['motion_path']), motion_dataset.cond_dict[entry['object_type']])
-             for entry in motion_dataset.data_dict.values())
-    mean, std = reference_descriptor_stats(clips)
-    model.set_reference_descriptor_stats(mean, std)
-    print('[ref-desc] target mean/std: ' + ', '.join(
-        f'{name} {m:.3f}/{s:.3f}' for name, m, s in zip(REFERENCE_DESCRIPTOR_NAMES, mean, std)))
-
 
 def run_training(args):
     if getattr(args, 'compile', None) not in (None, '', 'None'):
@@ -372,7 +354,6 @@ def run_training(args):
     print(f"[INFO] Train split '{train_split}': {num_motions} motions")
 
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
-    bind_reference_descriptor_stats(model, data.dataset)
     print(f'[model] parameter budget: {model.reference_parameter_budget()}')
     model.to(dist_util.dev())
     ml_platform.watch_model(model)

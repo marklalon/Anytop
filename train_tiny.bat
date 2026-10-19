@@ -91,7 +91,6 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --lambda_dpos 0.05 ^
     --lambda_geo 0.1 ^
     --lambda_bone 0.06 ^
-    --lambda_ref_desc 0.2 ^
     --motion_cache_size 16384 ^
     --amp_dtype fp16 ^
     --main_process_prefetch_batches 64 ^
