@@ -86,7 +86,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 
 
 
-# The merged cond records each source's train/val assignment from datasets.jsonl.
+# The merged cond records each source's train/val assignment from datasets_all.jsonl.
 SUPPORTED_SPLITS = ("train", "val")
 ALL_SPLIT_NAME = "all"
 

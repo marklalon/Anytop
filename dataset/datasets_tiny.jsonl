@@ -1,0 +1,2 @@
+{"namespace": "truebones/zoo",         "path": "dataset/truebones/zoo/truebones_processed",          "raw": "dataset/truebones/zoo/Truebone_Z-OO", "split": "train"}
+{"namespace": "truebones/zoo_upgrade", "path": "dataset/truebones/zoo_upgrade/clean_processed",      "raw": "dataset/truebones/zoo_upgrade/clean", "split": "train"}

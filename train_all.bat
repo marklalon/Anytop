@@ -11,7 +11,7 @@ REM Inductor C++ codegen is disabled; no Visual Studio environment is needed.
 pushd "%SCRIPT_DIR%"
 
 "%PYTHON_EXE%" train/train_anytop.py ^
-	--cond_path dataset/cond.npy ^
+	--cond_path dataset/cond_all.npy ^
 	--save_dir save/%RUN_NAME% ^
 	--save_interval 10000 ^
 	--log_interval 100 ^

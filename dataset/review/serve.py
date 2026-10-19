@@ -6,7 +6,7 @@ pending_delete edits straight back into each dataset's action_labels.jsonl so
 the page and the file never drift apart.  A dropdown in the header picks which
 dataset is on screen.
 
-Datasets are discovered from ../datasets.jsonl -- one line per processed
+Datasets are discovered from ../datasets_all.jsonl -- one line per processed
 dataset::
 
     {"namespace": "unitybundles", "path": "dataset/unitybundles/processed"}
@@ -89,7 +89,7 @@ under ``<processed>/bvh_tpose/``; it is rebuilt when cond.npy is newer. The page
 can also play a species' clips from ``<processed>/bvhs/``, listed through
 ``motion_metadata.json``.
 
-    python serve.py [--port 8765] [--datasets ../datasets.jsonl] [--no-browser]
+    python serve.py [--port 8765] [--datasets ../datasets_all.jsonl] [--no-browser]
 
 ``/api/labels`` accepts optional ``q``, ``field=label|clip|both``,
 ``whole_word=1`` and ``group=<action group>`` query parameters. Without them it
@@ -118,7 +118,7 @@ ANYTOP_ROOT = DATASET_ROOT.parent               # .../Anytop
 INDEX = THIS_DIR / "index.html"
 JOINT_NAMES_PAGE = THIS_DIR / "joint_names.html"
 VENDOR_DIR = THIS_DIR / "vendor"
-DEFAULT_DATASETS = DATASET_ROOT / "datasets.jsonl"
+DEFAULT_DATASETS = DATASET_ROOT / "datasets_all.jsonl"
 
 # serve.py is commonly started by path from outside the Anytop directory.  Add
 # that directory explicitly so this review UI consumes the SAME vocabulary and
@@ -466,7 +466,7 @@ def _prune_dataset_species_tags(ds):
 
 
 def discover_datasets(datasets_file):
-    """Read datasets.jsonl into dataset descriptors (cond.npy must exist).
+    """Read datasets_all.jsonl into dataset descriptors (cond.npy must exist).
 
     ``labels`` is None for a dataset with no ``action_labels.jsonl`` yet: the
     joint names page lists it, the label grid does not.
@@ -1606,7 +1606,7 @@ def main():
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--datasets", default=str(DEFAULT_DATASETS),
-                        help="datasets.jsonl manifest (default: %(default)s)")
+                        help="datasets_all.jsonl manifest (default: %(default)s)")
     parser.add_argument("--trash", default=str(TRASH_ROOT),
                         help="where \"clean\" parks retired source files (default: %(default)s)")
     parser.add_argument("--no-browser", action="store_true")

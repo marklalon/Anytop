@@ -8,7 +8,7 @@ Two contracts run through this module:
   every entry carries its own baked ``species_tags``.
 
 ``cond.npy`` is the single entry point for both; a *dataset manifest*
-(``datasets.jsonl``) is read only by the offline merge tool and by ``eval``.
+(``datasets_all.jsonl``) is read only by the offline merge tool and by ``eval``.
 
 Everything here is pure path/key bookkeeping with no dataset I/O beyond the
 manifest, so ``dataset_tags`` can import it without a cycle.
@@ -231,7 +231,7 @@ def make_source(namespace, root, species_include=(), species_exclude=(), split="
 
 
 def load_datasets_manifest(manifest_path) -> list[DatasetSource]:
-    """Read ``datasets.jsonl`` into an ordered ``DatasetSource`` list.
+    """Read ``datasets_all.jsonl`` into an ordered ``DatasetSource`` list.
 
     Line order is the bare-name resolution priority (see ``resolve_species_key``),
     so it is preserved verbatim.  Disabled lines are dropped after validation, so

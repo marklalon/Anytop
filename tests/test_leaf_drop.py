@@ -163,7 +163,7 @@ def test_a_twin_of_a_protected_joint_is_kept():
 
 
 _MERGED_COND = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            'dataset', 'cond.npy')
+                            'dataset', 'cond_all.npy')
 _needs_merged = pytest.mark.skipif(not os.path.isfile(_MERGED_COND), reason='merged dataset not present')
 
 

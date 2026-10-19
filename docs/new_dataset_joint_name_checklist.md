@@ -1,6 +1,6 @@
 # 新数据集接入备忘录：骨骼名的检查与词表更新
 
-> 适用场景：往 `datasets.jsonl` 里加一个新数据集，里面有一批**没见过的骨骼命名习惯**。
+> 适用场景：往 `datasets_all.jsonl` 里加一个新数据集，里面有一批**没见过的骨骼命名习惯**。
 > 本文只管**骨骼名**这一条线；数据集注册、cond 合并、多源训练见 [multi_dataset_training.md](multi_dataset_training.md)。
 > 旧文 [t5_conditioner_joint_name_preprocessing.md](t5_conditioner_joint_name_preprocessing.md) 描述的是已被取代的
 > `T5Conditioner.tokenize()` 实现，只作历史背景读，**不要照着改**。
@@ -188,7 +188,7 @@ python tools/family_keys_stats.py           # 在仓库根运行
 如果翻转后的名字在同一副骨架里存在，那它几乎肯定是一对左右。
 
 ```bash
-python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
+python utils/validate_anytop_dataset.py --datasets dataset/datasets_all.jsonl
 ```
 
 朝向出问题时的两个已知信号：控制台出现

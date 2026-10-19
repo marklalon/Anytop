@@ -32,7 +32,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", type=Path, default=ROOT / "dataset/datasets.jsonl")
+    parser.add_argument("--manifest", type=Path, default=ROOT / "dataset/datasets_all.jsonl")
     parser.add_argument("--out-dir", type=Path, default=ROOT / "outputs/species_tags_matrix")
     args = parser.parse_args()
     members = defaultdict(list)

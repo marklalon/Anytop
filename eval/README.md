@@ -21,7 +21,7 @@ a task's quality is the median over its clips. The report lists both
 dimensions, every clip's quality and the task's weakest sub-scores.
 
 Both dimensions score a statistic by where it falls among real clips
-(every dataset in `dataset/datasets.jsonl`, each species weighted equally):
+(every dataset in `dataset/datasets_all.jsonl`, each species weighted equally):
 up to the real median it scores 1, at the real p75 / p90 / p99 it scores
 0.9 / 0.75 / 0.45, and past p99 it halves for every doubling. Body parts come
 from `joint_parts.prefill_joint_parts`; lengths are in units of the skeleton's

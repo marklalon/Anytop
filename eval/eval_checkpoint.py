@@ -15,7 +15,7 @@ Each task's clips are scored in-process with the motion quality scorer
 (``eval/motion_quality/quality.py``): every clip gets a physical-plausibility
 and a data-prior score in [0, 1], its quality is their geometric mean, and a
 task's is the median over its clips. The reference statistics are pooled over
-every dataset in ``--dataset_root`` (default ``dataset/datasets.jsonl``) and
+every dataset in ``--dataset_root`` (default ``dataset/datasets_all.jsonl``) and
 indexed once for the whole battery.
 
 Every task must name the label its clips are scored against: its own
@@ -117,7 +117,7 @@ _LAST_OUTPUT = "$LAST_OUTPUT"
 _DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks.json"
 # The datasets the quality reference is pooled over: every processed
 # dataset the training cond was merged from, not just the first one.
-_DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets.jsonl"
+_DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets_all.jsonl"
 # generate.py flags whose following value is a filesystem path. Their values are
 # resolved (relative → Anytop dir) when a task is loaded from the config.
 _PATH_FLAGS = ("--reference_motion", "--cond_path")
@@ -872,8 +872,8 @@ def main() -> int:
     parser.add_argument(
         "--dataset_root", "--dataset-root", default=str(_DEFAULT_DATASET_ROOT),
         help="Datasets the quality reference is pooled over: a processed "
-             "dataset dir or a datasets.jsonl manifest (absolute, or relative to "
-             "the Anytop dir). Default: dataset/datasets.jsonl.",
+             "dataset dir or a datasets_all.jsonl manifest (absolute, or relative to "
+             "the Anytop dir). Default: dataset/datasets_all.jsonl.",
     )
     parser.add_argument(
         "--no_review", "--no-review", action="store_true",

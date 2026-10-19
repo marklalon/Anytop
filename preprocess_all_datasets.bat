@@ -1,12 +1,12 @@
 @echo off
 setlocal
 REM ----------------------------------------------------------------------
-REM Preprocess every enabled dataset listed in dataset\datasets.jsonl (incremental by
+REM Preprocess every enabled dataset listed in dataset\datasets_all.jsonl (incremental by
 REM default) and merge them into a single training cond.
 REM
-REM   1) each enabled row of dataset\datasets.jsonl, in file order:
+REM   1) each enabled row of dataset\datasets_all.jsonl, in file order:
 REM        preprocess_and_validate.py --raw-data-dir <raw> --dataset-dir <path>
-REM   2) merge -> dataset\cond.npy
+REM   2) merge -> dataset\cond_all.npy
 REM
 REM A row without a "raw" field is only merged, not preprocessed. Adding a
 REM dataset to the manifest is all it takes to preprocess and merge it here.
@@ -21,7 +21,7 @@ REM --filter / --object-workers work the same way.
 REM ----------------------------------------------------------------------
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set DATASETS_FILE=dataset\datasets.jsonl
+set DATASETS_FILE=dataset\datasets_all.jsonl
 
 REM Capture the CLI args to forward to every preprocess step (e.g. --overwrite).
 set BATCH_ARGS=%*
@@ -42,12 +42,12 @@ for /f "usebackq tokens=1-3 delims=|" %%A in ("%DATASET_LIST%") do (
 REM ---- 3) merge every dataset into one training cond ----------------------
 "%PYTHON_EXE%" tools\merge_dataset_cond.py ^
 	--datasets "%DATASETS_FILE%" ^
-	--out dataset\cond.npy
+	--out dataset\cond_all.npy
 if errorlevel 1 goto :fail
 
 del "%DATASET_LIST%" 2>nul
 echo.
-echo [OK] Every dataset in %DATASETS_FILE% preprocessed and merged into dataset\cond.npy
+echo [OK] Every dataset in %DATASETS_FILE% preprocessed and merged into dataset\cond_all.npy
 popd
 exit /b 0
 

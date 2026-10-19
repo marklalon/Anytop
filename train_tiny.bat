@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions
-REM Zoo-only locomotion reference-encoder experiment. Optional first argument: a NEW run name.
+REM Zoo + zoo_upgrade locomotion reference-encoder experiment. Optional first argument: a NEW run name.
 REM Usage: train_tiny.bat [run_name]
 REM See docs/tiny_locomotion_baseline.md for the fixed ablation protocol.
 set "SCRIPT_DIR=%~dp0"
@@ -14,8 +14,8 @@ if not exist "%PYTHON_EXE%" (
 )
 pushd "%SCRIPT_DIR%"
 if errorlevel 1 exit /b 1
-if not exist "dataset\truebones\zoo\truebones_processed\cond.npy" (
-    echo ERROR: Preprocess truebones/zoo before running this experiment.
+if not exist "dataset\cond_tiny.npy" (
+    echo ERROR: Run tools/merge_dataset_cond.py --datasets dataset/datasets_tiny.jsonl --out dataset/cond_tiny.npy before running this experiment.
     popd
     exit /b 1
 )
@@ -25,7 +25,7 @@ REM Target and reference input draw topology and bone-length augmentation indepe
 REM Keep the full 215-clip locomotion pool; no ordered sample_limit truncation.
 REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
 "%PYTHON_EXE%" train/train_anytop.py ^
-    --cond_path dataset/truebones/zoo/truebones_processed/cond.npy ^
+    --cond_path dataset/cond_tiny.npy ^
     --save_dir "save/%RUN_NAME%" ^
     --seed 10 ^
     --save_interval 2000 ^

@@ -16,8 +16,8 @@ datasets' own ``cond.npy`` files are never modified.
 
 Usage:
     python tools/merge_dataset_cond.py \
-        --datasets dataset/datasets.jsonl \
-        --out dataset/cond.npy \
+        --datasets dataset/datasets_all.jsonl \
+        --out dataset/cond_all.npy \
         [--no-recompute-stats] [--dry-run]
 """
 
@@ -343,7 +343,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--datasets",
-        default="dataset/datasets.jsonl",
+        default="dataset/datasets_all.jsonl",
         help="Dataset manifest (JSONL). Line order sets bare-name resolution priority.",
     )
     parser.add_argument("--out", required=True, help="Output cond.npy path.")

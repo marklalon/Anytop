@@ -350,7 +350,7 @@ def test_twenty_percent_probability_gate(monkeypatch, draw, expected):
 @pytest.mark.parametrize('split', ['val'])
 def test_eval_rejects_random_bone_shapes(split):
     from data_loaders.get_data import get_dataset
-    cond_path = Path(__file__).resolve().parents[1] / 'dataset/cond.npy'
+    cond_path = Path(__file__).resolve().parents[1] / 'dataset/cond_all.npy'
     if not cond_path.exists():
         pytest.skip('Merged dataset absent')
     with pytest.raises(ValueError, match='training splits only'):
@@ -361,7 +361,7 @@ def test_eval_rejects_random_bone_shapes(split):
 def test_real_training_combines_bone_leaf_and_temporal_augmentation():
     from data_loaders.get_data import get_dataset
     from data_loaders.tensors import truebones_batch_collate
-    cond_path = Path(__file__).resolve().parents[1] / 'dataset/cond.npy'
+    cond_path = Path(__file__).resolve().parents[1] / 'dataset/cond_all.npy'
     if not cond_path.exists():
         pytest.skip('Merged dataset absent')
     dataset = get_dataset(num_frames=60, split='train', objects_subset='all',

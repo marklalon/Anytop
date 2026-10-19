@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Count the frequency of the words of one action-label slot.
 
-Reads ``dataset/datasets.jsonl``, merges the ``action_labels.jsonl`` sidecars
+Reads ``dataset/datasets_all.jsonl``, merges the ``action_labels.jsonl`` sidecars
 of every enabled dataset, and reports the words of the selected slot of each
 ``action_label`` as one pooled frequency table.  No train/val split is
 applied.  A label contributes one row PER word in the slot (a head slot may
@@ -19,7 +19,7 @@ Usage:
     python tools/count_action_label_words.py
     python tools/count_action_label_words.py --slot modifier
     python tools/count_action_label_words.py --slot direction
-    python tools/count_action_label_words.py --datasets dataset/datasets.jsonl
+    python tools/count_action_label_words.py --datasets dataset/datasets_all.jsonl
     python tools/count_action_label_words.py --by-dataset
 """
 
@@ -42,7 +42,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     DIRECTION_VOCAB,
 )
 
-_DEFAULT_MANIFEST = _anytop_root / "dataset" / "datasets.jsonl"
+_DEFAULT_MANIFEST = _anytop_root / "dataset" / "datasets_all.jsonl"
 
 # The vocabulary's own slot partition (word_slots in the conditioning
 # contract): a word's slot is a property of the word, never of its position.
@@ -104,8 +104,8 @@ def main():
     parser.add_argument(
         "--datasets",
         default=str(_DEFAULT_MANIFEST),
-        help="Path to the datasets.jsonl manifest (absolute, or relative to "
-        "the Anytop dir). Default: dataset/datasets.jsonl.",
+        help="Path to the datasets_all.jsonl manifest (absolute, or relative to "
+        "the Anytop dir). Default: dataset/datasets_all.jsonl.",
     )
     parser.add_argument(
         "--slot",

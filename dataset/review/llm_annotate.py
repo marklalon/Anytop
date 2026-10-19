@@ -5,7 +5,7 @@
 Step 3 of ``../readme.txt``: the review GIFs ``render_gifs.py`` writes are
 handed to the local VLM (``http://127.0.0.1:8066/v1``) and its answers become
 DRAFTS; nothing reaches a dataset's sidecars until ``apply``.  The datasets are
-the ones ``../datasets.jsonl`` lists, the same manifest ``serve.py`` and
+the ones ``../datasets_all.jsonl`` lists, the same manifest ``serve.py`` and
 ``render_gifs.py`` read::
 
     llm_annotate.py actions --dataset unitybundles --filter "RMW_*" --dry-run
@@ -118,7 +118,7 @@ from tools.action_label_sidecar import (  # noqa: E402
 )
 
 # ── paths ────────────────────────────────────────────────────────────────────
-DATASETS_FILE = DATASET_ROOT / "datasets.jsonl"
+DATASETS_FILE = DATASET_ROOT / "datasets_all.jsonl"
 DRAFT_SUBDIR = Path("review") / "llm"
 GIF_SUBDIR = Path("review") / "gif"
 COND_FILE = "cond.npy"
@@ -1723,7 +1723,7 @@ def main():
 
     def common(parser):
         parser.add_argument("--dataset", default="all",
-                            help="namespace glob from datasets.jsonl, or its last part "
+                            help="namespace glob from datasets_all.jsonl, or its last part "
                                  "(unitybundles, zoo, ...)")
         parser.add_argument("--out-root", default=None,
                             help="draft directory root (default: <processed>/review/llm)")
