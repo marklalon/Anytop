@@ -66,7 +66,6 @@ attention，最后由因子化注意力输出的预测就是干净动作。骨�
 - per-joint species × joint FiLM 与 species CFG；
 - 按角色分槽的 action-label 条件与 action CFG；
 - resample-speed 条件（输出坐标/标准化空间全语料统一，不作为模型输入）；
-- 可选的 global topology conditioner（骨架汇总 → 每层 AdaLN，见 §4.4）；
 - subtree / temporal-span 混合噪声训练；
 - full temporal attention、QK-Norm 和细分的拓扑关系码。
 
@@ -222,40 +221,6 @@ cond entry 携带同一对向量（loader 用 `assert_single_canonical_frame` �
 时间窗口相对源动作的压缩/拉伸程度。数据侧的 `motion_speed_aug` 是另一项无显式条件的数据
 增强，不应与 `resample_speed_cond` 混为一谈。
 
-### 4.4 Global topology conditioner
-
-`--topology_cond`（默认关）把整副骨架汇总成一个向量，乘性地调制每一层。实现是
-`motion_transformer.TopologyConditioner`：
-
-- 输入是第 0 个时间位置的 rest-pose token 加 structural latent（§3.3），**不含 joint-name
-  embedding**。名字带物种身份，能还原物种的汇总会和 species descriptor 竞争——而推理时用户
-  正是改 species_tags 来换步态风格。去掉名字后，这条通路只描述几何比例，改关节名不会动它；
-- 若干 learned query 对全部有效关节做 cross-attention（padding 关节被 mask），过残差 FFN，
-  对 query 取平均得到每个样本一个向量；
-- zero-init 的头把它映射成与 action AdaLN 相同的 (B, L, 4, d) 布局，两者相加后在 temporal 与
-  FFN 的分支输入上做 `(1+γ)·x + β`；
-- 不做 CFG drop：它描述被驱动的骨架，不是引导方向。
-
-动机：§4 的其他全局条件都是类别量，没有一个带连续的骨架几何；没有这条通路时，整身比例
-只能靠每层的 spatial attention 逐帧重建。rest-pose token 的非 root 行在同一物种内是常数（parent-local
-residual 在 rest 时为 0），所以这里的几何信息实际来自 structural channel。
-
-启用它时，需要复查 species_tags override（Galloping vs Lumbering、Flapping vs Hovering）的
-效果是否被削弱。
-
-数据侧的 `--leaf_drop_prob`（val/test 拒绝）给它配了拓扑增强：以该概率删掉所有符合
-条件的终端叶子——名称含 Nub / end / site / Container，或（名称没有有效词元或名称向量全零）
-且局部旋转静止；再随机删少量重复链的末段。重复链的判定是：叶子与父关节的规范名称去掉侧别词和
-末尾数字后词干相同，且词干末词不是 leg / arm / foot / hoof / paw / hand；镜像对成对删。
-因此可删的末段不局限于 Tail、Finger、Wing、Tongue，也可能是 Ear、Eye 等真实身体部位，
-即使该关节有动画；不在重复链上的蹄、下巴、耳、眼或挂在脊柱上的翅膀不会因此被选中。
-root、平移根、朝向关节、face 与 contact 标注关节始终保留。每个关节行存的是它自己的
-root-relative 位置、局部旋转和速度；叶子的旋转不影响其他关节，所以删行不会改变保留关节的运动。
-增强后的样本对应一副末端更短的骨架，而不一定只是去掉辅助节点。
-cond 按保留关节切片、索引重映射，structural channel、relation 矩阵和长度尺度 L 都按新骨架重建
-（`truebones_utils/leaf_drop.py`）。目的有两个：
-对末端节点与链长变化不敏感；不让这里的池化退化成按每个物种的精确拓扑查表。
-
 ## 5. Decoder layer
 
 每层的实际顺序是：
@@ -269,7 +234,7 @@ x + embedded timestep/conditions
   → [action AdaLN on the branch input] → FFN + residual + norm
 ```
 
-方括号里的 AdaLN 只在 `--action_label_adaln` 下存在（见 §4.2），`--topology_cond` 的调制叠加在同一位置（§4.4）；ref cross-attn 只在 `--ref_encoder` 下存在。
+方括号里的 AdaLN 只在 `--action_label_adaln` 下存在（见 §4.2）；ref cross-attn 只在 `--ref_encoder` 下存在。
 
 该层沿用了 `nn.TransformerDecoderLayer` 的外形，但不含 encoder-decoder memory attention：
 基类的 `self_attn` 换成 graph/temporal 两条路径，`multihead_attn` 已删除。
@@ -502,7 +467,6 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 | joint structural channel | `data_loaders/truebones/truebones_utils/joint_struct_features.py` |
 | refined topology codes | `data_loaders/truebones/truebones_utils/topology_relations.py` |
 | loop roll/tile/resample | `data_loaders/truebones/data/dataset.py` |
-| leaf-drop 拓扑增强 | `data_loaders/truebones/truebones_utils/leaf_drop.py` |
 | reference/inpainting/outpainting | `sample/generate.py` |
 | 源骨架参考编码器 | `model/motion_encoder.py` |
 | 编码器侧增强与固定字段 | `data_loaders/reference.py` |

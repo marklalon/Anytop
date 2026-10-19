@@ -4,7 +4,6 @@ import numpy as np
 from model.motion_transformer import (
     GraphMotionDecoderLayer,
     GraphMotionDecoder,
-    TopologyConditioner,
     run_in_fp32,
 )
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
@@ -153,10 +152,6 @@ class AnyTop(nn.Module):
                 "the action token, and without a label there is no token to drive "
                 "it -- the modulation would be one learned constant."
             )
-        # --topology_cond: a pooled whole-skeleton summary modulating every
-        # decoder layer (TopologyConditioner). Built last in __init__, so the
-        # flag does not reorder the other parameters' initialisation.
-        self.topology_cond = bool(kargs.get('topology_cond', False))
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if not 0.0 <= self.joint_mask_budget <= 1.0:
@@ -258,10 +253,6 @@ class AnyTop(nn.Module):
         
         self.output_process = OutputProcess(
             self.feature_len, self.input_feats, self.root_input_feats, self.max_joints, self.latent_dim
-        )
-        self.topology_conditioner = (
-            TopologyConditioner(self.latent_dim, self.num_layers, self.num_heads)
-            if self.topology_cond else None
         )
         self.ref_encoder = bool(kargs.get('ref_encoder', False))
         self.ref_cfg_drop_prob = float(kargs.get('ref_cfg_drop_prob', 0.4))
@@ -1032,16 +1023,8 @@ class AnyTop(nn.Module):
                 "without it comes from a caller that assembles model_kwargs by hand."
             )
         joint_name_drop = self._sample_joint_name_drop(bs, njoints, x.device)
-        topology_adaln = None
-        if self.topology_conditioner is None:
-            x = self.input_process(x, rest_pose, y['joints_names_embs'], species_emb_for_joints, joint_valid, y['joint_struct'],
-                                   joint_name_drop=joint_name_drop, species_active=species_active) # applies linear layer on each frame to convert it to latent dim
-        else:
-            x, topology_tokens = self.input_process(
-                x, rest_pose, y['joints_names_embs'], species_emb_for_joints, joint_valid,
-                y['joint_struct'], return_topology_tokens=True, joint_name_drop=joint_name_drop, species_active=species_active,
-            )
-            topology_adaln = run_in_fp32(self.topology_conditioner, topology_tokens, joint_valid)
+        x = self.input_process(x, rest_pose, y['joints_names_embs'], species_emb_for_joints, joint_valid, y['joint_struct'],
+                               joint_name_drop=joint_name_drop, species_active=species_active) # applies linear layer on each frame to convert it to latent dim
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
         spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
@@ -1075,7 +1058,6 @@ class AnyTop(nn.Module):
             # Same token the additive path summed in above, so a CFG-dropped row
             # modulates by the null embedding rather than skipping the head.
             action_adaln_cond=action_label_token if self.action_label_adaln else None,
-            topology_adaln=topology_adaln,
             ref_z=ref_z,
             ref_active=ref_active,
         )
@@ -1178,17 +1160,12 @@ class InputProcess(nn.Module):
         )
 
     def forward(self, x, rest_pose, joints_embedded_names, species_emb=None, joint_valid=None,
-                joint_struct=None, return_topology_tokens=False, joint_name_drop=None, species_active=None):
+                joint_struct=None, joint_name_drop=None, species_active=None):
         """Embed every (frame, joint); the rest pose becomes frame 0.
 
         ``joint_name_drop`` ([B, J] bool) zeroes those joints' whole name rows,
         leaving rest pose and the topology as their identity signals. No
         1/(1-p) rescale: a hidden row is not a thinned vector.
-
-        With ``return_topology_tokens`` also returns the (B, J, d) rest-pose
-        token plus structural latent, WITHOUT the joint-name embedding: the
-        input of the --topology_cond pool, kept name-free so it describes the
-        skeleton's geometry and not the species' identity.
         """
         # x.shape = [batch_size, joints, feature_len, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
@@ -1263,7 +1240,6 @@ class InputProcess(nn.Module):
         # and a live joint's struct row is never all-zero.
         struct_latent = struct_latent * joint_valid.unsqueeze(-1).to(struct_latent.dtype)
         x = x + struct_latent[None, ...]
-        topology_tokens = tpos_embedded[0] + struct_latent if return_topology_tokens else None
         # Absolute frame PE, the baseline frame signal for every sample (loop
         # samples add a circular phase on top, per decoder layer -- see
         # circular_phase_embedding). Batch dim 1: only row 0 is kept, so a
@@ -1272,8 +1248,6 @@ class InputProcess(nn.Module):
         positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1)
         pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
         x = x + pos_emb.unsqueeze(1).unsqueeze(1)
-        if return_topology_tokens:
-            return x, topology_tokens
         return x
 
 
