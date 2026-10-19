@@ -145,7 +145,9 @@ def bake_foot_floor_offset(anim, foot_chains, up_axis: int = 1):
     and exported — is the only place the contact really lands at y=0.
 
     Each foot's floor is the lowest height any of its joints reaches over the
-    clip; the median of those is the floor. A skeleton without feet (serpentine
+    clip; the mean of the two lowest is the floor, so a pose with raised feet
+    (a quadruped standing on its hind legs) is grounded by its supporting
+    feet. A skeleton without feet (serpentine
     or aquatic animals, for example) passes an empty ``foot_chains`` and stands
     on its lowest joint instead. A single constant offset is subtracted from the
     hierarchy root's local translation. The root has no parent, so this is an
@@ -170,7 +172,8 @@ def bake_foot_floor_offset(anim, foot_chains, up_axis: int = 1):
         return anim
     global_positions = positions_global(anim)
     per_joint_min = np.min(global_positions[:, :, up_axis], axis=0)
-    floor_height = float(np.median(ground_floors(per_joint_min, foot_chains)))
+    floors = np.sort(ground_floors(per_joint_min, foot_chains))
+    floor_height = float(floors[:2].mean())
     # Ignore sub-centimeter drift from FK reconstruction to preserve self-retarget accuracy. 
     if abs(floor_height) <= 1e-2:
         return anim
