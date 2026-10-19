@@ -213,7 +213,7 @@ opt.sources   = tuple[DatasetSource]   # 由 cond entry 的 dataset_root 去重�
 5. `motion_metadata.json` / `action_labels.jsonl` 按源分别加载，join 时用裸文件名。
    动作词表 `dataset/action_word_embeddings.npy` **只有一份**：它按受控词表的**词**索引，
    与语料无关，所以没有合并问题，改标签也不会让它过期
-   （[action_label_per_word_pooling.md](action_label_per_word_pooling.md) §7）。
+   （[action_group_and_label.md](action_group_and_label.md) §5.4）。
 
 ### 5.4 采样权重
 

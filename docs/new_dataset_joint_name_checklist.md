@@ -52,7 +52,7 @@ $EDITOR dataset/<新数据集>/species_tags.jsonl
 $EDITOR dataset/<新数据集>/chain_forward_joints.jsonl
 
 # action_labels.jsonl 同样没有 fallback（2026-08-30 起，见
-# action_group_label_refactor.md §9.5）：预处理阶段宽容（carry-forward 读），
+# action_group_and_label.md §2）：预处理阶段宽容（carry-forward 读），
 # 但训练 / 产物重建（regenerate_dataset_artifacts.py）时缺文件或缺 clip 条目
 # 会直接 fast-fail。每个 clip 一行，group 三选一：
 # {"clip": "Cat_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, ..."}

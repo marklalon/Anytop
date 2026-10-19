@@ -10,7 +10,7 @@ import copy
 # tests/test_action_group_checkpoint_binding.py pins the two together.
 ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # The training value for one model over the whole corpus
-# (docs/unified_action_group_training.md). Recorded in args.json in a group's
+# (docs/action_group_and_label.md). Recorded in args.json in a group's
 # place; generation then reads the group off the label instead of the weights.
 ACTION_GROUP_ALL = 'all'
 
@@ -446,7 +446,7 @@ def add_data_options(parser, training=False):
                                 "(stationary ~53%); see --rare_head_word_floor for the tail. "
                                 "Recorded in the checkpoint's args.json, where generation reads it "
                                 "back -- a single-group checkpoint can only ever be sampled as that "
-                                "group. See docs/unified_action_group_training.md.")
+                                "group. See docs/action_group_and_label.md.")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
