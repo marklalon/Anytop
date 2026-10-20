@@ -61,6 +61,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets_all.jsonl
 | `path` | 是 | — | **Anytop-root-relative** POSIX 路径（工作目录即 Anytop）或绝对路径，用现有的 [`param_utils._resolve_project_path`](../data_loaders/truebones/truebones_utils/param_utils.py) 解析 |
 | `enabled` | 否 | `true` | |
 | `species_include` / `species_exclude` | 否 | — | 裸名列表，方便临时裁剪 |
+| `sample_weight` | 否 | `1` | 该数据集每条 clip 的抽样倍数，与 head-word 倍数相乘。合并工具写入 cond 的 `dataset_sample_weight`，修改后需要重新合并 cond |
 
 **行序 = 裸名解析优先级**（重名时取第一个）。
 

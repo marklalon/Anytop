@@ -246,7 +246,7 @@ def _report(sources, merged_cond):
         clip_counts = _count_clips(source, merged_cond)
         print(
             f"  {source.namespace:<28} {len(keys):>3} species  "
-            f"{sum(clip_counts.values()):>5} clips  ({source.portable_root})"
+            f"{sum(clip_counts.values()):>5} clips  x{source.sample_weight:g}  ({source.portable_root})"
         )
     print()
 
@@ -276,6 +276,7 @@ def merge_dataset_cond(manifest_path, out_path, recompute_stats=True, dry_run=Fa
         )
         for entry in entries.values():
             entry["dataset_split"] = source.split
+            entry["dataset_sample_weight"] = source.sample_weight
         entries = {
             key: entry for key, entry in entries.items()
             if source.accepts(entry["species_name"])

@@ -17,6 +17,7 @@ manifest, so ``dataset_tags`` can import it without a cycle.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -42,6 +43,18 @@ def normalize_dataset_split(split) -> str:
     if split not in DATASET_SPLITS:
         raise ValueError(f"Invalid dataset split {split!r}; expected 'train' or 'val'.")
     return split
+
+
+def normalize_sample_weight(weight) -> float:
+    """A dataset's draw multiplier: every clip of it is drawn this many times as
+    often as a weight-1 clip with the same head word."""
+    try:
+        value = float(weight)
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid dataset sample_weight {weight!r}; expected a number.") from None
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f"Invalid dataset sample_weight {weight!r}; expected a finite number > 0.")
+    return value
 
 # A namespace is one or more ``[A-Za-z0-9_-]`` segments joined by ``/``.
 _NAMESPACE_RE = re.compile(r"^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$")
@@ -189,6 +202,7 @@ class DatasetSource:
     namespace: str
     root: str
     split: str = "train"
+    sample_weight: float = 1.0
     species_include: tuple[str, ...] = field(default=())
     species_exclude: tuple[str, ...] = field(default=())
 
@@ -220,11 +234,13 @@ class DatasetSource:
         return canonical_key(self.namespace, species_name)
 
 
-def make_source(namespace, root, species_include=(), species_exclude=(), split="train") -> DatasetSource:
+def make_source(namespace, root, species_include=(), species_exclude=(), split="train",
+                sample_weight=1.0) -> DatasetSource:
     return DatasetSource(
         namespace=normalize_namespace(namespace),
         root=str(resolve_anytop_path(root)),
         split=normalize_dataset_split(split),
+        sample_weight=normalize_sample_weight(sample_weight),
         species_include=tuple(str(name).strip() for name in species_include or ()),
         species_exclude=tuple(str(name).strip() for name in species_exclude or ()),
     )
@@ -262,6 +278,7 @@ def load_datasets_manifest(manifest_path) -> list[DatasetSource]:
                 species_include=record.get("species_include") or (),
                 species_exclude=record.get("species_exclude") or (),
                 split=record["split"],
+                sample_weight=record.get("sample_weight", 1.0),
             )
         except ValueError as exc:
             raise ValueError(f"{path.name}:{line_no}: {exc}") from exc
@@ -308,6 +325,7 @@ def sources_from_cond(
     for entry in cond_dict.values():
         namespace = normalize_namespace(entry["dataset_namespace"])
         split = normalize_dataset_split(entry.get("dataset_split", "train"))
+        sample_weight = normalize_sample_weight(entry.get("dataset_sample_weight", 1.0))
         stored_root = entry.get("dataset_root")
         root = str(resolve(stored_root)) if stored_root else fallback_root
         if root is None:
@@ -317,11 +335,14 @@ def sources_from_cond(
             )
         existing = ordered.get(namespace)
         if existing is None:
-            ordered[namespace] = DatasetSource(namespace=namespace, root=root, split=split)
-        elif existing.root != root or existing.split != split:
+            ordered[namespace] = DatasetSource(
+                namespace=namespace, root=root, split=split, sample_weight=sample_weight,
+            )
+        elif (existing.root, existing.split, existing.sample_weight) != (root, split, sample_weight):
             raise ValueError(
-                f"cond namespace {namespace!r} has conflicting roots or splits: "
-                f"{(existing.root, existing.split)!r} and {(root, split)!r}."
+                f"cond namespace {namespace!r} has conflicting roots, splits or sample weights: "
+                f"{(existing.root, existing.split, existing.sample_weight)!r} and "
+                f"{(root, split, sample_weight)!r}."
             )
     if not ordered:
         raise ValueError("cond dict is empty; cannot derive dataset sources.")
