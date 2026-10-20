@@ -1,8 +1,8 @@
 {
   "_comment": "Quick battery for train_tiny.bat.",
   "checkpoint": {
-    "RUN_NAME": "zoo_locomotion_tiny_v18",
-    "OUTPUT_DIR": "zoo_locomotion_tiny_v18_tiny"
+    "RUN_NAME": "zoo_locomotion_tiny_v19",
+    "OUTPUT_DIR": "zoo_locomotion_tiny_v19_tiny"
   },
   "tasks": [
     {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Buffalo", "--action_label", "run, forward"]},
@@ -35,6 +35,6 @@
     {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Eagle", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Giantbee_Fly.npy", "--ref_cfg_scale", "4"], "eval_label": "fly, forward"},
     {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Elephant", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Dog-2_Swimturn.npy", "--ref_cfg_scale", "4"], "eval_label": "swim, turn"},
     {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo_upgrade/Bear", "--reference_motion", "dataset/truebones/zoo_upgrade/clean/Bear/hind2.glb", "--ref_cfg_scale", "4"], "eval_label": "idle"},
-    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Cat", "--reference_motion", "dataset/truebones/zoo_upgrade/clean/impman/walk.glb", "--ref_cfg_scale", "4"], "eval_label": "idle"}
+    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Cat", "--reference_motion", "dataset/truebones/zoo_upgrade/clean/impman/walk.glb", "--ref_cfg_scale", "4"], "eval_label": "walk"}
   ]
 }
