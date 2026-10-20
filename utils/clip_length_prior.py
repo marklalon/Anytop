@@ -262,7 +262,7 @@ def _head_word_matcher(action_group, action_label):
     """Same group (or any, when none is asked for) and same action head words,
     whatever the modifiers.
 
-    'walk, forward, fast' falls back to every 'walk' clip of the group: the head
+    'walk, forward, trot' falls back to every 'walk' clip of the group: the head
     word is what sets the duration, a direction or a hands token does not.
     """
     group = str(action_group or "").strip().lower()

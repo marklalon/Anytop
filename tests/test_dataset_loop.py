@@ -371,7 +371,7 @@ def test_event_modifier_anchors_a_phase_free_head() -> None:
     assert not loop_is_phase_free("idle, scratch, sit")
     assert phase_anchoring_words("idle, look, crouch") == ["look"]
     assert phase_anchoring_words("attack, hover, bite") == ["attack", "bite"]
-    assert phase_anchoring_words("walk, left, slow") == []
+    assert phase_anchoring_words("walk, left, lumber") == []
 
 
 @pytest.mark.parametrize("loop_cond_prob", [1.0, 0.0])

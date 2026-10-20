@@ -47,8 +47,7 @@ rewrites ``species_tags.jsonl``; a changed species tag needs a cond regen.
 reaches the model is ``min(frames sent / 2, ~1 per second of container time)``.
 :func:`gif_as_video` re-times the GIF to 2 fps and writes every frame twice, so
 the surviving half is one copy of each rendered frame.  The price is playback
-far slower than the action, which the prompt has to say: speed words therefore
-come from the clip name only.
+far slower than the action, which the prompt has to say.
 """
 from __future__ import annotations
 
@@ -151,7 +150,7 @@ def log(message):
 # the prompt shows them as blocks, so the split is read back out of the tuple at
 # these leaders. A leader that moved is a loud failure, not a wrong prompt.
 MODIFIER_BLOCKS = (
-    ("hover", "how the head is executed (suspension, gait, speed, wing state)"),
+    ("hover", "how the head is executed (suspension, gait, wing state)"),
     ("bite", "secondary action layered on the head"),
     ("spin", "how a strike is delivered"),
     ("happy", "affect / social gesture"),
@@ -169,18 +168,11 @@ _CONFLICTS = (
     (("die", "fall"), "a death already falls -- write 'die' alone"),
     (("die", "idle"), "'idle' is a live motionless stance and contradicts a death"),
     (("walk", "run"), "the gait between them is 'walk, trot'"),
-    (("slow", "fast"), "the speed axis takes one word, not both"),
 )
-
-# Speed is name-only evidence: the 2 fps playback cannot show it.
-_NAME_SPEED = {"slow": ("slow", "slowly"),
-               "fast": ("fast", "sprint", "sprinting", "dash", "quick")}
-
 
 def _check_vocab():
     """Fail at startup when a word this tool is built around left the vocabulary."""
     missing = [w for w in TRAVEL_MODES if w not in HEAD_VOCAB]
-    missing += [w for w in _NAME_SPEED if w not in MODIFIER_VOCAB]
     missing += [leader for leader, _ in MODIFIER_BLOCKS if leader not in MODIFIER_VOCAB]
     if missing:
         raise SystemExit("motion_labels.py no longer has %s; llm_annotate.py has to "
@@ -349,11 +341,6 @@ def name_direction_words(action):
     return found
 
 
-def name_speed_words(action):
-    tokens = set(decamel(action).split())
-    return {word for word, forms in _NAME_SPEED.items() if tokens & set(forms)}
-
-
 # The prop a character carries is spelled as a suffix on the clip name, and the
 # motion underneath is the same one: IAC_Caveman ships Land beside LandWeapon.
 _VARIANT_SUFFIX_RE = re.compile(
@@ -374,9 +361,9 @@ def variant_base(action, known):
     return (base, match.group(0)) if base in known else (None, None)
 
 
-_AIRBORNE_NAME_RE = re.compile(r"(fly|flight|swim|hover|float|glide|dive|jump|fall|air)",
+_AIRBORNE_NAME_RE = re.compile(r"(fly|flight|swim|hover|float|glide|jump|fall|air)",
                                re.IGNORECASE)
-_AIRBORNE_WORDS = frozenset(w for w in ("fly", "swim", "jump", "fall", "glide", "dive",
+_AIRBORNE_WORDS = frozenset(w for w in ("fly", "swim", "jump", "fall", "glide",
                                         "land", "takeoff", "roll", "hover")
                             if w in CONTROLLED_VOCAB)
 
@@ -960,7 +947,7 @@ locomotion -- the character TRAVELS; the ground slides underneath it.
   - fly is for a body held up by WINGS. A legless hoverer drifting along is not
     flying: it is walk or run by pace.
   - Gait and manner are modifiers: "walk, forward, trot" (between walking and
-    running), "run, forward, fast" (sprint, dash), "fly, forward, glide" (held
+    running), "run, forward, gallop", "fly, forward, glide" (held
     wings). Backing away is just "walk, backward". A sideways step with the
     body still facing ahead is just "walk, left" / "walk, right".
   - A walk or run takes AT MOST ONE gait word, and only when its stepping style
@@ -1030,11 +1017,10 @@ WHAT THE RENDER DOES NOT TELL YOU
    in GetUp, StandUp, WakeUp, PickUp, LevelUp is not a direction.
 2. GROUND CONTACT MEANS NOTHING. Flying, swimming and hovering clips are usually
    authored in place, so the character may be drawn sunk into the grid. When the
-   name says Fly / Swim / Hover / Glide / Dive / Jump / Fall, BELIEVE THE NAME.
+   name says Fly / Swim / Hover / Glide / Jump / Fall, BELIEVE THE NAME.
 3. STAYING IN PLACE PROVES NOTHING. Gaits are very often animated in place. An
    in-place gait still gets its direction -- the heading it is trying to go.
-4. SPEED IS INVISIBLE at this playback rate. Write "fast" only when the name says
-   Fast / Sprint / Dash, "slow" only when it says Slow, never both.
+4. SPEED IS INVISIBLE at this playback rate, and there is no speed word.
 5. A HELD WEAPON IS ONE WORD. bow / gun / hammer / shield name the MOTION the
    implement makes (drawing a bow, firing, hammering, a shield bash); any other
    weapon in hand, one- or two-handed, adds "weapon" -- never together with
@@ -1242,11 +1228,6 @@ def validate_label(action, label, words, unknown, group, loop):
     if len(modes) > 1:
         problems.append("names %d travel media (%s) -- a clip travels in one"
                         % (len(modes), ", ".join(modes)))
-
-    claimed_speed = (word_set & set(_NAME_SPEED)) - name_speed_words(action)
-    if claimed_speed:
-        problems.append("the clip name does not say %s, and speed is not visible at "
-                        "this playback rate -- drop it" % "/".join(sorted(claimed_speed)))
 
     name_dirs = name_direction_words(action)
     label_planar = word_set & set(PLANAR_DIRECTIONS)

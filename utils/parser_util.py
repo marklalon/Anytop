@@ -374,7 +374,7 @@ def add_model_options(parser):
                             "Requires 'species_emb'.")
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the clip's action_label ('run, forward, "
-                            "left, fast' -- controlled keywords, not prose) is split into words, pooled "
+                            "left, trot' -- controlled keywords, not prose) is split into words, pooled "
                             "into one frozen-T5 channel per role slot (head / direction / "
                             "modifier), "
                             "projected and added to the timestep token. Requires the word table "
@@ -748,7 +748,7 @@ def add_generate_options(parser):
                             "tokens ONLY, comma-separated, in the canonical order the labels use: "
                             "action word(s) first, then the direction bound to the last one, then "
                             "any other modifiers in vocabulary order ('walk, forward', "
-                            "'run, left, fast', 'attack, bite'). Free text is NOT accepted -- an "
+                            "'run, left, trot', 'attack, bite'). Free text is NOT accepted -- an "
                             "unknown token is a hard error listing the valid ones, because the "
                             "vectors live in the checkpoint and no T5 runs at generation. A "
                             "recognizable prompt written out of canonical order is rewritten to it "

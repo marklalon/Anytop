@@ -42,7 +42,7 @@ _RETIRED_AUX_ACTION_GROUPS_KEY = "aux_action_groups"
 #   action_group  -- one of ACTION_GROUPS; partitions the dataset, each group
 #                    trains its own model.
 #   action_label  -- CONTROLLED KEYWORDS from the vocabulary below, in canonical
-#                    order ("run, forward, left, fast"); may be empty (= no
+#                    order ("run, forward, left, gallop"); may be empty (= no
 #                    condition, routed to the learned null embedding).
 #
 # The vocabulary is CONTROLLED, not mutually exclusive classes: a label names
@@ -85,12 +85,12 @@ HEAD_VOCAB: tuple[str, ...] = (
 
 # Blocks order the spelling only; nothing weights a word by its block.
 MODIFIER_VOCAB: tuple[str, ...] = (
-    # -- block A: how the head is executed (suspension, gait, speed, wing state) --
+    # -- block A: how the head is executed (suspension, gait, wing state) --
     # hover is a held suspension state; hovering at rest is "idle, hover".
     # The gait words name the stepping style of a walk / run (GAIT_WORDS); the
     # wing words name what the wings do (WING_WORDS).
     "hover", "trot", "gallop", "scurry", "clank", "lumber", "waddle",
-    "flap", "flutter", "fast", "glide", "slow", "dive", "flopping",
+    "flap", "flutter", "glide", "flopping",
     # -- block B: secondary action layered on the head --
     "bite", "eat", "look", "shake", "throw", "taunt",
     "sniff", "yawn", "sting", "kick", "scratch",
@@ -128,9 +128,8 @@ ACTION_VOCAB: tuple[str, ...] = HEAD_VOCAB + MODIFIER_VOCAB
 # The direction axis -- travel / facing direction. Directions bind after a
 # ``turn`` head (or the last head), before the remaining modifiers, spelled
 # BARE ("forward", not "leftward": the derived adjectives collapse to nearly
-# the same T5 point). up/down are directions, not actions (dive stays an
-# action); the vertical word is spelled LAST after the planar ones, at most
-# one per label.
+# the same T5 point). up/down are directions, not actions; the vertical word
+# is spelled LAST after the planar ones, at most one per label.
 DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right", "up", "down")
 
 # A HELD WEAPON IS ONE MODIFIER, NOT A GRIP. ``bow`` / ``gun`` / ``hammer`` /
@@ -198,11 +197,11 @@ assert not any(char.isspace() for word in CONTROLLED_VOCAB for char in word), (
 # Direction words that name travel in the ground plane.
 PLANAR_DIRECTIONS: tuple[str, ...] = ("forward", "backward", "left", "right")
 
-# Words that name travel OUT of the ground plane. A dive, a jump-fall or a
+# Words that name travel OUT of the ground plane. A jump-fall or a
 # vertical take-off has no planar heading to spell, so no rule may demand one
-# of them. ``fall`` and ``dive`` are ACTION_VOCAB words, not directions, but
-# they name the same vertical axis.
-VERTICAL_WORDS: tuple[str, ...] = ("up", "down", "dive", "fall")
+# of them. ``fall`` is an ACTION_VOCAB word, not a direction, but
+# it names the same vertical axis.
+VERTICAL_WORDS: tuple[str, ...] = ("up", "down", "fall")
 
 # ``hover`` holds the body in place: no heading of travel to spell. Distinct
 # from VERTICAL_WORDS (travel OUT of the plane) -- this names the absence of a
@@ -301,7 +300,7 @@ assert _PHASE_FREE_LOOP_HEAD_SET <= _HEAD_VOCAB_SET, (
 )
 
 # The modifiers that leave a phase-free head phase-free: how the state is
-# carried out (gait, speed, wing state), a posture held through it (sit,
+# carried out (gait, wing state), a posture held through it (sit,
 # sleep), or what is held during it (carry, weapon). Every other modifier names
 # an EVENT layered on the state -- a glance, a bite of food, a shake, a yawn --
 # and anchors the clip exactly like an anchored head: rolling "idle, look"
@@ -311,7 +310,7 @@ assert _PHASE_FREE_LOOP_HEAD_SET <= _HEAD_VOCAB_SET, (
 # not modifiers and never anchor.
 PHASE_FREE_LOOP_MODIFIERS: tuple[str, ...] = (
     "hover", "trot", "gallop", "scurry", "clank", "lumber", "waddle",
-    "flap", "flutter", "fast", "glide", "slow", "flopping",
+    "flap", "flutter", "glide", "flopping",
     "crouch", "dead", "sit", "sleep",
     "aim", "carry",
     "bow", "gun", "hammer", "shield", "weapon",
