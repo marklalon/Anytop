@@ -287,7 +287,7 @@ def _adopt_reference_file_cond(args):
         sys.exit(
             f"ERROR: cannot tell which species {reference} is: its name matches no species of the "
             "checkpoint, so the skeleton the file carries has no motion descriptor. Pass "
-            "--species_tags (e.g. --species_tags Quadruped,Lumbering) so it can be edited on its own "
+            "--species_tags (e.g. --species_tags Quadruped) so it can be edited on its own "
             "skeleton, or --object_type / --cond_path to edit a skeleton that already exists."
         )
     from tools.process_new_skeleton import species_from_tpose_stem

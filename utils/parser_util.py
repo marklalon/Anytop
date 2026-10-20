@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 34
+CKPT_VERSION = 35
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -773,12 +773,13 @@ def add_generate_options(parser):
                             "--action_label_cfg_drop_prob (without it there is no unconditional "
                             "mode to guide away from).")
     group.add_argument("--species_tags", default="", type=str,
-                       help="Override the target species' motion style tags for this generation, e.g. "
-                            "'Quadruped,Lumbering'. Comma/semicolon-separated. The pair must be in the "
-                            "checkpoint's precomputed species descriptor table (a closed body-plan x "
-                            "locomotion vocabulary; no T5 runs at generation); its row replaces the species "
-                            "descriptor baked into cond.npy (default from species_tags.jsonl), letting you "
-                            "restyle the generated motion (e.g. make a Winged Dragon walk on the ground). "
+                       help="Override the target species' body plan for this generation, e.g. "
+                            "'Quadruped'. It must be in the checkpoint's precomputed species descriptor "
+                            "table (the closed body-plan vocabulary; no T5 runs at generation); its row "
+                            "replaces the species descriptor baked into cond.npy (default from "
+                            "species_tags.jsonl), letting you restyle the generated motion (e.g. make a "
+                            "Winged Dragon move as a Quadruped). Gait and wing state are action_label "
+                            "modifiers (--action_label 'run, forward, gallop'). "
                             "Requires a checkpoint trained with --species_joint_cond. "
                             "Incompatible with --object_type all.")
     group.add_argument("--species_cfg_scale", default=1.0, type=float,
@@ -854,7 +855,7 @@ def process_new_skeleton_args():
                             "enable for training-compatible preprocessing.")
     group.add_argument("--species-tags", required=True, type=str,
                        help="Comma-separated species tags (motion descriptor) for --object-type, "
-                            "e.g. 'Quadruped,Lumbering'. REQUIRED for a new skeleton: it "
+                            "e.g. 'Quadruped'. REQUIRED for a new skeleton: it "
                             "defines the descriptor baked into cond.npy (generation looks its vector up "
                             "in the checkpoint's species descriptor table). There is no fallback to "
                             "the default dataset's species_tags.jsonl, so it must be supplied "

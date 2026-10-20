@@ -32,7 +32,7 @@ other side.  Labels are exact controlled-vocabulary tokens
 ``canonical_action_label``; head order follows the dataset's existing spelling
 of the same word set, since head order IS the condition.
 
-**species.**  Two closed tags (``dataset_tags``: body plan x locomotion).  The
+**species.**  One closed tag (``dataset_tags``: the body plan).  The
 evidence is the rig out of ``cond.npy`` (joint tree, leg chains, contact
 joints) plus one clip GIF of the species, preferably a locomotion clip.
 
@@ -80,7 +80,6 @@ from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa
 from data_loaders.truebones.truebones_utils.joint_parts import prefill_joint_parts  # noqa: E402
 from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
     CANONICAL_OBJECT_SUBSETS,
-    SPECIES_LOCOMOTIONS,
     SPECIES_TAGS_FILE,
     check_species_tags,
     normalize_species_tag,
@@ -654,14 +653,13 @@ SPECIES_SYSTEM = (
 
 SPECIES_RULES = """\
 TASK
-Produce two tags describing HOW THIS CHARACTER MOVES: body plan, locomotion.
-They are joined into one short text that conditions the model on the species, and
-tag 1 also decides which training subset the species is grouped into. Judge the
-creature, not the picture: how it is lit and how big it is drawn carry no
-information. BOTH TAGS ARE CLOSED SETS: answer with exactly one listed word each,
-spelled as listed. Any other word is rejected.
+Produce the body plan of this character: which part of the body carries its
+motion. It conditions the model on the species and decides which training subset
+the species is grouped into. Judge the creature, not the picture: how it is lit
+and how big it is drawn carry no information. IT IS A CLOSED SET: answer with
+exactly one listed word, spelled as listed. Any other word is rejected.
 
-TAG 1 -- body_plan, closed set: {subsets}
+body_plan, closed set: {subsets}
   Decide by PRIMARY locomotion, then by leg count:
     - travels through the AIR as its main way of moving -- flies, hovers,
       levitates -- and HAS WINGS or rotors                   -> winged
@@ -683,23 +681,12 @@ TAG 1 -- body_plan, closed set: {subsets}
   weapons look like limbs and are not; a rigged leg chain is. Report the number
   you settled on in leg_count (0 when it has none).
 
-TAG 2 -- locomotion, closed set: {locomotions}
-  EXACTLY ONE of these words -- no modifier, no role, no style, no invented
-  gerund. It names this species' SIGNATURE way of travelling, decided from WHAT
-  THE CREATURE IS: its name, its build, its anatomy. When none fits perfectly,
-  pick the nearest one.
-  IT IS NOT THE GAIT IN THE CLIP. The clip is one arbitrary sample and is usually
-  a walk cycle. A horse is Galloping even when the clip shows it walking; a bear
-  is Lumbering even in a slow plod; a cat is Galloping even when it trots past.
-  A robot or mechanical construct that steps on its legs is Clanking: stiff,
-  rigid-jointed, metronomic steps. A hovering robot is Hovering, not Clanking.
-
 THE CLIP
 One clip of this character, "{clip}" -- the only picture you get. Use it to see
 the body and to rule out an obvious error about how the body travels at all (it
 floats, hovers, rolls or drags itself rather than stepping on its legs). Its NAME
 counts as evidence: a take the artist called FlyForward belongs to a species that
-travels through the air. It does NOT name the gait. It is rendered on a 1x1 grid
+travels through the air. It is rendered on a 1x1 grid
 at ground level; the character may float above the grid or sink into it, and
 GROUND CONTACT IS NOT EVIDENCE about whether it flies. Playback is far slower than
 the real action, so speed on screen means nothing.
@@ -718,10 +705,10 @@ RIG (parsed from the actual skeleton -- authoritative for anatomy)
 {tree}
 """
 
-SPECIES_SCHEMA_KEYS = ("body_plan", "leg_count", "locomotion", "why", "confidence")
+SPECIES_SCHEMA_KEYS = ("body_plan", "leg_count", "why", "confidence")
 # The keys the tags are built from; decoded first, so a stall inside `why`
 # never strands them.
-SPECIES_TAG_KEYS = ("body_plan", "leg_count", "locomotion")
+SPECIES_TAG_KEYS = ("body_plan", "leg_count")
 
 
 def species_schema():
@@ -730,7 +717,6 @@ def species_schema():
         "properties": {
             "body_plan": {"type": "string", "enum": list(CANONICAL_OBJECT_SUBSETS)},
             "leg_count": {"type": "integer"},
-            "locomotion": {"type": "string", "enum": list(SPECIES_LOCOMOTIONS)},
             "why": {"type": "string"},
             "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
         },
@@ -742,8 +728,7 @@ def species_schema():
 def validate_species(reply):
     """``(tags, legs, problems)`` -- tags in sidecar spelling."""
     problems = []
-    tags = [normalize_species_tag(reply.get("body_plan") or ""),
-            normalize_species_tag(reply.get("locomotion") or "")]
+    tags = [normalize_species_tag(reply.get("body_plan") or "")]
     try:
         check_species_tags(tags, "reply")
     except ValueError as exc:
@@ -806,7 +791,6 @@ def annotate_species(args, job, sink):
     species, facts, chosen = job["species"], job["facts"], job["clip"]
     prompt = SPECIES_RULES.format(
         subsets=", ".join(CANONICAL_OBJECT_SUBSETS),
-        locomotions=", ".join(SPECIES_LOCOMOTIONS),
         clip=chosen["action"], species=species, label=readable_species(species),
         n_joints=facts["n_joints"],
         n_legs=len(facts["legs"]), legs=", ".join(facts["legs"]) or "(none found)",
@@ -979,6 +963,12 @@ locomotion -- the character TRAVELS; the ground slides underneath it.
     running), "run, forward, fast" (sprint, dash), "fly, forward, glide" (held
     wings). Backing away is just "walk, backward". A sideways step with the
     body still facing ahead is just "walk, left" / "walk, right".
+  - A walk or run takes AT MOST ONE gait word, and only when its stepping style
+    is plain to see: trot (diagonal legs together), gallop (a bounding run with
+    every foot off the ground -- run only), scurry (small rapid steps), lumber
+    (a heavy, ponderous plod), waddle (rocking side to side on short legs),
+    clank (a machine's stiff, rigid-jointed, metronomic steps). An ordinary
+    walk or run takes none. jump, fall, roll and swim take none.
   - The label MUST name a direction, even for a clip authored in place: the
     heading the gait is trying to go. A hover held in place is exempt.
   - Every jump is here, one in place included: "jump, up" (straight up),
@@ -1067,6 +1057,10 @@ RULES THAT ARE NOT OPTIONAL
   {no_planar}. up / down still apply to them.
 - A death is just "die" -- never "die, fall", never "die, idle".
 - Never "walk, run": the gait between them is "walk, trot".
+- WINGS: write flap (full wingbeats) or flutter (rapid, shallow wingbeats) only
+  when the wings are plainly beating, glide only when they are plainly held
+  still, in any group -- "fly, forward, flap", "idle, hover, flutter". At most
+  one of the three; none when the wings are folded or you cannot tell.
 - If the clip name puts a SECOND action on top of the head (Attack, Bite, Roar,
   Jump, Shot) and the lists have a word for it, name it: it is what separates
   this clip from the plain version. Do not invent one the lists cannot spell.

@@ -62,7 +62,7 @@ def _limb(side, x, top, z, names, y_top):
     return joints
 
 
-def _quadruped(fore_names, hind_names, tags=('Quadruped', 'Galloping')):
+def _quadruped(fore_names, hind_names, tags=('Quadruped',)):
     joints = [
         ('Hips', None, (0.0, 0.5, -0.4)),
         ('Spine', 'Hips', (0.0, 0.5, 0.0)),
@@ -104,7 +104,7 @@ def test_quadruped_plain_legs_split_fore_hind_by_geometry():
     for side, x in (('L', 0.15), ('R', -0.15)):
         joints += _limb(side, x, 'Chest', 0.4, ['Leg1', 'Leg2', 'Foot1'], 0.5)
         joints += _limb(side, x, 'Hips', -0.4, ['Leg3', 'Leg4', 'Foot2'], 0.5)
-    parts, _ = _parts(_entry(joints, ('Quadruped', 'Trotting')))
+    parts, _ = _parts(_entry(joints, ('Quadruped',)))
     assert parts['L_Leg1'] == 'arm' and parts['L_Foot1'] == 'hand'
     assert parts['L_Leg3'] == 'leg' and parts['L_Foot2'] == 'foot'
 
@@ -118,7 +118,7 @@ def test_multiped_walking_arm_is_a_leg_but_pincers_stay():
         joints += _limb(side, x, 'Hips', 0.0, ['UpperArm', 'Forearm', 'Finger'], 0.3)
         joints += _limb(side, x, 'Hips', -0.2, ['Thigh', 'Calf', 'Toe'], 0.3)
         joints += [(f'{side}_Pincers1', 'Head', (x, 0.3, 0.45)), (f'{side}_Pincers2', f'{side}_Pincers1', (x, 0.3, 0.55))]
-    entry = _entry(joints, ('Multiped', 'Crawling'))
+    entry = _entry(joints, ('Multiped',))
     parts, proposal = _parts(entry)
     assert proposal['L_Finger']['contact'] == 1
     assert parts['L_UpperArm'] == 'leg' and parts['L_Finger'] == 'foot'
@@ -139,14 +139,14 @@ def test_winged_species_arm_chain_is_the_wing():
     ]
     joints += _limb('L', 0.05, 'Hips', 0.0, ['Thigh', 'Foot'], 0.3)
     joints += _limb('R', -0.05, 'Hips', 0.0, ['Thigh', 'Foot'], 0.3)
-    parts, _ = _parts(_entry(joints, ('Winged', 'Flapping')))
+    parts, _ = _parts(_entry(joints, ('Winged',)))
     assert {parts[name] for name in ('L_UpperArm', 'L_Forearm', 'L_Finger')} == {'wing'}
     assert parts['L_Thigh'] == 'leg' and parts['L_Foot'] == 'foot'
 
 
 @pytest.mark.parametrize('tags, body_tentacle', [
-    (('Aquatic', 'Undulating'), 'arm'),
-    (('Drifting', 'Hovering'), 'soft'),
+    (('Aquatic',), 'arm'),
+    (('Drifting',), 'soft'),
 ])
 def test_tentacles_follow_where_they_hang(tags, body_tentacle):
     joints = [
@@ -169,7 +169,7 @@ def test_root_is_trunk_and_blank_child_inherits():
         ('Head', 'Spine', (0.0, 0.9, 0.0)),
         ('Bone02', 'Head', (0.0, 1.0, 0.0)),
     ]
-    parts, proposal = _parts(_entry(joints, ('Biped', 'Striding')))
+    parts, proposal = _parts(_entry(joints, ('Biped',)))
     assert parts['Armature'] == 'trunk' and proposal['Armature']['contact'] == 0
     assert parts['Bone02'] == 'head' and proposal['Bone02']['src'] == 'inherit'
 
@@ -206,7 +206,7 @@ def test_feelers_are_soft_not_head():
         ('Jaw', 'Head', (0.0, 0.3, 0.38)),
         ('R_Shall1', 'Head', (-0.05, 0.4, 0.4)),
     ]
-    parts, _ = _parts(_entry(joints, ('Multiped', 'Crawling')))
+    parts, _ = _parts(_entry(joints, ('Multiped',)))
     assert parts['L_Feeler1'] == 'soft' and parts['L_Feeler2'] == 'soft'
     assert parts['R_Shall1'] == 'soft'
     assert parts['Head'] == 'head' and parts['Jaw'] == 'head'

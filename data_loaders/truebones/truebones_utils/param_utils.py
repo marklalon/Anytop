@@ -73,7 +73,7 @@ DEFAULT_ACTION_WORD_EMBEDDINGS = str(
         (_ANYTOP_ROOT / "dataset" / ACTION_WORD_EMBEDDINGS_FILE).resolve()
 )
 # Offline sidecar: the frozen T5 vector of every legal species descriptor
-# (body plan x locomotion), built at training startup. Repo-global for the same
+# (every body plan), built at training startup. Repo-global for the same
 # reason as the action-word table; training copies it next to the checkpoint,
 # and inference reads only that copy.
 SPECIES_DESCRIPTOR_TABLE_FILE = "species_descriptor_embs.npy"

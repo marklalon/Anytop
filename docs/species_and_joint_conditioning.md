@@ -31,24 +31,21 @@ species 描述符**只**通过"对关节名嵌入做 FiLM"进入模型，不进�
 
 ### 2.1 它是什么
 
-一个物种的描述符是**两个词**：`[body-plan, locomotion]`，各自来自封闭词表（[dataset_tags.py](../data_loaders/truebones/truebones_utils/dataset_tags.py)）：
+一个物种的描述符是**一个词**：`[body-plan]`，来自封闭词表 `SPECIES_BODY_PLANS`（Quadruped / Biped / Multiped / Serpentine / Aquatic / Winged / Drifting，见 [dataset_tags.py](../data_loaders/truebones/truebones_utils/dataset_tags.py)）。
 
-- body-plan：`SPECIES_BODY_PLANS`（Quadruped / Biped / Multiped / Serpentine / Aquatic / Winged / Drifting）；
-- locomotion：`SPECIES_LOCOMOTIONS`（一个步态词，如 Galloping / Lumbering / Flapping / Undulating…）。
-
-描述符文本是两个词用空格连接，例如 `Quadruped Lumbering`。没有体型大小槽：运动在进模型前已做尺度归一化，且描述符对 token 做均值池化，一个信息量弱的词只会稀释真正区分物种的两个词。
+步态和翅膀状态不在描述符里：同一个物种的不同 clip 步态不同（马会 walk、trot、gallop），所以它们是逐 clip 的 action_label 修饰词——`motion_labels.GAIT_WORDS`（trot / gallop / scurry / clank / lumber / waddle，每个 label 至多一个，只写在 walk / run 上）和 `WING_WORDS`（flap / flutter / glide，至多一个，任何动作组都可以写）。
 
 人工维护在每个数据集的 `species_tags.jsonl`：
 
 ```json
-{"species": "Cat", "species_tags": ["Quadruped", "Galloping"]}
+{"species": "Cat", "species_tags": ["Quadruped"]}
 ```
 
-条数不是 2 的行视为过期 sidecar，直接拒绝，不会被静默编码成另一段文本。`species_tags.jsonl` 必须覆盖训练用到的每个物种，没有回退。
+条数不是 1 的行视为过期 sidecar，直接拒绝，不会被静默编码成另一段文本。`species_tags.jsonl` 必须覆盖训练用到的每个物种，没有回退。
 
 ### 2.2 `species_emb` 从哪来：描述符表
 
-合法描述符集合是有限的（body-plan × locomotion 的全部乘积），所以**整个乘积被一次性编码成一张表**，`species_emb` 不存在 `cond.npy` 里：
+合法描述符集合是有限的（每个 body plan 一条），所以**全部描述符被一次性编码成一张表**，`species_emb` 不存在 `cond.npy` 里：
 
 - `cond.npy` 只带每个物种烘焙进去的 `species_tags`；
 - 训练启动时构建（或扩充）仓库级的 `dataset/species_descriptor_embs.npy`——这是**唯一**为物种跑 T5 的地方——把正在训练的 cond 绑定上对应的行，并把这张表拷到 `save_dir`，与 checkpoint、`cond.npy` 放在一起；
@@ -56,11 +53,11 @@ species 描述符**只**通过"对关节名嵌入做 FiLM"进入模型，不进�
 
 行向量是 T5Conditioner 对描述符文本的 masked token mean，维度与关节名嵌入相同。
 
-多个物种可以共用同一个描述符（同 body-plan、同步态），所以描述符的**不同取值数远少于物种数**。这是 species 通路天花板的来源，也是 FiLM 隐层取窄的原因。
+多个物种共用同一个描述符（同 body-plan），所以描述符的**不同取值数远少于物种数**。这是 species 通路天花板的来源，也是 FiLM 隐层取窄的原因。
 
 ### 2.3 推理时改风格：`--species_tags`
 
-`--species_tags Quadruped,Lumbering` 用描述符表里对应的行**替换**目标物种自己的 `species_emb`，从而重新"着装"：例如让 Winged 的龙按地面步态行走。
+`--species_tags Quadruped` 用描述符表里对应的行**替换**目标物种自己的 `species_emb`，从而重新"着装"：例如让 Winged 的龙按四足方式运动。要换步态，改 `--action_label`（如 `run, forward, gallop`）。
 
 - 要求 checkpoint 以 `--species_joint_cond` 训练；
 - 组合必须在 checkpoint 的描述符表里；
@@ -185,7 +182,7 @@ padding 行与"无名字"行同为零向量；是否为真实关节由 attention
 | 改动 | 需要 |
 |---|---|
 | 改 `species_tags.jsonl` | 重新烘焙 `cond.npy`（`tools/regenerate_dataset_artifacts.py`）；描述符表会在下次训练启动时自动扩充；已有 checkpoint 的行为随之改变，需重训才能受益 |
-| 新增 locomotion 词或 body-plan | 重建描述符表并重训（表是封闭乘积，词表外没有向量） |
+| 新增 body-plan | 重建描述符表并重训（表是封闭词表，词表外没有向量） |
 | 改关节名文本规则 / T5 型号 | 重新烘焙 `joints_names_embs`（`JOINT_NAME_EMBEDDING_SCHEMA_VERSION` 变）并重训 |
 | 改结构特征 | `JOINT_STRUCT_FEATURE_SCHEMA_VERSION` 变，重训，不需重新烘焙 cond |
 | 改 FiLM 结构 / bottleneck / 注入位置 | 重训（`CKPT_VERSION` 覆盖会改变语义的改动） |

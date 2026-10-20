@@ -46,16 +46,16 @@ def test_slot_source_rank_covers_the_full_domain_and_projection_width():
     # The slots partition the vocabulary -- a head word is a head source and
     # nothing else, however late in the label it is spelled -- so the ranks add
     # to the vocabulary size.
-    assert report["total_rank"] == 92
+    assert report["total_rank"] == 99
     assert {name: item["rank"] for name, item in report["slots"].items()} == {
         "head": 32,
         "direction": 6,
-        "modifier": 54,
+        "modifier": 61,
     }
     assert sum(report["slots"][name]["rank"] for name in report["slots"]) == len(
         CONTROLLED_VOCAB
     )
-    assert not slot_source_rank_report(table, latent_dim=91)["fits_projection"]
+    assert not slot_source_rank_report(table, latent_dim=98)["fits_projection"]
 
 
 def test_slot_assignment_carries_ids_masks_and_slots_only():

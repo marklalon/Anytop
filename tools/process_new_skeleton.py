@@ -25,7 +25,7 @@ object_type       - Species/type name (e.g. "Dragon"). Inferred from the tpos-pa
                     when omitted: the whole stem minus trailing pose tokens
                     ("Pet_Kiki_A_Tpose.glb" -> "Pet_Kiki_A").
 species-tags      - Comma-separated species tags (motion descriptor) for --object-type,
-                    e.g. 'Quadruped,Lumbering'. REQUIRED: it defines the
+                    e.g. 'Quadruped'. REQUIRED: it defines the
                     descriptor baked into cond.npy. There is no fallback to the
                     default dataset's species_tags.jsonl. Only the tags are
                     baked; generation looks their vector up in the checkpoint's

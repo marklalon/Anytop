@@ -13,8 +13,8 @@
     { "category": "Flamingo", "args": ["--object_type", "Flamingo", "--action_label", "run, forward", "--loop"] },
     { "category": "Flamingo", "args": ["--object_type", "Flamingo", "--action_label", "jump, up"] },
     { "category": "Flamingo", "args": ["--object_type", "Flamingo", "--action_label", "hurt"] },
-    { "category": "Flamingo", "args": ["--object_type", "Flamingo", "--action_label", "fly, forward", "--species_tags", "Winged,Flapping"] },
-    { "category": "Flamingo", "args": ["--object_type", "Flamingo", "--action_label", "land, hover", "--species_tags", "Winged,Flapping"] },
+    { "category": "Flamingo", "args": ["--object_type", "Flamingo", "--action_label", "fly, forward, flap", "--species_tags", "Winged"] },
+    { "category": "Flamingo", "args": ["--object_type", "Flamingo", "--action_label", "land, hover, flap", "--species_tags", "Winged"] },
 
     { "category": "Spider", "args": ["--object_type", "spider_tarantula", "--action_label", "run, forward", "--loop"] },
     { "category": "Spider", "args": ["--object_type", "spider_tarantula", "--action_label", "jump, up"] },
@@ -32,7 +32,7 @@
     { "category": "Human", "args": ["--cond_path", "outputs/test/cond/Human/cond.npy", "--action_label", "swim, jump"] },
     { "category": "Human", "args": ["--cond_path", "outputs/test/cond/Human/cond.npy", "--action_label", "attack, jump"] },
     { "category": "Human", "args": ["--cond_path", "outputs/test/cond/Human/cond.npy", "--action_label", "attack, swat"] },
-    { "category": "Human", "args": ["--cond_path", "outputs/test/cond/Human/cond.npy", "--action_label", "fly, forward", "--species_tags", "Winged,Flapping"] },
+    { "category": "Human", "args": ["--cond_path", "outputs/test/cond/Human/cond.npy", "--action_label", "fly, forward, flap", "--species_tags", "Winged"] },
     
     { "category": "RedDragon", "args": ["--cond_path", "outputs/test/cond/RedDragon/cond.npy", "--action_label", "fly, forward"] },
     { "category": "RedDragon", "args": ["--cond_path", "outputs/test/cond/RedDragon/cond.npy", "--action_label", "jump, up"] },
@@ -58,13 +58,13 @@
     { "category": "Syn_Human_DragonTail", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Human_DragonTail/cond.npy", "--action_label", "run, forward"] },
     { "category": "Syn_Human_DragonTail", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Human_DragonTail/cond.npy", "--action_label", "jump, up"] },
 
-    { "category": "Syn_Human_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Human_DragonWings/cond.npy", "--action_label", "idle, hover", "--species_tags", "Winged,Flapping"] },
+    { "category": "Syn_Human_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Human_DragonWings/cond.npy", "--action_label", "idle, hover, flap", "--species_tags", "Winged"] },
     { "category": "Syn_Human_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Human_DragonWings/cond.npy", "--action_label", "jump, up"] },
     { "category": "Syn_Human_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Human_DragonWings/cond.npy", "--action_label", "run, forward"] },
 
-    { "category": "Syn_Horse_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Horse_DragonWings/cond.npy", "--action_label", "fly, forward", "--species_tags", "Winged,Flapping"] },
-    { "category": "Syn_Horse_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Horse_DragonWings/cond.npy", "--action_label", "jump, up", "--species_tags", "Winged,Flapping"] },
-    { "category": "Syn_Horse_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Horse_DragonWings/cond.npy", "--action_label", "run, forward", "--species_tags", "Winged,Flapping"] },
+    { "category": "Syn_Horse_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Horse_DragonWings/cond.npy", "--action_label", "fly, forward, flap", "--species_tags", "Winged"] },
+    { "category": "Syn_Horse_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Horse_DragonWings/cond.npy", "--action_label", "jump, up", "--species_tags", "Winged"] },
+    { "category": "Syn_Horse_DragonWings", "args": ["--cond_path", "outputs/test/synthetic/cond/Syn_Horse_DragonWings/cond.npy", "--action_label", "run, forward", "--species_tags", "Winged"] },
 
     { "category": "MotionFix", "args": ["--reference_motion", "outputs/corrupted_motion/Buffalo_Run_Noloop.npy", "--skip_timesteps", "50", "--loop"], "eval_label": "run" },
     { "category": "MotionFix", "args": ["--reference_motion", "outputs/corrupted_motion/Buffalo_corrupted.npy", "--skip_timesteps", "20", "--action_label", "run, forward"] },

@@ -53,20 +53,20 @@ def _cond_entry(tags, t5_name="t5-base"):
 
 
 def test_check_species_tags_rejects_words_outside_the_vocabulary():
-    dt.check_species_tags(("Quadruped", "Galloping"), "ok")
+    dt.check_species_tags(("Quadruped",), "ok")
     with pytest.raises(ValueError, match="body plan 'Robot'"):
-        dt.check_species_tags(("Robot", "Galloping"), "x")
-    with pytest.raises(ValueError, match="locomotion 'Chibi Striding'"):
-        dt.check_species_tags(("Biped", "Chibi Striding"), "x")
+        dt.check_species_tags(("Robot",), "x")
+    with pytest.raises(ValueError, match="1 non-empty tag"):
+        dt.check_species_tags(("Biped", "Striding"), "x")
 
 
-def test_vocabulary_is_the_full_product():
+def test_vocabulary_is_every_body_plan():
     vocabulary = dt.species_descriptor_vocabulary()
-    assert len(vocabulary) == len(dt.SPECIES_BODY_PLANS) * len(dt.SPECIES_LOCOMOTIONS)
-    assert ("Aquatic", "Galloping") in vocabulary
+    assert vocabulary == tuple((body_plan,) for body_plan in dt.SPECIES_BODY_PLANS)
+    assert ("Aquatic",) in vocabulary
 
 
-def test_build_encodes_every_combination_then_skips(tmp_path):
+def test_build_encodes_every_descriptor_then_skips(tmp_path):
     fake = _FakeT5()
     out = tmp_path / "table.npy"
     table = sdt.build_species_descriptor_table(out, "t5-base", t5_conditioner=fake)
@@ -82,49 +82,49 @@ def test_build_encodes_every_combination_then_skips(tmp_path):
 def test_grown_vocabulary_only_encodes_new_rows(tmp_path, monkeypatch):
     out = tmp_path / "table.npy"
     table = sdt.build_species_descriptor_table(out, "t5-base", t5_conditioner=_FakeT5())
-    monkeypatch.setattr(dt, "SPECIES_LOCOMOTIONS", dt.SPECIES_LOCOMOTIONS + ("Rolling",))
+    monkeypatch.setattr(dt, "SPECIES_BODY_PLANS", dt.SPECIES_BODY_PLANS + ("Rolling",))
     fake = _FakeT5()
     grown = sdt.build_species_descriptor_table(out, "t5-base", t5_conditioner=fake)
-    assert fake.encoded == [f"{body_plan} Rolling" for body_plan in dt.SPECIES_BODY_PLANS]
+    assert fake.encoded == ["Rolling"]
     for tags in table.descriptors:
         np.testing.assert_array_equal(grown.lookup(tags, "t"), table.lookup(tags, "t"))
 
 
-def test_lookup_refuses_a_missing_combination():
-    table = _table([("Biped", "Striding")])
-    np.testing.assert_array_equal(table.lookup("biped, striding", "t"), np.arange(DIM))
+def test_lookup_refuses_a_missing_descriptor():
+    table = _table([("Biped",)])
+    np.testing.assert_array_equal(table.lookup("biped", "t"), np.arange(DIM))
     with pytest.raises(sdt.SpeciesDescriptorError, match="not in the precomputed"):
-        table.lookup(("Quadruped", "Striding"), "t")
+        table.lookup(("Quadruped",), "t")
 
 
 def test_bind_sets_rows_and_refuses_unknown_descriptors():
-    table = _table([("Biped", "Striding"), ("Quadruped", "Trotting")])
-    cond = {"a/Horse": _cond_entry(("Quadruped", "Trotting"))}
+    table = _table([("Biped",), ("Quadruped",)])
+    cond = {"a/Horse": _cond_entry(("Quadruped",))}
     sdt.bind_cond_species_embs(cond, table, "t")
-    np.testing.assert_array_equal(cond["a/Horse"]["species_emb"], table.lookup(("Quadruped", "Trotting"), "t"))
-    assert cond["a/Horse"]["species_emb_meta"]["embedding_text"] == "Quadruped Trotting"
+    np.testing.assert_array_equal(cond["a/Horse"]["species_emb"], table.lookup(("Quadruped",), "t"))
+    assert cond["a/Horse"]["species_emb_meta"]["embedding_text"] == "Quadruped"
     # Binding the same dict again (a reused runtime cond) is fine.
     sdt.bind_cond_species_embs(cond, table, "t")
 
-    cond["a/Snake"] = _cond_entry(("Serpentine", "Slithering"))
+    cond["a/Snake"] = _cond_entry(("Serpentine",))
     with pytest.raises(sdt.SpeciesDescriptorError, match="a/Snake"):
         sdt.bind_cond_species_embs(cond, table, "t")
 
 
 def test_bind_refuses_a_cond_with_a_baked_species_emb():
-    table = _table([("Biped", "Striding")])
-    old_entry = _cond_entry(("Biped", "Striding"))
+    table = _table([("Biped",)])
+    old_entry = _cond_entry(("Biped",))
     old_entry.update({"species_emb": np.zeros(DIM),
                       "species_emb_meta": {"t5_name": "t5-base",
-                                           "embedding_text": "Biped Striding"}})
+                                           "embedding_text": "Biped"}})
     old = {"a/Human": old_entry}
     with pytest.raises(sdt.SpeciesDescriptorError, match="regenerate"):
         sdt.bind_cond_species_embs(old, table, "t")
 
 
 def test_bind_refuses_a_table_encoded_with_another_t5_before_mutating_cond():
-    table = _table([("Biped", "Striding")])
-    cond = {"a/Human": _cond_entry(("Biped", "Striding"), t5_name="t5-large")}
+    table = _table([("Biped",)])
+    cond = {"a/Human": _cond_entry(("Biped",), t5_name="t5-large")}
 
     with pytest.raises(sdt.SpeciesDescriptorError, match="t5-base.*t5-large"):
         sdt.bind_cond_species_embs(cond, table, "checkpoint cond")
@@ -143,15 +143,15 @@ def test_cond_t5_name_reads_the_joint_name_encoder():
 
 
 def test_species_tags_override_reads_the_table(monkeypatch):
-    table = _table([("Biped", "Striding"), ("Winged", "Flapping")])
+    table = _table([("Biped",), ("Winged",)])
     model = SimpleNamespace(species_joint_cond=True)
     monkeypatch.setattr(conditioning, "unwrap_anytop_model", lambda m: m)
-    cond = {"a/Dragon": {"species_emb_meta": {"embedding_text": "Winged Flapping"}}}
+    cond = {"a/Dragon": {"species_emb_meta": {"embedding_text": "Winged"}}}
 
-    args = SimpleNamespace(species_tags="biped, striding")
+    args = SimpleNamespace(species_tags="biped")
     emb = conditioning._resolve_species_emb_override(args, model, cond, "a/Dragon", table)
-    np.testing.assert_array_equal(emb, table.lookup(("Biped", "Striding"), "t"))
+    np.testing.assert_array_equal(emb, table.lookup(("Biped",), "t"))
 
-    args = SimpleNamespace(species_tags="Quadruped, Striding")
+    args = SimpleNamespace(species_tags="Quadruped")
     with pytest.raises(SystemExit, match="not in the precomputed"):
         conditioning._resolve_species_emb_override(args, model, cond, "a/Dragon", table)

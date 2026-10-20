@@ -33,7 +33,7 @@ def _chain_cond(joint_count: int = 4, bone: float = 1.0) -> dict:
         "offsets": offsets,
         "joints_names": ["Pelvis", "Spine", "Neck", "Head"][:joint_count],
         "joint_side_labels": ["center"] * joint_count,
-        "species_tags": ("Serpentine", "Slithering"),
+        "species_tags": ("Serpentine",),
     }
 
 

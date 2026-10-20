@@ -142,7 +142,6 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E4
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
     SPECIES_BODY_PLANS,
-    SPECIES_LOCOMOTIONS,
     check_species_tags,
     parse_species_tags,
 )
@@ -1351,7 +1350,6 @@ class Handler(BaseHTTPRequestHandler):
                 },
                 "species_contract": {
                     "body_plans": list(SPECIES_BODY_PLANS),
-                    "locomotions": list(SPECIES_LOCOMOTIONS),
                 },
                 "species_errors": species_errors,
                 "rows": rows,

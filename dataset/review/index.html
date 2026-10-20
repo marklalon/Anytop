@@ -418,7 +418,7 @@ let view = [];      // current filtered subset
 let page = 1;
 let trashRoot = '';  // where "清理待删除" parks source files (server's --trash)
 let labelContract = null; // vocabulary/order supplied by the shared Python contract
-let speciesContract = null; // {body_plans, locomotions}: species_tags' closed vocabularies
+let speciesContract = null; // {body_plans}: species_tags' closed vocabulary
 const MODE_KEY = 'actionReview.mode';
 const SPECIES_MODE = 'species';
 let mode = (() => { try { return localStorage.getItem(MODE_KEY) || 'label'; } catch (err) { return 'label'; } })();
@@ -944,7 +944,7 @@ function labelBar(el, row) {
   return label;
 }
 
-// species_tags of the clip's species: [body plan, locomotion]. One row per
+// species_tags of the clip's species: [body plan]. One row per
 // species, so an edit here changes every clip of that species.
 function speciesBar(el, row) {
   const label = document.createElement('div');
@@ -966,8 +966,8 @@ function speciesBar(el, row) {
   return label;
 }
 
-// Two closed slots, so two <select>s instead of free text. Picking a value
-// saves at once; Escape or leaving the editor cancels.
+// One closed slot, so a <select> instead of free text. Picking a value saves
+// at once; Escape or leaving the editor cancels.
 function editSpecies(row, label) {
   if (!speciesContract) { toast('species_tags 词表尚未加载'); return; }
   const box = document.createElement('div');
@@ -987,8 +987,7 @@ function editSpecies(row, label) {
     return sel;
   };
   const plan = pick(speciesContract.body_plans, current[0], 'body plan');
-  const loco = pick(speciesContract.locomotions, current[1], 'locomotion');
-  box.append(plan, loco);
+  box.append(plan);
   let closed = false;
   const close = () => {
     if (closed) return;
@@ -996,12 +995,12 @@ function editSpecies(row, label) {
     box.replaceWith(label);
   };
   const commit = () => {
-    if (!plan.value || !loco.value) return;   // wait for the other slot
-    const next = [plan.value, loco.value];
+    if (!plan.value) return;
+    const next = [plan.value];
     close();
     if (next.join('|') !== current.join('|') || row._species_error) saveSpecies(row, next);
   };
-  plan.onchange = loco.onchange = commit;
+  plan.onchange = commit;
   box.onkeydown = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
   box.addEventListener('focusout', (ev) => {
     if (!box.contains(ev.relatedTarget)) close();

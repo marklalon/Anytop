@@ -52,12 +52,12 @@ def test_overwrite_invalidation_is_a_noop_for_unscheduled_keys(tmp_path):
     main = tmp_path / "species_tags.jsonl"
     review = tmp_path / "species_tags.review.jsonl"
     main.write_text(
-        '{"species": "Horse", "species_tags": ["Quadruped", "Galloping"]}\n',
+        '{"species": "Horse", "species_tags": ["Quadruped"]}\n',
         encoding="utf-8",
     )
 
     sink = Sink(main, review, "species")
     assert sink.invalidate(["Dragon"]) == 0
     assert _rows(main) == [
-        {"species": "Horse", "species_tags": ["Quadruped", "Galloping"]}
+        {"species": "Horse", "species_tags": ["Quadruped"]}
     ]

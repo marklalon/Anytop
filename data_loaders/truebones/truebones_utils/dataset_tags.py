@@ -55,18 +55,18 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     get_dataset_dir,
 )
 
-# Per-species motion descriptor (body-plan, locomotion). One object per line:
-#   {"species": "Cat", "species_tags": ["Quadruped", "Galloping"]}
+# Per-species motion descriptor: the body plan. One object per line:
+#   {"species": "Cat", "species_tags": ["Quadruped"]}
 # Single source of truth for the species condition and the object subsets; the
 # species->tags mapping is never duplicated in code.
 SPECIES_TAGS_FILE = "species_tags.jsonl"
 
-# Slots per descriptor: body plan, then locomotion (optional modifiers + gerund).
-# There is no size slot: motion is scale-normalized before the model sees it, and
-# the descriptor is mean-pooled over tokens, so a weakly informative word only
-# dilutes the two that separate species.  A row with any other count is a stale
-# sidecar and is rejected rather than silently encoded into a different text.
-SPECIES_TAG_COUNT = 2
+# Slots per descriptor: the body plan only. How a species steps or beats its
+# wings varies from clip to clip, so it is written per clip as an action_label
+# modifier (motion_labels.GAIT_WORDS / WING_WORDS), not here. A row with any
+# other count is a stale sidecar and is rejected rather than silently encoded
+# into a different text.
+SPECIES_TAG_COUNT = 1
 
 # Separators accepted between tags in a single string (CLI, service requests).
 _TAG_SEPARATOR_RE = re.compile(r"[,;]")
@@ -98,29 +98,6 @@ CANONICAL_OBJECT_SUBSETS = (
 # Every subset key ``build_object_subsets`` is guaranteed to produce, for CLI
 # ``choices=`` lists that must be built before a dataset directory is known.
 OBJECT_SUBSET_CHOICES = ("all",) + CANONICAL_OBJECT_SUBSETS
-
-# The locomotion slot's closed vocabulary: one gait word per descriptor. Together
-# with the body plans (the capitalized object subsets) it spans every legal
-# descriptor, and species_descriptor_table encodes that whole product ahead of
-# training, so a word outside this list has no T5 vector anywhere. Adding one
-# means rebuilding the table and retraining.
-SPECIES_LOCOMOTIONS = (
-    "Clanking",
-    "Crawling",
-    "Flapping",
-    "Fluttering",
-    "Galloping",
-    "Hovering",
-    "Lumbering",
-    "Scurrying",
-    "Slithering",
-    "Striding",
-    "Swimming",
-    "Trotting",
-    "Undulating",
-    "Waddling",
-)
-
 
 @dataclass(frozen=True)
 class SidecarPaths:
@@ -218,8 +195,8 @@ def normalize_species_tag(tag) -> str:
 
     The descriptor text is exactly these tags joined by one space, and T5 is
     case-sensitive (``quadruped`` and ``Quadruped`` tokenize differently), so
-    every entry point writes the sidecar's spelling: ``chibi  wing-beating
-    hovering`` -> ``Chibi Wing-Beating Hovering``.
+    every entry point writes the sidecar's spelling: ``quadruped`` ->
+    ``Quadruped``.
     """
     return " ".join(
         "-".join(part[:1].upper() + part[1:].lower() for part in word.split("-"))
@@ -241,7 +218,9 @@ def parse_species_tags(raw) -> tuple[str, ...]:
     return tuple(tag for tag in (normalize_species_tag(item) for item in items) if tag)
 
 
-# The body-plan slot's closed vocabulary, in sidecar spelling.
+# The descriptor's closed vocabulary, in sidecar spelling. species_descriptor_table
+# encodes every entry ahead of training, so a body plan outside this list has no
+# T5 vector anywhere.
 SPECIES_BODY_PLANS = tuple(normalize_species_tag(name) for name in CANONICAL_OBJECT_SUBSETS)
 
 
@@ -250,37 +229,26 @@ def species_descriptor_text(tags) -> str:
     return " ".join(str(tag) for tag in tags)
 
 
-def species_descriptor_vocabulary() -> tuple[tuple[str, str], ...]:
-    """Every legal ``(body-plan, locomotion)`` descriptor, body plan major."""
-    return tuple(
-        (body_plan, locomotion)
-        for body_plan in SPECIES_BODY_PLANS
-        for locomotion in SPECIES_LOCOMOTIONS
-    )
+def species_descriptor_vocabulary() -> tuple[tuple[str], ...]:
+    """Every legal ``(body-plan,)`` descriptor."""
+    return tuple((body_plan,) for body_plan in SPECIES_BODY_PLANS)
 
 
 # ── Sidecar loading ──────────────────────────────────────────────────────────
 def check_species_tags(tags, where: str) -> None:
-    """Raise unless ``tags`` is a ``[body-plan, locomotion]`` pair from the closed vocabularies."""
+    """Raise unless ``tags`` is a ``[body-plan]`` from the closed vocabulary."""
     if len(tags) != SPECIES_TAG_COUNT or any(not str(tag).strip() for tag in tags):
         raise ValueError(
-            f"{where}: species_tags must be {SPECIES_TAG_COUNT} non-empty tags "
-            f"[body-plan, locomotion], got {list(tags)!r}."
+            f"{where}: species_tags must be {SPECIES_TAG_COUNT} non-empty tag "
+            f"[body-plan], got {list(tags)!r}. Gait and wing state are "
+            "action_label modifiers, not species tags."
         )
-    body_plan, locomotion = (str(tag) for tag in tags)
-    problems = []
+    body_plan = str(tags[0])
     if body_plan not in SPECIES_BODY_PLANS:
-        problems.append(
-            f"body plan {body_plan!r} is not one of {', '.join(SPECIES_BODY_PLANS)}"
-        )
-    if locomotion not in SPECIES_LOCOMOTIONS:
-        problems.append(
-            f"locomotion {locomotion!r} is not one of {', '.join(SPECIES_LOCOMOTIONS)}"
-        )
-    if problems:
         raise ValueError(
-            f"{where}: {'; '.join(problems)}. The descriptor vocabulary is closed: "
-            "only its precomputed combinations have a species embedding."
+            f"{where}: body plan {body_plan!r} is not one of "
+            f"{', '.join(SPECIES_BODY_PLANS)}. The descriptor vocabulary is closed: "
+            "only its precomputed entries have a species embedding."
         )
 
 

@@ -12,12 +12,10 @@ Similarity blends three signals (see ``SimilarityWeights``), each a distance
 in ``[0, ~1]``:
 
   * **Motion tags** -- the *primary* term. Every cond entry carries a baked
-    ``species_tags`` pair ``(body-plan, gait)`` such as
-    ``('Quadruped', 'Galloping')``; the slots are compared one by one and
-    weighted (body plan above gait), so a Horse is close to a Deer and a Cavalry
-    unit, and no closer to a Chicken than to a Crow.
-    Grouping by *how an animal moves* is what the smoothness / spectral
-    statistics the scorer compares actually depend on.
+    ``species_tags`` body plan such as ``('Quadruped',)``; a match puts a Horse
+    next to a Deer and a Cavalry unit, and a Chicken no closer to a Horse than
+    to any other non-quadruped. Grouping by *which limbs carry the motion* is
+    what the smoothness / spectral statistics the scorer compares depend on.
   * **Body parts** -- Jaccard over the *slim* joint tokens the joint-name
     embedding schema already normalises every rig to (``Tail``, ``Thigh``,
     ``Wing``, ``Ear HeadFeature`` ...), with the side / front / back qualifiers
@@ -31,7 +29,7 @@ in ``[0, ~1]``:
 
 The module is intentionally numpy-only so the lightweight motion-quality
 scorer does not pull in torch/motion_lib. Every cond entry carries its baked
-``species_tags`` pair; one without is old data and is refused.
+``species_tags``; one with a different slot count is old data and is refused.
 """
 
 from __future__ import annotations
@@ -45,25 +43,25 @@ from data_loaders.truebones.truebones_utils.dataset_tags import SPECIES_TAG_COUN
 
 
 # ── Motion tags ──────────────────────────────────────────────────────────────
-# Slot weights of the species_tags pair: (body-plan, gait). Body plan decides
-# which limbs carry the motion; gait is the dynamics.
-_TAG_SLOT_WEIGHTS = (0.6, 0.4)
+# Slot weights of species_tags, one per slot (the body plan).
+_TAG_SLOT_WEIGHTS = (1.0,)
+assert len(_TAG_SLOT_WEIGHTS) == SPECIES_TAG_COUNT
 
 
 def species_tags_of(object_cond: Mapping[str, object], object_type_hint: str) -> tuple[str, ...]:
-    """The baked ``(body-plan, gait)`` pair of a cond entry, lower-cased."""
+    """The baked ``(body-plan,)`` tags of a cond entry, lower-cased."""
     tags = tuple(str(tag).strip().lower() for tag in (object_cond.get("species_tags") or ()))
     if len(tags) != SPECIES_TAG_COUNT:
         raise ValueError(
             f"cond entry '{object_cond.get('object_type') or object_type_hint}' has "
-            f"species_tags {list(tags)!r}, expected a (body-plan, gait) pair; "
+            f"species_tags {list(tags)!r}, expected {SPECIES_TAG_COUNT} (body-plan); "
             "regenerate its cond.npy"
         )
     return tags
 
 
 def tag_distance(query_tags: Sequence[str], candidate_tags: Sequence[str]) -> float:
-    """Weighted slot mismatch of two tag pairs, in ``[0, 1]``."""
+    """Weighted slot mismatch of two species_tags, in ``[0, 1]``."""
     similarity = sum(
         weight
         for weight, query_word, candidate_word in zip(_TAG_SLOT_WEIGHTS, query_tags, candidate_tags)
@@ -218,11 +216,11 @@ DEFAULT_WEIGHTS = SimilarityWeights()
 @dataclass
 class SpeciesSimilarity:
     name: str
-    tag_distance: float           # weighted slot mismatch of the species_tags pairs
+    tag_distance: float           # weighted slot mismatch of the species_tags
     jaccard: float                # body-part overlap (1 = identical part set)
     topology_distance: float      # z-scored descriptor euclidean (pool-relative)
     combined_distance: float
-    same_tags: bool               # identical motion descriptor (all three slots)
+    same_tags: bool               # identical motion descriptor (every slot)
     weight: float = 0.0
 
 

@@ -1,18 +1,17 @@
 """The precomputed T5 table of every legal species descriptor.
 
-A species descriptor is ``[body-plan, locomotion]`` drawn from two closed
-vocabularies (``dataset_tags.SPECIES_BODY_PLANS`` x ``SPECIES_LOCOMOTIONS``), so
-the set of descriptor texts is finite. The whole product is encoded into one
-table, and ``species_emb`` never lives in a dataset's cond.npy -- a cond only
-carries each species' baked ``species_tags``, and the vector is bound from a
-table in memory:
+A species descriptor is ``[body-plan]`` drawn from a closed vocabulary
+(``dataset_tags.SPECIES_BODY_PLANS``), so the set of descriptor texts is
+finite. All of them are encoded into one table, and ``species_emb`` never
+lives in a dataset's cond.npy -- a cond only carries each species' baked
+``species_tags``, and the vector is bound from a table in memory:
 
 * training builds (or extends) the repo-global table
   ``dataset/species_descriptor_embs.npy`` at startup -- the only place T5 runs
   for a species -- binds the cond it trains on from it, and copies it into
   ``save_dir`` next to the checkpoint and its ``cond.npy``;
 * generation and ``--species_tags`` (the CLI and the AnyTop service alike)
-  read only the checkpoint's copy, and refuse a combination it lacks rather
+  read only the checkpoint's copy, and refuse a descriptor it lacks rather
   than encoding one the weights never saw.
 
 The rows are ``T5Conditioner``'s masked token mean of the descriptor text, the
