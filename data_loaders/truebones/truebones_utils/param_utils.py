@@ -104,8 +104,8 @@ MAX_PATH_LEN = 5
 # above it is scaled -- by ONE factor for the whole clip, so a climb keeps its
 # shape -- until its peak approaches VERTICAL_CLAMP_MAX_RATIO without reaching
 # it (aquatic clips get the same band mirrored onto swim depth).
-VERTICAL_CLAMP_MIN_RATIO = 0.4
-VERTICAL_CLAMP_MAX_RATIO = 0.6
+VERTICAL_CLAMP_MIN_RATIO = 0.5
+VERTICAL_CLAMP_MAX_RATIO = 0.7
 # Soft lower bound on the translation root's world Y height, in HML-normalised
 # units -- the same units the exported motion features use. It sits a fraction of
 # a body span below the floor. Applied to EVERY species, on top of the subset

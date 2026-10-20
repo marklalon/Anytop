@@ -248,7 +248,7 @@
 {"clip": "Deer_Bleat", "action_group": "stationary", "action_label": "roar", "is_loop": false, "reviewed": true}
 {"clip": "Deer_BuckShy", "action_group": "locomotion", "action_label": "run, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "Deer_Charge", "action_group": "stationary", "action_label": "attack, charge", "is_loop": true, "reviewed": true}
-{"clip": "Deer_ComeDown", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
+{"clip": "Deer_ComeDown", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "Deer_Gallop", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Deer_GetUpAgain", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "Deer_GetUp", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
@@ -539,7 +539,7 @@
 {"clip": "Lion_GetUp", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "Lion_Growl", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "Lion_JumpBite", "action_group": "stationary", "action_label": "attack, jump, charge", "is_loop": true, "reviewed": true}
-{"clip": "Lion_LeapBite", "action_group": "stationary", "action_label": "attack, jump, charge", "is_loop": true, "reviewed": true}
+{"clip": "Lion_LeapBite", "action_group": "stationary", "action_label": "attack, rear, bite", "is_loop": true, "reviewed": true}
 {"clip": "Lion_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Lion_SlowIdle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Lion_Sniff", "action_group": "stationary", "action_label": "idle, sniff", "is_loop": true, "reviewed": true}
