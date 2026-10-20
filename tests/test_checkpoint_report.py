@@ -109,6 +109,41 @@ def test_motion_and_command_changes_change_revision(tmp_path):
     assert store.manifest()["summary"]["quality"] == {}
 
 
+@pytest.mark.parametrize("reference_field", ["reference_bvh", "reference_motion", "last_output_resolved"])
+@pytest.mark.parametrize("suffix", [".bvh", ".glb", ".npy"])
+def test_reference_is_portable_and_changes_invalidate_rating(tmp_path, reference_field, suffix):
+    root = tmp_path / "report"
+    store = build(root)
+    source = tmp_path / "external reference" / ("walk" + suffix)
+    source.parent.mkdir()
+    viewable = source.with_suffix(".bvh") if suffix == ".npy" else source
+    content = BVH.encode() if viewable.suffix == ".bvh" else b"glTF reference bytes"
+    viewable.write_bytes(content)
+    record = dict(category="Category", index=1, task_dir=root / "Category/task1",
+                  command="--reference_motion walk", status="ok", **{reference_field: str(source)})
+    if reference_field == "last_output_resolved":
+        record["reference_motion"] = "$LAST_OUTPUT"
+
+    def rebuild():
+        review.write_report(root / "eval_report.html", "checkpoint.pt", "run", "model", [record], [])
+        return store.manifest()["tasks"][0]
+
+    task = rebuild()
+    assert len(task["clips"]) == 6  # reference is never a generated sample
+    reference_url = task["reference_clip"]["url"]
+    assert (root / reference_url).read_bytes() == content
+    assert (root / "report_assets/vendor/GLTFLoader.js").is_file()
+    assert (root / "report_assets/vendor/BufferGeometryUtils.js").is_file()
+    store.update(task["id"], task["revision"], 8)
+    assert rebuild()["revision"] == task["revision"]
+    copied = tmp_path / "copied"
+    shutil.copytree(root, copied)
+    assert (copied / reference_url).read_bytes() == content
+    viewable.write_bytes(content + b"\n")
+    assert rebuild()["revision"] != task["revision"]
+    assert store.snapshot()["stale_count"] == 1
+
+
 @pytest.mark.parametrize("score", [0, 10, -1, 1.5, True, "8", [], {}])
 def test_invalid_ratings_do_not_write(tmp_path, score):
     store = build(tmp_path)

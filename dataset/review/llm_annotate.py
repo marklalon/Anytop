@@ -5,7 +5,7 @@
 Step 3 of ``../readme.txt``: the review GIFs ``render_gifs.py`` writes are
 handed to the local VLM (``http://127.0.0.1:8066/v1``) and its answers become
 DRAFTS; nothing reaches a dataset's sidecars until ``apply``.  The datasets are
-the ones ``../datasets.jsonl`` lists, the same manifest ``serve.py`` and
+the ones ``../datasets_all.jsonl`` lists, the same manifest ``serve.py`` and
 ``render_gifs.py`` read::
 
     llm_annotate.py actions --dataset unitybundles --filter "RMW_*" --dry-run
@@ -101,6 +101,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     VERTICAL_WORDS,
     canonical_action_label,
     clip_key,
+    decamel,
     head_words_in,
     mirror_label,
     parse_action_label,
@@ -117,7 +118,7 @@ from tools.action_label_sidecar import (  # noqa: E402
 )
 
 # ── paths ────────────────────────────────────────────────────────────────────
-DATASETS_FILE = DATASET_ROOT / "datasets.jsonl"
+DATASETS_FILE = DATASET_ROOT / "datasets_all.jsonl"
 DRAFT_SUBDIR = Path("review") / "llm"
 GIF_SUBDIR = Path("review") / "gif"
 COND_FILE = "cond.npy"
@@ -151,7 +152,7 @@ def log(message):
 # the prompt shows them as blocks, so the split is read back out of the tuple at
 # these leaders. A leader that moved is a loud failure, not a wrong prompt.
 MODIFIER_BLOCKS = (
-    ("trot", "how the head is executed (gait, speed, wing state)"),
+    ("hover", "how the head is executed (suspension, gait, speed, wing state)"),
     ("bite", "secondary action layered on the head"),
     ("spin", "how a strike is delivered"),
     ("happy", "affect / social gesture"),
@@ -287,17 +288,6 @@ def load_clips(ds):
 
 
 # ═══════════════════════════ names ══════════════════════════════════════════
-_CAMEL_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|\d+")
-
-
-def decamel(text):
-    """'PolygonalOneEyedBat' -> 'polygonal one eyed bat' (prompt-facing name)."""
-    parts = []
-    for chunk in re.split(r"[^A-Za-z0-9]+", str(text)):
-        parts.extend(_CAMEL_RE.findall(chunk))
-    return " ".join(p.lower() for p in parts if p)
-
-
 def readable_species(species):
     """'MU01_Ghost' -> 'ghost': the pack code carries no species information."""
     code, _, rest = str(species).partition("_")
@@ -987,7 +977,7 @@ locomotion -- the character TRAVELS; the ground slides underneath it.
     flying: it is walk or run by pace.
   - Gait and manner are modifiers: "walk, forward, trot" (between walking and
     running), "run, forward, fast" (sprint, dash), "fly, forward, glide" (held
-    wings), "walk, backward, retreat" (backing away). A sideways step with the
+    wings). Backing away is just "walk, backward". A sideways step with the
     body still facing ahead is just "walk, left" / "walk, right".
   - The label MUST name a direction, even for a clip authored in place: the
     heading the gait is trying to go. A hover held in place is exempt.
@@ -1003,7 +993,7 @@ stationary -- the character acts WITHOUT travelling across the ground.
     "idle, talk", "idle, sit", "idle, rear".
   - Attacks name the strike whenever one is visible: bite, headbutt, kick, swat
     (unarmed lateral sweep of paw / claw / tail), sting, stab, slash, punch,
-    smash (heavy overhead or ground slam), throw, spit, cast (magic),
+    smash (heavy overhead or ground slam), throw, cast (magic),
     firebreath, projectile, charge (wind-up or lunge in place), spin; and the
     implement when the strike IS its motion: bow, gun, hammer, shield; any
     other held weapon: weapon.
@@ -1733,7 +1723,7 @@ def main():
 
     def common(parser):
         parser.add_argument("--dataset", default="all",
-                            help="namespace glob from datasets.jsonl, or its last part "
+                            help="namespace glob from datasets_all.jsonl, or its last part "
                                  "(unitybundles, zoo, ...)")
         parser.add_argument("--out-root", default=None,
                             help="draft directory root (default: <processed>/review/llm)")

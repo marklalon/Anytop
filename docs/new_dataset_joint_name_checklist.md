@@ -1,6 +1,6 @@
 # 新数据集接入备忘录：骨骼名的检查与词表更新
 
-> 适用场景：往 `datasets.jsonl` 里加一个新数据集，里面有一批**没见过的骨骼命名习惯**。
+> 适用场景：往 `datasets_all.jsonl` 里加一个新数据集，里面有一批**没见过的骨骼命名习惯**。
 > 本文只管**骨骼名**这一条线；数据集注册、cond 合并、多源训练见 [multi_dataset_training.md](multi_dataset_training.md)。
 > 旧文 [t5_conditioner_joint_name_preprocessing.md](t5_conditioner_joint_name_preprocessing.md) 描述的是已被取代的
 > `T5Conditioner.tokenize()` 实现，只作历史背景读，**不要照着改**。
@@ -52,7 +52,7 @@ $EDITOR dataset/<新数据集>/species_tags.jsonl
 $EDITOR dataset/<新数据集>/chain_forward_joints.jsonl
 
 # action_labels.jsonl 同样没有 fallback（2026-08-30 起，见
-# action_group_label_refactor.md §9.5）：预处理阶段宽容（carry-forward 读），
+# action_group_and_label.md §2）：预处理阶段宽容（carry-forward 读），
 # 但训练 / 产物重建（regenerate_dataset_artifacts.py）时缺文件或缺 clip 条目
 # 会直接 fast-fail。每个 clip 一行，group 三选一：
 # {"clip": "Cat_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, ..."}
@@ -188,7 +188,7 @@ python tools/family_keys_stats.py           # 在仓库根运行
 如果翻转后的名字在同一副骨架里存在，那它几乎肯定是一对左右。
 
 ```bash
-python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
+python utils/validate_anytop_dataset.py --datasets dataset/datasets_all.jsonl
 ```
 
 朝向出问题时的两个已知信号：控制台出现
@@ -255,7 +255,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 | C1 | `detect_joint_side` 的 marker 元组 | 左右识别。新数据集用了新的侧别写法（`_L_`/`Lft`/`L01`/`Lwing`…）必须加。显式 `Left`/`Right` 优先于方位码；歧义码的门控必须与 B5 一致：肢体码要求 `arm`/`leg`/`wing`，面部角码要求 `mouth`/`lip`/`jaw` 等面部词 |
 | C2 | `joint_signature` / `_signature_tokens` / `_LIMB_CODE_SIGNATURE_TOKENS` / `_SIGNATURE_SPELLING_TOKENS` | 对称配对签名。剥掉左右半码、**但保留前后/中或上下半码**——否则前肢会和后肢、上嘴角会和下嘴角配成一对。签名是**拼写键**，不吃 B6 同义词：左右拼法被改坏（`Lower`/`Rower`）时在 `_SIGNATURE_SPELLING_TOKENS` 里做纯拼写修复，不要把整张同义词表塞进来（会重排所有现有 rig 的分组） |
 | C3 | `_FACE_JOINT_*` / `_FORWARD_REFERENCE_PRIORITIES` / `_BODY_AXIS_*`（在 `face_orientation.py`） | 朝向解算挑哪些关节。新物种的髋/肩/鼻子叫了别的名字，朝向就会算错；道具骨（披风/头发/武器）要进 exclude |
-| C4 | `_CONTACT_JOINT_*` / `_CONTACT_CHAIN_*`（在 `joint_parts.py`） | motion_edit 的触地预填（脚/爪/掌）；在 motion_edit 页面校准，写入 `joint_parts_overrides.json` |
+| C4 | `_CONTACT_JOINT_*` / `_CONTACT_CHAIN_*`（在 `joint_parts.py`） | 落地处理与评估使用的触地预填（脚/爪/掌） |
 | C5 | `_CONTACT_GEOMETRY_DISTAL_TOKENS` / `_CONTACT_EXCLUDE_TOKENS`（在 `joint_parts.py`） | 几何法触地预填的候选叶子池：名字带远端肢体词、不带排除词的叶子 |
 
 ### D 层 · 度量 —— 不影响模型，但影响 renamer 的评测与 S6 prior

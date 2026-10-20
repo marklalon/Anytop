@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -62,11 +63,11 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # maintained controlled set, not a fixed list.
 #
 # HEAD_VOCAB is the closed set of words a label can be ABOUT: a state the body
-# is in (idle, run, hover, rear ...) or an event that is the whole clip (die,
+# is in (idle, run, rear ...) or an event that is the whole clip (die,
 # getup, land, draw, sheathe, stop ...). Words are spelled in WRITTEN order;
 # tuple position decides nothing. Every head word feeds the head slot, the
 # FIRST weighted above the later ones (see slot_member_weights), so head order
-# IS the condition: "attack, hover" and "hover, attack" are two labels, and one
+# IS the condition: "attack, jump" and "jump, attack" are two labels, and one
 # word set has only one head order per group
 # (_validate_head_order_consistency). Head order carries no DIRECTION. At most
 # ACTION_LABEL_MAX_HEADS heads per label.
@@ -77,21 +78,22 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # (see canonical_action_label).
 HEAD_VOCAB: tuple[str, ...] = (
     "attack", "burrow", "climb", "crawl", "die", "draw", "fall",
-    "fly", "getup", "hover", "hurt", "idle", "jump", "kneel", "land", "laydown",
+    "fly", "getup", "hurt", "idle", "jump", "kneel", "land", "laydown",
     "lift", "pickup", "putdown", "rear", "rest", "roar", "roll", "run", "sheathe",
     "sitdown", "spawn", "stop", "swim", "takeoff", "turn", "walk", "work",
 )
 
 # Blocks order the spelling only; nothing weights a word by its block.
 MODIFIER_VOCAB: tuple[str, ...] = (
-    # -- block A: how the head is executed (gait, speed, wing state) --
-    "trot", "fast", "glide", "slow", "retreat", "dive", "flopping",
+    # -- block A: how the head is executed (suspension, gait, speed, wing state) --
+    # hover is a held suspension state; hovering at rest is "idle, hover".
+    "hover", "trot", "fast", "glide", "slow", "dive", "flopping",
     # -- block B: secondary action layered on the head --
     "bite", "eat", "look", "shake", "throw", "taunt",
-    "sniff", "yawn", "catch", "sting", "kick", "spit", "wag", "scratch",
+    "sniff", "yawn", "sting", "kick", "scratch",
     "crouch", "dead", "sit", "sleep",
     # -- block C: how a strike is delivered (manner before strike type) --
-    "spin", "flip", "charge",
+    "spin", "charge",
     "headbutt", "punch", "swat", "slash", "stab", "smash", "whip",
     "block", "cast", "firebreath", "projectile",
     # -- block D: affect / social gesture --
@@ -279,7 +281,7 @@ ACTION_LABEL_MAX_HEADS = 2
 # phase-free loop only forgoes augmentation, while rolling an anchored one
 # scrambles the event's timing.
 PHASE_FREE_LOOP_HEADS: tuple[str, ...] = (
-    "climb", "crawl", "fall", "fly", "hover", "idle", "rest", "roll", "run", "swim",
+    "climb", "crawl", "fall", "fly", "idle", "rest", "roll", "run", "swim",
     "walk",
 )
 _PHASE_FREE_LOOP_HEAD_SET: frozenset[str] = frozenset(PHASE_FREE_LOOP_HEADS)
@@ -288,17 +290,49 @@ assert _PHASE_FREE_LOOP_HEAD_SET <= _HEAD_VOCAB_SET, (
     + str(sorted(_PHASE_FREE_LOOP_HEAD_SET - _HEAD_VOCAB_SET))
 )
 
+# The modifiers that leave a phase-free head phase-free: how the state is
+# carried out (gait, speed, wing state), a posture held through it (sit,
+# sleep), or what is held during it (carry, weapon). Every other modifier names
+# an EVENT layered on the state -- a glance, a bite of food, a shake, a yawn --
+# and anchors the clip exactly like an anchored head: rolling "idle, look"
+# moves the glance to a random phase and cropping it keeps only part of it, so
+# the label stops meaning any particular motion. A whitelist for the same
+# reason as the heads: a new modifier defaults to anchored. Direction words are
+# not modifiers and never anchor.
+PHASE_FREE_LOOP_MODIFIERS: tuple[str, ...] = (
+    "hover", "trot", "fast", "glide", "slow", "flopping",
+    "crouch", "dead", "sit", "sleep",
+    "aim", "carry",
+    "bow", "gun", "hammer", "shield", "weapon",
+)
+_PHASE_FREE_LOOP_MODIFIER_SET: frozenset[str] = frozenset(PHASE_FREE_LOOP_MODIFIERS)
+assert _PHASE_FREE_LOOP_MODIFIER_SET <= set(MODIFIER_VOCAB), (
+    "PHASE_FREE_LOOP_MODIFIERS names non-modifier words: "
+    + str(sorted(_PHASE_FREE_LOOP_MODIFIER_SET - set(MODIFIER_VOCAB)))
+)
+_PHASE_FREE_LOOP_WORD_SET: frozenset[str] = (
+    _PHASE_FREE_LOOP_HEAD_SET | _PHASE_FREE_LOOP_MODIFIER_SET | frozenset(DIRECTION_VOCAB)
+)
+
+
+def phase_anchoring_words(label) -> list[str]:
+    """The words of *label* that anchor its phase, in written order: every
+    head outside :data:`PHASE_FREE_LOOP_HEADS` and every modifier outside
+    :data:`PHASE_FREE_LOOP_MODIFIERS`. Empty for a phase-free label."""
+    return [word for word in parse_action_label(label) if word not in _PHASE_FREE_LOOP_WORD_SET]
+
 
 def loop_is_phase_free(label) -> bool:
     """Whether a loop clip carrying *label* may be circularly rolled and tiled.
 
-    True only when every head word of the label is in
-    :data:`PHASE_FREE_LOOP_HEADS`; one anchored head ("idle, rear",
-    "attack, hover") anchors the clip. An empty label has no evidence either
-    way and is anchored.
+    True only when every head word is in :data:`PHASE_FREE_LOOP_HEADS` and
+    every modifier in :data:`PHASE_FREE_LOOP_MODIFIERS`; one anchored head
+    ("idle, rear", "attack, hover") or one event modifier ("idle, look",
+    "idle, hover, eat") anchors the clip. An empty label has no evidence either way
+    and is anchored.
     """
-    heads = head_words_in(parse_action_label(label))
-    return bool(heads) and all(head in _PHASE_FREE_LOOP_HEAD_SET for head in heads)
+    words = parse_action_label(label)
+    return bool(head_words_in(words)) and not phase_anchoring_words(label)
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +362,6 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "draw": "drawing a weapon",          # bare "draw" is pulling a line or a card
     "cry": "weeping",                    # bare "cry" reads as shouting out
     "firebreath": "breathing fire",      # glued compound is no English word; T5 splits it into subword shards
-    "flip": "somersault",                # bare "flip" is a coin or a switch
     "land": "touching down",             # bare "land" is terrain -- overwhelmingly
     "punch": "punching",                 # bare "punch" is the drink
     "rear": "rearing up",                # bare "rear" is the back side
@@ -520,6 +553,49 @@ def canonical_action_label(words) -> str:
         if head == direction_anchor:
             canonical.extend(directions)
     return ", ".join(canonical + modifiers)
+
+
+# ---------------------------------------------------------------------------
+# Clip-name words
+# ---------------------------------------------------------------------------
+
+_CAMEL_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|\d+")
+
+
+def decamel(text):
+    """'PolygonalOneEyedBat' -> 'polygonal one eyed bat' (prompt-facing name)."""
+    parts = []
+    for chunk in re.split(r"[^A-Za-z0-9]+", str(text)):
+        parts.extend(_CAMEL_RE.findall(chunk))
+    return " ".join(p.lower() for p in parts if p)
+
+
+# Clip-name words that spell a gait, e.g. "Run01Forwards", "TrotLeft".
+LOCOMOTION_NAME_WORDS: frozenset[str] = frozenset({
+    "walk", "walking", "run", "running", "fly", "flying", "swim", "swimming",
+    "jump", "jumping", "roll", "rolling", "crawl", "crawling", "climb", "climbing",
+    "fall", "falling", "move", "moving", "dash", "sprint", "strafe", "trot",
+    "trotting", "jog", "jogging", "gallop", "galloping", "glide", "gliding",
+    "leap", "hop", "hopping", "slither", "charge",
+})
+
+# Words that turn a gait-named clip into an event or a held state, e.g.
+# "FlyAttack", "FallLand", "RunToStop".
+NON_LOCOMOTION_NAME_WORDS: frozenset[str] = frozenset({
+    "attack", "idle", "start", "end", "land", "landing", "death", "die", "dead",
+    "hurt", "hit", "damage", "take", "stop", "spell", "cast", "defend", "aim",
+    "shoot", "shot", "punch", "recover", "startled", "getup", "to", "draw", "grenade",
+})
+
+
+def clip_name_is_locomotion(name) -> bool:
+    """Whether a clip NAME reads as the locomotion group.
+
+    The default for a clip with no ``action_labels.jsonl`` row (an inference
+    reference, a new skeleton): the name spells a gait and no event word.
+    """
+    words = set(decamel(name).split())
+    return bool(words & LOCOMOTION_NAME_WORDS) and not words & NON_LOCOMOTION_NAME_WORDS
 
 
 # ---------------------------------------------------------------------------

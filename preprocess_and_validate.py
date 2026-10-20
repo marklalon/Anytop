@@ -186,7 +186,7 @@ def _install_sidecars_into_dataset_dir(args: argparse.Namespace) -> None:
     downstream of this process re-resolve the sidecars from it rather than from
     this run's flags: ``regenerate_dataset_artifacts.py`` runs in its own
     subprocess, and ``dataset_tags._load_multi_source`` reads
-    ``<root>/species_tags.jsonl`` for every entry in ``datasets.jsonl`` with no
+    ``<root>/species_tags.jsonl`` for every entry in ``datasets_all.jsonl`` with no
     override at all. So pointing a run at a sidecar that lives elsewhere has to
     deposit a copy, or preprocessing succeeds and everything after it looks for a
     file that is not there.

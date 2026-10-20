@@ -118,8 +118,8 @@ from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noq
     build_joint_embedding_texts,
 )
 
-DEFAULT_REFERENCE_COND = _ANYTOP_DIR / "dataset" / "cond.npy"
-DATASETS_MANIFEST = _ANYTOP_DIR / "dataset" / "datasets.jsonl"
+DEFAULT_REFERENCE_COND = _ANYTOP_DIR / "dataset" / "cond_all.npy"
+DATASETS_MANIFEST = _ANYTOP_DIR / "dataset" / "datasets_all.jsonl"
 MOTION_EXTENSIONS = {".glb", ".gltf", ".fbx"}
 TARGET_FPS = 30.0
 FPS_TOLERANCE = 0.1
@@ -583,7 +583,7 @@ def _load_reference_vocabulary(path: Path) -> tuple[Counter, set[str]]:
 
 
 def _processed_dir_for_raw(dataset_dir: Path) -> Path | None:
-    """The processed directory ``datasets.jsonl`` pairs with this raw directory."""
+    """The processed directory ``datasets_all.jsonl`` pairs with this raw directory."""
     if not DATASETS_MANIFEST.is_file():
         return None
     raw = dataset_dir.resolve()
@@ -1424,11 +1424,11 @@ def main() -> int:
                         help="comma-separated case-insensitive globs restricting the species checked")
     parser.add_argument("--reference-cond", type=Path, default=DEFAULT_REFERENCE_COND,
                         help="cond.npy whose joint embedding texts define the known vocabulary "
-                             "(default: dataset/cond.npy); 'none' disables the unseen-word check")
+                             "(default: dataset/cond_all.npy); 'none' disables the unseen-word check")
     parser.add_argument("--processed-dir", type=Path,
                         help="processed dataset directory whose sidecars (chain_forward_joints, "
                              "ignore_warnings) the facing rules read (default: the row of "
-                             "dataset/datasets.jsonl whose raw is dataset_dir; none when absent)")
+                             "dataset/datasets_all.jsonl whose raw is dataset_dir; none when absent)")
     parser.add_argument("--joints", action="store_true", help="print the per-joint name table of every species")
     parser.add_argument("--no-info", action="store_true", help="hide INFO findings")
     parser.add_argument("--report", type=Path, help="write the full report (findings + joint tables) as JSON")

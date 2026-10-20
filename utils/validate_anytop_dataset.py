@@ -48,7 +48,10 @@ from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E40
     ROOT_XZ_LOCOMOTION_LIMIT,
 )
 from utils.misc import infer_object_type_from_filename  # noqa: E402
-from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE  # noqa: E402
+from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
+    CANONICAL_FEATURE_SPACE,
+    assert_single_canonical_frame,
+)
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
     STALE_JOINT_ANNOTATION_KEYS,
     load_cond,
@@ -383,6 +386,11 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
         except Exception as e:
             msg = f"{object_type}: {e}"
             print_warn(f"validation error: {msg}")
+
+    try:
+        assert_single_canonical_frame(cond, source=str(cond_path))
+    except ValueError as e:
+        print_warn(f"validation error: {e}")
     
     print_ok(f"cond.npy validated for {len(cond)} object types")
     return cond

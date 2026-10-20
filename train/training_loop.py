@@ -309,6 +309,7 @@ class TrainLoop:
                 drop_last=False,
                 action_group=getattr(self.args, 'action_group', ''),
                 action_label_cond=getattr(self.args, 'action_label_cond', False),
+                ref_encoder=getattr(self.args, 'ref_encoder', False),
                 action_conditioning=getattr(self.args, 'action_conditioning', None),
                 species_table=getattr(self.args, 'species_descriptor_table', None),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
@@ -369,6 +370,10 @@ class TrainLoop:
         except Exception:  # pragma: no cover - dynamo always present with compile
             pass
         torch.set_float32_matmul_precision('high')
+        from utils.compile_util import configure_triton_c_compiler
+        launcher_compiler = configure_triton_c_compiler()
+        if launcher_compiler:
+            logger.log(f'Triton C launcher compiler: {launcher_compiler} (TinyCC; C++ codegen disabled)')
         try:
             compile_kwargs = {'dynamic': False}
             if mode and mode != 'default':
@@ -378,7 +383,7 @@ class TrainLoop:
         except Exception as exc:  # pragma: no cover - depends on build toolchain
             logger.log(
                 f"torch.compile unavailable ({exc}); falling back to eager. "
-                "Ensure the MSVC build env is active (start_torch_compile_env.ps1)."
+                "Check the PyTorch/Triton installation and bundled TinyCC."
             )
             return
         bucket_note = (
@@ -705,14 +710,24 @@ class TrainLoop:
         and unweighted (the caller draws ``t`` stratified-uniform, which needs
         no importance weights).
         """
+        ref_enabled = bool(getattr(unwrap_anytop_model(model), 'ref_encoder', False))
+        null_cond = cond
+        if ref_enabled:
+            null_cond = dict(cond, y=dict(cond['y'], ref_active=torch.zeros(
+                batch.shape[0], dtype=torch.bool, device=batch.device)))
         with torch.no_grad(), self._autocast_context():
             losses = self.diffusion.training_losses(
                 model,
                 batch,
                 t,
-                model_kwargs=self._with_train_step(cond, self.total_step()),
+                model_kwargs=self._with_train_step(null_cond, self.total_step()),
                 noise=noise,
             )
+            if ref_enabled:
+                ref_losses = self.diffusion.training_losses(
+                    model, batch, t, model_kwargs=self._with_train_step(cond, self.total_step()), noise=noise)
+                losses.update({'reference_' + key: value for key, value in ref_losses.items()
+                               if key not in self.TRAIN_ONLY_LOSS_KEYS})
         # part_loss covers only joints whose name was dropped, and eval drops none.
         return {
             key: value.detach().float().mean()

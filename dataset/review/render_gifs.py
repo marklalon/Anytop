@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Render every source clip of every dataset to a 224x224 review GIF.
 
-Datasets are the ones ``../datasets.jsonl`` lists -- the same manifest
+Datasets are the ones ``../datasets_all.jsonl`` lists -- the same manifest
 ``serve.py`` reads, one line per dataset, ``raw`` being the source tree
 (``<raw>/<Species>/*.glb``) and ``path`` the processed tree beside it::
 
@@ -104,7 +104,7 @@ DATASET_ROOT = os.path.dirname(HERE)                           # dataset
 ANYTOP_ROOT = os.path.dirname(DATASET_ROOT)                    # Anytop
 
 # -- paths -------------------------------------------------------------------
-DATASETS_PATH = os.path.join(DATASET_ROOT, "datasets.jsonl")
+DATASETS_PATH = os.path.join(DATASET_ROOT, "datasets_all.jsonl")
 GIF_SUBDIR = os.path.join("review", "gif")
 
 # -- gif ---------------------------------------------------------------------
@@ -228,7 +228,7 @@ DRAW_MODES = ("auto", "mesh", "skeleton")
 
 # ============================ job planning ==================================
 def _discover_datasets(manifest_path=DATASETS_PATH, anytop_root=ANYTOP_ROOT):
-    """The datasets ``datasets.jsonl`` lists, as ``{namespace, ...}`` rows.
+    """The datasets ``datasets_all.jsonl`` lists, as ``{namespace, ...}`` rows.
 
     Mirrors ``serve.py``'s reading of the same file: ``path`` (the processed
     tree, where the GIFs go)
@@ -1632,7 +1632,7 @@ def main():
     ap = argparse.ArgumentParser(
         description="Render every source clip of every dataset to a review GIF.")
     ap.add_argument("--datasets", default=DATASETS_PATH,
-                    help="datasets.jsonl manifest (default: %(default)s)")
+                    help="datasets_all.jsonl manifest (default: %(default)s)")
     ap.add_argument("--dataset", default="*",
                     help="namespace glob, e.g. 'truebones/*' or unitybundles "
                          "(default: %(default)s)")

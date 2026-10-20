@@ -1,0 +1,7 @@
+{"species": "SYN_Dog", "species_tags": ["Biped", "Trotting"]}
+{"species": "SYN_Elephant", "species_tags": ["Biped", "Lumbering"]}
+{"species": "SYN_Horse", "species_tags": ["Biped", "Galloping"]}
+{"species": "SYN_IAC_Caveman", "species_tags": ["Quadruped", "Trotting"]}
+{"species": "SYN_KI_Human", "species_tags": ["Quadruped", "Trotting"]}
+{"species": "SYN_LH_Hero", "species_tags": ["Quadruped", "Trotting"]}
+{"species": "SYN_MXO_Human", "species_tags": ["Quadruped", "Galloping"]}

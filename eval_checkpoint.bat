@@ -6,6 +6,8 @@ REM
 REM Usage:
 REM   eval_checkpoint.bat <task_config.json> [extra eval args]
 REM   eval_checkpoint.bat eval\eval_tasks.json --overwrite
+REM   eval_checkpoint.bat --kill-all-serve
+REM     Stop all Python serve_report.py processes and exit without evaluating.
 REM
 REM The task config must define checkpoint.RUN_NAME. checkpoint.MODEL_FILE is
 REM optional; when omitted, eval_checkpoint.py selects the newest model*.pt
@@ -16,8 +18,11 @@ REM ----------------------------------------------------------------------
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 
+if /I "%~1"=="--kill-all-serve" goto :kill_all_serve
+
 if "%~1"=="" (
     echo Usage: eval_checkpoint.bat ^<task_config.json^> [extra eval args]
+    echo        eval_checkpoint.bat --kill-all-serve
     exit /b 2
 )
 
@@ -39,3 +44,11 @@ pushd "%SCRIPT_DIR%"
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
 endlocal & exit /b %EXIT_CODE%
+
+:kill_all_serve
+if not "%~2"=="" (
+    echo --kill-all-serve must be used alone.
+    exit /b 2
+)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%eval\kill_report_servers.ps1"
+exit /b %ERRORLEVEL%

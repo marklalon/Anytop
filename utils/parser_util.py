@@ -10,7 +10,7 @@ import copy
 # tests/test_action_group_checkpoint_binding.py pins the two together.
 ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # The training value for one model over the whole corpus
-# (docs/unified_action_group_training.md). Recorded in args.json in a group's
+# (docs/action_group_and_label.md). Recorded in args.json in a group's
 # place; generation then reads the group off the label instead of the weights.
 ACTION_GROUP_ALL = 'all'
 
@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 27
+CKPT_VERSION = 34
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -205,6 +205,20 @@ def add_base_options(parser):
 
 def add_model_options(parser):
     group = parser.add_argument_group('model')
+    group.add_argument('--ref_encoder', action='store_true', help='Train a frame-aligned reference motion encoder.')
+    group.add_argument('--ref_slots', type=int, default=2)
+    group.add_argument('--ref_dim', type=int, default=8)
+    group.add_argument('--ref_width', type=int, default=64)
+    group.add_argument('--ref_layers', type=int, default=2)
+    group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4)
+    group.add_argument('--ref_label_drop_prob', type=float, default=0.5,
+                       help='Action-label CFG drop probability on reference-active training rows '
+                            '(rows without a reference use --action_label_cfg_drop_prob). '
+                            'Reference-active rows always bypass the species FiLM.')
+    group.add_argument('--ref_leaf_drop_prob', type=float, default=0.2)
+    group.add_argument('--ref_bone_length_aug_prob', type=float, default=0.2)
+    group.add_argument('--ref_bone_length_aug', type=float, default=0.1)
+    group.add_argument('--ref_joint_name_drop_prob', type=float, default=0.15)
     group.add_argument("--layers", default=4, type=int,
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
@@ -222,21 +236,26 @@ def add_model_options(parser):
                        help="Hidden width of the --action_label_adaln head (0 = latent_dim). "
                             "The action label set has slot-source rank ~137, so ~192 "
                             "loses nothing and halves the model's largest matrix.")
-    group.add_argument("--species_film_bottleneck", default=0, type=int,
-                       help="Hidden width of the --species_cond FiLM head (0 = latent_dim). "
-                            "The species descriptors span rank 94; 128 is enough.")
+    group.add_argument("--species_film_bottleneck", default=128, type=int,
+                       help="Hidden width of the joint x species FiLM head (default 128; 0 = latent_dim).")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
-    group.add_argument("--lambda_vel", default=0.0, type=float,
-                       help="Weight for velocity-position consistency loss (0.0=off)."
-                            " Penalizes |pos[t+1]-pos[t] - (vel[t] - vel_root[t])|^2 on denormalized outputs,"
-                            " the root's velocity subtracted on X/Z only (RIC positions are root-XZ-relative,"
-                            " velocities are world deltas), so the residual is exactly zero on real data."
-                            " Couples position and velocity feature groups to prevent independent memorization.")
+    # Increase root-trajectory supervision and reduce position-step weight
+    # relative to the initial loss-share estimates; validate with training runs.
+    group.add_argument("--lambda_root_vel", default=0.1, type=float,
+                       help="Weight of the root's X/Z velocity MSE, the only velocity the model "
+                            "predicts: every other joint's velocity is its own position step plus the root's, "
+                            "so the canonical space drops it. Per sample, in canonical units, scaled by the "
+                            "species' root_vel_loss_weight from cond.npy.")
+    group.add_argument("--lambda_dpos", default=0.04, type=float,
+                       help="Weight of the frame-to-frame position-step MSE against the target, "
+                            "in units of the corpus position-step RMS; a loop sample also counts its wrap "
+                            "step pos[0]-pos[-1]. It is the position supervision the dropped non-root "
+                            "velocity channels used to carry. Scaled by the species' dpos_loss_weight.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
-                       help="Weight for the loop-only seam continuity loss on denormalized outputs: the "
-                            "terminal velocity row equals the wrap delta pos[0]-pos[-1], and the wrap "
-                            "step's rotation angle matches its neighbouring steps. A loop window's last "
-                            "frame is one step before frame 0, never a copy of it.")
+                       help="Weight for the loop-only rotation seam continuity loss on denormalized "
+                            "outputs: the wrap step's rotation angle matches its neighbouring steps. A loop "
+                            "window's last frame is one step before frame 0, never a copy of it; the "
+                            "position seam is --lambda_dpos's wrap step.")
     group.add_argument("--lambda_loop_root_closure", default=0.0, type=float,
                        help="Weight for the loop-only full-cycle closure of the translation root's XZ "
                             "velocity (0.0=off): ||sum_t vel_xz[t] * step||^2 over ALL rows, the terminal "
@@ -297,8 +316,7 @@ def add_model_options(parser):
                             "joints are protected. Exact on the kept features (a leaf's row moves no other joint); "
                             "joint_struct, the relation matrices and the length scale L are rebuilt for the "
                             "smaller rig. Teaches invariance to optional terminators and shorter distal "
-                            "chains, and keeps the --topology_cond pool from keying on each species' exact "
-                            "topology. Training split only (the dataset refuses it for val). "
+                            "chains. Training split only (the dataset refuses it for val). "
                             "Loader-only: no regen, no model change, no CKPT_VERSION bump.")
     group.add_argument("--bone_length_aug_prob", default=0.0, type=float,
                        help="Probability of symmetric body-proportion augmentation; training only (0 = off).")
@@ -321,6 +339,8 @@ def add_model_options(parser):
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
+    group.add_argument("--cross_limb", default=1, type=int, choices=[0, 1],
+                       help="Enable cross-limb temporal blocks (1 = on, 0 = off).")
     group.add_argument("--cross_limb_latents", default=8, type=int,
                        help="Number of latent tokens K in the cross-limb temporal block.")
     group.add_argument("--cross_limb_dim", default=64, type=int,
@@ -345,23 +365,13 @@ def add_model_options(parser):
                             "(sibling / sibling_limb / cousin), so a skeleton whose symmetry pairing "
                             "missed some twins stays in distribution. Both directions of a pair drop "
                             "together. Inference never drops.")
-    group.add_argument("--species_cond", action='store_true',
-                       help="Enable per-species FiLM conditioning: the T5-derived species descriptor "
-                            "modulates the timestep token multiplicatively (gamma=1+res, beta; zero-init "
-                            "so it starts at identity), which every decoder layer re-injects. CFG-droppable "
-                            "(see --species_cfg_drop_prob). Requires cond.npy regenerated with 'species_emb'.")
     group.add_argument("--species_cfg_drop_prob", default=0.15, type=float,
-                       help="Per-sample probability of hard-dropping the species FiLM condition during "
-                            "training (replaced by identity modulation gamma=1, beta=0), enabling "
-                            "classifier-free guidance over the species descriptor. Default 0.15.")
+                       help="Per-sample probability of bypassing per-joint species FiLM during training "
+                            "(identity modulation), enabling species classifier-free guidance.")
     group.add_argument("--species_joint_cond", action='store_true',
-                       help="Also fuse the species descriptor into the per-joint name embedding: a FiLM "
-                            "head reads [joint_name_emb || species_emb] and emits (gamma, beta) per joint, "
-                            "shifting and rescaling joint semantics toward the body-plan context of the "
-                            "species. Zero-initialized, so it starts at identity. Never CFG-dropped -- it "
-                            "is the always-on species channel. Per-joint structural conditioning, "
-                            "orthogonal to (and combinable with) the --species_cond FiLM on the timestep "
-                            "token. Requires 'species_emb'.")
+                       help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_emb]. "
+                            "Zero-initialized to identity; CFG-droppable via --species_cfg_drop_prob. "
+                            "Requires 'species_emb'.")
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the clip's action_label ('run, forward, "
                             "left, fast' -- controlled keywords, not prose) is split into words, pooled "
@@ -390,14 +400,6 @@ def add_model_options(parser):
                             "without leaning on --action_label_cfg_scale and paying its quality cost. "
                             "Requires --action_label_cond. Costs d^2 + 4*layers*d^2 parameters. "
                             "See docs/conditional_modulation_upgrade.md section 3.")
-    group.add_argument("--topology_cond", action='store_true',
-                       help="Global topology conditioner: learned queries pool the skeleton's "
-                            "rest-pose + structural tokens (joint names excluded) into one summary, "
-                            "and a zero-initialised head turns it into a per-channel scale and shift "
-                            "on the temporal and feed-forward branch inputs of every decoder layer, "
-                            "summed with --action_label_adaln's. Never CFG-dropped. Gives every layer "
-                            "the whole-body proportions instead of leaving each to rebuild them "
-                            "through spatial attention.")
     group.add_argument("--direction_slot_drop_prob", default=0.15, type=float,
                        help="Per-sample probability of blanking the label's DIRECTION words during "
                             "training while the rest of the label stays. Trains the empty direction "
@@ -444,7 +446,7 @@ def add_data_options(parser, training=False):
                                 "(stationary ~53%); see --rare_head_word_floor for the tail. "
                                 "Recorded in the checkpoint's args.json, where generation reads it "
                                 "back -- a single-group checkpoint can only ever be sampled as that "
-                                "group. See docs/unified_action_group_training.md.")
+                                "group. See docs/action_group_and_label.md.")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -470,8 +472,9 @@ def add_training_options(parser):
                        help="Wrap the transformer decoder with torch.compile to fuse the many tiny "
                             "per-layer kernels (training is kernel-launch-bound). "
                             "Mode: 'None' (no compile), 'default' (torch.compile default), "
-                            "'max-autotune-no-cudagraphs'. Requires the MSVC build env "
-                            "(start_torch_compile_env.ps1). First step pays a one-time compile "
+                            "'max-autotune-no-cudagraphs'. On Windows, requires Triton's bundled "
+                            "TinyCC; MSVC is not used and C++ codegen is disabled. "
+                            "First step pays a one-time compile "
                             "cost; shapes are static so no recompile thrashing afterward "
                             "(one graph per JOINT_BUCKETS joint bucket).")
     group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
@@ -483,7 +486,7 @@ def add_training_options(parser):
                        help="LR at the end of the cosine decay (only with --lr_decay_start).")
 
     group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")
-    group.add_argument("--eval_interval", default=1_000, type=int,
+    group.add_argument("--eval_interval", default=0, type=int,
                        help="Compute the loss over the val split every N training steps (and at the "
                             "last step), logged under Val/. 0 disables validation.")
     group.add_argument("--val_t_strata", default=4, type=int,
@@ -505,7 +508,10 @@ def add_training_options(parser):
     group.add_argument("--motion_cache_size", default=0, type=int,
                        help="Number of entries to keep in in-memory LRU cache for raw motion clips per dataset instance. 0 disables the cache.")
     group.add_argument("--main_process_prefetch_batches", default=4, type=int,
-                       help="Prefetch this many batches on background thread for main-thread data loading to overlap with GPU compute. 0 disables it.")
+                       help="Number of training batches kept ready ahead of the GPU (spread across --num_workers when it is > 0). 0 selects the default of 4.")
+    group.add_argument("--num_workers", default=0, type=int,
+                       help="Training data worker processes. 0 prepares batches on a background thread of the training "
+                            "process, sharing its GIL; N > 0 runs N persistent worker processes. Validation always uses the thread.")
     group.add_argument("--detect_anomaly", action='store_true',
                        help="Enable PyTorch autograd anomaly detection. Useful for debugging, but significantly slows training.")
     # Spike-capture probe is always on (hardcoded in TrainLoop) and always
@@ -544,7 +550,7 @@ def add_training_options(parser):
                        help="Maximum length of each sampled training-time temporal span perturbation. "
                             "Must be >= temporal_span_mask_min_frames.")
     group.add_argument("--temporal_span_seam_loss_weight", default=0.0, type=float,
-                       help="Weight of a target-relative acceleration (2nd temporal difference) penalty on the position channel, applied in a Gaussian seam band around sampled temporal-span boundaries. Suppresses inpainting-seam acceleration spikes that l_simple and vel_loss do not catch. 0 disables it.")
+                       help="Weight of a target-relative acceleration (2nd temporal difference) penalty on the position channel, applied in a Gaussian seam band around sampled temporal-span boundaries. Suppresses inpainting-seam acceleration spikes that l_simple and dpos_loss do not catch. 0 disables it.")
     group.add_argument("--temporal_span_seam_width", default=2, type=int,
                        help="Radius of the Gaussian seam band on each side of a sampled temporal-span boundary frame.")
     group.add_argument("--renoise_same_level_prob", default=1.0, type=float,
@@ -616,9 +622,11 @@ def add_sampling_options(parser):
                             "clamped overrides this to 'off': there is no closure for the model to make, and "
                             "a periodic export would resample those clamped ends. "
                             "'off': an open window. 'auto' (default): with a --reference_motion, follow its own "
-                            "loop verdict; else, with --action_label and no reference, 'on' when every head "
-                            "word is phase-free (walk, run, swim, fly, idle ... -- the loader's roll/tile "
-                            "whitelist) and 'off' for an anchored event (jump, attack ...); else 'off'.")
+                            "loop verdict; else, with --action_label and no reference, 'on' when the label "
+                            "is phase-free (heads walk, run, swim, fly, idle ... with only gait / posture / "
+                            "held-object modifiers -- the loader's roll/tile whitelist) and 'off' for an "
+                            "anchored event (heads jump, attack ...; modifiers look, eat, shake ...); "
+                            "else 'off'.")
     group.add_argument("--fullbody_ik", action='store_true',
                        help="Decode the BVH preview with the same full-body IK as restore_glb_from_npy --fullbody-ik: "
                             "rotations are re-solved on the rigid cond skeleton so the position channels are honoured "
@@ -629,8 +637,29 @@ def add_sampling_options(parser):
                             "which also makes the BVH rotation-only). Same meaning as restore_glb_from_npy --stretch-factor.")
 
 
+def _bool_argument(value):
+    if str(value).lower() not in ('true', 'false'):
+        raise argparse.ArgumentTypeError('Expected true or false')
+    return str(value).lower() == 'true'
+
+
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
+    group.add_argument('--reference_source_type', default='', help='Source cond species for an encoded NPY --reference_motion.')
+    group.add_argument('--reference_action_group', default=None, choices=ACTION_GROUPS,
+                       help="Action group of a raw .fbx/.glb/.gltf --reference_motion. Only 'locomotion' "
+                            "changes its encoding: the root-travel detrend and extent bound, as in dataset "
+                            "preprocessing. Default: decided from the file name (e.g. 'Run01Forwards' is "
+                            "locomotion, 'FlyAttack' is not).")
+    group.add_argument('--ref_cfg_scale', type=float, default=1.0,
+                       help='Reference CFG scale on the high-noise half of the steps, where global '
+                            'posture (facing, body height) is decided; the detail steps use 1.')
+    group.add_argument('--species_active', type=_bool_argument,
+                       choices=(True, False), default=None,
+                       help='Target per-joint species FiLM; true / false. '
+                            'Defaults to true. Cannot be supplied with an encoded '
+                            '--reference_motion (one without skip_timesteps / inpaint / outpaint), '
+                            'which always disables species FiLM.')
     group.add_argument("--num_frames", default=None, type=int,
                        help="The number of frames in the sampled motion. Omit it to let "
                             "generation pick one, in this priority order: --reference_motion's "
@@ -657,7 +686,8 @@ def add_generate_options(parser):
                             "containing a single species (that species is used). Otherwise "
                             "required for pure-random generation. When both flags are provided "
                             "and the inferred type differs from this value, the reference motion "
-                            "is auto-retargeted to this skeleton.")
+                            "drives this skeleton through the motion encoder (no retargeting), "
+                            "or, with skip_timesteps / inpaint / outpaint, must be the same species.")
     group.add_argument("--sampling_method", default="ddpm", choices=["p", "ddpm", "ddim"],
                        help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (default). 'ddim' = DDIM. "
                             "Both cost the same at the same --sampling_steps. DDIM is deterministic "
@@ -671,11 +701,12 @@ def add_generate_options(parser):
     group.add_argument("--reference_motion", default=None, type=str,
                        help="Path to a reference motion .npy/.fbx/.glb/.gltf file. Non-NPY inputs are "
                            "preprocessed into the same 12-channel feature-space NPY used by training, then "
-                           "noised to an intermediate timestep (img2img-style). If --object_type is not given, "
-                           "it is inferred from the reference filename. If --object_type is given and differs "
-                           "from the reference's inferred type, the reference is auto-retargeted to the requested "
-                           "skeleton before noising. When filename inference is invalid, the target object_type "
-                           "is used as a fallback. "
+                           "then either ENCODED (default; the reference may be another species, the sample "
+                           "starts from noise and needs a --ref_encoder checkpoint) or EDITED (with "
+                           "--skip_timesteps / --inpaint_* / --outpaint: noised or clamped on the target "
+                           "skeleton, so the reference must be the same rig: a preprocessed .npy, or a .glb/.fbx whose own bind pose is its rest pose). If --object_type is "
+                           "not given, it is inferred from the reference filename. When filename inference "
+                           "is invalid, the target object_type is used as a fallback. "
                             "Omit for pure random generation.")
     group.add_argument("--skip_timesteps", default=None, type=int,
                        help="Number of timesteps to skip when using --reference_motion (img2img). Higher = more faithful to reference. "
@@ -735,9 +766,9 @@ def add_generate_options(parser):
                        help="Classifier-free guidance scale over --action_label. 1.0 (default) = "
                             "off: one forward per diffusion step, the conditional prediction as-is. "
                             ">1 amplifies the prompt by extrapolating away from the model's own "
-                            "unconditional prediction (x0_uncond + s*(x0_cond - x0_uncond)), at 2x "
-                            "sampling cost since every step then runs a conditional AND an "
-                            "unconditional forward. Requires "
+                            "unconditional prediction (x0_uncond + s*(x0_cond - x0_uncond)) on the "
+                            "high-noise half of the steps, where global posture is decided; the "
+                            "detail steps use 1 (plain conditional, one forward). Requires "
                             "--action_label and a checkpoint trained with a non-zero "
                             "--action_label_cfg_drop_prob (without it there is no unconditional "
                             "mode to guide away from).")
@@ -748,14 +779,16 @@ def add_generate_options(parser):
                             "locomotion vocabulary; no T5 runs at generation); its row replaces the species "
                             "descriptor baked into cond.npy (default from species_tags.jsonl), letting you "
                             "restyle the generated motion (e.g. make a Winged Dragon walk on the ground). "
-                            "Requires a checkpoint trained with --species_cond and/or --species_joint_cond. "
+                            "Requires a checkpoint trained with --species_joint_cond. "
                             "Incompatible with --object_type all.")
     group.add_argument("--species_cfg_scale", default=1.0, type=float,
                        help="Classifier-free guidance scale over the species descriptor's "
-                            "droppable FiLM path. 1.0 (default) uses one forward; any other "
-                            "scale uses two (four when action-label CFG is also enabled). "
-                            "The per-joint species path stays active in both. "
-                            "Requires a checkpoint trained with --species_cond and non-zero "
+                            "droppable FiLM path, applied on the high-noise half of the steps "
+                            "only (the detail steps use 1). 1.0 (default) uses one forward; any "
+                            "other scale uses two on the high-noise steps (four with action-label CFG). "
+                            "The unconditional pass bypasses per-joint species FiLM. "
+                            "Ignored when --species_active false, with no extra species forwards. "
+                            "Requires a checkpoint trained with --species_joint_cond and non-zero "
                             "--species_cfg_drop_prob. Uses --species_tags when supplied, otherwise "
                             "the target species' baked descriptor.")
 
@@ -781,18 +814,34 @@ def generate_args(argv=None):
     # There is deliberately no --action_group here: the group belongs to the
     # weights, so apply_checkpoint_action_group() sets args.action_group from the
     # checkpoint's own args.json.
-    preserve_cli_args = {'action_label', 'species_tags'}
+    preserve_cli_args = {'action_label', 'species_tags', 'reference_action_group'}
     args = parse_and_load_from_model(
         parser, argv=argv,
         preserve_cli_args=preserve_cli_args,
     )
+    encoded_reference = bool(args.reference_motion) and (
+        args.skip_timesteps is None and not args.outpaint
+        and not str(args.inpaint_joints or '').strip()
+        and not str(args.inpaint_frames or '').strip()
+    )
+    if encoded_reference and args.species_active is not None:
+        parser.error('an encoded --reference_motion cannot be combined with --species_active; '
+                     'encode always disables species FiLM')
+    if args.species_active is None:
+        args.species_active = not encoded_reference
     return args
 
 def process_new_skeleton_args():
     parser = ArgumentParser()
     group = parser.add_argument_group('process_new_skeleton')
-    group.add_argument("--tpos-path", required=True, type=str,
-                       help="An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base.")
+    group.add_argument("--tpos-path", default=None, type=str,
+                       help="An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base. "
+                            "Optional with --motion-path: the first motion file's own bind pose is used.")
+    group.add_argument("--motion-path", nargs='+', default=None, type=str,
+                       help="Animation FBX/GLB/GLTF file(s), or directories of them, of this skeleton. "
+                            "Each is encoded into motions/<object_type>_<action>.npy alongside cond.npy, on "
+                            "the --tpos-path rest pose (default: the first file's own bind pose), so a "
+                            "self-contained animation yields its cond and its feature clip in one run.")
     group.add_argument("--save-dir", required=True, type=str,
                        help="Output directory.")
     group.add_argument("--object-type", default=None, type=str,
@@ -800,7 +849,7 @@ def process_new_skeleton_args():
                             "When omitted, the tpos-path file stem minus trailing pose "
                             "tokens (e.g. 'Pet_Kiki_A_Tpose.glb' -> 'Pet_Kiki_A').")
     group.add_argument("--crop-enabled", action='store_true', default=False,
-                       help="Enable automatic skeleton cropping to MAX_JOINTS=128. "
+                       help="Enable automatic skeleton cropping to MAX_JOINTS=100. "
                             "Off by default because inference has no joint cap; "
                             "enable for training-compatible preprocessing.")
     group.add_argument("--species-tags", required=True, type=str,
@@ -810,8 +859,13 @@ def process_new_skeleton_args():
                             "in the checkpoint's species descriptor table). There is no fallback to "
                             "the default dataset's species_tags.jsonl, so it must be supplied "
                             "explicitly.")
+    group.add_argument("--action-group", default=None, choices=ACTION_GROUPS,
+                       help="Action group of every --motion-path clip. Only 'locomotion' changes the "
+                            "encoding: those clips take the root-travel detrend and extent bound, as in "
+                            "dataset preprocessing. Default: decided per clip from its file name "
+                            "(e.g. 'Run01Forwards' is locomotion, 'FlyAttack' is not).")
     group.add_argument("--reference-cond-path", required=True, type=str,
-                       help="REQUIRED. cond.npy to inherit the per-object_subset "
+                       help="REQUIRED. cond.npy to inherit the global canonical "
                             "standardization statistics from. Those statistics belong to a "
                             "trained checkpoint, so this must be the checkpoint's own "
                             "cond.npy snapshot (there is no fallback to the processed "

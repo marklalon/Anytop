@@ -219,6 +219,21 @@ def reseat_candidates(entry, report):
     return candidates
 
 
+def reseat_rest_onto_clips(entry, motions):
+    """Measure ``motions`` against ``entry``'s rest and apply the re-seat.
+
+    The in-memory form of the dataset step, for a cond built together with its
+    clips in one process (an inference reference, a new skeleton). Returns the
+    applied candidates.
+    """
+    acc = None
+    for motion in motions:
+        acc = accumulate_rest_vs_clip(entry, motion, acc=acc)
+    candidates = reseat_candidates(entry, finalize_rest_vs_clip(entry, acc))
+    apply_reseat(entry, candidates)
+    return candidates
+
+
 def apply_reseat(entry, candidates):
     """Scale each candidate leaf's rest bone to the length its clips hold it at.
 

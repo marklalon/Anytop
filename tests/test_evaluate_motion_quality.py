@@ -96,7 +96,7 @@ def test_main_registers_cond_path_for_novel_query_species(tmp_path, monkeypatch)
     assert captured["action_label"] == "fly, forward"
     assert captured["n_motions"] == 1
     # The prior is pooled over every dataset by default.
-    assert str(captured["dataset_root"]).replace("\\", "/").endswith("dataset/datasets.jsonl")
+    assert str(captured["dataset_root"]).replace("\\", "/").endswith("dataset/datasets_all.jsonl")
 
 
 def test_main_without_action_label_is_rejected(tmp_path, monkeypatch, capsys) -> None:

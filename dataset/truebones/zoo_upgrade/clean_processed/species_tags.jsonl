@@ -1,5 +1,5 @@
 {"species": "antilope", "species_tags": ["Quadruped", "Galloping"]}
-{"species": "bat_demon", "species_tags": ["Biped", "Striding"]}
+{"species": "bat_demon", "species_tags": ["Biped", "Trotting"]}
 {"species": "Bear", "species_tags": ["Quadruped", "Lumbering"]}
 {"species": "Boar", "species_tags": ["Quadruped", "Galloping"]}
 {"species": "Camel", "species_tags": ["Quadruped", "Lumbering"]}
@@ -16,15 +16,15 @@
 {"species": "Hyena", "species_tags": ["Quadruped", "Trotting"]}
 {"species": "impman", "species_tags": ["Biped", "Striding"]}
 {"species": "Kappa_gorilla", "species_tags": ["Biped", "Crawling"]}
-{"species": "Locust_monster", "species_tags": ["Multiped", "Scuttling"]}
+{"species": "Locust_monster", "species_tags": ["Multiped", "Crawling"]}
 {"species": "Oscafish", "species_tags": ["Aquatic", "Swimming"]}
 {"species": "Ostrich", "species_tags": ["Winged", "Flapping"]}
 {"species": "pikefish", "species_tags": ["Aquatic", "Swimming"]}
 {"species": "Rabbit", "species_tags": ["Quadruped", "Scurrying"]}
 {"species": "Rabbit2", "species_tags": ["Quadruped", "Scurrying"]}
 {"species": "rhino", "species_tags": ["Quadruped", "Lumbering"]}
-{"species": "scorpion", "species_tags": ["Multiped", "Scuttling"]}
+{"species": "scorpion", "species_tags": ["Multiped", "Crawling"]}
 {"species": "Seagull", "species_tags": ["Winged", "Flapping"]}
 {"species": "serpent_man", "species_tags": ["Biped", "Crawling"]}
-{"species": "spider_tarantula", "species_tags": ["Multiped", "Scuttling"]}
+{"species": "spider_tarantula", "species_tags": ["Multiped", "Crawling"]}
 {"species": "Tiger", "species_tags": ["Quadruped", "Galloping"]}

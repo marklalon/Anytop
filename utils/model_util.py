@@ -195,11 +195,12 @@ def get_gmdm_args(args):
             'dropout': getattr(args, 'dropout_prob', 0.1), 'activation': "gelu", 'cond_mode': cond_mode,
             'max_joints': max_joints, 
             'feature_len':feature_len,  'value_emb': args.value_emb,
-            'cross_limb': True, 'cross_limb_latents': args.cross_limb_latents,
+            'cross_limb': bool(getattr(args, 'cross_limb', True)),
+            'cross_limb_latents': args.cross_limb_latents,
             'cross_limb_dim': getattr(args, 'cross_limb_dim', 64),
             'cross_limb_last_n': getattr(args, 'cross_limb_last_n', 0),
             'action_adaln_bottleneck': getattr(args, 'action_adaln_bottleneck', 0),
-            'species_film_bottleneck': getattr(args, 'species_film_bottleneck', 0),
+            'species_film_bottleneck': getattr(args, 'species_film_bottleneck', 128),
             'last_layer_ff': getattr(args, 'last_layer_ff', 0),
             'joint_mask_prob': getattr(args, 'joint_mask_prob', 0.5),
             'joint_mask_budget': getattr(args, 'joint_mask_budget', 0.15),
@@ -207,22 +208,23 @@ def get_gmdm_args(args):
             'temporal_span_mask_prob': getattr(args, 'temporal_span_mask_prob', 0.0),
             'temporal_span_mask_min_frames': getattr(args, 'temporal_span_mask_min_frames', 4),
             'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 12),
-            'species_cond': getattr(args, 'species_cond', False),
             'species_cfg_drop_prob': getattr(args, 'species_cfg_drop_prob', 0.15),
             'species_joint_cond': getattr(args, 'species_joint_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
+            **{key: getattr(args, key, default) for key, default in (
+                ('ref_encoder', False), ('ref_slots', 2), ('ref_dim', 8),
+                ('ref_width', 64), ('ref_layers', 2),
+                ('ref_cfg_drop_prob', 0.4), ('ref_label_drop_prob', 0.5))},
             'mirror_twin_drop_prob': getattr(args, 'mirror_twin_drop_prob', 0.2),
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
             'action_label_adaln': getattr(args, 'action_label_adaln', False),
-            'topology_cond': getattr(args, 'topology_cond', False),
             'direction_slot_drop_prob': getattr(args, 'direction_slot_drop_prob', 0.0),
             'modifier_slot_drop_prob': getattr(args, 'modifier_slot_drop_prob', 0.0),
             # The training entry point builds one bundle and hands the same
             # object to the loader and to the model. Absent at inference: there
             # the checkpoint's own buffers are the word table.
-            'action_conditioning': getattr(args, 'action_conditioning', None),
-            'root_input_feats': 12}
+            'action_conditioning': getattr(args, 'action_conditioning', None)}
 
 def create_gaussian_diffusion(args):
     # default params
@@ -257,7 +259,8 @@ def create_gaussian_diffusion(args):
         loss_type=loss_type,
         rescale_timesteps=rescale_timesteps,
         lambda_geo=args.lambda_geo,
-        lambda_vel=getattr(args, 'lambda_vel', 0.0),
+        lambda_root_vel=getattr(args, 'lambda_root_vel', 0.0),
+        lambda_dpos=getattr(args, 'lambda_dpos', 0.0),
         lambda_loop_wrap=getattr(args, 'lambda_loop_wrap', 0.0),
         lambda_loop_root_closure=getattr(args, 'lambda_loop_root_closure', 0.0),
         lambda_bone=getattr(args, 'lambda_bone', 0.0),

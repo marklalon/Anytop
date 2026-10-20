@@ -209,7 +209,9 @@ def test_label_match_weight_tiers() -> None:
     exact, heads, partial = prior.LABEL_MATCH_WEIGHTS
     assert label_match_weight(("run", "forward"), ("run", "forward")) == exact
     assert label_match_weight(("run", "forward"), ("run", "left")) == heads
-    assert label_match_weight(("attack", "hover"), ("attack", "bite")) == partial
+    # Hover and bite are modifiers: both labels have the same attack head.
+    assert label_match_weight(("attack", "hover"), ("attack", "bite")) == heads
+    assert label_match_weight(("attack", "jump"), ("attack", "bite")) == partial
     assert label_match_weight(("run",), ("walk",)) == 0.0
 
 

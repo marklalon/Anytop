@@ -7,7 +7,7 @@ sampler), never as a conditioning input. Whatever these two matrices fail to
 distinguish, the network cannot recover.
 
 The original codes distinguished very little. Measured over the 257 skeletons in
-``dataset/cond.npy`` (share of off-diagonal pairs landing in the single
+``dataset/cond_all.npy`` (share of off-diagonal pairs landing in the single
 largest code, averaged over species):
 
     graph_dist       61.0%   (5-hop saturation: everything >=5 hops was one code)

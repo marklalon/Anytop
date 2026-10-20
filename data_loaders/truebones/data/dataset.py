@@ -2,6 +2,7 @@ import torch
 from torch.utils import data
 from torch.utils.data.sampler import WeightedRandomSampler
 import numpy as np
+import json
 import os
 from collections import OrderedDict, defaultdict
 from os.path import join as pjoin
@@ -46,7 +47,13 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (
+    CANONICAL_DPOS_STD_KEY,
     CANONICAL_FEATURE_SPACE,
+    CANONICAL_MEAN_KEY,
+    CANONICAL_STD_KEY,
+    DPOS_LOSS_WEIGHT_KEY,
+    ROOT_VEL_LOSS_WEIGHT_KEY,
+    assert_single_canonical_frame,
     build_canonical_rest_feature,
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
@@ -80,7 +87,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 
 
 
-# The merged cond records each source's train/val assignment from datasets.jsonl.
+# The merged cond records each source's train/val assignment from datasets_all.jsonl.
 SUPPORTED_SPLITS = ("train", "val")
 ALL_SPLIT_NAME = "all"
 
@@ -224,11 +231,29 @@ def parse_head_word_weights(spec) -> dict[str, float]:
     return weights
 
 
+# Every training cond entry carries these (the loss reads them from y).
+_REQUIRED_CANONICAL_KEYS = (
+    CANONICAL_MEAN_KEY,
+    CANONICAL_STD_KEY,
+    CANONICAL_DPOS_STD_KEY,
+    ROOT_VEL_LOSS_WEIGHT_KEY,
+    DPOS_LOSS_WEIGHT_KEY,
+)
+
+
 def _copy_required_motion_metadata(motion_name: str, motion_metadata) -> dict[str, object]:
     if not isinstance(motion_metadata, dict):
         raise KeyError(f"Motion '{motion_name}' is missing explicit motion metadata.")
     if 'translation_root_index' not in motion_metadata:
         raise KeyError(f"Motion '{motion_name}' metadata is missing translation_root_index.")
+    # The canonical space keeps velocity on joint 0 alone (canonical_features,
+    # "Derived velocity"), so joint 0 must be the one carrying the locomotion.
+    if int(motion_metadata['translation_root_index']) != 0:
+        raise ValueError(
+            f"Motion '{motion_name}' has translation_root_index="
+            f"{motion_metadata['translation_root_index']}; the canonical feature space "
+            "requires the translation root at joint 0."
+        )
     copied_motion_metadata = dict(motion_metadata)
     copied_motion_metadata.setdefault('motion_name', motion_name)
     return copied_motion_metadata
@@ -917,6 +942,83 @@ def clip_id(namespace: str, motion_name: str) -> str:
     return f"{namespace}/{motion_name}"
 
 
+# Optional sidecar in a processed dataset directory: one JSON object per line,
+# ``{"motion": "<file>.npy", "source": "<namespace>/<file>.npy"}``, saying that
+# this dataset's clip and the source clip are the same motion on two rigs,
+# frame for frame. Pairs sharing a clip form one group.
+REFERENCE_PAIRS_FILE = "reference_pairs.jsonl"
+
+
+def load_reference_groups(sources, data_dict) -> dict[str, tuple[str, ...]]:
+    """``{clip id: every clip id of its group}`` for the clips in ``data_dict``.
+
+    A group lists its own clip too, so drawing uniformly from it includes the
+    self-reference. Group members outside this run's pool (a split, subset or
+    action-group filter) are left out; a group left with one member is no
+    group. Every member must have the same stored length and is_loop flag,
+    since the reference encoder reads the partner on the target's time axis.
+    """
+    by_namespace = {source.namespace: source for source in sources}
+    parent: dict[str, str] = {}
+
+    def find(key):
+        parent.setdefault(key, key)
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    def require_clip(key, where):
+        namespace, _, motion_name = key.rpartition('/')
+        source = by_namespace.get(namespace)
+        if source is None:
+            return False
+        if not os.path.isfile(pjoin(source.motion_dir, motion_name)):
+            raise FileNotFoundError(f"{where}: clip {key!r} does not exist in {source.motion_dir}")
+        return True
+
+    for source in sources:
+        path = Path(source.root) / REFERENCE_PAIRS_FILE
+        if not path.is_file():
+            continue
+        for line_no, line in enumerate(path.read_text(encoding='utf-8').splitlines(), start=1):
+            text = line.strip()
+            if not text:
+                continue
+            where = f"{path}:{line_no}"
+            record = json.loads(text)
+            motion = clip_id(source.namespace, record['motion'])
+            partner = str(record['source'])
+            if '/' not in partner:
+                raise ValueError(f"{where}: source {partner!r} must be '<namespace>/<file>.npy'")
+            require_clip(motion, where)
+            # A source dataset left out of this cond only drops the pair.
+            if require_clip(partner, where):
+                parent[find(motion)] = find(partner)
+
+    members: dict[str, list[str]] = defaultdict(list)
+    for key in list(parent):
+        if key in data_dict:
+            members[find(key)].append(key)
+    groups: dict[str, tuple[str, ...]] = {}
+    for clips in members.values():
+        if len(clips) < 2:
+            continue
+        clips = tuple(sorted(clips))
+        signatures = {
+            (int(data_dict[key]['length']), bool(data_dict[key]['motion_metadata'].get('is_loop')))
+            for key in clips
+        }
+        if len(signatures) != 1:
+            raise ValueError(
+                f"reference group {list(clips)} disagrees on (length, is_loop): "
+                f"{sorted(signatures)}; its clips must be the same motion frame for frame."
+            )
+        for key in clips:
+            groups[key] = clips
+    return groups
+
+
 def load_allowed_motion_names_per_source(
     split: str,
     sources,
@@ -1090,7 +1192,7 @@ class MotionDataset(data.Dataset):
         # indices, so __getitem__ must skip the pointer offset in that case.
         self.use_weighted_sampler = bool(self.head_word_weights) or (
             self.rare_head_word_floor > RARE_HEAD_WORD_FLOOR_OFF
-        )
+        ) or any(source.sample_weight != 1.0 for source in opt.sources)
         self.sample_limit = max(0, int(sample_limit))
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
         self.motion_cache = OrderedDict()
@@ -1167,6 +1269,7 @@ class MotionDataset(data.Dataset):
                                             'source_namespace': namespace,
                                             'motion_name': name,
                                             'high_frequency': is_high_frequency(hf_score),
+                                            'sample_weight': source.sample_weight,
                                            }
 
                         new_name_list.append(key)
@@ -1206,6 +1309,16 @@ class MotionDataset(data.Dataset):
         self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
         self.name_list = name_list
+        # Same-motion groups across rigs (REFERENCE_PAIRS_FILE): a grouped clip
+        # draws its encoder input uniformly from its group.
+        self.reference_groups = (
+            load_reference_groups(opt.sources, data_dict) if getattr(opt, 'ref_encoder', False) else {}
+        )
+        if self.reference_groups:
+            print(
+                f"[dataset] reference groups: {len(set(self.reference_groups.values()))} groups, "
+                f"{len(self.reference_groups)} clips"
+            )
         high_frequency_count = sum(bool(entry['high_frequency']) for entry in data_dict.values())
         print(
             f"[dataset] high-frequency clips (score >= {HIGH_FREQUENCY_SCORE_THRESHOLD}): "
@@ -1390,6 +1503,25 @@ class MotionDataset(data.Dataset):
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
         cond = self.cond_dict[object_type]
         joint_struct = self._joint_struct_cache[object_type]
+        # The reference encoder's input draws its own skeleton augmentation, so
+        # it starts from the stored rig, not from the target's augmented one.
+        # A grouped clip draws that rig uniformly from its group, itself included.
+        ref_source = None
+        ref_partner = False
+        if getattr(self.opt, 'ref_encoder', False):
+            partner = random.choice(getattr(self, "reference_groups", {}).get(name, (name,)))
+            if partner == name:
+                ref_source = (motion, cond, joint_struct, int(motion_metadata['translation_root_index']))
+            else:
+                partner_data = self.data_dict[partner]
+                partner_type = partner_data['object_type']
+                ref_source = (
+                    self._load_physical_motion(partner_data)[0],
+                    self.cond_dict[partner_type],
+                    self._joint_struct_cache[partner_type],
+                    int(partner_data['motion_metadata']['translation_root_index']),
+                )
+                ref_partner = True
         # ── Leaf-drop augmentation (topology; see leaf_drop.py) ──
         # Runs on the stored clip, before any temporal stage: from here on the
         # sample IS a rig without those leaves, so every later stage and the
@@ -1444,6 +1576,13 @@ class MotionDataset(data.Dataset):
         if is_loop:
             motion = _drop_loop_closing_frame(motion)
             m_length = int(motion.shape[0])
+        target_skeleton_changed = bool(leaf_drop_count or bone_length_info['applied'])
+        ref_separate_rig = ref_partner or target_skeleton_changed
+        if ref_source is not None and ref_separate_rig:
+            # The target's verdict, so both sides share one time axis below.
+            ref_motion = ref_source[0][:m_length]
+        elif ref_source is not None:
+            ref_motion = motion
 
         # A high-frequency clip (high_frequency.py) is never resampled to fewer
         # frames, so its source budget is the window itself: the speed draw
@@ -1502,8 +1641,9 @@ class MotionDataset(data.Dataset):
         # they preserve per-frame feature semantics (see _tile_loop_motion and
         # _circular_roll_motion, which they are equivalent to) -- and are kept
         # here as the frame shift and window length only.
-        # A phase-anchored loop (loop_is_phase_free: an attack, a roar -- an
-        # event that leaves a ready pose and returns to it) keeps frame 0 at
+        # A phase-anchored loop (loop_is_phase_free: an attack, a roar, an
+        # idle with a glance or a bite of food -- an event that leaves a ready
+        # pose and returns to it) keeps frame 0 at
         # the ready pose and one event per window: under the circular time
         # table its phase 0 IS the wind-up, and on the loop_uncond path it
         # stays an ordinary one-shot clip instead of a strike at a random
@@ -1541,13 +1681,13 @@ class MotionDataset(data.Dataset):
         # step is L/T = resample_speed_cond; everything else, including a loop
         # the model is told is not one, is open, at step (L-1)/(T-1). The loss
         # reads which one from y['is_loop'] (_physical_velocity_step_scale).
-        if scaled_length != source_length:
-            motion = resample_time_scaled_window(
-                source_motion, scaled_length, m_length, target_num_frames,
-                source_periodic=bool(is_loop), window_periodic=loop_condition_active,
-                shift=frame_shift,
-            )
-        else:
+        def sample_window(clip):
+            if scaled_length != source_length:
+                return resample_time_scaled_window(
+                    clip, scaled_length, m_length, target_num_frames,
+                    source_periodic=bool(is_loop), window_periodic=loop_condition_active,
+                    shift=frame_shift,
+                )
             # No speed change: the shift and window are whole source frames
             # (a loop's roll and tiles wrap it), and the window resample is the
             # only interpolation.
@@ -1555,18 +1695,38 @@ class MotionDataset(data.Dataset):
             if is_loop:
                 frames %= source_length
             if m_length != source_length or frame_shift != 0:
-                motion = source_motion[frames]
+                clip = clip[frames]
             if m_length != target_num_frames:
-                motion = resample_motion_features(
-                    motion,
+                clip = resample_motion_features(
+                    clip,
                     target_num_frames,
                     periodic=loop_condition_active,
                 )
-        m_length = target_num_frames
+            return clip
 
+        motion = sample_window(source_motion)
+        physical_motion = motion
         motion = np.nan_to_num(
             physical_hml_to_canonical(motion, cond)
         ).astype(np.float32, copy=False)
+        reference = None
+        if ref_source is not None:
+            from data_loaders.reference import prepare_reference_sample
+            _, ref_cond, ref_joint_struct, ref_root_index = ref_source
+            reference_metadata = dict(motion_metadata, is_loop=loop_condition_active,
+                                      translation_root_index=ref_root_index)
+            if ref_separate_rig:
+                reference = prepare_reference_sample(
+                    sample_window(ref_motion), ref_cond, reference_metadata, self.opt,
+                    shared=dict(joint_struct=ref_joint_struct))
+            else:
+                # The target kept the stored rig, so the reference starts from
+                # the same window and reuses its derived channels until its own
+                # augmentation changes the skeleton.
+                reference = prepare_reference_sample(
+                    physical_motion, cond, reference_metadata, self.opt,
+                    shared=dict(feats=motion, joint_struct=joint_struct))
+        m_length = target_num_frames
 
         # is_loop is the whole loop condition the model sees: a closed window.
         # The tile count is deliberately NOT passed on -- generation has no
@@ -1589,6 +1749,7 @@ class MotionDataset(data.Dataset):
 
         if return_aug_info:
             return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
+                'reference': reference,
                 'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
                 'joint_struct': joint_struct,
                 'species_emb': cond.get('species_emb'),
@@ -1596,6 +1757,9 @@ class MotionDataset(data.Dataset):
                 'rest_pos_ric_hml': cond['rest_pos_ric_hml'],
                 'canonical_feature_mean': cond.get('canonical_feature_mean'),
                 'canonical_feature_std': cond.get('canonical_feature_std'),
+                CANONICAL_DPOS_STD_KEY: cond.get(CANONICAL_DPOS_STD_KEY),
+                ROOT_VEL_LOSS_WEIGHT_KEY: cond.get(ROOT_VEL_LOSS_WEIGHT_KEY),
+                DPOS_LOSS_WEIGHT_KEY: cond.get(DPOS_LOSS_WEIGHT_KEY),
                 'feature_space': cond.get('feature_space', CANONICAL_FEATURE_SPACE),
             }, {
                 'loop_applied': bool(loop_condition_active),
@@ -1611,6 +1775,7 @@ class MotionDataset(data.Dataset):
                 'object_cond': cond,  # Exact per-sample skeleton for augmentation previews.
             }
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
+            'reference': reference,
             'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
             'joint_struct': joint_struct,
             'species_emb': cond.get('species_emb'),
@@ -1618,6 +1783,9 @@ class MotionDataset(data.Dataset):
             'rest_pos_ric_hml': cond['rest_pos_ric_hml'],
             'canonical_feature_mean': cond.get('canonical_feature_mean'),
             'canonical_feature_std': cond.get('canonical_feature_std'),
+            CANONICAL_DPOS_STD_KEY: cond.get(CANONICAL_DPOS_STD_KEY),
+            ROOT_VEL_LOSS_WEIGHT_KEY: cond.get(ROOT_VEL_LOSS_WEIGHT_KEY),
+            DPOS_LOSS_WEIGHT_KEY: cond.get(DPOS_LOSS_WEIGHT_KEY),
             'feature_space': cond.get('feature_space', CANONICAL_FEATURE_SPACE),
         }
     
@@ -1689,8 +1857,15 @@ class MotionDataset(data.Dataset):
         carries -- the loader's joint bucketing keys on it.
         """
         names = self.name_list if self.use_weighted_sampler else self.name_list[self.pointer:]
+        groups = getattr(self, 'reference_groups', {})
+
+        def joints(name):
+            return len(self.cond_dict[self.data_dict[name]['object_type']]['parents'])
+
+        # A grouped clip may carry any member's rig as its reference, and the
+        # collate pads to the wider of reference and target.
         return np.asarray(
-            [len(self.cond_dict[self.data_dict[name]['object_type']]['parents']) for name in names],
+            [max(joints(member) for member in groups.get(name, (name,))) for name in names],
             dtype=np.int64,
         )
 
@@ -1716,6 +1891,9 @@ class TruebonesSampler(WeightedRandomSampler):
       list to keep in step with the corpus.
     * ``motion_dataset.head_word_weights``: an explicit per-word multiplier
       applied on top, for a word that needs a hand-set weight.
+
+    A third multiplier is the clip's dataset ``sample_weight`` (the
+    manifest's per-dataset field, baked into the merged cond).
 
     A clip of final weight w is drawn w times as often as a weight-1 clip.
     Nothing else moves: species are not balanced, and the words neither rule
@@ -1766,8 +1944,13 @@ class TruebonesSampler(WeightedRandomSampler):
         for head, count in counts.items():
             boost = 1.0 if head == UNLABELED_ACTION_GROUP else rare_head_word_boost(count, floor, max_boost)
             multiplier[head] = boost * head_word_weights.get(head, 1.0)
+        dataset_weight_of: dict[str, float] = {}
         for index, head in head_of_index.items():
-            weights[index] = multiplier[head]
+            entry = data_dict[name_list[index]]
+            dataset_weight = float(entry.get('sample_weight', 1.0))
+            weights[index] = multiplier[head] * dataset_weight
+            if dataset_weight != 1.0:
+                dataset_weight_of[entry['source_namespace']] = dataset_weight
         total = float(weights.sum())
         weights /= total
 
@@ -1794,6 +1977,14 @@ class TruebonesSampler(WeightedRandomSampler):
                 f"floor {floor} (max boost {max_boost:g})" if floor > RARE_HEAD_WORD_FLOOR_OFF else "no floor"
             ) + (f", {len(head_word_weights)} explicit" if head_word_weights else "")
             print(f"[sampler] head-word weights over {pool} clips, {rule}: {shown}")
+        if dataset_weight_of and os.environ.get("LOCAL_RANK", "0") == "0":
+            share = defaultdict(float)
+            for index in head_of_index:
+                share[data_dict[name_list[index]].get('source_namespace')] += weights[index]
+            shown = ", ".join(
+                f"{ns} x{weight:g} {share[ns]:.2%}" for ns, weight in sorted(dataset_weight_of.items())
+            )
+            print(f"[sampler] dataset weights (draw share): {shown}")
 
         super().__init__(num_samples=num_samples, weights=weights)
 
@@ -1840,6 +2031,15 @@ class Truebones(data.Dataset):
             )
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
         self.opt.leaf_drop_prob = float(kwargs.get('leaf_drop_prob', 0.0))
+        self.opt.ref_encoder = bool(kwargs.get('ref_encoder', False))
+        for key, default in (('ref_leaf_drop_prob', 0.2), ('ref_bone_length_aug_prob', 0.2),
+                             ('ref_joint_name_drop_prob', 0.15)):
+            value = float(kwargs.get(key, default))
+            if not 0 <= value <= 1:
+                raise ValueError(f'{key} must be in [0, 1]')
+            setattr(self.opt, key, value if split in ('train', ALL_SPLIT_NAME) else 0.0)
+        self.opt.ref_bone_length_aug = float(kwargs.get('ref_bone_length_aug', 0.1))
+        validate_bone_length_aug(self.opt.ref_bone_length_aug_prob, self.opt.ref_bone_length_aug)
         self.opt.bone_length_aug_prob = float(kwargs.get('bone_length_aug_prob', 0.0))
         self.opt.bone_length_aug = float(kwargs.get('bone_length_aug', DEFAULT_BONE_LENGTH_AUG))
         validate_bone_length_aug(self.opt.bone_length_aug_prob, self.opt.bone_length_aug)
@@ -1884,13 +2084,14 @@ class Truebones(data.Dataset):
         cond_dict = ensure_joint_name_embeddings(cond_dict, cond_source=opt.cond_file)
         for object_type, cond in cond_dict.items():
             mark_canonical_cond_entry(cond)
-            if cond.get('canonical_feature_mean') is None or cond.get('canonical_feature_std') is None:
+            if any(cond.get(key) is None for key in _REQUIRED_CANONICAL_KEYS):
                 raise RuntimeError(
-                    f"cond entry '{object_type}' is missing canonical_feature_mean/std. "
-                    "Regenerate cond.npy (python tools/regenerate_dataset_artifacts.py) to "
-                    "compute the per-object_subset canonical standardization statistics."
+                    f"cond entry '{object_type}' is missing one of {_REQUIRED_CANONICAL_KEYS}. "
+                    "Regenerate cond.npy (tools/merge_dataset_cond.py for a merged cond, "
+                    "tools/regenerate_dataset_artifacts.py for a dataset)."
                 )
             cond['joint_mask_candidate_roots'] = _build_joint_mask_candidate_roots(cond)
+        assert_single_canonical_frame(cond_dict, source=opt.cond_file)
 
         motion_metadata_lookup = {
             source.namespace: load_motion_metadata(source.root)

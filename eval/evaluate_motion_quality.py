@@ -9,7 +9,7 @@ data-prior conformity -- limb symmetry, coordination and tempo against real
 clips whose action_label shares a head word with the label the clips were
 generated with. A clip's quality is the geometric mean of the two; the clips of
 one species are reported together (median over clips). The reference is pooled
-over every dataset in ``dataset/datasets.jsonl`` unless ``--dataset_root`` says
+over every dataset in ``dataset/datasets_all.jsonl`` unless ``--dataset_root`` says
 otherwise.
 
 Usage
@@ -50,7 +50,7 @@ from utils.misc import infer_object_type_from_filename
 
 # The datasets the reference is pooled over by default: every processed
 # dataset the training cond was merged from.
-_DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets.jsonl"
+_DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets_all.jsonl"
 
 
 def _expand_patterns(patterns: List[str]) -> List[str]:
@@ -193,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DIR_OR_MANIFEST",
         help="Dataset root containing cond.npy, motion_metadata.json, and motions/. "
              "A path ending in .jsonl is read as a dataset manifest instead, pooling the "
-             "reference distribution over every dataset it lists. Default: dataset/datasets.jsonl.",
+             "reference distribution over every dataset it lists. Default: dataset/datasets_all.jsonl.",
     )
     parser.add_argument(
         "--output_json",

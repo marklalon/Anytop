@@ -1,20 +1,23 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_all_v48
+set RUN_NAME=zoo_locomotion_tiny_v18
 REM ----------------------------------------------------------------------
 REM Combination rules for target skeleton + reference motion (passed via %* to sample/generate.py):
 REM   1) --object_type Horse only                          : random generation for Horse
-REM   2) --reference_motion path\Horse_Run.npy only      : infer "Horse" from filename, reference-guided generation
+REM   2) --reference_motion path\Horse_Run.npy only      : infer "Horse" from filename; the reference is
+REM      encoded by the motion encoder (needs a --ref_encoder checkpoint), sampling starts from noise
 REM   3) --reference_motion path\Flamingo_Walk.npy --object_type Horse
-REM      : inferred "Flamingo" differs from target "Horse" -> auto retarget Flamingo motion to Horse skeleton,
-REM        then use as reference in diffusion process (intermediate _retargeted_*.npy / .bvh written to OUTPUT_DIR)
-REM   4) neither provided -> error and exit
+REM      : the Flamingo reference drives the Horse skeleton through the encoder, no retargeting
+REM   4) + --skip_timesteps / --inpaint_* / --outpaint : edit the reference on the target skeleton;
+REM      the reference must be the SAME rig as --object_type: a preprocessed .npy, or a .glb/.fbx whose own
+REM      bind pose is used as the rest pose
+REM   5) neither provided -> error and exit
 REM Supports zero-shot inference on object types not seen during training.
 REM ----------------------------------------------------------------------
 set BATCH_SIZE=8
 
-rem set MODEL_FILE=model000010000.pt
+rem set MODEL_FILE=model000020000.pt
 
 pushd "%SCRIPT_DIR%"
 

@@ -34,12 +34,14 @@ from data_loaders.truebones.data.dataset import (
     _tile_loop_motion,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.truebones_utils.motion_labels import loop_is_phase_free
+from data_loaders.truebones.truebones_utils.motion_labels import loop_is_phase_free, phase_anchoring_words
 from data_loaders.truebones.truebones_utils.param_utils import MAX_FIT_SPEEDUP, MAX_SOURCE_FRAMES_MULT
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
 from data_loaders.truebones.truebones_utils.canonical_features import (
+    ROOT_VEL_CHANNELS,
     canonical_to_physical_hml,
     physical_hml_to_canonical,
+    rebuild_derived_velocity,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
@@ -63,7 +65,9 @@ def _find_motion(pattern: str) -> str:
 
 
 LOOP_MOTION = _find_motion("Ostrich_Run.npy")
-LOOP_SUBSET = "biped"
+# Select the fixture species directly: its current Winged/Flapping tags do
+# not put it in the biped subset, and loop behavior must not depend on tags.
+LOOP_SUBSET = "Ostrich"
 # A PHASE-FREE loop authored WITH its closing key: its last frame repeats frame
 # 0, so the loader drops it and the cycle it augments is one frame shorter.
 # Ostrich_Run above ends 0.6 of a step short of frame 0 and keeps all its
@@ -315,8 +319,12 @@ def test_loop_with_closing_key_is_augmented_as_its_clean_period() -> None:
     assert m_length == NUM_FRAMES
     assert np.isclose(float(aug_info["resample_speed_cond"]), float(period.shape[0]) / float(NUM_FRAMES))
     assert_close("closing-key loop, single cycle", motion, expected, atol=3e-5)
-    # The seam is one ordinary frame step, not the ~zero wrap the stored clip carries.
-    physical = canonical_to_physical_hml(motion, cond)
+    # The seam is one ordinary frame step, not the ~zero wrap the stored clip
+    # carries. The window holds no derived velocity; rebuild it from positions.
+    physical = rebuild_derived_velocity(
+        canonical_to_physical_hml(motion, cond), is_loop=True,
+        step_scale=float(aug_info["resample_speed_cond"]),
+    )
     seam = float(np.linalg.norm(physical[-1, :, 9:12], axis=-1).max())
     typical = float(np.median(np.linalg.norm(physical[:-1, :, 9:12], axis=-1).max(axis=1)))
     assert seam > 0.3 * typical, f"wrap velocity {seam} still reads as a stall against a typical step {typical}"
@@ -341,13 +349,29 @@ def test_loop_is_phase_free_needs_every_head_phase_free() -> None:
     assert loop_is_phase_free("walk, forward")
     assert loop_is_phase_free("idle, sleep")
     assert loop_is_phase_free("fly, hover")
-    assert not loop_is_phase_free("attack, spit")
+    assert loop_is_phase_free("idle, hover")
+    assert not loop_is_phase_free("attack, projectile")
     assert not loop_is_phase_free("roar")
     # One anchored head anchors the clip, in either position.
     assert not loop_is_phase_free("idle, rear")
     assert not loop_is_phase_free("attack, hover")
     assert not loop_is_phase_free("")
     assert not loop_is_phase_free(None)
+
+
+def test_event_modifier_anchors_a_phase_free_head() -> None:
+    # Gait, held posture and held object keep the state phase-free.
+    assert loop_is_phase_free("walk, forward, trot")
+    assert loop_is_phase_free("idle, crouch, sleep")
+    assert loop_is_phase_free("idle, sit")
+    assert loop_is_phase_free("run, forward, weapon")
+    # An event layered on the state anchors it.
+    assert not loop_is_phase_free("idle, look")
+    assert not loop_is_phase_free("idle, hover, eat")
+    assert not loop_is_phase_free("idle, scratch, sit")
+    assert phase_anchoring_words("idle, look, crouch") == ["look"]
+    assert phase_anchoring_words("attack, hover, bite") == ["attack", "bite"]
+    assert phase_anchoring_words("walk, left, slow") == []
 
 
 @pytest.mark.parametrize("loop_cond_prob", [1.0, 0.0])
@@ -545,10 +569,14 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     assert motion.shape[0] == NUM_FRAMES, f"expected random-offset loop fill to keep {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"effective length should remain {NUM_FRAMES}, got {m_length}"
     assert_close("loop-filled motion with wraparound offset", motion, expected, atol=3e-5)
-    # Pure circular roll preserves the velocity ring; the terminal velocity
-    # (channels 9-12, i.e. the wrap-around delta) must equal the expected
-    # terminal velocity after resample — it is NOT forced to zero/copy.
-    assert_close("rolled loop terminal velocity", raw_motion[-1, :, 9:12], expected_raw[-1, :, 9:12], atol=3e-5)
+    # Pure circular roll preserves the velocity ring; the root's terminal X/Z
+    # velocity (the wrap-around delta, the only velocity the window keeps) must
+    # equal the expected terminal velocity after resample -- it is NOT forced
+    # to zero/copy.
+    assert_close(
+        "rolled loop terminal velocity",
+        raw_motion[-1, 0, list(ROOT_VEL_CHANNELS)], expected_raw[-1, 0, list(ROOT_VEL_CHANNELS)], atol=3e-5,
+    )
 
 
 def test_long_motion_crops_fixed_length_random_window() -> None:
@@ -911,8 +939,11 @@ def test_motion_speed_aug_is_transparent_to_roll_tile_crop_and_resample() -> Non
     base, _base_metadata, base_info = prepare(raw_len)
     assert np.isclose(float(base_info["motion_speed_applied"]), 1.0)
     assert_close("time-scaled loop pose content", motion[..., :9], base[..., :9], atol=3e-5)
-    live = np.abs(base[..., 9:12]) > 1e-2
-    vel_ratio = np.median(np.abs(motion[..., 9:12][live]) / np.abs(base[..., 9:12][live]))
+    # Physical root X/Z velocity: the standardized one carries the mean offset.
+    root_vel = lambda window: canonical_to_physical_hml(window, cond)[:, 0, list(ROOT_VEL_CHANNELS)]
+    base_vel, scaled_vel = root_vel(base), root_vel(motion)
+    live = np.abs(base_vel) > 0.1 * np.abs(base_vel).max()
+    vel_ratio = np.median(np.abs(scaled_vel[live]) / np.abs(base_vel[live]))
     assert abs(vel_ratio - speed) < 0.05 * speed, (vel_ratio, speed)
     assert float(aug_info["resample_speed_cond"]) < float(base_info["resample_speed_cond"])
 

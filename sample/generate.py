@@ -19,13 +19,15 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from data_loaders.truebones.data.dataset import ensure_joint_name_embeddings
+from data_loaders.truebones.data.dataset import ensure_joint_name_embeddings, resample_step_scale
 from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
+    rebuild_derived_velocity,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import (
+    bare_species_name,
     build_species_file_tokens,
     species_lookup_map,
 )
@@ -36,6 +38,7 @@ from sample.conditioning import (
     _resolve_species_emb_override,
     _wrap_action_label_cfg,
     _wrap_species_cfg,
+    _wrap_reference_cfg,
     create_condition,
 )
 from sample.export import (
@@ -49,6 +52,7 @@ from sample.generation_runtime import (
     _checkpoint_cond_path,
     _checkpoint_native_num_frames,
     _lookup_object_type_case_insensitive,
+    _load_default_cond_cache,
     _normalize_optional_path,
     _raise_opt_max_joints_for_cond,
     _resolve_generation_cond_path,
@@ -56,12 +60,10 @@ from sample.generation_runtime import (
     prepare_generation_runtime,
 )
 from sample.inpaint import (
-    _reanchor_inpaint_root_y_via_velocity,
     _reground_inpaint_joint_y,
     _resolve_inpaint_joint_indices,
     build_inpaint_mask,
     check_full_coverage_inpaint_early,
-    inpaint_y_anchor_spans,
     resolve_inpaint_policy,
 )
 from sample.output_lengths import (
@@ -75,12 +77,12 @@ from sample.output_lengths import (
 )
 from sample.reference_motion import (
     _REFERENCE_MOTION_PREPROCESS_SUFFIXES,
-    _build_retarget_cond_dict,
+    _build_source_cond_dict,
+    _extract_edit_reference,
     _prepare_img2img_reference_bundle,
+    _prepare_encoder_reference_bundle,
+    _load_raw_encoder_reference,
     _resolve_reference_source_type,
-    _retarget_reference_motion,
-    _retarget_reference_motion_from_file,
-    _should_retarget_reference,
     _validate_reference_motion_path,
 )
 from sample.sampling import _sample_batch
@@ -88,6 +90,16 @@ from utils import dist_util
 from utils.fixseed import fixseed
 from utils.misc import infer_object_type_from_filename
 from utils.parser_util import generate_args
+
+
+def _with_derived_velocity(motion_np, resample_speed, loop):
+    """Fill the derived velocity rows of a decoded ``[T, J, F]`` window, at the
+    window's own step (``vel * step`` is a window-frame step), so the export
+    resample and every reader of the saved rows see full physical velocity."""
+    n_frames = motion_np.shape[0]
+    speed = 1.0 if resample_speed is None else float(resample_speed)
+    step = resample_step_scale(speed * n_frames, n_frames, periodic=bool(loop))
+    return rebuild_derived_velocity(motion_np, is_loop=bool(loop), step_scale=step)
 
 
 def _generate_all_species(
@@ -175,6 +187,8 @@ def _generate_all_species(
                 [species_output_lengths[sp][1] for sp in batch_species],
                 dtype=torch.float32, device=dist_util.dev(),
             )
+            model_kwargs['y']['species_active'] = torch.full(
+                (actual_bs,), bool(getattr(args, 'species_active', True)), dtype=torch.bool)
 
             print(f'  Sampling {actual_bs} species × 1 motion each ...')
             sample = _sample_batch(
@@ -199,7 +213,10 @@ def _generate_all_species(
                 motion = motion[:n_joints]
                 # Decode with full cond entry (carries rest geometry + global standardization stats).
                 motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), sp_entry)[0]
-                motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
+                motion_np = _with_derived_velocity(
+                    motion_physical.cpu().permute(2, 0, 1).numpy(),
+                    species_output_lengths[sp][1], species_output_lengths[sp][2],
+                )
 
                 motion_np = _resample_window_to_output(
                     motion_np, species_output_lengths[sp][0], output_frame_count,
@@ -231,11 +248,73 @@ def _generate_all_species(
                 print(f'    Created: {npy_name}')
 
 
+def _reference_is_edit(args):
+    """A --reference_motion with skip_timesteps / inpaint / outpaint edits the
+    reference on the target skeleton; without them it is only encoded."""
+    return bool(getattr(args, 'reference_motion', None)) and (
+        getattr(args, 'skip_timesteps', None) is not None
+        or bool(getattr(args, 'outpaint', False))
+        or bool(str(getattr(args, 'inpaint_joints', '') or '').strip())
+        or bool(str(getattr(args, 'inpaint_frames', '') or '').strip())
+    )
+
+
+def _adopt_reference_file_cond(args):
+    """Edit a raw .glb/.fbx on the skeleton the file itself carries.
+
+    With neither --cond_path nor --object_type, the animation file is
+    self-contained: ``process_new_skeleton`` builds its cond (bind pose as rest
+    pose) and its feature clip in one go, and generation targets that. The
+    checkpoint's cond is only the fallback: it lends the canonical statistics,
+    the joint-name vectors and, when --species_tags is not given, the species
+    tags of the species the filename names. A file whose species the checkpoint
+    does not know needs --species_tags; there is no silent fallback to a
+    checkpoint skeleton it would not match.
+    """
+    reference = getattr(args, 'reference_motion', None)
+    if (not _reference_is_edit(args)
+            or os.path.splitext(reference)[1].lower() not in _REFERENCE_MOTION_PREPROCESS_SUFFIXES
+            or str(getattr(args, 'cond_path', '') or '').strip()
+            or args.object_type):
+        return
+    checkpoint_cond_path = _checkpoint_cond_path(args.model_path)
+    checkpoint_cond = load_cond(checkpoint_cond_path)
+    species = infer_object_type_from_filename(reference, valid_types=species_lookup_map(checkpoint_cond))
+    tags = str(getattr(args, 'species_tags', '') or '').strip()
+    if not tags and species is not None:
+        tags = ','.join(checkpoint_cond[species]['species_tags'])
+    if not tags:
+        sys.exit(
+            f"ERROR: cannot tell which species {reference} is: its name matches no species of the "
+            "checkpoint, so the skeleton the file carries has no motion descriptor. Pass "
+            "--species_tags (e.g. --species_tags Quadruped,Lumbering) so it can be edited on its own "
+            "skeleton, or --object_type / --cond_path to edit a skeleton that already exists."
+        )
+    from tools.process_new_skeleton import species_from_tpose_stem
+    object_name = bare_species_name(species) if species is not None else species_from_tpose_stem(reference)
+    import tempfile
+    from tools.process_new_skeleton import process_new_skeleton
+    save_dir = (os.path.join(args.output_dir, '_reference_cond') if args.output_dir
+                else tempfile.mkdtemp(prefix='reference_cond_'))
+    result = process_new_skeleton(
+        save_dir=save_dir, motion_paths=[reference],
+        reference_cond_path=checkpoint_cond_path,
+        object_type=object_name, species_tags=tags, yes=True,
+    )
+    clips = sorted(f for f in os.listdir(os.path.join(save_dir, 'motions')) if f.endswith('.npy'))
+    if not clips:
+        raise RuntimeError(f'process_new_skeleton wrote no motion clip for {reference}')
+    args.cond_path = result['cond_npy']
+    args.reference_motion = os.path.join(save_dir, 'motions', clips[0])
+    print(f"[generate] editing {reference} on its own skeleton: cond {args.cond_path}")
+
+
 def main(args=None, cond_dict=None, runtime=None):
     if args is None:
         args = generate_args()
 
     fixseed(args.seed)
+    _adopt_reference_file_cond(args)
 
     skip_timesteps_raw = getattr(args, 'skip_timesteps', None)
 
@@ -268,6 +347,14 @@ def main(args=None, cond_dict=None, runtime=None):
         skip_timesteps_raw = 0  # inpaint without skip: denoise full schedule
 
     skip_timesteps = int(skip_timesteps_raw) if skip_timesteps_raw is not None else 0
+
+    # A --reference_motion is either EDITED (skip_timesteps / inpaint / outpaint:
+    # the reference is the start or clamp source on the target skeleton, so it
+    # must be the same species) or ENCODED (none of those flags: the motion
+    # encoder reads it on its own rig and the sample starts from noise, so the
+    # target may be any species).
+    reference_edit = _reference_is_edit(args)
+    reference_encode = bool(getattr(args, 'reference_motion', None)) and not reference_edit
 
     if runtime is None:
         runtime = prepare_generation_runtime(args, cond_dict=cond_dict)
@@ -304,6 +391,8 @@ def main(args=None, cond_dict=None, runtime=None):
     cond_dict = runtime.cond_dict
     actual_cond_file = runtime.actual_cond_file
     model = runtime.model
+    if reference_encode and not getattr(model, 'ref_encoder', False):
+        raise ValueError('an encoded --reference_motion requires a checkpoint trained with --ref_encoder')
     diffusion = runtime.diffusion
     sampling_method = runtime.sampling_method
     sampling_steps = runtime.sampling_steps
@@ -375,7 +464,7 @@ def main(args=None, cond_dict=None, runtime=None):
     # ── Resolve --object_type ───────────────────────────────────────────────
     # --object_type: look up directly in cond (user-provided first, then default).
     # --reference_motion: infer source type from filename, look up in cond the same way.
-    # If source != target → retarget.
+    # An edit (skip_timesteps / inpaint / outpaint) needs source == target.
     explicit_object_type = args.object_type
 
     # A --cond_path whose file holds exactly one species makes --object_type
@@ -399,7 +488,7 @@ def main(args=None, cond_dict=None, runtime=None):
             "ERROR: must supply at least one of --reference_motion or --object_type. "
             "Pass --object_type for pure-random generation, --reference_motion for "
             "reference-guided generation (object_type auto-inferred from filename), "
-            "or both to retarget the reference into a different target skeleton. "
+            "or both to drive a different target skeleton with an encoded reference. "
             "(A single-species --cond_path also auto-selects its species.)"
         )
 
@@ -483,7 +572,7 @@ def main(args=None, cond_dict=None, runtime=None):
     else:
         target_type = None  # unreachable
 
-    # 2) Resolve reference source type (for retarget decision)
+    # 2) Resolve reference source type (edit needs it equal to the target)
     # Raw animation references (.fbx/.glb/.gltf) are cond-free (source from file);
     # .npy references need a source cond entry for their T-pose/skeleton.
     reference_is_raw_anim = bool(reference_motion_path) and (
@@ -495,14 +584,25 @@ def main(args=None, cond_dict=None, runtime=None):
     blind_type = None
 
     if reference_motion_path and not reference_is_raw_anim:
-        source_type, _default_cond_cache, blind_type, source_type_used_target_fallback = _resolve_reference_source_type(
-            reference_motion_path,
-            cond_dict,
-            target_type=target_type,
-            # The checkpoint's own snapshot, not a hard-coded dataset directory.
-            default_cond_file=_checkpoint_cond_path(getattr(args, 'model_path', '')),
-            actual_cond_file=actual_cond_file,
-        )
+        explicit_source = str(getattr(args, 'reference_source_type', '') or '').strip()
+        if reference_encode and explicit_source:
+            from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
+            source_type = resolve_species_key(cond_dict, explicit_source)
+            if source_type is None:
+                _default_cond_cache = _load_default_cond_cache(
+                    _checkpoint_cond_path(getattr(args, 'model_path', '')), actual_cond_file)
+                source_type = resolve_species_key(_default_cond_cache or {}, explicit_source)
+            if source_type is None:
+                raise ValueError(f'Unknown reference_source_type: {explicit_source}')
+        else:
+            source_type, _default_cond_cache, blind_type, source_type_used_target_fallback = _resolve_reference_source_type(
+                reference_motion_path,
+                cond_dict,
+                target_type=target_type,
+                # The checkpoint's own snapshot, not a hard-coded dataset directory.
+                default_cond_file=_checkpoint_cond_path(getattr(args, 'model_path', '')),
+                actual_cond_file=actual_cond_file,
+            )
         if source_type is None and blind_type:
             available = ', '.join(sorted(cond_dict.keys()))
             if _default_cond_cache:
@@ -518,11 +618,14 @@ def main(args=None, cond_dict=None, runtime=None):
                 f"{reference_motion_path}) not found in cond file. "
                 f"Available: {available}"
             )
-    # Raw-anim references always retarget (cond-free); .npy only when source != target.
-    should_retarget_reference = reference_is_raw_anim or _should_retarget_reference(
-        source_type,
-        target_type,
-    )
+    if reference_edit and not reference_is_raw_anim:
+        if source_type.upper() != target_type.upper():
+            sys.exit(
+                f"ERROR: --skip_timesteps / --inpaint_* / --outpaint edit the reference on the "
+                f"target skeleton, so it must be the same species: reference is '{source_type}', "
+                f"target is '{target_type}'. Drop those flags to drive '{target_type}' with an "
+                "encoded reference instead."
+            )
 
     object_type = target_type  # downstream code keeps reading `object_type`
     max_joints = len(np.asarray(cond_dict[object_type]['parents']))
@@ -540,7 +643,7 @@ def main(args=None, cond_dict=None, runtime=None):
         if reference_is_raw_anim:
             print(
                 f"Reference motion: raw animation file (source skeleton extracted "
-                f"from file, cond-free; will retarget to {target_type})"
+                f"from file, cond-free; mode={'encode' if reference_encode else 'edit'})"
             )
         else:
             if source_type_used_target_fallback:
@@ -548,17 +651,13 @@ def main(args=None, cond_dict=None, runtime=None):
                     f"Reference motion object_type inference was invalid"
                     f" ({blind_type or 'no match'}); falling back to target object_type: {target_type}"
                 )
-            if should_retarget_reference:
-                print(f"Reference motion object_type: {source_type} (will retarget to {target_type})")
-            else:
-                inferred_display = source_type if source_type else target_type
-                print(f"Reference motion object_type: {inferred_display}")
+            print(f"Reference motion object_type: {source_type or target_type}")
 
     print(f'\nSampling object_type: {object_type}  method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
 
-    # Resolved here, ahead of every reference/retarget step, because
+    # Resolved here, ahead of every reference step, because
     # an unset ``--num_frames`` needs the label -- and because a bad label should
-    # fail before minutes of retargeting, not after. The loop condition comes
+    # fail before minutes of preprocessing, not after. The loop condition comes
     # first: the auto length only pools loop clips when the window is a loop.
     # With a reference both wait for the clip itself (further down): its length
     # is the window, and --loop auto reads whether it closes off the tensor.
@@ -595,37 +694,43 @@ def main(args=None, cond_dict=None, runtime=None):
 
     prepared_reference_path = reference_motion_path
     effective_reference_path = reference_motion_path
-    if reference_is_raw_anim:
-        # Cond-free source path: read the source skeleton + motion straight
-        # from the .fbx/.glb/.gltf and retarget onto the target. No source
-        # cond entry, no source object_type inference, no source-side
-        # feature-space preprocessing.
-        effective_reference_path = _retarget_reference_motion_from_file(
-            reference_motion_path,
-            target_type=target_type,
-            cond_dict=cond_dict,
-            opt=opt,
-            output_dir=out_path,
-            fps=fps,
+    encoder_reference = None
+    if reference_encode:
+        if reference_is_raw_anim:
+            ref_features, source_cond = _load_raw_encoder_reference(
+                reference_motion_path, actual_cond_file, cond_dict,
+                action_group=getattr(args, 'reference_action_group', None))
+        else:
+            source_conds = _build_source_cond_dict(cond_dict, source_type, _default_cond_cache)
+            if source_type_used_target_fallback:
+                raise ValueError('Encode mode needs the source skeleton; provide reference_source_type or a species-named NPY')
+            if source_type not in source_conds:
+                raise ValueError('Source reference skeleton is not present in the cond snapshot')
+            source_cond = source_conds[source_type]
+            ref_features = np.load(reference_motion_path).astype(np.float32)
+        loop_condition = resolve_loop_condition(
+            loop_mode, _action_condition, reference_features=ref_features,
+            translation_root_index=int(source_cond.get('translation_root_index', 0)))
+        if requested_output_frames is None:
+            auto_frames = int(np.clip(len(ref_features), min_length, MAX_SOURCE_FRAMES_MULT * internal_num_frames))
+            requested_output_frames, target_output_frames, resample_speed_cond_value = (
+                _finalize_output_lengths(auto_frames, min_length, internal_num_frames))
+        ref_features, _, _ = resample_reference_to_output(ref_features, int(requested_output_frames))
+        encoder_reference = _prepare_encoder_reference_bundle(
+            ref_features, source_cond, batch_size=args.batch_size, n_frames=n_frames,
+            visible_frames=target_output_frames, min_length=min_length)
+        # The diffusion sampler receives noise; reference tensors go only to E.
+        effective_reference_path = None
+    elif reference_is_raw_anim:
+        # Edit of a raw animation: its own bind pose is the rest pose, and the
+        # rig it carries must be the target's.
+        effective_reference_path = _extract_edit_reference(
+            reference_motion_path, cond_dict[object_type], object_type,
+            actual_cond_file, cond_dict, out_path,
+            action_group=getattr(args, 'reference_action_group', None),
         )
     elif reference_motion_path:
         effective_reference_path = prepared_reference_path
-        if should_retarget_reference:
-            retarget_cond_dict = _build_retarget_cond_dict(
-                cond_dict,
-                source_type,
-                _default_cond_cache,
-            )
-
-            effective_reference_path = _retarget_reference_motion(
-                prepared_reference_path,
-                source_type=source_type,
-                target_type=target_type,
-                cond_dict=retarget_cond_dict,
-                opt=opt,
-                output_dir=out_path,
-                fps=fps,
-            )
 
     if effective_reference_path:
         ref_features_full = np.load(effective_reference_path).astype(np.float32)
@@ -635,8 +740,8 @@ def main(args=None, cond_dict=None, runtime=None):
             )
         R = int(ref_features_full.shape[0])
 
-        # The loop condition, off the reference as it will fill the window:
-        # retargeted onto the target skeleton, so the target's root indexes it.
+        # The loop condition, off the reference as it will fill the window,
+        # on the target skeleton (same species), so the target's root indexes it.
         # This verdict is the ONLY thing the reference's loopiness decides: it
         # becomes the model's is_loop condition, and with it the export mapping.
         # Nothing below reads the clip as a cycle -- it is fitted, filled and
@@ -735,14 +840,6 @@ def main(args=None, cond_dict=None, runtime=None):
         loaded_reference_joint_count = reference_bundle['loaded_reference_joint_count']
 
         print(f'  Reference motion loaded: {effective_reference_path}')
-        if reference_is_raw_anim:
-            if effective_reference_path != reference_motion_path:
-                print(f'    Retargeted from raw animation file: {reference_motion_path}')
-        else:
-            if prepared_reference_path != reference_motion_path:
-                print(f'    Preprocessed from original: {reference_motion_path}')
-            if effective_reference_path != prepared_reference_path:
-                print(f'    Retargeted from preprocessed: {prepared_reference_path}')
         print(
             f'    Original: [{loaded_reference_frame_count} frames, {loaded_reference_joint_count} joints] '
             f'-> Internal target: [{output_frame_count} frames, {max_joints} joints]'
@@ -778,7 +875,10 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # Create condition with effective frame count (shared across passes).
     obj_batch = [object_type] * args.batch_size
-    _sampling_model = _wrap_species_cfg(_wrap_action_label_cfg(model, args, _action_condition), args)
+    _sampling_model = (
+        _wrap_reference_cfg(model, args, _action_condition) if reference_encode else
+        _wrap_species_cfg(_wrap_action_label_cfg(model, args, _action_condition), args)
+    )
 
     # ── --species_tags: restyle the target species' motion descriptor ────────
     _species_emb_override = _resolve_species_emb_override(
@@ -805,6 +905,10 @@ def main(args=None, cond_dict=None, runtime=None):
         dtype=torch.float32,
         device=dist_util.dev(),
     )
+    model_kwargs['y']['species_active'] = torch.full(
+        (args.batch_size,), bool(getattr(args, 'species_active', True)), dtype=torch.bool)
+    if encoder_reference is not None:
+        model_kwargs['y'].update(encoder_reference)
 
     def _build_inpaint_mask_for(frames_arg, joints_arg):
         return build_inpaint_mask(
@@ -887,12 +991,6 @@ def main(args=None, cond_dict=None, runtime=None):
         cond_dict[object_type]['joints_names'],
     ))
     preview_options = _bvh_preview_options(args)
-    # Inpaint Y-anchor spans, applied per joint via vel_y integration with
-    # dual-end ramp anchoring once the motion is back in output frames.
-    inpaint_y_spans = (
-        inpaint_y_anchor_spans(inpaint_frames_arg, target_output_frames)
-        if user_inpaint_active else None
-    )
     # A frame-range clamp (inpaint frames, outpaint) is built on the export's
     # interpolation preimage, so it keeps the interpolating export.
     export_inverts_window = not (inpaint_frames_arg or outpaint_active)
@@ -905,7 +1003,9 @@ def main(args=None, cond_dict=None, runtime=None):
         # Decode with the full per-species cond entry (rest geometry + global
         # standardization stats), not a minimal dict that would drop the stats.
         motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), cond_dict[object_type])[0]
-        motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
+        motion_np = _with_derived_velocity(
+            motion_physical.cpu().permute(2, 0, 1).numpy(), resample_speed_cond_value, loop_condition,
+        )
 
         motion_np = _resample_window_to_output(
             motion_np, target_output_frames, output_frame_count, loop_condition,
@@ -920,9 +1020,9 @@ def main(args=None, cond_dict=None, runtime=None):
             fallback=cond_dict[object_type].get('translation_root_index', 0),
         )
 
-        if inpaint_y_spans:
-            _reanchor_inpaint_root_y_via_velocity(motion_np, inpaint_y_spans)
-        elif reseat_reference is not None:
+        # A frame-range inpaint keeps the clamped frames' own ground; only a
+        # joint subset needs re-seating onto the reference.
+        if reseat_reference is not None and not (user_inpaint_active and inpaint_frames_arg):
             ref_phys = canonical_to_physical_hml(
                 reseat_reference[sample_idx][:n_joints].to(motion.device).unsqueeze(0),
                 cond_dict[object_type],

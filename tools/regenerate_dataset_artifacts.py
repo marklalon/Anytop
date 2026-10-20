@@ -54,9 +54,11 @@ from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E40
 from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
     mark_canonical_cond_entry,
     accumulate_lnorm_stats,
-    collapse_stat_blocks,
     finalize_lnorm_stats,
+    pool_global_stats,
+    set_aux_loss_weights,
     set_canonical_global_stats,
+    species_aux_loss_weights,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
     STALE_JOINT_ANNOTATION_KEYS,
@@ -192,32 +194,21 @@ def _reseat_rest_to_clip_geometry(
         print("[OK] rest geometry already agrees with the clips; nothing re-seated")
 
 
-def _compute_canonical_stats_per_object_subset(
+def _compute_canonical_stats(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
 ) -> None:
-    """Compute per-object_subset per-channel standardization statistics and store
-    each object_subset's FEATS_LEN-vectors on its member cond entries.
+    """Compute the global per-channel standardization statistics and store the
+    same FEATS_LEN-vectors on every cond entry.
 
     Each physical clip is encoded into the L-normalized space (rest-centered
-    position + per-skeleton size division) and accumulated into the bucket of the
-    species' object_subset (the first motion tag in species_tags.jsonl: quadruped
-    / biped / multiped / serpentine / aquatic / winged / drifting). The pooled std is
-    then passed through ``collapse_stat_blocks`` (per-block scalars plus a position
-    gain shared by every subset). Pooling within an
-    object_subset (across its species, joints, frames, and clips) keeps the
-    resulting mean/std a cross-species constant *per object_subset* (no per-species
-    motion prior), so they generalize to held-out species of the same
-    object_subset while giving each object_subset its own zero-mean / unit-variance
-    calibration -- closer to the behavior the diffusion noise schedule expects than
-    a single global constant that averages flapping wings against quadruped gaits.
-
-    There is NO global-pooled fallback: the model is trained exclusively on
-    per-object_subset normalized features, so standardizing any species with stats
-    pooled across all subsets would place its features in a space the model never
-    saw (out-of-distribution at inference). A species that cannot resolve to an
-    object_subset with usable clips is therefore a hard error -- the build
-    fast-fails listing the offending species. Requires rest geometry (set by
+    position + per-skeleton size division) and accumulated into the bucket of
+    its species' object_subset (the first motion tag in species_tags.jsonl).
+    The buckets exist only so that ``pool_global_stats`` can give every subset
+    equal weight; the result is one canonical frame shared by all species, so
+    the frame carries no body-plan information and needs no per-subset donor.
+    Clips of species without an object_subset tag are left out of the pooling
+    (they still receive the global stats). Requires rest geometry (set by
     mark_canonical_cond_entry) to already be present on each cond entry."""
 
     cond_lookup = species_lookup_map(rebuilt_cond)
@@ -233,19 +224,19 @@ def _compute_canonical_stats_per_object_subset(
             continue
         subset = subset_of.get(object_type)
         if not subset:
-            # Untagged species cannot be bucketed; it will be caught by the
-            # unresolved-species fast-fail below (no global fallback).
             continue
         motion = np.load(motion_path).astype(np.float32, copy=False)
         # Exact width, not "at least": this loop's output is written straight
         # into cond as canonical_feature_mean/std, and neither
-        # collapse_stat_blocks nor set_canonical_global_stats validates its
+        # pool_global_stats nor set_canonical_global_stats validates its
         # length -- a stale 13-channel (v3) clip would silently produce a
         # 13-wide table on a canonical_motion_v4 cond.
         if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN:
             continue
         try:
-            subset_accs[subset] = accumulate_lnorm_stats(motion, object_cond, acc=subset_accs.get(subset))
+            subset_accs[subset] = accumulate_lnorm_stats(
+                motion, object_cond, acc=subset_accs.get(subset), species=object_type
+            )
         except (KeyError, ValueError):
             # cond entry lacks rest geometry (e.g. minimal synthetic fixtures);
             # such clips cannot be encoded, so skip them.
@@ -258,39 +249,18 @@ def _compute_canonical_stats_per_object_subset(
         return
 
     subset_stats = {subset: finalize_lnorm_stats(acc) for subset, acc in usable_accs.items()}
-    # Collapse each block's std to one scalar and share the position gain across
-    # every subset, so a subset mismatch can only translate a skeleton rigidly,
-    # never deform it. Shape, keys
-    # and feature_space are unchanged.
-    subset_stats = collapse_stat_blocks(subset_stats)
-
-    # No global-pooled fallback (would be OOD at inference -- see docstring). Every
-    # species MUST resolve to an object_subset that has usable clips.
-    unresolved = sorted(
-        f"{ot} (object_subset={subset_of.get(ot)!r})"
-        for ot in rebuilt_cond
-        if subset_of.get(ot) is None or subset_of.get(ot) not in subset_stats
-    )
-    if unresolved:
-        raise ValueError(
-            "Cannot compute per-object_subset canonical stats: no usable clips for "
-            "the object_subset(s) of these species:\n  " + "\n  ".join(unresolved)
-            + "\nEvery species must belong to an object_subset that has at least one "
-            "usable motion clip (the model is trained per-object_subset; there is no "
-            "global fallback). Add clips for the subset, or register the species in "
-            "species_tags.jsonl."
-        )
-
+    mean, std, dpos_std = pool_global_stats(subset_stats)
+    aux_weights = species_aux_loss_weights(usable_accs.values(), mean, std, dpos_std)
     for object_type, object_cond in rebuilt_cond.items():
-        mean, std = subset_stats[subset_of[object_type]]
-        set_canonical_global_stats(object_cond, mean, std)
+        set_canonical_global_stats(object_cond, mean, std, dpos_std)
+        set_aux_loss_weights(object_cond, *aux_weights.get(object_type, (1.0, 1.0)))
 
     with np.printoptions(precision=3, suppress=True, linewidth=160):
-        print(f"[OK] canonical stats over {used} clip(s) bucketed by object_subset:")
-        for subset, (mean, std) in sorted(subset_stats.items()):
-            print(
-                f"     [{subset}] {usable_accs[subset]['count']} frames-joints"
-            )
+        print(f"[OK] global canonical stats over {used} clip(s), "
+              f"{len(usable_accs)} object_subset(s) weighted equally:")
+        print(f"     mean {mean}")
+        print(f"     std  {std}")
+        print(f"     dpos_std {float(dpos_std):.4f}")
 
 
 def _compute_clip_length_prior(
@@ -542,7 +512,7 @@ def _regenerate_dataset_artifacts(
         object_cond.pop("action_words", None)
         object_cond.pop("loop_period_by_action", None)
         object_cond.pop("loop_period_median", None)
-        # Contacts and body parts are not dataset data (motion_edit prefills them).
+        # Contacts and body parts are derived from the skeleton, not dataset data.
         for key in STALE_JOINT_ANNOTATION_KEYS:
             object_cond.pop(key, None)
     _mark_object_feature_spaces(rebuilt_cond)
@@ -586,8 +556,8 @@ def _regenerate_dataset_artifacts(
         print(f"[OK] rest-vs-clip geometry checked in {time.time() - t0:.1f}s")
 
     t0 = time.time()
-    _compute_canonical_stats_per_object_subset(rebuilt_cond, motion_files)
-    print(f"[OK] per-object_subset canonical stats computed in {time.time() - t0:.1f}s")
+    _compute_canonical_stats(rebuilt_cond, motion_files)
+    print(f"[OK] global canonical stats computed in {time.time() - t0:.1f}s")
 
     # Re-stamp on write: this is the dataset's own cond, so entries stay keyed
     # <namespace>/<species> with dataset_root=None ("wherever this file lives").

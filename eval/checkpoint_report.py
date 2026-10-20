@@ -63,7 +63,7 @@ def _stats(values):
 
 
 def write_report(report_path, model_path, run_name, model_name, records, all_scores,
-                 dimensions=("physics", "prior")):
+                 dimensions=("physics", "prior"), task_config=None):
     report_path = Path(report_path).resolve()
     root = report_path.parent
     root.mkdir(parents=True, exist_ok=True)
@@ -74,7 +74,8 @@ def write_report(report_path, model_path, run_name, model_name, records, all_sco
         shutil.copy2(source / "report" / name, assets / name)
     vendor = assets / "vendor"
     vendor.mkdir(exist_ok=True)
-    for name in ("three.module.min.js", "OrbitControls.js", "BVHLoader.js"):
+    for name in ("three.module.min.js", "OrbitControls.js", "BVHLoader.js",
+                 "GLTFLoader.js", "BufferGeometryUtils.js"):
         shutil.copy2(source.parent / "dataset" / "review" / "vendor" / name, vendor / name)
     shutil.copy2(Path(__file__), root / "serve_report.py")
 
@@ -108,30 +109,46 @@ def write_report(report_path, model_path, run_name, model_name, records, all_sco
                 digest.update(path.read_bytes())
         score = record.get("score") or {}
         reference = record.get("reference_bvh") or record.get("last_output_resolved") or record.get("reference_motion")
-        reference_link = None
+        reference_clip = None
         if reference and reference != "$LAST_OUTPUT":
             bvh = Path(reference).resolve()
             if bvh.suffix.lower() not in (".bvh", ".glb"):
                 bvh = bvh.with_suffix(".bvh")
             if bvh.is_file():
-                reference_link = "bvhview://open?--reuse&url=" + quote(bvh.as_uri(), safe="/:")
+                # Copy external references into the report so HTTP serving and
+                # moving the report to another machine both keep working.
+                reference_bytes = bvh.read_bytes()
+                reference_hash = hashlib.sha256(reference_bytes).hexdigest()
+                reference_dir = assets / "references"
+                reference_dir.mkdir(exist_ok=True)
+                target = reference_dir / (reference_hash + bvh.suffix.lower())
+                if not target.is_file():
+                    target.write_bytes(reference_bytes)
+                reference_clip = dict(name=bvh.name,
+                    url=quote(target.relative_to(root).as_posix(), safe="/"))
+                digest.update(reference_hash.encode("ascii"))
         tasks.append(dict(
             id=task_id, command=record["command"], category=record["category"],
             status=record["status"], revision=digest.hexdigest(), clips=clips,
             quality=_finite(record.get("quality")),
             dimensions={dim: _finite(score.get(dim)) for dim in dimensions},
-            score_label=record.get("score_label", ""), reference_link=reference_link,
+            score_label=record.get("score_label", ""), reference_clip=reference_clip,
         ))
     columns = {"quality": [_finite(v) for v in all_scores]}
     columns.update({dim: [task["dimensions"][dim] for task in tasks if task["quality"] is not None]
                     for dim in dimensions})
     data = dict(version=1, report=report_path.name, run_name=run_name, model_name=model_name,
+                task_config=str(task_config) if task_config is not None else None,
+                task_config_name=Path(task_config).name if task_config is not None else None,
                 model_path=str(model_path), generated=dt.datetime.now().astimezone().isoformat(timespec="seconds"),
                 summary={name: _stats(values) for name, values in columns.items()}, tasks=tasks)
     # JSON in script elements must not contain a literal closing script tag.
     embedded = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c")
     template = (source / "report" / "eval_review.html").read_text(encoding="utf-8")
-    doc = template.replace("__REPORT_TITLE__", html.escape(f"{run_name} / {model_name}"))
+    title = f"{run_name} / {model_name}"
+    if data["task_config_name"]:
+        title += f" / {data['task_config_name']}"
+    doc = template.replace("__REPORT_TITLE__", html.escape(title))
     doc = doc.replace("__REPORT_DATA__", embedded)
     atomic_json(root / "eval_report.json", data)
     report_path.write_text(doc, encoding="utf-8")

@@ -59,7 +59,7 @@ def load_cond_dict(dataset_dir: str | Path | None = None) -> dict[str, dict]:
     """Canonically-keyed cond entries for every source, unioned in source order.
 
     Reference scoring only reads skeleton metadata, so the sources' conds are
-    merged as-is; the per-object_subset normalization statistics are *not*
+    merged as-is; the global canonical normalization statistics are *not*
     recomputed here (that belongs to ``tools/merge_dataset_cond.py``, which is
     the only place that owns a merged training cond).
     """

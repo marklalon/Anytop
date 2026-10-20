@@ -25,6 +25,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     ROOT_Y_MIN_HEIGHT,
     ROOT_Y_SOFT_CLAMP_KNEE,
     VERTICAL_CLAMP_MAX_RATIO,
+    VERTICAL_CLAMP_STANCE_HEADROOM,
     VERTICAL_CLAMP_MIN_RATIO,
 )
 
@@ -255,7 +256,9 @@ def test_aquatic_vertical_ratios_apply_as_negative_swim_depth_limit():
     assert root_y.min() == pytest.approx(
         float(_expected_soft_floor(-(min_h + (0.4 - min_h) * scale)))
     )
-    assert -max_h < root_y.min() < -min_h
+    # The root-Y bound runs after the band and pulls the deepest frame shallower
+    # still, so it lands inside the band's edge rather than on it.
+    assert max(-max_h, ROOT_Y_MIN_HEIGHT) < root_y.min() < ROOT_Y_SOFT_CLAMP_KNEE
     np.testing.assert_allclose(root_y[:2], [0.0, -0.1], atol=1e-8)
 
 
@@ -440,13 +443,14 @@ def test_the_band_never_compresses_a_long_legged_stance():
 
 def test_the_band_lifted_to_the_stance_keeps_its_width():
     leg, span = 1.0, 1.5
-    knee, asymptote = leg, leg + span * (VERTICAL_CLAMP_MAX_RATIO - VERTICAL_CLAMP_MIN_RATIO)
-    heights = np.array([leg, leg + 0.2, leg + 2.0])
+    knee = leg * (1.0 + VERTICAL_CLAMP_STANCE_HEADROOM)
+    asymptote = knee + span * (VERTICAL_CLAMP_MAX_RATIO - VERTICAL_CLAMP_MIN_RATIO)
+    heights = np.array([leg, knee + 0.2, knee + 2.0])
     anim = _long_legged_root_y(heights, leg=leg)
 
     root_y = positions_global(clamp_vertical_trajectory(anim, "Pteranodon"))[:, 0, 1]
 
-    assert root_y[0] == pytest.approx(knee, abs=1e-12)
+    assert root_y[0] == pytest.approx(leg, abs=1e-12)
     scale = _expected_band_scale(heights.max(), knee, asymptote)
     np.testing.assert_allclose(root_y[1:], knee + (heights[1:] - knee) * scale, atol=1e-12)
     assert root_y.max() < asymptote

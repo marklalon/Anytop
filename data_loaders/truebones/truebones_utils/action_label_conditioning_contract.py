@@ -46,7 +46,9 @@ ACTION_CONDITIONING_CONTRACT_SCHEMA_VERSION = 1
 #    the fourth slot with them, so the label no longer says anything about
 #    held equipment and an armed clip is the same condition as an unarmed one
 #    (2026-09-22).
-ACTION_LABEL_PARSER_CONTRACT_VERSION = 7
+# 8: hover is a modifier (a held suspension state), not a head; hovering
+#    at rest is "idle, hover". Existing checkpoints must be retrained.
+ACTION_LABEL_PARSER_CONTRACT_VERSION = 8
 
 # Slots.  The approved representation gives each slot its own conditioning
 # channel, so a word's contribution depends on ITS slot only -- appending a
@@ -77,6 +79,7 @@ ACTION_LABEL_SLOTS: tuple[str, ...] = ("head", "direction", "modifier")
 # (1, r) unless r == 1), so the choice is only about how much of the axis the
 # first word keeps.
 #
+# Historical measurements before hover became a modifier (parser version 8):
 # 1.5 was measured on the frozen table (dim 768, all rows unit norm) against
 # the two costs that matter, with the word-pair null band |cos| p95 = 0.19 for
 # scale:
@@ -192,8 +195,8 @@ def label_slot_ids(ordered_tokens: Iterable[str]) -> tuple[int, ...]:
     Every head word feeds the head slot.  Written order still decides the
     condition, but through weight rather than through the channel: the first
     head word is what the label is about and carries
-    :data:`HEAD_SLOT_PRIMARY_WEIGHT`, a later one qualifies it (the posture or
-    medium it happens in: "attack, hover", "land, jump") and carries 1.0.  So
+    :data:`HEAD_SLOT_PRIMARY_WEIGHT`, a later one qualifies its body event
+    ("attack, jump", "land, jump") and carries 1.0.  So
     "a, b" and "b, a" stay two conditions -- the corpus spells one word set one
     way per group for exactly that reason
     (motion_labels._validate_head_order_consistency) -- while the head channel
@@ -608,7 +611,9 @@ SLOT_PAD_ID = -1
 #    canonical_frame_projection is one Linear instead of a two-layer MLP.
 # 5: the hands slot is gone, so the word table has two fewer rows and
 #    action_label_projection's first Linear loses that slot's 2 code columns.
-ACTION_CHECKPOINT_VERSION = 5
+# 6: rarely used words left the vocabulary, so the word table has fewer rows
+#    and action_label_projection's first Linear is narrower.
+ACTION_CHECKPOINT_VERSION = 6
 
 
 class ActionConditioningError(RuntimeError):

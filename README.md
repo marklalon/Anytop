@@ -35,8 +35,8 @@ under `docs/` may describe superseded intermediate states.
 
 ### Evaluation
 - **Motion Quality Scorer** — Reference-calibrated evaluation without autoencoders or discriminators: physical plausibility (bone rigidity, smoothness, continuity) and data-prior conformity (limb symmetry, coordination, tempo) against real clips of the action.
-- **Action Group Split** — `--action_group` is required at training and selects the corpus: one of `locomotion|stationary|transition`, or `all` for one model over every group (no lists). The value is recorded in the checkpoint's `args.json`, and generation has no `--action_group` flag at all — it reads the group from there, so a single-group checkpoint can only ever be sampled as the group it was trained on. An `all` checkpoint carries no group condition: the action label's first head word already determines the group across the whole corpus. See [docs/unified_action_group_training.md](docs/unified_action_group_training.md).
-- **Text-to-Motion Conditioning** — `--action_label_cond` looks up frozen T5 embeddings per controlled-vocabulary word, pools them into four separate role slots (head/action, direction, modifier, hands; every head word of the label feeds the head slot, the first one weighted above the rest), and projects the concatenated channels into the timestep condition. Use `--action_label "run, forward"` at generation time and `--action_label_cfg_scale` for classifier-free guidance.
+- **Action Group Split** — `--action_group` is required at training and selects the corpus: one of `locomotion|stationary|transition`, or `all` for one model over every group (no lists). The value is recorded in the checkpoint's `args.json`, and generation has no `--action_group` flag at all — it reads the group from there, so a single-group checkpoint can only ever be sampled as the group it was trained on. An `all` checkpoint carries no group condition: the action label's first head word already determines the group across the whole corpus. See [docs/action_group_and_label.md](docs/action_group_and_label.md).
+- **Text-to-Motion Conditioning** — `--action_label_cond` looks up frozen T5 embeddings per controlled-vocabulary word, pools them into three separate role slots (head/action, direction, modifier; every head word of the label feeds the head slot, the first one weighted above the rest), and projects the concatenated channels into the timestep condition. Use `--action_label "run, forward"` at generation time and `--action_label_cfg_scale` for classifier-free guidance.
 - **Semantic Joint Groups** — Automatic root/axial/limbs grouping from skeleton metadata for per-group evaluation.
 
 ### Data Loading
@@ -115,7 +115,7 @@ The script (`tools/process_new_skeleton.py`) accepts the following input argumen
 *save_dir* - Output directory (required).
 *object_type* - Species/type name (e.g. "Dragon"). Inferred from the tpos-path filename when omitted.
 *species_tags* - Comma-separated species tags (motion descriptor) for the object type, e.g. 'Quadruped,Lumbering'. REQUIRED: it defines the descriptor baked into cond.npy. There is no fallback to the default dataset's species_tags.jsonl.
-*crop_enabled* - Enable skeleton cropping to MAX_JOINTS=128. Off by default (inference has no joint cap); enable for training-compatible preprocessing.
+*crop_enabled* - Enable skeleton cropping to MAX_JOINTS=100. Off by default (inference has no joint cap); enable for training-compatible preprocessing.
 *reference_cond_path* - cond.npy to inherit the per-object_subset standardization statistics from. REQUIRED: the stats belong to a trained checkpoint, so pass the checkpoint's own cond.npy snapshot (there is no fallback to the processed dataset directory). Its T5 vectors are reused, and a joint whose name text it never encodes gets the blank (all-zero) name the model reads as unknown.
 *yes* - Skip all interactive confirmation prompts (headless / automated calls).
 
@@ -164,7 +164,7 @@ train_all.bat
 
 `train_all.bat` trains ONE model over every group (`--action_group all`, no
 group condition, uniform draws + `--rare_head_word_floor` for the tail) and is the only training script — see
-[docs/unified_action_group_training.md](docs/unified_action_group_training.md).
+[docs/action_group_and_label.md](docs/action_group_and_label.md).
 The per-group scripts (`train_locomotion.bat` / `train_stationary.bat` /
 `train_transition.bat`) are gone; to train a single group, run the same command
 with `--action_group locomotion|stationary|transition`. The full argument set of

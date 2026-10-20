@@ -94,17 +94,17 @@ def _make_y():
 class ClassifierFreeActionModelTest(unittest.TestCase):
     def test_scale_one_is_a_single_conditional_forward(self):
         stub = _StubDenoiser()
-        wrapped = ClassifierFreeActionModel(stub, 1.0)
+        wrapped = ClassifierFreeActionModel(stub, 1.0, 100)
         x = torch.zeros(2, 4, 12, 3)
-        out = wrapped(x, torch.tensor([1, 1]), y={'action_label': ['run', 'run']})
+        out = wrapped(x, torch.tensor([99, 99]), y={'action_label': ['run', 'run']})
         self.assertEqual(len(stub.calls), 1)
         self.assertTrue(torch.allclose(out, torch.full_like(x, 4.0)))
 
     def test_guidance_extrapolates_away_from_the_null_prediction(self):
         stub = _StubDenoiser()
-        wrapped = ClassifierFreeActionModel(stub, 2.5)
+        wrapped = ClassifierFreeActionModel(stub, 2.5, 100)
         x = torch.zeros(2, 4, 12, 3)
-        out = wrapped(x, torch.tensor([1, 1]), y={'action_label': ['run', 'run']})
+        out = wrapped(x, torch.tensor([99, 99]), y={'action_label': ['run', 'run']})
         self.assertEqual(len(stub.calls), 2)
         # uncond + s * (cond - uncond) == 1 + 2.5 * (4 - 1)
         self.assertTrue(torch.allclose(out, torch.full_like(x, 8.5)))
@@ -112,15 +112,15 @@ class ClassifierFreeActionModelTest(unittest.TestCase):
     def test_zero_scale_is_the_pure_unconditional_prediction(self):
         stub = _StubDenoiser()
         x = torch.zeros(2, 4, 12, 3)
-        out = ClassifierFreeActionModel(stub, 0.0)(
-            x, torch.tensor([1, 1]), y={'action_label': ['run', 'run']})
+        out = ClassifierFreeActionModel(stub, 0.0, 100)(
+            x, torch.tensor([99, 99]), y={'action_label': ['run', 'run']})
         self.assertTrue(torch.allclose(out, torch.full_like(x, 1.0)))
 
     def test_uncond_pass_forces_the_null_condition_for_every_row(self):
         stub = _StubDenoiser()
-        wrapped = ClassifierFreeActionModel(stub, 2.0)
+        wrapped = ClassifierFreeActionModel(stub, 2.0, 100)
         y = {'action_label': ['run', 'run']}
-        wrapped(torch.zeros(2, 4, 12, 3), torch.tensor([1, 1]), y=y)
+        wrapped(torch.zeros(2, 4, 12, 3), torch.tensor([99, 99]), y=y)
         cond_y, uncond_y = stub.calls
         # Conditional pass: untouched, so eval-mode keeps every row conditional.
         self.assertNotIn('action_label_active', cond_y)
@@ -137,13 +137,13 @@ class ClassifierFreeActionModelTest(unittest.TestCase):
     def test_invalid_scales_rejected(self):
         stub = _StubDenoiser()
         with self.assertRaises(ValueError):
-            ClassifierFreeActionModel(stub, -1.0)
+            ClassifierFreeActionModel(stub, -1.0, 100)
         with self.assertRaises(ValueError):
-            ClassifierFreeActionModel(stub, float('nan'))
+            ClassifierFreeActionModel(stub, float('nan'), 100)
 
     def test_attributes_resolve_through_to_the_denoiser(self):
         stub = _StubDenoiser()
-        wrapped = ClassifierFreeActionModel(stub, 2.0)
+        wrapped = ClassifierFreeActionModel(stub, 2.0, 100)
         self.assertEqual(wrapped.feature_len, 12)
         with self.assertRaises(AttributeError):
             _ = wrapped.no_such_attribute
@@ -158,7 +158,7 @@ class ClassifierFreeActionModelTest(unittest.TestCase):
         model.eval()
 
         x = torch.randn(2, 4, 12, 3)
-        t = torch.tensor([1, 2], dtype=torch.int64)
+        t = torch.tensor([98, 99], dtype=torch.int64)
         y = _make_y()
         scale = 3.0
 
@@ -167,10 +167,33 @@ class ClassifierFreeActionModelTest(unittest.TestCase):
             uncond = model(x, t, y=dict(y, action_label_active=torch.tensor([False, False])))
             # No explicit mask in eval == fully conditional.
             self.assertTrue(torch.allclose(model(x, t, y=y), cond, atol=1e-6))
-            out = ClassifierFreeActionModel(model, scale)(x, t, y=y)
+            out = ClassifierFreeActionModel(model, scale, 100)(x, t, y=y)
 
         self.assertFalse(torch.allclose(cond, uncond))
         self.assertTrue(torch.allclose(out, uncond + scale * (cond - uncond), atol=1e-5))
+
+
+class StagedScaleTest(unittest.TestCase):
+    def _run(self, timesteps):
+        stub = _StubDenoiser()
+        out = ClassifierFreeActionModel(stub, 3.0, 100)(
+            torch.zeros(2, 4, 12, 3), torch.tensor(timesteps), y={'action_label': ['run', 'run']})
+        return stub, out
+
+    def test_late_steps_are_plain_conditional_with_one_forward(self):
+        stub, out = self._run([10, 20])
+        self.assertEqual(len(stub.calls), 1)
+        self.assertTrue(torch.allclose(out, torch.full_like(out, 4.0)))
+
+    def test_early_steps_extrapolate(self):
+        stub, out = self._run([60, 99])
+        self.assertEqual(len(stub.calls), 2)
+        self.assertTrue(torch.allclose(out, torch.full_like(out, 1.0 + 3.0 * 3.0)))
+
+    def test_mixed_rows_use_their_own_scale(self):
+        _, out = self._run([10, 99])
+        self.assertTrue(torch.allclose(out[0], torch.full_like(out[0], 4.0)))
+        self.assertTrue(torch.allclose(out[1], torch.full_like(out[1], 10.0)))
 
 
 class ActionLabelCfgFlagTest(unittest.TestCase):
@@ -178,6 +201,7 @@ class ActionLabelCfgFlagTest(unittest.TestCase):
     def _args(scale, drop_prob=0.2):
         return types.SimpleNamespace(
             action_label_cfg_scale=scale, action_label_cfg_drop_prob=drop_prob,
+            diffusion_steps=100,
         )
 
     @staticmethod

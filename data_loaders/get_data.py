@@ -1,9 +1,13 @@
 import functools
+import math
 import os
+import pickle
 import queue
+import tempfile
 import threading
+import weakref
 import torch
-from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
 from data_loaders.joint_buckets import (
     JointBucketBatchSampler,
     bucket_ids_for_joint_counts,
@@ -57,6 +61,104 @@ class BackgroundPrefetchLoader:
                 break
             yield item
 
+class _TransformedCollate:
+    """collate_fn followed by batch_transform, as one picklable callable so a
+    worker process runs both."""
+
+    def __init__(self, collate, batch_transform):
+        self.collate = collate
+        self.batch_transform = batch_transform
+
+    def __call__(self, samples):
+        return self.batch_transform(self.collate(samples))
+
+
+def _load_spilled_dataset(path):
+    with open(path, 'rb') as handle:
+        return pickle.load(handle)
+
+
+class _SpilledDataset(Dataset):
+    """Hands a dataset to spawned workers through a temp file.
+
+    Spawn writes each worker's arguments into a pipe that the child reads only
+    after re-importing the main module, so a large pickled dataset blocks the
+    parent once per worker and the workers start one after another. Pickled as
+    the file path instead, the write fits the pipe and they start together.
+    """
+
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self._path = None
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, item):
+        return self.dataset[item]
+
+    def __reduce__(self):
+        if self._path is None:
+            handle, self._path = tempfile.mkstemp(prefix='anytop_dataset_', suffix='.pkl')
+            with os.fdopen(handle, 'wb') as out:
+                pickle.dump(self.dataset, out, protocol=pickle.HIGHEST_PROTOCOL)
+            weakref.finalize(self, _remove_quietly, self._path)
+        return _load_spilled_dataset, (self._path,)
+
+
+def _remove_quietly(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+class EagerWorkerLoader:
+    """A worker-process DataLoader whose workers are spawned at construction.
+
+    Under spawn each worker re-imports the main module and unpickles the
+    dataset before the next one is started, so the first ``iter()`` of a
+    DataLoader blocks for num_workers times that. Starting it on a thread here
+    overlaps the spawn with whatever the caller builds next (the model, its
+    compile); the thread mostly waits on the worker pipes, off the GIL. The
+    first ``__iter__`` hands over that iterator, later ones are the
+    DataLoader's own (persistent workers, so they only reset).
+    """
+
+    def __init__(self, loader, dataset):
+        self.loader = loader
+        self.dataset = dataset
+        self._first_iter = None
+        self._error = None
+        self._spawn = threading.Thread(target=self._start_workers, daemon=True)
+        self._spawn.start()
+
+    def _start_workers(self):
+        try:
+            self._first_iter = iter(self.loader)
+        except Exception as exc:
+            self._error = exc
+
+    def __len__(self):
+        return len(self.loader)
+
+    def __iter__(self):
+        if self._spawn is not None:
+            self._spawn.join()
+            self._spawn = None
+            if self._error is not None:
+                raise self._error
+            first, self._first_iter = self._first_iter, None
+            return first
+        return iter(self.loader)
+
+
+def _init_data_worker(worker_id):
+    # Sample prep is small numpy work; intra-op threads in every worker would
+    # only oversubscribe the cores the training process launches kernels from.
+    torch.set_num_threads(1)
+
+
 def get_dataset_class(name):
     return Truebones
 
@@ -82,6 +184,11 @@ def get_dataset(
     bone_length_aug=DEFAULT_BONE_LENGTH_AUG,
     cond_path=None,
     species_table=None,
+    ref_encoder=False,
+    ref_leaf_drop_prob=0.2,
+    ref_bone_length_aug_prob=0.2,
+    ref_bone_length_aug=0.1,
+    ref_joint_name_drop_prob=0.15,
 ):
     dataset = Truebones(
         split=split,
@@ -105,6 +212,11 @@ def get_dataset(
         bone_length_aug=bone_length_aug,
         cond_path=cond_path,
         species_table=species_table,
+        ref_encoder=ref_encoder,
+        ref_leaf_drop_prob=ref_leaf_drop_prob,
+        ref_bone_length_aug_prob=ref_bone_length_aug_prob,
+        ref_bone_length_aug=ref_bone_length_aug,
+        ref_joint_name_drop_prob=ref_joint_name_drop_prob,
     )
     return dataset
 
@@ -116,8 +228,7 @@ def get_dataset_loader(
     rare_head_word_floor=0,
     rare_head_word_max_boost=4.0,
     objects_subset="all",
-    num_workers=None,
-    prefetch_factor=2,
+    num_workers=0,
     sample_limit=0,
     shuffle=True,
     drop_last=True,
@@ -138,12 +249,21 @@ def get_dataset_loader(
     cond_path=None,
     joint_buckets=JOINT_BUCKETS,
     species_table=None,
+    ref_encoder=False,
+    ref_leaf_drop_prob=0.2,
+    ref_bone_length_aug_prob=0.2,
+    ref_bone_length_aug=0.1,
+    ref_joint_name_drop_prob=0.15,
 ):
-    """``joint_buckets``: joint-count ceilings (param_utils.JOINT_BUCKETS by
+    """``num_workers``: 0 prepares batches on one background thread of this
+    process; N > 0 prepares them in N persistent worker processes, which keeps
+    the sample prep off the training process's GIL. ``main_process_prefetch_batches``
+    is the number of batches kept ready in either mode.
+
+    ``joint_buckets``: joint-count ceilings (param_utils.JOINT_BUCKETS by
     default). Batches are grouped by rig size and padded to their bucket's
     ceiling instead of MAX_JOINTS -- see data_loaders/joint_buckets. ``None`` or
     ``()`` pads every batch to MAX_JOINTS."""
-    # Always use main thread (num_workers=0) - multi-worker paths removed
     dataset = get_dataset(
         num_frames=num_frames,
         split=split,
@@ -166,6 +286,11 @@ def get_dataset_loader(
         bone_length_aug=bone_length_aug,
         cond_path=cond_path,
         species_table=species_table,
+        ref_encoder=ref_encoder,
+        ref_leaf_drop_prob=ref_leaf_drop_prob,
+        ref_bone_length_aug_prob=ref_bone_length_aug_prob,
+        ref_bone_length_aug=ref_bone_length_aug,
+        ref_joint_name_drop_prob=ref_joint_name_drop_prob,
     )
     collate = truebones_batch_collate
     sampler = None
@@ -208,7 +333,21 @@ def get_dataset_loader(
         }
     if torch.cuda.is_available():
         loader_kwargs['pin_memory'] = True
+    prefetch_batches = int(main_process_prefetch_batches) or 4
+    num_workers = max(0, int(num_workers or 0))
+    if num_workers > 0:
+        if batch_transform is not None:
+            loader_kwargs['collate_fn'] = _TransformedCollate(loader_kwargs['collate_fn'], batch_transform)
+        # Persistent: an epoch boundary must not respawn the workers (spawn
+        # re-imports torch and unpickles the dataset). Each worker seeds its own
+        # python / numpy / torch RNG from the loader's base seed.
+        loader_kwargs.update(
+            dataset=_SpilledDataset(dataset),
+            num_workers=num_workers,
+            persistent_workers=True,
+            prefetch_factor=max(1, math.ceil(prefetch_batches / num_workers)),
+            worker_init_fn=_init_data_worker,
+        )
+        return EagerWorkerLoader(DataLoader(**loader_kwargs), dataset)
     loader = DataLoader(**loader_kwargs)
-    # Use background prefetch on main thread for data loading overlap
-    main_process_prefetch_batches = int(main_process_prefetch_batches) or 4
-    return BackgroundPrefetchLoader(loader, max_prefetch_batches=main_process_prefetch_batches, batch_transform=batch_transform)
+    return BackgroundPrefetchLoader(loader, max_prefetch_batches=prefetch_batches, batch_transform=batch_transform)

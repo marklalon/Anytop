@@ -15,7 +15,7 @@ Each task's clips are scored in-process with the motion quality scorer
 (``eval/motion_quality/quality.py``): every clip gets a physical-plausibility
 and a data-prior score in [0, 1], its quality is their geometric mean, and a
 task's is the median over its clips. The reference statistics are pooled over
-every dataset in ``--dataset_root`` (default ``dataset/datasets.jsonl``) and
+every dataset in ``--dataset_root`` (default ``dataset/datasets_all.jsonl``) and
 indexed once for the whole battery.
 
 Every task must name the label its clips are scored against: its own
@@ -117,7 +117,7 @@ _LAST_OUTPUT = "$LAST_OUTPUT"
 _DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks.json"
 # The datasets the quality reference is pooled over: every processed
 # dataset the training cond was merged from, not just the first one.
-_DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets.jsonl"
+_DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets_all.jsonl"
 # generate.py flags whose following value is a filesystem path. Their values are
 # resolved (relative → Anytop dir) when a task is loaded from the config.
 _PATH_FLAGS = ("--reference_motion", "--cond_path")
@@ -139,6 +139,17 @@ _COMMON_GENERATE_ARGS = ("--batch_size", "4", "--amp_dtype", "fp32")
 # Path-valued flags (see ``_PATH_FLAGS``) accept either an absolute path or a
 # path relative to the Anytop dir; the "$LAST_OUTPUT" sentinel passes through
 # unchanged. See eval/eval_tasks.json for the default battery.
+class _ResolvedPath(str):
+    """Resolved path string that remembers the text written in the task config."""
+
+    raw: str
+
+
+def _display_args(args: list[str]) -> list[str]:
+    """Task args as written in the config (resolved paths shown unresolved)."""
+    return [getattr(a, "raw", a) for a in args]
+
+
 def _resolve_arg_path(value: str, base_dir: Path) -> str:
     """Resolve a path-valued task arg.
 
@@ -228,6 +239,9 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
                         f"Task #{i} in {config_path}: {args[j]} points to "
                         f"non-existent file: {resolved}"
                     )
+                if resolved != _LAST_OUTPUT:
+                    resolved = _ResolvedPath(resolved)
+                    resolved.raw = args[j + 1]
                 args[j + 1] = resolved
         tasks.append((category, args, score_label))
 
@@ -608,6 +622,10 @@ def _build_record_from_existing(
         m = re.search(r'--cond_path\s+(?:"([^"]*)"|(\S+))', record["command"])
         if m:
             task_cond = _register_cond_path(scorer, m.group(1) or m.group(2))
+    if task_cond is None:
+        adopted = task_dir / "_reference_cond" / "cond.npy"
+        if adopted.is_file():
+            task_cond = _register_cond_path(scorer, str(adopted))
 
     first_npy = _first_output_npy(task_dir)
     record["first_npy"] = first_npy
@@ -704,7 +722,7 @@ def run_task(
     ]
     # Display command: only show differentiated (extra) args, not boilerplate flags.
     display_cmd = " ".join(
-        f'"{a}"' if " " in a else a for a in extra_args
+        f'"{a}"' if " " in a else a for a in _display_args(extra_args)
     )
 
     record = {
@@ -733,6 +751,7 @@ def run_task(
     # Capture stdout for the per-task log; let stderr (tqdm/progress bars) pass through.
     stdout = io.StringIO()
     returncode = 0
+    task_args = None
     try:
         task_args = generate_args(generate_argv)
         with contextlib.redirect_stdout(stdout):
@@ -766,7 +785,10 @@ def run_task(
     # (e.g., 'dragon') can be featurised as the query, while the reference
     # still comes from the dataset corpus.
     task_cond: dict | None = None
-    task_cond_path = _extract_cond_path(extra_args)
+    # generate.py adopts the cond of a raw reference file on its own skeleton and
+    # records it in args.cond_path, so the scorer sees it without a --cond_path flag.
+    task_cond_path = _extract_cond_path(extra_args) or (
+        getattr(task_args, 'cond_path', None) or None)
     if task_cond_path:
         task_cond = _register_cond_path(scorer, task_cond_path)
 
@@ -803,6 +825,7 @@ def write_html_report(
     model_name: str,
     records: list[dict],
     all_scores: list[float],
+    task_config: Path | None = None,
 ) -> None:
     """Write the portable motion review UI, assets, and local rating server."""
     from eval.checkpoint_report import write_report
@@ -811,7 +834,7 @@ def write_html_report(
         record.get("last_output_resolved") or record.get("reference_motion")
     )) for record in records]
     write_report(report_path, model_path, run_name, model_name, records, all_scores,
-                 dimensions=DIMENSIONS)
+                 dimensions=DIMENSIONS, task_config=task_config)
 
 
 def main() -> int:
@@ -849,8 +872,8 @@ def main() -> int:
     parser.add_argument(
         "--dataset_root", "--dataset-root", default=str(_DEFAULT_DATASET_ROOT),
         help="Datasets the quality reference is pooled over: a processed "
-             "dataset dir or a datasets.jsonl manifest (absolute, or relative to "
-             "the Anytop dir). Default: dataset/datasets.jsonl.",
+             "dataset dir or a datasets_all.jsonl manifest (absolute, or relative to "
+             "the Anytop dir). Default: dataset/datasets_all.jsonl.",
     )
     parser.add_argument(
         "--no_review", "--no-review", action="store_true",
@@ -1007,7 +1030,7 @@ def main() -> int:
             record = {
                 "category": category, "index": index,
                 "task_dir": task_dir,
-                "command": "generate.py " + " ".join(extra_args),
+                "command": "generate.py " + " ".join(_display_args(extra_args)),
                 "score": None, "quality": None,
                 "status": f"harness error: {exc}", "first_npy": None,
                 "reference_motion": _extract_reference_motion(extra_args),
@@ -1038,7 +1061,7 @@ def main() -> int:
         return 1
 
     report_path = root / "eval_report.html"
-    write_html_report(report_path, model_path, run_name, model_name, records, all_scores)
+    write_html_report(report_path, model_path, run_name, model_name, records, all_scores, task_config)
 
     print("\n" + "=" * 60)
     if all_scores:

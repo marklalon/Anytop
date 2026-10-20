@@ -5,7 +5,10 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     SLOT_PAD_ID,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (
+    CANONICAL_DPOS_STD_KEY,
     CANONICAL_FEATURE_SPACE,
+    DPOS_LOSS_WEIGHT_KEY,
+    ROOT_VEL_LOSS_WEIGHT_KEY,
     REST_LENGTH_SCALE_KEY,
     _length_scale_from_rest,
 )
@@ -172,13 +175,12 @@ def truebones_collate(batch):
             ])
         })
 
-    # Canonical standardization stats are a cross-species constant *per object_subset*
-    # (quadruped / winged / ... each get their own FEATS_LEN-vector), so a mixed-species
-    # batch needs per-sample stats. Stack them in batch order into [B, F] so the
-    # training-time aux-loss decode (canonical_to_physical_hml reads y) de-standardizes
-    # each sample with its own object_subset's stats. Only stack when every item carries
-    # the stat; a partially-populated batch would misalign sample<->stat (and the
-    # fail-fast loader guarantees all training items have it).
+    # Canonical standardization stats, stacked in batch order into [B, F] for the
+    # y-only decoders (the training-time aux-loss decode, canonical_to_physical_hml
+    # reading y). Every species carries the same global vectors; stacking keeps the
+    # per-sample decode contract instead of assuming it. Only stack when every item
+    # carries the stat; a partially-populated batch would misalign sample<->stat
+    # (and the fail-fast loader guarantees all training items have it).
     for stat_key in ('canonical_feature_mean', 'canonical_feature_std'):
         stat_vals = [batch_item.get(stat_key) for batch_item in notnone_batches]
         if all(v is not None for v in stat_vals):
@@ -186,6 +188,13 @@ def truebones_collate(batch):
                 [torch.as_tensor(v, dtype=torch.float32).reshape(-1) for v in stat_vals],
                 dim=0,
             )
+
+    # Per-sample scalars the loss reads ([B]), emitted only when every item has
+    # them for the same reason as the stats above.
+    for scalar_key in (CANONICAL_DPOS_STD_KEY, ROOT_VEL_LOSS_WEIGHT_KEY, DPOS_LOSS_WEIGHT_KEY):
+        scalar_vals = [batch_item.get(scalar_key) for batch_item in notnone_batches]
+        if all(v is not None for v in scalar_vals):
+            cond['y'][scalar_key] = torch.tensor([float(v) for v in scalar_vals], dtype=torch.float32)
 
     if any('feature_space' in batch_item for batch_item in notnone_batches):
         cond['y'].update({
@@ -278,7 +287,29 @@ def truebones_collate(batch):
     cond['y'].update({'joints_relations': torch.stack(jointsrelationsbatch)})
     cond['y'].update({'graph_dist': torch.stack(graphdistbatch)})
 
+    from data_loaders.reference import collate_reference
+    # The null fields are tensors too, so compiled batches never change keys.
+    struct = cond['y'].get('joint_struct', motion.new_zeros(
+        motion.shape[0], motion.shape[1], JOINT_STRUCT_DIM))
+    cond['y'].update(collate_reference(
+        [item.get('reference') for item in notnone_batches], motion,
+        cond['y']['joints_names_embs'], struct,
+    ))
     return motion, cond
+
+
+def _sample_joint_width(b):
+    """Joints a raw sample needs on the canvas: its rig, or a wider reference.
+
+    Target and reference skeletons are augmented independently, so the
+    reference can keep leaves the target dropped.
+    """
+    width = b[0].shape[1]
+    for extra in b[10:]:
+        if isinstance(extra, dict) and extra.get('reference') is not None:
+            width = max(width, np.asarray(extra['reference']['feats']).shape[1])
+    return width
+
 
 def truebones_batch_collate(batch, joint_buckets=None):
     """Collate a raw batch from MotionDataset into the format for truebones_collate.
@@ -309,7 +340,7 @@ def truebones_batch_collate(batch, joint_buckets=None):
     """
     max_joints = batch[0][9]
     if joint_buckets is not None:
-        max_joints = bucket_ceiling(max(b[0].shape[1] for b in batch), joint_buckets)
+        max_joints = bucket_ceiling(max(_sample_joint_width(b) for b in batch), joint_buckets)
     adapted_batch = []
     for b in batch:  
         max_len, n_joints, n_feats = b[0].shape
@@ -346,6 +377,8 @@ def truebones_batch_collate(batch, joint_buckets=None):
             'joints_names_embs': joints_names_embs,
             'rest_pose': rest_pose,
         }
+        if extra_cond is not None:
+            item['reference'] = extra_cond.get('reference')
         if extra_cond is not None and 'joint_mask_candidate_roots' in extra_cond:
             raw_candidates = np.asarray(extra_cond['joint_mask_candidate_roots'], dtype=np.bool_)
             padded_candidate_roots = torch.zeros((max_joints,), dtype=torch.bool)
@@ -402,6 +435,9 @@ def truebones_batch_collate(batch, joint_buckets=None):
                 np.asarray(extra_cond['canonical_feature_std'], dtype=np.float32).reshape(-1)
             )
         if extra_cond is not None:
+            for scalar_key in (CANONICAL_DPOS_STD_KEY, ROOT_VEL_LOSS_WEIGHT_KEY, DPOS_LOSS_WEIGHT_KEY):
+                if extra_cond.get(scalar_key) is not None:
+                    item[scalar_key] = float(extra_cond[scalar_key])
             item['feature_space'] = extra_cond.get('feature_space', CANONICAL_FEATURE_SPACE)
         if motion_metadata is not None:
             for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'resample_speed_cond', 'motion_speed_applied', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count', 'bone_length_aug_applied'):

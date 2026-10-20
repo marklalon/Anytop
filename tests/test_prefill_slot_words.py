@@ -203,12 +203,12 @@ def test_head_order_conflicts_are_refused_before_anything_is_written(dataset):
     """The sidecar's cross-row rule, run over the corpus as the write would leave it."""
     prefill_common.rewrite_action_label_rows(
         dataset,
-        lambda entry: {**entry, "action_label": "attack, hover"}
+        lambda entry: {**entry, "action_label": "attack, jump"}
         if entry["clip"] == "Wolf_AtkR" else None,
     )
     conflicting = prefill_common.Proposal(
         _clip(dataset, "Wolf_AtkL", "attack, swat"), "write", "",
-        "hover, attack", {"measure": "test"},
+        "jump, attack", {"measure": "test"},
     )
     with pytest.raises(SystemExit):
         prefill_common.check_head_order([_Source(dataset)], [conflicting])

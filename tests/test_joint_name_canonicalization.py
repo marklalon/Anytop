@@ -414,7 +414,7 @@ _CONTACT_CASES = [
 
 @pytest.mark.parametrize('species, expected, forbidden', _CONTACT_CASES)
 def test_contact_prefill_on_real_rigs(species, expected, forbidden):
-    cond_path = Path(__file__).resolve().parents[1] / 'dataset' / 'cond.npy'
+    cond_path = Path(__file__).resolve().parents[1] / 'dataset' / 'cond_all.npy'
     if not cond_path.is_file():
         pytest.skip('merged dataset not present')
     from data_loaders.truebones.truebones_utils.cond_schema import load_cond

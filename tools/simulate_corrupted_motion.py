@@ -58,7 +58,9 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
+    rebuild_derived_velocity,
 )
+from data_loaders.truebones.truebones_utils.loop_verdict import stored_loop_verdict
 from model.joint_mask_utils import collect_subtree_indices
 from utils.misc import infer_object_type_from_filename
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
@@ -301,7 +303,13 @@ def main() -> int:
             f"[INFO] Added i.i.d. Gaussian noise (std={args.noise_std}, "
             f"seed={args.noise_seed}) to ALL joints."
         )
-    motion_corrupted = canonical_to_physical_hml(motion_canonical, object_cond).astype(np.float32)
+    # The canonical space drops every velocity but the root's X/Z; rebuild the
+    # rest from positions so the written clip keeps the stored layout,
+    # terminal loop row included.
+    motion_corrupted = rebuild_derived_velocity(
+        canonical_to_physical_hml(motion_canonical, object_cond),
+        is_loop=bool(stored_loop_verdict(motion_raw, 0)),
+    ).astype(np.float32)
 
     # -----------------------------------------------------------------------
     # Write outputs

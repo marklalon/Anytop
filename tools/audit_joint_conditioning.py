@@ -15,7 +15,7 @@ one place, so the claims cannot drift away from the implementation:
 
 Writes nothing. Exits non-zero when a check fails, so it can gate a run.
 
-    python tools/audit_joint_conditioning.py --cond dataset/cond.npy
+    python tools/audit_joint_conditioning.py --cond dataset/cond_all.npy
 """
 
 from __future__ import annotations
@@ -253,8 +253,8 @@ def audit_path_consistency(audit):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--cond', default='dataset/cond.npy',
-                        help='cond.npy to audit (default: dataset/cond.npy)')
+    parser.add_argument('--cond', default='dataset/cond_all.npy',
+                        help='cond.npy to audit (default: dataset/cond_all.npy)')
     parser.add_argument('--json', default='',
                         help='also write the full report to this path')
     parser.add_argument('--skip_model', action='store_true',

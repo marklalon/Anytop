@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { BVHLoader } from 'three/addons/BVHLoader.js';
+import { GLTFLoader } from 'three/addons/GLTFLoader.js';
 
 const report = JSON.parse(document.getElementById('report-data').textContent);
 const $ = id => document.getElementById(id);
@@ -36,7 +37,7 @@ try {
   $('connection').classList.add('error');
 }
 
-$('report-name').textContent = `${report.run_name} / ${report.model_name}`;
+$('report-name').textContent = [report.run_name, report.model_name, report.task_config_name].filter(Boolean).join(' / ');
 $('report-name').title = $('report-name').textContent;
 
 function visibleTasks() {
@@ -85,7 +86,8 @@ function updateRatingsPanel() {
   $('rated-count').textContent = `已评分 ${Object.keys(ratings).length} / ${report.tasks.length}`;
 }
 
-for (let score = 1; score <= 9; score++) {
+// Lay out the buttons like a numpad: 7-8-9 / 4-5-6 / 1-2-3.
+for (const score of [7, 8, 9, 4, 5, 6, 1, 2, 3]) {
   const button = el('button', String(score), 'rating');
   button.dataset.score = score;
   button.style.setProperty('--rating-color', color(score));
@@ -187,6 +189,12 @@ function parseBVH(text) {
 
 const vec = new THREE.Vector3(), quat = new THREE.Quaternion(), matrix = new THREE.Matrix4();
 function applyPose(bvh, time) {
+  if (bvh.mixer) {
+    if (bvh.action) bvh.action.paused = false;
+    bvh.mixer.setTime(Math.min(Math.max(time, 0), bvh.duration));
+    bvh.root.updateMatrixWorld(true);
+    return;
+  }
   const frame = Math.min(Math.max(time / bvh.frameTime, 0), bvh.frames - 1);
   const lo = Math.floor(frame), hi = Math.min(lo + 1, bvh.frames - 1), weight = frame - lo;
   bvh.bones.forEach((bone, index) => {
@@ -194,6 +202,32 @@ function applyPose(bvh, time) {
     bone.quaternion.fromArray(bvh.quat[index], lo * 4).slerp(quat.fromArray(bvh.quat[index], hi * 4), weight);
   });
   bvh.root.updateMatrixWorld(true);
+}
+
+async function parseReference(buffer, url) {
+  if (!/\.glb$/i.test(url)) return parseBVH(new TextDecoder().decode(buffer));
+  const gltf = await new GLTFLoader().parseAsync(buffer, '');
+  const root = gltf.scene, bones = [];
+  root.traverse(object => {
+    if (object.isBone) bones.push(object);
+    // Render the reference skeleton only, including for skinned GLB files.
+    if (object.isMesh) object.visible = false;
+  });
+  if (!bones.length) throw new Error('GLB 没有骨架');
+  const clip = gltf.animations[0];
+  const duration = clip?.duration || 0;
+  const mixer = new THREE.AnimationMixer(root);
+  let action = null;
+  if (clip) {
+    action = mixer.clipAction(clip);
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true;
+    action.play();
+  }
+  const times = clip?.tracks.flatMap(track => Array.from(track.times)) || [];
+  const uniqueTimes = [...new Set(times)].sort((a, b) => a - b);
+  const frameTime = uniqueTimes.length > 1 ? duration / (uniqueTimes.length - 1) : 1 / 30;
+  return { root, bones, mixer, action, duration, frameTime, frames: Math.max(1, uniqueTimes.length) };
 }
 
 function resetCamera(view, kind = 'persp') {
@@ -206,14 +240,34 @@ function resetCamera(view, kind = 'persp') {
   view.camera.far = view.extent * 1000;
   view.camera.updateProjectionMatrix();
   view.controls.target.copy(view.center);
+  // Remember the framing, so user camera moves can be mirrored onto other views.
+  view.homePosition = view.camera.position.clone();
+  view.homeTarget = view.controls.target.clone();
   view.controls.update();
 }
 
-function setupView(view, text) {
-  const bvh = parseBVH(text);
+// Mirror a view's camera onto every other view. Each view keeps its own
+// framing scale, so clips whose motion spans a different area stay visible
+// while sharing the exact orientation and relative zoom.
+let cameraSource = null;
+const syncPosition = new THREE.Vector3(), syncTarget = new THREE.Vector3();
+function syncCameras(source) {
+  if (!source.homePosition || !source.homeTarget) return;
+  cameraSource = source;
+  syncPosition.copy(source.camera.position).sub(source.homePosition);
+  syncTarget.copy(source.controls.target).sub(source.homeTarget);
+  for (const view of views) {
+    if (view === source || !view.homePosition || !view.homeTarget) continue;
+    const scale = view.extent / source.extent;
+    view.camera.position.copy(view.homePosition).addScaledVector(syncPosition, scale);
+    view.controls.target.copy(view.homeTarget).addScaledVector(syncTarget, scale);
+    view.camera.lookAt(view.controls.target);
+    view.camera.updateMatrixWorld();
+  }
+}
+
+function setupSkeleton(view, bvh, scene, reference = false) {
   view.bvh = bvh;
-  const scene = new THREE.Scene();
-  view.scene = scene;
   scene.add(bvh.root);
   view.positions = bvh.bones.map(() => new THREE.Vector3());
   // Fit the whole trajectory, so forward motion stays in view throughout a loop.
@@ -228,7 +282,8 @@ function setupView(view, text) {
   applyPose(bvh, 0);
   const bodyBox = new THREE.Box3().setFromPoints(bvh.bones.map(bone => bone.getWorldPosition(new THREE.Vector3())));
   view.radius = Math.max(bodyBox.getSize(new THREE.Vector3()).length() * .009, view.extent * .001);
-  view.joints = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 8, 6), new THREE.MeshBasicMaterial({ color: 0x85baff }), bvh.bones.length);
+  const ghost = reference ? { transparent: true, opacity: .4, depthWrite: false } : {};
+  view.joints = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 8, 6), new THREE.MeshBasicMaterial({ color: reference ? 0xaaaaaa : 0x85baff, ...ghost }), bvh.bones.length);
   view.joints.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   view.joints.frustumCulled = false;
   scene.add(view.joints);
@@ -236,9 +291,28 @@ function setupView(view, text) {
   view.segments = bvh.bones.map((bone, i) => [i, indices.get(bone.parent)]).filter(pair => pair[1] !== undefined);
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(view.segments.length * 6, 3));
-  view.lines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: 0xaacfff }));
+  view.lines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: reference ? 0xaaaaaa : 0xaacfff, ...ghost }));
   view.lines.frustumCulled = false;
   scene.add(view.lines);
+}
+
+function setupView(view, text, reference) {
+  const scene = new THREE.Scene();
+  view.scene = scene;
+  setupSkeleton(view, parseBVH(text), scene);
+  if (reference) {
+    view.reference = {};
+    setupSkeleton(view.reference, reference, scene, true);
+    // Frame both trajectories without changing their relative positions.
+    const box = new THREE.Box3();
+    for (const skeleton of [view, view.reference]) {
+      const half = new THREE.Vector3().setScalar(skeleton.extent / 2);
+      box.expandByPoint(skeleton.center.clone().sub(half));
+      box.expandByPoint(skeleton.center.clone().add(half));
+    }
+    view.center = box.getCenter(new THREE.Vector3());
+    view.extent = Math.max(...box.getSize(new THREE.Vector3()).toArray(), .001);
+  }
   const grid = new THREE.GridHelper(view.extent * 4, 40, 0x555555, 0x363636);
   grid.position.set(view.center.x, 0, view.center.z);
   scene.add(grid);
@@ -247,13 +321,21 @@ function setupView(view, text) {
   // Match dataset/review/joint_names.html, including modifier-key panning.
   view.controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
   view.controls.enableDamping = false;
+  view.controls.addEventListener('change', () => syncCameras(view));
   view.message.hidden = true;
+  const previousSource = cameraSource;
   resetCamera(view);
+  // A clip that finishes loading later adopts the camera the user already moved.
+  if (previousSource && previousSource !== view && previousSource.homePosition) syncCameras(previousSource);
 }
 
 function disposeViews() {
   for (const view of views) {
     view.controls?.dispose();
+    if (view.reference?.bvh.mixer) {
+      view.reference.bvh.mixer.stopAllAction();
+      view.reference.bvh.mixer.uncacheRoot(view.reference.bvh.root);
+    }
     view.scene?.traverse(object => {
       object.geometry?.dispose();
       if (object.material) for (const material of [].concat(object.material)) material.dispose();
@@ -262,6 +344,7 @@ function disposeViews() {
   }
   renderer?.renderLists.dispose();
   views = [];
+  cameraSource = null;
   $('views').replaceChildren();
 }
 
@@ -280,15 +363,13 @@ async function selectTask(task) {
   disposeViews();
   seconds = 0; duration = 0; loading = true;
   $('task-title').textContent = task?.id || '没有匹配的任务';
-  $('clip-count').textContent = task ? `${task.clips.length} 个动作` : '';
+  $('clip-count').textContent = task ? `${task.clips.length} 个动作${task.reference_clip ? ' · 灰色半透明：参考动作' : ''}` : '';
   $('frame-info').textContent = '';
   $('quality').textContent = fmt(task?.quality);
   $('dimensions').textContent = Object.entries(task?.dimensions || {}).map(([key, value]) => `${key} ${fmt(value)}`).join(' · ');
   $('task-status').textContent = task?.status || '';
   $('score-label').textContent = task?.score_label ? `评估标签：${task.score_label}` : '';
   $('command').textContent = task?.command || '';
-  $('reference').hidden = !task?.reference_link;
-  if (task?.reference_link) $('reference').href = task.reference_link;
   if (!saving && connected) {
     $('save-status').textContent = '评分自动保存到 human_scores.json';
     $('save-status').classList.remove('error');
@@ -300,6 +381,11 @@ async function selectTask(task) {
     loading = false;
     return;
   }
+  // Fetch once, then parse separate skeletons for independent scenes.
+  const referenceData = task.reference_clip ? fetch(task.reference_clip.url, { signal }).then(response => {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.arrayBuffer();
+  }).then(buffer => ({ buffer }), error => ({ error })) : Promise.resolve(null);
   const jobs = task.clips.map(clip => {
     const node = el('div', undefined, 'view');
     node.setAttribute('aria-label', clip.name);
@@ -312,9 +398,21 @@ async function selectTask(task) {
     return fetch(clip.url, { signal }).then(response => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.text();
-    }).then(text => {
+    }).then(async text => {
+      const data = await referenceData;
       if (token !== generation) return;
-      setupView(view, text);
+      let reference = null, referenceError = data?.error;
+      if (data?.buffer) {
+        try { reference = await parseReference(data.buffer, task.reference_clip.url); }
+        catch (error) { referenceError = error; }
+      }
+      if (token !== generation) return;
+      setupView(view, text, reference);
+      if (referenceError) {
+        view.message.hidden = false;
+        view.message.textContent = `参考动作加载失败：${referenceError.message}`;
+        view.message.classList.add('error');
+      }
     }).catch(error => {
       if (token !== generation) return;
       view.message.hidden = false;
@@ -326,8 +424,9 @@ async function selectTask(task) {
   if (token !== generation) return;
   const firstClip = views.find(view => view.bvh)?.bvh;
   $('frame-info').textContent = firstClip ? `${firstClip.frames} 帧 · ${(1 / firstClip.frameTime).toFixed(1)} FPS` : '';
-  duration = Math.max(0, ...views.map(view => view.bvh?.duration || 0));
-  const frameTimes = views.filter(view => view.bvh).map(view => view.bvh.frameTime);
+  const motions = views.flatMap(view => [view.bvh, view.reference?.bvh]).filter(Boolean);
+  duration = Math.max(0, ...motions.map(motion => motion.duration));
+  const frameTimes = motions.map(motion => motion.frameTime);
   frameTime = frameTimes.length ? Math.min(...frameTimes) : 1 / 30;
   loading = false;
   lastNow = performance.now();
@@ -426,6 +525,7 @@ function animate(now) {
     const clipRight = Math.min(width, left + viewWidth), clipBottom = Math.min(height, top + viewHeight);
     if (clipRight <= clipLeft || clipBottom <= clipTop) continue;
     drawPose(view);
+    if (view.reference) drawPose(view.reference);
     view.camera.aspect = viewWidth / Math.max(viewHeight, 1);
     view.camera.updateProjectionMatrix();
     view.controls.update();
@@ -439,6 +539,7 @@ function showSummary() {
   const body = $('summary-body'); body.replaceChildren();
   body.append(el('div', `Run: ${report.run_name} | Model: ${report.model_name}`, 'meta'),
     el('div', `Checkpoint: ${report.model_path}`, 'meta'),
+    ...(report.task_config ? [el('div', `Task config: ${report.task_config}`, 'meta')] : []),
     el('div', `Generated: ${report.generated}`, 'meta'));
   const values = Object.values(ratings).map(rating => rating.score).sort((a, b) => a - b);
   const cards = el('div', undefined, 'summary-cards');

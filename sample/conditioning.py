@@ -58,10 +58,10 @@ def _resolve_species_emb_override(args, model, cond_dict, object_type, species_t
 
     # Fast-fail if checkpoint ignores species descriptor.
     unwrapped = unwrap_anytop_model(model)
-    if not (getattr(unwrapped, 'species_cond', False) or getattr(unwrapped, 'species_joint_cond', False)):
+    if not getattr(unwrapped, 'species_joint_cond', False):
         sys.exit(
             'ERROR: --species_tags was passed but this checkpoint was trained without '
-            '--species_cond or --species_joint_cond; the species descriptor is unused, so '
+            '--species_joint_cond; the species descriptor is unused, so '
             'the tags would have no effect.'
         )
     if species_table is None:
@@ -206,13 +206,35 @@ def _wrap_action_label_cfg(model, args, action_condition):
         )
     print(
         f"[generate] action-label CFG: scale={scale:g} on "
-        f"{action_condition['action_label']!r} (2 model forwards per diffusion step)"
+        f"{action_condition['action_label']!r} (high-noise half of the steps; "
+        f"2 model forwards per step there, 1 on the detail steps)"
     )
-    return ClassifierFreeActionModel(model, scale)
+    return ClassifierFreeActionModel(model, scale, args.diffusion_steps)
+
+
+def _wrap_reference_cfg(model, args, action_condition):
+    from model.cfg_sampler import ClassifierFreeReferenceModel
+    if not getattr(unwrap_anytop_model(model), 'ref_encoder', False):
+        raise ValueError('--reference_motion requires a checkpoint trained with --ref_encoder')
+    if getattr(args, 'species_active', True) and float(getattr(args, 'species_cfg_scale', 1.0)) != 1.0:
+        raise ValueError('Reference CFG keeps species fixed; species_cfg_scale must be 1')
+    if float(getattr(model, 'ref_cfg_drop_prob', 0.0)) <= 0:
+        raise ValueError('Reference CFG requires training with ref_cfg_drop_prob > 0')
+    if action_condition is not None and float(getattr(model, 'ref_label_drop_prob', 0.0)) <= 0:
+        raise ValueError('Reference/text CFG requires ref_label_drop_prob > 0')
+    return ClassifierFreeReferenceModel(
+        model, getattr(args, 'ref_cfg_scale', 1.0),
+        getattr(args, 'action_label_cfg_scale', 1.0), use_text=action_condition is not None,
+        num_timesteps=args.diffusion_steps,
+    )
 
 
 def _wrap_species_cfg(model, args):
     """Guide the species FiLM descriptor, leaving structural channels active."""
+    # Both CFG branches would use the same species bypass. Keep any existing
+    # action wrapper, without adding a redundant species forward or checks.
+    if not getattr(args, 'species_active', True):
+        return model
     raw_scale = getattr(args, 'species_cfg_scale', None)
     scale = 1.0 if raw_scale is None else float(raw_scale)
     if not math.isfinite(scale) or scale < 0.0:
@@ -220,10 +242,9 @@ def _wrap_species_cfg(model, args):
     if scale == 1.0:
         return model
     unwrapped = unwrap_anytop_model(model)
-    if not getattr(unwrapped, 'species_cond', False):
+    if not getattr(unwrapped, 'species_joint_cond', False):
         sys.exit(
-            "ERROR: --species_cfg_scale requires a checkpoint trained with --species_cond. "
-            "--species_joint_cond alone has no droppable species branch."
+            "ERROR: --species_cfg_scale requires a checkpoint trained with --species_joint_cond. "
         )
     if float(getattr(args, 'species_cfg_drop_prob', 0.0) or 0.0) <= 0.0:
         sys.exit(
@@ -232,7 +253,7 @@ def _wrap_species_cfg(model, args):
         )
     forwards = 4 if isinstance(model, ClassifierFreeActionModel) else 2
     print(f"[generate] species CFG: scale={scale:g} ({forwards} model forwards per diffusion step)")
-    return ClassifierFreeSpeciesModel(model, scale)
+    return ClassifierFreeSpeciesModel(model, scale, args.diffusion_steps)
 
 
 def _coerce_loop_flag(flag):
@@ -330,10 +351,9 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         # these same stats and raises a named KeyError when they are absent.
         canonical_mean, canonical_std = get_canonical_global_stats(cond_dict[object_type])
         batch.append({
-            # The output coordinate frame is an UNCONDITIONAL model input (see
-            # AnyTop.canonical_frame_projection), so generation must carry it just
-            # like training does -- the collate stacks it per sample. Decoding the
-            # sample back to physical still uses the full cond entry, not y.
+            # The canonical stats travel in y for the y-only decoders, as in
+            # training -- the collate stacks them per sample. Decoding the sample
+            # back to physical still uses the full cond entry, not y.
             'canonical_feature_mean': canonical_mean,
             'canonical_feature_std': canonical_std,
             'rest_pose_physical': cond_dict[object_type]['rest_pose'],

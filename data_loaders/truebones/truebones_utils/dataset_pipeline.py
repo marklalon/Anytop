@@ -22,10 +22,13 @@ from data_loaders.truebones.truebones_utils.param_utils import ACTION_LABELS_FIL
 from pathlib import Path
 from . import dataset_tags as _dataset_tags
 from .motion_labels import (
+    ACTION_GROUPS,
     LOOP_FLAG_KEY,
     build_motion_labels,
+    clip_name_is_locomotion,
     load_action_labels,
     load_motion_metadata,
+    normalize_action_group,
     write_motion_metadata,
 )
 from .physics_joint_annotation import (
@@ -62,8 +65,14 @@ from .features import (
     get_hml_aligned_anim,
 )
 from .topology_relations import create_topology_edge_relations
+from .rest_geometry import reseat_rest_onto_clips
 from .canonical_features import (
+    DPOS_LOSS_WEIGHT_KEY,
+    ROOT_VEL_LOSS_WEIGHT_KEY,
+    assert_single_canonical_frame,
     mark_canonical_cond_entry,
+    get_canonical_dpos_std,
+    set_aux_loss_weights,
     set_canonical_global_stats,
 )
 from .dataset_sources import resolve_species_key
@@ -751,6 +760,177 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     return object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, squared_positions_error, max_joints, tpose_reference_path
 
 
+def _root_fold(tp, translation_root_index):
+    """``(fold_count, kind)`` of the joints still above the species root.
+
+    ``(0, None)`` is the fixed point: the species travels on joint 0 and that
+    joint is not a detached control root.
+    """
+    if translation_root_index == 0:
+        if not tp.detached_root_depth:
+            return 0, None
+        # The species travels on its root, but that root is a detached control
+        # node (Crow's ground-level ``Pelvis``). Folding it hands its transport
+        # to the child, so the next pass settles on joint 0 again.
+        return int(tp.detached_root_depth), "detached control root(s)"
+    # Everything above the joint this species travels on is an inert control node.
+    return int(translation_root_index), "wrapper joint(s)"
+
+
+def _encode_rest_on_root(tp, object_type, max_joints, scale_factor, translation_root_index, errors):
+    """The rest pose re-encoded on the settled species root.
+
+    The provisional root of ``_build_rest_pose_cond`` comes from a static pose,
+    which has no animated translation to detect a motion root from.
+    """
+    fixed_rest = get_motion(
+        tp.tpos_anim,
+        object_type,
+        max_joints,
+        tp.offsets,
+        tp.tpos_rots,
+        errors,
+        scale_factor=scale_factor,
+        orientation_quat=tp.orientation_quat,
+        animation_input_is_tpose_aligned=False,
+        translation_root_index=translation_root_index,
+    )
+    if fixed_rest[0] is None:
+        raise DatasetPreprocessingError(
+            [f"[FAIL] Object '{object_type}': failed to encode rest pose with translation root {translation_root_index}"]
+        )
+    return fixed_rest[0][0]
+
+
+def _resample_short_result(result, resample_min_length, object_type, max_joints, orientation_quat):
+    """Bring a clip shorter than ``resample_min_length`` up to it, in place."""
+    if resample_min_length <= 0 or result['motion'].shape[0] >= resample_min_length:
+        return
+    # Resample the animation (slerp rotations / linear positions), then
+    # RECOMPUTE the feature tensor from it. Interpolating the precomputed
+    # feature tensor directly would corrupt every channel: velocity is
+    # per-frame displacement (so it must shrink as frames are added),
+    # and the 6D rotation rep is not closed under linear interpolation.
+    # Re-extraction keeps vel = diff(pos) and valid rotations — both
+    # physically consistent with the resampled motion.
+    # Re-extract from the anims as AUTHORED, not from pass 1's
+    # output. Feeding a flattened anim back in would measure drift on
+    # a trajectory whose drift was just removed; running the source
+    # through instead decides once, applies once, and leaves features,
+    # anims and verdict consistent by construction.
+    result['source_new_anim'] = _resample_animation(result['source_new_anim'], resample_min_length)
+    result['source_export_anim'] = _resample_animation(result['source_export_anim'], resample_min_length)
+    (motion, _, motion_anim, motion_export_anim, is_loop,
+     root_xz_flattened, root_y_flattened) = extract_motion_features_from_aligned_anims(
+        result['source_new_anim'],
+        result['source_export_anim'],
+        object_type,
+        max_joints,
+        orientation_quat,
+        result['translation_root_index'],
+        flatten_root_travel=bool(result.get('flatten_root_travel')),
+        clamp_root_extent=True,
+        is_loop=result.get('loop_verdict'),
+    )
+    result['motion'] = motion
+    # Keep the stored anims the ones the features were built from, as
+    # the first pass does -- the BVH export must not drift from them.
+    result['new_anim'] = motion_anim
+    result['export_anim'] = motion_export_anim
+    result['is_loop'] = is_loop
+    result['root_xz_flattened'] = bool(root_xz_flattened)
+    result['root_y_flattened'] = bool(root_y_flattened)
+
+
+def locomotion_clips_for_files(object_type, motion_paths, action_group=None):
+    """Clip names of ``motion_paths`` that take the locomotion root policy.
+
+    Stands in for the action_labels sidecar where there is none: an explicit
+    ``action_group`` applies to every file, otherwise each file's name decides
+    (:func:`clip_name_is_locomotion`).
+    """
+    group = normalize_action_group(action_group)
+    if group and group not in ACTION_GROUPS:
+        raise ValueError(f"action_group must be one of {', '.join(ACTION_GROUPS)}, got '{action_group}'")
+    return frozenset(
+        source_clip_name(object_type, path)
+        for path in motion_paths
+        if (group == 'locomotion' if group
+            else clip_name_is_locomotion(os.path.splitext(os.path.basename(path))[0]))
+    )
+
+
+def encode_motion_files_on_rest_pose(object_type, rest_pose_path, motion_paths, *, crop_enabled=False,
+                                     action_group=None, resample_min_length=20):
+    """Rest-pose cond plus the feature encoding of every motion file on it.
+
+    ``rest_pose_path`` supplies the bind/rest pose (it may be one of the motion
+    files: a self-contained animation carries its own bind pose). Each step
+    follows dataset preprocessing, with the sidecar annotations replaced:
+
+    * the species transport root is resolved over ALL the clips, folding
+      wrapper and detached control roots until the carrier sits at joint zero
+      (the root InputProcess requires), and the rest pose is re-encoded on it;
+    * the locomotion root policy (detrend + extent bound) comes from
+      ``action_group`` or each file's name (:func:`locomotion_clips_for_files`);
+      the loop verdict is left to the detector;
+    * a clip shorter than ``resample_min_length`` is resampled up to it;
+    * the rest is re-seated onto the clips' geometry
+      (:func:`rest_geometry.reseat_rest_onto_clips`).
+
+    Returns ``(cond, max_joints, tpose_reference_path, results)`` where
+    ``results`` is one encoded payload per motion file; the cond holds the
+    resolved ``translation_root_index`` and ``root_promote_depth``.
+    """
+    locomotion_clips = locomotion_clips_for_files(object_type, motion_paths, action_group)
+    print(f"[OK] {object_type}: locomotion root policy for {len(locomotion_clips)}/{len(motion_paths)} clip(s)"
+          + (f" ({', '.join(sorted(locomotion_clips))})" if locomotion_clips else "")
+          + (f" from action_group={action_group}" if action_group else " from file names"))
+    depth = 0
+    for _ in range(4):
+        cond, tp, _, _, _, scale, errors, max_joints, tpose_reference_path = _build_rest_pose_cond(
+            object_type, rest_pose_path, None, crop_enabled=crop_enabled, promote_root_depth=depth)
+        prepared = []
+        for path in motion_paths:
+            item = _prepare_motion_file_for_root_detection(
+                path, object_type, tp.offsets, tp.tpos_rots, scale, tp.orientation_quat,
+                crop_enabled=crop_enabled, prop_socket_names=tp.prop_socket_names,
+                end_site_names=tp.end_site_names, promote_root_depth=depth,
+            )
+            if item is None:
+                raise ValueError(f'Could not preprocess animation: {path}')
+            prepared.append(item)
+        root, _ = _select_species_translation_root(
+            object_type, [item['translation_root_index'] for item in prepared],
+            [item['chain_xz_travel'] for item in prepared])
+        fold_count, kind = _root_fold(tp, root)
+        if not fold_count:
+            break
+        print(f"[OK] {object_type}: folding {fold_count} {kind} {list(tp.names[:fold_count])}")
+        depth += fold_count
+    else:
+        raise ValueError('Transport root did not converge')
+    results = []
+    for item in prepared:
+        encoded = _encode_prepared_motion_file(
+            item, object_type, max_joints, tp.offsets, tp.tpos_rots, scale, tp.orientation_quat, root,
+            locomotion_clips=locomotion_clips)
+        if not encoded['results']:
+            raise ValueError(f"Feature extraction failed: {encoded['motion_errors']}")
+        result = encoded['results'][0]
+        _resample_short_result(result, resample_min_length, object_type, max_joints, tp.orientation_quat)
+        results.append(result)
+    cond['translation_root_index'] = root
+    cond['root_promote_depth'] = int(depth)
+    cond['rest_pose'] = _encode_rest_on_root(tp, object_type, max_joints, scale, root, errors)
+    mark_canonical_cond_entry(cond)
+    reseated = reseat_rest_onto_clips(cond, [result['motion'] for result in results])
+    if reseated:
+        print(f"[OK] {object_type}: re-seated {len(reseated)} rest joint(s) onto clip geometry: "
+              f"{', '.join(candidate['name'] for candidate in reseated)}")
+    return cond, max_joints, tpose_reference_path, results
+
+
 def build_tpose_cond(*args, **kwargs):
     """Backward-compatible alias; cond is now built from the file bind/rest pose."""
     return _build_rest_pose_cond(*args, **kwargs)
@@ -964,19 +1144,9 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 )
             break
 
-        if translation_root_index == 0:
-            if not tp.detached_root_depth:
-                break
-            # The species travels on its root, but that root is a detached
-            # control node (Crow's ground-level ``Pelvis``). Folding it hands its
-            # transport to the child, so the next pass settles on joint 0 again.
-            fold_count = int(tp.detached_root_depth)
-            kind = "detached control root(s)"
-        else:
-            # Everything above the joint this species travels on is an inert
-            # control node.
-            fold_count = translation_root_index
-            kind = "wrapper joint(s)"
+        fold_count, kind = _root_fold(tp, translation_root_index)
+        if not fold_count:
+            break
 
         # Fold into the real root and measure again on that skeleton.
         folded = list(tp.names[:fold_count])
@@ -1012,30 +1182,14 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         flush=True,
     )
 
-    # Re-encode the rest-pose conditioning with the same root contract used by
-    # every action.  The provisional T-pose detection above cannot establish a
-    # motion root because a rest pose has no animated translation.
-    fixed_rest = get_motion(
-        tp.tpos_anim,
-        object_type,
-        max_joints,
-        tp.offsets,
-        tp.tpos_rots,
-        squared_positions_error,
-        scale_factor=character_scale_factor,
-        orientation_quat=tp.orientation_quat,
-        animation_input_is_tpose_aligned=False,
-        translation_root_index=translation_root_index,
-    )
-    if fixed_rest[0] is None:
-        raise DatasetPreprocessingError(
-            [f"[FAIL] Object '{object_type}': failed to encode rest pose with translation root {translation_root_index}"]
-        )
     object_cond['translation_root_index'] = int(translation_root_index)
     # Recorded so an incremental run folds exactly the same joints away instead
     # of re-deriving a depth from a subset of the species' clips.
     object_cond['root_promote_depth'] = int(promote_root_depth)
-    object_cond['rest_pose'] = fixed_rest[0][0]
+    object_cond['rest_pose'] = _encode_rest_on_root(
+        tp, object_type, max_joints, character_scale_factor, translation_root_index,
+        squared_positions_error,
+    )
 
     # Animation loading via bpy is single-threaded inside a process because clear_scene
     # mutates global Blender state, so file-level parallelism is intentionally removed.
@@ -1075,41 +1229,8 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             num_frames = result['motion'].shape[0]
             if num_frames < filter_min_length:
                 continue
-            if resample_min_length > 0 and num_frames < resample_min_length:
-                # Resample the animation (slerp rotations / linear positions), then
-                # RECOMPUTE the feature tensor from it. Interpolating the precomputed
-                # feature tensor directly would corrupt every channel: velocity is
-                # per-frame displacement (so it must shrink as frames are added),
-                # and the 6D rotation rep is not closed under linear interpolation.
-                # Re-extraction keeps vel = diff(pos) and valid rotations — both
-                # physically consistent with the resampled motion.
-                # Re-extract from the anims as AUTHORED, not from pass 1's
-                # output. Feeding a flattened anim back in would measure drift on
-                # a trajectory whose drift was just removed; running the source
-                # through instead decides once, applies once, and leaves features,
-                # anims and verdict consistent by construction.
-                result['source_new_anim'] = _resample_animation(result['source_new_anim'], resample_min_length)
-                result['source_export_anim'] = _resample_animation(result['source_export_anim'], resample_min_length)
-                (motion, _, motion_anim, motion_export_anim, is_loop,
-                 root_xz_flattened, root_y_flattened) = extract_motion_features_from_aligned_anims(
-                    result['source_new_anim'],
-                    result['source_export_anim'],
-                    object_type,
-                    max_joints,
-                    tp.orientation_quat,
-                    result['translation_root_index'],
-                    flatten_root_travel=bool(result.get('flatten_root_travel')),
-                    clamp_root_extent=True,
-                    is_loop=result.get('loop_verdict'),
-                )
-                result['motion'] = motion
-                # Keep the stored anims the ones the features were built from, as
-                # the first pass does -- the BVH export must not drift from them.
-                result['new_anim'] = motion_anim
-                result['export_anim'] = motion_export_anim
-                result['is_loop'] = is_loop
-                result['root_xz_flattened'] = bool(root_xz_flattened)
-                result['root_y_flattened'] = bool(root_y_flattened)
+            _resample_short_result(
+                result, resample_min_length, object_type, max_joints, tp.orientation_quat)
             result['canonical_names'] = list(object_cond['canonical_bvh_joint_names'])
             # The pre-flatten anims exist only for the resample re-extraction just
             # above. Dropping them here keeps them out of the payload that gets
@@ -1579,42 +1700,34 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
 
 
 def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_cond_path=None):
-    """Inherit per-object_subset canonical standardization stats onto a standalone,
+    """Copy the global canonical standardization stats onto a standalone,
     motion-less cond entry from the trained checkpoint's cond.npy.
 
     A rest-pose-only new skeleton (the ``process_new_skeleton`` inference path) has
-    no clips to calibrate the L-normalized mean/std from, and no sibling species in
-    its own standalone cond to inherit from. The stats are a cross-species constant
-    *per object_subset* tied to the trained checkpoint, so the only correct source
-    is a same-object_subset species in the training dataset cond.npy. Without them
-    the cond cannot be (de)standardized and generation fast-fails downstream.
+    no clips to calibrate the L-normalized mean/std from. The stats are one
+    corpus-wide constant tied to the trained checkpoint, identical on every entry
+    of its cond.npy, so any entry is a valid source. Without them the cond cannot
+    be (de)standardized and generation fast-fails downstream.
 
     Returns True if stats were set (or were already present), False if the reference
-    cond holds no same-object_subset species with stats. Raises ValueError when
-    ``reference_cond_path`` is missing and FileNotFoundError when the path does not
-    exist -- the stats belong to a trained checkpoint, so there is no fallback.
+    cond holds no entry with stats. Raises ValueError when ``reference_cond_path``
+    is missing and FileNotFoundError when the path does not exist -- the stats
+    belong to a trained checkpoint, so there is no fallback.
     """
     from .canonical_features import get_canonical_global_stats
 
-    if get_canonical_global_stats(object_cond) is not None:
+    if get_canonical_global_stats(object_cond) is not None and get_canonical_dpos_std(object_cond) is not None:
         return True
-
-    tags = _dataset_tags.dataset_tags()
-    target_subset = tags.object_subset_for(object_name)
-    if target_subset is None:
-        print(f"[process_skeleton] '{object_name}' has no object_subset "
-              "(missing species_tags.jsonl entry); cannot inherit canonical stats.")
-        return False
 
     # The stats belong to a *checkpoint*, so the reference must be that
     # checkpoint's own cond.npy snapshot -- a caller-supplied path is required,
     # with no fallback to the processed dataset directory (that cond is not the
-    # checkpoint the model was trained on, so its stats would be out-of-distribution).
+    # checkpoint the model was trained on, so its stats may differ).
     if not reference_cond_path:
         raise ValueError(
             f"reference_cond_path is required to inherit canonical stats for "
-            f"'{object_name}' (object_subset={target_subset!r}). The stats belong "
-            "to a trained checkpoint, so pass the checkpoint's own cond.npy."
+            f"'{object_name}'. The stats belong to a trained checkpoint, so pass "
+            "the checkpoint's own cond.npy."
         )
     ref_cond_path = reference_cond_path
     if not os.path.exists(ref_cond_path):
@@ -1625,21 +1738,22 @@ def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_co
 
     from .cond_schema import load_cond
     ref_cond = load_cond(ref_cond_path)
-    for sibling, sibling_cond in ref_cond.items():
+    assert_single_canonical_frame(ref_cond, source=str(ref_cond_path))
+    for sibling_cond in ref_cond.values():
         if not isinstance(sibling_cond, dict):
             continue
-        if tags.object_subset_for(sibling) != target_subset:
-            continue
         stats = get_canonical_global_stats(sibling_cond)
-        if stats is not None:
-            set_canonical_global_stats(object_cond, stats[0], stats[1])
+        dpos_std = get_canonical_dpos_std(sibling_cond)
+        if stats is not None and dpos_std is not None:
+            set_canonical_global_stats(object_cond, stats[0], stats[1], dpos_std)
+            set_aux_loss_weights(object_cond)
             print(f"[process_skeleton] inherited canonical stats for '{object_name}' "
-                  f"(subset={target_subset}) from {ref_cond_path}")
+                  f"from {ref_cond_path}")
             return True
 
-    print(f"[process_skeleton] no '{target_subset}' species with canonical stats found "
-          f"in {ref_cond_path} for '{object_name}' to inherit; "
-          "regenerate the dataset cond.npy or process with motion clips.")
+    print(f"[process_skeleton] no entry with canonical stats found in {ref_cond_path} "
+          f"for '{object_name}' to inherit; regenerate the dataset cond.npy or "
+          "process with motion clips.")
     return False
 
 
@@ -1660,75 +1774,37 @@ def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_
     prior_entry = cond.get(existing_key) if existing_key is not None else None
     merged_key = existing_key if existing_key is not None else object_name
     cond[merged_key] = object_cond
-    # The canonical standardization stats are a cross-species constant *per
-    # object_subset* tied to the trained checkpoint. A freshly (re)built object
-    # cond has no stats of its own, so it must reuse the dataset's existing
-    # constant to land in the space the model was trained on.
-    def _entry_stats(entry):
-        if entry is None:
-            return None
-        mean = entry.get('canonical_feature_mean')
-        std = entry.get('canonical_feature_std')
-        return (mean, std) if mean is not None and std is not None else None
-
+    # The canonical standardization stats are one corpus-wide constant tied to
+    # the trained checkpoint, identical on every entry. A freshly (re)built
+    # object cond has no stats of its own, so it reuses the dataset's constant to
+    # land in the space the model was trained on.
     if object_cond.get('canonical_feature_mean') is None:
-        # 1) Update of an existing species: keep its own prior stats (skeleton
-        #    geometry / object_subset is unchanged, and the stats are tied to the
-        #    checkpoint), so the overwrite above doesn't drop them.
-        chosen = _entry_stats(prior_entry)
+        donors = ([prior_entry] if prior_entry is not None else []) + [
+            sibling_cond for sibling, sibling_cond in cond.items() if sibling != merged_key
+        ]
+        chosen = next(
+            (
+                (entry['canonical_feature_mean'], entry['canonical_feature_std'], get_canonical_dpos_std(entry))
+                for entry in donors
+                if entry.get('canonical_feature_mean') is not None
+                and entry.get('canonical_feature_std') is not None
+                and get_canonical_dpos_std(entry) is not None
+            ),
+            None,
+        )
         if chosen is None:
-            siblings_with_stats = {
-                sibling: stats
-                for sibling, sibling_cond in cond.items()
-                if sibling != merged_key and (stats := _entry_stats(sibling_cond)) is not None
-            }
-            # 2) New species in a dataset that already carries canonical stats:
-            #    inherit from a sibling of the SAME object_subset when one exists.
-            #    A brand-new body plan (the first genuinely aquatic quadruped, say)
-            #    has no such sibling; that used to be a hard fast-fail, on the
-            #    grounds that another subset's stats are out-of-distribution. Since
-            #    the position gain became a single globally shared constant
-            #    (canonical_features.collapse_stat_blocks), that is no longer true
-            #    of the part that matters: the cross-subset delta is a per-channel
-            #    mean (a rigid translation of the whole skeleton, bone lengths
-            #    exact) plus rotation/velocity gains (an amplitude bias). Neither
-            #    can deform a skeleton, so the case is a WARNING with a cross-subset
-            #    donor rather than a refusal to build the cond at all.
-            if not siblings_with_stats:
-                raise ValueError(
-                    f"No species in cond.npy carries canonical standardization stats "
-                    f"for '{object_name}' to inherit (the dataset predates canonical "
-                    f"features, or no species has been processed with rest geometry). "
-                    "Run regenerate_dataset_artifacts first to compute per-object_subset "
-                    "standardization statistics before merging new skeletons."
-                )
-            tags = _dataset_tags.dataset_tags()
-            target_subset = tags.object_subset_for(object_name)
-            if target_subset is None:
-                raise ValueError(
-                    f"'{object_name}' has no object_subset (missing species_tags.jsonl "
-                    "entry); cannot inherit canonical standardization stats. Register it "
-                    "in species_tags.jsonl before merging."
-                )
-            for sibling, stats in siblings_with_stats.items():
-                if tags.object_subset_for(sibling) == target_subset:
-                    chosen = stats
-                    break
-            if chosen is None:
-                donor, chosen = next(iter(siblings_with_stats.items()))
-                donor_subset = tags.object_subset_for(donor)
-                print(
-                    f"[WARN] no '{target_subset}' species in cond.npy carries canonical "
-                    f"standardization stats for new skeleton '{object_name}'; borrowing "
-                    f"'{donor}' (object_subset={donor_subset!r}). The shared position gain "
-                    "means this cannot deform the skeleton -- the mismatch is a rigid "
-                    "translation plus a rotation/velocity amplitude bias. Add a "
-                    "same-object_subset species (or regenerate the dataset) for an exact "
-                    "calibration."
-                )
-        if chosen is not None:
-            object_cond['canonical_feature_mean'] = np.asarray(chosen[0], dtype=np.float32)
-            object_cond['canonical_feature_std'] = np.asarray(chosen[1], dtype=np.float32)
+            raise ValueError(
+                f"No species in cond.npy carries canonical standardization stats "
+                f"for '{object_name}' to inherit (the dataset predates canonical "
+                f"features, or no species has been processed with rest geometry). "
+                "Run regenerate_dataset_artifacts first to compute the global "
+                "standardization statistics before merging new skeletons."
+            )
+        set_canonical_global_stats(object_cond, *chosen)
+    # Until the next stats pass measures this species' clips, its root-velocity
+    # and position-step losses keep full weight.
+    if object_cond.get(ROOT_VEL_LOSS_WEIGHT_KEY) is None or object_cond.get(DPOS_LOSS_WEIGHT_KEY) is None:
+        set_aux_loss_weights(object_cond)
     # tpose_reference_path is None for retarget/direct-input updates that reuse the
     # target's existing sidecar entry (preserved by _save_cond_with_tpose_sidecar).
     tpose_refs = {object_name: tpose_reference_path} if tpose_reference_path else None
@@ -1908,7 +1984,7 @@ def find_orphan_clips(dataset_dir=None, raw_data_dir=None, species_filter=None):
 
 
 def process_skeleton(object_name, face_joints, save_dir, tpose_path, reference_cond_path,
-                     crop_enabled=True):
+                     crop_enabled=True, motion_paths=None, action_group=None):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
@@ -1922,22 +1998,45 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, reference_c
     cond = dict()
     motion_metadata = {}
 
-    # Rest-pose only: generate cond.npy without motion file processing.
-    object_cond, max_joints, tpose_reference_path = _build_rest_pose_only_cond(
-        object_name,
-        tpose_path,
-        face_joints,
-        crop_enabled=crop_enabled,
-    )
-    # Rest-pose-only builds have no clips to calibrate the per-object_subset
-    # standardization stats from, and no sibling in this standalone cond to
-    # inherit them from. Pull them from the trained checkpoint's same-object_subset
-    # species (reference_cond_path, required) so the cond is usable for inference;
+    encoded_motions = []
+    if motion_paths:
+        # Animation files: the species root is resolved over them and each is
+        # encoded on the rest pose of ``tpose_path`` (the file's own bind pose).
+        object_cond, max_joints, tpose_reference_path, encoded_motions = encode_motion_files_on_rest_pose(
+            object_name, tpose_path, list(motion_paths), crop_enabled=crop_enabled,
+            action_group=action_group)
+    else:
+        # Rest-pose only: generate cond.npy without motion file processing.
+        object_cond, max_joints, tpose_reference_path = _build_rest_pose_only_cond(
+            object_name,
+            tpose_path,
+            face_joints,
+            crop_enabled=crop_enabled,
+        )
+    # Rest-pose-only builds have no clips to calibrate the global
+    # standardization stats from. Copy them from the trained checkpoint's cond
+    # (reference_cond_path, required) so the cond is usable for inference;
     # a missing reference fails fast here instead of at generation time.
     _inherit_canonical_stats_from_dataset(
         object_name, object_cond, reference_cond_path=reference_cond_path
     )
     cond[object_name] = object_cond
+    written_motions = []
+    for result in encoded_motions:
+        # Clips whose action names collide get a numeric suffix, so none overwrites another.
+        motion_name = f"{object_name}_{result['action']}.npy"
+        suffix = 1
+        while motion_name in written_motions:
+            suffix += 1
+            motion_name = f"{object_name}_{result['action']}_{suffix}.npy"
+        np.save(pjoin(save_dir, MOTION_DIR, motion_name), result['motion'].astype(np.float32))
+        written_motions.append(motion_name)
+        files_counter += 1
+        frames_counter += int(result['motion'].shape[0])
+    if written_motions:
+        objects_counter[object_name] = len(written_motions)
+        print(f"[process_skeleton] wrote {len(written_motions)} motion clip(s) to "
+              f"{pjoin(save_dir, MOTION_DIR)}: {', '.join(written_motions)}")
     # The checkpoint's cond already holds T5 vectors for its joint-name texts;
     # any text the new skeleton shares with it is reused, and a joint text it
     # never saw gets the blank name the model is trained to read as "unknown",

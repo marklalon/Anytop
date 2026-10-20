@@ -12,7 +12,7 @@ wrote) is annotation workflow, not dataset schema.
 They are one module rather than one copy per tool because the audit, the two
 slot prefills and the loop-flag prefill all use them: what "rewritten in
 place" means has to be defined once (抽共用而不是复制 --
-``docs/action_label_direction_slot_dropout.md``).
+``docs/action_group_and_label.md``).
 
 What the sidecar IS stays in ``motion_labels``: the file name, ``clip_key``,
 the vocabulary and canonical spelling, ``AUTOFILL_KEY``, ``set_loop_flag``.

@@ -13,6 +13,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     ROOT_Y_SOFT_CLAMP_KNEE,
     VERTICAL_CLAMP_MIN_RATIO,
     VERTICAL_CLAMP_MAX_RATIO,
+    VERTICAL_CLAMP_STANCE_HEADROOM,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import (
     dataset_tags,
@@ -522,10 +523,13 @@ def _positive_band(body_length, standing_height, min_ratio, max_ratio):
     The band bounds flight, so its knee never sits below the height the species
     stands at: a long-legged bird's pelvis rides above ``min_ratio`` of its span
     while it walks, and a knee under that compressed the stance itself and sank
-    the feet into the floor. Lifting the knee keeps the band's width, so the
-    excursion above the stance is bounded exactly as before.
+    the feet into the floor. The knee also clears a hop's worth of headroom above
+    the stance (``VERTICAL_CLAMP_STANCE_HEADROOM``), because a jump-attack from a
+    tall stance is not flight. Lifting the knee keeps the band's width, so the
+    excursion above it is bounded exactly as before.
     """
-    knee = max(body_length * min_ratio, standing_height or 0.0)
+    stance = standing_height or 0.0
+    knee = max(body_length * min_ratio, stance * (1.0 + VERTICAL_CLAMP_STANCE_HEADROOM))
     return knee, knee + body_length * (max_ratio - min_ratio)
 
 
