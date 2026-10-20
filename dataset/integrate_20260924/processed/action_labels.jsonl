@@ -32,7 +32,7 @@
 {"clip": "CU_Cat_StandDig", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true}
 {"clip": "CU_Cat_StandEat", "action_group": "stationary", "action_label": "idle, eat, crouch", "is_loop": true, "reviewed": true}
 {"clip": "CU_Cat_StandIdle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "CU_Cat_StandJump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": false, "reviewed": true}
+{"clip": "CU_Cat_StandJump", "action_group": "locomotion", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "CU_Cat_StandPunchR", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "CU_Cat_StandRun", "action_group": "locomotion", "action_label": "run, forward, scurry", "is_loop": true, "reviewed": true}
 {"clip": "CU_Cat_StandSmell", "action_group": "stationary", "action_label": "idle, sniff", "is_loop": true, "reviewed": true}
@@ -276,7 +276,7 @@
 {"clip": "LOL_Ahri_Spell1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
 {"clip": "LOL_Ahri_Spell2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, spin"}
 {"clip": "LOL_Ahri_Spell3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, cast"}
-{"clip": "LOL_Ahri_Spell4", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, run, left"}
+{"clip": "LOL_Ahri_Spell4", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "roll, run, left"}
 {"clip": "LOL_Akali_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, slash"}
 {"clip": "LOL_Akali_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, punch"}
 {"clip": "LOL_Akali_Crit", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, cast"}
@@ -419,7 +419,7 @@
 {"clip": "MXO_Human_RifleProneToKneel", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup, crawl, gun"}
 {"clip": "MXO_Human_RiflePutAway", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "sheathe, gun"}
 {"clip": "MXO_Human_RollForward", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, forward"}
-{"clip": "MXO_Human_RollLeft", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "roll, crawl, left, gun"}
+{"clip": "MXO_Human_RollLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, crawl, left, gun"}
 {"clip": "MXO_Human_RoundhouseKick", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, kick"}
 {"clip": "MXO_Human_RunForward", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "MXO_Human_RunningJump", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, forward"}
@@ -1079,7 +1079,7 @@
 {"clip": "DNL_Balrog_Sleep", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, sleep"}
 {"clip": "DNL_Balrog_Startled", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "DNL_Banshee_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, swat"}
-{"clip": "DNL_Banshee_Attack2", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "roll, fly, left"}
+{"clip": "DNL_Banshee_Attack2", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, fly, left"}
 {"clip": "DNL_Banshee_BigHurtLeft", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "DNL_Banshee_BigHurtRight", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "DNL_Banshee_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}

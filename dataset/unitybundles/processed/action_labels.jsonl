@@ -1793,15 +1793,15 @@
 {"clip": "RTH_Hero_JumpFull", "action_group": "locomotion", "action_label": "jump, up", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_JumpFullSpin", "action_group": "locomotion", "action_label": "roll, jump, forward", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_MoveBWDBattle", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
-{"clip": "RTH_Hero_MoveFWDBattle", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
-{"clip": "RTH_Hero_MoveFWDNormal", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "RTH_Hero_MoveFWDBattle", "action_group": "locomotion", "action_label": "run, forward, waddle", "is_loop": true, "reviewed": true}
+{"clip": "RTH_Hero_MoveFWDNormal", "action_group": "locomotion", "action_label": "run, forward, waddle", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_Push", "action_group": "locomotion", "action_label": "walk, forward, push", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_SenseSomethingSearching", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_SingleSwordAttack01", "action_group": "stationary", "action_label": "attack, right, slash", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_SingleSwordAttack02", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_SingleSwordAttack03", "action_group": "stationary", "action_label": "attack, right, stab", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_Sleeping", "action_group": "stationary", "action_label": "rest, sleep", "is_loop": true, "reviewed": true}
-{"clip": "RTH_Hero_SprintFWDBattle", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "RTH_Hero_SprintFWDBattle", "action_group": "locomotion", "action_label": "run, forward, waddle", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_Swimming", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_SwimmingFloating", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
 {"clip": "RTH_Hero_Victory", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
