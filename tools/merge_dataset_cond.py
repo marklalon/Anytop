@@ -204,7 +204,6 @@ def _recompute_canonical_stats(merged_cond, sources) -> tuple:
         f"[OK] recomputed canonical stats over {used} train clip(s) ({skipped} skipped), "
         f"pooled over {len(usable)} object_subset(s)"
     )
-    _report_aux_loss_weights(aux_weights)
     return mean, std
 
 
@@ -216,15 +215,6 @@ def _match_species(motion_name: str, species_by_name: dict[str, str]) -> str | N
         if motion_name.startswith(f"{species}_") and len(species) > best_len:
             best_key, best_len = key, len(species)
     return best_key
-
-
-def _report_aux_loss_weights(aux_weights) -> None:
-    capped = sorted(
-        (key, weights) for key, weights in aux_weights.items() if min(weights) < 1.0
-    )
-    print(f"[OK] root-velocity / position-step loss weights: {len(capped)} species scaled down")
-    for key, (root_vel_weight, dpos_weight) in capped:
-        print(f"     {key}: root_vel {root_vel_weight:.3f}  dpos {dpos_weight:.3f}")
 
 
 # ---------------------------------------------------------------------------
