@@ -33,16 +33,16 @@ pushd "%SCRIPT_DIR%"
 	--species_film_bottleneck 128 ^
 	--species_joint_cond ^
 	--ref_encoder ^
-	--ref_slots 3 ^
+	--ref_slots 2 ^
 	--ref_dim 8 ^
 	--ref_width 128 ^
 	--ref_layers 2 ^
-	--ref_cfg_drop_prob 0.5 ^
+	--ref_cfg_drop_prob 0.6 ^
 	--ref_leaf_drop_prob 0.2 ^
 	--ref_bone_length_aug_prob 0.3 ^
 	--ref_bone_length_aug 0.2 ^
 	--ref_joint_name_drop_prob 0.15 ^
-    --ref_label_drop_prob ^ 0.9 ^
+    --ref_label_drop_prob ^ 0.8 ^
 	--leaf_drop_prob 0.2 ^
 	--bone_length_aug_prob 0.3 ^
 	--bone_length_aug 0.2 ^
