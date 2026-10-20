@@ -230,19 +230,20 @@ class SpeciesHybridTest(unittest.TestCase):
         torch.nn.init.normal_(model.input_process.species_film_j[-1].weight, std=0.1)
         model.seqTransDecoder = _TimestepEchoDecoder()
         x = torch.randn(2, 4, 12, 3)
-        t = torch.tensor([1, 2])
+        t = torch.tensor([98, 99])
         y = _make_y(species_emb=torch.randn(2, T5_DIM))
         with torch.no_grad():
             cond = model(x, t, y=dict(y, species_active=torch.ones(2, dtype=torch.bool)))
             uncond = model(x, t, y=dict(y, species_active=torch.zeros(2, dtype=torch.bool)))
-            guided = ClassifierFreeSpeciesModel(model, 2.0)(x, t, y=y)
+            guided = ClassifierFreeSpeciesModel(model, 2.0, 100)(x, t, y=y)
         self.assertFalse(torch.allclose(cond, uncond))
         self.assertTrue(torch.allclose(guided, uncond + 2 * (cond - uncond)))
         self.assertNotIn('species_active', y)
 
     def test_species_cfg_requires_trained_joint_condition(self):
         from sample.conditioning import _wrap_species_cfg
-        args = types.SimpleNamespace(species_cfg_scale=2.0, species_cfg_drop_prob=0.15)
+        args = types.SimpleNamespace(species_cfg_scale=2.0, species_cfg_drop_prob=0.15,
+                                   diffusion_steps=100)
         with self.assertRaises(SystemExit):
             _wrap_species_cfg(_make_model(), args)
         args.species_cfg_drop_prob = 0.0
@@ -261,13 +262,13 @@ class SpeciesHybridTest(unittest.TestCase):
             for action_cfg in (False, True):
                 with self.subTest(scale=scale, action_cfg=action_cfg):
                     inner = Mock(return_value=torch.ones(2, 1, 1, 1))
-                    model = ClassifierFreeActionModel(inner, 2.0) if action_cfg else inner
+                    model = ClassifierFreeActionModel(inner, 2.0, 100) if action_cfg else inner
                     args = types.SimpleNamespace(species_active=False, species_cfg_scale=scale,
                                                  species_cfg_drop_prob=0.0)
                     wrapped = _wrap_species_cfg(model, args)
                     self.assertIs(wrapped, model)
                     y = {'species_active': torch.zeros(2, dtype=torch.bool)}
-                    wrapped(torch.zeros(2, 1, 1, 1), torch.zeros(2), y=y)
+                    wrapped(torch.zeros(2, 1, 1, 1), torch.full((2,), 99), y=y)
                     self.assertEqual(inner.call_count, 2 if action_cfg else 1)
 
 

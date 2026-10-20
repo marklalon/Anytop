@@ -198,7 +198,7 @@ Action label 使用受控词表，不接收自由文本。每个词先查 checkp
 
 各槽的通道拼接后由 MLP 投影并加到 timestep condition。训练时
 `action_label_cfg_drop_prob` 把部分样本送到 learned null embedding；推理时
-`action_label_cfg_scale>1` 用 conditional/unconditional 两次 forward 做 CFG。
+`action_label_cfg_scale>1` 用 conditional/unconditional 两次 forward 做 CFG，仅作用于高噪声半程（`t ≥ T/2`），细节步退回单次 conditional forward。
 
 `--action_label_adaln` 给同一个 action token 再加一路**乘性**通路：
 `GraphMotionDecoder.action_adaln` 一次 matmul 出全部层的 (γ, β)，每层拿自己的

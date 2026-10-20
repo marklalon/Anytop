@@ -131,7 +131,7 @@ name_vec  = text_embedding( modulated )                                  # Linea
 - 训练：`--species_cfg_drop_prob`（默认 0.15，`train_all.bat` 为 0.2）按样本抽样；被丢弃的样本**整条绕过 FiLM**，关节名嵌入原样进入 `text_embedding`（不是只把 species 输入置零——那样仍会保留一条由关节名驱动的 learned 条件路径）。
 - 带参考动作的行：目标物种 FiLM **一律 bypass**，训练和推理都是。参考提供运动内容，不再需要物种风格。
 - 推理 `--species_active`：显式开关。`--reference_motion` 为已编码的参考时默认 False，且不能与该参数同时给出。
-- 推理 `--species_cfg_scale`（默认 1.0 = 关）：每步额外一次 `species_active=False` 的前向，按 `uncond + s·(cond − uncond)` 组合。这里的"无条件"**只移除显式 species 调制**，关节名、骨架、结构通道、action label 等全部保留。
+- 推理 `--species_cfg_scale`（默认 1.0 = 关）：高噪声半程（`t ≥ T/2`）每步额外一次 `species_active=False` 的前向（细节步 scale 固定为 1，不额外前向），按 `uncond + s·(cond − uncond)` 组合。这里的"无条件"**只移除显式 species 调制**，关节名、骨架、结构通道、action label 等全部保留。
   - 前向次数：只开 species CFG 为 2 次/步；与 action CFG 同时开为 4 次/步；
   - 要求 checkpoint 用 `--species_joint_cond` 训练且 `species_cfg_drop_prob > 0`；带参考动作时 scale 必须为 1。
 

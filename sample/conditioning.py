@@ -206,9 +206,10 @@ def _wrap_action_label_cfg(model, args, action_condition):
         )
     print(
         f"[generate] action-label CFG: scale={scale:g} on "
-        f"{action_condition['action_label']!r} (2 model forwards per diffusion step)"
+        f"{action_condition['action_label']!r} (high-noise half of the steps; "
+        f"2 model forwards per step there, 1 on the detail steps)"
     )
-    return ClassifierFreeActionModel(model, scale)
+    return ClassifierFreeActionModel(model, scale, args.diffusion_steps)
 
 
 def _wrap_reference_cfg(model, args, action_condition):
@@ -252,7 +253,7 @@ def _wrap_species_cfg(model, args):
         )
     forwards = 4 if isinstance(model, ClassifierFreeActionModel) else 2
     print(f"[generate] species CFG: scale={scale:g} ({forwards} model forwards per diffusion step)")
-    return ClassifierFreeSpeciesModel(model, scale)
+    return ClassifierFreeSpeciesModel(model, scale, args.diffusion_steps)
 
 
 def _coerce_loop_flag(flag):

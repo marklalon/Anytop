@@ -288,13 +288,13 @@ python sample/generate.py ... --action_label "run, forward, fast"
 
 ### 7.2 CFG：`--action_label_cfg_scale`
 
-`ClassifierFreeActionModel`（`model/cfg_sampler.py`）每步顺序跑两次前向——一次带标签，一次把 `action_label_active` 强制为 False——在 x0 上外推：
+`ClassifierFreeActionModel`（`model/cfg_sampler.py`）在高噪声半程（`t ≥ T/2`）每步顺序跑两次前向——一次带标签，一次把 `action_label_active` 强制为 False——在 x0 上外推：
 
 ```
 out = out_uncond + s * (out_cond - out_uncond)
 ```
 
-- 默认 1.0 = 关闭，每步 1 次前向；>1 采样耗时翻倍。
+- 默认 1.0 = 关闭，每步 1 次前向；>1 时只有高噪声半程做两次前向，细节步（`t < T/2`）scale 固定为 1、单次前向（`CFG_SWITCH` / `CFG_LATE_SCALE`）。
 - 只有 action 条件被引导，两次前向之间除这个掩码外逐位相同（species FiLM、canonical frame、loop 等在差分里抵消）。
 - 要求：给了 `--action_label`，且 checkpoint 的 `action_label_cfg_drop_prob > 0`（否则没有无条件模态可引导），scale ≥ 0；服务端同样校验（并用 `ValueError` 而非 `sys.exit`）。
 - **实践建议**（来自对 checkpoint 的实测，不是超参调优）：语料内的标签用 2；模型没见过的词组合用 1（标签越没被拟合，外推方向越不可靠）；≥ 4 会明显劣化，不建议。

@@ -36,9 +36,17 @@ class ClassifierFreeActionModel(nn.Module):
     attention actually computed -- both passes here run the full model.
     """
 
-    def __init__(self, model, guidance_scale):
+    # Noise level t / T below which the late scale takes over.
+    CFG_SWITCH = 0.5
+    # Scale on the low-noise detail steps: the plain conditional prediction.
+    CFG_LATE_SCALE = 1.0
+
+    def __init__(self, model, guidance_scale, num_timesteps):
         super().__init__()
         self.model = model
+        if int(num_timesteps) <= 0:
+            raise ValueError(f'num_timesteps must be positive, got {num_timesteps}')
+        self.switch_t = self.CFG_SWITCH * int(num_timesteps)
         guidance_scale = float(guidance_scale)
         if not math.isfinite(guidance_scale):
             raise ValueError(f"guidance_scale must be finite, got {guidance_scale}")
@@ -61,9 +69,26 @@ class ClassifierFreeActionModel(nn.Module):
                 raise
             return getattr(inner, name)
 
+    def _staged_scale(self, scale, timesteps):
+        """``scale`` on the high-noise half of the steps, ``CFG_LATE_SCALE`` below
+        the switch: a float, or a (B, 1, 1, 1) tensor when rows of one batch sit
+        on different sides of it."""
+        early = timesteps >= self.switch_t
+        if bool(early.all()):
+            return scale
+        if not bool(early.any()):
+            return self.CFG_LATE_SCALE
+        guided = torch.where(early, scale, self.CFG_LATE_SCALE)
+        return guided.to(torch.float32)[:, None, None, None]
+
+    @staticmethod
+    def _is_identity(scale):
+        return bool((scale == 1.0).all()) if torch.is_tensor(scale) else scale == 1.0
+
     def forward(self, x, timesteps, y=None, **kwargs):
         cond_out = self.model(x, timesteps, y=y, **kwargs)
-        if self.guidance_scale == 1.0:
+        scale = self._staged_scale(self.guidance_scale, timesteps)
+        if self._is_identity(scale):
             return cond_out
         uncond_y = dict(y or {})
         # Force the null condition for every row. _resolve_action_label_active
@@ -73,7 +98,7 @@ class ClassifierFreeActionModel(nn.Module):
             x.shape[0], dtype=torch.bool, device=x.device
         )
         uncond_out = self.model(x, timesteps, y=uncond_y, **kwargs)
-        return uncond_out + self.guidance_scale * (cond_out - uncond_out)
+        return uncond_out + scale * (cond_out - uncond_out)
 
 
 class ClassifierFreeSpeciesModel(ClassifierFreeActionModel):
@@ -84,14 +109,15 @@ class ClassifierFreeSpeciesModel(ClassifierFreeActionModel):
 
     def forward(self, x, timesteps, y=None, **kwargs):
         cond_out = self.model(x, timesteps, y=y, **kwargs)
-        if self.guidance_scale == 1.0:
+        scale = self._staged_scale(self.guidance_scale, timesteps)
+        if self._is_identity(scale):
             return cond_out
         uncond_y = dict(y or {})
         uncond_y['species_active'] = torch.zeros(
             x.shape[0], dtype=torch.bool, device=x.device
         )
         uncond_out = self.model(x, timesteps, y=uncond_y, **kwargs)
-        return uncond_out + self.guidance_scale * (cond_out - uncond_out)
+        return uncond_out + scale * (cond_out - uncond_out)
 
 
 class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
@@ -102,44 +128,28 @@ class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
     keeps whatever ``y['species_active']`` says; encode sets it False, which makes
     species identical across all passes.
 
-    ``ref_scale`` applies only to the high-noise steps, where global posture
-    (facing, body height) is settled; the detail steps below
-    ``REF_CFG_SWITCH * num_timesteps`` use ``REF_CFG_LATE_SCALE``, so a high
-    scale shapes the pose without carrying its artifacts into the details.
+    ``ref_scale`` and ``text_scale`` apply only to the high-noise steps, where
+    global posture (facing, body height) is settled; the detail steps below
+    ``CFG_SWITCH * num_timesteps`` use ``CFG_LATE_SCALE``, so a high scale shapes
+    the pose without carrying its artifacts into the details.
     ``timesteps`` are the original-schedule indices the respaced diffusion hands
     the model, so ``num_timesteps`` is the training ``--diffusion_steps``.
     """
-    # Noise level t / T below which the late scale takes over.
-    REF_CFG_SWITCH = 0.5
-    # Reference scale on the low-noise detail steps: the plain reference prediction.
-    REF_CFG_LATE_SCALE = 1.0
 
     def __init__(self, model, ref_scale, text_scale, use_text, num_timesteps):
-        super().__init__(model, ref_scale)
+        super().__init__(model, ref_scale, num_timesteps)
         if not math.isfinite(float(text_scale)) or float(text_scale) < 0:
             raise ValueError('text_scale must be finite and >= 0')
-        if int(num_timesteps) <= 0:
-            raise ValueError(f'num_timesteps must be positive, got {num_timesteps}')
         self.text_scale, self.use_text = float(text_scale), bool(use_text)
-        self.switch_t = self.REF_CFG_SWITCH * int(num_timesteps)
-
-    def _ref_scale(self, timesteps):
-        """Reference scale for this step: a float, or a (B, 1, 1, 1) tensor when
-        rows of one batch sit on different sides of the switch."""
-        early = timesteps >= self.switch_t
-        if bool(early.all()):
-            return self.guidance_scale
-        if not bool(early.any()):
-            return self.REF_CFG_LATE_SCALE
-        scale = torch.where(early, self.guidance_scale, self.REF_CFG_LATE_SCALE)
-        return scale.to(torch.float32)[:, None, None, None]
 
     def forward(self, x, timesteps, y=None, **kwargs):
         # Expand the composition so branches with zero weight need no forward:
         # (1 - ref_scale) * base + (ref_scale - text_scale) * ref
         # + text_scale * full. Without a text prompt, text_scale is zero.
-        text_scale = self.text_scale if self.use_text else 0.0
-        ref_scale = self._ref_scale(timesteps)
+        text_scale = (
+            self._staged_scale(self.text_scale, timesteps) if self.use_text else 0.0
+        )
+        ref_scale = self._staged_scale(self.guidance_scale, timesteps)
         base_weight = 1.0 - ref_scale
         ref_weight = ref_scale - text_scale
         out = None
@@ -159,7 +169,7 @@ class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
             ref = self.model(x, timesteps, y=ref_y, **kwargs)
             term = ref_weight * ref
             out = term if out is None else out + term
-        if text_scale != 0.0:
+        if nonzero(text_scale):
             full = self.model(x, timesteps, y=y, **kwargs)
             term = text_scale * full
             out = term if out is None else out + term

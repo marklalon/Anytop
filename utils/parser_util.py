@@ -766,9 +766,9 @@ def add_generate_options(parser):
                        help="Classifier-free guidance scale over --action_label. 1.0 (default) = "
                             "off: one forward per diffusion step, the conditional prediction as-is. "
                             ">1 amplifies the prompt by extrapolating away from the model's own "
-                            "unconditional prediction (x0_uncond + s*(x0_cond - x0_uncond)), at 2x "
-                            "sampling cost since every step then runs a conditional AND an "
-                            "unconditional forward. Requires "
+                            "unconditional prediction (x0_uncond + s*(x0_cond - x0_uncond)) on the "
+                            "high-noise half of the steps, where global posture is decided; the "
+                            "detail steps use 1 (plain conditional, one forward). Requires "
                             "--action_label and a checkpoint trained with a non-zero "
                             "--action_label_cfg_drop_prob (without it there is no unconditional "
                             "mode to guide away from).")
@@ -783,8 +783,9 @@ def add_generate_options(parser):
                             "Incompatible with --object_type all.")
     group.add_argument("--species_cfg_scale", default=1.0, type=float,
                        help="Classifier-free guidance scale over the species descriptor's "
-                            "droppable FiLM path. 1.0 (default) uses one forward; any other "
-                            "scale uses two (four when action-label CFG is also enabled). "
+                            "droppable FiLM path, applied on the high-noise half of the steps "
+                            "only (the detail steps use 1). 1.0 (default) uses one forward; any "
+                            "other scale uses two on the high-noise steps (four with action-label CFG). "
                             "The unconditional pass bypasses per-joint species FiLM. "
                             "Ignored when --species_active false, with no extra species forwards. "
                             "Requires a checkpoint trained with --species_joint_cond and non-zero "
