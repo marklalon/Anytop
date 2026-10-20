@@ -1,22 +1,22 @@
-{"motion": "SYN_Dog_Hind2.npy", "source": "truebones/zoo_upgrade/Bear_Hind2.npy"}
-{"motion": "SYN_Dog_Idle01.npy", "source": "unitybundles/KI_Human_Idle01.npy"}
-{"motion": "SYN_Dog_StandingJump.npy", "source": "integrate_20260924/MXO_Human_StandingJump.npy"}
-{"motion": "SYN_Dog_Walk01Forwards.npy", "source": "unitybundles/KI_Human_Walk01Forwards.npy"}
-{"motion": "SYN_Elephant_Hind2.npy", "source": "truebones/zoo_upgrade/Bear_Hind2.npy"}
-{"motion": "SYN_Elephant_Idle01.npy", "source": "unitybundles/KI_Human_Idle01.npy"}
-{"motion": "SYN_Elephant_StandingJump.npy", "source": "integrate_20260924/MXO_Human_StandingJump.npy"}
-{"motion": "SYN_Elephant_Walk01Forwards.npy", "source": "unitybundles/KI_Human_Walk01Forwards.npy"}
-{"motion": "SYN_Horse_Hind2.npy", "source": "truebones/zoo_upgrade/Bear_Hind2.npy"}
-{"motion": "SYN_Horse_Idle01.npy", "source": "unitybundles/KI_Human_Idle01.npy"}
-{"motion": "SYN_Horse_StandingJump.npy", "source": "integrate_20260924/MXO_Human_StandingJump.npy"}
-{"motion": "SYN_Horse_Walk01Forwards.npy", "source": "unitybundles/KI_Human_Walk01Forwards.npy"}
-{"motion": "SYN_IAC_Caveman_Attack.npy", "source": "truebones/zoo/Dog_Attack.npy"}
-{"motion": "SYN_IAC_Caveman_Idle.npy", "source": "truebones/zoo/Bear_Idle.npy"}
-{"motion": "SYN_IAC_Caveman_Trot.npy", "source": "truebones/zoo/Bear_Trot.npy"}
-{"motion": "SYN_KI_Human_StandIdle.npy", "source": "integrate_20260924/CU_Cat_StandIdle.npy"}
-{"motion": "SYN_KI_Human_StandWalk.npy", "source": "integrate_20260924/CU_Cat_StandWalk.npy"}
-{"motion": "SYN_LH_Hero_Attack.npy", "source": "truebones/zoo/Dog_Attack.npy"}
-{"motion": "SYN_LH_Hero_Idle.npy", "source": "truebones/zoo/Bear_Idle.npy"}
-{"motion": "SYN_LH_Hero_Trot.npy", "source": "truebones/zoo/Bear_Trot.npy"}
-{"motion": "SYN_MXO_Human_Idle.npy", "source": "truebones/zoo/Monkey_Idle1.npy"}
-{"motion": "SYN_MXO_Human_Run.npy", "source": "truebones/zoo/Monkey_Run.npy"}
+{"motion": "SYN_Dog_Hind2.npy", "source": "truebones/zoo_upgrade/Bear_Hind2.npy", "reviewed": true}
+{"motion": "SYN_Dog_Idle01.npy", "source": "unitybundles/KI_Human_Idle01.npy", "reviewed": true}
+{"motion": "SYN_Dog_StandingJump.npy", "source": "integrate_20260924/MXO_Human_StandingJump.npy", "reviewed": true}
+{"motion": "SYN_Dog_Walk01Forwards.npy", "source": "unitybundles/KI_Human_Walk01Forwards.npy", "reviewed": true}
+{"motion": "SYN_Elephant_Hind2.npy", "source": "truebones/zoo_upgrade/Bear_Hind2.npy", "reviewed": true}
+{"motion": "SYN_Elephant_Idle01.npy", "source": "unitybundles/KI_Human_Idle01.npy", "reviewed": true}
+{"motion": "SYN_Elephant_StandingJump.npy", "source": "integrate_20260924/MXO_Human_StandingJump.npy", "reviewed": true}
+{"motion": "SYN_Elephant_Walk01Forwards.npy", "source": "unitybundles/KI_Human_Walk01Forwards.npy", "reviewed": true}
+{"motion": "SYN_Horse_Hind2.npy", "source": "truebones/zoo_upgrade/Bear_Hind2.npy", "reviewed": true}
+{"motion": "SYN_Horse_Idle01.npy", "source": "unitybundles/KI_Human_Idle01.npy", "reviewed": true}
+{"motion": "SYN_Horse_StandingJump.npy", "source": "integrate_20260924/MXO_Human_StandingJump.npy", "reviewed": true}
+{"motion": "SYN_Horse_Walk01Forwards.npy", "source": "unitybundles/KI_Human_Walk01Forwards.npy", "reviewed": true}
+{"motion": "SYN_IAC_Caveman_Attack.npy", "source": "truebones/zoo/Dog_Attack.npy", "reviewed": true}
+{"motion": "SYN_IAC_Caveman_Idle.npy", "source": "truebones/zoo/Bear_Idle.npy", "reviewed": true}
+{"motion": "SYN_IAC_Caveman_Trot.npy", "source": "truebones/zoo/Bear_Trot.npy", "reviewed": true}
+{"motion": "SYN_KI_Human_StandIdle.npy", "source": "integrate_20260924/CU_Cat_StandIdle.npy", "reviewed": true}
+{"motion": "SYN_KI_Human_StandWalk.npy", "source": "integrate_20260924/CU_Cat_StandWalk.npy", "reviewed": true}
+{"motion": "SYN_LH_Hero_Attack.npy", "source": "truebones/zoo/Dog_Attack.npy", "reviewed": true}
+{"motion": "SYN_LH_Hero_Idle.npy", "source": "truebones/zoo/Bear_Idle.npy", "reviewed": true}
+{"motion": "SYN_LH_Hero_Trot.npy", "source": "truebones/zoo/Bear_Trot.npy", "reviewed": true}
+{"motion": "SYN_MXO_Human_Idle.npy", "source": "truebones/zoo/Monkey_Idle1.npy", "reviewed": true}
+{"motion": "SYN_MXO_Human_Run.npy", "source": "truebones/zoo/Monkey_Run.npy", "reviewed": true}

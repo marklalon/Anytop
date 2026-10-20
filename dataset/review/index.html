@@ -387,7 +387,11 @@
   </div>
   <button id="clean" disabled title="清理当前数据集所有标记为待删除的动作">清理待删除</button>
 
-  <a href="/joints" style="color:var(--accent);text-decoration:none" title="关节名 / EmbedText 预览页">关节名 ↗</a>
+  <select id="nav" title="切换页面">
+    <option value="/" selected>动作标签</option>
+    <option value="/joints">关节名</option>
+    <option value="/references">参考组</option>
+  </select>
 
   <div class="pager">
     <button id="prev">上一页</button>
@@ -1413,6 +1417,9 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') $('moreMenu').open = false;
 });
 
+// Page switcher; pageshow resets it after a back-navigation restores the page.
+$('nav').onchange = () => { location.href = $('nav').value; };
+window.addEventListener('pageshow', () => { $('nav').value = '/'; });
 load();
 </script>
 </body>

@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>参考组审核</title>
+<style>
+  :root {
+    --bg: #303030;
+    --card: #3a3a3a;
+    --card-edge: #4a4a4a;
+    --text: #e6e6e6;
+    --dim: #9a9a9a;
+    --accent: #6fa8ff;
+    --ok: #4caf50;
+    --warn: #e0704a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.45 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: #262626;
+    border-bottom: 1px solid #1c1c1c;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  }
+  header .spacer { flex: 1; }
+  label.f { color: var(--dim); font-size: 12px; }
+  select, input[type=search], input[type=number], button {
+    background: #3d3d3d;
+    color: var(--text);
+    border: 1px solid var(--card-edge);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font: inherit;
+  }
+  select#dataset { border-color: var(--accent); max-width: 300px; }
+  input[type=search] { width: 200px; }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  .counts { color: var(--dim); font-size: 12px; }
+  .counts b { color: var(--text); font-weight: 600; }
+
+  .pager { display: flex; align-items: center; gap: 6px; }
+  .pager .page-of { color: var(--dim); min-width: 90px; text-align: center; }
+  .pager input { width: 62px; text-align: center; }
+
+  main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+
+  .grp {
+    background: #2b2b2b;
+    border: 1px solid var(--card-edge);
+    border-radius: 6px;
+    padding: 10px 12px 12px;
+  }
+  .grp.reviewed { border: 2px solid #43a047; }
+  .grp.saving { opacity: .55; pointer-events: none; }
+  .grp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .grp-head .gid { font-weight: 600; }
+  .grp-head .meta { color: var(--dim); font-size: 12px; }
+  .grp-head .bad { color: #ffb79c; font-size: 12px; }
+  .grp-head .spacer { flex: 1; }
+  .approve { padding: 3px 9px; background: #454545; font-size: 12px; }
+  .approve:hover:not(:disabled) { border-color: var(--ok); color: var(--ok); }
+  .unreview { color: #53d656; font-weight: 600; }
+  .unreview:hover:not(:disabled) { color: var(--warn); border-color: var(--warn); }
+
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; }
+  .card {
+    width: 224px;
+    background: var(--card);
+    border: 1px solid var(--card-edge);
+    border-radius: 5px;
+    overflow: hidden;
+  }
+  .card.broken { border-color: #b4552f; }
+  .thumb { position: relative; width: 224px; height: 224px; background: #202020; }
+  .thumb img { display: block; width: 224px; height: 224px; }
+  .thumb.failed { cursor: pointer; }
+  .thumb.failed::after {
+    content: 'GIF 加载失败 · 点击重试';
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--warn); font-size: 12px;
+    text-align: center; padding: 0 8px;
+  }
+  .clip {
+    position: absolute; top: 0; left: 0; right: 0;
+    padding: 3px 26px 3px 6px;   /* the right end is the remove button's */
+    background: rgba(0,0,0,.62);
+    color: #fff;
+    font-size: 11px;
+    text-decoration: none;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .clip.link:hover { color: var(--accent); text-decoration: underline; }
+  .clip.link:visited { color: #fff; }
+  .remove {
+    position: absolute; top: 0; right: 0;
+    width: 24px; height: 21px;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent; border: none; border-radius: 0;
+    color: #cfcfcf; padding: 0; font-size: 14px; line-height: 1;
+  }
+  .remove:hover:not(:disabled) { color: #fff; background: rgba(180,85,47,.92); }
+  .ds-tag {
+    position: absolute; bottom: 0; left: 0;
+    padding: 2px 6px;
+    background: rgba(0,0,0,.55);
+    color: var(--dim);
+    font-size: 10px;
+    max-width: 100%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .info { padding: 5px 6px 6px; display: flex; flex-direction: column; gap: 2px; }
+  .info .label { word-break: break-word; }
+  .info .label.none { color: var(--dim); }
+  .info .sig { color: var(--dim); font-size: 11px; }
+  .info .sig.odd { color: #ffb79c; }
+  .info .err { color: #ff8a80; font-size: 11px; }
+
+  .empty { padding: 60px; text-align: center; color: var(--dim); }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    padding: 9px 16px; border-radius: 4px;
+    background: var(--warn); color: #fff;
+    box-shadow: 0 3px 12px rgba(0,0,0,.5);
+    display: none;
+    z-index: 50;
+  }
+</style>
+</head>
+<body>
+<header>
+  <label class="f" for="dataset">数据集</label>
+  <select id="dataset"><option value="">加载中…</option></select>
+
+  <label class="f" for="state">状态</label>
+  <select id="state">
+    <option value="all">all</option>
+    <option value="todo">未审核</option>
+    <option value="done">已审核</option>
+    <option value="odd">帧数/loop 不一致</option>
+  </select>
+
+  <input type="search" id="q" placeholder="搜索 clip">
+
+  <span class="counts" id="counts"></span>
+  <span class="spacer"></span>
+
+  <button id="refresh" title="重新读取 reference_pairs.jsonl（保留筛选、页码与滚动位置）">刷新</button>
+
+  <select id="nav" title="切换页面">
+    <option value="/">动作标签</option>
+    <option value="/joints">关节名</option>
+    <option value="/references" selected>参考组</option>
+  </select>
+
+  <div class="pager">
+    <button id="prev">上一页</button>
+    <span class="page-of" id="pageOf">- / -</span>
+    <input id="jump" type="number" min="1" value="1">
+    <button id="next">下一页</button>
+  </div>
+</header>
+
+<main id="list"></main>
+<div id="toast"></div>
+
+<script>
+const PAGE_SIZE = 20;   // groups per page
+const $ = (id) => document.getElementById(id);
+const DS_KEY = 'referenceReview.dataset';
+
+let ds = null;      // selected dataset id
+let groups = [];    // server truth for the selected dataset, in file order
+let view = [];      // current filtered subset
+let page = 1;
+
+// Only cards near the viewport carry a GIF src (see index.html).
+const io = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    const img = e.target;
+    if (e.isIntersecting) {
+      img.dataset.live = '1';
+      if (!img.getAttribute('src')) img.src = img.dataset.src;
+    } else {
+      delete img.dataset.live;
+      img.removeAttribute('src');
+    }
+  }
+}, { rootMargin: '500px 0px', threshold: 0 });
+
+function dropImgs(root) {
+  for (const img of root.querySelectorAll('img')) {
+    io.unobserve(img);
+    img.onload = img.onerror = null;
+    img.removeAttribute('src');
+  }
+}
+
+const stripNpy = (clip) => clip.replace(/\.npy$/i, '');
+const gifOf = (m) => 'gif/' + encodeURIComponent(m.dataset) + '/' + stripNpy(m.clip) + '.gif';
+const memberKeys = (g) => g.members.map((m) => m.key);
+// The training loader requires one (length, is_loop) across a group.
+const signature = (m) => (m.frames ?? '?') + '|' + (m.is_loop === true ? 'loop' : m.is_loop === false ? 'once' : '?');
+function oddMembers(g) {
+  const tally = new Map();
+  for (const m of g.members) tally.set(signature(m), (tally.get(signature(m)) || 0) + 1);
+  if (tally.size <= 1) return new Set();
+  const majority = [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  return new Set(g.members.filter((m) => signature(m) !== majority).map((m) => m.key));
+}
+const isOdd = (g) => oddMembers(g).size > 0 || g.members.some((m) => m.error);
+
+function toast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { el.style.display = 'none'; }, 3500);
+}
+
+async function api(url, body) {
+  const res = await fetch(url, body ? {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  } : { cache: 'no-store' });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.status);
+  return data;
+}
+
+const dsOptionText = (d) => d.error
+  ? d.name + '（读取失败）'
+  : d.name + '（已审核 ' + d.reviewed + ' / ' + d.groups + ' 组）';
+
+async function loadDatasets() {
+  let list;
+  try {
+    list = (await api('api/references/datasets')).datasets;
+  } catch (err) {
+    toast('读取数据集清单失败：' + err.message + '（请通过 serve.py 打开本页）');
+    return false;
+  }
+  if (!list.length) {
+    $('dataset').innerHTML = '<option value="">（没有数据集带 reference_pairs.jsonl）</option>';
+    return false;
+  }
+  let saved = null;
+  try { saved = localStorage.getItem(DS_KEY); } catch (err) { /* per-viewer convenience only */ }
+  ds = list.some((d) => d.id === saved) ? saved : list[0].id;
+  $('dataset').innerHTML = list.map((d) =>
+    '<option value="' + d.id + '">' + dsOptionText(d) + '</option>').join('');
+  $('dataset').value = ds;
+  return true;
+}
+
+async function refreshDatasetCounts() {
+  try {
+    const list = (await api('api/references/datasets')).datasets;
+    for (const opt of $('dataset').options) {
+      const d = list.find((x) => x.id === opt.value);
+      if (d) opt.textContent = dsOptionText(d);
+    }
+  } catch (err) { /* option labels only */ }
+}
+
+async function load(keepView) {
+  if (!ds && !(await loadDatasets())) return;
+  try {
+    groups = (await api('api/references?ds=' + encodeURIComponent(ds))).groups;
+  } catch (err) {
+    toast('读取 ' + ds + ' 的 reference_pairs.jsonl 失败：' + err.message);
+    return;
+  }
+  applyFilters(keepView, keepView);
+}
+
+function applyFilters(keepPage, keepScroll) {
+  const s = $('state').value;
+  const q = $('q').value.trim().toLowerCase();
+  view = groups.filter((g) => {
+    if (s === 'todo' && g.reviewed) return false;
+    if (s === 'done' && !g.reviewed) return false;
+    if (s === 'odd' && !isOdd(g)) return false;
+    if (q && !g.members.some((m) => m.key.toLowerCase().includes(q))) return false;
+    return true;
+  });
+  if (!keepPage) page = 1;
+  render(keepScroll);
+}
+
+function counts() {
+  const done = groups.filter((g) => g.reviewed).length;
+  const odd = groups.filter(isOdd).length;
+  $('counts').innerHTML = '已审核 <b>' + done + '</b> / ' + groups.length + ' 组' +
+    (odd ? ' &nbsp;·&nbsp; <span style="color:#ffb79c">不一致 <b>' + odd + '</b></span>' : '') +
+    ' &nbsp;·&nbsp; 当前筛选 <b>' + view.length + '</b>';
+}
+
+function render(keepScroll) {
+  const y = keepScroll ? window.scrollY : 0;
+  const pages = Math.max(1, Math.ceil(view.length / PAGE_SIZE));
+  page = Math.min(Math.max(1, page), pages);
+  counts();
+  $('pageOf').textContent = page + ' / ' + pages;
+  $('jump').value = page;
+  $('jump').max = pages;
+  $('prev').disabled = page <= 1;
+  $('next').disabled = page >= pages;
+
+  const list = $('list');
+  dropImgs(list);
+  list.textContent = '';
+  const slice = view.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  if (!slice.length) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = '没有匹配的参考组';
+    list.appendChild(e);
+    return;
+  }
+  for (const g of slice) list.appendChild(groupEl(g));
+  window.scrollTo(0, y);
+}
+
+function groupEl(g) {
+  const el = document.createElement('section');
+  el.className = 'grp' + (g.reviewed ? ' reviewed' : '');
+  const odd = oddMembers(g);
+
+  const head = document.createElement('div');
+  head.className = 'grp-head';
+  const gid = document.createElement('span');
+  gid.className = 'gid';
+  gid.textContent = '#' + (groups.indexOf(g) + 1);
+  const meta = document.createElement('span');
+  meta.className = 'meta';
+  meta.textContent = g.members.length + ' 个样本 · ' + g.lines + ' 行';
+  head.append(gid, meta);
+  if (odd.size) {
+    const bad = document.createElement('span');
+    bad.className = 'bad';
+    bad.textContent = '⚠ 帧数 / is_loop 不一致（训练加载会报错）';
+    head.appendChild(bad);
+  }
+  const spacer = document.createElement('span');
+  spacer.className = 'spacer';
+  head.appendChild(spacer);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  if (g.reviewed) {
+    btn.className = 'unreview';
+    btn.textContent = '✓ 已审核';
+    btn.title = '点击取消审核（去掉整组的 reviewed 标记）';
+  } else {
+    btn.className = 'approve';
+    btn.textContent = 'OK';
+    btn.title = '整组每一行写入 "reviewed": true';
+  }
+  btn.onclick = () => review(el, g, !g.reviewed);
+  head.appendChild(btn);
+
+  const cards = document.createElement('div');
+  cards.className = 'cards';
+  for (const m of g.members) cards.appendChild(card(el, g, m, odd.has(m.key)));
+  el.append(head, cards);
+  return el;
+}
+
+function card(groupNode, g, m, odd) {
+  const el = document.createElement('div');
+  el.className = 'card' + (m.error ? ' broken' : '');
+
+  const thumb = document.createElement('div');
+  thumb.className = 'thumb';
+  const img = document.createElement('img');
+  img.width = 224;
+  img.height = 224;
+  img.decoding = 'async';
+  img.alt = '';
+  img.dataset.src = gifOf(m);
+  img.onload = () => thumb.classList.remove('failed');
+  img.onerror = () => {
+    if (!img.getAttribute('src')) return;
+    img.removeAttribute('src');
+    const tries = (img._tries = (img._tries || 0) + 1);
+    if (tries > 2) { thumb.classList.add('failed'); return; }
+    setTimeout(() => {
+      if (img.isConnected && img.dataset.live) img.src = img.dataset.src + '?r=' + tries;
+    }, 400 * tries);
+  };
+  thumb.onclick = () => {
+    if (!thumb.classList.contains('failed')) return;
+    thumb.classList.remove('failed');
+    img._tries = 0;
+    img.src = img.dataset.src + '?r=manual' + Date.now();
+  };
+  io.observe(img);
+
+  const name = document.createElement(m.bvhview ? 'a' : 'div');
+  name.className = 'clip' + (m.bvhview ? ' link' : '');
+  if (m.bvhview) { name.href = m.bvhview; name.rel = 'noopener'; }
+  name.textContent = stripNpy(m.clip);
+  name.title = m.key + (m.bvhview ? '\n在 BVH 查看器中打开' : '');
+
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'remove';
+  remove.textContent = '✕';
+  remove.title = '从参考组剔除（只改 reference_pairs.jsonl，不删 clip）';
+  remove.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    removeMember(groupNode, g, m);
+  };
+
+  const tag = document.createElement('div');
+  tag.className = 'ds-tag';
+  tag.textContent = m.dataset;
+  thumb.append(img, name, remove, tag);
+
+  const info = document.createElement('div');
+  info.className = 'info';
+  const label = document.createElement('div');
+  label.className = 'label' + (m.action_label ? '' : ' none');
+  label.textContent = m.action_label || '（无 action_label）';
+  const sig = document.createElement('div');
+  sig.className = 'sig' + (odd ? ' odd' : '');
+  sig.textContent = (m.frames != null ? m.frames + ' 帧' : '? 帧') + ' · ' +
+    (m.is_loop === true ? '↻ 循环' : m.is_loop === false ? '→ 单次' : '? loop 未判定');
+  info.append(label, sig);
+  if (m.error) {
+    const err = document.createElement('div');
+    err.className = 'err';
+    err.textContent = '⚠ ' + m.error;
+    info.appendChild(err);
+  }
+  el.append(thumb, info);
+  return el;
+}
+
+async function review(el, g, reviewed) {
+  el.classList.add('saving');
+  try {
+    await api('api/references/review', {
+      dataset: ds, member: g.members[0].key, members: memberKeys(g), reviewed,
+    });
+    g.reviewed = reviewed;
+    // An approved group may leave the 未审核 filter; keep page and scroll.
+    applyFilters(true, true);
+    refreshDatasetCounts();
+  } catch (err) {
+    toast('保存失败：' + err.message);
+    el.classList.remove('saving');
+  }
+}
+
+async function removeMember(el, g, m) {
+  const local = g.members.filter((x) => x.key !== m.key && x.dataset === ds);
+  const dissolves = g.members.length <= 2 || !local.length;
+  const ok = confirm(
+    '从参考组 #' + (groups.indexOf(g) + 1) + ' 剔除 ' + m.key + '？\n\n' +
+    (dissolves
+      ? '剔除后这一组不再成组，相关行全部从 reference_pairs.jsonl 删除。'
+      : '删除所有提到它的行；其余样本仍保持为一组（必要时自动补连接行）。\n整组的 reviewed 标记会清除。') +
+    '\n\n不会删除任何 clip 文件。');
+  if (!ok) return;
+  el.classList.add('saving');
+  try {
+    await api('api/references/remove', { dataset: ds, member: m.key, members: memberKeys(g) });
+  } catch (err) {
+    toast('剔除失败：' + err.message);
+    el.classList.remove('saving');
+    return;
+  }
+  // Re-read: the server may have re-linked the rest of the group.
+  await load(true);
+  refreshDatasetCounts();
+}
+
+$('dataset').onchange = () => {
+  const next = $('dataset').value;
+  if (!next || next === ds) return;
+  ds = next;
+  try { localStorage.setItem(DS_KEY, ds); } catch (err) { /* per-viewer convenience only */ }
+  groups = [];
+  page = 1;
+  window.scrollTo({ top: 0 });
+  load(false);
+};
+$('state').onchange = () => applyFilters();
+$('q').oninput = () => {
+  clearTimeout($('q')._t);
+  $('q')._t = setTimeout(() => applyFilters(), 200);
+};
+// Page switcher; pageshow resets it after a back-navigation restores the page.
+$('nav').onchange = () => { location.href = $('nav').value; };
+window.addEventListener('pageshow', () => { $('nav').value = '/references'; });
+$('prev').onclick = () => { page--; render(); };
+$('next').onclick = () => { page++; render(); };
+$('jump').onchange = () => { page = parseInt($('jump').value, 10) || 1; render(); };
+$('refresh').onclick = () => load(true);
+
+load();
+</script>
+</body>
+</html>

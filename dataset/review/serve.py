@@ -89,6 +89,12 @@ under ``<processed>/bvh_tpose/``; it is rebuilt when cond.npy is newer. The page
 can also play a species' clips from ``<processed>/bvhs/``, listed through
 ``motion_metadata.json``.
 
+``/references`` reviews each dataset's ``reference_pairs.jsonl`` one group at
+a time (pairs sharing a clip form a group, as the training loader builds them).
+Approving a group writes ``"reviewed": true`` on every line of it; removing a
+member drops the lines naming it and re-links whatever the removal split, so
+the rest stays one group. Clip files are never touched.
+
     python serve.py [--port 8765] [--datasets ../datasets_all.jsonl] [--no-browser]
 
 ``/api/labels`` accepts optional ``q``, ``field=label|clip|both``,
@@ -112,11 +118,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import numpy as np
+
 THIS_DIR = Path(__file__).resolve().parent      # .../dataset/review
 DATASET_ROOT = THIS_DIR.parent                  # .../dataset
 ANYTOP_ROOT = DATASET_ROOT.parent               # .../Anytop
 INDEX = THIS_DIR / "index.html"
 JOINT_NAMES_PAGE = THIS_DIR / "joint_names.html"
+REFERENCE_PAGE = THIS_DIR / "reference_pairs.html"
 VENDOR_DIR = THIS_DIR / "vendor"
 DEFAULT_DATASETS = DATASET_ROOT / "datasets_all.jsonl"
 
@@ -164,6 +173,10 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     parse_action_label,
     set_loop_flag,
 )
+
+# A processed dataset's same-motion pair sidecar, as the training loader reads
+# it (data_loaders/truebones/data/dataset.py REFERENCE_PAIRS_FILE).
+REFERENCE_PAIRS_FILE = "reference_pairs.jsonl"
 
 # Source animation extensions a raw species directory can hold.
 RAW_ANIMATION_SUFFIXES = (".glb", ".gltf", ".fbx", ".bvh")
@@ -1016,6 +1029,148 @@ class JointNamesStore:
         }
 
 
+class ReferencePairsStore:
+    """One dataset's reference_pairs.jsonl, reviewed group by group.
+
+    Pairs sharing a clip form one group (the same union the training loader
+    builds, restricted to this file). Approving a group writes
+    ``"reviewed": true`` on each of its lines; removing a member drops every
+    line naming it and, when that splits the group, links the pieces back
+    together, so the remaining members stay one group. Any change to a group's
+    membership clears its ``reviewed`` marks.
+    """
+
+    def __init__(self, ds):
+        self.ds = ds
+        self.path = Path(ds["processed"]) / REFERENCE_PAIRS_FILE
+        self.lock = threading.Lock()
+        self.rows = []
+        self.mtime = None
+        self.newline = "\n"
+
+    def exists(self):
+        return self.path.is_file()
+
+    def _reload_if_stale(self):
+        mtime = self.path.stat().st_mtime_ns
+        if mtime == self.mtime:
+            return
+        raw = self.path.read_bytes()
+        self.newline = "\r\n" if b"\r\n" in raw else "\n"
+        rows = []
+        for line_no, line in enumerate(raw.decode("utf-8").splitlines(), start=1):
+            text = line.strip()
+            if not text:
+                continue
+            row = json.loads(text)
+            if not row.get("motion") or "/" not in str(row.get("source", "")):
+                raise ValueError(f"{self.path}:{line_no}: needs motion and '<namespace>/<file>.npy' source")
+            rows.append(row)
+        self.rows = rows
+        self.mtime = mtime
+
+    def _write(self):
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        with tmp.open("w", encoding="utf-8", newline=self.newline) as fh:
+            for row in self.rows:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        os.replace(tmp, self.path)
+        self.mtime = self.path.stat().st_mtime_ns
+
+    def _motion_key(self, row):
+        return f"{self.ds['id']}/{row['motion']}"
+
+    def _groups(self, rows):
+        """``[(members in first-seen order, [row indices])]`` in file order."""
+        parent = {}
+
+        def find(key):
+            parent.setdefault(key, key)
+            while parent[key] != key:
+                parent[key] = parent[parent[key]]
+                key = parent[key]
+            return key
+
+        for row in rows:
+            parent[find(self._motion_key(row))] = find(str(row["source"]))
+        groups = {}
+        for i, row in enumerate(rows):
+            root = find(self._motion_key(row))
+            members, lines = groups.setdefault(root, ([], []))
+            for key in (str(row["source"]), self._motion_key(row)):
+                if key not in members:
+                    members.append(key)
+            lines.append(i)
+        return list(groups.values())
+
+    def _find_group(self, member, expect):
+        for members, lines in self._groups(self.rows):
+            if member in members:
+                if expect is not None and sorted(expect) != sorted(members):
+                    raise LookupError("参考组已在文件中改变，请刷新页面")
+                return members, lines
+        raise LookupError(f"参考组中没有 {member}，请刷新页面")
+
+    def snapshot(self):
+        with self.lock:
+            self._reload_if_stale()
+            return [
+                {"members": members,
+                 "lines": len(lines),
+                 "reviewed": all(self.rows[i].get("reviewed") is True for i in lines)}
+                for members, lines in self._groups(self.rows)
+            ]
+
+    def set_reviewed(self, member, expect, reviewed):
+        with self.lock:
+            self._reload_if_stale()
+            _, lines = self._find_group(member, expect)
+            for i in lines:
+                if reviewed:
+                    self.rows[i]["reviewed"] = True
+                else:
+                    self.rows[i].pop("reviewed", None)
+            self._write()
+            return len(lines)
+
+    def remove_member(self, member, expect):
+        """Drop ``member`` from its group; returns the members left (may be [])."""
+        with self.lock:
+            self._reload_if_stale()
+            members, lines = self._find_group(member, expect)
+            keep = [i for i in lines
+                    if member not in (str(self.rows[i]["source"]), self._motion_key(self.rows[i]))]
+            group_rows = [self.rows[i] for i in keep]
+            for row in group_rows:
+                row.pop("reviewed", None)
+            # The removal can split the group, and a member whose every line
+            # named the removed clip is left on its own. Re-link each piece to a
+            # hub of this dataset: a line's motion must be a local clip, so a
+            # group left with no local clip cannot be written here and dissolves.
+            prefix = self.ds["id"] + "/"
+            left = [m for m in members if m != member]
+            pieces = [p for p, _ in self._groups(group_rows)]
+            covered = {m for p in pieces for m in p}
+            pieces += [[m] for m in left if m not in covered]
+            hub = next((m for m in left if m.startswith(prefix)), None)
+            if hub is None or len(left) < 2:
+                group_rows, left = [], []
+            else:
+                for piece in pieces:
+                    if hub in piece:
+                        continue
+                    local = next((m for m in piece if m.startswith(prefix)), None)
+                    group_rows.append({"motion": local[len(prefix):], "source": hub} if local
+                                      else {"motion": hub[len(prefix):], "source": piece[0]})
+            dropped = set(lines)
+            first = min(lines)
+            before = [r for i, r in enumerate(self.rows) if i < first and i not in dropped]
+            after = [r for i, r in enumerate(self.rows) if i > first and i not in dropped]
+            self.rows = before + group_rows + after
+            self._write()
+            return left
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     datasets = []       # datasets with action_labels.jsonl (see discover_datasets)
@@ -1023,6 +1178,7 @@ class Handler(BaseHTTPRequestHandler):
     species_stores = {} # dataset id -> SpeciesTagStore
     joint_datasets = [] # every dataset with cond.npy
     joint_stores = {}   # dataset id -> JointNamesStore
+    reference_stores = {}  # dataset id -> ReferencePairsStore (every dataset with cond.npy)
 
     def log_message(self, fmt, *args):  # keep the console readable
         if self.command != "GET" or not self.path.startswith("/gif/"):
@@ -1091,6 +1247,16 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self._send_json(500, {"error": f"missing {JOINT_NAMES_PAGE}"})
             return self._send(200, body, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+
+        if path in ("/references", "/reference_pairs.html"):
+            try:
+                body = REFERENCE_PAGE.read_bytes()
+            except OSError:
+                return self._send_json(500, {"error": f"missing {REFERENCE_PAGE}"})
+            return self._send(200, body, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+
+        if path.startswith("/api/references"):
+            return self._references_get(path)
 
         if path.startswith("/vendor/"):
             name = os.path.basename(path)
@@ -1193,9 +1359,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/gif/"):
             # /gif/<dataset id>/<clip>.gif -- ids may contain '/', so match by prefix.
+            # Any dataset with cond.npy: a reference group can reach one that
+            # has no action_labels.jsonl.
             ds = None
             name = None
-            for d in self.datasets:
+            for d in self.joint_datasets:
                 prefix = "/gif/" + d["id"] + "/"
                 if path.startswith(prefix):
                     ds, name = d, path[len(prefix):]
@@ -1215,6 +1383,93 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, body, "image/gif", {"Cache-Control": "max-age=3600"})
 
         return self._send_json(404, {"error": "not found"})
+
+    def _reference_member(self, key):
+        """What the reference page shows for one group member ``<namespace>/<clip>``."""
+        namespace, _, clip = key.rpartition("/")
+        info = {"key": key, "dataset": namespace, "clip": clip}
+        ds = next((d for d in self.joint_datasets if d["id"] == namespace), None)
+        if ds is None:
+            info["error"] = f"数据集 {namespace} 不在清单中"
+            return info
+        npy = Path(ds["processed"]) / "motions" / clip
+        if not npy.is_file():
+            info["error"] = "motions/ 下没有这个 clip"
+            return info
+        try:
+            info["frames"] = int(np.load(npy, mmap_mode="r").shape[0])
+        except (OSError, ValueError) as exc:
+            info["error"] = f"读取 NPY 失败：{exc}"
+        store = self.stores.get(namespace)
+        row = store.index.get(clip_stem(clip)) if store is not None else None
+        if row is not None:
+            info["action_label"] = row.get("action_label")
+            if LOOP_FLAG_KEY in row:
+                info["is_loop"] = row[LOOP_FLAG_KEY]
+        info["bvhview"] = _bvhview_href(ds, clip)
+        return info
+
+    def _references_get(self, path):
+        if path == "/api/references/datasets":
+            payload = []
+            for d in self.joint_datasets:
+                store = self.reference_stores[d["id"]]
+                if not store.exists():
+                    continue
+                try:
+                    groups = store.snapshot()
+                except (OSError, ValueError) as exc:
+                    payload.append({"id": d["id"], "name": d["name"], "error": str(exc)})
+                    continue
+                payload.append({
+                    "id": d["id"],
+                    "name": d["name"],
+                    "groups": len(groups),
+                    "reviewed": sum(1 for g in groups if g["reviewed"]),
+                })
+            return self._send_json(200, {"datasets": payload})
+        if path == "/api/references":
+            ds_id = self._query().get("ds", "")
+            store = self.reference_stores.get(ds_id)
+            if store is None or not store.exists():
+                return self._send_json(404, {"error": f"{ds_id} 没有 {REFERENCE_PAIRS_FILE}"})
+            try:
+                groups = store.snapshot()
+            except (OSError, ValueError) as exc:
+                return self._send_json(500, {"error": str(exc)})
+            # Label stores are read straight from their index below; make sure
+            # they reflect the file first.
+            for label_store in self.stores.values():
+                with label_store.lock:
+                    label_store._reload_if_stale()
+            members = {}
+            for group in groups:
+                group["members"] = [members.setdefault(key, self._reference_member(key))
+                                    for key in group["members"]]
+            return self._send_json(200, {"dataset": ds_id, "path": str(store.path), "groups": groups})
+        return self._send_json(404, {"error": "not found"})
+
+    def _references_post(self, route, payload):
+        ds_id = payload.get("dataset", "")
+        store = self.reference_stores.get(ds_id)
+        if store is None or not store.exists():
+            return self._send_json(404, {"error": f"{ds_id} 没有 {REFERENCE_PAIRS_FILE}"})
+        member = payload.get("member")
+        expect = payload.get("members")
+        if not member or not isinstance(expect, list):
+            return self._send_json(400, {"error": "member and members are required"})
+        try:
+            if route == "/api/references/review":
+                lines = store.set_reviewed(member, expect, bool(payload.get("reviewed")))
+                return self._send_json(200, {"lines": lines})
+            left = store.remove_member(member, expect)
+            return self._send_json(200, {"members": left})
+        except LookupError as exc:
+            return self._send_json(409, {"error": str(exc)})
+        except ValueError as exc:
+            return self._send_json(400, {"error": str(exc)})
+        except OSError as exc:
+            return self._send_json(500, {"error": f"write failed: {exc}"})
 
     def _joint_store(self, ds_id):
         store = self.joint_stores.get(ds_id)
@@ -1270,7 +1525,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         route = urlparse(self.path).path
         if route not in ("/api/update", "/api/mark-pending", "/api/clean", "/api/clear-autofill",
-                         "/api/species-tags"):
+                         "/api/species-tags", "/api/references/review", "/api/references/remove"):
             return self._send_json(404, {"error": "not found"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -1285,6 +1540,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._clear_autofill(payload)
         if route == "/api/species-tags":
             return self._species_tags(payload)
+        if route.startswith("/api/references/"):
+            return self._references_post(route, payload)
 
         ds, store = self._store_and_dataset(payload.get("dataset") or payload.get("ds"))
         if ds is None:
@@ -1619,6 +1876,7 @@ def main():
         print(f"no datasets found in {args.datasets} -- check the manifest", file=os.sys.stderr)
         raise SystemExit(1)
     Handler.joint_stores = {d["id"]: JointNamesStore(d) for d in Handler.joint_datasets}
+    Handler.reference_stores = {d["id"]: ReferencePairsStore(d) for d in Handler.joint_datasets}
     Handler.datasets = [d for d in Handler.joint_datasets if d["labels"] is not None]
     register_raw_mirrors(Handler.datasets)
     for d in Handler.datasets:
@@ -1653,6 +1911,7 @@ def main():
         )
     print(f"labels manifest : {Path(args.datasets).resolve()}")
     print(f"joint names page: {url}joints")
+    print(f"reference groups: {url}references")
     print(f"clean trash dir : {TRASH_ROOT}")
     print(f"serving: {url}   (ctrl-c to stop)")
 

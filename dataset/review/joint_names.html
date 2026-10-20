@@ -176,7 +176,11 @@
   <input type="search" id="q" placeholder="搜索物种">
   <span class="counts" id="count"></span>
   <span class="spacer"></span>
-  <a href="/" title="action_labels 核验页">动作标签 ↗</a>
+  <select id="nav" title="切换页面">
+    <option value="/">动作标签</option>
+    <option value="/joints" selected>关节名</option>
+    <option value="/references">参考组</option>
+  </select>
 </header>
 
 <main>
@@ -1315,6 +1319,9 @@ $('speed').addEventListener('change', () => {
 });
 
 fillClipOptions([], '');
+// Page switcher; pageshow resets it after a back-navigation restores the page.
+document.getElementById('nav').onchange = () => { location.href = document.getElementById('nav').value; };
+window.addEventListener('pageshow', () => { document.getElementById('nav').value = '/joints'; });
 loadDatasets().catch((err) => setStatus(`加载失败：${err.message}`, true));
 </script>
 </body>
