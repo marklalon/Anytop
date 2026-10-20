@@ -47,7 +47,7 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --species_film_bottleneck 64 ^
     --species_joint_cond ^
     --ref_encoder ^
-    --ref_slots 2 ^
+    --ref_slots 3 ^
     --ref_dim 8 ^
     --ref_width 128 ^
     --ref_layers 2 ^
@@ -56,6 +56,7 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --ref_bone_length_aug_prob 0.3 ^
     --ref_bone_length_aug 0.2 ^
     --ref_joint_name_drop_prob 0.15 ^
+    --ref_label_drop_prob ^ 0.9 ^
     --leaf_drop_prob 0.2 ^
     --bone_length_aug_prob 0.3 ^
     --bone_length_aug 0.2 ^

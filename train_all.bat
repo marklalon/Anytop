@@ -33,15 +33,16 @@ pushd "%SCRIPT_DIR%"
 	--species_film_bottleneck 128 ^
 	--species_joint_cond ^
 	--ref_encoder ^
-	--ref_slots 4 ^
+	--ref_slots 3 ^
 	--ref_dim 8 ^
 	--ref_width 128 ^
 	--ref_layers 2 ^
 	--ref_cfg_drop_prob 0.5 ^
-	--ref_leaf_drop_prob 0.1 ^
+	--ref_leaf_drop_prob 0.2 ^
 	--ref_bone_length_aug_prob 0.3 ^
 	--ref_bone_length_aug 0.2 ^
 	--ref_joint_name_drop_prob 0.15 ^
+    --ref_label_drop_prob ^ 0.9 ^
 	--leaf_drop_prob 0.2 ^
 	--bone_length_aug_prob 0.3 ^
 	--bone_length_aug 0.2 ^
@@ -53,7 +54,7 @@ pushd "%SCRIPT_DIR%"
 	--num_frames 60 ^
 	--batch_size 16 ^
 	--lr 1e-4 ^
-	--lr_final 3e-5 ^
+	--lr_final 5e-5 ^
 	--lr_decay_start 0 ^
 	--weight_decay 0.03 ^
 	--use_ema ^
