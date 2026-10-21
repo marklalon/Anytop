@@ -20,7 +20,12 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
-from model.anytop import AnyTop  # noqa: E402
+from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
+    JOINT_MODEL_CHANNELS,
+    ROOT_MODEL_CHANNELS,
+)
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa: E402
+from model.anytop import AnyTop, InputProcess  # noqa: E402
 from model.cfg_sampler import ClassifierFreeSpeciesModel  # noqa: E402
 
 
@@ -100,12 +105,12 @@ class SpeciesConditionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             _make_model(species_cond=True, species_cfg_drop_prob=1.5)
 
-    def test_input_process_has_no_species_pathway(self):
-        """Species is a sample-level condition; the joint-name path is species-free."""
-        model = _make_model(species_cond=True)
-        self.assertFalse(any('species' in name for name, _ in
-                             model.input_process.named_parameters()))
-        self.assertEqual(model.input_process.text_embedding.in_features, T5_DIM)
+    def test_input_process_species_modulation_follows_species_cond(self):
+        self.assertIsNone(_make_model(species_cond=False).input_process.species_joint_modulation)
+        head = _make_model(species_cond=True).input_process.species_joint_modulation
+        # Reads [species token || static joint embedding], emits (gamma, beta).
+        self.assertEqual(head[0].in_features, 2 * 8)
+        self.assertEqual(head[-1].out_features, 2 * 8)
 
     def test_projection_reads_body_plan_and_variant_axes(self):
         model = _make_model(species_cond=True)
@@ -117,6 +122,9 @@ class SpeciesConditionTest(unittest.TestCase):
         head = model.seqTransDecoder.species_adaln
         self.assertEqual(torch.count_nonzero(head[-1].weight), 0)
         self.assertEqual(torch.count_nonzero(head[-1].bias), 0)
+        joint_head = model.input_process.species_joint_modulation
+        self.assertEqual(torch.count_nonzero(joint_head[-1].weight), 0)
+        self.assertEqual(torch.count_nonzero(joint_head[-1].bias), 0)
         self.assertEqual(torch.count_nonzero(model.species_null_emb), 0)
 
     def test_variant_axis_moves_the_species_token(self):
@@ -232,6 +240,113 @@ class SpeciesConditionTest(unittest.TestCase):
                     y = {'species_active': torch.zeros(2, dtype=torch.bool)}
                     wrapped(torch.zeros(2, 1, 1, 1), torch.full((2,), 99), y=y)
                     self.assertEqual(inner.call_count, 2 if action_cfg else 1)
+
+
+class SpeciesJointModulationTest(unittest.TestCase):
+    """InputProcess' per-joint (gamma, beta) driven by the species token."""
+
+    LATENT = 8
+    JOINTS = 4
+    FRAMES = 3
+
+    def _process(self):
+        torch.manual_seed(0)
+        return InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS), self.LATENT, T5_DIM,
+                            dropout_prob=0.0, species_joint_modulation=True).eval()
+
+    def _inputs(self, valid=None):
+        torch.manual_seed(1)
+        if valid is None:
+            valid = torch.ones(2, self.JOINTS, dtype=torch.bool)
+        return dict(
+            x=torch.randn(2, self.JOINTS, FEATS_LEN, self.FRAMES),
+            rest_pose=torch.randn(1, 2, self.JOINTS, FEATS_LEN),
+            joints_embedded_names=torch.randn(2, self.JOINTS, T5_DIM) * valid.unsqueeze(-1),
+            joint_valid=valid,
+            joint_struct=torch.randn(2, self.JOINTS, JOINT_STRUCT_DIM) * valid.unsqueeze(-1),
+            species_token=torch.randn(2, self.LATENT),
+        )
+
+    def _open(self, process, gamma, beta):
+        """Random weights on the chosen halves of the output layer, zeros elsewhere."""
+        out = process.species_joint_modulation[-1]
+        with torch.no_grad():
+            out.weight.zero_()
+            out.bias.zero_()
+            if gamma:
+                out.weight[:self.LATENT].normal_(std=0.5)
+            if beta:
+                out.weight[self.LATENT:].normal_(std=0.5)
+
+    def _delta(self, process, **inputs):
+        """Modulated minus unmodulated tokens, [frames + 1, B, J, d]."""
+        with torch.no_grad():
+            modulated = process(**inputs)
+            head = process.species_joint_modulation
+            out = head[-1]
+            saved = out.weight.clone(), out.bias.clone()
+            out.weight.zero_()
+            out.bias.zero_()
+            plain = process(**inputs)
+            out.weight.copy_(saved[0])
+            out.bias.copy_(saved[1])
+        return modulated - plain
+
+    def test_zero_init_is_identity(self):
+        process = self._process()
+        self.assertEqual(float(self._delta(process, **self._inputs()).abs().max()), 0.0)
+
+    def test_beta_shifts_every_frame_including_rest_equally(self):
+        process = self._process()
+        self._open(process, gamma=False, beta=True)
+        delta = self._delta(process, **self._inputs())
+        self.assertGreater(float(delta[0].abs().max()), 0.0)
+        for frame in range(1, delta.shape[0]):
+            torch.testing.assert_close(delta[frame], delta[0])
+
+    def test_gamma_scales_motion_frames_only(self):
+        process = self._process()
+        self._open(process, gamma=True, beta=False)
+        delta = self._delta(process, **self._inputs())
+        self.assertEqual(float(delta[0].abs().max()), 0.0)
+        self.assertGreater(float(delta[1:].abs().max()), 0.0)
+
+    def test_modulation_is_joint_dependent(self):
+        process = self._process()
+        self._open(process, gamma=False, beta=True)
+        delta = self._delta(process, **self._inputs())[0, 0]
+        self.assertFalse(torch.allclose(delta[1], delta[2]))
+
+    def test_padded_joints_are_untouched(self):
+        process = self._process()
+        self._open(process, gamma=True, beta=True)
+        valid = torch.tensor([[True, True, False, False], [True, True, True, False]])
+        delta = self._delta(process, **self._inputs(valid))
+        self.assertEqual(float(delta[:, 0, 2:].abs().max()), 0.0)
+        self.assertEqual(float(delta[:, 1, 3:].abs().max()), 0.0)
+        self.assertGreater(float(delta[:, 0, :2].abs().max()), 0.0)
+
+    def test_species_token_must_match_the_module(self):
+        process = self._process()
+        inputs = self._inputs()
+        inputs.pop('species_token')
+        with self.assertRaises(ValueError):
+            process(**inputs)
+        plain = InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS), self.LATENT, T5_DIM,
+                             dropout_prob=0.0).eval()
+        with self.assertRaises(ValueError):
+            plain(**self._inputs())
+
+    def test_anytop_feeds_the_species_token_to_the_input(self):
+        """Same species code, per-joint head open vs closed: the head must matter."""
+        model = _make_model(species_cond=True, species_cfg_drop_prob=0.0).eval()
+        x, t = torch.randn(2, 4, 12, 3), torch.tensor([1, 2])
+        y = _make_y(species_code=torch.randn(2, CODE_DIM))
+        with torch.no_grad():
+            closed = model(x, t, y=y)
+            torch.nn.init.normal_(model.input_process.species_joint_modulation[-1].weight, std=0.5)
+            opened = model(x, t, y=y)
+        self.assertFalse(torch.allclose(opened, closed))
 
 
 if __name__ == '__main__':

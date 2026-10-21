@@ -217,7 +217,7 @@ out = x0(∅) + s_ref · (x0(ref) − x0(∅))
 - **推理**：加载上述 checkpoint，保留其 `species_cond=True`；encode（不带编辑参数的 `--reference_motion`）固定关闭 species 条件，让参考提供运动内容。encode 与 `--species_active` 参数互斥，传入 true 或 false 都会报错；无需另传关闭参数。不要把 checkpoint 的 `species_cond` 改为 False。
 - encode 与 `--action_label` 互斥（参考提供运动内容，label 在参考生效的行上被旁路）；编辑与无参考生成默认 `species_active=True`，可用 `--species_active true/false` 控制。
 
-**契约**：species 条件只有一条通路：`AnyTop._build_species_token` 产出的样本级 token，加进 timestep 条件并驱动 `GraphMotionDecoder.species_adaln`。`species_cond` 控制是否构造模块，`species_active` 控制每个样本用条件 token 还是 `species_null_emb`。`species_active=False` 只换掉 species token，保留关节名、rest pose 和 structural channel。
+**契约**：species 条件只有一个来源：`AnyTop._build_species_token` 产出的样本级 token。它加进 timestep 条件，驱动 `GraphMotionDecoder.species_adaln`，并驱动输入层的逐关节调制 `InputProcess.species_joint_modulation`。`species_cond` 控制是否构造模块，`species_active` 控制每个样本用条件 token 还是 `species_null_emb`。`species_active=False` 只换掉 species token，保留关节名、rest pose 和 structural channel。
 
 **依据与边界**：目标 descriptor 包含 body plan 和步态信息，可能与参考中的直立姿态、支撑方式等运动内容冲突。关闭是减少条件冲突的实验起点，尚未证明迁移质量更好。关闭 species 条件不会消除关节名、几何及共享主干已有的运动先验。E 的输入不读取 descriptor。未来若做开关对照，应使用独立实验入口。
 

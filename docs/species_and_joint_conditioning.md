@@ -6,12 +6,13 @@
 
 ## 1. 总览
 
-输入层 `InputProcess`（[anytop.py](../model/anytop.py)）为每个 `(帧, 关节)` 生成一个 latent token，由四部分相加：
+输入层 `InputProcess`（[anytop.py](../model/anytop.py)）为每个 `(帧, 关节)` 生成一个 latent token，由四部分相加，`--species_cond` 时再按关节做一次 species 调制：
 
 ```
 token(frame, joint) =  运动投影(该帧该关节的特征)          # 帧 0 为 rest pose 的投影
                      + text_embedding( 关节名 )                  # 本文 §3
                      + struct_embedding( 关节结构特征 )          # 本文 §5
+                     → species 逐关节调制 (γ_j, β_j)            # 本文 §4.1，仅 --species_cond
                      + 帧位置编码
 ```
 
@@ -23,7 +24,7 @@ token(frame, joint) =  运动投影(该帧该关节的特征)          # 帧 0 �
 | 结构通道 | 这个关节在**骨架的什么位置**（几何 / 拓扑） | 由 `parents` 与 rest 位置现场计算 | 骨架 |
 | species 描述符 | 这个物种**怎么动**（体型类别 × 变体） | body plan 取冻结 T5（描述符表），variant 取正交码 | 物种 |
 
-关节名与结构通道是**逐关节**的，进输入层 token；species 描述符是**样本级**的，不进输入层，而是和 action label 一样作为条件 token 加进 timestep 条件，并驱动自己的 AdaLN 头（§4）。
+关节名与结构通道是**逐关节**的，进输入层 token；species 描述符是**样本级**的条件 token：它和 action label 一样加进 timestep 条件并驱动自己的 AdaLN 头，同时在输入层按关节调制每个关节 token（§4）。
 
 ---
 
@@ -112,7 +113,7 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 
 ---
 
-## 4. species 条件：样本级 token + AdaLN
+## 4. species 条件：样本级 token + 逐关节调制 + AdaLN
 
 开关：`--species_cond`（`train_all.bat` 开启）。
 
@@ -128,13 +129,22 @@ timesteps_emb += species_token                                           # 加�
 adaln          = action_adaln(action_token) + species_adaln(species_token)
                  species_adaln: Linear(latent → bottleneck) → SiLU → Linear(→ L·4·latent)
 每层 temporal-attn 与 FF 两个分支的输入：(1 + γ) · x + β
+
+输入层（InputProcess），每个关节 j：
+static_j       = text_embedding(name_j) + struct_latent_j                 # 名字 drop 之后的值
+(γ_j, β_j)     = species_joint_modulation([species_token ‖ static_j])
+                 Linear(2·latent → latent) → GELU → Linear(→ 2·latent)
+rest 帧 token：  x_0j + β_j
+运动帧 token：   x_tj · (1 + γ_j) + β_j
 ```
 
-- **与关节无关**：species 调制对一个样本的所有关节、所有帧相同。variant（如 Fluttering）是整个身体的运动风格；不读关节名的调制可以直接作用到训练时从没和这个 variant 一起出现过的骨架上（例如让鹰带 Fluttering）。按关节的身份区分由关节名与结构通道负责。
+- **逐关节调制**：同一个 species token 对每个关节给出不同的 (γ_j, β_j)。MLP 一次只看一个关节的静态 embedding，看不到整副骨架，只能学到关节局部的规则（"Biped 的前肢末端抬离地面"），而不是某一副骨架的整体模式；这是 species 条件能迁移到训练里没带过该描述符的骨架上的原因。名字被 drop 的关节只靠结构通道得到调制，训练中的整关节名字 drop 因此也会逼出不依赖名字的规则。
+- **rest 帧只加 β**：β_j 平移关节身份，所有帧一致；γ_j 只缩放运动帧，rest token 的几何不被缩放。
+- **AdaLN 是样本级的**：decoder 里的 species 调制对一个样本的所有关节、所有帧相同，负责整体的运动风格。
 - **乘性、每层都有**：AdaLN 调制分支输入，残差流本身不动，所以不会被每个子层后的 LayerNorm 抹掉；只靠加性 token 时，平移会被 LayerNorm 压回去。
 - **独立的头**：species 和 action 各有一个 AdaLN 头，两者的 (γ, β) 相加；各自有自己的 null token 和 CFG 开关。
 - **隐层宽度** `--species_adaln_bottleneck`（默认 64；0 表示取 `latent_dim`）：描述符的不同取值很少，宽隐层只是浪费。
-- **零初始化**：AdaLN 头输出层与 `species_null_emb` 均为零，起点等于没有 species 调制；`species_projection` 常规初始化，它的输出在起点只经加性 token 生效。
+- **零初始化**：AdaLN 头与逐关节调制的输出层、`species_null_emb` 均为零，起点等于没有 species 调制；`species_projection` 常规初始化，它的输出在起点只经加性 token 生效。
 - 投影与头都在 fp32 下运行（`run_in_fp32`）。
 
 ### 4.2 CFG：无条件分支是学到的 null token
@@ -178,9 +188,9 @@ variant 在数据里是按物种打的，与骨架高度相关（例如所有 Fl
 1. 取 `joints_names_embs` 行；按 `joint_name_drop_prob` 决定整行是否清零。
 2. 做逐元素 dropout。
 3. `text_embedding` 把名字向量投到 `latent_dim`，加到该关节的运动 token 上。
-4. 加结构通道（padding 行清零后）与帧位置编码。
-
-species 不参与这一步：它是样本级条件，在 decoder 里经 timestep 条件与 AdaLN 生效（§4）。
+4. 加结构通道（padding 行清零后）。
+5. `--species_cond` 时按关节施加 species 调制（§4.1；padding 行清零后）。
+6. 加帧位置编码。
 
 padding 行与"无名字"行同为零向量；是否为真实关节由 attention mask 对角线给出，**不能**靠名字是否全零判断（语料中有真实关节被刻意置空，如定位器、道具挂点）。
 
@@ -188,7 +198,7 @@ padding 行与"无名字"行同为零向量；是否为真实关节由 attention
 
 ## 7. 常见问题与取舍
 
-- **为什么 species 不按关节调制？** 按关节的调制是 `f(关节名, species)`，variant 的效果只在训练中见过的关节名上有定义；换一副骨架（鹰的翅膀关节名配 Fluttering）就是外推。样本级 AdaLN 不读关节名，学到的风格调制可以作用到任何骨架上。
+- **为什么 species 要按关节调制？** 只有样本级 AdaLN 时，同一组 (γ, β) 作用于所有关节，"前肢抬起、后肢支撑"这种按关节不同的变化只能由网络从整副骨架的特征里拼出来，学到的是"这副骨架 + 该描述符"，换骨架就不成立：同一 Dog 骨架的 Biped / Quadruped 对照能学会，Cat 上不迁移。逐关节调制的输入是单个关节的名字 + 结构，规则落在关节层面，可以带到别的骨架上。它的输入包含结构通道，关节名陌生或被置空时仍有定义。
 - **为什么名字置空优于猜一个名字？** 置空是训练过的状态；猜一个会落在 T5 空间里没有先验的位置。
 - **为什么 AdaLN 头零初始化？** 起点等于"没有 species 调制"，不会在训练早期把随机增益注入每一层；代价是它要从头学出所需的调制，早期曲线不能用来判断它有没有用。
 - **用 `--species_tags` 的外推风险**：它驱动的是每层的乘性增益；描述符表限定了只能用训练见过的离散组合，这是该风险被约束住的原因。但 body plan × variant 的组合在训练里不一定出现过（如 Winged + 鸟类骨架 + Fluttering），这种用法本身就是外推。

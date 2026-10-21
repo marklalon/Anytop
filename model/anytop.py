@@ -177,6 +177,7 @@ class AnyTop(nn.Module):
         self.input_process = InputProcess(
             self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim,
             dropout_prob=self.dropout,
+            species_joint_modulation=self.species_cond,
         )
         # Token-type embedding for "this (frame, joint) is being re-drawn",
         # added to the input tokens right after InputProcess so the WHOLE trunk
@@ -1043,7 +1044,7 @@ class AnyTop(nn.Module):
             )
         joint_name_drop = self._sample_joint_name_drop(bs, njoints, x.device)
         x = self.input_process(x, rest_pose, y['joints_names_embs'], joint_valid, y['joint_struct'],
-                               joint_name_drop=joint_name_drop) # applies linear layer on each frame to convert it to latent dim
+                               joint_name_drop=joint_name_drop, species_token=species_token) # applies linear layer on each frame to convert it to latent dim
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
         spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
@@ -1114,7 +1115,8 @@ class AnyTop(nn.Module):
 # in the case of GMDM, the input process is as follows:
 # embed each joint of each frame of each motion in batch by the same MLP, separately !
 class InputProcess(nn.Module):
-    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, dropout_prob=0):
+    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, dropout_prob=0,
+                 species_joint_modulation=False):
         super().__init__()
         self.input_feats = input_feats
         self.latent_dim = latent_dim
@@ -1152,14 +1154,37 @@ class InputProcess(nn.Module):
             nn.GELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
+        # --species_cond, per joint: (gamma_j, beta_j) = f(species token, the
+        # joint's static embedding = name + struct latent). beta_j shifts the
+        # joint's identity on every frame including the rest token; gamma_j
+        # scales the motion frames only, so the rest token's geometry is never
+        # rescaled. The MLP sees one joint at a time, so it can only learn
+        # joint-local rules ("a forelimb end of a Biped is lifted") rather than
+        # one rig's whole-body mode, which is what lets a species condition
+        # carry over to a skeleton that never had that descriptor in training.
+        # Zero-init output: a fresh model is unmodulated.
+        if species_joint_modulation:
+            self.species_joint_modulation = nn.Sequential(
+                nn.Linear(2 * self.latent_dim, self.latent_dim),
+                nn.GELU(),
+                nn.Linear(self.latent_dim, 2 * self.latent_dim),
+            )
+            nn.init.zeros_(self.species_joint_modulation[-1].weight)
+            nn.init.zeros_(self.species_joint_modulation[-1].bias)
+        else:
+            self.species_joint_modulation = None
 
     def forward(self, x, rest_pose, joints_embedded_names, joint_valid=None,
-                joint_struct=None, joint_name_drop=None):
+                joint_struct=None, joint_name_drop=None, species_token=None):
         """Embed every (frame, joint); the rest pose becomes frame 0.
 
         ``joint_name_drop`` ([B, J] bool) zeroes those joints' whole name rows,
         leaving rest pose and the topology as their identity signals. No
         1/(1-p) rescale: a hidden row is not a thinned vector.
+
+        ``species_token`` ([B, latent_dim]) drives the per-joint species
+        modulation and is required exactly when it exists. An inactive row
+        carries the species null token, so it is modulated by the null's value.
         """
         # x.shape = [batch_size, joints, feature_len, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
@@ -1208,6 +1233,20 @@ class InputProcess(nn.Module):
         # and a live joint's struct row is never all-zero.
         struct_latent = struct_latent * joint_valid.unsqueeze(-1).to(struct_latent.dtype)
         x = x + struct_latent[None, ...]
+        if self.species_joint_modulation is not None:
+            if species_token is None:
+                raise ValueError("the per-joint species modulation needs species_token.")
+            # The static embedding is read after the name dropout, so a joint
+            # whose name is hidden is modulated by its structure alone.
+            static = joints_embedded_names + struct_latent
+            species = species_token.to(static.dtype).unsqueeze(1).expand(-1, static.shape[1], -1)
+            modulation = run_in_fp32(self.species_joint_modulation, torch.cat([species, static], dim=-1))
+            # The name projection has a bias, so padded rows are re-zeroed here.
+            modulation = modulation * joint_valid.unsqueeze(-1).to(modulation.dtype)
+            gamma, beta = modulation.chunk(2, dim=-1)
+            x = torch.cat([x[:1], x[1:] * (1.0 + gamma[None, ...])], dim=0) + beta[None, ...]
+        elif species_token is not None:
+            raise ValueError("species_token was passed but this InputProcess has no species modulation.")
         # Absolute frame PE, the baseline frame signal for every sample (loop
         # samples add a circular phase on top, per decoder layer -- see
         # circular_phase_embedding). Batch dim 1: only row 0 is kept, so a

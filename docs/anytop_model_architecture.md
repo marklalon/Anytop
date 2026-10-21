@@ -160,7 +160,7 @@ timestep
 
 | 通路 | 输入 | 作用位置 | drop 语义 |
 |---|---|---|---|
-| `species_cond` | `[T5(body plan) ‖ variant one-hot]` → MLP → species token | timestep condition bus（加性）+ 独立 AdaLN 头（乘性） | `species_cfg_drop_prob` 按样本换成 learned null |
+| `species_cond` | `[T5(body plan) ‖ variant one-hot]` → MLP → species token | 输入层逐关节调制 + timestep condition bus（加性）+ 独立 AdaLN 头（乘性） | `species_cfg_drop_prob` 按样本换成 learned null |
 
 ```text
 species_code = [T5(body plan) || variant one-hot]          # species_descriptor_table.species_code
@@ -168,11 +168,16 @@ species_code = [T5(body plan) || variant one-hot]          # species_descriptor_
 timesteps_emb += species_token
 species_adaln: Linear(latent, bottleneck) → SiLU → Linear(bottleneck, L * 4 * latent)
 每层 (γ, β) = action_adaln(action_token) + species_adaln(species_token)
+
+# 输入层，每个关节 j（static_j = 名字投影 + 结构投影，名字 drop 之后）
+(γ_j, β_j) = species_joint_modulation([species_token || static_j])
+rest 帧 token += β_j；运动帧 token = token · (1 + γ_j) + β_j
 ```
 
 variant 是正交码（每个 variant 一根单位轴），不经过 T5：T5 下 `Winged` 与 `Winged Fluttering` 几乎重合。
-species 条件与关节无关，对样本内全部关节、全部帧使用同一组增益；按关节区分身份的是关节名与结构通道。
-AdaLN 头的隐藏宽度由 `species_adaln_bottleneck` 控制（0 表示 `latent_dim`），输出层与 null 均零初始化。
+decoder 里的 species AdaLN 是样本级的，对样本内全部关节、全部帧使用同一组增益；输入层的逐关节调制一次只读一个关节的
+名字与结构，学到的是关节局部规则，让 species 条件可以迁移到训练中没带过该描述符的骨架上。
+AdaLN 头的隐藏宽度由 `species_adaln_bottleneck` 控制（0 表示 `latent_dim`）；AdaLN 头、逐关节调制的输出层与 null 均零初始化。
 
 训练时 `species_cfg_drop_prob` 按样本独立抽样，被丢弃的行用 `species_null_emb`；推理时
 `species_active=False` 走同一个 null，CFG 按 `uncond + scale * (cond - uncond)` 组合预测，只作用于高噪声半程。
@@ -473,7 +478,7 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 不计入可训练参数。训练启动时会打印各模块的参数量。
 
 参数主要分布在以下模块：decoder 主干（占绝大部分）、`action_adaln` / `species_adaln` 头、cross-limb block、
-`action_label_projection`、`species_projection`、`input_process`（joint-name 投影、structural 投影）、
+`action_label_projection`、`species_projection`、`input_process`（joint-name 投影、structural 投影、species 逐关节调制）、
 `resample_speed_projection`，以及可忽略的 `output_process` 与各层共享的 relation/topology embedding 表。
 
 各处宽度的分配依据，来自训练后权重的秩与单元参与率：

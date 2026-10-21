@@ -146,10 +146,11 @@ class JointNameDropoutTest(unittest.TestCase):
         real = model.input_process.forward
 
         def spy(x, rest_pose, joints_embedded_names, joint_valid=None,
-                joint_struct=None, joint_name_drop=None):
+                joint_struct=None, joint_name_drop=None, species_token=None):
             captured['joint_valid'] = joint_valid
             return real(x, rest_pose, joints_embedded_names, joint_valid,
-                        joint_struct, joint_name_drop=joint_name_drop)
+                        joint_struct, joint_name_drop=joint_name_drop,
+                        species_token=species_token)
 
         model.input_process.forward = spy
         model.seqTransDecoder = _CaptureDecoder()
