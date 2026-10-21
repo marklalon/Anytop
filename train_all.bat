@@ -42,7 +42,7 @@ pushd "%SCRIPT_DIR%"
 	--ref_bone_length_aug_prob 0.3 ^
 	--ref_bone_length_aug 0.2 ^
 	--ref_joint_name_drop_prob 0.15 ^
-    --ref_label_drop_prob ^ 0.8 ^
+    --ref_label_drop_prob ^ 0.8
 	--leaf_drop_prob 0.2 ^
 	--bone_length_aug_prob 0.3 ^
 	--bone_length_aug 0.2 ^
