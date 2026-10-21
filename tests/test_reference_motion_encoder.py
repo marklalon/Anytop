@@ -281,14 +281,15 @@ def test_reference_rows_bypass_species_film(monkeypatch):
     assert seen[0].tolist() == [False, True]
 
 
-def test_reference_rows_use_their_own_label_drop_prob():
-    m = model(ref_label_drop_prob=1, action_label_cfg_drop_prob=0).train()
+@pytest.mark.parametrize('training', [True, False])
+def test_reference_rows_bypass_the_action_label(monkeypatch, training):
+    m = model(action_label_cond=True, action_label_cfg_drop_prob=0).train(training)
     ref_active = torch.tensor([True, False, True, False])
-    active = m._resolve_action_label_active(None, 4, 'cpu', ref_active)
+    monkeypatch.setattr(m, '_action_slot_inputs', lambda *a: None)
+    monkeypatch.setattr(m, '_resolve_action_label_valid', lambda *a: torch.ones(4, dtype=torch.bool))
+    y = {'action_label_active': torch.ones(4, dtype=torch.bool)}
+    _, active = m._action_condition(y, 4, 'cpu', torch.float32, ref_active)
     assert active.tolist() == [False, True, False, True]
-    m = model(ref_label_drop_prob=0, action_label_cfg_drop_prob=1).train()
-    assert m._resolve_action_label_active(None, 4, 'cpu', ref_active).tolist() == [True, False, True, False]
-    assert m.eval()._resolve_action_label_active(None, 4, 'cpu', ref_active).all()
 
 
 def test_folded_reference_read_matches_explicit_attention():
@@ -349,55 +350,51 @@ class Echo(torch.nn.Module):
         ref = y['ref_active'].float()
         text = y.get('action_label_active', torch.ones_like(ref)).float()
         self.calls.append((ref.clone(), text.clone(), y['species_active']))
-        return x * 0 + (1 + ref * 2 + text * ref * 3 + y['species_active'].float() * 7)[:, None, None, None]
+        # Like AnyTop, a reference-active row ignores the action label.
+        return x * 0 + (1 + ref * 2 + text * (1 - ref) * 3 + y['species_active'].float() * 7)[:, None, None, None]
 
 
-@pytest.mark.parametrize('use_text,expected,calls', [(False, 12., 2), (True, 21., 3)])
-def test_cfg_algebra_sequential_pass_count_and_species_state(use_text, expected, calls):
+def test_cfg_algebra_sequential_pass_count_and_species_state():
     inner = Echo()
-    wrapper = ClassifierFreeReferenceModel(inner, 2, 3, use_text, num_timesteps=100)
+    wrapper = ClassifierFreeReferenceModel(inner, 2, num_timesteps=100)
     x = torch.zeros(2, 4, 12, 5)
     species = torch.ones(2, dtype=torch.bool)
     y = dict(ref_active=torch.ones(2, dtype=torch.bool), species_active=species)
     out = wrapper(x, torch.full((2,), 99), y)
-    torch.testing.assert_close(out, torch.full_like(out, expected))
-    assert len(inner.calls) == calls
+    # base 1 + 2 * (ref 3 - base 1), species off in both passes.
+    torch.testing.assert_close(out, torch.full_like(out, 12.))
+    assert len(inner.calls) == 2
     assert not inner.calls[0][0].any() and not inner.calls[0][1].any()
-    assert inner.calls[1][0].all() and not inner.calls[1][1].any()
+    assert inner.calls[1][0].all()
     assert all(c[2] is species for c in inner.calls)
     assert 'action_label_active' not in y
 
 
-@pytest.mark.parametrize('use_text', [False, True])
 @pytest.mark.parametrize('ref_scale', [0., 1., 2., 0.5])
-@pytest.mark.parametrize('text_scale', [0., 1., 2., 3.])
-def test_reference_cfg_skips_zero_weight_branches(use_text, ref_scale, text_scale):
+def test_reference_cfg_skips_zero_weight_branches(ref_scale):
     inner = Echo()
-    wrapper = ClassifierFreeReferenceModel(inner, ref_scale, text_scale, use_text, num_timesteps=100)
+    wrapper = ClassifierFreeReferenceModel(inner, ref_scale, num_timesteps=100)
     x = torch.zeros(2, 1, 1, 1)
     species = torch.tensor([False, True])
-    y = dict(ref_active=torch.ones(2, dtype=torch.bool), species_active=species)
+    y = dict(ref_active=torch.ones(2, dtype=torch.bool), species_active=species,
+             action_label_active=torch.zeros(2, dtype=torch.bool))
     out = wrapper(x, torch.full((2,), 99), y)
-    effective_text_scale = text_scale if use_text else 0.
     base = 1 + species.float() * 7
-    expected = base + ref_scale * 2 + effective_text_scale * 3
-    torch.testing.assert_close(out, expected[:, None, None, None])
+    torch.testing.assert_close(out, (base + ref_scale * 2)[:, None, None, None])
     expected_branches = []
     if ref_scale != 1.:
-        expected_branches.append((False, False))
-    if ref_scale != effective_text_scale:
-        expected_branches.append((True, False))
-    if effective_text_scale != 0.:
-        expected_branches.append((True, True))
-    assert [(bool(ref.all()), bool(text.all())) for ref, text, _ in inner.calls] == expected_branches
+        expected_branches.append(False)
+    if ref_scale != 0.:
+        expected_branches.append(True)
+    assert [bool(ref.all()) for ref, _, _ in inner.calls] == expected_branches
     assert all(call[2] is species for call in inner.calls)
-    assert 'action_label_active' not in y
+    assert not y['action_label_active'].any()
     assert y['ref_active'].all()
 
 
 def test_reference_cfg_schedule_switches_on_noise_level():
     inner = Echo()
-    wrapper = ClassifierFreeReferenceModel(inner, 6., 1., False, num_timesteps=100)
+    wrapper = ClassifierFreeReferenceModel(inner, 6., num_timesteps=100)
     x = torch.zeros(2, 1, 1, 1)
     y = dict(ref_active=torch.ones(2, dtype=torch.bool), species_active=torch.zeros(2, dtype=torch.bool))
     # Early (t >= 50): base + 6 * (ref - base) = 1 + 12; two forwards.
@@ -414,29 +411,27 @@ def test_reference_cfg_schedule_switches_on_noise_level():
 
 def test_reference_cfg_schedule_validation():
     with pytest.raises(ValueError, match='num_timesteps'):
-        ClassifierFreeReferenceModel(Echo(), 6., 1., False, num_timesteps=0)
+        ClassifierFreeReferenceModel(Echo(), 6., num_timesteps=0)
 
 
-@pytest.mark.parametrize('use_text', [False, True])
-def test_reference_cfg_ignores_species_scale_only_when_disabled(use_text):
+def test_reference_cfg_ignores_species_scale_only_when_disabled():
     from sample.conditioning import _wrap_reference_cfg
     inner = Echo()
     inner.ref_encoder = True
     inner.ref_cfg_drop_prob = .4
-    inner.ref_label_drop_prob = .5
     args = SimpleNamespace(species_active=False, species_cfg_scale=2.,
-                           ref_cfg_scale=2., action_label_cfg_scale=3., diffusion_steps=100)
-    action = {'action_label': 'walk'} if use_text else None
-    wrapper = _wrap_reference_cfg(inner, args, action)
+                           ref_cfg_scale=2., diffusion_steps=100)
+    wrapper = _wrap_reference_cfg(inner, args, None)
     species = torch.zeros(2, dtype=torch.bool)
     wrapper(torch.zeros(2, 1, 1, 1), torch.full((2,), 99),
-            y=dict(ref_active=torch.ones(2, dtype=torch.bool), species_active=species,
-                   action_label_active=torch.ones(2, dtype=torch.bool)))
-    assert len(inner.calls) == (3 if use_text else 2)
+            y=dict(ref_active=torch.ones(2, dtype=torch.bool), species_active=species))
+    assert len(inner.calls) == 2
     assert all(c[2] is species for c in inner.calls)
+    with pytest.raises(ValueError, match='action_label'):
+        _wrap_reference_cfg(inner, args, {'action_label': 'walk'})
     args.species_active = True
     with pytest.raises(ValueError, match='species_cfg_scale must be 1'):
-        _wrap_reference_cfg(inner, args, action)
+        _wrap_reference_cfg(inner, args, None)
 
 
 def test_augmentation_has_independent_cond_and_target_is_untouched():

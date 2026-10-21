@@ -220,12 +220,10 @@ def _wrap_reference_cfg(model, args, action_condition):
         raise ValueError('Reference CFG keeps species fixed; species_cfg_scale must be 1')
     if float(getattr(model, 'ref_cfg_drop_prob', 0.0)) <= 0:
         raise ValueError('Reference CFG requires training with ref_cfg_drop_prob > 0')
-    if action_condition is not None and float(getattr(model, 'ref_label_drop_prob', 0.0)) <= 0:
-        raise ValueError('Reference/text CFG requires ref_label_drop_prob > 0')
+    if action_condition is not None:
+        raise ValueError('an encoded --reference_motion cannot be combined with --action_label')
     return ClassifierFreeReferenceModel(
-        model, getattr(args, 'ref_cfg_scale', 1.0),
-        getattr(args, 'action_label_cfg_scale', 1.0), use_text=action_condition is not None,
-        num_timesteps=args.diffusion_steps,
+        model, getattr(args, 'ref_cfg_scale', 1.0), num_timesteps=args.diffusion_steps,
     )
 
 

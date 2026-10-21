@@ -121,37 +121,27 @@ class ClassifierFreeSpeciesModel(ClassifierFreeActionModel):
 
 
 class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
-    """Sequential ref/text composition.
+    """Guide the encoded reference against the fully unconditional mode.
 
-    The model bypasses the species FiLM on every reference-active row, so the
-    reference and full passes run with species off. The null-reference base pass
-    keeps whatever ``y['species_active']`` says; encode sets it False, which makes
-    species identical across all passes.
+    The model bypasses the action label and the species FiLM on every
+    reference-active row, so the reference pass carries neither. The
+    null-reference pass forces the label off as well and keeps whatever
+    ``y['species_active']`` says; encode sets it False, which makes species
+    identical across both passes.
 
-    ``ref_scale`` and ``text_scale`` apply only to the high-noise steps, where
-    global posture (facing, body height) is settled; the detail steps below
+    The scale applies only to the high-noise steps, where global posture
+    (facing, body height) is settled; the detail steps below
     ``CFG_SWITCH * num_timesteps`` use ``CFG_LATE_SCALE``, so a high scale shapes
     the pose without carrying its artifacts into the details.
     ``timesteps`` are the original-schedule indices the respaced diffusion hands
     the model, so ``num_timesteps`` is the training ``--diffusion_steps``.
     """
 
-    def __init__(self, model, ref_scale, text_scale, use_text, num_timesteps):
-        super().__init__(model, ref_scale, num_timesteps)
-        if not math.isfinite(float(text_scale)) or float(text_scale) < 0:
-            raise ValueError('text_scale must be finite and >= 0')
-        self.text_scale, self.use_text = float(text_scale), bool(use_text)
-
     def forward(self, x, timesteps, y=None, **kwargs):
-        # Expand the composition so branches with zero weight need no forward:
-        # (1 - ref_scale) * base + (ref_scale - text_scale) * ref
-        # + text_scale * full. Without a text prompt, text_scale is zero.
-        text_scale = (
-            self._staged_scale(self.text_scale, timesteps) if self.use_text else 0.0
-        )
-        ref_scale = self._staged_scale(self.guidance_scale, timesteps)
-        base_weight = 1.0 - ref_scale
-        ref_weight = ref_scale - text_scale
+        # (1 - scale) * base + scale * ref, so a branch with zero weight needs
+        # no forward.
+        ref_weight = self._staged_scale(self.guidance_scale, timesteps)
+        base_weight = 1.0 - ref_weight
         out = None
 
         def nonzero(weight):
@@ -161,16 +151,8 @@ class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
         null_y['ref_active'] = torch.zeros(x.shape[0], dtype=torch.bool, device=x.device)
         null_y['action_label_active'] = torch.zeros_like(null_y['ref_active'])
         if nonzero(base_weight):
-            base = self.model(x, timesteps, y=null_y, **kwargs)
-            out = base_weight * base
+            out = base_weight * self.model(x, timesteps, y=null_y, **kwargs)
         if nonzero(ref_weight):
-            ref_y = dict(y or {})
-            ref_y['action_label_active'] = null_y['action_label_active']
-            ref = self.model(x, timesteps, y=ref_y, **kwargs)
-            term = ref_weight * ref
-            out = term if out is None else out + term
-        if nonzero(text_scale):
-            full = self.model(x, timesteps, y=y, **kwargs)
-            term = text_scale * full
+            term = ref_weight * self.model(x, timesteps, y=y, **kwargs)
             out = term if out is None else out + term
         return out

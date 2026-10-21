@@ -258,11 +258,6 @@ class AnyTop(nn.Module):
         self.ref_cfg_drop_prob = float(kargs.get('ref_cfg_drop_prob', 0.4))
         if not 0 <= self.ref_cfg_drop_prob <= 1:
             raise ValueError('ref_cfg_drop_prob must be in [0, 1]')
-        # Action-label hard-drop probability for reference-active training rows;
-        # rows without a reference keep action_label_cfg_drop_prob.
-        self.ref_label_drop_prob = float(kargs.get('ref_label_drop_prob', 0.5))
-        if not 0 <= self.ref_label_drop_prob <= 1:
-            raise ValueError('ref_label_drop_prob must be in [0, 1]')
         self.motion_encoder = None
         if self.ref_encoder:
             from model.motion_encoder import MotionEncoder
@@ -623,15 +618,13 @@ class AnyTop(nn.Module):
             word_mask, slot_ids, SLOT_MODIFIER, self.modifier_slot_drop_prob, batch_size, device
         )
 
-    def _resolve_action_label_active(self, raw_action_label_active, batch_size, device,
-                                     ref_active=None):
+    def _resolve_action_label_active(self, raw_action_label_active, batch_size, device):
         """Per-sample CFG mask for the action condition (True == conditional).
 
         An explicit ``y['action_label_active']`` wins (used at inference to force
         the unconditional branch). Otherwise, training samples a Bernoulli keep
         per sample so the condition is hard-dropped with probability
-        ``action_label_cfg_drop_prob``, or ``ref_label_drop_prob`` on rows whose
-        reference is active; eval/inference keeps every sample.
+        ``action_label_cfg_drop_prob``; eval/inference keeps every sample.
         """
         if raw_action_label_active is not None:
             active = torch.as_tensor(raw_action_label_active, device=device, dtype=torch.bool).reshape(-1)
@@ -643,10 +636,6 @@ class AnyTop(nn.Module):
                     f"{active.numel()} for batch {batch_size}"
                 )
             return active
-        if self.training and ref_active is not None:
-            draw = torch.rand(batch_size, device=device)
-            return torch.where(ref_active, draw >= self.ref_label_drop_prob,
-                               draw >= self.action_label_cfg_drop_prob)
         if self.training and self.action_label_cfg_drop_prob > 0.0:
             return torch.rand(batch_size, device=device) >= self.action_label_cfg_drop_prob
         return torch.ones(batch_size, device=device, dtype=torch.bool)
@@ -703,11 +692,15 @@ class AnyTop(nn.Module):
                 self._assemble_action_slot_channels(word_ids, slot_ids, word_mask, dtype)
             )
         active = self._resolve_action_label_active(
-            y.get('action_label_active'), batch_size, device, ref_active
+            y.get('action_label_active'), batch_size, device
         )
         active = active & self._resolve_action_label_valid(
             y, batch_size, device, word_mask
         )
+        # A reference supplies the motion content, so the action label is
+        # bypassed on every reference-active row, in training and at inference.
+        if ref_active is not None:
+            active = active & ~ref_active
         return channels, active
 
     def _build_action_label_token(self, y, batch_size, device, dtype, ref_active=None):

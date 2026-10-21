@@ -214,7 +214,7 @@ def get_gmdm_args(args):
             **{key: getattr(args, key, default) for key, default in (
                 ('ref_encoder', False), ('ref_slots', 2), ('ref_dim', 8),
                 ('ref_width', 64), ('ref_layers', 2), ('ref_rest_context', False),
-                ('ref_cfg_drop_prob', 0.4), ('ref_label_drop_prob', 0.5))},
+                ('ref_cfg_drop_prob', 0.4))},
             'mirror_twin_drop_prob': getattr(args, 'mirror_twin_drop_prob', 0.2),
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),

@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 36
+CKPT_VERSION = 37
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -213,11 +213,9 @@ def add_model_options(parser):
     group.add_argument('--ref_rest_context', action='store_true',
                        help="Reference encoder also reads the source's rest pose (bone directions "
                             "+ height) as static per-joint context; per-frame inputs stay absolute.")
-    group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4)
-    group.add_argument('--ref_label_drop_prob', type=float, default=0.5,
-                       help='Action-label CFG drop probability on reference-active training rows '
-                            '(rows without a reference use --action_label_cfg_drop_prob). '
-                            'Reference-active rows always bypass the species FiLM.')
+    group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4,
+                       help='Reference hard-drop probability. Reference-active rows always '
+                            'bypass the action label and the species FiLM.')
     group.add_argument('--ref_leaf_drop_prob', type=float, default=0.2)
     group.add_argument('--ref_bone_length_aug_prob', type=float, default=0.2)
     group.add_argument('--ref_bone_length_aug', type=float, default=0.1)
@@ -807,6 +805,14 @@ def train_args():
     return parser.parse_args()
 
 
+def is_encoded_reference(reference_motion, skip_timesteps=None, inpaint_joints='',
+                         inpaint_frames='', outpaint=False):
+    """True when the reference is encoded as motion content rather than edited."""
+    return bool(reference_motion) and (skip_timesteps is None and not outpaint
+                                       and not str(inpaint_joints or '').strip()
+                                       and not str(inpaint_frames or '').strip())
+
+
 def generate_args(argv=None):
     parser = ArgumentParser()
     # args specified by the user: (all other will be loaded from the model)
@@ -824,14 +830,14 @@ def generate_args(argv=None):
         parser, argv=argv,
         preserve_cli_args=preserve_cli_args,
     )
-    encoded_reference = bool(args.reference_motion) and (
-        args.skip_timesteps is None and not args.outpaint
-        and not str(args.inpaint_joints or '').strip()
-        and not str(args.inpaint_frames or '').strip()
-    )
+    encoded_reference = is_encoded_reference(args.reference_motion, args.skip_timesteps,
+                                             args.inpaint_joints, args.inpaint_frames, args.outpaint)
     if encoded_reference and args.species_active is not None:
         parser.error('an encoded --reference_motion cannot be combined with --species_active; '
                      'encode always disables species FiLM')
+    if encoded_reference and str(args.action_label or '').strip():
+        parser.error('an encoded --reference_motion cannot be combined with --action_label; '
+                     'the reference supplies the motion content')
     if args.species_active is None:
         args.species_active = not encoded_reference
     return args
