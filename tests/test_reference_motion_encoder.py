@@ -135,7 +135,6 @@ def test_encoder_permutation_invariance_padding_and_actual_channel_contract():
     changed['ref_feats'][:, 0, :9] = 100
     changed['ref_feats'][:, 0, 10] = 100
     changed['species_emb'] = torch.randn(2, 99)
-    changed['ref_rest_pose'] = torch.randn(2, 6, REFERENCE_POSE_CHANNELS)
     torch.testing.assert_close(z, encoder(changed), rtol=0, atol=0)
     moved = copy.deepcopy(y)
     moved['ref_feats'][:, 0, 9] += 1
@@ -159,8 +158,8 @@ def test_encoder_reads_bone_directions_and_height():
         assert not torch.allclose(z, m.motion_encoder(changed))
 
 
-def test_rest_context_reads_rest_pose_and_keeps_padding_inert():
-    m = model(ref_rest_context=True).eval()
+def test_encoder_reads_rest_pose_and_keeps_padding_inert():
+    m = model().eval()
     _, y = inputs()
     z = m.motion_encoder(y)
     changed = copy.deepcopy(y)

@@ -101,7 +101,7 @@ def reference_rest_pose(cond):
 
     The same bone-direction / height channels evaluated on the rest positions,
     so a frame's pose and the rest sit in one space and their difference is
-    linear in the inputs. Read only by an encoder built with ``rest_context``.
+    linear in the inputs. Read by the reference encoder as static per-joint context.
     """
     return reference_pose(rest_pos_from_cond(cond)[None], cond)[0]
 

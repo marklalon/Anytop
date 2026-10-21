@@ -17,17 +17,15 @@ REF_SIDE_TOLERANCE = 1e-3
 
 
 class MotionEncoder(nn.Module):
-    """Encodes a reference from rest-free channels only.
+    """Encodes a reference from absolute per-frame channels plus a static rest context.
 
     Every per-frame input means the same thing on every skeleton: the unit
     bone direction and the joint height (over ``L``) in the rest-facing frame,
-    and the root's XZ velocity. Nothing describes the source's rest pose -- no
-    rest token, no rest-centered position residual, no local rotation, no rest
-    geometry -- so the encoder cannot code motion as a deviation from the
-    source's own rest, which would then be replayed against the target's rest.
+    and the root's XZ velocity. There is no rest token, no rest-centered
+    position residual, no local rotation and no rest geometry.
 
-    ``rest_context`` adds one static per-joint input: the same pose channels
-    evaluated on the source's rest (``ref_rest_pose``). The per-frame inputs
+    One static per-joint input carries the source's rest: the same pose
+    channels evaluated on the rest (``ref_rest_pose``). The per-frame inputs
     stay absolute; the encoder may additionally read how far a joint departs
     from its rest (a tail raised far above where it hangs at rest), which the
     absolute direction alone cannot tell apart from a rig whose tail simply
@@ -35,7 +33,7 @@ class MotionEncoder(nn.Module):
     """
 
     def __init__(self, t5_out_dim, slots=2, ref_dim=8, width=64, layers=2,
-                 heads=4, dropout=0.1, rest_context=False):
+                 heads=4, dropout=0.1):
         super().__init__()
         from data_loaders.reference import REFERENCE_POSE_CHANNELS
         from data_loaders.truebones.truebones_utils.canonical_features import ROOT_VEL_CHANNELS
@@ -59,7 +57,7 @@ class MotionEncoder(nn.Module):
             nn.GELU(),
             nn.Linear(width, width),
         )
-        self.rest_embedding = nn.Linear(REFERENCE_POSE_CHANNELS, width) if rest_context else None
+        self.rest_embedding = nn.Linear(REFERENCE_POSE_CHANNELS, width)
         # Plain spatial attention, no topology / edge bias: that bias costs as
         # much as in the shared decoder whatever the width. Skeleton identity
         # reaches the encoder through names and the topology columns.
@@ -98,9 +96,8 @@ class MotionEncoder(nn.Module):
             self.joint_embedding(pose[:, :, 1:]),
         ], dim=2)
         names = self.text_embedding(self.names_dropout(y['ref_joints_names_embs']))
-        static = names + self.struct_embedding(self._structure(y['ref_joint_struct']))
-        if self.rest_embedding is not None:
-            static = static + self.rest_embedding(y['ref_rest_pose'])
+        static = (names + self.struct_embedding(self._structure(y['ref_joint_struct']))
+                  + self.rest_embedding(y['ref_rest_pose']))
         # Re-zero after the projections: their biases would make padding live.
         tokens = tokens + (static * valid[..., None].to(names.dtype))[None]
         positions = torch.arange(frames, device=pose.device).view(1, -1, 1)

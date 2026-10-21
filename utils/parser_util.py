@@ -210,9 +210,6 @@ def add_model_options(parser):
     group.add_argument('--ref_dim', type=int, default=8)
     group.add_argument('--ref_width', type=int, default=64)
     group.add_argument('--ref_layers', type=int, default=2)
-    group.add_argument('--ref_rest_context', action='store_true',
-                       help="Reference encoder also reads the source's rest pose (bone directions "
-                            "+ height) as static per-joint context; per-frame inputs stay absolute.")
     group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4,
                        help='Reference hard-drop probability. Reference-active rows always '
                             'bypass the action label and the species condition.')
