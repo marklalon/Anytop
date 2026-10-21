@@ -200,7 +200,7 @@ def get_gmdm_args(args):
             'cross_limb_dim': getattr(args, 'cross_limb_dim', 64),
             'cross_limb_last_n': getattr(args, 'cross_limb_last_n', 0),
             'action_adaln_bottleneck': getattr(args, 'action_adaln_bottleneck', 0),
-            'species_film_bottleneck': getattr(args, 'species_film_bottleneck', 128),
+            'species_adaln_bottleneck': getattr(args, 'species_adaln_bottleneck', 64),
             'last_layer_ff': getattr(args, 'last_layer_ff', 0),
             'joint_mask_prob': getattr(args, 'joint_mask_prob', 0.5),
             'joint_mask_budget': getattr(args, 'joint_mask_budget', 0.15),
@@ -209,7 +209,7 @@ def get_gmdm_args(args):
             'temporal_span_mask_min_frames': getattr(args, 'temporal_span_mask_min_frames', 4),
             'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 12),
             'species_cfg_drop_prob': getattr(args, 'species_cfg_drop_prob', 0.15),
-            'species_joint_cond': getattr(args, 'species_joint_cond', False),
+            'species_cond': getattr(args, 'species_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
             **{key: getattr(args, key, default) for key, default in (
                 ('ref_encoder', False), ('ref_slots', 2), ('ref_dim', 8),

@@ -25,7 +25,7 @@ class ClassifierFreeActionModel(nn.Module):
 
     Only the action condition is guided. The unconditional pass differs from the
     conditional one by exactly ``y['action_label_active'] = False``, so every
-    other channel (species FiLM, the canonical output frame, loop/resample_speed, the
+    other channel (the species token, the canonical output frame, loop/resample_speed, the
     skeleton graph itself) is bit-identical between the two and cancels out of
     the guidance term instead of being extrapolated along with the prompt.
 
@@ -102,7 +102,7 @@ class ClassifierFreeActionModel(nn.Module):
 
 
 class ClassifierFreeSpeciesModel(ClassifierFreeActionModel):
-    """Guide per-joint species FiLM using its trained identity bypass.
+    """Guide the species condition against its trained null token.
 
     Other conditions, including the joint names, remain active in both passes.
     """
@@ -123,7 +123,7 @@ class ClassifierFreeSpeciesModel(ClassifierFreeActionModel):
 class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
     """Guide the encoded reference against the fully unconditional mode.
 
-    The model bypasses the action label and the species FiLM on every
+    The model bypasses the action label and the species condition on every
     reference-active row, so the reference pass carries neither. The
     null-reference pass forces the label off as well and keeps whatever
     ``y['species_active']`` says; encode sets it False, which makes species

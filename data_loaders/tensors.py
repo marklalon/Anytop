@@ -272,9 +272,9 @@ def truebones_collate(batch):
         jointsnamesembsbatchTensor = collate_tensors(jointsnamesembsbatch)
         cond['y'].update({'joints_names_embs': jointsnamesembsbatchTensor})
 
-    if 'species_emb' in notnone_batches[0]:
-        speciesembbatch = [b['species_emb'] for b in notnone_batches]
-        cond['y'].update({'species_emb': torch.stack(speciesembbatch)})
+    if 'species_code' in notnone_batches[0]:
+        speciescodebatch = [b['species_code'] for b in notnone_batches]
+        cond['y'].update({'species_code': torch.stack(speciescodebatch)})
         
     if 'joints_relations' in notnone_batches[0]:
         jointsrelationsbatch = [b['joints_relations'] for b in notnone_batches]
@@ -386,8 +386,8 @@ def truebones_batch_collate(batch, joint_buckets=None):
             if candidate_count > 0:
                 padded_candidate_roots[:candidate_count] = torch.from_numpy(raw_candidates[:candidate_count])
             item['joint_mask_candidate_roots'] = padded_candidate_roots
-        if extra_cond is not None and extra_cond.get('species_emb') is not None:
-            item['species_emb'] = torch.from_numpy(np.asarray(extra_cond['species_emb'], dtype=np.float32))
+        if extra_cond is not None and extra_cond.get('species_code') is not None:
+            item['species_code'] = torch.from_numpy(np.asarray(extra_cond['species_code'], dtype=np.float32))
         if extra_cond is not None and 'rest_pos_ric_hml' in extra_cond:
             rest_pos = torch.zeros((max_joints, 3), dtype=torch.float32)
             raw_rest_pos = np.asarray(extra_cond['rest_pos_ric_hml'], dtype=np.float32)
@@ -443,8 +443,8 @@ def truebones_batch_collate(batch, joint_buckets=None):
             for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'resample_speed_cond', 'motion_speed_applied', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count', 'bone_length_aug_applied'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
-            if 'species_emb' in motion_metadata:
-                item['species_emb'] = torch.from_numpy(np.asarray(motion_metadata['species_emb'], dtype=np.float32))
+            if 'species_code' in motion_metadata:
+                item['species_code'] = torch.from_numpy(np.asarray(motion_metadata['species_code'], dtype=np.float32))
         if motion_name is not None:
             item['motion_name'] = motion_name
         adapted_batch.append(item)

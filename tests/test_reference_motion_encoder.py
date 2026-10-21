@@ -19,6 +19,7 @@ from data_loaders.reference import (
 )
 from data_loaders.truebones.data.dataset import resample_motion_features
 from data_loaders.truebones.truebones_utils.canonical_features import rest_pos_from_cond
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from sample.reference_motion import _prepare_encoder_reference_bundle
 from test_bone_length_aug import fixture, make_dataset
@@ -267,18 +268,21 @@ def test_reference_dropout_keeps_fixed_rows_and_encodes_only_those(monkeypatch):
     assert not m._reference_condition(y, 4, 5, x.device)[1].any()
 
 
-def test_reference_rows_bypass_species_film(monkeypatch):
-    m = model(ref_cfg_drop_prob=0, species_joint_cond=True, species_cfg_drop_prob=0).eval()
+def test_reference_rows_bypass_the_species_condition(monkeypatch):
+    m = model(ref_cfg_drop_prob=0, species_cond=True, species_cfg_drop_prob=0).eval()
+    with torch.no_grad():
+        m.species_null_emb.fill_(3.0)
     x, y = inputs()
     y['ref_active'][1] = False
     y['species_active'] = torch.ones(2, dtype=torch.bool)
-    y['species_emb'] = torch.randn(2, 4)
+    y['species_code'] = torch.randn(2, species_code_dim(4))
     seen = []
-    forward = m.input_process.forward
-    monkeypatch.setattr(m.input_process, 'forward',
-                        lambda *a, **k: seen.append(k['species_active'].clone()) or forward(*a, **k))
+    build = m._build_species_token
+    monkeypatch.setattr(m, '_build_species_token',
+                        lambda *a, **k: seen.append(build(*a, **k)) or seen[-1])
     m(x, torch.zeros(2), y)
-    assert seen[0].tolist() == [False, True]
+    assert torch.equal(seen[0][0], m.species_null_emb)
+    assert not torch.equal(seen[0][1], m.species_null_emb)
 
 
 @pytest.mark.parametrize('training', [True, False])

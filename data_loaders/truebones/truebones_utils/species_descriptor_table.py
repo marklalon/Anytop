@@ -28,6 +28,7 @@ from typing import Iterable, Mapping
 import numpy as np
 
 from data_loaders.truebones.truebones_utils.dataset_tags import (
+    SPECIES_VARIANTS,
     parse_species_tags,
     species_descriptor_text,
     species_descriptor_vocabulary,
@@ -273,6 +274,30 @@ def build_species_descriptor_table(
     return table
 
 
+# ── Species code ─────────────────────────────────────────────────────────────
+def species_code(table: SpeciesDescriptorTable, tags, where: str) -> np.ndarray:
+    """The AnyTop species condition: ``[T5(body plan) || variant one-hot]``.
+
+    The variant is not read through T5: "Winged" and "Winged Fluttering" encode
+    to nearly the same vector, which leaves the variant a small difference
+    inside the body plan's direction. As a code it is a unit axis of its own,
+    exactly orthogonal to the body plan part and to the other variants; a
+    descriptor without a variant has zeros there.
+    """
+    parsed = parse_species_tags(tags)
+    if not parsed:
+        raise SpeciesDescriptorError(f"{where}: empty species descriptor")
+    variant = np.zeros(len(SPECIES_VARIANTS), dtype=np.float32)
+    for tag in parsed[1:]:
+        if tag not in SPECIES_VARIANTS:
+            raise SpeciesDescriptorError(
+                f"{where}: variant {tag!r} is not one of {', '.join(SPECIES_VARIANTS)}"
+            )
+        variant[SPECIES_VARIANTS.index(tag)] = 1.0
+    body_plan = table.lookup(parsed[:1], where)
+    return np.concatenate([body_plan, variant]).astype(np.float32, copy=False)
+
+
 # ── Cond binding ─────────────────────────────────────────────────────────────
 def _entry_species_tags(object_type, entry) -> tuple[str, ...]:
     tags = tuple(str(tag) for tag in (entry.get("species_tags") or ()))
@@ -284,7 +309,8 @@ def _entry_species_tags(object_type, entry) -> tuple[str, ...]:
 
 
 def bind_cond_species_embs(cond_dict, table: SpeciesDescriptorTable, where: str) -> None:
-    """Set every entry's ``species_emb`` to its table row, by its baked ``species_tags``.
+    """Set every entry's ``species_emb`` to its table row, by its baked ``species_tags``,
+    and its ``species_code`` (what AnyTop reads) from the same table.
 
     Training binds from the table it ships with the checkpoint, generation from
     that shipped copy; an entry whose descriptor the table lacks is refused.
@@ -308,6 +334,7 @@ def bind_cond_species_embs(cond_dict, table: SpeciesDescriptorTable, where: str)
             missing.append(f"{object_type}: {list(tags)}")
             continue
         entry["species_emb"] = table.lookup(tags, where)
+        entry["species_code"] = species_code(table, tags, f"{where}: {object_type}")
         entry["species_emb_meta"] = {
             "table": table.source,
             "t5_name": table.t5_name,

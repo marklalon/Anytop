@@ -963,8 +963,9 @@ ADALN_TEMPORAL, ADALN_FF = 0, 1
 def _modulate(x: Tensor, adaln: Optional[Tensor], branch: int) -> Tensor:
     """Scale and shift ONE branch's input: ``(1 + gamma) * x + beta``.
 
-    ``adaln`` is this layer's (B, 4, d_model) slice, or None when the run has no
-    action AdaLN (then this is the identity and costs nothing). ``x`` is
+    ``adaln`` is this layer's (B, 4, d_model) slice -- the action and species
+    heads' outputs summed -- or None when the run has neither (then this is the
+    identity and costs nothing). ``x`` is
     (frames, B, njoints, d_model), so the modulation broadcasts over frames and
     joints: a per-sample, per-channel gain, which is the authority the purely
     additive condition token lacks.
@@ -973,7 +974,7 @@ def _modulate(x: Tensor, adaln: Optional[Tensor], branch: int) -> Tensor:
     post-norm activation, so the identity path through the stack is untouched
     and the gains cannot compound layer over layer.
 
-    The head is zero-initialised, so gamma = 0 and beta = 0 on a fresh model and
+    The heads are zero-initialised, so gamma = 0 and beta = 0 on a fresh model and
     this reproduces the unmodulated layer exactly.
     """
     if adaln is None:
@@ -989,7 +990,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                  value_emb=False,
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
                  cross_limb_last_n=0, action_label_adaln=False,
-                 action_adaln_bottleneck=0, last_layer_ff=0,
+                 action_adaln_bottleneck=0, species_adaln=False,
+                 species_adaln_bottleneck=64, last_layer_ff=0,
                  mirror_twin_drop_prob=0.0, graph_relations=True):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
@@ -1114,6 +1116,27 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         else:
             self.action_adaln = None
 
+        # --species_cond: the species token's own AdaLN head, same layout as the
+        # action head. Its (gamma, beta) add to the action head's, so each
+        # condition keeps a separate head and a separate CFG null. The species
+        # descriptor takes few distinct values, hence the narrow default hidden.
+        self.species_adaln_bottleneck = int(species_adaln_bottleneck)
+        if self.species_adaln_bottleneck < 0:
+            raise ValueError(
+                f"species_adaln_bottleneck must be >= 0, got {species_adaln_bottleneck}"
+            )
+        if species_adaln:
+            hidden = self.species_adaln_bottleneck or self.d_model
+            self.species_adaln = nn.Sequential(
+                nn.Linear(self.d_model, hidden),
+                nn.SiLU(),
+                nn.Linear(hidden, num_layers * ACTION_ADALN_PARAMS_PER_LAYER * self.d_model),
+            )
+            nn.init.zeros_(self.species_adaln[-1].weight)
+            nn.init.zeros_(self.species_adaln[-1].bias)
+        else:
+            self.species_adaln = None
+
     def _resolve_edge_codes(self, edge_rel: Tensor) -> Tensor:
         """Stored ``[B, J, J]`` codes -> embedding indices, with twin dropout.
 
@@ -1146,6 +1169,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             cross_limb_unreliable_mask: Optional[Tensor] = None,
             loop_phase_mask: Optional[Tensor] = None,
             action_adaln_cond: Optional[Tensor] = None,
+            species_adaln_cond: Optional[Tensor] = None,
             ref_z: Optional[Tensor] = None,
             ref_active: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = edge_rel = None
@@ -1189,11 +1213,18 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # hard-dropped row carries action_label_null_emb, so its modulation is
         # the null token's modulation rather than a bypass of the head (the
         # failure mode of the retired global_energy null).
-        action_adaln = None
+        adaln = None
         if self.action_adaln is not None and action_adaln_cond is not None:
-            action_adaln = run_in_fp32(self.action_adaln, action_adaln_cond).view(
+            adaln = run_in_fp32(self.action_adaln, action_adaln_cond).view(
                 B, self.num_layers, ACTION_ADALN_PARAMS_PER_LAYER, self.d_model
             )
+        # Same contract for the species token: a dropped row carries
+        # species_null_emb and is modulated by the null's (gamma, beta).
+        if self.species_adaln is not None and species_adaln_cond is not None:
+            species_adaln = run_in_fp32(self.species_adaln, species_adaln_cond).view(
+                B, self.num_layers, ACTION_ADALN_PARAMS_PER_LAYER, self.d_model
+            )
+            adaln = species_adaln if adaln is None else adaln + species_adaln
         for layer_ind, mod in enumerate(self.layers):
             edge_value_emb = None
             topology_value_emb = None
@@ -1210,7 +1241,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     cross_limb_block=cl_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     loop_phase_embedding=loop_phase_embedding,
-                    action_adaln=None if action_adaln is None else action_adaln[:, layer_ind],
+                    adaln=None if adaln is None else adaln[:, layer_ind],
                     ref_z=ref_z, ref_active=ref_active)
         if self.norm is not None:
             output = self.norm(output)
@@ -1350,7 +1381,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         cross_limb_block: Optional[nn.Module] = None,
         cross_limb_unreliable_mask: Optional[Tensor] = None,
         loop_phase_embedding: Optional[Tensor] = None,
-        action_adaln: Optional[Tensor] = None,
+        adaln: Optional[Tensor] = None,
         ref_z: Optional[Tensor] = None,
         ref_active: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
@@ -1366,7 +1397,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         # modulation lands BEFORE the circular phase, which _temporal_mha_block
         # sums in, so a loop sample's phase is never scaled by the label.
         x = self.norm2(x + self._temporal_mha_block_sin_joint(
-            _modulate(x, action_adaln, ADALN_TEMPORAL), None,
+            _modulate(x, adaln, ADALN_TEMPORAL), None,
             loop_phase_embedding=loop_phase_embedding))
         if cross_limb_block is not None:
             x = cross_limb_block(
@@ -1374,5 +1405,5 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 tgt_key_padding_mask,
                 unreliable_mask=cross_limb_unreliable_mask,
             )
-        x = self.norm3(x + self._ff_block(_modulate(x, action_adaln, ADALN_FF)))
+        x = self.norm3(x + self._ff_block(_modulate(x, adaln, ADALN_FF)))
         return x

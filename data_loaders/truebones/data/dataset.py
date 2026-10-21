@@ -1752,7 +1752,7 @@ class MotionDataset(data.Dataset):
                 'reference': reference,
                 'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
                 'joint_struct': joint_struct,
-                'species_emb': cond.get('species_emb'),
+                'species_code': cond.get('species_code'),
                 'rest_pose_physical': cond['rest_pose'],
                 'rest_pos_ric_hml': cond['rest_pos_ric_hml'],
                 'canonical_feature_mean': cond.get('canonical_feature_mean'),
@@ -1778,7 +1778,7 @@ class MotionDataset(data.Dataset):
             'reference': reference,
             'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
             'joint_struct': joint_struct,
-            'species_emb': cond.get('species_emb'),
+            'species_code': cond.get('species_code'),
             'rest_pose_physical': cond['rest_pose'],
             'rest_pos_ric_hml': cond['rest_pos_ric_hml'],
             'canonical_feature_mean': cond.get('canonical_feature_mean'),
@@ -2075,7 +2075,7 @@ class Truebones(data.Dataset):
         # tag (the per-species condition has no fallback).
         assert_species_tags_cover(cond_dict.keys())
         assert_cond_species_tags_current(cond_dict)
-        # species_emb is not stored in cond.npy: it is bound here from the
+        # species_emb / species_code are not stored in cond.npy: they are bound here from the
         # descriptor table the run ships with its checkpoint (training passes
         # it; a caller without species conditioning passes none).
         species_table = kwargs.get('species_table')

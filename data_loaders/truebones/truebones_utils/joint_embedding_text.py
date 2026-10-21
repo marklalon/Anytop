@@ -1006,6 +1006,7 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', report_colli
         }
 
         object_cond.pop('species_emb', None)
+        object_cond.pop('species_code', None)
         object_cond.pop('species_emb_meta', None)
 
     # cond keys are '<namespace>/<species>', which cannot go into a filename;

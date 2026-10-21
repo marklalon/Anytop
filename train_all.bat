@@ -30,8 +30,8 @@ pushd "%SCRIPT_DIR%"
 	--action_label_cond ^
 	--action_label_adaln ^
 	--action_adaln_bottleneck 64 ^
-	--species_film_bottleneck 64 ^
-	--species_joint_cond ^
+	--species_adaln_bottleneck 64 ^
+	--species_cond ^
 	--ref_encoder ^
 	--ref_slots 2 ^
 	--ref_dim 8 ^

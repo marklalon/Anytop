@@ -13,6 +13,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
+    SPECIES_VARIANTS,
+    species_code_dim,
+)
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
@@ -21,6 +25,7 @@ from model.cfg_sampler import ClassifierFreeSpeciesModel  # noqa: E402
 
 
 T5_DIM = 512
+CODE_DIM = species_code_dim(T5_DIM)
 
 
 class _CaptureDecoder(torch.nn.Module):
@@ -38,100 +43,131 @@ class _TimestepEchoDecoder(torch.nn.Module):
         return kwargs['tgt'] + kwargs['timesteps_embs'].sum()
 
 
-class _ProbeHead(torch.nn.Module):
-    """Wraps a head to capture the exact tensor it was called with."""
-
-    def __init__(self, real):
-        super().__init__()
-        self.real = real
-        self.last_input = None
-
-    def forward(self, inp):
-        self.last_input = inp
-        return self.real(inp)
-
-
-def _make_model(species_cfg_drop_prob=0.15, species_joint_cond=False):
+def _make_model(species_cfg_drop_prob=0.15, species_cond=False, **extra):
     return AnyTop(
         max_joints=4,
         feature_len=12,
         latent_dim=8,
         ff_size=32,
-        num_layers=1,
+        num_layers=2,
         num_heads=2,
         dropout=0.0,
         cross_limb=True,
         t5_out_dim=T5_DIM,
         species_cfg_drop_prob=species_cfg_drop_prob,
-        species_joint_cond=species_joint_cond,
+        species_cond=species_cond,
+        **extra,
     )
 
 
-def _joint_cond_inputs(batch=1, joints=4, frames=3):
-    """Shapes InputProcess is called with from AnyTop.forward (anytop.py:796)."""
-    return (
-        torch.randn(batch, joints, 12, frames),
-        torch.randn(1, batch, joints, 12),
-        torch.randn(batch, joints, T5_DIM),
-        torch.randn(batch, T5_DIM),
-    )
-
-
-def _joint_struct(batch=1, joints=4):
-    """Stand-in structural descriptors; only their shape matters here."""
-    return torch.randn(batch, joints, JOINT_STRUCT_DIM)
-
-
-def _make_y(species_emb=None, **extra):
+def _make_y(species_code=None, **extra):
     y = {
         'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
         'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
+        'graph_dist': torch.zeros(2, 4, 4, dtype=torch.int64),
+        'joints_relations': torch.zeros(2, 4, 4, dtype=torch.int64),
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
         # The output coordinate frame is an unconditional model input: every
         # forward reads it, so a hand-built y has to carry it.
         'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),
         'canonical_feature_std': torch.ones(12, dtype=torch.float32),
     }
-    if species_emb is not None:
-        y['species_emb'] = species_emb
+    if species_code is not None:
+        y['species_code'] = species_code
     y.update(extra)
     return y
 
 
-class SpeciesHybridTest(unittest.TestCase):
+def _open_species_heads(model, std=0.1):
+    """Leave zero-init so the species path actually changes the output."""
+    torch.nn.init.normal_(model.species_null_emb, std=std)
+    torch.nn.init.normal_(model.seqTransDecoder.species_adaln[-1].weight, std=std)
+
+
+class SpeciesConditionTest(unittest.TestCase):
     def test_disabled_by_default(self):
         model = AnyTop(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
                        num_layers=1, num_heads=2, dropout=0.0, cross_limb=True)
-        self.assertFalse(hasattr(model, "species_film"))
-        self.assertFalse(model.species_joint_cond)
-        self.assertFalse(model.input_process.species_joint_cond)
+        self.assertFalse(model.species_cond)
+        self.assertIsNone(model.species_projection)
+        self.assertIsNone(model.species_null_emb)
+        self.assertIsNone(model.seqTransDecoder.species_adaln)
 
     def test_invalid_drop_prob_rejected(self):
         with self.assertRaises(ValueError):
-            _make_model(species_joint_cond=True, species_cfg_drop_prob=1.5)
+            _make_model(species_cond=True, species_cfg_drop_prob=1.5)
 
-    def test_cfg_drop_bypasses_entire_joint_modulation(self):
-        model = _make_model(species_joint_cond=True).eval()
-        ip = model.input_process
-        torch.nn.init.normal_(ip.species_film_j[-1].weight, std=0.1)
-        x, rest, joints, species = _joint_cond_inputs(batch=2)
-        struct = _joint_struct(2)
-        mixed = ip(x, rest, joints, species, joint_struct=struct,
-                   species_active=torch.tensor([True, False]))
-        ip.species_joint_cond = False
-        plain = ip(x, rest, joints, joint_struct=struct)
-        self.assertFalse(torch.allclose(mixed[:, 0], plain[:, 0]))
-        self.assertTrue(torch.equal(mixed[:, 1], plain[:, 1]))
+    def test_input_process_has_no_species_pathway(self):
+        """Species is a sample-level condition; the joint-name path is species-free."""
+        model = _make_model(species_cond=True)
+        self.assertFalse(any('species' in name for name, _ in
+                             model.input_process.named_parameters()))
+        self.assertEqual(model.input_process.text_embedding.in_features, T5_DIM)
 
-    def test_full_drop_in_training_matches_explicit_bypass(self):
-        model = _make_model(species_joint_cond=True, species_cfg_drop_prob=1.0).train()
-        torch.nn.init.normal_(model.input_process.species_film_j[-1].weight, std=0.1)
-        model.seqTransDecoder = _CaptureDecoder()
+    def test_projection_reads_body_plan_and_variant_axes(self):
+        model = _make_model(species_cond=True)
+        self.assertEqual(model.species_projection[0].in_features, T5_DIM + len(SPECIES_VARIANTS))
+
+    def test_heads_start_as_identity(self):
+        """Zero-init null and AdaLN output: a fresh model ignores the species."""
+        model = _make_model(species_cond=True)
+        head = model.seqTransDecoder.species_adaln
+        self.assertEqual(torch.count_nonzero(head[-1].weight), 0)
+        self.assertEqual(torch.count_nonzero(head[-1].bias), 0)
+        self.assertEqual(torch.count_nonzero(model.species_null_emb), 0)
+
+    def test_variant_axis_moves_the_species_token(self):
+        model = _make_model(species_cond=True, species_cfg_drop_prob=0.0).eval()
+        code = torch.zeros(2, CODE_DIM)
+        code[:, :T5_DIM] = torch.randn(T5_DIM)
+        code[1, T5_DIM + SPECIES_VARIANTS.index('Fluttering')] = 1.0
+        with torch.no_grad():
+            token = model._build_species_token({'species_code': code}, 2, 'cpu', torch.float32)
+        self.assertFalse(torch.allclose(token[0], token[1]))
+
+    def test_inactive_rows_carry_the_null_token(self):
+        model = _make_model(species_cond=True, species_cfg_drop_prob=0.0).eval()
+        _open_species_heads(model)
+        y = {'species_code': torch.randn(2, CODE_DIM),
+             'species_active': torch.tensor([True, False])}
+        with torch.no_grad():
+            token = model._build_species_token(y, 2, 'cpu', torch.float32)
+        self.assertTrue(torch.equal(token[1], model.species_null_emb))
+        self.assertFalse(torch.equal(token[0], model.species_null_emb))
+
+    def test_species_token_drives_the_decoder_adaln(self):
+        model = _make_model(species_cond=True, species_cfg_drop_prob=0.0).eval()
+        capture = _CaptureDecoder()
+        model.seqTransDecoder = capture
         x, t = torch.randn(2, 4, 12, 3), torch.tensor([1, 2])
-        y = _make_y(species_emb=torch.randn(2, T5_DIM))
+        with torch.no_grad():
+            model(x, t, y=_make_y(species_code=torch.randn(2, CODE_DIM)))
+        cond = capture.last_kwargs['species_adaln_cond']
+        self.assertEqual(tuple(cond.shape), (2, 8))
+
+    def test_species_adaln_changes_the_full_decoder_output(self):
+        model = _make_model(species_cond=True, species_cfg_drop_prob=0.0).eval()
+        _open_species_heads(model, std=0.5)
+        x, t = torch.randn(2, 4, 12, 3), torch.tensor([1, 2])
+        code = torch.randn(2, CODE_DIM)
+        with torch.no_grad():
+            kept = model(x, t, y=_make_y(species_code=code))
+            # Same additive token, AdaLN head switched off: the head must matter.
+            head = model.seqTransDecoder.species_adaln
+            model.seqTransDecoder.species_adaln = None
+            no_head = model(x, t, y=_make_y(species_code=code))
+            model.seqTransDecoder.species_adaln = head
+        self.assertFalse(torch.allclose(kept, no_head))
+
+    def test_full_drop_in_training_matches_explicit_null(self):
+        model = _make_model(species_cond=True, species_cfg_drop_prob=1.0).train()
+        _open_species_heads(model)
+        model.seqTransDecoder = _TimestepEchoDecoder()
+        x, t = torch.randn(2, 4, 12, 3), torch.tensor([1, 2])
+        y = _make_y(species_code=torch.randn(2, CODE_DIM))
         dropped = model(x, t, y=y)
         explicit = model(x, t, y=dict(y, species_active=False))
         kept = model(x, t, y=dict(y, species_active=True))
@@ -144,114 +180,40 @@ class SpeciesHybridTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'batch dimension'):
             model._resolve_species_active([True, False, True], 2, 'cpu')
 
-    def test_joint_cond_film_keeps_text_embedding_dim(self):
-        plain = _make_model()
-        fused = _make_model(species_joint_cond=True)
-        self.assertEqual(plain.input_process.text_embedding.in_features, T5_DIM)
-        self.assertEqual(fused.input_process.text_embedding.in_features, T5_DIM)
-        self.assertIsNone(plain.input_process.species_film_j)
-        # concat([joint_emb, species_emb]) in, (gamma_residual, beta) out.
-        self.assertEqual(fused.input_process.species_film_j[0].in_features, 2 * T5_DIM)
-        self.assertEqual(fused.input_process.species_film_j[0].out_features, 128)
-        self.assertEqual(fused.input_process.species_film_j[-1].in_features, 128)
-        self.assertEqual(fused.input_process.species_film_j[-1].out_features, 2 * T5_DIM)
-
-    def test_joint_cond_film_starts_at_identity(self):
-        model = _make_model(species_joint_cond=True)
-        model.eval()
-        ip = model.input_process
-        x, rest_pose, joints, species = _joint_cond_inputs()
-        joint_struct = _joint_struct(*joints.shape[:2])
-        with torch.no_grad():
-            fused = ip(x, rest_pose, joints, species, None, joint_struct)
-            ip.species_joint_cond = False  # bypass the FiLM fusion entirely
-            plain = ip(x, rest_pose, joints, None, None, joint_struct)
-        self.assertTrue(torch.allclose(fused, plain))
-
-    def test_joint_cond_film_differentiates_across_joints(self):
-        """The whole point of the FiLM head: gamma must vary per joint. The additive
-        form it replaced could not -- it added one per-species constant to every joint."""
-        model = _make_model(species_joint_cond=True)
-        head = model.input_process.species_film_j
-        torch.nn.init.normal_(head[-1].weight, std=0.5)
-        joints = torch.randn(1, 4, T5_DIM)
-        species = torch.randn(1, T5_DIM).unsqueeze(1).expand(-1, 4, -1)
-        with torch.no_grad():
-            gamma_residual, _ = head(torch.cat([joints, species], dim=-1)).chunk(2, dim=-1)
-        self.assertGreater(gamma_residual.std(dim=1).mean().item(), 1e-4)
-
-    def test_joint_cond_film_reads_pre_dropout_joint_embeddings(self):
-        """The FiLM head must read the *pre-dropout* joint embeddings. With
-        dropout p=1 the dropout-ified copy is all zeros, so a head that
-        accidentally consumed it would receive a zero joint part. The old
-        per-joint spread assertion on the full output could not catch that
-        (pose data alone spreads the joints), so probe the head's input
-        directly instead."""
-        model = _make_model(species_joint_cond=True)
-        ip = model.input_process
-        ip.joints_names_dropout.p = 1.0
-        torch.nn.init.normal_(ip.species_film_j[-1].weight, std=0.5)
-        probe = _ProbeHead(ip.species_film_j)
-        ip.species_film_j = probe
-        model.train()
-        x, rest_pose, joints, species = _joint_cond_inputs()
-        with torch.no_grad():
-            ip(x, rest_pose, joints, species, None, _joint_struct(*joints.shape[:2]))
-        # Head input: [B, J, 2*T5] = [joint_emb, species_emb]. The joint part
-        # must be the un-dropped input, not the zeroed dropout copy.
-        joint_part = probe.last_input[..., :T5_DIM]
-        self.assertTrue(torch.allclose(joint_part, joints))
-
-    def test_joint_cond_requires_species_emb(self):
-        model = _make_model(species_joint_cond=True)
-        model.eval()
+    def test_species_cond_requires_species_code(self):
+        model = _make_model(species_cond=True).eval()
         model.seqTransDecoder = _CaptureDecoder()
         x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         ts = torch.tensor([1, 2], dtype=torch.int64)
-        with self.assertRaises(ValueError):
-            model(x, ts, y=_make_y())  # no species_emb -> InputProcess raises
+        with self.assertRaisesRegex(ValueError, 'species_code'):
+            model(x, ts, y=_make_y())
 
-    def test_full_forward_joint_condition(self):
-        model = _make_model(species_cfg_drop_prob=0.0,
-                            species_joint_cond=True)
-        model.eval()
-        capture = _CaptureDecoder()
-        model.seqTransDecoder = capture
-        x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
-        ts = torch.tensor([1, 2], dtype=torch.int64)
-        y = _make_y(species_emb=torch.randn(2, T5_DIM))
-        out = model(x, ts, y=y)
-        self.assertIsNotNone(capture.last_kwargs)
-        self.assertEqual(out.shape, x.shape)
-
-    def test_species_cfg_matches_explicit_film_branches(self):
-        model = _make_model(species_joint_cond=True)
-        model.eval()
-        torch.nn.init.normal_(model.input_process.species_film_j[-1].weight, std=0.1)
-        model.seqTransDecoder = _TimestepEchoDecoder()
+    def test_species_cfg_matches_explicit_branches(self):
+        model = _make_model(species_cond=True).eval()
+        _open_species_heads(model)
         x = torch.randn(2, 4, 12, 3)
         t = torch.tensor([98, 99])
-        y = _make_y(species_emb=torch.randn(2, T5_DIM))
+        y = _make_y(species_code=torch.randn(2, CODE_DIM))
         with torch.no_grad():
             cond = model(x, t, y=dict(y, species_active=torch.ones(2, dtype=torch.bool)))
             uncond = model(x, t, y=dict(y, species_active=torch.zeros(2, dtype=torch.bool)))
             guided = ClassifierFreeSpeciesModel(model, 2.0, 100)(x, t, y=y)
         self.assertFalse(torch.allclose(cond, uncond))
-        self.assertTrue(torch.allclose(guided, uncond + 2 * (cond - uncond)))
+        self.assertTrue(torch.allclose(guided, uncond + 2 * (cond - uncond), atol=1e-6))
         self.assertNotIn('species_active', y)
 
-    def test_species_cfg_requires_trained_joint_condition(self):
+    def test_species_cfg_requires_trained_condition(self):
         from sample.conditioning import _wrap_species_cfg
         args = types.SimpleNamespace(species_cfg_scale=2.0, species_cfg_drop_prob=0.15,
-                                   diffusion_steps=100)
+                                     diffusion_steps=100)
         with self.assertRaises(SystemExit):
             _wrap_species_cfg(_make_model(), args)
         args.species_cfg_drop_prob = 0.0
         with self.assertRaises(SystemExit):
-            _wrap_species_cfg(_make_model(species_joint_cond=True), args)
+            _wrap_species_cfg(_make_model(species_cond=True), args)
         args.species_cfg_drop_prob = 0.15
         self.assertIsInstance(
-            _wrap_species_cfg(_make_model(species_joint_cond=True), args),
+            _wrap_species_cfg(_make_model(species_cond=True), args),
             ClassifierFreeSpeciesModel,
         )
 

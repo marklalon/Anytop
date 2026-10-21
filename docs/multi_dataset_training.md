@@ -131,7 +131,7 @@ truebones/zoo_upgrade/Horse
 
 - `object_type`：由裸名改为**规范键**（与 dict key 保持一致）；裸名移到 `species_name`
 
-保持不变：`parents / offsets / rest_pose / joints_names_embs / species_emb / canonical_feature_mean·std / …`
+保持不变：`parents / offsets / rest_pose / joints_names_embs / canonical_feature_mean·std / …`（`species_emb` / `species_code` 不存在 cond.npy 里，运行时由描述符表绑定）
 
 > 已确认两个现有数据集的 `feature_space`、`joints_names_embs_meta.schema_version=8`、`t5_name=t5-base` 完全一致，可直接合并。
 > **注意**：`feature_space` 现为 `canonical_motion_v4`（逐帧 foot contact 通道已删除，`FEATS_LEN`=12）。

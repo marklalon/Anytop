@@ -297,7 +297,7 @@ class PaddingSurvivesTheProjection(unittest.TestCase):
         with self.assertRaises(ValueError):
             process(
                 torch.randn(1, 4, FEATS_LEN, 3), torch.randn(1, 1, 4, FEATS_LEN),
-                torch.randn(1, 4, 32), None, torch.ones(1, 4, dtype=torch.bool),
+                torch.randn(1, 4, 32), torch.ones(1, 4, dtype=torch.bool),
             )
 
 

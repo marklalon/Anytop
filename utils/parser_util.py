@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 37
+CKPT_VERSION = 38
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -215,7 +215,7 @@ def add_model_options(parser):
                             "+ height) as static per-joint context; per-frame inputs stay absolute.")
     group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4,
                        help='Reference hard-drop probability. Reference-active rows always '
-                            'bypass the action label and the species FiLM.')
+                            'bypass the action label and the species condition.')
     group.add_argument('--ref_leaf_drop_prob', type=float, default=0.2)
     group.add_argument('--ref_bone_length_aug_prob', type=float, default=0.2)
     group.add_argument('--ref_bone_length_aug', type=float, default=0.1)
@@ -237,8 +237,9 @@ def add_model_options(parser):
                        help="Hidden width of the --action_label_adaln head (0 = latent_dim). "
                             "The action label set has slot-source rank ~137, so ~192 "
                             "loses nothing and halves the model's largest matrix.")
-    group.add_argument("--species_film_bottleneck", default=128, type=int,
-                       help="Hidden width of the joint x species FiLM head (default 128; 0 = latent_dim).")
+    group.add_argument("--species_adaln_bottleneck", default=64, type=int,
+                       help="Hidden width of the --species_cond AdaLN head (0 = latent_dim). The "
+                            "species descriptor takes few distinct values, so a narrow head suffices.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     # Increase root-trajectory supervision and reduce position-step weight
     # relative to the initial loss-share estimates; validate with training runs.
@@ -367,12 +368,13 @@ def add_model_options(parser):
                             "missed some twins stays in distribution. Both directions of a pair drop "
                             "together. Inference never drops.")
     group.add_argument("--species_cfg_drop_prob", default=0.15, type=float,
-                       help="Per-sample probability of bypassing per-joint species FiLM during training "
-                            "(identity modulation), enabling species classifier-free guidance.")
-    group.add_argument("--species_joint_cond", action='store_true',
-                       help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_emb]. "
-                            "Zero-initialized to identity; CFG-droppable via --species_cfg_drop_prob. "
-                            "Requires 'species_emb'.")
+                       help="Per-sample probability in training of replacing the species token with its "
+                            "learned null, enabling species classifier-free guidance.")
+    group.add_argument("--species_cond", action='store_true',
+                       help="Condition on the species descriptor: [T5(body plan) || variant one-hot] "
+                            "projected to a sample-level token, summed into the timestep embedding and "
+                            "driving its own zero-initialized AdaLN head in every decoder layer. "
+                            "CFG-droppable via --species_cfg_drop_prob.")
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the clip's action_label ('run, forward, "
                             "left, glide' -- controlled keywords, not prose) is split into words, pooled "
@@ -657,10 +659,10 @@ def add_generate_options(parser):
                             'posture (facing, body height) is decided; the detail steps use 1.')
     group.add_argument('--species_active', type=_bool_argument,
                        choices=(True, False), default=None,
-                       help='Target per-joint species FiLM; true / false. '
+                       help='Target species condition; true / false. '
                             'Defaults to true. Cannot be supplied with an encoded '
                             '--reference_motion (one without skip_timesteps / inpaint / outpaint), '
-                            'which always disables species FiLM.')
+                            'which always disables the species condition.')
     group.add_argument("--num_frames", default=None, type=int,
                        help="The number of frames in the sampled motion. Omit it to let "
                             "generation pick one, in this priority order: --reference_motion's "
@@ -782,16 +784,16 @@ def add_generate_options(parser):
                             "descriptor baked into cond.npy (default from species_tags.jsonl), letting "
                             "you restyle the generated motion (e.g. make a Winged Dragon move as a "
                             "Quadruped, or a human walk like a machine). "
-                            "Requires a checkpoint trained with --species_joint_cond. "
+                            "Requires a checkpoint trained with --species_cond. "
                             "Incompatible with --object_type all.")
     group.add_argument("--species_cfg_scale", default=1.0, type=float,
-                       help="Classifier-free guidance scale over the species descriptor's "
-                            "droppable FiLM path, applied on the high-noise half of the steps "
+                       help="Classifier-free guidance scale over the species descriptor, "
+                            "applied on the high-noise half of the steps "
                             "only (the detail steps use 1). 1.0 (default) uses one forward; any "
                             "other scale uses two on the high-noise steps (four with action-label CFG). "
-                            "The unconditional pass bypasses per-joint species FiLM. "
+                            "The unconditional pass uses the learned species null token. "
                             "Ignored when --species_active false, with no extra species forwards. "
-                            "Requires a checkpoint trained with --species_joint_cond and non-zero "
+                            "Requires a checkpoint trained with --species_cond and non-zero "
                             "--species_cfg_drop_prob. Uses --species_tags when supplied, otherwise "
                             "the target species' baked descriptor.")
 
@@ -834,7 +836,7 @@ def generate_args(argv=None):
                                              args.inpaint_joints, args.inpaint_frames, args.outpaint)
     if encoded_reference and args.species_active is not None:
         parser.error('an encoded --reference_motion cannot be combined with --species_active; '
-                     'encode always disables species FiLM')
+                     'encode always disables the species condition')
     if encoded_reference and str(args.action_label or '').strip():
         parser.error('an encoded --reference_motion cannot be combined with --action_label; '
                      'the reference supplies the motion content')

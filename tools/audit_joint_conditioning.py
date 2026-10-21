@@ -229,9 +229,9 @@ def audit_model_padding(audit):
     )
 
     with torch.no_grad():
-        mixed = process(x, rest_pose, names, None, valid, struct)
+        mixed = process(x, rest_pose, names, valid, struct)
         alone = process(
-            x[1:], rest_pose[:, 1:], names[1:], None, valid[1:], struct[1:],
+            x[1:], rest_pose[:, 1:], names[1:], valid[1:], struct[1:],
         )
     delta = float((mixed[:, 1:] - alone).abs().max())
     audit.check('a mixed-joint-count batch matches the single-sample run',

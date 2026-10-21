@@ -110,6 +110,8 @@ def test_bind_sets_rows_and_refuses_unknown_descriptors():
     cond = {"a/Horse": _cond_entry(("Quadruped",))}
     sdt.bind_cond_species_embs(cond, table, "t")
     np.testing.assert_array_equal(cond["a/Horse"]["species_emb"], table.lookup(("Quadruped",), "t"))
+    np.testing.assert_array_equal(cond["a/Horse"]["species_code"],
+                                  sdt.species_code(table, ("Quadruped",), "t"))
     assert cond["a/Horse"]["species_emb_meta"]["embedding_text"] == "Quadruped"
     # Binding the same dict again (a reused runtime cond) is fine.
     sdt.bind_cond_species_embs(cond, table, "t")
@@ -117,6 +119,22 @@ def test_bind_sets_rows_and_refuses_unknown_descriptors():
     cond["a/Snake"] = _cond_entry(("Serpentine",))
     with pytest.raises(sdt.SpeciesDescriptorError, match="a/Snake"):
         sdt.bind_cond_species_embs(cond, table, "t")
+
+
+def test_species_code_is_body_plan_row_then_variant_axes():
+    table = _table()
+    winged = table.lookup(("Winged",), "t")
+    plain = sdt.species_code(table, ("Winged",), "t")
+    fluttering = sdt.species_code(table, ("Winged", "Fluttering"), "t")
+    assert plain.shape == (dt.species_code_dim(DIM),) and plain.dtype == np.float32
+    np.testing.assert_array_equal(plain[:DIM], winged)
+    np.testing.assert_array_equal(fluttering[:DIM], winged)
+    np.testing.assert_array_equal(plain[DIM:], np.zeros(len(dt.SPECIES_VARIANTS)))
+    expected = np.zeros(len(dt.SPECIES_VARIANTS))
+    expected[dt.SPECIES_VARIANTS.index("Fluttering")] = 1.0
+    np.testing.assert_array_equal(fluttering[DIM:], expected)
+    with pytest.raises(sdt.SpeciesDescriptorError, match="variant 'Striding'"):
+        sdt.species_code(table, ("Winged", "Striding"), "t")
 
 
 def test_bind_refuses_a_cond_with_a_baked_species_emb():
@@ -152,14 +170,14 @@ def test_cond_t5_name_reads_the_joint_name_encoder():
 
 def test_species_tags_override_reads_the_table(monkeypatch):
     table = _table([("Biped",), ("Winged",)])
-    model = SimpleNamespace(species_joint_cond=True)
+    model = SimpleNamespace(species_cond=True)
     monkeypatch.setattr(conditioning, "unwrap_anytop_model", lambda m: m)
     cond = {"a/Dragon": {"species_emb_meta": {"embedding_text": "Winged"}}}
 
     args = SimpleNamespace(species_tags="biped")
-    emb = conditioning._resolve_species_emb_override(args, model, cond, "a/Dragon", table)
-    np.testing.assert_array_equal(emb, table.lookup(("Biped",), "t"))
+    code = conditioning._resolve_species_code_override(args, model, cond, "a/Dragon", table)
+    np.testing.assert_array_equal(code, sdt.species_code(table, ("Biped",), "t"))
 
     args = SimpleNamespace(species_tags="Quadruped")
     with pytest.raises(SystemExit, match="not in the precomputed"):
-        conditioning._resolve_species_emb_override(args, model, cond, "a/Dragon", table)
+        conditioning._resolve_species_code_override(args, model, cond, "a/Dragon", table)

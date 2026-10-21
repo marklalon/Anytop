@@ -240,6 +240,12 @@ def species_descriptor_text(tags) -> str:
 SPECIES_VARIANTS = ("Clanking", "Fluttering", "Waddling")
 
 
+def species_code_dim(embedding_dim: int) -> int:
+    """Width of a species code: the body plan's embedding, then one axis per
+    variant (see ``species_descriptor_table.species_code``)."""
+    return int(embedding_dim) + len(SPECIES_VARIANTS)
+
+
 def species_descriptor_vocabulary() -> tuple[tuple[str, ...], ...]:
     """Every legal descriptor: each body plan bare, then with each variant."""
     return tuple((body_plan,) for body_plan in SPECIES_BODY_PLANS) + tuple(
