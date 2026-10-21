@@ -232,8 +232,8 @@ def add_model_options(parser):
                             "512 recovers those parameters for the trunk.")
     group.add_argument("--action_adaln_bottleneck", default=0, type=int,
                        help="Hidden width of the action-label AdaLN head (0 = latent_dim). "
-                            "The action label set has slot-source rank ~137, so ~192 "
-                            "loses nothing and halves the model's largest matrix.")
+                            "Its output layer is the model's largest matrix; a width at or "
+                            "above the rank of the action-label codes loses nothing.")
     group.add_argument("--species_adaln_bottleneck", default=64, type=int,
                        help="Hidden width of the --species_cond AdaLN head (0 = latent_dim). The "
                             "species descriptor takes few distinct values, so a narrow head suffices.")
@@ -430,8 +430,8 @@ def add_data_options(parser, training=False):
                                 "word already determines the group (a property of the corpus), "
                                 "so a group token would "
                                 "add no information the label does not already carry. Draws are "
-                                "uniform over clips, so the group mix is the corpus's own "
-                                "(stationary ~53%); see --rare_head_word_floor for the tail. "
+                                "uniform over clips, so the group mix is the corpus's own; "
+                                "see --rare_head_word_floor for the tail. "
                                 "Recorded in the checkpoint's args.json, where generation reads it "
                                 "back -- a single-group checkpoint can only ever be sampled as that "
                                 "group. See docs/action_group_and_label.md.")

@@ -279,14 +279,17 @@ class SpeciesJointModulationTest(unittest.TestCase):
                 out.weight[self.LATENT:].normal_(std=0.5)
 
     def _delta(self, process, **inputs):
-        """Modulated minus unmodulated tokens, [frames + 1, B, J, d]."""
+        """Modulated minus unmodulated tokens, [frames + 1, B, J, d]. Both passes
+        draw the same dropout masks, so in training mode they cancel too."""
         with torch.no_grad():
+            torch.manual_seed(2)
             modulated = process(**inputs)
             head = process.species_joint_modulation
             out = head[-1]
             saved = out.weight.clone(), out.bias.clone()
             out.weight.zero_()
             out.bias.zero_()
+            torch.manual_seed(2)
             plain = process(**inputs)
             out.weight.copy_(saved[0])
             out.bias.copy_(saved[1])
@@ -325,6 +328,32 @@ class SpeciesJointModulationTest(unittest.TestCase):
         self.assertEqual(float(delta[:, 0, 2:].abs().max()), 0.0)
         self.assertEqual(float(delta[:, 1, 3:].abs().max()), 0.0)
         self.assertGreater(float(delta[:, 0, :2].abs().max()), 0.0)
+
+    def test_modulation_ignores_the_elementwise_name_dropout(self):
+        """The head reads the name before the train-only elementwise dropout."""
+        torch.manual_seed(0)
+        process = InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS), self.LATENT, T5_DIM,
+                               dropout_prob=0.5, species_joint_modulation=True)
+        self._open(process, gamma=False, beta=True)
+        inputs = self._inputs()
+        process.eval()
+        eval_delta = self._delta(process, **inputs)
+        process.train()
+        # The rest frame's delta is beta alone (gamma is closed); it must not
+        # depend on whether the elementwise dropout is active.
+        train_delta = self._delta(process, **inputs)
+        torch.testing.assert_close(train_delta[0], eval_delta[0])
+
+    def test_whole_joint_name_drop_reaches_the_modulation(self):
+        process = self._process()
+        self._open(process, gamma=False, beta=True)
+        inputs = self._inputs()
+        kept = self._delta(process, **inputs)
+        drop = torch.zeros(2, self.JOINTS, dtype=torch.bool)
+        drop[0, 1] = True
+        dropped = self._delta(process, joint_name_drop=drop, **inputs)
+        self.assertFalse(torch.allclose(dropped[0, 0, 1], kept[0, 0, 1]))
+        torch.testing.assert_close(dropped[0, 0, 2], kept[0, 0, 2])
 
     def test_species_token_must_match_the_module(self):
         process = self._process()

@@ -1215,8 +1215,10 @@ class InputProcess(nn.Module):
             joints_clean = joints_clean.masked_fill(
                 joint_name_drop.to(joints_clean.device).unsqueeze(-1), 0.0
             )
-        joints_embedded_names = self.joints_names_dropout(joints_clean)
-        joints_embedded_names = run_in_fp32(self.text_embedding, joints_embedded_names)
+        dropout_live = self.training and self.joints_names_dropout.p > 0
+        joints_embedded_names = run_in_fp32(
+            self.text_embedding, self.joints_names_dropout(joints_clean) if dropout_live else joints_clean
+        )
         x = x + joints_embedded_names[None, ...]# [frames, batch_size, n_joints, d]
         if joint_struct is None:
             raise ValueError(
@@ -1236,9 +1238,14 @@ class InputProcess(nn.Module):
         if self.species_joint_modulation is not None:
             if species_token is None:
                 raise ValueError("the per-joint species modulation needs species_token.")
-            # The static embedding is read after the name dropout, so a joint
-            # whose name is hidden is modulated by its structure alone.
-            static = joints_embedded_names + struct_latent
+            # The static embedding reads the name after the whole-joint drop, so
+            # a hidden name stays hidden and that joint is modulated by its
+            # structure alone, but before the elementwise dropout: that one is
+            # train-only and rescales by 1/(1-p), which would make the
+            # modulation itself differ between training and inference.
+            # With the dropout inactive the two name embeddings coincide.
+            name_clean = run_in_fp32(self.text_embedding, joints_clean) if dropout_live else joints_embedded_names
+            static = name_clean + struct_latent
             species = species_token.to(static.dtype).unsqueeze(1).expand(-1, static.shape[1], -1)
             modulation = run_in_fp32(self.species_joint_modulation, torch.cat([species, static], dim=-1))
             # The name projection has a bias, so padded rows are re-zeroed here.

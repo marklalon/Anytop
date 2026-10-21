@@ -1088,12 +1088,11 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # which matters on a step that is partly kernel-launch bound.
         #
         # --action_adaln_bottleneck: the hidden width of that head. Its input is
-        # the action token, and the label set the token is drawn from has a
-        # slot-source rank of ~137, so the head cannot use more than that many
-        # directions whatever its width: at d_model=384 the trained output
-        # Linear had effective rank 130. 0 keeps the hidden at d_model (old
-        # behaviour); ~192 loses nothing measurable and halves the head, whose
-        # output Linear is the largest single matrix in the model.
+        # the action token, so the head cannot use more directions than the
+        # rank of the action-label codes, whatever its width; a hidden at or
+        # above that rank loses nothing and shrinks the head, whose output
+        # Linear is the largest single matrix in the model. 0 keeps the hidden
+        # at d_model.
         self.action_adaln_bottleneck = int(action_adaln_bottleneck)
         if self.action_adaln_bottleneck < 0:
             raise ValueError(

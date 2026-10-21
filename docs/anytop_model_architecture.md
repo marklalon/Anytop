@@ -169,7 +169,7 @@ timesteps_emb += species_token
 species_adaln: Linear(latent, bottleneck) → SiLU → Linear(bottleneck, L * 4 * latent)
 每层 (γ, β) = action_adaln(action_token) + species_adaln(species_token)
 
-# 输入层，每个关节 j（static_j = 名字投影 + 结构投影，名字 drop 之后）
+# 输入层，每个关节 j（static_j = 名字投影 + 结构投影；名字取整关节 drop 之后、逐元素 dropout 之前）
 (γ_j, β_j) = species_joint_modulation([species_token || static_j])
 rest 帧 token += β_j；运动帧 token = token · (1 + γ_j) + β_j
 ```

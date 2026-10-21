@@ -131,14 +131,14 @@ adaln          = action_adaln(action_token) + species_adaln(species_token)
 每层 temporal-attn 与 FF 两个分支的输入：(1 + γ) · x + β
 
 输入层（InputProcess），每个关节 j：
-static_j       = text_embedding(name_j) + struct_latent_j                 # 名字 drop 之后的值
+static_j       = text_embedding(name_j) + struct_latent_j                 # 整关节 drop 之后、逐元素 dropout 之前
 (γ_j, β_j)     = species_joint_modulation([species_token ‖ static_j])
                  Linear(2·latent → latent) → GELU → Linear(→ 2·latent)
 rest 帧 token：  x_0j + β_j
 运动帧 token：   x_tj · (1 + γ_j) + β_j
 ```
 
-- **逐关节调制**：同一个 species token 对每个关节给出不同的 (γ_j, β_j)。MLP 一次只看一个关节的静态 embedding，看不到整副骨架，只能学到关节局部的规则（"Biped 的前肢末端抬离地面"），而不是某一副骨架的整体模式；这是 species 条件能迁移到训练里没带过该描述符的骨架上的原因。名字被 drop 的关节只靠结构通道得到调制，训练中的整关节名字 drop 因此也会逼出不依赖名字的规则。
+- **逐关节调制**：同一个 species token 对每个关节给出不同的 (γ_j, β_j)。MLP 一次只看一个关节的静态 embedding，看不到整副骨架，只能学到关节局部的规则（"Biped 的前肢末端抬离地面"），而不是某一副骨架的整体模式；这是 species 条件能迁移到训练里没带过该描述符的骨架上的原因。名字被 drop 的关节只靠结构通道得到调制，训练中的整关节名字 drop 因此也会逼出不依赖名字的规则。逐元素 dropout 只在训练时生效且按 1/(1−p) 缩放，调制头不读它，免得 (γ_j, β_j) 本身在训练与推理间不一致。
 - **rest 帧只加 β**：β_j 平移关节身份，所有帧一致；γ_j 只缩放运动帧，rest token 的几何不被缩放。
 - **AdaLN 是样本级的**：decoder 里的 species 调制对一个样本的所有关节、所有帧相同，负责整体的运动风格。
 - **乘性、每层都有**：AdaLN 调制分支输入，残差流本身不动，所以不会被每个子层后的 LayerNorm 抹掉；只靠加性 token 时，平移会被 LayerNorm 压回去。
