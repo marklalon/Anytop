@@ -1069,7 +1069,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         else:
             self.cross_limb_blocks = None
 
-        # --action_label_adaln: the action condition gets a MULTIPLICATIVE
+        # Action AdaLN: the action condition gets a MULTIPLICATIVE
         # pathway on top of the additive token summed into timesteps_emb
         # (docs/conditional_modulation_upgrade.md section 3.2). The additive one
         # can only translate the residual stream, and every sublayer output is
@@ -1080,10 +1080,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # 'run, turn, left') into a large behavioural one, instead of leaving
         # that entirely to --action_label_cfg_scale and its quality cost.
         #
-        # Allocated after the decoder's other parameters so the flag does not
-        # reorder their initialisation; it does still consume RNG, so a seeded
-        # with/without comparison has to copy weights rather than trust the seed
-        # (tests/test_action_label_adaln.py does).
+        # Allocated after the decoder's other parameters so it does not reorder
+        # their initialisation.
         #
         # ONE head for every layer, not one per layer: same parameter count
         # (d^2 + 4*L*d^2 against L*(d^2 + 4*d^2)) for one matmul instead of 2L,

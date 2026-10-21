@@ -1,20 +1,20 @@
-"""``--action_label_adaln``: the action label's multiplicative pathway.
+"""The action label's multiplicative pathway (AdaLN head).
 
 The additive action token can only translate the residual stream, and every
 sublayer output is LayerNormed straight after its residual add.
-``--action_label_adaln`` adds a per-channel scale and shift, driven by the SAME
+The head adds a per-channel scale and shift, driven by the SAME
 token, to the temporal and feed-forward BRANCH INPUTS of every decoder layer
 (docs/conditional_modulation_upgrade.md section 3.2).
 
 What these tests pin:
 
-* zero-init -- a fresh modulated model is bit-identical to one without the flag,
-  so turning it on changes nothing until training moves the head;
+* zero-init -- a fresh model is bit-identical to one with the head's output
+  zeroed, so it changes nothing until training moves the head;
 * once the head moves, the label reaches the output THROUGH the modulation and
   not only through the additive token;
 * classifier-free guidance stays honest: a dropped row modulates by the null
   embedding rather than bypassing the head;
-* it is refused without a label to drive it.
+* it exists exactly when there is a label to drive it.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ from tests.action_label_test_utils import (  # noqa: E402
 NUM_LAYERS = 2
 
 
-def _model(action_label_adaln, bundle, action_label_cond=True, seed=7):
+def _model(bundle, action_label_cond=True, seed=7):
     torch.manual_seed(seed)
     model = AnyTop(
         max_joints=4,
@@ -62,7 +62,6 @@ def _model(action_label_adaln, bundle, action_label_cond=True, seed=7):
         t5_out_dim=TEST_T5_DIM,
         action_label_cond=action_label_cond,
         action_label_cfg_drop_prob=0.0,
-        action_label_adaln=action_label_adaln,
         action_conditioning=bundle if action_label_cond else None,
     )
     model.eval()
@@ -107,26 +106,16 @@ def _perturb_head(model, scale=0.05):
 
 class ActionAdaLNStartsAsIdentity(unittest.TestCase):
     def test_a_fresh_modulated_model_matches_the_unmodulated_one(self):
-        bundle = make_test_bundle()
-        plain = _model(False, bundle)
-        modulated = _model(True, bundle)
-        # Give the two models the same weights everywhere but the head. The
-        # head consumes RNG at construction, so a shared seed alone would
-        # not do it, and the property under test is about the zero-init head,
-        # not about initialisation order.
-        missing, unexpected = modulated.load_state_dict(plain.state_dict(), strict=False)
-        self.assertEqual(unexpected, [])
-        self.assertTrue(
-            all(name.startswith('seqTransDecoder.action_adaln.') for name in missing),
-            missing,
-        )
-
+        modulated = _model(make_test_bundle())
         x, t = _x_t()
         y = _y(['attack, bite', 'idle'])
-        self.assertTrue(torch.allclose(modulated(x, t, y=y), plain(x, t, y=y), atol=1e-6))
+        with_head = modulated(x, t, y=y)
+        # Dropping the head altogether must change nothing while it is zero.
+        modulated.seqTransDecoder.action_adaln = None
+        self.assertTrue(torch.allclose(with_head, modulated(x, t, y=y), atol=1e-6))
 
     def test_the_output_layer_is_zero_initialised(self):
-        model = _model(True, make_test_bundle())
+        model = _model(make_test_bundle())
         head = model.seqTransDecoder.action_adaln
         self.assertTrue(torch.equal(head[-1].weight, torch.zeros_like(head[-1].weight)))
         self.assertTrue(torch.equal(head[-1].bias, torch.zeros_like(head[-1].bias)))
@@ -139,14 +128,14 @@ class ActionAdaLNStartsAsIdentity(unittest.TestCase):
             NUM_LAYERS * ACTION_ADALN_PARAMS_PER_LAYER * TEST_LATENT_DIM,
         )
 
-    def test_no_modulation_head_without_the_flag(self):
-        self.assertIsNone(_model(False, make_test_bundle()).seqTransDecoder.action_adaln)
+    def test_no_modulation_head_without_action_label_cond(self):
+        self.assertIsNone(_model(None, action_label_cond=False).seqTransDecoder.action_adaln)
 
 
 class ActionAdaLNCarriesTheLabel(unittest.TestCase):
     def test_a_trained_head_makes_the_label_reach_the_output_through_it(self):
         bundle = make_test_bundle()
-        modulated = _model(True, bundle)
+        modulated = _model(bundle)
         _perturb_head(modulated)
         x, t = _x_t()
 
@@ -158,7 +147,7 @@ class ActionAdaLNCarriesTheLabel(unittest.TestCase):
 
         # And the difference is not just the additive token: with the additive
         # path alone (same weights, head still zeroed) it comes out different.
-        plain = _model(True, bundle)
+        plain = _model(bundle)
         plain_gap = (plain(x, t, y=_y(['attack, bite', 'idle']))[0]
                      - plain(x, t, y=_y(['idle', 'idle']))[0]).abs().mean().detach()
         modulated_gap = (attack[0] - idle[0]).abs().mean().detach()
@@ -171,7 +160,7 @@ class ActionAdaLNCarriesTheLabel(unittest.TestCase):
         conditioned -- the failure the retired global_energy null had.
         """
         bundle = make_test_bundle()
-        modulated = _model(True, bundle)
+        modulated = _model(bundle)
         _perturb_head(modulated)
         with torch.no_grad():
             # A null embedding that is not the zero vector, so "went through the
@@ -191,18 +180,11 @@ class ActionAdaLNCarriesTheLabel(unittest.TestCase):
 
         # And that unconditional output is NOT what a zeroed head would give:
         # the null token drove a real modulation.
-        bypass = _model(True, bundle)
+        bypass = _model(bundle)
         with torch.no_grad():
             bypass.action_label_null_emb.copy_(modulated.action_label_null_emb)
         self.assertFalse(torch.allclose(
             dropped, bypass(x, t, y=dict(y, action_label_active=inactive)), atol=1e-6))
-
-
-class ActionAdaLNNeedsALabel(unittest.TestCase):
-    def test_modulation_without_action_label_cond_is_refused(self):
-        with self.assertRaises(ValueError) as caught:
-            _model(True, None, action_label_cond=False)
-        self.assertIn('action_label_cond', str(caught.exception))
 
 
 if __name__ == '__main__':

@@ -28,7 +28,6 @@ pushd "%SCRIPT_DIR%"
 	--last_layer_ff 256 ^
 	--layers 8 ^
 	--action_label_cond ^
-	--action_label_adaln ^
 	--action_adaln_bottleneck 64 ^
 	--species_adaln_bottleneck 64 ^
 	--species_cond ^

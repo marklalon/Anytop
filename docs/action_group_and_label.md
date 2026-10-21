@@ -211,7 +211,7 @@ timestep_emb += token
 
 - `active`：CFG 的硬丢弃掩码（训练时按概率采样，推理时可强制 False）。
 - `valid`：该行是否真有标签（空标签 = 无条件）。无标签的行与被丢弃的行走同一条 null 路径，所以推理时不给 `--action_label` 自动落在无条件模态。
-- **AdaLN（`--action_label_adaln`，`train_all.bat` 开启）**：另用一个零初始化的头，把 action token 变成**每层** temporal 与 feed-forward 分支输入的逐通道 scale / shift。加性 token 保留；AdaLN 补的是加性路径表达不了的乘性增益——两个标签共享同一槽（向量近乎平行）时，仍能产生不同动作。一个头服务所有层；`--action_adaln_bottleneck` 控制其隐层宽度。
+- **AdaLN（有 `--action_label_cond` 即有，不是开关）**：另用一个零初始化的头，把 action token 变成**每层** temporal 与 feed-forward 分支输入的逐通道 scale / shift。加性 token 保留；AdaLN 补的是加性路径表达不了的乘性增益——两个标签共享同一槽（向量近乎平行）时，仍能产生不同动作。一个头服务所有层；`--action_adaln_bottleneck` 控制其隐层宽度。
 - 有参考动作编码器时，参考生效的行一律旁路 action label（训练与推理相同）；encode 推理与 `--action_label` 互斥。
 
 ### 5.7 建模型时的硬门

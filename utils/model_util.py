@@ -218,7 +218,6 @@ def get_gmdm_args(args):
             'mirror_twin_drop_prob': getattr(args, 'mirror_twin_drop_prob', 0.2),
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
-            'action_label_adaln': getattr(args, 'action_label_adaln', False),
             'direction_slot_drop_prob': getattr(args, 'direction_slot_drop_prob', 0.0),
             'modifier_slot_drop_prob': getattr(args, 'modifier_slot_drop_prob', 0.0),
             # The training entry point builds one bundle and hands the same

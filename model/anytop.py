@@ -145,16 +145,10 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"modifier_slot_drop_prob must be in [0, 1], got {self.modifier_slot_drop_prob}"
             )
-        # --action_label_adaln: give the action token a multiplicative pathway
-        # through the decoder on top of the additive one (GraphMotionDecoder
-        # owns the head). Meaningless without a label to drive it.
-        self.action_label_adaln = bool(kargs.get('action_label_adaln', False))
-        if self.action_label_adaln and not self.action_label_cond:
-            raise ValueError(
-                "action_label_adaln needs action_label_cond: the head is driven by "
-                "the action token, and without a label there is no token to drive "
-                "it -- the modulation would be one learned constant."
-            )
+        # The action token also gets a multiplicative pathway through the
+        # decoder on top of the additive one (GraphMotionDecoder owns the head).
+        # It exists exactly when there is a label to drive it.
+        self.action_label_adaln = self.action_label_cond
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if not 0.0 <= self.joint_mask_budget <= 1.0:

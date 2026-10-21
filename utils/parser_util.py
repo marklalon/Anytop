@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 38
+CKPT_VERSION = 39
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -234,7 +234,7 @@ def add_model_options(parser):
                             "readout, and in a full run ~3/4 of its FFN units went dead; "
                             "512 recovers those parameters for the trunk.")
     group.add_argument("--action_adaln_bottleneck", default=0, type=int,
-                       help="Hidden width of the --action_label_adaln head (0 = latent_dim). "
+                       help="Hidden width of the action-label AdaLN head (0 = latent_dim). "
                             "The action label set has slot-source rank ~137, so ~192 "
                             "loses nothing and halves the model's largest matrix.")
     group.add_argument("--species_adaln_bottleneck", default=64, type=int,
@@ -391,18 +391,6 @@ def add_model_options(parser):
                        help="Per-sample probability of hard-dropping the action condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
                             "guidance at sampling time via --action_label_cfg_scale. Default 0.2.")
-    group.add_argument("--action_label_adaln", action='store_true',
-                       help="Give the action label a MULTIPLICATIVE pathway: a zero-initialised head "
-                            "turns the action token into a per-channel scale and shift on the "
-                            "temporal and feed-forward BRANCH INPUTS of every decoder layer (the "
-                            "residual stream is left unmodulated, and the spatial branch already "
-                            "carries the additive timestep offset). The additive action token stays; "
-                            "this adds the gain the additive path cannot express, which is what two "
-                            "labels sharing a slot (whose vectors are near-parallel by construction, "
-                            "e.g. 'turn, left' and 'run, turn, left') need to produce different motion "
-                            "without leaning on --action_label_cfg_scale and paying its quality cost. "
-                            "Requires --action_label_cond. Costs d^2 + 4*layers*d^2 parameters. "
-                            "See docs/conditional_modulation_upgrade.md section 3.")
     group.add_argument("--direction_slot_drop_prob", default=0.15, type=float,
                        help="Per-sample probability of blanking the label's DIRECTION words during "
                             "training while the rest of the label stays. Trains the empty direction "
