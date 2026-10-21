@@ -1215,10 +1215,8 @@ class InputProcess(nn.Module):
             joints_clean = joints_clean.masked_fill(
                 joint_name_drop.to(joints_clean.device).unsqueeze(-1), 0.0
             )
-        dropout_live = self.training and self.joints_names_dropout.p > 0
-        joints_embedded_names = run_in_fp32(
-            self.text_embedding, self.joints_names_dropout(joints_clean) if dropout_live else joints_clean
-        )
+        joints_embedded_names = self.joints_names_dropout(joints_clean)
+        joints_embedded_names = run_in_fp32(self.text_embedding, joints_embedded_names)
         x = x + joints_embedded_names[None, ...]# [frames, batch_size, n_joints, d]
         if joint_struct is None:
             raise ValueError(
@@ -1243,9 +1241,7 @@ class InputProcess(nn.Module):
             # structure alone, but before the elementwise dropout: that one is
             # train-only and rescales by 1/(1-p), which would make the
             # modulation itself differ between training and inference.
-            # With the dropout inactive the two name embeddings coincide.
-            name_clean = run_in_fp32(self.text_embedding, joints_clean) if dropout_live else joints_embedded_names
-            static = name_clean + struct_latent
+            static = run_in_fp32(self.text_embedding, joints_clean) + struct_latent
             species = species_token.to(static.dtype).unsqueeze(1).expand(-1, static.shape[1], -1)
             modulation = run_in_fp32(self.species_joint_modulation, torch.cat([species, static], dim=-1))
             # The name projection has a bias, so padded rows are re-zeroed here.
