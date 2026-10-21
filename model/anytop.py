@@ -273,7 +273,7 @@ class AnyTop(nn.Module):
             self.motion_encoder = MotionEncoder(
                 t5_out_dim, slots=int(kargs.get('ref_slots', 2)), ref_dim=ref_dim,
                 width=ref_width, layers=int(kargs.get('ref_layers', 2)),
-                dropout=self.dropout,
+                dropout=self.dropout, rest_context=bool(kargs.get('ref_rest_context', False)),
             )
             for layer in self.seqTransDecoder.layers:
                 layer.enable_reference(ref_dim)

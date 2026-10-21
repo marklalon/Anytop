@@ -18,6 +18,7 @@ from data_loaders.reference import (
     reference_pose, reference_sample,
 )
 from data_loaders.truebones.data.dataset import resample_motion_features
+from data_loaders.truebones.truebones_utils.canonical_features import rest_pos_from_cond
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from sample.reference_motion import _prepare_encoder_reference_bundle
 from test_bone_length_aug import fixture, make_dataset
@@ -41,6 +42,7 @@ def inputs(batch=2, joints=4, frames=5, source_joints=6):
     pose[:, :, :3] = torch.nn.functional.normalize(pose[:, :, :3], dim=2)
     y.update(ref_feats=torch.randn(batch, source_joints, 12, frames),
              ref_pose=pose,
+             ref_rest_pose=pose[..., 0].clone(),
              ref_mask=torch.ones(batch, source_joints, dtype=torch.bool),
              ref_active=torch.ones(batch, dtype=torch.bool),
              ref_joints_names_embs=torch.randn(batch, source_joints, 4),
@@ -121,7 +123,8 @@ def test_encoder_permutation_invariance_padding_and_actual_channel_contract():
     assert z.shape == (2, 5, 2, 8)
     permutation = torch.tensor([0, 4, 1, 5, 2, 3])  # transport root remains zero
     permuted = dict(y)
-    for k in ('ref_feats', 'ref_pose', 'ref_mask', 'ref_joints_names_embs', 'ref_joint_struct'):
+    for k in ('ref_feats', 'ref_pose', 'ref_rest_pose', 'ref_mask', 'ref_joints_names_embs',
+              'ref_joint_struct'):
         permuted[k] = y[k][:, permutation]
     torch.testing.assert_close(z, encoder(permuted), rtol=1e-5, atol=1e-6)
     # Only the root XZ velocity of the canonical window is read: the
@@ -131,13 +134,14 @@ def test_encoder_permutation_invariance_padding_and_actual_channel_contract():
     changed['ref_feats'][:, 0, :9] = 100
     changed['ref_feats'][:, 0, 10] = 100
     changed['species_emb'] = torch.randn(2, 99)
-    changed['ref_rest_pose'] = torch.randn(2, 6, 12)
+    changed['ref_rest_pose'] = torch.randn(2, 6, REFERENCE_POSE_CHANNELS)
     torch.testing.assert_close(z, encoder(changed), rtol=0, atol=0)
     moved = copy.deepcopy(y)
     moved['ref_feats'][:, 0, 9] += 1
     assert not torch.allclose(z, encoder(moved))
     padded = dict(y)
-    for k in ('ref_feats', 'ref_pose', 'ref_mask', 'ref_joints_names_embs', 'ref_joint_struct'):
+    for k in ('ref_feats', 'ref_pose', 'ref_rest_pose', 'ref_mask', 'ref_joints_names_embs',
+              'ref_joint_struct'):
         shape = list(y[k].shape)
         shape[1] = 3
         padded[k] = torch.cat([y[k], y[k].new_zeros(shape)], dim=1)
@@ -152,6 +156,30 @@ def test_encoder_reads_bone_directions_and_height():
         changed = copy.deepcopy(y)
         changed['ref_pose'][:, :, channels] = -changed['ref_pose'][:, :, channels]
         assert not torch.allclose(z, m.motion_encoder(changed))
+
+
+def test_rest_context_reads_rest_pose_and_keeps_padding_inert():
+    m = model(ref_rest_context=True).eval()
+    _, y = inputs()
+    z = m.motion_encoder(y)
+    changed = copy.deepcopy(y)
+    changed['ref_rest_pose'][:, 2] = -changed['ref_rest_pose'][:, 2]
+    assert not torch.allclose(z, m.motion_encoder(changed))
+    padded = dict(y)
+    for k in ('ref_feats', 'ref_pose', 'ref_rest_pose', 'ref_mask', 'ref_joints_names_embs',
+              'ref_joint_struct'):
+        shape = list(y[k].shape)
+        shape[1] = 3
+        padded[k] = torch.cat([y[k], y[k].new_zeros(shape)], dim=1)
+    torch.testing.assert_close(z, m.motion_encoder(padded), rtol=1e-5, atol=1e-6)
+
+
+def test_reference_rest_pose_is_the_pose_of_the_rest():
+    motion, cond, _ = fixture()
+    rest = rest_pos_from_cond(cond)
+    sample = reference_sample(motion, cond, cond['joints_names_embs'])
+    assert sample['rest_pose'].shape == (len(cond['parents']), REFERENCE_POSE_CHANNELS)
+    np.testing.assert_allclose(sample['rest_pose'], reference_pose(rest[None], cond)[0])
 
 
 def test_encoder_reads_topology_and_side_but_not_rest_geometry():
