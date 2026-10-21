@@ -1,7 +1,6 @@
-"""The three head-width knobs: ``--action_adaln_bottleneck``,
-``--species_adaln_bottleneck``, ``--last_layer_ff``.
+"""The two head-width knobs: ``--action_adaln_bottleneck``, ``--last_layer_ff``.
 
-The species head defaults to 64; the other widths default to 0 (full width). The v24 values are
+Both default to 0 (full width). The v24 values are
 pinned here with the shapes they produce, since the point of the change is a
 specific parameter budget (docs/anytop_model_architecture.md).
 """
@@ -48,40 +47,34 @@ def _shapes(model):
     return {k: tuple(v.shape) for k, v in model.state_dict().items()}
 
 
-def test_get_gmdm_args_defaults_species_to_64_and_other_heads_to_full_width():
+def test_get_gmdm_args_defaults_heads_to_full_width():
     a = _args()
-    for k in ('action_adaln_bottleneck', 'species_adaln_bottleneck', 'last_layer_ff'):
+    for k in ('action_adaln_bottleneck', 'last_layer_ff'):
         assert not hasattr(a, k)
     kw = get_gmdm_args(a)
     assert kw['action_adaln_bottleneck'] == 0
-    assert kw['species_adaln_bottleneck'] == 64
     assert kw['last_layer_ff'] == 0
 
 
 def test_explicit_defaults_match_implicit_layout():
     base = AnyTop(**get_gmdm_args(_args()))
     explicit = AnyTop(**get_gmdm_args(_args(
-        action_adaln_bottleneck=0, species_adaln_bottleneck=64, last_layer_ff=0)))
+        action_adaln_bottleneck=0, last_layer_ff=0)))
     assert _shapes(base) == _shapes(explicit)
     dec = base.seqTransDecoder
     assert dec.action_adaln[0].out_features == D
-    assert dec.species_adaln[0].out_features == 64
     assert [layer.linear1.out_features for layer in dec.layers] == [FF] * L
 
 
 def test_v24_widths_land_where_they_should():
     m = AnyTop(**get_gmdm_args(_args(
-        action_adaln_bottleneck=12, species_adaln_bottleneck=8, last_layer_ff=16)))
+        action_adaln_bottleneck=12, last_layer_ff=16)))
     dec = m.seqTransDecoder
     assert tuple(dec.action_adaln[0].weight.shape) == (12, D)
     assert tuple(dec.action_adaln[2].weight.shape) == (L * ACTION_ADALN_PARAMS_PER_LAYER * D, 12)
     # Output layer stays zero-init: gamma = beta = 0 on a fresh model.
     assert torch.count_nonzero(dec.action_adaln[2].weight) == 0
     assert torch.count_nonzero(dec.action_adaln[2].bias) == 0
-    assert tuple(dec.species_adaln[0].weight.shape) == (8, D)
-    assert tuple(dec.species_adaln[2].weight.shape) == (L * ACTION_ADALN_PARAMS_PER_LAYER * D, 8)
-    assert torch.count_nonzero(dec.species_adaln[2].weight) == 0
-    assert torch.count_nonzero(dec.species_adaln[2].bias) == 0
     # Only the LAST layer is narrower; the others keep ff_size.
     assert [layer.linear1.out_features for layer in dec.layers] == [FF] * (L - 1) + [16]
     assert dec.layers[-1].linear2.in_features == 16
@@ -104,7 +97,7 @@ def test_last_layer_ff_replacement_keeps_dropout_and_activation():
     assert last.activation is layer.activation
 
 
-@pytest.mark.parametrize('flag', ['action_adaln_bottleneck', 'species_adaln_bottleneck', 'last_layer_ff'])
+@pytest.mark.parametrize('flag', ['action_adaln_bottleneck', 'last_layer_ff'])
 def test_negative_widths_are_refused(flag):
     with pytest.raises(ValueError, match=flag):
         AnyTop(**get_gmdm_args(_args(**{flag: -1})))
@@ -113,8 +106,8 @@ def test_negative_widths_are_refused(flag):
 def test_forward_runs_with_narrow_heads():
     torch.manual_seed(0)
     m = AnyTop(**get_gmdm_args(_args(
-        action_adaln_bottleneck=12, species_adaln_bottleneck=8, last_layer_ff=16))).eval()
-    # A minimal batch through the decoder alone, which is where all three
+        action_adaln_bottleneck=12, last_layer_ff=16))).eval()
+    # A minimal batch through the decoder alone, which is where both
     # knobs live; AnyTop.forward needs the full cond bundle.
     dec = m.seqTransDecoder
     B, J, frames = 2, 4, 5
@@ -129,7 +122,6 @@ def test_forward_runs_with_narrow_heads():
         y=y,
         tgt_key_padding_mask=torch.zeros(B, J, dtype=torch.bool),
         action_adaln_cond=torch.randn(B, D),
-        species_adaln_cond=torch.randn(B, D),
     )
     assert tuple(out.shape) == (frames, B, J, D)
     assert torch.isfinite(out).all()

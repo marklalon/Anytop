@@ -43,11 +43,6 @@ class _CaptureDecoder(torch.nn.Module):
         return kwargs['tgt']
 
 
-class _TimestepEchoDecoder(torch.nn.Module):
-    def forward(self, **kwargs):
-        return kwargs['tgt'] + kwargs['timesteps_embs'].sum()
-
-
 def _make_model(species_cfg_drop_prob=0.15, species_cond=False, **extra):
     return AnyTop(
         max_joints=4,
@@ -89,7 +84,7 @@ def _make_y(species_code=None, **extra):
 def _open_species_heads(model, std=0.1):
     """Leave zero-init so the species path actually changes the output."""
     torch.nn.init.normal_(model.species_null_emb, std=std)
-    torch.nn.init.normal_(model.seqTransDecoder.species_adaln[-1].weight, std=std)
+    torch.nn.init.normal_(model.input_process.species_joint_modulation[-1].weight, std=std)
 
 
 class SpeciesConditionTest(unittest.TestCase):
@@ -99,7 +94,6 @@ class SpeciesConditionTest(unittest.TestCase):
         self.assertFalse(model.species_cond)
         self.assertIsNone(model.species_projection)
         self.assertIsNone(model.species_null_emb)
-        self.assertIsNone(model.seqTransDecoder.species_adaln)
 
     def test_invalid_drop_prob_rejected(self):
         with self.assertRaises(ValueError):
@@ -117,11 +111,8 @@ class SpeciesConditionTest(unittest.TestCase):
         self.assertEqual(model.species_projection[0].in_features, T5_DIM + len(SPECIES_VARIANTS))
 
     def test_heads_start_as_identity(self):
-        """Zero-init null and AdaLN output: a fresh model ignores the species."""
+        """Zero-init null and modulation output: a fresh model ignores the species."""
         model = _make_model(species_cond=True)
-        head = model.seqTransDecoder.species_adaln
-        self.assertEqual(torch.count_nonzero(head[-1].weight), 0)
-        self.assertEqual(torch.count_nonzero(head[-1].bias), 0)
         joint_head = model.input_process.species_joint_modulation
         self.assertEqual(torch.count_nonzero(joint_head[-1].weight), 0)
         self.assertEqual(torch.count_nonzero(joint_head[-1].bias), 0)
@@ -146,34 +137,28 @@ class SpeciesConditionTest(unittest.TestCase):
         self.assertTrue(torch.equal(token[1], model.species_null_emb))
         self.assertFalse(torch.equal(token[0], model.species_null_emb))
 
-    def test_species_token_drives_the_decoder_adaln(self):
+    def test_species_reaches_the_decoder_only_through_the_input(self):
+        """No sample-level path: neither the timestep bus nor a decoder AdaLN
+        head carries the species token."""
         model = _make_model(species_cond=True, species_cfg_drop_prob=0.0).eval()
+        self.assertFalse(hasattr(model.seqTransDecoder, 'species_adaln'))
+        _open_species_heads(model)
         capture = _CaptureDecoder()
         model.seqTransDecoder = capture
         x, t = torch.randn(2, 4, 12, 3), torch.tensor([1, 2])
-        with torch.no_grad():
-            model(x, t, y=_make_y(species_code=torch.randn(2, CODE_DIM)))
-        cond = capture.last_kwargs['species_adaln_cond']
-        self.assertEqual(tuple(cond.shape), (2, 8))
-
-    def test_species_adaln_changes_the_full_decoder_output(self):
-        model = _make_model(species_cond=True, species_cfg_drop_prob=0.0).eval()
-        _open_species_heads(model, std=0.5)
-        x, t = torch.randn(2, 4, 12, 3), torch.tensor([1, 2])
-        code = torch.randn(2, CODE_DIM)
-        with torch.no_grad():
-            kept = model(x, t, y=_make_y(species_code=code))
-            # Same additive token, AdaLN head switched off: the head must matter.
-            head = model.seqTransDecoder.species_adaln
-            model.seqTransDecoder.species_adaln = None
-            no_head = model(x, t, y=_make_y(species_code=code))
-            model.seqTransDecoder.species_adaln = head
-        self.assertFalse(torch.allclose(kept, no_head))
+        seen = []
+        for code in (torch.randn(2, CODE_DIM), torch.randn(2, CODE_DIM)):
+            with torch.no_grad():
+                model(x, t, y=_make_y(species_code=code))
+            seen.append(capture.last_kwargs)
+        self.assertNotIn('species_adaln_cond', seen[0])
+        self.assertTrue(torch.equal(seen[0]['timesteps_embs'], seen[1]['timesteps_embs']))
+        self.assertFalse(torch.allclose(seen[0]['tgt'], seen[1]['tgt']))
 
     def test_full_drop_in_training_matches_explicit_null(self):
         model = _make_model(species_cond=True, species_cfg_drop_prob=1.0).train()
         _open_species_heads(model)
-        model.seqTransDecoder = _TimestepEchoDecoder()
+        model.seqTransDecoder = _CaptureDecoder()
         x, t = torch.randn(2, 4, 12, 3), torch.tensor([1, 2])
         y = _make_y(species_code=torch.randn(2, CODE_DIM))
         dropped = model(x, t, y=y)

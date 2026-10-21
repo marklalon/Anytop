@@ -85,7 +85,6 @@ class AnyTop(nn.Module):
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
         # Hidden widths of conditioning heads; 0 selects latent_dim.
         self.action_adaln_bottleneck=int(kargs.get('action_adaln_bottleneck', 0))
-        self.species_adaln_bottleneck=int(kargs.get('species_adaln_bottleneck', 64))
         self.last_layer_ff=int(kargs.get('last_layer_ff', 0))
         self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.5))
         self.joint_mask_budget=float(kargs.get('joint_mask_budget', 0.15))
@@ -99,11 +98,13 @@ class AnyTop(nn.Module):
                 f"species_cfg_drop_prob must be in [0, 1], got {self.species_cfg_drop_prob}"
             )
         # --species_cond: the species descriptor (body plan + variant) becomes a
-        # sample-level token, summed into the timestep embedding and driving its
-        # own AdaLN head in the decoder. It is joint-agnostic on purpose: a
-        # variant such as Fluttering is a movement style of the whole body, and a
-        # modulation that does not read joint names carries over to a skeleton
-        # whose names the variant was never trained with.
+        # token that reaches the model through InputProcess' per-joint
+        # modulation only. It is not summed into the timestep embedding and has
+        # no decoder AdaLN head: a sample-level injection sees one value per
+        # descriptor, and since a descriptor covers few rigs it learns that
+        # rig's whole-body motion keyed on the descriptor. Read joint by joint,
+        # the condition can only express joint-local rules, which carry over to
+        # a skeleton that never had that descriptor in training.
         self.species_cond=bool(kargs.get('species_cond', False))
         # Whole-joint name dropout (see InputProcess). It defaults to 0.0 so an
         # existing checkpoint rebuilds bit-identically and gains no state_dict key.
@@ -260,8 +261,6 @@ class AnyTop(nn.Module):
                                                         cross_limb_last_n=self.cross_limb_last_n,
                                                         action_label_adaln=self.action_label_adaln,
                                                         action_adaln_bottleneck=self.action_adaln_bottleneck,
-                                                        species_adaln=self.species_cond,
-                                                        species_adaln_bottleneck=self.species_adaln_bottleneck,
                                                         last_layer_ff=self.last_layer_ff,
                                                         mirror_twin_drop_prob=self.mirror_twin_drop_prob)
             
@@ -953,7 +952,7 @@ class AnyTop(nn.Module):
         return species_code
 
     def _build_species_token(self, y, batch_size, device, dtype, ref_active=None):
-        """The species token added to the timestep embedding, or ``None`` when off.
+        """The species token driving InputProcess' per-joint modulation, or ``None`` when off.
 
         A row whose species condition is inactive -- CFG-dropped in training,
         the unconditional branch at sampling, or reference-active (the reference
@@ -1024,8 +1023,6 @@ class AnyTop(nn.Module):
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token
         species_token = self._build_species_token(y, bs, x.device, x.dtype, ref_active)
-        if species_token is not None:
-            timesteps_emb = timesteps_emb + species_token
 
         # Per-joint validity for the whole-joint name dropout: joints_padding_mask is
         # the outer product valid[i]*valid[j] over max_joints+1 slots whose slot 0 is
@@ -1078,7 +1075,6 @@ class AnyTop(nn.Module):
             # Same token the additive path summed in above, so a CFG-dropped row
             # modulates by the null embedding rather than skipping the head.
             action_adaln_cond=action_label_token if self.action_label_adaln else None,
-            species_adaln_cond=species_token,
             ref_z=ref_z,
             ref_active=ref_active,
         )

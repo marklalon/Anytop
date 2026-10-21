@@ -963,8 +963,8 @@ ADALN_TEMPORAL, ADALN_FF = 0, 1
 def _modulate(x: Tensor, adaln: Optional[Tensor], branch: int) -> Tensor:
     """Scale and shift ONE branch's input: ``(1 + gamma) * x + beta``.
 
-    ``adaln`` is this layer's (B, 4, d_model) slice -- the action and species
-    heads' outputs summed -- or None when the run has neither (then this is the
+    ``adaln`` is this layer's (B, 4, d_model) slice of the action head's
+    output, or None when the run has no action AdaLN (then this is the
     identity and costs nothing). ``x`` is
     (frames, B, njoints, d_model), so the modulation broadcasts over frames and
     joints: a per-sample, per-channel gain, which is the authority the purely
@@ -990,8 +990,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                  value_emb=False,
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
                  cross_limb_last_n=0, action_label_adaln=False,
-                 action_adaln_bottleneck=0, species_adaln=False,
-                 species_adaln_bottleneck=64, last_layer_ff=0,
+                 action_adaln_bottleneck=0, last_layer_ff=0,
                  mirror_twin_drop_prob=0.0, graph_relations=True):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
@@ -1113,27 +1112,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         else:
             self.action_adaln = None
 
-        # --species_cond: the species token's own AdaLN head, same layout as the
-        # action head. Its (gamma, beta) add to the action head's, so each
-        # condition keeps a separate head and a separate CFG null. The species
-        # descriptor takes few distinct values, hence the narrow default hidden.
-        self.species_adaln_bottleneck = int(species_adaln_bottleneck)
-        if self.species_adaln_bottleneck < 0:
-            raise ValueError(
-                f"species_adaln_bottleneck must be >= 0, got {species_adaln_bottleneck}"
-            )
-        if species_adaln:
-            hidden = self.species_adaln_bottleneck or self.d_model
-            self.species_adaln = nn.Sequential(
-                nn.Linear(self.d_model, hidden),
-                nn.SiLU(),
-                nn.Linear(hidden, num_layers * ACTION_ADALN_PARAMS_PER_LAYER * self.d_model),
-            )
-            nn.init.zeros_(self.species_adaln[-1].weight)
-            nn.init.zeros_(self.species_adaln[-1].bias)
-        else:
-            self.species_adaln = None
-
     def _resolve_edge_codes(self, edge_rel: Tensor) -> Tensor:
         """Stored ``[B, J, J]`` codes -> embedding indices, with twin dropout.
 
@@ -1166,7 +1144,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             cross_limb_unreliable_mask: Optional[Tensor] = None,
             loop_phase_mask: Optional[Tensor] = None,
             action_adaln_cond: Optional[Tensor] = None,
-            species_adaln_cond: Optional[Tensor] = None,
             ref_z: Optional[Tensor] = None,
             ref_active: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = edge_rel = None
@@ -1215,13 +1192,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             adaln = run_in_fp32(self.action_adaln, action_adaln_cond).view(
                 B, self.num_layers, ACTION_ADALN_PARAMS_PER_LAYER, self.d_model
             )
-        # Same contract for the species token: a dropped row carries
-        # species_null_emb and is modulated by the null's (gamma, beta).
-        if self.species_adaln is not None and species_adaln_cond is not None:
-            species_adaln = run_in_fp32(self.species_adaln, species_adaln_cond).view(
-                B, self.num_layers, ACTION_ADALN_PARAMS_PER_LAYER, self.d_model
-            )
-            adaln = species_adaln if adaln is None else adaln + species_adaln
         for layer_ind, mod in enumerate(self.layers):
             edge_value_emb = None
             topology_value_emb = None

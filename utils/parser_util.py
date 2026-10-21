@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 40
+CKPT_VERSION = 41
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -234,9 +234,6 @@ def add_model_options(parser):
                        help="Hidden width of the action-label AdaLN head (0 = latent_dim). "
                             "Its output layer is the model's largest matrix; a width at or "
                             "above the rank of the action-label codes loses nothing.")
-    group.add_argument("--species_adaln_bottleneck", default=64, type=int,
-                       help="Hidden width of the --species_cond AdaLN head (0 = latent_dim). The "
-                            "species descriptor takes few distinct values, so a narrow head suffices.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     # Increase root-trajectory supervision and reduce position-step weight
     # relative to the initial loss-share estimates; validate with training runs.
@@ -369,8 +366,8 @@ def add_model_options(parser):
                             "learned null, enabling species classifier-free guidance.")
     group.add_argument("--species_cond", action='store_true',
                        help="Condition on the species descriptor: [T5(body plan) || variant one-hot] "
-                            "projected to a sample-level token, summed into the timestep embedding and "
-                            "driving its own zero-initialized AdaLN head in every decoder layer. "
+                            "projected to a token that drives a zero-initialized per-joint (gamma, beta) "
+                            "on the input embedding, read together with each joint's name and structure. "
                             "CFG-droppable via --species_cfg_drop_prob.")
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the clip's action_label ('run, forward, "

@@ -63,7 +63,7 @@ attention，最后由因子化注意力输出的预测就是干净动作。骨�
 - Perceiver 式 cross-limb temporal pathway，让不同肢体交换完整的运动节奏；
 - loop 条件、圆周相位、loop 数据增强与闭合损失；
 - per-joint structural channel 和 whole-joint name dropout；
-- 样本级 species 条件（token + AdaLN）与 species CFG；
+- species 条件（输入层逐关节调制）与 species CFG；
 - 按角色分槽的 action-label 条件与 action CFG；
 - resample-speed 条件（输出坐标/标准化空间全语料统一，不作为模型输入）；
 - subtree / temporal-span 混合噪声训练；
@@ -151,7 +151,6 @@ padding 已被 attention mask 和 loss 排除，不会混淆）。它不同于�
 timestep
   + resample_speed
   + action_label
-  + species
 ```
 
 组合后的 condition 在每个 decoder layer 中经该层自己的 `embed_timesteps` 再注入残差流。
@@ -160,14 +159,11 @@ timestep
 
 | 通路 | 输入 | 作用位置 | drop 语义 |
 |---|---|---|---|
-| `species_cond` | `[T5(body plan) ‖ variant one-hot]` → MLP → species token | 输入层逐关节调制 + timestep condition bus（加性）+ 独立 AdaLN 头（乘性） | `species_cfg_drop_prob` 按样本换成 learned null |
+| `species_cond` | `[T5(body plan) ‖ variant one-hot]` → MLP → species token | 仅输入层逐关节调制（不进 timestep condition bus，无 AdaLN 头） | `species_cfg_drop_prob` 按样本换成 learned null |
 
 ```text
 species_code = [T5(body plan) || variant one-hot]          # species_descriptor_table.species_code
   → Linear → GELU → Linear → species_token [B, latent]     # inactive 行换成 species_null_emb
-timesteps_emb += species_token
-species_adaln: Linear(latent, bottleneck) → SiLU → Linear(bottleneck, L * 4 * latent)
-每层 (γ, β) = action_adaln(action_token) + species_adaln(species_token)
 
 # 输入层，每个关节 j（static_j = 名字投影 + 结构投影；名字取整关节 drop 之后、逐元素 dropout 之前）
 (γ_j, β_j) = species_joint_modulation([species_token || static_j])
@@ -175,9 +171,9 @@ rest 帧 token += β_j；运动帧 token = token · (1 + γ_j) + β_j
 ```
 
 variant 是正交码（每个 variant 一根单位轴），不经过 T5：T5 下 `Winged` 与 `Winged Fluttering` 几乎重合。
-decoder 里的 species AdaLN 是样本级的，对样本内全部关节、全部帧使用同一组增益；输入层的逐关节调制一次只读一个关节的
-名字与结构，学到的是关节局部规则，让 species 条件可以迁移到训练中没带过该描述符的骨架上。
-AdaLN 头的隐藏宽度由 `species_adaln_bottleneck` 控制（0 表示 `latent_dim`）；AdaLN 头、逐关节调制的输出层与 null 均零初始化。
+逐关节调制一次只读一个关节的名字与结构，学到的是关节局部规则，让 species 条件可以迁移到训练中没带过该描述符的骨架上。
+species 没有样本级通路：描述符取值少、每个只覆盖几副骨架，样本级注入会学成按描述符查表的骨架整体模式。
+逐关节调制的输出层与 null 均零初始化。
 
 训练时 `species_cfg_drop_prob` 按样本独立抽样，被丢弃的行用 `species_null_emb`；推理时
 `species_active=False` 走同一个 null，CFG 按 `uncond + scale * (cond - uncond)` 组合预测，只作用于高噪声半程。
@@ -474,10 +470,10 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 ## 11. 宽度分配与设计依据
 
 参数预算由训练配置（`train_all.bat`）决定：主干宽度、FFN 宽度、层数、cross-limb 的启用层与瓶颈宽度、
-`last_layer_ff`、`action_adaln_bottleneck`、`species_adaln_bottleneck`。冻结的 T5 词表以 buffer 形式保存，
+`last_layer_ff`、`action_adaln_bottleneck`。冻结的 T5 词表以 buffer 形式保存，
 不计入可训练参数。训练启动时会打印各模块的参数量。
 
-参数主要分布在以下模块：decoder 主干（占绝大部分）、`action_adaln` / `species_adaln` 头、cross-limb block、
+参数主要分布在以下模块：decoder 主干（占绝大部分）、`action_adaln` 头、cross-limb block、
 `action_label_projection`、`species_projection`、`input_process`（joint-name 投影、structural 投影、species 逐关节调制）、
 `resample_speed_projection`，以及可忽略的 `output_process` 与各层共享的 relation/topology embedding 表。
 
@@ -489,7 +485,7 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
   `LayerNorm → Linear` 的线性读出，不需要全宽 FFN，因此用 `last_layer_ff` 收窄。
 - **AdaLN 头的有效秩被标签集的秩封顶**：隐层不需要接近 `latent_dim`；窄隐层同时避免它成为
   模型里最大的单个矩阵。
-- **species 描述子的秩远低于物种数**：species AdaLN 头的隐层相应取窄。
+- **species 描述子的秩远低于物种数**：species 只走输入层逐关节调制，不设样本级头。
 - **`action_label_projection` 只读紧凑通道**：direction 槽的正交码只占少数几个轴，其余列的输入
   恒为 0，是结构性死参数；投影只读 `compact_slot_channels`，不读完整槽宽。
 - **cross-limb**：proj 的有效秩接近瓶颈宽度，宽度用满。
