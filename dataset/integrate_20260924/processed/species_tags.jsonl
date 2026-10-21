@@ -12,7 +12,7 @@
 {"species": "Aquatic_Shark", "species_tags": ["Aquatic"]}
 {"species": "Aquatic_YellowCroaker", "species_tags": ["Aquatic"]}
 {"species": "CU_Cat", "species_tags": ["Quadruped"]}
-{"species": "DMM_Boss01", "species_tags": ["Biped"]}
+{"species": "DMM_Boss01", "species_tags": ["Biped", "Clanking"]}
 {"species": "DMM_Boss02", "species_tags": ["Biped"]}
 {"species": "DMM_Dog01", "species_tags": ["Quadruped"]}
 {"species": "DMM_Dog02", "species_tags": ["Quadruped"]}
@@ -26,14 +26,14 @@
 {"species": "DMM_Thief04", "species_tags": ["Biped"]}
 {"species": "DMM_Thief06", "species_tags": ["Biped"]}
 {"species": "Insect_Ant", "species_tags": ["Multiped"]}
-{"species": "Insect_Bee", "species_tags": ["Winged"]}
-{"species": "Insect_Butterfly", "species_tags": ["Winged"]}
-{"species": "Insect_Cicada", "species_tags": ["Winged"]}
-{"species": "Insect_Dragonfly", "species_tags": ["Winged"]}
-{"species": "Insect_Firefly", "species_tags": ["Winged"]}
-{"species": "Insect_KingStagBeetle", "species_tags": ["Winged"]}
-{"species": "Insect_Sawyer", "species_tags": ["Winged"]}
-{"species": "Insect_StagBeetle", "species_tags": ["Winged"]}
+{"species": "Insect_Bee", "species_tags": ["Winged", "Fluttering"]}
+{"species": "Insect_Butterfly", "species_tags": ["Winged", "Fluttering"]}
+{"species": "Insect_Cicada", "species_tags": ["Winged", "Fluttering"]}
+{"species": "Insect_Dragonfly", "species_tags": ["Winged", "Fluttering"]}
+{"species": "Insect_Firefly", "species_tags": ["Winged", "Fluttering"]}
+{"species": "Insect_KingStagBeetle", "species_tags": ["Winged", "Fluttering"]}
+{"species": "Insect_Sawyer", "species_tags": ["Winged", "Fluttering"]}
+{"species": "Insect_StagBeetle", "species_tags": ["Winged", "Fluttering"]}
 {"species": "Knight_AuntieTina", "species_tags": ["Quadruped"]}
 {"species": "Knight_Barbarianwarrior", "species_tags": ["Quadruped"]}
 {"species": "Knight_GerryFinn", "species_tags": ["Quadruped"]}
@@ -42,7 +42,7 @@
 {"species": "LOL_Ahri", "species_tags": ["Biped"]}
 {"species": "LOL_Akali", "species_tags": ["Biped"]}
 {"species": "LOL_Ashe", "species_tags": ["Biped"]}
-{"species": "LOL_Blitzcrank", "species_tags": ["Biped"]}
+{"species": "LOL_Blitzcrank", "species_tags": ["Biped", "Waddling"]}
 {"species": "LOL_Caitlyn", "species_tags": ["Biped"]}
 {"species": "LOL_Fiora", "species_tags": ["Biped"]}
 {"species": "LOL_Jinx", "species_tags": ["Biped"]}
@@ -59,7 +59,7 @@
 {"species": "ORA_Ballora", "species_tags": ["Biped"]}
 {"species": "ORA_Bat", "species_tags": ["Biped"]}
 {"species": "ORA_BatToon", "species_tags": ["Winged"]}
-{"species": "ORA_Bee", "species_tags": ["Winged"]}
+{"species": "ORA_Bee", "species_tags": ["Winged", "Fluttering"]}
 {"species": "ORA_Beetle", "species_tags": ["Multiped"]}
 {"species": "ORA_Birdman", "species_tags": ["Biped"]}
 {"species": "ORA_BlackSpider", "species_tags": ["Multiped"]}
@@ -73,7 +73,7 @@
 {"species": "ORA_CoCHero", "species_tags": ["Biped"]}
 {"species": "ORA_Cowboy", "species_tags": ["Biped"]}
 {"species": "ORA_Crab", "species_tags": ["Multiped"]}
-{"species": "ORA_Crawly", "species_tags": ["Multiped"]}
+{"species": "ORA_Crawly", "species_tags": ["Multiped", "Clanking"]}
 {"species": "ORA_CubeHumanoid", "species_tags": ["Biped"]}
 {"species": "ORA_DickTum", "species_tags": ["Quadruped"]}
 {"species": "ORA_DinoBiped", "species_tags": ["Biped"]}
@@ -101,7 +101,7 @@
 {"species": "ORA_LowPolyHumanoid", "species_tags": ["Biped"]}
 {"species": "ORA_MantisMan", "species_tags": ["Biped"]}
 {"species": "ORA_MascotBear", "species_tags": ["Biped"]}
-{"species": "ORA_MechStriker", "species_tags": ["Biped"]}
+{"species": "ORA_MechStriker", "species_tags": ["Biped", "Clanking"]}
 {"species": "ORA_MikeWazowski", "species_tags": ["Biped"]}
 {"species": "ORA_Mushroom", "species_tags": ["Drifting"]}
 {"species": "ORA_NagaWarrior", "species_tags": ["Serpentine"]}
@@ -130,7 +130,7 @@
 {"species": "ORA_Spider", "species_tags": ["Multiped"]}
 {"species": "ORA_SpiderGuardian", "species_tags": ["Aquatic"]}
 {"species": "ORA_SpiderHero", "species_tags": ["Biped"]}
-{"species": "ORA_SpiderRobot", "species_tags": ["Multiped"]}
+{"species": "ORA_SpiderRobot", "species_tags": ["Multiped", "Clanking"]}
 {"species": "ORA_SpikyBrute", "species_tags": ["Biped"]}
 {"species": "ORA_SwimmerHumanoid", "species_tags": ["Biped"]}
 {"species": "ORA_SwordMaiden", "species_tags": ["Biped"]}
@@ -138,20 +138,20 @@
 {"species": "ORA_ToonHumanoid", "species_tags": ["Biped"]}
 {"species": "ORA_TRex", "species_tags": ["Biped"]}
 {"species": "ORA_Trout", "species_tags": ["Aquatic"]}
-{"species": "ORA_TurtleHumanoid", "species_tags": ["Biped"]}
-{"species": "ORA_TVRobot", "species_tags": ["Biped"]}
+{"species": "ORA_TurtleHumanoid", "species_tags": ["Biped", "Waddling"]}
+{"species": "ORA_TVRobot", "species_tags": ["Biped", "Clanking"]}
 {"species": "ORA_UndeadDragon", "species_tags": ["Quadruped"]}
 {"species": "ORA_VoxelHumanoid", "species_tags": ["Biped"]}
-{"species": "ORA_Wasp", "species_tags": ["Winged"]}
+{"species": "ORA_Wasp", "species_tags": ["Winged", "Fluttering"]}
 {"species": "ORA_Whale", "species_tags": ["Aquatic"]}
-{"species": "ORA_WingedHumanoid", "species_tags": ["Biped"]}
+{"species": "ORA_WingedHumanoid", "species_tags": ["Biped", "Clanking"]}
 {"species": "ORA_WingedLion", "species_tags": ["Quadruped"]}
 {"species": "ORA_WingedRaptor", "species_tags": ["Winged"]}
 {"species": "ORA_Woodpecker", "species_tags": ["Winged"]}
 {"species": "ORA_Wyvern", "species_tags": ["Winged"]}
 {"species": "ORA_YellowTang", "species_tags": ["Aquatic"]}
 {"species": "Pet_Bentley", "species_tags": ["Quadruped"]}
-{"species": "Pet_Chick", "species_tags": ["Biped"]}
+{"species": "Pet_Chick", "species_tags": ["Biped", "Waddling"]}
 {"species": "Pet_Fafnir", "species_tags": ["Winged"]}
 {"species": "Pet_Gate", "species_tags": ["Aquatic"]}
 {"species": "Pet_Goldfish", "species_tags": ["Aquatic"]}
@@ -180,22 +180,22 @@
 {"species": "PP_Hen", "species_tags": ["Winged"]}
 {"species": "PP_Orca", "species_tags": ["Aquatic"]}
 {"species": "PP_Parrot", "species_tags": ["Winged"]}
-{"species": "PP_Penguin", "species_tags": ["Biped"]}
+{"species": "PP_Penguin", "species_tags": ["Biped", "Waddling"]}
 {"species": "PP_Rooster", "species_tags": ["Winged"]}
 {"species": "PP_Seagull", "species_tags": ["Winged"]}
-{"species": "PP_Seal", "species_tags": ["Quadruped"]}
+{"species": "PP_Seal", "species_tags": ["Quadruped", "Waddling"]}
 {"species": "PP_Squid", "species_tags": ["Aquatic"]}
 {"species": "PP_Squirrel", "species_tags": ["Quadruped"]}
 {"species": "PP_StarFish", "species_tags": ["Multiped"]}
 {"species": "PP_Tapir", "species_tags": ["Quadruped"]}
 {"species": "PP_Tucan", "species_tags": ["Winged"]}
 {"species": "PP_Vulture", "species_tags": ["Winged"]}
-{"species": "PP_Walrus", "species_tags": ["Quadruped"]}
+{"species": "PP_Walrus", "species_tags": ["Quadruped", "Waddling"]}
 {"species": "SC2_Baneling", "species_tags": ["Multiped"]}
 {"species": "SC2_BroodLord", "species_tags": ["Multiped"]}
 {"species": "SC2_Drone", "species_tags": ["Multiped"]}
 {"species": "SC2_Hydralisk", "species_tags": ["Serpentine"]}
-{"species": "SC2_InfestedMarine", "species_tags": ["Biped"]}
+{"species": "SC2_InfestedMarine", "species_tags": ["Biped", "Waddling"]}
 {"species": "SC2_Infestor", "species_tags": ["Multiped"]}
 {"species": "SC2_Larva", "species_tags": ["Serpentine"]}
 {"species": "SC2_Lurker", "species_tags": ["Multiped"]}
@@ -208,7 +208,7 @@
 {"species": "SC2_Ultralisk", "species_tags": ["Quadruped"]}
 {"species": "SC2_Zergling", "species_tags": ["Quadruped"]}
 {"species": "SYN_Worm", "species_tags": ["Serpentine"]}
-{"species": "Voxel_Chicken", "species_tags": ["Biped"]}
+{"species": "Voxel_Chicken", "species_tags": ["Biped", "Waddling"]}
 {"species": "DNL_Balrog", "species_tags": ["Biped"]}
 {"species": "DNL_Banshee", "species_tags": ["Winged"]}
 {"species": "DNL_Boa", "species_tags": ["Serpentine"]}

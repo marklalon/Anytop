@@ -150,7 +150,7 @@ def log(message):
 # the prompt shows them as blocks, so the split is read back out of the tuple at
 # these leaders. A leader that moved is a loud failure, not a wrong prompt.
 MODIFIER_BLOCKS = (
-    ("hover", "how the head is executed (suspension, gait, wing state)"),
+    ("hover", "how the head is executed (suspension, wing state)"),
     ("bite", "secondary action layered on the head"),
     ("spin", "how a strike is delivered"),
     ("happy", "affect / social gesture"),
@@ -167,7 +167,7 @@ TRAVEL_MODES = ("walk", "run", "fly", "swim", "crawl")
 _CONFLICTS = (
     (("die", "fall"), "a death already falls -- write 'die' alone"),
     (("die", "idle"), "'idle' is a live motionless stance and contradicts a death"),
-    (("walk", "run"), "the gait between them is 'walk, trot'"),
+    (("walk", "run"), "write 'walk' or 'run', not both"),
 )
 
 def _check_vocab():
@@ -946,16 +946,10 @@ locomotion -- the character TRAVELS; the ground slides underneath it.
     those -- or roll, jump, fall, hover, which may also ride on one ("run, jump").
   - fly is for a body held up by WINGS. A legless hoverer drifting along is not
     flying: it is walk or run by pace.
-  - Gait and manner are modifiers: "walk, forward, trot" (between walking and
-    running), "run, forward, gallop", "fly, forward, glide" (held
-    wings). Backing away is just "walk, backward". A sideways step with the
-    body still facing ahead is just "walk, left" / "walk, right".
-  - A walk or run takes AT MOST ONE gait word, and only when its stepping style
-    is plain to see: trot (diagonal legs together), gallop (a bounding run with
-    every foot off the ground -- run only), scurry (small rapid steps), lumber
-    (a heavy, ponderous plod), waddle (rocking side to side on short legs),
-    clank (a machine's stiff, rigid-jointed, metronomic steps). An ordinary
-    walk or run takes none. jump, fall, roll and swim take none.
+  - A walk or run takes no gait word: how fast or in which footfall pattern
+    it steps is not part of the label. "fly, forward, glide" is a flight on
+    held wings. Backing away is just "walk, backward". A sideways step with
+    the body still facing ahead is just "walk, left" / "walk, right".
   - The label MUST name a direction, even for a clip authored in place: the
     heading the gait is trying to go. A hover held in place is exempt.
   - Every jump is here, one in place included: "jump, up" (straight up),
@@ -1042,11 +1036,9 @@ RULES THAT ARE NOT OPTIONAL
 - These are aimed nowhere and NEVER take forward / backward / left / right:
   {no_planar}. up / down still apply to them.
 - A death is just "die" -- never "die, fall", never "die, idle".
-- Never "walk, run": the gait between them is "walk, trot".
-- WINGS: write flap (full wingbeats) or flutter (rapid, shallow wingbeats) only
-  when the wings are plainly beating, glide only when they are plainly held
-  still, in any group -- "fly, forward, flap", "idle, hover, flutter". At most
-  one of the three; none when the wings are folded or you cannot tell.
+- Never "walk, run": pick the one the feet show.
+- WINGS: write glide only when the wings are plainly held still in flight --
+  "fly, forward, glide". Beating wings take no word.
 - If the clip name puts a SECOND action on top of the head (Attack, Bite, Roar,
   Jump, Shot) and the lists have a word for it, name it: it is what separates
   this clip from the plain version. Do not invent one the lists cannot spell.
@@ -1649,6 +1641,9 @@ def apply_species(ds, drafts, dry_run):
     out_rows = []
     for row in rows:
         tags = new.pop(row.get("species"), None)
+        if tags is not None and len(tags) == 1:
+            # The model answers the body plan only; a variant is a reviewer's call.
+            tags = tags + list(row.get("species_tags") or [])[1:]
         if tags is not None and list(row.get("species_tags") or []) != tags:
             print("  %-28s %s -> %s" % (row["species"], row.get("species_tags"), tags))
             row = dict(row, species_tags=tags)

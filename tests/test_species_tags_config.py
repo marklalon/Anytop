@@ -142,17 +142,29 @@ def test_every_shipped_sidecar_tag_is_already_normalized():
 
 
 def test_a_stale_locomotion_slot_row_is_rejected(tmp_path):
-    """A sidecar still carrying the locomotion slot fails instead of encoding other text."""
+    """A sidecar still carrying a locomotion word fails instead of encoding other text."""
     path = tmp_path / "species_tags.jsonl"
     path.write_text(
         '{"species": "Cat", "species_tags": ["Quadruped", "Galloping"]}\n',
         encoding="utf-8",
     )
     dt.configure(species_tags_file=path)
-    with pytest.raises(ValueError, match="species_tags must be 1"):
+    with pytest.raises(ValueError, match="variant 'Galloping'"):
         dt.dataset_tags()
-    with pytest.raises(ValueError, match="species_tags must be 1"):
+    with pytest.raises(ValueError, match="variant 'Galloping'"):
         dt.register_species_tags("Cat", ("Quadruped", "Galloping"))
+
+
+def test_a_variant_row_loads_and_keeps_the_body_plan_subset(tmp_path):
+    path = tmp_path / "species_tags.jsonl"
+    path.write_text(
+        '{"species": "Robot", "species_tags": ["Biped", "Clanking"]}\n',
+        encoding="utf-8",
+    )
+    dt.configure(species_tags_file=path)
+    tags = dt.dataset_tags()
+    assert tags.tags_for("Robot") == ("Biped", "Clanking")
+    assert tags.object_subset_for("Robot") == "biped"
 
 
 def test_a_cond_baked_from_an_older_sidecar_is_rejected(tmp_path):

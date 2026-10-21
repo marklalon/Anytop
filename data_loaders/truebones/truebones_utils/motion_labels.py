@@ -42,7 +42,7 @@ _RETIRED_AUX_ACTION_GROUPS_KEY = "aux_action_groups"
 #   action_group  -- one of ACTION_GROUPS; partitions the dataset, each group
 #                    trains its own model.
 #   action_label  -- CONTROLLED KEYWORDS from the vocabulary below, in canonical
-#                    order ("run, forward, left, gallop"); may be empty (= no
+#                    order ("run, forward, left, glide"); may be empty (= no
 #                    condition, routed to the learned null embedding).
 #
 # The vocabulary is CONTROLLED, not mutually exclusive classes: a label names
@@ -85,12 +85,11 @@ HEAD_VOCAB: tuple[str, ...] = (
 
 # Blocks order the spelling only; nothing weights a word by its block.
 MODIFIER_VOCAB: tuple[str, ...] = (
-    # -- block A: how the head is executed (suspension, gait, wing state) --
+    # -- block A: how the head is executed (suspension, wing state) --
     # hover is a held suspension state; hovering at rest is "idle, hover".
-    # The gait words name the stepping style of a walk / run (GAIT_WORDS); the
-    # wing words name what the wings do (WING_WORDS).
-    "hover", "trot", "gallop", "scurry", "clank", "lumber", "waddle",
-    "flap", "flutter", "glide", "flopping",
+    # glide is a flight on still wings; plain "fly" beats them. A movement
+    # style the whole species shows is its species_tags variant, not a word here.
+    "hover", "glide", "flopping",
     # -- block B: secondary action layered on the head --
     "bite", "eat", "look", "shake", "throw", "taunt",
     "sniff", "yawn", "sting", "kick", "scratch",
@@ -115,13 +114,6 @@ MODIFIER_VOCAB: tuple[str, ...] = (
 IMPLEMENT_WORDS: tuple[str, ...] = ("bow", "gun", "hammer", "shield")
 WEAPON_FALLBACK_WORD = "weapon"
 assert set(IMPLEMENT_WORDS) | {WEAPON_FALLBACK_WORD} <= set(MODIFIER_VOCAB)
-
-# A walk / run has one stepping style, so a label carries at most one of these.
-GAIT_WORDS: tuple[str, ...] = ("trot", "gallop", "scurry", "clank", "lumber", "waddle")
-# Beating wings (flap: full strokes, flutter: rapid shallow ones) or wings held
-# still (glide): one wing state per label.
-WING_WORDS: tuple[str, ...] = ("flap", "flutter", "glide")
-assert set(GAIT_WORDS) | set(WING_WORDS) <= set(MODIFIER_VOCAB)
 
 ACTION_VOCAB: tuple[str, ...] = HEAD_VOCAB + MODIFIER_VOCAB
 
@@ -300,7 +292,7 @@ assert _PHASE_FREE_LOOP_HEAD_SET <= _HEAD_VOCAB_SET, (
 )
 
 # The modifiers that leave a phase-free head phase-free: how the state is
-# carried out (gait, wing state), a posture held through it (sit,
+# carried out (suspension, wing state), a posture held through it (sit,
 # sleep), or what is held during it (carry, weapon). Every other modifier names
 # an EVENT layered on the state -- a glance, a bite of food, a shake, a yawn --
 # and anchors the clip exactly like an anchored head: rolling "idle, look"
@@ -309,8 +301,7 @@ assert _PHASE_FREE_LOOP_HEAD_SET <= _HEAD_VOCAB_SET, (
 # reason as the heads: a new modifier defaults to anchored. Direction words are
 # not modifiers and never anchor.
 PHASE_FREE_LOOP_MODIFIERS: tuple[str, ...] = (
-    "hover", "trot", "gallop", "scurry", "clank", "lumber", "waddle",
-    "flap", "flutter", "glide", "flopping",
+    "hover", "glide", "flopping",
     "crouch", "dead", "sit", "sleep",
     "aim", "carry",
     "bow", "gun", "hammer", "shield", "weapon",
@@ -370,11 +361,9 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "cast": "spellcasting",              # bare "cast" is plaster, or a film cast
     "charge": "rushing forward",         # bare "charge" is voltage or a fee
     "draw": "drawing a weapon",          # bare "draw" is pulling a line or a card
-    "flap": "flapping wings",            # bare "flap" is a flap of paper or cloth
     "cry": "weeping",                    # bare "cry" reads as shouting out
     "firebreath": "breathing fire",      # glued compound is no English word; T5 splits it into subword shards
     "land": "touching down",             # bare "land" is terrain -- overwhelmingly
-    "lumber": "lumbering",               # bare "lumber" is timber
     "punch": "punching",                 # bare "punch" is the drink
     "rear": "rearing up",                # bare "rear" is the back side
     "rest": "resting",                   # bare "rest" is the remainder
@@ -469,8 +458,7 @@ def parse_action_label(label: str) -> list[str]:
     Every comma-separated piece must be a vocabulary token verbatim: no empty
     segment, no repeat, at most :data:`ACTION_LABEL_MAX_WORDS` tokens, 1..
     :data:`ACTION_LABEL_MAX_HEADS` head words, ``weapon`` never beside an
-    :data:`IMPLEMENT_WORDS` word, at most one :data:`GAIT_WORDS` and one
-    :data:`WING_WORDS` word. An empty label parses to ``[]``
+    :data:`IMPLEMENT_WORDS` word. An empty label parses to ``[]``
     (= no condition).
 
     Raises :class:`ActionLabelError` rather than dropping anything: a silently
@@ -518,13 +506,6 @@ def parse_action_label(label: str) -> list[str]:
                 f"action_label {label!r} names {WEAPON_FALLBACK_WORD!r} with "
                 f"{implements}. {WEAPON_FALLBACK_WORD!r} is the fallback for a "
                 f"weapon no implement word names; keep only the specific word."
-            )
-    for exclusive, what in ((GAIT_WORDS, "gait"), (WING_WORDS, "wing state")):
-        named = [token for token in tokens if token in exclusive]
-        if len(named) > 1:
-            raise ActionLabelError(
-                f"action_label {label!r} names {len(named)} {what} words {named}; "
-                f"{list(exclusive)} are mutually exclusive."
             )
     return tokens
 

@@ -1,5 +1,5 @@
 {
-  "_comment": "Cross-species transfer battery. T1_L*: species B generates an action X that no species sharing B's skeleton performs in training (L1..L4 = common..rare by number of species performing X). L5: B generates an action with a gait or wing modifier word it never carries (no --species_tags override). T2_S*: B generates an action with --species_tags overridden to a body plan its skeleton never carries (S1..S3 = common..rare by number of species of the target body plan). meta is ignored by eval_checkpoint.py and only describes the task.",
+  "_comment": "Cross-species transfer battery. T1_L*: species B generates an action X that no species sharing B's skeleton performs in training (L1..L4 = common..rare by number of species performing X). L5: B generates an action with --species_tags overridden to its own body plan plus a species variant it never carries. T2_S*: B generates an action with --species_tags overridden to a body plan its skeleton never carries (S1..S3 = common..rare by number of species of the target body plan). meta is ignored by eval_checkpoint.py and only describes the task.",
   "checkpoint": {
     "RUN_NAME": "merged_all_v49",
     "OUTPUT_DIR": "merged_all_v49_transfer"
@@ -43,7 +43,6 @@
     {"category": "T1_L3", "args": ["--object_type", "MXO_Human", "--action_label", "fall"], "meta": {"native_tags": ["Biped"]}},
     {"category": "T1_L3", "args": ["--object_type", "IAC_Cavewoman", "--action_label", "rest, sleep"], "meta": {"native_tags": ["Biped"]}},
     {"category": "T1_L3", "args": ["--object_type", "DNL_Pegasus", "--action_label", "sitdown"], "meta": {"native_tags": ["Quadruped"]}},
-    {"category": "T1_L3", "args": ["--object_type", "Horse@truebones_zoo", "--action_label", "walk, forward, trot"], "meta": {"native_tags": ["Quadruped"]}},
     {"category": "T1_L3", "args": ["--object_type", "Dog", "--action_label", "rest, sleep"], "meta": {"native_tags": ["Quadruped"]}},
     {"category": "T1_L3", "args": ["--object_type", "RMW_Dragon", "--action_label", "takeoff"], "meta": {"native_tags": ["Winged"]}},
     {"category": "T1_L3", "args": ["--object_type", "Eagle", "--action_label", "fly, forward, glide"], "meta": {"native_tags": ["Winged"]}},
@@ -65,20 +64,22 @@
     {"category": "T1_L4", "args": ["--object_type", "PP_Dolphin", "--action_label", "hurt, flopping"], "meta": {"native_tags": ["Aquatic"]}},
     {"category": "T1_L4", "args": ["--object_type", "MU04_Earthworm", "--action_label", "attack, firebreath"], "meta": {"native_tags": ["Drifting"]}},
     {"category": "T1_L4", "args": ["--object_type", "RU02_GalaxyRobot", "--action_label", "pickup"], "meta": {"native_tags": ["Drifting"]}},
-    {"category": "T1_L5", "args": ["--object_type", "MB_TigerDrago", "--action_label", "idle, hover, flutter"], "meta": {"native_tags": ["Winged"]}},
-    {"category": "T1_L5", "args": ["--object_type", "Parrot", "--action_label", "fly, forward, flutter"], "meta": {"native_tags": ["Winged"]}},
-    {"category": "T1_L5", "args": ["--object_type", "Eagle", "--action_label", "idle, hover, flutter"], "meta": {"native_tags": ["Winged"]}},
-    {"category": "T1_L5", "args": ["--object_type", "Spider", "--action_label", "walk, forward, clank"], "meta": {"native_tags": ["Multiped"]}},
+    {"category": "T1_L5", "args": ["--object_type", "MB_TigerDrago", "--action_label", "idle, hover", "--species_tags", "Winged,Fluttering"], "meta": {"native_tags": ["Winged"]}},
+    {"category": "T1_L5", "args": ["--object_type", "Parrot", "--action_label", "fly, forward", "--species_tags", "Winged,Fluttering"], "meta": {"native_tags": ["Winged"]}},
+    {"category": "T1_L5", "args": ["--object_type", "Eagle", "--action_label", "idle, hover", "--species_tags", "Winged,Fluttering"], "meta": {"native_tags": ["Winged"]}},
+    {"category": "T1_L5", "args": ["--object_type", "Spider", "--action_label", "walk, forward", "--species_tags", "Multiped,Clanking"], "meta": {"native_tags": ["Multiped"]}},
+    {"category": "T1_L5", "args": ["--object_type", "MXO_Human", "--action_label", "walk, forward", "--species_tags", "Biped,Clanking"], "meta": {"native_tags": ["Biped"]}},
+    {"category": "T1_L5", "args": ["--object_type", "MXO_Human", "--action_label", "walk, forward", "--species_tags", "Biped,Waddling"], "meta": {"native_tags": ["Biped"]}},
     {"category": "T2_S1", "args": ["--object_type", "Anaconda", "--action_label", "walk, forward", "--species_tags", "Drifting"], "meta": {"native_tags": ["Serpentine"]}},
     {"category": "T2_S1", "args": ["--object_type", "Monkey", "--action_label", "walk, forward", "--species_tags", "Biped"], "meta": {"native_tags": ["Quadruped"]}},
     {"category": "T2_S1", "args": ["--object_type", "DNL_Werewolf", "--action_label", "walk, forward", "--species_tags", "Quadruped"], "meta": {"native_tags": ["Biped"]}},
-    {"category": "T2_S1", "args": ["--object_type", "ORA_WingedHumanoid", "--action_label", "fly, forward, flap", "--species_tags", "Winged"], "meta": {"native_tags": ["Biped"]}},
-    {"category": "T2_S1", "args": ["--object_type", "LH_Hero", "--action_label", "idle, hover, flap", "--species_tags", "Winged"], "meta": {"native_tags": ["Biped"]}},
-    {"category": "T2_S1", "args": ["--object_type", "DNL_Pegasus", "--action_label", "idle, hover, flap", "--species_tags", "Winged"], "meta": {"native_tags": ["Quadruped"]}},
+    {"category": "T2_S1", "args": ["--object_type", "ORA_WingedHumanoid", "--action_label", "fly, forward", "--species_tags", "Winged"], "meta": {"native_tags": ["Biped"]}},
+    {"category": "T2_S1", "args": ["--object_type", "LH_Hero", "--action_label", "idle, hover", "--species_tags", "Winged"], "meta": {"native_tags": ["Biped"]}},
+    {"category": "T2_S1", "args": ["--object_type", "DNL_Pegasus", "--action_label", "idle, hover", "--species_tags", "Winged"], "meta": {"native_tags": ["Quadruped"]}},
     {"category": "T2_S1", "args": ["--object_type", "Pet_Miho", "--action_label", "swim", "--species_tags", "Aquatic"], "meta": {"native_tags": ["Quadruped"]}},
-    {"category": "T2_S1", "args": ["--object_type", "DNL_Balrog", "--action_label", "walk, forward, lumber", "--species_tags", "Quadruped"], "meta": {"native_tags": ["Biped"]}},
-    {"category": "T2_S1", "args": ["--object_type", "IAC_Caveman", "--action_label", "walk, forward, clank", "--species_tags", "Quadruped"], "meta": {"native_tags": ["Biped"]}},
-    {"category": "T2_S1", "args": ["--object_type", "Bear@truebones_zoo", "--action_label", "walk, forward, lumber", "--species_tags", "Biped"], "meta": {"native_tags": ["Quadruped"]}},
+    {"category": "T2_S1", "args": ["--object_type", "DNL_Balrog", "--action_label", "walk, forward", "--species_tags", "Quadruped"], "meta": {"native_tags": ["Biped"]}},
+    {"category": "T2_S1", "args": ["--object_type", "IAC_Caveman", "--action_label", "walk, forward", "--species_tags", "Quadruped,Clanking"], "meta": {"native_tags": ["Biped"]}},
+    {"category": "T2_S1", "args": ["--object_type", "Bear@truebones_zoo", "--action_label", "walk, forward", "--species_tags", "Biped"], "meta": {"native_tags": ["Quadruped"]}},
     {"category": "T2_S2", "args": ["--object_type", "Jaws", "--action_label", "walk, forward", "--species_tags", "Serpentine"], "meta": {"native_tags": ["Aquatic"]}}
   ]
 }

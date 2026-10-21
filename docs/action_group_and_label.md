@@ -116,7 +116,7 @@ action_labels.jsonl ──► dataset loader ──► word / slot / mask ids �
 | 类 | 常量 | 说明 |
 |---|---|---|
 | 主词 | `HEAD_VOCAB` | 标签"关于什么"：一个身体状态（`idle` `run` `rear`…）或一个整段事件（`die` `getup` `land` `draw` `sheathe` `stop`…） |
-| 修饰词 | `MODIFIER_VOCAB` | 其余动作词：执行方式（`hover` `fast`；步态 `GAIT_WORDS` 如 `trot` `gallop`，至多一个；翅膀状态 `WING_WORDS` `flap` `flutter` `glide`，至多一个）、叠加的次要动作（`bite` `eat` `look` `shake`）、打击类型（`swat` `slash` `punch`…）、情绪手势、活动/物件、持械（`bow` `gun` `hammer` `shield` `weapon`） |
+| 修饰词 | `MODIFIER_VOCAB` | 其余动作词：执行方式（`hover`；`glide` 翅膀不动的滑翔。步态快慢由 `--num_frames` 决定，物种整体的运动风格是 species_tags 的 variant，都不写成修饰词）、叠加的次要动作（`bite` `eat` `look` `shake`）、打击类型（`swat` `slash` `punch`…）、情绪手势、活动/物件、持械（`bow` `gun` `hammer` `shield` `weapon`） |
 | 方向词 | `DIRECTION_VOCAB` | `forward backward left right up down` |
 
 要点：
@@ -278,7 +278,7 @@ checkpoint 的 load / resume / bind 受两层指纹把关，不兼容的 checkpo
 ### 7.1 `--action_label`
 
 ```
-python sample/generate.py ... --action_label "run, forward, fast"
+python sample/generate.py ... --action_label "run, forward" --num_frames 40
 ```
 
 - 只接受受控 token；未知 token 是硬错误并列出合法词（词向量在 checkpoint 里，推理不跑 T5，自由文本无处可去）。

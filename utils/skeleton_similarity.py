@@ -39,25 +39,29 @@ from typing import List, Mapping, MutableMapping, Optional, Sequence
 
 import numpy as np
 
-from data_loaders.truebones.truebones_utils.dataset_tags import SPECIES_TAG_COUNT
+from data_loaders.truebones.truebones_utils.dataset_tags import (
+    SPECIES_TAG_MAX_COUNT,
+    SPECIES_TAG_MIN_COUNT,
+)
 
 
 # ── Motion tags ──────────────────────────────────────────────────────────────
-# Slot weights of species_tags, one per slot (the body plan).
+# Slot weights of the compared species_tags slots (the body plan). The variant
+# slot is not compared: a variant is shared by a handful of rig families, and
+# weighting it would pull every query toward those families' clips.
 _TAG_SLOT_WEIGHTS = (1.0,)
-assert len(_TAG_SLOT_WEIGHTS) == SPECIES_TAG_COUNT
 
 
 def species_tags_of(object_cond: Mapping[str, object], object_type_hint: str) -> tuple[str, ...]:
-    """The baked ``(body-plan,)`` tags of a cond entry, lower-cased."""
+    """The compared ``(body-plan,)`` slot of a cond entry's baked tags, lower-cased."""
     tags = tuple(str(tag).strip().lower() for tag in (object_cond.get("species_tags") or ()))
-    if len(tags) != SPECIES_TAG_COUNT:
+    if not SPECIES_TAG_MIN_COUNT <= len(tags) <= SPECIES_TAG_MAX_COUNT:
         raise ValueError(
             f"cond entry '{object_cond.get('object_type') or object_type_hint}' has "
-            f"species_tags {list(tags)!r}, expected {SPECIES_TAG_COUNT} (body-plan); "
+            f"species_tags {list(tags)!r}, expected [body-plan] or [body-plan, variant]; "
             "regenerate its cond.npy"
         )
-    return tags
+    return tags[:len(_TAG_SLOT_WEIGHTS)]
 
 
 def tag_distance(query_tags: Sequence[str], candidate_tags: Sequence[str]) -> float:
@@ -220,7 +224,7 @@ class SpeciesSimilarity:
     jaccard: float                # body-part overlap (1 = identical part set)
     topology_distance: float      # z-scored descriptor euclidean (pool-relative)
     combined_distance: float
-    same_tags: bool               # identical motion descriptor (every slot)
+    same_tags: bool               # identical body plan
     weight: float = 0.0
 
 

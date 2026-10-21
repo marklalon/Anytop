@@ -16,16 +16,16 @@ from data_loaders.truebones.truebones_utils.motion_labels import load_action_lab
 
 
 def test_review_normalizer_validates_and_uses_canonical_order():
-    assert review.normalize_action_label(" TROT；right, WALK, right ") == (
-        "walk, right, trot"
+    assert review.normalize_action_label(" CARRY；right, WALK, right ") == (
+        "walk, right, carry"
     )
     # Head order is time order and must survive sorting; direction/modifier
     # placement is canonicalized around it.
-    assert review.normalize_action_label("trot, attack, idle, left") == (
-        "attack, idle, left, trot"
+    assert review.normalize_action_label("carry, attack, idle, left") == (
+        "attack, idle, left, carry"
     )
-    assert review.normalize_action_label("idle, right, turn, trot") == (
-        "idle, turn, right, trot"
+    assert review.normalize_action_label("idle, right, turn, carry") == (
+        "idle, turn, right, carry"
     )
 
 
@@ -39,7 +39,7 @@ def test_review_normalizer_rejects_unknown_words_with_suggestion():
 
 def test_review_normalizer_enforces_label_shape():
     with pytest.raises(review.ActionLabelError, match="no head word"):
-        review.normalize_action_label("trot, forward")
+        review.normalize_action_label("carry, forward")
 
 
 def test_store_sorts_valid_startup_labels_and_exposes_invalid_ones(tmp_path):
@@ -48,7 +48,7 @@ def test_store_sorts_valid_startup_labels_and_exposes_invalid_ones(tmp_path):
         {
             "clip": "valid.npy",
             "action_group": "locomotion",
-            "action_label": "TROT, right, walk",
+            "action_label": "CARRY, right, walk",
         },
         {
             "clip": "typo.npy",
@@ -62,7 +62,7 @@ def test_store_sorts_valid_startup_labels_and_exposes_invalid_ones(tmp_path):
 
     store = review.LabelStore(labels)
     saved = [json.loads(line) for line in labels.read_text(encoding="utf-8").splitlines()]
-    assert saved[0]["action_label"] == "walk, right, trot"
+    assert saved[0]["action_label"] == "walk, right, carry"
     assert saved[1]["action_label"] == "run, foward"
 
     snapshot = {row["clip"]: row for row in store.snapshot()}
@@ -73,8 +73,8 @@ def test_store_sorts_valid_startup_labels_and_exposes_invalid_ones(tmp_path):
         store.update("typo.npy", action_label="run, sidewayz")
     assert store.snapshot()[1]["action_label"] == "run, foward"
 
-    fixed = store.update("typo.npy", action_label="TROT, forward, run")
-    assert fixed["action_label"] == "run, forward, trot"
+    fixed = store.update("typo.npy", action_label="CARRY, forward, run")
+    assert fixed["action_label"] == "run, forward, carry"
     assert "label_error" not in fixed
     assert "label_error" not in store.snapshot()[1]
 
@@ -153,8 +153,8 @@ def test_review_search_matches_whole_words_and_keeps_substring_default():
     assert match("walking", "walk")
     assert match("walk (left)", "(left)", True)
     assert review._row_matches_search({"action_label": "idle"}, "IDLE", whole_word=True)
-    assert not review._row_matches_search({"action_label": "idle, trot"}, "idle", whole_word=True)
-    assert review._row_matches_search({"action_label": "idle, trot"}, "idle")
+    assert not review._row_matches_search({"action_label": "idle, carry"}, "idle", whole_word=True)
+    assert review._row_matches_search({"action_label": "idle, carry"}, "idle")
 
 
 def test_labels_api_can_filter_by_group(tmp_path):
@@ -193,7 +193,7 @@ def test_labels_api_can_filter_by_field_and_whole_word(tmp_path):
         {"clip": "Bear_Walk", "action_group": "locomotion", "action_label": "walk, forward"},
         {"clip": "Bear_Walking", "action_group": "locomotion", "action_label": "run, forward"},
         {"clip": "Bear_Idle", "action_group": "stationary", "action_label": "idle"},
-        {"clip": "Bear_IdleFast", "action_group": "stationary", "action_label": "idle, trot"},
+        {"clip": "Bear_IdleFast", "action_group": "stationary", "action_label": "idle, carry"},
     ]), encoding="utf-8")
     dataset = {
         "id": "sample", "name": "sample", "processed": str(processed),
@@ -450,6 +450,10 @@ def test_species_tag_store_update_rewrites_one_row_and_validates(tmp_path):
 
     with pytest.raises(ValueError):
         store.update("Cat", ["Moonwalking"])
+    with pytest.raises(ValueError):
+        store.update("Cat", ["Biped", "Moonwalking"])
+    row, changed = store.update("Cat", ["biped", "clanking"])
+    assert changed and row["species_tags"] == ["Biped", "Clanking"]
     with pytest.raises(KeyError):
         store.update("Unknown", ["Biped"])
 

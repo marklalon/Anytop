@@ -39,8 +39,8 @@ def _cond(parents, joints_names, tags=None, slim=None) -> dict:
 def test_species_tags_read_the_baked_body_plan_only() -> None:
     baked = _cond([-1], ["Root"], tags=("Winged",))
     assert species_tags_of(baked, "anything") == ("winged",)
-    with pytest.raises(ValueError, match="regenerate"):
-        species_tags_of(_cond([-1], ["Root"], tags=("Winged", "Flapping")), "x")
+    # The variant slot is baked but not compared.
+    assert species_tags_of(_cond([-1], ["Root"], tags=("Winged", "Fluttering")), "x") == ("winged",)
     with pytest.raises(ValueError, match="regenerate"):
         species_tags_of(_cond([-1], ["Root"]), "cat")
     with pytest.raises(ValueError, match="regenerate"):

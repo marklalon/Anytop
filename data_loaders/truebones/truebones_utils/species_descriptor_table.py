@@ -1,9 +1,9 @@
 """The precomputed T5 table of every legal species descriptor.
 
-A species descriptor is ``[body-plan]`` drawn from a closed vocabulary
-(``dataset_tags.SPECIES_BODY_PLANS``), so the set of descriptor texts is
-finite. All of them are encoded into one table, and ``species_emb`` never
-lives in a dataset's cond.npy -- a cond only carries each species' baked
+A species descriptor is ``[body-plan]`` or ``[body-plan, variant]`` drawn
+from closed vocabularies (``dataset_tags.SPECIES_BODY_PLANS`` x
+``SPECIES_VARIANTS``), so the set of descriptor texts is finite. All of them
+are encoded into one table, and ``species_emb`` never lives in a dataset's cond.npy -- a cond only carries each species' baked
 ``species_tags``, and the vector is bound from a table in memory:
 
 * training builds (or extends) the repo-global table

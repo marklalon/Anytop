@@ -64,7 +64,7 @@
 {"species": "Tukan", "species_tags": ["Winged"]}
 {"species": "Bat", "species_tags": ["Winged"]}
 {"species": "Dragon", "species_tags": ["Winged"]}
-{"species": "Giantbee", "species_tags": ["Winged"]}
+{"species": "Giantbee", "species_tags": ["Winged", "Fluttering"]}
 {"species": "Eagle", "species_tags": ["Winged"]}
 {"species": "Buzzard", "species_tags": ["Winged"]}
 {"species": "Pteranodon", "species_tags": ["Winged"]}

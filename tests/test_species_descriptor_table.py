@@ -56,14 +56,22 @@ def test_check_species_tags_rejects_words_outside_the_vocabulary():
     dt.check_species_tags(("Quadruped",), "ok")
     with pytest.raises(ValueError, match="body plan 'Robot'"):
         dt.check_species_tags(("Robot",), "x")
-    with pytest.raises(ValueError, match="1 non-empty tag"):
+    dt.check_species_tags(("Biped", "Clanking"), "ok")
+    with pytest.raises(ValueError, match="variant 'Striding'"):
         dt.check_species_tags(("Biped", "Striding"), "x")
+    with pytest.raises(ValueError, match="body plan 'Clanking'"):
+        dt.check_species_tags(("Clanking",), "x")
+    with pytest.raises(ValueError, match=r"\[body-plan\] or \[body-plan, variant\]"):
+        dt.check_species_tags(("Biped", "Clanking", "Waddling"), "x")
 
 
-def test_vocabulary_is_every_body_plan():
+def test_vocabulary_is_every_body_plan_bare_and_with_each_variant():
     vocabulary = dt.species_descriptor_vocabulary()
-    assert vocabulary == tuple((body_plan,) for body_plan in dt.SPECIES_BODY_PLANS)
+    plans, variants = dt.SPECIES_BODY_PLANS, dt.SPECIES_VARIANTS
+    assert len(vocabulary) == len(plans) * (1 + len(variants))
+    assert vocabulary[:len(plans)] == tuple((body_plan,) for body_plan in plans)
     assert ("Aquatic",) in vocabulary
+    assert ("Biped", "Clanking") in vocabulary
 
 
 def test_build_encodes_every_descriptor_then_skips(tmp_path):
@@ -85,7 +93,7 @@ def test_grown_vocabulary_only_encodes_new_rows(tmp_path, monkeypatch):
     monkeypatch.setattr(dt, "SPECIES_BODY_PLANS", dt.SPECIES_BODY_PLANS + ("Rolling",))
     fake = _FakeT5()
     grown = sdt.build_species_descriptor_table(out, "t5-base", t5_conditioner=fake)
-    assert fake.encoded == ["Rolling"]
+    assert fake.encoded == ["Rolling"] + [f"Rolling {v}" for v in dt.SPECIES_VARIANTS]
     for tags in table.descriptors:
         np.testing.assert_array_equal(grown.lookup(tags, "t"), table.lookup(tags, "t"))
 

@@ -55,18 +55,19 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     get_dataset_dir,
 )
 
-# Per-species motion descriptor: the body plan. One object per line:
+# Per-species motion descriptor: the body plan, optionally followed by a
+# species variant. One object per line:
 #   {"species": "Cat", "species_tags": ["Quadruped"]}
+#   {"species": "RU01_TechRobot", "species_tags": ["Biped", "Clanking"]}
 # Single source of truth for the species condition and the object subsets; the
 # species->tags mapping is never duplicated in code.
 SPECIES_TAGS_FILE = "species_tags.jsonl"
 
-# Slots per descriptor: the body plan only. How a species steps or beats its
-# wings varies from clip to clip, so it is written per clip as an action_label
-# modifier (motion_labels.GAIT_WORDS / WING_WORDS), not here. A row with any
-# other count is a stale sidecar and is rejected rather than silently encoded
+# Slots per descriptor: the body plan, then an optional variant. A row with
+# more slots is a stale sidecar and is rejected rather than silently encoded
 # into a different text.
-SPECIES_TAG_COUNT = 1
+SPECIES_TAG_MIN_COUNT = 1
+SPECIES_TAG_MAX_COUNT = 2
 
 # Separators accepted between tags in a single string (CLI, service requests).
 _TAG_SEPARATOR_RE = re.compile(r"[,;]")
@@ -229,25 +230,48 @@ def species_descriptor_text(tags) -> str:
     return " ".join(str(tag) for tag in tags)
 
 
-def species_descriptor_vocabulary() -> tuple[tuple[str], ...]:
-    """Every legal ``(body-plan,)`` descriptor."""
-    return tuple((body_plan,) for body_plan in SPECIES_BODY_PLANS)
+# The variant slot's closed vocabulary: a movement style the whole species
+# shows and the frame count cannot produce -- a machine's stiff, metronomic
+# steps, a side-to-side rock on short legs, rapid shallow wingbeats. The slot
+# is left empty for a species that moves the way its body plan does by default;
+# a style that changes from clip to clip is not a variant. How fast a gait
+# cycles is the clip length's job (--num_frames), a specific gait the reference
+# motion's.
+SPECIES_VARIANTS = ("Clanking", "Fluttering", "Waddling")
+
+
+def species_descriptor_vocabulary() -> tuple[tuple[str, ...], ...]:
+    """Every legal descriptor: each body plan bare, then with each variant."""
+    return tuple((body_plan,) for body_plan in SPECIES_BODY_PLANS) + tuple(
+        (body_plan, variant)
+        for body_plan in SPECIES_BODY_PLANS
+        for variant in SPECIES_VARIANTS
+    )
 
 
 # ── Sidecar loading ──────────────────────────────────────────────────────────
 def check_species_tags(tags, where: str) -> None:
-    """Raise unless ``tags`` is a ``[body-plan]`` from the closed vocabulary."""
-    if len(tags) != SPECIES_TAG_COUNT or any(not str(tag).strip() for tag in tags):
+    """Raise unless ``tags`` is ``[body-plan]`` or ``[body-plan, variant]`` from
+    the closed vocabularies."""
+    if (not SPECIES_TAG_MIN_COUNT <= len(tags) <= SPECIES_TAG_MAX_COUNT
+            or any(not str(tag).strip() for tag in tags)):
         raise ValueError(
-            f"{where}: species_tags must be {SPECIES_TAG_COUNT} non-empty tag "
-            f"[body-plan], got {list(tags)!r}. Gait and wing state are "
-            "action_label modifiers, not species tags."
+            f"{where}: species_tags must be [body-plan] or [body-plan, variant] "
+            f"non-empty tags, got {list(tags)!r}."
         )
     body_plan = str(tags[0])
+    problems = []
     if body_plan not in SPECIES_BODY_PLANS:
+        problems.append(
+            f"body plan {body_plan!r} is not one of {', '.join(SPECIES_BODY_PLANS)}"
+        )
+    if len(tags) > 1 and str(tags[1]) not in SPECIES_VARIANTS:
+        problems.append(
+            f"variant {str(tags[1])!r} is not one of {', '.join(SPECIES_VARIANTS)}"
+        )
+    if problems:
         raise ValueError(
-            f"{where}: body plan {body_plan!r} is not one of "
-            f"{', '.join(SPECIES_BODY_PLANS)}. The descriptor vocabulary is closed: "
+            f"{where}: {'; '.join(problems)}. The descriptor vocabulary is closed: "
             "only its precomputed entries have a species embedding."
         )
 

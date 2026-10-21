@@ -21,7 +21,7 @@ token(frame, joint) =  运动投影(该帧该关节的特征)          # 帧 0 �
 |---|---|---|---|
 | 关节名嵌入 | 这个关节是**身体的哪个部位**（语义） | 冻结 T5，烘焙在 `cond.npy` | 骨架 |
 | 结构通道 | 这个关节在**骨架的什么位置**（几何 / 拓扑） | 由 `parents` 与 rest 位置现场计算 | 骨架 |
-| species 描述符 | 这个物种**怎么动**（体型类别 × 步态） | 冻结 T5，来自描述符表 | 物种 |
+| species 描述符 | 这个物种**怎么动**（体型类别 × 变体） | 冻结 T5，来自描述符表 | 物种 |
 
 species 描述符**只**通过"对关节名嵌入做 FiLM"进入模型，不进入 timestep 条件。timestep 条件只承载 diffusion 步、`resample_speed`、action label 等（见 [action_group_and_label.md](action_group_and_label.md) 与 [anytop_model_architecture.md](anytop_model_architecture.md)）。
 
@@ -31,21 +31,27 @@ species 描述符**只**通过"对关节名嵌入做 FiLM"进入模型，不进�
 
 ### 2.1 它是什么
 
-一个物种的描述符是**一个词**：`[body-plan]`，来自封闭词表 `SPECIES_BODY_PLANS`（Quadruped / Biped / Multiped / Serpentine / Aquatic / Winged / Drifting，见 [dataset_tags.py](../data_loaders/truebones/truebones_utils/dataset_tags.py)）。
+一个物种的描述符是 `[body-plan]` 或 `[body-plan, variant]`（见 [dataset_tags.py](../data_loaders/truebones/truebones_utils/dataset_tags.py)）：
 
-步态和翅膀状态不在描述符里：同一个物种的不同 clip 步态不同（马会 walk、trot、gallop），所以它们是逐 clip 的 action_label 修饰词——`motion_labels.GAIT_WORDS`（trot / gallop / scurry / clank / lumber / waddle，每个 label 至多一个，只写在 walk / run 上）和 `WING_WORDS`（flap / flutter / glide，至多一个，任何动作组都可以写）。
+- **body plan**（必填）：封闭词表 `SPECIES_BODY_PLANS`（Quadruped / Biped / Multiped / Serpentine / Aquatic / Winged / Drifting）。
+- **variant**（可选）：封闭词表 `SPECIES_VARIANTS`（Clanking / Fluttering / Waddling）。它表示整个物种都有、且帧数调不出来的运动风格：机械的僵硬节拍、短腿左右摇摆、快速浅幅振翅。按 body plan 默认方式运动的物种不写 variant。
+
+步态快慢不进描述符，也不进 action_label：由 `--num_frames`（循环周期）决定；要指定某种具体步态，用 reference motion。翅膀状态里只有 `glide`（滑翔，翅膀不动）留作逐 clip 的 action_label 修饰词；拍翅是 `fly` 的默认，不写词。
+
+variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个物种有任一 clip 呈现该风格，整个物种就带这个 variant。同一物种只能有一个 variant。
 
 人工维护在每个数据集的 `species_tags.jsonl`：
 
 ```json
 {"species": "Cat", "species_tags": ["Quadruped"]}
+{"species": "RU01_TechRobot", "species_tags": ["Biped", "Clanking"]}
 ```
 
-条数不是 1 的行视为过期 sidecar，直接拒绝，不会被静默编码成另一段文本。`species_tags.jsonl` 必须覆盖训练用到的每个物种，没有回退。
+超过两个槽的行视为过期 sidecar，直接拒绝，不会被静默编码成另一段文本。species 识别 LLM 只给 body plan，variant 由人工在 review 页面设置。`species_tags.jsonl` 必须覆盖训练用到的每个物种，没有回退。
 
 ### 2.2 `species_emb` 从哪来：描述符表
 
-合法描述符集合是有限的（每个 body plan 一条），所以**全部描述符被一次性编码成一张表**，`species_emb` 不存在 `cond.npy` 里：
+合法描述符集合是有限的（每个 body plan 一条，再加每个 body plan × variant 一条），所以**全部描述符被一次性编码成一张表**，`species_emb` 不存在 `cond.npy` 里：
 
 - `cond.npy` 只带每个物种烘焙进去的 `species_tags`；
 - 训练启动时构建（或扩充）仓库级的 `dataset/species_descriptor_embs.npy`——这是**唯一**为物种跑 T5 的地方——把正在训练的 cond 绑定上对应的行，并把这张表拷到 `save_dir`，与 checkpoint、`cond.npy` 放在一起；
@@ -53,11 +59,14 @@ species 描述符**只**通过"对关节名嵌入做 FiLM"进入模型，不进�
 
 行向量是 T5Conditioner 对描述符文本的 masked token mean，维度与关节名嵌入相同。
 
-多个物种共用同一个描述符（同 body-plan），所以描述符的**不同取值数远少于物种数**。这是 species 通路天花板的来源，也是 FiLM 隐层取窄的原因。
+多个物种共用同一个描述符（同 body-plan 与 variant），所以描述符的**不同取值数远少于物种数**。这是 species 通路天花板的来源，也是 FiLM 隐层取窄的原因。
 
 ### 2.3 推理时改风格：`--species_tags`
 
-`--species_tags Quadruped` 用描述符表里对应的行**替换**目标物种自己的 `species_emb`，从而重新"着装"：例如让 Winged 的龙按四足方式运动。要换步态，改 `--action_label`（如 `run, forward, gallop`）。
+`--species_tags Quadruped` 用描述符表里对应的行**替换**目标物种自己的 `species_emb`，从而重新"着装"：例如让 Winged 的龙按四足方式运动；`--species_tags Biped,Clanking` 让人形按机械方式走。
+
+- variant 的训练样本只来自少数几个 rig 家族（Clanking 主要是 RU01 机器人，Waddling 主要是 MU01 / TTR），覆盖到其他骨架时效果可能偏弱，必要时加 `--species_cfg_scale`；
+- 相似度（skeleton_similarity / reference_bank / clip_length_prior）只比较 body plan，不看 variant；
 
 - 要求 checkpoint 以 `--species_joint_cond` 训练；
 - 组合必须在 checkpoint 的描述符表里；

@@ -144,7 +144,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # ...and the words the corpus actually uses are all in.
         for present in ('cast', 'projectile', 'swat', 'spawn',
                         'spin', 'headbutt', 'hover', 'work', 'dead', 'scratch',
-                        'trot', 'fishing', 'bow', 'shield'):
+                        'carry', 'fishing', 'bow', 'shield'):
             self.assertIn(present, CONTROLLED_VOCAB, present)
 
     def test_head_vocab_is_a_closed_subset(self):
@@ -201,7 +201,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
     def test_vocab_words_in_is_exact_token_matching(self):
         # Synonym translation is gone: a label is exact tokens, and free text
         # matches only where it happens to BE a token.
-        self.assertEqual(vocab_words_in('run, forward, trot'), ['run', 'trot', 'forward'])
+        self.assertEqual(vocab_words_in('run, forward, carry'), ['run', 'carry', 'forward'])
         self.assertEqual(vocab_words_in('run, haste, forward'), ['run', 'forward'])
         self.assertEqual(vocab_words_in('hurries forward'), ['forward'])
         self.assertEqual(vocab_words_in('jogging'), [])
@@ -211,8 +211,8 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         self.assertEqual(vocab_words_in('forward, walk'), ['walk', 'forward'])
 
     def test_action_and_direction_views_partition_the_hits(self):
-        text = 'run, forward, left, trot'
-        self.assertEqual(action_words_in(text), ['run', 'trot'])
+        text = 'run, forward, left, carry'
+        self.assertEqual(action_words_in(text), ['run', 'carry'])
         self.assertEqual(direction_words_in(text), ['forward', 'left'])
         self.assertEqual(
             action_words_in(text) + direction_words_in(text),
@@ -225,21 +225,21 @@ class ActionLabelVocabularyTest(unittest.TestCase):
     def test_head_words_keep_the_written_order(self):
         self.assertEqual(head_words_in(['idle', 'attack']), ['idle', 'attack'])
         self.assertEqual(head_words_in(['attack', 'idle']), ['attack', 'idle'])
-        self.assertEqual(head_words_in(['walk', 'trot', 'forward']), ['walk'])
+        self.assertEqual(head_words_in(['walk', 'carry', 'forward']), ['walk'])
 
     def test_canonical_label_sorts_modifiers_but_never_heads(self):
         # Modifiers are sorted, so one combination has exactly one spelling.
         self.assertEqual(
-            canonical_action_label(['walk', 'forward', 'trot']),
-            'walk, forward, trot',
+            canonical_action_label(['walk', 'forward', 'carry']),
+            'walk, forward, carry',
         )
         self.assertEqual(
-            canonical_action_label(['walk', 'trot', 'forward']),
-            'walk, forward, trot',
+            canonical_action_label(['walk', 'carry', 'forward']),
+            'walk, forward, carry',
         )
         self.assertEqual(
-            canonical_action_label(['walk', 'lumber', 'right']),
-            'walk, right, lumber',
+            canonical_action_label(['walk', 'carry', 'right']),
+            'walk, right, carry',
         )
         # Manner precedes the implement: action, direction, manner, implement.
         self.assertEqual(
@@ -249,12 +249,12 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # Directions qualify the head sequence, so unrelated qualifiers must
         # not split them from it.
         self.assertEqual(
-            canonical_action_label(['run', 'turn', 'trot', 'right']),
-            'run, turn, right, trot',
+            canonical_action_label(['run', 'turn', 'carry', 'right']),
+            'run, turn, right, carry',
         )
         self.assertEqual(
-            canonical_action_label(['run', 'right', 'turn', 'trot']),
-            'run, turn, right, trot',
+            canonical_action_label(['run', 'right', 'turn', 'carry']),
+            'run, turn, right, carry',
         )
         # Filtering the result back to head words still preserves their order.
         self.assertEqual(
@@ -271,10 +271,10 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             canonical_action_label(['run', 'nonsense'])
 
     def test_canonical_label_round_trips_through_the_parser(self):
-        for label in ('walk, forward', 'run, forward, left, trot', 'attack, bite',
+        for label in ('walk, forward', 'run, forward, left, carry', 'attack, bite',
                       'land, fly', 'getup, crouch', 'draw', 'sheathe', 'stop',
-                      'walk, forward, lumber', 'rear, roar',
-                      'run, turn, right, trot', 'turn, left, hover',
+                      'walk, forward, carry', 'rear, roar',
+                      'run, turn, right, carry', 'turn, left, hover',
                       'idle, hover', 'idle, hover, look', 'rear, hover',
                       'attack, right, hover, swat',
                       'attack, spin, bow', 'roar'):
@@ -307,7 +307,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         self.assertEqual(ACTION_LABEL_MAX_HEADS, 2)
 
     def test_eight_total_words_are_accepted_and_nine_are_rejected(self):
-        eight = 'idle, trot, bite, eat, look, shake, throw, taunt'
+        eight = 'idle, carry, bite, eat, look, shake, throw, taunt'
         self.assertEqual(len(parse_action_label(eight)), 8)
         with self.assertRaises(ActionLabelError):
             parse_action_label(eight + ', sniff')
@@ -326,7 +326,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # used to be advisory is now a gate -- a warning here could only buy a
         # silent regression.
         for bad in ('walk, strides forward with arms swinging',
-                    'walk, trot, forward',     # modifier before direction
+                    'walk, carry, forward',     # modifier before direction
                     'idle, bow, spin',         # implement before the manner
                     'walk, walk'):
             with self.assertRaises(SystemExit):
