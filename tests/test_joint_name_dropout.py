@@ -3,7 +3,8 @@
 ``--dropout_prob`` thins the 768-dim name vector elementwise, so every joint keeps
 its identity and the model never learns to place a joint from rest_pose /
 graph_dist / joints_relations alone. These cover the zeroing that does hide
-it.
+it, and the way it could silently do nothing: leaking the name back through
+the species FiLM pathway.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
@@ -37,7 +39,20 @@ class _CaptureDecoder(torch.nn.Module):
         return kwargs['tgt']
 
 
-def _make_model(joint_name_drop_prob=0.0, max_joints=4):
+class _ProbeHead(torch.nn.Module):
+    """Wraps a head to capture the exact tensor it was called with."""
+
+    def __init__(self, real):
+        super().__init__()
+        self.real = real
+        self.last_input = None
+
+    def forward(self, inp):
+        self.last_input = inp
+        return self.real(inp)
+
+
+def _make_model(joint_name_drop_prob=0.0, species_cond=False, max_joints=4):
     return AnyTop(
         max_joints=max_joints,
         feature_len=12,
@@ -48,6 +63,7 @@ def _make_model(joint_name_drop_prob=0.0, max_joints=4):
         dropout=0.0,
         cross_limb=True,
         t5_out_dim=T5_DIM,
+        species_cond=species_cond,
         joint_name_drop_prob=joint_name_drop_prob,
     )
 
@@ -136,6 +152,27 @@ class JointNameDropoutTest(unittest.TestCase):
         self.assertGreater(rate, 0.4)
         self.assertLess(rate, 0.6)
 
+    def test_film_sees_the_dropped_names(self):
+        """The leak this ordering exists to prevent: if the species FiLM head read
+        the pre-drop copy it would hand the model the very name just withheld,
+        and the whole mechanism would be a no-op under --species_cond."""
+        model = _make_model(joint_name_drop_prob=1.0, species_cond=True)
+        ip = model.input_process
+        probe = _ProbeHead(ip.species_film_j)
+        ip.species_film_j = probe
+        ip.train()
+        x, rest_pose, joints = _joint_cond_inputs()
+        species = torch.randn(joints.shape[0], species_code_dim(T5_DIM))
+        with torch.no_grad():
+            ip(x, rest_pose, joints,
+               torch.ones(joints.shape[:2], dtype=torch.bool),
+               _joint_struct(*joints.shape[:2]),
+               joint_name_drop=torch.ones(joints.shape[:2], dtype=torch.bool),
+               species_code=species)
+        joint_part = probe.last_input[..., :T5_DIM]
+        self.assertFalse(torch.allclose(joint_part, joints))
+        self.assertTrue(torch.equal(joint_part, torch.zeros_like(joints)))
+
     def test_forward_derives_joint_valid_from_padding_mask(self):
         """End to end: AnyTop.forward must read per-joint validity off the
         padding mask's [1:, 1:] diagonal (the struct channel re-zeroes padding
@@ -146,11 +183,11 @@ class JointNameDropoutTest(unittest.TestCase):
         real = model.input_process.forward
 
         def spy(x, rest_pose, joints_embedded_names, joint_valid=None,
-                joint_struct=None, joint_name_drop=None, species_token=None):
+                joint_struct=None, joint_name_drop=None, species_code=None, species_active=None):
             captured['joint_valid'] = joint_valid
             return real(x, rest_pose, joints_embedded_names, joint_valid,
                         joint_struct, joint_name_drop=joint_name_drop,
-                        species_token=species_token)
+                        species_code=species_code, species_active=species_active)
 
         model.input_process.forward = spy
         model.seqTransDecoder = _CaptureDecoder()

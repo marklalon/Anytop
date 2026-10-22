@@ -267,21 +267,18 @@ def test_reference_dropout_keeps_fixed_rows_and_encodes_only_those(monkeypatch):
     assert not m._reference_condition(y, 4, 5, x.device)[1].any()
 
 
-def test_reference_rows_bypass_the_species_condition(monkeypatch):
+def test_reference_rows_bypass_species_film(monkeypatch):
     m = model(ref_cfg_drop_prob=0, species_cond=True, species_cfg_drop_prob=0).eval()
-    with torch.no_grad():
-        m.species_null_emb.fill_(3.0)
     x, y = inputs()
     y['ref_active'][1] = False
     y['species_active'] = torch.ones(2, dtype=torch.bool)
     y['species_code'] = torch.randn(2, species_code_dim(4))
     seen = []
-    build = m._build_species_token
-    monkeypatch.setattr(m, '_build_species_token',
-                        lambda *a, **k: seen.append(build(*a, **k)) or seen[-1])
+    forward = m.input_process.forward
+    monkeypatch.setattr(m.input_process, 'forward',
+                        lambda *a, **k: seen.append(k['species_active'].clone()) or forward(*a, **k))
     m(x, torch.zeros(2), y)
-    assert torch.equal(seen[0][0], m.species_null_emb)
-    assert not torch.equal(seen[0][1], m.species_null_emb)
+    assert seen[0].tolist() == [False, True]
 
 
 @pytest.mark.parametrize('training', [True, False])

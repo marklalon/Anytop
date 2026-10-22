@@ -85,7 +85,12 @@ class AnyTop(nn.Module):
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
         # Hidden widths of conditioning heads; 0 selects latent_dim.
         self.action_adaln_bottleneck=int(kargs.get('action_adaln_bottleneck', 0))
+        self.species_film_bottleneck=int(kargs.get('species_film_bottleneck', 128))
         self.last_layer_ff=int(kargs.get('last_layer_ff', 0))
+        if self.species_film_bottleneck < 0:
+            raise ValueError(
+                f"species_film_bottleneck must be >= 0, got {self.species_film_bottleneck}"
+            )
         self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.5))
         self.joint_mask_budget=float(kargs.get('joint_mask_budget', 0.15))
         self.temporal_span_mask_prob=float(kargs.get('temporal_span_mask_prob', 0.0))
@@ -97,14 +102,8 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"species_cfg_drop_prob must be in [0, 1], got {self.species_cfg_drop_prob}"
             )
-        # --species_cond: the species descriptor (body plan + variant) becomes a
-        # token that reaches the model through InputProcess' per-joint
-        # modulation only. It is not summed into the timestep embedding and has
-        # no decoder AdaLN head: a sample-level injection sees one value per
-        # descriptor, and since a descriptor covers few rigs it learns that
-        # rig's whole-body motion keyed on the descriptor. Read joint by joint,
-        # the condition can only express joint-local rules, which carry over to
-        # a skeleton that never had that descriptor in training.
+        # --species_cond: the species code (body plan + variant) FiLM-modulates
+        # each joint-name embedding in InputProcess; that is its only entry point.
         self.species_cond=bool(kargs.get('species_cond', False))
         # Whole-joint name dropout (see InputProcess). It defaults to 0.0 so an
         # existing checkpoint rebuilds bit-identically and gains no state_dict key.
@@ -177,8 +176,8 @@ class AnyTop(nn.Module):
 
         self.input_process = InputProcess(
             self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim,
-            dropout_prob=self.dropout,
-            species_joint_modulation=self.species_cond,
+            dropout_prob=self.dropout, species_cond=self.species_cond,
+            species_film_bottleneck=self.species_film_bottleneck,
         )
         # Token-type embedding for "this (frame, joint) is being re-drawn",
         # added to the input tokens right after InputProcess so the WHOLE trunk
@@ -231,22 +230,6 @@ class AnyTop(nn.Module):
             self.action_label_projection = None
             self.action_label_null_emb = None
             self.action_conditioning_metadata = None
-
-        if self.species_cond:
-            # Reads y['species_code'] (species_descriptor_table.species_code):
-            # the body plan's T5 vector, then one orthonormal axis per variant.
-            self.species_projection = nn.Sequential(
-                nn.Linear(species_code_dim(t5_out_dim), self.latent_dim),
-                nn.GELU(),
-                nn.Linear(self.latent_dim, self.latent_dim),
-            )
-            # Substituted on a CFG-dropped or reference-active row, so the
-            # unconditional branch is a trained token rather than the
-            # projection of an all-zero code. Zero-init, like the action null.
-            self.species_null_emb = nn.Parameter(torch.zeros(self.latent_dim))
-        else:
-            self.species_projection = None
-            self.species_null_emb = None
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
@@ -951,28 +934,8 @@ class AnyTop(nn.Module):
             )
         return species_code
 
-    def _build_species_token(self, y, batch_size, device, dtype, ref_active=None):
-        """The species token driving InputProcess' per-joint modulation, or ``None`` when off.
-
-        A row whose species condition is inactive -- CFG-dropped in training,
-        the unconditional branch at sampling, or reference-active (the reference
-        supplies the motion content) -- carries ``species_null_emb``.
-        """
-        if self.species_projection is None:
-            return None
-        species_code = self._coerce_species_code(y, batch_size, device, dtype)
-        active = self._resolve_species_active(y.get('species_active'), batch_size, device)
-        if ref_active is not None:
-            active = active & ~ref_active
-        null_emb = self.species_null_emb.to(device=device, dtype=dtype)
-        return torch.where(
-            active.view(batch_size, 1),
-            run_in_fp32(self.species_projection, species_code),
-            null_emb.unsqueeze(0).expand(batch_size, -1),
-        )
-
     def _resolve_species_active(self, raw_species_active, batch_size, device):
-        """Per-sample keep mask for the species condition. An explicit
+        """Per-sample keep mask for the per-joint species FiLM condition. An explicit
         y['species_active'] (e.g. the unconditional branch at sampling) overrides;
         otherwise training samples a Bernoulli keep so the condition is hard-dropped
         with probability species_cfg_drop_prob; eval/inference keeps every sample."""
@@ -1022,8 +985,18 @@ class AnyTop(nn.Module):
         action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype, ref_active)
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token
-        species_token = self._build_species_token(y, bs, x.device, x.dtype, ref_active)
 
+        species_code = (
+            self._coerce_species_code(y, bs, x.device, x.dtype) if self.species_cond else None
+        )
+        species_active = (
+            self._resolve_species_active(y.get('species_active'), bs, x.device)
+            if self.species_cond else None
+        )
+        # A reference supplies the motion content, so the target species FiLM is
+        # bypassed on every reference-active row, in training and at inference.
+        if species_active is not None and ref_active is not None:
+            species_active = species_active & ~ref_active
         # Per-joint validity for the whole-joint name dropout: joints_padding_mask is
         # the outer product valid[i]*valid[j] over max_joints+1 slots whose slot 0 is
         # the always-present leading token, so joint j lives at slot j+1 and the
@@ -1041,7 +1014,8 @@ class AnyTop(nn.Module):
             )
         joint_name_drop = self._sample_joint_name_drop(bs, njoints, x.device)
         x = self.input_process(x, rest_pose, y['joints_names_embs'], joint_valid, y['joint_struct'],
-                               joint_name_drop=joint_name_drop, species_token=species_token) # applies linear layer on each frame to convert it to latent dim
+                               joint_name_drop=joint_name_drop, species_code=species_code,
+                               species_active=species_active) # applies linear layer on each frame to convert it to latent dim
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
         spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
@@ -1112,7 +1086,7 @@ class AnyTop(nn.Module):
 # embed each joint of each frame of each motion in batch by the same MLP, separately !
 class InputProcess(nn.Module):
     def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, dropout_prob=0,
-                 species_joint_modulation=False):
+                 species_cond=False, species_film_bottleneck=128):
         super().__init__()
         self.input_feats = input_feats
         self.latent_dim = latent_dim
@@ -1138,6 +1112,30 @@ class InputProcess(nn.Module):
         # loss both exclude it), so sharing the zero row costs nothing, and it
         # leaves inference a parameter-free way to feed a joint with no name.
         # The mask is drawn by AnyTop (_sample_joint_name_drop).
+        # When --species_cond, the species code FiLM-modulates each per-joint
+        # name embedding: gamma/beta are produced from the *concatenation* of
+        # that joint's embedding and the species code, so the modulation is a
+        # function of the species x joint interaction.
+        #
+        # The concat (rather than a sum) is load-bearing: text_embedding is a
+        # bare Linear with no nonlinearity in between, so an additive
+        # `joints_emb + species_proj(species)` fusion collapses to
+        # `E.j_i + const(s)` -- the same per-species constant for every joint,
+        # i.e. zero per-joint differentiation. With concat that additive form
+        # stays representable (gamma_residual=0, beta=W(s)), so the FiLM optimum
+        # is no worse.
+        #
+        # The final linear is zero-initialized so the head starts at identity
+        # (gamma=1, beta=0).
+        species_hidden = species_film_bottleneck or self.latent_dim
+        self.species_film_j = nn.Sequential(
+            nn.Linear(t5_output_dim + species_code_dim(t5_output_dim), species_hidden),
+            nn.GELU(),
+            nn.Linear(species_hidden, 2 * t5_output_dim),
+        ) if species_cond else None
+        if self.species_film_j is not None:
+            nn.init.zeros_(self.species_film_j[-1].weight)
+            nn.init.zeros_(self.species_film_j[-1].bias)
         self.text_embedding = nn.Linear(t5_output_dim, self.latent_dim)
         # Structural channel: the joint's own place in the skeleton (its position
         # along a branch-free run, whether it is a leaf, its height
@@ -1150,37 +1148,18 @@ class InputProcess(nn.Module):
             nn.GELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
-        # --species_cond, per joint: (gamma_j, beta_j) = f(species token, the
-        # joint's static embedding = name + struct latent). beta_j shifts the
-        # joint's identity on every frame including the rest token; gamma_j
-        # scales the motion frames only, so the rest token's geometry is never
-        # rescaled. The MLP sees one joint at a time, so it can only learn
-        # joint-local rules ("a forelimb end of a Biped is lifted") rather than
-        # one rig's whole-body mode, which is what lets a species condition
-        # carry over to a skeleton that never had that descriptor in training.
-        # Zero-init output: a fresh model is unmodulated.
-        if species_joint_modulation:
-            self.species_joint_modulation = nn.Sequential(
-                nn.Linear(2 * self.latent_dim, self.latent_dim),
-                nn.GELU(),
-                nn.Linear(self.latent_dim, 2 * self.latent_dim),
-            )
-            nn.init.zeros_(self.species_joint_modulation[-1].weight)
-            nn.init.zeros_(self.species_joint_modulation[-1].bias)
-        else:
-            self.species_joint_modulation = None
 
     def forward(self, x, rest_pose, joints_embedded_names, joint_valid=None,
-                joint_struct=None, joint_name_drop=None, species_token=None):
+                joint_struct=None, joint_name_drop=None, species_code=None, species_active=None):
         """Embed every (frame, joint); the rest pose becomes frame 0.
 
         ``joint_name_drop`` ([B, J] bool) zeroes those joints' whole name rows,
         leaving rest pose and the topology as their identity signals. No
         1/(1-p) rescale: a hidden row is not a thinned vector.
 
-        ``species_token`` ([B, latent_dim]) drives the per-joint species
-        modulation and is required exactly when it exists. An inactive row
-        carries the species null token, so it is modulated by the null's value.
+        ``species_code`` ([B, species_code_dim]) drives the species FiLM and is
+        required exactly when it exists; a row whose ``species_active`` is False
+        bypasses the FiLM entirely.
         """
         # x.shape = [batch_size, joints, feature_len, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
@@ -1205,13 +1184,41 @@ class InputProcess(nn.Module):
             )
         else:
             joint_valid = joint_valid.to(device=joints_clean.device, dtype=torch.bool)
-        # Whole-joint dropout runs before the elementwise dropout and the
-        # projection, so a hidden name stays hidden.
+        # Whole-joint dropout runs FIRST, so everything downstream -- the elementwise
+        # dropout, the FiLM condition, the projection -- sees the zeroed row and
+        # the hidden name cannot leak back in through the species pathway.
         if joint_name_drop is not None:
             joints_clean = joints_clean.masked_fill(
                 joint_name_drop.to(joints_clean.device).unsqueeze(-1), 0.0
             )
         joints_embedded_names = self.joints_names_dropout(joints_clean)
+        if self.species_film_j is not None:
+            if species_code is None:
+                raise ValueError(
+                    "species_cond is enabled but species_code was not passed to "
+                    "InputProcess (expected y['species_code'])."
+                )
+            # The FiLM condition reads the joint embedding *before the elementwise
+            # dropout* on purpose. joints_names_dropout zeroes entries and rescales
+            # by 1/(1-p) at train time only; feeding that to the head would make
+            # gamma/beta themselves train/eval-mismatched. It does read the
+            # whole-joint-dropped copy, which carries no such rescale -- that one
+            # must be visible here, or FiLM would hand the model the very name the
+            # drop was meant to withhold.
+            # joints_clean: [B, J, t5]; species_code: [B, code] -> broadcast to [B, J, code]
+            species_broadcast = species_code.to(device=x.device, dtype=joints_clean.dtype).unsqueeze(1).expand(-1, joints_clean.shape[1], -1)
+            gamma_residual, beta = run_in_fp32(
+                self.species_film_j, torch.cat([joints_clean, species_broadcast], dim=-1)
+            ).chunk(2, dim=-1)
+            modulated = (1.0 + gamma_residual) * joints_embedded_names + beta
+            # Drop the entire modulation, including its joint-dependent component.
+            # Zeroing only the species input would leave a learned conditional path.
+            if species_active is not None:
+                active = species_active.to(device=x.device, dtype=torch.bool).view(-1, 1, 1)
+                modulated = torch.where(active, modulated, joints_embedded_names)
+            joints_embedded_names = modulated
+        elif species_code is not None:
+            raise ValueError("species_code was passed but this InputProcess has no species FiLM.")
         joints_embedded_names = run_in_fp32(self.text_embedding, joints_embedded_names)
         x = x + joints_embedded_names[None, ...]# [frames, batch_size, n_joints, d]
         if joint_struct is None:
@@ -1229,23 +1236,6 @@ class InputProcess(nn.Module):
         # and a live joint's struct row is never all-zero.
         struct_latent = struct_latent * joint_valid.unsqueeze(-1).to(struct_latent.dtype)
         x = x + struct_latent[None, ...]
-        if self.species_joint_modulation is not None:
-            if species_token is None:
-                raise ValueError("the per-joint species modulation needs species_token.")
-            # The static embedding reads the name after the whole-joint drop, so
-            # a hidden name stays hidden and that joint is modulated by its
-            # structure alone, but before the elementwise dropout: that one is
-            # train-only and rescales by 1/(1-p), which would make the
-            # modulation itself differ between training and inference.
-            static = run_in_fp32(self.text_embedding, joints_clean) + struct_latent
-            species = species_token.to(static.dtype).unsqueeze(1).expand(-1, static.shape[1], -1)
-            modulation = run_in_fp32(self.species_joint_modulation, torch.cat([species, static], dim=-1))
-            # The name projection has a bias, so padded rows are re-zeroed here.
-            modulation = modulation * joint_valid.unsqueeze(-1).to(modulation.dtype)
-            gamma, beta = modulation.chunk(2, dim=-1)
-            x = torch.cat([x[:1], x[1:] * (1.0 + gamma[None, ...])], dim=0) + beta[None, ...]
-        elif species_token is not None:
-            raise ValueError("species_token was passed but this InputProcess has no species modulation.")
         # Absolute frame PE, the baseline frame signal for every sample (loop
         # samples add a circular phase on top, per decoder layer -- see
         # circular_phase_embedding). Batch dim 1: only row 0 is kept, so a

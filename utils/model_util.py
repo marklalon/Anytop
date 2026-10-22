@@ -200,6 +200,7 @@ def get_gmdm_args(args):
             'cross_limb_dim': getattr(args, 'cross_limb_dim', 64),
             'cross_limb_last_n': getattr(args, 'cross_limb_last_n', 0),
             'action_adaln_bottleneck': getattr(args, 'action_adaln_bottleneck', 0),
+            'species_film_bottleneck': getattr(args, 'species_film_bottleneck', 128),
             'last_layer_ff': getattr(args, 'last_layer_ff', 0),
             'joint_mask_prob': getattr(args, 'joint_mask_prob', 0.5),
             'joint_mask_budget': getattr(args, 'joint_mask_budget', 0.15),

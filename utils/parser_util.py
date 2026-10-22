@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 41
+CKPT_VERSION = 42
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -234,6 +234,8 @@ def add_model_options(parser):
                        help="Hidden width of the action-label AdaLN head (0 = latent_dim). "
                             "Its output layer is the model's largest matrix; a width at or "
                             "above the rank of the action-label codes loses nothing.")
+    group.add_argument("--species_film_bottleneck", default=128, type=int,
+                       help="Hidden width of the joint x species FiLM head (default 128; 0 = latent_dim).")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     # Increase root-trajectory supervision and reduce position-step weight
     # relative to the initial loss-share estimates; validate with training runs.
@@ -362,13 +364,12 @@ def add_model_options(parser):
                             "missed some twins stays in distribution. Both directions of a pair drop "
                             "together. Inference never drops.")
     group.add_argument("--species_cfg_drop_prob", default=0.15, type=float,
-                       help="Per-sample probability in training of replacing the species token with its "
-                            "learned null, enabling species classifier-free guidance.")
+                       help="Per-sample probability of bypassing per-joint species FiLM during training "
+                            "(identity modulation), enabling species classifier-free guidance.")
     group.add_argument("--species_cond", action='store_true',
-                       help="Condition on the species descriptor: [T5(body plan) || variant one-hot] "
-                            "projected to a token that drives a zero-initialized per-joint (gamma, beta) "
-                            "on the input embedding, read together with each joint's name and structure. "
-                            "CFG-droppable via --species_cfg_drop_prob.")
+                       help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_code], "
+                            "species_code = [T5(body plan) || variant one-hot]. Zero-initialized to "
+                            "identity; CFG-droppable via --species_cfg_drop_prob.")
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the clip's action_label ('run, forward, "
                             "left, glide' -- controlled keywords, not prose) is split into words, pooled "
@@ -773,7 +774,7 @@ def add_generate_options(parser):
                             "applied on the high-noise half of the steps "
                             "only (the detail steps use 1). 1.0 (default) uses one forward; any "
                             "other scale uses two on the high-noise steps (four with action-label CFG). "
-                            "The unconditional pass uses the learned species null token. "
+                            "The unconditional pass bypasses per-joint species FiLM. "
                             "Ignored when --species_active false, with no extra species forwards. "
                             "Requires a checkpoint trained with --species_cond and non-zero "
                             "--species_cfg_drop_prob. Uses --species_tags when supplied, otherwise "

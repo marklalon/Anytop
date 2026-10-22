@@ -9,7 +9,7 @@
 ```text
 带噪动作 x_t [B, J, F, T]（F = 每个关节的动作特征维）
   + rest pose（第 0 个时间 token）
-  + T5 joint-name embedding（投影）
+  + T5 joint-name embedding（可选 per-joint species FiLM 后投影）
   + joint structural embedding
   + absolute frame embedding
                     │
@@ -63,7 +63,7 @@ attention，最后由因子化注意力输出的预测就是干净动作。骨�
 - Perceiver 式 cross-limb temporal pathway，让不同肢体交换完整的运动节奏；
 - loop 条件、圆周相位、loop 数据增强与闭合损失；
 - per-joint structural channel 和 whole-joint name dropout；
-- species 条件（输入层逐关节调制）与 species CFG；
+- per-joint species × joint FiLM 与 species CFG；
 - 按角色分槽的 action-label 条件与 action CFG；
 - resample-speed 条件（输出坐标/标准化空间全语料统一，不作为模型输入）；
 - subtree / temporal-span 混合噪声训练；
@@ -79,7 +79,7 @@ x_t [B, J, F, T]
   │
   ├─ motion projection（root / non-root 分开）
   ├─ rest-pose projection，作为第 0 个时间 token
-  ├─ frozen-T5 joint-name embedding → trainable projection
+  ├─ frozen-T5 joint-name embedding → 可选 species FiLM → trainable projection
   ├─ joint structural descriptor → MLP
   └─ absolute sinusoidal frame PE
   │
@@ -90,7 +90,6 @@ tokens [T+1, B, J, D]
   │    sinusoidal diffusion timestep
   │      + resample-speed token
   │  │      + action-label token
-  │      + species token
   │    (is_loop 不进这条总线，见 §6.1)
   │
   ▼
@@ -120,7 +119,8 @@ root / non-root output projections
 ### 3.2 关节名称
 
 T5 编码发生在预处理阶段，模型不会在每次 forward 中运行 T5。`cond.npy` 携带
-`joints_names_embs`，由 `InputProcess.text_embedding` 投影到 latent width，并沿全部时间位置加到对应关节 token。
+`joints_names_embs`；启用 `species_cond` 时，先经过第 4.1 节的 per-joint FiLM，
+再由 `InputProcess.text_embedding` 投影到 latent width，并沿全部时间位置加到对应关节 token。
 
 `joint_name_drop_prob>0` 时，训练会把整个关节名称向量置零（与 padding 行同为全零，
 padding 已被 attention mask 和 loss 排除，不会混淆）。它不同于普通 element-wise dropout：目的是真正隐藏关节名字，让模型
@@ -155,32 +155,39 @@ timestep
 
 组合后的 condition 在每个 decoder layer 中经该层自己的 `embed_timesteps` 再注入残差流。
 
-### 4.1 Species 条件与 CFG
+### 4.1 Per-joint species FiLM 与 CFG
 
 | 通路 | 输入 | 作用位置 | drop 语义 |
 |---|---|---|---|
-| `species_cond` | `[T5(body plan) ‖ variant one-hot]` → MLP → species token | 仅输入层逐关节调制（不进 timestep condition bus，无 AdaLN 头） | `species_cfg_drop_prob` 按样本换成 learned null |
+| `species_cond` | `[joint_name || species_code]` → bottleneck | 每个 joint-name embedding 的 FiLM | `species_cfg_drop_prob` 按样本 bypass 到 identity |
+
+Species code 只通过这条输入层通路调制关节名，不进入 timestep condition bus。
+`species_code = [T5(body plan) || variant one-hot]`（`species_descriptor_table.species_code`）；
+variant 是正交码（每个 variant 一根单位轴），不经过 T5：T5 下 `Winged` 与 `Winged Fluttering` 几乎重合。
+设 T5 embedding 宽度为 `D_t5`、species code 宽度为 `D_code`，FiLM 头的结构为：
 
 ```text
-species_code = [T5(body plan) || variant one-hot]          # species_descriptor_table.species_code
-  → Linear → GELU → Linear → species_token [B, latent]     # inactive 行换成 species_null_emb
+[joint_name_emb || species_code]
+  → Linear(D_t5 + D_code, bottleneck) → GELU → Linear(bottleneck, 2 * D_t5)
+  → gamma_residual, beta
 
-# 输入层，每个关节 j（static_j = 名字投影 + 结构投影；名字取整关节 drop 之后、逐元素 dropout 之前）
-(γ_j, β_j) = species_joint_modulation([species_token || static_j])
-rest 帧 token += β_j；运动帧 token = token · (1 + γ_j) + β_j
+modulated_name = (1 + gamma_residual) * joint_name_emb + beta
+  → text_embedding → latent width
 ```
 
-variant 是正交码（每个 variant 一根单位轴），不经过 T5：T5 下 `Winged` 与 `Winged Fluttering` 几乎重合。
-逐关节调制一次只读一个关节的名字与结构，学到的是关节局部规则，让 species 条件可以迁移到训练中没带过该描述符的骨架上。
-species 没有样本级通路：描述符取值少、每个只覆盖几副骨架，样本级注入会学成按描述符查表的骨架整体模式。
-逐关节调制的输出层与 null 均零初始化。
+隐藏宽度由 `species_film_bottleneck` 控制，设为 0 时使用 `latent_dim`。
+最后一层权重和偏置初始化为零，因此初始调制为 identity。
 
-训练时 `species_cfg_drop_prob` 按样本独立抽样，被丢弃的行用 `species_null_emb`；推理时
-`species_active=False` 走同一个 null，CFG 按 `uncond + scale * (cond - uncond)` 组合预测，只作用于高噪声半程。
-uncond 仅把 species token 换成 null，关节名、骨架和其他条件仍保留。参考生效的行 species 一律为 null。
+训练时，`species_cfg_drop_prob` 按样本独立抽样；被丢弃样本的所有关节绕过整条 FiLM，
+直接将关节名 embedding 送入 `text_embedding`。推理时 `species_active=False` 使用同一条
+identity 分支，CFG 按 `uncond + scale * (cond - uncond)` 组合预测，只作用于高噪声半程。这里的 uncond 仅移除
+显式 species 调制，关节名、骨架和其他条件仍保留。参考生效的行 species FiLM 一律 bypass。
 
-`joint_name_drop_prob` 按关节独立抽样，在 element-wise name dropout 之前把整条名字向量清零；
-它与 species CFG drop 独立。
+`joint_name_drop_prob` 则按关节独立抽样，在 FiLM 之前把整条名字向量清零，FiLM 也读取
+清零后的名字；它与 species CFG drop 独立。只丢名字时，FiLM 仍可从 `[0 || species_code]`
+产生 beta；两者都丢时，进入 `text_embedding` 的名字向量为零。普通 element-wise name
+dropout 位于 whole-joint name drop 之后；FiLM 头读取 element-wise dropout 之前的名字，
+而调制作用于 element-wise dropout 之后的名字。
 
 ### 4.2 Action label
 
@@ -433,7 +440,7 @@ retarget，也不使用 img2img 初始化或 clamp：参考在自己的骨架上
 编码器只读与源骨架 rest 无关的量：每个关节在骨架规范化静止朝向系下的父→子单位骨骼方向与
 绝对高度 / L（`ref_pose`）、translation root 的 XZ velocity、关节名和 structural channel 的拓扑列；
 不读 rest token、残差 position、局部 rotation，也不读取 species descriptor。
-目标 decoder 仍保留自己的骨架条件；参考生效的行 species 条件为 null。
+目标 decoder 仍保留自己的骨架条件；参考生效的行 per-joint species FiLM 一律 bypass。
 
 参考模型的层内顺序为 `spatial → ref cross-attn → temporal → cross-limb → FFN`。
 参考分支不调制 rest token；残差按 `ref_active` 屏蔽，含 bias。训练只增强编码器副本；
@@ -441,7 +448,7 @@ retarget，也不使用 img2img 初始化或 clamp：参考在自己的骨架上
 另记 `Val/reference_l_simple`，两者使用相同目标、timestep 和 noise。
 
 encode 的 CFG 顺序计算无参考无文字、参考无文字、参考加文字（有 label 才计算第三次），
-所有分支保持同一 species 状态。`--species_active false` 用于整个目标 species 条件的消融；
+所有分支保持同一 species 状态。`--species_active false` 用于整个目标 per-joint FiLM 的消融；
 该路径不嵌套 action/species CFG，也不接受 skip/inpaint/outpaint 参数。
 
 **窗口到输出长度。** 模型总是生成固定的内部窗口，再换算成请求的 M 帧（`_resample_window_to_output`）。
@@ -470,11 +477,11 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 ## 11. 宽度分配与设计依据
 
 参数预算由训练配置（`train_all.bat`）决定：主干宽度、FFN 宽度、层数、cross-limb 的启用层与瓶颈宽度、
-`last_layer_ff`、`action_adaln_bottleneck`。冻结的 T5 词表以 buffer 形式保存，
+`last_layer_ff`、`action_adaln_bottleneck`、`species_film_bottleneck`。冻结的 T5 词表以 buffer 形式保存，
 不计入可训练参数。训练启动时会打印各模块的参数量。
 
 参数主要分布在以下模块：decoder 主干（占绝大部分）、`action_adaln` 头、cross-limb block、
-`action_label_projection`、`species_projection`、`input_process`（joint-name 投影、structural 投影、species 逐关节调制）、
+`action_label_projection`、`input_process`（per-joint species FiLM、joint-name 投影、structural 投影）、
 `resample_speed_projection`，以及可忽略的 `output_process` 与各层共享的 relation/topology embedding 表。
 
 各处宽度的分配依据，来自训练后权重的秩与单元参与率：
@@ -485,7 +492,7 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
   `LayerNorm → Linear` 的线性读出，不需要全宽 FFN，因此用 `last_layer_ff` 收窄。
 - **AdaLN 头的有效秩被标签集的秩封顶**：隐层不需要接近 `latent_dim`；窄隐层同时避免它成为
   模型里最大的单个矩阵。
-- **species 描述子的秩远低于物种数**：species 只走输入层逐关节调制，不设样本级头。
+- **species 描述子的秩远低于物种数**：per-joint FiLM 的隐层相应取窄。
 - **`action_label_projection` 只读紧凑通道**：direction 槽的正交码只占少数几个轴，其余列的输入
   恒为 0，是结构性死参数；投影只读 `compact_slot_channels`，不读完整槽宽。
 - **cross-limb**：proj 的有效秩接近瓶颈宽度，宽度用满。

@@ -29,6 +29,7 @@ pushd "%SCRIPT_DIR%"
 	--layers 8 ^
 	--action_label_cond ^
 	--action_adaln_bottleneck 64 ^
+	--species_film_bottleneck 64 ^
 	--species_cond ^
 	--ref_encoder ^
 	--ref_slots 4 ^
