@@ -171,6 +171,23 @@ def _resolve_action_condition(args, model):
     }
 
 
+def cfg_switch_timestep(args):
+    """The step where the CFG wrappers hand over to the detail scale: the noise
+    level of ``CFG_SWITCH`` on the unshifted schedule, so a checkpoint trained
+    with ``--noise_schedule_shift`` guides the same noise range as one without."""
+    from diffusion.gaussian_diffusion import get_named_beta_schedule, matching_shifted_timestep
+    steps = int(args.diffusion_steps)
+    switch_t = ClassifierFreeActionModel.CFG_SWITCH * steps
+    shift = float(getattr(args, 'noise_schedule_shift', 1.0))
+    if shift == 1.0:
+        return switch_t
+    return matching_shifted_timestep(
+        get_named_beta_schedule(args.noise_schedule, steps),
+        get_named_beta_schedule(args.noise_schedule, steps, shift=shift),
+        switch_t,
+    )
+
+
 def _wrap_action_label_cfg(model, args, action_condition):
     """Wrap the denoiser in action-label CFG, or hand it back untouched.
 
@@ -206,12 +223,13 @@ def _wrap_action_label_cfg(model, args, action_condition):
             "so it never saw the null condition. Sample with --action_label_cfg_scale 1.0, "
             "or retrain with a non-zero drop probability."
         )
+    switch_t = cfg_switch_timestep(args)
     print(
         f"[generate] action-label CFG: scale={scale:g} on "
-        f"{action_condition['action_label']!r} (high-noise half of the steps; "
+        f"{action_condition['action_label']!r} (high-noise steps t >= {switch_t:g}; "
         f"2 model forwards per step there, 1 on the detail steps)"
     )
-    return ClassifierFreeActionModel(model, scale, args.diffusion_steps)
+    return ClassifierFreeActionModel(model, scale, args.diffusion_steps, switch_t=switch_t)
 
 
 def _wrap_reference_cfg(model, args, action_condition):
@@ -226,6 +244,7 @@ def _wrap_reference_cfg(model, args, action_condition):
         raise ValueError('an encoded --reference_motion cannot be combined with --action_label')
     return ClassifierFreeReferenceModel(
         model, getattr(args, 'ref_cfg_scale', 1.0), num_timesteps=args.diffusion_steps,
+        switch_t=cfg_switch_timestep(args),
     )
 
 
@@ -253,7 +272,9 @@ def _wrap_species_cfg(model, args):
         )
     forwards = 4 if isinstance(model, ClassifierFreeActionModel) else 2
     print(f"[generate] species CFG: scale={scale:g} ({forwards} model forwards per diffusion step)")
-    return ClassifierFreeSpeciesModel(model, scale, args.diffusion_steps)
+    return ClassifierFreeSpeciesModel(
+        model, scale, args.diffusion_steps, switch_t=cfg_switch_timestep(args),
+    )
 
 
 def _coerce_loop_flag(flag):

@@ -199,6 +199,15 @@ def add_base_options(parser):
     group = parser.add_argument_group('diffusion')
     group.add_argument("--noise_schedule", default='cosine', choices=['linear', 'cosine'], type=str,
                        help="Noise schedule type")
+    group.add_argument("--noise_schedule_shift", default=1.0, type=float,
+                       help="Shift every noise level of --noise_schedule toward noise: the SNR of "
+                            "each step is divided by shift^2. The step count and the uniform "
+                            "training draw over steps stay as they are, so shift > 1 spends more "
+                            "steps (and training samples) at high noise, where global structure "
+                            "such as a clip's tempo is decided, and fewer on low-noise detail. "
+                            "1 = the plain schedule. A training-time choice: generation reads it "
+                            "from the checkpoint, and the same --skip_timesteps then starts from "
+                            "more noise.")
     group.add_argument("--diffusion_steps", default=100, type=int,
                        help="Number of diffusion steps (denoted T in the paper)")
     group.add_argument("--sigma_small", default=True, type=bool, help="Use smaller sigma values.")

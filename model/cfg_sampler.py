@@ -36,17 +36,23 @@ class ClassifierFreeActionModel(nn.Module):
     attention actually computed -- both passes here run the full model.
     """
 
-    # Noise level t / T below which the late scale takes over.
+    # Noise level, as t / T of the unshifted schedule, below which the late
+    # scale takes over.
     CFG_SWITCH = 0.5
     # Scale on the low-noise detail steps: the plain conditional prediction.
     CFG_LATE_SCALE = 1.0
 
-    def __init__(self, model, guidance_scale, num_timesteps):
+    def __init__(self, model, guidance_scale, num_timesteps, switch_t=None):
+        """``switch_t`` is the step at the ``CFG_SWITCH`` noise level of a shifted
+        schedule (``sample.conditioning.cfg_switch_timestep``); None means the
+        unshifted ``CFG_SWITCH * num_timesteps``."""
         super().__init__()
         self.model = model
         if int(num_timesteps) <= 0:
             raise ValueError(f'num_timesteps must be positive, got {num_timesteps}')
-        self.switch_t = self.CFG_SWITCH * int(num_timesteps)
+        self.switch_t = (
+            self.CFG_SWITCH * int(num_timesteps) if switch_t is None else float(switch_t)
+        )
         guidance_scale = float(guidance_scale)
         if not math.isfinite(guidance_scale):
             raise ValueError(f"guidance_scale must be finite, got {guidance_scale}")
@@ -132,7 +138,8 @@ class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
     The scale applies only to the high-noise steps, where global posture
     (facing, body height) is settled; the detail steps below
     ``CFG_SWITCH * num_timesteps`` use ``CFG_LATE_SCALE``, so a high scale shapes
-    the pose without carrying its artifacts into the details.
+    the pose without carrying its artifacts into the details (under a shifted
+    noise schedule, the step at that noise level instead).
     ``timesteps`` are the original-schedule indices the respaced diffusion hands
     the model, so ``num_timesteps`` is the training ``--diffusion_steps``.
     """
