@@ -60,7 +60,13 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 行向量是 T5Conditioner 对描述符文本的 masked token mean，维度与关节名嵌入相同。绑定时每个 cond 条目得到两个向量：
 
 - `species_emb`：整条描述符文本的表行（video2pose 读它）；
-- `species_code`：AnyTop 读的条件，`[T5(body plan) ‖ variant one-hot]`（`species_descriptor_table.species_code`）。body plan 取表里**不带 variant** 的那一行；variant 不过 T5，每个 variant 占一根单位轴，没有 variant 时全零。T5 下 `Winged` 与 `Winged Fluttering` 几乎重合，variant 只是 body plan 方向里一个很小的差；改成正交码后，它是与 body plan 部分和其他 variant 都严格正交的独立方向。宽度见 `dataset_tags.species_code_dim`。
+- `species_code`：AnyTop 读的条件，`[T5(body plan) ‖ variant 轴]`（`species_descriptor_table.species_code`）：
+
+- body plan 取表里**不带 variant** 的那一行。
+- variant 不过 T5：T5 下 `Winged` 与 `Winged Fluttering` 几乎重合，variant 只是 body plan 方向里一个很小的差。因此每个 variant 占一根独立的轴，与 body plan 部分和其他 variant 都严格正交；没有 variant 时这部分全零。
+- variant 轴的取值等于该 body plan 行的模长，使「加 variant」与「换 body plan」对 code 的位移同量级。取 1 时它远短于 T5 行，FiLM 几乎学不到它。
+
+宽度见 `dataset_tags.species_code_dim`。
 
 多个物种共用同一个描述符（同 body-plan 与 variant），所以描述符的**不同取值数远少于物种数**。这是 species 通路天花板的来源。
 

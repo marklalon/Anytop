@@ -131,8 +131,8 @@ def test_species_code_is_body_plan_row_then_variant_axes():
     np.testing.assert_array_equal(fluttering[:DIM], winged)
     np.testing.assert_array_equal(plain[DIM:], np.zeros(len(dt.SPECIES_VARIANTS)))
     expected = np.zeros(len(dt.SPECIES_VARIANTS))
-    expected[dt.SPECIES_VARIANTS.index("Fluttering")] = 1.0
-    np.testing.assert_array_equal(fluttering[DIM:], expected)
+    expected[dt.SPECIES_VARIANTS.index("Fluttering")] = np.linalg.norm(winged)
+    np.testing.assert_allclose(fluttering[DIM:], expected, rtol=1e-6)
     with pytest.raises(sdt.SpeciesDescriptorError, match="variant 'Striding'"):
         sdt.species_code(table, ("Winged", "Striding"), "t")
 

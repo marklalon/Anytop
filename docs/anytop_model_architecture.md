@@ -162,8 +162,8 @@ timestep
 | `species_cond` | `[joint_name || species_code]` → bottleneck | 每个 joint-name embedding 的 FiLM | `species_cfg_drop_prob` 按样本 bypass 到 identity |
 
 Species code 只通过这条输入层通路调制关节名，不进入 timestep condition bus。
-`species_code = [T5(body plan) || variant one-hot]`（`species_descriptor_table.species_code`）；
-variant 是正交码（每个 variant 一根单位轴），不经过 T5：T5 下 `Winged` 与 `Winged Fluttering` 几乎重合。
+`species_code = [T5(body plan) || variant 轴]`（`species_descriptor_table.species_code`）；
+variant 是正交码（每个 variant 一根轴，取值为该 body plan 行的模长，无 variant 时全零），不经过 T5：T5 下 `Winged` 与 `Winged Fluttering` 几乎重合。
 设 T5 embedding 宽度为 `D_t5`、species code 宽度为 `D_code`，FiLM 头的结构为：
 
 ```text

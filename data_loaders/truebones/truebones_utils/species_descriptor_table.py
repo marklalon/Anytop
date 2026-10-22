@@ -276,25 +276,31 @@ def build_species_descriptor_table(
 
 # ── Species code ─────────────────────────────────────────────────────────────
 def species_code(table: SpeciesDescriptorTable, tags, where: str) -> np.ndarray:
-    """The AnyTop species condition: ``[T5(body plan) || variant one-hot]``.
+    """The AnyTop species condition: ``[T5(body plan) || variant axes]``.
 
     The variant is not read through T5: "Winged" and "Winged Fluttering" encode
     to nearly the same vector, which leaves the variant a small difference
-    inside the body plan's direction. As a code it is a unit axis of its own,
+    inside the body plan's direction. As a code it is an axis of its own,
     exactly orthogonal to the body plan part and to the other variants; a
     descriptor without a variant has zeros there.
+
+    The variant axis is set to the body plan row's norm rather than 1, so adding
+    a variant moves the code as far as the body plan itself does: a unit axis
+    next to a T5 row several times longer starts out, and under AdamW keeps
+    growing, at a fraction of the body plan's pull on the FiLM.
     """
     parsed = parse_species_tags(tags)
     if not parsed:
         raise SpeciesDescriptorError(f"{where}: empty species descriptor")
+    body_plan = table.lookup(parsed[:1], where)
+    variant_value = float(np.linalg.norm(body_plan))
     variant = np.zeros(len(SPECIES_VARIANTS), dtype=np.float32)
     for tag in parsed[1:]:
         if tag not in SPECIES_VARIANTS:
             raise SpeciesDescriptorError(
                 f"{where}: variant {tag!r} is not one of {', '.join(SPECIES_VARIANTS)}"
             )
-        variant[SPECIES_VARIANTS.index(tag)] = 1.0
-    body_plan = table.lookup(parsed[:1], where)
+        variant[SPECIES_VARIANTS.index(tag)] = variant_value
     return np.concatenate([body_plan, variant]).astype(np.float32, copy=False)
 
 
