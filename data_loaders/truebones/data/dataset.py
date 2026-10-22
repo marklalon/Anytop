@@ -325,7 +325,6 @@ def resample_step_scale(source_frames, target_num_frames, *, periodic=False):
     An open clip maps its first and last frame onto the window's, so ``L``
     frames span ``L - 1`` steps: ``(L - 1) / (T - 1)``. A periodic one maps the
     cycle's ``L`` steps (the wrap included) onto the window's ``T``: ``L / T``.
-    GaussianDiffusion._physical_velocity_step_scale must agree with this.
     """
     source_frames = float(source_frames)
     target_num_frames = float(target_num_frames)
@@ -334,6 +333,33 @@ def resample_step_scale(source_frames, target_num_frames, *, periodic=False):
     if target_num_frames <= 1.0:
         return 1.0
     return max(source_frames - 1.0, 0.0) / (target_num_frames - 1.0)
+
+
+def velocity_to_window_units(motion, step_scale):
+    """``motion`` [T, J, F] with its velocity rows as displacement per WINDOW frame.
+
+    The resamplers below keep velocity physical: displacement per SOURCE frame
+    at the dataset fps, so a window holding ``L`` source frames moves
+    ``vel * step_scale`` per window frame (``resample_step_scale(L, T)``). The
+    model's window carries that per-window-frame displacement instead, which
+    makes it self-consistent without knowing ``L``: the root's XZ path over
+    the window is ``cumsum(vel)`` whatever tempo it is later played back at,
+    and ``L`` only decides how many output frames that path is spread over.
+    Inverse: :func:`velocity_to_source_units`.
+    """
+    out = np.array(motion, dtype=np.float32, copy=True)
+    if out.shape[-1] >= 12:
+        out[..., 9:12] *= np.float32(step_scale)
+    return out
+
+
+def velocity_to_source_units(motion, step_scale):
+    """Inverse of :func:`velocity_to_window_units`: velocity rows back to
+    displacement per source frame, the physical unit every exporter reads."""
+    out = np.array(motion, dtype=np.float32, copy=True)
+    if out.shape[-1] >= 12:
+        out[..., 9:12] /= np.float32(step_scale)
+    return out
 
 
 def resample_motion_features(motion, target_num_frames, *, periodic=False):
@@ -366,11 +392,10 @@ def resample_motion_features(motion, target_num_frames, *, periodic=False):
     resampled = (motion[lo] * (1.0 - w) + motion[hi] * w).astype(motion.dtype, copy=False)
 
     if resampled.shape[-1] >= 12:
-        # Velocity channels are stored so that `vel[t] * step_scale` recovers
-        # the target-frame position delta — matching the contract that
-        # velocity_consistency_loss and loop_wrap_loss multiply by step_scale
-        # (reconstructed from resample_speed_cond and is_loop) before comparing
-        # with pos deltas.
+        # Velocity channels stay physical (per source frame), so that
+        # `vel[t] * step_scale` recovers the target-frame position delta; the
+        # loader's window converts to per-window-frame units afterwards
+        # (velocity_to_window_units).
         # Linear interpolation of source velocities would give the instantaneous
         # value at src[t], which is off whenever step_scale != 1; instead we
         # integrate to a position path, interpolate that, then take target-step
@@ -514,17 +539,15 @@ def time_scale_motion_features(motion, target_num_frames, *, periodic=False):
     slows down (more frames).
 
     The result is a legitimate source clip in its own right -- every downstream
-    stage (loop roll / tile, crop, the window resample and its
-    ``resample_speed_cond``) treats it exactly like a clip recorded at that
-    tempo, and the model is told nothing about it.
+    stage (loop roll / tile, crop, the window resample and the window's source
+    frame count, the tempo head's target) treats it exactly like a clip
+    recorded at that tempo.
 
     ``resample_motion_features`` deliberately leaves the velocity channels in
-    "per SOURCE frame" units (the loss multiplies them by the step scale it
-    reconstructs from ``resample_speed_cond``); here the new frames ARE the
-    source frames, so the velocities are rescaled to "per new frame" -- without
-    that the positions would advance ``speed``x per frame while the velocity
-    channel still claimed 1x, and the velocity-consistency / loop-wrap losses
-    would be fed a self-contradicting target.
+    "per SOURCE frame" units; here the new frames ARE the source frames, so the
+    velocities are rescaled to "per new frame" -- without that the positions
+    would advance ``speed``x per frame while the velocity channel still
+    claimed 1x, a self-contradicting target.
 
     ``periodic`` is the loop flag: a loop clip is time-scaled periodically
     (see ``resample_motion_features``), so it stays uniformly periodic.
@@ -758,7 +781,7 @@ def _tile_loop_motion(motion, repeat_count):
     operates in whichever feature space the
     caller supplies (raw or normalized); both are linear transformations of
     each other, so the result is equivalent and the caller must only ensure
-    ``resample_speed_cond`` reflects the post-tile frame count.
+    ``window_source_frames`` reflects the post-tile frame count.
     """
     repeat_count = int(repeat_count)
     if repeat_count <= 1:
@@ -1386,12 +1409,11 @@ class MotionDataset(data.Dataset):
         ``opt.motion_speed_aug_prob``; the recorded tempo is one point of that
         continuum, not a mode. The range is then narrowed so the augmentation
         never carries a clip across a boundary it was not across already --
-        the point is to fill the gaps between the corpus' clustered clip
-        lengths, not to change what else happens to the clip:
+        the point is a little tempo spread around each recorded clip, not to
+        change what else happens to the clip:
 
-        * the scaled clip stays >= ``min_length`` (inference never asks for a
-          shorter window, so anything below is training the model on a
-          ``resample_speed`` it will never see);
+        * the scaled clip stays >= ``min_length`` (the tempo head's lowest
+          bin, so anything below is a tempo it can never answer);
         * a loop clip that fits the ``max_source_length`` budget still fits,
           so slowing it down cannot push it into the crop branch that
           downgrades it to non-loop.
@@ -1587,9 +1609,9 @@ class MotionDataset(data.Dataset):
         # A high-frequency clip (high_frequency.py) is never resampled to fewer
         # frames, so its source budget is the window itself: the speed draw
         # only slows it down and never past the window, tiling stays within
-        # the window, and an over-long one is cropped to the window at
-        # resample_speed 1 instead of squeezed into it. It also skips the
-        # phase-anchored speed-up and is cropped mid-event instead.
+        # the window, and an over-long one is cropped to the window at one
+        # source frame per window frame instead of squeezed into it. It also
+        # skips the phase-anchored speed-up and is cropped mid-event instead.
         high_frequency = bool(data.get('high_frequency', False))
         if high_frequency:
             max_source_length = target_num_frames
@@ -1598,14 +1620,12 @@ class MotionDataset(data.Dataset):
         # ── Motion-speed augmentation (applies to every clip) ──
         # Runs ahead of the loop augmentations and is invisible to everything
         # after it: the time-scaled clip is simply a shorter/longer source clip
-        # recorded at a different
-        # tempo, so roll / tile / crop / the window resample and
-        # resample_speed_cond all see an ordinary clip and the model is told
-        # nothing. Its purpose is the corpus' length distribution -- 45% of the
-        # clips sit on five exact frame counts (20/21/26/31/41), so without it
-        # resample_speed is a comb and an inference num_frames between the
-        # teeth is out of distribution. A loop clip is time-scaled with its
-        # terminal wrap velocity intact, so it is still a closed cycle.
+        # recorded at a different tempo, so roll / tile / crop / the window
+        # resample and the tempo target all see an ordinary clip. A clip that
+        # fits the budget lands in the SAME window whatever the draw (only its
+        # source frame count moves), so the draw is a tempo spread on the
+        # tempo head's target and must stay small. A loop clip is time-scaled
+        # with its terminal wrap velocity intact, so it is still a closed cycle.
         # A phase-anchored clip (any label loop_is_phase_free rejects, loop or
         # not) is also sped up toward the budget here, so it enters the window
         # whole instead of being cropped mid-event (see the sampler).
@@ -1665,8 +1685,8 @@ class MotionDataset(data.Dataset):
             # to non-loop here and told so.
             # The crop LENGTH is fixed at the full budget -- every over-long
             # clip contributes budget source frames, resampled to the target
-            # length below at resample_speed budget/n -- while the window
-            # POSITION stays random so repeated epochs still see the whole clip.
+            # length below -- while the window POSITION stays random so
+            # repeated epochs still see the whole clip.
             if loop_condition_active:
                 loop_uncond = True
             loop_condition_active = False
@@ -1674,14 +1694,17 @@ class MotionDataset(data.Dataset):
             frame_shift += int(ind)
             m_length = int(max_source_length)
 
-        source_len_for_resample_speed = int(m_length)
-        resample_speed_cond = float(source_len_for_resample_speed) / float(target_num_frames)
-        # A loop-conditioned window is resampled periodically, so its period is
-        # exactly the window (what circular_phase_embedding encodes) and its
-        # step is L/T = resample_speed_cond; everything else, including a loop
-        # the model is told is not one, is open, at step (L-1)/(T-1). The loss
-        # reads which one from y['is_loop'] (_physical_velocity_step_scale).
-        def sample_window(clip):
+        # The window holds L = window_source_frames source frames, the tempo
+        # head's target. A loop-conditioned window is resampled periodically,
+        # so its period is exactly the window (what circular_phase_embedding
+        # encodes) and its step is L/T; everything else, including a loop the
+        # model is told is not one, is open, at step (L-1)/(T-1).
+        window_source_frames = int(m_length)
+        window_step = resample_step_scale(
+            window_source_frames, target_num_frames, periodic=loop_condition_active
+        )
+
+        def resampled_window(clip):
             if scaled_length != source_length:
                 return resample_time_scaled_window(
                     clip, scaled_length, m_length, target_num_frames,
@@ -1703,6 +1726,9 @@ class MotionDataset(data.Dataset):
                     periodic=loop_condition_active,
                 )
             return clip
+
+        def sample_window(clip):
+            return velocity_to_window_units(resampled_window(clip), window_step)
 
         motion = sample_window(source_motion)
         physical_motion = motion
@@ -1730,12 +1756,13 @@ class MotionDataset(data.Dataset):
 
         # is_loop is the whole loop condition the model sees: a closed window.
         # The tile count is deliberately NOT passed on -- generation has no
-        # tile count, so the model must learn the cycle count from
-        # resample_speed_cond (= tiles * period / T) and the species/action prior,
-        # exactly as it does for a one-shot clip. loop_tile_count and
+        # tile count, so the model picks the cycle count from the species /
+        # action prior, and the tempo head answers the window's source frame
+        # count (= tiles * period) from what it drew. loop_tile_count and
         # loop_phase_offset are logged for diagnostics only.
+        # window_source_frames is the tempo head's target, never a model input.
         motion_metadata['is_loop'] = bool(loop_condition_active)
-        motion_metadata['resample_speed_cond'] = float(resample_speed_cond)
+        motion_metadata['window_source_frames'] = int(window_source_frames)
         motion_metadata['loop_data_aug_applied'] = bool(is_loop)
         # Diagnostics only: whether the roll/tile draws ran for this loop.
         motion_metadata['loop_phase_free'] = bool(loop_phase_free)
@@ -1766,7 +1793,7 @@ class MotionDataset(data.Dataset):
                 'loop_phase_offset': int(loop_phase_offset),
                 'loop_tile_count': int(loop_tile_count),
                 'loop_phase_free': bool(loop_phase_free),
-                'resample_speed_cond': float(resample_speed_cond),
+                'window_source_frames': int(window_source_frames),
                 'loop_uncond': bool(loop_uncond),
                 'motion_speed_applied': float(motion_speed_applied),
                 'leaf_drop_count': int(leaf_drop_count),

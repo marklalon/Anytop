@@ -22,7 +22,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from model.motion_transformer import circular_phase_embedding  # noqa: E402
-from utils.model_util import create_gaussian_diffusion, load_model  # noqa: E402
+from utils.model_util import create_gaussian_diffusion  # noqa: E402
 
 
 # circular_phase_embedding's window closure is exact only in real arithmetic:
@@ -54,7 +54,7 @@ class _CaptureDecoder(torch.nn.Module):
 
 def _make_batch_item(
     is_loop: bool,
-    resample_speed_cond: float = 1.0,
+    window_source_frames: int = 60,
 ):
     n_frames = 5
     n_joints = 2
@@ -71,7 +71,7 @@ def _make_batch_item(
         'action_label': 'run, gallops forward',
         'translation_root_index': 0,
         'is_loop': is_loop,
-        'resample_speed_cond': resample_speed_cond,
+        'window_source_frames': window_source_frames,
     }
     extra_cond = {'joint_mask_candidate_roots': np.zeros((n_joints,), dtype=np.bool_)}
     return (
@@ -159,17 +159,17 @@ class NativeLoopTests(unittest.TestCase):
 
     def test_truebones_collate_forwards_loop_flags_as_bool_tensors(self):
         _, cond = truebones_batch_collate([
-            _make_batch_item(True, resample_speed_cond=0.5),
-            _make_batch_item(False, resample_speed_cond=2.0),
+            _make_batch_item(True, window_source_frames=30),
+            _make_batch_item(False, window_source_frames=120),
         ])
 
         self.assertEqual(cond['y']['is_loop'].dtype, torch.bool)
         self.assertEqual(cond['y']['is_loop'].tolist(), [True, False])
         self.assertNotIn('loop_full_cycle', cond['y'])
         self.assertNotIn('loop_phase_lengths', cond['y'])
-        self.assertTrue(torch.equal(cond['y']['resample_speed_cond'], torch.tensor([0.5, 2.0], dtype=torch.float32)))
+        self.assertTrue(torch.equal(cond['y']['window_source_frames'], torch.tensor([30, 120])))
 
-    def test_anytop_coerces_default_resample_speed_to_one(self):
+    def test_anytop_takes_no_tempo_input_and_returns_tempo_logits(self):
         model = AnyTop(
             max_joints=4,
             feature_len=12,
@@ -179,32 +179,13 @@ class NativeLoopTests(unittest.TestCase):
             num_heads=2,
             dropout=0.0,
             cross_limb=True,
+            window_frames=60,
+            min_length=20,
         )
 
-        value = model._coerce_resample_speed_cond(None, batch_size=2, device=torch.device('cpu'), dtype=torch.float32)
-
-        self.assertTrue(torch.equal(value, torch.ones(2, 1, dtype=torch.float32)))
-
-    def test_load_model_remaps_legacy_playspeed_projection_keys(self):
-        # Checkpoints written before the rename carry ``playspeed_projection.*``;
-        # they must load into ``resample_speed_projection`` unchanged.
-        kwargs = dict(
-            max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
-            num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
-        )
-        source = AnyTop(**kwargs)
-        legacy_state = {
-            (key.replace('resample_speed_projection.', 'playspeed_projection.', 1)
-             if key.startswith('resample_speed_projection.') else key): value
-            for key, value in source.state_dict().items()
-        }
-        self.assertTrue(any(key.startswith('playspeed_projection.') for key in legacy_state))
-
-        restored = AnyTop(**kwargs)
-        load_model(restored, legacy_state)
-
-        for key, value in source.state_dict().items():
-            self.assertTrue(torch.equal(restored.state_dict()[key], value), key)
+        self.assertFalse(any('resample_speed' in key for key in model.state_dict()))
+        # 20, 25, ..., 120: min_length up to the 2x source budget.
+        self.assertEqual(model.tempo_head.bin_frames.tolist(), [float(f) for f in range(20, 121, 5)])
 
     def test_loop_wrap_loss_skips_non_loop_samples(self):
         diffusion = self._make_diffusion()
@@ -280,22 +261,6 @@ class NativeLoopTests(unittest.TestCase):
         )
         step = 2.0 * math.pi / 8.0
         self.assertAlmostEqual(float(terms['loop_wrap_rot'].item()), 1.5 * step, places=4)
-
-    def test_physical_velocity_step_scale_is_periodic_for_loops(self):
-        # resample_speed_cond = L / T. A loop window is resampled periodically
-        # (step L/T), anything else end to end (step (L-1)/(T-1)).
-        diffusion = self._make_diffusion()
-        n_frames = 60
-        speed = torch.tensor([1.5, 1.5, 0.75], dtype=torch.float32)
-        y = {
-            'is_loop': torch.tensor([True, False, True]),
-            'resample_speed_cond': speed,
-        }
-        step = diffusion._physical_velocity_step_scale(
-            y, 3, n_frames, torch.device('cpu'), torch.float32,
-        )
-        expected = torch.tensor([1.5, (90.0 - 1.0) / 59.0, 0.75], dtype=torch.float32)
-        self.assertTrue(torch.allclose(step, expected, atol=1e-6), step)
 
     def test_position_step_loss_counts_the_wrap_step_only_on_loops(self):
         # Moving the last frame by one unit changes two steps: the last inner
@@ -390,20 +355,20 @@ class NativeLoopTests(unittest.TestCase):
         self.assertAlmostEqual(float(terms['loop_root_xz_closure'].item()), 4.5, places=6)
         self.assertAlmostEqual(float(terms['loop_root_xz_drift'].item()), 1.5, places=6)
 
-    def test_loop_root_xz_closure_uses_physical_step_scale(self):
+    def test_loop_root_xz_closure_sums_window_frame_rows(self):
         diffusion = self._make_diffusion()
+        # Window velocity is displacement per window frame, so 7 rows of 1 are
+        # 7 units of drift whatever source frame count the window holds.
         model_output = self._closure_output([1.0] * 7)
         y = {
             'is_loop': torch.tensor([True]),
             'translation_root_index': [0],
-            # 7 output frames drawn from a 4-frame clip: step_scale = 4 / 7,
-            # so the clip's drift is its 4 source frames of unit velocity.
-            'resample_speed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
+            'window_source_frames': torch.tensor([4]),
         }
 
         terms = diffusion.loop_root_xz_closure_loss(model_output, y, n_joints=torch.tensor([2]))
 
-        self.assertAlmostEqual(float(terms['loop_root_xz_drift'].item()), 4.0, places=5)
+        self.assertAlmostEqual(float(terms['loop_root_xz_drift'].item()), 7.0, places=5)
 
     def test_loop_root_xz_closure_follows_translation_root_index_and_masks_invalid(self):
         diffusion = self._make_diffusion()

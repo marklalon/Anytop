@@ -1,12 +1,8 @@
 """Shared skeleton-similarity scoring.
 
 A single place to answer "how close is this skeleton, as a *mover*, to that
-one?", reused by:
-
-  * eval/motion_quality/reference_bank.py -- pick the reference species a
-    generated clip is scored against;
-  * utils/clip_length_prior.py -- pool neighbouring species when a species
-    has no training clip for the requested action.
+one?", used by eval/motion_quality/reference_bank.py to pick the reference
+species a generated clip is scored against.
 
 Similarity blends three signals (see ``SimilarityWeights``), each a distance
 in ``[0, ~1]``:

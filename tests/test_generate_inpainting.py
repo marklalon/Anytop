@@ -27,14 +27,13 @@ from sample.inpaint import (  # noqa: E402
     _reground_inpaint_joint_y,
     _resolve_inpaint_joint_indices,
     build_inpaint_mask,
-    check_full_coverage_inpaint_early,
     inpaint_span_role,
     resolve_inpaint_policy,
 )
 from sample.output_lengths import (  # noqa: E402
-    _finalize_output_lengths,
     _resample_window_to_output,
-    fit_reference_to_output,
+    clamp_reference_frames,
+    outpaint_reference,
 )
 from sample.reference_motion import (  # noqa: E402
     _prepare_img2img_reference_bundle,
@@ -268,15 +267,6 @@ def test_policy_rejects_a_mask_that_frees_everything() -> None:
     assert _policy("1-118", joints="LeftHip", M=120) is True
 
 
-def test_early_full_coverage_check_needs_an_explicit_length_and_no_joints() -> None:
-    with pytest.raises(SystemExit):
-        check_full_coverage_inpaint_early("0-44", "", 45)
-    # Deferred to resolve_inpaint_policy, which sees the resolved values.
-    check_full_coverage_inpaint_early("0-44", "LeftHip", 45)
-    check_full_coverage_inpaint_early("0-44", "", None)
-    check_full_coverage_inpaint_early("20-25", "", 45)
-
-
 def test_build_inpaint_mask_maps_output_frames_when_asked() -> None:
     # The caller hands it output frames; the window mapping happens inside.
     cond = _make_cond_entry()
@@ -338,41 +328,14 @@ def test_inpaint_span_role_classifies_the_clip_ends() -> None:
     assert inpaint_span_role("", 45) == "full"
 
 
-def test_finalize_output_lengths_returns_frames_and_resample_speed() -> None:
-    requested, target, resample_speed = _finalize_output_lengths(
-        requested_frames=90, min_length=20, internal_num_frames=60
-    )
-    assert requested == 90
-    assert target == 90
-    assert resample_speed == pytest.approx(90.0 / 60.0)
-
-
-def test_finalize_output_lengths_rejects_out_of_window() -> None:
-    internal_num_frames = 60
-    min_length = 20
-    max_frames = MAX_SOURCE_FRAMES_MULT * internal_num_frames
-
-    with pytest.raises(SystemExit):
-        _finalize_output_lengths(
-            requested_frames=min_length - 1,
-            min_length=min_length,
-            internal_num_frames=internal_num_frames,
-        )
-    # The upper bound is inclusive: the full source-frame budget is allowed,
-    # one frame past it is not.
-    requested, target, resample_speed = _finalize_output_lengths(
-        requested_frames=max_frames,
-        min_length=min_length,
-        internal_num_frames=internal_num_frames,
-    )
-    assert (requested, target) == (max_frames, max_frames)
-    assert resample_speed == pytest.approx(float(MAX_SOURCE_FRAMES_MULT))
-    with pytest.raises(SystemExit):
-        _finalize_output_lengths(
-            requested_frames=max_frames + 1,
-            min_length=min_length,
-            internal_num_frames=internal_num_frames,
-        )
+def test_reference_frames_are_clamped_into_a_window() -> None:
+    window = 60
+    budget = MAX_SOURCE_FRAMES_MULT * window
+    assert clamp_reference_frames(45, 20, window) == 45
+    assert clamp_reference_frames(12, 20, window) == 20
+    # The upper bound is inclusive: the full source-frame budget is allowed.
+    assert clamp_reference_frames(budget, 20, window) == budget
+    assert clamp_reference_frames(budget + 1, 20, window) == budget
 
 
 def test_validate_reference_motion_path_accepts_supported_suffixes() -> None:
@@ -414,7 +377,7 @@ def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
     # always runs at that native window (requested_output_frame_count=60) and
     # resamples the shorter reference up to it; the requested output length is
     # honored later by resampling the sampled motion. reference_source_frame_count
-    # records the pre-resample reference length (40) for resample_speed.
+    # records the pre-resample reference length (40), the window's step.
     assert bundle["output_frame_count"] == 60
     assert bundle["reference_source_frame_count"] == 40
     assert tuple(bundle["reference_motion"].shape) == (2, n_joints, feat, 60)
@@ -499,7 +462,7 @@ def test_reference_bundle_keeps_a_closing_key() -> None:
 
 
 def test_outpaint_mask_lands_on_the_appended_frames() -> None:
-    # The two ends of the R < M path have to agree: fit_reference_to_output pads
+    # The two ends of the outpaint path have to agree: outpaint_reference pads
     # [R, M) with a repeat of the last pose and names that span in OUTPUT
     # frames, the bundle then stretches the padded array end to end, and the
     # mask is mapped with that same end-to-end convention. So every window
@@ -509,7 +472,7 @@ def test_outpaint_mask_lands_on_the_appended_frames() -> None:
     cond = _make_full_cond_entry(n_joints, feature_len=feat)
     clip = _synthetic_cycle(30)
 
-    fitted, outpaint_range, _ = fit_reference_to_output(clip, 45)
+    fitted, outpaint_range, _ = outpaint_reference(clip, 15)
     assert outpaint_range == "30-44"
 
     window = _reference_window(cond, fitted)
@@ -534,7 +497,7 @@ def test_outpaint_mask_still_covers_the_pad_under_loop() -> None:
     # span would be exported as motion the model never generated. Every
     # appended frame must also come out regenerated, bar the wrap partner.
     for M, R in ((45, 30), (45, 21), (120, 60), (180, 40)):
-        _, outpaint_range, _ = fit_reference_to_output(_synthetic_cycle(R), M)
+        _, outpaint_range, _ = outpaint_reference(_synthetic_cycle(R), M - R)
         assert outpaint_range == f"{R}-{M - 1}"
         freed = _parse_frame_ranges(
             _map_frame_ranges_to_internal(outpaint_range, M, 60, loop=True), 60

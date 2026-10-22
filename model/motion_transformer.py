@@ -342,8 +342,8 @@ def circular_phase_embedding(
     encoded. It used to be (period ``(motion_frames - 1)/k`` for the ``k``
     loader tiles), which made generation guess ``k`` from a per-species table
     and forced a wrong stride when the guess was off. The cycle count is now
-    learned from resample_speed_cond and the species/action prior, as for a
-    one-shot clip.
+    the model's to draw from the species/action prior, as for a one-shot
+    clip, and the tempo head reports the source frames it spans.
 
     Frequencies run over ``1..dim // 2`` unconditionally, so at production
     shapes (``motion_frames < dim // 2``) the table is redundant: ``f`` and

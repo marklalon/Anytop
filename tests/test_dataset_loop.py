@@ -29,8 +29,10 @@ from data_loaders.truebones.data.dataset import (
     _circular_roll_motion,
     _drop_loop_closing_frame,
     resample_motion_features,
+    resample_step_scale,
     resample_time_scaled_window,
     time_scale_motion_features,
+    velocity_to_window_units,
     _tile_loop_motion,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
@@ -89,8 +91,8 @@ ANCHORED_LOOP_MOTION = _find_motion("Spider_Attack2.npy")
 ANCHORED_LOOP_SUBSET = "multiped"
 NUM_FRAMES = 60
 # The n*MAX_SOURCE_FRAMES_MULT source-frame budget the dataset crops over-long
-# clips to (see _prepare_sample); over-long clips resample down at exactly
-# resample_speed MAX_SOURCE_FRAMES_MULT.
+# clips to (see _prepare_sample); an over-long clip's window holds exactly this
+# many source frames.
 BUDGET_FRAMES = NUM_FRAMES * MAX_SOURCE_FRAMES_MULT
 _ENRICHED_MOTION_METADATA_LOOKUP = None
 
@@ -144,7 +146,20 @@ def _resample_raw_then_normalize(
     periodic: bool = False,
 ) -> np.ndarray:
     resampled = resample_motion_features(raw, target_frames, periodic=periodic)
-    return _normalize_motion(resampled, cond)
+    return _normalize_window(resampled, cond, source_frames=raw.shape[0], periodic=periodic)
+
+
+def _normalize_window(
+    window: np.ndarray,
+    cond: dict[str, np.ndarray],
+    *,
+    source_frames: int,
+    periodic: bool,
+) -> np.ndarray:
+    """A physical window holding ``source_frames`` source frames, as the loader
+    hands it over: velocity per window frame, then canonical."""
+    step = resample_step_scale(source_frames, window.shape[0], periodic=periodic)
+    return _normalize_motion(velocity_to_window_units(window, step), cond)
 
 
 def _get_enriched_motion_metadata_lookup() -> dict[str, dict[str, object]]:
@@ -309,7 +324,7 @@ def test_loop_with_closing_key_is_augmented_as_its_clean_period() -> None:
     )
 
     # Single cycle, phase 0: the clean period is what gets resampled into the
-    # window, and resample_speed_cond counts the frames the model actually sees.
+    # window, and window_source_frames counts the frames the model actually sees.
     with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=1):
         sample = motion_dataset._prepare_sample(
             CLOSING_KEY_LOOP_MOTION, data, target_num_frames=NUM_FRAMES, loop_offset=0, return_aug_info=True,
@@ -317,13 +332,13 @@ def test_loop_with_closing_key_is_augmented_as_its_clean_period() -> None:
     motion, m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
     expected = _resample_raw_then_normalize(period, cond, NUM_FRAMES, periodic=True)
     assert m_length == NUM_FRAMES
-    assert np.isclose(float(aug_info["resample_speed_cond"]), float(period.shape[0]) / float(NUM_FRAMES))
+    assert aug_info["window_source_frames"] == period.shape[0]
     assert_close("closing-key loop, single cycle", motion, expected, atol=3e-5)
     # The seam is one ordinary frame step, not the ~zero wrap the stored clip
-    # carries. The window holds no derived velocity; rebuild it from positions.
+    # carries. The window holds no derived velocity; rebuild it from positions,
+    # per window frame.
     physical = rebuild_derived_velocity(
-        canonical_to_physical_hml(motion, cond), is_loop=True,
-        step_scale=float(aug_info["resample_speed_cond"]),
+        canonical_to_physical_hml(motion, cond), is_loop=True, step_scale=1.0,
     )
     seam = float(np.linalg.norm(physical[-1, :, 9:12], axis=-1).max())
     typical = float(np.median(np.linalg.norm(physical[:-1, :, 9:12], axis=-1).max(axis=1)))
@@ -338,7 +353,7 @@ def test_loop_with_closing_key_is_augmented_as_its_clean_period() -> None:
         )
     motion, _m_length, *_rest, _motion_metadata, _name, _joint_mask_dict, aug_info = sample
     tiled = _tile_loop_motion(_circular_roll_motion(period, offset), 2)
-    assert np.isclose(float(aug_info["resample_speed_cond"]), float(2 * period.shape[0]) / float(NUM_FRAMES))
+    assert aug_info["window_source_frames"] == 2 * period.shape[0]
     assert_close("closing-key loop, rolled and tiled", motion, _resample_raw_then_normalize(tiled, cond, NUM_FRAMES, periodic=True), atol=3e-5)
 
     # Idempotent: the period itself has no closing key to give.
@@ -403,7 +418,7 @@ def test_phase_anchored_loop_is_never_rolled_or_tiled(loop_cond_prob) -> None:
     assert aug_info["loop_tile_count"] == 1
     assert aug_info["loop_phase_free"] is False
     assert motion_metadata["is_loop"] is told_loop
-    assert np.isclose(float(aug_info["resample_speed_cond"]), float(period.shape[0]) / float(NUM_FRAMES))
+    assert aug_info["window_source_frames"] == period.shape[0]
     # Frame 0 stays the ready pose: the window is the unrolled single event,
     # periodic when the model is told it is a loop, an ordinary one-shot otherwise.
     expected = _resample_raw_then_normalize(period, cond, NUM_FRAMES, periodic=told_loop)
@@ -505,7 +520,7 @@ def test_loop_padding_updates_effective_length() -> None:
 
     assert "loop_phase_length" not in motion_metadata
     assert "loop_full_cycle" not in motion_metadata
-    assert np.isclose(float(motion_metadata["resample_speed_cond"]), float(raw_len) / float(NUM_FRAMES))
+    assert motion_metadata["window_source_frames"] == raw_len
     assert_close("loop-filled motion", motion, expected, atol=3e-5)
 
 
@@ -532,7 +547,7 @@ def test_loop_padding_can_tile_multiple_cycles_before_resample() -> None:
     assert name == LOOP_MOTION, f"unexpected sample: {name}"
     assert motion.shape[0] == NUM_FRAMES
     assert m_length == NUM_FRAMES
-    assert np.isclose(float(motion_metadata["resample_speed_cond"]), float(raw.shape[0] * 2) / float(NUM_FRAMES))
+    assert motion_metadata["window_source_frames"] == raw.shape[0] * 2
     # The tile count is diagnostics only: the model is not told how many
     # cycles the window holds.
     assert motion_metadata["loop_tile_count"] == 2
@@ -563,7 +578,10 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
         )
     motion, m_length = sample[0], sample[1]
     rolled_raw = _circular_roll_motion(raw, offset)
-    expected_raw = resample_motion_features(rolled_raw, NUM_FRAMES, periodic=True)
+    expected_raw = velocity_to_window_units(
+        resample_motion_features(rolled_raw, NUM_FRAMES, periodic=True),
+        resample_step_scale(raw_len, NUM_FRAMES, periodic=True),
+    )
     expected = _normalize_motion(expected_raw, cond)
     raw_motion = canonical_to_physical_hml(motion, cond)
     assert motion.shape[0] == NUM_FRAMES, f"expected random-offset loop fill to keep {NUM_FRAMES} frames"
@@ -627,9 +645,9 @@ def test_long_motion_crops_fixed_length_random_window() -> None:
     )
 
     assert m_length == NUM_FRAMES, f"cropped sample should have effective length {NUM_FRAMES}, got {m_length}"
-    assert np.isclose(
-        float(aug_info["resample_speed_cond"]), MAX_SOURCE_FRAMES_MULT
-    ), f"expected resample_speed {MAX_SOURCE_FRAMES_MULT}, got {aug_info}"
+    assert aug_info["window_source_frames"] == BUDGET_FRAMES, (
+        f"expected {BUDGET_FRAMES} window source frames, got {aug_info}"
+    )
     assert_close("fixed-length random crop window", motion, expected)
 
 
@@ -660,7 +678,7 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
     assert aug_info["loop_applied"] is True, f"expected loop_applied=True, got {aug_info}"
     assert aug_info["loop_phase_offset"] == 0, f"expected loop_phase_offset=0, got {aug_info}"
     assert aug_info["loop_tile_count"] == 1, f"expected loop_tile_count=1, got {aug_info}"
-    assert np.isclose(float(aug_info["resample_speed_cond"]), float(motion_dataset.data_dict[LOOP_MOTION]["length"]) / float(NUM_FRAMES))
+    assert aug_info["window_source_frames"] == motion_dataset.data_dict[LOOP_MOTION]["length"]
 
 
 def test_loop_uncond_keeps_loop_augmentation_but_hands_over_an_open_window() -> None:
@@ -699,7 +717,7 @@ def test_loop_uncond_keeps_loop_augmentation_but_hands_over_an_open_window() -> 
     assert motion_metadata["loop_uncond"] is True
     assert aug_info["loop_applied"] is False
     assert aug_info["loop_uncond"] is True
-    assert np.isclose(float(aug_info["resample_speed_cond"]), float(raw.shape[0]) / float(NUM_FRAMES))
+    assert aug_info["window_source_frames"] == raw.shape[0]
     assert_close("loop uncond resample", motion, expected, atol=3e-5)
 
 
@@ -787,7 +805,7 @@ def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
     assert motion_metadata["is_loop"] is False
     assert aug_info["loop_applied"] is False
     assert aug_info["loop_uncond"] is True
-    assert np.isclose(float(aug_info["resample_speed_cond"]), MAX_SOURCE_FRAMES_MULT)
+    assert aug_info["window_source_frames"] == BUDGET_FRAMES
     assert_close("conditioned long loop downgraded crop", motion, expected)
 
 
@@ -809,7 +827,7 @@ def test_batch_collate_preserves_translation_root_index() -> None:
     _motion, cond = truebones_batch_collate([sample])
 
     assert int(cond["y"]["translation_root_index"][0]) == 0
-    assert "resample_speed_cond" in cond["y"]
+    assert "window_source_frames" in cond["y"]
     assert "loop_phase_offset" in cond["y"]
     assert "loop_tile_count" in cond["y"]
     assert "loop_data_aug_applied" in cond["y"]
@@ -906,18 +924,18 @@ def test_motion_speed_aug_is_transparent_to_roll_tile_crop_and_resample() -> Non
 
     # The time-scaled clip is just a shorter source clip: the window is the
     # ordinary loop path (terminal wrap kept) applied to it, interpolated from
-    # the source once, and resample_speed_cond reports ITS length -- the model
-    # is told nothing else.
+    # the source once, and window_source_frames reports ITS length -- the tempo
+    # head's target, never a model input.
     _scaled_raw, speed = time_scale_motion_features(raw, scaled_len, periodic=True)
-    expected = _normalize_motion(
+    expected = _normalize_window(
         resample_time_scaled_window(
             _drop_loop_closing_frame(raw), scaled_len, scaled_len, NUM_FRAMES,
             source_periodic=True, window_periodic=True,
         ),
-        cond,
+        cond, source_frames=scaled_len, periodic=True,
     )
     assert_close("time-scaled loop window", motion, expected, atol=3e-5)
-    assert np.isclose(float(aug_info["resample_speed_cond"]), float(scaled_len) / float(NUM_FRAMES))
+    assert aug_info["window_source_frames"] == scaled_len
     assert np.isclose(float(aug_info["motion_speed_applied"]), speed)
     assert np.isclose(float(motion_metadata["motion_speed_applied"]), speed)
     assert bool(motion_metadata["is_loop"]), "time-scaling must not downgrade a loop"
@@ -930,22 +948,23 @@ def test_motion_speed_aug_is_transparent_to_roll_tile_crop_and_resample() -> Non
     assert "motion_speed_applied" in cond_batch["y"]
     assert not any(key.startswith("motion_speed") and key != "motion_speed_applied" for key in cond_batch["y"])
 
-    # What the augmentation changes in the window: the pose/rotation CONTENT
-    # is the same cycle in the same T frames -- the window's time map does not
-    # depend on the scaled length when nothing is rolled, tiled or cropped --
-    # the velocity channels scale with the speed and resample_speed_cond
-    # shrinks by it. That is the whole mechanism -- it spreads the
-    # resample_speed a given content is seen at, it does not invent new poses.
+    # What the augmentation changes: nothing in the window -- the window's
+    # time map does not depend on the scaled length when nothing is rolled,
+    # tiled or cropped, and its velocity is per window frame -- only the
+    # source frame count the tempo head is asked for. It is a tempo spread on
+    # that target, not new poses.
     base, _base_metadata, base_info = prepare(raw_len)
     assert np.isclose(float(base_info["motion_speed_applied"]), 1.0)
-    assert_close("time-scaled loop pose content", motion[..., :9], base[..., :9], atol=3e-5)
-    # Physical root X/Z velocity: the standardized one carries the mean offset.
-    root_vel = lambda window: canonical_to_physical_hml(window, cond)[:, 0, list(ROOT_VEL_CHANNELS)]
-    base_vel, scaled_vel = root_vel(base), root_vel(motion)
+    assert_close("time-scaled loop window content", motion, base, atol=3e-5)
+    # Physical root X/Z velocity per source frame still scales with the speed.
+    root_vel = lambda window, frames: canonical_to_physical_hml(window, cond)[:, 0, list(ROOT_VEL_CHANNELS)] / \
+        resample_step_scale(frames, NUM_FRAMES, periodic=True)
+    base_vel = root_vel(base, base_info["window_source_frames"])
+    scaled_vel = root_vel(motion, aug_info["window_source_frames"])
     live = np.abs(base_vel) > 0.1 * np.abs(base_vel).max()
     vel_ratio = np.median(np.abs(scaled_vel[live]) / np.abs(base_vel[live]))
     assert abs(vel_ratio - speed) < 0.05 * speed, (vel_ratio, speed)
-    assert float(aug_info["resample_speed_cond"]) < float(base_info["resample_speed_cond"])
+    assert aug_info["window_source_frames"] < base_info["window_source_frames"]
 
 
 def test_time_scaled_loop_roll_and_tiles_are_one_interpolation() -> None:
@@ -969,14 +988,14 @@ def test_time_scaled_loop_roll_and_tiles_are_one_interpolation() -> None:
         )
     motion, aug_info = sample[0], sample[-1]
     assert aug_info["loop_applied"] is True and aug_info["loop_tile_count"] == 2
-    assert np.isclose(float(aug_info["resample_speed_cond"]), 2 * scaled_len / NUM_FRAMES)
+    assert aug_info["window_source_frames"] == 2 * scaled_len
     # The roll is in scaled frames, i.e. a fractional shift of the source.
-    expected = _normalize_motion(
+    expected = _normalize_window(
         resample_time_scaled_window(
             raw, scaled_len, 2 * scaled_len, NUM_FRAMES,
             source_periodic=True, window_periodic=True, shift=offset,
         ),
-        cond,
+        cond, source_frames=2 * scaled_len, periodic=True,
     )
     assert_close("rolled + tiled time-scaled loop", motion, expected, atol=3e-5)
 
@@ -1108,30 +1127,30 @@ def test_long_phase_anchored_clip_is_fitted_whole_not_cropped() -> None:
         BUDGET_FRAMES + 30, randint=lambda *_: (_ for _ in ()).throw(AssertionError("must not crop")),
     )
     _fitted_raw, speed = time_scale_motion_features(long_raw, BUDGET_FRAMES)
-    expected = _normalize_motion(
+    expected = _normalize_window(
         resample_time_scaled_window(
             long_raw, BUDGET_FRAMES, BUDGET_FRAMES, NUM_FRAMES,
             source_periodic=False, window_periodic=False,
         ),
-        cond,
+        cond, source_frames=BUDGET_FRAMES, periodic=False,
     )
     assert_close("fitted anchored window", motion, expected, atol=3e-5)
     assert np.isclose(float(aug_info["motion_speed_applied"]), speed) and speed > 1.0
-    assert np.isclose(float(aug_info["resample_speed_cond"]), MAX_SOURCE_FRAMES_MULT)
+    assert aug_info["window_source_frames"] == BUDGET_FRAMES
 
     # Past it: sped up by the cap first, then cropped to the budget.
     window_start = 3
     beyond = int(MAX_FIT_SPEEDUP * BUDGET_FRAMES) + 20
     long_raw, motion, aug_info = prepare(beyond, randint=lambda *_: window_start)
-    expected = _normalize_motion(
+    expected = _normalize_window(
         resample_time_scaled_window(
             long_raw, int(round(beyond / MAX_FIT_SPEEDUP)), BUDGET_FRAMES, NUM_FRAMES,
             source_periodic=False, window_periodic=False, shift=window_start,
         ),
-        cond,
+        cond, source_frames=BUDGET_FRAMES, periodic=False,
     )
     assert_close("capped anchored crop", motion, expected, atol=3e-5)
-    assert np.isclose(float(aug_info["resample_speed_cond"]), MAX_SOURCE_FRAMES_MULT)
+    assert aug_info["window_source_frames"] == BUDGET_FRAMES
 
 
 def test_motion_speed_sampler_rejects_bad_settings() -> None:

@@ -235,8 +235,8 @@ def species_descriptor_text(tags) -> str:
 # steps, a side-to-side rock on short legs, rapid shallow wingbeats. The slot
 # is left empty for a species that moves the way its body plan does by default;
 # a style that changes from clip to clip is not a variant. How fast a gait
-# cycles is the clip length's job (--num_frames), a specific gait the reference
-# motion's.
+# cycles is the tempo the model draws for the action label, a specific gait
+# the reference motion's.
 SPECIES_VARIANTS = ("Clanking", "Fluttering", "Waddling")
 
 

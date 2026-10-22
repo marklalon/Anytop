@@ -26,10 +26,11 @@ Exported filenames encode the applied augmentations, e.g.:
   Horse_Gallop__motion-speed+spd1.130.bvh
 
 By default every mode exports at the real 30 fps tempo by stretching the window
-back to resample_speed_cond * num_frames frames, as sample/generate.py does.
-Pass --no-real-time to export the model window itself at its compressed tempo.
-Real-time export makes speed changes visible: the window content of a time-scaled
-clip is the same as the original's; its resample_speed and velocity channels differ.
+back to its window_source_frames, as sample/generate.py does with the tempo
+head's reading. Pass --no-real-time to export the model window itself at its
+compressed tempo. Real-time export makes speed changes visible: the window
+content of a time-scaled clip is the same as the original's; only its source
+frame count differs.
 
 Usage
 -----
@@ -88,6 +89,8 @@ from data_loaders.truebones.data.dataset import (
     MotionDataset,
     load_allowed_motion_names_per_source,
     resample_motion_features,
+    resample_step_scale,
+    velocity_to_source_units,
     ALL_SPLIT_NAME,
     SUPPORTED_SPLITS,
     _build_joint_mask_candidate_roots,
@@ -197,19 +200,26 @@ def _decode_for_export(
     num_frames: int,
     real_time: bool,
 ) -> np.ndarray:
-    """Canonical (F, J, 12) window → physical features at the export tempo."""
+    """Canonical (F, J, 12) window → physical features at the export tempo.
+
+    The window's velocity is displacement per window frame, which is already
+    per output frame for the window-tempo export; the real-time export turns
+    it back into displacement per source frame before resampling.
+    """
     motion_raw = canonical_to_physical_hml(
         motion_canonical[:m_length],
         object_cond,
     ).astype(np.float32)
     if real_time:
-        export_frames = max(2, int(round(float(aug_info["resample_speed_cond"]) * num_frames)))
+        export_frames = max(2, int(aug_info["window_source_frames"]))
+        periodic = bool(aug_info.get("loop_applied"))
+        motion_raw = velocity_to_source_units(
+            motion_raw, resample_step_scale(export_frames, motion_raw.shape[0], periodic=periodic),
+        )
         if export_frames != motion_raw.shape[0]:
             # Invert the loader's window resample: periodic for a
             # loop-conditioned window.
-            motion_raw = resample_motion_features(
-                motion_raw, export_frames, periodic=bool(aug_info.get("loop_applied")),
-            )
+            motion_raw = resample_motion_features(motion_raw, export_frames, periodic=periodic)
     return motion_raw
 
 
@@ -276,12 +286,12 @@ def parse_args() -> argparse.Namespace:
                    help="Temporal window length in frames (must match --num_frames in training).")
     p.add_argument("--loop-tile-single-prob", type=float, default=0.5,
                    help="Floor on the probability that a loop window holds one cycle. Match --loop_tile_single_prob.")
-    p.add_argument("--motion-speed-aug", type=float, default=1.3,
-                   help="Speed range R >= 1, log-uniform in [1/R, R]; default: 1.3, matching "
+    p.add_argument("--motion-speed-aug", type=float, default=1.1,
+                   help="Speed range R >= 1, log-uniform in [1/R, R]; default: 1.1, matching "
                         "train_all.bat (1.0 disables random speed changes). Used only in motion-speed mode.")
     p.add_argument("--no-real-time", dest="real_time", action="store_false", default=True,
                    help="Export the model window at its compressed tempo. By default all modes export "
-                        "at the real 30 fps tempo (resample_speed_cond * num-frames frames).")
+                        "at the real 30 fps tempo (the window's source frame count).")
     p.add_argument("--filter", nargs="+", default=[], metavar="PATTERN",
                    help="Wildcard patterns (case-insensitive, e.g. 'Insect_*') matched against "
                         "species names; only matching species' clips are sampled.")
@@ -461,7 +471,7 @@ def main() -> int:
                 motion_metadata,
                 _name,
                 _candidate_roots_info,
-                aug_info,     # dict: loop_applied, resample_speed_cond, ...
+                aug_info,     # dict: loop_applied, window_source_frames, ...
             ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 
             object_cond = aug_info["object_cond"]

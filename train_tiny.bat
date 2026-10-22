@@ -59,7 +59,7 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --leaf_drop_prob 0.3 ^
     --bone_length_aug_prob 0.3 ^
     --bone_length_aug 0.2 ^
-    --motion_speed_aug 1.3 ^
+    --motion_speed_aug 1.1 ^
     --loop_cond_prob 0.8 ^
     --cross_limb_dim 64 ^
     --cross_limb_last_n 4 ^
@@ -91,6 +91,7 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --lambda_dpos 0.07 ^
     --lambda_geo 0.1 ^
     --lambda_bone 0.06 ^
+    --lambda_tempo 0.1 ^
     --motion_cache_size 16384 ^
     --amp_dtype fp16 ^
     --main_process_prefetch_batches 64 ^

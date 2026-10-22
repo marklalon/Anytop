@@ -95,21 +95,6 @@ _FULL_COVERAGE_INPAINT_ERROR = (
 )
 
 
-def check_full_coverage_inpaint_early(frames_arg, joints_arg, num_frames):
-    """Reject a whole-mask inpaint before the model is loaded, when it can be
-    seen that early: an explicit ``--num_frames`` and no ``--inpaint_joints`` to
-    narrow the joint axis. Everything else waits for
-    :func:`resolve_inpaint_policy`, which sees the resolved length, the resolved
-    joint set and the mapped window frames.
-    """
-    if joints_arg or not frames_arg:
-        return
-    if int(num_frames or 0) <= 0:
-        return
-    if inpaint_span_role(frames_arg, int(num_frames)) == 'full':
-        sys.exit(_FULL_COVERAGE_INPAINT_ERROR)
-
-
 def resolve_inpaint_policy(
     cond_entry,
     *,

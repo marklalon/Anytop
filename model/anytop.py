@@ -34,6 +34,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     CONTROLLED_VOCAB,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim
+from model.tempo_head import TempoHead, tempo_bin_frames
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -200,14 +201,19 @@ class AnyTop(nn.Module):
         # the low-lift, phase-scrambled gait of the cluster's other loops
         # instead of the species' own one-shot runs, while the phase table
         # alone closed the window just as well (docs/anytop_model_architecture.md §6).
-        self.resample_speed_projection = nn.Sequential(
-            nn.Linear(1, self.latent_dim),
-            nn.GELU(),
-            nn.Linear(self.latent_dim, self.latent_dim),
+        #
+        # The window's source frame count (its tempo) is not an input either:
+        # an input tempo competed with the action label for the same token and
+        # could win, drawing a motion that fits the length rather than the
+        # label. The model draws the tempo the label and species call for, and
+        # the tempo head reads it back (model/tempo_head.py).
+        self.tempo_head = TempoHead(
+            self.latent_dim,
+            tempo_bin_frames(kargs.get('window_frames', 60), kargs.get('min_length', 20)),
         )
         if self.action_label_cond:
             # Project the concatenated slot channels and add the result to the
-            # timestep token, alongside loop / resample_speed / canonical frame. One
+            # timestep token. One
             # Linear over the concatenation IS one Linear per channel block,
             # summed, so each channel's relative scale is learned rather than
             # being some offline budget we picked. Additive and linear is enough:
@@ -336,29 +342,6 @@ class AnyTop(nn.Module):
         attention masks. Only structurally padded joints are masked here.
         """
         return torch.arange(njoints, device=device)[None, :] >= n_joints[:, None]
-
-    def _coerce_resample_speed_cond(self, raw_resample_speed_cond, batch_size, device, dtype):
-        if raw_resample_speed_cond is None:
-            raw_resample_speed_cond = torch.ones(batch_size, device=device, dtype=dtype)
-        elif not torch.is_tensor(raw_resample_speed_cond):
-            raw_resample_speed_cond = torch.as_tensor(raw_resample_speed_cond, device=device)
-        raw_resample_speed_cond = raw_resample_speed_cond.to(device=device)
-        if raw_resample_speed_cond.dim() == 0:
-            raw_resample_speed_cond = raw_resample_speed_cond.reshape(1)
-        raw_resample_speed_cond = raw_resample_speed_cond.reshape(-1)
-        if raw_resample_speed_cond.numel() == 1 and batch_size != 1:
-            raw_resample_speed_cond = raw_resample_speed_cond.expand(batch_size)
-        elif raw_resample_speed_cond.numel() != batch_size:
-            raise ValueError(
-                "resample_speed_cond batch dimension must match the motion batch size, got "
-                f"{raw_resample_speed_cond.numel()} for batch {batch_size}"
-            )
-        # `.all()` in a python `if` is a data-dependent value that forces a
-        # torch.compile graph break every step, so skip the finiteness guard
-        # under compilation (eager eval/inference still validates).
-        if not torch.compiler.is_compiling() and not torch.isfinite(raw_resample_speed_cond).all():
-            raise ValueError("resample_speed_cond must be finite")
-        return raw_resample_speed_cond.to(dtype=dtype).view(batch_size, 1)
 
     def _init_action_conditioning(self, bundle, t5_out_dim):
         """Freeze the word table into a model buffer.
@@ -953,10 +936,12 @@ class AnyTop(nn.Module):
             return torch.rand(batch_size, device=device) >= self.species_cfg_drop_prob
         return torch.ones(batch_size, device=device, dtype=torch.bool)
 
-    def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
+    def forward(self, x, timesteps, y=None, train_step=None, return_tempo_logits=False, **unused_kwargs):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
+        return_tempo_logits: also return the tempo head's ``[batch_size, bins]``
+            logits over the window's source frame count (model/tempo_head.py).
         """
         joints_padding_mask = y['joints_padding_mask'].to(x.device)
         rest_pose = y['rest_pose'].to(x.device).unsqueeze(0)
@@ -974,14 +959,6 @@ class AnyTop(nn.Module):
         # cross-joint pathway to denoise robustly against per-joint timestep
         # disagreement (matching inpaint clamp behavior at inference).
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
-        resample_speed_condition = self._coerce_resample_speed_cond(
-            y.get('resample_speed_cond'),
-            batch_size=bs,
-            device=x.device,
-            dtype=x.dtype,
-        )
-        timesteps_emb = timesteps_emb + run_in_fp32(
-            self.resample_speed_projection, resample_speed_condition)
         action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype, ref_active)
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token
@@ -1052,7 +1029,10 @@ class AnyTop(nn.Module):
             ref_z=ref_z,
             ref_active=ref_active,
         )
+        tempo_logits = self.tempo_head(output, joint_valid) if return_tempo_logits else None
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
+        if return_tempo_logits:
+            return output, tempo_logits
         return output
 
     def _sample_joint_name_drop(self, batch_size, joint_count, device):

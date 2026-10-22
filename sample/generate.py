@@ -19,11 +19,10 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from data_loaders.truebones.data.dataset import ensure_joint_name_embeddings, resample_step_scale
+from data_loaders.truebones.data.dataset import ensure_joint_name_embeddings
 from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
-    rebuild_derived_velocity,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import (
@@ -32,7 +31,6 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
     species_lookup_map,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
 from sample.conditioning import (
     _resolve_action_condition,
     _resolve_species_code_override,
@@ -48,7 +46,6 @@ from sample.export import (
     _zero_root_ric_xz,
 )
 from sample.generation_runtime import (
-    _checkpoint_cond_loader,
     _checkpoint_cond_path,
     _checkpoint_native_num_frames,
     _lookup_object_type_case_insensitive,
@@ -63,17 +60,17 @@ from sample.inpaint import (
     _reground_inpaint_joint_y,
     _resolve_inpaint_joint_indices,
     build_inpaint_mask,
-    check_full_coverage_inpaint_early,
     resolve_inpaint_policy,
 )
 from sample.output_lengths import (
-    _all_species_output_lengths,
-    _finalize_output_lengths,
     _resample_window_to_output,
-    _resolve_auto_output_lengths,
-    fit_reference_to_output,
+    clamp_reference_frames,
+    outpaint_reference,
+    predict_window_source_frames,
     resample_reference_to_output,
     resolve_loop_condition,
+    source_frame_budget,
+    window_to_physical,
 )
 from sample.reference_motion import (
     _REFERENCE_MOTION_PREPROCESS_SUFFIXES,
@@ -92,14 +89,15 @@ from utils.misc import infer_object_type_from_filename
 from utils.parser_util import generate_args
 
 
-def _with_derived_velocity(motion_np, resample_speed, loop):
-    """Fill the derived velocity rows of a decoded ``[T, J, F]`` window, at the
-    window's own step (``vel * step`` is a window-frame step), so the export
-    resample and every reader of the saved rows see full physical velocity."""
-    n_frames = motion_np.shape[0]
-    speed = 1.0 if resample_speed is None else float(resample_speed)
-    step = resample_step_scale(speed * n_frames, n_frames, periodic=bool(loop))
-    return rebuild_derived_velocity(motion_np, is_loop=bool(loop), step_scale=step)
+def _require_tempo_head(args):
+    """Generation without a reference reads its length off the tempo head,
+    which only a run trained with --lambda_tempo > 0 has fitted."""
+    if float(getattr(args, 'lambda_tempo', 0.0) or 0.0) <= 0.0:
+        sys.exit(
+            "ERROR: this checkpoint was trained with --lambda_tempo 0, so its tempo head was "
+            "never fitted and cannot give the output length. Generate from a --reference_motion "
+            "(its length is the output length) or use a checkpoint trained with --lambda_tempo > 0."
+        )
 
 
 def _generate_all_species(
@@ -108,7 +106,7 @@ def _generate_all_species(
     opt,
     args,
     n_frames,
-    species_output_lengths,
+    loop_condition,
     model,
     diffusion,
     sampling_method,
@@ -128,14 +126,10 @@ def _generate_all_species(
     which is exactly what the flag means here: the same prompt performed by each
     skeleton.
 
-    ``species_output_lengths`` is ``{species: (target_output_frames,
-    resample_speed_cond, is_loop)}``. Length is per species for the same reason
-    the conditioning is: a Pigeon's walk cycle is not a Horse's, so one shared
-    number would put every species but the average one off its training
-    distribution. All three values are already per-sample in the batch (the
-    speed and the loop flag are conditioning channels, the frame count only
-    affects the export resample), so nothing about the shared forward pass
-    changes.
+    ``loop_condition`` is the resolved ``--loop`` verdict, one for every
+    species (it depends on the label only). The output length is per sample:
+    the tempo head reads each finished window on its own, so a Pigeon's walk
+    cycle and a Horse's come back at their own lengths from the shared pass.
     """
     all_species = sorted(cond_dict.keys())
     # Canonical keys carry '/', so output filenames use the file token instead.
@@ -148,6 +142,7 @@ def _generate_all_species(
     print(f'\n### Multi-species generation: {total_species} species, '
           f'{len(species_batches)} batch(es) of batch_size={batch_size}')
     print(f'  All species: {", ".join(all_species)}')
+    print(f'  loop: {"on" if loop_condition else "off"} for every species')
     if action_condition is not None:
         print(f'  Action label: {action_condition["action_label"]!r} '
               f'(group={action_condition["action_group"]})')
@@ -164,13 +159,8 @@ def _generate_all_species(
                     f"cond/model max_joints={cond_max_joints}"
                 )
 
-            batch_roster = ", ".join(
-                f'{sp}({species_output_lengths[sp][0]}f'
-                f'{", loop" if species_output_lengths[sp][2] else ""})'
-                for sp in batch_species
-            )
             print(f'\n--- Batch {batch_idx}/{len(species_batches)} ({actual_bs} species, '
-                  f'max_joints={batch_max_joints}): {batch_roster} ---')
+                  f'max_joints={batch_max_joints}): {", ".join(batch_species)} ---')
 
             _, model_kwargs = create_condition(
                 list(batch_species),
@@ -178,14 +168,10 @@ def _generate_all_species(
                 output_frame_count,
                 max_joints=batch_max_joints,
                 feature_len=opt.feature_len,
-                # Same meaning as in main(), per sample: a closed window, so
-                # every temporal resample of it is periodic.
-                loop=[species_output_lengths[sp][2] for sp in batch_species],
+                # Same meaning as in main(): a closed window, so every
+                # temporal resample of it is periodic.
+                loop=loop_condition,
                 action_condition=action_condition,
-            )
-            model_kwargs['y']['resample_speed_cond'] = torch.tensor(
-                [species_output_lengths[sp][1] for sp in batch_species],
-                dtype=torch.float32, device=dist_util.dev(),
             )
             model_kwargs['y']['species_active'] = torch.full(
                 (actual_bs,), bool(getattr(args, 'species_active', True)), dtype=torch.bool)
@@ -202,6 +188,11 @@ def _generate_all_species(
                 device=dist_util.dev(),
                 autocast_dtype=inference_autocast_dtype,
             )
+            source_frames = predict_window_source_frames(
+                model, sample, model_kwargs, autocast_dtype=inference_autocast_dtype,
+            )
+            print('  num_frames (tempo head): ' + ', '.join(
+                f'{sp} {frames}' for sp, frames in zip(batch_species, source_frames)))
 
             # ── Per-sample export with per-species metadata ──────────
             export_tasks = []
@@ -213,14 +204,13 @@ def _generate_all_species(
                 motion = motion[:n_joints]
                 # Decode with full cond entry (carries rest geometry + global standardization stats).
                 motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), sp_entry)[0]
-                motion_np = _with_derived_velocity(
+                motion_np = window_to_physical(
                     motion_physical.cpu().permute(2, 0, 1).numpy(),
-                    species_output_lengths[sp][1], species_output_lengths[sp][2],
+                    source_frames[sample_idx], loop_condition,
                 )
 
                 motion_np = _resample_window_to_output(
-                    motion_np, species_output_lengths[sp][0], output_frame_count,
-                    species_output_lengths[sp][2],
+                    motion_np, source_frames[sample_idx], output_frame_count, loop_condition,
                 )
 
                 translation_root_index = _get_batch_translation_root_index(
@@ -253,7 +243,7 @@ def _reference_is_edit(args):
     reference on the target skeleton; without them it is only encoded."""
     return bool(getattr(args, 'reference_motion', None)) and (
         getattr(args, 'skip_timesteps', None) is not None
-        or bool(getattr(args, 'outpaint', False))
+        or int(getattr(args, 'outpaint', 0) or 0) > 0
         or bool(str(getattr(args, 'inpaint_joints', '') or '').strip())
         or bool(str(getattr(args, 'inpaint_frames', '') or '').strip())
     )
@@ -324,8 +314,8 @@ def main(args=None, cond_dict=None, runtime=None):
         or str(getattr(args, 'inpaint_frames', '') or '').strip()
     )
 
-    # --skip_timesteps check deferred until after reference length R is known
-    # (--outpaint with R < M needs no --skip_timesteps).
+    # --skip_timesteps check deferred until after the reference is loaded
+    # (--outpaint needs no --skip_timesteps).
 
     # Fail fast if inpaint flags are set without reference motion.
     if _inpaint_early and not getattr(args, 'reference_motion', None):
@@ -334,13 +324,6 @@ def main(args=None, cond_dict=None, runtime=None):
             "(the reference is the known region held fixed while the masked region "
             "is regenerated). Pass --reference_motion <path>, or drop the inpaint "
             "flags for plain generation."
-        )
-
-    if _inpaint_early:
-        check_full_coverage_inpaint_early(
-            str(getattr(args, 'inpaint_frames', '') or '').strip(),
-            str(getattr(args, 'inpaint_joints', '') or '').strip(),
-            getattr(args, 'num_frames', None),
         )
 
     if _inpaint_early and skip_timesteps_raw is None:
@@ -403,36 +386,18 @@ def main(args=None, cond_dict=None, runtime=None):
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
     fps = opt.fps
 
-    # Model native window from checkpoint args.json (args.num_frames = user intent, may be None).
-    _ckpt_num_frames = _checkpoint_native_num_frames(args.model_path)
-
-    internal_num_frames = _ckpt_num_frames
+    # The model's native window T, from the checkpoint's args.json.
+    n_frames = _checkpoint_native_num_frames(args.model_path)
     min_length = int(getattr(args, 'min_length', 20))
-    n_frames = internal_num_frames
     cond_max_joints = opt.max_joints
 
-    motion_frames = getattr(args, 'num_frames', None)
-
-    # Output length, in priority order:
-    #   1. --num_frames itself. An explicit number is the user's decision and
-    #      outranks everything, reference included (the reference is resampled
-    #      to M, or under --outpaint outpainted when R < M and cropped when
-    #      R > M, loop or not): it is finalized right here, and every
-    #      fallback below is guarded on requested_output_frames still being None.
-    #   2. a --reference_motion's own frame count R -- with no number given, the
-    #      reference IS the requested length.
-    #   3. the training-length prior for --action_label, resolved once
-    #      --object_type is known (below, and in the all-species branch).
-    #   4. the checkpoint's native window.
-    requested_output_frames = target_output_frames = resample_speed_cond_value = None
-    if motion_frames is not None:
-        requested_output_frames, target_output_frames, resample_speed_cond_value = (
-            _finalize_output_lengths(
-                motion_frames,
-                min_length,
-                internal_num_frames,
-            )
-        )
+    # Output length: never an input to the model. With a --reference_motion it
+    # is the reference's own frame count (plus any --outpaint frames), fixed
+    # once the clip is loaded below; without one the tempo head reads it off
+    # each finished window, per sample, after sampling.
+    target_output_frames = None
+    if not getattr(args, 'reference_motion', None):
+        _require_tempo_head(args)
     object_type = args.object_type
     if out_path == '':
         out_path = os.path.join(
@@ -513,26 +478,13 @@ def main(args=None, cond_dict=None, runtime=None):
         # unreported). The condition is species-independent: it is word ids into
         # the checkpoint's own vocabulary.
         _all_action_condition = _resolve_action_condition(args, model)
-        _species_output_lengths = _all_species_output_lengths(
-            cond_dict,
-            _all_action_condition,
-            explicit=(
-                None if requested_output_frames is None
-                else (target_output_frames, resample_speed_cond_value)
-            ),
-            min_length=min_length,
-            internal_num_frames=internal_num_frames,
-            default_frames=_ckpt_num_frames,
-            loop_mode=loop_mode,
-            fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file),
-        )
         _generate_all_species(
             cond_dict=cond_dict,
             cond_max_joints=cond_max_joints,
             opt=opt,
             args=args,
             n_frames=n_frames,
-            species_output_lengths=_species_output_lengths,
+            loop_condition=resolve_loop_condition(loop_mode, _all_action_condition),
             model=model,
             diffusion=diffusion,
             sampling_method=sampling_method,
@@ -655,31 +607,14 @@ def main(args=None, cond_dict=None, runtime=None):
 
     print(f'\nSampling object_type: {object_type}  method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
 
-    # Resolved here, ahead of every reference step, because
-    # an unset ``--num_frames`` needs the label -- and because a bad label should
-    # fail before minutes of preprocessing, not after. The loop condition comes
-    # first: the auto length only pools loop clips when the window is a loop.
-    # With a reference both wait for the clip itself (further down): its length
-    # is the window, and --loop auto reads whether it closes off the tensor.
+    # Resolved here, ahead of every reference step, so a bad label fails
+    # before minutes of preprocessing, not after. With a reference the loop
+    # condition waits for the clip itself (further down): --loop auto reads
+    # whether it closes off the tensor.
     _action_condition = _resolve_action_condition(args, model)
     loop_condition = None
     if not reference_motion_path:
         loop_condition = resolve_loop_condition(loop_mode, _action_condition)
-    if requested_output_frames is None and not reference_motion_path:
-        # A reference outranks the label: with one present the length is its own
-        # R, finalized from the loaded reference further down.
-        requested_output_frames, target_output_frames, resample_speed_cond_value = (
-            _resolve_auto_output_lengths(
-                cond_dict,
-                object_type,
-                _action_condition,
-                min_length=min_length,
-                internal_num_frames=internal_num_frames,
-                default_frames=_ckpt_num_frames,
-                loop=loop_condition,
-                fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file),
-            )
-        )
 
     # Prepare reference motion (normalize + reshape)
     ref_motion = None
@@ -711,11 +646,13 @@ def main(args=None, cond_dict=None, runtime=None):
         loop_condition = resolve_loop_condition(
             loop_mode, _action_condition, reference_features=ref_features,
             translation_root_index=int(source_cond.get('translation_root_index', 0)))
-        if requested_output_frames is None:
-            auto_frames = int(np.clip(len(ref_features), min_length, MAX_SOURCE_FRAMES_MULT * internal_num_frames))
-            requested_output_frames, target_output_frames, resample_speed_cond_value = (
-                _finalize_output_lengths(auto_frames, min_length, internal_num_frames))
-        ref_features, _, _ = resample_reference_to_output(ref_features, int(requested_output_frames))
+        # The output is frame-aligned with the reference, so it runs at the
+        # reference's tempo: its length is the reference's, clamped into what
+        # a window holds.
+        target_output_frames = clamp_reference_frames(len(ref_features), min_length, n_frames)
+        ref_features, _, fit_note = resample_reference_to_output(ref_features, target_output_frames)
+        if fit_note:
+            print(fit_note)
         encoder_reference = _prepare_encoder_reference_bundle(
             ref_features, source_cond, batch_size=args.batch_size, n_frames=n_frames,
             visible_frames=target_output_frames, min_length=min_length)
@@ -754,37 +691,41 @@ def main(args=None, cond_dict=None, runtime=None):
             translation_root_index=int(cond_dict[object_type].get('translation_root_index', 0)),
         )
 
-        # Finalize output lengths from R (if --num_frames not specified).
-        if requested_output_frames is None:
-            auto_frames = int(np.clip(R, min_length, MAX_SOURCE_FRAMES_MULT * internal_num_frames))
-            requested_output_frames, target_output_frames, resample_speed_cond_value = (
-                _finalize_output_lengths(auto_frames, min_length, internal_num_frames)
-            )
-            if auto_frames == R:
-                print(f'  Using reference native length R={R} frames')
-            else:
-                print(
-                    f'  Reference R={R} frames clamped to {auto_frames} '
-                    f'(variable-length window [{min_length}, '
-                    f"{MAX_SOURCE_FRAMES_MULT * internal_num_frames}])"
-                )
-        M = int(requested_output_frames)
-
-        # Fit the reference to M. By default it is resampled to M (tempo
-        # change, nothing to fill). --outpaint fits by length instead: crop
-        # (R > M) or outpaint-pad (R < M). A loop reference is no exception --
-        # R < M appends frames from noise, which under is_loop is exactly where
-        # the model gets to close the cycle.
-        fit_reference = (
-            fit_reference_to_output if getattr(args, 'outpaint', False)
-            else resample_reference_to_output
+        # Output length: the reference's own R, clamped into what a window
+        # holds (a reference outside that range is resampled to it -- a tempo
+        # change), plus any --outpaint frames up to the source budget.
+        reference_frames = clamp_reference_frames(R, min_length, n_frames)
+        if reference_frames == R:
+            print(f'  Using reference native length R={R} frames')
+        ref_features_full, _, fit_note = resample_reference_to_output(
+            ref_features_full, reference_frames,
         )
-        ref_features_full, auto_outpaint_range, fit_note = fit_reference(
-            ref_features_full, M,
+        if fit_note:
+            print(fit_note)
+        requested_outpaint = int(getattr(args, 'outpaint', 0) or 0)
+        appended = min(requested_outpaint, source_frame_budget(n_frames) - reference_frames)
+        if requested_outpaint > 0 and appended <= 0:
+            sys.exit(
+                f"ERROR: --outpaint {requested_outpaint}: the reference already fills the "
+                f"{source_frame_budget(n_frames)}-frame source budget of one window, so "
+                "there is no room to append frames."
+            )
+        if appended < requested_outpaint:
+            print(
+                f'  --outpaint {requested_outpaint} capped to {appended} frames '
+                f'(source budget {source_frame_budget(n_frames)})'
+            )
+        # A loop reference is no exception -- the appended frames come from
+        # noise, which under is_loop is exactly where the model gets to close
+        # the cycle.
+        ref_features_full, auto_outpaint_range, fit_note = outpaint_reference(
+            ref_features_full, appended,
         )
         outpaint_active = auto_outpaint_range is not None
         if fit_note:
             print(fit_note)
+        M = int(ref_features_full.shape[0])
+        target_output_frames = M
 
         # Settles what the range means for the run -- which clip ends stay
         # clamped, hence whether --loop has a closure to make -- and rejects a
@@ -816,8 +757,8 @@ def main(args=None, cond_dict=None, runtime=None):
         if not outpaint_active and not user_inpaint_active and skip_timesteps_raw is None:
             sys.exit(
                 "ERROR: --skip_timesteps is required when using --reference_motion "
-                "without --inpaint_joints/--inpaint_frames and without an outpaint "
-                "extension (--outpaint with R < num_frames).\n"
+                "without --inpaint_joints/--inpaint_frames and without an --outpaint "
+                "extension.\n"
                 "  Higher values (e.g. 80-100) produce motion more faithful to the reference;\n"
                 "  lower values (e.g. 20-40) allow more model-driven variation."
             )
@@ -851,7 +792,7 @@ def main(args=None, cond_dict=None, runtime=None):
             )
             print(
                 f'    Mode: two-pass outpaint '
-                f'(pass 1: fill appended frames [{R}, {M - 1}] from pure noise; '
+                f'(pass 1: fill appended frames [{reference_frames}, {M - 1}] from pure noise; '
                 f'pass 2: {pass2_desc})'
             )
         elif single_pass_outpaint:
@@ -898,12 +839,6 @@ def main(args=None, cond_dict=None, runtime=None):
         loop=loop_condition,
         action_condition=_action_condition,
         species_code_override=_species_code_override,
-    )
-    model_kwargs['y']['resample_speed_cond'] = torch.full(
-        (args.batch_size,),
-        resample_speed_cond_value,
-        dtype=torch.float32,
-        device=dist_util.dev(),
     )
     model_kwargs['y']['species_active'] = torch.full(
         (args.batch_size,), bool(getattr(args, 'species_active', True)), dtype=torch.bool)
@@ -962,6 +897,17 @@ def main(args=None, cond_dict=None, runtime=None):
         # Plain img2img (reference present) or plain generation (ref_motion None).
         sample = _run_sample(ref_motion, skip_timesteps, None)
 
+    # Source frames per sample: the reference's (every reference path fixed
+    # target_output_frames above), else the tempo head's reading of each
+    # finished window.
+    if target_output_frames is None:
+        sample_source_frames = predict_window_source_frames(
+            model, sample, model_kwargs, autocast_dtype=inference_autocast_dtype,
+        )
+        print('  num_frames (tempo head): ' + ', '.join(str(int(f)) for f in sample_source_frames))
+    else:
+        sample_source_frames = np.full(len(sample), int(target_output_frames), dtype=np.int64)
+
     # Joint-inpaint vertical reseat: capture the reference actually
     # used to clamp the known joints so the regenerated subtree can be dropped
     # back onto its grounded vertical frame during export. Pure joint inpaint
@@ -1003,12 +949,13 @@ def main(args=None, cond_dict=None, runtime=None):
         # Decode with the full per-species cond entry (rest geometry + global
         # standardization stats), not a minimal dict that would drop the stats.
         motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), cond_dict[object_type])[0]
-        motion_np = _with_derived_velocity(
-            motion_physical.cpu().permute(2, 0, 1).numpy(), resample_speed_cond_value, loop_condition,
+        source_frames = int(sample_source_frames[sample_idx])
+        motion_np = window_to_physical(
+            motion_physical.cpu().permute(2, 0, 1).numpy(), source_frames, loop_condition,
         )
 
         motion_np = _resample_window_to_output(
-            motion_np, target_output_frames, output_frame_count, loop_condition,
+            motion_np, source_frames, output_frame_count, loop_condition,
             invert=export_inverts_window,
         )
 
@@ -1027,11 +974,13 @@ def main(args=None, cond_dict=None, runtime=None):
                 reseat_reference[sample_idx][:n_joints].to(motion.device).unsqueeze(0),
                 cond_dict[object_type],
             )[0]
-            ref_motion_np = ref_phys.cpu().permute(2, 0, 1).numpy()
+            ref_motion_np = window_to_physical(
+                ref_phys.cpu().permute(2, 0, 1).numpy(), source_frames, loop_condition,
+            )
             # Same mapping as the exported motion: _reground_inpaint_joint_y
             # pairs these two frame by frame.
             ref_motion_np = _resample_window_to_output(
-                ref_motion_np, target_output_frames, output_frame_count, loop_condition,
+                ref_motion_np, source_frames, output_frame_count, loop_condition,
                 invert=export_inverts_window,
             )
             reseat_delta = _reground_inpaint_joint_y(

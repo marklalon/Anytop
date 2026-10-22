@@ -13,7 +13,11 @@ import os
 import numpy as np
 import torch
 
-from data_loaders.truebones.data.dataset import resample_motion_features
+from data_loaders.truebones.data.dataset import (
+    resample_motion_features,
+    resample_step_scale,
+    velocity_to_window_units,
+)
 from data_loaders.truebones.truebones_utils.canonical_features import (
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
@@ -117,8 +121,8 @@ def _prepare_img2img_reference_bundle(
 
     loaded_reference_frame_count, loaded_reference_joint_count, ref_feats = ref_raw.shape
     # Fixed-window model: always run at native window length (num_frames);
-    # resample reference up to it like pure generation, then resample output
-    # to target_output_frames afterwards.
+    # resample the reference into it as the loader does, then resample the
+    # output to target_output_frames afterwards.
     output_frame_count = int(requested_output_frame_count)
     max_source_frames = max(int(min_length), output_frame_count * MAX_SOURCE_FRAMES_MULT)
     if loaded_reference_frame_count > max_source_frames:
@@ -134,6 +138,12 @@ def _prepare_img2img_reference_bundle(
     reference_source_frame_count = int(ref_raw.shape[0])
     if ref_raw.shape[0] != output_frame_count:
         ref_raw = resample_motion_features(ref_raw, output_frame_count)
+    # The window's velocity rows are displacement per window frame, as in the
+    # loader; the rest of this bundle (encoder pose, canonical tensor) reads
+    # the window as the model will.
+    ref_raw = velocity_to_window_units(
+        ref_raw, resample_step_scale(reference_source_frame_count, output_frame_count)
+    )
 
     mark_canonical_cond_entry(target_cond)
     ref_canonical = np.nan_to_num(

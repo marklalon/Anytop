@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 43
+CKPT_VERSION = 44
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -130,9 +130,7 @@ def apply_checkpoint_action_group(args, model_args, args_path):
 
     An ``all`` checkpoint was trained on the whole corpus and carries no group
     condition. It leaves the group EMPTY, which every consumer reads as "any
-    group": the label's first head word determines the group by itself, so
-    nothing downstream needs the value except the clip-length prior, which
-    matches across groups when it is empty (utils/clip_length_prior).
+    group": the label's first head word determines the group by itself.
 
     A run predating the mandatory flag also records no group.
     """
@@ -143,8 +141,7 @@ def apply_checkpoint_action_group(args, model_args, args_path):
         print(
             f"[parser_util] WARNING: {args_path} records action_group "
             f"'{recorded_group}', which is not one of {', '.join(ACTION_GROUPS)} "
-            f"or '{ACTION_GROUP_ALL}'. Treating this checkpoint as group-less: "
-            f"the clip-length prior will match a label across every group."
+            f"or '{ACTION_GROUP_ALL}'. Treating this checkpoint as group-less."
         )
         recorded_group = ''
     args.action_group = recorded_group
@@ -164,15 +161,13 @@ def extract_args(args, args_to_overwrite, model_path):
         if a in model_args.keys():
             setattr(args, a, model_args[a])
 
-    for a, default in (('min_length', 20),):
+    # The model's window and the loader's shortest source clip: together they
+    # fix the tempo head's bins, so they always come from the checkpoint.
+    for a, default in (('min_length', 20), ('num_frames', 60)):
         if a in model_args:
             setattr(args, a, model_args[a])
         elif not hasattr(args, a):
             setattr(args, a, default)
-    # num_frames is intentionally NOT overridden here — it is a per-generation
-    # parameter (output frame count) and must preserve the generate parser's
-    # default of None so the caller can distinguish "user explicitly requested
-    # N frames" from "use reference native length / checkpoint default".
     return args
 
 def get_args_per_group_name(parser, args, group_name):
@@ -274,6 +269,15 @@ def add_model_options(parser):
                             "weight well below 1 already matches l_simple's gradient norm at low t, and "
                             "1.0 is an order of magnitude above it. loop_root_xz_drift (the per-cycle "
                             "seam pop in physical units) is logged whenever this or --lambda_loop_wrap is on.")
+    group.add_argument("--lambda_tempo", default=0.1, type=float,
+                       help="Weight of the tempo head's cross-entropy: the head reads, from the "
+                            "denoised window and its conditions, how many source frames the window "
+                            "holds, as a distribution over integer-frame bins (min_length up to "
+                            "MAX_SOURCE_FRAMES_MULT * num_frames, every 5 frames; two-hot target). "
+                            "Generation without a reference takes its output length from it, so a "
+                            "checkpoint trained with 0 cannot generate without one. The frame count "
+                            "is never a model input. Mean absolute error of the expected frame count "
+                            "is logged as tempo_frames_error.")
     group.add_argument("--lambda_bone", default=0.0, type=float,
                        help="Weight for the target-relative, rest-length-normalized bone-vector loss (0.0=off). "
                             "Penalizes |v_pred - v_gt| for every parent->child bone vector of the position "
@@ -285,20 +289,20 @@ def add_model_options(parser):
                             "|R_pred - R_gt|_F / sqrt(3)), so a leaf's rotation is held like a joint with a child. "
                             "Weighted by alphas_cumprod[t] so it fades out at high noise. Computed on "
                             "denormalized outputs; recommended range ~0.1-0.3.")
-    group.add_argument("--motion_speed_aug", default=1.0, type=float,
+    group.add_argument("--motion_speed_aug", default=1.1, type=float,
                        help="Motion-speed augmentation range R (1.0 = off). Each training clip is first "
                             "time-scaled by a log-uniform ratio in [1/R, R] -- played faster (fewer frames) "
                             "or slower (more frames) at the same fps -- and then treated as an ordinary "
-                            "source clip: loop roll/tile, crop, the window resample and resample_speed_cond "
-                            "all see the scaled length, and the model is told nothing. Loader-only: no cond "
-                            "regen, no model change, no CKPT_VERSION bump. Spreads the clustered clip lengths "
-                            "(the corpus piles up on a few exact frame counts) so an inference num_frames "
-                            "between the clusters is in distribution. The range is narrowed per clip so the "
-                            "scaled clip stays >= min_length and a loop that fits the source budget still "
-                            "fits (never downgraded to non-loop by slowing down). A phase-anchored clip (label not "
+                            "source clip: loop roll/tile, crop, the window resample and the tempo head's "
+                            "target all see the scaled length. Loader-only: no cond regen, no model change. "
+                            "A clip that fits the source budget lands in the same window whatever the draw, "
+                            "so R is a tempo spread on the tempo head's target and the output length, and "
+                            "should stay small. The range is narrowed per clip so the scaled clip stays >= "
+                            "min_length and a loop that fits the source budget still fits (never downgraded "
+                            "to non-loop by slowing down). A phase-anchored clip (label not "
                             "loop_is_phase_free) over the source budget is additionally sped up by at least "
                             "min(L/budget, MAX_FIT_SPEEDUP) -- even with this flag at 1.0 -- so it enters the "
-                            "window whole instead of being cropped. 1.2 is the intended value.")
+                            "window whole instead of being cropped.")
     group.add_argument("--motion_speed_aug_prob", default=1.0, type=float,
                        help="Per-sample probability of applying --motion_speed_aug (default 1.0 = every clip). "
                             "The recorded tempo is one point of the continuum, so leaving a mass at exactly "
@@ -495,9 +499,12 @@ def add_training_options(parser):
     group.add_argument("--num_steps", default=600_000, type=int,
                        help="Training will stop after the specified number of steps.")
     group.add_argument("--num_frames", default=60, type=int,
-                       help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
+                       help="The model's window T in frames. A clip of L source frames (min_length <= L <= "
+                            "MAX_SOURCE_FRAMES_MULT * T) is resampled into it; generation reads L back from "
+                            "the tempo head and exports L frames.")
     group.add_argument("--min_length", default=20, type=int,
-                       help="Variable-length pipeline lower bound in frames. Inference rejects shorter requested lengths.")
+                       help="Shortest source clip, in frames: shorter clips are dropped, and it is the tempo "
+                            "head's lowest bin.")
     group.add_argument("--sample_limit", default=0, type=int,
                        help="Limit the number of motion clips loaded for tiny overfit/debug runs. 0 keeps the full dataset.")
     group.add_argument("--motion_cache_size", default=0, type=int,
@@ -611,8 +618,8 @@ def add_sampling_options(parser):
                        help="Whether to generate a closed window (loop conditioning + loop-aware temporal masks). "
                             "'on' (also a bare --loop): the window is periodic -- its last frame is one step "
                             "before frame 0, whatever number of cycles it holds. A --reference_motion is placed "
-                            "into it the same way and the sampled window is rescaled to --num_frames the same "
-                            "way, so the output is a loop whatever the reference is. "
+                            "into it the same way and the sampled window is rescaled to the output length the "
+                            "same way, so the output is a loop whatever the reference is. "
                             "An --inpaint_frames range that, mapped onto the window, keeps both window ends "
                             "clamped overrides this to 'off': there is no closure for the model to make, and "
                             "a periodic export would resample those clamped ends. "
@@ -655,26 +662,12 @@ def add_generate_options(parser):
                             'Defaults to true. Cannot be supplied with an encoded '
                             '--reference_motion (one without skip_timesteps / inpaint / outpaint), '
                             'which always disables the species condition.')
-    group.add_argument("--num_frames", default=None, type=int,
-                       help="The number of frames in the sampled motion. Omit it to let "
-                            "generation pick one, in this priority order: --reference_motion's "
-                            "native length (R frames) when a reference is given; else, when "
-                            "--action_label is given, the median length of the training clips "
-                            "carrying that label -- the target species' own clips if it has any, "
-                            "otherwise the most similar species' -- so the resample_speed "
-                            "condition the model is handed stays inside its training distribution "
-                            "(needs a cond.npy baked by tools/regenerate_dataset_artifacts.py); "
-                            "else the checkpoint's native window (60). "
-                            "When R != M the reference is resampled to M frames (tempo "
-                            "change); pass --outpaint to crop / extend it instead. "
-                            "Valid range: [min_length, MAX_SOURCE_FRAMES_MULT*num_frames] "
-                            "of the checkpoint (param_utils.MAX_SOURCE_FRAMES_MULT); an "
-                            "auto-picked length is clamped into it.")
-    group.add_argument("--outpaint", action="store_true",
-                       help="With --reference_motion, fit the reference to --num_frames M "
-                            "by length instead of by tempo: R > M crops the tail, R < M "
-                            "keeps the R frames clamped and generates [R, M) from noise. "
-                            "Without it the reference is always resampled to M.")
+    group.add_argument("--outpaint", default=0, type=int,
+                       help="With --reference_motion, append this many frames after the reference's "
+                            "last one and generate them from noise while the reference frames stay "
+                            "clamped (0 = off). The output is the reference plus the appended frames, "
+                            "capped at the checkpoint's source budget "
+                            "(MAX_SOURCE_FRAMES_MULT * num_frames).")
     group.add_argument("--object_type", default=None, type=str,
                        help="Target object type. Optional if --reference_motion is provided "
                             "(inferred from filename), or if --cond_path points at a cond file "
@@ -800,7 +793,7 @@ def train_args():
 
 
 def is_encoded_reference(reference_motion, skip_timesteps=None, inpaint_joints='',
-                         inpaint_frames='', outpaint=False):
+                         inpaint_frames='', outpaint=0):
     """True when the reference is encoded as motion content rather than edited."""
     return bool(reference_motion) and (skip_timesteps is None and not outpaint
                                        and not str(inpaint_joints or '').strip()

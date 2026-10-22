@@ -43,6 +43,15 @@ zero after encode and after decode, the model neither reads nor writes it, and
 the velocity block's statistics are the root X/Z's. Consumers of a decoded
 sample that need the full physical rows call :func:`rebuild_derived_velocity`.
 
+Velocity units. A stored clip's velocity is physical: displacement per frame
+at the dataset fps. A model WINDOW (the loader's, and every reference window
+generation builds) holds ``L`` source frames resampled to ``T`` and carries
+displacement per WINDOW frame instead (dataset.velocity_to_window_units), so
+the window is self-consistent without ``L``; generation turns it back into
+physical velocity with the ``L`` it reads off the tempo head
+(sample/output_lengths.window_to_physical). The global stats below are taken
+over the stored, physical clips.
+
 """
 
 from __future__ import annotations

@@ -28,6 +28,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     _length_scale_from_cond,
     canonical_to_physical_hml,
 )
+from model.tempo_head import expected_frames, two_hot_targets
 
 
 # Floor of the rest length that normalizes the bone-vector loss, as a fraction
@@ -222,6 +223,7 @@ class GaussianDiffusion:
         lambda_loop_wrap=0.,
         lambda_loop_root_closure=0.,
         lambda_bone=0.,
+        lambda_tempo=0.,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
         renoise_same_level_prob=1.0,
@@ -236,6 +238,7 @@ class GaussianDiffusion:
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_loop_root_closure = float(lambda_loop_root_closure)
         self.lambda_bone = float(lambda_bone)
+        self.lambda_tempo = float(lambda_tempo)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
         self.renoise_same_level_prob = float(renoise_same_level_prob)
@@ -252,6 +255,8 @@ class GaussianDiffusion:
             )
         if self.lambda_bone < 0.0:
             raise ValueError(f"lambda_bone must be >= 0, got {self.lambda_bone}")
+        if self.lambda_tempo < 0.0:
+            raise ValueError(f"lambda_tempo must be >= 0, got {self.lambda_tempo}")
         if self.temporal_span_seam_loss_weight < 0.0:
             raise ValueError(
                 "temporal_span_seam_loss_weight must be >= 0, got "
@@ -464,53 +469,6 @@ class GaussianDiffusion:
         non_zero_elements = (lengths * n_joints).float()
         loss_val = loss / non_zero_elements
         return loss_val
-
-    def _coerce_resample_speed_batch(self, value, batch_size, device, dtype):
-        if value is None:
-            return th.ones(batch_size, device=device, dtype=dtype)
-        on_accelerator = th.is_tensor(value) and value.device.type != 'cpu'
-        value = host_to_device(value, device, dtype=dtype).reshape(-1)
-        if value.numel() == 1 and batch_size != 1:
-            value = value.expand(batch_size)
-        elif value.numel() != batch_size:
-            raise ValueError(
-                f"resample_speed_cond has length {value.numel()} but expected {batch_size}."
-            )
-        if on_accelerator:
-            # Checked on the device: reading it back would sync every step, in
-            # each of the three losses that call this. A bad value still aborts
-            # the run, as a device-side assert.
-            th._assert_async(
-                (th.isfinite(value) & (value > 0)).all(),
-                "resample_speed_cond must be finite and positive",
-            )
-            return value
-        if not th.isfinite(value).all():
-            raise ValueError("resample_speed_cond must be finite")
-        if bool((value <= 0).any()):
-            raise ValueError("resample_speed_cond must be positive")
-        return value
-
-    def _physical_velocity_step_scale(self, y, batch_size, n_frames, device, dtype):
-        """Source frames per window frame, as dataset.resample_step_scale.
-
-        An open window spans its ``L = resample_speed * T`` source frames end
-        to end, ``(L - 1) / (T - 1)``; a loop window is resampled periodically,
-        ``L / T``, which is resample_speed itself.
-        """
-        if n_frames <= 1:
-            return th.ones(batch_size, device=device, dtype=dtype)
-        y = y if isinstance(y, dict) else {}
-        resample_speed = self._coerce_resample_speed_batch(
-            y.get('resample_speed_cond'),
-            batch_size,
-            device,
-            dtype,
-        )
-        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
-        source_frames = (resample_speed * float(n_frames)).clamp_min(1.0)
-        open_step = ((source_frames - 1.0) / float(n_frames - 1)).clamp_min(0.0)
-        return th.where(is_loop, resample_speed, open_step)
 
     def _per_sample_y_scalar(self, y, key, batch_size, device, default=None):
         """A ``[B]`` float tensor from ``y[key]`` (``default`` when absent)."""
@@ -751,6 +709,43 @@ class GaussianDiffusion:
             )
         return result
 
+    @staticmethod
+    def _tempo_bin_frames(model):
+        """The tempo head's bin centres, through any wrapper (respacing,
+        DDP, torch.compile) around the model."""
+        current = model
+        for _ in range(8):
+            head = getattr(current, 'tempo_head', None)
+            if head is not None:
+                return head.bin_frames
+            current = (getattr(current, 'module', None) or getattr(current, '_orig_mod', None)
+                       or getattr(current, 'model', None))
+            if current is None:
+                break
+        raise AttributeError("the model has no tempo_head; --lambda_tempo needs one")
+
+    def tempo_loss(self, model, tempo_logits, y):
+        """Cross-entropy of the tempo head against the window's source frame
+        count ``y['window_source_frames']``, two-hot over the integer-frame bins
+        (model/tempo_head.py). ``[B]``.
+
+        Also returns ``tempo_frames_error``, the absolute error of the expected
+        frame count, as a metric (no gradient).
+        """
+        frames = (y or {}).get('window_source_frames')
+        if frames is None:
+            raise KeyError(
+                "y['window_source_frames'] is missing; the training loader collates it "
+                "as the tempo head's target."
+            )
+        bins = self._tempo_bin_frames(model)
+        frames = th.as_tensor(frames, device=tempo_logits.device).reshape(-1)
+        targets = two_hot_targets(frames, bins)
+        log_probs = th.log_softmax(tempo_logits.float(), dim=-1)
+        loss = -(targets * log_probs).sum(dim=-1)
+        error = (expected_frames(tempo_logits.detach(), bins) - frames.float()).abs()
+        return {'tempo_loss': loss, 'tempo_frames_error': error}
+
     def loop_wrap_loss(self, model_output, y, n_joints):
         """Rotation seam continuity of loop samples, on denormalized outputs.
 
@@ -833,7 +828,7 @@ class GaussianDiffusion:
         gradient norm at t=10 while 1.0 is ~12x it -- hence the 0.05-0.2 range
         on --lambda_loop_root_closure.
 
-        Returns the squared per-cycle closure ``||sum_t vel_xz[t] * step||^2``
+        Returns the squared per-cycle closure ``||sum_t vel_xz[t]||^2``
         in physical units, averaged over the active loop samples, plus the
         mean closure magnitude ``loop_root_xz_drift`` (the seam pop, in the
         same units as the dataset's LOOP_DETECTION_ROOT_XZ_TOLERANCE) as a
@@ -852,9 +847,6 @@ class GaussianDiffusion:
         active_weight = active_valid.to(dtype=model_output.dtype)
         active_denom = active_weight.sum().clamp(min=1.0)
 
-        step_scale = self._physical_velocity_step_scale(
-            y, batch_size, n_frames, device, model_output.dtype,
-        ).view(batch_size, 1)
         batch_indices = th.arange(batch_size, device=device)
         root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
         root_rows = model_output[batch_indices, root_indices_clamped]
@@ -863,7 +855,9 @@ class GaussianDiffusion:
         # Every row, the terminal one included: that is the identity the
         # stored tensors satisfy, and summing the visible rows alone would
         # add a pull of the terminal row toward zero on top.
-        closure = root_vel_xz.sum(dim=-1) * step_scale                                 # [bs, 2]
+        # The window's velocity rows are displacement per window frame, so
+        # their sum IS the cycle's XZ travel.
+        closure = root_vel_xz.sum(dim=-1)                                              # [bs, 2]
         closure_sq = (closure ** 2).sum(dim=-1)
         closure_sq = th.where(active_valid, closure_sq, th.zeros_like(closure_sq))
         loss = (closure_sq * active_weight).sum() / active_denom
@@ -1929,7 +1923,13 @@ class GaussianDiffusion:
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.num_timesteps
         elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
-            model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
+            tempo_logits = None
+            if self.lambda_tempo > 0.:
+                model_output, tempo_logits = model(
+                    x_t, self._scale_timesteps(t), return_tempo_logits=True, **model_kwargs
+                )
+            else:
+                model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
 
             if self.model_var_type in [
                 ModelVarType.LEARNED,
@@ -2041,6 +2041,10 @@ class GaussianDiffusion:
                     )
                     terms.update(loop_terms)
                     terms["loss"] = terms["loss"] + self.lambda_loop_wrap * terms["loop_wrap_loss"]
+
+                if tempo_logits is not None:
+                    terms.update(self.tempo_loss(model, tempo_logits, y_for_decode))
+                    terms["loss"] = terms["loss"] + self.lambda_tempo * terms["tempo_loss"]
 
                 if self.lambda_loop_wrap > 0.0 or self.lambda_loop_root_closure > 0.0:
                     # Computed whenever loop supervision is on, so a run with
