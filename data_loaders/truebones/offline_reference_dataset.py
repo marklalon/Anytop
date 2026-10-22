@@ -69,7 +69,7 @@ def load_cond_dict(dataset_dir: str | Path | None = None) -> dict[str, dict]:
         if not cond_path.exists():
             raise FileNotFoundError(f"Condition file was not found: {cond_path}")
         for key, entry in load_cond(cond_path, namespace=source.namespace).items():
-            if not source.accepts(entry["species_name"]):
+            if not source.accepts(entry["species_name"], entry.get("species_tags") or ()):
                 continue
             merged[key] = entry
     if not merged:
