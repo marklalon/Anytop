@@ -38,7 +38,7 @@ Usage
         --mode loop \\
         --n 10 \\
         --num-frames 60 \\
-        --objects-subset quadropeds_test \\
+        --filter 'Horse*' \\
         --output-dir ./augmented_bvh_samples
 
 Arguments
@@ -50,7 +50,7 @@ Arguments
   --motion-speed-aug  Speed range R >= 1, log-uniform in [1/R, R] (default: 1.3)
   --loop-tile-single-prob  Floor on P(loop tile count == 1) (default: 0.5; 0.0 = uniform)
   --no-real-time      Export the model window instead of the default real 30 fps tempo
-  --objects-subset    Subset name or single species name (default: "all")
+  --filter            One or more species-name wildcards, e.g. 'Insect_*' 'Horse*' (case-insensitive)
   --split             train / val / all (default: "all")
   --seed              RNG seed for reproducibility (default: 1234)
   --dataset-dir       Dataset root (auto-detected if omitted)
@@ -59,6 +59,7 @@ Arguments
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import random
 import sys
@@ -80,7 +81,6 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 from utils.npy_restore import write_feature_bvh
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
-from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 from data_loaders.truebones.truebones_utils.motion_labels import (
     load_motion_metadata,
 )
@@ -133,7 +133,7 @@ class PreviewMotionDataset(MotionDataset):
         raise ValueError("Speed range cannot produce a changed frame count for this clip.")
 
 
-def _build_cond_dict(opt, objects_subset: str) -> dict:
+def _build_cond_dict(opt) -> dict:
     """Load cond.npy and prepare static canonical metadata.
     Joint-name T5 embeddings are stubbed with zeros so we can avoid loading a
     large language model just for BVH export.
@@ -141,14 +141,9 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
     cond_dict_raw: dict = load_cond(opt.cond_file)
     cond_dict_raw = refresh_joint_metadata_in_cond_dict(cond_dict_raw)
 
-    species_list = dataset_tags().species_for(objects_subset)
-
-    cond_dict = {k: cond_dict_raw[k] for k in species_list if k in cond_dict_raw}
+    cond_dict = dict(cond_dict_raw)
     if not cond_dict:
-        raise RuntimeError(
-            f"No species found for subset '{objects_subset}'. "
-            f"Available species: {sorted(cond_dict_raw.keys())}"
-        )
+        raise RuntimeError(f"No species found in {opt.cond_file}.")
 
     for object_type, cond in cond_dict.items():
         mark_canonical_cond_entry(cond)
@@ -287,8 +282,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-real-time", dest="real_time", action="store_false", default=True,
                    help="Export the model window at its compressed tempo. By default all modes export "
                         "at the real 30 fps tempo (resample_speed_cond * num-frames frames).")
-    p.add_argument("--objects-subset", default="all",
-                   help="Predefined subset name or single species (e.g. 'quadropeds_test', 'Horse').")
+    p.add_argument("--filter", nargs="+", default=[], metavar="PATTERN",
+                   help="Wildcard patterns (case-insensitive, e.g. 'Insect_*') matched against "
+                        "species names; only matching species' clips are sampled.")
     p.add_argument("--split", default="all",
                    help="Dataset split: train / val / all.")
     p.add_argument("--seed", type=int, default=1234,
@@ -365,8 +361,8 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[INFO] Loading condition data from: {opt.cond_file}")
-    cond_dict = _build_cond_dict(opt, args.objects_subset)
-    print(f"[INFO] Species loaded: {sorted(cond_dict.keys())}")
+    cond_dict = _build_cond_dict(opt)
+    print(f"[INFO] Species loaded: {len(cond_dict)}")
 
     # -----------------------------------------------------------------------
     # Build MotionDataset (applies augmentations via augment() + _prepare_sample())
@@ -399,6 +395,22 @@ def main() -> int:
         return 1
 
     candidate_names = list(dataset.name_list)
+    if args.filter:
+        patterns = [p.lower() for p in args.filter]
+
+        def _labels(name: str) -> list[str]:
+            # Bare name too: the stored key may carry a dataset namespace prefix.
+            object_type = str(dataset.data_dict[name]['object_type']).lower()
+            return [object_type, object_type.rpartition('/')[2]]
+
+        candidate_names = [
+            name for name in candidate_names
+            if any(fnmatch.fnmatchcase(label, p) for label in _labels(name) for p in patterns)
+        ]
+        print(f"[INFO] Species filter {args.filter}: {len(candidate_names)} candidates")
+        if not candidate_names:
+            print("[ERROR] No motions match --filter. Check the species pattern.")
+            return 1
     if args.mode == 'bone-length':
         print(f'[INFO] Bone-length candidates (all actions and skeletons): {len(candidate_names)}')
     if args.mode == "loop":
