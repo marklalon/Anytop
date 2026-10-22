@@ -6,6 +6,8 @@ REM
 REM Usage:
 REM   eval_checkpoint.bat <task_config.json> [extra eval args]
 REM   eval_checkpoint.bat eval\eval_tasks.json --overwrite
+REM   eval_checkpoint.bat <task_config.json> --kill-all-serve [extra eval args]
+REM     Stop all Python serve_report.py processes first, then run the evaluation.
 REM   eval_checkpoint.bat --kill-all-serve
 REM     Stop all Python serve_report.py processes and exit without evaluating.
 REM
@@ -31,14 +33,23 @@ shift
 
 REM Preserve all remaining arguments while making the task config explicit to
 REM the Python entry point. This also keeps quoted paths with spaces intact.
+REM --kill-all-serve is consumed here (not forwarded) and runs before the eval.
 set "EXTRA_ARGS="
+set "KILL_FIRST="
 :collect_args
 if "%~1"=="" goto :run
-set "EXTRA_ARGS=%EXTRA_ARGS% %1"
+if /I "%~1"=="--kill-all-serve" (
+    set "KILL_FIRST=1"
+) else (
+    set "EXTRA_ARGS=%EXTRA_ARGS% %1"
+)
 shift
 goto :collect_args
 
 :run
+if defined KILL_FIRST (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%eval\kill_report_servers.ps1"
+)
 pushd "%SCRIPT_DIR%"
 "%PYTHON_EXE%" eval\eval_checkpoint.py --task_config "%TASK_CONFIG%" %EXTRA_ARGS%
 set "EXIT_CODE=%ERRORLEVEL%"
