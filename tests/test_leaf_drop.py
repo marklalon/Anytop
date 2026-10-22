@@ -17,6 +17,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from data_loaders.truebones.truebones_utils import leaf_drop
 from data_loaders.truebones.truebones_utils.leaf_drop import (
     LEAF_STATIC_MAX_DEG,
     classify_leaves,
@@ -39,6 +40,7 @@ _NAMES = [
 ]
 _PARENTS = [-1, 0, 1, 2, 1, 4, 1, 6, 0, 0, 9, 2, 2, 2, 0, 14, 0, 16]
 _HEAD_NUB, _L_FINGER_TIP, _R_FINGER_TIP, _FOOT, _TAIL_TIP, _JAW = 3, 5, 7, 8, 10, 11
+_TAIL_BASE = 9
 _NAMELESS_STATIC, _NAMELESS_LIVE, _L_LEG_TIP, _R_LEG_TIP = 12, 13, 15, 17
 _ALL_LEAVES = [3, 5, 7, 8, 10, 11, 12, 13, 15, 17]
 
@@ -140,7 +142,8 @@ def test_selection_rules():
         assert not dropped & {0, 4, 6, _FOOT, _JAW, _NAMELESS_LIVE, _L_LEG_TIP, _R_LEG_TIP}
         assert (_L_FINGER_TIP in dropped) == (_R_FINGER_TIP in dropped)  # mirror twins together
         seen_segments.update(dropped - {_HEAD_NUB, _NAMELESS_STATIC})
-    assert seen_segments == {_L_FINGER_TIP, _R_FINGER_TIP, _TAIL_TIP}
+    # Tail 1 is peeled once Tail 2 is gone.
+    assert seen_segments == {_L_FINGER_TIP, _R_FINGER_TIP, _TAIL_TIP, _TAIL_BASE}
 
 
 def test_without_a_terminator_a_segment_still_goes():
@@ -150,7 +153,7 @@ def test_without_a_terminator_a_segment_still_goes():
     rng = random.Random(1)
     for _ in range(50):
         dropped = sample_leaf_drop(entry, motion, translation_root_index=0, rng=rng)
-        assert dropped and set(dropped) <= {_L_FINGER_TIP, _R_FINGER_TIP, _TAIL_TIP}
+        assert dropped and set(dropped) <= {_L_FINGER_TIP, _R_FINGER_TIP, _TAIL_TIP, _TAIL_BASE}
 
 
 def test_a_segment_goes_alongside_the_terminators():
@@ -160,6 +163,31 @@ def test_a_segment_goes_alongside_the_terminators():
     for _ in range(50):
         dropped = set(sample_leaf_drop(entry, motion, translation_root_index=0, rng=rng))
         assert dropped & {_L_FINGER_TIP, _R_FINGER_TIP, _TAIL_TIP}
+
+
+def test_a_chain_is_peeled_tip_first():
+    entry = _entry()
+    motion = _motion(live_joints=[_NAMELESS_LIVE])
+    rng = random.Random(6)
+    whole = 0
+    for _ in range(200):
+        dropped = set(sample_leaf_drop(entry, motion, translation_root_index=0, rng=rng))
+        assert _TAIL_BASE not in dropped or _TAIL_TIP in dropped
+        whole += {_TAIL_BASE, _TAIL_TIP} <= dropped
+    assert whole
+
+
+def test_a_guarded_chain_root_is_kept(monkeypatch):
+    monkeypatch.setattr(leaf_drop, '_guarded_chain_roots', lambda entry: frozenset({_TAIL_BASE}))
+    entry = _entry()
+    motion = _motion(live_joints=[_NAMELESS_LIVE])
+    rng = random.Random(6)
+    tips = 0
+    for _ in range(200):
+        dropped = set(sample_leaf_drop(entry, motion, translation_root_index=0, rng=rng))
+        assert _TAIL_BASE not in dropped
+        tips += _TAIL_TIP in dropped
+    assert tips
 
 
 def test_a_small_rig_is_left_whole():
@@ -212,6 +240,19 @@ def test_standalone_body_part_leaves_are_not_dropped(species, clip, body_parts):
     for _ in range(100):
         dropped = set(sample_leaf_drop(entry, motion, entry['translation_root_index'], rng=rng))
         assert not dropped & guarded, [names[j] for j in dropped & guarded]
+
+
+@_needs_merged
+@pytest.mark.parametrize('species, chain_roots', [
+    ('truebones/zoo/Horse', ['Left Clavicle', 'Right Clavicle', 'Left Thigh', 'Right Thigh']),
+    ('truebones/zoo/Roach', ['Left Thigh 01', 'Right Thigh 01', 'Spine 1 Left Wing', 'Spine 1 Right Wing']),
+])
+def test_limb_and_wing_chain_roots_are_guarded(species, chain_roots):
+    from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+
+    entry = load_cond(_MERGED_COND)[species]
+    names = list(entry['canonical_joint_names'])
+    assert {names.index(name) for name in chain_roots} <= leaf_drop._guarded_chain_roots(entry)
 
 
 @_needs_merged
