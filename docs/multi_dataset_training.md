@@ -52,7 +52,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets_all.jsonl
 
 ```jsonl
 {"namespace": "truebones/zoo",         "path": "dataset/truebones/zoo/truebones_processed"}
-{"namespace": "truebones/zoo_upgrade", "path": "dataset/truebones/zoo_upgrade/clean_processed"}
+{"namespace": "truebones/zoo_upgrade", "path": "dataset/truebones/zoo_upgrade/clean_processed", "species_include": ["Horse", "*Dragon*"], "species_exclude": "Dragon_Baby*"}
 ```
 
 | 字段 | 必填 | 默认 | 说明 |
@@ -60,7 +60,8 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets_all.jsonl
 | `namespace` | 是 | — | 唯一，正则 `[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*`；不允许某个 namespace 是另一个的路径前缀（否则后缀解析有歧义） |
 | `path` | 是 | — | **Anytop-root-relative** POSIX 路径（工作目录即 Anytop）或绝对路径，用现有的 [`param_utils._resolve_project_path`](../data_loaders/truebones/truebones_utils/param_utils.py) 解析 |
 | `enabled` | 否 | `true` | |
-| `species_include` / `species_exclude` | 否 | — | 裸名列表，方便临时裁剪 |
+| `species_include` / `species_exclude` | 否 | — | 按物种裸名过滤，只用该数据集的部分物种。字符串或列表，每项是大小写敏感的通配符（`*` `?` `[...]`，如 `"*Dragon*"`）；exclude 优先于 include。include 中有模式一个物种都没匹配到时合并工具报错。修改后需要重新合并 cond |
+| `species_tags_include` / `species_tags_exclude` | 否 | — | 按 `species_tags`（body plan 与 variant 同等对待）过滤。`;` 分隔多个备选（或），`,` 分隔同一备选里必须同时具备的 tag（且），每个 tag 可用通配符：`"Winged, Fluttering; Quadruped"` 匹配同时带 Winged 与 Fluttering 的物种或 Quadruped 物种，不匹配只有 Winged 的物种。写成列表时各项按 `;` 拼接。include：命中任一备选即保留；exclude：命中任一备选即剔除。与物种名过滤同时生效（都要通过）。某个 tag 匹配不到词表里任何 tag 时合并工具报错 |
 | `sample_weight` | 否 | `1` | 该数据集每条 clip 的抽样倍数，与 head-word 倍数相乘。合并工具写入 cond 的 `dataset_sample_weight`，修改后需要重新合并 cond |
 
 **行序 = 裸名解析优先级**（重名时取第一个）。
@@ -131,7 +132,7 @@ truebones/zoo_upgrade/Horse
 
 - `object_type`：由裸名改为**规范键**（与 dict key 保持一致）；裸名移到 `species_name`
 
-保持不变：`parents / offsets / rest_pose / joints_names_embs / species_emb / canonical_feature_mean·std / …`
+保持不变：`parents / offsets / rest_pose / joints_names_embs / canonical_feature_mean·std / …`（`species_emb` / `species_code` 不存在 cond.npy 里，运行时由描述符表绑定）
 
 > 已确认两个现有数据集的 `feature_space`、`joints_names_embs_meta.schema_version=8`、`t5_name=t5-base` 完全一致，可直接合并。
 > **注意**：`feature_space` 现为 `canonical_motion_v4`（逐帧 foot contact 通道已删除，`FEATS_LEN`=12）。

@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 34
+CKPT_VERSION = 43
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -199,6 +199,15 @@ def add_base_options(parser):
     group = parser.add_argument_group('diffusion')
     group.add_argument("--noise_schedule", default='cosine', choices=['linear', 'cosine'], type=str,
                        help="Noise schedule type")
+    group.add_argument("--noise_schedule_shift", default=1.0, type=float,
+                       help="Shift every noise level of --noise_schedule toward noise: the SNR of "
+                            "each step is divided by shift^2. The step count and the uniform "
+                            "training draw over steps stay as they are, so shift > 1 spends more "
+                            "steps (and training samples) at high noise, where global structure "
+                            "such as a clip's tempo is decided, and fewer on low-noise detail. "
+                            "1 = the plain schedule. A training-time choice: generation reads it "
+                            "from the checkpoint, and the same --skip_timesteps then starts from "
+                            "more noise.")
     group.add_argument("--diffusion_steps", default=100, type=int,
                        help="Number of diffusion steps (denoted T in the paper)")
     group.add_argument("--sigma_small", default=True, type=bool, help="Use smaller sigma values.")
@@ -210,11 +219,9 @@ def add_model_options(parser):
     group.add_argument('--ref_dim', type=int, default=8)
     group.add_argument('--ref_width', type=int, default=64)
     group.add_argument('--ref_layers', type=int, default=2)
-    group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4)
-    group.add_argument('--ref_label_drop_prob', type=float, default=0.5,
-                       help='Action-label CFG drop probability on reference-active training rows '
-                            '(rows without a reference use --action_label_cfg_drop_prob). '
-                            'Reference-active rows always bypass the species FiLM.')
+    group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4,
+                       help='Reference hard-drop probability. Reference-active rows always '
+                            'bypass the action label and the species condition.')
     group.add_argument('--ref_leaf_drop_prob', type=float, default=0.2)
     group.add_argument('--ref_bone_length_aug_prob', type=float, default=0.2)
     group.add_argument('--ref_bone_length_aug', type=float, default=0.1)
@@ -233,9 +240,9 @@ def add_model_options(parser):
                             "readout, and in a full run ~3/4 of its FFN units went dead; "
                             "512 recovers those parameters for the trunk.")
     group.add_argument("--action_adaln_bottleneck", default=0, type=int,
-                       help="Hidden width of the --action_label_adaln head (0 = latent_dim). "
-                            "The action label set has slot-source rank ~137, so ~192 "
-                            "loses nothing and halves the model's largest matrix.")
+                       help="Hidden width of the action-label AdaLN head (0 = latent_dim). "
+                            "Its output layer is the model's largest matrix; a width at or "
+                            "above the rank of the action-label codes loses nothing.")
     group.add_argument("--species_film_bottleneck", default=128, type=int,
                        help="Hidden width of the joint x species FiLM head (default 128; 0 = latent_dim).")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
@@ -302,7 +309,7 @@ def add_model_options(parser):
                             "0.0 is the plain uniform draw over 1..max, which for a short loop makes the "
                             "single-cycle window -- the regime --loop with the auto length generates in -- "
                             "a small minority of draws, while every other draw is k bit-identical copies "
-                            "of the cycle. Loader-only, like --motion_speed_aug: no regen, no bump.")
+                            "of the cycle. 1.0 turns loop tiling off. Loader-only, like --motion_speed_aug: no regen, no bump.")
     group.add_argument("--leaf_drop_prob", default=0.0, type=float,
                        help="Per-sample probability of the leaf-drop topology augmentation (0.0 = off). "
                             "The sample's rig loses every eligible terminator leaf (named Nub / end / "
@@ -368,13 +375,13 @@ def add_model_options(parser):
     group.add_argument("--species_cfg_drop_prob", default=0.15, type=float,
                        help="Per-sample probability of bypassing per-joint species FiLM during training "
                             "(identity modulation), enabling species classifier-free guidance.")
-    group.add_argument("--species_joint_cond", action='store_true',
-                       help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_emb]. "
-                            "Zero-initialized to identity; CFG-droppable via --species_cfg_drop_prob. "
-                            "Requires 'species_emb'.")
+    group.add_argument("--species_cond", action='store_true',
+                       help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_code], "
+                            "species_code = [T5(body plan) || variant one-hot]. Zero-initialized to "
+                            "identity; CFG-droppable via --species_cfg_drop_prob.")
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the clip's action_label ('run, forward, "
-                            "left, fast' -- controlled keywords, not prose) is split into words, pooled "
+                            "left, glide' -- controlled keywords, not prose) is split into words, pooled "
                             "into one frozen-T5 channel per role slot (head / direction / "
                             "modifier), "
                             "projected and added to the timestep token. Requires the word table "
@@ -388,18 +395,6 @@ def add_model_options(parser):
                        help="Per-sample probability of hard-dropping the action condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
                             "guidance at sampling time via --action_label_cfg_scale. Default 0.2.")
-    group.add_argument("--action_label_adaln", action='store_true',
-                       help="Give the action label a MULTIPLICATIVE pathway: a zero-initialised head "
-                            "turns the action token into a per-channel scale and shift on the "
-                            "temporal and feed-forward BRANCH INPUTS of every decoder layer (the "
-                            "residual stream is left unmodulated, and the spatial branch already "
-                            "carries the additive timestep offset). The additive action token stays; "
-                            "this adds the gain the additive path cannot express, which is what two "
-                            "labels sharing a slot (whose vectors are near-parallel by construction, "
-                            "e.g. 'turn, left' and 'run, turn, left') need to produce different motion "
-                            "without leaning on --action_label_cfg_scale and paying its quality cost. "
-                            "Requires --action_label_cond. Costs d^2 + 4*layers*d^2 parameters. "
-                            "See docs/conditional_modulation_upgrade.md section 3.")
     group.add_argument("--direction_slot_drop_prob", default=0.15, type=float,
                        help="Per-sample probability of blanking the label's DIRECTION words during "
                             "training while the rest of the label stays. Trains the empty direction "
@@ -442,8 +437,8 @@ def add_data_options(parser, training=False):
                                 "word already determines the group (a property of the corpus), "
                                 "so a group token would "
                                 "add no information the label does not already carry. Draws are "
-                                "uniform over clips, so the group mix is the corpus's own "
-                                "(stationary ~53%); see --rare_head_word_floor for the tail. "
+                                "uniform over clips, so the group mix is the corpus's own; "
+                                "see --rare_head_word_floor for the tail. "
                                 "Recorded in the checkpoint's args.json, where generation reads it "
                                 "back -- a single-group checkpoint can only ever be sampled as that "
                                 "group. See docs/action_group_and_label.md.")
@@ -656,10 +651,10 @@ def add_generate_options(parser):
                             'posture (facing, body height) is decided; the detail steps use 1.')
     group.add_argument('--species_active', type=_bool_argument,
                        choices=(True, False), default=None,
-                       help='Target per-joint species FiLM; true / false. '
+                       help='Target species condition; true / false. '
                             'Defaults to true. Cannot be supplied with an encoded '
                             '--reference_motion (one without skip_timesteps / inpaint / outpaint), '
-                            'which always disables species FiLM.')
+                            'which always disables the species condition.')
     group.add_argument("--num_frames", default=None, type=int,
                        help="The number of frames in the sampled motion. Omit it to let "
                             "generation pick one, in this priority order: --reference_motion's "
@@ -748,7 +743,7 @@ def add_generate_options(parser):
                             "tokens ONLY, comma-separated, in the canonical order the labels use: "
                             "action word(s) first, then the direction bound to the last one, then "
                             "any other modifiers in vocabulary order ('walk, forward', "
-                            "'run, left, fast', 'attack, bite'). Free text is NOT accepted -- an "
+                            "'fly, left, glide', 'attack, bite'). Free text is NOT accepted -- an "
                             "unknown token is a hard error listing the valid ones, because the "
                             "vectors live in the checkpoint and no T5 runs at generation. A "
                             "recognizable prompt written out of canonical order is rewritten to it "
@@ -773,22 +768,24 @@ def add_generate_options(parser):
                             "--action_label_cfg_drop_prob (without it there is no unconditional "
                             "mode to guide away from).")
     group.add_argument("--species_tags", default="", type=str,
-                       help="Override the target species' motion style tags for this generation, e.g. "
-                            "'Quadruped,Lumbering'. Comma/semicolon-separated. The pair must be in the "
-                            "checkpoint's precomputed species descriptor table (a closed body-plan x "
-                            "locomotion vocabulary; no T5 runs at generation); its row replaces the species "
-                            "descriptor baked into cond.npy (default from species_tags.jsonl), letting you "
-                            "restyle the generated motion (e.g. make a Winged Dragon walk on the ground). "
-                            "Requires a checkpoint trained with --species_joint_cond. "
+                       help="Override the target species' descriptor for this generation: a body "
+                            "plan, optionally followed by a variant, e.g. 'Quadruped' or "
+                            "'Biped,Clanking'. Comma/semicolon-separated. It must be in the checkpoint's "
+                            "precomputed species descriptor table (the closed body-plan x variant "
+                            "vocabulary; no T5 runs at generation); its row replaces the species "
+                            "descriptor baked into cond.npy (default from species_tags.jsonl), letting "
+                            "you restyle the generated motion (e.g. make a Winged Dragon move as a "
+                            "Quadruped, or a human walk like a machine). "
+                            "Requires a checkpoint trained with --species_cond. "
                             "Incompatible with --object_type all.")
     group.add_argument("--species_cfg_scale", default=1.0, type=float,
-                       help="Classifier-free guidance scale over the species descriptor's "
-                            "droppable FiLM path, applied on the high-noise half of the steps "
+                       help="Classifier-free guidance scale over the species descriptor, "
+                            "applied on the high-noise half of the steps "
                             "only (the detail steps use 1). 1.0 (default) uses one forward; any "
                             "other scale uses two on the high-noise steps (four with action-label CFG). "
                             "The unconditional pass bypasses per-joint species FiLM. "
                             "Ignored when --species_active false, with no extra species forwards. "
-                            "Requires a checkpoint trained with --species_joint_cond and non-zero "
+                            "Requires a checkpoint trained with --species_cond and non-zero "
                             "--species_cfg_drop_prob. Uses --species_tags when supplied, otherwise "
                             "the target species' baked descriptor.")
 
@@ -800,6 +797,14 @@ def train_args():
     add_model_options(parser)
     add_training_options(parser)
     return parser.parse_args()
+
+
+def is_encoded_reference(reference_motion, skip_timesteps=None, inpaint_joints='',
+                         inpaint_frames='', outpaint=False):
+    """True when the reference is encoded as motion content rather than edited."""
+    return bool(reference_motion) and (skip_timesteps is None and not outpaint
+                                       and not str(inpaint_joints or '').strip()
+                                       and not str(inpaint_frames or '').strip())
 
 
 def generate_args(argv=None):
@@ -819,14 +824,14 @@ def generate_args(argv=None):
         parser, argv=argv,
         preserve_cli_args=preserve_cli_args,
     )
-    encoded_reference = bool(args.reference_motion) and (
-        args.skip_timesteps is None and not args.outpaint
-        and not str(args.inpaint_joints or '').strip()
-        and not str(args.inpaint_frames or '').strip()
-    )
+    encoded_reference = is_encoded_reference(args.reference_motion, args.skip_timesteps,
+                                             args.inpaint_joints, args.inpaint_frames, args.outpaint)
     if encoded_reference and args.species_active is not None:
         parser.error('an encoded --reference_motion cannot be combined with --species_active; '
-                     'encode always disables species FiLM')
+                     'encode always disables the species condition')
+    if encoded_reference and str(args.action_label or '').strip():
+        parser.error('an encoded --reference_motion cannot be combined with --action_label; '
+                     'the reference supplies the motion content')
     if args.species_active is None:
         args.species_active = not encoded_reference
     return args
@@ -854,7 +859,7 @@ def process_new_skeleton_args():
                             "enable for training-compatible preprocessing.")
     group.add_argument("--species-tags", required=True, type=str,
                        help="Comma-separated species tags (motion descriptor) for --object-type, "
-                            "e.g. 'Quadruped,Lumbering'. REQUIRED for a new skeleton: it "
+                            "e.g. 'Quadruped' or 'Biped,Clanking'. REQUIRED for a new skeleton: it "
                             "defines the descriptor baked into cond.npy (generation looks its vector up "
                             "in the checkpoint's species descriptor table). There is no fallback to "
                             "the default dataset's species_tags.jsonl, so it must be supplied "

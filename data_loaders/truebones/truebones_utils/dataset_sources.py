@@ -16,6 +16,7 @@ manifest, so ``dataset_tags`` can import it without a cycle.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import math
 import os
@@ -205,6 +206,8 @@ class DatasetSource:
     sample_weight: float = 1.0
     species_include: tuple[str, ...] = field(default=())
     species_exclude: tuple[str, ...] = field(default=())
+    species_tags_include: tuple[tuple[str, ...], ...] = field(default=())
+    species_tags_exclude: tuple[tuple[str, ...], ...] = field(default=())
 
     @property
     def root_path(self) -> Path:
@@ -222,27 +225,114 @@ class DatasetSource:
     def portable_root(self) -> str:
         return to_anytop_relative(self.root)
 
-    def accepts(self, species_name) -> bool:
+    @property
+    def filters_species_tags(self) -> bool:
+        return bool(self.species_tags_include or self.species_tags_exclude)
+
+    def accepts(self, species_name, species_tags=None) -> bool:
+        """Whether a species passes both this source's name and tag filters."""
+        return self.accepts_name(species_name) and self.accepts_tags(species_tags)
+
+    def accepts_name(self, species_name) -> bool:
+        """Whether the bare species name passes this source's name filter.
+
+        ``species_include`` / ``species_exclude`` are case-sensitive ``fnmatch``
+        globs (``Horse``, ``*Dragon*``, ``Bird_?``); exclude wins over include.
+        Case-sensitive because the data carries ``Rhino`` and ``rhino`` as
+        different species.
+        """
         name = str(species_name).strip()
-        if self.species_include and name not in self.species_include:
+        if self.species_include and not _matches_any(name, self.species_include):
             return False
-        if name in self.species_exclude:
+        return not _matches_any(name, self.species_exclude)
+
+    def accepts_tags(self, species_tags) -> bool:
+        """Whether a species' tags pass this source's tag filter.
+
+        Each filter is a list of alternatives, each alternative a set of tag
+        globs that must all match (see ``parse_species_tag_filter``).
+        ``species_tags_include`` keeps a species matching any alternative;
+        ``species_tags_exclude`` drops it.  Body plan and variant are matched
+        alike, so ``Fluttering`` selects by variant and ``Winged`` by body plan.
+        """
+        if not self.filters_species_tags:
+            return True
+        if species_tags is None:
+            raise ValueError(
+                f"{self.namespace}: a species_tags filter needs the species' tags."
+            )
+        tags = [str(tag).strip() for tag in species_tags]
+
+        def matches(alternatives) -> bool:
+            return any(
+                all(any(fnmatch.fnmatchcase(tag, pattern) for tag in tags) for pattern in required)
+                for required in alternatives
+            )
+
+        if self.species_tags_include and not matches(self.species_tags_include):
             return False
-        return True
+        return not matches(self.species_tags_exclude)
+
+    def unmatched_includes(self, species_names: Iterable[str]) -> list[str]:
+        """``species_include`` patterns that match none of *species_names* --
+        almost always a typo, which would otherwise silently drop a species."""
+        names = [str(name).strip() for name in species_names]
+        return [
+            pattern for pattern in self.species_include
+            if not any(fnmatch.fnmatchcase(name, pattern) for name in names)
+        ]
 
     def key_for(self, species_name) -> str:
         return canonical_key(self.namespace, species_name)
 
 
+def _matches_any(name: str, patterns: Sequence[str]) -> bool:
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns)
+
+
+def normalize_species_patterns(patterns) -> tuple[str, ...]:
+    """A species name filter as a tuple of globs; a single string is one pattern."""
+    if not patterns:
+        return ()
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    normalized = tuple(str(pattern).strip() for pattern in patterns)
+    if any(not pattern for pattern in normalized):
+        raise ValueError(f"Invalid species filter {patterns!r}: empty pattern.")
+    return normalized
+
+
+def parse_species_tag_filter(value) -> tuple[tuple[str, ...], ...]:
+    """A species_tags filter as alternatives of required tag globs.
+
+    ``;`` separates alternatives (OR) and ``,`` separates tags one alternative
+    requires together (AND): ``"Winged, Fluttering; Quadruped"`` is
+    ``(("Winged", "Fluttering"), ("Quadruped",))``.  A list is joined with
+    ``;``, so each element is one or more alternatives.
+    """
+    if not value:
+        return ()
+    text = value if isinstance(value, str) else ";".join(str(item) for item in value)
+    alternatives = []
+    for alternative in text.split(";"):
+        required = tuple(pattern.strip() for pattern in alternative.split(","))
+        if any(not pattern for pattern in required):
+            raise ValueError(f"Invalid species_tags filter {value!r}: empty tag.")
+        alternatives.append(required)
+    return tuple(alternatives)
+
+
 def make_source(namespace, root, species_include=(), species_exclude=(), split="train",
-                sample_weight=1.0) -> DatasetSource:
+                sample_weight=1.0, species_tags_include=(), species_tags_exclude=()) -> DatasetSource:
     return DatasetSource(
         namespace=normalize_namespace(namespace),
         root=str(resolve_anytop_path(root)),
         split=normalize_dataset_split(split),
         sample_weight=normalize_sample_weight(sample_weight),
-        species_include=tuple(str(name).strip() for name in species_include or ()),
-        species_exclude=tuple(str(name).strip() for name in species_exclude or ()),
+        species_include=normalize_species_patterns(species_include),
+        species_exclude=normalize_species_patterns(species_exclude),
+        species_tags_include=parse_species_tag_filter(species_tags_include),
+        species_tags_exclude=parse_species_tag_filter(species_tags_exclude),
     )
 
 
@@ -275,8 +365,10 @@ def load_datasets_manifest(manifest_path) -> list[DatasetSource]:
             source = make_source(
                 record["namespace"],
                 record["path"],
-                species_include=record.get("species_include") or (),
-                species_exclude=record.get("species_exclude") or (),
+                species_include=record.get("species_include"),
+                species_exclude=record.get("species_exclude"),
+                species_tags_include=record.get("species_tags_include"),
+                species_tags_exclude=record.get("species_tags_exclude"),
                 split=record["split"],
                 sample_weight=record.get("sample_weight", 1.0),
             )

@@ -119,7 +119,7 @@ root / non-root output projections
 ### 3.2 关节名称
 
 T5 编码发生在预处理阶段，模型不会在每次 forward 中运行 T5。`cond.npy` 携带
-`joints_names_embs`；启用 `species_joint_cond` 时，先经过第 4.1 节的 per-joint FiLM，
+`joints_names_embs`；启用 `species_cond` 时，先经过第 4.1 节的 per-joint FiLM，
 再由 `InputProcess.text_embedding` 投影到 latent width，并沿全部时间位置加到对应关节 token。
 
 `joint_name_drop_prob>0` 时，训练会把整个关节名称向量置零（与 padding 行同为全零，
@@ -159,14 +159,16 @@ timestep
 
 | 通路 | 输入 | 作用位置 | drop 语义 |
 |---|---|---|---|
-| `species_joint_cond` | `[joint_name || species]` → bottleneck | 每个 joint-name embedding 的 FiLM | `species_cfg_drop_prob` 按样本 bypass 到 identity |
+| `species_cond` | `[joint_name || species_code]` → bottleneck | 每个 joint-name embedding 的 FiLM | `species_cfg_drop_prob` 按样本 bypass 到 identity |
 
-Species descriptor 只通过这条输入层通路调制关节名，不进入 timestep condition bus。
-设 T5 embedding 宽度为 `D_t5`，FiLM 头的结构为：
+Species code 只通过这条输入层通路调制关节名，不进入 timestep condition bus。
+`species_code = [T5(body plan) || variant 轴]`（`species_descriptor_table.species_code`）；
+variant 是正交码（每个 variant 一根轴，取值为该 body plan 行的模长，无 variant 时全零），不经过 T5：T5 下 `Winged` 与 `Winged Fluttering` 几乎重合。
+设 T5 embedding 宽度为 `D_t5`、species code 宽度为 `D_code`，FiLM 头的结构为：
 
 ```text
-[joint_name_emb || species_emb]
-  → Linear(2 * D_t5, bottleneck) → GELU → Linear(bottleneck, 2 * D_t5)
+[joint_name_emb || species_code]
+  → Linear(D_t5 + D_code, bottleneck) → GELU → Linear(bottleneck, 2 * D_t5)
   → gamma_residual, beta
 
 modulated_name = (1 + gamma_residual) * joint_name_emb + beta
@@ -178,11 +180,11 @@ modulated_name = (1 + gamma_residual) * joint_name_emb + beta
 
 训练时，`species_cfg_drop_prob` 按样本独立抽样；被丢弃样本的所有关节绕过整条 FiLM，
 直接将关节名 embedding 送入 `text_embedding`。推理时 `species_active=False` 使用同一条
-identity 分支，CFG 按 `uncond + scale * (cond - uncond)` 组合预测。这里的 uncond 仅移除
-显式 species 调制，关节名、骨架和其他条件仍保留。
+identity 分支，CFG 按 `uncond + scale * (cond - uncond)` 组合预测，只作用于高噪声半程。这里的 uncond 仅移除
+显式 species 调制，关节名、骨架和其他条件仍保留。参考生效的行 species FiLM 一律 bypass。
 
 `joint_name_drop_prob` 则按关节独立抽样，在 FiLM 之前把整条名字向量清零，FiLM 也读取
-清零后的名字；它与 species CFG drop 独立。只丢名字时，FiLM 仍可从 `[0 || species_emb]`
+清零后的名字；它与 species CFG drop 独立。只丢名字时，FiLM 仍可从 `[0 || species_code]`
 产生 beta；两者都丢时，进入 `text_embedding` 的名字向量为零。普通 element-wise name
 dropout 位于 whole-joint name drop 之后；FiLM 头读取 element-wise dropout 之前的名字，
 而调制作用于 element-wise dropout 之后的名字。
@@ -200,7 +202,7 @@ Action label 使用受控词表，不接收自由文本。每个词先查 checkp
 `action_label_cfg_drop_prob` 把部分样本送到 learned null embedding；推理时
 `action_label_cfg_scale>1` 用 conditional/unconditional 两次 forward 做 CFG，仅作用于高噪声半程（`t ≥ T/2`），细节步退回单次 conditional forward。
 
-`--action_label_adaln` 给同一个 action token 再加一路**乘性**通路：
+启用 action label 时，同一个 action token 另有一路**乘性**通路：
 `GraphMotionDecoder.action_adaln` 一次 matmul 出全部层的 (γ, β)，每层拿自己的
 (B, 4, d) 切片，在 temporal 与 FFN 的**分支输入**上做 `(1+γ)·x + β`；残差流和 spatial 分支不碰。
 零初始化，驱动向量与加性路径共用，所以 CFG 的无条件分支自动走 null。
@@ -234,7 +236,7 @@ x + embedded timestep/conditions
   → [action AdaLN on the branch input] → FFN + residual + norm
 ```
 
-方括号里的 AdaLN 只在 `--action_label_adaln` 下存在（见 §4.2）；ref cross-attn 只在 `--ref_encoder` 下存在。
+方括号里的 AdaLN 只在 `--action_label_cond` 下存在（见 §4.2）；ref cross-attn 只在 `--ref_encoder` 下存在。
 
 该层沿用了 `nn.TransformerDecoderLayer` 的外形，但不含 encoder-decoder memory attention：
 基类的 `self_attn` 换成 graph/temporal 两条路径，`multihead_attn` 已删除。
@@ -438,7 +440,7 @@ retarget，也不使用 img2img 初始化或 clamp：参考在自己的骨架上
 编码器只读与源骨架 rest 无关的量：每个关节在骨架规范化静止朝向系下的父→子单位骨骼方向与
 绝对高度 / L（`ref_pose`）、translation root 的 XZ velocity、关节名和 structural channel 的拓扑列；
 不读 rest token、残差 position、局部 rotation，也不读取 species descriptor。
-目标 decoder 仍保留自己的骨架条件和 per-joint species FiLM。
+目标 decoder 仍保留自己的骨架条件；参考生效的行 per-joint species FiLM 一律 bypass。
 
 参考模型的层内顺序为 `spatial → ref cross-attn → temporal → cross-limb → FFN`。
 参考分支不调制 rest token；残差按 `ref_active` 屏蔽，含 bias。训练只增强编码器副本；

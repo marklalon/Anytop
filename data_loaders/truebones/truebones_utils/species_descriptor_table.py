@@ -1,18 +1,17 @@
 """The precomputed T5 table of every legal species descriptor.
 
-A species descriptor is ``[body-plan, locomotion]`` drawn from two closed
-vocabularies (``dataset_tags.SPECIES_BODY_PLANS`` x ``SPECIES_LOCOMOTIONS``), so
-the set of descriptor texts is finite. The whole product is encoded into one
-table, and ``species_emb`` never lives in a dataset's cond.npy -- a cond only
-carries each species' baked ``species_tags``, and the vector is bound from a
-table in memory:
+A species descriptor is ``[body-plan]`` or ``[body-plan, variant]`` drawn
+from closed vocabularies (``dataset_tags.SPECIES_BODY_PLANS`` x
+``SPECIES_VARIANTS``), so the set of descriptor texts is finite. All of them
+are encoded into one table, and ``species_emb`` never lives in a dataset's cond.npy -- a cond only carries each species' baked
+``species_tags``, and the vector is bound from a table in memory:
 
 * training builds (or extends) the repo-global table
   ``dataset/species_descriptor_embs.npy`` at startup -- the only place T5 runs
   for a species -- binds the cond it trains on from it, and copies it into
   ``save_dir`` next to the checkpoint and its ``cond.npy``;
 * generation and ``--species_tags`` (the CLI and the AnyTop service alike)
-  read only the checkpoint's copy, and refuse a combination it lacks rather
+  read only the checkpoint's copy, and refuse a descriptor it lacks rather
   than encoding one the weights never saw.
 
 The rows are ``T5Conditioner``'s masked token mean of the descriptor text, the
@@ -29,6 +28,7 @@ from typing import Iterable, Mapping
 import numpy as np
 
 from data_loaders.truebones.truebones_utils.dataset_tags import (
+    SPECIES_VARIANTS,
     parse_species_tags,
     species_descriptor_text,
     species_descriptor_vocabulary,
@@ -274,6 +274,36 @@ def build_species_descriptor_table(
     return table
 
 
+# ── Species code ─────────────────────────────────────────────────────────────
+def species_code(table: SpeciesDescriptorTable, tags, where: str) -> np.ndarray:
+    """The AnyTop species condition: ``[T5(body plan) || variant axes]``.
+
+    The variant is not read through T5: "Winged" and "Winged Fluttering" encode
+    to nearly the same vector, which leaves the variant a small difference
+    inside the body plan's direction. As a code it is an axis of its own,
+    exactly orthogonal to the body plan part and to the other variants; a
+    descriptor without a variant has zeros there.
+
+    The variant axis is set to the body plan row's norm rather than 1, so adding
+    a variant moves the code as far as the body plan itself does: a unit axis
+    next to a T5 row several times longer starts out, and under AdamW keeps
+    growing, at a fraction of the body plan's pull on the FiLM.
+    """
+    parsed = parse_species_tags(tags)
+    if not parsed:
+        raise SpeciesDescriptorError(f"{where}: empty species descriptor")
+    body_plan = table.lookup(parsed[:1], where)
+    variant_value = float(np.linalg.norm(body_plan))
+    variant = np.zeros(len(SPECIES_VARIANTS), dtype=np.float32)
+    for tag in parsed[1:]:
+        if tag not in SPECIES_VARIANTS:
+            raise SpeciesDescriptorError(
+                f"{where}: variant {tag!r} is not one of {', '.join(SPECIES_VARIANTS)}"
+            )
+        variant[SPECIES_VARIANTS.index(tag)] = variant_value
+    return np.concatenate([body_plan, variant]).astype(np.float32, copy=False)
+
+
 # ── Cond binding ─────────────────────────────────────────────────────────────
 def _entry_species_tags(object_type, entry) -> tuple[str, ...]:
     tags = tuple(str(tag) for tag in (entry.get("species_tags") or ()))
@@ -285,7 +315,8 @@ def _entry_species_tags(object_type, entry) -> tuple[str, ...]:
 
 
 def bind_cond_species_embs(cond_dict, table: SpeciesDescriptorTable, where: str) -> None:
-    """Set every entry's ``species_emb`` to its table row, by its baked ``species_tags``.
+    """Set every entry's ``species_emb`` to its table row, by its baked ``species_tags``,
+    and its ``species_code`` (what AnyTop reads) from the same table.
 
     Training binds from the table it ships with the checkpoint, generation from
     that shipped copy; an entry whose descriptor the table lacks is refused.
@@ -309,6 +340,7 @@ def bind_cond_species_embs(cond_dict, table: SpeciesDescriptorTable, where: str)
             missing.append(f"{object_type}: {list(tags)}")
             continue
         entry["species_emb"] = table.lookup(tags, where)
+        entry["species_code"] = species_code(table, tags, f"{where}: {object_type}")
         entry["species_emb_meta"] = {
             "table": table.source,
             "t5_name": table.t5_name,

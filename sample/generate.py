@@ -35,7 +35,7 @@ from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
 from sample.conditioning import (
     _resolve_action_condition,
-    _resolve_species_emb_override,
+    _resolve_species_code_override,
     _wrap_action_label_cfg,
     _wrap_species_cfg,
     _wrap_reference_cfg,
@@ -287,7 +287,7 @@ def _adopt_reference_file_cond(args):
         sys.exit(
             f"ERROR: cannot tell which species {reference} is: its name matches no species of the "
             "checkpoint, so the skeleton the file carries has no motion descriptor. Pass "
-            "--species_tags (e.g. --species_tags Quadruped,Lumbering) so it can be edited on its own "
+            "--species_tags (e.g. --species_tags Quadruped) so it can be edited on its own "
             "skeleton, or --object_type / --cond_path to edit a skeleton that already exists."
         )
     from tools.process_new_skeleton import species_from_tpose_stem
@@ -881,7 +881,7 @@ def main(args=None, cond_dict=None, runtime=None):
     )
 
     # ── --species_tags: restyle the target species' motion descriptor ────────
-    _species_emb_override = _resolve_species_emb_override(
+    _species_code_override = _resolve_species_code_override(
         args,
         model,
         cond_dict,
@@ -897,7 +897,7 @@ def main(args=None, cond_dict=None, runtime=None):
         feature_len=opt.feature_len,
         loop=loop_condition,
         action_condition=_action_condition,
-        species_emb_override=_species_emb_override,
+        species_code_override=_species_code_override,
     )
     model_kwargs['y']['resample_speed_cond'] = torch.full(
         (args.batch_size,),

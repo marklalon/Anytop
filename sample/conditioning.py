@@ -6,8 +6,9 @@
 * ``_resolve_action_condition`` / ``_wrap_action_label_cfg`` -- the
   ``--action_label`` prompt as word-slot ids into the checkpoint's own frozen
   vocabulary, and the optional classifier-free guidance around it.
-* ``_resolve_species_emb_override`` -- ``--species_tags``, the checkpoint's
-  descriptor-table row replacing the species' own ``species_emb``.
+* ``_resolve_species_code_override`` -- ``--species_tags``, a species code
+  from the checkpoint's descriptor table replacing the species' own
+  ``species_code``.
 """
 import math
 import sys
@@ -28,6 +29,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
+from data_loaders.truebones.truebones_utils.species_descriptor_table import species_code
 from model.cfg_sampler import ClassifierFreeActionModel, ClassifierFreeSpeciesModel
 from utils.model_util import unwrap_anytop_model
 
@@ -45,8 +47,8 @@ def _parse_species_tags(raw):
     return list(tags)
 
 
-def _resolve_species_emb_override(args, model, cond_dict, object_type, species_table):
-    """``--species_tags`` -> a ``[t5_out_dim]`` species descriptor, or ``None``.
+def _resolve_species_code_override(args, model, cond_dict, object_type, species_table):
+    """``--species_tags`` -> a ``[species_code_dim]`` species code, or ``None``.
 
     Restyles the target species' motion descriptor with a row of the
     checkpoint's precomputed descriptor table. No T5 runs here: a combination
@@ -58,16 +60,16 @@ def _resolve_species_emb_override(args, model, cond_dict, object_type, species_t
 
     # Fast-fail if checkpoint ignores species descriptor.
     unwrapped = unwrap_anytop_model(model)
-    if not getattr(unwrapped, 'species_joint_cond', False):
+    if not getattr(unwrapped, 'species_cond', False):
         sys.exit(
             'ERROR: --species_tags was passed but this checkpoint was trained without '
-            '--species_joint_cond; the species descriptor is unused, so '
+            '--species_cond; the species descriptor is unused, so '
             'the tags would have no effect.'
         )
     if species_table is None:
         sys.exit("ERROR: --species_tags needs the checkpoint's species descriptor table.")
     try:
-        species_emb_override = species_table.lookup(species_tags, '--species_tags')
+        species_code_override = species_code(species_table, species_tags, '--species_tags')
     except ValueError as exc:
         sys.exit(f'ERROR: {exc}')
     default_text = ' '.join(
@@ -77,7 +79,7 @@ def _resolve_species_emb_override(args, model, cond_dict, object_type, species_t
         f"[generate] species descriptor for '{object_type}' overridden: "
         f"'{default_text}' -> '{' '.join(species_tags)}'"
     )
-    return species_emb_override
+    return species_code_override
 
 
 def _resolve_action_condition(args, model):
@@ -169,6 +171,23 @@ def _resolve_action_condition(args, model):
     }
 
 
+def cfg_switch_timestep(args):
+    """The step where the CFG wrappers hand over to the detail scale: the noise
+    level of ``CFG_SWITCH`` on the unshifted schedule, so a checkpoint trained
+    with ``--noise_schedule_shift`` guides the same noise range as one without."""
+    from diffusion.gaussian_diffusion import get_named_beta_schedule, matching_shifted_timestep
+    steps = int(args.diffusion_steps)
+    switch_t = ClassifierFreeActionModel.CFG_SWITCH * steps
+    shift = float(getattr(args, 'noise_schedule_shift', 1.0))
+    if shift == 1.0:
+        return switch_t
+    return matching_shifted_timestep(
+        get_named_beta_schedule(args.noise_schedule, steps),
+        get_named_beta_schedule(args.noise_schedule, steps, shift=shift),
+        switch_t,
+    )
+
+
 def _wrap_action_label_cfg(model, args, action_condition):
     """Wrap the denoiser in action-label CFG, or hand it back untouched.
 
@@ -204,12 +223,13 @@ def _wrap_action_label_cfg(model, args, action_condition):
             "so it never saw the null condition. Sample with --action_label_cfg_scale 1.0, "
             "or retrain with a non-zero drop probability."
         )
+    switch_t = cfg_switch_timestep(args)
     print(
         f"[generate] action-label CFG: scale={scale:g} on "
-        f"{action_condition['action_label']!r} (high-noise half of the steps; "
+        f"{action_condition['action_label']!r} (high-noise steps t >= {switch_t:g}; "
         f"2 model forwards per step there, 1 on the detail steps)"
     )
-    return ClassifierFreeActionModel(model, scale, args.diffusion_steps)
+    return ClassifierFreeActionModel(model, scale, args.diffusion_steps, switch_t=switch_t)
 
 
 def _wrap_reference_cfg(model, args, action_condition):
@@ -220,17 +240,16 @@ def _wrap_reference_cfg(model, args, action_condition):
         raise ValueError('Reference CFG keeps species fixed; species_cfg_scale must be 1')
     if float(getattr(model, 'ref_cfg_drop_prob', 0.0)) <= 0:
         raise ValueError('Reference CFG requires training with ref_cfg_drop_prob > 0')
-    if action_condition is not None and float(getattr(model, 'ref_label_drop_prob', 0.0)) <= 0:
-        raise ValueError('Reference/text CFG requires ref_label_drop_prob > 0')
+    if action_condition is not None:
+        raise ValueError('an encoded --reference_motion cannot be combined with --action_label')
     return ClassifierFreeReferenceModel(
-        model, getattr(args, 'ref_cfg_scale', 1.0),
-        getattr(args, 'action_label_cfg_scale', 1.0), use_text=action_condition is not None,
-        num_timesteps=args.diffusion_steps,
+        model, getattr(args, 'ref_cfg_scale', 1.0), num_timesteps=args.diffusion_steps,
+        switch_t=cfg_switch_timestep(args),
     )
 
 
 def _wrap_species_cfg(model, args):
-    """Guide the species FiLM descriptor, leaving structural channels active."""
+    """Guide the species descriptor, leaving structural channels active."""
     # Both CFG branches would use the same species bypass. Keep any existing
     # action wrapper, without adding a redundant species forward or checks.
     if not getattr(args, 'species_active', True):
@@ -242,9 +261,9 @@ def _wrap_species_cfg(model, args):
     if scale == 1.0:
         return model
     unwrapped = unwrap_anytop_model(model)
-    if not getattr(unwrapped, 'species_joint_cond', False):
+    if not getattr(unwrapped, 'species_cond', False):
         sys.exit(
-            "ERROR: --species_cfg_scale requires a checkpoint trained with --species_joint_cond. "
+            "ERROR: --species_cfg_scale requires a checkpoint trained with --species_cond."
         )
     if float(getattr(args, 'species_cfg_drop_prob', 0.0) or 0.0) <= 0.0:
         sys.exit(
@@ -253,7 +272,9 @@ def _wrap_species_cfg(model, args):
         )
     forwards = 4 if isinstance(model, ClassifierFreeActionModel) else 2
     print(f"[generate] species CFG: scale={scale:g} ({forwards} model forwards per diffusion step)")
-    return ClassifierFreeSpeciesModel(model, scale, args.diffusion_steps)
+    return ClassifierFreeSpeciesModel(
+        model, scale, args.diffusion_steps, switch_t=cfg_switch_timestep(args),
+    )
 
 
 def _coerce_loop_flag(flag):
@@ -282,12 +303,12 @@ def _coerce_loop_flag(flag):
     raise TypeError(f"create_condition: loop must be a bool or one of 'on'/'off', got {type(flag).__name__}")
 
 
-def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len, loop=False, action_condition=None, species_emb_override=None):
+def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len, loop=False, action_condition=None, species_code_override=None):
     """Build model_kwargs for a batch of object_types.
 
     action_condition: {'action_group', 'action_label', 'action_slots'} applied
         to every object in the batch, or None for unconditional generation.
-    species_emb_override: [t5_out_dim] vector replacing baked species_emb for all objects.
+    species_code_override: [species_code_dim] vector replacing the bound species_code for all objects.
     loop: ask for a closed window -- one bool for the whole batch, or one per
         object_type (--object_type all resolves --loop auto per species). It is
         the whole loop condition -- how many gait cycles the window holds is the
@@ -337,10 +358,10 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
             'is_loop': is_loop,
             'translation_root_index': cond_dict[object_type].get('translation_root_index', 0),
         }
-        if 'species_emb' in cond_dict[object_type]:
-            metadata['species_emb'] = cond_dict[object_type]['species_emb']
-        if species_emb_override is not None:
-            metadata['species_emb'] = species_emb_override
+        if 'species_code' in cond_dict[object_type]:
+            metadata['species_code'] = cond_dict[object_type]['species_code']
+        if species_code_override is not None:
+            metadata['species_code'] = species_code_override
         if action_condition is not None:
             metadata['action_group'] = action_condition['action_group']
             metadata['action_label'] = action_condition['action_label']

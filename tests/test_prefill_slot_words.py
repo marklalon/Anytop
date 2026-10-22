@@ -235,5 +235,5 @@ def test_the_corpus_loader_drops_retiring_rows_and_carries_the_review_marks(data
 
 def test_spell_with_puts_the_word_where_the_contract_wants_it():
     assert prefill_common.spell_with("attack, swat", ["left"]) == "attack, left, swat"
-    assert prefill_common.spell_with("walk, fast", ["forward"]) == "walk, forward, fast"
+    assert prefill_common.spell_with("walk, carry", ["forward"]) == "walk, forward, carry"
     assert prefill_common.spell_with("jump", ["up"]) == "jump, up"

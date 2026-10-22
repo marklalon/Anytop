@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import fnmatch
 import sys
 import time
 from collections import Counter
@@ -55,7 +56,9 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E4
     load_datasets_manifest,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
+    SPECIES_BODY_PLANS,
     SPECIES_TAGS_FILE,
+    SPECIES_VARIANTS,
     build_object_subsets,
     load_species_tags,
 )
@@ -254,9 +257,28 @@ def _report(sources, merged_cond):
 # ---------------------------------------------------------------------------
 # Merge
 # ---------------------------------------------------------------------------
+def _check_species_tag_patterns(source) -> None:
+    """Fail on a species_tags pattern that matches no tag of the closed
+    vocabulary -- a typo that would otherwise drop or keep species silently."""
+    vocabulary = SPECIES_BODY_PLANS + SPECIES_VARIANTS
+    unknown = [
+        pattern
+        for required in source.species_tags_include + source.species_tags_exclude
+        for pattern in required
+        if not any(fnmatch.fnmatchcase(tag, pattern) for tag in vocabulary)
+    ]
+    if unknown:
+        raise SystemExit(
+            f"{source.namespace}: species_tags pattern(s) match no known tag: "
+            + ", ".join(unknown) + ". Known tags: " + ", ".join(vocabulary)
+        )
+
+
 def merge_dataset_cond(manifest_path, out_path, recompute_stats=True, dry_run=False) -> Path:
     sources = load_datasets_manifest(manifest_path)
     print(f"Merging {len(sources)} dataset(s) from {manifest_path}")
+    for source in sources:
+        _check_species_tag_patterns(source)
 
     per_source_entries: dict[str, dict[str, dict]] = {}
     for source in sources:
@@ -277,9 +299,15 @@ def merge_dataset_cond(manifest_path, out_path, recompute_stats=True, dry_run=Fa
         for entry in entries.values():
             entry["dataset_split"] = source.split
             entry["dataset_sample_weight"] = source.sample_weight
+        unmatched = source.unmatched_includes(entry["species_name"] for entry in entries.values())
+        if unmatched:
+            raise SystemExit(
+                f"{source.namespace}: species_include pattern(s) match no species: "
+                + ", ".join(unmatched)
+            )
         entries = {
             key: entry for key, entry in entries.items()
-            if source.accepts(entry["species_name"])
+            if source.accepts_name(entry["species_name"])
         }
         missing_tags = sorted(key for key, entry in entries.items() if not entry["species_tags"])
         if missing_tags:
@@ -287,6 +315,12 @@ def merge_dataset_cond(manifest_path, out_path, recompute_stats=True, dry_run=Fa
                 f"{source.namespace}: {SPECIES_TAGS_FILE} is missing entries for "
                 + ", ".join(missing_tags)
             )
+        entries = {
+            key: entry for key, entry in entries.items()
+            if source.accepts_tags(entry["species_tags"])
+        }
+        if not entries:
+            raise SystemExit(f"{source.namespace}: species filter leaves no species.")
         per_source_entries[source.namespace] = entries
         print(f"  [OK] {source.namespace}: {len(entries)} species from {cond_path}")
 

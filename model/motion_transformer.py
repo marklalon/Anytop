@@ -963,8 +963,9 @@ ADALN_TEMPORAL, ADALN_FF = 0, 1
 def _modulate(x: Tensor, adaln: Optional[Tensor], branch: int) -> Tensor:
     """Scale and shift ONE branch's input: ``(1 + gamma) * x + beta``.
 
-    ``adaln`` is this layer's (B, 4, d_model) slice, or None when the run has no
-    action AdaLN (then this is the identity and costs nothing). ``x`` is
+    ``adaln`` is this layer's (B, 4, d_model) slice of the action head's
+    output, or None when the run has no action AdaLN (then this is the
+    identity and costs nothing). ``x`` is
     (frames, B, njoints, d_model), so the modulation broadcasts over frames and
     joints: a per-sample, per-channel gain, which is the authority the purely
     additive condition token lacks.
@@ -973,7 +974,7 @@ def _modulate(x: Tensor, adaln: Optional[Tensor], branch: int) -> Tensor:
     post-norm activation, so the identity path through the stack is untouched
     and the gains cannot compound layer over layer.
 
-    The head is zero-initialised, so gamma = 0 and beta = 0 on a fresh model and
+    The heads are zero-initialised, so gamma = 0 and beta = 0 on a fresh model and
     this reproduces the unmodulated layer exactly.
     """
     if adaln is None:
@@ -1067,7 +1068,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         else:
             self.cross_limb_blocks = None
 
-        # --action_label_adaln: the action condition gets a MULTIPLICATIVE
+        # Action AdaLN: the action condition gets a MULTIPLICATIVE
         # pathway on top of the additive token summed into timesteps_emb
         # (docs/conditional_modulation_upgrade.md section 3.2). The additive one
         # can only translate the residual stream, and every sublayer output is
@@ -1078,22 +1079,19 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # 'run, turn, left') into a large behavioural one, instead of leaving
         # that entirely to --action_label_cfg_scale and its quality cost.
         #
-        # Allocated after the decoder's other parameters so the flag does not
-        # reorder their initialisation; it does still consume RNG, so a seeded
-        # with/without comparison has to copy weights rather than trust the seed
-        # (tests/test_action_label_adaln.py does).
+        # Allocated after the decoder's other parameters so it does not reorder
+        # their initialisation.
         #
         # ONE head for every layer, not one per layer: same parameter count
         # (d^2 + 4*L*d^2 against L*(d^2 + 4*d^2)) for one matmul instead of 2L,
         # which matters on a step that is partly kernel-launch bound.
         #
         # --action_adaln_bottleneck: the hidden width of that head. Its input is
-        # the action token, and the label set the token is drawn from has a
-        # slot-source rank of ~137, so the head cannot use more than that many
-        # directions whatever its width: at d_model=384 the trained output
-        # Linear had effective rank 130. 0 keeps the hidden at d_model (old
-        # behaviour); ~192 loses nothing measurable and halves the head, whose
-        # output Linear is the largest single matrix in the model.
+        # the action token, so the head cannot use more directions than the
+        # rank of the action-label codes, whatever its width; a hidden at or
+        # above that rank loses nothing and shrinks the head, whose output
+        # Linear is the largest single matrix in the model. 0 keeps the hidden
+        # at d_model.
         self.action_adaln_bottleneck = int(action_adaln_bottleneck)
         if self.action_adaln_bottleneck < 0:
             raise ValueError(
@@ -1189,9 +1187,9 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # hard-dropped row carries action_label_null_emb, so its modulation is
         # the null token's modulation rather than a bypass of the head (the
         # failure mode of the retired global_energy null).
-        action_adaln = None
+        adaln = None
         if self.action_adaln is not None and action_adaln_cond is not None:
-            action_adaln = run_in_fp32(self.action_adaln, action_adaln_cond).view(
+            adaln = run_in_fp32(self.action_adaln, action_adaln_cond).view(
                 B, self.num_layers, ACTION_ADALN_PARAMS_PER_LAYER, self.d_model
             )
         for layer_ind, mod in enumerate(self.layers):
@@ -1210,7 +1208,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     cross_limb_block=cl_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     loop_phase_embedding=loop_phase_embedding,
-                    action_adaln=None if action_adaln is None else action_adaln[:, layer_ind],
+                    adaln=None if adaln is None else adaln[:, layer_ind],
                     ref_z=ref_z, ref_active=ref_active)
         if self.norm is not None:
             output = self.norm(output)
@@ -1350,7 +1348,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         cross_limb_block: Optional[nn.Module] = None,
         cross_limb_unreliable_mask: Optional[Tensor] = None,
         loop_phase_embedding: Optional[Tensor] = None,
-        action_adaln: Optional[Tensor] = None,
+        adaln: Optional[Tensor] = None,
         ref_z: Optional[Tensor] = None,
         ref_active: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
@@ -1366,7 +1364,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         # modulation lands BEFORE the circular phase, which _temporal_mha_block
         # sums in, so a loop sample's phase is never scaled by the label.
         x = self.norm2(x + self._temporal_mha_block_sin_joint(
-            _modulate(x, action_adaln, ADALN_TEMPORAL), None,
+            _modulate(x, adaln, ADALN_TEMPORAL), None,
             loop_phase_embedding=loop_phase_embedding))
         if cross_limb_block is not None:
             x = cross_limb_block(
@@ -1374,5 +1372,5 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 tgt_key_padding_mask,
                 unreliable_mask=cross_limb_unreliable_mask,
             )
-        x = self.norm3(x + self._ff_block(_modulate(x, action_adaln, ADALN_FF)))
+        x = self.norm3(x + self._ff_block(_modulate(x, adaln, ADALN_FF)))
         return x

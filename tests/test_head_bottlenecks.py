@@ -1,5 +1,5 @@
-"""The three head-width knobs added for the v24 parameter reallocation:
-``--action_adaln_bottleneck``, ``--species_film_bottleneck``, ``--last_layer_ff``.
+"""The three head-width knobs: ``--action_adaln_bottleneck``,
+``--species_film_bottleneck``, ``--last_layer_ff``.
 
 The species head defaults to 128; the other widths default to 0 (full width). The v24 values are
 pinned here with the shapes they produce, since the point of the change is a
@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from model.motion_transformer import (  # noqa: E402
     ACTION_ADALN_PARAMS_PER_LAYER,
@@ -34,8 +35,8 @@ def _args(**overrides):
         t5_out_dim=T5, latent_dim=D, ff_size=FF, layers=L, dropout_prob=0.0,
         value_emb=False, cross_limb_latents=2, cross_limb_dim=8, cross_limb_last_n=1,
         joint_mask_prob=0.0, joint_mask_budget=0.15, unreliable_mask_drop_prob=0.0,
-        temporal_span_mask_prob=0.0, species_joint_cond=True,
-        joint_name_drop_prob=0.0, action_label_cond=True, action_label_adaln=True,
+        temporal_span_mask_prob=0.0, species_cond=True,
+        joint_name_drop_prob=0.0, action_label_cond=True,
         direction_slot_drop_prob=0.0, modifier_slot_drop_prob=0.0,
         action_conditioning=None,
     )
@@ -78,7 +79,7 @@ def test_v24_widths_land_where_they_should():
     # Output layer stays zero-init: gamma = beta = 0 on a fresh model.
     assert torch.count_nonzero(dec.action_adaln[2].weight) == 0
     assert torch.count_nonzero(dec.action_adaln[2].bias) == 0
-    assert tuple(m.input_process.species_film_j[0].weight.shape) == (8, 2 * T5)
+    assert tuple(m.input_process.species_film_j[0].weight.shape) == (8, T5 + species_code_dim(T5))
     assert tuple(m.input_process.species_film_j[2].weight.shape) == (2 * T5, 8)
     assert torch.count_nonzero(m.input_process.species_film_j[2].weight) == 0
     # Only the LAST layer is narrower; the others keep ff_size.

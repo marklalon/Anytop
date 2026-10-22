@@ -4,10 +4,12 @@ Every joint's row holds its own root-relative position, its own local rotation
 and its own velocity, and a leaf's rotation moves nothing but the leaf. Deleting
 a leaf's row therefore leaves every other row a valid description of the same
 motion on a skeleton that never had that leaf -- no FK re-run, no approximation.
+The same holds for a chain peeled leaf by leaf: each step removes a leaf of the
+rig left by the previous one.
 
 What changes is the skeleton: the cond entry is sliced to the kept joints and
 every index it carries is remapped, so the sample is indistinguishable from a
-rig authored without those leaves. The length scale ``L`` is re-derived from the
+rig authored without those joints. The length scale ``L`` is re-derived from the
 kept rest positions downstream, exactly as it would be for such a rig.
 """
 
@@ -19,6 +21,7 @@ from typing import Optional
 
 import numpy as np
 
+from data_loaders.truebones.truebones_utils.joint_parts import prefill_joint_parts
 from data_loaders.truebones.truebones_utils.topology_relations import (
     refresh_topology_relations_in_object_cond,
 )
@@ -36,11 +39,19 @@ _SIDE_TOKENS = frozenset({'left', 'right', 'l', 'r'})
 # A repeated-name leaf is excluded when its stem ends in one of these words.
 # Other repeated chains, including ears and eyes, remain eligible.
 SUPPORT_LIMB_TOKENS = frozenset({'leg', 'arm', 'foot', 'hoof', 'paw', 'hand'})
-# Upper bound on the chain segments dropped on top of the terminator group; a
-# mirror pair counts as one.
-LEAF_DROP_MAX_SEGMENT_UNITS = 2
+# Range of chain segments peeled on top of the terminator group, one leaf at a
+# time; a mirror pair counts as one.
+LEAF_DROP_MIN_SEGMENT_UNITS = 1
+LEAF_DROP_MAX_SEGMENT_UNITS = 4
 # A rig is never cut below this many joints.
-LEAF_DROP_MIN_KEPT_JOINTS = 3
+LEAF_DROP_MIN_KEPT_JOINTS = 10
+# Body-part groups (joint_parts labels) whose chain top joint is never dropped,
+# so a rig keeps every limb and wing it has. Forelegs are labelled arm/hand.
+# Tails and other chains may go whole.
+LEAF_DROP_GUARDED_PART_GROUPS = (
+    frozenset({'arm', 'hand', 'leg', 'foot'}),
+    frozenset({'wing'}),
+)
 
 # Per-joint arrays/lists sliced along their first axis.
 _ROW_KEYS = (
@@ -89,7 +100,38 @@ def _protected_joints(entry, translation_root_index) -> set[int]:
         if index is not None:
             protected.add(index)
     protected.update(int(index) for index in (entry.get('face_joints') or []))
+    protected.update(_guarded_chain_roots(entry))
     return protected
+
+
+_GUARDED_ROOTS_CACHE: dict[tuple, frozenset[int]] = {}
+
+
+def _guarded_chain_roots(entry) -> frozenset[int]:
+    """Top joint of every chain of a ``LEAF_DROP_GUARDED_PART_GROUPS`` group,
+    from the prefilled body parts; cached per skeleton."""
+    parents = np.asarray(entry['parents'], dtype=np.int64)
+    names = [str(name) for name in entry['joints_names']]
+    key = (
+        tuple(names),
+        parents.tobytes(),
+        np.asarray(entry['offsets'], dtype=np.float64).tobytes(),
+        tuple(entry.get('species_tags') or ()),
+        str(entry.get('species_name') or entry.get('object_type') or ''),
+        tuple(str(name) for name in entry.get('canonical_joint_names') or ()),
+        tuple(str(side) for side in entry.get('joint_side_labels') or ()),
+        _int_or_none(entry.get('translation_root_index')),
+    )
+    roots = _GUARDED_ROOTS_CACHE.get(key)
+    if roots is None:
+        prefill = prefill_joint_parts(entry)
+        parts = [prefill[name]['part'] for name in names]
+        roots = frozenset(
+            joint for joint in range(parents.shape[0]) for group in LEAF_DROP_GUARDED_PART_GROUPS
+            if parts[joint] in group and (parents[joint] < 0 or parts[parents[joint]] not in group)
+        )
+        _GUARDED_ROOTS_CACHE[key] = roots
+    return roots
 
 
 def static_joint_mask(motion, joint_indices) -> np.ndarray:
@@ -164,15 +206,23 @@ def classify_leaves(entry, motion, leaves) -> dict[int, str]:
 def sample_leaf_drop(entry, motion, translation_root_index, rng=random) -> list[int]:
     """Pick the joints to remove from one training sample, or ``[]``.
 
-    Candidates are unprotected leaves that ``classify_leaves`` offers. A leaf
+    Candidates are unprotected leaves that ``classify_leaves`` offers; the
+    protected set includes the top joint of every limb and wing chain. A leaf
     whose mirror twin is a candidate of the same kind forms a unit with it (both
     go or neither does); one whose twin is not is kept, so a symmetric rig stays
     symmetric. Every terminator unit is dropped, then a uniform number of
-    segment units up to ``LEAF_DROP_MAX_SEGMENT_UNITS`` (at least one when there
-    is no terminator, so an augmented sample always differs from the stored rig).
+    segment units in ``[LEAF_DROP_MIN_SEGMENT_UNITS, LEAF_DROP_MAX_SEGMENT_UNITS]``
+    is peeled one at a time. A joint whose children are all gone becomes a
+    segment candidate when its name stem matches its parent's or the dropped
+    child's ("Tail 1" once "Tail 2" is gone), so a chain can be peeled whole.
+    Peeling stops early when the rig runs out of segments or the next unit would
+    leave fewer than ``LEAF_DROP_MIN_KEPT_JOINTS`` joints; a terminator group
+    that alone would do so cancels the cut.
     """
     parents = np.asarray(entry['parents'], dtype=np.int64)
     joint_count = int(parents.shape[0])
+    if joint_count <= LEAF_DROP_MIN_KEPT_JOINTS:
+        return []
     child_count = np.bincount(parents[parents >= 0], minlength=joint_count)
     protected = _protected_joints(entry, translation_root_index)
     leaves = [
@@ -181,29 +231,56 @@ def sample_leaf_drop(entry, motion, translation_root_index, rng=random) -> list[
     ]
     kinds = classify_leaves(entry, motion, leaves)
     partners = list(entry.get('symmetry_partner_indices') or [-1] * joint_count)
-
-    units: dict[str, list[tuple[int, ...]]] = {'terminator': [], 'segment': []}
-    seen: set[int] = set()
-    for joint in sorted(kinds):
-        if joint in seen:
-            continue
-        seen.add(joint)
-        partner = int(partners[joint]) if joint < len(partners) else -1
-        if partner < 0 or partner == joint:
-            units[kinds[joint]].append((joint,))
-        elif kinds.get(partner) == kinds[joint]:
-            units[kinds[joint]].append(tuple(sorted((joint, partner))))
-            seen.add(partner)
-    terminator_units, segment_units = units['terminator'], units['segment']
-    if not terminator_units and not segment_units:
+    terminator_units = _mirror_units({j for j, kind in kinds.items() if kind == 'terminator'}, partners)
+    segments = {j for j, kind in kinds.items() if kind == 'segment'}
+    if not terminator_units and not segments:
         return []
 
-    segment_count = rng.randint(0 if terminator_units else 1, LEAF_DROP_MAX_SEGMENT_UNITS)
-    chosen = terminator_units + rng.sample(segment_units, min(segment_count, len(segment_units)))
-    dropped = sorted({joint for unit in chosen for joint in unit})
+    dropped = {joint for unit in terminator_units for joint in unit}
     if joint_count - len(dropped) < LEAF_DROP_MIN_KEPT_JOINTS:
         return []
-    return dropped
+    names = list(entry.get('canonical_joint_names') or entry.get('joints_names') or [])
+    stems = [_name_stem(names[j]) if j < len(names) else () for j in range(joint_count)]
+    remaining = child_count.copy()
+
+    def drop(joint):
+        """Drop ``joint``; offer its parent once that is a leaf continuing the chain."""
+        dropped.add(joint)
+        segments.discard(joint)
+        parent = int(parents[joint])
+        remaining[parent] -= 1
+        if remaining[parent] or parent in protected or parents[parent] < 0:
+            return
+        stem = stems[parent]
+        if stem and stem[-1] not in SUPPORT_LIMB_TOKENS and stem in (stems[joint], stems[parents[parent]]):
+            segments.add(parent)
+
+    for joint in sorted(dropped):
+        drop(joint)
+    for _ in range(rng.randint(LEAF_DROP_MIN_SEGMENT_UNITS, LEAF_DROP_MAX_SEGMENT_UNITS)):
+        units = _mirror_units(segments, partners)
+        if not units:
+            break
+        unit = rng.choice(units)
+        if joint_count - len(dropped) - len(unit) < LEAF_DROP_MIN_KEPT_JOINTS:
+            break
+        for joint in unit:
+            drop(joint)
+    return sorted(dropped)
+
+
+def _mirror_units(candidates, partners) -> list[tuple[int, ...]]:
+    """``candidates`` grouped with their mirror twins: a twin pair when both are
+    candidates, a single when the joint has no twin; a joint whose twin is not
+    a candidate is left out."""
+    units = []
+    for joint in sorted(candidates):
+        partner = int(partners[joint]) if joint < len(partners) else -1
+        if partner < 0 or partner == joint:
+            units.append((joint,))
+        elif partner in candidates and joint < partner:
+            units.append((joint, partner))
+    return units
 
 
 def drop_joints_from_cond(entry, dropped):

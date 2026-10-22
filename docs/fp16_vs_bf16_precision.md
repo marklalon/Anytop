@@ -140,7 +140,7 @@ bf16 指数位和 fp32 一样，完全不需要这套机制——这是 bf16 唯
 | 约束 | 值 | 允许的最大 scale |
 |---|---|---|
 | 激活梯度最大值 | 3.52e-3 | 2^24.2 |
-| fp16 层里最大 \|dW\|（`species_film.2.weight` 4.9e-3） | — | 2^23.7 |
+| fp16 层里最大 \|dW\|（旧 FiLM 头 `species_film.2.weight` 4.9e-3） | — | 2^23.7 |
 | 5000 步 checkpoint 同项 | 1.2e-2 | 2^22.4 |
 
 实跑 run 的 scaler 状态（从 `opt*.pt` 读出）：
@@ -234,7 +234,7 @@ fp16 run 是从 bf16 run 的 5000 步 checkpoint 续训的，两边在 5000–54
 
 - 除那条被门关住的支路以外，误差在 **2^14–2^22 完全平坦**：窗口上沿一分钱都不值。
 - 第 5.2 节的 QKNorm 要 scale ≥2^19 才干净，而离群 batch 把有效溢出墙压到 2^17–2^18 ——**两个目标在原结构下直接冲突**，`GradScaler` 选了 2^17，代价就是 6.8%。
-- 最先溢出的是 `canonical_frame_projection.2` / `loop_condition_projection.2` / `resample_speed_projection.2` / `species_film.2` / `cross_in_attn.in_proj_bias`：它们的输出要广播到 ~1e6 个 token，反向对这些 token 求和，所以权重梯度是全网最大的。
+- 最先溢出的是 `canonical_frame_projection.2` / `loop_condition_projection.2` / `resample_speed_projection.2` / 旧 FiLM 头 `species_film.2` / `cross_in_attn.in_proj_bias`：它们的输出要广播到 ~1e6 个 token，反向对这些 token 求和，所以权重梯度是全网最大的。
 
 另外，第 5.1 节说的"周期性溢出"是 `GradScaler` 的设计而不是意外：它每 `growth_interval`（2000 步）翻一倍直到溢出，稳态下按节律制造跳步。要"不产生 spike"就必须停掉这个探顶动作。
 
@@ -250,7 +250,7 @@ fp16 run 是从 bf16 run 的 5000 步 checkpoint 续训的，两边在 5000–54
 - **A**：`cross_k_scale` 是模型里唯一一个背后挂着整张子网络的零初始化门（其余 `time_emb_scale` / `temporal_phase_scale` / `*_reliability_bias` 只门住一个加法项，门自身的梯度并不小）。子路只有 K 个 token、瓶颈宽度，fp32 实测 0 成本。
 - **B**：当前 `GradScaler` 显式以 2^15 初始化并封顶，避免新 run 在第一步探测 2^16；真正溢出时仍会下降。**恢复旧 run 时**保存的更高 scale 会在第一次 optimizer update 后被拉回 2^15（并重置 growth tracker）。
 - **C**：旧逻辑用 `not np.isfinite(grad_norm)` 当尖峰触发条件，而 `_optimize_amp` 恰好用 `inf` 标记"因非有限梯度跳过"。没有 scaler 的 bf16 / fp32 下 `inf` 仍然算真实故障，照样 dump。
-- **D**：8 处 = `species_film`、`resample_speed_projection`、`loop_condition_projection`、`action_label_projection`、`canonical_frame_projection`、`input_process.{species_film_j, text_embedding, struct_embedding}`。`InputProcess` 的返回本来就在末尾被 fp32 的 pos_emb 提升，所以下游看到的 dtype 没有变化。
+- **D**：`resample_speed_projection`、`loop_condition_projection`、`action_label_projection`、`canonical_frame_projection`、`input_process.{species_film_j, text_embedding, struct_embedding}`。`InputProcess` 的返回本来就在末尾被 fp32 的 pos_emb 提升，所以下游看到的 dtype 没有变化。
 
 ### 9.3 效果（实测）
 

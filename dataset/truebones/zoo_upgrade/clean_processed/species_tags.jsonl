@@ -1,30 +1,30 @@
-{"species": "antilope", "species_tags": ["Quadruped", "Galloping"]}
-{"species": "bat_demon", "species_tags": ["Biped", "Trotting"]}
-{"species": "Bear", "species_tags": ["Quadruped", "Lumbering"]}
-{"species": "Boar", "species_tags": ["Quadruped", "Galloping"]}
-{"species": "Camel", "species_tags": ["Quadruped", "Lumbering"]}
-{"species": "Cobra", "species_tags": ["Serpentine", "Slithering"]}
-{"species": "Crocodile", "species_tags": ["Quadruped", "Crawling"]}
-{"species": "Crow", "species_tags": ["Winged", "Flapping"]}
-{"species": "Deer_Buck", "species_tags": ["Quadruped", "Galloping"]}
-{"species": "Donkey", "species_tags": ["Quadruped", "Trotting"]}
-{"species": "Dinosaur", "species_tags": ["Quadruped", "Lumbering"]}
-{"species": "Elephant", "species_tags": ["Quadruped", "Lumbering"]}
-{"species": "Goat", "species_tags": ["Quadruped", "Trotting"]}
-{"species": "Hen", "species_tags": ["Biped", "Trotting"]}
-{"species": "Horse", "species_tags": ["Quadruped", "Galloping"]}
-{"species": "Hyena", "species_tags": ["Quadruped", "Trotting"]}
-{"species": "impman", "species_tags": ["Biped", "Striding"]}
-{"species": "Kappa_gorilla", "species_tags": ["Biped", "Crawling"]}
-{"species": "Locust_monster", "species_tags": ["Multiped", "Crawling"]}
-{"species": "Oscafish", "species_tags": ["Aquatic", "Swimming"]}
-{"species": "Ostrich", "species_tags": ["Winged", "Flapping"]}
-{"species": "pikefish", "species_tags": ["Aquatic", "Swimming"]}
-{"species": "Rabbit", "species_tags": ["Quadruped", "Scurrying"]}
-{"species": "Rabbit2", "species_tags": ["Quadruped", "Scurrying"]}
-{"species": "rhino", "species_tags": ["Quadruped", "Lumbering"]}
-{"species": "scorpion", "species_tags": ["Multiped", "Crawling"]}
-{"species": "Seagull", "species_tags": ["Winged", "Flapping"]}
-{"species": "serpent_man", "species_tags": ["Biped", "Crawling"]}
-{"species": "spider_tarantula", "species_tags": ["Multiped", "Crawling"]}
-{"species": "Tiger", "species_tags": ["Quadruped", "Galloping"]}
+{"species": "antilope", "species_tags": ["Quadruped"]}
+{"species": "bat_demon", "species_tags": ["Biped"]}
+{"species": "Bear", "species_tags": ["Quadruped"]}
+{"species": "Boar", "species_tags": ["Quadruped"]}
+{"species": "Camel", "species_tags": ["Quadruped"]}
+{"species": "Cobra", "species_tags": ["Serpentine"]}
+{"species": "Crocodile", "species_tags": ["Quadruped"]}
+{"species": "Crow", "species_tags": ["Winged"]}
+{"species": "Deer_Buck", "species_tags": ["Quadruped"]}
+{"species": "Donkey", "species_tags": ["Quadruped"]}
+{"species": "Dinosaur", "species_tags": ["Quadruped"]}
+{"species": "Elephant", "species_tags": ["Quadruped"]}
+{"species": "Goat", "species_tags": ["Quadruped"]}
+{"species": "Hen", "species_tags": ["Biped"]}
+{"species": "Horse", "species_tags": ["Quadruped"]}
+{"species": "Hyena", "species_tags": ["Quadruped"]}
+{"species": "impman", "species_tags": ["Biped"]}
+{"species": "Kappa_gorilla", "species_tags": ["Quadruped"]}
+{"species": "Locust_monster", "species_tags": ["Multiped"]}
+{"species": "Oscafish", "species_tags": ["Aquatic"]}
+{"species": "Ostrich", "species_tags": ["Winged"]}
+{"species": "pikefish", "species_tags": ["Aquatic"]}
+{"species": "Rabbit", "species_tags": ["Quadruped"]}
+{"species": "Rabbit2", "species_tags": ["Quadruped"]}
+{"species": "rhino", "species_tags": ["Quadruped"]}
+{"species": "scorpion", "species_tags": ["Multiped"]}
+{"species": "Seagull", "species_tags": ["Winged"]}
+{"species": "serpent_man", "species_tags": ["Biped"]}
+{"species": "spider_tarantula", "species_tags": ["Multiped"]}
+{"species": "Tiger", "species_tags": ["Quadruped"]}

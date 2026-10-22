@@ -46,16 +46,16 @@ def test_slot_source_rank_covers_the_full_domain_and_projection_width():
     # The slots partition the vocabulary -- a head word is a head source and
     # nothing else, however late in the label it is spelled -- so the ranks add
     # to the vocabulary size.
-    assert report["total_rank"] == 92
+    assert report["total_rank"] == 88
     assert {name: item["rank"] for name, item in report["slots"].items()} == {
         "head": 32,
         "direction": 6,
-        "modifier": 54,
+        "modifier": 50,
     }
     assert sum(report["slots"][name]["rank"] for name in report["slots"]) == len(
         CONTROLLED_VOCAB
     )
-    assert not slot_source_rank_report(table, latent_dim=91)["fits_projection"]
+    assert not slot_source_rank_report(table, latent_dim=87)["fits_projection"]
 
 
 def test_slot_assignment_carries_ids_masks_and_slots_only():
@@ -68,7 +68,7 @@ def test_slot_assignment_carries_ids_masks_and_slots_only():
     assert slots["slot_ids"] == (SLOT_HEAD, SLOT_HEAD)
     assert slot_member_weights(slots["slot_ids"]) == (HEAD_SLOT_PRIMARY_WEIGHT, 1.0)
     assert action_label_slots(("attack", "idle"))["slot_ids"] == (SLOT_HEAD, SLOT_HEAD)
-    assert action_label_slots(("run", "turn", "left", "fast"))["slot_ids"] == (
+    assert action_label_slots(("run", "turn", "left", "carry"))["slot_ids"] == (
         SLOT_HEAD, SLOT_HEAD, SLOT_DIRECTION, SLOT_MODIFIER,
     )
 
@@ -84,7 +84,7 @@ def _channels(tokens, table):
 
 
 def test_slot_ids_partition_the_label_by_slot():
-    slots = action_label_slots(("walk", "forward", "fast"))
+    slots = action_label_slots(("walk", "forward", "carry"))
     assert slots["slot_ids"] == (SLOT_HEAD, SLOT_DIRECTION, SLOT_MODIFIER)
     assert ACTION_LABEL_SLOTS == ("head", "direction", "modifier")
 
@@ -113,7 +113,7 @@ def test_head_and_direction_channels_ignore_added_modifiers():
     table = _word_table()
     short, short_present = _channels(("walk", "forward"), table)
     long, long_present = _channels(
-        ("walk", "forward", "fast", "bow", "shield"), table
+        ("walk", "forward", "carry", "bow", "shield"), table
     )
     assert np.array_equal(short[SLOT_HEAD], long[SLOT_HEAD])
     assert np.array_equal(short[SLOT_DIRECTION], long[SLOT_DIRECTION])

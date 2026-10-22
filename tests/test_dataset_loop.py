@@ -361,7 +361,7 @@ def test_loop_is_phase_free_needs_every_head_phase_free() -> None:
 
 def test_event_modifier_anchors_a_phase_free_head() -> None:
     # Gait, held posture and held object keep the state phase-free.
-    assert loop_is_phase_free("walk, forward, trot")
+    assert loop_is_phase_free("walk, forward, carry")
     assert loop_is_phase_free("idle, crouch, sleep")
     assert loop_is_phase_free("idle, sit")
     assert loop_is_phase_free("run, forward, weapon")
@@ -371,7 +371,7 @@ def test_event_modifier_anchors_a_phase_free_head() -> None:
     assert not loop_is_phase_free("idle, scratch, sit")
     assert phase_anchoring_words("idle, look, crouch") == ["look"]
     assert phase_anchoring_words("attack, hover, bite") == ["attack", "bite"]
-    assert phase_anchoring_words("walk, left, slow") == []
+    assert phase_anchoring_words("walk, left, carry") == []
 
 
 @pytest.mark.parametrize("loop_cond_prob", [1.0, 0.0])

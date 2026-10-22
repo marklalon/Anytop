@@ -209,16 +209,15 @@ def get_gmdm_args(args):
             'temporal_span_mask_min_frames': getattr(args, 'temporal_span_mask_min_frames', 4),
             'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 12),
             'species_cfg_drop_prob': getattr(args, 'species_cfg_drop_prob', 0.15),
-            'species_joint_cond': getattr(args, 'species_joint_cond', False),
+            'species_cond': getattr(args, 'species_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
             **{key: getattr(args, key, default) for key, default in (
                 ('ref_encoder', False), ('ref_slots', 2), ('ref_dim', 8),
                 ('ref_width', 64), ('ref_layers', 2),
-                ('ref_cfg_drop_prob', 0.4), ('ref_label_drop_prob', 0.5))},
+                ('ref_cfg_drop_prob', 0.4))},
             'mirror_twin_drop_prob': getattr(args, 'mirror_twin_drop_prob', 0.2),
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
-            'action_label_adaln': getattr(args, 'action_label_adaln', False),
             'direction_slot_drop_prob': getattr(args, 'direction_slot_drop_prob', 0.0),
             'modifier_slot_drop_prob': getattr(args, 'modifier_slot_drop_prob', 0.0),
             # The training entry point builds one bundle and hands the same
@@ -235,7 +234,10 @@ def create_gaussian_diffusion(args):
     learn_sigma = False
     rescale_timesteps = False
 
-    betas = gd.get_named_beta_schedule(args.noise_schedule, steps, scale_beta)
+    betas = gd.get_named_beta_schedule(
+        args.noise_schedule, steps, scale_beta,
+        shift=getattr(args, 'noise_schedule_shift', 1.0),
+    )
     loss_type = gd.LossType.MSE
 
     if not timestep_respacing:

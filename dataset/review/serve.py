@@ -75,7 +75,7 @@ loadable immediately, not just after the next preprocess. Every source move is a
 ``<trash>/soft_deleted.jsonl`` so it can be traced back and undone by hand.
 
 The page's second mode shows each clip's species descriptor
-(``species_tags.jsonl``: body plan, locomotion) in place of its label and edits
+(``species_tags.jsonl``: body plan, optional variant) in place of its label and edits
 it through ``/api/species-tags``. Every clip of a species shares the one row,
 looked up through ``motion_metadata.json``'s ``object_type``. The tags are
 baked into ``cond.npy`` (``species_emb``), so an edit needs a cond regen
@@ -142,7 +142,7 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E4
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
     SPECIES_BODY_PLANS,
-    SPECIES_LOCOMOTIONS,
+    SPECIES_VARIANTS,
     check_species_tags,
     parse_species_tags,
 )
@@ -1351,7 +1351,7 @@ class Handler(BaseHTTPRequestHandler):
                 },
                 "species_contract": {
                     "body_plans": list(SPECIES_BODY_PLANS),
-                    "locomotions": list(SPECIES_LOCOMOTIONS),
+                    "variants": list(SPECIES_VARIANTS),
                 },
                 "species_errors": species_errors,
                 "rows": rows,

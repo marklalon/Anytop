@@ -36,22 +36,21 @@ def _cond(parents, joints_names, tags=None, slim=None) -> dict:
 
 
 # ── motion tags ──────────────────────────────────────────────────────────────
-def test_species_tags_read_the_baked_pair_only() -> None:
-    baked = _cond([-1], ["Root"], tags=("Winged", "Flapping"))
-    assert species_tags_of(baked, "anything") == ("winged", "flapping")
+def test_species_tags_read_the_baked_body_plan_only() -> None:
+    baked = _cond([-1], ["Root"], tags=("Winged",))
+    assert species_tags_of(baked, "anything") == ("winged",)
+    # The variant slot is baked but not compared.
+    assert species_tags_of(_cond([-1], ["Root"], tags=("Winged", "Fluttering")), "x") == ("winged",)
     with pytest.raises(ValueError, match="regenerate"):
         species_tags_of(_cond([-1], ["Root"]), "cat")
     with pytest.raises(ValueError, match="regenerate"):
         species_tags_of(_cond([-1], ["Root"], tags=("Winged", "Heavy", "Flapping")), "x")
 
 
-def test_tag_distance_weights_slots() -> None:
-    horse = ("quadruped", "galloping")
+def test_tag_distance_is_the_body_plan_mismatch() -> None:
+    horse = ("quadruped",)
     assert tag_distance(horse, horse) == pytest.approx(0.0)
-    # Same body plan, different gait.
-    assert tag_distance(horse, ("quadruped", "trotting")) == pytest.approx(0.4)
-    # Different body plan is the larger single penalty.
-    assert tag_distance(horse, ("winged", "galloping")) == pytest.approx(0.6)
+    assert tag_distance(horse, ("winged",)) == pytest.approx(1.0)
 
 
 # ── body parts ───────────────────────────────────────────────────────────────
@@ -69,53 +68,50 @@ def test_part_tokens_drop_qualifiers_and_prefer_slim_texts() -> None:
 
 # ── ranking ──────────────────────────────────────────────────────────────────
 def test_rank_species_puts_the_same_mover_first_regardless_of_joint_names() -> None:
-    # A quadruped galloper named one way; candidates: the same mover named the
-    # other way, a quadruped with the same names but a different gait, and a
-    # bird with similar joint count.
+    # A quadruped named one way; candidates: the same body plan named the other
+    # way, a biped with the same names, and a bird with similar joint count.
     query = _cond(
         [-1, 0, 1, 1, 0],
         ["Hips", "Spine", "Right Front Upper Leg", "Left Front Upper Leg", "Tail 01"],
-        tags=("Quadruped", "Galloping"),
+        tags=("Quadruped",),
         slim=["Hips", "Spine", "Right Front Thigh", "Left Front Thigh", "Tail"],
     )
     candidates = {
         "Deer": _cond(
             [-1, 0, 1, 1, 0],
             ["Pelvis", "Spine1", "RightThigh", "LeftThigh", "Tail1"],
-            tags=("Quadruped", "Galloping"),
+            tags=("Quadruped",),
             slim=["Pelvis", "Spine", "Right Thigh", "Left Thigh", "Tail"],
         ),
-        "Bear": _cond(
+        "Ostrich": _cond(
             [-1, 0, 1, 1, 0],
             ["Hips", "Spine", "Right Front Upper Leg", "Left Front Upper Leg", "Tail 01"],
-            tags=("Quadruped", "Lumbering"),
+            tags=("Biped",),
             slim=["Hips", "Spine", "Right Front Thigh", "Left Front Thigh", "Tail"],
         ),
         "Crow": _cond(
             [-1, 0, 1, 1, 0],
             ["Hips", "Spine", "Right Wing", "Left Wing", "Tail 01"],
-            tags=("Winged", "Flapping"),
+            tags=("Winged",),
             slim=["Hips", "Spine", "Right Wing", "Left Wing", "Tail"],
         ),
     }
     ranked = rank_species(query, candidates, query_hint="Horse", top_k=None)
-    # Deer: tags match, 3/5 parts (0.3 * 0.4 = 0.12); Bear: parts match, gait differs (0.5 * 0.4 = 0.20).
-    assert [r.name for r in ranked] == ["Deer", "Bear", "Crow"]
+    # Deer: tags match, 3/5 parts; Ostrich: parts match, body plan differs.
+    assert [r.name for r in ranked] == ["Deer", "Ostrich", "Crow"]
     by_name = {r.name: r for r in ranked}
-    # Bear shares every body part; Deer shares the tags. Both beat the bird by a margin.
     assert by_name["Deer"].same_tags is True and by_name["Deer"].tag_distance == pytest.approx(0.0)
-    assert by_name["Bear"].jaccard == pytest.approx(1.0)
-    assert by_name["Crow"].combined_distance > 2 * max(by_name["Deer"].combined_distance, by_name["Bear"].combined_distance)
+    assert by_name["Ostrich"].jaccard == pytest.approx(1.0)
     assert sum(r.weight for r in ranked) == pytest.approx(1.0)
-    assert by_name["Crow"].weight < min(by_name["Deer"].weight, by_name["Bear"].weight)
+    assert by_name["Crow"].weight < min(by_name["Deer"].weight, by_name["Ostrich"].weight)
 
 
 def test_rank_species_top_k_and_softmax_over_the_selection() -> None:
-    query = _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine", "Slithering"))
+    query = _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine",))
     candidates = {
-        "Snake": _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine", "Slithering")),
-        "Worm": _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine", "Undulating")),
-        "Eel": _cond([-1, 0], ["Hips", "Tail"], tags=("Aquatic", "Swimming")),
+        "Snake": _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine",)),
+        "Worm": _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine",)),
+        "Eel": _cond([-1, 0], ["Hips", "Tail"], tags=("Aquatic",)),
     }
     ranked = rank_species(query, candidates, query_hint="Snake", top_k=2)
     assert [r.name for r in ranked] == ["Snake", "Worm"]
@@ -125,15 +121,16 @@ def test_rank_species_top_k_and_softmax_over_the_selection() -> None:
     assign_softmax_weights(widened)
     assert [r.name for r in widened] == ["Snake", "Worm", "Eel"]
     assert sum(r.weight for r in widened) == pytest.approx(1.0)
-    assert widened[0].weight > widened[1].weight > widened[2].weight
+    assert widened[0].weight == pytest.approx(widened[1].weight)
+    assert widened[1].weight > widened[2].weight
 
 
 def test_rank_species_fills_the_profile_memo() -> None:
-    query = _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine", "Slithering"))
-    candidates = {"Snake": _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine", "Slithering"))}
+    query = _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine",))
+    candidates = {"Snake": _cond([-1, 0], ["Hips", "Tail"], tags=("Serpentine",))}
     profiles: dict = {}
     rank_species(query, candidates, query_hint="Snake", profiles=profiles)
     assert set(profiles) == {"Snake"}
-    assert profiles["Snake"].tags == ("serpentine", "slithering")
+    assert profiles["Snake"].tags == ("serpentine",)
 
 

@@ -54,3 +54,57 @@ def test_manifest_rejects_missing_or_unknown_split(tmp_path, split):
     manifest.write_text(json.dumps(row), encoding="utf-8")
     with pytest.raises(ValueError, match="split"):
         load_datasets_manifest(manifest)
+
+
+def test_manifest_species_filter_globs(tmp_path):
+    manifest = tmp_path / "datasets.jsonl"
+    row = {
+        "namespace": "sample", "path": str(tmp_path / "sample"), "split": "train",
+        "species_include": ["Horse", "*Dragon*"], "species_exclude": "Dragon_Baby*",
+    }
+    manifest.write_text(json.dumps(row), encoding="utf-8")
+    (source,) = load_datasets_manifest(manifest)
+    names = ["Horse", "horse", "RedDragon", "Dragon_Baby_01", "Cat"]
+    assert [name for name in names if source.accepts(name)] == ["Horse", "RedDragon"]
+    assert source.unmatched_includes(["Horse", "Cat"]) == ["*Dragon*"]
+
+
+
+@pytest.mark.parametrize("include, expected", [
+    ("Winged, Fluttering; Quadruped", ["Bee", "Horse"]),
+    ("Fluttering; Quadruped", ["Bee", "Moth", "Horse"]),
+    (["Winged, Fluttering", "Quadruped"], ["Bee", "Horse"]),
+    ("Winged", ["Eagle", "Bee"]),
+])
+def test_manifest_species_tags_filter(tmp_path, include, expected):
+    manifest = tmp_path / "datasets.jsonl"
+    row = {"namespace": "sample", "path": str(tmp_path / "sample"), "split": "train",
+           "species_tags_include": include}
+    manifest.write_text(json.dumps(row), encoding="utf-8")
+    (source,) = load_datasets_manifest(manifest)
+    species = {
+        "Eagle": ("Winged",), "Bee": ("Winged", "Fluttering"), "Moth": ("Multiped", "Fluttering"),
+        "Horse": ("Quadruped",), "Snake": ("Serpentine",),
+    }
+    assert [name for name, tags in species.items() if source.accepts(name, tags)] == expected
+    with pytest.raises(ValueError, match="tags"):
+        source.accepts("Horse")
+
+
+def test_manifest_species_tags_exclude_requires_every_tag(tmp_path):
+    manifest = tmp_path / "datasets.jsonl"
+    row = {"namespace": "sample", "path": str(tmp_path / "sample"), "split": "train",
+           "species_tags_exclude": "Winged, Flutter*"}
+    manifest.write_text(json.dumps(row), encoding="utf-8")
+    (source,) = load_datasets_manifest(manifest)
+    assert source.accepts("Eagle", ("Winged",))
+    assert not source.accepts("Bee", ("Winged", "Fluttering"))
+
+
+def test_manifest_species_tags_filter_rejects_empty_tag(tmp_path):
+    manifest = tmp_path / "datasets.jsonl"
+    row = {"namespace": "sample", "path": str(tmp_path / "sample"), "split": "train",
+           "species_tags_include": "Winged,; Quadruped"}
+    manifest.write_text(json.dumps(row), encoding="utf-8")
+    with pytest.raises(ValueError, match="empty tag"):
+        load_datasets_manifest(manifest)

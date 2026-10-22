@@ -363,7 +363,7 @@
     <option value="species_tags">species tags</option>
   </select>
   <input type="search" id="q" placeholder="搜索 label">
-  <button id="wholeWord" class="search-toggle" type="button" title="Match whole word（label 完全匹配；clip 按单词匹配；species tags 按整个 tag 匹配）" aria-label="Match whole word" aria-pressed="false">
+  <button id="wholeWord" class="search-toggle" type="button" title="Match whole word（label 完全匹配；clip 按单词匹配；species tags 的 tag 集合须与输入完全一致）" aria-label="Match whole word" aria-pressed="false">
     <svg viewBox="0 0 32 20" aria-hidden="true" focusable="false">
       <path d="M2 2v16M30 2v16" fill="none" stroke="currentColor" stroke-width="2"/>
       <text x="16" y="14.5" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700" font-family="sans-serif">ab</text>
@@ -418,7 +418,7 @@ let view = [];      // current filtered subset
 let page = 1;
 let trashRoot = '';  // where "清理待删除" parks source files (server's --trash)
 let labelContract = null; // vocabulary/order supplied by the shared Python contract
-let speciesContract = null; // {body_plans, locomotions}: species_tags' closed vocabularies
+let speciesContract = null; // {body_plans, variants}: species_tags' closed vocabularies
 const MODE_KEY = 'actionReview.mode';
 const SPECIES_MODE = 'species';
 let mode = (() => { try { return localStorage.getItem(MODE_KEY) || 'label'; } catch (err) { return 'label'; } })();
@@ -572,7 +572,9 @@ function counts() {
     (unjudged ? ' <span style="color:#ffcf8f">(未判定 <b>' + unjudged + '</b>)</span>' : '') +
     (pending ? ' &nbsp;·&nbsp; 待删除 <b>' + pending + '</b>' : '') +
     (invalid ? ' &nbsp;·&nbsp; <span style="color:#ff8a80">非法 label <b>' + invalid + '</b></span>' : '') +
-    ' &nbsp;·&nbsp; 当前筛选 <b>' + view.length + '</b>';
+    ' &nbsp;·&nbsp; 当前筛选 <b>' + view.length + '</b>' +
+    ' (<b>' + new Set(view.filter(r => r._species).map(r => (r._dataset || ds) + '\u0000' + r._species)).size +
+    '</b> 物种)';
   const clean = $('clean');
   const markFiltered = $('markFiltered');
   const markable = view.filter(r => !isPending(r)).length;
@@ -760,6 +762,36 @@ function containsSearchTerm(value, query, wholeWord) {
   return false;
 }
 
+// Every term must hit its own tag (no tag serves two terms): "winged, w" needs two tags.
+function matchDistinctTags(terms, tags, used = new Set()) {
+  if (!terms.length) return true;
+  const [term, ...rest] = terms;
+  return tags.some((t, i) => {
+    if (used.has(i) || !t.includes(term)) return false;
+    used.add(i);
+    const ok = matchDistinctTags(rest, tags, used);
+    used.delete(i);
+    return ok;
+  });
+}
+
+function tightCommas(value) {
+  return String(value || '').toLowerCase().replace(/\s*[,，]\s*/g, ',');
+}
+
+// species tags mode lists one card per species: the first row left by the filters.
+function shownRows() {
+  if (mode !== SPECIES_MODE) return view;
+  const seen = new Set();
+  return view.filter(r => {
+    if (!r._species) return true;
+    const key = (r._dataset || ds) + '\u0000' + r._species;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function applyFilters(keepPage, keepScroll) {
   const g = $('group').value;
   const s = $('state').value;
@@ -775,16 +807,22 @@ function applyFilters(keepPage, keepScroll) {
     if (s === 'autofill' && !isAutofill(r)) return false;
     if (l !== 'all' && loopState(r) !== l) return false;
     if (q) {
+      // "run,forward" matches "run, forward": spacing around commas is ignored.
+      const labelText = tightCommas(r.action_label);
+      const labelQuery = tightCommas(q);
       const inLabel = wholeWord
-        ? String(r.action_label || '').trim().toLowerCase() === q
-        : containsSearchTerm(r.action_label, q, false);
+        ? labelText.trim() === labelQuery
+        : labelText.includes(labelQuery);
       const inClip = containsSearchTerm(r.clip, q, wholeWord);
       if (searchField === 'species_tags') {
         const tags = (r._species_tags || []).map(t => String(t).toLowerCase());
-        // "a, b" = every term must hit some tag (AND).
-        const terms = q.split(/[,，]/).map(t => t.trim()).filter(Boolean);
-        const inTags = terms.every(term =>
-          wholeWord ? tags.includes(term) : tags.some(t => t.includes(term)));
+        // "a, b" = every term must hit some tag (AND). An empty term ("winged, ")
+        // stands for any one more tag, so it selects species that have a variant.
+        const terms = q.split(/[,，]/).map(t => t.trim());
+        // Whole word: the tag set must be exactly the terms ("winged" excludes "Winged, X").
+        const inTags = wholeWord
+          ? tags.length === terms.length && terms.every(term => !term || tags.includes(term))
+          : matchDistinctTags(terms, tags);
         if (!inTags) return false;
       }
       if (searchField === 'label' && !inLabel) return false;
@@ -798,7 +836,8 @@ function applyFilters(keepPage, keepScroll) {
 
 function render(keepScroll) {
   const y = keepScroll ? window.scrollY : 0;
-  const pages = Math.max(1, Math.ceil(view.length / PAGE_SIZE));
+  const shown = shownRows();
+  const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
   page = Math.min(Math.max(1, page), pages);
 
   counts();
@@ -811,7 +850,7 @@ function render(keepScroll) {
   const grid = $('grid');
   dropImgs(grid);
   grid.textContent = '';
-  const slice = view.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const slice = shown.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   if (!slice.length) {
     const e = document.createElement('div');
     e.className = 'empty';
@@ -944,7 +983,7 @@ function labelBar(el, row) {
   return label;
 }
 
-// species_tags of the clip's species: [body plan, locomotion]. One row per
+// species_tags of the clip's species: [body plan] or [body plan, variant]. One row per
 // species, so an edit here changes every clip of that species.
 function speciesBar(el, row) {
   const label = document.createElement('div');
@@ -966,17 +1005,18 @@ function speciesBar(el, row) {
   return label;
 }
 
-// Two closed slots, so two <select>s instead of free text. Picking a value
-// saves at once; Escape or leaving the editor cancels.
+// Closed slots, so <select>s instead of free text. Picking a value saves at
+// once; Escape or leaving the editor cancels. The variant's '—' is no variant.
 function editSpecies(row, label) {
   if (!speciesContract) { toast('species_tags 词表尚未加载'); return; }
   const box = document.createElement('div');
   box.className = 'tag-edit';
   const current = row._species_tags || [];
-  const pick = (options, value, title) => {
+  const pick = (options, value, title, none) => {
     const sel = document.createElement('select');
     sel.title = title;
-    const known = options.includes(value);
+    if (none) sel.add(new Option('—', '', false, !value));
+    const known = options.includes(value) || (none && !value);
     if (!known) {
       const blank = new Option(value ? '⚠ ' + value : '—', '', true, true);
       blank.disabled = true;
@@ -987,8 +1027,8 @@ function editSpecies(row, label) {
     return sel;
   };
   const plan = pick(speciesContract.body_plans, current[0], 'body plan');
-  const loco = pick(speciesContract.locomotions, current[1], 'locomotion');
-  box.append(plan, loco);
+  const variant = pick(speciesContract.variants, current[1] || '', 'variant', true);
+  box.append(plan, variant);
   let closed = false;
   const close = () => {
     if (closed) return;
@@ -996,12 +1036,13 @@ function editSpecies(row, label) {
     box.replaceWith(label);
   };
   const commit = () => {
-    if (!plan.value || !loco.value) return;   // wait for the other slot
-    const next = [plan.value, loco.value];
+    if (!plan.value) return;
+    const next = variant.value ? [plan.value, variant.value] : [plan.value];
     close();
     if (next.join('|') !== current.join('|') || row._species_error) saveSpecies(row, next);
   };
-  plan.onchange = loco.onchange = commit;
+  plan.onchange = commit;
+  variant.onchange = commit;
   box.onkeydown = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
   box.addEventListener('focusout', (ev) => {
     if (!box.contains(ev.relatedTarget)) close();
@@ -1039,7 +1080,7 @@ function setMode(next) {
   try { localStorage.setItem(MODE_KEY, mode); } catch (err) { /* per-viewer convenience only */ }
   $('modeLabel').setAttribute('aria-pressed', String(mode !== SPECIES_MODE));
   $('modeSpecies').setAttribute('aria-pressed', String(mode === SPECIES_MODE));
-  if (rows.length) render(true);
+  if (rows.length) { page = 1; render(); }
 }
 
 function edit(el, row, label) {

@@ -96,6 +96,16 @@ def reference_pose(motion, cond):
     return np.nan_to_num(pose).astype(np.float32)
 
 
+def reference_rest_pose(cond):
+    """``[J, REFERENCE_POSE_CHANNELS]`` static rest context: the encoder pose of the rest.
+
+    The same bone-direction / height channels evaluated on the rest positions,
+    so a frame's pose and the rest sit in one space and their difference is
+    linear in the inputs. Read by the reference encoder as static per-joint context.
+    """
+    return reference_pose(rest_pos_from_cond(cond)[None], cond)[0]
+
+
 def reference_sample(motion, cond, names, *, feats=None, joint_struct=None):
     """One encoder input from physical features on their own skeleton.
 
@@ -110,6 +120,7 @@ def reference_sample(motion, cond, names, *, feats=None, joint_struct=None):
     return {
         'feats': feats,
         'pose': reference_pose(motion, cond),
+        'rest_pose': reference_rest_pose(cond),
         'joints_names_embs': names,
         'joint_struct': build_joint_struct_features(cond) if joint_struct is None else joint_struct,
     }
@@ -125,6 +136,7 @@ def collate_reference(samples, motion, names, joint_struct):
     result = {
         'ref_feats': torch.zeros_like(motion),
         'ref_pose': motion.new_zeros(batch, joints, REFERENCE_POSE_CHANNELS, frames),
+        'ref_rest_pose': motion.new_zeros(batch, joints, REFERENCE_POSE_CHANNELS),
         'ref_mask': torch.zeros(batch, joints, dtype=torch.bool, device=motion.device),
         'ref_active': torch.zeros(batch, dtype=torch.bool, device=motion.device),
         'ref_joints_names_embs': torch.zeros_like(names),
@@ -147,6 +159,8 @@ def collate_reference(samples, motion, names, joint_struct):
                 f'got {tuple(pose.shape)} for {frames} frames and {count} joints'
             )
         result['ref_pose'][i, :count] = pose.permute(1, 2, 0)
+        result['ref_rest_pose'][i, :count] = torch.as_tensor(
+            sample['rest_pose'], dtype=motion.dtype, device=motion.device)
         result['ref_mask'][i, :count] = True
         result['ref_active'][i] = True
         for key in ('joints_names_embs', 'joint_struct'):

@@ -104,7 +104,7 @@ def _channels(model, labels, groups, dtype=torch.float64):
 def test_model_channels_equal_the_numpy_contract():
     bundle = make_test_bundle()
     model = _model(bundle)
-    labels = ['land, fly', 'draw', 'walk, forward, slow', 'idle, sniff']
+    labels = ['land, fly', 'draw', 'walk, forward, carry', 'idle, sniff']
     groups = ['transition', 'transition', 'locomotion', 'stationary']
     got = _channels(model, labels, groups)
     expected = reference_channels(bundle, labels, groups)
@@ -129,7 +129,7 @@ def _direction_dropped_channels(model, labels, groups, dtype=torch.float64):
 def test_direction_slot_dropout_zeroes_only_the_direction_channel_in_training():
     bundle = make_test_bundle()
     model = _model(bundle, direction_drop_prob=1.0, eval_mode=False)
-    labels = ['walk, forward, fast', 'attack, left, swat', 'idle']
+    labels = ['walk, forward, carry', 'attack, left, swat', 'idle']
     groups = ['locomotion', 'stationary', 'stationary']
     reference = _channels(model, labels, groups)
     dropped, word_mask = _direction_dropped_channels(model, labels, groups)
@@ -186,7 +186,7 @@ def _modifier_dropped_channels(model, labels, groups, dtype=torch.float64):
 def test_modifier_slot_dropout_zeroes_only_the_modifier_channel_in_training():
     bundle = make_test_bundle()
     model = _model(bundle, modifier_drop_prob=1.0, eval_mode=False)
-    labels = ['walk, forward, fast', 'attack, left, swat', 'idle, sniff', 'attack, jump, charge']
+    labels = ['walk, forward, carry', 'attack, left, swat', 'idle, sniff', 'attack, jump, charge']
     groups = ['locomotion', 'stationary', 'stationary', 'stationary']
     reference = _channels(model, labels, groups)
     dropped, word_mask = _modifier_dropped_channels(model, labels, groups)
@@ -242,7 +242,7 @@ def test_projection_consumes_one_block_per_slot():
 def test_compacted_channels_match_numpy_and_lose_nothing():
     bundle = make_test_bundle()
     model = _model(bundle)
-    labels = ['attack, left, fast', 'walk, forward', 'idle, sniff', 'draw']
+    labels = ['attack, left, carry', 'walk, forward', 'idle, sniff', 'draw']
     groups = ['stationary', 'locomotion', 'stationary', 'transition']
     full = _channels(model, labels, groups)
     compact = model._compact_action_slot_channels(full)
@@ -262,14 +262,14 @@ def test_head_and_direction_channels_do_not_move_when_modifiers_are_added():
     """Long-label axis retention as an equality, not a tuned constant."""
     model = _model(make_test_bundle())
     short = _channels(model, ['walk, forward'], ['locomotion'])
-    longer = _channels(model, ['walk, forward, fast'], ['locomotion'])
+    longer = _channels(model, ['walk, forward, carry'], ['locomotion'])
     width = TEST_T5_DIM
     assert torch.equal(short[:, :2 * width], longer[:, :2 * width])
     # ...and the modifier channel is exactly what moved.
     assert not torch.equal(short[:, 2 * width:], longer[:, 2 * width:])
     assert torch.count_nonzero(short[:, 2 * width:]) == 0
     # A second modifier pools into the same channel and moves nothing else.
-    two = _channels(model, ['walk, forward, fast, bow'], ['locomotion'])
+    two = _channels(model, ['walk, forward, carry, bow'], ['locomotion'])
     assert torch.equal(two[:, :2 * width], longer[:, :2 * width])
     assert not torch.equal(two[:, 2 * width:], longer[:, 2 * width:])
 
@@ -391,7 +391,7 @@ def test_latent_dim_below_the_slot_source_rank_fails_at_construction():
     bundle = make_test_bundle()
     total_rank = bundle.slot_source_rank_report(TEST_LATENT_DIM)['total_rank']
     # The slots partition the vocabulary, so the ranks add to its size.
-    assert total_rank == 92
+    assert total_rank == 88
     with pytest.raises(ValueError, match="smaller than the total slot source rank"):
         _model(bundle, latent_dim=total_rank - 1)
     _model(bundle, latent_dim=TEST_LATENT_DIM)  # a width at or above it

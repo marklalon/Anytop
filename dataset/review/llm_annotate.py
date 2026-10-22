@@ -32,7 +32,7 @@ other side.  Labels are exact controlled-vocabulary tokens
 ``canonical_action_label``; head order follows the dataset's existing spelling
 of the same word set, since head order IS the condition.
 
-**species.**  Two closed tags (``dataset_tags``: body plan x locomotion).  The
+**species.**  One closed tag (``dataset_tags``: the body plan).  The
 evidence is the rig out of ``cond.npy`` (joint tree, leg chains, contact
 joints) plus one clip GIF of the species, preferably a locomotion clip.
 
@@ -47,8 +47,7 @@ rewrites ``species_tags.jsonl``; a changed species tag needs a cond regen.
 reaches the model is ``min(frames sent / 2, ~1 per second of container time)``.
 :func:`gif_as_video` re-times the GIF to 2 fps and writes every frame twice, so
 the surviving half is one copy of each rendered frame.  The price is playback
-far slower than the action, which the prompt has to say: speed words therefore
-come from the clip name only.
+far slower than the action, which the prompt has to say.
 """
 from __future__ import annotations
 
@@ -80,7 +79,6 @@ from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa
 from data_loaders.truebones.truebones_utils.joint_parts import prefill_joint_parts  # noqa: E402
 from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
     CANONICAL_OBJECT_SUBSETS,
-    SPECIES_LOCOMOTIONS,
     SPECIES_TAGS_FILE,
     check_species_tags,
     normalize_species_tag,
@@ -152,7 +150,7 @@ def log(message):
 # the prompt shows them as blocks, so the split is read back out of the tuple at
 # these leaders. A leader that moved is a loud failure, not a wrong prompt.
 MODIFIER_BLOCKS = (
-    ("hover", "how the head is executed (suspension, gait, speed, wing state)"),
+    ("hover", "how the head is executed (suspension, wing state)"),
     ("bite", "secondary action layered on the head"),
     ("spin", "how a strike is delivered"),
     ("happy", "affect / social gesture"),
@@ -169,19 +167,12 @@ TRAVEL_MODES = ("walk", "run", "fly", "swim", "crawl")
 _CONFLICTS = (
     (("die", "fall"), "a death already falls -- write 'die' alone"),
     (("die", "idle"), "'idle' is a live motionless stance and contradicts a death"),
-    (("walk", "run"), "the gait between them is 'walk, trot'"),
-    (("slow", "fast"), "the speed axis takes one word, not both"),
+    (("walk", "run"), "write 'walk' or 'run', not both"),
 )
-
-# Speed is name-only evidence: the 2 fps playback cannot show it.
-_NAME_SPEED = {"slow": ("slow", "slowly"),
-               "fast": ("fast", "sprint", "sprinting", "dash", "quick")}
-
 
 def _check_vocab():
     """Fail at startup when a word this tool is built around left the vocabulary."""
     missing = [w for w in TRAVEL_MODES if w not in HEAD_VOCAB]
-    missing += [w for w in _NAME_SPEED if w not in MODIFIER_VOCAB]
     missing += [leader for leader, _ in MODIFIER_BLOCKS if leader not in MODIFIER_VOCAB]
     if missing:
         raise SystemExit("motion_labels.py no longer has %s; llm_annotate.py has to "
@@ -350,11 +341,6 @@ def name_direction_words(action):
     return found
 
 
-def name_speed_words(action):
-    tokens = set(decamel(action).split())
-    return {word for word, forms in _NAME_SPEED.items() if tokens & set(forms)}
-
-
 # The prop a character carries is spelled as a suffix on the clip name, and the
 # motion underneath is the same one: IAC_Caveman ships Land beside LandWeapon.
 _VARIANT_SUFFIX_RE = re.compile(
@@ -375,9 +361,9 @@ def variant_base(action, known):
     return (base, match.group(0)) if base in known else (None, None)
 
 
-_AIRBORNE_NAME_RE = re.compile(r"(fly|flight|swim|hover|float|glide|dive|jump|fall|air)",
+_AIRBORNE_NAME_RE = re.compile(r"(fly|flight|swim|hover|float|glide|jump|fall|air)",
                                re.IGNORECASE)
-_AIRBORNE_WORDS = frozenset(w for w in ("fly", "swim", "jump", "fall", "glide", "dive",
+_AIRBORNE_WORDS = frozenset(w for w in ("fly", "swim", "jump", "fall", "glide",
                                         "land", "takeoff", "roll", "hover")
                             if w in CONTROLLED_VOCAB)
 
@@ -654,14 +640,13 @@ SPECIES_SYSTEM = (
 
 SPECIES_RULES = """\
 TASK
-Produce two tags describing HOW THIS CHARACTER MOVES: body plan, locomotion.
-They are joined into one short text that conditions the model on the species, and
-tag 1 also decides which training subset the species is grouped into. Judge the
-creature, not the picture: how it is lit and how big it is drawn carry no
-information. BOTH TAGS ARE CLOSED SETS: answer with exactly one listed word each,
-spelled as listed. Any other word is rejected.
+Produce the body plan of this character: which part of the body carries its
+motion. It conditions the model on the species and decides which training subset
+the species is grouped into. Judge the creature, not the picture: how it is lit
+and how big it is drawn carry no information. IT IS A CLOSED SET: answer with
+exactly one listed word, spelled as listed. Any other word is rejected.
 
-TAG 1 -- body_plan, closed set: {subsets}
+body_plan, closed set: {subsets}
   Decide by PRIMARY locomotion, then by leg count:
     - travels through the AIR as its main way of moving -- flies, hovers,
       levitates -- and HAS WINGS or rotors                   -> winged
@@ -683,23 +668,12 @@ TAG 1 -- body_plan, closed set: {subsets}
   weapons look like limbs and are not; a rigged leg chain is. Report the number
   you settled on in leg_count (0 when it has none).
 
-TAG 2 -- locomotion, closed set: {locomotions}
-  EXACTLY ONE of these words -- no modifier, no role, no style, no invented
-  gerund. It names this species' SIGNATURE way of travelling, decided from WHAT
-  THE CREATURE IS: its name, its build, its anatomy. When none fits perfectly,
-  pick the nearest one.
-  IT IS NOT THE GAIT IN THE CLIP. The clip is one arbitrary sample and is usually
-  a walk cycle. A horse is Galloping even when the clip shows it walking; a bear
-  is Lumbering even in a slow plod; a cat is Galloping even when it trots past.
-  A robot or mechanical construct that steps on its legs is Clanking: stiff,
-  rigid-jointed, metronomic steps. A hovering robot is Hovering, not Clanking.
-
 THE CLIP
 One clip of this character, "{clip}" -- the only picture you get. Use it to see
 the body and to rule out an obvious error about how the body travels at all (it
 floats, hovers, rolls or drags itself rather than stepping on its legs). Its NAME
 counts as evidence: a take the artist called FlyForward belongs to a species that
-travels through the air. It does NOT name the gait. It is rendered on a 1x1 grid
+travels through the air. It is rendered on a 1x1 grid
 at ground level; the character may float above the grid or sink into it, and
 GROUND CONTACT IS NOT EVIDENCE about whether it flies. Playback is far slower than
 the real action, so speed on screen means nothing.
@@ -718,10 +692,10 @@ RIG (parsed from the actual skeleton -- authoritative for anatomy)
 {tree}
 """
 
-SPECIES_SCHEMA_KEYS = ("body_plan", "leg_count", "locomotion", "why", "confidence")
+SPECIES_SCHEMA_KEYS = ("body_plan", "leg_count", "why", "confidence")
 # The keys the tags are built from; decoded first, so a stall inside `why`
 # never strands them.
-SPECIES_TAG_KEYS = ("body_plan", "leg_count", "locomotion")
+SPECIES_TAG_KEYS = ("body_plan", "leg_count")
 
 
 def species_schema():
@@ -730,7 +704,6 @@ def species_schema():
         "properties": {
             "body_plan": {"type": "string", "enum": list(CANONICAL_OBJECT_SUBSETS)},
             "leg_count": {"type": "integer"},
-            "locomotion": {"type": "string", "enum": list(SPECIES_LOCOMOTIONS)},
             "why": {"type": "string"},
             "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
         },
@@ -742,8 +715,7 @@ def species_schema():
 def validate_species(reply):
     """``(tags, legs, problems)`` -- tags in sidecar spelling."""
     problems = []
-    tags = [normalize_species_tag(reply.get("body_plan") or ""),
-            normalize_species_tag(reply.get("locomotion") or "")]
+    tags = [normalize_species_tag(reply.get("body_plan") or "")]
     try:
         check_species_tags(tags, "reply")
     except ValueError as exc:
@@ -806,7 +778,6 @@ def annotate_species(args, job, sink):
     species, facts, chosen = job["species"], job["facts"], job["clip"]
     prompt = SPECIES_RULES.format(
         subsets=", ".join(CANONICAL_OBJECT_SUBSETS),
-        locomotions=", ".join(SPECIES_LOCOMOTIONS),
         clip=chosen["action"], species=species, label=readable_species(species),
         n_joints=facts["n_joints"],
         n_legs=len(facts["legs"]), legs=", ".join(facts["legs"]) or "(none found)",
@@ -975,10 +946,10 @@ locomotion -- the character TRAVELS; the ground slides underneath it.
     those -- or roll, jump, fall, hover, which may also ride on one ("run, jump").
   - fly is for a body held up by WINGS. A legless hoverer drifting along is not
     flying: it is walk or run by pace.
-  - Gait and manner are modifiers: "walk, forward, trot" (between walking and
-    running), "run, forward, fast" (sprint, dash), "fly, forward, glide" (held
-    wings). Backing away is just "walk, backward". A sideways step with the
-    body still facing ahead is just "walk, left" / "walk, right".
+  - A walk or run takes no gait word: how fast or in which footfall pattern
+    it steps is not part of the label. "fly, forward, glide" is a flight on
+    held wings. Backing away is just "walk, backward". A sideways step with
+    the body still facing ahead is just "walk, left" / "walk, right".
   - The label MUST name a direction, even for a clip authored in place: the
     heading the gait is trying to go. A hover held in place is exempt.
   - Every jump is here, one in place included: "jump, up" (straight up),
@@ -1040,11 +1011,10 @@ WHAT THE RENDER DOES NOT TELL YOU
    in GetUp, StandUp, WakeUp, PickUp, LevelUp is not a direction.
 2. GROUND CONTACT MEANS NOTHING. Flying, swimming and hovering clips are usually
    authored in place, so the character may be drawn sunk into the grid. When the
-   name says Fly / Swim / Hover / Glide / Dive / Jump / Fall, BELIEVE THE NAME.
+   name says Fly / Swim / Hover / Glide / Jump / Fall, BELIEVE THE NAME.
 3. STAYING IN PLACE PROVES NOTHING. Gaits are very often animated in place. An
    in-place gait still gets its direction -- the heading it is trying to go.
-4. SPEED IS INVISIBLE at this playback rate. Write "fast" only when the name says
-   Fast / Sprint / Dash, "slow" only when it says Slow, never both.
+4. SPEED IS INVISIBLE at this playback rate, and there is no speed word.
 5. A HELD WEAPON IS ONE WORD. bow / gun / hammer / shield name the MOTION the
    implement makes (drawing a bow, firing, hammering, a shield bash); any other
    weapon in hand, one- or two-handed, adds "weapon" -- never together with
@@ -1066,7 +1036,9 @@ RULES THAT ARE NOT OPTIONAL
 - These are aimed nowhere and NEVER take forward / backward / left / right:
   {no_planar}. up / down still apply to them.
 - A death is just "die" -- never "die, fall", never "die, idle".
-- Never "walk, run": the gait between them is "walk, trot".
+- Never "walk, run": pick the one the feet show.
+- WINGS: write glide only when the wings are plainly held still in flight --
+  "fly, forward, glide". Beating wings take no word.
 - If the clip name puts a SECOND action on top of the head (Attack, Bite, Roar,
   Jump, Shot) and the lists have a word for it, name it: it is what separates
   this clip from the plain version. Do not invent one the lists cannot spell.
@@ -1248,11 +1220,6 @@ def validate_label(action, label, words, unknown, group, loop):
     if len(modes) > 1:
         problems.append("names %d travel media (%s) -- a clip travels in one"
                         % (len(modes), ", ".join(modes)))
-
-    claimed_speed = (word_set & set(_NAME_SPEED)) - name_speed_words(action)
-    if claimed_speed:
-        problems.append("the clip name does not say %s, and speed is not visible at "
-                        "this playback rate -- drop it" % "/".join(sorted(claimed_speed)))
 
     name_dirs = name_direction_words(action)
     label_planar = word_set & set(PLANAR_DIRECTIONS)
@@ -1674,6 +1641,9 @@ def apply_species(ds, drafts, dry_run):
     out_rows = []
     for row in rows:
         tags = new.pop(row.get("species"), None)
+        if tags is not None and len(tags) == 1:
+            # The model answers the body plan only; a variant is a reviewer's call.
+            tags = tags + list(row.get("species_tags") or [])[1:]
         if tags is not None and list(row.get("species_tags") or []) != tags:
             print("  %-28s %s -> %s" % (row["species"], row.get("species_tags"), tags))
             row = dict(row, species_tags=tags)

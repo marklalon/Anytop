@@ -86,7 +86,7 @@ def _weights(labels, **kwargs):
 def test_head_word_of_a_label_is_its_first_head_word():
     assert clip_action_head_word({"action_label": "attack, jump, charge"}) == "attack"
     assert clip_action_head_word({"action_label": "land, jump"}) == "land"
-    assert clip_action_head_word({"action_label": "walk, forward, slow"}) == "walk"
+    assert clip_action_head_word({"action_label": "walk, forward, carry"}) == "walk"
 
 
 def test_head_word_of_an_unlabelled_clip_is_the_unlabelled_key():

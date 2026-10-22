@@ -16,16 +16,16 @@ from data_loaders.truebones.truebones_utils.motion_labels import load_action_lab
 
 
 def test_review_normalizer_validates_and_uses_canonical_order():
-    assert review.normalize_action_label(" FAST；right, WALK, right ") == (
-        "walk, right, fast"
+    assert review.normalize_action_label(" CARRY；right, WALK, right ") == (
+        "walk, right, carry"
     )
     # Head order is time order and must survive sorting; direction/modifier
     # placement is canonicalized around it.
-    assert review.normalize_action_label("fast, attack, idle, left") == (
-        "attack, idle, left, fast"
+    assert review.normalize_action_label("carry, attack, idle, left") == (
+        "attack, idle, left, carry"
     )
-    assert review.normalize_action_label("idle, right, turn, fast") == (
-        "idle, turn, right, fast"
+    assert review.normalize_action_label("idle, right, turn, carry") == (
+        "idle, turn, right, carry"
     )
 
 
@@ -39,7 +39,7 @@ def test_review_normalizer_rejects_unknown_words_with_suggestion():
 
 def test_review_normalizer_enforces_label_shape():
     with pytest.raises(review.ActionLabelError, match="no head word"):
-        review.normalize_action_label("fast, forward")
+        review.normalize_action_label("carry, forward")
 
 
 def test_store_sorts_valid_startup_labels_and_exposes_invalid_ones(tmp_path):
@@ -48,7 +48,7 @@ def test_store_sorts_valid_startup_labels_and_exposes_invalid_ones(tmp_path):
         {
             "clip": "valid.npy",
             "action_group": "locomotion",
-            "action_label": "FAST, right, walk",
+            "action_label": "CARRY, right, walk",
         },
         {
             "clip": "typo.npy",
@@ -62,7 +62,7 @@ def test_store_sorts_valid_startup_labels_and_exposes_invalid_ones(tmp_path):
 
     store = review.LabelStore(labels)
     saved = [json.loads(line) for line in labels.read_text(encoding="utf-8").splitlines()]
-    assert saved[0]["action_label"] == "walk, right, fast"
+    assert saved[0]["action_label"] == "walk, right, carry"
     assert saved[1]["action_label"] == "run, foward"
 
     snapshot = {row["clip"]: row for row in store.snapshot()}
@@ -73,8 +73,8 @@ def test_store_sorts_valid_startup_labels_and_exposes_invalid_ones(tmp_path):
         store.update("typo.npy", action_label="run, sidewayz")
     assert store.snapshot()[1]["action_label"] == "run, foward"
 
-    fixed = store.update("typo.npy", action_label="FAST, forward, run")
-    assert fixed["action_label"] == "run, forward, fast"
+    fixed = store.update("typo.npy", action_label="CARRY, forward, run")
+    assert fixed["action_label"] == "run, forward, carry"
     assert "label_error" not in fixed
     assert "label_error" not in store.snapshot()[1]
 
@@ -153,8 +153,8 @@ def test_review_search_matches_whole_words_and_keeps_substring_default():
     assert match("walking", "walk")
     assert match("walk (left)", "(left)", True)
     assert review._row_matches_search({"action_label": "idle"}, "IDLE", whole_word=True)
-    assert not review._row_matches_search({"action_label": "idle, fast"}, "idle", whole_word=True)
-    assert review._row_matches_search({"action_label": "idle, fast"}, "idle")
+    assert not review._row_matches_search({"action_label": "idle, carry"}, "idle", whole_word=True)
+    assert review._row_matches_search({"action_label": "idle, carry"}, "idle")
 
 
 def test_labels_api_can_filter_by_group(tmp_path):
@@ -193,7 +193,7 @@ def test_labels_api_can_filter_by_field_and_whole_word(tmp_path):
         {"clip": "Bear_Walk", "action_group": "locomotion", "action_label": "walk, forward"},
         {"clip": "Bear_Walking", "action_group": "locomotion", "action_label": "run, forward"},
         {"clip": "Bear_Idle", "action_group": "stationary", "action_label": "idle"},
-        {"clip": "Bear_IdleFast", "action_group": "stationary", "action_label": "idle, fast"},
+        {"clip": "Bear_IdleFast", "action_group": "stationary", "action_label": "idle, carry"},
     ]), encoding="utf-8")
     dataset = {
         "id": "sample", "name": "sample", "processed": str(processed),
@@ -299,8 +299,8 @@ def test_prune_stale_species_tags_uses_metadata_object_type_and_preserves_rows(t
 def test_prune_stale_species_tags_keeps_species_waiting_for_preprocessing(tmp_path):
     tags = tmp_path / "species_tags.jsonl"
     tags.write_text(
-        '{"species": "New_Hero", "species_tags": ["Biped", "Striding"]}\n'
-        '{"species": "Only_TPose", "species_tags": ["Biped", "Striding"]}\n',
+        '{"species": "New_Hero", "species_tags": ["Biped"]}\n'
+        '{"species": "Only_TPose", "species_tags": ["Biped"]}\n',
         encoding="utf-8",
     )
     raw = tmp_path / "raw"
@@ -421,15 +421,15 @@ def _species_dataset(tmp_path, tag_lines, motions):
 def test_species_tag_store_maps_clips_through_metadata_and_prefix(tmp_path):
     ds = _species_dataset(
         tmp_path,
-        '{"species": "Big_Cat", "species_tags": ["Quadruped", "Galloping"]}\n'
-        '{"species": "Big", "species_tags": ["Biped", "Striding"]}\n',
+        '{"species": "Big_Cat", "species_tags": ["Quadruped"]}\n'
+        '{"species": "Big", "species_tags": ["Biped"]}\n',
         # The clip name does not carry its species; metadata decides.
         {"Roar01.npy": {"object_type": "Big_Cat"}},
     )
     store = review.SpeciesTagStore(ds)
     rows = store.annotate([{"clip": "Roar01"}, {"clip": "Big_Cat_Walk"}, {"clip": "Nobody_Walk"}])
     assert [r["_species"] for r in rows] == ["Big_Cat", "Big_Cat", None]
-    assert rows[0]["_species_tags"] == ["Quadruped", "Galloping"]
+    assert rows[0]["_species_tags"] == ["Quadruped"]
     assert rows[2]["_species_tags"] is None
 
 
@@ -437,27 +437,31 @@ def test_species_tag_store_update_rewrites_one_row_and_validates(tmp_path):
     original_dog = '{"species":"Dog","species_tags":["Quadruped","Trotting"]}'
     ds = _species_dataset(
         tmp_path,
-        '{"species": "Cat", "species_tags": ["Quadruped", "Galloping"]}\r\n' + original_dog + '\r\n',
+        '{"species": "Cat", "species_tags": ["Quadruped"]}\r\n' + original_dog + '\r\n',
         {"Cat_Walk.npy": {"object_type": "Cat"}, "Ghost_Idle.npy": {"object_type": "Ghost"}},
     )
     store = review.SpeciesTagStore(ds)
-    row, changed = store.update("Cat", ["biped", "striding"])
-    assert changed and row == {"species": "Cat", "species_tags": ["Biped", "Striding"]}
+    row, changed = store.update("Cat", ["biped"])
+    assert changed and row == {"species": "Cat", "species_tags": ["Biped"]}
     lines = ds["species_tags"].read_bytes().decode("utf-8").split("\r\n")
-    assert json.loads(lines[0])["species_tags"] == ["Biped", "Striding"]
+    assert json.loads(lines[0])["species_tags"] == ["Biped"]
     assert lines[1] == original_dog          # untouched row keeps its text
     assert lines[2] == ""                    # CRLF + final newline preserved
 
     with pytest.raises(ValueError):
+        store.update("Cat", ["Moonwalking"])
+    with pytest.raises(ValueError):
         store.update("Cat", ["Biped", "Moonwalking"])
+    row, changed = store.update("Cat", ["biped", "clanking"])
+    assert changed and row["species_tags"] == ["Biped", "Clanking"]
     with pytest.raises(KeyError):
-        store.update("Unknown", ["Biped", "Striding"])
+        store.update("Unknown", ["Biped"])
 
     # A species with clips but no row gets one appended.
-    _, changed = store.update("Ghost", "Drifting, Hovering")
+    _, changed = store.update("Ghost", "Drifting")
     assert changed
-    assert store.annotate([{"clip": "Ghost_Idle"}])[0]["_species_tags"] == ["Drifting", "Hovering"]
-    assert store.update("Ghost", ["Drifting", "Hovering"])[1] is False
+    assert store.annotate([{"clip": "Ghost_Idle"}])[0]["_species_tags"] == ["Drifting"]
+    assert store.update("Ghost", ["Drifting"])[1] is False
 
 
 def test_species_tag_store_reports_invalid_rows_and_repairs_them(tmp_path):
@@ -469,24 +473,24 @@ def test_species_tag_store_reports_invalid_rows_and_repairs_them(tmp_path):
     store = review.SpeciesTagStore(ds)
     row = store.annotate([{"clip": "Cat_Walk"}])[0]
     assert "_species_error" in row
-    fixed, changed = store.update("Cat", ["Quadruped", "Galloping"])
+    fixed, changed = store.update("Cat", ["Quadruped"])
     assert changed and "error" not in fixed
 
 
 def test_species_tag_store_reports_duplicate_rows_and_drops_them_on_edit(tmp_path):
     ds = _species_dataset(
         tmp_path,
-        '{"species": "Cat", "species_tags": ["Quadruped", "Galloping"]}\n'
-        '{"species": "Dog", "species_tags": ["Quadruped", "Trotting"]}\n'
-        '{"species": "Cat", "species_tags": ["Biped", "Striding"]}\n',
+        '{"species": "Cat", "species_tags": ["Quadruped"]}\n'
+        '{"species": "Dog", "species_tags": ["Quadruped"]}\n'
+        '{"species": "Cat", "species_tags": ["Biped"]}\n',
         {"Cat_Walk.npy": {"object_type": "Cat"}},
     )
     store = review.SpeciesTagStore(ds)
     row = store.annotate([{"clip": "Cat_Walk"}])[0]
-    assert row["_species_tags"] == ["Quadruped", "Galloping"]   # first row wins
+    assert row["_species_tags"] == ["Quadruped"]   # first row wins
     assert "duplicates line 1" in row["_species_error"]
     # Same tags as the kept row still rewrites: the duplicate must go.
-    fixed, changed = store.update("Cat", ["Quadruped", "Galloping"])
+    fixed, changed = store.update("Cat", ["Quadruped"])
     assert changed and "error" not in fixed
     rows = [json.loads(line) for line in ds["species_tags"].read_text(encoding="utf-8").splitlines()]
     assert [r["species"] for r in rows] == ["Cat", "Dog"]
@@ -502,7 +506,7 @@ def test_species_tag_store_rejects_a_row_that_is_not_an_object(tmp_path):
 def test_update_api_returns_the_row_with_its_species_fields(tmp_path):
     ds = _species_dataset(
         tmp_path,
-        '{"species": "ORA_PlayerHumanoid", "species_tags": ["Biped", "Striding"]}\n',
+        '{"species": "ORA_PlayerHumanoid", "species_tags": ["Biped"]}\n',
         {"ORA_PlayerHumanoid_Run.npy": {"object_type": "ORA_PlayerHumanoid"}},
     )
     processed = ds["metadata"].parent
@@ -527,4 +531,4 @@ def test_update_api_returns_the_row_with_its_species_fields(tmp_path):
     assert status == 200
     # The page adopts this row wholesale; the species bar must survive a label edit.
     assert payload["row"]["_species"] == "ORA_PlayerHumanoid"
-    assert payload["row"]["_species_tags"] == ["Biped", "Striding"]
+    assert payload["row"]["_species_tags"] == ["Biped"]

@@ -45,7 +45,7 @@ class GenerationRuntime:
     amp_dtype: str
     cond_path: str
     # The checkpoint's species descriptor table (None when the checkpoint has no
-    # species conditioning): the only source of species_emb at generation.
+    # species conditioning): the only source of species_code at generation.
     species_table: object = None
 
     def validate_args(self, args):
@@ -111,7 +111,7 @@ def _resolve_generation_cond_path(args):
 
 def _load_checkpoint_species_table(args):
     """The descriptor table next to the checkpoint, or None when species cond is off."""
-    if not getattr(args, 'species_joint_cond', False):
+    if not getattr(args, 'species_cond', False):
         return None
     table = load_checkpoint_species_descriptor_table(args.model_path, 'the checkpoint')
     if table.embedding_dim != int(args.t5_out_dim):

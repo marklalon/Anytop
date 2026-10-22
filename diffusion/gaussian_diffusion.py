@@ -71,7 +71,7 @@ def _cached_extract_source_tensor(arr, device):
     return tensor
 
 
-def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
+def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1., shift=1.):
     """
     Get a pre-defined beta schedule for the given name.
 
@@ -79,6 +79,9 @@ def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=
     in the limit of num_diffusion_timesteps.
     Beta schedules may be added, but should not be removed or changed once
     they are committed to maintain backwards compatibility.
+
+    ``shift`` moves every noise level of the named schedule toward noise
+    (see ``shift_beta_schedule``); 1 is the named schedule itself.
     """
     if schedule_name == "linear":
         # Linear schedule from Ho et al, extended to work for any number of
@@ -86,16 +89,50 @@ def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=
         scale = scale_betas * 1000 / num_diffusion_timesteps
         beta_start = scale * 0.0001
         beta_end = scale * 0.02
-        return np.linspace(
+        betas = np.linspace(
             beta_start, beta_end, num_diffusion_timesteps, dtype=np.float64
         )
     elif schedule_name == "cosine":
-        return betas_for_alpha_bar(
+        betas = betas_for_alpha_bar(
             num_diffusion_timesteps,
             lambda t: math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2,
         )
     else:
         raise NotImplementedError(f"unknown beta schedule: {schedule_name}")
+    return shift_beta_schedule(betas, shift)
+
+
+def shift_beta_schedule(betas, shift, max_beta=0.999):
+    """Divide the SNR of every step by ``shift ** 2`` (log-SNR minus ``2 ln shift``).
+
+    The step count and the uniform training draw over steps are unchanged, so a
+    shift > 1 puts more of the steps -- and more of the training samples -- at
+    high noise, where a clip's global structure (its tempo, its posture) is
+    decided, and fewer at the low-noise detail end. ``shift == 1`` returns
+    ``betas`` untouched.
+    """
+    shift = float(shift)
+    if not math.isfinite(shift) or shift <= 0.0:
+        raise ValueError(f"noise schedule shift must be finite and > 0, got {shift}")
+    betas = np.asarray(betas, dtype=np.float64)
+    if shift == 1.0:
+        return betas
+    alphas_cumprod = np.cumprod(1.0 - betas)
+    shifted = alphas_cumprod / (alphas_cumprod + shift ** 2 * (1.0 - alphas_cumprod))
+    previous = np.concatenate(([1.0], shifted[:-1]))
+    return np.minimum(1.0 - shifted / previous, max_beta)
+
+
+def matching_shifted_timestep(betas, shifted_betas, t):
+    """The (fractional) step of ``shifted_betas`` at the noise level step ``t``
+    has in ``betas``; ``t`` itself when the two schedules are the same."""
+    def log_snr(b):
+        alphas_cumprod = np.cumprod(1.0 - np.asarray(b, dtype=np.float64))
+        return np.log(alphas_cumprod) - np.log1p(-alphas_cumprod)
+    steps = np.arange(len(betas), dtype=np.float64)
+    target = np.interp(float(t), steps, log_snr(betas))
+    # log-SNR falls with t; np.interp needs increasing x.
+    return float(np.interp(-target, -log_snr(shifted_betas), steps))
 
 
 def betas_for_alpha_bar(num_diffusion_timesteps, alpha_bar, max_beta=0.999):

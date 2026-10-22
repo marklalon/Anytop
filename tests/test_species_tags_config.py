@@ -28,8 +28,8 @@ def restore_default_configuration():
 def _write_species_tags(tmp_path):
     path = tmp_path / "species_tags.jsonl"
     path.write_text(
-        '{"species": "Kappa_gorilla", "species_tags": ["Biped", "Striding"]}\n'
-        '{"species": "Pikefish", "species_tags": ["Aquatic", "Swimming"]}\n',
+        '{"species": "Kappa_gorilla", "species_tags": ["Biped"]}\n'
+        '{"species": "Pikefish", "species_tags": ["Aquatic"]}\n',
         encoding="utf-8",
     )
     return path
@@ -40,8 +40,8 @@ def test_configure_loads_custom_species_tags(tmp_path):
 
     tags = dt.dataset_tags()
     assert tags.species_tags == {
-        "Kappa_gorilla": ("Biped", "Striding"),
-        "Pikefish": ("Aquatic", "Swimming"),
+        "Kappa_gorilla": ("Biped",),
+        "Pikefish": ("Aquatic",),
     }
     assert tags.object_subsets["biped"] == ["Kappa_gorilla"]
     assert tags.object_subsets["aquatic"] == ["Pikefish"]
@@ -50,7 +50,7 @@ def test_configure_loads_custom_species_tags(tmp_path):
     # Derived views come off the same snapshot, so they cannot drift.
     assert tags.subset_members["aquatic"] == frozenset({"Pikefish"})
     assert tags.object_subset_for("kappa_GORILLA") == "biped"
-    assert tags.tags_for("Pikefish") == ("Aquatic", "Swimming")
+    assert tags.tags_for("Pikefish") == ("Aquatic",)
     assert tags.object_subset_for("Nonesuch") is None
     # A selector is a subset key or a bare species name.
     assert tags.species_for("biped") == ["Kappa_gorilla"]
@@ -97,7 +97,7 @@ def test_configure_loads_custom_chain_forward_joints(tmp_path):
 def test_absent_default_chain_forward_sidecar_is_optional(tmp_path):
     """A dataset with no overrides falls through to semantic detection."""
     (tmp_path / "species_tags.jsonl").write_text(
-        '{"species": "Crow", "species_tags": ["Winged", "Flapping"]}\n',
+        '{"species": "Crow", "species_tags": ["Winged"]}\n',
         encoding="utf-8",
     )
 
@@ -141,23 +141,35 @@ def test_every_shipped_sidecar_tag_is_already_normalized():
                     sidecar, record["species"])
 
 
-def test_a_stale_three_slot_row_is_rejected(tmp_path):
-    """A sidecar still carrying the size slot fails instead of encoding other text."""
+def test_a_stale_locomotion_slot_row_is_rejected(tmp_path):
+    """A sidecar still carrying a locomotion word fails instead of encoding other text."""
     path = tmp_path / "species_tags.jsonl"
     path.write_text(
-        '{"species": "Cat", "species_tags": ["Quadruped", "Small", "Galloping"]}\n',
+        '{"species": "Cat", "species_tags": ["Quadruped", "Galloping"]}\n',
         encoding="utf-8",
     )
     dt.configure(species_tags_file=path)
-    with pytest.raises(ValueError, match="species_tags must be 2"):
+    with pytest.raises(ValueError, match="variant 'Galloping'"):
         dt.dataset_tags()
-    with pytest.raises(ValueError, match="species_tags must be 2"):
-        dt.register_species_tags("Cat", ("Quadruped", "Small", "Galloping"))
+    with pytest.raises(ValueError, match="variant 'Galloping'"):
+        dt.register_species_tags("Cat", ("Quadruped", "Galloping"))
+
+
+def test_a_variant_row_loads_and_keeps_the_body_plan_subset(tmp_path):
+    path = tmp_path / "species_tags.jsonl"
+    path.write_text(
+        '{"species": "Robot", "species_tags": ["Biped", "Clanking"]}\n',
+        encoding="utf-8",
+    )
+    dt.configure(species_tags_file=path)
+    tags = dt.dataset_tags()
+    assert tags.tags_for("Robot") == ("Biped", "Clanking")
+    assert tags.object_subset_for("Robot") == "biped"
 
 
 def test_a_cond_baked_from_an_older_sidecar_is_rejected(tmp_path):
     dt.configure(species_tags_file=_write_species_tags(tmp_path))
-    current = {"Pikefish": {"species_tags": ("Aquatic", "Swimming")}}
+    current = {"Pikefish": {"species_tags": ("Aquatic",)}}
     dt.assert_cond_species_tags_current(current)
     stale = {"Pikefish": {"species_tags": ("Aquatic", "Small", "Swimming")}}
     with pytest.raises(SystemExit, match="stale"):
@@ -166,10 +178,10 @@ def test_a_cond_baked_from_an_older_sidecar_is_rejected(tmp_path):
 
 def test_register_species_tags_rebuilds_derived_views():
     dt.configure()
-    dt.register_species_tags("Kappa_gorilla", ("Biped", "Striding"))
+    dt.register_species_tags("Kappa_gorilla", ("Biped",))
 
     tags = dt.dataset_tags()
-    assert tags.species_tags["Kappa_gorilla"] == ("Biped", "Striding")
+    assert tags.species_tags["Kappa_gorilla"] == ("Biped",)
     assert "Kappa_gorilla" in tags.object_subsets["biped"]
     assert tags.object_subset_for("Kappa_gorilla") == "biped"
     dt.assert_species_tags_cover(["Kappa_gorilla"])

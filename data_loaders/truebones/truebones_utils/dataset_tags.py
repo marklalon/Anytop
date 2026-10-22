@@ -55,18 +55,19 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     get_dataset_dir,
 )
 
-# Per-species motion descriptor (body-plan, locomotion). One object per line:
-#   {"species": "Cat", "species_tags": ["Quadruped", "Galloping"]}
+# Per-species motion descriptor: the body plan, optionally followed by a
+# species variant. One object per line:
+#   {"species": "Cat", "species_tags": ["Quadruped"]}
+#   {"species": "RU01_TechRobot", "species_tags": ["Biped", "Clanking"]}
 # Single source of truth for the species condition and the object subsets; the
 # species->tags mapping is never duplicated in code.
 SPECIES_TAGS_FILE = "species_tags.jsonl"
 
-# Slots per descriptor: body plan, then locomotion (optional modifiers + gerund).
-# There is no size slot: motion is scale-normalized before the model sees it, and
-# the descriptor is mean-pooled over tokens, so a weakly informative word only
-# dilutes the two that separate species.  A row with any other count is a stale
-# sidecar and is rejected rather than silently encoded into a different text.
-SPECIES_TAG_COUNT = 2
+# Slots per descriptor: the body plan, then an optional variant. A row with
+# more slots is a stale sidecar and is rejected rather than silently encoded
+# into a different text.
+SPECIES_TAG_MIN_COUNT = 1
+SPECIES_TAG_MAX_COUNT = 2
 
 # Separators accepted between tags in a single string (CLI, service requests).
 _TAG_SEPARATOR_RE = re.compile(r"[,;]")
@@ -98,29 +99,6 @@ CANONICAL_OBJECT_SUBSETS = (
 # Every subset key ``build_object_subsets`` is guaranteed to produce, for CLI
 # ``choices=`` lists that must be built before a dataset directory is known.
 OBJECT_SUBSET_CHOICES = ("all",) + CANONICAL_OBJECT_SUBSETS
-
-# The locomotion slot's closed vocabulary: one gait word per descriptor. Together
-# with the body plans (the capitalized object subsets) it spans every legal
-# descriptor, and species_descriptor_table encodes that whole product ahead of
-# training, so a word outside this list has no T5 vector anywhere. Adding one
-# means rebuilding the table and retraining.
-SPECIES_LOCOMOTIONS = (
-    "Clanking",
-    "Crawling",
-    "Flapping",
-    "Fluttering",
-    "Galloping",
-    "Hovering",
-    "Lumbering",
-    "Scurrying",
-    "Slithering",
-    "Striding",
-    "Swimming",
-    "Trotting",
-    "Undulating",
-    "Waddling",
-)
-
 
 @dataclass(frozen=True)
 class SidecarPaths:
@@ -218,8 +196,8 @@ def normalize_species_tag(tag) -> str:
 
     The descriptor text is exactly these tags joined by one space, and T5 is
     case-sensitive (``quadruped`` and ``Quadruped`` tokenize differently), so
-    every entry point writes the sidecar's spelling: ``chibi  wing-beating
-    hovering`` -> ``Chibi Wing-Beating Hovering``.
+    every entry point writes the sidecar's spelling: ``quadruped`` ->
+    ``Quadruped``.
     """
     return " ".join(
         "-".join(part[:1].upper() + part[1:].lower() for part in word.split("-"))
@@ -241,7 +219,9 @@ def parse_species_tags(raw) -> tuple[str, ...]:
     return tuple(tag for tag in (normalize_species_tag(item) for item in items) if tag)
 
 
-# The body-plan slot's closed vocabulary, in sidecar spelling.
+# The descriptor's closed vocabulary, in sidecar spelling. species_descriptor_table
+# encodes every entry ahead of training, so a body plan outside this list has no
+# T5 vector anywhere.
 SPECIES_BODY_PLANS = tuple(normalize_species_tag(name) for name in CANONICAL_OBJECT_SUBSETS)
 
 
@@ -250,37 +230,55 @@ def species_descriptor_text(tags) -> str:
     return " ".join(str(tag) for tag in tags)
 
 
-def species_descriptor_vocabulary() -> tuple[tuple[str, str], ...]:
-    """Every legal ``(body-plan, locomotion)`` descriptor, body plan major."""
-    return tuple(
-        (body_plan, locomotion)
+# The variant slot's closed vocabulary: a movement style the whole species
+# shows and the frame count cannot produce -- a machine's stiff, metronomic
+# steps, a side-to-side rock on short legs, rapid shallow wingbeats. The slot
+# is left empty for a species that moves the way its body plan does by default;
+# a style that changes from clip to clip is not a variant. How fast a gait
+# cycles is the clip length's job (--num_frames), a specific gait the reference
+# motion's.
+SPECIES_VARIANTS = ("Clanking", "Fluttering", "Waddling")
+
+
+def species_code_dim(embedding_dim: int) -> int:
+    """Width of a species code: the body plan's embedding, then one axis per
+    variant (see ``species_descriptor_table.species_code``)."""
+    return int(embedding_dim) + len(SPECIES_VARIANTS)
+
+
+def species_descriptor_vocabulary() -> tuple[tuple[str, ...], ...]:
+    """Every legal descriptor: each body plan bare, then with each variant."""
+    return tuple((body_plan,) for body_plan in SPECIES_BODY_PLANS) + tuple(
+        (body_plan, variant)
         for body_plan in SPECIES_BODY_PLANS
-        for locomotion in SPECIES_LOCOMOTIONS
+        for variant in SPECIES_VARIANTS
     )
 
 
 # ── Sidecar loading ──────────────────────────────────────────────────────────
 def check_species_tags(tags, where: str) -> None:
-    """Raise unless ``tags`` is a ``[body-plan, locomotion]`` pair from the closed vocabularies."""
-    if len(tags) != SPECIES_TAG_COUNT or any(not str(tag).strip() for tag in tags):
+    """Raise unless ``tags`` is ``[body-plan]`` or ``[body-plan, variant]`` from
+    the closed vocabularies."""
+    if (not SPECIES_TAG_MIN_COUNT <= len(tags) <= SPECIES_TAG_MAX_COUNT
+            or any(not str(tag).strip() for tag in tags)):
         raise ValueError(
-            f"{where}: species_tags must be {SPECIES_TAG_COUNT} non-empty tags "
-            f"[body-plan, locomotion], got {list(tags)!r}."
+            f"{where}: species_tags must be [body-plan] or [body-plan, variant] "
+            f"non-empty tags, got {list(tags)!r}."
         )
-    body_plan, locomotion = (str(tag) for tag in tags)
+    body_plan = str(tags[0])
     problems = []
     if body_plan not in SPECIES_BODY_PLANS:
         problems.append(
             f"body plan {body_plan!r} is not one of {', '.join(SPECIES_BODY_PLANS)}"
         )
-    if locomotion not in SPECIES_LOCOMOTIONS:
+    if len(tags) > 1 and str(tags[1]) not in SPECIES_VARIANTS:
         problems.append(
-            f"locomotion {locomotion!r} is not one of {', '.join(SPECIES_LOCOMOTIONS)}"
+            f"variant {str(tags[1])!r} is not one of {', '.join(SPECIES_VARIANTS)}"
         )
     if problems:
         raise ValueError(
             f"{where}: {'; '.join(problems)}. The descriptor vocabulary is closed: "
-            "only its precomputed combinations have a species embedding."
+            "only its precomputed entries have a species embedding."
         )
 
 

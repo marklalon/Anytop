@@ -68,14 +68,14 @@ def test_reference_prior_words_reject_what_generate_rejects() -> None:
 
 
 def test_reference_bank_refuses_an_empty_label() -> None:
-    corpus = _make_corpus({"horse": _make_cond_entry(("Quadruped", "Galloping"))})
+    corpus = _make_corpus({"horse": _make_cond_entry(("Quadruped",))})
     with pytest.raises(ValueError, match="names no head word"):
         corpus.build_bank("horse", "")
 
 
 def test_clip_paths_match_on_head_words_and_list_a_transition_clip_once() -> None:
     corpus = _make_corpus(
-        {"horse": _make_cond_entry(("Quadruped", "Galloping"))},
+        {"horse": _make_cond_entry(("Quadruped",))},
         {"horse": {"walk": ["walk.npy", "walk_run.npy"], "run": ["walk_run.npy", "run.npy"]}},
     )
     assert corpus.clip_paths(("walk",)) == {"horse": ["walk.npy", "walk_run.npy"]}
@@ -85,10 +85,10 @@ def test_clip_paths_match_on_head_words_and_list_a_transition_clip_once() -> Non
 
 def test_reference_species_selection_accepts_external_query_cond() -> None:
     baseline_cond = {
-        "horse": _make_cond_entry(("Quadruped", "Galloping")),
-        "snake": _make_cond_entry(("Serpentine", "Slithering")),
+        "horse": _make_cond_entry(("Quadruped",)),
+        "snake": _make_cond_entry(("Serpentine",)),
     }
-    query_cond = _make_cond_entry(("Serpentine", "Slithering"))
+    query_cond = _make_cond_entry(("Serpentine",))
     corpus = _make_corpus(baseline_cond)
 
     selected = corpus.select_species(
@@ -108,21 +108,22 @@ def test_reference_species_selection_accepts_external_query_cond() -> None:
 
 def test_reference_species_selection_widens_to_the_clip_floor() -> None:
     cond = {
-        "horse": _make_cond_entry(("Quadruped", "Galloping")),
-        "deer": _make_cond_entry(("Quadruped", "Trotting")),
-        "bear": _make_cond_entry(("Quadruped", "Lumbering")),
-        "crow": _make_cond_entry(("Winged", "Flapping")),
+        "horse": _make_cond_entry(("Quadruped",)),
+        "deer": _make_cond_entry(("Quadruped",)),
+        "bear": _make_cond_entry(("Biped",)),
+        "crow": _make_cond_entry(("Winged",)),
     }
     corpus = _make_corpus(cond)
     paths = {"horse": ["h1"], "deer": ["d1", "d2"], "bear": ["b1", "b2", "b3"], "crow": ["c1"] * 10}
 
-    # top_k=1 is the horse alone; the floor of 6 clips pulls in bear and deer
-    # (nearest first; equally far, so by name) and stops before the crow.
+    # The floor of 6 clips takes the two quadrupeds (equally far, so by name),
+    # then the nearest of the rest -- bear and crow tie, bear wins by name --
+    # and stops before the crow.
     selected = corpus.select_species("horse", ("walk",), paths, top_k_species=1, min_reference_clips=6)
-    assert [entry.name for entry in selected] == ["horse", "bear", "deer"]
+    assert [entry.name for entry in selected] == ["deer", "horse", "bear"]
     assert sum(entry.weight for entry in selected) == pytest.approx(1.0)
     assert selected[0].weight > selected[-1].weight
 
     # A floor already met by the top-k adds nothing.
     selected = corpus.select_species("horse", ("walk",), paths, top_k_species=2, min_reference_clips=1)
-    assert [entry.name for entry in selected] == ["horse", "bear"]
+    assert [entry.name for entry in selected] == ["deer", "horse"]

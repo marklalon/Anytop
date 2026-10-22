@@ -13,6 +13,10 @@ probability 100%; other augmentations are disabled:
   bone-length   — symmetric body proportions, paired original/augmented BVHs
                   with actual scales in filenames and contact residuals in logs
 
+Every mode also writes <stem>__original.bvh beside each augmented file: the same
+clip with augmentations off as a control. Bone-length and loop replay the same
+temporal draws; motion-speed keeps the deterministic fit instead of the sampled tempo.
+
 All modes keep training's automatic speed fitting for phase-anchored actions,
 capped by MAX_FIT_SPEEDUP. Clips still above the source-length budget are randomly
 cropped, followed by the normal model-window resampling.
@@ -34,7 +38,7 @@ Usage
         --mode loop \\
         --n 10 \\
         --num-frames 60 \\
-        --objects-subset quadropeds_test \\
+        --filter 'Horse*' \\
         --output-dir ./augmented_bvh_samples
 
 Arguments
@@ -46,7 +50,7 @@ Arguments
   --motion-speed-aug  Speed range R >= 1, log-uniform in [1/R, R] (default: 1.3)
   --loop-tile-single-prob  Floor on P(loop tile count == 1) (default: 0.5; 0.0 = uniform)
   --no-real-time      Export the model window instead of the default real 30 fps tempo
-  --objects-subset    Subset name or single species name (default: "all")
+  --filter            One or more species-name wildcards, e.g. 'Insect_*' 'Horse*' (case-insensitive)
   --split             train / val / all (default: "all")
   --seed              RNG seed for reproducibility (default: 1234)
   --dataset-dir       Dataset root (auto-detected if omitted)
@@ -55,6 +59,7 @@ Arguments
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import random
 import sys
@@ -76,7 +81,6 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 from utils.npy_restore import write_feature_bvh
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
-from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 from data_loaders.truebones.truebones_utils.motion_labels import (
     load_motion_metadata,
 )
@@ -129,7 +133,7 @@ class PreviewMotionDataset(MotionDataset):
         raise ValueError("Speed range cannot produce a changed frame count for this clip.")
 
 
-def _build_cond_dict(opt, objects_subset: str) -> dict:
+def _build_cond_dict(opt) -> dict:
     """Load cond.npy and prepare static canonical metadata.
     Joint-name T5 embeddings are stubbed with zeros so we can avoid loading a
     large language model just for BVH export.
@@ -137,14 +141,9 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
     cond_dict_raw: dict = load_cond(opt.cond_file)
     cond_dict_raw = refresh_joint_metadata_in_cond_dict(cond_dict_raw)
 
-    species_list = dataset_tags().species_for(objects_subset)
-
-    cond_dict = {k: cond_dict_raw[k] for k in species_list if k in cond_dict_raw}
+    cond_dict = dict(cond_dict_raw)
     if not cond_dict:
-        raise RuntimeError(
-            f"No species found for subset '{objects_subset}'. "
-            f"Available species: {sorted(cond_dict_raw.keys())}"
-        )
+        raise RuntimeError(f"No species found in {opt.cond_file}.")
 
     for object_type, cond in cond_dict.items():
         mark_canonical_cond_entry(cond)
@@ -175,6 +174,81 @@ def _export_bvh(
         print(f"[export] {save_path.name}: {exc}")
         return False
     return True
+
+
+def _bvh_joint_names(object_cond: dict[str, object], n_joints: int) -> list[str]:
+    """Anatomical BVH joint names from cond, with placeholders as fallback."""
+    joints_names = list(
+        object_cond.get(
+            "canonical_bvh_joint_names",
+            object_cond.get("joints_names", []),
+        )
+    )
+    if not joints_names:
+        joints_names = [f"joint_{j}" for j in range(n_joints)]
+    return joints_names
+
+
+def _decode_for_export(
+    motion_canonical: np.ndarray,
+    m_length: int,
+    object_cond: dict[str, object],
+    aug_info: dict,
+    num_frames: int,
+    real_time: bool,
+) -> np.ndarray:
+    """Canonical (F, J, 12) window → physical features at the export tempo."""
+    motion_raw = canonical_to_physical_hml(
+        motion_canonical[:m_length],
+        object_cond,
+    ).astype(np.float32)
+    if real_time:
+        export_frames = max(2, int(round(float(aug_info["resample_speed_cond"]) * num_frames)))
+        if export_frames != motion_raw.shape[0]:
+            # Invert the loader's window resample: periodic for a
+            # loop-conditioned window.
+            motion_raw = resample_motion_features(
+                motion_raw, export_frames, periodic=bool(aug_info.get("loop_applied")),
+            )
+    return motion_raw
+
+
+def _replay_original(
+    dataset: PreviewMotionDataset,
+    name: str,
+    aug_info: dict,
+    num_frames: int,
+    real_time: bool,
+) -> tuple[np.ndarray, dict[str, object], list[str]]:
+    """Replay the augmented sample's temporal draws on the un-augmented clip.
+
+    ``bone_length_rng_state`` is captured after the leaf-drop and bone-length
+    draws, right before the temporal stages, so restoring it keeps the same
+    crop and loop-tile draws. Outside loop mode the "baseline" preview mode
+    treats the clip as non-loop, so no roll or tile is applied to the control;
+    in loop mode the clip keeps its loop flag and replays the same roll and tile.
+    """
+    opt = dataset.opt
+    saved = (opt.preview_mode, opt.leaf_drop_prob, opt.bone_length_aug_prob, opt.motion_speed_aug_prob)
+    post_state = random.getstate()
+    try:
+        if saved[0] != "loop":
+            opt.preview_mode = "baseline"
+        opt.leaf_drop_prob = 0.0
+        opt.bone_length_aug_prob = 0.0
+        opt.motion_speed_aug_prob = 0.0
+        random.setstate(aug_info["bone_length_rng_state"])
+        baseline = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
+    finally:
+        opt.preview_mode, opt.leaf_drop_prob, opt.bone_length_aug_prob, opt.motion_speed_aug_prob = saved
+        random.setstate(post_state)
+    baseline_aug = baseline[13]
+    baseline_cond = baseline_aug["object_cond"]
+    motion_raw = _decode_for_export(
+        baseline[0], baseline[1], baseline_cond, baseline_aug, num_frames, real_time,
+    )
+    joints_names = _bvh_joint_names(baseline_cond, np.asarray(baseline[2]).shape[0])
+    return motion_raw, baseline_cond, joints_names
 
 
 # ---------------------------------------------------------------------------
@@ -208,8 +282,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-real-time", dest="real_time", action="store_false", default=True,
                    help="Export the model window at its compressed tempo. By default all modes export "
                         "at the real 30 fps tempo (resample_speed_cond * num-frames frames).")
-    p.add_argument("--objects-subset", default="all",
-                   help="Predefined subset name or single species (e.g. 'quadropeds_test', 'Horse').")
+    p.add_argument("--filter", nargs="+", default=[], metavar="PATTERN",
+                   help="Wildcard patterns (case-insensitive, e.g. 'Insect_*') matched against "
+                        "species names; only matching species' clips are sampled.")
     p.add_argument("--split", default="all",
                    help="Dataset split: train / val / all.")
     p.add_argument("--seed", type=int, default=1234,
@@ -286,8 +361,8 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[INFO] Loading condition data from: {opt.cond_file}")
-    cond_dict = _build_cond_dict(opt, args.objects_subset)
-    print(f"[INFO] Species loaded: {sorted(cond_dict.keys())}")
+    cond_dict = _build_cond_dict(opt)
+    print(f"[INFO] Species loaded: {len(cond_dict)}")
 
     # -----------------------------------------------------------------------
     # Build MotionDataset (applies augmentations via augment() + _prepare_sample())
@@ -320,6 +395,22 @@ def main() -> int:
         return 1
 
     candidate_names = list(dataset.name_list)
+    if args.filter:
+        patterns = [p.lower() for p in args.filter]
+
+        def _labels(name: str) -> list[str]:
+            # Bare name too: the stored key may carry a dataset namespace prefix.
+            object_type = str(dataset.data_dict[name]['object_type']).lower()
+            return [object_type, object_type.rpartition('/')[2]]
+
+        candidate_names = [
+            name for name in candidate_names
+            if any(fnmatch.fnmatchcase(label, p) for label in _labels(name) for p in patterns)
+        ]
+        print(f"[INFO] Species filter {args.filter}: {len(candidate_names)} candidates")
+        if not candidate_names:
+            print("[ERROR] No motions match --filter. Check the species pattern.")
+            return 1
     if args.mode == 'bone-length':
         print(f'[INFO] Bone-length candidates (all actions and skeletons): {len(candidate_names)}')
     if args.mode == "loop":
@@ -388,21 +479,10 @@ def main() -> int:
             # ----------------------------------------------------------------
             # Decode canonical model-space features back to physical HML-like features.
             # ----------------------------------------------------------------
-            motion_raw = canonical_to_physical_hml(
-                motion_canonical[:m_length],
-                object_cond,
-            ).astype(np.float32)
+            motion_raw = _decode_for_export(
+                motion_canonical, m_length, object_cond, aug_info, args.num_frames, args.real_time,
+            )
             export_frames = int(motion_raw.shape[0])
-            if args.real_time:
-                export_frames = max(
-                    2, int(round(float(aug_info["resample_speed_cond"]) * args.num_frames))
-                )
-                if export_frames != motion_raw.shape[0]:
-                    # Invert the loader's window resample: periodic for a
-                    # loop-conditioned window.
-                    motion_raw = resample_motion_features(
-                        motion_raw, export_frames, periodic=bool(aug_info.get("loop_applied")),
-                    )
 
             # ----------------------------------------------------------------
             # Retrieve joint names from cond_dict for BVH hierarchy
@@ -410,15 +490,8 @@ def main() -> int:
             # BVH matches the naming convention used by sample/generate.py and
             # the preprocessing pipeline.
             # ----------------------------------------------------------------
-            joints_names = list(
-                object_cond.get(
-                    "canonical_bvh_joint_names",
-                    object_cond.get("joints_names", []),
-                )
-            )
             n_joints = np.asarray(parents).shape[0]
-            if not joints_names:
-                joints_names = [f"joint_{j}" for j in range(n_joints)]
+            joints_names = _bvh_joint_names(object_cond, n_joints)
 
             # ----------------------------------------------------------------
             # Build a descriptive filename that encodes what augmentations fired
@@ -451,26 +524,13 @@ def main() -> int:
             fname = f"{stem}__{'+'.join(tags)}.bvh"
             save_path = output_dir / fname
 
-            if args.mode == 'bone-length':
-                # Replay the exact crop/resample on the original skeleton.
-                # Bone draws have already advanced RNG, so start from the state
-                # immediately before the augmented sample's temporal stages.
-                post_state = random.getstate()
-                old_prob = opt.bone_length_aug_prob
-                try:
-                    opt.bone_length_aug_prob = 0.0
-                    random.setstate(aug_info['bone_length_rng_state'])
-                    baseline = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
-                finally:
-                    opt.bone_length_aug_prob = old_prob
-                    random.setstate(post_state)
-                baseline_cond = baseline[13]['object_cond']
-                baseline_raw = canonical_to_physical_hml(baseline[0], baseline_cond).astype(np.float32)
-                if baseline_raw.shape[0] != export_frames:
-                    baseline_raw = resample_motion_features(baseline_raw, export_frames, periodic=False)
-                original_path = output_dir / f'{stem}__original.bvh'
-                if not _export_bvh(original_path, baseline_raw, joints_names, baseline_cond):
-                    raise RuntimeError('Original comparison BVH export failed.')
+            # Control: the same clip with augmentations off, on the same temporal draws.
+            original_raw, original_cond, original_names = _replay_original(
+                dataset, name, aug_info, args.num_frames, args.real_time,
+            )
+            original_path = output_dir / f'{stem}__original.bvh'
+            if not _export_bvh(original_path, original_raw, original_names, original_cond):
+                raise RuntimeError('Original control BVH export failed.')
 
             ok = _export_bvh(
                 save_path,
