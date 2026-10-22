@@ -36,11 +36,12 @@ _SIDE_TOKENS = frozenset({'left', 'right', 'l', 'r'})
 # A repeated-name leaf is excluded when its stem ends in one of these words.
 # Other repeated chains, including ears and eyes, remain eligible.
 SUPPORT_LIMB_TOKENS = frozenset({'leg', 'arm', 'foot', 'hoof', 'paw', 'hand'})
-# Upper bound on the chain segments dropped on top of the terminator group; a
-# mirror pair counts as one.
-LEAF_DROP_MAX_SEGMENT_UNITS = 2
+# Range of chain segments dropped on top of the terminator group; a mirror pair
+# counts as one.
+LEAF_DROP_MIN_SEGMENT_UNITS = 1
+LEAF_DROP_MAX_SEGMENT_UNITS = 3
 # A rig is never cut below this many joints.
-LEAF_DROP_MIN_KEPT_JOINTS = 3
+LEAF_DROP_MIN_KEPT_JOINTS = 10
 
 # Per-joint arrays/lists sliced along their first axis.
 _ROW_KEYS = (
@@ -168,8 +169,9 @@ def sample_leaf_drop(entry, motion, translation_root_index, rng=random) -> list[
     whose mirror twin is a candidate of the same kind forms a unit with it (both
     go or neither does); one whose twin is not is kept, so a symmetric rig stays
     symmetric. Every terminator unit is dropped, then a uniform number of
-    segment units up to ``LEAF_DROP_MAX_SEGMENT_UNITS`` (at least one when there
-    is no terminator, so an augmented sample always differs from the stored rig).
+    segment units in ``[LEAF_DROP_MIN_SEGMENT_UNITS, LEAF_DROP_MAX_SEGMENT_UNITS]``,
+    capped by how many the rig offers. A cut that would leave fewer than
+    ``LEAF_DROP_MIN_KEPT_JOINTS`` joints is not made.
     """
     parents = np.asarray(entry['parents'], dtype=np.int64)
     joint_count = int(parents.shape[0])
@@ -198,7 +200,7 @@ def sample_leaf_drop(entry, motion, translation_root_index, rng=random) -> list[
     if not terminator_units and not segment_units:
         return []
 
-    segment_count = rng.randint(0 if terminator_units else 1, LEAF_DROP_MAX_SEGMENT_UNITS)
+    segment_count = rng.randint(LEAF_DROP_MIN_SEGMENT_UNITS, LEAF_DROP_MAX_SEGMENT_UNITS)
     chosen = terminator_units + rng.sample(segment_units, min(segment_count, len(segment_units)))
     dropped = sorted({joint for unit in chosen for joint in unit})
     if joint_count - len(dropped) < LEAF_DROP_MIN_KEPT_JOINTS:

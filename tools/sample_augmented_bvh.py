@@ -13,6 +13,10 @@ probability 100%; other augmentations are disabled:
   bone-length   — symmetric body proportions, paired original/augmented BVHs
                   with actual scales in filenames and contact residuals in logs
 
+Every mode also writes <stem>__original.bvh beside each augmented file: the same
+clip with augmentations off as a control. Bone-length and loop replay the same
+temporal draws; motion-speed keeps the deterministic fit instead of the sampled tempo.
+
 All modes keep training's automatic speed fitting for phase-anchored actions,
 capped by MAX_FIT_SPEEDUP. Clips still above the source-length budget are randomly
 cropped, followed by the normal model-window resampling.
@@ -175,6 +179,81 @@ def _export_bvh(
         print(f"[export] {save_path.name}: {exc}")
         return False
     return True
+
+
+def _bvh_joint_names(object_cond: dict[str, object], n_joints: int) -> list[str]:
+    """Anatomical BVH joint names from cond, with placeholders as fallback."""
+    joints_names = list(
+        object_cond.get(
+            "canonical_bvh_joint_names",
+            object_cond.get("joints_names", []),
+        )
+    )
+    if not joints_names:
+        joints_names = [f"joint_{j}" for j in range(n_joints)]
+    return joints_names
+
+
+def _decode_for_export(
+    motion_canonical: np.ndarray,
+    m_length: int,
+    object_cond: dict[str, object],
+    aug_info: dict,
+    num_frames: int,
+    real_time: bool,
+) -> np.ndarray:
+    """Canonical (F, J, 12) window → physical features at the export tempo."""
+    motion_raw = canonical_to_physical_hml(
+        motion_canonical[:m_length],
+        object_cond,
+    ).astype(np.float32)
+    if real_time:
+        export_frames = max(2, int(round(float(aug_info["resample_speed_cond"]) * num_frames)))
+        if export_frames != motion_raw.shape[0]:
+            # Invert the loader's window resample: periodic for a
+            # loop-conditioned window.
+            motion_raw = resample_motion_features(
+                motion_raw, export_frames, periodic=bool(aug_info.get("loop_applied")),
+            )
+    return motion_raw
+
+
+def _replay_original(
+    dataset: PreviewMotionDataset,
+    name: str,
+    aug_info: dict,
+    num_frames: int,
+    real_time: bool,
+) -> tuple[np.ndarray, dict[str, object], list[str]]:
+    """Replay the augmented sample's temporal draws on the un-augmented clip.
+
+    ``bone_length_rng_state`` is captured after the leaf-drop and bone-length
+    draws, right before the temporal stages, so restoring it keeps the same
+    crop and loop-tile draws. Outside loop mode the "baseline" preview mode
+    treats the clip as non-loop, so no roll or tile is applied to the control;
+    in loop mode the clip keeps its loop flag and replays the same roll and tile.
+    """
+    opt = dataset.opt
+    saved = (opt.preview_mode, opt.leaf_drop_prob, opt.bone_length_aug_prob, opt.motion_speed_aug_prob)
+    post_state = random.getstate()
+    try:
+        if saved[0] != "loop":
+            opt.preview_mode = "baseline"
+        opt.leaf_drop_prob = 0.0
+        opt.bone_length_aug_prob = 0.0
+        opt.motion_speed_aug_prob = 0.0
+        random.setstate(aug_info["bone_length_rng_state"])
+        baseline = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
+    finally:
+        opt.preview_mode, opt.leaf_drop_prob, opt.bone_length_aug_prob, opt.motion_speed_aug_prob = saved
+        random.setstate(post_state)
+    baseline_aug = baseline[13]
+    baseline_cond = baseline_aug["object_cond"]
+    motion_raw = _decode_for_export(
+        baseline[0], baseline[1], baseline_cond, baseline_aug, num_frames, real_time,
+    )
+    joints_names = _bvh_joint_names(baseline_cond, np.asarray(baseline[2]).shape[0])
+    return motion_raw, baseline_cond, joints_names
 
 
 # ---------------------------------------------------------------------------
@@ -388,21 +467,10 @@ def main() -> int:
             # ----------------------------------------------------------------
             # Decode canonical model-space features back to physical HML-like features.
             # ----------------------------------------------------------------
-            motion_raw = canonical_to_physical_hml(
-                motion_canonical[:m_length],
-                object_cond,
-            ).astype(np.float32)
+            motion_raw = _decode_for_export(
+                motion_canonical, m_length, object_cond, aug_info, args.num_frames, args.real_time,
+            )
             export_frames = int(motion_raw.shape[0])
-            if args.real_time:
-                export_frames = max(
-                    2, int(round(float(aug_info["resample_speed_cond"]) * args.num_frames))
-                )
-                if export_frames != motion_raw.shape[0]:
-                    # Invert the loader's window resample: periodic for a
-                    # loop-conditioned window.
-                    motion_raw = resample_motion_features(
-                        motion_raw, export_frames, periodic=bool(aug_info.get("loop_applied")),
-                    )
 
             # ----------------------------------------------------------------
             # Retrieve joint names from cond_dict for BVH hierarchy
@@ -410,15 +478,8 @@ def main() -> int:
             # BVH matches the naming convention used by sample/generate.py and
             # the preprocessing pipeline.
             # ----------------------------------------------------------------
-            joints_names = list(
-                object_cond.get(
-                    "canonical_bvh_joint_names",
-                    object_cond.get("joints_names", []),
-                )
-            )
             n_joints = np.asarray(parents).shape[0]
-            if not joints_names:
-                joints_names = [f"joint_{j}" for j in range(n_joints)]
+            joints_names = _bvh_joint_names(object_cond, n_joints)
 
             # ----------------------------------------------------------------
             # Build a descriptive filename that encodes what augmentations fired
@@ -451,26 +512,13 @@ def main() -> int:
             fname = f"{stem}__{'+'.join(tags)}.bvh"
             save_path = output_dir / fname
 
-            if args.mode == 'bone-length':
-                # Replay the exact crop/resample on the original skeleton.
-                # Bone draws have already advanced RNG, so start from the state
-                # immediately before the augmented sample's temporal stages.
-                post_state = random.getstate()
-                old_prob = opt.bone_length_aug_prob
-                try:
-                    opt.bone_length_aug_prob = 0.0
-                    random.setstate(aug_info['bone_length_rng_state'])
-                    baseline = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
-                finally:
-                    opt.bone_length_aug_prob = old_prob
-                    random.setstate(post_state)
-                baseline_cond = baseline[13]['object_cond']
-                baseline_raw = canonical_to_physical_hml(baseline[0], baseline_cond).astype(np.float32)
-                if baseline_raw.shape[0] != export_frames:
-                    baseline_raw = resample_motion_features(baseline_raw, export_frames, periodic=False)
-                original_path = output_dir / f'{stem}__original.bvh'
-                if not _export_bvh(original_path, baseline_raw, joints_names, baseline_cond):
-                    raise RuntimeError('Original comparison BVH export failed.')
+            # Control: the same clip with augmentations off, on the same temporal draws.
+            original_raw, original_cond, original_names = _replay_original(
+                dataset, name, aug_info, args.num_frames, args.real_time,
+            )
+            original_path = output_dir / f'{stem}__original.bvh'
+            if not _export_bvh(original_path, original_raw, original_names, original_cond):
+                raise RuntimeError('Original control BVH export failed.')
 
             ok = _export_bvh(
                 save_path,

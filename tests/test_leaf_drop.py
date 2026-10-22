@@ -23,6 +23,7 @@ from data_loaders.truebones.truebones_utils.leaf_drop import (
     drop_joints_from_cond,
     sample_leaf_drop,
     static_joint_mask,
+    LEAF_DROP_MIN_KEPT_JOINTS,
 )
 from data_loaders.truebones.truebones_utils.topology_relations import (
     create_topology_edge_relations,
@@ -150,6 +151,31 @@ def test_without_a_terminator_a_segment_still_goes():
     for _ in range(50):
         dropped = sample_leaf_drop(entry, motion, translation_root_index=0, rng=rng)
         assert dropped and set(dropped) <= {_L_FINGER_TIP, _R_FINGER_TIP, _TAIL_TIP}
+
+
+def test_a_segment_goes_alongside_the_terminators():
+    entry = _entry()
+    motion = _motion(live_joints=[_NAMELESS_LIVE])
+    rng = random.Random(4)
+    for _ in range(50):
+        dropped = set(sample_leaf_drop(entry, motion, translation_root_index=0, rng=rng))
+        assert dropped & {_L_FINGER_TIP, _R_FINGER_TIP, _TAIL_TIP}
+
+
+def test_a_small_rig_is_left_whole():
+    # Both a terminator ("Head Nub") and a segment ("Tail 2") are on offer.
+    names = ['Hips', 'Spine', 'Head', 'Head Nub', 'Tail 1', 'Tail 2']
+    parents = [-1, 0, 1, 2, 0, 4]
+    assert len(parents) < LEAF_DROP_MIN_KEPT_JOINTS
+    entry = {
+        'parents': np.asarray(parents, dtype=np.int64),
+        'canonical_joint_names': names,
+        'joints_names_embs': np.eye(len(parents), dtype=np.float32),
+        'translation_root_index': 0,
+    }
+    motion = np.zeros((4, len(parents), 12), dtype=np.float32)
+    motion[:, :, 3] = motion[:, :, 7] = 1.0
+    assert sample_leaf_drop(entry, motion, translation_root_index=0, rng=random.Random(5)) == []
 
 
 def test_a_twin_of_a_protected_joint_is_kept():
