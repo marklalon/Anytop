@@ -309,7 +309,7 @@ def add_model_options(parser):
                             "0.0 is the plain uniform draw over 1..max, which for a short loop makes the "
                             "single-cycle window -- the regime --loop with the auto length generates in -- "
                             "a small minority of draws, while every other draw is k bit-identical copies "
-                            "of the cycle. Loader-only, like --motion_speed_aug: no regen, no bump.")
+                            "of the cycle. 1.0 turns loop tiling off. Loader-only, like --motion_speed_aug: no regen, no bump.")
     group.add_argument("--leaf_drop_prob", default=0.0, type=float,
                        help="Per-sample probability of the leaf-drop topology augmentation (0.0 = off). "
                             "The sample's rig loses every eligible terminator leaf (named Nub / end / "

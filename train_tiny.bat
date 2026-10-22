@@ -5,7 +5,7 @@ REM Usage: train_tiny.bat [run_name]
 REM See docs/tiny_locomotion_baseline.md for the fixed ablation protocol.
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
-set "RUN_NAME=zoo_locomotion_tiny_v28"
+set "RUN_NAME=zoo_locomotion_tiny_v29"
 if not "%~1"=="" set "RUN_NAME=%~1"
 
 if not exist "%PYTHON_EXE%" (
@@ -55,12 +55,13 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --ref_leaf_drop_prob 0.1 ^
     --ref_bone_length_aug_prob 0.3 ^
     --ref_bone_length_aug 0.2 ^
-    --ref_joint_name_drop_prob 0.15 ^
+    --ref_joint_name_drop_prob 0.3 ^
     --leaf_drop_prob 0.2 ^
     --bone_length_aug_prob 0.3 ^
     --bone_length_aug 0.2 ^
     --motion_speed_aug 1.3 ^
-    --loop_cond_prob 0.6 ^
+    --loop_cond_prob 0.8 ^
+    --loop_tile_single_prob 1.0 ^
     --cross_limb_dim 64 ^
     --cross_limb_last_n 4 ^
     --diffusion_steps 100 ^
@@ -80,7 +81,7 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --joint_mask_budget 0.15 ^
     --unreliable_mask_drop_prob 0.2 ^
     --renoise_same_level_prob 0.8 ^
-    --joint_name_drop_prob 0.15 ^
+    --joint_name_drop_prob 0.3 ^
     --direction_slot_drop_prob 0.15 ^
     --modifier_slot_drop_prob 0.15 ^
     --temporal_span_mask_prob 0.3 ^
@@ -88,7 +89,7 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --lambda_loop_wrap 0.04 ^
     --lambda_loop_root_closure 0.04 ^
     --lambda_root_vel 0.1 ^
-    --lambda_dpos 0.05 ^
+    --lambda_dpos 0.07 ^
     --lambda_geo 0.1 ^
     --lambda_bone 0.06 ^
     --motion_cache_size 16384 ^
