@@ -149,9 +149,10 @@ padding 已被 attention mask 和 loss 排除，不会混淆）。它不同于�
 
 ```text
 timestep
-  + resample_speed
   + action_label
 ```
+
+`resample_speed` 不在这条总线上，见 4.3。
 
 组合后的 condition 在每个 decoder layer 中经该层自己的 `embed_timesteps` 再注入残差流。
 
@@ -219,9 +220,19 @@ cond entry 携带同一对向量（loader 用 `assert_single_canonical_frame` �
 模型输入——输出空间对所有物种相同，也就不携带任何 body plan 信息。它们仍随 `y` collate，
 供只读 `y` 的解码路径（训练 aux-loss）反标准化。
 
-`resample_speed_cond = source_frames / internal_frames`，经另一条 MLP 注入。它告诉模型当前
-时间窗口相对源动作的压缩/拉伸程度。数据侧的 `motion_speed_aug` 是另一项无显式条件的数据
-增强，不应与 `resample_speed_cond` 混为一谈。
+`resample_speed_cond = source_frames / internal_frames` 以**逐帧物理时间**注入：窗口第 `i` 帧
+对应源帧 `i * step`（loop 为 `L / T`，open 为 `(L - 1) / (T - 1)`，与 loader 的 resample step 一致），
+经 sinusoidal embedding 和 `tempo_projection`（末层零初始化）后加到该帧所有关节的 token 上，
+rest-pose 槽不加。它只表达"每帧代表多少源时间"，不与 action label 共用条件 token，
+避免帧数变成压过标签的内容索引。
+
+训练以 `--tempo_cfg_drop_prob` 整行丢弃（该行不加 tempo embedding），推理用
+`--tempo_cfg_scale` 做 tempo CFG：小于 1 时让 label/species 压过语料里少见的长度，大于 1
+时让动作更贴合所给长度。推理的长度默认来自 `clip_length_prior`，丢弃态只作为 CFG 的
+无条件分支，所以 drop 概率取低值。
+
+数据侧的 `motion_speed_aug` 改变源长度 `L`，模型经 tempo 条件看到，不应与
+`resample_speed_cond` 本身混为一谈。
 
 ## 5. Decoder layer
 
@@ -482,7 +493,7 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 
 参数主要分布在以下模块：decoder 主干（占绝大部分）、`action_adaln` 头、cross-limb block、
 `action_label_projection`、`input_process`（per-joint species FiLM、joint-name 投影、structural 投影）、
-`resample_speed_projection`，以及可忽略的 `output_process` 与各层共享的 relation/topology embedding 表。
+`tempo_projection`，以及可忽略的 `output_process` 与各层共享的 relation/topology embedding 表。
 
 各处宽度的分配依据，来自训练后权重的秩与单元参与率：
 

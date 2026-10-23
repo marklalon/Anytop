@@ -2,7 +2,7 @@
 setlocal
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_all_v53
+set RUN_NAME=merged_all_v55
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM train_anytop requires bundled TinyCC for --compile, overriding inherited CC.
@@ -23,6 +23,7 @@ pushd "%SCRIPT_DIR%"
 	--rare_head_word_max_boost 4 ^
 	--head_word_weights attack,idle=0.6 ^
 	--train_split train ^
+    --noise_schedule_shift 2 ^
 	--latent_dim 384 ^
 	--ff_size 2048 ^
 	--last_layer_ff 256 ^
@@ -37,11 +38,11 @@ pushd "%SCRIPT_DIR%"
 	--ref_width 128 ^
 	--ref_layers 2 ^
 	--ref_cfg_drop_prob 0.6 ^
-	--ref_leaf_drop_prob 0.1 ^
+	--ref_leaf_drop_prob 0.3 ^
 	--ref_bone_length_aug_prob 0.3 ^
 	--ref_bone_length_aug 0.2 ^
-	--ref_joint_name_drop_prob 0.15 ^
-	--leaf_drop_prob 0.2 ^
+	--ref_joint_name_drop_prob 0.2 ^
+	--leaf_drop_prob 0.3 ^
 	--bone_length_aug_prob 0.3 ^
 	--bone_length_aug 0.2 ^
 	--motion_speed_aug 1.3 ^
@@ -61,11 +62,12 @@ pushd "%SCRIPT_DIR%"
 	--dropout_prob 0.1 ^
 	--action_label_cfg_drop_prob 0.2 ^
 	--species_cfg_drop_prob 0.2 ^
+	--tempo_cfg_drop_prob 0.1 ^
 	--joint_mask_prob 0.3 ^
 	--joint_mask_budget 0.15 ^
 	--unreliable_mask_drop_prob 0.2 ^
 	--renoise_same_level_prob 0.8 ^
-	--joint_name_drop_prob 0.15 ^
+	--joint_name_drop_prob 0.2 ^
 	--direction_slot_drop_prob 0.15 ^
 	--modifier_slot_drop_prob 0.15 ^
 	--temporal_span_mask_prob 0.3 ^
@@ -73,7 +75,7 @@ pushd "%SCRIPT_DIR%"
 	--lambda_loop_wrap 0.04 ^
 	--lambda_loop_root_closure 0.04 ^
 	--lambda_root_vel 0.1 ^
-	--lambda_dpos 0.05 ^
+	--lambda_dpos 0.08 ^
 	--lambda_geo 0.1 ^
 	--lambda_bone 0.06 ^
 	--motion_cache_size 16384 ^

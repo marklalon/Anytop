@@ -65,33 +65,12 @@ def unwrap_anytop_model(model):
     return unwrapped_model
 
 
-# The window-span condition was called ``playspeed`` until the loader grew a
-# real motion-speed augmentation; the projection MLP was renamed with it. Pure
-# rename, no semantic change, so older checkpoints are remapped instead of
-# rejected by a CKPT_VERSION bump.
-_LEGACY_STATE_DICT_PREFIXES = (
-    ('playspeed_projection.', 'resample_speed_projection.'),
-)
-
-
-def remap_legacy_state_dict_keys(state_dict):
-    remapped = {}
-    for key, value in state_dict.items():
-        for old_prefix, new_prefix in _LEGACY_STATE_DICT_PREFIXES:
-            if key.startswith(old_prefix):
-                key = new_prefix + key[len(old_prefix):]
-                break
-        remapped[key] = value
-    return remapped
-
-
 # Prefixes of training-only modules a checkpoint may still carry and the model
 # no longer builds; their weights never reached the motion output.
 _DROPPED_STATE_DICT_PREFIXES = ('joint_part_head.',)
 
 
 def load_model(model, state_dict):
-    state_dict = remap_legacy_state_dict_keys(state_dict)
     state_dict = {k: v for k, v in state_dict.items() if not k.startswith(_DROPPED_STATE_DICT_PREFIXES)}
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert len(unexpected_keys) == 0, f"Unexpected keys in checkpoint: {unexpected_keys}"
@@ -209,6 +188,7 @@ def get_gmdm_args(args):
             'temporal_span_mask_min_frames': getattr(args, 'temporal_span_mask_min_frames', 4),
             'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 12),
             'species_cfg_drop_prob': getattr(args, 'species_cfg_drop_prob', 0.15),
+            'tempo_cfg_drop_prob': getattr(args, 'tempo_cfg_drop_prob', 0.1),
             'species_cond': getattr(args, 'species_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
             **{key: getattr(args, key, default) for key, default in (

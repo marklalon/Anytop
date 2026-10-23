@@ -22,7 +22,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from model.motion_transformer import circular_phase_embedding  # noqa: E402
-from utils.model_util import create_gaussian_diffusion, load_model  # noqa: E402
+from utils.model_util import create_gaussian_diffusion  # noqa: E402
 
 
 # circular_phase_embedding's window closure is exact only in real arithmetic:
@@ -183,28 +183,7 @@ class NativeLoopTests(unittest.TestCase):
 
         value = model._coerce_resample_speed_cond(None, batch_size=2, device=torch.device('cpu'), dtype=torch.float32)
 
-        self.assertTrue(torch.equal(value, torch.ones(2, 1, dtype=torch.float32)))
-
-    def test_load_model_remaps_legacy_playspeed_projection_keys(self):
-        # Checkpoints written before the rename carry ``playspeed_projection.*``;
-        # they must load into ``resample_speed_projection`` unchanged.
-        kwargs = dict(
-            max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
-            num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
-        )
-        source = AnyTop(**kwargs)
-        legacy_state = {
-            (key.replace('resample_speed_projection.', 'playspeed_projection.', 1)
-             if key.startswith('resample_speed_projection.') else key): value
-            for key, value in source.state_dict().items()
-        }
-        self.assertTrue(any(key.startswith('playspeed_projection.') for key in legacy_state))
-
-        restored = AnyTop(**kwargs)
-        load_model(restored, legacy_state)
-
-        for key, value in source.state_dict().items():
-            self.assertTrue(torch.equal(restored.state_dict()[key], value), key)
+        self.assertTrue(torch.equal(value, torch.ones(2, dtype=torch.float32)))
 
     def test_loop_wrap_loss_skips_non_loop_samples(self):
         diffusion = self._make_diffusion()

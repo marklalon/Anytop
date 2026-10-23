@@ -15,7 +15,11 @@ const color = score => score == null ? 'var(--edge)' :
   score <= 2 ? 'var(--red)' : score <= 4 ? 'var(--orange)' : score <= 6 ? 'var(--yellow)' : 'var(--green)';
 const fmt = value => value == null ? '—' : Number(value).toFixed(4);
 let current = null, views = [], ratings = {}, connected = false, saving = false;
-let playing = true, seconds = 0, duration = 0, frameTime = 1 / 30, generation = 0;
+// Clips in one batch have different lengths, so each motion loops on its own
+// duration at real speed against one shared clock. The scrub bar shows that
+// clock modulo 1 s; only its changes matter, not its absolute value.
+let playing = true, seconds = 0, frameTime = 1 / 30, generation = 0;
+const wrap = (time, length) => length > 0 ? (time % length + length) % length : 0;
 let loading = false, loadController = null, lastNow = performance.now();
 const taskNodes = new Map();
 const stage = el('div');
@@ -323,6 +327,7 @@ function setupView(view, text, reference) {
   view.controls.enableDamping = false;
   view.controls.addEventListener('change', () => syncCameras(view));
   view.message.hidden = true;
+  view.node.append(el('div', `${view.bvh.frames} 帧`, 'view-frames'));
   const previousSource = cameraSource;
   resetCamera(view);
   // A clip that finishes loading later adopts the camera the user already moved.
@@ -361,7 +366,7 @@ async function selectTask(task) {
     node.setAttribute('aria-current', String(selected));
   }
   disposeViews();
-  seconds = 0; duration = 0; loading = true;
+  seconds = 0; loading = true;
   $('task-title').textContent = task?.id || '没有匹配的任务';
   $('clip-count').textContent = task ? `${task.clips.length} 个动作${task.reference_clip ? ' · 灰色半透明：参考动作' : ''}` : '';
   $('frame-info').textContent = '';
@@ -423,10 +428,8 @@ async function selectTask(task) {
   await Promise.allSettled(jobs);
   if (token !== generation) return;
   const firstClip = views.find(view => view.bvh)?.bvh;
-  $('frame-info').textContent = firstClip ? `${firstClip.frames} 帧 · ${(1 / firstClip.frameTime).toFixed(1)} FPS` : '';
-  const motions = views.flatMap(view => [view.bvh, view.reference?.bvh]).filter(Boolean);
-  duration = Math.max(0, ...motions.map(motion => motion.duration));
-  const frameTimes = motions.map(motion => motion.frameTime);
+  $('frame-info').textContent = firstClip ? `${(1 / firstClip.frameTime).toFixed(1)} FPS` : '';
+  const frameTimes = views.flatMap(view => [view.bvh, view.reference?.bvh]).filter(Boolean).map(motion => motion.frameTime);
   frameTime = frameTimes.length ? Math.min(...frameTimes) : 1 / 30;
   loading = false;
   lastNow = performance.now();
@@ -437,15 +440,39 @@ function updateTransport() {
   const enabled = !loading && views.some(view => view.bvh);
   for (const id of ['play', 'step-back', 'step-forward', 'scrub']) $(id).disabled = !enabled;
   $('play').textContent = playing ? '暂停' : '播放';
-  $('scrub').max = duration || 1;
-  $('scrub').value = seconds;
-  $('time').textContent = `${seconds.toFixed(2)} / ${duration.toFixed(2)} s`;
+  $('scrub').value = wrap(seconds, 1);
+  $('time').textContent = `${wrap(seconds, 1).toFixed(2)} s`;
 }
 $('play').addEventListener('click', () => { playing = !playing; lastNow = performance.now(); updateTransport(); });
-$('scrub').addEventListener('input', () => { playing = false; seconds = Number($('scrub').value); updateTransport(); });
+// Keyboard input on the range itself.
+$('scrub').addEventListener('input', () => {
+  playing = false;
+  seconds += Number($('scrub').value) - wrap(seconds, 1);
+  updateTransport();
+});
+// Pointer drags go through the track, so they can run past either end and wrap.
+let dragX = null;
+$('scrub-track').addEventListener('pointerdown', event => {
+  if ($('scrub').disabled || event.button !== 0) return;
+  event.preventDefault();
+  $('scrub').focus();
+  $('scrub-track').setPointerCapture(event.pointerId);
+  const rect = $('scrub').getBoundingClientRect();
+  playing = false;
+  seconds += (event.clientX - rect.left) / rect.width - wrap(seconds, 1);
+  dragX = event.clientX;
+  updateTransport();
+});
+$('scrub-track').addEventListener('pointermove', event => {
+  if (dragX === null) return;
+  seconds += (event.clientX - dragX) / $('scrub').getBoundingClientRect().width;
+  dragX = event.clientX;
+  updateTransport();
+});
+for (const type of ['pointerup', 'pointercancel']) $('scrub-track').addEventListener(type, () => { dragX = null; });
 function step(direction) {
   playing = false;
-  seconds = Math.max(0, Math.min(duration, seconds + direction * frameTime));
+  seconds += direction * frameTime;
   updateTransport();
 }
 $('step-back').addEventListener('click', () => step(-1));
@@ -476,7 +503,7 @@ document.addEventListener('keydown', event => {
 });
 
 function drawPose(view) {
-  applyPose(view.bvh, seconds);
+  applyPose(view.bvh, wrap(seconds, view.bvh.duration));
   view.bvh.bones.forEach((bone, i) => {
     bone.getWorldPosition(view.positions[i]);
     view.joints.setMatrixAt(i, matrix.makeScale(view.radius, view.radius, view.radius).setPosition(view.positions[i]));
@@ -495,8 +522,8 @@ function animate(now) {
   requestAnimationFrame(animate);
   const delta = Math.min((now - lastNow) / 1000, .1);
   lastNow = now;
-  if (playing && !loading && duration > 0 && !$('summary').open) {
-    seconds = (seconds + delta * Number($('speed').value)) % duration;
+  if (playing && !loading && !$('summary').open) {
+    seconds += delta * Number($('speed').value);
     updateTransport();
   }
   if (!renderer) return;

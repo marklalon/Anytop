@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 43
+CKPT_VERSION = 45
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -298,7 +298,7 @@ def add_model_options(parser):
                             "fits (never downgraded to non-loop by slowing down). A phase-anchored clip (label not "
                             "loop_is_phase_free) over the source budget is additionally sped up by at least "
                             "min(L/budget, MAX_FIT_SPEEDUP) -- even with this flag at 1.0 -- so it enters the "
-                            "window whole instead of being cropped. 1.2 is the intended value.")
+                            "window whole instead of being cropped.")
     group.add_argument("--motion_speed_aug_prob", default=1.0, type=float,
                        help="Per-sample probability of applying --motion_speed_aug (default 1.0 = every clip). "
                             "The recorded tempo is one point of the continuum, so leaving a mass at exactly "
@@ -375,6 +375,10 @@ def add_model_options(parser):
     group.add_argument("--species_cfg_drop_prob", default=0.15, type=float,
                        help="Per-sample probability of bypassing per-joint species FiLM during training "
                             "(identity modulation), enabling species classifier-free guidance.")
+    group.add_argument("--tempo_cfg_drop_prob", default=0.1, type=float,
+                       help="Per-sample probability of dropping the tempo condition (each window "
+                            "frame's physical time, from resample_speed_cond) during training, "
+                            "enabling tempo classifier-free guidance (--tempo_cfg_scale).")
     group.add_argument("--species_cond", action='store_true',
                        help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_code], "
                             "species_code = [T5(body plan) || variant one-hot]. Zero-initialized to "
@@ -495,9 +499,12 @@ def add_training_options(parser):
     group.add_argument("--num_steps", default=600_000, type=int,
                        help="Training will stop after the specified number of steps.")
     group.add_argument("--num_frames", default=60, type=int,
-                       help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
+                       help="The model's window T in frames. Each clip's L source frames (cropped to at most "
+                            "MAX_SOURCE_FRAMES_MULT * T) are resampled into it, and L / T is its "
+                            "resample_speed_cond.")
     group.add_argument("--min_length", default=20, type=int,
-                       help="Variable-length pipeline lower bound in frames. Inference rejects shorter requested lengths.")
+                       help="Shortest source clip, in frames: shorter clips are dropped, and generation "
+                            "rejects a shorter --num_frames.")
     group.add_argument("--sample_limit", default=0, type=int,
                        help="Limit the number of motion clips loaded for tiny overfit/debug runs. 0 keeps the full dataset.")
     group.add_argument("--motion_cache_size", default=0, type=int,
@@ -778,6 +785,13 @@ def add_generate_options(parser):
                             "Quadruped, or a human walk like a machine). "
                             "Requires a checkpoint trained with --species_cond. "
                             "Incompatible with --object_type all.")
+    group.add_argument("--tempo_cfg_scale", default=1.0, type=float,
+                       help="Classifier-free guidance scale over the tempo condition (the output "
+                            "length, --num_frames or the clip-length prior's default), applied on "
+                            "the high-noise half of the steps only. Below 1 lets the action label "
+                            "and species outweigh a length the corpus rarely pairs with them; above "
+                            "1 holds the motion to it. 1.0 (default) costs no extra forward. "
+                            "Requires a checkpoint trained with --tempo_cfg_drop_prob > 0.")
     group.add_argument("--species_cfg_scale", default=1.0, type=float,
                        help="Classifier-free guidance scale over the species descriptor, "
                             "applied on the high-noise half of the steps "

@@ -296,9 +296,9 @@ def _all_species_output_lengths(
     (``loop_mode``, the raw flag) depends on the label only, so every species
     gets the same verdict.
     """
+    is_loop = resolve_loop_condition(loop_mode, action_condition, verbose=False)
     lengths = {}
     for species in cond_dict:
-        is_loop = resolve_loop_condition(loop_mode, action_condition, verbose=False)
         if explicit is not None:
             target, speed = explicit
         else:
@@ -315,8 +315,7 @@ def _all_species_output_lengths(
             )
         lengths[species] = (target, speed, is_loop)
 
-    closed = sum(1 for _, _, is_loop in lengths.values() if is_loop)
-    print(f'  loop ({loop_mode}): {closed} of {len(lengths)} species closed')
+    print(f'  loop ({loop_mode}): {"on" if is_loop else "off"} for every species')
     if explicit is None and lengths:
         resolved = sorted(target for target, _, _ in lengths.values())
         # One line instead of one per species; each batch header repeats the

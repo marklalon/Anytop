@@ -26,8 +26,8 @@
         <button id="play" title="空格：播放 / 暂停" disabled>暂停</button>
         <button id="step-back" title="上一帧" disabled>‹</button>
         <button id="step-forward" title="下一帧" disabled>›</button>
-        <input id="scrub" type="range" min="0" max="1" step="any" value="0" aria-label="所有动作统一播放进度" disabled>
-        <span id="time">0.00 / 0.00 s</span>
+        <span id="scrub-track"><input id="scrub" type="range" min="0" max="1" step="any" value="0" aria-label="共享时间轴（1 秒循环）" disabled></span>
+        <span id="time">0.00 s</span>
         <select id="speed" aria-label="播放速度">
           <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
           <option value="1" selected>1×</option><option value="2">2×</option>

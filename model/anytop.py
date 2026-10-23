@@ -102,6 +102,11 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"species_cfg_drop_prob must be in [0, 1], got {self.species_cfg_drop_prob}"
             )
+        self.tempo_cfg_drop_prob=float(kargs.get('tempo_cfg_drop_prob', 0.1))
+        if not 0.0 <= self.tempo_cfg_drop_prob <= 1.0:
+            raise ValueError(
+                f"tempo_cfg_drop_prob must be in [0, 1], got {self.tempo_cfg_drop_prob}"
+            )
         # --species_cond: the species code (body plan + variant) FiLM-modulates
         # each joint-name embedding in InputProcess; that is its only entry point.
         self.species_cond=bool(kargs.get('species_cond', False))
@@ -200,14 +205,24 @@ class AnyTop(nn.Module):
         # the low-lift, phase-scrambled gait of the cluster's other loops
         # instead of the species' own one-shot runs, while the phase table
         # alone closed the window just as well (docs/anytop_model_architecture.md §6).
-        self.resample_speed_projection = nn.Sequential(
-            nn.Linear(1, self.latent_dim),
+        # resample_speed_cond (source frames per window, M / T) is NOT summed
+        # into the condition embedding either. It enters as the physical time
+        # of every window frame (_tempo_frame_embedding): a statement about the
+        # window's time scale, added per frame next to the absolute frame PE,
+        # instead of a global token beside the action label where the frame
+        # count became a content key that could outvote the label. Zero-init
+        # last layer, so a fresh model starts tempo-blind; CFG-droppable via
+        # tempo_cfg_drop_prob.
+        self.tempo_projection = nn.Sequential(
+            nn.Linear(self.latent_dim, self.latent_dim),
             nn.GELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
+        nn.init.zeros_(self.tempo_projection[-1].weight)
+        nn.init.zeros_(self.tempo_projection[-1].bias)
         if self.action_label_cond:
             # Project the concatenated slot channels and add the result to the
-            # timestep token, alongside loop / resample_speed / canonical frame. One
+            # timestep token. One
             # Linear over the concatenation IS one Linear per channel block,
             # summed, so each channel's relative scale is learned rather than
             # being some offline budget we picked. Additive and linear is enough:
@@ -358,7 +373,42 @@ class AnyTop(nn.Module):
         # under compilation (eager eval/inference still validates).
         if not torch.compiler.is_compiling() and not torch.isfinite(raw_resample_speed_cond).all():
             raise ValueError("resample_speed_cond must be finite")
-        return raw_resample_speed_cond.to(dtype=dtype).view(batch_size, 1)
+        return raw_resample_speed_cond.to(dtype=dtype)
+
+    def _tempo_frame_embedding(self, y, batch_size, nframes, device):
+        """``[nframes, B, D]`` embedding of each window frame's physical time.
+
+        Window frame ``i`` sits at source frame ``i * step``, ``step`` being the
+        loader's resample step (dataset.resample_step_scale): ``L / T`` for a
+        loop window, ``(L - 1) / (T - 1)`` for an open one, with
+        ``L = resample_speed_cond * T``. A dropped row (``tempo_active`` False)
+        gets zeros, the unconditional mode tempo CFG guides against.
+        """
+        speed = self._coerce_resample_speed_cond(
+            y.get('resample_speed_cond'), batch_size=batch_size, device=device, dtype=torch.float32,
+        )
+        is_loop = y.get('is_loop')
+        if is_loop is None:
+            is_loop = torch.zeros(batch_size, device=device, dtype=torch.bool)
+        is_loop = torch.as_tensor(is_loop, device=device).to(torch.bool).reshape(-1)
+        if is_loop.numel() == 1 and batch_size != 1:
+            is_loop = is_loop.expand(batch_size)
+        if nframes > 1:
+            source_frames = (speed * float(nframes)).clamp_min(1.0)
+            open_step = ((source_frames - 1.0) / float(nframes - 1)).clamp_min(0.0)
+            step = torch.where(is_loop, speed, open_step)
+        else:
+            step = torch.ones_like(speed)
+        frame_times = (
+            torch.arange(nframes, device=device, dtype=torch.float32).view(1, -1, 1)
+            * step.view(-1, 1, 1)
+        )
+        tempo_emb = run_in_fp32(
+            self.tempo_projection, create_sin_embedding(frame_times, self.latent_dim)
+        )
+        active = self._resolve_tempo_active(y.get('tempo_active'), batch_size, device)
+        tempo_emb = tempo_emb * active.view(-1, 1, 1).to(tempo_emb.dtype)
+        return tempo_emb.transpose(0, 1)
 
     def _init_action_conditioning(self, bundle, t5_out_dim):
         """Freeze the word table into a model buffer.
@@ -953,6 +1003,23 @@ class AnyTop(nn.Module):
             return torch.rand(batch_size, device=device) >= self.species_cfg_drop_prob
         return torch.ones(batch_size, device=device, dtype=torch.bool)
 
+    def _resolve_tempo_active(self, raw_tempo_active, batch_size, device):
+        """Per-sample keep mask for the tempo condition, as _resolve_species_active
+        with tempo_cfg_drop_prob."""
+        if raw_tempo_active is not None:
+            active = torch.as_tensor(raw_tempo_active, device=device, dtype=torch.bool).reshape(-1)
+            if active.numel() == 1 and batch_size != 1:
+                active = active.expand(batch_size)
+            elif active.numel() != batch_size:
+                raise ValueError(
+                    "tempo_active batch dimension must match the motion batch size, got "
+                    f"{active.numel()} for batch {batch_size}"
+                )
+            return active
+        if self.training and self.tempo_cfg_drop_prob > 0.0:
+            return torch.rand(batch_size, device=device) >= self.tempo_cfg_drop_prob
+        return torch.ones(batch_size, device=device, dtype=torch.bool)
+
     def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
@@ -974,14 +1041,6 @@ class AnyTop(nn.Module):
         # cross-joint pathway to denoise robustly against per-joint timestep
         # disagreement (matching inpaint clamp behavior at inference).
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
-        resample_speed_condition = self._coerce_resample_speed_cond(
-            y.get('resample_speed_cond'),
-            batch_size=bs,
-            device=x.device,
-            dtype=x.dtype,
-        )
-        timesteps_emb = timesteps_emb + run_in_fp32(
-            self.resample_speed_projection, resample_speed_condition)
         action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype, ref_active)
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token
@@ -1016,6 +1075,9 @@ class AnyTop(nn.Module):
         x = self.input_process(x, rest_pose, y['joints_names_embs'], joint_valid, y['joint_struct'],
                                joint_name_drop=joint_name_drop, species_code=species_code,
                                species_active=species_active) # applies linear layer on each frame to convert it to latent dim
+        # Motion frames only: slot 0 is the rest pose, which has no time.
+        tempo_emb = self._tempo_frame_embedding(y, bs, nframes, x.device)
+        x = torch.cat([x[:1], x[1:] + tempo_emb.unsqueeze(2).to(x.dtype)], dim=0)
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
         spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 

@@ -23,7 +23,7 @@ token(frame, joint) =  运动投影(该帧该关节的特征)          # 帧 0 �
 | 结构通道 | 这个关节在**骨架的什么位置**（几何 / 拓扑） | 由 `parents` 与 rest 位置现场计算 | 骨架 |
 | species 描述符 | 这个物种**怎么动**（体型类别 × 变体） | body plan 取冻结 T5（描述符表），variant 取正交码 | 物种 |
 
-species code **只**通过“对关节名嵌入做 FiLM”进入模型，不进入 timestep 条件，decoder 里也没有 species AdaLN 头。timestep 条件只承载 diffusion 步、`resample_speed`、action label 等（见 [action_group_and_label.md](action_group_and_label.md) 与 [anytop_model_architecture.md](anytop_model_architecture.md)）。
+species code **只**通过“对关节名嵌入做 FiLM”进入模型，不进入 timestep 条件，decoder 里也没有 species AdaLN 头。timestep 条件只承载 diffusion 步和 action label（`resample_speed` 以逐帧物理时间注入）（见 [action_group_and_label.md](action_group_and_label.md) 与 [anytop_model_architecture.md](anytop_model_architecture.md)）。
 
 ---
 

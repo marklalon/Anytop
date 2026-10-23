@@ -250,7 +250,7 @@ fp16 run 是从 bf16 run 的 5000 步 checkpoint 续训的，两边在 5000–54
 - **A**：`cross_k_scale` 是模型里唯一一个背后挂着整张子网络的零初始化门（其余 `time_emb_scale` / `temporal_phase_scale` / `*_reliability_bias` 只门住一个加法项，门自身的梯度并不小）。子路只有 K 个 token、瓶颈宽度，fp32 实测 0 成本。
 - **B**：当前 `GradScaler` 显式以 2^15 初始化并封顶，避免新 run 在第一步探测 2^16；真正溢出时仍会下降。**恢复旧 run 时**保存的更高 scale 会在第一次 optimizer update 后被拉回 2^15（并重置 growth tracker）。
 - **C**：旧逻辑用 `not np.isfinite(grad_norm)` 当尖峰触发条件，而 `_optimize_amp` 恰好用 `inf` 标记"因非有限梯度跳过"。没有 scaler 的 bf16 / fp32 下 `inf` 仍然算真实故障，照样 dump。
-- **D**：`resample_speed_projection`、`loop_condition_projection`、`action_label_projection`、`canonical_frame_projection`、`input_process.{species_film_j, text_embedding, struct_embedding}`。`InputProcess` 的返回本来就在末尾被 fp32 的 pos_emb 提升，所以下游看到的 dtype 没有变化。
+- **D**：`tempo_projection`、`loop_condition_projection`、`action_label_projection`、`canonical_frame_projection`、`input_process.{species_film_j, text_embedding, struct_embedding}`。`InputProcess` 的返回本来就在末尾被 fp32 的 pos_emb 提升，所以下游看到的 dtype 没有变化。
 
 ### 9.3 效果（实测）
 

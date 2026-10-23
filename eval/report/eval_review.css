@@ -32,10 +32,13 @@ main { display:grid; grid-template-columns:450px minmax(0,1fr) 390px; flex:1; mi
 #views { height:100%; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); grid-auto-rows:minmax(240px,calc((100% - 8px) / 2)); gap:8px; padding:8px; }
 .view { position:relative; min-width:0; min-height:0; border:1px solid #424242; border-radius:4px; overflow:hidden; }
 .view canvas { width:100%; height:100%; display:block; touch-action:none; }
+.view-frames { position:absolute; top:6px; left:8px; font:11px Consolas,monospace; color:var(--dim); pointer-events:none; }
 .view-message { position:absolute; inset:45px 12px 40px; display:flex; align-items:center; justify-content:center; text-align:center; color:var(--dim); overflow-wrap:anywhere; }
 .empty { color:var(--dim); padding:20px; grid-column:1/-1; }
 #transport { display:flex; align-items:center; gap:7px; padding:9px 10px; background:var(--bar); border-top:1px solid var(--edge); }
-#scrub { flex:1; min-width:40px; accent-color:var(--accent); padding:0; }
+#scrub-track { flex:1; min-width:40px; display:flex; touch-action:none; cursor:pointer; }
+#scrub { flex:1; min-width:0; accent-color:var(--accent); padding:0; pointer-events:none; }
+#scrub:focus,#scrub:focus-visible { outline:none; }
 #time { font:11px Consolas,monospace; white-space:nowrap; min-width:112px; text-align:right; }
 aside { overflow-y:auto; border-left:1px solid var(--edge); background:var(--panel); }
 aside section { padding:16px; border-bottom:1px solid var(--edge); }
