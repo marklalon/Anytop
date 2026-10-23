@@ -196,27 +196,24 @@ class SpeciesHybridTest(unittest.TestCase):
                      None, _joint_struct(1).expand(2, -1, -1), species_code=code)
         self.assertFalse(torch.allclose(out[:, 0], out[:, 1]))
 
-    def test_joint_cond_film_reads_pre_dropout_joint_embeddings(self):
-        """The FiLM head must read the *pre-dropout* joint embeddings. With
-        dropout p=1 the dropout-ified copy is all zeros, so a head that
-        accidentally consumed it would receive a zero joint part. The old
-        per-joint spread assertion on the full output could not catch that
-        (pose data alone spreads the joints), so probe the head's input
-        directly instead."""
+    def test_joint_cond_film_reads_the_noised_names(self):
+        """The FiLM head reads the same noised names the projection does: with
+        the zero-initialized (identity) head, its joint input equals what
+        text_embedding receives, and both differ from the clean names."""
         model = _make_model(species_cond=True)
         ip = model.input_process
-        ip.joints_names_dropout.p = 1.0
-        torch.nn.init.normal_(ip.species_film_j[-1].weight, std=0.5)
-        probe = _ProbeHead(ip.species_film_j)
-        ip.species_film_j = probe
+        ip.joint_name_noise.noise_std = 0.2
+        ip.joint_name_noise.set_basis(torch.eye(T5_DIM)[:4], torch.ones(4))
+        film = _ProbeHead(ip.species_film_j)
+        text = _ProbeHead(ip.text_embedding)
+        ip.species_film_j, ip.text_embedding = film, text
         model.train()
-        x, rest_pose, joints, species = _joint_cond_inputs()
+        x, rest_geom, joints, species = _joint_cond_inputs()
         with torch.no_grad():
-            ip(x, rest_pose, joints, None, _joint_struct(*joints.shape[:2]), species_code=species)
-        # Head input: [B, J, T5 + code] = [joint_emb, species_code]. The joint
-        # part must be the un-dropped input, not the zeroed dropout copy.
-        joint_part = probe.last_input[..., :T5_DIM]
-        self.assertTrue(torch.allclose(joint_part, joints))
+            ip(x, rest_geom, joints, None, _joint_struct(*joints.shape[:2]), species_code=species)
+        joint_part = film.last_input[..., :T5_DIM]
+        self.assertTrue(torch.allclose(joint_part, text.last_input))
+        self.assertFalse(torch.allclose(joint_part, joints))
 
     def test_species_code_must_match_the_module(self):
         x, rest_pose, joints, species = _joint_cond_inputs()

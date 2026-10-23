@@ -208,8 +208,7 @@ def audit_model_padding(audit):
 
     torch.manual_seed(0)
     latent_dim, t5_dim, frames, max_joints = 16, 32, 3, 5
-    process = InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS), latent_dim, t5_dim,
-                           dropout_prob=0.0).eval()
+    process = InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS), latent_dim, t5_dim).eval()
 
     x = torch.randn(2, max_joints, FEATS_LEN, frames)
     rest_geom = torch.randn(1, 2, max_joints, REST_GEOM_DIM)

@@ -31,6 +31,7 @@ from train.training_loop import TrainLoop
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.truebones_utils.bone_length_aug import DEFAULT_BONE_LENGTH_AUG
 from utils.model_util import create_model_and_diffusion_general_skeleton, resolve_t5_out_dim
+from model.joint_name_noise import joint_name_noise_basis
 from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform, WandBPlatform #required
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.data.dataset import load_action_conditioning
@@ -355,6 +356,9 @@ def run_training(args):
 
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
     print(f'[model] parameter budget: {model.reference_parameter_budget()}')
+    # From the training cond, so a resume rebuilds the same basis.
+    model.set_joint_name_noise_basis(*joint_name_noise_basis(
+        data.dataset.motion_dataset.cond_dict, int(getattr(args, 'joint_name_noise_rank', 128))))
     model.to(dist_util.dev())
     ml_platform.watch_model(model)
     print("Training...")
