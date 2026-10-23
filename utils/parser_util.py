@@ -222,13 +222,6 @@ def add_model_options(parser):
     group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4,
                        help='Reference hard-drop probability. Reference-active rows always '
                             'bypass the action label and the species condition.')
-    group.add_argument('--ref_leaf_drop_prob', type=float, default=0.2)
-    group.add_argument('--ref_bone_length_aug_prob', type=float, default=0.2)
-    group.add_argument('--ref_bone_length_aug', type=float, default=0.2,
-                       help='Reference max relative bone-length change (see --bone_length_aug).')
-    group.add_argument('--ref_bone_length_aug_min', type=float, default=0.1,
-                       help='Reference min relative bone-length change (see --bone_length_aug_min).')
-    group.add_argument('--ref_joint_name_drop_prob', type=float, default=0.15)
     group.add_argument("--layers", default=4, type=int,
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
@@ -330,7 +323,7 @@ def add_model_options(parser):
                             "Loader-only: no regen, no model change, no CKPT_VERSION bump.")
     group.add_argument("--bone_length_aug_prob", default=0.0, type=float,
                        help="Probability of symmetric body-proportion augmentation; training only (0 = off).")
-    group.add_argument("--bone_length_aug", default=0.2, type=float,
+    group.add_argument("--bone_length_aug_max", default=0.2, type=float,
                        help="Max relative bone-length change; with --bone_length_aug_min 0.1 a group "
                             "scale is drawn from [0.8, 0.9] or [1.1, 1.2]. Only groups whose mean bone "
                             "length reaches the skeleton's mean bone length are scaled. "
@@ -339,7 +332,7 @@ def add_model_options(parser):
                             "Loader-only: no dataset regeneration or checkpoint schema change.")
     group.add_argument("--bone_length_aug_min", default=0.1, type=float,
                        help="Min relative bone-length change, so every draw is visible; "
-                            "must be in [0, --bone_length_aug].")
+                            "must be in [0, --bone_length_aug_max].")
     group.add_argument("--loop_cond_prob", default=1.0, type=float,
                        help="Probability that a loop training clip is TOLD it is a loop (is_loop=1: "
                             "circular time table, periodic window resample, wrap losses). The rest of "

@@ -139,7 +139,7 @@ E 不读取 species descriptor，也没有自己的 species 条件。`ref_pose` 
 | 骨长比例 | `truebones_utils/bone_length_aug.py` | 扰动身体比例，鼓励减少对源骨长的依赖 |
 | 整关节名置空 | 与 `joint_name_drop_prob` 同一机制 | 隐藏部分名字，鼓励结合几何和运动识别部位 |
 
-编码器侧的概率由 `--ref_leaf_drop_prob`、`--ref_bone_length_aug_prob` 等参数控制，与目标侧互相独立。
+编码器侧复用目标侧的 `--leaf_drop_prob`、`--bone_length_aug_prob`、`--joint_name_drop_prob` 等参数，但各自独立抽样。
 
 **理由与限制**：这些增强保留时间对应，鼓励编码器从变化后的输入恢复原始运动；它们提供的是形态扰动鲁棒性，不强制 z 不变，也不建立不同 body plan 的对应。骨长增强保留局部旋转，但会改变末端位置、速度和可能的接触状态；leaf-drop 也会丢失被删末端的运动。因此必须控制强度，并比较增强前后的动作内容与交换结果，不能假定运动信息完全无损。
 

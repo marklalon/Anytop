@@ -44,7 +44,7 @@ Usage
 Arguments
 ---------
   --mode              Required: loop / motion-speed / leaf-drop / bone-length (one only)
-  --bone-length-aug   Max relative group-length change (default: 0.2 = +/-20%)
+  --bone-length-aug-max  Max relative group-length change (default: 0.2 = +/-20%)
   --bone-length-aug-min  Min relative group-length change (default: 0.1 = +/-10%)
   --n                 Number of samples to export  (default: 10)
   --num-frames        Window length in frames, must match --num_frames in training (default: 60)
@@ -272,7 +272,7 @@ def parse_args() -> argparse.Namespace:
                    choices=("loop", "motion-speed", "leaf-drop", "bone-length"),
                    help="Preview exactly one augmentation, enabled with probability 100%%.")
     p.add_argument("--n", type=int, default=10, help="Number of samples to export.")
-    p.add_argument('--bone-length-aug', type=float, default=0.2,
+    p.add_argument('--bone-length-aug-max', type=float, default=0.2,
                    help='Max relative body-proportion change; 0.2 = +/-20%% (bone-length mode only).')
     p.add_argument('--bone-length-aug-min', type=float, default=0.1,
                    help='Min relative body-proportion change; 0.1 = +/-10%% (bone-length mode only).')
@@ -310,11 +310,11 @@ def parse_args() -> argparse.Namespace:
     if not 0.0 <= args.loop_tile_single_prob <= 1.0:
         p.error("--loop-tile-single-prob must be in [0, 1]")
     if args.mode == 'bone-length' and (
-        not np.isfinite(args.bone_length_aug) or not 0.0 < args.bone_length_aug < 1.0
+        not np.isfinite(args.bone_length_aug_max) or not 0.0 < args.bone_length_aug_max < 1.0
     ):
-        p.error('--bone-length-aug must be finite and in (0, 1) in bone-length mode')
-    if args.mode == 'bone-length' and not 0.0 <= args.bone_length_aug_min <= args.bone_length_aug:
-        p.error('--bone-length-aug-min must be in [0, --bone-length-aug] in bone-length mode')
+        p.error('--bone-length-aug-max must be finite and in (0, 1) in bone-length mode')
+    if args.mode == 'bone-length' and not 0.0 <= args.bone_length_aug_min <= args.bone_length_aug_max:
+        p.error('--bone-length-aug-min must be in [0, --bone-length-aug-max] in bone-length mode')
     if args.n <= 0 or args.num_frames <= 0:
         p.error("--n and --num-frames must be positive")
     return args
@@ -361,7 +361,7 @@ def main() -> int:
     opt.motion_speed_aug_prob = 1.0 if args.mode == "motion-speed" else 0.0
     opt.leaf_drop_prob = 1.0 if args.mode == "leaf-drop" else 0.0
     opt.bone_length_aug_prob = 1.0 if args.mode == 'bone-length' else 0.0
-    opt.bone_length_aug = args.bone_length_aug
+    opt.bone_length_aug_max = args.bone_length_aug_max
     opt.bone_length_aug_min = args.bone_length_aug_min
     opt.loop_tile_single_prob = args.loop_tile_single_prob
     opt.motion_cache_size = 0  # no cache needed for sampling

@@ -308,13 +308,10 @@ def create_training_data_loader(args):
         motion_speed_aug_prob=getattr(args, 'motion_speed_aug_prob', 1.0),
         loop_tile_single_prob=getattr(args, 'loop_tile_single_prob', 0.5),
         leaf_drop_prob=getattr(args, 'leaf_drop_prob', 0.0),
-        **{key: getattr(args, key, default) for key, default in (
-            ('ref_encoder', False), ('ref_leaf_drop_prob', 0.2),
-            ('ref_bone_length_aug_prob', 0.2), ('ref_bone_length_aug', DEFAULT_BONE_LENGTH_AUG),
-            ('ref_bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN),
-            ('ref_joint_name_drop_prob', 0.15))},
+        ref_encoder=getattr(args, 'ref_encoder', False),
+        joint_name_drop_prob=getattr(args, 'joint_name_drop_prob', 0.0),
         bone_length_aug_prob=getattr(args, 'bone_length_aug_prob', 0.0),
-        bone_length_aug=getattr(args, 'bone_length_aug', DEFAULT_BONE_LENGTH_AUG),
+        bone_length_aug_max=getattr(args, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG),
         bone_length_aug_min=getattr(args, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN),
         species_table=getattr(args, 'species_descriptor_table', None),
     )

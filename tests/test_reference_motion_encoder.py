@@ -325,7 +325,7 @@ def test_unaugmented_reference_reuses_shared_target_channels():
                                       shared=shared)
     assert all(reused[k] is shared[k] for k in shared)
     np.testing.assert_array_equal(reused['pose'], fresh['pose'])
-    options = SimpleNamespace(ref_bone_length_aug_prob=1, ref_bone_length_aug=.2)
+    options = SimpleNamespace(bone_length_aug_prob=1, bone_length_aug_max=.2)
     random.seed(5)
     augmented = prepare_reference_sample(motion, cond, metadata, options, shared=shared)
     assert all(augmented[k] is not shared[k] for k in shared)
@@ -428,8 +428,8 @@ def test_wrap_reference_cfg_rejects_action_label():
 def test_augmentation_has_independent_cond_and_target_is_untouched():
     motion, cond, metadata = fixture()
     before_motion, before_cond = motion.copy(), copy.deepcopy(cond)
-    options = SimpleNamespace(ref_bone_length_aug_prob=1, ref_bone_length_aug=.2,
-                              ref_joint_name_drop_prob=1, ref_leaf_drop_prob=0)
+    options = SimpleNamespace(bone_length_aug_prob=1, bone_length_aug_max=.2,
+                              joint_name_drop_prob=1, leaf_drop_prob=0)
     cond['joints_names_embs'][:] = 1
     random.seed(5)
     sample = prepare_reference_sample(motion, cond, metadata, options)
@@ -484,41 +484,15 @@ def test_invalid_reference_configuration(kwargs):
         model(**kwargs)
 
 
-def test_loader_reference_augmentation_keeps_target_and_metadata_identical(monkeypatch):
-    from data_loaders.tensors import truebones_batch_collate
-    import data_loaders.truebones.truebones_utils.leaf_drop as leaf_drop
-    dataset, data = make_dataset()
-    dataset.opt.bone_length_aug_prob = 0
-    random.seed(2)
-    original = dataset._prepare_sample('test', data)
-    dataset.opt.ref_encoder = True
-    dataset.opt.ref_leaf_drop_prob = 1
-    dataset.opt.ref_bone_length_aug_prob = 1
-    dataset.opt.ref_bone_length_aug = .2
-    dataset.opt.ref_joint_name_drop_prob = 1
-    monkeypatch.setattr(leaf_drop, 'sample_leaf_drop', lambda *a: [3])
-    random.seed(2)
-    augmented = dataset._prepare_sample('test', data)
-    for i in (0, 2, 3, 4, 5, 6, 8):
-        np.testing.assert_array_equal(original[i], augmented[i])
-    assert original[10] == augmented[10]
-    reference = augmented[12]['reference']
-    assert reference['feats'].shape[1] == 6
-    x, kwargs = truebones_batch_collate([augmented, original])
-    assert kwargs['y']['ref_mask'].sum() == 6
-    assert kwargs['y']['ref_active'].tolist() == [True, False]
-    assert x.shape[1] == dataset.opt.max_joints
-
-
 def test_target_augmentation_leaves_reference_on_stored_rig(monkeypatch):
     from data_loaders.tensors import truebones_batch_collate
     import data_loaders.truebones.data.dataset as dataset_module
     dataset, data = make_dataset()
     dataset.opt.bone_length_aug_prob = 0
     dataset.opt.ref_encoder = True
-    dataset.opt.ref_leaf_drop_prob = 0
-    dataset.opt.ref_bone_length_aug_prob = 0
-    dataset.opt.ref_joint_name_drop_prob = 0
+    dataset.opt.leaf_drop_prob = 0
+    dataset.opt.bone_length_aug_prob = 0
+    dataset.opt.joint_name_drop_prob = 0
     random.seed(2)
     plain = dataset._prepare_sample('test', data)
     stored_joints = plain[0].shape[1]
@@ -539,9 +513,9 @@ def test_target_augmentation_keeps_loop_reference_time_aligned(monkeypatch):
     dataset, data = make_dataset()
     dataset.opt.bone_length_aug_prob = 0
     dataset.opt.ref_encoder = True
-    dataset.opt.ref_leaf_drop_prob = 0
-    dataset.opt.ref_bone_length_aug_prob = 0
-    dataset.opt.ref_joint_name_drop_prob = 0
+    dataset.opt.leaf_drop_prob = 0
+    dataset.opt.bone_length_aug_prob = 0
+    dataset.opt.joint_name_drop_prob = 0
     dataset.opt.leaf_drop_prob = 1
     data['motion_metadata']['is_loop'] = True
     monkeypatch.setattr(dataset_module, 'sample_leaf_drop', lambda *a: [3])

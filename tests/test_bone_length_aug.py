@@ -277,7 +277,7 @@ def test_non_parent_first_joint_order_is_supported():
 def make_dataset(cls=MotionDataset):
     motion, cond, metadata = fixture()
     dataset = cls.__new__(cls)
-    dataset.opt = SimpleNamespace(bone_length_aug_prob=1., bone_length_aug=.1,
+    dataset.opt = SimpleNamespace(bone_length_aug_prob=1., bone_length_aug_max=.1,
                                   motion_speed_aug=1., preview_mode='bone-length')
     dataset.max_motion_length = 30
     dataset.min_length = 2
@@ -384,7 +384,7 @@ def test_eval_rejects_random_bone_shapes(split):
         pytest.skip('Merged dataset absent')
     with pytest.raises(ValueError, match='training splits only'):
         get_dataset(num_frames=60, split=split, objects_subset='all',
-                    bone_length_aug_prob=.2, bone_length_aug=.1, cond_path=str(cond_path))
+                    bone_length_aug_prob=.2, bone_length_aug_max=.1, cond_path=str(cond_path))
 
 
 def test_real_training_combines_bone_leaf_and_temporal_augmentation():
@@ -394,7 +394,7 @@ def test_real_training_combines_bone_leaf_and_temporal_augmentation():
     if not cond_path.exists():
         pytest.skip('Merged dataset absent')
     dataset = get_dataset(num_frames=60, split='train', objects_subset='all',
-                          bone_length_aug_prob=1., bone_length_aug=.1, leaf_drop_prob=1.,
+                          bone_length_aug_prob=1., bone_length_aug_max=.1, leaf_drop_prob=1.,
                           motion_speed_aug=1.3, cond_path=str(cond_path)).motion_dataset
     candidates = list(dataset.name_list)
     assert candidates

@@ -38,14 +38,9 @@ pushd "%SCRIPT_DIR%"
 	--ref_width 128 ^
 	--ref_layers 2 ^
 	--ref_cfg_drop_prob 0.6 ^
-	--ref_leaf_drop_prob 0.3 ^
-	--ref_bone_length_aug_prob 0.3 ^
-	--ref_bone_length_aug 0.2 ^
-	--ref_bone_length_aug_min 0.1 ^
-	--ref_joint_name_drop_prob 0.2 ^
 	--leaf_drop_prob 0.3 ^
 	--bone_length_aug_prob 0.3 ^
-	--bone_length_aug 0.2 ^
+	--bone_length_aug_max 0.2 ^
 	--bone_length_aug_min 0.1 ^
 	--motion_speed_aug 1.3 ^
 	--loop_cond_prob 0.8 ^

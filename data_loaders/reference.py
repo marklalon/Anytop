@@ -23,8 +23,8 @@ def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, share
         DEFAULT_BONE_LENGTH_AUG, DEFAULT_BONE_LENGTH_AUG_MIN, augment_bone_lengths)
 
     metadata = dict(metadata)
-    leaf_prob = getattr(opt, 'ref_leaf_drop_prob', 0.0) if augment else 0.0
-    bone_prob = getattr(opt, 'ref_bone_length_aug_prob', 0.0) if augment else 0.0
+    leaf_prob = getattr(opt, 'leaf_drop_prob', 0.0) if augment else 0.0
+    bone_prob = getattr(opt, 'bone_length_aug_prob', 0.0) if augment else 0.0
     changed = False
     if leaf_prob and random.random() < leaf_prob:
         dropped = sample_leaf_drop(cond, motion, metadata['translation_root_index'])
@@ -35,11 +35,11 @@ def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, share
             changed = True
     if bone_prob and random.random() < bone_prob:
         motion, cond, info = augment_bone_lengths(
-            motion, cond, metadata, getattr(opt, 'ref_bone_length_aug', DEFAULT_BONE_LENGTH_AUG),
-            getattr(opt, 'ref_bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN))
+            motion, cond, metadata, getattr(opt, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG),
+            getattr(opt, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN))
         changed = changed or info['applied']
     names = np.asarray(cond['joints_names_embs'], dtype=np.float32)
-    prob = getattr(opt, 'ref_joint_name_drop_prob', 0.0) if augment else 0.0
+    prob = getattr(opt, 'joint_name_drop_prob', 0.0) if augment else 0.0
     if prob:
         drop = np.array([random.random() < prob for _ in names], dtype=bool)
         if drop.any():

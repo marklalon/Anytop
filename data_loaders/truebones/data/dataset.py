@@ -1552,7 +1552,7 @@ class MotionDataset(data.Dataset):
             bone_metadata['is_loop'] = bool(bone_metadata.get('bone_length_source_is_loop', is_loop))
             motion, cond, bone_length_info = augment_bone_lengths(
                 motion, cond, bone_metadata,
-                float(getattr(self.opt, 'bone_length_aug', DEFAULT_BONE_LENGTH_AUG)),
+                float(getattr(self.opt, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG)),
                 float(getattr(self.opt, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN)),
             )
             if bone_length_info['applied']:
@@ -2033,20 +2033,15 @@ class Truebones(data.Dataset):
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
         self.opt.leaf_drop_prob = float(kwargs.get('leaf_drop_prob', 0.0))
         self.opt.ref_encoder = bool(kwargs.get('ref_encoder', False))
-        for key, default in (('ref_leaf_drop_prob', 0.2), ('ref_bone_length_aug_prob', 0.2),
-                             ('ref_joint_name_drop_prob', 0.15)):
-            value = float(kwargs.get(key, default))
-            if not 0 <= value <= 1:
-                raise ValueError(f'{key} must be in [0, 1]')
-            setattr(self.opt, key, value if split in ('train', ALL_SPLIT_NAME) else 0.0)
-        self.opt.ref_bone_length_aug = float(kwargs.get('ref_bone_length_aug', DEFAULT_BONE_LENGTH_AUG))
-        self.opt.ref_bone_length_aug_min = float(kwargs.get('ref_bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN))
-        validate_bone_length_aug(self.opt.ref_bone_length_aug_prob, self.opt.ref_bone_length_aug,
-                                 self.opt.ref_bone_length_aug_min)
+        self.opt.joint_name_drop_prob = float(kwargs.get('joint_name_drop_prob', 0.0))
+        if not 0 <= self.opt.joint_name_drop_prob <= 1:
+            raise ValueError('joint_name_drop_prob must be in [0, 1]')
+        if split not in ('train', ALL_SPLIT_NAME):
+            self.opt.joint_name_drop_prob = 0.0
         self.opt.bone_length_aug_prob = float(kwargs.get('bone_length_aug_prob', 0.0))
-        self.opt.bone_length_aug = float(kwargs.get('bone_length_aug', DEFAULT_BONE_LENGTH_AUG))
+        self.opt.bone_length_aug_max = float(kwargs.get('bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG))
         self.opt.bone_length_aug_min = float(kwargs.get('bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN))
-        validate_bone_length_aug(self.opt.bone_length_aug_prob, self.opt.bone_length_aug,
+        validate_bone_length_aug(self.opt.bone_length_aug_prob, self.opt.bone_length_aug_max,
                                  self.opt.bone_length_aug_min)
         if self.opt.bone_length_aug_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
             raise ValueError('bone-length augmentation is for training splits only; pass 0.0.')

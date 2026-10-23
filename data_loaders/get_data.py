@@ -182,16 +182,12 @@ def get_dataset(
     loop_tile_single_prob=0.5,
     leaf_drop_prob=0.0,
     bone_length_aug_prob=0.0,
-    bone_length_aug=DEFAULT_BONE_LENGTH_AUG,
+    bone_length_aug_max=DEFAULT_BONE_LENGTH_AUG,
     bone_length_aug_min=DEFAULT_BONE_LENGTH_AUG_MIN,
     cond_path=None,
     species_table=None,
     ref_encoder=False,
-    ref_leaf_drop_prob=0.2,
-    ref_bone_length_aug_prob=0.2,
-    ref_bone_length_aug=DEFAULT_BONE_LENGTH_AUG,
-    ref_bone_length_aug_min=DEFAULT_BONE_LENGTH_AUG_MIN,
-    ref_joint_name_drop_prob=0.15,
+    joint_name_drop_prob=0.0,
 ):
     dataset = Truebones(
         split=split,
@@ -212,16 +208,12 @@ def get_dataset(
         loop_tile_single_prob=loop_tile_single_prob,
         leaf_drop_prob=leaf_drop_prob,
         bone_length_aug_prob=bone_length_aug_prob,
-        bone_length_aug=bone_length_aug,
+        bone_length_aug_max=bone_length_aug_max,
         bone_length_aug_min=bone_length_aug_min,
         cond_path=cond_path,
         species_table=species_table,
         ref_encoder=ref_encoder,
-        ref_leaf_drop_prob=ref_leaf_drop_prob,
-        ref_bone_length_aug_prob=ref_bone_length_aug_prob,
-        ref_bone_length_aug=ref_bone_length_aug,
-        ref_bone_length_aug_min=ref_bone_length_aug_min,
-        ref_joint_name_drop_prob=ref_joint_name_drop_prob,
+        joint_name_drop_prob=joint_name_drop_prob,
     )
     return dataset
 
@@ -250,17 +242,13 @@ def get_dataset_loader(
     loop_tile_single_prob=0.5,
     leaf_drop_prob=0.0,
     bone_length_aug_prob=0.0,
-    bone_length_aug=DEFAULT_BONE_LENGTH_AUG,
+    bone_length_aug_max=DEFAULT_BONE_LENGTH_AUG,
     bone_length_aug_min=DEFAULT_BONE_LENGTH_AUG_MIN,
     cond_path=None,
     joint_buckets=JOINT_BUCKETS,
     species_table=None,
     ref_encoder=False,
-    ref_leaf_drop_prob=0.2,
-    ref_bone_length_aug_prob=0.2,
-    ref_bone_length_aug=DEFAULT_BONE_LENGTH_AUG,
-    ref_bone_length_aug_min=DEFAULT_BONE_LENGTH_AUG_MIN,
-    ref_joint_name_drop_prob=0.15,
+    joint_name_drop_prob=0.0,
 ):
     """``num_workers``: 0 prepares batches on one background thread of this
     process; N > 0 prepares them in N persistent worker processes, which keeps
@@ -290,16 +278,12 @@ def get_dataset_loader(
         loop_tile_single_prob=loop_tile_single_prob,
         leaf_drop_prob=leaf_drop_prob,
         bone_length_aug_prob=bone_length_aug_prob,
-        bone_length_aug=bone_length_aug,
+        bone_length_aug_max=bone_length_aug_max,
         bone_length_aug_min=bone_length_aug_min,
         cond_path=cond_path,
         species_table=species_table,
         ref_encoder=ref_encoder,
-        ref_leaf_drop_prob=ref_leaf_drop_prob,
-        ref_bone_length_aug_prob=ref_bone_length_aug_prob,
-        ref_bone_length_aug=ref_bone_length_aug,
-        ref_bone_length_aug_min=ref_bone_length_aug_min,
-        ref_joint_name_drop_prob=ref_joint_name_drop_prob,
+        joint_name_drop_prob=joint_name_drop_prob,
     )
     collate = truebones_batch_collate
     sampler = None
