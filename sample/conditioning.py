@@ -15,10 +15,10 @@ import sys
 
 import numpy as np
 
+from data_loaders.reference import rest_geom_features
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_FEATURE_SPACE,
-    build_canonical_rest_feature,
     get_canonical_global_stats,
     mark_canonical_cond_entry,
 )
@@ -329,7 +329,7 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         mark_canonical_cond_entry(cond_dict[object_type])
         parents = cond_dict[object_type]['parents']
         n_joints = len(parents)
-        rest_pose = np.nan_to_num(build_canonical_rest_feature(cond_dict[object_type]))
+        rest_geom = rest_geom_features(cond_dict[object_type])
         joint_relations = cond_dict[object_type]['joint_relations']
         joints_graph_dist = cond_dict[object_type]['joints_graph_dist']
         offsets = cond_dict[object_type]['offsets']
@@ -337,7 +337,7 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         batch.append(np.zeros((n_frames, n_joints, feature_len)))
         batch.append(n_frames)
         batch.append(parents)
-        batch.append(rest_pose)
+        batch.append(rest_geom)
         batch.append(offsets)
         batch.append(joints_graph_dist)
         batch.append(joint_relations)
@@ -358,9 +358,13 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
             metadata['action_slots'] = action_condition['action_slots']
         batch.append(metadata)
         batch.append(object_type)
-        # Never None here: build_canonical_rest_feature above standardizes with
-        # these same stats and raises a named KeyError when they are absent.
-        canonical_mean, canonical_std = get_canonical_global_stats(cond_dict[object_type])
+        canonical_stats = get_canonical_global_stats(cond_dict[object_type])
+        if canonical_stats is None:
+            raise KeyError(
+                f"cond entry {object_type!r} is missing canonical_feature_mean/"
+                "canonical_feature_std; re-run preprocessing to write them."
+            )
+        canonical_mean, canonical_std = canonical_stats
         batch.append({
             # The canonical stats travel in y for the y-only decoders, as in
             # training -- the collate stacks them per sample. Decoding the sample

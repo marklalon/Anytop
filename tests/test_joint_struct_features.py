@@ -19,6 +19,7 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from data_loaders.reference import REFERENCE_POSE_CHANNELS  # noqa: E402
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
@@ -253,7 +254,7 @@ class PaddingSurvivesTheProjection(unittest.TestCase):
         return [
             motion, 4,
             np.asarray(_BIPED_PARENTS[:n_joints], dtype=np.int64),
-            np.zeros((n_joints, n_feats), dtype=np.float32),
+            np.zeros((n_joints, REFERENCE_POSE_CHANNELS), dtype=np.float32),
             np.zeros((n_joints, 3), dtype=np.float32),
             np.zeros((n_joints, n_joints), dtype=np.int64),
             np.zeros((n_joints, n_joints), dtype=np.int64),
@@ -296,7 +297,7 @@ class PaddingSurvivesTheProjection(unittest.TestCase):
         process = InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS), 16, 32, dropout_prob=0.0).eval()
         with self.assertRaises(ValueError):
             process(
-                torch.randn(1, 4, FEATS_LEN, 3), torch.randn(1, 1, 4, FEATS_LEN),
+                torch.randn(1, 4, FEATS_LEN, 3), torch.randn(1, 1, 4, REFERENCE_POSE_CHANNELS + 1),
                 torch.randn(1, 4, 32), torch.ones(1, 4, dtype=torch.bool),
             )
 

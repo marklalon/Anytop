@@ -13,7 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.reference import REFERENCE_POSE_CHANNELS  # noqa: E402
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
+from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.data.dataset import resample_motion_features  # noqa: E402
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
@@ -61,7 +63,7 @@ def _make_batch_item(
     n_feats = FEATS_LEN
     max_joints = 3
     motion = np.zeros((n_frames, n_joints, n_feats), dtype=np.float32)
-    tpose = np.zeros((n_joints, n_feats), dtype=np.float32)
+    tpose = np.zeros((n_joints, REFERENCE_POSE_CHANNELS), dtype=np.float32)
     offsets = np.zeros((n_joints, 3), dtype=np.float32)
     graph = np.zeros((n_joints, n_joints), dtype=np.int64)
     relations = np.zeros((n_joints, n_joints), dtype=np.int64)
@@ -494,7 +496,7 @@ class NativeLoopTests(unittest.TestCase):
         x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         y = {
             'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-            'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
+            'rest_geom': torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
             'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),

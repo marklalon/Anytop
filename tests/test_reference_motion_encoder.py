@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from model.anytop import AnyTop
 from model.cfg_sampler import ClassifierFreeReferenceModel
 from data_loaders.reference import (
+    REST_GEOM_DIM,
     REFERENCE_POSE_CHANNELS, bone_directions, collate_reference, prepare_reference_sample,
     reference_pose, reference_sample,
 )
@@ -33,7 +34,7 @@ def model(**kwargs):
 
 def inputs(batch=2, joints=4, frames=5, source_joints=6):
     x = torch.randn(batch, joints, 12, frames)
-    y = dict(n_joints=torch.full((batch,), joints), rest_pose=torch.randn(batch, joints, 12),
+    y = dict(n_joints=torch.full((batch,), joints), rest_geom=torch.randn(batch, joints, REST_GEOM_DIM),
              joints_names_embs=torch.randn(batch, joints, 4),
              joint_struct=torch.randn(batch, joints, JOINT_STRUCT_DIM),
              joints_padding_mask=torch.ones(batch, 1, 1, joints+1, joints+1),

@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 47
+CKPT_VERSION = 48
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -366,6 +366,14 @@ def add_model_options(parser):
                             "vector elementwise but never hides the joint's identity, so the model is "
                             "never trained to fall back on rest_pose/graph_dist/joints_relations and a "
                             "single rare name token can flip a limb's motion prior. Default 0.0 (off).")
+    group.add_argument("--rest_geom_drop_prob", default=0.2, type=float,
+                       help="Per-sample probability in training of hiding the whole rest geometry "
+                            "(y['rest_geom'], present flag included), so the rest is not a species "
+                            "fingerprint the model can always read. Inference never drops.")
+    group.add_argument("--rest_geom_joint_drop_prob", default=0.1, type=float,
+                       help="Per-joint probability in training of hiding one joint's rest geometry, "
+                            "drawn independently of --rest_geom_drop_prob and of the name drop. "
+                            "Inference never drops.")
     group.add_argument("--mirror_twin_drop_prob", default=0.2, type=float,
                        help="Per bilateral twin pair, the probability in training that the pair's "
                             "mirror_twin edge code is replaced by its plain topological code "

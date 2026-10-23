@@ -34,6 +34,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     CONTROLLED_VOCAB,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim
+from data_loaders.reference import REST_GEOM_DIM
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -114,6 +115,13 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"joint_name_drop_prob must be in [0, 1], got {self.joint_name_drop_prob}"
             )
+        # Rest-geometry drop (see _sample_rest_geom_drop): whole sample, then
+        # single joints, drawn independently of the name drop.
+        self.rest_geom_drop_prob=float(kargs.get('rest_geom_drop_prob', 0.0))
+        self.rest_geom_joint_drop_prob=float(kargs.get('rest_geom_joint_drop_prob', 0.0))
+        for key in ('rest_geom_drop_prob', 'rest_geom_joint_drop_prob'):
+            if not 0.0 <= getattr(self, key) <= 1.0:
+                raise ValueError(f"{key} must be in [0, 1], got {getattr(self, key)}")
         # Training-only; validated by GraphMotionDecoder.
         self.mirror_twin_drop_prob=float(kargs.get('mirror_twin_drop_prob', 0.0))
         self.lateral_drop_prob=float(kargs.get('lateral_drop_prob', 0.0))
@@ -1008,7 +1016,7 @@ class AnyTop(nn.Module):
         timesteps: [batch_size] (int)
         """
         joints_padding_mask = y['joints_padding_mask'].to(x.device)
-        rest_pose = y['rest_pose'].to(x.device).unsqueeze(0)
+        rest_geom = y['rest_geom'].to(x.device).unsqueeze(0)
 
         bs, njoints, nfeats, nframes = x.shape
         ref_z, ref_active = self._reference_condition(y, bs, nframes, x.device)
@@ -1052,8 +1060,10 @@ class AnyTop(nn.Module):
                 "without it comes from a caller that assembles model_kwargs by hand."
             )
         joint_name_drop = self._sample_joint_name_drop(bs, njoints, x.device)
-        x = self.input_process(x, rest_pose, y['joints_names_embs'], joint_valid, y['joint_struct'],
-                               joint_name_drop=joint_name_drop, species_code=species_code,
+        rest_geom_drop = self._sample_rest_geom_drop(bs, njoints, x.device)
+        x = self.input_process(x, rest_geom, y['joints_names_embs'], joint_valid, y['joint_struct'],
+                               joint_name_drop=joint_name_drop, rest_geom_drop=rest_geom_drop,
+                               species_code=species_code,
                                species_active=species_active) # applies linear layer on each frame to convert it to latent dim
         # Motion frames only: slot 0 is the rest pose, which has no time.
         tempo_emb = self._tempo_frame_embedding(y, bs, nframes, x.device)
@@ -1114,6 +1124,23 @@ class AnyTop(nn.Module):
             return None
         return torch.rand(batch_size, joint_count, device=device) < self.joint_name_drop_prob
 
+    def _sample_rest_geom_drop(self, batch_size, joint_count, device):
+        """Rest-geometry drop mask, ``[B, J]`` bool, or None when off.
+
+        In training, a joint's rest geometry is hidden when its whole sample
+        draws ``rest_geom_drop_prob`` or the joint itself draws
+        ``rest_geom_joint_drop_prob``. InputProcess zeroes the selected rows,
+        present flag included. Eval keeps every row. Branch-free on tensor
+        values, like _sample_joint_name_drop.
+        """
+        if not self.training:
+            return None
+        if self.rest_geom_drop_prob <= 0.0 and self.rest_geom_joint_drop_prob <= 0.0:
+            return None
+        sample_drop = torch.rand(batch_size, 1, device=device) < self.rest_geom_drop_prob
+        joint_drop = torch.rand(batch_size, joint_count, device=device) < self.rest_geom_joint_drop_prob
+        return sample_drop | joint_drop
+
 
     def _apply(self, fn):
         super()._apply(fn)
@@ -1134,16 +1161,16 @@ class InputProcess(nn.Module):
         self.latent_dim = latent_dim
         self.root_input_feats = root_input_feats
         self.root_embedding = nn.Linear(self.root_input_feats, self.latent_dim)
-        # The rest pose has no velocity, so the root's rest token reads the
-        # joint channels only.
-        self.tpos_root_embedding = nn.Linear(self.input_feats, self.latent_dim)
+        # The rest token reads rest_geom_features plus the present flag. The
+        # root's bone direction is zero, so its own layer reads height alone.
+        self.tpos_root_embedding = nn.Linear(REST_GEOM_DIM, self.latent_dim)
         self.joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
-        self.tpos_joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
+        self.tpos_joint_embedding = nn.Linear(REST_GEOM_DIM, self.latent_dim)
         self.joints_names_dropout = nn.Dropout(p=dropout_prob)
         # Whole-joint name dropout. `joints_names_dropout` above is ELEMENTWISE: it
         # thins the 768-dim vector but every joint keeps its identity, so the model
         # is never trained on "I do not know what this joint is" and never learns to
-        # fall back on rest_pose / graph_dist / joints_relations. The name embedding
+        # fall back on rest geometry / graph_dist / joints_relations. The name embedding
         # is the only per-joint identity signal in the token (it is added straight
         # onto x below), which is why a single rare token -- Mixamo's "LeftLeg"
         # landing next to "Left Arm" in T5 space -- can flip a whole limb's motion
@@ -1191,13 +1218,17 @@ class InputProcess(nn.Module):
             nn.Linear(self.latent_dim, self.latent_dim),
         )
 
-    def forward(self, x, rest_pose, joints_embedded_names, joint_valid=None,
-                joint_struct=None, joint_name_drop=None, species_code=None, species_active=None):
-        """Embed every (frame, joint); the rest pose becomes frame 0.
+    def forward(self, x, rest_geom, joints_embedded_names, joint_valid=None,
+                joint_struct=None, joint_name_drop=None, rest_geom_drop=None,
+                species_code=None, species_active=None):
+        """Embed every (frame, joint); the rest geometry becomes frame 0.
 
+        ``rest_geom`` is ``[1, B, J, REST_GEOM_DIM]`` (y['rest_geom']).
         ``joint_name_drop`` ([B, J] bool) zeroes those joints' whole name rows,
-        leaving rest pose and the topology as their identity signals. No
+        leaving rest geometry and the topology as their identity signals. No
         1/(1-p) rescale: a hidden row is not a thinned vector.
+        ``rest_geom_drop`` ([B, J] bool) zeroes those joints' rest geometry,
+        present flag included.
 
         ``species_code`` ([B, species_code_dim]) drives the species FiLM and is
         required exactly when it exists; a row whose ``species_active`` is False
@@ -1206,15 +1237,19 @@ class InputProcess(nn.Module):
         # x.shape = [batch_size, joints, feature_len, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
         n_joint_channels = len(JOINT_MODEL_CHANNELS)
-        rest_pose_all_joints_except_root = self.tpos_joint_embedding(rest_pose[:, :, 1:, :n_joint_channels])
-        rest_pose_root_data = self.tpos_root_embedding(rest_pose[:, :, 0:1, :n_joint_channels])
+        if rest_geom_drop is not None:
+            rest_geom = rest_geom.masked_fill(
+                rest_geom_drop.to(rest_geom.device)[None, :, :, None], 0.0
+            )
+        rest_geom_all_joints_except_root = self.tpos_joint_embedding(rest_geom[:, :, 1:])
+        rest_geom_root_data = self.tpos_root_embedding(rest_geom[:, :, 0:1])
         all_joints_except_root = self.joint_embedding(x[:, :, 1:, :n_joint_channels])
         # Slices, not an index list: a list index uploads to the device per call.
         root_x = x[:, :, 0:1]
         root_data = self.root_embedding(torch.cat(
             [root_x[..., :n_joint_channels]] + [root_x[..., c:c + 1] for c in ROOT_VEL_CHANNELS], dim=-1
         ))
-        tpos_embedded = torch.cat([rest_pose_root_data, rest_pose_all_joints_except_root], dim=2)
+        tpos_embedded = torch.cat([rest_geom_root_data, rest_geom_all_joints_except_root], dim=2)
         x_embedded = torch.cat([root_data, all_joints_except_root], dim=2)
         x = torch.cat([tpos_embedded, x_embedded], dim=0)
         joints_clean = joints_embedded_names.to(x.device)

@@ -32,6 +32,7 @@ if str(REPO_ROOT) not in sys.path:
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
+from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from model.motion_transformer import (  # noqa: E402
     ACTION_ADALN_PARAMS_PER_LAYER,
@@ -73,8 +74,8 @@ def _y(labels):
     # or "the output changed" would not isolate the label.
     y = {
         'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-        'rest_pose': torch.randn(
-            2, 4, 12, dtype=torch.float32,
+        'rest_geom': torch.randn(
+            2, 4, REST_GEOM_DIM, dtype=torch.float32,
             generator=torch.Generator().manual_seed(5),
         ),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),

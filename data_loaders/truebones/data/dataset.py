@@ -54,7 +54,6 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     DPOS_LOSS_WEIGHT_KEY,
     ROOT_VEL_LOSS_WEIGHT_KEY,
     assert_single_canonical_frame,
-    build_canonical_rest_feature,
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
@@ -65,6 +64,7 @@ from data_loaders.truebones.truebones_utils.joint_embedding_text import (
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
+from data_loaders.reference import rest_geom_features
 from data_loaders.truebones.truebones_utils.leaf_drop import (
     drop_joints_from_cond,
     sample_leaf_drop,
@@ -1167,12 +1167,12 @@ class MotionDataset(data.Dataset):
         self.pointer = 0
         self.max_motion_length = num_frames
         self.cond_dict = cond_dict
-        # The canonical rest-pose token depends only on the per-species cond
-        # entry (not on the clip), so it is constant across all samples of a
-        # species. Precompute once at construction instead of rebuilding it
-        # inside the per-sample hot path (_load_physical_motion).
-        self._canonical_rest_pose_cache = {
-            object_key: build_canonical_rest_feature(entry)
+        # The rest token's geometry depends only on the per-species cond entry
+        # (not on the clip), so it is constant across all samples of a species.
+        # Precompute once at construction instead of rebuilding it inside the
+        # per-sample hot path (_load_physical_motion).
+        self._rest_geom_cache = {
+            object_key: rest_geom_features(entry)
             for object_key, entry in cond_dict.items()
         }
         # Structural joint descriptors: same story -- a pure function of the cond
@@ -1500,7 +1500,7 @@ class MotionDataset(data.Dataset):
             and random.random() >= loop_cond_prob
         )
 
-        motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
+        motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_geom, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
         cond = self.cond_dict[object_type]
         joint_struct = self._joint_struct_cache[object_type]
         # The reference encoder's input draws its own skeleton augmentation, so
@@ -1539,7 +1539,7 @@ class MotionDataset(data.Dataset):
                 parents = cond['parents']
                 joints_graph_dist = cond['joints_graph_dist']
                 joints_relations = cond['joint_relations']
-                rest_pose = build_canonical_rest_feature(cond)
+                rest_geom = rest_geom_features(cond)
                 offsets = cond['offsets']
                 joints_names_embs = cond['joints_names_embs']
                 joint_struct = build_joint_struct_features(cond, source=str(object_type))
@@ -1554,7 +1554,7 @@ class MotionDataset(data.Dataset):
                 float(getattr(self.opt, 'bone_length_aug', DEFAULT_BONE_LENGTH_AUG)),
             )
             if bone_length_info['applied']:
-                rest_pose = build_canonical_rest_feature(cond)
+                rest_geom = rest_geom_features(cond)
                 offsets = cond['offsets']
                 joint_struct = build_joint_struct_features(cond, source=str(object_type))
         # Preview can replay temporal draws on the original skeleton exactly.
@@ -1747,7 +1747,7 @@ class MotionDataset(data.Dataset):
         self._apply_action_label_condition(motion_metadata)
 
         if return_aug_info:
-            return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
+            return motion, m_length, parents, rest_geom, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
                 'reference': reference,
                 'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
                 'joint_struct': joint_struct,
@@ -1773,7 +1773,7 @@ class MotionDataset(data.Dataset):
                 'bone_length_rng_state': bone_length_rng_state,
                 'object_cond': cond,  # Exact per-sample skeleton for augmentation previews.
             }
-        return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
+        return motion, m_length, parents, rest_geom, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
             'reference': reference,
             'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
             'joint_struct': joint_struct,
@@ -1838,9 +1838,9 @@ class MotionDataset(data.Dataset):
             motion = np.load(motion_path).astype(np.float32, copy=False)
 
         m_length = motion.shape[0]
-        rest_pose = self._canonical_rest_pose_cache[object_type]
+        rest_geom = self._rest_geom_cache[object_type]
         offsets = cond['offsets']
-        return (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], rest_pose, offsets, cond['joints_names_embs'], cond['kinematic_chains'])
+        return (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], rest_geom, offsets, cond['joints_names_embs'], cond['kinematic_chains'])
         
     def __len__(self):
         return len(self.name_list) - self.pointer

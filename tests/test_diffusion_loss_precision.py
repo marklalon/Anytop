@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, extract_into_tensor  # noqa: E402
 from diffusion.respace import SpacedDiffusion, space_timesteps  # noqa: E402
+from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.canonical_features import REST_LENGTH_SCALE_FLOOR  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
@@ -108,10 +109,9 @@ class BoneVectorLossTests(unittest.TestCase):
     """Tests for bone_vector_consistency_loss.
 
     The loss normalizes per-frame bone-vector errors by the PHYSICAL rest bone
-    length. y['rest_pose'] is the canonical rest feature whose position channel
-    is the rest-centered residual (exactly zero at rest), so using it made every
-    rest bone length read as 0, masked out every bone, and silently zeroed the
-    whole loss regardless of lambda_bone.
+    length. A rest whose positions are zero (the canonical rest-centered
+    residual) made every rest bone length read as 0, masked out every bone, and
+    silently zeroed the whole loss regardless of lambda_bone.
     """
 
     def _make_diffusion(self, betas=(0.001, 0.002, 0.003)) -> GaussianDiffusion:
@@ -259,14 +259,13 @@ class BoneVectorLossTests(unittest.TestCase):
         loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
         self.assertAlmostEqual(loss.item(), 0.0, places=6)
 
-    def test_bone_loss_rejects_canonical_rest_pose_only(self):
+    def test_bone_loss_rejects_a_batch_without_physical_rest(self):
         diffusion = self._make_diffusion()
         parents = np.array([-1, 0, 1], dtype=np.int64)
-        # Canonical rest feature: constant (zero) position channel at rest.
-        canonical_rest = np.zeros((3, 12), dtype=np.float32)
+        # The rest token's geometry holds unit directions, not lengths.
         y = {
             "parents": [parents],
-            "rest_pose": torch.from_numpy(canonical_rest).unsqueeze(0),
+            "rest_geom": torch.zeros(1, 3, REST_GEOM_DIM),
         }
         target = torch.zeros(1, 3, 12, 4)
         with self.assertRaises(ValueError):
@@ -882,7 +881,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         x = torch.randn(1, 4, 12, 3, dtype=torch.float32)
         y = {
             "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
-            "rest_pose": torch.randn(1, 4, 12, dtype=torch.float32),
+            "rest_geom": torch.randn(1, 4, REST_GEOM_DIM, dtype=torch.float32),
             "n_joints": torch.tensor([3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
             "joint_struct": torch.zeros(1, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
@@ -920,7 +919,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         y = {
             "joints_padding_mask": torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-            "rest_pose": torch.randn(2, 4, 12, dtype=torch.float32),
+            "rest_geom": torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
             "n_joints": torch.tensor([4, 3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(2, 4, 512, dtype=torch.float32),
             "joint_struct": torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
@@ -959,7 +958,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         y = {
             "joints_padding_mask": torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-            "rest_pose": torch.randn(2, 4, 12, dtype=torch.float32),
+            "rest_geom": torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
             "n_joints": torch.tensor([4, 3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(2, 4, 512, dtype=torch.float32),
             "joint_struct": torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
@@ -999,7 +998,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         raw_copy = raw_unreliable.clone()
         y = {
             "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
-            "rest_pose": torch.randn(1, 4, 12, dtype=torch.float32),
+            "rest_geom": torch.randn(1, 4, REST_GEOM_DIM, dtype=torch.float32),
             "n_joints": torch.tensor([4], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
             "joint_struct": torch.zeros(1, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
@@ -1044,7 +1043,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         prepared_copy = prepared_unreliable.clone()
         y = {
             "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
-            "rest_pose": torch.randn(1, 4, 12, dtype=torch.float32),
+            "rest_geom": torch.randn(1, 4, REST_GEOM_DIM, dtype=torch.float32),
             "n_joints": torch.tensor([4], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
             "joint_struct": torch.zeros(1, 4, JOINT_STRUCT_DIM, dtype=torch.float32),

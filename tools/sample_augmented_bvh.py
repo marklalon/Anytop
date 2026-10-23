@@ -451,7 +451,7 @@ def main() -> int:
                 motion_canonical,  # (num_frames, J, 12) canonical model space
                 m_length,     # prepared-motion frame count; _prepare_sample resamples to num_frames, so the [:m_length] slice is the whole array
                 parents,
-                rest_pose,
+                _rest_geom,
                 offsets,
                 _joints_graph_dist,
                 _joints_relations,

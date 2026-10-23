@@ -30,6 +30,7 @@ from diffusion.gaussian_diffusion import (  # noqa: E402
     ModelMeanType,
     ModelVarType,
 )
+from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from train.training_loop import (  # noqa: E402
     build_optimizer_param_groups,
@@ -65,7 +66,7 @@ def _inputs(seed: int = 1):
     x = torch.randn(B, J, NFEATS, F_, dtype=torch.float32)
     y = {
         "joints_padding_mask": torch.ones(B, 1, 1, J + 1, J + 1, dtype=torch.float32),
-        "rest_pose": torch.randn(B, J, NFEATS, dtype=torch.float32),
+        "rest_geom": torch.randn(B, J, REST_GEOM_DIM, dtype=torch.float32),
         "n_joints": torch.full((B,), J, dtype=torch.int64),
         "joints_names_embs": torch.zeros(B, J, 512, dtype=torch.float32),
         "joint_struct": torch.zeros(B, J, JOINT_STRUCT_DIM, dtype=torch.float32),

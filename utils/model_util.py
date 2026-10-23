@@ -190,6 +190,8 @@ def get_gmdm_args(args):
             'tempo_cfg_drop_prob': getattr(args, 'tempo_cfg_drop_prob', 0.1),
             'species_cond': getattr(args, 'species_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
+            'rest_geom_drop_prob': getattr(args, 'rest_geom_drop_prob', 0.2),
+            'rest_geom_joint_drop_prob': getattr(args, 'rest_geom_joint_drop_prob', 0.1),
             **{key: getattr(args, key, default) for key, default in (
                 ('ref_encoder', False), ('ref_slots', 2), ('ref_dim', 8),
                 ('ref_width', 64), ('ref_layers', 2),

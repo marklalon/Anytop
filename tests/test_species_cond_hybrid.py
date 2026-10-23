@@ -15,6 +15,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
     SPECIES_VARIANTS,
     species_code_dim,
 )
+from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
@@ -73,7 +74,7 @@ def _joint_cond_inputs(batch=1, joints=4, frames=3):
     """Shapes InputProcess is called with from AnyTop.forward."""
     return (
         torch.randn(batch, joints, 12, frames),
-        torch.randn(1, batch, joints, 12),
+        torch.randn(1, batch, joints, REST_GEOM_DIM),
         torch.randn(batch, joints, T5_DIM),
         torch.randn(batch, CODE_DIM),
     )
@@ -87,7 +88,7 @@ def _joint_struct(batch=1, joints=4):
 def _make_y(species_code=None, **extra):
     y = {
         'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-        'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
+        'rest_geom': torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),

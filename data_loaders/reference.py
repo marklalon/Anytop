@@ -52,6 +52,9 @@ BONE_DIRECTION_MIN_REST_FRACTION = 1e-3
 
 # Per-joint encoder pose: unit bone direction (3) and height over ``L`` (1).
 REFERENCE_POSE_CHANNELS = 4
+# Target rest token: the rest's pose channels plus a present flag, since an
+# all-zero geometry (root, coincident helper, grounded joint) is a real value.
+REST_GEOM_DIM = REFERENCE_POSE_CHANNELS + 1
 
 
 def bone_directions(positions, parents, rest_positions):
@@ -96,12 +99,14 @@ def reference_pose(motion, cond):
     return np.nan_to_num(pose).astype(np.float32)
 
 
-def reference_rest_pose(cond):
-    """``[J, REFERENCE_POSE_CHANNELS]`` static rest context: the encoder pose of the rest.
+def rest_geom_features(cond):
+    """``[J, REFERENCE_POSE_CHANNELS]`` rest geometry: the pose channels of the rest.
 
     The same bone-direction / height channels evaluated on the rest positions,
     so a frame's pose and the rest sit in one space and their difference is
-    linear in the inputs. Read by the reference encoder as static per-joint context.
+    linear in the inputs. The single builder for both rest inputs: the reference
+    encoder's static per-joint context and the target's rest token
+    (``y['rest_geom']``, loader and generation alike).
     """
     return reference_pose(rest_pos_from_cond(cond)[None], cond)[0]
 
@@ -120,7 +125,7 @@ def reference_sample(motion, cond, names, *, feats=None, joint_struct=None):
     return {
         'feats': feats,
         'pose': reference_pose(motion, cond),
-        'rest_pose': reference_rest_pose(cond),
+        'rest_pose': rest_geom_features(cond),
         'joints_names_embs': names,
         'joint_struct': build_joint_struct_features(cond) if joint_struct is None else joint_struct,
     }
