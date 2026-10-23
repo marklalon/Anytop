@@ -32,7 +32,6 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (
 from data_loaders.truebones.truebones_utils.species_descriptor_table import species_code
 from model.cfg_sampler import (
     ClassifierFreeActionModel,
-    ClassifierFreeSpeciesModel,
     ClassifierFreeTempoModel,
 )
 from utils.model_util import unwrap_anytop_model
@@ -240,8 +239,6 @@ def _wrap_reference_cfg(model, args, action_condition):
     from model.cfg_sampler import ClassifierFreeReferenceModel
     if not getattr(unwrap_anytop_model(model), 'ref_encoder', False):
         raise ValueError('--reference_motion requires a checkpoint trained with --ref_encoder')
-    if getattr(args, 'species_active', True) and float(getattr(args, 'species_cfg_scale', 1.0)) != 1.0:
-        raise ValueError('Reference CFG keeps species fixed; species_cfg_scale must be 1')
     if float(getattr(model, 'ref_cfg_drop_prob', 0.0)) <= 0:
         raise ValueError('Reference CFG requires training with ref_cfg_drop_prob > 0')
     if action_condition is not None:
@@ -249,35 +246,6 @@ def _wrap_reference_cfg(model, args, action_condition):
     return ClassifierFreeReferenceModel(
         model, getattr(args, 'ref_cfg_scale', 1.0), num_timesteps=args.diffusion_steps,
         switch_t=cfg_switch_timestep(args),
-    )
-
-
-def _wrap_species_cfg(model, args):
-    """Guide the species descriptor, leaving structural channels active."""
-    # Both CFG branches would use the same species bypass. Keep any existing
-    # action wrapper, without adding a redundant species forward or checks.
-    if not getattr(args, 'species_active', True):
-        return model
-    raw_scale = getattr(args, 'species_cfg_scale', None)
-    scale = 1.0 if raw_scale is None else float(raw_scale)
-    if not math.isfinite(scale) or scale < 0.0:
-        sys.exit(f"ERROR: --species_cfg_scale must be finite and >= 0, got {scale}.")
-    if scale == 1.0:
-        return model
-    unwrapped = unwrap_anytop_model(model)
-    if not getattr(unwrapped, 'species_cond', False):
-        sys.exit(
-            "ERROR: --species_cfg_scale requires a checkpoint trained with --species_cond."
-        )
-    if float(getattr(args, 'species_cfg_drop_prob', 0.0) or 0.0) <= 0.0:
-        sys.exit(
-            "ERROR: --species_cfg_scale requires a checkpoint trained with "
-            "--species_cfg_drop_prob > 0."
-        )
-    forwards = 4 if isinstance(model, ClassifierFreeActionModel) else 2
-    print(f"[generate] species CFG: scale={scale:g} ({forwards} model forwards per diffusion step)")
-    return ClassifierFreeSpeciesModel(
-        model, scale, args.diffusion_steps, switch_t=cfg_switch_timestep(args),
     )
 
 

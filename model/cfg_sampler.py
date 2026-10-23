@@ -107,25 +107,6 @@ class ClassifierFreeActionModel(nn.Module):
         return uncond_out + scale * (cond_out - uncond_out)
 
 
-class ClassifierFreeSpeciesModel(ClassifierFreeActionModel):
-    """Guide per-joint species FiLM using its trained identity bypass.
-
-    Other conditions, including the joint names, remain active in both passes.
-    """
-
-    def forward(self, x, timesteps, y=None, **kwargs):
-        cond_out = self.model(x, timesteps, y=y, **kwargs)
-        scale = self._staged_scale(self.guidance_scale, timesteps)
-        if self._is_identity(scale):
-            return cond_out
-        uncond_y = dict(y or {})
-        uncond_y['species_active'] = torch.zeros(
-            x.shape[0], dtype=torch.bool, device=x.device
-        )
-        uncond_out = self.model(x, timesteps, y=uncond_y, **kwargs)
-        return uncond_out + scale * (cond_out - uncond_out)
-
-
 class ClassifierFreeTempoModel(ClassifierFreeActionModel):
     """Guide the tempo condition (each window frame's physical time) against
     its trained dropped mode; every other condition is identical in both passes.
@@ -152,9 +133,9 @@ class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
 
     The model bypasses the action label and the species FiLM on every
     reference-active row, so the reference pass carries neither. The
-    null-reference pass forces the label off as well and keeps whatever
-    ``y['species_active']`` says; encode sets it False, which makes species
-    identical across both passes.
+    null-reference pass forces the label off as well; with no reference the
+    model applies the species FiLM, so that pass is the target rig's own
+    unlabeled prior and the guidance pushes from it toward the reference.
 
     The scale applies only to the high-noise steps, where global posture
     (facing, body height) is settled; the detail steps below

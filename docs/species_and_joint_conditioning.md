@@ -74,7 +74,7 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 
 `--species_tags Quadruped` 用描述符表算出的 species code **替换**目标物种自己的 `species_code`，从而重新"着装"：例如让 Winged 的龙按四足方式运动；`--species_tags Biped,Clanking` 让人形按机械方式走。
 
-- variant 的训练样本只来自少数几个 rig 家族（Clanking 主要是 RU01 机器人，Waddling 主要是 MU01 / TTR），覆盖到其他骨架时效果可能偏弱，必要时加 `--species_cfg_scale`；
+- variant 的训练样本只来自少数几个 rig 家族（Clanking 主要是 RU01 机器人，Waddling 主要是 MU01 / TTR），覆盖到其他骨架时效果可能偏弱；跨骨架迁移动作风格用 `--reference_motion`；
 - 相似度（skeleton_similarity / reference_bank / clip_length_prior）只比较 body plan，不看 variant；
 
 - 要求 checkpoint 以 `--species_cond` 训练；
@@ -141,22 +141,20 @@ name_vec  = text_embedding( modulated )                                  # Linea
 - **零初始化**：输出层权重与偏置为零，起点是 identity（gamma = 1, beta = 0）；模型只需学"偏离"。
 - MLP 在 fp32 下运行（`run_in_fp32`）。
 
-### 4.2 CFG：整条调制可被 bypass
+### 4.2 激活规则：无参考即开，有参考即关
 
-- 训练：`--species_cfg_drop_prob`（默认 0.15，`train_all.bat` 为 0.2）按样本抽样；被丢弃的样本**整条绕过 FiLM**，关节名嵌入原样进入 `text_embedding`（不是只把 species 输入置零——那样仍会保留一条由关节名驱动的 learned 条件路径）。
-- 带参考动作的行：目标物种 FiLM **一律 bypass**，训练和推理都是。参考提供运动内容，不再需要物种风格。
-- 推理 `--species_active`：显式开关。`--reference_motion` 为已编码的参考时默认 False，且不能与该参数同时给出。
-- 推理 `--species_cfg_scale`（默认 1.0 = 关）：高噪声半程（`t ≥ T/2`）每步额外一次 `species_active=False` 的前向（细节步 scale 固定为 1，不额外前向），按 `uncond + s·(cond − uncond)` 组合。这里的"无条件"**只移除显式 species 调制**，关节名、骨架、结构通道、action label 等全部保留。
-  - 前向次数：只开 species CFG 为 2 次/步；与 action CFG 同时开为 4 次/步；
-  - 要求 checkpoint 用 `--species_cond` 训练且 `species_cfg_drop_prob > 0`；带参考动作时 scale 必须为 1。
+- species FiLM 在**每个没有生效参考的行上都开启**，在**每个参考生效的行上整条 bypass**（关节名嵌入原样进入 `text_embedding`），训练与推理相同。它没有自己的 CFG drop，也没有 null 模式。
+- 训练里被 `--ref_cfg_drop_prob` 丢掉参考的行因此带 species。这让同一骨架、同一 label、不同 body plan 的样本（如 `SYN_Dog` Biped 与 zoo `Dog` Quadruped）在无参考时靠 species code 区分，带参考时靠参考区分。
+- reference CFG 的无参考分支因此是"目标骨架自身 species 下、无 label 的先验"，guidance 从它推向参考。
+- 推理没有 species 开关，也没有 species CFG；`--species_tags` 只作用于无参考的前向。
 
-注意：per-joint FiLM 是 species 的**唯一**通道，bypass 即完全无 species。无条件分支里关节名、拓扑、rest pose 仍在，所以"无条件"不是"不知道是什么骨架"，只是"不知道步态风格"。
+注意：per-joint FiLM 是 species 的**唯一**通道，bypass 即完全无 species。
 
 ### 4.3 species 通路的作用边界
 
 关节名、拓扑边关系、rest pose、骨长已经让模型看到相当完整的骨架信息；body plan 在很大程度上是这些信息的**有损摘要**，因此 species 的作用是**风格偏置**（步态节奏、能量、跨关节协调），而不是骨架识别。描述符碰撞（同描述符的物种拿到同一个向量）进一步限制了它能区分的程度——但 FiLM 因关节名不同，仍能区分共用同一描述符的两个物种，加性做法做不到。评估 species 效果时应挑**描述符互不相同**的物种做对照。
 
-variant 在数据里是按物种打的，与骨架高度相关（例如所有 Fluttering 物种都是昆虫）。模型可以从 tag 学到它，也可以从骨架学到它，二者预测力相同；species CFG 放大的是 tag 那一部分。
+variant 在数据里是按物种打的，与骨架高度相关（例如所有 Fluttering 物种都是昆虫）。模型可以从 tag 学到它，也可以从骨架学到它，二者预测力相同，所以 tag 不能把这种风格迁移到别的骨架；这种迁移由参考动作完成。
 
 ---
 
@@ -180,7 +178,7 @@ variant 在数据里是按物种打的，与骨架高度相关（例如所有 Fl
 
 1. 取 `joints_names_embs` 行；按 `joint_name_drop_prob` 决定整行是否清零。
 2. 复制一份作 FiLM 输入（`joints_clean`）；另一份做逐元素 dropout。
-3. 若 `species_cond`：用 `concat[joints_clean, species_code]` 算 gamma / beta，调制 dropout 后的名字；若该样本 `species_active = False`（CFG 丢弃或带参考），则取未调制的名字。
+3. 若 `species_cond`：用 `concat[joints_clean, species_code]` 算 gamma / beta，调制 dropout 后的名字；若该样本带生效参考，则取未调制的名字。
 4. `text_embedding` 把名字向量投到 `latent_dim`，加到该关节的运动 token 上。
 5. 加结构通道（padding 行清零后）与帧位置编码。
 
@@ -190,7 +188,7 @@ padding 行与"无名字"行同为零向量；是否为真实关节由 attention
 
 ## 7. 常见问题与取舍
 
-- **为什么 species 不进 timestep 条件？** 全局条件与逐关节条件的输入语义不同：timestep 只能拿到纯物种向量，逐关节需要 `species × joint` 交互；一个头也无法对两个对象做独立的 drop 决策。species 只走逐关节 FiLM，timestep 条件只承载时间、速度和动作。
+- **为什么 species 不进 timestep 条件？** 全局条件与逐关节条件的输入语义不同：timestep 只能拿到纯物种向量，逐关节需要 `species × joint` 交互；species 只走逐关节 FiLM，timestep 条件只承载时间、速度和动作。
 - **为什么名字置空优于猜一个名字？** 置空是训练过的状态；猜一个会落在 T5 空间里没有先验的位置。
 - **为什么 FiLM 零初始化？** 起点等于"没有 species"，不会在训练早期把随机扰动注入关节名；代价是它要从头学出所需的调制，早期曲线不能用来判断它有没有用。
 - **用 `--species_tags` 的外推风险**：它驱动的是非线性 MLP 的乘性 gamma，直接缩放关节名语义；描述符表限定了只能用训练见过的离散组合，这是该风险被约束住的原因。但 body plan × variant 的组合在训练里不一定出现过（如 Winged + 鸟类骨架 + Fluttering），这种用法本身就是外推。
@@ -206,7 +204,6 @@ padding 行与"无名字"行同为零向量；是否为真实关节由 attention
 | 改关节名文本规则 / T5 型号 | 重新烘焙 `joints_names_embs`（`JOINT_NAME_EMBEDDING_SCHEMA_VERSION` 变）并重训 |
 | 改结构特征 | `JOINT_STRUCT_FEATURE_SCHEMA_VERSION` 变，重训，不需重新烘焙 cond |
 | 改 FiLM 结构 / bottleneck / 注入位置、variant 编码 | 重训（`CKPT_VERSION` 覆盖会改变语义的改动） |
-| 只改 drop 概率、`--species_cfg_scale` | drop 概率需新 run；`--species_cfg_scale` 仅推理，无需重训 |
 
 ---
 
@@ -214,11 +211,11 @@ padding 行与"无名字"行同为零向量；是否为真实关节由 attention
 
 | 内容 | 位置 |
 |---|---|
-| 输入装配、FiLM、整关节 drop、species 激活逻辑 | [`model/anytop.py`](../model/anytop.py)（`InputProcess`、`_resolve_species_active`、`_sample_joint_name_drop`） |
+| 输入装配、FiLM、整关节 drop、species 激活逻辑 | [`model/anytop.py`](../model/anytop.py)（`InputProcess`、`AnyTop.forward` 的 species 激活、`_sample_joint_name_drop`） |
 | 描述符词表、`species_tags.jsonl` 读取与校验 | [`dataset_tags.py`](../data_loaders/truebones/truebones_utils/dataset_tags.py) |
 | 描述符表（构建、绑定、查表）、species code | [`species_descriptor_table.py`](../data_loaders/truebones/truebones_utils/species_descriptor_table.py) |
 | 关节名文本生成与 T5 烘焙、未见名字置空 | [`joint_embedding_text.py`](../data_loaders/truebones/truebones_utils/joint_embedding_text.py)、[`joint_name_canonical.py`](../data_loaders/truebones/truebones_utils/joint_name_canonical.py) |
 | 结构特征 | [`joint_struct_features.py`](../data_loaders/truebones/truebones_utils/joint_struct_features.py) |
-| `--species_tags` 覆盖、species CFG 包装 | [`sample/conditioning.py`](../sample/conditioning.py) |
+| `--species_tags` 覆盖 | [`sample/conditioning.py`](../sample/conditioning.py) |
 | 新骨架的名字与描述符处理 | [`new_dataset_joint_name_checklist.md`](new_dataset_joint_name_checklist.md) |
 | 训练配置示例 | [`train_all.bat`](../train_all.bat) |

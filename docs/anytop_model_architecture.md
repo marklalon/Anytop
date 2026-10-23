@@ -63,7 +63,7 @@ attention，最后由因子化注意力输出的预测就是干净动作。骨�
 - Perceiver 式 cross-limb temporal pathway，让不同肢体交换完整的运动节奏；
 - loop 条件、圆周相位、loop 数据增强与闭合损失；
 - per-joint structural channel 和 whole-joint name dropout；
-- per-joint species × joint FiLM 与 species CFG；
+- per-joint species × joint FiLM（无参考的行开启，参考生效的行 bypass）；
 - 按角色分槽的 action-label 条件与 action CFG；
 - resample-speed 条件（输出坐标/标准化空间全语料统一，不作为模型输入）；
 - subtree / temporal-span 混合噪声训练；
@@ -156,11 +156,11 @@ timestep
 
 组合后的 condition 在每个 decoder layer 中经该层自己的 `embed_timesteps` 再注入残差流。
 
-### 4.1 Per-joint species FiLM 与 CFG
+### 4.1 Per-joint species FiLM
 
 | 通路 | 输入 | 作用位置 | drop 语义 |
 |---|---|---|---|
-| `species_cond` | `[joint_name || species_code]` → bottleneck | 每个 joint-name embedding 的 FiLM | `species_cfg_drop_prob` 按样本 bypass 到 identity |
+| `species_cond` | `[joint_name || species_code]` → bottleneck | 每个 joint-name embedding 的 FiLM | 参考生效的行 bypass 到 identity；无随机 drop |
 
 Species code 只通过这条输入层通路调制关节名，不进入 timestep condition bus。
 `species_code = [T5(body plan) || variant 轴]`（`species_descriptor_table.species_code`）；
@@ -179,13 +179,11 @@ modulated_name = (1 + gamma_residual) * joint_name_emb + beta
 隐藏宽度由 `species_film_bottleneck` 控制，设为 0 时使用 `latent_dim`。
 最后一层权重和偏置初始化为零，因此初始调制为 identity。
 
-训练时，`species_cfg_drop_prob` 按样本独立抽样；被丢弃样本的所有关节绕过整条 FiLM，
-直接将关节名 embedding 送入 `text_embedding`。推理时 `species_active=False` 使用同一条
-identity 分支，CFG 按 `uncond + scale * (cond - uncond)` 组合预测，只作用于高噪声半程。这里的 uncond 仅移除
-显式 species 调制，关节名、骨架和其他条件仍保留。参考生效的行 species FiLM 一律 bypass。
+FiLM 在每个没有生效参考的行上开启；参考生效的行所有关节绕过整条 FiLM，直接将关节名
+embedding 送入 `text_embedding`。训练与推理相同，没有 species CFG drop，也没有 species CFG。
 
 `joint_name_drop_prob` 则按关节独立抽样，在 FiLM 之前把整条名字向量清零，FiLM 也读取
-清零后的名字；它与 species CFG drop 独立。只丢名字时，FiLM 仍可从 `[0 || species_code]`
+清零后的名字。只丢名字时，FiLM 仍可从 `[0 || species_code]`
 产生 beta；两者都丢时，进入 `text_embedding` 的名字向量为零。普通 element-wise name
 dropout 位于 whole-joint name drop 之后；FiLM 头读取 element-wise dropout 之前的名字，
 而调制作用于 element-wise dropout 之后的名字。
@@ -455,12 +453,12 @@ retarget，也不使用 img2img 初始化或 clamp：参考在自己的骨架上
 
 参考模型的层内顺序为 `spatial → ref cross-attn → temporal → cross-limb → FFN`。
 参考分支不调制 rest token；残差按 `ref_active` 屏蔽，含 bias。训练只增强编码器副本；
-`ref_cfg_drop_prob` 独立于 action/species dropout。验证保留原 `Val/l_simple` 为 ref-null，
+`ref_cfg_drop_prob` 独立于 action dropout；被它丢掉参考的行开启 species FiLM。验证保留原 `Val/l_simple` 为 ref-null，
 另记 `Val/reference_l_simple`，两者使用相同目标、timestep 和 noise。
 
 encode 的 CFG 顺序计算无参考无文字、参考无文字、参考加文字（有 label 才计算第三次），
-所有分支保持同一 species 状态。`--species_active false` 用于整个目标 per-joint FiLM 的消融；
-该路径不嵌套 action/species CFG，也不接受 skip/inpaint/outpaint 参数。
+无参考分支开启目标骨架自身的 species FiLM，参考分支 bypass。
+该路径不嵌套 action CFG，也不接受 skip/inpaint/outpaint 参数。
 
 **窗口到输出长度。** 模型总是生成固定的内部窗口，再换算成请求的 M 帧（`_resample_window_to_output`）。
 M 小于窗口时，窗口是 loader 会把 M 帧源动作放大成的样子，所以输出按最小二乘**反解**训练时的线性

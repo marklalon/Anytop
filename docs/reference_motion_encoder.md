@@ -122,7 +122,7 @@ E 不读取 species descriptor，也没有自己的 species 条件。`ref_pose` 
 ### 4.1 目标与 dropout
 
 - **编码器输入**：同一个 clip（属于同源组时从组内抽取，§4.4）的同一时间窗，干净的物理特征（经过 §4.2 的编码器侧增强）按 §3.1 转成编码器输入。**解码器目标**：同一个 clip，按主干自己的 `--leaf_drop_prob` / `--bone_length_aug_prob` 独立抽签增强。
-- `--ref_cfg_drop_prob` 对 ref 做硬丢弃。参考生效的行：species FiLM 与 action_label 一律旁路（训练与推理相同）；无参考的行仍按 `--action_label_cfg_drop_prob` 与 `--species_cfg_drop_prob` 抽签。
+- `--ref_cfg_drop_prob` 对 ref 做硬丢弃。参考生效的行：species FiLM 与 action_label 一律旁路（训练与推理相同）；无参考的行按 `--action_label_cfg_drop_prob` 抽签，species FiLM 一律开启。
 - 每个 batch 随机保留固定数量（由丢弃概率换算）的参考行，编码器只对这些行前向（形状静态，可编译）；被丢弃的行被硬旁路，其 z 不会被读取。
 - 共享主干不冻结、不对参考样本做 stop-gradient：两种模式共同更新共享参数；E、ref cross-attn 及其 gate 仅由参考激活样本训练。
 
@@ -207,21 +207,21 @@ out = x0(∅) + s_ref · (x0(ref) − x0(∅))
 
 - 参考生效时 action label 被模型旁路，encode 不接受 `--action_label`，所以只有参考一项引导。
 - 通常两次前向；`ref_cfg_scale=1` 时仅计算参考分支，一次前向；为 0 时仅计算无条件分支。
-- 实现为一个独立 wrapper（`model/cfg_sampler.py`），不与现有 action / species wrapper 嵌套，避免前向次数相乘。
+- 实现为一个独立 wrapper（`model/cfg_sampler.py`），不与现有 action wrapper 嵌套，避免前向次数相乘。
 
 ### 5.4 species 调制
 
-**训练时开启 species conditioning，干净迁移推理时关闭 species 调制。** 两个阶段使用不同开关：
+**无参考即开，有参考即关。** species FiLM 没有 CFG drop，也没有推理开关：
 
-- **训练**：传入 `--species_cond`，构造并训练 species FiLM；保持 `species_cfg_drop_prob > 0`，让模型同时学习调制开启和硬旁路两种状态。参考生效的行由模型强制旁路 species FiLM（§4.1），species FiLM 只由无参考的行训练。
-- **推理**：加载上述 checkpoint，保留其 `species_cond=True`；encode（不带编辑参数的 `--reference_motion`）固定关闭 species FiLM，让参考提供运动内容。encode 与 `--species_active` 参数互斥，传入 true 或 false 都会报错；无需另传关闭参数。不要把 checkpoint 的 `species_cond` 改为 False。
-- encode 与 `--action_label` 互斥（参考提供运动内容，label 在参考生效的行上被旁路）；编辑与无参考生成默认 `species_active=True`，可用 `--species_active true/false` 控制。
+- **训练**：传入 `--species_cond`。参考生效的行由模型强制旁路 species FiLM（§4.1）；其余行（包括被 `--ref_cfg_drop_prob` 丢掉参考的行）一律应用 species FiLM。
+- **推理**：encode（不带编辑参数的 `--reference_motion`）的参考分支旁路 species FiLM，让参考提供运动内容；编辑与无参考生成应用目标物种的 species code（或 `--species_tags` 覆盖值）。
+- encode 与 `--action_label` 互斥（参考提供运动内容，label 在参考生效的行上被旁路）。
 
-**契约**：唯一的 species FiLM 是 `InputProcess.species_film_j`。它读取关节名 embedding 与 species code 的拼接；`species_cond` 控制是否构造/启用模块，`species_active` 控制每个样本是否应用整个调制。`species_active=False` 会旁路全部 per-joint 调制，保留原始关节名、rest pose 和 structural channel。
+**契约**：唯一的 species FiLM 是 `InputProcess.species_film_j`。它读取关节名 embedding 与 species code 的拼接；`species_cond` 控制是否构造模块，`ref_active` 决定每个样本是否应用整个调制。旁路时保留原始关节名、rest pose 和 structural channel。
 
-**依据与边界**：目标 descriptor 包含 body plan 和步态信息，可能与参考中的直立姿态、支撑方式等运动内容冲突。关闭是减少条件冲突的实验起点，尚未证明迁移质量更好。关闭 FiLM 不会消除关节名、几何及共享主干已有的运动先验。E 的输入不读取 descriptor。未来若做开关对照，应使用独立实验入口。
+**依据**：目标 descriptor 包含 body plan 和步态信息，可能与参考中的直立姿态、支撑方式等运动内容冲突，所以参考行不读它。无参考的行始终带 species，同一骨架不同 body plan 的桥接样本（`SYN_*`）在无参考时靠它区分，不会污染骨架默认动作。
 
-**CFG 行为**：encode 的所有 reference CFG 分支固定关闭 species，不嵌套 species guidance；其它模式下 `--species_active false` 时同样忽略 `species_cfg_scale`，不构造 species CFG wrapper，不检查 species CFG 的训练前提。关闭 species 不改变 reference CFG 的前向次数。
+**CFG 行为**：reference CFG 的无参考分支开启目标骨架自身的 species FiLM，是"该骨架无 label 的先验"；guidance 从它推向参考。
 
 ---
 

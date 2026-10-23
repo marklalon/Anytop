@@ -61,7 +61,6 @@ pushd "%SCRIPT_DIR%"
 	--num_steps 300000 ^
 	--dropout_prob 0.1 ^
 	--action_label_cfg_drop_prob 0.2 ^
-	--species_cfg_drop_prob 0.2 ^
 	--tempo_cfg_drop_prob 0.1 ^
 	--joint_mask_prob 0.3 ^
 	--joint_mask_budget 0.15 ^
