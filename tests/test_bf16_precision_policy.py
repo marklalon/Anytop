@@ -82,7 +82,7 @@ class InferencePrecisionTests(_MatmulPrecisionRestore):
 
     def test_task_checksum_changes_with_inference_precision(self):
         # Output generated under bf16 must be regenerated, not re-scored.
-        task_args = ["--object_type", "Horse", "--action_label", "walk, forward"]
+        task_args = ["--object_type", "Horse", "--num_frames", "90"]
         fp32_digest = eval_checkpoint._task_param_hash(task_args)
         bf16_common = ("--batch_size", "8", "--amp_dtype", "bf16")
         with patch.object(eval_checkpoint, "_COMMON_GENERATE_ARGS", bf16_common):

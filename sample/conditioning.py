@@ -30,7 +30,11 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
 from data_loaders.truebones.truebones_utils.species_descriptor_table import species_code
-from model.cfg_sampler import ClassifierFreeActionModel, ClassifierFreeSpeciesModel
+from model.cfg_sampler import (
+    ClassifierFreeActionModel,
+    ClassifierFreeSpeciesModel,
+    ClassifierFreeTempoModel,
+)
 from utils.model_util import unwrap_anytop_model
 
 
@@ -277,6 +281,25 @@ def _wrap_species_cfg(model, args):
     )
 
 
+def _wrap_tempo_cfg(model, args):
+    """Guide the tempo condition (the requested length), outermost wrapper."""
+    raw_scale = getattr(args, 'tempo_cfg_scale', None)
+    scale = 1.0 if raw_scale is None else float(raw_scale)
+    if not math.isfinite(scale) or scale < 0.0:
+        sys.exit(f"ERROR: --tempo_cfg_scale must be finite and >= 0, got {scale}.")
+    if scale == 1.0:
+        return model
+    if float(getattr(args, 'tempo_cfg_drop_prob', 0.0) or 0.0) <= 0.0:
+        sys.exit(
+            "ERROR: --tempo_cfg_scale requires a checkpoint trained with "
+            "--tempo_cfg_drop_prob > 0."
+        )
+    print(f"[generate] tempo CFG: scale={scale:g} (doubles the model forwards on the high-noise steps)")
+    return ClassifierFreeTempoModel(
+        model, scale, args.diffusion_steps, switch_t=cfg_switch_timestep(args),
+    )
+
+
 def _coerce_loop_flag(flag):
     """One ``is_loop`` bool from a batch-level or per-species ``loop`` value.
 
@@ -310,8 +333,9 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         to every object in the batch, or None for unconditional generation.
     species_code_override: [species_code_dim] vector replacing the bound species_code for all objects.
     loop: ask for a closed window -- one bool for the whole batch, or one per
-        object_type. It is the whole loop condition -- how many gait cycles the
-        window holds is the model's to decide from the species/action prior, so
+        object_type (--object_type all resolves --loop auto per species). It is
+        the whole loop condition -- how many gait cycles the window holds is the
+        model's to decide from resample_speed and the species/action prior, so
         nothing here needs a period table.
     """
     if isinstance(loop, (list, tuple)):

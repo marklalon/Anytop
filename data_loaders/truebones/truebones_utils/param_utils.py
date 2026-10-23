@@ -127,9 +127,9 @@ MAX_JOINTS=100
 # Training batch padding widths; the final bucket must match MAX_JOINTS.
 JOINT_BUCKETS = (48, 64, MAX_JOINTS)
 # Source-frame budget as a multiple of the target window n: clips longer than
-# n * MAX_SOURCE_FRAMES_MULT are cropped (random window) and resampled to n.
-# It is the tempo head's top bin, and inference uses the same multiple (the
-# reference crop budget and the --outpaint cap). Changing it requires
+# n * MAX_SOURCE_FRAMES_MULT are cropped (random window) and resampled to n,
+# pinning their resample_speed condition to this value. Inference uses the same
+# multiple (reference crop budget + num_frames range). Changing it requires
 # retraining.
 MAX_SOURCE_FRAMES_MULT=2
 # Largest speed-up the loader forces on a phase-anchored clip (an attack, a

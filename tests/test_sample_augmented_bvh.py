@@ -77,7 +77,7 @@ def test_speed_mode_preserves_training_fit_flag(monkeypatch):
 def test_speed_preview_default(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["preview", "--mode", "motion-speed"])
     args = parse_args()
-    assert args.motion_speed_aug == 1.1
+    assert args.motion_speed_aug == 1.3
 
 
 def test_explicit_unit_speed_keeps_fitting_but_disables_random_speed(monkeypatch):

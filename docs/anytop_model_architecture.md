@@ -152,6 +152,8 @@ timestep
   + action_label
 ```
 
+`resample_speed` 不在这条总线上，见 4.3。
+
 组合后的 condition 在每个 decoder layer 中经该层自己的 `embed_timesteps` 再注入残差流。
 
 ### 4.1 Per-joint species FiLM 与 CFG
@@ -211,23 +213,26 @@ Action label 使用受控词表，不接收自由文本。每个词先查 checkp
 action token，而标签集的 slot-source 秩有限，头再宽也用不满，所以隐层可以远小于
 `latent_dim`，同时避免它成为模型里最大的单个矩阵。见 §11。
 
-### 4.3 输出空间与输出帧数
+### 4.3 输出空间与 resample speed
 
 `canonical_feature_mean/std` 定义模型写入的输出坐标/标准化空间。全语料只有一套：每个
 cond entry 携带同一对向量（loader 用 `assert_single_canonical_frame` 校验），所以它不是
 模型输入——输出空间对所有物种相同，也就不携带任何 body plan 信息。它们仍随 `y` collate，
 供只读 `y` 的解码路径（训练 aux-loss）反标准化。
 
-窗口对应的源帧数 L（窗口的节奏）不是输入：输入节奏会和 action_label 争同一个条件 token，
-可能画出符合帧数却不符合标签的动作。模型按标签与物种自己画节奏，`tempo_head`
-（`model/tempo_head.py`）从 decoder 输出（对帧与有效关节平均池化）分类 L：bin 为
-`min_length` 到 `MAX_SOURCE_FRAMES_MULT * T` 的整数帧、每 5 帧一个，two-hot 目标，交叉熵
-权重 `--lambda_tempo`。推理在 t=0 读期望帧数作为输出帧数。
+`resample_speed_cond = source_frames / internal_frames` 以**逐帧物理时间**注入：窗口第 `i` 帧
+对应源帧 `i * step`（loop 为 `L / T`，open 为 `(L - 1) / (T - 1)`，与 loader 的 resample step 一致），
+经 sinusoidal embedding 和 `tempo_projection`（末层零初始化）后加到该帧所有关节的 token 上，
+rest-pose 槽不加。它只表达"每帧代表多少源时间"，不与 action label 共用条件 token，
+避免帧数变成压过标签的内容索引。
 
-窗口里的速度通道是"每窗口帧位移"（loader 的 `velocity_to_window_units`），不依赖 L 就自洽：
-窗口内 root XZ 路径就是 `cumsum(vel)`。存盘 clip 与导出结果的速度是物理的"每源帧位移"，
-生成端用读出的 L 换回（`sample/output_lengths.window_to_physical`）。`motion_speed_aug` 对放得进
-预算的 clip 只改变 L、不改变窗口内容，所以它是 tempo 目标上的节奏扰动，应保持很小。
+训练以 `--tempo_cfg_drop_prob` 整行丢弃（该行不加 tempo embedding），推理用
+`--tempo_cfg_scale` 做 tempo CFG：小于 1 时让 label/species 压过语料里少见的长度，大于 1
+时让动作更贴合所给长度。推理的长度默认来自 `clip_length_prior`，丢弃态只作为 CFG 的
+无条件分支，所以 drop 概率取低值。
+
+数据侧的 `motion_speed_aug` 改变源长度 `L`，模型经 tempo 条件看到，不应与
+`resample_speed_cond` 本身混为一谈。
 
 ## 5. Decoder layer
 
@@ -374,10 +379,12 @@ eval loader 总是告知。另一处降级是超出源帧预算被裁剪的 clip
 振翅、一两帧完成的急速动作；判据见 `truebones_utils/high_frequency.py`，分数随 clip 长度一起缓存在
 `cache/motion_lengths.npy`），线性插值一旦把它压到更少的帧就会混叠：周期只有几帧的振翅变成慢拍频，
 更短周期的几乎静止。这类 clip 的源帧预算等于窗口本身：变速只减速、且不减速出窗口，tile
-不超过窗口，超长的按每窗口帧一源帧裁剪到窗口长度而不是压进窗口，也不走上面有固定相位
+不超过窗口，超长的按 `resample_speed = 1` 裁剪到窗口长度而不是压进窗口，也不走上面有固定相位
 clip 的强制加速（改为裁剪，事件可能不完整）。超过窗口长度的高频 loop 因此总被裁开、按非 loop
-告知。代价是这类 clip 的源帧数只落在 `[min_length, T]`，tempo head 对这类动作也只会读出这个
-区间里的帧数。
+告知。代价是这类 clip 只出现在 `resample_speed <= 1` 的区间。生成端自动选长度和 `--loop auto`
+用的 clip-length prior（`utils/clip_length_prior.py`）按同一规则读表：高频 clip 的长度上限是
+checkpoint 的窗口，超过窗口的高频 loop 按非 loop 计票，所以不会替这类动作选出训练里没见过的长度
+或 loop 条件。
 
 **变速、roll、tile、裁剪和窗口重采样只插值一次。** 这几步都是时间的线性映射，loader 不逐步生成
 中间 clip：变速只定下变速后的长度，roll、tile、裁剪只改一个帧偏移（以变速后的帧计，对源可以是
@@ -486,7 +493,7 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 
 参数主要分布在以下模块：decoder 主干（占绝大部分）、`action_adaln` 头、cross-limb block、
 `action_label_projection`、`input_process`（per-joint species FiLM、joint-name 投影、structural 投影）、
-`tempo_head`，以及可忽略的 `output_process` 与各层共享的 relation/topology embedding 表。
+`tempo_projection`，以及可忽略的 `output_process` 与各层共享的 relation/topology embedding 表。
 
 各处宽度的分配依据，来自训练后权重的秩与单元参与率：
 

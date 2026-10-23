@@ -153,11 +153,8 @@ Horse --loop --action_label "run, forward"`). `--loop` takes `auto` / `on` /
 `off` (a bare `--loop` is `on`); omitted it is `auto`: with a
 `--reference_motion` the window closes when the reference does (its stored loop
 verdict, else the endpoint detector); with an `--action_label` alone it closes
-when the label is phase-free (walk, run, fly, idle ...) and stays open for an
-anchored event (jump, attack ...); with neither it stays open. There is no
-frame-count flag: the model's tempo head reads the output length off each
-sample, and a `--reference_motion` keeps its own length (`--outpaint N` appends
-N frames).
+when the training clips carrying that label are mostly loops -- the same corpus
+lookup that picks an unset `--num_frames`; with neither it stays open.
 
 ## Train AnyTop 
 

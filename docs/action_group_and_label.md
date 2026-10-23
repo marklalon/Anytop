@@ -116,7 +116,7 @@ action_labels.jsonl ──► dataset loader ──► word / slot / mask ids �
 | 类 | 常量 | 说明 |
 |---|---|---|
 | 主词 | `HEAD_VOCAB` | 标签"关于什么"：一个身体状态（`idle` `run` `rear`…）或一个整段事件（`die` `getup` `land` `draw` `sheathe` `stop`…） |
-| 修饰词 | `MODIFIER_VOCAB` | 其余动作词：执行方式（`hover`；`glide` 翅膀不动的滑翔。步态快慢由模型按物种与动作自己决定、tempo head 读出帧数，物种整体的运动风格是 species_tags 的 variant，都不写成修饰词）、叠加的次要动作（`bite` `eat` `look` `shake`）、打击类型（`swat` `slash` `punch`…）、情绪手势、活动/物件、持械（`bow` `gun` `hammer` `shield` `weapon`） |
+| 修饰词 | `MODIFIER_VOCAB` | 其余动作词：执行方式（`hover`；`glide` 翅膀不动的滑翔。步态快慢由 `--num_frames` 决定，物种整体的运动风格是 species_tags 的 variant，都不写成修饰词）、叠加的次要动作（`bite` `eat` `look` `shake`）、打击类型（`swat` `slash` `punch`…）、情绪手势、活动/物件、持械（`bow` `gun` `hammer` `shield` `weapon`） |
 | 方向词 | `DIRECTION_VOCAB` | `forward backward left right up down` |
 
 要点：
@@ -278,7 +278,7 @@ checkpoint 的 load / resume / bind 受两层指纹把关，不兼容的 checkpo
 ### 7.1 `--action_label`
 
 ```
-python sample/generate.py ... --action_label "run, forward"
+python sample/generate.py ... --action_label "run, forward" --num_frames 40
 ```
 
 - 只接受受控 token；未知 token 是硬错误并列出合法词（词向量在 checkpoint 里，推理不跑 T5，自由文本无处可去）。
@@ -303,9 +303,9 @@ out = out_uncond + s * (out_cond - out_uncond)
 
 默认 `auto`：有 `--reference_motion` 时跟随它自己的 loop 判定；否则有 `--action_label` 时，标签 **phase-free → on，anchored → off**；都没有 → off。显式 `on` / `off` 覆盖。
 
-### 7.4 输出帧数
+### 7.4 `--num_frames` 自动取值
 
-没有帧数参数，帧数也不是模型输入（否则会和 action_label 争同一个条件 token）。模型画出标签与物种要求的节奏，tempo head（`model/tempo_head.py`）在采样结束后对 t=0 的样本读出窗口对应的源帧数 L，作为输出帧数，batch 内逐样本各自读取。有 `--reference_motion` 时输出帧数就是 reference 自己的长度（夹到 `[min_length, MAX_SOURCE_FRAMES_MULT * T]`），`--outpaint N` 在其后追加 N 帧。
+省略时按优先级：reference 的原生长度 → 有 `--action_label` 时取"带该标签的训练 clip 长度中位数"（目标物种自己的 clip；没有就取最相似物种的）→ checkpoint 的原生窗口。这样输入模型的 `resample_speed` 条件落在训练分布内。先验表存在 `cond.npy` 的 `clip_length_prior`，key 为 `group|label`；表由 `tools/regenerate_dataset_artifacts.py` 烘焙，缺失时静默退回默认值。
 
 ---
 
@@ -373,7 +373,7 @@ out = out_uncond + s * (out_cond - out_uncond)
 |---|---|
 | 词表 / 槽规则 / `HEAD_SLOT_PRIMARY_WEIGHT` / parser 版本 | 重建词向量表（`build_action_label_embeddings.py`），**重训**；旧 checkpoint 被两层指纹拒绝 |
 | `_VOCAB_T5_TEXT`、T5 型号、池化 / 后处理、合成码 | 重建词向量表，重训 |
-| 改 sidecar 里的标签 | 重训；`preprocess_and_validate.py --regenerate-side-artifacts` 刷新依赖标签的侧产物；不需要重新预处理 motion。词向量表按词索引，**不会**因此过期 |
+| 改 sidecar 里的标签 | 重训；`preprocess_and_validate.py --regenerate-side-artifacts` 刷新依赖标签的侧产物（如 `clip_length_prior`）；不需要重新预处理 motion。词向量表按词索引，**不会**因此过期 |
 | 改 `NO_PLANAR_DIRECTION_WORDS` 等标注规则 | 先更新 sidecar，再按上一行处理；预填工具要加 `--include-reviewed` 才会重判旧签字 |
 | 只改训练期开关（各 drop 概率、采样规则） | 开新 run，不要续训 |
 | 只改预填 / 审核工具行为，不改标签 | 无 |
@@ -393,6 +393,6 @@ out = out_uncond + s * (out_cond - out_uncond)
 | 标签解析与改写、loop auto | [`sample/conditioning.py`](../sample/conditioning.py)、[`sample/generate.py`](../sample/generate.py) |
 | 训练 / 推理的 group 读写 | [`parser_util.py`](../utils/parser_util.py)（`apply_checkpoint_action_group`）、[`train_anytop.py`](../train/train_anytop.py)（`assert_resume_keeps_action_group`） |
 | 服务端路由 | [`server/anytop_service.py`](../../server/anytop_service.py) |
-| 输出帧数（tempo head） | [`model/tempo_head.py`](../model/tempo_head.py) |
+| 片长先验 | [`utils/clip_length_prior.py`](../utils/clip_length_prior.py) |
 | 评测参考先验 | [`eval/motion_quality/reference_bank.py`](../eval/motion_quality/reference_bank.py) |
 | 当前训练配置示例 | [`train_all.bat`](../train_all.bat) |

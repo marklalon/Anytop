@@ -23,7 +23,7 @@ token(frame, joint) =  运动投影(该帧该关节的特征)          # 帧 0 �
 | 结构通道 | 这个关节在**骨架的什么位置**（几何 / 拓扑） | 由 `parents` 与 rest 位置现场计算 | 骨架 |
 | species 描述符 | 这个物种**怎么动**（体型类别 × 变体） | body plan 取冻结 T5（描述符表），variant 取正交码 | 物种 |
 
-species code **只**通过“对关节名嵌入做 FiLM”进入模型，不进入 timestep 条件，decoder 里也没有 species AdaLN 头。timestep 条件只承载 diffusion 步、action label 等（见 [action_group_and_label.md](action_group_and_label.md) 与 [anytop_model_architecture.md](anytop_model_architecture.md)）。
+species code **只**通过“对关节名嵌入做 FiLM”进入模型，不进入 timestep 条件，decoder 里也没有 species AdaLN 头。timestep 条件只承载 diffusion 步和 action label（`resample_speed` 以逐帧物理时间注入）（见 [action_group_and_label.md](action_group_and_label.md) 与 [anytop_model_architecture.md](anytop_model_architecture.md)）。
 
 ---
 
@@ -36,7 +36,7 @@ species code **只**通过“对关节名嵌入做 FiLM”进入模型，不进�
 - **body plan**（必填）：封闭词表 `SPECIES_BODY_PLANS`（Quadruped / Biped / Multiped / Serpentine / Aquatic / Winged / Drifting）。
 - **variant**（可选）：封闭词表 `SPECIES_VARIANTS`（Clanking / Fluttering / Waddling）。它表示整个物种都有、且帧数调不出来的运动风格：机械的僵硬节拍、短腿左右摇摆、快速浅幅振翅。按 body plan 默认方式运动的物种不写 variant。
 
-步态快慢不进描述符，也不进 action_label：由模型按物种与动作自己决定（tempo head 读出输出帧数）；要指定某种具体步态，用 reference motion。翅膀状态里只有 `glide`（滑翔，翅膀不动）留作逐 clip 的 action_label 修饰词；拍翅是 `fly` 的默认，不写词。
+步态快慢不进描述符，也不进 action_label：由 `--num_frames`（循环周期）决定；要指定某种具体步态，用 reference motion。翅膀状态里只有 `glide`（滑翔，翅膀不动）留作逐 clip 的 action_label 修饰词；拍翅是 `fly` 的默认，不写词。
 
 variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个物种有任一 clip 呈现该风格，整个物种就带这个 variant。同一物种只能有一个 variant。
 
@@ -75,7 +75,7 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 `--species_tags Quadruped` 用描述符表算出的 species code **替换**目标物种自己的 `species_code`，从而重新"着装"：例如让 Winged 的龙按四足方式运动；`--species_tags Biped,Clanking` 让人形按机械方式走。
 
 - variant 的训练样本只来自少数几个 rig 家族（Clanking 主要是 RU01 机器人，Waddling 主要是 MU01 / TTR），覆盖到其他骨架时效果可能偏弱，必要时加 `--species_cfg_scale`；
-- 相似度（skeleton_similarity / reference_bank）只比较 body plan，不看 variant；
+- 相似度（skeleton_similarity / reference_bank / clip_length_prior）只比较 body plan，不看 variant；
 
 - 要求 checkpoint 以 `--species_cond` 训练；
 - 组合必须在 checkpoint 的描述符表里；

@@ -188,12 +188,9 @@ def get_gmdm_args(args):
             'temporal_span_mask_min_frames': getattr(args, 'temporal_span_mask_min_frames', 4),
             'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 12),
             'species_cfg_drop_prob': getattr(args, 'species_cfg_drop_prob', 0.15),
+            'tempo_cfg_drop_prob': getattr(args, 'tempo_cfg_drop_prob', 0.1),
             'species_cond': getattr(args, 'species_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
-            # The tempo head's bins span the source frame counts the loader
-            # puts in a window: [min_length, MAX_SOURCE_FRAMES_MULT * num_frames].
-            'window_frames': getattr(args, 'num_frames', 60),
-            'min_length': getattr(args, 'min_length', 20),
             **{key: getattr(args, key, default) for key, default in (
                 ('ref_encoder', False), ('ref_slots', 2), ('ref_dim', 8),
                 ('ref_width', 64), ('ref_layers', 2),
@@ -249,7 +246,6 @@ def create_gaussian_diffusion(args):
         lambda_loop_wrap=getattr(args, 'lambda_loop_wrap', 0.0),
         lambda_loop_root_closure=getattr(args, 'lambda_loop_root_closure', 0.0),
         lambda_bone=getattr(args, 'lambda_bone', 0.0),
-        lambda_tempo=getattr(args, 'lambda_tempo', 0.0),
         temporal_span_seam_loss_weight=getattr(args, 'temporal_span_seam_loss_weight', 0.0),
         temporal_span_seam_width=getattr(args, 'temporal_span_seam_width', 2),
         renoise_same_level_prob=getattr(args, 'renoise_same_level_prob', 1.0),

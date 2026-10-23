@@ -264,7 +264,11 @@ def prepare_generation_runtime(args=None, cond_dict=None):
 
 
 def _checkpoint_native_num_frames(model_path, default=60):
-    """The window the checkpoint was trained on, from the args.json next to it."""
+    """The window the checkpoint was trained on, from the args.json next to it.
+
+    ``args.num_frames`` at generation is the user's requested output length (or
+    ``None``); the model's own window only lives in the training args.
+    """
     ckpt_args_path = os.path.join(os.path.dirname(model_path), 'args.json')
     if not os.path.isfile(ckpt_args_path):
         return int(default)
@@ -310,3 +314,24 @@ def _load_default_cond_cache(default_cond_file, actual_cond_file):
             return None
 
     return load_cond(default_cond_file)
+
+
+def _checkpoint_cond_loader(args, actual_cond_file):
+    """A no-argument loader for the checkpoint's own cond snapshot, or ``None``.
+
+    Returns ``None`` (nothing to load) when the snapshot IS the active cond,
+    which is the ordinary case -- so the caller never pays for a second np.load
+    unless it is really looking at a different, narrower cond file. The load is
+    memoized because the all-species path asks once per species.
+    """
+    default_cond_file = _checkpoint_cond_path(getattr(args, 'model_path', ''))
+    if not default_cond_file or os.path.realpath(default_cond_file) == os.path.realpath(actual_cond_file):
+        return None
+    cache = []
+
+    def load():
+        if not cache:
+            cache.append(_load_default_cond_cache(default_cond_file, actual_cond_file))
+        return cache[0]
+
+    return load
