@@ -14,17 +14,21 @@ def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, share
     The draws are independent of the target's own skeleton augmentation;
     ``motion`` / ``cond`` are the stored rig's window. ``shared`` holds
     channels already derived from this same motion and cond; they are reused
-    while no augmentation changes the skeleton. The augmentations return new
+    while no augmentation changes the skeleton, and the structural channel
+    also across the rest re-pose. The augmentations return new
     arrays, so the caller's motion and cond are never written.
     """
     import random
     from data_loaders.truebones.truebones_utils.leaf_drop import sample_leaf_drop, drop_joints_from_cond
     from data_loaders.truebones.truebones_utils.bone_length_aug import (
         DEFAULT_BONE_LENGTH_AUG, DEFAULT_BONE_LENGTH_AUG_MIN, augment_bone_lengths)
+    from data_loaders.truebones.truebones_utils.rest_repose_aug import (
+        DEFAULT_REST_REPOSE_MAX_DEG, augment_rest_repose)
 
     metadata = dict(metadata)
     leaf_prob = getattr(opt, 'leaf_drop_prob', 0.0) if augment else 0.0
     bone_prob = getattr(opt, 'bone_length_aug_prob', 0.0) if augment else 0.0
+    repose_prob = getattr(opt, 'rest_repose_prob', 0.0) if augment else 0.0
     changed = False
     if leaf_prob and random.random() < leaf_prob:
         dropped = sample_leaf_drop(cond, motion, metadata['translation_root_index'])
@@ -38,6 +42,18 @@ def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, share
             motion, cond, metadata, getattr(opt, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG),
             getattr(opt, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN))
         changed = changed or info['applied']
+    if changed:
+        shared = None
+    if repose_prob and random.random() < repose_prob:
+        # The structural channel names the rig's joints, so it is the one
+        # built before the re-pose (see rest_repose_aug).
+        struct = (shared or {}).get('joint_struct')
+        if struct is None:
+            struct = build_joint_struct_features(cond)
+        motion, cond, info = augment_rest_repose(
+            motion, cond, metadata, getattr(opt, 'rest_repose_max_deg', DEFAULT_REST_REPOSE_MAX_DEG))
+        if info['applied']:
+            shared = dict(joint_struct=struct)
     names = np.asarray(cond['joints_names_embs'], dtype=np.float32)
     prob = getattr(opt, 'joint_name_drop_prob', 0.0) if augment else 0.0
     if prob:
@@ -45,7 +61,7 @@ def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, share
         if drop.any():
             names = names.copy()
             names[drop] = 0
-    return reference_sample(motion, cond, names, **({} if changed else (shared or {})))
+    return reference_sample(motion, cond, names, **(shared or {}))
 
 
 # A bone shorter than this fraction of the rig's longest rest bone is a

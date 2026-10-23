@@ -333,6 +333,18 @@ def add_model_options(parser):
     group.add_argument("--bone_length_aug_min", default=0.1, type=float,
                        help="Min relative bone-length change, so every draw is visible; "
                             "must be in [0, --bone_length_aug_max].")
+    group.add_argument("--rest_repose_prob", default=0.0, type=float,
+                       help="Probability of re-expressing a sample against a randomly bent rest pose "
+                            "(target and reference input draw independently); training only (0 = off). "
+                            "Exact: the world motion is unchanged, the local rotations are re-expressed, "
+                            "and rest_geom / offsets / L follow the new rest, so a rig's rest geometry "
+                            "stops being a fixed fingerprint. The structural channel stays the stored rig's. "
+                            "Loader-only: no dataset regeneration or checkpoint schema change.")
+    group.add_argument("--rest_repose_max_deg", default=20.0, type=float,
+                       help="Largest rest rotation per joint in degrees, scaled down by the share of the "
+                            "rig the joint moves (a hub carrying most of the body barely turns). Paired "
+                            "joints bend about a random axis normal to their bones and mirror to the "
+                            "partner; midline joints bend in the sagittal plane only.")
     group.add_argument("--loop_cond_prob", default=1.0, type=float,
                        help="Probability that a loop training clip is TOLD it is a loop (is_loop=1: "
                             "circular time table, periodic window resample, wrap losses). The rest of "
