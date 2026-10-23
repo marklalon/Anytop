@@ -195,6 +195,7 @@ def get_gmdm_args(args):
                 ('ref_width', 64), ('ref_layers', 2),
                 ('ref_cfg_drop_prob', 0.4))},
             'mirror_twin_drop_prob': getattr(args, 'mirror_twin_drop_prob', 0.2),
+            'lateral_drop_prob': getattr(args, 'lateral_drop_prob', 0.1),
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
             'direction_slot_drop_prob': getattr(args, 'direction_slot_drop_prob', 0.0),

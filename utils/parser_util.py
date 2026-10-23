@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 46
+CKPT_VERSION = 47
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -372,6 +372,11 @@ def add_model_options(parser):
                             "(sibling / sibling_limb / cousin), so a skeleton whose symmetry pairing "
                             "missed some twins stays in distribution. Both directions of a pair drop "
                             "together. Inference never drops.")
+    group.add_argument("--lateral_drop_prob", default=0.1, type=float,
+                       help="Per-sample probability in training that every joint pair's lateral code "
+                            "(same side / opposite side, from joint_side_labels) reads as neutral, so a "
+                            "skeleton whose side labels are missing stays in distribution. Inference "
+                            "never drops.")
     group.add_argument("--tempo_cfg_drop_prob", default=0.1, type=float,
                        help="Per-sample probability of dropping the tempo condition (each window "
                             "frame's physical time, from resample_speed_cond) during training, "

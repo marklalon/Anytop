@@ -50,6 +50,9 @@ def _entry():
     partners = [-1] * joint_count
     for left, right in ((4, 6), (5, 7), (14, 16), (15, 17)):
         partners[left], partners[right] = right, left
+    sides = ['center'] * joint_count
+    for left, right in ((4, 6), (5, 7), (14, 16), (15, 17)):
+        sides[left], sides[right] = 'left', 'right'
     rest = np.arange(joint_count * 3, dtype=np.float32).reshape(joint_count, 3)
     embs = np.eye(joint_count, dtype=np.float32)
     embs[[_NAMELESS_STATIC, _NAMELESS_LIVE]] = 0.0
@@ -63,6 +66,7 @@ def _entry():
         'joints_names': [f'j{j}' for j in range(joint_count)],
         'canonical_joint_names': list(_NAMES),
         'symmetry_partner_indices': partners,
+        'joint_side_labels': sides,
         'symmetric_joint_pairs': [[4, 6], [5, 7], [14, 16], [15, 17]],
         'symmetric_joint_pair_names': [['j4', 'j6'], ['j5', 'j7'], ['j14', 'j16'], ['j15', 'j17']],
         'face_joints': [4, 6],
@@ -71,7 +75,8 @@ def _entry():
         'forward_joint_index': 2,
         'forward_base_joint_index': None,
     }
-    edge, dist = create_topology_edge_relations(entry['parents'], symmetry_partner_indices=partners)
+    edge, dist = create_topology_edge_relations(
+        entry['parents'], symmetry_partner_indices=partners, joint_side_labels=sides)
     entry['joint_relations'], entry['joints_graph_dist'] = edge, dist
     return entry
 
@@ -120,7 +125,8 @@ def test_drop_remaps_every_index():
     np.testing.assert_array_equal(entry['joints_names_embs'], _entry()['joints_names_embs'][keep])
     np.testing.assert_array_equal(entry['rest_pos_ric_hml'], _entry()['rest_pos_ric_hml'][keep])
     edge, dist = create_topology_edge_relations(
-        entry['parents'], symmetry_partner_indices=entry['symmetry_partner_indices'])
+        entry['parents'], symmetry_partner_indices=entry['symmetry_partner_indices'],
+        joint_side_labels=entry['joint_side_labels'])
     np.testing.assert_array_equal(entry['joint_relations'], edge)
     np.testing.assert_array_equal(entry['joints_graph_dist'], dist)
 

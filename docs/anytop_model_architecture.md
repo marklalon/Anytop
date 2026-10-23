@@ -271,7 +271,10 @@ bias 的幅度，避免 softmax 饱和。
 - directed edge relation codes：self、parent、child、sibling、no-relation（无关系）、
   leaf（无子关节的关节在对角线上的标记）、ancestor、descendant、sibling-limb、按归一化 LCA 深度分档的 cousin，
   以及双侧镜像伴侣 mirror_twin（在存储矩阵中以 flag 叠加在拓扑码上，训练时按概率回退为普通拓扑码）；
-  no-relation 码保留编号但不再产生；
+  no-relation 码保留编号但不再产生；每个 edge code 再按 `joint_side_labels` 乘上侧别
+  （neutral / same_side / opposite_side，同样以 flag 存储，嵌入索引为 `code + NUM_EDGE_CODES * lateral`），
+  否则左手到左脚与到右脚的拓扑码完全相同，只交换一个肢带左右时注意力偏置不变；
+  训练时 `--lateral_drop_prob` 按样本把侧别整体回退为 neutral；
 - topology-distance codes：近距离 hop 精确编码；更远的 pair 再按是否共线以及
   normalized LCA depth 分档。
 

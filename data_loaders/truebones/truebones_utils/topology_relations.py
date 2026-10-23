@@ -42,8 +42,19 @@ other cousin at that LCA depth, so the partner is not singled out. The matrix
 leaving this module carries a twin as its topological code plus
 ``MIRROR_TWIN_FLAG`` rather than as ``mirror_twin`` outright, so the model can
 drop the twin flag in training and fall back to the code the pair would
-otherwise have (``resolve_mirror_twin_codes``). Everything that indexes an
+otherwise have (``resolve_edge_codes``). Everything that indexes an
 embedding table must go through that resolve step first.
+
+Laterality (``joint_side_labels``) is the other relation ``parents`` cannot
+give. A left hand's code to the left foot equals its code to the right foot --
+same hop count, same LCA, same cousin tier -- so the pairwise bias is invariant
+to swapping one girdle's sides alone, and which forelimb steps with which
+hindlimb is left to the joint tokens' content. Every pair of two sided joints
+therefore carries ``same_side`` or ``opposite_side`` in a second flag
+(``LATERAL_FLAG``); pairs touching a midline joint, and the diagonal, stay
+``neutral``. The resolve step folds it into the embedding index as
+``code + NUM_EDGE_CODES * lateral``, so each edge code learns a same-side and an
+opposite-side variant, and dropping the flag falls back to ``neutral``.
 """
 
 from __future__ import annotations
@@ -86,6 +97,19 @@ EDGE_COUSIN_TIERS = 3
 # padding fill (0) never reads as a twin.
 MIRROR_TWIN_FLAG = 16
 assert MIRROR_TWIN_FLAG > NUM_EDGE_CODES
+
+# Lateral relation of a pair of joints, from ``joint_side_labels``.
+LATERAL_CODES = {
+    'neutral': 0,         # either joint is on the midline (or unlabelled)
+    'same_side': 1,
+    'opposite_side': 2,
+}
+NUM_LATERAL_CODES = 3
+# Multiplies a pair's lateral code in the stored matrix, above the twin flag.
+LATERAL_FLAG = 32
+assert LATERAL_FLAG > MIRROR_TWIN_FLAG + NUM_EDGE_CODES
+# Rows of the model's edge embedding tables: every edge code once per lateral code.
+NUM_EDGE_EMBEDDINGS = NUM_EDGE_CODES * NUM_LATERAL_CODES
 
 # Two categories that look useful and are provably empty, recorded so they do not
 # get proposed again. A branch-free run is a path, so any two joints in it are
@@ -156,7 +180,8 @@ def _branch_free_runs(parents: np.ndarray) -> np.ndarray:
 
 
 def create_topology_edge_relations(parents, max_path_len: int = MAX_PATH_LEN,
-                                   symmetry_partner_indices=None):
+                                   symmetry_partner_indices=None,
+                                   joint_side_labels=None):
     """Return ``(edge_rel, topo_rel)``, both ``(n, n)`` int arrays.
 
     ``topo_rel`` stays symmetric; ``edge_rel`` is directed, as it always was
@@ -166,6 +191,10 @@ def create_topology_edge_relations(parents, max_path_len: int = MAX_PATH_LEN,
     pair gets ``MIRROR_TWIN_FLAG`` added to its ``edge_rel`` code in both
     directions. A partner that is an ancestor/descendant, or not mutual, is
     ignored rather than trusted: the near field is not a mirror relation.
+
+    With ``joint_side_labels`` (``'left'`` / ``'right'`` / anything else for the
+    midline), each off-diagonal pair of two sided joints gets ``LATERAL_FLAG``
+    times its lateral code added.
     """
     parents = np.asarray(parents, dtype=np.int64).reshape(-1)
     n = len(parents)
@@ -246,8 +275,25 @@ def create_topology_edge_relations(parents, max_path_len: int = MAX_PATH_LEN,
 
     twin = _mirror_twin_mask(symmetry_partner_indices, n) & ~colinear & ~eye
     edge_rel = edge_rel + MIRROR_TWIN_FLAG * twin.astype(np.int64)
+    edge_rel = edge_rel + LATERAL_FLAG * _lateral_codes(joint_side_labels, n)
 
     return edge_rel, topo_rel
+
+
+def _lateral_codes(joint_side_labels, n: int) -> np.ndarray:
+    """``(n, n)`` int ``LATERAL_CODES``; all neutral without labels."""
+    codes = np.zeros((n, n), dtype=np.int64)
+    if joint_side_labels is None:
+        return codes
+    sides = [str(side) for side in joint_side_labels]
+    if len(sides) != n:
+        raise ValueError(f"joint_side_labels has {len(sides)} entries for {n} joints")
+    sign = np.asarray([{'left': 1, 'right': -1}.get(side, 0) for side in sides], dtype=np.int64)
+    product = sign[:, None] * sign[None, :]
+    codes[product > 0] = LATERAL_CODES['same_side']
+    codes[product < 0] = LATERAL_CODES['opposite_side']
+    np.fill_diagonal(codes, LATERAL_CODES['neutral'])
+    return codes
 
 
 def _mirror_twin_mask(symmetry_partner_indices, n: int) -> np.ndarray:
@@ -266,35 +312,48 @@ def _mirror_twin_mask(symmetry_partner_indices, n: int) -> np.ndarray:
     return mask
 
 
+def split_lateral_codes(edge_rel):
+    """Split a stored ``edge_rel`` into ``(code with twin flag, lateral code)``."""
+    edge_rel = np.asarray(edge_rel, dtype=np.int64)
+    return edge_rel % LATERAL_FLAG, edge_rel // LATERAL_FLAG
+
+
 def split_mirror_twin_codes(edge_rel):
     """Split a stored ``edge_rel`` into ``(topological code, is_twin)``."""
-    edge_rel = np.asarray(edge_rel, dtype=np.int64)
+    edge_rel, _ = split_lateral_codes(edge_rel)
     is_twin = edge_rel >= MIRROR_TWIN_FLAG
     return edge_rel - MIRROR_TWIN_FLAG * is_twin, is_twin
 
 
-def resolve_mirror_twin_codes(edge_rel, drop=None):
-    """Map a stored ``edge_rel`` tensor onto embedding indices.
+def resolve_edge_codes(edge_rel, twin_drop=None, lateral_drop=None):
+    """Map a stored ``edge_rel`` tensor onto embedding indices in
+    ``[0, NUM_EDGE_EMBEDDINGS)``.
 
-    A twin cell becomes ``mirror_twin``; where ``drop`` is True it becomes its
-    topological code instead, exactly as if the pair had never been paired.
-    Torch-only (``edge_rel`` and ``drop`` are tensors); the import stays lazy so
-    this module stays numpy-only for the preprocessing side.
+    A twin cell becomes ``mirror_twin``; where ``twin_drop`` is True it becomes
+    its topological code instead, exactly as if the pair had never been paired.
+    Where ``lateral_drop`` is True the pair reads as ``neutral``, as if the rig
+    had no side labels. Torch-only (all arguments are tensors); the import stays
+    lazy so this module stays numpy-only for the preprocessing side.
     """
     import torch
 
+    lateral = torch.div(edge_rel, LATERAL_FLAG, rounding_mode='floor')
+    edge_rel = edge_rel - LATERAL_FLAG * lateral
     is_twin = edge_rel >= MIRROR_TWIN_FLAG
     base = edge_rel - MIRROR_TWIN_FLAG * is_twin.to(edge_rel.dtype)
-    if drop is not None:
-        is_twin = is_twin & ~drop
-    return torch.where(is_twin, torch.full_like(base, EDGE_CODES['mirror_twin']), base)
+    if twin_drop is not None:
+        is_twin = is_twin & ~twin_drop
+    if lateral_drop is not None:
+        lateral = lateral.masked_fill(lateral_drop, LATERAL_CODES['neutral'])
+    code = torch.where(is_twin, torch.full_like(base, EDGE_CODES['mirror_twin']), base)
+    return code + NUM_EDGE_CODES * lateral
 
 
 def refresh_topology_relations_in_object_cond(object_cond) -> None:
     """Recompute both matrices from ``parents``, in place.
 
-    Both are pure functions of ``parents`` and ``symmetry_partner_indices``,
-    which every cond entry already carries, so a code change here reaches
+    Both are pure functions of ``parents``, ``symmetry_partner_indices`` and
+    ``joint_side_labels``, which every cond entry already carries, so a code change here reaches
     existing datasets without a regen. It does mean the values on disk are
     advisory; the next preprocessing run persists the refreshed ones.
     """
@@ -303,6 +362,7 @@ def refresh_topology_relations_in_object_cond(object_cond) -> None:
     edge_rel, topo_rel = create_topology_edge_relations(
         object_cond['parents'],
         symmetry_partner_indices=object_cond.get('symmetry_partner_indices'),
+        joint_side_labels=object_cond.get('joint_side_labels'),
     )
     object_cond['joint_relations'] = edge_rel
     object_cond['joints_graph_dist'] = topo_rel
