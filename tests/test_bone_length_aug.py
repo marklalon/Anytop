@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from data_loaders.truebones.truebones_utils.bone_length_aug import (
-    augment_bone_lengths, body_groups, validate_bone_length_aug,
+    augment_bone_lengths, body_groups, long_groups, validate_bone_length_aug,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
@@ -55,13 +55,41 @@ def test_invalid_configuration(prob, magnitude):
         validate_bone_length_aug(prob, magnitude)
 
 
+@pytest.mark.parametrize('min_magnitude', [-.1, .3, np.nan])
+def test_invalid_min_magnitude(min_magnitude):
+    with pytest.raises(ValueError):
+        validate_bone_length_aug(.2, .2, min_magnitude)
+
+
+@pytest.mark.parametrize('seed', range(20))
+def test_change_stays_within_min_and_max(seed):
+    motion, cond, metadata = fixture()
+    _, _, info = augment_bone_lengths(motion, cond, metadata, .2, .1, rng=random.Random(seed))
+    for factor in info['scales'].values():
+        assert .1 - 1e-9 <= abs(factor - 1) <= .2 + 1e-9
+
+
+def test_only_long_groups_are_scaled():
+    motion, cond, metadata = fixture()
+    # Unpaired legs: the right leg's bones are short, so only the left leg qualifies.
+    cond.pop('symmetry_partner_indices')
+    cond['offsets'][5:] *= .2
+    groups = body_groups(cond)
+    assert set(groups) == {'chain_1', 'chain_4'}
+    assert set(long_groups(cond, groups)) == {'chain_1'}
+    for seed in range(10):
+        _, new_cond, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(seed))
+        assert set(info['scales']) == {'chain_1'}
+        np.testing.assert_array_equal(new_cond['offsets'][4:], cond['offsets'][4:])
+
+
 def test_symmetric_lengths_grounding_and_unmutated_source():
     motion, cond, metadata = fixture()
     saved_motion, saved_rest = motion.copy(), cond['rest_pose'].copy()
     out, new_cond, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(3))
     assert info['applied'], info
     factor = info['scales']['chain_1']
-    assert .9 <= factor <= 1.1 and factor != 1
+    assert .1 <= abs(factor - 1) <= .2
     # Topology groups: each leg is one branch-free chain, the mirror pair one group.
     assert body_groups(cond) == {'chain_1': [1, 2, 3, 4, 5, 6]}
     np.testing.assert_allclose(new_cond['offsets'][1:], cond['offsets'][1:] * factor)
@@ -283,9 +311,9 @@ def test_preview_retains_source_loop_for_physical_augmentation(monkeypatch):
     captured = {}
     import data_loaders.truebones.data.dataset as module
     real_aug = module.augment_bone_lengths
-    def spy(motion, cond, metadata, magnitude):
+    def spy(motion, cond, metadata, magnitude, min_magnitude):
         captured.update(metadata)
-        return real_aug(motion, cond, metadata, magnitude)
+        return real_aug(motion, cond, metadata, magnitude, min_magnitude)
     monkeypatch.setattr(module, 'augment_bone_lengths', spy)
     sample = dataset._prepare_sample('test', data, return_aug_info=True)
     assert captured['is_loop']
@@ -337,7 +365,7 @@ def test_twenty_percent_probability_gate(monkeypatch, draw, expected):
     dataset.opt.bone_length_aug_prob = .2
     import data_loaders.truebones.data.dataset as module
     called = []
-    def spy(motion, cond, metadata, magnitude):
+    def spy(motion, cond, metadata, magnitude, min_magnitude):
         called.append(magnitude)
         return motion, cond, dict(applied=False, scales={}, skip_reason='test')
     monkeypatch.setattr(module, 'augment_bone_lengths', spy)

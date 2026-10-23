@@ -1,9 +1,11 @@
 """Symmetric body-proportion augmentation in physical feature space.
 
 One or two topology groups -- branch-free bone chains, mirror chains merged --
-get one constant multiplier per clip. Topology, names and subset statistics
-stay fixed. Local translations (including authored deformation) are scaled, not
-discarded. All action labels are accepted. Contact IK is disabled: local
+get one constant multiplier per clip. Only long groups are drawn (mean bone
+length at least the skeleton's mean bone length), and each multiplier changes
+the length by a relative amount in [min, max], growing or shrinking. Topology,
+names and subset statistics stay fixed. Local translations (including authored
+deformation) are scaled, not discarded. All action labels are accepted. Contact IK is disabled: local
 rotations are preserved, and the lowest point of the rest pose and of the clip
 keeps its height.
 """
@@ -13,8 +15,10 @@ import random
 
 import numpy as np
 
-# Relative group-scale range when a caller does not choose one.
-DEFAULT_BONE_LENGTH_AUG = 0.1
+# Largest relative length change of a group when a caller does not choose one.
+DEFAULT_BONE_LENGTH_AUG = 0.2
+# Smallest relative length change, so a draw is always visible.
+DEFAULT_BONE_LENGTH_AUG_MIN = 0.1
 
 
 def _parent_order(parents):
@@ -92,11 +96,23 @@ def _topology_groups(cond, order, children, tri):
     return {f'chain_{min(joints)}': sorted(joints) for joints in merged.values()}
 
 
-def validate_bone_length_aug(probability, magnitude):
+def validate_bone_length_aug(probability, magnitude, min_magnitude=0.0):
     if not np.isfinite(probability) or not 0.0 <= probability <= 1.0:
         raise ValueError('bone_length_aug_prob must be finite and in [0, 1].')
     if not np.isfinite(magnitude) or not 0.0 <= magnitude < 1.0:
         raise ValueError('bone_length_aug must be finite and in [0, 1).')
+    if not np.isfinite(min_magnitude) or not 0.0 <= min_magnitude <= magnitude:
+        raise ValueError('bone_length_aug_min must be finite and in [0, bone_length_aug].')
+
+
+def long_groups(cond, groups):
+    """Groups whose mean bone length reaches the mean over all grouped bones.
+    Short distal chains (fingers, toes) barely show a length change."""
+    lengths = np.linalg.norm(np.asarray(cond['offsets'], dtype=np.float64), axis=-1)
+    means = {name: float(lengths[joints].mean()) for name, joints in groups.items()}
+    overall = float(lengths[sorted({j for joints in groups.values() for j in joints})].mean())
+    # Relative tolerance: a uniform-length rig keeps every group.
+    return {name: groups[name] for name in sorted(groups) if means[name] >= overall * (1.0 - 1e-6)}
 
 
 def body_groups(cond):
@@ -106,14 +122,15 @@ def body_groups(cond):
     return _topology_groups(cond, order, children, int(cond.get('translation_root_index', 0)))
 
 
-def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_AUG, *, rng=random):
+def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_AUG,
+                         min_magnitude=DEFAULT_BONE_LENGTH_AUG_MIN, *, rng=random):
     """Return (physical motion, private cond, diagnostics); skip is a no-op.
 
     Position/velocity encoding uses the existing identity-facing HML basis.
     No temporal operations run here. Closed clips retain their closing key;
     terminal velocity uses the same last->first convention as preprocessing.
     """
-    validate_bone_length_aug(1.0, magnitude)
+    validate_bone_length_aug(1.0, magnitude, min_magnitude)
     info = {'applied': False, 'scales': {}, 'skip_reason': '', 'notes': [],
             'contact_ik_applied': False}
 
@@ -136,10 +153,12 @@ def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_A
         info['changed_bone_count'] = 0
         info['notes'].append('no nonzero bone offsets; skeleton unchanged')
         return np.array(motion, copy=True), dict(cond), info
-    selected = rng.sample(sorted(groups), rng.randint(1, min(2, len(groups))))
+    candidates = long_groups(cond, groups)
+    selected = rng.sample(sorted(candidates), rng.randint(1, min(2, len(candidates))))
     scales = np.ones(len(parents), dtype=np.float64)
     for group in selected:
-        factor = rng.uniform(1.0 - magnitude, 1.0 + magnitude)
+        change = rng.uniform(min_magnitude, magnitude)
+        factor = 1.0 + change if rng.random() < 0.5 else 1.0 - change
         scales[groups[group]] = factor
         info['scales'][group] = factor
     info['changed_bone_count'] = int(np.count_nonzero(scales != 1.0))

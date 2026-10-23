@@ -77,6 +77,7 @@ from data_loaders.truebones.truebones_utils.high_frequency import (
 )
 from data_loaders.truebones.truebones_utils.bone_length_aug import (
     DEFAULT_BONE_LENGTH_AUG,
+    DEFAULT_BONE_LENGTH_AUG_MIN,
     augment_bone_lengths,
     validate_bone_length_aug,
 )
@@ -1552,6 +1553,7 @@ class MotionDataset(data.Dataset):
             motion, cond, bone_length_info = augment_bone_lengths(
                 motion, cond, bone_metadata,
                 float(getattr(self.opt, 'bone_length_aug', DEFAULT_BONE_LENGTH_AUG)),
+                float(getattr(self.opt, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN)),
             )
             if bone_length_info['applied']:
                 rest_geom = rest_geom_features(cond)
@@ -2037,11 +2039,15 @@ class Truebones(data.Dataset):
             if not 0 <= value <= 1:
                 raise ValueError(f'{key} must be in [0, 1]')
             setattr(self.opt, key, value if split in ('train', ALL_SPLIT_NAME) else 0.0)
-        self.opt.ref_bone_length_aug = float(kwargs.get('ref_bone_length_aug', 0.1))
-        validate_bone_length_aug(self.opt.ref_bone_length_aug_prob, self.opt.ref_bone_length_aug)
+        self.opt.ref_bone_length_aug = float(kwargs.get('ref_bone_length_aug', DEFAULT_BONE_LENGTH_AUG))
+        self.opt.ref_bone_length_aug_min = float(kwargs.get('ref_bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN))
+        validate_bone_length_aug(self.opt.ref_bone_length_aug_prob, self.opt.ref_bone_length_aug,
+                                 self.opt.ref_bone_length_aug_min)
         self.opt.bone_length_aug_prob = float(kwargs.get('bone_length_aug_prob', 0.0))
         self.opt.bone_length_aug = float(kwargs.get('bone_length_aug', DEFAULT_BONE_LENGTH_AUG))
-        validate_bone_length_aug(self.opt.bone_length_aug_prob, self.opt.bone_length_aug)
+        self.opt.bone_length_aug_min = float(kwargs.get('bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN))
+        validate_bone_length_aug(self.opt.bone_length_aug_prob, self.opt.bone_length_aug,
+                                 self.opt.bone_length_aug_min)
         if self.opt.bone_length_aug_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
             raise ValueError('bone-length augmentation is for training splits only; pass 0.0.')
         if not 0.0 <= self.opt.leaf_drop_prob <= 1.0:

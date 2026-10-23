@@ -29,7 +29,8 @@ from utils.parser_util import (
 from utils import dist_util
 from train.training_loop import TrainLoop
 from data_loaders.get_data import get_dataset_loader
-from data_loaders.truebones.truebones_utils.bone_length_aug import DEFAULT_BONE_LENGTH_AUG
+from data_loaders.truebones.truebones_utils.bone_length_aug import (
+    DEFAULT_BONE_LENGTH_AUG, DEFAULT_BONE_LENGTH_AUG_MIN)
 from utils.model_util import create_model_and_diffusion_general_skeleton, resolve_t5_out_dim
 from model.joint_name_noise import joint_name_noise_basis
 from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform, WandBPlatform #required
@@ -309,10 +310,12 @@ def create_training_data_loader(args):
         leaf_drop_prob=getattr(args, 'leaf_drop_prob', 0.0),
         **{key: getattr(args, key, default) for key, default in (
             ('ref_encoder', False), ('ref_leaf_drop_prob', 0.2),
-            ('ref_bone_length_aug_prob', 0.2), ('ref_bone_length_aug', 0.1),
+            ('ref_bone_length_aug_prob', 0.2), ('ref_bone_length_aug', DEFAULT_BONE_LENGTH_AUG),
+            ('ref_bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN),
             ('ref_joint_name_drop_prob', 0.15))},
         bone_length_aug_prob=getattr(args, 'bone_length_aug_prob', 0.0),
         bone_length_aug=getattr(args, 'bone_length_aug', DEFAULT_BONE_LENGTH_AUG),
+        bone_length_aug_min=getattr(args, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN),
         species_table=getattr(args, 'species_descriptor_table', None),
     )
 
