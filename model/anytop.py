@@ -9,7 +9,7 @@ from model.motion_transformer import (
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
 from utils.device_transfer import host_to_device
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
-    JOINT_STRUCT_DIM,
+    STRUCT_TOPOLOGY_DIM, joint_struct_topology,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (
     JOINT_MODEL_CHANNELS,
@@ -341,27 +341,22 @@ class AnyTop(nn.Module):
 
     @staticmethod
     def _prepare_unreliable_mask(raw_mask, bs, nframes, njoints, device, dtype):
-        """(nframes+1, B, J) float map, T-pose row reliable; None when absent.
+        """(nframes, B, J) float map from the (B, nframes, J) input; None when absent.
 
-        Accepts the loss-side raw (B, nframes, J) layout or the already
-        prepared one. Padding joints are never flagged by either producer
-        (the samplers draw from valid joints only; inference maps derive from
-        the inpaint mask over real joints), so nothing is re-zeroed here.
+        Padding joints are never flagged by either producer (the samplers draw
+        from valid joints only; inference maps derive from the inpaint mask over
+        real joints), so nothing is re-zeroed here.
         """
         if raw_mask is None:
             return None
         mask = raw_mask.to(device=device, dtype=dtype)
-        raw_expected_shape = (bs, nframes, njoints)
-        prepared_expected_shape = (nframes + 1, bs, njoints)
-        if mask.shape == raw_expected_shape:
-            reliable_tpose = torch.zeros((bs, 1, njoints), device=device, dtype=dtype)
-            return torch.cat([reliable_tpose, mask], dim=1).transpose(0, 1).contiguous()
-        if mask.shape != prepared_expected_shape:
+        expected_shape = (bs, nframes, njoints)
+        if mask.shape != expected_shape:
             raise ValueError(
                 "y['cross_limb_unreliable_mask'] must have shape "
-                f"{raw_expected_shape} or {prepared_expected_shape}, got {tuple(mask.shape)}"
+                f"{expected_shape}, got {tuple(mask.shape)}"
             )
-        return mask
+        return mask.transpose(0, 1).contiguous()
 
     @staticmethod
     def _build_joint_key_padding_mask(njoints, n_joints, device):
@@ -1029,7 +1024,7 @@ class AnyTop(nn.Module):
         timesteps: [batch_size] (int)
         """
         joints_padding_mask = y['joints_padding_mask'].to(x.device)
-        rest_geom = y['rest_geom'].to(x.device).unsqueeze(0)
+        rest_geom = y['rest_geom'].to(x.device)
 
         bs, njoints, nfeats, nframes = x.shape
         ref_z, ref_active = self._reference_condition(y, bs, nframes, x.device)
@@ -1078,21 +1073,17 @@ class AnyTop(nn.Module):
                                joint_name_drop=joint_name_drop, rest_geom_drop=rest_geom_drop,
                                species_code=species_code,
                                species_active=species_active) # applies linear layer on each frame to convert it to latent dim
-        # Motion frames only: slot 0 is the rest pose, which has no time.
         tempo_emb = self._tempo_frame_embedding(y, bs, nframes, x.device)
-        x = torch.cat([x[:1], x[1:] + tempo_emb.unsqueeze(2).to(x.dtype)], dim=0)
+        x = x + tempo_emb.unsqueeze(2).to(x.dtype)
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
         spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
         # Temporal self-attention is unmasked: every frame token attends over the
-        # whole window, including the T-pose token at index 0 and, symmetrically,
-        # that token over every frame.
+        # whole window.
 
-        # One prepared (nframes+1, B, J) unreliable map, 1 == being re-drawn,
-        # shared by the input embedding below and every cross-limb block. The
-        # training loss hands over the raw (B, nframes, J) map and the T-pose
-        # row is prepended here as reliable; inference already passes the
-        # prepared layout and must not have it prepended twice.
+        # One (nframes, B, J) unreliable map, 1 == being re-drawn, shared by the
+        # input embedding below and every cross-limb block. Training loss and
+        # inference both hand over the (B, nframes, J) layout.
         cross_limb_unreliable_mask = self._prepare_unreliable_mask(
             y.get('cross_limb_unreliable_mask'), bs, nframes, njoints, x.device, x.dtype
         )
@@ -1174,11 +1165,7 @@ class InputProcess(nn.Module):
         self.latent_dim = latent_dim
         self.root_input_feats = root_input_feats
         self.root_embedding = nn.Linear(self.root_input_feats, self.latent_dim)
-        # The rest token reads rest_geom_features plus the present flag. The
-        # root's bone direction is zero, so its own layer reads height alone.
-        self.tpos_root_embedding = nn.Linear(REST_GEOM_DIM, self.latent_dim)
         self.joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
-        self.tpos_joint_embedding = nn.Linear(REST_GEOM_DIM, self.latent_dim)
         # Training-time noise in the names' principal subspace (model/joint_name_noise.py):
         # nearby names become interchangeable, so a name carries coarse semantics
         # rather than an exact per-name identity.
@@ -1222,14 +1209,22 @@ class InputProcess(nn.Module):
             nn.init.zeros_(self.species_film_j[-1].weight)
             nn.init.zeros_(self.species_film_j[-1].bias)
         self.text_embedding = nn.Linear(t5_output_dim, self.latent_dim)
-        # Structural channel: the joint's own place in the skeleton (its position
-        # along a branch-free run, whether it is a leaf, its height
-        # and signed lateral offset, its sibling rank) projected into the token
+        # Structural channel: the joint's place in the topology (its position
+        # along a branch-free run, whether it is a leaf, its subtree size, its
+        # sibling rank) and its side, projected into every frame's token
         # alongside the name. Ordinary init, NOT zero: this is meant to carry
-        # signal from step one, and it is the only per-joint identity left when
+        # signal from step one, and it is a per-joint identity left when
         # joint_name_drop_prob blanks a joint's name.
         self.struct_embedding = nn.Sequential(
-            nn.Linear(JOINT_STRUCT_DIM, self.latent_dim),
+            nn.Linear(STRUCT_TOPOLOGY_DIM, self.latent_dim),
+            nn.GELU(),
+            nn.Linear(self.latent_dim, self.latent_dim),
+        )
+        # Rest-geometry channel: rest_geom_features plus the present flag,
+        # projected into every frame's token. The only path by which the rest
+        # geometry reaches the denoiser, so rest_geom_drop hides all of it.
+        self.rest_geom_embedding = nn.Sequential(
+            nn.Linear(REST_GEOM_DIM, self.latent_dim),
             nn.GELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
@@ -1237,9 +1232,9 @@ class InputProcess(nn.Module):
     def forward(self, x, rest_geom, joints_embedded_names, joint_valid=None,
                 joint_struct=None, joint_name_drop=None, rest_geom_drop=None,
                 species_code=None, species_active=None):
-        """Embed every (frame, joint); the rest geometry becomes frame 0.
+        """Embed every (frame, joint) with its static per-joint channels.
 
-        ``rest_geom`` is ``[1, B, J, REST_GEOM_DIM]`` (y['rest_geom']).
+        ``rest_geom`` is ``[B, J, REST_GEOM_DIM]`` (y['rest_geom']).
         ``joint_name_drop`` ([B, J] bool) zeroes those joints' whole name rows,
         leaving rest geometry and the topology as their identity signals. No
         1/(1-p) rescale: a hidden row is not a thinned vector.
@@ -1253,21 +1248,13 @@ class InputProcess(nn.Module):
         # x.shape = [batch_size, joints, feature_len, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
         n_joint_channels = len(JOINT_MODEL_CHANNELS)
-        if rest_geom_drop is not None:
-            rest_geom = rest_geom.masked_fill(
-                rest_geom_drop.to(rest_geom.device)[None, :, :, None], 0.0
-            )
-        rest_geom_all_joints_except_root = self.tpos_joint_embedding(rest_geom[:, :, 1:])
-        rest_geom_root_data = self.tpos_root_embedding(rest_geom[:, :, 0:1])
         all_joints_except_root = self.joint_embedding(x[:, :, 1:, :n_joint_channels])
         # Slices, not an index list: a list index uploads to the device per call.
         root_x = x[:, :, 0:1]
         root_data = self.root_embedding(torch.cat(
             [root_x[..., :n_joint_channels]] + [root_x[..., c:c + 1] for c in ROOT_VEL_CHANNELS], dim=-1
         ))
-        tpos_embedded = torch.cat([rest_geom_root_data, rest_geom_all_joints_except_root], dim=2)
-        x_embedded = torch.cat([root_data, all_joints_except_root], dim=2)
-        x = torch.cat([tpos_embedded, x_embedded], dim=0)
+        x = torch.cat([root_data, all_joints_except_root], dim=2)
         joints_clean = joints_embedded_names.to(x.device)
         if joint_valid is None:
             # AnyTop.forward always supplies the real mask; a bare InputProcess
@@ -1319,13 +1306,19 @@ class InputProcess(nn.Module):
         # point of the structural channel is to be the signal that survives a
         # missing name.
         struct_latent = run_in_fp32(
-            self.struct_embedding, joint_struct.to(device=x.device, dtype=x.dtype)
+            self.struct_embedding,
+            joint_struct_topology(joint_struct.to(device=x.device, dtype=x.dtype)),
         )
-        # Re-zero AFTER the projection. The padded rows arrive as zeros, but
-        # the MLP has biases, so a zero row does not stay zero through it --
-        # and a live joint's struct row is never all-zero.
-        struct_latent = struct_latent * joint_valid.unsqueeze(-1).to(struct_latent.dtype)
-        x = x + struct_latent[None, ...]
+        rest_geom = rest_geom.to(device=x.device, dtype=x.dtype)
+        if rest_geom_drop is not None:
+            rest_geom = rest_geom.masked_fill(rest_geom_drop.to(x.device)[..., None], 0.0)
+        rest_latent = run_in_fp32(self.rest_geom_embedding, rest_geom)
+        # Re-zero AFTER the projections. The padded rows arrive as zeros, but
+        # the MLPs have biases, so a zero row does not stay zero through them.
+        # A dropped rest row is a live joint and keeps the bias: present=0 is
+        # its "geometry unknown" input.
+        valid = joint_valid.unsqueeze(-1).to(struct_latent.dtype)
+        x = x + ((struct_latent + rest_latent) * valid)[None, ...]
         # Absolute frame PE, the baseline frame signal for every sample (loop
         # samples add a circular phase on top, per decoder layer -- see
         # circular_phase_embedding). Batch dim 1: only row 0 is kept, so a
@@ -1368,5 +1361,5 @@ class OutputProcess(nn.Module):
             root_data[..., channel] = root_kept[..., n_joint_channels + offset]
         all_joints = nn.functional.pad(joints_kept, (0, self.feature_len - n_joint_channels))
         output = torch.cat([root_data.unsqueeze(2), all_joints], dim=-2)
-        output = output.permute(1, 2, 3, 0)[..., 1:]  # [bs, njoints, nfeats, nframes]
+        output = output.permute(1, 2, 3, 0)  # [bs, njoints, nfeats, nframes]
         return output

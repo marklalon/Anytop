@@ -1168,7 +1168,7 @@ class MotionDataset(data.Dataset):
         self.pointer = 0
         self.max_motion_length = num_frames
         self.cond_dict = cond_dict
-        # The rest token's geometry depends only on the per-species cond entry
+        # The rest geometry depends only on the per-species cond entry
         # (not on the clip), so it is constant across all samples of a species.
         # Precompute once at construction instead of rebuilding it inside the
         # per-sample hot path (_load_physical_motion).

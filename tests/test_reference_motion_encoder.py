@@ -302,18 +302,17 @@ def test_folded_reference_read_matches_explicit_attention():
         layer.ref_attn_gate.fill_(1.)
     frames, batch, joints, width, slots, heads = 6, 2, 3, 16, 2, 4
     x = torch.randn(frames, batch, joints, width)
-    z = torch.randn(batch, frames - 1, slots, 8)
+    z = torch.randn(batch, frames, slots, 8)
     active = torch.tensor([True, False])
     out = layer._read_reference(x, z, active)
-    xn = layer.ref_norm(x[1:, 0])  # [T, J, D], active row only
+    xn = layer.ref_norm(x[:, 0])  # [T, J, D], active row only
     zt = z[0]  # [T, K, d_z]
-    keys = layer.ref_key(zt).view(frames - 1, slots, heads, width)
-    values = layer.ref_value(zt).view(frames - 1, slots, heads, width)
+    keys = layer.ref_key(zt).view(frames, slots, heads, width)
+    values = layer.ref_value(zt).view(frames, slots, heads, width)
     scores = torch.einsum('tjd,tkhd->tjhk', xn, keys) * width ** -.5
     scores = scores + layer.ref_key_bias(zt).permute(0, 2, 1)[:, None]
     read = torch.einsum('tjhk,tkhd->tjd', scores.softmax(-1), values) + layer.ref_out_bias
-    torch.testing.assert_close(out[1:, 0], x[1:, 0] + read, rtol=1e-5, atol=1e-5)
-    torch.testing.assert_close(out[0], x[0], rtol=0, atol=0)
+    torch.testing.assert_close(out[:, 0], x[:, 0] + read, rtol=1e-5, atol=1e-5)
     torch.testing.assert_close(out[:, 1], x[:, 1], rtol=0, atol=0)
 
 

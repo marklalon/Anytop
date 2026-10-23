@@ -78,7 +78,7 @@ def _joint_cond_inputs(batch=2, joints=4, frames=3):
     """Shapes InputProcess is called with from AnyTop.forward."""
     return (
         torch.randn(batch, joints, 12, frames),
-        torch.randn(1, batch, joints, REST_GEOM_DIM),
+        torch.randn(batch, joints, REST_GEOM_DIM),
         torch.randn(batch, joints, T5_DIM),
     )
 

@@ -74,7 +74,7 @@ def _joint_cond_inputs(batch=1, joints=4, frames=3):
     """Shapes InputProcess is called with from AnyTop.forward."""
     return (
         torch.randn(batch, joints, 12, frames),
-        torch.randn(1, batch, joints, REST_GEOM_DIM),
+        torch.randn(batch, joints, REST_GEOM_DIM),
         torch.randn(batch, joints, T5_DIM),
         torch.randn(batch, CODE_DIM),
     )
@@ -192,7 +192,7 @@ class SpeciesHybridTest(unittest.TestCase):
         code[1, T5_DIM + SPECIES_VARIANTS.index('Fluttering')] = 1.0
         model.eval()
         with torch.no_grad():
-            out = ip(x[:1].expand(2, -1, -1, -1), rest_pose[:, :1].expand(-1, 2, -1, -1), joints,
+            out = ip(x[:1].expand(2, -1, -1, -1), rest_pose[:1].expand(2, -1, -1), joints,
                      None, _joint_struct(1).expand(2, -1, -1), species_code=code)
         self.assertFalse(torch.allclose(out[:, 0], out[:, 1]))
 

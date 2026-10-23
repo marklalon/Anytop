@@ -115,16 +115,17 @@ class UnreliableEmbeddingTests(unittest.TestCase):
 
         self.assertFalse(torch.allclose(out_none, out_mask, atol=1e-6))
 
-    def test_tpose_row_is_never_flagged_and_prepared_mask_is_not_prepended_twice(self):
+    def test_prepared_mask_is_frame_major_and_rejects_other_layouts(self):
         model = _small_model()
         raw = _whole_frame_raw_mask([0, 2])
         prepared = model._prepare_unreliable_mask(raw, B, F_, J, torch.device("cpu"), torch.float32)
 
-        self.assertEqual(prepared.shape, (F_ + 1, B, J))
-        self.assertTrue(bool((prepared[0] == 0).all()))
-        self.assertTrue(torch.equal(prepared[1:], raw.transpose(0, 1)))
-        again = model._prepare_unreliable_mask(prepared, B, F_, J, torch.device("cpu"), torch.float32)
-        self.assertTrue(torch.equal(again, prepared))
+        self.assertEqual(prepared.shape, (F_, B, J))
+        self.assertTrue(torch.equal(prepared, raw.transpose(0, 1)))
+        with self.assertRaises(ValueError):
+            model._prepare_unreliable_mask(
+                torch.zeros(F_ + 1, B, J), B, F_, J, torch.device("cpu"), torch.float32
+            )
 
     def test_masks_do_not_leak_across_batch_samples(self):
         model = _small_model()

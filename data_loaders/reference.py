@@ -54,7 +54,7 @@ BONE_DIRECTION_MIN_REST_FRACTION = 1e-3
 
 # Per-joint encoder pose: unit bone direction (3) and height over ``L`` (1).
 REFERENCE_POSE_CHANNELS = 4
-# Target rest token: the rest's pose channels plus a present flag, since an
+# Target rest-geometry channel: the rest's pose channels plus a present flag, since an
 # all-zero geometry (root, coincident helper, grounded joint) is a real value.
 REST_GEOM_DIM = REFERENCE_POSE_CHANNELS + 1
 
@@ -107,8 +107,8 @@ def rest_geom_features(cond):
     The same bone-direction / height channels evaluated on the rest positions,
     so a frame's pose and the rest sit in one space and their difference is
     linear in the inputs. The single builder for both rest inputs: the reference
-    encoder's static per-joint context and the target's rest token
-    (``y['rest_geom']``, loader and generation alike).
+    encoder's static per-joint context and the denoiser's per-joint rest-geometry
+    channel (``y['rest_geom']``, loader and generation alike).
     """
     return reference_pose(rest_pos_from_cond(cond)[None], cond)[0]
 

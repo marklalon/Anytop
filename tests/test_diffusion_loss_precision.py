@@ -262,7 +262,7 @@ class BoneVectorLossTests(unittest.TestCase):
     def test_bone_loss_rejects_a_batch_without_physical_rest(self):
         diffusion = self._make_diffusion()
         parents = np.array([-1, 0, 1], dtype=np.int64)
-        # The rest token's geometry holds unit directions, not lengths.
+        # The rest geometry holds unit directions, not lengths.
         y = {
             "parents": [parents],
             "rest_geom": torch.zeros(1, 3, REST_GEOM_DIM),
@@ -1011,53 +1011,9 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         model(x, torch.tensor([1], dtype=torch.int64), y=y)
 
         self.assertIsNotNone(capture_decoder.last_kwargs)
-        expected = torch.cat(
-            [torch.zeros(1, 1, 4, dtype=torch.float32), raw_unreliable], dim=1
-        ).transpose(0, 1).contiguous()
+        expected = raw_unreliable.transpose(0, 1).contiguous()
         self.assertTrue(torch.equal(capture_decoder.last_kwargs["cross_limb_unreliable_mask"], expected))
         self.assertTrue(torch.equal(y["cross_limb_unreliable_mask"], raw_copy))
-
-    def test_anytop_forward_accepts_prepared_cross_limb_unreliable_mask_without_mutating_input(self):
-        model = AnyTop(
-            max_joints=4,
-            feature_len=12,
-            latent_dim=8,
-            ff_size=32,
-            num_layers=1,
-            num_heads=2,
-            dropout=0.0,
-            cross_limb=True,
-        )
-        capture_decoder = _CaptureDecoder()
-        model.seqTransDecoder = capture_decoder
-        model.eval()
-
-        x = torch.randn(1, 4, 12, 3, dtype=torch.float32)
-        prepared_unreliable = torch.tensor(
-            [[[0.0, 0.0, 0.0, 0.0]],
-             [[0.0, 1.0, 0.0, 0.0]],
-             [[1.0, 0.0, 0.0, 0.0]],
-             [[0.0, 0.0, 1.0, 0.0]]],
-            dtype=torch.float32,
-        )
-        prepared_copy = prepared_unreliable.clone()
-        y = {
-            "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
-            "rest_geom": torch.randn(1, 4, REST_GEOM_DIM, dtype=torch.float32),
-            "n_joints": torch.tensor([4], dtype=torch.int64),
-            "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
-            "joint_struct": torch.zeros(1, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
-            # Unconditional model input -- every forward reads the output frame.
-            "canonical_feature_mean": torch.zeros(12, dtype=torch.float32),
-            "canonical_feature_std": torch.ones(12, dtype=torch.float32),
-            "cross_limb_unreliable_mask": prepared_unreliable,
-        }
-
-        model(x, torch.tensor([1], dtype=torch.int64), y=y)
-
-        self.assertIsNotNone(capture_decoder.last_kwargs)
-        self.assertTrue(torch.equal(capture_decoder.last_kwargs["cross_limb_unreliable_mask"], prepared_unreliable))
-        self.assertTrue(torch.equal(y["cross_limb_unreliable_mask"], prepared_copy))
 
     def test_anytop_sample_subtree_joint_mask_train_matches_sequential_baseline(self):
         model = AnyTop(

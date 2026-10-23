@@ -1,8 +1,9 @@
-"""The rest token's input, y['rest_geom']: rest_geom_features plus a present flag.
+"""The rest-geometry channel, y['rest_geom']: rest_geom_features plus a present flag.
 
 The loader and generation must hand the model the same rows, the rows must
-follow the augmented skeleton, and the training-only drop must hide a joint's
-geometry together with its present flag.
+follow the augmented skeleton, the training-only drop must hide a joint's
+geometry together with its present flag, and no other input may carry the rest
+geometry past that drop.
 """
 import random
 import sys
@@ -21,6 +22,9 @@ from data_loaders.tensors import truebones_batch_collate  # noqa: E402
 from data_loaders.truebones.truebones_utils.leaf_drop import drop_joints_from_cond  # noqa: E402
 from sample.conditioning import create_condition  # noqa: E402
 from tests.test_bone_length_aug import make_dataset  # noqa: E402
+from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
+    JOINT_STRUCT_FEATURE_NAMES,
+)
 from tests.test_joint_name_dropout import (  # noqa: E402
     _joint_cond_inputs, _joint_struct, _make_model,
 )
@@ -93,9 +97,49 @@ def test_dropped_joints_read_as_absent():
     x, rest_geom, names = _joint_cond_inputs()
     struct = _joint_struct()
     drop = torch.tensor([[False, True, False, True], [True, False, False, False]])
-    hidden = rest_geom.masked_fill(drop[None, :, :, None], 0.0)
-    assert bool((hidden[0][drop][:, -1] == 0).all())
+    hidden = rest_geom.masked_fill(drop[:, :, None], 0.0)
+    assert bool((hidden[drop][:, -1] == 0).all())
     with torch.no_grad():
         dropped = ip(x, rest_geom, names, None, struct, rest_geom_drop=drop)
         reference = ip(x, hidden, names, None, struct)
     assert torch.equal(dropped, reference)
+
+
+def test_joint_struct_geometry_columns_never_reach_the_denoiser():
+    """Only the topology columns and the side sign of joint_struct are read, so
+    the rest geometry has one path in, the one rest_geom_drop hides."""
+    ip = _make_model().input_process.eval()
+    x, rest_geom, names = _joint_cond_inputs()
+    struct = _joint_struct()
+    moved = struct.clone()
+    for name in ('height_n', 'fore_aft_n', 'attach_h_n'):
+        moved[..., JOINT_STRUCT_FEATURE_NAMES.index(name)] += 0.37
+    side = JOINT_STRUCT_FEATURE_NAMES.index('lateral_signed')
+    moved[..., side] *= 3.0  # same sign, other magnitude
+    with torch.no_grad():
+        torch.testing.assert_close(ip(x, rest_geom, names, None, struct),
+                                   ip(x, rest_geom, names, None, moved), rtol=0, atol=0)
+
+
+def test_fully_dropped_rest_geom_hides_the_rest():
+    ip = _make_model().input_process.eval()
+    x, rest_geom, names = _joint_cond_inputs()
+    struct = _joint_struct()
+    drop = torch.ones(rest_geom.shape[:2], dtype=torch.bool)
+    with torch.no_grad():
+        a = ip(x, rest_geom, names, None, struct, rest_geom_drop=drop)
+        b = ip(x, torch.randn_like(rest_geom), names, None, struct, rest_geom_drop=drop)
+    torch.testing.assert_close(a, b, rtol=0, atol=0)
+
+
+def test_every_frame_token_reads_the_rest_geometry():
+    """No leading rest frame: the output keeps the input's frame count and
+    every frame changes with the rest geometry."""
+    ip = _make_model().input_process.eval()
+    x, rest_geom, names = _joint_cond_inputs()
+    struct = _joint_struct()
+    with torch.no_grad():
+        a = ip(x, rest_geom, names, None, struct)
+        b = ip(x, rest_geom + 1.0, names, None, struct)
+    assert a.shape[0] == x.shape[-1]
+    assert bool(((a - b).abs().flatten(1).amax(1) > 0).all())

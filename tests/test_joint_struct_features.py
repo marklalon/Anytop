@@ -25,6 +25,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
     JOINT_STRUCT_DIM,
     JOINT_STRUCT_FEATURE_NAMES,
     JointStructFeatureError,
+    joint_struct_topology,
     build_joint_struct_features,
 )
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa: E402
@@ -281,23 +282,29 @@ class PaddingSurvivesTheProjection(unittest.TestCase):
             truebones_batch_collate([item])
 
     def test_the_projected_padding_latent_is_exactly_zero(self):
-        """The MLP has biases, so a zero input row does NOT stay zero through it;
-        the mask has to be reapplied on the output side."""
+        """The MLPs have biases, so a zero input row does NOT stay zero through
+        them; InputProcess reapplies the mask on the output side."""
         torch.manual_seed(0)
         process = InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS), 16, 32).eval()
         valid = torch.tensor([[True, True, False, False]])
         struct = torch.randn(1, 4, JOINT_STRUCT_DIM) * valid.unsqueeze(-1)
+        rest_geom = torch.randn(1, 4, REFERENCE_POSE_CHANNELS + 1) * valid.unsqueeze(-1)
+        x = torch.zeros(1, 4, FEATS_LEN, 3)
+        names = torch.zeros(1, 4, 32)
         with torch.no_grad():
-            raw = process.struct_embedding(struct)
-            masked = raw * valid.unsqueeze(-1)
+            raw = process.struct_embedding(joint_struct_topology(struct))
+            out = process(x, rest_geom, names, valid, struct)
+            bare = process(x, torch.zeros_like(rest_geom), names, torch.zeros_like(valid), struct)
         self.assertGreater(float(raw[0, 2:].abs().max()), 0.0)
-        self.assertEqual(float(masked[0, 2:].abs().max()), 0.0)
+        # Padding rows get no static channel at all: they match a forward in
+        # which every joint is padding.
+        torch.testing.assert_close(out[:, 0, 2:], bare[:, 0, 2:], rtol=0, atol=0)
 
     def test_input_process_refuses_to_run_without_the_descriptors(self):
         process = InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS), 16, 32).eval()
         with self.assertRaises(ValueError):
             process(
-                torch.randn(1, 4, FEATS_LEN, 3), torch.randn(1, 1, 4, REFERENCE_POSE_CHANNELS + 1),
+                torch.randn(1, 4, FEATS_LEN, 3), torch.randn(1, 4, REFERENCE_POSE_CHANNELS + 1),
                 torch.randn(1, 4, 32), torch.ones(1, 4, dtype=torch.bool),
             )
 

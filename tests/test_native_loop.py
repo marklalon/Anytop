@@ -41,7 +41,7 @@ def _phase_step(emb: torch.Tensor, a: int, b: int) -> float:
 
 
 # Toy shapes plus the production one (--num_frames 60 -> T = 61, latent_dim 256).
-_PHASE_SHAPES = ((6, 8), (8, 8), (61, 256))
+_PHASE_SHAPES = ((6, 8), (8, 8), (60, 256))
 
 
 class _CaptureDecoder(torch.nn.Module):
@@ -128,17 +128,15 @@ class NativeLoopTests(unittest.TestCase):
                 )
 
                 self.assertEqual(tuple(emb.shape), (length, dim))
-                # Slot 0 is the T-pose token; motion frames are 1..length-1.
-                self.assertTrue(torch.equal(emb[0], torch.zeros(dim)))
-                ordinary = _phase_step(emb, 2, 1)
+                ordinary = _phase_step(emb, 1, 0)
                 self.assertGreater(ordinary, 1e-2)
                 atol = _closure_atol(dim)
-                for a, b in ((length - 1, length - 2), (1, length - 1)):
+                for a, b in ((length - 1, length - 2), (0, length - 1)):
                     self.assertAlmostEqual(_phase_step(emb, a, b), ordinary, delta=atol)
                 # The frame after the last is frame 0: phase 0 is cos = 1, sin = 0.
                 half = dim // 2
                 expected_first = torch.cat([torch.ones(half), torch.zeros(dim - half)])
-                self.assertTrue(torch.equal(emb[1], expected_first))
+                self.assertTrue(torch.equal(emb[0], expected_first))
 
     def test_circular_phase_wraps_exactly_once_per_window(self):
         """The period is the window, never a cycle count: no frame after the
@@ -153,8 +151,8 @@ class NativeLoopTests(unittest.TestCase):
                     dtype=torch.float32,
                 )
 
-                first = emb[1]
-                for frame in range(2, length):
+                first = emb[0]
+                for frame in range(1, length):
                     self.assertFalse(
                         torch.allclose(emb[frame], first, atol=1e-3), frame
                     )
