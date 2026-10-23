@@ -333,10 +333,9 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         to every object in the batch, or None for unconditional generation.
     species_code_override: [species_code_dim] vector replacing the bound species_code for all objects.
     loop: ask for a closed window -- one bool for the whole batch, or one per
-        object_type (--object_type all resolves --loop auto per species). It is
-        the whole loop condition -- how many gait cycles the window holds is the
-        model's to decide from resample_speed and the species/action prior, so
-        nothing here needs a period table.
+        object_type. It is the whole loop condition -- how many gait cycles the
+        window holds is the model's to decide from resample_speed and the
+        species/action prior, so nothing here needs a period table.
     """
     if isinstance(loop, (list, tuple)):
         if len(loop) != len(object_types):

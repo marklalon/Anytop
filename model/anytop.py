@@ -399,7 +399,10 @@ class AnyTop(nn.Module):
             step = torch.where(is_loop, speed, open_step)
         else:
             step = torch.ones_like(speed)
-        frame_times = torch.arange(nframes, device=device, dtype=torch.float32).view(1, -1, 1)             * step.view(-1, 1, 1)
+        frame_times = (
+            torch.arange(nframes, device=device, dtype=torch.float32).view(1, -1, 1)
+            * step.view(-1, 1, 1)
+        )
         tempo_emb = run_in_fp32(
             self.tempo_projection, create_sin_embedding(frame_times, self.latent_dim)
         )

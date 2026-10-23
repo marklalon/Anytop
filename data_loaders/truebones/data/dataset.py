@@ -1598,11 +1598,10 @@ class MotionDataset(data.Dataset):
         # ── Motion-speed augmentation (applies to every clip) ──
         # Runs ahead of the loop augmentations and is invisible to everything
         # after it: the time-scaled clip is simply a shorter/longer source clip
-        # recorded at a different
-        # tempo, so roll / tile / crop / the window resample and
-        # resample_speed_cond all see an ordinary clip and the model is told
-        # nothing. Its purpose is the corpus' length distribution -- 45% of the
-        # clips sit on five exact frame counts (20/21/26/31/41), so without it
+        # recorded at a different tempo, so roll / tile / crop / the window
+        # resample and resample_speed_cond all see an ordinary clip and the
+        # model is told nothing. Its purpose is the corpus' length distribution
+        # -- much of it piles up on a few exact frame counts, so without it
         # resample_speed is a comb and an inference num_frames between the
         # teeth is out of distribution. A loop clip is time-scaled with its
         # terminal wrap velocity intact, so it is still a closed cycle.

@@ -298,7 +298,7 @@ def add_model_options(parser):
                             "fits (never downgraded to non-loop by slowing down). A phase-anchored clip (label not "
                             "loop_is_phase_free) over the source budget is additionally sped up by at least "
                             "min(L/budget, MAX_FIT_SPEEDUP) -- even with this flag at 1.0 -- so it enters the "
-                            "window whole instead of being cropped. 1.2 is the intended value.")
+                            "window whole instead of being cropped.")
     group.add_argument("--motion_speed_aug_prob", default=1.0, type=float,
                        help="Per-sample probability of applying --motion_speed_aug (default 1.0 = every clip). "
                             "The recorded tempo is one point of the continuum, so leaving a mass at exactly "
@@ -499,9 +499,12 @@ def add_training_options(parser):
     group.add_argument("--num_steps", default=600_000, type=int,
                        help="Training will stop after the specified number of steps.")
     group.add_argument("--num_frames", default=60, type=int,
-                       help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
+                       help="The model's window T in frames. Each clip's L source frames (cropped to at most "
+                            "MAX_SOURCE_FRAMES_MULT * T) are resampled into it, and L / T is its "
+                            "resample_speed_cond.")
     group.add_argument("--min_length", default=20, type=int,
-                       help="Variable-length pipeline lower bound in frames. Inference rejects shorter requested lengths.")
+                       help="Shortest source clip, in frames: shorter clips are dropped, and generation "
+                            "rejects a shorter --num_frames.")
     group.add_argument("--sample_limit", default=0, type=int,
                        help="Limit the number of motion clips loaded for tiny overfit/debug runs. 0 keeps the full dataset.")
     group.add_argument("--motion_cache_size", default=0, type=int,
