@@ -75,7 +75,7 @@ def test_model_attaches_one_basis_to_both_name_paths_without_new_state():
     kwargs = dict(max_joints=4, feature_len=12, latent_dim=16, ff_size=32, num_layers=1,
                   num_heads=2, t5_out_dim=DIM, ref_encoder=True, ref_width=8)
     plain = AnyTop(**kwargs)
-    model = AnyTop(joint_name_noise_std=0.2, ref_joint_name_noise_std=0.1, **kwargs)
+    model = AnyTop(joint_name_noise_std=0.1, **kwargs)
     basis, std = joint_name_noise_basis(_cond_dict(), 4)
     model.set_joint_name_noise_basis(basis, std)
     assert torch.equal(model.input_process.joint_name_noise.basis, basis)

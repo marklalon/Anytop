@@ -119,7 +119,6 @@ class AnyTop(nn.Module):
         # Training-only noise on the name embeddings (model/joint_name_noise.py); the
         # basis is attached after construction by set_joint_name_noise_basis.
         self.joint_name_noise_std=float(kargs.get('joint_name_noise_std', 0.0))
-        self.ref_joint_name_noise_std=float(kargs.get('ref_joint_name_noise_std', 0.0))
         # Rest-geometry drop (see _sample_rest_geom_drop): whole sample, then
         # single joints, drawn independently of the name drop.
         self.rest_geom_drop_prob=float(kargs.get('rest_geom_drop_prob', 0.0))
@@ -292,7 +291,7 @@ class AnyTop(nn.Module):
             self.motion_encoder = MotionEncoder(
                 t5_out_dim, slots=int(kargs.get('ref_slots', 2)), ref_dim=ref_dim,
                 width=ref_width, layers=int(kargs.get('ref_layers', 2)),
-                dropout=self.dropout, joint_name_noise_std=self.ref_joint_name_noise_std,
+                dropout=self.dropout, joint_name_noise_std=self.joint_name_noise_std,
             )
             for layer in self.seqTransDecoder.layers:
                 layer.enable_reference(ref_dim)
