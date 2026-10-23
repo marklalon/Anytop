@@ -97,11 +97,6 @@ class AnyTop(nn.Module):
         self.temporal_span_mask_min_frames=int(kargs.get('temporal_span_mask_min_frames', 4))
         self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 12))
         self.unreliable_mask_drop_prob=float(kargs.get('unreliable_mask_drop_prob', 0.0))
-        self.species_cfg_drop_prob=float(kargs.get('species_cfg_drop_prob', 0.15))
-        if not 0.0 <= self.species_cfg_drop_prob <= 1.0:
-            raise ValueError(
-                f"species_cfg_drop_prob must be in [0, 1], got {self.species_cfg_drop_prob}"
-            )
         self.tempo_cfg_drop_prob=float(kargs.get('tempo_cfg_drop_prob', 0.1))
         if not 0.0 <= self.tempo_cfg_drop_prob <= 1.0:
             raise ValueError(
@@ -109,6 +104,8 @@ class AnyTop(nn.Module):
             )
         # --species_cond: the species code (body plan + variant) FiLM-modulates
         # each joint-name embedding in InputProcess; that is its only entry point.
+        # It is on exactly on the rows without an active reference, so it has
+        # no CFG drop and no null mode of its own.
         self.species_cond=bool(kargs.get('species_cond', False))
         # Whole-joint name dropout (see InputProcess). It defaults to 0.0 so an
         # existing checkpoint rebuilds bit-identically and gains no state_dict key.
@@ -984,28 +981,11 @@ class AnyTop(nn.Module):
             )
         return species_code
 
-    def _resolve_species_active(self, raw_species_active, batch_size, device):
-        """Per-sample keep mask for the per-joint species FiLM condition. An explicit
-        y['species_active'] (e.g. the unconditional branch at sampling) overrides;
-        otherwise training samples a Bernoulli keep so the condition is hard-dropped
-        with probability species_cfg_drop_prob; eval/inference keeps every sample."""
-        if raw_species_active is not None:
-            active = torch.as_tensor(raw_species_active, device=device, dtype=torch.bool).reshape(-1)
-            if active.numel() == 1 and batch_size != 1:
-                active = active.expand(batch_size)
-            elif active.numel() != batch_size:
-                raise ValueError(
-                    "species_active batch dimension must match the motion batch size, got "
-                    f"{active.numel()} for batch {batch_size}"
-                )
-            return active
-        if self.training and self.species_cfg_drop_prob > 0.0:
-            return torch.rand(batch_size, device=device) >= self.species_cfg_drop_prob
-        return torch.ones(batch_size, device=device, dtype=torch.bool)
-
     def _resolve_tempo_active(self, raw_tempo_active, batch_size, device):
-        """Per-sample keep mask for the tempo condition, as _resolve_species_active
-        with tempo_cfg_drop_prob."""
+        """Per-sample keep mask for the tempo condition. An explicit
+        y['tempo_active'] (e.g. the unconditional branch at sampling) overrides;
+        otherwise training samples a Bernoulli keep so the condition is hard-dropped
+        with probability tempo_cfg_drop_prob; eval/inference keeps every sample."""
         if raw_tempo_active is not None:
             active = torch.as_tensor(raw_tempo_active, device=device, dtype=torch.bool).reshape(-1)
             if active.numel() == 1 and batch_size != 1:
@@ -1048,14 +1028,12 @@ class AnyTop(nn.Module):
         species_code = (
             self._coerce_species_code(y, bs, x.device, x.dtype) if self.species_cond else None
         )
-        species_active = (
-            self._resolve_species_active(y.get('species_active'), bs, x.device)
-            if self.species_cond else None
-        )
         # A reference supplies the motion content, so the target species FiLM is
-        # bypassed on every reference-active row, in training and at inference.
-        if species_active is not None and ref_active is not None:
-            species_active = species_active & ~ref_active
+        # bypassed on every reference-active row and applied on every other row,
+        # in training and at inference alike.
+        species_active = (
+            ~ref_active if self.species_cond and ref_active is not None else None
+        )
         # Per-joint validity for the whole-joint name dropout: joints_padding_mask is
         # the outer product valid[i]*valid[j] over max_joints+1 slots whose slot 0 is
         # the always-present leading token, so joint j lives at slot j+1 and the

@@ -37,7 +37,6 @@ from sample.conditioning import (
     _resolve_action_condition,
     _resolve_species_code_override,
     _wrap_action_label_cfg,
-    _wrap_species_cfg,
     _wrap_tempo_cfg,
     _wrap_reference_cfg,
     create_condition,
@@ -152,9 +151,7 @@ def _generate_all_species(
     if action_condition is not None:
         print(f'  Action label: {action_condition["action_label"]!r} '
               f'(group={action_condition["action_group"]})')
-    sampling_model = _wrap_tempo_cfg(
-        _wrap_species_cfg(_wrap_action_label_cfg(model, args, action_condition), args), args,
-    )
+    sampling_model = _wrap_tempo_cfg(_wrap_action_label_cfg(model, args, action_condition), args)
 
     for batch_idx, batch_species in enumerate(species_batches, 1):
             actual_bs = len(batch_species)
@@ -190,8 +187,6 @@ def _generate_all_species(
                 [species_output_lengths[sp][1] for sp in batch_species],
                 dtype=torch.float32, device=dist_util.dev(),
             )
-            model_kwargs['y']['species_active'] = torch.full(
-                (actual_bs,), bool(getattr(args, 'species_active', True)), dtype=torch.bool)
 
             print(f'  Sampling {actual_bs} species × 1 motion each ...')
             sample = _sample_batch(
@@ -880,7 +875,7 @@ def main(args=None, cond_dict=None, runtime=None):
     obj_batch = [object_type] * args.batch_size
     _sampling_model = _wrap_tempo_cfg(
         _wrap_reference_cfg(model, args, _action_condition) if reference_encode else
-        _wrap_species_cfg(_wrap_action_label_cfg(model, args, _action_condition), args),
+        _wrap_action_label_cfg(model, args, _action_condition),
         args,
     )
 
@@ -909,8 +904,6 @@ def main(args=None, cond_dict=None, runtime=None):
         dtype=torch.float32,
         device=dist_util.dev(),
     )
-    model_kwargs['y']['species_active'] = torch.full(
-        (args.batch_size,), bool(getattr(args, 'species_active', True)), dtype=torch.bool)
     if encoder_reference is not None:
         model_kwargs['y'].update(encoder_reference)
 

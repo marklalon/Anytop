@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 45
+CKPT_VERSION = 46
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -372,9 +372,6 @@ def add_model_options(parser):
                             "(sibling / sibling_limb / cousin), so a skeleton whose symmetry pairing "
                             "missed some twins stays in distribution. Both directions of a pair drop "
                             "together. Inference never drops.")
-    group.add_argument("--species_cfg_drop_prob", default=0.15, type=float,
-                       help="Per-sample probability of bypassing per-joint species FiLM during training "
-                            "(identity modulation), enabling species classifier-free guidance.")
     group.add_argument("--tempo_cfg_drop_prob", default=0.1, type=float,
                        help="Per-sample probability of dropping the tempo condition (each window "
                             "frame's physical time, from resample_speed_cond) during training, "
@@ -382,7 +379,8 @@ def add_model_options(parser):
     group.add_argument("--species_cond", action='store_true',
                        help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_code], "
                             "species_code = [T5(body plan) || variant one-hot]. Zero-initialized to "
-                            "identity; CFG-droppable via --species_cfg_drop_prob.")
+                            "identity. Applied on every row without an active reference and "
+                            "bypassed on every reference-active row; it has no CFG drop.")
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the clip's action_label ('run, forward, "
                             "left, glide' -- controlled keywords, not prose) is split into words, pooled "
@@ -639,12 +637,6 @@ def add_sampling_options(parser):
                             "which also makes the BVH rotation-only). Same meaning as restore_glb_from_npy --stretch-factor.")
 
 
-def _bool_argument(value):
-    if str(value).lower() not in ('true', 'false'):
-        raise argparse.ArgumentTypeError('Expected true or false')
-    return str(value).lower() == 'true'
-
-
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
     group.add_argument('--reference_source_type', default='', help='Source cond species for an encoded NPY --reference_motion.')
@@ -656,12 +648,6 @@ def add_generate_options(parser):
     group.add_argument('--ref_cfg_scale', type=float, default=1.0,
                        help='Reference CFG scale on the high-noise half of the steps, where global '
                             'posture (facing, body height) is decided; the detail steps use 1.')
-    group.add_argument('--species_active', type=_bool_argument,
-                       choices=(True, False), default=None,
-                       help='Target species condition; true / false. '
-                            'Defaults to true. Cannot be supplied with an encoded '
-                            '--reference_motion (one without skip_timesteps / inpaint / outpaint), '
-                            'which always disables the species condition.')
     group.add_argument("--num_frames", default=None, type=int,
                        help="The number of frames in the sampled motion. Omit it to let "
                             "generation pick one, in this priority order: --reference_motion's "
@@ -792,17 +778,6 @@ def add_generate_options(parser):
                             "and species outweigh a length the corpus rarely pairs with them; above "
                             "1 holds the motion to it. 1.0 (default) costs no extra forward. "
                             "Requires a checkpoint trained with --tempo_cfg_drop_prob > 0.")
-    group.add_argument("--species_cfg_scale", default=1.0, type=float,
-                       help="Classifier-free guidance scale over the species descriptor, "
-                            "applied on the high-noise half of the steps "
-                            "only (the detail steps use 1). 1.0 (default) uses one forward; any "
-                            "other scale uses two on the high-noise steps (four with action-label CFG). "
-                            "The unconditional pass bypasses per-joint species FiLM. "
-                            "Ignored when --species_active false, with no extra species forwards. "
-                            "Requires a checkpoint trained with --species_cond and non-zero "
-                            "--species_cfg_drop_prob. Uses --species_tags when supplied, otherwise "
-                            "the target species' baked descriptor.")
-
 
 def train_args():
     parser = ArgumentParser()
@@ -840,14 +815,9 @@ def generate_args(argv=None):
     )
     encoded_reference = is_encoded_reference(args.reference_motion, args.skip_timesteps,
                                              args.inpaint_joints, args.inpaint_frames, args.outpaint)
-    if encoded_reference and args.species_active is not None:
-        parser.error('an encoded --reference_motion cannot be combined with --species_active; '
-                     'encode always disables the species condition')
     if encoded_reference and str(args.action_label or '').strip():
         parser.error('an encoded --reference_motion cannot be combined with --action_label; '
                      'the reference supplies the motion content')
-    if args.species_active is None:
-        args.species_active = not encoded_reference
     return args
 
 def process_new_skeleton_args():

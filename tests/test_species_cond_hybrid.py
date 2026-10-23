@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import sys
-import types
 import unittest
-from unittest.mock import Mock
 from pathlib import Path
 
 import torch
@@ -21,7 +19,6 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
     JOINT_STRUCT_DIM,
 )
 from model.anytop import AnyTop  # noqa: E402
-from model.cfg_sampler import ClassifierFreeSpeciesModel  # noqa: E402
 
 
 T5_DIM = 512
@@ -56,7 +53,7 @@ class _ProbeHead(torch.nn.Module):
         return self.real(inp)
 
 
-def _make_model(species_cfg_drop_prob=0.15, species_cond=False, **extra):
+def _make_model(species_cond=False, **extra):
     return AnyTop(
         max_joints=4,
         feature_len=12,
@@ -67,7 +64,6 @@ def _make_model(species_cfg_drop_prob=0.15, species_cond=False, **extra):
         dropout=0.0,
         cross_limb=True,
         t5_out_dim=T5_DIM,
-        species_cfg_drop_prob=species_cfg_drop_prob,
         species_cond=species_cond,
         **extra,
     )
@@ -114,11 +110,7 @@ class SpeciesHybridTest(unittest.TestCase):
         self.assertFalse(model.species_cond)
         self.assertIsNone(model.input_process.species_film_j)
 
-    def test_invalid_drop_prob_rejected(self):
-        with self.assertRaises(ValueError):
-            _make_model(species_cond=True, species_cfg_drop_prob=1.5)
-
-    def test_cfg_drop_bypasses_entire_joint_modulation(self):
+    def test_inactive_row_bypasses_entire_joint_modulation(self):
         model = _make_model(species_cond=True).eval()
         ip = model.input_process
         torch.nn.init.normal_(ip.species_film_j[-1].weight, std=0.1)
@@ -131,23 +123,19 @@ class SpeciesHybridTest(unittest.TestCase):
         self.assertFalse(torch.allclose(mixed[:, 0], plain[:, 0]))
         self.assertTrue(torch.equal(mixed[:, 1], plain[:, 1]))
 
-    def test_full_drop_in_training_matches_explicit_bypass(self):
-        model = _make_model(species_cond=True, species_cfg_drop_prob=1.0).train()
+    def test_training_without_reference_never_drops_species(self):
+        model = _make_model(species_cond=True).train()
         torch.nn.init.normal_(model.input_process.species_film_j[-1].weight, std=0.1)
         model.seqTransDecoder = _CaptureDecoder()
         x, t = torch.randn(2, 4, 12, 3), torch.tensor([1, 2])
-        y = _make_y(species_code=torch.randn(2, CODE_DIM))
-        dropped = model(x, t, y=y)
-        explicit = model(x, t, y=dict(y, species_active=False))
-        kept = model(x, t, y=dict(y, species_active=True))
-        self.assertTrue(torch.equal(dropped, explicit))
-        self.assertFalse(torch.allclose(dropped, kept))
-
-    def test_eval_keeps_and_validates_species_mask(self):
-        model = _make_model(species_cfg_drop_prob=1.0).eval()
-        self.assertTrue(model._resolve_species_active(None, 2, 'cpu').all())
-        with self.assertRaisesRegex(ValueError, 'batch dimension'):
-            model._resolve_species_active([True, False, True], 2, 'cpu')
+        y = _make_y()
+        y['joints_names_embs'] = torch.randn(2, 4, T5_DIM)
+        code = torch.randn(2, CODE_DIM)
+        for _ in range(8):
+            first = model(x, t, y=dict(y, species_code=code))
+            second = model(x, t, y=dict(y, species_code=torch.randn(2, CODE_DIM)))
+            for row in range(2):
+                self.assertFalse(torch.allclose(first[row], second[row]))
 
     def test_joint_cond_film_keeps_text_embedding_dim(self):
         plain = _make_model()
@@ -248,7 +236,7 @@ class SpeciesHybridTest(unittest.TestCase):
 
     def test_species_reaches_the_decoder_only_through_the_input(self):
         """No sample-level path: the timestep bus does not carry the species."""
-        model = _make_model(species_cond=True, species_cfg_drop_prob=0.0).eval()
+        model = _make_model(species_cond=True).eval()
         torch.nn.init.normal_(model.input_process.species_film_j[-1].weight, std=0.1)
         capture = _CaptureDecoder()
         model.seqTransDecoder = capture
@@ -264,7 +252,7 @@ class SpeciesHybridTest(unittest.TestCase):
         self.assertFalse(torch.allclose(seen[0]['tgt'], seen[1]['tgt']))
 
     def test_full_forward_joint_condition(self):
-        model = _make_model(species_cfg_drop_prob=0.0, species_cond=True)
+        model = _make_model(species_cond=True)
         model.eval()
         capture = _CaptureDecoder()
         model.seqTransDecoder = capture
@@ -275,53 +263,6 @@ class SpeciesHybridTest(unittest.TestCase):
         self.assertIsNotNone(capture.last_kwargs)
         self.assertEqual(out.shape, x.shape)
 
-    def test_species_cfg_matches_explicit_film_branches(self):
-        model = _make_model(species_cond=True)
-        model.eval()
-        torch.nn.init.normal_(model.input_process.species_film_j[-1].weight, std=0.1)
-        model.seqTransDecoder = _TimestepEchoDecoder()
-        x = torch.randn(2, 4, 12, 3)
-        t = torch.tensor([98, 99])
-        y = _make_y(species_code=torch.randn(2, CODE_DIM))
-        y['joints_names_embs'] = torch.randn(2, 4, T5_DIM)
-        with torch.no_grad():
-            cond = model(x, t, y=dict(y, species_active=torch.ones(2, dtype=torch.bool)))
-            uncond = model(x, t, y=dict(y, species_active=torch.zeros(2, dtype=torch.bool)))
-            guided = ClassifierFreeSpeciesModel(model, 2.0, 100)(x, t, y=y)
-        self.assertFalse(torch.allclose(cond, uncond))
-        self.assertTrue(torch.allclose(guided, uncond + 2 * (cond - uncond), atol=1e-6))
-        self.assertNotIn('species_active', y)
-
-    def test_species_cfg_requires_trained_joint_condition(self):
-        from sample.conditioning import _wrap_species_cfg
-        args = types.SimpleNamespace(species_cfg_scale=2.0, species_cfg_drop_prob=0.15,
-                                     diffusion_steps=100)
-        with self.assertRaises(SystemExit):
-            _wrap_species_cfg(_make_model(), args)
-        args.species_cfg_drop_prob = 0.0
-        with self.assertRaises(SystemExit):
-            _wrap_species_cfg(_make_model(species_cond=True), args)
-        args.species_cfg_drop_prob = 0.15
-        self.assertIsInstance(
-            _wrap_species_cfg(_make_model(species_cond=True), args),
-            ClassifierFreeSpeciesModel,
-        )
-
-    def test_disabled_species_cfg_preserves_forward_count(self):
-        from sample.conditioning import _wrap_species_cfg
-        from model.cfg_sampler import ClassifierFreeActionModel
-        for scale in (0.0, 2.0, float('nan')):
-            for action_cfg in (False, True):
-                with self.subTest(scale=scale, action_cfg=action_cfg):
-                    inner = Mock(return_value=torch.ones(2, 1, 1, 1))
-                    model = ClassifierFreeActionModel(inner, 2.0, 100) if action_cfg else inner
-                    args = types.SimpleNamespace(species_active=False, species_cfg_scale=scale,
-                                                 species_cfg_drop_prob=0.0)
-                    wrapped = _wrap_species_cfg(model, args)
-                    self.assertIs(wrapped, model)
-                    y = {'species_active': torch.zeros(2, dtype=torch.bool)}
-                    wrapped(torch.zeros(2, 1, 1, 1), torch.full((2,), 99), y=y)
-                    self.assertEqual(inner.call_count, 2 if action_cfg else 1)
 
 
 if __name__ == '__main__':
