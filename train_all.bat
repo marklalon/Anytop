@@ -33,16 +33,16 @@ pushd "%SCRIPT_DIR%"
 	--species_film_bottleneck 64 ^
 	--species_cond ^
 	--ref_encoder ^
-	--ref_slots 4 ^
+	--ref_slots 3 ^
 	--ref_dim 8 ^
 	--ref_width 128 ^
 	--ref_layers 2 ^
 	--ref_cfg_drop_prob 0.6 ^
-	--leaf_drop_prob 0.3 ^
-	--bone_length_aug_prob 0.3 ^
+	--leaf_drop_prob 0.2 ^
+	--bone_length_aug_prob 0.2 ^
 	--bone_length_aug_max 0.2 ^
 	--bone_length_aug_min 0.1 ^
-	--rest_repose_prob 0.5 ^
+	--rest_repose_prob 0.0 ^
 	--rest_repose_max_deg 20 ^
 	--motion_speed_aug 1.3 ^
 	--loop_cond_prob 0.8 ^
@@ -61,14 +61,14 @@ pushd "%SCRIPT_DIR%"
 	--dropout_prob 0.1 ^
 	--action_label_cfg_drop_prob 0.2 ^
 	--tempo_cfg_drop_prob 0.1 ^
-	--joint_mask_prob 0.3 ^
+	--joint_mask_prob 0.2 ^
 	--joint_mask_budget 0.15 ^
 	--unreliable_mask_drop_prob 0.2 ^
 	--renoise_same_level_prob 0.8 ^
-	--joint_name_drop_prob 0.2 ^
+	--joint_name_drop_prob 0.15 ^
 	--direction_slot_drop_prob 0.15 ^
 	--modifier_slot_drop_prob 0.15 ^
-	--temporal_span_mask_prob 0.3 ^
+	--temporal_span_mask_prob 0.2 ^
 	--temporal_span_seam_loss_weight 0.2 ^
 	--lambda_loop_wrap 0.04 ^
 	--lambda_loop_root_closure 0.04 ^
