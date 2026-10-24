@@ -463,7 +463,7 @@ class GaussianDiffusion:
             if default is None:
                 raise KeyError(
                     f"y[{key!r}] is missing; the training loader collates it from cond.npy "
-                    "(regenerate the cond if it predates root-only velocity)."
+                    "(regenerate the cond if it predates it)."
                 )
             return th.full((batch_size,), float(default), device=device, dtype=th.float32)
         value = value if torch.is_tensor(value) else th.as_tensor(np.asarray(value, dtype=np.float32))

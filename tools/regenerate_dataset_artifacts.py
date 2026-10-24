@@ -59,7 +59,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa:
     set_aux_loss_weights,
     set_canonical_global_stats,
     species_aux_loss_weights,
-    with_root_world_xz,
+    stored_to_working,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
     STALE_JOINT_ANNOTATION_KEYS,
@@ -237,7 +237,7 @@ def _compute_canonical_stats(
             continue
         try:
             subset_accs[subset] = accumulate_lnorm_stats(
-                with_root_world_xz(motion), object_cond, acc=subset_accs.get(subset), species=object_type
+                stored_to_working(motion), object_cond, acc=subset_accs.get(subset), species=object_type
             )
         except (KeyError, ValueError):
             # cond entry lacks rest geometry (e.g. minimal synthetic fixtures);

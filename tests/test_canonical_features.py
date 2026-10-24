@@ -531,7 +531,7 @@ def test_cond_of_another_feature_space_is_refused_unless_restamped():
     cf.assert_single_canonical_frame({"Dog": current})
 
 
-def _stored_clip(rng, n_frames, n_joints, step=1.0):
+def _stored_clip(rng, n_frames, n_joints):
     """A stored clip of a random world motion: RIC positions, velocity rows
     that are world steps, frame 0's root on the origin."""
     world = np.cumsum(rng.normal(size=(n_frames, n_joints, 3)), axis=0).astype(np.float64)
@@ -541,43 +541,41 @@ def _stored_clip(rng, n_frames, n_joints, step=1.0):
     motion = np.zeros((n_frames, n_joints, 12), dtype=np.float32)
     motion[..., 0:3] = ric
     motion[..., 3:9] = rng.normal(size=(n_frames, n_joints, 6))
-    motion[:-1, :, 9:12] = (world[1:] - world[:-1]) / step
+    motion[:-1, :, 9:12] = world[1:] - world[:-1]
     motion[-1, :, 9:12] = motion[-2, :, 9:12]
     return world, motion
 
 
 def test_working_layout_carries_the_root_world_xz():
     world, stored = _stored_clip(np.random.default_rng(3), 6, 3)
-    working = cf.with_root_world_xz(stored)
+    working = cf.stored_to_working(stored)
     np.testing.assert_allclose(working[:, 0, [0, 2]], world[:, 0, [0, 2]], atol=1e-5)
-    np.testing.assert_array_equal(working[:, 0, 1:2], stored[:, 0, 1:2])
-    np.testing.assert_array_equal(working[:, 0, 3:], stored[:, 0, 3:])
-    np.testing.assert_array_equal(working[:, 1:], stored[:, 1:])
+    np.testing.assert_array_equal(working[:, 0, 1], stored[:, 0, 1])
+    np.testing.assert_array_equal(working[:, :, 3:9], stored[:, :, 3:9])
+    np.testing.assert_array_equal(working[:, 1:, 0:3], stored[:, 1:, 0:3])
+    # The working layout carries no velocity.
+    np.testing.assert_array_equal(working[..., 9:12], 0.0)
     # The all-RIC view is the stored positions again, numpy and [B, J, F, T] torch.
     np.testing.assert_allclose(cf.root_relative_positions(working)[..., 0:3], stored[..., 0:3], atol=1e-5)
     rel = cf.root_relative_positions(torch.as_tensor(working).permute(1, 2, 0).unsqueeze(0))
     np.testing.assert_allclose(rel[0].permute(2, 0, 1)[..., 0:3].numpy(), stored[..., 0:3], atol=1e-5)
 
 
-def test_rebuild_derived_velocity_writes_the_stored_layout():
-    # A decoded working window (no velocity, the root's world XZ in ch0/ch2)
-    # becomes the stored clip of the same world motion, at the window's step.
-    step = 0.75
-    world, stored = _stored_clip(np.random.default_rng(7), 6, 3, step=step)
-    decoded = cf.zero_velocity(stored)
-    decoded[:, 0, [0, 2]] = world[:, 0, [0, 2]]
-    np.testing.assert_allclose(cf.rebuild_derived_velocity(decoded, is_loop=False, step_scale=step), stored, atol=1e-5)
+def test_working_to_stored_writes_the_root_velocity():
+    # A working clip goes back to the stored layout: RIC positions and the
+    # root's world steps, the only velocity a stored-clip reader uses.
+    world, stored = _stored_clip(np.random.default_rng(7), 6, 3)
+    working = cf.stored_to_working(stored)
+    expected = cf.zero_velocity(stored)
+    expected[:, 0, 9:12] = stored[:, 0, 9:12]
+    np.testing.assert_allclose(cf.working_to_stored(working, is_loop=False), expected, atol=1e-5)
 
     # A loop's terminal row is the wrap step.
-    looped = stored.copy()
-    looped[-1, :, 9:12] = (world[0] - world[-1]) / step
-    np.testing.assert_allclose(cf.rebuild_derived_velocity(decoded, is_loop=True, step_scale=step), looped, atol=1e-5)
+    expected[-1, 0, 9:12] = world[0, 0] - world[-1, 0]
+    np.testing.assert_allclose(cf.working_to_stored(working, is_loop=True), expected, atol=1e-5)
 
-    # A stored clip read into the working layout writes back unchanged.
-    _world, stored = _stored_clip(np.random.default_rng(8), 6, 3)
-    np.testing.assert_allclose(
-        cf.rebuild_derived_velocity(cf.zero_velocity(cf.with_root_world_xz(stored)), is_loop=False), stored, atol=1e-5,
-    )
+    # Reading it back gives the same working clip.
+    np.testing.assert_allclose(cf.stored_to_working(cf.working_to_stored(working, is_loop=True)), working, atol=1e-5)
 
 
 def test_species_aux_loss_weights_only_scale_down():
@@ -598,7 +596,7 @@ def test_species_aux_loss_weights_only_scale_down():
 
 def test_lnorm_stats_measure_the_root_position_on_its_own():
     _world, stored = _stored_clip(np.random.default_rng(5), 8, 3)
-    working = cf.with_root_world_xz(stored)
+    working = cf.stored_to_working(stored)
     cond = mark_canonical_cond_entry(
         {"rest_pose": np.zeros((3, 12), dtype=np.float32), "parents": np.array([-1, 0, 1])}
     )

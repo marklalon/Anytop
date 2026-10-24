@@ -129,10 +129,9 @@ def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_A
     """Return (physical motion, private cond, diagnostics); skip is a no-op.
 
     ``motion`` is in the working layout (canonical_features, "Root"), whose
-    translation root is joint 0. Position/velocity encoding uses the existing
-    identity-facing HML basis. No temporal operations run here. Closed clips
-    retain their closing key; terminal velocity uses the same last->first
-    convention as preprocessing.
+    translation root is joint 0. Positions use the existing identity-facing HML
+    basis. No temporal operations run here. Closed clips retain their closing
+    key.
     """
     validate_bone_length_aug(1.0, magnitude, min_magnitude)
     info = {'applied': False, 'scales': {}, 'skip_reason': '', 'notes': [],
@@ -189,7 +188,6 @@ def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_A
     target = _scale_positions(source, parents, order, scales)
     # So does the clip's lowest point: a foot that reached the floor still does.
     target[..., 1] += float(source[..., 1].min() - target[..., 1].min())
-    periodic = bool(metadata.get('is_loop', False))
 
     out = np.array(motion, dtype=np.float32, copy=True)
     out[..., :3] = target
@@ -200,17 +198,6 @@ def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_A
     out[:, tri, 2] = motion[:, tri, 2]
     # No contact IK: retain the source local-rotation channels exactly.
     # The copy above already carries motion[..., 3:9].
-    out[:-1, :, 9:12] = np.diff(target, axis=0)
-    # Convert RIC differences to world velocity using the existing root travel.
-    out[:-1, :, 9] += motion[:-1, tri:tri+1, 9]
-    out[:-1, :, 11] += motion[:-1, tri:tri+1, 11]
-    # Preserve the source locomotion displacement at a periodic wrap. The
-    # spatial augmentation changes relative joint trajectories, not root speed.
-    if periodic:
-        delta = target - source
-        out[-1, :, 9:12] = motion[-1, :, 9:12] + delta[0] - delta[-1]
-    elif len(out) > 1:
-        out[-1, :, 9:12] = out[-2, :, 9:12]
     if not np.isfinite(out).all():
         raise ValueError('Non-finite bone-length reconstructed motion; invalid numerical input.')
     info['applied'] = True

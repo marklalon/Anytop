@@ -44,7 +44,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa:
     set_aux_loss_weights,
     set_canonical_global_stats,
     species_aux_loss_weights,
-    with_root_world_xz,
+    stored_to_working,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
     load_cond,
@@ -186,7 +186,7 @@ def _recompute_canonical_stats(merged_cond, sources) -> tuple:
             subset = subset_of[object_key]
             try:
                 subset_accs[subset] = accumulate_lnorm_stats(
-                    with_root_world_xz(motion), merged_cond[object_key], acc=subset_accs.get(subset), species=object_key
+                    stored_to_working(motion), merged_cond[object_key], acc=subset_accs.get(subset), species=object_key
                 )
             except (KeyError, ValueError):
                 skipped += 1

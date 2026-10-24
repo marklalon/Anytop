@@ -56,7 +56,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
-    with_root_world_xz,
+    stored_to_working,
 )
 from data_loaders.truebones.truebones_utils.joint_embedding_text import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
@@ -246,8 +246,8 @@ def _copy_required_motion_metadata(motion_name: str, motion_metadata) -> dict[st
         raise KeyError(f"Motion '{motion_name}' is missing explicit motion metadata.")
     if 'translation_root_index' not in motion_metadata:
         raise KeyError(f"Motion '{motion_name}' metadata is missing translation_root_index.")
-    # The canonical space keeps velocity on joint 0 alone (canonical_features,
-    # "Derived velocity"), so joint 0 must be the one carrying the locomotion.
+    # The working layout holds the root's world XZ on joint 0 (canonical_features,
+    # "Root"), so joint 0 must be the one carrying the locomotion.
     if int(motion_metadata['translation_root_index']) != 0:
         raise ValueError(
             f"Motion '{motion_name}' has translation_root_index="
@@ -342,13 +342,16 @@ def resample_motion_features(motion, target_num_frames, *, periodic=False):
     frames ``0 .. L-1`` end to end.
 
     ``periodic=True`` treats it as one closed cycle whose frame ``L`` is frame
-    0 (a loop after ``_drop_loop_closing_frame``, whose terminal velocity row
-    is the wrap delta): target frame ``t`` samples source time ``t * L / T``
+    0 (a loop after ``_drop_loop_closing_frame``): target frame ``t`` samples
+    source time ``t * L / T``
     and interpolates across the wrap, so the window's own wrap step is one
     ordinary target step and the result is periodic in ``T``. The open mapping
     would instead give a loop an interior step of ``(L-1)/(T-1)`` source frames
     against a wrap step of exactly 1, a non-uniform period that is only
     uniform when ``L == T``.
+
+    ``motion`` is in the working layout (canonical_features, "Root"): every
+    channel is a position or a rotation, so each is interpolated the same way.
     """
     source_frames = int(motion.shape[0])
     target_num_frames = int(target_num_frames)
@@ -359,48 +362,11 @@ def resample_motion_features(motion, target_num_frames, *, periodic=False):
     if source_frames == target_num_frames:
         return motion
 
-    step_scale = resample_step_scale(source_frames, target_num_frames, periodic=periodic)
     lo, hi, w = _resample_frame_weights(source_frames, target_num_frames, periodic=periodic)
     w = w[:, None, None].astype(np.float32)
     resampled = (motion[lo] * (1.0 - w) + motion[hi] * w).astype(motion.dtype, copy=False)
 
-    if resampled.shape[-1] >= 12:
-        # Velocity channels are stored so that `vel[t] * step_scale` recovers
-        # the target-frame position delta (the stored contract
-        # rebuild_derived_velocity writes).
-        # Linear interpolation of source velocities would give the instantaneous
-        # value at src[t], which is off whenever step_scale != 1; instead we
-        # integrate to a position path, interpolate that, then take target-step
-        # differences divided by step_scale.
-        #
-        # The path has one node per source frame boundary, L + 1 of them, the
-        # last one reached through the terminal row. A periodic clip samples it
-        # at T + 1 positions, the last at source time L, so the terminal target
-        # row is the wrap delta; an open clip has no step past its last frame
-        # and repeats its last visible velocity.
-        velocity = motion[:, :, 9:12].astype(np.float64, copy=False)
-        source_velocity_path = np.zeros((source_frames + 1, motion.shape[1], 3), dtype=np.float64)
-        source_velocity_path[1:] = np.cumsum(velocity, axis=0)
-        path_lo, path_hi, path_w, _ = _resample_path_weights(
-            source_frames, target_num_frames, periodic=periodic
-        )
-        path_w = path_w[:, None, None]
-        resampled_velocity_path = (
-            source_velocity_path[path_lo] * (1.0 - path_w)
-            + source_velocity_path[path_hi] * path_w
-        )
-        rebuilt_velocity = (
-            (resampled_velocity_path[1:] - resampled_velocity_path[:-1]) / step_scale
-        ).astype(motion.dtype, copy=False)
-        if periodic:
-            resampled[:, :, 9:12] = rebuilt_velocity
-        elif target_num_frames > 1:
-            resampled[:-1, :, 9:12] = rebuilt_velocity
-            resampled[-1, :, 9:12] = rebuilt_velocity[-1]
-        else:
-            resampled[0, :, 9:12] = 0.0
-
-    return resampled.astype(motion.dtype, copy=False)
+    return resampled
 
 
 def _resample_frame_weights(source_frames, target_num_frames, *, periodic=False):
@@ -417,24 +383,6 @@ def _resample_frame_weights(source_frames, target_num_frames, *, periodic=False)
         lo = np.floor(src).astype(np.int64).clip(0, source_frames - 1)
         hi = np.minimum(lo + 1, source_frames - 1)
     return lo, hi, src - lo
-
-
-def _resample_path_weights(source_frames, target_num_frames, *, periodic=False):
-    """Where ``resample_motion_features`` samples the velocity path (node ``k``
-    = position after ``k`` source steps), plus the number of source nodes it
-    reads. A periodic clip samples ``T + 1`` positions up to node ``L`` (so its
-    terminal target row is the wrap delta); an open one samples its ``T``
-    frame positions and never reads past node ``L - 1``, so the terminal row
-    (not a step of an open clip) is never used."""
-    if periodic:
-        path_src = np.arange(target_num_frames + 1, dtype=np.float64) * source_frames / target_num_frames
-        last_node = source_frames
-    else:
-        path_src = np.linspace(0.0, float(source_frames - 1), target_num_frames, endpoint=True, dtype=np.float64)
-        last_node = source_frames - 1
-    path_lo = np.floor(path_src).astype(np.int64).clip(0, last_node)
-    path_hi = np.minimum(path_lo + 1, last_node)
-    return path_lo, path_hi, path_src - path_lo, last_node + 1
 
 
 def _interpolation_matrix(lo, hi, w, columns):
@@ -457,10 +405,6 @@ def invert_resample_motion_features(window, source_frames, *, periodic=False):
     linear map when it upsamples, so solving it instead recovers the source
     exactly from an exact window and averages a noisy one. Only defined for
     ``source_frames <= T``; the caller falls back to linear resampling above.
-
-    The velocity channels are inverted through their position path, the same
-    way the forward resample builds them, so they keep the "per source frame"
-    contract.
     """
     target_num_frames = int(window.shape[0])
     source_frames = int(source_frames)
@@ -477,31 +421,6 @@ def invert_resample_motion_features(window, source_frames, *, periodic=False):
     source = np.linalg.lstsq(frame_matrix, flat, rcond=None)[0]
     source = source.reshape((source_frames,) + window.shape[1:])
 
-    if window.shape[-1] >= 12:
-        step_scale = resample_step_scale(source_frames, target_num_frames, periodic=periodic)
-        velocity = window[:, :, 9:12].astype(np.float64)
-        # Window path nodes, in positions: a periodic window's T rows are its T
-        # steps (the last one the wrap); an open window's last row repeats the
-        # one before it and is not a step.
-        steps = velocity if periodic else velocity[:-1]
-        window_path = np.zeros((steps.shape[0] + 1,) + velocity.shape[1:], dtype=np.float64)
-        window_path[1:] = np.cumsum(steps * step_scale, axis=0)
-        path_lo, path_hi, path_w, source_nodes = _resample_path_weights(
-            source_frames, target_num_frames, periodic=periodic
-        )
-        path_matrix = _interpolation_matrix(path_lo, path_hi, path_w, source_nodes)
-        # Node 0 is the path origin on both sides; solve for the rest.
-        source_path = np.zeros((source_nodes,) + velocity.shape[1:], dtype=np.float64)
-        source_path[1:] = np.linalg.lstsq(
-            path_matrix[:, 1:], window_path.reshape(window_path.shape[0], -1), rcond=None
-        )[0].reshape((source_nodes - 1,) + velocity.shape[1:])
-        source_velocity = np.diff(source_path, axis=0)
-        if periodic:
-            source[:, :, 9:12] = source_velocity
-        else:
-            source[:-1, :, 9:12] = source_velocity
-            source[-1, :, 9:12] = source_velocity[-1]
-
     return source.astype(window.dtype, copy=False)
 
 
@@ -514,14 +433,6 @@ def time_scale_motion_features(motion, target_num_frames, *, periodic=False):
     stage (loop roll / tile, crop, the window resample and its
     ``resample_speed_cond``) treats it exactly like a clip recorded at that
     tempo, and the model is told nothing about it.
-
-    ``resample_motion_features`` deliberately leaves the velocity channels in
-    "per SOURCE frame" units (the loss multiplies them by the step scale it
-    reconstructs from ``resample_speed_cond``); here the new frames ARE the
-    source frames, so the velocities are rescaled to "per new frame" -- without
-    that the positions would advance ``speed``x per frame while the velocity
-    channel still claimed 1x, and the velocity-consistency / loop-wrap losses
-    would be fed a self-contradicting target.
 
     ``periodic`` is the loop flag: a loop clip is time-scaled periodically
     (see ``resample_motion_features``), so it stays uniformly periodic.
@@ -542,12 +453,7 @@ def time_scale_motion_features(motion, target_num_frames, *, periodic=False):
     if target_num_frames == source_frames:
         return motion, 1.0
     speed = resample_step_scale(source_frames, target_num_frames, periodic=periodic)
-    scaled = resample_motion_features(
-        motion, target_num_frames, periodic=periodic
-    )
-    if scaled.shape[-1] >= 12:
-        scaled[..., 9:12] *= np.asarray(speed, dtype=scaled.dtype)
-    return scaled, speed
+    return resample_motion_features(motion, target_num_frames, periodic=periodic), speed
 
 
 def _sample_frames_at(motion, num, den, *, periodic):
@@ -568,30 +474,6 @@ def _sample_frames_at(motion, num, den, *, periodic):
     return motion[lo] * (1.0 - w) + motion[hi] * w
 
 
-def _sample_velocity_path_at(velocity, num, den, *, periodic):
-    """Position path of ``velocity`` (node ``k`` = displacement after ``k``
-    rows) at source times ``num / den``. A periodic clip's path runs past
-    node ``L`` through its terminal (wrap) row and repeats with that cycle's
-    drift, which is what tiling the clip does; an open one has no step past
-    node ``L - 1``."""
-    source_frames = int(velocity.shape[0])
-    path = np.zeros((source_frames + 1,) + velocity.shape[1:], dtype=np.float64)
-    path[1:] = np.cumsum(velocity, axis=0)
-    if periodic:
-        cycles = num // (source_frames * den)
-        num = num - cycles * source_frames * den
-        lo = num // den
-        hi = lo + 1
-        drift = cycles[:, None, None] * path[source_frames]
-    else:
-        last_node = source_frames - 1
-        lo = (num // den).clip(0, last_node)
-        hi = np.minimum(lo + 1, last_node)
-        drift = 0.0
-    w = ((num - lo * den) / den)[:, None, None]
-    return path[lo] * (1.0 - w) + path[hi] * w + drift
-
-
 def resample_time_scaled_window(motion, scaled_frames, window_source_frames, target_num_frames,
                                 *, source_periodic, window_periodic, shift=0):
     """The loader's time-scale, shift and window resample as ONE interpolation.
@@ -609,9 +491,6 @@ def resample_time_scaled_window(motion, scaled_frames, window_source_frames, tar
 
     Times are exact rationals (window ``t`` -> scaled ``(t*a + shift*b)/b`` ->
     source ``*c/d``), so a time that lands on a source frame reads it exactly.
-    The velocity channels keep the window contract of
-    ``resample_motion_features``: displacement per scaled frame, rebuilt
-    from the source's position path.
     """
     source_frames = int(motion.shape[0])
     scaled_frames = int(scaled_frames)
@@ -640,24 +519,8 @@ def resample_time_scaled_window(motion, scaled_frames, window_source_frames, tar
         c, d = source_frames, scaled_frames
     else:
         c, d = source_frames - 1, scaled_frames - 1
-    den = b * d
-    path_count = target_num_frames + 1 if window_periodic else target_num_frames
-    num = (np.arange(path_count, dtype=np.int64) * a + shift * b) * c
-
-    resampled = _sample_frames_at(
-        motion.astype(np.float64, copy=False), num[:target_num_frames], den, periodic=source_periodic
-    )
-    if motion.shape[-1] >= 12:
-        positions = _sample_velocity_path_at(
-            motion[:, :, 9:12].astype(np.float64, copy=False), num, den, periodic=source_periodic
-        )
-        step_scale = resample_step_scale(window_source_frames, target_num_frames, periodic=window_periodic)
-        rebuilt_velocity = np.diff(positions, axis=0) / step_scale
-        if window_periodic:
-            resampled[:, :, 9:12] = rebuilt_velocity
-        else:
-            resampled[:-1, :, 9:12] = rebuilt_velocity
-            resampled[-1, :, 9:12] = rebuilt_velocity[-1]
+    num = (np.arange(target_num_frames, dtype=np.int64) * a + shift * b) * c
+    resampled = _sample_frames_at(motion.astype(np.float64, copy=False), num, b * d, periodic=source_periodic)
     return resampled.astype(motion.dtype, copy=False)
 
 
@@ -674,9 +537,9 @@ def _circular_roll_motion(motion, offset):
 # frame at every seam.  Many loops ship that way, so the frame is dropped at load
 # time, leaving a clean period.
 #
-# The test is scale-free: each pose stack (RIC positions, 6-D rotations) and the
-# wrap velocity row are judged against the clip's own median frame step, and
-# every moving stack must call the pair a repeat.  A frame that fails is real
+# The test is scale-free: each pose stack (positions -- the root's world XZ among
+# them -- and 6-D rotations) is judged against the clip's own median frame step,
+# and every moving stack must call the pair a repeat.  A frame that fails is real
 # motion and stays.
 #
 # Only a frame IDENTICAL to frame 0 is a closing key -- not one a little short
@@ -734,13 +597,13 @@ def _drop_loop_closing_frame(motion, ratio=LOOP_CLOSING_FRAME_RATIO,
 def _tile_loop_motion(motion, repeat_count):
     """Concatenate ``repeat_count`` copies of a loop motion along the time axis.
 
-    Feature consistency at tile boundaries is guaranteed because preprocessing
-    writes the terminal velocity (channels 9-11) as the wrap-around delta
-    ``pos[0] - pos[-1]`` for all motions classified as loop
-    (``detect_motion_loop`` / ``_compute_terminal_local_velocity``), and the
-    caller has already dropped a closing key that repeats frame 0
-    (``_drop_loop_closing_frame``): the step from copy *k*'s last frame to copy
-    *k+1*'s first is one ordinary frame step, not a stall.
+    Feature consistency at tile boundaries is guaranteed because a loop's root
+    returns to its frame-0 world XZ over one cycle (preprocessing writes its
+    terminal velocity row as the wrap-around delta ``pos[0] - pos[-1]``, so the
+    working layout's root path closes), and the caller has already dropped a
+    closing key that repeats frame 0 (``_drop_loop_closing_frame``): the step
+    from copy *k*'s last frame to copy *k+1*'s first is one ordinary frame
+    step, not a stall.
 
     The 6-D rotations (channels 3-8) are unaffected by tiling.  Tiling
     operates in whichever feature space the
@@ -1475,7 +1338,7 @@ class MotionDataset(data.Dataset):
         # gets every loop augmentation below (closing-key drop, periodic time
         # scale, circular roll, tiling), but the window is then resampled as an
         # open clip and handed over with is_loop=False -- absolute time table,
-        # open velocity step, no wrap losses. That is deliberate label noise:
+        # no wrap step, no wrap losses. That is deliberate label noise:
         # the flag is confounded with content in the corpus (see the model's
         # is_loop note), and a flag the model cannot trust as a content key is
         # one it has to read as time topology only. An explicit loop_offset
@@ -1535,10 +1398,8 @@ class MotionDataset(data.Dataset):
         bone_length_info = {'applied': False, 'scales': {}, 'skip_reason': 'probability draw'}
         bone_length_prob = float(getattr(self.opt, 'bone_length_aug_prob', 0.0))
         if bone_length_prob > 0.0 and random.random() < bone_length_prob:
-            bone_metadata = dict(motion_metadata)
-            bone_metadata['is_loop'] = bool(bone_metadata.get('bone_length_source_is_loop', is_loop))
             motion, cond, bone_length_info = augment_bone_lengths(
-                motion, cond, bone_metadata,
+                motion, cond, motion_metadata,
                 float(getattr(self.opt, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG)),
                 float(getattr(self.opt, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN)),
             )
@@ -1558,7 +1419,7 @@ class MotionDataset(data.Dataset):
         # A loop authored with its last frame repeating frame 0 is the loop
         # plus one redundant frame.  It goes first, on the clip as stored:
         # every stage below treats the clip as periodic (the speed resample's wrap
-        # velocity, the circular roll, the tile seams, the window resample),
+        # step, the circular roll, the tile seams, the window resample),
         # and each would turn that frame into a one-frame stall at a random
         # phase of the window.  The roll also makes it undetectable afterwards
         # -- once rolled, first and last are no longer the repeated pair.
@@ -1592,8 +1453,8 @@ class MotionDataset(data.Dataset):
         # model is told nothing. Its purpose is the corpus' length distribution
         # -- much of it piles up on a few exact frame counts, so without it
         # resample_speed is a comb and an inference num_frames between the
-        # teeth is out of distribution. A loop clip is time-scaled with its
-        # terminal wrap velocity intact, so it is still a closed cycle.
+        # teeth is out of distribution. A loop clip is time-scaled periodically,
+        # so it is still a closed cycle.
         # A phase-anchored clip (any label loop_is_phase_free rejects, loop or
         # not) is also sped up toward the budget here, so it enters the window
         # whole instead of being cropped mid-event (see the sampler).
@@ -1816,7 +1677,7 @@ class MotionDataset(data.Dataset):
         if self.motion_cache_size > 0:
             motion = self.motion_cache.get(motion_path)
             if motion is None:
-                motion = with_root_world_xz(np.load(motion_path))
+                motion = stored_to_working(np.load(motion_path))
                 self.motion_cache[motion_path] = motion
                 self.motion_cache.move_to_end(motion_path)
                 while len(self.motion_cache) > self.motion_cache_size:
@@ -1824,7 +1685,7 @@ class MotionDataset(data.Dataset):
             else:
                 self.motion_cache.move_to_end(motion_path)
         else:
-            motion = with_root_world_xz(np.load(motion_path))
+            motion = stored_to_working(np.load(motion_path))
 
         m_length = motion.shape[0]
         rest_geom = self._rest_geom_cache[object_type]

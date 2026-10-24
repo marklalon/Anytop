@@ -220,9 +220,11 @@ cond entry 携带同一对向量（loader 用 `assert_single_canonical_frame` �
 
 每个关节的模型通道是 position 与 rotation，没有速度。非根关节的 position 是 RIC（世界坐标减去根的
 XZ）；根的 position 是它的世界坐标，XZ 从 clip 第 0 帧（预处理放在原点）起算，loader 在任何时间
-阶段之前由存储的根速度积分得到（`canonical_features.with_root_world_xz`）。根的世界 XZ 分布比关节
+阶段之前由存储的根速度积分得到，之后工作布局里不再有速度（`canonical_features.stored_to_working`），
+所以所有时间阶段（变速、roll、tile、窗口重采样）都只插值位置与旋转。根的世界 XZ 分布比关节
 的 RIC 位置窄得多，所以统计向量在每通道统计之后另带根 position 的一组 mean/std：X、Z 共用一个
-标量（水平面保持各向同性），Y 一个。导出时 `rebuild_derived_velocity` 把解码结果写回存储格式。
+标量（水平面保持各向同性），Y 一个。导出时 `working_to_stored` 把解码结果写回存储格式：根的
+position 回到 RIC，速度行写入根的世界步长（读存储 clip 的代码只读这一路速度），其余关节的速度行为零。
 
 `resample_speed_cond = source_frames / internal_frames` 以**逐帧物理时间**注入：窗口第 `i` 帧
 对应源帧 `i * step`（loop 为 `L / T`，open 为 `(L - 1) / (T - 1)`，与 loader 的 resample step 一致），
@@ -370,7 +372,7 @@ k 份 tile 经周期重采样后是 k 份逐位相同的拷贝（周期 T/k 帧�
 
 真实 loop clip 以概率 `--loop_cond_prob` 被告知它是 loop（取 1 即总是）；其余的抽签
 （`loop_uncond`）仍做它本该有的全部 loop 增广（closing-key drop、周期变速，无固定相位的再加 circular roll、tile），但按开放
-clip 重采样窗口、以 `is_loop=False` 交给模型（零 circular phase、开放速度步长、无 wrap 损失）。
+clip 重采样窗口、以 `is_loop=False` 交给模型（零 circular phase、无回绕步、无 wrap 损失）。
 这是有意的标签噪声，目的与不把 loop flag 放进条件总线相同：flag 与内容相关时模型会把它
 当内容键，而一个不可信的 flag 只能被当作时间拓扑来读。它不是 CFG（没有 null 态、推理端不消费），
 eval loader 总是告知。另一处降级是超出源帧预算被裁剪的 clip（环被裁开，按非 loop 告知）。
@@ -395,8 +397,7 @@ checkpoint 的窗口，超过窗口的高频 loop 按非 loop 计票，所以不
 
 **变速、roll、tile、裁剪和窗口重采样只插值一次。** 这几步都是时间的线性映射，loader 不逐步生成
 中间 clip：变速只定下变速后的长度，roll、tile、裁剪只改一个帧偏移（以变速后的帧计，对源可以是
-小数）和窗口长度，最后由 `resample_time_scaled_window` 按复合映射（精确有理数）从源 clip 插值一次，
-速度通道沿源的位置路径采样后差分，契约与 `resample_motion_features` 相同。两次线性插值连做时，
+小数）和窗口长度，最后由 `resample_time_scaled_window` 按复合映射（精确有理数）从源 clip 插值一次。两次线性插值连做时，
 即使两步都是放大采样，第二步也会切掉落在两个中间帧之间的源关键帧，周期几帧的内容会被削平。
 不变速的 clip 不经过它：roll、tile、裁剪按整数帧取下标，窗口重采样是唯一一次插值。
 
@@ -470,7 +471,7 @@ encode 的 CFG 顺序计算无参考无文字、参考无文字、参考加文�
 
 **窗口到输出长度。** 模型总是生成固定的内部窗口，再换算成请求的 M 帧（`_resample_window_to_output`）。
 M 小于窗口时，窗口是 loader 会把 M 帧源动作放大成的样子，所以输出按最小二乘**反解**训练时的线性
-插值（`invert_resample_motion_features`，速度通道沿位置路径反解），而不是再插值一次：插值会漏掉
+插值（`invert_resample_motion_features`），而不是再插值一次：插值会漏掉
 落在两个窗口帧之间的源帧，削平几帧周期的内容，反解对精确的窗口逐帧还原、对有噪声的窗口做平均。
 M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参考的 inpaint/outpaint 也保留线性插值：
 它的 mask 只放开每个输出帧插值所读的那两个窗口帧，而反解的每个输出帧都以衰减权重读整个窗口，

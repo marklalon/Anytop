@@ -29,7 +29,7 @@ By default every mode exports at the real 30 fps tempo by stretching the window
 back to resample_speed_cond * num_frames frames, as sample/generate.py does.
 Pass --no-real-time to export the model window itself at its compressed tempo.
 Real-time export makes speed changes visible: the window content of a time-scaled
-clip is the same as the original's; its resample_speed and velocity channels differ.
+clip is the same as the original's; its resample_speed differs.
 
 Usage
 -----
@@ -97,7 +97,7 @@ from data_loaders.truebones.data.dataset import (
 from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
-    rebuild_derived_velocity,
+    working_to_stored,
 )
 
 
@@ -112,10 +112,7 @@ class PreviewMotionDataset(MotionDataset):
         if self.opt.preview_mode != "loop":
             # loop_cond_prob=0 only hides the condition; it still rolls/tiles.
             data = dict(data)
-            source_is_loop = bool(data['motion_metadata'].get('is_loop', False))
             data["motion_metadata"] = dict(data["motion_metadata"], is_loop=False)
-            if self.opt.preview_mode == 'bone-length':
-                data['motion_metadata']['bone_length_source_is_loop'] = source_is_loop
         return super()._prepare_sample(name, data, **kwargs)
 
     def _sample_motion_speed_target_length(
@@ -213,7 +210,7 @@ def _decode_for_export(
             motion_raw = resample_motion_features(
                 motion_raw, export_frames, periodic=bool(aug_info.get("loop_applied")),
             )
-    return rebuild_derived_velocity(motion_raw, is_loop=bool(aug_info.get("loop_applied")))
+    return working_to_stored(motion_raw, is_loop=bool(aug_info.get("loop_applied")))
 
 
 def _replay_original(

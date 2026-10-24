@@ -58,8 +58,8 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
-    rebuild_derived_velocity,
-    with_root_world_xz,
+    stored_to_working,
+    working_to_stored,
 )
 from data_loaders.truebones.truebones_utils.loop_verdict import stored_loop_verdict
 from model.joint_mask_utils import collect_subtree_indices
@@ -291,7 +291,7 @@ def main() -> int:
     # Apply mask in canonical model space, then decode back to physical features.
     # -----------------------------------------------------------------------
     motion_canonical = np.nan_to_num(
-        physical_hml_to_canonical(with_root_world_xz(motion_raw), object_cond),
+        physical_hml_to_canonical(stored_to_working(motion_raw), object_cond),
         copy=True,
     ).astype(np.float32)
     motion_canonical[:, freeze_mask, :] = 0.0
@@ -305,9 +305,9 @@ def main() -> int:
             f"[INFO] Added i.i.d. Gaussian noise (std={args.noise_std}, "
             f"seed={args.noise_seed}) to ALL joints."
         )
-    # The canonical space carries no velocity; rebuild it from positions so the
-    # written clip keeps the stored layout, terminal loop row included.
-    motion_corrupted = rebuild_derived_velocity(
+    # The canonical space carries no velocity; write the stored layout back,
+    # terminal loop row included.
+    motion_corrupted = working_to_stored(
         canonical_to_physical_hml(motion_canonical, object_cond),
         is_loop=stored_is_loop,
     ).astype(np.float32)

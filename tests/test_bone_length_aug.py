@@ -16,9 +16,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import build_joint_struct_features
 from data_loaders.reference import rest_geom_features
-from data_loaders.truebones.truebones_utils.features import recover_from_bvh_ric_np
 from data_loaders.truebones.data.dataset import MotionDataset
-from tools.sample_augmented_bvh import PreviewMotionDataset
 from utils.retarget_core import batch_forward_kinematics_np
 
 
@@ -46,6 +44,21 @@ def fixture():
     motion = np.broadcast_to(rest_feature, (30, 7, 12)).copy()
     metadata = dict(action_label='walk', translation_root_index=0, is_loop=False)
     return motion, cond, metadata
+
+
+def working(positions):
+    """The working layout of world positions: RIC, the root at its world XZ."""
+    out = positions.copy()
+    out[:, 1:, 0] -= positions[:, 0:1, 0]
+    out[:, 1:, 2] -= positions[:, 0:1, 2]
+    return out
+
+
+def world_of(features):
+    positions = features[..., :3].astype(np.float64).copy()
+    positions[:, 1:, 0] += positions[:, 0:1, 0]
+    positions[:, 1:, 2] += positions[:, 0:1, 2]
+    return positions
 
 
 @pytest.mark.parametrize('prob, magnitude', [(-.1, .1), (1.1, .1), (np.nan, .1),
@@ -117,7 +130,7 @@ def test_all_actions_and_missing_labels_are_augmented(label):
     assert not np.allclose(new_cond['offsets'], cond['offsets'])
 
 
-def test_velocity_and_authored_deformation_with_rotating_parent():
+def test_authored_deformation_with_rotating_parent():
     motion, cond, metadata = fixture()
     cond['canonical_joint_names'] = ['Hips', 'Tail 1', 'Tail 2', 'Tail 3', '', '', '']
     cond['joint_side_labels'] = ['center'] * 7
@@ -135,15 +148,11 @@ def test_velocity_and_authored_deformation_with_rotating_parent():
     positions[:, 2, 1] *= np.linspace(1, 1.05, 30)
     world, _ = batch_forward_kinematics_np(rotations, positions, cond['parents'])
     from motion_lib.Quaternions import Quaternions
-    motion[..., :3] = world
-    motion[..., 0] -= world[:, :1, 0]
+    motion[..., :3] = working(world)
     motion[..., 3:9] = Quaternions(rotations).rotation_matrix(cont6d=True)
-    motion[:-1, :, 9:12] = np.diff(world, axis=0)
-    motion[-1, :, 9:12] = motion[-2, :, 9:12]
     out, new_cond, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(5))
     assert info['applied']
-    actual = recover_from_bvh_ric_np(out, translation_root_index=0)
-    np.testing.assert_allclose(np.diff(actual, axis=0), out[:-1, :, 9:12], atol=2e-7)
+    actual = world_of(out)
     factor = info['scales']['chain_1']
     scaled_positions = positions.copy()
     scaled_positions[:, [1, 2, 3]] *= factor
@@ -157,14 +166,12 @@ def test_velocity_and_authored_deformation_with_rotating_parent():
     np.testing.assert_allclose(out[..., 3:9], motion[..., 3:9], atol=2e-7)
 
 
-@pytest.mark.parametrize('periodic', [False, True])
-def test_separate_roots_keep_the_root_world_path(periodic):
+def test_separate_roots_keep_the_root_world_path():
     motion, cond, metadata = fixture()
     cond['parents'][4] = -1
     cond['canonical_joint_names'] = ['Hips', 'Tail 1', 'Tail 2', 'Tail 3', '', '', '']
     cond['joint_side_labels'] = ['center'] * 7
     cond.pop('symmetry_partner_indices')
-    metadata['is_loop'] = periodic
     rotations = np.zeros((30, 7, 4))
     rotations[..., 0] = 1
     angle = np.linspace(0, .5, 30)
@@ -176,23 +183,8 @@ def test_separate_roots_keep_the_root_world_path(periodic):
     world, _ = batch_forward_kinematics_np(rotations, local, cond['parents'])
     from motion_lib.Quaternions import Quaternions
 
-    def working(positions):
-        """The working layout of world positions: RIC, the root at its world XZ."""
-        out = positions.copy()
-        out[:, 1:, 0] -= positions[:, 0:1, 0]
-        out[:, 1:, 2] -= positions[:, 0:1, 2]
-        return out
-
-    def world_of(features):
-        positions = features[..., :3].astype(np.float64).copy()
-        positions[:, 1:, 0] += positions[:, 0:1, 0]
-        positions[:, 1:, 2] += positions[:, 0:1, 2]
-        return positions
-
     motion[..., :3] = working(world)
     motion[..., 3:9] = Quaternions(rotations).rotation_matrix(cont6d=True)
-    motion[:-1, :, 9:12] = np.diff(world, axis=0)
-    motion[-1, :, 9:12] = world[0] - world[-1] if periodic else motion[-2, :, 9:12]
     out, _, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(5))
     scaled_local = local.copy()
     groups = body_groups(cond)
@@ -204,9 +196,6 @@ def test_separate_roots_keep_the_root_world_path(periodic):
     # The root's world XZ path is the source's: bone lengths do not move it.
     np.testing.assert_allclose(out[:, 0, [0, 2]], motion[:, 0, [0, 2]], atol=0)
     np.testing.assert_allclose(world_of(out), expected, atol=2e-7)
-    np.testing.assert_allclose(out[:-1, :, 9:12], np.diff(expected, axis=0), atol=2e-7)
-    terminal = expected[0] - expected[-1] if periodic else out[-2, :, 9:12]
-    np.testing.assert_allclose(out[-1, :, 9:12], terminal, atol=2e-7)
 
 
 def test_a_non_zero_translation_root_is_refused():
@@ -290,11 +279,11 @@ def test_non_parent_first_joint_order_is_supported():
     np.testing.assert_allclose(out[:, np.flatnonzero(np.isin(order, [3, 6])), 1], 0, atol=1e-6)
 
 
-def make_dataset(cls=MotionDataset):
+def make_dataset():
     motion, cond, metadata = fixture()
-    dataset = cls.__new__(cls)
+    dataset = MotionDataset.__new__(MotionDataset)
     dataset.opt = SimpleNamespace(bone_length_aug_prob=1., bone_length_aug_max=.1,
-                                  motion_speed_aug=1., preview_mode='bone-length')
+                                  motion_speed_aug=1.)
     dataset.max_motion_length = 30
     dataset.min_length = 2
     dataset.opt.max_joints = 7
@@ -321,22 +310,6 @@ def test_loader_rebuilds_geometry_and_canonical_roundtrip():
     assert not np.allclose(sample[4], dataset.cond_dict['test']['offsets'])
 
 
-def test_preview_retains_source_loop_for_physical_augmentation(monkeypatch):
-    dataset, data = make_dataset(PreviewMotionDataset)
-    data['motion_metadata']['is_loop'] = True
-    captured = {}
-    import data_loaders.truebones.data.dataset as module
-    real_aug = module.augment_bone_lengths
-    def spy(motion, cond, metadata, magnitude, min_magnitude):
-        captured.update(metadata)
-        return real_aug(motion, cond, metadata, magnitude, min_magnitude)
-    monkeypatch.setattr(module, 'augment_bone_lengths', spy)
-    sample = dataset._prepare_sample('test', data, return_aug_info=True)
-    assert captured['is_loop']
-    assert sample[13]['loop_applied'] is False
-    assert data['motion_metadata']['is_loop'] is True
-
-
 def test_disabled_loader_does_not_draw_rng(monkeypatch):
     dataset, data = make_dataset()
     dataset.opt.bone_length_aug_prob = 0
@@ -345,15 +318,12 @@ def test_disabled_loader_does_not_draw_rng(monkeypatch):
     assert not sample[13]['bone_length_aug']['applied']
 
 
-def test_loop_closing_pose_and_terminal_velocity_survive():
+def test_loop_closing_pose_survives():
     motion, cond, metadata = fixture()
     metadata['is_loop'] = True
-    # A travelling clip with a repeated closing pose and nonzero root speed.
-    motion[:, :, 9] = .01
     out, new_cond, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(2))
     assert info['applied'], info
     np.testing.assert_allclose(out[0, :, :9], out[-1, :, :9], atol=1e-6)
-    np.testing.assert_allclose(out[-1, :, 9:12], motion[-1, :, 9:12], atol=1e-6)
 
 
 def test_bvh_export_uses_augmented_offsets(tmp_path):

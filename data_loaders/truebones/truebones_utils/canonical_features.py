@@ -38,11 +38,11 @@ Channel layout per joint (n_feats == 12):
     0:3   position   (RIC: world position minus the translation root's XZ;
                       the root itself holds its world position, see "Root")
     3:9   rotation 6d (bone-aligned global rotation)
-    9:12  velocity   (zero in the model space, see "Velocity")
+    9:12  velocity   (zero in the working layout, see "Velocity")
 
 Root. A stored clip (preprocessing's ``.npy``) keeps the translation root's
 X/Z at zero and its world XZ path in the velocity rows. The loader turns it
-into the working layout before any temporal stage (:func:`with_root_world_xz`):
+into the working layout before any temporal stage (:func:`stored_to_working`):
 the root's ch0/ch2 become its world XZ, integrated from frame 0, which
 preprocessing centres on the origin. Every other joint stays RIC, so its world
 position is its RIC position plus the root's XZ (:func:`root_relative_positions`
@@ -56,10 +56,10 @@ Statistics layout. ``canonical_feature_mean`` / ``canonical_feature_std`` are
 ``FEATS_LEN + 3`` vectors: the per-channel statistics of every joint, then the
 root position's (``ROOT_STAT_SLICE``), which replace channels 0:3 on joint 0.
 
-Velocity. Every velocity is a position step, so the model space carries none:
-the velocity channels are zero after encode and after decode, and their
-statistics are the identity. :func:`rebuild_derived_velocity` turns a decoded
-working clip back into the stored layout.
+Velocity. Every velocity is a position step, so the working layout carries
+none: its velocity channels are zero, every temporal stage interpolates
+positions and rotations only, and the velocity statistics are the identity.
+:func:`working_to_stored` writes a working clip back in the stored layout.
 
 Rotation channel. A physical rotation is identity AT THE REST POSE, so the same
 world motion stored on a T-pose rig and on an A-pose rig of the same skeleton
@@ -234,11 +234,11 @@ def root_relative_positions(feature):
     return _apply_channel_mask(feature, "root_xz")
 
 
-def with_root_world_xz(motion):
+def stored_to_working(motion):
     """A stored ``[T, J, F]`` clip in the working layout (see "Root").
 
     The root's ch0/ch2 take its world XZ: the sum of the root velocity rows
-    before each frame, zero at frame 0. Velocity is left as stored.
+    before each frame, zero at frame 0. Every velocity channel is then zeroed.
     """
     out = np.array(motion, dtype=np.float32, copy=True)
     if out.ndim != 3 or out.shape[-1] < _VEL_SLICE.stop or out.shape[0] == 0:
@@ -248,33 +248,34 @@ def with_root_world_xz(motion):
     world_xz = np.zeros((out.shape[0], 2), dtype=np.float64)
     world_xz[1:] = np.cumsum(steps, axis=0)
     out[:, 0, list(ROOT_XZ_CHANNELS)] = world_xz
+    out[..., _VEL_SLICE] = 0.0
     return out
 
 
-def rebuild_derived_velocity(motion, *, is_loop, step_scale=1.0):
-    """A decoded working ``[T, J, F]`` clip in the stored layout.
+def working_to_stored(motion, *, is_loop):
+    """A working ``[T, J, F]`` clip in the stored layout, one row per frame.
 
-    ``vel[t] * step_scale`` is the world step from frame ``t`` to ``t + 1``:
-    a joint's RIC position step plus the root's world XZ step. The terminal row
-    follows preprocessing: a loop's wrap step, otherwise the last step
-    repeated. The root's X/Z position channels go back to zero.
+    The root's position goes back to RIC (ch0/ch2 zero) and its velocity rows
+    take its world steps: row ``t`` is the step from frame ``t`` to ``t + 1``,
+    the terminal row a loop's wrap step, otherwise the last step repeated.
+    That is the only velocity a stored-clip reader uses (the exporter
+    integrates it into the trajectory, the loop detector reads its closure);
+    every other joint's velocity row stays zero.
     """
     out = np.array(motion, dtype=np.float32, copy=True)
     n_frames = out.shape[0]
     if out.ndim != 3 or out.shape[-1] < _VEL_SLICE.stop or n_frames == 0:
         return out
-    step = float(step_scale) if step_scale and step_scale > 0 else 1.0
-    world = np.asarray(root_relative_positions(out)[..., _POS_SLICE], dtype=np.float64)
-    root_xz = list(ROOT_XZ_CHANNELS)
-    world[..., root_xz] += np.asarray(out[:, 0:1, root_xz], dtype=np.float64)
-    world_step = np.zeros(world.shape, dtype=np.float64)
-    world_step[:-1] = world[1:] - world[:-1]
+    root = np.asarray(out[:, 0, _POS_SLICE], dtype=np.float64)
+    step = np.zeros_like(root)
+    step[:-1] = root[1:] - root[:-1]
     if is_loop or n_frames == 1:
-        world_step[-1] = world[0] - world[-1]
+        step[-1] = root[0] - root[-1]
     else:
-        world_step[-1] = world_step[-2]
-    out[..., _VEL_SLICE] = (world_step / step).astype(np.float32)
-    out[:, 0, root_xz] = 0.0
+        step[-1] = step[-2]
+    out[..., _VEL_SLICE] = 0.0
+    out[:, 0, _VEL_SLICE] = step.astype(np.float32)
+    out[:, 0, list(ROOT_XZ_CHANNELS)] = 0.0
     return out
 
 
@@ -906,7 +907,7 @@ def canonical_to_physical_hml(feature, cond_entry):
     the global mean/std, multiply the position channels by ``L``, then turn the
     rotation channel back into local rotations against ``cond_entry``'s own
     rest. The velocity channels come back as zero;
-    :func:`rebuild_derived_velocity` writes the stored layout.
+    :func:`working_to_stored` writes the stored layout.
     """
     lnorm = _apply_global_stats(feature, cond_entry, inverse=True)
     unscaled = _apply_L_scale(lnorm, cond_entry, inverse=True)

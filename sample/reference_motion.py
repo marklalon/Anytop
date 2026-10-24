@@ -17,7 +17,7 @@ from data_loaders.truebones.data.dataset import resample_motion_features
 from data_loaders.truebones.truebones_utils.canonical_features import (
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
-    with_root_world_xz,
+    stored_to_working,
 )
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
 from sample.generation_runtime import (
@@ -107,16 +107,16 @@ def _prepare_img2img_reference_bundle(
     min_length=20,
     preloaded_features=None,
 ):
+    # ``preloaded_features`` is already in the working layout; a stored clip
+    # read from disk is brought into it.
     if preloaded_features is not None:
         ref_raw = np.asarray(preloaded_features, dtype=np.float32)
     else:
-        ref_raw = np.load(reference_motion_path).astype(np.float32)
+        ref_raw = stored_to_working(np.load(reference_motion_path))
     if ref_raw.ndim != 3:
         raise ValueError(
             f"Reference motion must have shape (T, J, F), got {ref_raw.shape}"
         )
-    # A stored clip; everything below reads the working layout.
-    ref_raw = with_root_world_xz(ref_raw)
 
     loaded_reference_frame_count, loaded_reference_joint_count, ref_feats = ref_raw.shape
     # Fixed-window model: always run at native window length (num_frames);
