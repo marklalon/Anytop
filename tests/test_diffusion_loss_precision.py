@@ -159,12 +159,15 @@ class BoneVectorLossTests(unittest.TestCase):
 
     def test_short_bone_normalization_is_floored(self):
         diffusion = self._make_diffusion()
-        # Bone 1->2 is 0.01 long, below BONE_REST_FLOOR_FRAC * L = 0.1.
+        from diffusion.gaussian_diffusion import BONE_REST_FLOOR_FRAC
+
+        # Bone 1->2 is 0.01 long, below the floor BONE_REST_FLOOR_FRAC * L (L = 1).
         y, target, spat_mask = self._chain([[0, 0, 0], [1, 0, 0], [1.01, 0, 0]])
         pred = target.clone()
         pred[0, 2, 0, :] += 0.005
         loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
-        rel = 0.005 / 0.1  # floored rest, not 0.005 / 0.01
+        rel = 0.005 / BONE_REST_FLOOR_FRAC  # floored rest, not 0.005 / 0.01
+        assert 0.01 < BONE_REST_FLOOR_FRAC and rel < 0.1  # floored, still in the quadratic regime
         expected = (0.5 * rel * rel / 0.1) / 3.0
         self.assertAlmostEqual(loss.item(), expected, places=5)
 
@@ -343,6 +346,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
                 # and the global standardization stats (identity here so the decoded
                 # physical space equals the L-normalized space the tests reason about).
                 "rest_pos_ric_hml": torch.arange(n_joints * 3, dtype=torch.float32).reshape(n_joints, 3),
+                "parents": np.arange(-1, n_joints - 1),
                 "canonical_feature_mean": torch.zeros(n_feats, dtype=torch.float32),
                 "canonical_feature_std": torch.ones(n_feats, dtype=torch.float32),
                 "canonical_dpos_std": torch.ones(batch_size, dtype=torch.float32),

@@ -1,17 +1,24 @@
 """Canonical AnyTop motion feature conversion helpers.
 
-V3 keeps the HML-like physical feature layout but converts to a *canonical*
-model feature space via three prior-free, exactly-invertible steps:
+The physical feature layout is HML-like (RIC position, each joint's own local
+rotation relative to the rest pose, local velocity). The *canonical* model
+feature space is reached via three prior-free, exactly-invertible steps. They
+read the rest only as topology, bone lengths and per-joint bone frames, which a
+re-posed rest turns along with the motion, so one world motion encodes to the
+same canonical features whichever rest convention (T-pose, A-pose, ...) the rig
+was authored in:
 
-  1. Position re-centering: the position channel is expressed relative to the
-     skeleton rest-pose feature position (residual-from-rest).
+  1. Rotation re-expression: each joint's local rotation becomes its
+     bone-aligned global rotation ``G_j @ A_j`` (see "Rotation channel").
   2. Per-skeleton size normalization (L-scaling): the position and velocity
-     channels are divided by the skeleton's own geometric length ``L`` so that
-     every species lands in a size-free space (cross-species fair). Rotation
-     (6d) is size-independent and is left untouched here. ``L`` is floored at
-     ``REST_LENGTH_SCALE_FLOOR``: a rig of a few clustered joints (MU04_Pollen,
-     4 joints, L=0.03) has almost no joint spread, and dividing its body-scale
-     root trajectory by that spread blew a 1.7-unit fall up to ~70 std.
+     channels are divided by the skeleton's own geometric length ``L`` (the
+     joints' RMS spread measured along the bone tree, so bone lengths and
+     topology decide it and the rest pose does not) so that every species lands
+     in a size-free space (cross-species fair). Rotation (6d) is
+     size-independent and is left untouched here. ``L`` is floored at
+     ``REST_LENGTH_SCALE_FLOOR``: a rig of a few clustered joints (MU04_Pollen)
+     has almost no joint spread, and dividing its body-scale root trajectory by
+     that spread blew a fall up to tens of std.
   3. Global standardization: subtract a per-channel mean and divide by a
      *block-collapsed* std (12-vectors). One pair of vectors for the whole
      corpus, computed at preprocessing time in the L-normalized space of step
@@ -28,12 +35,28 @@ model feature space via three prior-free, exactly-invertible steps:
      so ``l_simple`` weights every joint and axis of a block uniformly.
 
 Channel layout per joint (n_feats == 12):
-    0:3   position   (rest-centered residual)
-    3:9   rotation 6d
+    0:3   position   (absolute RIC: world position minus the root's XZ)
+    3:9   rotation 6d (bone-aligned global rotation)
     9:12  local velocity
 
 Every channel belongs to exactly one of the three blocks, so ``pool_global_stats``
 covers the whole vector.
+
+Rotation channel. A physical rotation is identity AT THE REST POSE, so the same
+world motion stored on a T-pose rig and on an A-pose rig of the same skeleton
+carries different rotations. The canonical channel stores
+``G_j @ A_j`` instead, where ``G_j`` is the joint's global rotation (the local
+rotations composed along the chain; the rest offsets are world-aligned) and
+``A_j`` is the joint's rest bone frame (:func:`rest_bone_frames`): column 0 the
+rest bone direction ``d_j``, column 1 a twist reference ``p_j`` orthogonal to
+it, column 2 their cross product. The first 6d column is therefore the joint's
+current world bone direction and the second its current twist reference. A
+rest that turns joint ``j``'s frame by ``Q`` turns ``d_j`` by ``Q`` and turns
+``G_j`` by ``Q^T``; whenever ``Q`` also carries ``p_j`` onto the new rest's
+``p_j`` (any turn in the plane of ``d_j`` and the twist reference axis, e.g.
+an arm lowered from T to A about Z, a leg swung about X) the canonical rotation
+is exactly unchanged. Decoding reads the TARGET rig's frames, so a decoded clip
+is re-expressed against that rig's own rest.
 
 Derived velocity. A joint's world step is its own RIC position step plus the
 translation root's XZ step, so the only velocity the positions do not already
@@ -47,9 +70,16 @@ sample that need the full physical rows call :func:`rebuild_derived_velocity`.
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 
-from data_loaders.truebones.truebones_utils.param_utils import HML_REF_REST_LENGTH_SCALE
+from data_loaders.truebones.truebones_utils.param_utils import (
+    HML_REF_REST_LENGTH_SCALE,
+    ancestor_matrix,
+    joint_depths,
+    rest_tree_spread,
+)
 
 try:
     import torch
@@ -57,7 +87,7 @@ except Exception:  # pragma: no cover - torch is present in training/runtime.
     torch = None
 
 
-CANONICAL_FEATURE_SPACE = "canonical_motion_v4"
+CANONICAL_FEATURE_SPACE = "canonical_motion_v5"
 PHYSICAL_FEATURE_SPACE = "hml_like_v_current"
 
 # Keys under which the global per-channel standardization statistics are stored
@@ -78,6 +108,16 @@ ROOT_VEL_LOSS_WEIGHT_KEY = "root_vel_loss_weight"
 DPOS_LOSS_WEIGHT_KEY = "dpos_loss_weight"
 AUX_LOSS_ENERGY_CAP = 2.0
 
+# Cond keys measured in the canonical space; they are only valid under the
+# feature space stamped on the same entry.
+_FEATURE_SPACE_BOUND_KEYS = (
+    CANONICAL_MEAN_KEY,
+    CANONICAL_STD_KEY,
+    CANONICAL_DPOS_STD_KEY,
+    ROOT_VEL_LOSS_WEIGHT_KEY,
+    DPOS_LOSS_WEIGHT_KEY,
+)
+
 # The model's channel contract (see "Derived velocity" above). Joint 0 is the
 # translation root of every cond skeleton.
 ROOT_VEL_CHANNELS = (9, 11)
@@ -85,18 +125,39 @@ JOINT_MODEL_CHANNELS = tuple(range(0, 9))
 ROOT_MODEL_CHANNELS = JOINT_MODEL_CHANNELS + ROOT_VEL_CHANNELS
 
 # Per-sample geometric length ``L`` (``[B]``) that the training collate
-# precomputes from each sample's unpadded rest and stores in ``y``; see
+# precomputes from each sample's unpadded rig and stores in ``y``; see
 # ``_length_scale_from_cond``. Never stored in cond.npy (species entries derive
-# it from ``rest_pos_ric_hml`` on the fly).
+# it from ``rest_pos_ric_hml`` and ``parents`` on the fly).
 REST_LENGTH_SCALE_KEY = "rest_length_scale"
 
-# Lower bound on ``L``: half the reference skeleton's own ``L``. Preprocessing
-# has already scaled every character to the reference body size (its extent
-# folds in the root's elevation, which the joint spread never sees), so an ``L``
-# far below the reference means clustered joints, not a small body. Of 260
-# species it lifts the seven 2-6 joint effect/drifting rigs (0.030-0.106, up to
-# 4.3x) and grazes two 8-joint rigs (0.126, 0.127 -> 0.130).
-REST_LENGTH_SCALE_FLOOR = 0.5 * HML_REF_REST_LENGTH_SCALE
+# Lower bound on ``L``: a fraction of the reference skeleton's own ``L``.
+# Preprocessing has already scaled every character to the reference body size
+# (its extent folds in the root's elevation, which the joint spread never sees),
+# so an ``L`` far below the reference means clustered joints, not a small body.
+# The fraction is set so that only the few-joint effect / drifting rigs reach it;
+# short-boned bodies such as fish stay above.
+REST_LENGTH_SCALE_FLOOR = 0.35 * HML_REF_REST_LENGTH_SCALE
+
+# Per-sample rest bone frames ``[B, J, 3, 3]`` and parent indices ``[B, J]``
+# (-1 for a root and for padding) that the training collate precomputes from
+# each sample's unpadded rig, so the training-time decode of the rotation
+# channel never rebuilds them; see ``_rotation_context``. Never stored in
+# cond.npy (species entries derive them from ``parents`` and the rest).
+REST_BONE_FRAME_KEY = "rest_bone_frame"
+PARENT_INDEX_KEY = "parent_index"
+
+# Twist reference axes of ``rest_bone_frames`` in order of preference: the first
+# one not within ``_TWIST_REFERENCE_MAX_COS`` of the bone direction is used.
+_TWIST_REFERENCE_AXES = ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
+_TWIST_REFERENCE_MAX_COS = 0.95
+# A subtree-weighted mean of child directions shorter than this has cancelled
+# out (opposed children of equal weight) and names no direction.
+_MIN_CHILD_DIRECTION_NORM = 0.3
+# Rest bones shorter than this fraction of ``L`` carry no direction.
+_MIN_BONE_FRAC_OF_L = 1e-3
+# Rigs whose ``L`` and rest bone frames stay cached per process: every stored
+# rig plus the recent augmented ones.
+_RIG_GEOMETRY_CACHE_SIZE = 2048
 
 # Channels whose std falls below this floor are treated as unit-variance so the
 # encode divide never explodes (mirrors the old std_safe floor).
@@ -212,104 +273,39 @@ def rest_pos_from_cond(cond_entry, *, like=None):
     return np.asarray(rest_pos, dtype=np.float32)
 
 
-def _joint_count_batch(n_counts: int, rest_batch: int, rest_shape) -> int:
-    """Batch size of ``L`` for ``n_counts`` joint counts against a rest batch.
+def _length_scale_from_rest(rest_pos, parents):
+    """Per-skeleton geometric length ``L`` of one rig: its tree RMS spread
+    (``param_utils.rest_tree_spread``), floored at ``REST_LENGTH_SCALE_FLOOR``.
 
-    Broadcasts like numpy: one count covers every rest row, and one rest row
-    (an unbatched ``[J, 3]`` rest is one row) is shared by every count -- the
-    homogeneous batch whose loader hands a single species rest alongside the
-    collated per-row ``n_joints``. Each row then gets its own ``L`` from its own
-    count, so unequal counts are honoured rather than silently collapsed.
+    ``rest_pos`` is ``[J, 3]`` (rows past ``len(parents)`` are padding and
+    ignored). Derived purely from skeleton geometry -- no motion stats. A
+    collapsed or non-finite rest lands on the floor.
     """
-    if n_counts == rest_batch or rest_batch == 1:
-        return n_counts
-    if n_counts == 1:
-        return rest_batch
-    raise ValueError(
-        f"n_joints has {n_counts} entries but rest_pos has shape {tuple(rest_shape)}: "
-        "pass one count, one per batch row, or a single shared rest."
-    )
+    return _rig_geometry(*_rig_key(rest_pos, parents))[0]
 
 
-def _length_scale_from_rest(rest_pos, n_joints=None):
-    """Per-skeleton geometric length L = RMS spread of rest-pose joint positions.
-
-    Accepts ``[J, 3]`` (returns a scalar) or ``[B, J, 3]`` (returns ``[B]``).
-    ``n_joints`` gives the real joint count(s) so the zero-padded rows of a
-    collated mixed-skeleton batch are left out; without it every row counts.
-    Counts and rest rows broadcast (see ``_joint_count_batch``): the result is a
-    scalar only for an unbatched rest with a single count, otherwise ``[B]``.
-    Derived purely from skeleton geometry -- no motion stats. Floored at
-    ``REST_LENGTH_SCALE_FLOOR``; a collapsed or non-finite rest lands on the
-    floor too.
-    """
+def _rig_key(rest_pos, parents):
+    """Hashable ``(rest bytes, parents bytes)`` of one rig for ``_rig_geometry``:
+    the unpadded rest as float64, so float32 and float64 copies of it agree."""
     if _is_torch_tensor(rest_pos):
-        rp = rest_pos.to(dtype=torch.float32)
-        if n_joints is None:
-            centered = rp - rp.mean(dim=-2, keepdim=True)
-            L = torch.sqrt((centered ** 2).mean(dim=(-2, -1)))
-        else:
-            if rp.dim() not in (2, 3):
-                raise ValueError(
-                    f"rest_pos must have shape [J, 3] or [B, J, 3], got {tuple(rp.shape)}."
-                )
-            rp3 = rp.unsqueeze(0) if rp.dim() == 2 else rp
-            max_joints = rp3.shape[1]
-            counts = torch.as_tensor(n_joints, device=rp3.device, dtype=torch.long).reshape(-1)
-            batch = _joint_count_batch(counts.numel(), rp3.shape[0], rp.shape)
-            rp3 = rp3.expand(batch, -1, -1)
-            counts = counts.expand(batch)
-            # Counts from a collated y live on CUDA. Validating them there would
-            # force a device synchronization on every decode, so only CPU callers
-            # get the fail-fast (the training decode reads rest_length_scale and
-            # does not reach this path at all).
-            if (
-                counts.device.type == "cpu"
-                and bool(((counts <= 0) | (counts > max_joints)).any())
-            ):
-                raise ValueError(
-                    f"n_joints must be in [1, {max_joints}], got {counts.tolist()}."
-                )
+        rest_pos = rest_pos.detach().cpu().numpy()
+    parents = np.ascontiguousarray(np.asarray(parents, dtype=np.int64).reshape(-1))
+    rest_pos = np.ascontiguousarray(np.asarray(rest_pos, dtype=np.float64)[:parents.size, :3])
+    return rest_pos.tobytes(), parents.tobytes()
 
-            valid = torch.arange(max_joints, device=rp3.device).unsqueeze(0) < counts.unsqueeze(1)
-            valid_f = valid.to(dtype=rp3.dtype).unsqueeze(-1)
-            counts_f = counts.to(dtype=rp3.dtype)
-            mean = (rp3 * valid_f).sum(dim=-2, keepdim=True) / counts_f.view(-1, 1, 1)
-            squared = ((rp3 - mean) ** 2) * valid_f
-            L = torch.sqrt(squared.sum(dim=(-2, -1)) / (counts_f * rp3.shape[-1]))
-            if rp.dim() == 2 and counts.numel() == 1:
-                L = L[0]
-        # Mirrors the numpy branch below.
-        return torch.where(torch.isfinite(L), L, torch.zeros_like(L)).clamp_min(
-            REST_LENGTH_SCALE_FLOOR
-        )
 
-    rp = np.asarray(rest_pos, dtype=np.float64)
-    if n_joints is None:
-        centered = rp - rp.mean(axis=-2, keepdims=True)
-        L = np.sqrt((centered ** 2).mean(axis=(-2, -1)))
-    else:
-        if rp.ndim not in (2, 3):
-            raise ValueError(
-                f"rest_pos must have shape [J, 3] or [B, J, 3], got {rp.shape}."
-            )
-        rp3 = rp[None, ...] if rp.ndim == 2 else rp
-        max_joints = rp3.shape[1]
-        counts = np.asarray(n_joints, dtype=np.int64).reshape(-1)
-        batch = _joint_count_batch(counts.size, rp3.shape[0], rp.shape)
-        rp3 = np.broadcast_to(rp3, (batch,) + rp3.shape[1:])
-        counts = np.broadcast_to(counts, (batch,))
-        if np.any((counts <= 0) | (counts > max_joints)):
-            raise ValueError(f"n_joints must be in [1, {max_joints}], got {counts.tolist()}.")
-
-        valid = np.arange(max_joints)[None, :] < counts[:, None]
-        valid_f = valid[..., None].astype(rp3.dtype)
-        mean = (rp3 * valid_f).sum(axis=-2, keepdims=True) / counts.reshape(-1, 1, 1)
-        squared = ((rp3 - mean) ** 2) * valid_f
-        L = np.sqrt(squared.sum(axis=(-2, -1)) / (counts * rp3.shape[-1]))
-        if rp.ndim == 2 and counts.size == 1:
-            L = L[0]
-    return np.maximum(np.where(np.isfinite(L), L, 0.0), REST_LENGTH_SCALE_FLOOR)
+# A training sample derives its rig's geometry several times (target and
+# reference encode, collate), and most samples use their species' stored rig.
+@functools.lru_cache(maxsize=_RIG_GEOMETRY_CACHE_SIZE)
+def _rig_geometry(rest_bytes, parents_bytes):
+    """``(L, rest bone frames [J, 3, 3] read-only)`` of the rig a ``_rig_key`` names."""
+    parents = np.frombuffer(parents_bytes, dtype=np.int64)
+    rest_pos = np.frombuffer(rest_bytes, dtype=np.float64).reshape(parents.size, 3)
+    L = rest_tree_spread(rest_pos, parents)
+    L = max(L if np.isfinite(L) else 0.0, REST_LENGTH_SCALE_FLOOR)
+    frames = _bone_frames(rest_pos, parents, L)
+    frames.setflags(write=False)
+    return L, frames
 
 
 def _spatial_L_vectors(n_feats):
@@ -330,18 +326,33 @@ def _length_scale_from_cond(cond_entry, *, like=None):
     """Resolve the per-skeleton length ``L`` for a cond entry / collated ``y``.
 
     The collate precomputes ``rest_length_scale`` (``[B]``) from each sample's
-    UNPADDED rest, so the training aux-loss decode reads it instead of spending
-    a dozen kernel launches re-deriving it from the padded rest every step.
-    Without it, ``L`` is derived from the rest positions, honouring ``n_joints``
-    so the zero-padded rows of a collated batch are left out.
+    unpadded rig, so the training aux-loss decode reads it instead of
+    re-deriving it every step. Without it, ``L`` is derived from the rest
+    positions and ``parents``: one rig's array gives a scalar, a collated
+    per-sample list gives ``[B]`` over the padded ``[B, J, 3]`` rest.
     """
     L = cond_entry.get(REST_LENGTH_SCALE_KEY) if hasattr(cond_entry, "get") else None
     if L is not None:
         return L
-    n_joints = cond_entry.get("n_joints") if hasattr(cond_entry, "get") else None
-    return _length_scale_from_rest(
-        rest_pos_from_cond(cond_entry, like=like), n_joints=n_joints
-    )
+    parents = cond_entry.get("parents") if hasattr(cond_entry, "get") else None
+    if parents is None:
+        raise KeyError(
+            "cond entry is missing 'parents' (and no precomputed rest_length_scale): "
+            "L is measured along the skeleton's bone tree."
+        )
+    rest = rest_pos_from_cond(cond_entry)
+    rest = np.asarray(rest.detach().cpu() if _is_torch_tensor(rest) else rest, dtype=np.float64)
+    if isinstance(parents, (list, tuple)) and len(parents) > 0 and np.ndim(parents[0]) > 0:
+        rest_rows = rest if rest.ndim == 3 else np.broadcast_to(rest, (len(parents),) + rest.shape)
+        L = np.array([
+            _length_scale_from_rest(rest_rows[b], np.asarray(p).reshape(-1))
+            for b, p in enumerate(parents)
+        ])
+    else:
+        L = _length_scale_from_rest(rest[0] if rest.ndim == 3 else rest, parents)
+    if _is_torch_tensor(like):
+        return torch.as_tensor(L, device=like.device, dtype=torch.float32)
+    return L
 
 
 _SPATIAL_L_TENSOR_CACHE = {}
@@ -548,55 +559,267 @@ def _apply_global_stats(feature, cond_entry, inverse: bool):
     return out.astype(np.float32, copy=False)
 
 
-def _apply_rest_pos(feature, cond_entry, sign: float):
-    rest_pos = rest_pos_from_cond(cond_entry, like=feature)
-    out = feature.clone() if _is_torch_tensor(feature) else np.asarray(feature, dtype=np.float32).copy()
+def _frames_from_directions(directions):
+    """``[K, 3, 3]`` frames with columns ``d``, twist reference ``p``, ``d x p``
+    for unit directions ``[K, 3]``."""
+    axes = np.asarray(_TWIST_REFERENCE_AXES, dtype=np.float64)
+    cos = directions @ axes.T
+    usable = np.abs(cos) <= _TWIST_REFERENCE_MAX_COS
+    # The first usable axis; the last one when none is.
+    choice = np.where(usable.any(axis=1), usable.argmax(axis=1), len(axes) - 1)
+    reference = axes[choice] - cos[np.arange(choice.size), choice][:, None] * directions
+    reference /= np.linalg.norm(reference, axis=-1, keepdims=True)
+    return np.stack([directions, reference, np.cross(directions, reference)], axis=-1)
 
-    if _is_torch_tensor(out):
-        if out.dim() == 4:
-            # [B, J, F, T]
-            if rest_pos.dim() == 2:
-                rest_pos = rest_pos.unsqueeze(0).expand(out.shape[0], -1, -1)
-            out[:, :, 0:3, :] = out[:, :, 0:3, :] + (float(sign) * rest_pos[:, :, :, None])
-            return out
-        if out.dim() == 3:
-            # [T, J, F] or [J, F]. Broadcasting covers both common no-batch cases.
-            out[..., 0:3] = out[..., 0:3] + (float(sign) * rest_pos)
-            return out
-        if out.dim() == 2:
-            out[:, 0:3] = out[:, 0:3] + (float(sign) * rest_pos)
-            return out
-        raise ValueError(f"Unsupported torch feature rank {out.dim()} for canonical conversion.")
 
-    if out.ndim in (2, 3):
-        out[..., 0:3] = out[..., 0:3] + (float(sign) * rest_pos)
-        return out.astype(np.float32, copy=False)
-    if out.ndim == 4:
-        if rest_pos.ndim == 2:
-            rest_pos = rest_pos[None, :, :, None]
-        elif rest_pos.ndim == 3:
-            rest_pos = rest_pos[:, :, :, None]
-        out[:, :, 0:3, :] = out[:, :, 0:3, :] + (float(sign) * rest_pos)
-        return out.astype(np.float32, copy=False)
-    raise ValueError(f"Unsupported numpy feature rank {out.ndim} for canonical conversion.")
+def rest_bone_frames(rest_pos, parents):
+    """``[J, 3, 3]`` rest bone frame ``A_j`` of every joint (see "Rotation channel").
+
+    Column 0 is the rest bone direction ``d_j``: the mean of the directions to
+    the joint's children, each weighted by the size of its subtree, so a
+    mirrored pair of children cancels sideways and a chain's continuation
+    outweighs a short branch. A leaf, or a joint whose children cancel out,
+    takes the direction of its own bone from its parent; a joint with neither
+    (a zero-length nub, a lone root) inherits its parent's frame, identity at a
+    root. Column 1 is the first ``_TWIST_REFERENCE_AXES`` axis not within
+    ``_TWIST_REFERENCE_MAX_COS`` of ``d_j``, made orthogonal to it; column 2 is
+    ``d_j x p_j``.
+
+    The weights are topology and the directions are rest offsets, which a
+    joint's rest frame turns rigidly -- that is what keeps the canonical
+    rotation independent of the rest pose.
+    """
+    return _rig_geometry(*_rig_key(rest_pos, parents))[1].copy()
+
+
+def _bone_frames(rest_pos, parents, length_scale):
+    """:func:`rest_bone_frames` of an unpadded float64 rest whose ``L`` is known."""
+    n_joints = parents.size
+    ancestors, depths = ancestor_matrix(parents)
+    has_parent = parents >= 0
+    subtree = ancestors.sum(axis=0).astype(np.float64)
+
+    offsets = np.zeros_like(rest_pos)
+    offsets[has_parent] = rest_pos[has_parent] - rest_pos[parents[has_parent]]
+    lengths = np.linalg.norm(offsets, axis=-1)
+    min_len = _MIN_BONE_FRAC_OF_L * length_scale
+    live_bone = has_parent & (lengths > min_len)
+    unit = np.zeros_like(offsets)
+    unit[live_bone] = offsets[live_bone] / lengths[live_bone, None]
+
+    weighted = np.zeros_like(offsets)
+    weight = np.zeros(n_joints, dtype=np.float64)
+    live = np.flatnonzero(live_bone)
+    np.add.at(weighted, parents[live], subtree[live, None] * unit[live])
+    np.add.at(weight, parents[live], subtree[live])
+
+    mean = np.divide(weighted, weight[:, None], out=np.zeros_like(weighted), where=weight[:, None] > 0.0)
+    mean_norm = np.linalg.norm(mean, axis=-1)
+    from_children = (weight > 0.0) & (mean_norm >= _MIN_CHILD_DIRECTION_NORM)
+    has_direction = from_children | live_bone
+    direction = np.where(
+        from_children[:, None], mean / np.maximum(mean_norm, _MIN_CHILD_DIRECTION_NORM)[:, None], unit
+    )
+    own = np.repeat(np.eye(3)[None], n_joints, axis=0)
+    own[has_direction] = _frames_from_directions(direction[has_direction])
+
+    # A joint without a direction takes the frame of its deepest ancestor that
+    # has one, identity when none does.
+    holders = ancestors & has_direction[None, :]
+    source = np.where(holders, depths[None, :], -1).argmax(axis=1)
+    frames = np.where(holders.any(axis=1)[:, None, None], own[source], np.eye(3))
+    return frames.astype(np.float32)
+
+
+def padded_rotation_context(rest_pos, parents, n_slots):
+    """``(frames [n_slots, 3, 3], parent_index [n_slots])`` of one rig.
+
+    Slots past the rig's joints are padding: identity frame, parent -1.
+    """
+    parents = np.asarray(parents, dtype=np.int64).reshape(-1)
+    n_joints = parents.size
+    if n_joints > n_slots:
+        raise ValueError(f"rig has {n_joints} joints but the feature has {n_slots} slots.")
+    frames = np.repeat(np.eye(3, dtype=np.float32)[None], n_slots, axis=0)
+    frames[:n_joints] = rest_bone_frames(rest_pos, parents)
+    parent_index = np.full(n_slots, -1, dtype=np.int64)
+    parent_index[:n_joints] = parents
+    return frames, parent_index
+
+
+def _rotation_context(cond_entry, like, n_joints):
+    """Rest bone frames ``[N, J, 3, 3]`` and parent indices ``[N, J]`` for a
+    feature with ``n_joints`` slots, numpy or tensors on ``like``'s device.
+
+    Reads the collate's ``REST_BONE_FRAME_KEY`` / ``PARENT_INDEX_KEY`` when
+    present. Otherwise ``parents`` is either one rig's array (a cond entry,
+    ``N == 1``) or a collated per-sample list over a padded ``[B, J, 3]`` rest.
+    """
+    getter = cond_entry.get if hasattr(cond_entry, "get") else (lambda key: None)
+    frames, parent_index = getter(REST_BONE_FRAME_KEY), getter(PARENT_INDEX_KEY)
+    if frames is None or parent_index is None:
+        parents = getter("parents")
+        if parents is None:
+            raise KeyError(
+                "cond entry is missing 'parents': the canonical rotation channel is "
+                "the bone-aligned global rotation and needs the skeleton's chain."
+            )
+        rest = rest_pos_from_cond(cond_entry)
+        rest = np.asarray(rest.detach().cpu() if _is_torch_tensor(rest) else rest, dtype=np.float32)
+        if isinstance(parents, (list, tuple)) and len(parents) > 0 and np.ndim(parents[0]) > 0:
+            rest_rows = rest if rest.ndim == 3 else np.broadcast_to(rest, (len(parents),) + rest.shape)
+            pairs = [
+                padded_rotation_context(rest_rows[b], np.asarray(p).reshape(-1), n_joints)
+                for b, p in enumerate(parents)
+            ]
+            frames = np.stack([pair[0] for pair in pairs])
+            parent_index = np.stack([pair[1] for pair in pairs])
+        else:
+            frames, parent_index = padded_rotation_context(
+                rest[0] if rest.ndim == 3 else rest, parents, n_joints
+            )
+
+    if _is_torch_tensor(like):
+        frames = torch.as_tensor(frames).to(device=like.device, dtype=like.dtype)
+        parent_index = torch.as_tensor(parent_index).to(device=like.device, dtype=torch.long)
+        if frames.dim() == 3:
+            frames, parent_index = frames.unsqueeze(0), parent_index.reshape(1, -1)
+        return frames[:, :n_joints], parent_index[:, :n_joints]
+    if _is_torch_tensor(frames):
+        frames, parent_index = frames.detach().cpu().numpy(), parent_index.detach().cpu().numpy()
+    frames = np.asarray(frames, dtype=np.float64)
+    parent_index = np.asarray(parent_index, dtype=np.int64)
+    if frames.ndim == 3:
+        frames, parent_index = frames[None], parent_index.reshape(1, -1)
+    return frames[:, :n_joints], parent_index[:, :n_joints]
+
+
+def _rotation_view(feature):
+    """The rotation channels of any feature rank as ``[N, T, J, 6]``."""
+    ndim = feature.dim() if _is_torch_tensor(feature) else feature.ndim
+    if ndim == 4:
+        rot = feature[:, :, _ROT_SLICE, :]
+        return rot.permute(0, 3, 1, 2) if _is_torch_tensor(rot) else rot.transpose(0, 3, 1, 2)
+    if ndim == 3:
+        return feature[None, :, :, _ROT_SLICE]
+    if ndim == 2:
+        return feature[None, None, :, _ROT_SLICE]
+    raise ValueError(f"Unsupported feature rank {ndim} for canonical conversion.")
+
+
+def _write_rotation_view(out, rot6d):
+    """Inverse of ``_rotation_view``: store ``[N, T, J, 6]`` back into ``out``."""
+    ndim = out.dim() if _is_torch_tensor(out) else out.ndim
+    if ndim == 4:
+        out[:, :, _ROT_SLICE, :] = rot6d.permute(0, 2, 3, 1) if _is_torch_tensor(rot6d) \
+            else rot6d.transpose(0, 2, 3, 1)
+    elif ndim == 3:
+        out[..., _ROT_SLICE] = rot6d[0]
+    else:
+        out[..., _ROT_SLICE] = rot6d[0, 0]
+    return out
+
+
+def _gather_parent(matrices, parent_index):
+    """``matrices[n, t, parent_index[n, j]]`` of ``[N, T, J, 3, 3]`` matrices; a
+    root slot reads itself."""
+    if _is_torch_tensor(matrices):
+        own = torch.arange(parent_index.shape[1], device=parent_index.device).expand_as(parent_index)
+        index = torch.where(parent_index >= 0, parent_index, own)
+        n_batch = max(matrices.shape[0], index.shape[0])
+        index = index.expand(n_batch, -1).reshape(n_batch, 1, -1, 1, 1)
+        index = index.expand(-1, matrices.shape[1], -1, 3, 3)
+        return torch.gather(matrices.expand(n_batch, -1, -1, -1, -1), 2, index)
+    own = np.arange(parent_index.shape[1])[None]
+    index = np.where(parent_index >= 0, parent_index, own)
+    return np.take_along_axis(matrices, index[:, None, :, None, None], axis=2)
+
+
+def _apply_rotation_frames(feature, cond_entry, inverse: bool):
+    """Physical local rotation (encode) <-> canonical bone-aligned global
+    rotation (decode, ``inverse=True``).
+
+    Encode composes the local rotations down each chain into ``G_j``, one step
+    per chain depth, and right-multiplies the rest bone frame. Decode removes
+    the frame and reads each joint's local rotation off its parent's global
+    one, in parallel over joints.
+    """
+    from utils.rotation_conversions import rotation_6d_to_matrix_np, rotation_6d_to_matrix_safe
+
+    is_torch = _is_torch_tensor(feature)
+    out = feature.clone() if is_torch else np.asarray(feature, dtype=np.float32).copy()
+    n_feats = out.shape[2] if out.ndim == 4 else out.shape[-1]
+    if n_feats < _ROT_SLICE.stop:
+        return out
+    # A copy, not a view: ``out`` is written in place below, and the rotation
+    # conversion keeps its input for the backward pass.
+    rot6d = _rotation_view(out)
+    rot6d = rot6d.clone() if is_torch else rot6d.copy()
+    frames, parent_index = _rotation_context(cond_entry, out, rot6d.shape[2])
+    if frames.shape[0] not in (1, rot6d.shape[0]):
+        raise ValueError(
+            f"rotation context has {frames.shape[0]} rigs but the feature batch has "
+            f"{rot6d.shape[0]} samples; slice the collated y per sample when decoding one."
+        )
+    frames = frames[:, None]                                            # [N, 1, J, 3, 3]
+    if is_torch:
+        matrices = rotation_6d_to_matrix_safe(rot6d)
+        transpose, where = (lambda m: m.transpose(-1, -2)), torch.where
+    else:
+        matrices = rotation_6d_to_matrix_np(rot6d.astype(np.float64))
+        transpose, where = (lambda m: np.swapaxes(m, -1, -2)), np.where
+
+    if inverse:
+        global_rot = matrices @ transpose(frames)
+        local = transpose(_gather_parent(global_rot, parent_index)) @ global_rot
+        result = where((parent_index < 0)[:, None, :, None, None], global_rot, local)
+    else:
+        parents_host = parent_index.detach().cpu().numpy() if is_torch else parent_index
+        depths = np.stack([joint_depths(row) for row in parents_host])
+        if is_torch:
+            global_rot = matrices
+            for level in range(1, int(depths.max(initial=0)) + 1):
+                at_level = torch.as_tensor(depths == level, device=out.device)
+                composed = _gather_parent(global_rot, parent_index) @ matrices
+                global_rot = where(at_level[:, None, :, None, None], composed, global_rot)
+        else:
+            # In place, one chain level at a time, touching only that level's
+            # joints; each rig row composes its own chains.
+            global_rot = matrices.copy()
+            shared = depths.shape[0] == 1
+            for row in range(depths.shape[0]):
+                rows = slice(None) if shared else slice(row, row + 1)
+                for level in range(1, int(depths[row].max(initial=0)) + 1):
+                    joints = np.flatnonzero(depths[row] == level)
+                    global_rot[rows, :, joints] = (
+                        global_rot[rows, :, parents_host[row, joints]] @ matrices[rows, :, joints]
+                    )
+        result = global_rot @ frames
+
+    if is_torch:
+        result6d = torch.cat([result[..., :, 0], result[..., :, 1]], dim=-1).to(out.dtype)
+    else:
+        result6d = np.concatenate([result[..., :, 0], result[..., :, 1]], axis=-1).astype(np.float32)
+    return _write_rotation_view(out, result6d)
 
 
 def physical_hml_to_lnorm(feature, cond_entry):
     """Encode HML-like physical features into the *L-normalized* intermediate
-    space (steps 1-2): subtract rest from the position channel, then divide the
-    position/velocity channels by the per-skeleton length ``L``. This is the
-    space in which the GLOBAL standardization statistics are calibrated.
+    space (steps 1-2): re-express the rotation channel as the bone-aligned
+    global rotation, then divide the position/velocity channels by the
+    per-skeleton length ``L``. This is the space in which the GLOBAL
+    standardization statistics are calibrated.
     """
-    centered = _apply_rest_pos(feature, cond_entry, sign=-1.0)
-    return _apply_L_scale(centered, cond_entry, inverse=False)
+    rotated = _apply_rotation_frames(feature, cond_entry, inverse=False)
+    return _apply_L_scale(rotated, cond_entry, inverse=False)
 
 
 def physical_hml_to_canonical(feature, cond_entry):
     """Encode HML-like physical features into canonical model features.
 
-    Encode order: subtract rest from the position channel, divide the
-    position/velocity channels by ``L``, standardize every channel by the
-    global mean/std, then zero the derived velocity channels.
+    Encode order: re-express the rotation channel (bone-aligned global),
+    divide the position/velocity channels by ``L``, standardize every channel
+    by the global mean/std, then zero the derived velocity channels.
     """
     lnorm = physical_hml_to_lnorm(feature, cond_entry)
     return zero_derived_velocity(_apply_global_stats(lnorm, cond_entry, inverse=False))
@@ -607,40 +830,13 @@ def canonical_to_physical_hml(feature, cond_entry):
 
     Decode order (inverse of encode on every kept channel): de-standardize by
     the global mean/std, multiply the position/velocity channels by ``L``, then
-    add rest back onto the position channel. The derived velocity channels come
-    back as zero; :func:`rebuild_derived_velocity` fills them.
+    turn the rotation channel back into local rotations against ``cond_entry``'s
+    own rest. The derived velocity channels come back as zero;
+    :func:`rebuild_derived_velocity` fills them.
     """
     lnorm = _apply_global_stats(feature, cond_entry, inverse=True)
     unscaled = _apply_L_scale(lnorm, cond_entry, inverse=True)
-    return zero_derived_velocity(_apply_rest_pos(unscaled, cond_entry, sign=1.0))
-
-
-def build_canonical_rest_feature(cond_entry):
-    """Build the rest-pose token in canonical feature space.
-
-    The rest pose has no motion, so its physical feature is the rest rotation
-    with the position channel equal to the rest position and the velocity
-    channels zeroed. Encoding it through the same forward transform
-    keeps the rest token in exactly the canonical space the model sees (the
-    position residual collapses to 0 before standardization).
-    """
-    if "rest_pose_physical" in cond_entry:
-        rest = cond_entry["rest_pose_physical"]
-    elif "rest_pose" in cond_entry:
-        rest = cond_entry["rest_pose"]
-    else:
-        raise KeyError("cond entry is missing rest_pose/rest_pose_physical.")
-
-    if _is_torch_tensor(rest):
-        rest_phys = rest.clone()
-        if rest_phys.shape[-1] >= _VEL_SLICE.stop:
-            rest_phys[..., _VEL_SLICE] = 0.0
-    else:
-        rest_phys = np.asarray(rest, dtype=np.float32).copy()
-        if rest_phys.shape[-1] >= _VEL_SLICE.stop:
-            rest_phys[..., _VEL_SLICE] = 0.0
-
-    return physical_hml_to_canonical(rest_phys, cond_entry)
+    return zero_derived_velocity(_apply_rotation_frames(unscaled, cond_entry, inverse=True))
 
 
 def _new_term_acc(n_feats):
@@ -819,13 +1015,21 @@ def assert_single_canonical_frame(cond_dict, source="cond.npy"):
     The model is trained in one global canonical frame; a cond whose entries
     disagree was built by a per-object_subset (or otherwise stale) stats pass and
     would silently write some species in a frame the model never saw. Entries
-    without stats are left to the callers' own missing-stats checks.
+    without stats are left to the callers' own missing-stats checks. An entry
+    whose stats were measured in another feature space raises too.
     """
     frames = {}
     for key, entry in cond_dict.items():
         stats = get_canonical_global_stats(entry) if isinstance(entry, dict) else None
         if stats is None:
             continue
+        if _is_other_feature_space(entry):
+            raise ValueError(
+                f"{source} entry {key!r} was built in feature_space={entry['feature_space']!r}, the code "
+                f"expects {CANONICAL_FEATURE_SPACE!r}. Regenerate it "
+                "(tools/regenerate_dataset_artifacts.py for a dataset, "
+                "tools/merge_dataset_cond.py for the merged training cond)."
+            )
         frame = tuple(
             np.asarray(stat, dtype=np.float32).reshape(-1).tobytes()
             for stat in (*stats, get_canonical_dpos_std(entry) if get_canonical_dpos_std(entry) is not None else np.nan)
@@ -841,7 +1045,31 @@ def assert_single_canonical_frame(cond_dict, source="cond.npy"):
         )
 
 
-def mark_canonical_cond_entry(cond_entry):
+def _is_other_feature_space(cond_entry):
+    actual = cond_entry.get("feature_space")
+    return actual is not None and actual != CANONICAL_FEATURE_SPACE
+
+
+def mark_canonical_cond_entry(cond_entry, *, restamp=False):
+    """Stamp ``cond_entry`` with the current feature space and derive its rest
+    geometry.
+
+    An entry built in another feature space carries stats measured in that
+    space, and the model would be trained or decoded with them silently. Such an
+    entry raises, unless ``restamp`` is set by a writer that re-measures the
+    stats afterwards: the stale space-bound keys are then dropped so none of them
+    survive under the new stamp.
+    """
+    if _is_other_feature_space(cond_entry):
+        if not restamp:
+            raise ValueError(
+                f"cond entry was built in feature_space={cond_entry['feature_space']!r}, the code expects "
+                f"{CANONICAL_FEATURE_SPACE!r}; its canonical stats belong to the old space. "
+                "Regenerate cond.npy (preprocess_all_datasets.bat --regenerate-side-artifacts, "
+                "then tools/merge_dataset_cond.py for the merged training cond)."
+            )
+        for key in _FEATURE_SPACE_BOUND_KEYS:
+            cond_entry.pop(key, None)
     cond_entry["feature_space"] = CANONICAL_FEATURE_SPACE
     cond_entry["physical_feature_space"] = PHYSICAL_FEATURE_SPACE
     if "rest_pose" in cond_entry:

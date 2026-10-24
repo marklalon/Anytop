@@ -9,8 +9,11 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_FEATURE_SPACE,
     DPOS_LOSS_WEIGHT_KEY,
     ROOT_VEL_LOSS_WEIGHT_KEY,
+    PARENT_INDEX_KEY,
+    REST_BONE_FRAME_KEY,
     REST_LENGTH_SCALE_KEY,
     _length_scale_from_rest,
+    padded_rotation_context,
 )
 from data_loaders.joint_buckets import bucket_ceiling
 from data_loaders.reference import REST_GEOM_DIM
@@ -168,6 +171,14 @@ def truebones_collate(batch):
                 batch_item['joint_struct'] for batch_item in notnone_batches
             ])
         })
+
+    # Emitted only when every item has them, like rest_length_scale: a decode
+    # that found them on some rows only would misalign sample<->rig.
+    if all(REST_BONE_FRAME_KEY in batch_item for batch_item in notnone_batches):
+        cond['y'][REST_BONE_FRAME_KEY] = torch.stack(
+            [batch_item[REST_BONE_FRAME_KEY] for batch_item in notnone_batches])
+        cond['y'][PARENT_INDEX_KEY] = torch.stack(
+            [batch_item[PARENT_INDEX_KEY] for batch_item in notnone_batches])
 
     if any('rest_pose_physical' in batch_item for batch_item in notnone_batches):
         cond['y'].update({
@@ -402,12 +413,18 @@ def truebones_batch_collate(batch, joint_buckets=None):
             rest_count = min(max_joints, n_joints, raw_rest_pos.shape[0])
             rest_pos[:rest_count] = torch.from_numpy(raw_rest_pos[:rest_count])
             item['rest_pos_ric_hml'] = rest_pos
-            # The skeleton's length scale L, taken from the UNPADDED rest exactly
-            # as the encoder took it. Rows padded up to max_joints would drag L
-            # down (or up) with the padding count, so it is fixed here, once, on
-            # the CPU, rather than re-derived from the padded rest on every
-            # training-time aux-loss decode.
-            item[REST_LENGTH_SCALE_KEY] = float(_length_scale_from_rest(raw_rest_pos[:rest_count]))
+            # The skeleton's length scale L and the rotation channel's rest bone
+            # frames, taken from the UNPADDED rig exactly as the encoder took
+            # them, once, on the CPU, rather than re-derived on every
+            # training-time aux-loss decode. Padding slots are identity frames
+            # without a parent.
+            rig_parents = np.asarray(b[2]).reshape(-1)[:rest_count]
+            item[REST_LENGTH_SCALE_KEY] = float(_length_scale_from_rest(raw_rest_pos[:rest_count], rig_parents))
+            frames, parent_index = padded_rotation_context(
+                raw_rest_pos[:rest_count], rig_parents, max_joints
+            )
+            item[REST_BONE_FRAME_KEY] = torch.from_numpy(frames)
+            item[PARENT_INDEX_KEY] = torch.from_numpy(parent_index)
         if extra_cond is not None and 'joint_struct' in extra_cond:
             raw_joint_struct = np.asarray(extra_cond['joint_struct'], dtype=np.float32)
             if raw_joint_struct.ndim != 2 or raw_joint_struct.shape[1] != JOINT_STRUCT_DIM:

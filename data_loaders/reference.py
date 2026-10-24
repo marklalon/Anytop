@@ -65,8 +65,7 @@ def bone_directions(positions, parents, rest_positions):
     Physical positions sit in the skeleton-canonicalized rest-facing frame
     (every rest faces +Z; per-frame root yaw is not removed) with absolute
     height, so a direction means the same world direction on every skeleton
-    ("points up", "points back"), unlike the rest-centered position residual or
-    the local rotation. The rest pose only decides which bones are coincident
+    ("points up", "points back"), unlike the local rotation. The rest pose only decides which bones are coincident
     helpers; it is never an output row. Roots and coincident joints are zero.
     """
     positions = np.asarray(positions, np.float32)
@@ -120,7 +119,7 @@ def reference_sample(motion, cond, names, *, feats=None, joint_struct=None):
     hand the encoder differently derived channels. ``feats`` / ``joint_struct``
     may be passed in when already derived from this same motion and cond.
     ``feats`` is the canonical window; the encoder reads only its root XZ
-    velocity, the one canonical channel that is not rest-centered.
+    velocity.
     """
     if feats is None:
         feats = np.nan_to_num(physical_hml_to_canonical(motion, cond)).astype(np.float32)

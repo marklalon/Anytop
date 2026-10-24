@@ -193,14 +193,80 @@ HML_REF_MAX_SPAN = float(np.linalg.norm(
         axis=-1,
 ).max())
 
-# RMS spread of the SMPL rest joints about their centroid -- the canonical
-# per-skeleton length ``L`` (canonical_features._length_scale_from_rest) of the
-# reference skeleton the scale normalization above targets. Every species is
-# scaled into these units, so this is what ``L`` of a normally-rigged body
-# measures (dataset median 0.229 against this 0.260).
-HML_REF_REST_LENGTH_SCALE = float(np.sqrt(
-        ((_SMPL_REST_POSITIONS - _SMPL_REST_POSITIONS.mean(axis=0)) ** 2).mean()
-))
+
+
+def joint_depths(parents):
+    """Chain depth of every joint (0 for a root), for any joint ordering."""
+    parents = np.asarray(parents, dtype=np.int64).reshape(-1)
+    depths = np.full(parents.size, -1, dtype=np.int64)
+    for joint in range(parents.size):
+        chain = []
+        cursor = joint
+        while cursor >= 0 and depths[cursor] < 0:
+            chain.append(cursor)
+            if len(chain) > parents.size:
+                raise ValueError("parents contain a cycle.")
+            cursor = int(parents[cursor])
+        depth = -1 if cursor < 0 else int(depths[cursor])
+        for node in reversed(chain):
+            depth += 1
+            depths[node] = depth
+    return depths
+
+
+def ancestor_matrix(parents):
+    """``(ancestors [J, J] bool, depths [J])``: ``ancestors[i, k]`` when ``k`` is
+    ``i`` itself or on its chain to the root; ``depths`` as :func:`joint_depths`."""
+    parents = np.asarray(parents, dtype=np.int64).reshape(-1)
+    depths = joint_depths(parents)
+    ancestors = np.eye(parents.size, dtype=bool)
+    for level in range(1, int(depths.max(initial=0)) + 1):
+        joints = np.flatnonzero(depths == level)
+        ancestors[joints] |= ancestors[parents[joints]]
+    return ancestors, depths
+
+
+def rest_tree_spread(rest_positions, parents):
+    """RMS joint spread of a skeleton with distances measured along its tree.
+
+    The centroid RMS spread ``sqrt(mean |x_i - mean x|^2 / 3)`` equals
+    ``sqrt(sum_ij |x_i - x_j|^2 / (6 n^2))``; this replaces each ``|x_i - x_j|``
+    with the summed bone length of the chain between the two joints. Only bone
+    lengths and topology enter, so any re-pose of the rest leaves it unchanged,
+    and a rig whose bones all lie on one line gets its centroid spread. Joints
+    of separate trees (several roots) are joined through their roots' straight
+    distance.
+    """
+    positions = np.asarray(rest_positions, dtype=np.float64)
+    parents = np.asarray(parents, dtype=np.int64).reshape(-1)
+    n_joints = parents.size
+    if n_joints == 0:
+        return 0.0
+    positions = positions[:n_joints]
+    ancestors, _ = ancestor_matrix(parents)
+    has_parent = parents >= 0
+    bone = np.zeros(n_joints)
+    bone[has_parent] = np.linalg.norm(positions[has_parent] - positions[parents[has_parent]], axis=-1)
+    on_chain = ancestors.astype(np.float64)
+    from_root = on_chain @ bone
+    # Distance from the root to each pair's deepest common ancestor: the summed
+    # length of the bones both chains share.
+    common = (on_chain * bone) @ on_chain.T
+    roots = np.flatnonzero(~has_parent)
+    tree_root = roots[ancestors[:, roots].argmax(axis=1)]
+    pair = from_root[:, None] + from_root[None, :]
+    same_tree = tree_root[:, None] == tree_root[None, :]
+    roots_apart = np.linalg.norm(
+        positions[tree_root][:, None, :] - positions[tree_root][None, :, :], axis=-1
+    )
+    distance = np.where(same_tree, pair - 2.0 * common, pair + roots_apart)
+    return float(np.sqrt((distance ** 2).sum() / (6.0 * n_joints ** 2)))
+
+
+# Tree RMS spread of the SMPL rest -- the canonical per-skeleton length ``L``
+# (canonical_features._length_scale_from_rest) of the reference skeleton the
+# scale normalization above targets. Every species is scaled into these units.
+HML_REF_REST_LENGTH_SCALE = rest_tree_spread(_SMPL_REST_POSITIONS, SMPL_PARENTS)
 
 # Geometric blend weight between axial mean bone length and whole-body max span.
 # 0 keeps the existing axial-only scaling; 1 becomes pure max-span scaling.

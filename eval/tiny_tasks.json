@@ -1,40 +1,36 @@
 {
   "_comment": "Quick battery for train_tiny.bat.",
   "checkpoint": {
-    "RUN_NAME": "zoo_locomotion_tiny_v35",
-    "OUTPUT_DIR": "zoo_locomotion_tiny_v35_tiny"
+    "RUN_NAME": "zoo_locomotion_tiny_v38",
+    "OUTPUT_DIR": "zoo_locomotion_tiny_v38_tiny"
   },
   "tasks": [
     {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Buffalo", "--action_label", "run, forward"]},
     {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Buffalo", "--action_label", "jump, up"]},
     {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Camel", "--action_label", "run, forward"]},
     {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Camel", "--action_label", "jump, up"]},
-    {"category": "Basic_Biped", "args": ["--object_type", "truebones/zoo/Monkey", "--action_label", "walk, forward"]},
-    {"category": "Basic_Biped", "args": ["--object_type", "truebones/zoo/Monkey", "--action_label", "jump, up"]},
-    {"category": "Basic_Biped", "args": ["--object_type", "truebones/zoo/Monkey", "--action_label", "swim, forward"]},
+    {"category": "Basic_Biped", "args": ["--object_type", "truebones/zoo/Trex", "--action_label", "walk, forward", "--num_frames", "60"]},
+    {"category": "Basic_Biped", "args": ["--object_type", "truebones/zoo/Trex", "--action_label", "jump, up"]},
     {"category": "Basic_Multiped", "args": ["--object_type", "truebones/zoo/Spider", "--action_label", "run, forward"]},
     {"category": "Basic_Multiped", "args": ["--object_type", "truebones/zoo/Spider", "--action_label", "jump, up"]},
     {"category": "Basic_Winged", "args": ["--object_type", "truebones/zoo/Eagle", "--action_label", "fly, forward"]},
-    {"category": "Basic_Winged", "args": ["--object_type", "truebones/zoo/Eagle", "--action_label", "walk, forward"]},
-    {"category": "Basic_Winged", "args": ["--object_type", "truebones/zoo/Flamingo", "--action_label", "fly, forward"]},
+    {"category": "Basic_Winged", "args": ["--object_type", "truebones/zoo/Eagle", "--action_label", "walk, forward", "--action_label_cfg_scale", "2"]},
+    {"category": "Basic_Winged", "args": ["--object_type", "truebones/zoo/Flamingo", "--action_label", "fly, forward", "--action_label_cfg_scale", "3"]},
     {"category": "Basic_Winged", "args": ["--object_type", "truebones/zoo/Flamingo", "--action_label", "run, forward"]},
     {"category": "Basic_Aquatic", "args": ["--object_type", "truebones/zoo/Jaws", "--action_label", "swim, forward"]},
     {"category": "Basic_Aquatic", "args": ["--object_type", "truebones/zoo/Jaws", "--action_label", "jump, forward"]},
     {"category": "Basic_Serpentine", "args": ["--object_type", "truebones/zoo/Anaconda", "--action_label", "walk, forward"]},
-    {"category": "GaitTempo", "args": ["--object_type", "truebones/zoo/Elephant", "--action_label", "run, forward", "--num_frames", "30"]},
-    {"category": "GaitTempo", "args": ["--object_type", "truebones/zoo/Elephant", "--action_label", "run, forward", "--num_frames", "60"]},
-    {"category": "GaitTempo", "args": ["--object_type", "truebones/zoo/Cat", "--action_label", "run, forward", "--num_frames", "20"]},
-    {"category": "GaitTempo", "args": ["--object_type", "truebones/zoo/Cat", "--action_label", "run, forward", "--num_frames", "40"]},
-    {"category": "SpeciesOverride", "args": ["--object_type", "truebones/zoo/Eagle", "--action_label", "fly, forward", "--species_tags", "Winged,Fluttering"]},
-    {"category": "SpeciesOverride", "args": ["--object_type", "truebones/zoo/Cat", "--action_label", "walk, forward", "--species_tags", "Biped"]},  
-    {"category": "SpeciesOverride", "args": ["--object_type", "truebones/zoo/Buffalo", "--action_label", "walk, forward", "--species_tags", "Biped"]},
+    {"category": "Basic_Serpentine", "args": ["--object_type", "truebones/zoo/Anaconda", "--action_label", "jump, up"]},
     {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Dog", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Cat_Walk.npy"], "eval_label": "walk, forward"},
-    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Horse", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Dog_Walk.npy"], "eval_label": "walk, forward"},
     {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Horse", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Dog_Running.npy"], "eval_label": "run, forward"},
+    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Cat", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Bat_Fly.npy", "--ref_cfg_scale", "4"], "eval_label": "fly, forward"},
     {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Flamingo", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Parrot_Fly.npy", "--ref_cfg_scale", "4"], "eval_label": "fly, forward"},
     {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Eagle", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Giantbee_Fly.npy", "--ref_cfg_scale", "4"], "eval_label": "fly, forward"},
     {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Elephant", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Dog-2_Swimturn.npy", "--ref_cfg_scale", "4"], "eval_label": "swim, turn"},
-    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Buffalo", "--reference_motion", "dataset/truebones/zoo_upgrade/clean/Bear/hind2.glb", "--ref_cfg_scale", "4"], "eval_label": "idle"},
-    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Buffalo", "--reference_motion", "dataset/unitybundles/raw/KI_Human/Walk01Forwards.glb", "--ref_cfg_scale", "4"], "eval_label": "walk"}
+    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Trex", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/SabreToothTiger_Swim.npy", "--ref_cfg_scale", "4"], "eval_label": "swim"},
+    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Buffalo", "--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Tyranno_Walk.npy", "--ref_cfg_scale", "4"], "eval_label": "walk"},
+    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Buffalo", "--reference_motion", "dataset/unitybundles/processed/motions/KI_Human_Walk01Forwards.npy", "--ref_cfg_scale", "4"], "eval_label": "walk"},
+    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Buffalo", "--reference_motion", "dataset/unitybundles/processed/motions/KI_Human_Fall01.npy", "--ref_cfg_scale", "4"], "eval_label": "fall"},
+    {"category": "ReferenceMotion", "args": ["--object_type", "truebones/zoo/Buffalo", "--reference_motion", "dataset/unitybundles/processed/motions/KI_Human_Swim01Backwards.npy", "--ref_cfg_scale", "4"], "eval_label": "swim"}
   ]
 }

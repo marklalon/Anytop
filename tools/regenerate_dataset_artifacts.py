@@ -136,10 +136,12 @@ def _infer_object_type_from_motion_name(
 def _mark_object_feature_spaces(
     rebuilt_cond: dict[str, dict],
 ) -> None:
-    """Ensure cond entries carry canonical feature-space metadata."""
+    """Ensure cond entries carry canonical feature-space metadata. Entries of
+    an older feature space are restamped; their stats are re-measured by
+    ``_compute_canonical_stats``."""
 
     for object_type, object_cond in rebuilt_cond.items():
-        mark_canonical_cond_entry(object_cond)
+        mark_canonical_cond_entry(object_cond, restamp=True)
     if rebuilt_cond:
         print(f"[OK] marked canonical feature space for {len(rebuilt_cond)} species")
 
@@ -150,9 +152,8 @@ def _reseat_rest_to_clip_geometry(
 ) -> None:
     """Move each species' rest onto the geometry its own clips actually use.
 
-    The canonical position channel is a residual from rest, so a joint whose rest
-    disagrees with where every clip holds it is a per-joint DC constant the model
-    can only memorize. See data_loaders/.../rest_geometry.py for the guards and
+    A joint whose rest disagrees with where every clip holds it describes a bone
+    the motion never has. See data_loaders/.../rest_geometry.py for the guards and
     the reasoning behind this step.
 
     It runs here, before the canonical statistics, so one pass produces a rest and
@@ -201,8 +202,8 @@ def _compute_canonical_stats(
     """Compute the global per-channel standardization statistics and store the
     same FEATS_LEN-vectors on every cond entry.
 
-    Each physical clip is encoded into the L-normalized space (rest-centered
-    position + per-skeleton size division) and accumulated into the bucket of
+    Each physical clip is encoded into the L-normalized space (bone-aligned
+    global rotation + per-skeleton size division) and accumulated into the bucket of
     its species' object_subset (the first motion tag in species_tags.jsonl).
     The buckets exist only so that ``pool_global_stats`` can give every subset
     equal weight; the result is one canonical frame shared by all species, so

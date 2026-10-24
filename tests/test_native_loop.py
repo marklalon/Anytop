@@ -418,6 +418,7 @@ class NativeLoopTests(unittest.TestCase):
                 'n_joints': torch.full((batch_size,), n_joints, dtype=torch.int64),
                 'joints_padding_mask': torch.ones(batch_size, 1, 1, n_joints + 1, n_joints + 1),
                 'rest_pos_ric_hml': torch.zeros(n_joints, 3),
+                'parents': np.arange(-1, n_joints - 1),
                 # Unit L, as the collate would supply it, so the decoded drift is
                 # the canonical one (the zero rest alone would floor L).
                 'rest_length_scale': torch.ones(batch_size),

@@ -1,9 +1,10 @@
 """Re-seat a species' rest pose onto the geometry its own clips actually use.
 
-The canonical position channel is a residual FROM REST, so a joint whose rest
-position disagrees with where every clip holds it hands the model a per-joint DC
-constant with no signal in it -- and those joints are tokens the model has to
-predict like any other. The offenders are helper geometry: nub / locator /
+The rest is the skeleton the model is told about (rest geometry, bone-length
+normalization, ``L``) and the skeleton every decoded clip is exported onto, so a
+joint whose rest position disagrees with where every clip holds it describes a
+bone the motion never has, and an export that rebuilds the clip from rest
+offsets puts it there. The offenders are helper geometry: nub / locator /
 expression-control bones an exporter gave a rest offset while the animation
 collapses them onto their parent, ears and horns and tongues seated somewhere the
 animator never uses.

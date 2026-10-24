@@ -46,7 +46,7 @@ for _candidate in (str(ANYTOP_DIR), str(ANYTOP_DIR.parent)):
         sys.path.insert(0, _candidate)
 
 from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
-    _length_scale_from_cond,
+    rest_pos_from_cond,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
 from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
@@ -54,6 +54,9 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E4
 )
 from data_loaders.truebones.truebones_utils.features import (  # noqa: E402
     recover_from_bvh_ric_np,
+)
+from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
+    _SMPL_REST_POSITIONS,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_LABELS_FILE,
@@ -155,6 +158,28 @@ def species_name(clip) -> str:
 
 # ── decode ──────────────────────────────────────────────────────────────────
 
+def _centroid_spread(positions):
+    positions = np.asarray(positions, dtype=np.float64)
+    return float(np.sqrt(((positions - positions.mean(axis=0)) ** 2).mean()))
+
+
+# Floor of ``body_length``: half the SMPL rest's own spread, so a rig of a few
+# clustered joints is not measured in a near-zero unit.
+BODY_LENGTH_FLOOR = 0.5 * _centroid_spread(_SMPL_REST_POSITIONS)
+
+
+def body_length(entry):
+    """The unit the prefill thresholds are written in: the rest joints' RMS
+    spread about their centroid, floored at ``BODY_LENGTH_FLOOR``.
+
+    It measures world-space motion, so it keeps this calibration rather than
+    following the canonical ``L`` (a rest-pose-invariant tree spread on a
+    different scale).
+    """
+    spread = _centroid_spread(rest_pos_from_cond(entry))
+    return max(spread if np.isfinite(spread) else 0.0, BODY_LENGTH_FLOOR)
+
+
 class DecodedClip:
     """One clip's positions, in the canonical facing frame.
 
@@ -163,7 +188,7 @@ class DecodedClip:
     integrated XZ travel back (what the clip does on the ground plane -- for a
     locomotion clip the preprocess detrend has already removed the net travel,
     so only the within-cycle surge and sway remain). ``L`` is the skeleton's
-    length scale, so distances divided by it read in body lengths.
+    ``body_length``, so distances divided by it read in body lengths.
     """
 
     def __init__(self, motion_path, entry):
@@ -172,7 +197,7 @@ class DecodedClip:
         self.root_index = int(entry["translation_root_index"])
         self.ric = motion[..., :3]
         self.world = recover_from_bvh_ric_np(motion, translation_root_index=self.root_index)
-        self.L = float(_length_scale_from_cond(entry))
+        self.L = body_length(entry)
 
 
 # ── proposals ───────────────────────────────────────────────────────────────
