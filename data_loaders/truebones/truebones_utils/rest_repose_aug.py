@@ -17,7 +17,7 @@ heights); the augmentation gives every rig a spread of rests, so the motion
 cannot be keyed to one exact rest. A draw keeps the mirror symmetry (a partner
 gets the mirrored rotation, a midline joint only bends in the sagittal plane)
 and only turns a joint about an axis that leaves the canonical rotation
-channel exactly unchanged (see ``_subtree_twist_exact``).
+channel exactly unchanged (see ``_subtree_valid``).
 
 The structural channel names the stored rig's joints (which side, which
 sibling) and is not rest geometry: callers keep the one built before this
@@ -32,12 +32,14 @@ import numpy as np
 
 from data_loaders.truebones.truebones_utils.bone_length_aug import _parent_order
 from data_loaders.truebones.truebones_utils.canonical_features import (
-    _TWIST_REFERENCE_AXES, _frames_from_directions, rest_bone_frames)
+    _TWIST_REFERENCE_AXES, _twist_references, rest_bone_frames)
 
 # Largest rest rotation of a joint whose subtree is a vanishing part of the rig.
 DEFAULT_REST_REPOSE_MAX_DEG = 20.0
 # Largest deviation of a turned twist reference from the one the new rest derives.
 _TWIST_TOLERANCE = 1e-6
+# A rest joint closer to the sagittal plane than this is on the midline.
+_SIDE_EPS = 1e-4
 # Reflection across the sagittal plane: the canonical rest faces +Z with X lateral.
 _MIRROR = np.diag([-1.0, 1.0, 1.0])
 
@@ -83,36 +85,73 @@ def _partners(cond, joint_count):
     return np.where(valid, partners, -1)
 
 
-def _chain_rotation(rotations, parents, joint):
-    """Global rotation of ``joint``'s parent frame under the current draws."""
-    out = np.eye(3)
-    p = int(parents[joint])
-    while p >= 0:
-        out = rotations[p] @ out
-        p = int(parents[p])
-    return out
+def _subtree_layout(children, joint):
+    """Joints under ``joint`` in breadth-first order, with what batches their FK.
+
+    Returns ``(nodes, levels)``: each level is ``(slice, parent_pos)`` -- the
+    slice of ``nodes`` at one depth and the position in ``nodes`` of each
+    one's parent (the first level is the joint itself).
+    """
+    nodes = [joint]
+    levels = [(slice(0, 1), None)]
+    start = 0
+    while start < len(nodes):
+        stop = len(nodes)
+        parent_pos = []
+        for k in range(start, stop):
+            for c in children[nodes[k]]:
+                nodes.append(int(c))
+                parent_pos.append(k)
+        if len(nodes) > stop:
+            levels.append((slice(stop, len(nodes)), np.asarray(parent_pos)))
+        start = stop
+    return np.asarray(nodes), levels
 
 
-def _subtree_twist_exact(rotations, parents, children, frames, joint):
-    """True when every frame under ``joint`` follows its rest turn exactly.
+def _subtree_valid(rotations, parents, offsets, rest, frames, tri, layout):
+    """True when the draws under a joint are an exact, side-keeping re-pose.
 
-    The canonical rotation ``G A`` stays unchanged iff the turned twist
+    Exact: the canonical rotation ``G A`` stays unchanged iff the turned twist
     reference ``G p`` is the one the new rest derives from the turned bone
     direction ``G d``; a twist reference axis fixed in the world only
     guarantees that for turns about it (or in the plane of it and the bone).
+    Side-keeping: no joint crosses the root's sagittal plane, so a bent limb
+    never reaches over to its partner's side (an X-shaped pose).
     """
-    stack = [(joint, _chain_rotation(rotations, parents, joint))]
-    while stack:
-        j, parent_global = stack.pop()
-        g = parent_global @ rotations[j]
-        d = g @ frames[j][:, 0]
-        norm = np.linalg.norm(d)
-        if norm > 1e-9:
-            expected = _frames_from_directions((d / norm)[None])[0][:, 1]
-            if np.linalg.norm(g @ frames[j][:, 1] - expected) > _TWIST_TOLERANCE:
-                return False
-        stack.extend((int(c), g) for c in children[j])
-    return True
+    nodes, levels = layout
+    joint = int(nodes[0])
+    path = [joint]
+    while parents[path[-1]] >= 0:
+        path.append(int(parents[path[-1]]))
+    path.reverse()
+    position, frame = rest[path[0]], np.eye(3)
+    for a, b in zip(path[:-1], path[1:]):
+        frame = frame @ rotations[a]
+        position = position + frame @ offsets[b]
+    # ``frame`` is the global rotation of the joint's parent here.
+    count = len(nodes)
+    globals_ = np.empty((count, 3, 3))
+    positions = np.empty((count, 3))
+    globals_[0] = frame @ rotations[joint]
+    positions[0] = position
+    for rows, parent_pos in levels[1:]:
+        parent_global = globals_[parent_pos]
+        globals_[rows] = parent_global @ rotations[nodes[rows]]
+        positions[rows] = positions[parent_pos] + np.einsum(
+            'kij,kj->ki', parent_global, offsets[nodes[rows]])
+    midline = rest[tri, 0]
+    side = rest[nodes, 0] - midline
+    sided = np.abs(side) > _SIDE_EPS
+    if np.any((positions[sided, 0] - midline) * side[sided] <= 0.0):
+        return False
+    d = np.einsum('kij,kj->ki', globals_, frames[nodes, :, 0])
+    norm = np.linalg.norm(d, axis=-1)
+    live = norm > 1e-9
+    if not live.any():
+        return True
+    expected = _twist_references(d[live] / norm[live, None])
+    twist = np.einsum('kij,kj->ki', globals_[live], frames[nodes[live], :, 1])
+    return bool(np.all(np.linalg.norm(twist - expected, axis=-1) <= _TWIST_TOLERANCE))
 
 
 def _draw_rest_rotations(cond, order, children, tri, max_rad, rng):
@@ -123,8 +162,8 @@ def _draw_rest_rotations(cond, order, children, tri, max_rad, rng):
     joint turns about one of the twist reference axes and hands the mirrored
     rotation to its partner; an unpaired joint turns about the lateral axis
     only. A draw is kept only when every frame under the joint (and its
-    partner) keeps its canonical rotation exactly (``_subtree_twist_exact``),
-    so the augmentation changes the rest, not the motion features.
+    partner) keeps its canonical rotation exactly and stays on its side of
+    the midline (``_subtree_valid``).
     """
     parents = np.asarray(cond['parents'], dtype=np.int64)
     offsets = np.asarray(cond['offsets'], dtype=np.float64)
@@ -133,10 +172,12 @@ def _draw_rest_rotations(cond, order, children, tri, max_rad, rng):
     threshold = max(1e-6, float(lengths[parents >= 0].max(initial=0.0)) * 1e-4)
     sizes = _subtree_sizes(order, parents)
     partners = _partners(cond, joint_count)
-    frames = rest_bone_frames(np.asarray(cond['rest_pos_ric_hml'], dtype=np.float64), parents)
+    rest = np.asarray(cond['rest_pos_ric_hml'], dtype=np.float64)
+    frames = rest_bone_frames(rest, parents)
     rotations = np.repeat(np.eye(3)[None], joint_count, axis=0)
     drawn = np.zeros(joint_count, dtype=bool)
     twist_axes = np.asarray(_TWIST_REFERENCE_AXES, dtype=np.float64)
+    layouts = {}
     for j in order:
         j = int(j)
         if parents[j] < 0 or j == tri or drawn[j]:
@@ -150,13 +191,16 @@ def _draw_rest_rotations(cond, order, children, tri, max_rad, rng):
             axes = [np.array([1.0, 0.0, 0.0])]
         else:
             axes = [twist_axes[i] for i in rng.sample(range(len(twist_axes)), len(twist_axes))]
+        for k in (j, partner) if partner >= 0 else (j,):
+            if k not in layouts:
+                layouts[k] = _subtree_layout(children, k)
         for axis in axes:
             rotations[j] = _axis_angle_matrix(axis, angle)
             if partner >= 0:
                 rotations[partner] = _MIRROR @ rotations[j] @ _MIRROR
-            ok = _subtree_twist_exact(rotations, parents, children, frames, j)
-            if ok and partner >= 0:
-                ok = _subtree_twist_exact(rotations, parents, children, frames, partner)
+            ok = all(
+                _subtree_valid(rotations, parents, offsets, rest, frames, tri, layouts[k])
+                for k in ((j, partner) if partner >= 0 else (j,)))
             if ok:
                 drawn[j] = True
                 if partner >= 0:

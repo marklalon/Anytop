@@ -188,3 +188,17 @@ def test_canonical_features_are_rest_invariant():
     np.testing.assert_allclose(
         physical_hml_to_canonical(new_motion, new_cond)[..., :9],
         physical_hml_to_canonical(motion, cond)[..., :9], atol=1e-4)
+
+
+def test_bent_limbs_stay_on_their_side():
+    motion, cond, metadata = fixture()
+    side = cond['rest_pos_ric_hml'][:, 0] - cond['rest_pos_ric_hml'][0, 0]
+    sided = np.abs(side) > 1e-4
+    applied = 0
+    for seed in range(200):
+        random.seed(seed)
+        _, new_cond, info = augment_rest_repose(motion, cond, metadata, 90.0)
+        applied += info['applied']
+        new_side = new_cond['rest_pos_ric_hml'][:, 0] - new_cond['rest_pos_ric_hml'][0, 0]
+        assert np.all(new_side[sided] * side[sided] > 0), seed
+    assert applied

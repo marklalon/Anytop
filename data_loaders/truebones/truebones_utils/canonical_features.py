@@ -634,16 +634,21 @@ def _view_root_stat(stat, feature_ndim):
     return root.reshape(1, 3)
 
 
-def _frames_from_directions(directions):
-    """``[K, 3, 3]`` frames with columns ``d``, twist reference ``p``, ``d x p``
-    for unit directions ``[K, 3]``."""
+def _twist_references(directions):
+    """``[K, 3]`` unit twist references ``p`` for unit directions ``[K, 3]``."""
     axes = np.asarray(_TWIST_REFERENCE_AXES, dtype=np.float64)
     cos = directions @ axes.T
     usable = np.abs(cos) <= _TWIST_REFERENCE_MAX_COS
     # The first usable axis; the last one when none is.
     choice = np.where(usable.any(axis=1), usable.argmax(axis=1), len(axes) - 1)
     reference = axes[choice] - cos[np.arange(choice.size), choice][:, None] * directions
-    reference /= np.linalg.norm(reference, axis=-1, keepdims=True)
+    return reference / np.linalg.norm(reference, axis=-1, keepdims=True)
+
+
+def _frames_from_directions(directions):
+    """``[K, 3, 3]`` frames with columns ``d``, twist reference ``p``, ``d x p``
+    for unit directions ``[K, 3]``."""
+    reference = _twist_references(directions)
     return np.stack([directions, reference, np.cross(directions, reference)], axis=-1)
 
 
