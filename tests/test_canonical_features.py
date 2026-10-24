@@ -642,3 +642,21 @@ def test_collate_carries_rest_bone_frames_padded_with_identity():
     np.testing.assert_allclose(frames[:len(parents)], cf.rest_bone_frames(rest, parents), atol=1e-6)
     np.testing.assert_allclose(frames[len(parents):], np.tile(np.eye(3), (2, 1, 1)))
     assert y[cf.PARENT_INDEX_KEY][0].tolist() == list(parents) + [-1, -1]
+
+
+def test_canonical_decode_backpropagates_through_the_rotation_channel():
+    """The training aux losses differentiate the decode; writing the decoded
+    rotations back must not clobber a tensor autograd saved."""
+    parents, rest = _arm_rig()
+    mean, std = _global_stats()
+    y = {
+        "rest_pos_ric_hml": torch.as_tensor(rest, dtype=torch.float32).unsqueeze(0).expand(2, -1, -1),
+        "parents": [parents, parents],
+        "canonical_feature_mean": torch.as_tensor(mean),
+        "canonical_feature_std": torch.as_tensor(std),
+    }
+    canonical = torch.randn(2, len(parents), 12, 4, requires_grad=True)
+    decoded = canonical_to_physical_hml(canonical, y)
+    (decoded[:, :, 3:9] ** 2).sum().backward()
+    assert torch.isfinite(canonical.grad).all()
+    assert canonical.grad[:, :, 3:9].abs().sum() > 0

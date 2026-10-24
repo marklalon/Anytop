@@ -730,7 +730,10 @@ def _apply_rotation_frames(feature, cond_entry, inverse: bool):
     n_feats = out.shape[2] if out.ndim == 4 else out.shape[-1]
     if n_feats < _ROT_SLICE.stop:
         return out
+    # A copy, not a view: ``out`` is written in place below, and the rotation
+    # conversion keeps its input for the backward pass.
     rot6d = _rotation_view(out)
+    rot6d = rot6d.clone() if is_torch else rot6d.copy()
     frames, parent_index = _rotation_context(cond_entry, out, rot6d.shape[2])
     if frames.shape[0] not in (1, rot6d.shape[0]):
         raise ValueError(
