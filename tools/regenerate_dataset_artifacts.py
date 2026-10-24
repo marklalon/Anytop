@@ -136,10 +136,12 @@ def _infer_object_type_from_motion_name(
 def _mark_object_feature_spaces(
     rebuilt_cond: dict[str, dict],
 ) -> None:
-    """Ensure cond entries carry canonical feature-space metadata."""
+    """Ensure cond entries carry canonical feature-space metadata. Entries of
+    an older feature space are restamped; their stats are re-measured by
+    ``_compute_canonical_stats``."""
 
     for object_type, object_cond in rebuilt_cond.items():
-        mark_canonical_cond_entry(object_cond)
+        mark_canonical_cond_entry(object_cond, restamp=True)
     if rebuilt_cond:
         print(f"[OK] marked canonical feature space for {len(rebuilt_cond)} species")
 

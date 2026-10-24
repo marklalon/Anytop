@@ -497,6 +497,27 @@ def test_assert_single_canonical_frame_rejects_mixed_frames():
         cf.assert_single_canonical_frame(cond)
 
 
+def test_cond_of_another_feature_space_is_refused_unless_restamped():
+    mean, std, dpos_std = cf.pool_global_stats(_raw_subset_stats())
+    stale = set_canonical_global_stats({"feature_space": "canonical_motion_v0"}, mean, std, dpos_std)
+    cf.set_aux_loss_weights(stale)
+
+    with pytest.raises(ValueError, match="canonical_motion_v0"):
+        cf.assert_single_canonical_frame({"Dog": stale})
+    with pytest.raises(ValueError, match="canonical_motion_v0"):
+        mark_canonical_cond_entry(stale)
+    assert stale["feature_space"] == "canonical_motion_v0"
+
+    # A writer that re-measures the stats restamps; none of the old ones survive.
+    mark_canonical_cond_entry(stale, restamp=True)
+    assert stale["feature_space"] == cf.CANONICAL_FEATURE_SPACE
+    assert not any(key in stale for key in cf._FEATURE_SPACE_BOUND_KEYS)
+
+    current = set_canonical_global_stats(mark_canonical_cond_entry({}), mean, std, dpos_std)
+    mark_canonical_cond_entry(current)
+    cf.assert_single_canonical_frame({"Dog": current})
+
+
 def test_rebuild_derived_velocity_matches_the_stored_world_steps():
     # A stored clip's velocity rows are world steps (RIC removes the root's
     # world XZ from every joint). Decoding keeps the root's X/Z and rebuilds

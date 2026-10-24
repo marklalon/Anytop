@@ -108,6 +108,16 @@ ROOT_VEL_LOSS_WEIGHT_KEY = "root_vel_loss_weight"
 DPOS_LOSS_WEIGHT_KEY = "dpos_loss_weight"
 AUX_LOSS_ENERGY_CAP = 2.0
 
+# Cond keys measured in the canonical space; they are only valid under the
+# feature space stamped on the same entry.
+_FEATURE_SPACE_BOUND_KEYS = (
+    CANONICAL_MEAN_KEY,
+    CANONICAL_STD_KEY,
+    CANONICAL_DPOS_STD_KEY,
+    ROOT_VEL_LOSS_WEIGHT_KEY,
+    DPOS_LOSS_WEIGHT_KEY,
+)
+
 # The model's channel contract (see "Derived velocity" above). Joint 0 is the
 # translation root of every cond skeleton.
 ROOT_VEL_CHANNELS = (9, 11)
@@ -1005,13 +1015,21 @@ def assert_single_canonical_frame(cond_dict, source="cond.npy"):
     The model is trained in one global canonical frame; a cond whose entries
     disagree was built by a per-object_subset (or otherwise stale) stats pass and
     would silently write some species in a frame the model never saw. Entries
-    without stats are left to the callers' own missing-stats checks.
+    without stats are left to the callers' own missing-stats checks. An entry
+    whose stats were measured in another feature space raises too.
     """
     frames = {}
     for key, entry in cond_dict.items():
         stats = get_canonical_global_stats(entry) if isinstance(entry, dict) else None
         if stats is None:
             continue
+        if _is_other_feature_space(entry):
+            raise ValueError(
+                f"{source} entry {key!r} was built in feature_space={entry['feature_space']!r}, the code "
+                f"expects {CANONICAL_FEATURE_SPACE!r}. Regenerate it "
+                "(tools/regenerate_dataset_artifacts.py for a dataset, "
+                "tools/merge_dataset_cond.py for the merged training cond)."
+            )
         frame = tuple(
             np.asarray(stat, dtype=np.float32).reshape(-1).tobytes()
             for stat in (*stats, get_canonical_dpos_std(entry) if get_canonical_dpos_std(entry) is not None else np.nan)
@@ -1027,7 +1045,31 @@ def assert_single_canonical_frame(cond_dict, source="cond.npy"):
         )
 
 
-def mark_canonical_cond_entry(cond_entry):
+def _is_other_feature_space(cond_entry):
+    actual = cond_entry.get("feature_space")
+    return actual is not None and actual != CANONICAL_FEATURE_SPACE
+
+
+def mark_canonical_cond_entry(cond_entry, *, restamp=False):
+    """Stamp ``cond_entry`` with the current feature space and derive its rest
+    geometry.
+
+    An entry built in another feature space carries stats measured in that
+    space, and the model would be trained or decoded with them silently. Such an
+    entry raises, unless ``restamp`` is set by a writer that re-measures the
+    stats afterwards: the stale space-bound keys are then dropped so none of them
+    survive under the new stamp.
+    """
+    if _is_other_feature_space(cond_entry):
+        if not restamp:
+            raise ValueError(
+                f"cond entry was built in feature_space={cond_entry['feature_space']!r}, the code expects "
+                f"{CANONICAL_FEATURE_SPACE!r}; its canonical stats belong to the old space. "
+                "Regenerate cond.npy (preprocess_all_datasets.bat --regenerate-side-artifacts, "
+                "then tools/merge_dataset_cond.py for the merged training cond)."
+            )
+        for key in _FEATURE_SPACE_BOUND_KEYS:
+            cond_entry.pop(key, None)
     cond_entry["feature_space"] = CANONICAL_FEATURE_SPACE
     cond_entry["physical_feature_space"] = PHYSICAL_FEATURE_SPACE
     if "rest_pose" in cond_entry:

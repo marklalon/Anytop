@@ -67,6 +67,7 @@ from .features import (
 from .topology_relations import create_topology_edge_relations
 from .rest_geometry import reseat_rest_onto_clips
 from .canonical_features import (
+    CANONICAL_FEATURE_SPACE,
     DPOS_LOSS_WEIGHT_KEY,
     ROOT_VEL_LOSS_WEIGHT_KEY,
     assert_single_canonical_frame,
@@ -1778,10 +1779,15 @@ def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_
     # The canonical standardization stats are one corpus-wide constant tied to
     # the trained checkpoint, identical on every entry. A freshly (re)built
     # object cond has no stats of its own, so it reuses the dataset's constant to
-    # land in the space the model was trained on.
+    # land in the space the model was trained on. A donor of another feature
+    # space carries stats of that space and is skipped.
     if object_cond.get('canonical_feature_mean') is None:
-        donors = ([prior_entry] if prior_entry is not None else []) + [
-            sibling_cond for sibling, sibling_cond in cond.items() if sibling != merged_key
+        donors = [
+            entry
+            for entry in ([prior_entry] if prior_entry is not None else []) + [
+                sibling_cond for sibling, sibling_cond in cond.items() if sibling != merged_key
+            ]
+            if entry.get('feature_space') in (None, CANONICAL_FEATURE_SPACE)
         ]
         chosen = next(
             (
