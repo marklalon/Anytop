@@ -35,14 +35,14 @@ pushd "%SCRIPT_DIR%"
 	--ref_encoder ^
 	--ref_slots 3 ^
 	--ref_dim 8 ^
-	--ref_width 128 ^
+	--ref_width 256 ^
 	--ref_layers 2 ^
 	--ref_cfg_drop_prob 0.6 ^
 	--topology_aug_prob 0.2 ^
 	--bone_length_aug_prob 0.2 ^
 	--bone_length_aug_max 0.2 ^
 	--bone_length_aug_min 0.1 ^
-	--rest_repose_prob 0.0 ^
+	--rest_repose_prob 0.2 ^
 	--rest_repose_max_deg 20 ^
 	--motion_speed_aug 1.3 ^
 	--loop_cond_prob 0.8 ^
