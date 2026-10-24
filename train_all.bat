@@ -2,7 +2,7 @@
 setlocal
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_all_v55
+set RUN_NAME=merged_all_v56
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM train_anytop requires bundled TinyCC for --compile, overriding inherited CC.
