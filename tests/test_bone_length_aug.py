@@ -9,12 +9,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from data_loaders.truebones.truebones_utils.bone_length_aug import (
-    augment_bone_lengths, body_groups, validate_bone_length_aug,
+    augment_bone_lengths, body_groups, long_groups, validate_bone_length_aug,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (
-    build_canonical_rest_feature, canonical_to_physical_hml,
+    canonical_to_physical_hml,
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import build_joint_struct_features
+from data_loaders.reference import rest_geom_features
 from data_loaders.truebones.truebones_utils.features import recover_from_bvh_ric_np
 from data_loaders.truebones.data.dataset import MotionDataset
 from tools.sample_augmented_bvh import PreviewMotionDataset
@@ -54,13 +55,41 @@ def test_invalid_configuration(prob, magnitude):
         validate_bone_length_aug(prob, magnitude)
 
 
+@pytest.mark.parametrize('min_magnitude', [-.1, .3, np.nan])
+def test_invalid_min_magnitude(min_magnitude):
+    with pytest.raises(ValueError):
+        validate_bone_length_aug(.2, .2, min_magnitude)
+
+
+@pytest.mark.parametrize('seed', range(20))
+def test_change_stays_within_min_and_max(seed):
+    motion, cond, metadata = fixture()
+    _, _, info = augment_bone_lengths(motion, cond, metadata, .2, .1, rng=random.Random(seed))
+    for factor in info['scales'].values():
+        assert .1 - 1e-9 <= abs(factor - 1) <= .2 + 1e-9
+
+
+def test_only_long_groups_are_scaled():
+    motion, cond, metadata = fixture()
+    # Unpaired legs: the right leg's bones are short, so only the left leg qualifies.
+    cond.pop('symmetry_partner_indices')
+    cond['offsets'][5:] *= .2
+    groups = body_groups(cond)
+    assert set(groups) == {'chain_1', 'chain_4'}
+    assert set(long_groups(cond, groups)) == {'chain_1'}
+    for seed in range(10):
+        _, new_cond, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(seed))
+        assert set(info['scales']) == {'chain_1'}
+        np.testing.assert_array_equal(new_cond['offsets'][4:], cond['offsets'][4:])
+
+
 def test_symmetric_lengths_grounding_and_unmutated_source():
     motion, cond, metadata = fixture()
     saved_motion, saved_rest = motion.copy(), cond['rest_pose'].copy()
     out, new_cond, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(3))
     assert info['applied'], info
     factor = info['scales']['chain_1']
-    assert .9 <= factor <= 1.1 and factor != 1
+    assert .1 <= abs(factor - 1) <= .2
     # Topology groups: each leg is one branch-free chain, the mirror pair one group.
     assert body_groups(cond) == {'chain_1': [1, 2, 3, 4, 5, 6]}
     np.testing.assert_allclose(new_cond['offsets'][1:], cond['offsets'][1:] * factor)
@@ -248,7 +277,7 @@ def test_non_parent_first_joint_order_is_supported():
 def make_dataset(cls=MotionDataset):
     motion, cond, metadata = fixture()
     dataset = cls.__new__(cls)
-    dataset.opt = SimpleNamespace(bone_length_aug_prob=1., bone_length_aug=.1,
+    dataset.opt = SimpleNamespace(bone_length_aug_prob=1., bone_length_aug_max=.1,
                                   motion_speed_aug=1., preview_mode='bone-length')
     dataset.max_motion_length = 30
     dataset.min_length = 2
@@ -258,7 +287,7 @@ def make_dataset(cls=MotionDataset):
     dataset._joint_struct_cache = {'test': build_joint_struct_features(cond)}
     dataset._load_physical_motion = lambda data: (
         motion, len(motion), 'test', cond['parents'], cond['joints_graph_dist'],
-        cond['joint_relations'], build_canonical_rest_feature(cond), cond['offsets'],
+        cond['joint_relations'], rest_geom_features(cond), cond['offsets'],
         cond['joints_names_embs'], [])
     return dataset, dict(motion_metadata=metadata)
 
@@ -270,7 +299,7 @@ def test_loader_rebuilds_geometry_and_canonical_roundtrip():
     assert sample[13]['bone_length_aug']['applied']
     new_cond = sample[13]['object_cond']
     np.testing.assert_allclose(sample[12]['joint_struct'], build_joint_struct_features(new_cond))
-    np.testing.assert_allclose(sample[3], build_canonical_rest_feature(new_cond))
+    np.testing.assert_allclose(sample[3], rest_geom_features(new_cond))
     decoded = canonical_to_physical_hml(sample[0], sample[12])
     np.testing.assert_allclose(decoded[:, [3, 6], 1], 0, atol=1e-6)
     assert not np.allclose(sample[4], dataset.cond_dict['test']['offsets'])
@@ -282,9 +311,9 @@ def test_preview_retains_source_loop_for_physical_augmentation(monkeypatch):
     captured = {}
     import data_loaders.truebones.data.dataset as module
     real_aug = module.augment_bone_lengths
-    def spy(motion, cond, metadata, magnitude):
+    def spy(motion, cond, metadata, magnitude, min_magnitude):
         captured.update(metadata)
-        return real_aug(motion, cond, metadata, magnitude)
+        return real_aug(motion, cond, metadata, magnitude, min_magnitude)
     monkeypatch.setattr(module, 'augment_bone_lengths', spy)
     sample = dataset._prepare_sample('test', data, return_aug_info=True)
     assert captured['is_loop']
@@ -336,7 +365,7 @@ def test_twenty_percent_probability_gate(monkeypatch, draw, expected):
     dataset.opt.bone_length_aug_prob = .2
     import data_loaders.truebones.data.dataset as module
     called = []
-    def spy(motion, cond, metadata, magnitude):
+    def spy(motion, cond, metadata, magnitude, min_magnitude):
         called.append(magnitude)
         return motion, cond, dict(applied=False, scales={}, skip_reason='test')
     monkeypatch.setattr(module, 'augment_bone_lengths', spy)
@@ -355,7 +384,7 @@ def test_eval_rejects_random_bone_shapes(split):
         pytest.skip('Merged dataset absent')
     with pytest.raises(ValueError, match='training splits only'):
         get_dataset(num_frames=60, split=split, objects_subset='all',
-                    bone_length_aug_prob=.2, bone_length_aug=.1, cond_path=str(cond_path))
+                    bone_length_aug_prob=.2, bone_length_aug_max=.1, cond_path=str(cond_path))
 
 
 def test_real_training_combines_bone_leaf_and_temporal_augmentation():
@@ -365,7 +394,7 @@ def test_real_training_combines_bone_leaf_and_temporal_augmentation():
     if not cond_path.exists():
         pytest.skip('Merged dataset absent')
     dataset = get_dataset(num_frames=60, split='train', objects_subset='all',
-                          bone_length_aug_prob=1., bone_length_aug=.1, leaf_drop_prob=1.,
+                          bone_length_aug_prob=1., bone_length_aug_max=.1, leaf_drop_prob=1.,
                           motion_speed_aug=1.3, cond_path=str(cond_path)).motion_dataset
     candidates = list(dataset.name_list)
     assert candidates

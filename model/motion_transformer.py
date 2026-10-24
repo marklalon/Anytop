@@ -5,9 +5,9 @@ from typing import Optional, Union, Callable, Tuple
 from torch import Tensor
 
 from data_loaders.truebones.truebones_utils.topology_relations import (
-    NUM_EDGE_CODES,
+    NUM_EDGE_EMBEDDINGS,
     NUM_TOPOLOGY_CODES,
-    resolve_mirror_twin_codes,
+    resolve_edge_codes,
 )
 import torch.nn.functional as F
 CUDA_LAUNCH_BLOCKING=1
@@ -319,8 +319,7 @@ def circular_phase_embedding(
 ) -> Tensor:
     """Sinusoidal time table closed over the window, shape ``(length, dim)``.
 
-    Slot 0 is the T-pose token (zero row); the ``motion_frames = length - 1``
-    motion frames sit at phase ``2*pi*f*t / motion_frames``, so the frame AFTER
+    The ``motion_frames = length`` frames sit at phase ``2*pi*f*t / motion_frames``, so the frame AFTER
     the last one is in phase with the first. That is the loader's convention: a
     loop window holds no closing key (``_drop_loop_closing_frame``) and is
     resampled periodically (``resample_motion_features(periodic=True)``), so its
@@ -356,11 +355,10 @@ def circular_phase_embedding(
     """
     if length <= 0:
         raise ValueError(f"length must be positive, got {length}")
-    emb = torch.zeros((length, dim), device=device, dtype=dtype)
-    motion_frames = length - 1
+    motion_frames = length
     half_dim = dim // 2
-    if motion_frames <= 0 or half_dim == 0:
-        return emb
+    if half_dim == 0:
+        return torch.zeros((length, dim), device=device, dtype=dtype)
 
     period = float(motion_frames)
     frame_positions = torch.arange(motion_frames, device=device, dtype=dtype).unsqueeze(1)
@@ -369,8 +367,7 @@ def circular_phase_embedding(
     motion_emb = torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
     if motion_emb.shape[-1] < dim:
         motion_emb = F.pad(motion_emb, (0, dim - motion_emb.shape[-1]))
-    emb[1:] = motion_emb
-    return emb
+    return motion_emb
 
 
 class CrossLimbTemporalBlock(nn.Module):
@@ -423,7 +420,7 @@ class CrossLimbTemporalBlock(nn.Module):
     out. Cross-limb parameter cost scales with the number of active layers
     (controlled by ``cross_limb_last_n``).
 
-    x flows as (T, B, J, d) where T = nframes+1 (index 0 is the T-pose token).
+    x flows as (T, B, J, d) where T = nframes.
     """
 
     def __init__(self, d_model: int, nhead: int, num_latents: int = 8,
@@ -986,12 +983,12 @@ def _modulate(x: Tensor, adaln: Optional[Tensor], branch: int) -> Tensor:
 
 class GraphMotionDecoder(nn.TransformerDecoder):
     def __init__(self, decoder_layer, num_layers, norm=None,
-                 num_topology_codes=NUM_TOPOLOGY_CODES, num_edge_codes=NUM_EDGE_CODES,
+                 num_topology_codes=NUM_TOPOLOGY_CODES, num_edge_codes=NUM_EDGE_EMBEDDINGS,
                  value_emb=False,
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
                  cross_limb_last_n=0, action_label_adaln=False,
                  action_adaln_bottleneck=0, last_layer_ff=0,
-                 mirror_twin_drop_prob=0.0, graph_relations=True):
+                 mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0, graph_relations=True):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
         # graph_relations=False: spatial attention without the topology / edge
@@ -1007,6 +1004,14 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         if not 0.0 <= self.mirror_twin_drop_prob <= 1.0:
             raise ValueError(
                 f"mirror_twin_drop_prob must be in [0, 1], got {mirror_twin_drop_prob}"
+            )
+        # --lateral_drop_prob: per sample, the chance in training that every
+        # pair reads as lateral 'neutral', so a rig whose side labels are
+        # missing or all-midline is still in distribution.
+        self.lateral_drop_prob = float(lateral_drop_prob)
+        if not 0.0 <= self.lateral_drop_prob <= 1.0:
+            raise ValueError(
+                f"lateral_drop_prob must be in [0, 1], got {lateral_drop_prob}"
             )
 
         self.d_model = decoder_layer.d_model
@@ -1113,18 +1118,24 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             self.action_adaln = None
 
     def _resolve_edge_codes(self, edge_rel: Tensor) -> Tensor:
-        """Stored ``[B, J, J]`` codes -> embedding indices, with twin dropout.
+        """Stored ``[B, J, J]`` codes -> embedding indices, with twin and
+        lateral dropout.
 
-        The drop is drawn per joint at ``q = 1 - sqrt(1 - p)`` and a pair drops
-        when either end does. Each joint has at most one partner, so every pair
-        drops with exactly ``p``, and both directions of a pair together.
+        The twin drop is drawn per joint at ``q = 1 - sqrt(1 - p)`` and a pair
+        drops when either end does. Each joint has at most one partner, so every
+        pair drops with exactly ``p``, and both directions of a pair together.
+        The lateral drop is per sample: side labels are right or wrong for a
+        whole rig, not for one pair.
         """
-        drop = None
+        twin_drop = lateral_drop = None
         if self.training and self.mirror_twin_drop_prob > 0.0:
             q = 1.0 - math.sqrt(1.0 - self.mirror_twin_drop_prob)
             joint_drop = torch.rand(edge_rel.shape[:-1], device=edge_rel.device) < q
-            drop = joint_drop.unsqueeze(-1) | joint_drop.unsqueeze(-2)
-        return resolve_mirror_twin_codes(edge_rel, drop)
+            twin_drop = joint_drop.unsqueeze(-1) | joint_drop.unsqueeze(-2)
+        if self.training and self.lateral_drop_prob > 0.0:
+            sample_drop = torch.rand(edge_rel.shape[0], device=edge_rel.device) < self.lateral_drop_prob
+            lateral_drop = sample_drop.view(-1, 1, 1)
+        return resolve_edge_codes(edge_rel, twin_drop, lateral_drop)
 
     def _expand_relation_heads(self, relation: Tensor) -> Tensor:
         if relation.dim() == 3:
@@ -1256,18 +1267,16 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.ref_attn_gate = nn.Parameter(torch.zeros(()))
 
     def _read_reference(self, x, z, active):
-        """``x`` [F, B, J, D] with the rest token at frame 0, ``z`` [B, F-1, K, d_z].
+        """``x`` [F, B, J, D], ``z`` [B, F, K, d_z].
 
-        ``active`` [B] bool. The rest token and inactive rows receive nothing,
-        bias included (hard bypass).
+        ``active`` [B] bool. Inactive rows receive nothing, bias included
+        (hard bypass).
         """
         frames, batch, joints, width = x.shape
-        if z.shape[:2] != (batch, frames - 1):
+        if z.shape[:2] != (batch, frames):
             raise ValueError('Reference and output windows must be frame aligned')
         slots = z.shape[2]
-        # A zero slot row for the rest token keeps one static product over all
-        # frames; its output is masked below.
-        z = F.pad(z.transpose(0, 1), (0, 0, 0, 0, 0, 0, 1, 0))  # [F, B, K, d_z]
+        z = z.transpose(0, 1)  # [F, B, K, d_z]
 
         def per_head(t):  # [F, B, K, H*D] -> [F, B, H*K, D]
             t = t.view(frames, batch, slots, self.heads, width).transpose(2, 3)
@@ -1280,8 +1289,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         weights = F.dropout(weights, self.dropout1.p, self.training).to(values.dtype)
         out = torch.matmul(weights.view(frames, batch, joints, self.heads * slots), values)
         out = out + self.ref_out_bias
-        live = (torch.arange(frames, device=x.device)[:, None] > 0) & active.view(1, batch)
-        return x + out * (self.ref_attn_gate * live.to(out.dtype)).view(frames, batch, 1, 1)
+        live = active.to(out.dtype).view(1, batch, 1, 1)
+        return x + out * (self.ref_attn_gate * live)
 
     # spatial attention block
     def _spatial_mha_block(self, x: Tensor, topology_rel: Optional[Tensor], edge_rel: Optional[Tensor], edge_key_emb, edge_query_emb, edge_value_emb,
@@ -1313,7 +1322,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             # replacement; zero-init scale, so a fresh model starts phase-free.
             x = x + self.temporal_phase_scale * loop_phase_embedding.unsqueeze(2)
         # Temporal self-attention is unmasked: every frame token attends over the
-        # whole window, including the T-pose token at index 0.
+        # whole window.
         x = x.view(frames, bs * njoints, feats)
         output_attn, _ = self.temporal_attn(
             x,
@@ -1358,7 +1367,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
         if ref_z is not None:
-            # Rest token remains skeleton-only in the reference sublayer.
             x = self._read_reference(x, ref_z, ref_active)
         # Branch input only; the residual adds to the unmodulated x. The
         # modulation lands BEFORE the circular phase, which _temporal_mha_block

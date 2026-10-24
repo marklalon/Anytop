@@ -66,11 +66,11 @@ def enable_numerical_verification_mode():
 def disable_dropout(model):
     """Zero every dropout rate in ``model`` in place (protocol step 4).
 
-    Covers ``nn.Dropout`` modules (including the elementwise
-    ``joints_names_dropout``) and the attention modules that keep a float
+    Covers ``nn.Dropout`` modules and the attention modules that keep a float
     ``dropout`` and pass it to SDPA / ``F.dropout`` directly
     (``SelectiveMultiheadAttention``). Conditioning drops -- CFG drop,
-    ``joint_name_drop_prob`` whole-joint substitution, joint / temporal masks --
+    ``joint_name_drop_prob`` whole-joint substitution, name noise, rest-geometry
+    drop, joint / temporal masks --
     draw fp32 random numbers independent of the dtype and are left alone.
     Returns the number of rates changed.
     """

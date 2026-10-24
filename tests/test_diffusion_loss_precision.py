@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, extract_into_tensor  # noqa: E402
 from diffusion.respace import SpacedDiffusion, space_timesteps  # noqa: E402
+from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.canonical_features import REST_LENGTH_SCALE_FLOOR  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
@@ -108,10 +109,9 @@ class BoneVectorLossTests(unittest.TestCase):
     """Tests for bone_vector_consistency_loss.
 
     The loss normalizes per-frame bone-vector errors by the PHYSICAL rest bone
-    length. y['rest_pose'] is the canonical rest feature whose position channel
-    is the rest-centered residual (exactly zero at rest), so using it made every
-    rest bone length read as 0, masked out every bone, and silently zeroed the
-    whole loss regardless of lambda_bone.
+    length. A rest whose positions are zero (the canonical rest-centered
+    residual) made every rest bone length read as 0, masked out every bone, and
+    silently zeroed the whole loss regardless of lambda_bone.
     """
 
     def _make_diffusion(self, betas=(0.001, 0.002, 0.003)) -> GaussianDiffusion:
@@ -259,14 +259,13 @@ class BoneVectorLossTests(unittest.TestCase):
         loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
         self.assertAlmostEqual(loss.item(), 0.0, places=6)
 
-    def test_bone_loss_rejects_canonical_rest_pose_only(self):
+    def test_bone_loss_rejects_a_batch_without_physical_rest(self):
         diffusion = self._make_diffusion()
         parents = np.array([-1, 0, 1], dtype=np.int64)
-        # Canonical rest feature: constant (zero) position channel at rest.
-        canonical_rest = np.zeros((3, 12), dtype=np.float32)
+        # The rest geometry holds unit directions, not lengths.
         y = {
             "parents": [parents],
-            "rest_pose": torch.from_numpy(canonical_rest).unsqueeze(0),
+            "rest_geom": torch.zeros(1, 3, REST_GEOM_DIM),
         }
         target = torch.zeros(1, 3, 12, 4)
         with self.assertRaises(ValueError):
@@ -882,7 +881,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         x = torch.randn(1, 4, 12, 3, dtype=torch.float32)
         y = {
             "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
-            "rest_pose": torch.randn(1, 4, 12, dtype=torch.float32),
+            "rest_geom": torch.randn(1, 4, REST_GEOM_DIM, dtype=torch.float32),
             "n_joints": torch.tensor([3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
             "joint_struct": torch.zeros(1, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
@@ -920,7 +919,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         y = {
             "joints_padding_mask": torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-            "rest_pose": torch.randn(2, 4, 12, dtype=torch.float32),
+            "rest_geom": torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
             "n_joints": torch.tensor([4, 3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(2, 4, 512, dtype=torch.float32),
             "joint_struct": torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
@@ -959,7 +958,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         y = {
             "joints_padding_mask": torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-            "rest_pose": torch.randn(2, 4, 12, dtype=torch.float32),
+            "rest_geom": torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
             "n_joints": torch.tensor([4, 3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(2, 4, 512, dtype=torch.float32),
             "joint_struct": torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
@@ -999,7 +998,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         raw_copy = raw_unreliable.clone()
         y = {
             "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
-            "rest_pose": torch.randn(1, 4, 12, dtype=torch.float32),
+            "rest_geom": torch.randn(1, 4, REST_GEOM_DIM, dtype=torch.float32),
             "n_joints": torch.tensor([4], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
             "joint_struct": torch.zeros(1, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
@@ -1012,53 +1011,9 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         model(x, torch.tensor([1], dtype=torch.int64), y=y)
 
         self.assertIsNotNone(capture_decoder.last_kwargs)
-        expected = torch.cat(
-            [torch.zeros(1, 1, 4, dtype=torch.float32), raw_unreliable], dim=1
-        ).transpose(0, 1).contiguous()
+        expected = raw_unreliable.transpose(0, 1).contiguous()
         self.assertTrue(torch.equal(capture_decoder.last_kwargs["cross_limb_unreliable_mask"], expected))
         self.assertTrue(torch.equal(y["cross_limb_unreliable_mask"], raw_copy))
-
-    def test_anytop_forward_accepts_prepared_cross_limb_unreliable_mask_without_mutating_input(self):
-        model = AnyTop(
-            max_joints=4,
-            feature_len=12,
-            latent_dim=8,
-            ff_size=32,
-            num_layers=1,
-            num_heads=2,
-            dropout=0.0,
-            cross_limb=True,
-        )
-        capture_decoder = _CaptureDecoder()
-        model.seqTransDecoder = capture_decoder
-        model.eval()
-
-        x = torch.randn(1, 4, 12, 3, dtype=torch.float32)
-        prepared_unreliable = torch.tensor(
-            [[[0.0, 0.0, 0.0, 0.0]],
-             [[0.0, 1.0, 0.0, 0.0]],
-             [[1.0, 0.0, 0.0, 0.0]],
-             [[0.0, 0.0, 1.0, 0.0]]],
-            dtype=torch.float32,
-        )
-        prepared_copy = prepared_unreliable.clone()
-        y = {
-            "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
-            "rest_pose": torch.randn(1, 4, 12, dtype=torch.float32),
-            "n_joints": torch.tensor([4], dtype=torch.int64),
-            "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
-            "joint_struct": torch.zeros(1, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
-            # Unconditional model input -- every forward reads the output frame.
-            "canonical_feature_mean": torch.zeros(12, dtype=torch.float32),
-            "canonical_feature_std": torch.ones(12, dtype=torch.float32),
-            "cross_limb_unreliable_mask": prepared_unreliable,
-        }
-
-        model(x, torch.tensor([1], dtype=torch.int64), y=y)
-
-        self.assertIsNotNone(capture_decoder.last_kwargs)
-        self.assertTrue(torch.equal(capture_decoder.last_kwargs["cross_limb_unreliable_mask"], prepared_unreliable))
-        self.assertTrue(torch.equal(y["cross_limb_unreliable_mask"], prepared_copy))
 
     def test_anytop_sample_subtree_joint_mask_train_matches_sequential_baseline(self):
         model = AnyTop(

@@ -20,6 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
+from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
@@ -77,7 +78,7 @@ def _joint_cond_inputs(batch=2, joints=4, frames=3):
     """Shapes InputProcess is called with from AnyTop.forward."""
     return (
         torch.randn(batch, joints, 12, frames),
-        torch.randn(1, batch, joints, 12),
+        torch.randn(batch, joints, REST_GEOM_DIM),
         torch.randn(batch, joints, T5_DIM),
     )
 
@@ -96,7 +97,7 @@ def _make_y(n_joints=(4, 4), max_joints=4, **extra):
     batch = len(n_joints)
     y = {
         'joints_padding_mask': _padding_mask(n_joints, max_joints),
-        'rest_pose': torch.randn(batch, max_joints, 12, dtype=torch.float32),
+        'rest_geom': torch.randn(batch, max_joints, REST_GEOM_DIM, dtype=torch.float32),
         'n_joints': torch.tensor(n_joints, dtype=torch.int64),
         'joints_names_embs': torch.randn(batch, max_joints, T5_DIM, dtype=torch.float32),
         'joint_struct': _joint_struct(batch, max_joints),
@@ -182,12 +183,9 @@ class JointNameDropoutTest(unittest.TestCase):
         captured = {}
         real = model.input_process.forward
 
-        def spy(x, rest_pose, joints_embedded_names, joint_valid=None,
-                joint_struct=None, joint_name_drop=None, species_code=None, species_active=None):
+        def spy(x, rest_geom, joints_embedded_names, joint_valid=None, joint_struct=None, **kwargs):
             captured['joint_valid'] = joint_valid
-            return real(x, rest_pose, joints_embedded_names, joint_valid,
-                        joint_struct, joint_name_drop=joint_name_drop,
-                        species_code=species_code, species_active=species_active)
+            return real(x, rest_geom, joints_embedded_names, joint_valid, joint_struct, **kwargs)
 
         model.input_process.forward = spy
         model.seqTransDecoder = _CaptureDecoder()

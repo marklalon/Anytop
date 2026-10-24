@@ -3,17 +3,8 @@ import torch
 from torch import nn
 
 from model.motion_transformer import GraphMotionDecoder, GraphMotionDecoderLayer
-
-
-# Structural columns the encoder reads: topology only. The rest-geometry
-# columns (heights, offsets, attach height) are left out, and the lateral
-# offset is reduced to its side sign, so the encoder never sees where the
-# source's joints sit at rest.
-REF_STRUCT_TOPOLOGY_COLUMNS = ('depth_norm', 'run_len_inv', 'is_leaf', 'subtree_n',
-                               'sib_rank', 'sib_n_inv')
-REF_STRUCT_SIDE_COLUMN = 'lateral_signed'
-# A lateral offset within this fraction of the rig's span is the midline.
-REF_SIDE_TOLERANCE = 1e-3
+from model.joint_name_noise import JointNameNoise
+from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 
 
 class MotionEncoder(nn.Module):
@@ -33,27 +24,22 @@ class MotionEncoder(nn.Module):
     """
 
     def __init__(self, t5_out_dim, slots=2, ref_dim=8, width=64, layers=2,
-                 heads=4, dropout=0.1):
+                 heads=4, dropout=0.1, joint_name_noise_std=0.0):
         super().__init__()
         from data_loaders.reference import REFERENCE_POSE_CHANNELS
         from data_loaders.truebones.truebones_utils.canonical_features import ROOT_VEL_CHANNELS
-        from data_loaders.truebones.truebones_utils.joint_struct_features import (
-            JOINT_STRUCT_FEATURE_NAMES,
-        )
         if min(slots, ref_dim, width, layers, heads) < 1 or width % heads:
             raise ValueError('Invalid reference encoder dimensions / attention heads')
         if width < 4 or width % 2:
             raise ValueError('Reference encoder width must be even and >= 4')
         self.slots, self.ref_dim, self.width = slots, ref_dim, width
         self.root_vel_channels = tuple(ROOT_VEL_CHANNELS)
-        self.struct_columns = [JOINT_STRUCT_FEATURE_NAMES.index(c) for c in REF_STRUCT_TOPOLOGY_COLUMNS]
-        self.side_column = JOINT_STRUCT_FEATURE_NAMES.index(REF_STRUCT_SIDE_COLUMN)
         self.joint_embedding = nn.Linear(REFERENCE_POSE_CHANNELS, width)
         self.root_embedding = nn.Linear(REFERENCE_POSE_CHANNELS + len(ROOT_VEL_CHANNELS), width)
-        self.names_dropout = nn.Dropout(p=dropout)
+        self.joint_name_noise = JointNameNoise(joint_name_noise_std)
         self.text_embedding = nn.Linear(t5_out_dim, width)
         self.struct_embedding = nn.Sequential(
-            nn.Linear(len(self.struct_columns) + 1, width),
+            nn.Linear(JOINT_STRUCT_DIM, width),
             nn.GELU(),
             nn.Linear(width, width),
         )
@@ -69,11 +55,6 @@ class MotionEncoder(nn.Module):
         self.pool_norm = nn.LayerNorm(width)
         self.pool = nn.MultiheadAttention(width, heads, dropout=dropout, batch_first=True)
         self.output = nn.Linear(width, ref_dim)
-
-    def _structure(self, joint_struct):
-        side = joint_struct[..., self.side_column:self.side_column + 1]
-        side = torch.sign(side) * (side.abs() > REF_SIDE_TOLERANCE)
-        return torch.cat([joint_struct[..., self.struct_columns], side], dim=-1)
 
     def forward(self, y):
         # Local import: model.anytop imports this module.
@@ -95,8 +76,8 @@ class MotionEncoder(nn.Module):
             self.root_embedding(torch.cat([pose[:, :, :1], root_vel], dim=-1)),
             self.joint_embedding(pose[:, :, 1:]),
         ], dim=2)
-        names = self.text_embedding(self.names_dropout(y['ref_joints_names_embs']))
-        static = (names + self.struct_embedding(self._structure(y['ref_joint_struct']))
+        names = self.text_embedding(self.joint_name_noise(y['ref_joints_names_embs']))
+        static = (names + self.struct_embedding(y['ref_joint_struct'])
                   + self.rest_embedding(y['ref_rest_pose']))
         # Re-zero after the projections: their biases would make padding live.
         tokens = tokens + (static * valid[..., None].to(names.dtype))[None]

@@ -172,6 +172,33 @@ def test_legs_in_antiphase_are_locked_and_opposite() -> None:
     assert in_step["lr_phase:legs"] < 0.1
 
 
+def _girdle_swing(fore_left_phase: float, frames: int = 64, period: float = 16.0) -> np.ndarray:
+    """(T, 4) fore-aft swing of fore-left, fore-right, hind-left, hind-right
+    tips; each girdle's sides in antiphase, hind-left at phase 0."""
+    t = np.arange(frames)[:, None]
+    phases = np.array([fore_left_phase, fore_left_phase + np.pi, 0.0, np.pi])
+    return np.sin(2 * np.pi * t / period + phases)
+
+
+def test_girdle_phase_reads_the_fore_hind_offset_and_its_sign() -> None:
+    girdles = [(0, 1), (2, 3)]
+    lead = prior._girdle_features("legs", _girdle_swing(np.pi / 2), girdles)
+    assert lead["girdle_cos:legs"] == pytest.approx(0.0, abs=0.05)
+    assert lead["girdle_sin:legs"] == pytest.approx(1.0, abs=0.05)
+    # Swapping the fore girdle's sides keeps lr_phase and lock as they were;
+    # the girdle phase is what flips.
+    swapped = prior._girdle_features("legs", _girdle_swing(np.pi / 2 + np.pi), girdles)
+    assert swapped["girdle_sin:legs"] == pytest.approx(-1.0, abs=0.05)
+    trot = prior._girdle_features("legs", _girdle_swing(np.pi), girdles)
+    assert trot["girdle_cos:legs"] == pytest.approx(-1.0, abs=0.05)
+
+
+def test_a_two_legged_rig_has_no_leg_girdle_feature() -> None:
+    profile = PriorProfile(_biped_cond())
+    assert "legs" not in profile.girdles
+    assert not any(k.startswith("girdle") and k.endswith(":legs") for k in clip_features(_gait(), profile))
+
+
 def test_a_leg_at_another_frequency_breaks_agreement_and_lock() -> None:
     profile = PriorProfile(_biped_cond())
     steady = clip_features(_gait(), profile)

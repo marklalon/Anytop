@@ -200,14 +200,18 @@ def audit_texts_and_collisions(cond, features, audit):
 def audit_model_padding(audit):
     import torch  # local: the data-side checks must run without a torch build
 
+    from data_loaders.reference import REST_GEOM_DIM
+    from data_loaders.truebones.truebones_utils.canonical_features import (
+        JOINT_MODEL_CHANNELS, ROOT_MODEL_CHANNELS,
+    )
     from model.anytop import InputProcess
 
     torch.manual_seed(0)
     latent_dim, t5_dim, frames, max_joints = 16, 32, 3, 5
-    process = InputProcess(FEATS_LEN, FEATS_LEN, latent_dim, t5_dim, dropout_prob=0.0).eval()
+    process = InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS), latent_dim, t5_dim).eval()
 
     x = torch.randn(2, max_joints, FEATS_LEN, frames)
-    rest_pose = torch.randn(1, 2, max_joints, FEATS_LEN)
+    rest_geom = torch.randn(1, 2, max_joints, REST_GEOM_DIM)
     names = torch.randn(2, max_joints, t5_dim)
     struct = torch.randn(2, max_joints, JOINT_STRUCT_DIM)
     # Sample 0 has 3 live joints, sample 1 has all 5.
@@ -229,9 +233,9 @@ def audit_model_padding(audit):
     )
 
     with torch.no_grad():
-        mixed = process(x, rest_pose, names, valid, struct)
+        mixed = process(x, rest_geom, names, valid, struct)
         alone = process(
-            x[1:], rest_pose[:, 1:], names[1:], valid[1:], struct[1:],
+            x[1:], rest_geom[:, 1:], names[1:], valid[1:], struct[1:],
         )
     delta = float((mixed[:, 1:] - alone).abs().max())
     audit.check('a mixed-joint-count batch matches the single-sample run',

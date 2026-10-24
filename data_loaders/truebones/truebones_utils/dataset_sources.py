@@ -196,6 +196,11 @@ def assert_namespaces_disjoint(namespaces: Iterable[str]) -> None:
 
 
 # -- Dataset sources ---------------------------------------------------------
+# How a source combines its species-name filter with its species-tags filter:
+# "all" requires both to pass, "any" keeps a species selected by either.
+SPECIES_FILTER_MODES = ("all", "any")
+
+
 @dataclass(frozen=True)
 class DatasetSource:
     """One dataset directory participating in a training/eval run."""
@@ -208,6 +213,7 @@ class DatasetSource:
     species_exclude: tuple[str, ...] = field(default=())
     species_tags_include: tuple[tuple[str, ...], ...] = field(default=())
     species_tags_exclude: tuple[tuple[str, ...], ...] = field(default=())
+    species_filter_mode: str = "all"
 
     @property
     def root_path(self) -> Path:
@@ -230,8 +236,28 @@ class DatasetSource:
         return bool(self.species_tags_include or self.species_tags_exclude)
 
     def accepts(self, species_name, species_tags=None) -> bool:
-        """Whether a species passes both this source's name and tag filters."""
-        return self.accepts_name(species_name) and self.accepts_tags(species_tags)
+        """Whether a species passes this source's name and tag filters.
+
+        ``species_filter_mode="all"`` (default) needs both filters to pass;
+        ``"any"`` keeps a species selected by either filter (union).  Excludes
+        drop a species in both modes.
+        """
+        if self.species_filter_mode == "all":
+            return self.accepts_name(species_name) and self.accepts_tags(species_tags)
+        name = str(species_name).strip()
+        if _matches_any(name, self.species_exclude):
+            return False
+        tags = self._tags(species_tags) if self.filters_species_tags else ()
+        if self.species_tags_exclude and self._matches_alternatives(
+            tags, self.species_tags_exclude
+        ):
+            return False
+        selected = []
+        if self.species_include:
+            selected.append(_matches_any(name, self.species_include))
+        if self.species_tags_include:
+            selected.append(self._matches_alternatives(tags, self.species_tags_include))
+        return any(selected) if selected else True
 
     def accepts_name(self, species_name) -> bool:
         """Whether the bare species name passes this source's name filter.
@@ -257,21 +283,26 @@ class DatasetSource:
         """
         if not self.filters_species_tags:
             return True
+        tags = self._tags(species_tags)
+        if self.species_tags_include and not self._matches_alternatives(
+            tags, self.species_tags_include
+        ):
+            return False
+        return not self._matches_alternatives(tags, self.species_tags_exclude)
+
+    def _tags(self, species_tags) -> list[str]:
         if species_tags is None:
             raise ValueError(
                 f"{self.namespace}: a species_tags filter needs the species' tags."
             )
-        tags = [str(tag).strip() for tag in species_tags]
+        return [str(tag).strip() for tag in species_tags]
 
-        def matches(alternatives) -> bool:
-            return any(
-                all(any(fnmatch.fnmatchcase(tag, pattern) for tag in tags) for pattern in required)
-                for required in alternatives
-            )
-
-        if self.species_tags_include and not matches(self.species_tags_include):
-            return False
-        return not matches(self.species_tags_exclude)
+    @staticmethod
+    def _matches_alternatives(tags, alternatives) -> bool:
+        return any(
+            all(any(fnmatch.fnmatchcase(tag, pattern) for tag in tags) for pattern in required)
+            for required in alternatives
+        )
 
     def unmatched_includes(self, species_names: Iterable[str]) -> list[str]:
         """``species_include`` patterns that match none of *species_names* --
@@ -322,8 +353,20 @@ def parse_species_tag_filter(value) -> tuple[tuple[str, ...], ...]:
     return tuple(alternatives)
 
 
+def normalize_species_filter_mode(value) -> str:
+    """``"all"`` (both filters must pass) or ``"any"`` (either may pass)."""
+    mode = str(value or "all").strip().lower()
+    if mode not in SPECIES_FILTER_MODES:
+        raise ValueError(
+            f"Invalid species_filter_mode {value!r}; expected one of "
+            + ", ".join(SPECIES_FILTER_MODES) + "."
+        )
+    return mode
+
+
 def make_source(namespace, root, species_include=(), species_exclude=(), split="train",
-                sample_weight=1.0, species_tags_include=(), species_tags_exclude=()) -> DatasetSource:
+                sample_weight=1.0, species_tags_include=(), species_tags_exclude=(),
+                species_filter_mode="all") -> DatasetSource:
     return DatasetSource(
         namespace=normalize_namespace(namespace),
         root=str(resolve_anytop_path(root)),
@@ -333,6 +376,7 @@ def make_source(namespace, root, species_include=(), species_exclude=(), split="
         species_exclude=normalize_species_patterns(species_exclude),
         species_tags_include=parse_species_tag_filter(species_tags_include),
         species_tags_exclude=parse_species_tag_filter(species_tags_exclude),
+        species_filter_mode=normalize_species_filter_mode(species_filter_mode),
     )
 
 
@@ -369,6 +413,7 @@ def load_datasets_manifest(manifest_path) -> list[DatasetSource]:
                 species_exclude=record.get("species_exclude"),
                 species_tags_include=record.get("species_tags_include"),
                 species_tags_exclude=record.get("species_tags_exclude"),
+                species_filter_mode=record.get("species_filter_mode", "all"),
                 split=record["split"],
                 sample_weight=record.get("sample_weight", 1.0),
             )

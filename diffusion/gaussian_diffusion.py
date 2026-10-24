@@ -648,11 +648,8 @@ class GaussianDiffusion:
                 "bone_vector_consistency_loss requires y['parents'] (per-sample "
                 "parent arrays from the collate); none were provided."
             )
-        # Rest bone lengths MUST come from the PHYSICAL rest pose. The canonical
-        # y['rest_pose'] (build_canonical_rest_feature) carries the rest-centered
-        # position residual, which is exactly zero at rest, so its per-bone
-        # lengths are all zero and the (rest_len > 1e-4) guard below would mask
-        # out every bone -- an identically-zero loss that looks healthy in logs.
+        # Rest bone lengths MUST come from the PHYSICAL rest pose; y['rest_geom']
+        # holds unit bone directions, not lengths.
         rest_pos = (y or {}).get('rest_pos_ric_hml')
         if rest_pos is None:
             rest_physical = (y or {}).get('rest_pose_physical')
@@ -662,9 +659,7 @@ class GaussianDiffusion:
             raise ValueError(
                 "bone_vector_consistency_loss requires physical rest positions "
                 "(y['rest_pos_ric_hml'] or y['rest_pose_physical']) to normalize "
-                "by rest bone length; y['rest_pose'] is the canonical rest feature "
-                "(zero position residual at rest) and would make this loss "
-                "identically zero."
+                "by rest bone length."
             )
         if not th.is_tensor(rest_pos):
             rest_pos = th.as_tensor(rest_pos, dtype=pred_physical.dtype)

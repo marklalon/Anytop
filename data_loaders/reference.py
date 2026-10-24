@@ -19,11 +19,12 @@ def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, share
     """
     import random
     from data_loaders.truebones.truebones_utils.leaf_drop import sample_leaf_drop, drop_joints_from_cond
-    from data_loaders.truebones.truebones_utils.bone_length_aug import augment_bone_lengths
+    from data_loaders.truebones.truebones_utils.bone_length_aug import (
+        DEFAULT_BONE_LENGTH_AUG, DEFAULT_BONE_LENGTH_AUG_MIN, augment_bone_lengths)
 
     metadata = dict(metadata)
-    leaf_prob = getattr(opt, 'ref_leaf_drop_prob', 0.0) if augment else 0.0
-    bone_prob = getattr(opt, 'ref_bone_length_aug_prob', 0.0) if augment else 0.0
+    leaf_prob = getattr(opt, 'leaf_drop_prob', 0.0) if augment else 0.0
+    bone_prob = getattr(opt, 'bone_length_aug_prob', 0.0) if augment else 0.0
     changed = False
     if leaf_prob and random.random() < leaf_prob:
         dropped = sample_leaf_drop(cond, motion, metadata['translation_root_index'])
@@ -34,10 +35,11 @@ def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, share
             changed = True
     if bone_prob and random.random() < bone_prob:
         motion, cond, info = augment_bone_lengths(
-            motion, cond, metadata, getattr(opt, 'ref_bone_length_aug', 0.1))
+            motion, cond, metadata, getattr(opt, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG),
+            getattr(opt, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN))
         changed = changed or info['applied']
     names = np.asarray(cond['joints_names_embs'], dtype=np.float32)
-    prob = getattr(opt, 'ref_joint_name_drop_prob', 0.0) if augment else 0.0
+    prob = getattr(opt, 'joint_name_drop_prob', 0.0) if augment else 0.0
     if prob:
         drop = np.array([random.random() < prob for _ in names], dtype=bool)
         if drop.any():
@@ -52,6 +54,9 @@ BONE_DIRECTION_MIN_REST_FRACTION = 1e-3
 
 # Per-joint encoder pose: unit bone direction (3) and height over ``L`` (1).
 REFERENCE_POSE_CHANNELS = 4
+# Target rest-geometry channel: the rest's pose channels plus a present flag, since an
+# all-zero geometry (root, coincident helper, grounded joint) is a real value.
+REST_GEOM_DIM = REFERENCE_POSE_CHANNELS + 1
 
 
 def bone_directions(positions, parents, rest_positions):
@@ -96,12 +101,14 @@ def reference_pose(motion, cond):
     return np.nan_to_num(pose).astype(np.float32)
 
 
-def reference_rest_pose(cond):
-    """``[J, REFERENCE_POSE_CHANNELS]`` static rest context: the encoder pose of the rest.
+def rest_geom_features(cond):
+    """``[J, REFERENCE_POSE_CHANNELS]`` rest geometry: the pose channels of the rest.
 
     The same bone-direction / height channels evaluated on the rest positions,
     so a frame's pose and the rest sit in one space and their difference is
-    linear in the inputs. Read by the reference encoder as static per-joint context.
+    linear in the inputs. The single builder for both rest inputs: the reference
+    encoder's static per-joint context and the denoiser's per-joint rest-geometry
+    channel (``y['rest_geom']``, loader and generation alike).
     """
     return reference_pose(rest_pos_from_cond(cond)[None], cond)[0]
 
@@ -120,7 +127,7 @@ def reference_sample(motion, cond, names, *, feats=None, joint_struct=None):
     return {
         'feats': feats,
         'pose': reference_pose(motion, cond),
-        'rest_pose': reference_rest_pose(cond),
+        'rest_pose': rest_geom_features(cond),
         'joints_names_embs': names,
         'joint_struct': build_joint_struct_features(cond) if joint_struct is None else joint_struct,
     }

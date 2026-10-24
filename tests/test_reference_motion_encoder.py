@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from model.anytop import AnyTop
 from model.cfg_sampler import ClassifierFreeReferenceModel
 from data_loaders.reference import (
+    REST_GEOM_DIM,
     REFERENCE_POSE_CHANNELS, bone_directions, collate_reference, prepare_reference_sample,
     reference_pose, reference_sample,
 )
@@ -33,7 +34,7 @@ def model(**kwargs):
 
 def inputs(batch=2, joints=4, frames=5, source_joints=6):
     x = torch.randn(batch, joints, 12, frames)
-    y = dict(n_joints=torch.full((batch,), joints), rest_pose=torch.randn(batch, joints, 12),
+    y = dict(n_joints=torch.full((batch,), joints), rest_geom=torch.randn(batch, joints, REST_GEOM_DIM),
              joints_names_embs=torch.randn(batch, joints, 4),
              joint_struct=torch.randn(batch, joints, JOINT_STRUCT_DIM),
              joints_padding_mask=torch.ones(batch, 1, 1, joints+1, joints+1),
@@ -182,25 +183,6 @@ def test_reference_rest_pose_is_the_pose_of_the_rest():
     np.testing.assert_allclose(sample['rest_pose'], reference_pose(rest[None], cond)[0])
 
 
-def test_encoder_reads_topology_and_side_but_not_rest_geometry():
-    from data_loaders.truebones.truebones_utils.joint_struct_features import (
-        JOINT_STRUCT_FEATURE_NAMES,
-    )
-    m = model().eval()
-    _, y = inputs()
-    z = m.motion_encoder(y)
-    column = JOINT_STRUCT_FEATURE_NAMES.index
-    geometry = copy.deepcopy(y)
-    for name in ('height_n', 'fore_aft_n', 'attach_h_n'):
-        geometry['ref_joint_struct'][..., column(name)] = torch.randn(2, 6)
-    side = geometry['ref_joint_struct'][..., column('lateral_signed')]
-    side.copy_(side.sign() * (side.abs() + torch.rand_like(side)))  # magnitude only
-    torch.testing.assert_close(z, m.motion_encoder(geometry), rtol=0, atol=0)
-    flipped = copy.deepcopy(y)
-    flipped['ref_joint_struct'][..., column('lateral_signed')] *= -1
-    assert not torch.allclose(z, m.motion_encoder(flipped))
-
-
 def test_bone_directions_are_facing_frame_units():
     parents = np.array([-1, 0, 1, 1])
     rest = np.array([[0, 1, 0], [0, 1, 0], [0, 1, -1], [0, 1.0005, -1]], np.float32)
@@ -301,18 +283,17 @@ def test_folded_reference_read_matches_explicit_attention():
         layer.ref_attn_gate.fill_(1.)
     frames, batch, joints, width, slots, heads = 6, 2, 3, 16, 2, 4
     x = torch.randn(frames, batch, joints, width)
-    z = torch.randn(batch, frames - 1, slots, 8)
+    z = torch.randn(batch, frames, slots, 8)
     active = torch.tensor([True, False])
     out = layer._read_reference(x, z, active)
-    xn = layer.ref_norm(x[1:, 0])  # [T, J, D], active row only
+    xn = layer.ref_norm(x[:, 0])  # [T, J, D], active row only
     zt = z[0]  # [T, K, d_z]
-    keys = layer.ref_key(zt).view(frames - 1, slots, heads, width)
-    values = layer.ref_value(zt).view(frames - 1, slots, heads, width)
+    keys = layer.ref_key(zt).view(frames, slots, heads, width)
+    values = layer.ref_value(zt).view(frames, slots, heads, width)
     scores = torch.einsum('tjd,tkhd->tjhk', xn, keys) * width ** -.5
     scores = scores + layer.ref_key_bias(zt).permute(0, 2, 1)[:, None]
     read = torch.einsum('tjhk,tkhd->tjd', scores.softmax(-1), values) + layer.ref_out_bias
-    torch.testing.assert_close(out[1:, 0], x[1:, 0] + read, rtol=1e-5, atol=1e-5)
-    torch.testing.assert_close(out[0], x[0], rtol=0, atol=0)
+    torch.testing.assert_close(out[:, 0], x[:, 0] + read, rtol=1e-5, atol=1e-5)
     torch.testing.assert_close(out[:, 1], x[:, 1], rtol=0, atol=0)
 
 
@@ -324,7 +305,7 @@ def test_unaugmented_reference_reuses_shared_target_channels():
                                       shared=shared)
     assert all(reused[k] is shared[k] for k in shared)
     np.testing.assert_array_equal(reused['pose'], fresh['pose'])
-    options = SimpleNamespace(ref_bone_length_aug_prob=1, ref_bone_length_aug=.2)
+    options = SimpleNamespace(bone_length_aug_prob=1, bone_length_aug_max=.2)
     random.seed(5)
     augmented = prepare_reference_sample(motion, cond, metadata, options, shared=shared)
     assert all(augmented[k] is not shared[k] for k in shared)
@@ -427,8 +408,8 @@ def test_wrap_reference_cfg_rejects_action_label():
 def test_augmentation_has_independent_cond_and_target_is_untouched():
     motion, cond, metadata = fixture()
     before_motion, before_cond = motion.copy(), copy.deepcopy(cond)
-    options = SimpleNamespace(ref_bone_length_aug_prob=1, ref_bone_length_aug=.2,
-                              ref_joint_name_drop_prob=1, ref_leaf_drop_prob=0)
+    options = SimpleNamespace(bone_length_aug_prob=1, bone_length_aug_max=.2,
+                              joint_name_drop_prob=1, leaf_drop_prob=0)
     cond['joints_names_embs'][:] = 1
     random.seed(5)
     sample = prepare_reference_sample(motion, cond, metadata, options)
@@ -483,41 +464,15 @@ def test_invalid_reference_configuration(kwargs):
         model(**kwargs)
 
 
-def test_loader_reference_augmentation_keeps_target_and_metadata_identical(monkeypatch):
-    from data_loaders.tensors import truebones_batch_collate
-    import data_loaders.truebones.truebones_utils.leaf_drop as leaf_drop
-    dataset, data = make_dataset()
-    dataset.opt.bone_length_aug_prob = 0
-    random.seed(2)
-    original = dataset._prepare_sample('test', data)
-    dataset.opt.ref_encoder = True
-    dataset.opt.ref_leaf_drop_prob = 1
-    dataset.opt.ref_bone_length_aug_prob = 1
-    dataset.opt.ref_bone_length_aug = .2
-    dataset.opt.ref_joint_name_drop_prob = 1
-    monkeypatch.setattr(leaf_drop, 'sample_leaf_drop', lambda *a: [3])
-    random.seed(2)
-    augmented = dataset._prepare_sample('test', data)
-    for i in (0, 2, 3, 4, 5, 6, 8):
-        np.testing.assert_array_equal(original[i], augmented[i])
-    assert original[10] == augmented[10]
-    reference = augmented[12]['reference']
-    assert reference['feats'].shape[1] == 6
-    x, kwargs = truebones_batch_collate([augmented, original])
-    assert kwargs['y']['ref_mask'].sum() == 6
-    assert kwargs['y']['ref_active'].tolist() == [True, False]
-    assert x.shape[1] == dataset.opt.max_joints
-
-
 def test_target_augmentation_leaves_reference_on_stored_rig(monkeypatch):
     from data_loaders.tensors import truebones_batch_collate
     import data_loaders.truebones.data.dataset as dataset_module
     dataset, data = make_dataset()
     dataset.opt.bone_length_aug_prob = 0
     dataset.opt.ref_encoder = True
-    dataset.opt.ref_leaf_drop_prob = 0
-    dataset.opt.ref_bone_length_aug_prob = 0
-    dataset.opt.ref_joint_name_drop_prob = 0
+    dataset.opt.leaf_drop_prob = 0
+    dataset.opt.bone_length_aug_prob = 0
+    dataset.opt.joint_name_drop_prob = 0
     random.seed(2)
     plain = dataset._prepare_sample('test', data)
     stored_joints = plain[0].shape[1]
@@ -538,9 +493,9 @@ def test_target_augmentation_keeps_loop_reference_time_aligned(monkeypatch):
     dataset, data = make_dataset()
     dataset.opt.bone_length_aug_prob = 0
     dataset.opt.ref_encoder = True
-    dataset.opt.ref_leaf_drop_prob = 0
-    dataset.opt.ref_bone_length_aug_prob = 0
-    dataset.opt.ref_joint_name_drop_prob = 0
+    dataset.opt.leaf_drop_prob = 0
+    dataset.opt.bone_length_aug_prob = 0
+    dataset.opt.joint_name_drop_prob = 0
     dataset.opt.leaf_drop_prob = 1
     data['motion_metadata']['is_loop'] = True
     monkeypatch.setattr(dataset_module, 'sample_leaf_drop', lambda *a: [3])

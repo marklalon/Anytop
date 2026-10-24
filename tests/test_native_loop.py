@@ -13,7 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.reference import REFERENCE_POSE_CHANNELS  # noqa: E402
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
+from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.data.dataset import resample_motion_features  # noqa: E402
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
@@ -39,7 +41,7 @@ def _phase_step(emb: torch.Tensor, a: int, b: int) -> float:
 
 
 # Toy shapes plus the production one (--num_frames 60 -> T = 61, latent_dim 256).
-_PHASE_SHAPES = ((6, 8), (8, 8), (61, 256))
+_PHASE_SHAPES = ((6, 8), (8, 8), (60, 256))
 
 
 class _CaptureDecoder(torch.nn.Module):
@@ -61,7 +63,7 @@ def _make_batch_item(
     n_feats = FEATS_LEN
     max_joints = 3
     motion = np.zeros((n_frames, n_joints, n_feats), dtype=np.float32)
-    tpose = np.zeros((n_joints, n_feats), dtype=np.float32)
+    tpose = np.zeros((n_joints, REFERENCE_POSE_CHANNELS), dtype=np.float32)
     offsets = np.zeros((n_joints, 3), dtype=np.float32)
     graph = np.zeros((n_joints, n_joints), dtype=np.int64)
     relations = np.zeros((n_joints, n_joints), dtype=np.int64)
@@ -126,17 +128,15 @@ class NativeLoopTests(unittest.TestCase):
                 )
 
                 self.assertEqual(tuple(emb.shape), (length, dim))
-                # Slot 0 is the T-pose token; motion frames are 1..length-1.
-                self.assertTrue(torch.equal(emb[0], torch.zeros(dim)))
-                ordinary = _phase_step(emb, 2, 1)
+                ordinary = _phase_step(emb, 1, 0)
                 self.assertGreater(ordinary, 1e-2)
                 atol = _closure_atol(dim)
-                for a, b in ((length - 1, length - 2), (1, length - 1)):
+                for a, b in ((length - 1, length - 2), (0, length - 1)):
                     self.assertAlmostEqual(_phase_step(emb, a, b), ordinary, delta=atol)
                 # The frame after the last is frame 0: phase 0 is cos = 1, sin = 0.
                 half = dim // 2
                 expected_first = torch.cat([torch.ones(half), torch.zeros(dim - half)])
-                self.assertTrue(torch.equal(emb[1], expected_first))
+                self.assertTrue(torch.equal(emb[0], expected_first))
 
     def test_circular_phase_wraps_exactly_once_per_window(self):
         """The period is the window, never a cycle count: no frame after the
@@ -151,8 +151,8 @@ class NativeLoopTests(unittest.TestCase):
                     dtype=torch.float32,
                 )
 
-                first = emb[1]
-                for frame in range(2, length):
+                first = emb[0]
+                for frame in range(1, length):
                     self.assertFalse(
                         torch.allclose(emb[frame], first, atol=1e-3), frame
                     )
@@ -494,7 +494,7 @@ class NativeLoopTests(unittest.TestCase):
         x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
         y = {
             'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-            'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
+            'rest_geom': torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
             'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),

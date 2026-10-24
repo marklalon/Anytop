@@ -29,8 +29,10 @@ from utils.parser_util import (
 from utils import dist_util
 from train.training_loop import TrainLoop
 from data_loaders.get_data import get_dataset_loader
-from data_loaders.truebones.truebones_utils.bone_length_aug import DEFAULT_BONE_LENGTH_AUG
+from data_loaders.truebones.truebones_utils.bone_length_aug import (
+    DEFAULT_BONE_LENGTH_AUG, DEFAULT_BONE_LENGTH_AUG_MIN)
 from utils.model_util import create_model_and_diffusion_general_skeleton, resolve_t5_out_dim
+from model.joint_name_noise import joint_name_noise_basis
 from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform, WandBPlatform #required
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.data.dataset import load_action_conditioning
@@ -306,12 +308,11 @@ def create_training_data_loader(args):
         motion_speed_aug_prob=getattr(args, 'motion_speed_aug_prob', 1.0),
         loop_tile_single_prob=getattr(args, 'loop_tile_single_prob', 0.5),
         leaf_drop_prob=getattr(args, 'leaf_drop_prob', 0.0),
-        **{key: getattr(args, key, default) for key, default in (
-            ('ref_encoder', False), ('ref_leaf_drop_prob', 0.2),
-            ('ref_bone_length_aug_prob', 0.2), ('ref_bone_length_aug', 0.1),
-            ('ref_joint_name_drop_prob', 0.15))},
+        ref_encoder=getattr(args, 'ref_encoder', False),
+        joint_name_drop_prob=getattr(args, 'joint_name_drop_prob', 0.0),
         bone_length_aug_prob=getattr(args, 'bone_length_aug_prob', 0.0),
-        bone_length_aug=getattr(args, 'bone_length_aug', DEFAULT_BONE_LENGTH_AUG),
+        bone_length_aug_max=getattr(args, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG),
+        bone_length_aug_min=getattr(args, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN),
         species_table=getattr(args, 'species_descriptor_table', None),
     )
 
@@ -355,6 +356,9 @@ def run_training(args):
 
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
     print(f'[model] parameter budget: {model.reference_parameter_budget()}')
+    # From the training cond, so a resume rebuilds the same basis.
+    model.set_joint_name_noise_basis(*joint_name_noise_basis(
+        data.dataset.motion_dataset.cond_dict, int(getattr(args, 'joint_name_noise_rank', 128))))
     model.to(dist_util.dev())
     ml_platform.watch_model(model)
     print("Training...")

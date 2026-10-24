@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 46
+CKPT_VERSION = 49
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -222,10 +222,6 @@ def add_model_options(parser):
     group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4,
                        help='Reference hard-drop probability. Reference-active rows always '
                             'bypass the action label and the species condition.')
-    group.add_argument('--ref_leaf_drop_prob', type=float, default=0.2)
-    group.add_argument('--ref_bone_length_aug_prob', type=float, default=0.2)
-    group.add_argument('--ref_bone_length_aug', type=float, default=0.1)
-    group.add_argument('--ref_joint_name_drop_prob', type=float, default=0.15)
     group.add_argument("--layers", default=4, type=int,
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
@@ -327,11 +323,16 @@ def add_model_options(parser):
                             "Loader-only: no regen, no model change, no CKPT_VERSION bump.")
     group.add_argument("--bone_length_aug_prob", default=0.0, type=float,
                        help="Probability of symmetric body-proportion augmentation; training only (0 = off).")
-    group.add_argument("--bone_length_aug", default=0.1, type=float,
-                       help="Relative bone-length range: 0.1 draws group scales in [0.9, 1.1]. "
+    group.add_argument("--bone_length_aug_max", default=0.2, type=float,
+                       help="Max relative bone-length change; with --bone_length_aug_min 0.1 a group "
+                            "scale is drawn from [0.8, 0.9] or [1.1, 1.2]. Only groups whose mean bone "
+                            "length reaches the skeleton's mean bone length are scaled. "
                             "All actions/rigs; anatomical or fallback topology groups. "
                             "Contact IK is disabled; source local rotations are preserved, with no quality rejection. "
                             "Loader-only: no dataset regeneration or checkpoint schema change.")
+    group.add_argument("--bone_length_aug_min", default=0.1, type=float,
+                       help="Min relative bone-length change, so every draw is visible; "
+                            "must be in [0, --bone_length_aug_max].")
     group.add_argument("--loop_cond_prob", default=1.0, type=float,
                        help="Probability that a loop training clip is TOLD it is a loop (is_loop=1: "
                             "circular time table, periodic window resample, wrap losses). The rest of "
@@ -362,16 +363,36 @@ def add_model_options(parser):
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
     group.add_argument("--joint_name_drop_prob", default=0.0, type=float,
                        help="Per-joint probability of zeroing a joint's ENTIRE name embedding during "
-                            "training. --dropout_prob thins that "
-                            "vector elementwise but never hides the joint's identity, so the model is "
-                            "never trained to fall back on rest_pose/graph_dist/joints_relations and a "
+                            "training. --joint_name_noise_std blurs that "
+                            "vector but never hides the joint's identity, so the model is "
+                            "never trained to fall back on rest geometry/graph_dist/joints_relations and a "
                             "single rare name token can flip a limb's motion prior. Default 0.0 (off).")
-    group.add_argument("--mirror_twin_drop_prob", default=0.2, type=float,
+    group.add_argument("--joint_name_noise_std", default=0.1, type=float,
+                       help="Training-time Gaussian noise on the target's and the reference encoder's name embeddings, in the "
+                            "principal subspace of the training names and scaled by each direction's "
+                            "spread, so nearby names become interchangeable while distant body parts "
+                            "stay apart. All-zero (unknown) names stay zero. Inference adds none.")
+    group.add_argument("--joint_name_noise_rank", default=128, type=int,
+                       help="Number of principal directions of the training names the noise spans.")
+    group.add_argument("--rest_geom_drop_prob", default=0.1, type=float,
+                       help="Per-sample probability in training of hiding the whole rest geometry "
+                            "(y['rest_geom'], present flag included), so the rest is not a species "
+                            "fingerprint the model can always read. Inference never drops.")
+    group.add_argument("--rest_geom_joint_drop_prob", default=0.1, type=float,
+                       help="Per-joint probability in training of hiding one joint's rest geometry, "
+                            "drawn independently of --rest_geom_drop_prob and of the name drop. "
+                            "Inference never drops.")
+    group.add_argument("--mirror_twin_drop_prob", default=0.1, type=float,
                        help="Per bilateral twin pair, the probability in training that the pair's "
                             "mirror_twin edge code is replaced by its plain topological code "
                             "(sibling / sibling_limb / cousin), so a skeleton whose symmetry pairing "
                             "missed some twins stays in distribution. Both directions of a pair drop "
                             "together. Inference never drops.")
+    group.add_argument("--lateral_drop_prob", default=0.1, type=float,
+                       help="Per-sample probability in training that every joint pair's lateral code "
+                            "(same side / opposite side, from joint_side_labels) reads as neutral, so a "
+                            "skeleton whose side labels are missing stays in distribution. Inference "
+                            "never drops.")
     group.add_argument("--tempo_cfg_drop_prob", default=0.1, type=float,
                        help="Per-sample probability of dropping the tempo condition (each window "
                             "frame's physical time, from resample_speed_cond) during training, "

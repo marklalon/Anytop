@@ -12,6 +12,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 from data_loaders.tensors import truebones_collate  # noqa: E402
+from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (  # noqa: E402
     SLOT_PAD_ID,
 )
@@ -82,7 +83,7 @@ def _make_model(action_label_cond=True, action_label_cfg_drop_prob=0.3, bundle=N
 def _make_y(**extra):
     y = {
         'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-        'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
+        'rest_geom': torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
@@ -469,7 +470,7 @@ class ActionLabelConditioningTest(unittest.TestCase):
                 'joints_relations': torch.zeros(4, 4, dtype=torch.float32),
                 'joints_names_embs': torch.zeros(4, T5_DIM, dtype=torch.float32),
                 'joint_struct': torch.zeros(4, JOINT_STRUCT_DIM, dtype=torch.float32),
-                'rest_pose': torch.zeros(4, 12, dtype=torch.float32),
+                'rest_geom': torch.zeros(4, REST_GEOM_DIM, dtype=torch.float32),
                 'mean': torch.zeros(4, 12, dtype=torch.float32),
                 'std': torch.ones(4, 12, dtype=torch.float32),
                 'action_label': label,

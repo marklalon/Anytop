@@ -743,8 +743,8 @@ def build_joint_embedding_texts(object_cond):
     Structure-derived tokens (chain position, sibling numbering, contact and
     end-effector flags) belong to the structural channel, never to the text.
     Repeated siblings (a centipede's leg pairs, a bat's wing fingers) therefore
-    share one text on purpose: telling them apart is what sib_rank / fore_aft_n
-    / lateral_signed do, comparably across species.
+    share one text on purpose: telling them apart is what sib_rank / side
+    and rest_geom do, comparably across species.
     """
     base_joint_names = object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or []
     if not base_joint_names:

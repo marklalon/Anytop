@@ -35,24 +35,15 @@ def _sample_batch(
                 "Motion inpainting requires reference_motion frame count to match target sample length; "
                 f"got reference {reference_motion.shape[-1]} and target {sample_shape[-1]}"
             )
-    def _prepared_cross_limb_unreliable_mask_from_inpaint_mask(inpaint_mask_):
+    def _cross_limb_unreliable_mask_from_inpaint_mask(inpaint_mask_):
+        """[B, J, 1, T] inpaint mask -> the model's [B, T, J] unreliable map."""
         if inpaint_mask_ is None:
             return None
         if inpaint_mask_.dim() != 4 or inpaint_mask_.shape[2] != 1:
             raise ValueError(
                 f"inpaint_mask must have shape [B, J, 1, T], got {tuple(inpaint_mask_.shape)}"
             )
-        raw_cross_limb_unreliable_mask = inpaint_mask_.squeeze(2).permute(0, 2, 1).contiguous()
-        reliable_tpose = torch.zeros(
-            (
-                raw_cross_limb_unreliable_mask.shape[0],
-                1,
-                raw_cross_limb_unreliable_mask.shape[2],
-            ),
-            device=raw_cross_limb_unreliable_mask.device,
-            dtype=raw_cross_limb_unreliable_mask.dtype,
-        )
-        return torch.cat([reliable_tpose, raw_cross_limb_unreliable_mask], dim=1).transpose(0, 1).contiguous()
+        return inpaint_mask_.squeeze(2).permute(0, 2, 1).contiguous()
 
     def _copy_model_kwargs_for_loop(cross_limb_unreliable_mask_):
         if model_kwargs is None:
@@ -112,7 +103,7 @@ def _sample_batch(
         # Start from noised reference but clamp unmasked region to original reference at every step.
         ref = reference_motion.to(device, non_blocking=True)
         mask = inpaint_mask.to(device, non_blocking=True)
-        prepared_cross_limb_unreliable_mask = _prepared_cross_limb_unreliable_mask_from_inpaint_mask(mask)
+        cross_limb_unreliable_mask = _cross_limb_unreliable_mask_from_inpaint_mask(mask)
 
         fixseed(seed)
         return _run_loop(
@@ -121,21 +112,21 @@ def _sample_batch(
             skip_ts=skip_timesteps,
             inpaint_mask_=mask,
             inpaint_reference_=ref,
-            cross_limb_unreliable_mask_=prepared_cross_limb_unreliable_mask,
+            cross_limb_unreliable_mask_=cross_limb_unreliable_mask,
         )
 
     fixseed(seed)
     if inpainting:
         # skip_timesteps=0: start from pure noise; reference is only the per-step clamp source for unmasked region.
         mask = inpaint_mask.to(device, non_blocking=True)
-        prepared_cross_limb_unreliable_mask = _prepared_cross_limb_unreliable_mask_from_inpaint_mask(mask)
+        cross_limb_unreliable_mask = _cross_limb_unreliable_mask_from_inpaint_mask(mask)
         return _run_loop(
             noise=torch.randn(sample_shape, device=device),
             init_image=None,
             skip_ts=0,
             inpaint_mask_=mask,
             inpaint_reference_=reference_motion.to(device, non_blocking=True),
-            cross_limb_unreliable_mask_=prepared_cross_limb_unreliable_mask,
+            cross_limb_unreliable_mask_=cross_limb_unreliable_mask,
         )
     if reference_motion is not None and skip_timesteps > 0:
         # img2img: noise the whole reference to an intermediate step (higher = more faithful).

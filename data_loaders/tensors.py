@@ -13,6 +13,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     _length_scale_from_rest,
 )
 from data_loaders.joint_buckets import bucket_ceiling
+from data_loaders.reference import REST_GEOM_DIM
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from data_loaders.truebones.truebones_utils.motion_labels import ACTION_LABEL_MAX_WORDS
 
@@ -86,7 +87,7 @@ def truebones_collate(batch):
     """Collate a list of motion items into a single (inp, cond) batch.
 
     Each item in *batch* is a dict produced by ``truebones_batch_collate``
-    containing keys like ``'inp'``, ``'rest_pose'``, ``'lengths'``, etc.
+    containing keys like ``'inp'``, ``'rest_geom'``, ``'lengths'``, etc.
 
     Returns
     -------
@@ -99,21 +100,21 @@ def truebones_collate(batch):
     """
     notnone_batches = [b for b in batch if b is not None]
     databatch = [b['inp'] for b in notnone_batches]
-    restposebatch = [b['rest_pose'] for b in notnone_batches]
+    restgeombatch = [b['rest_geom'] for b in notnone_batches]
     if 'n_joints' in notnone_batches[0]:
         jointsnumbatch = [b['n_joints'] for b in notnone_batches]
     else:
         jointsnumbatch = [22 for b in notnone_batches] #smpl n_joints 
         
     databatchTensor = collate_tensors(databatch)
-    restposebatchTensor = collate_tensors(restposebatch)
+    restgeombatchTensor = collate_tensors(restgeombatch)
     jointsnumbatchTensor = torch.as_tensor(jointsnumbatch)
     jointsmaskbatchTensor = n_joints_to_mask(jointsnumbatchTensor, databatchTensor.shape[1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
 
     motion = databatchTensor
     frame_count = databatchTensor.shape[-1]
     batch_size = len(databatch)
-    cond = {'y': {'lengths': torch.full((batch_size,), frame_count, dtype=torch.long), 'rest_pose': restposebatchTensor}}
+    cond = {'y': {'lengths': torch.full((batch_size,), frame_count, dtype=torch.long), 'rest_geom': restgeombatchTensor}}
 
     if 'object_type' in notnone_batches[0]:
         objecttypebatch = [b['object_type'] for b in notnone_batches]
@@ -327,7 +328,7 @@ def truebones_batch_collate(batch, joint_buckets=None):
         [0]  motion          – np.ndarray, (frames, n_joints, n_feats)
         [1]  m_length        – int, motion length in frames
         [2]  parents         – np.ndarray, parent indices
-        [3]  rest_pose – np.ndarray, bind/rest-pose features
+        [3]  rest_geom – np.ndarray, (n_joints, REFERENCE_POSE_CHANNELS) rest_geom_features
         [4]  offsets         – np.ndarray, bone offsets
         [5]  joints_graph_dist – np.ndarray, graph distance matrix
         [6]  joints_relations  – np.ndarray, joint relation matrix
@@ -344,8 +345,15 @@ def truebones_batch_collate(batch, joint_buckets=None):
     adapted_batch = []
     for b in batch:  
         max_len, n_joints, n_feats = b[0].shape
-        rest_pose = torch.zeros((max_joints, n_feats))
-        rest_pose[:n_joints] = torch.from_numpy(np.asarray(b[3], dtype=np.float32))
+        # The last channel is the present flag: live joints 1, padding 0.
+        raw_rest_geom = np.asarray(b[3], dtype=np.float32)
+        if raw_rest_geom.shape != (n_joints, REST_GEOM_DIM - 1):
+            raise ValueError(
+                f"rest_geom must have shape [{n_joints}, {REST_GEOM_DIM - 1}], got {raw_rest_geom.shape}."
+            )
+        rest_geom = torch.zeros((max_joints, REST_GEOM_DIM))
+        rest_geom[:n_joints, :-1] = torch.from_numpy(raw_rest_geom)
+        rest_geom[:n_joints, -1] = 1.0
         motion = torch.zeros((max_len, max_joints, n_feats)) # (frames, max_joints, feature_len) 
         motion[:, :b[0].shape[1], :] = torch.from_numpy(np.asarray(b[0], dtype=np.float32))
         joints_names_embs = torch.zeros((max_joints, b[8].shape[1]))
@@ -375,7 +383,7 @@ def truebones_batch_collate(batch, joint_buckets=None):
             'joints_relations':  padded_joints_relations,
             'object_type': object_type,
             'joints_names_embs': joints_names_embs,
-            'rest_pose': rest_pose,
+            'rest_geom': rest_geom,
         }
         if extra_cond is not None:
             item['reference'] = extra_cond.get('reference')

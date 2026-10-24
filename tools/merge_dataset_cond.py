@@ -305,11 +305,19 @@ def merge_dataset_cond(manifest_path, out_path, recompute_stats=True, dry_run=Fa
                 f"{source.namespace}: species_include pattern(s) match no species: "
                 + ", ".join(unmatched)
             )
-        entries = {
-            key: entry for key, entry in entries.items()
-            if source.accepts_name(entry["species_name"])
-        }
-        missing_tags = sorted(key for key, entry in entries.items() if not entry["species_tags"])
+        # "all" only reaches the tag filter through the name filter, so a species
+        # the name filter drops is never judged on tags.  "any" lets a tag match
+        # keep a name-filtered species, so every entry is a tag candidate (only
+        # when a tag filter exists to do the keeping).
+        tag_candidates = entries
+        if source.species_filter_mode == "all" or not source.filters_species_tags:
+            tag_candidates = {
+                key: entry for key, entry in entries.items()
+                if source.accepts_name(entry["species_name"])
+            }
+        missing_tags = sorted(
+            key for key, entry in tag_candidates.items() if not entry["species_tags"]
+        )
         if missing_tags:
             raise SystemExit(
                 f"{source.namespace}: {SPECIES_TAGS_FILE} is missing entries for "
@@ -317,7 +325,7 @@ def merge_dataset_cond(manifest_path, out_path, recompute_stats=True, dry_run=Fa
             )
         entries = {
             key: entry for key, entry in entries.items()
-            if source.accepts_tags(entry["species_tags"])
+            if source.accepts(entry["species_name"], entry["species_tags"])
         }
         if not entries:
             raise SystemExit(f"{source.namespace}: species filter leaves no species.")

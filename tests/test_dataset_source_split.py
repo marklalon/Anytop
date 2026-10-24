@@ -108,3 +108,56 @@ def test_manifest_species_tags_filter_rejects_empty_tag(tmp_path):
     manifest.write_text(json.dumps(row), encoding="utf-8")
     with pytest.raises(ValueError, match="empty tag"):
         load_datasets_manifest(manifest)
+
+
+def test_manifest_species_filter_mode_any_unions_name_and_tags(tmp_path):
+    manifest = tmp_path / "datasets.jsonl"
+    row = {
+        "namespace": "sample", "path": str(tmp_path / "sample"), "split": "train",
+        "species_include": "KI_Human", "species_tags_include": "Winged, Fluttering",
+        "species_filter_mode": "any",
+    }
+    manifest.write_text(json.dumps(row), encoding="utf-8")
+    (source,) = load_datasets_manifest(manifest)
+    species = {
+        "KI_Human": ("Biped",), "Bee": ("Winged", "Fluttering"),
+        "Eagle": ("Winged",), "Horse": ("Quadruped",),
+    }
+    assert [name for name, tags in species.items() if source.accepts(name, tags)] == [
+        "KI_Human", "Bee"
+    ]
+
+
+def test_manifest_species_filter_mode_any_with_one_filter_only(tmp_path):
+    manifest = tmp_path / "datasets.jsonl"
+    row = {"namespace": "sample", "path": str(tmp_path / "sample"), "split": "train",
+           "species_include": "KI_Human", "species_filter_mode": "any"}
+    manifest.write_text(json.dumps(row), encoding="utf-8")
+    (source,) = load_datasets_manifest(manifest)
+    assert source.accepts("KI_Human", ("Biped",))
+    assert not source.accepts("Bee", ("Winged", "Fluttering"))
+
+
+def test_manifest_species_filter_mode_any_keeps_excludes(tmp_path):
+    manifest = tmp_path / "datasets.jsonl"
+    row = {
+        "namespace": "sample", "path": str(tmp_path / "sample"), "split": "train",
+        "species_include": "KI_Human", "species_tags_include": "Winged, Fluttering",
+        "species_exclude": "Bee", "species_tags_exclude": "Quadruped",
+        "species_filter_mode": "any",
+    }
+    manifest.write_text(json.dumps(row), encoding="utf-8")
+    (source,) = load_datasets_manifest(manifest)
+    assert source.accepts("KI_Human", ("Biped",))
+    assert not source.accepts("Bee", ("Winged", "Fluttering"))
+    assert not source.accepts("Horse", ("Quadruped",))
+
+
+@pytest.mark.parametrize("mode", ["both", "or", "either"])
+def test_manifest_rejects_unknown_species_filter_mode(tmp_path, mode):
+    manifest = tmp_path / "datasets.jsonl"
+    row = {"namespace": "sample", "path": str(tmp_path / "sample"), "split": "train",
+           "species_filter_mode": mode}
+    manifest.write_text(json.dumps(row), encoding="utf-8")
+    with pytest.raises(ValueError, match="species_filter_mode"):
+        load_datasets_manifest(manifest)

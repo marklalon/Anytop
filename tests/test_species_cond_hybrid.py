@@ -15,6 +15,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
     SPECIES_VARIANTS,
     species_code_dim,
 )
+from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
@@ -73,7 +74,7 @@ def _joint_cond_inputs(batch=1, joints=4, frames=3):
     """Shapes InputProcess is called with from AnyTop.forward."""
     return (
         torch.randn(batch, joints, 12, frames),
-        torch.randn(1, batch, joints, 12),
+        torch.randn(batch, joints, REST_GEOM_DIM),
         torch.randn(batch, joints, T5_DIM),
         torch.randn(batch, CODE_DIM),
     )
@@ -87,7 +88,7 @@ def _joint_struct(batch=1, joints=4):
 def _make_y(species_code=None, **extra):
     y = {
         'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-        'rest_pose': torch.randn(2, 4, 12, dtype=torch.float32),
+        'rest_geom': torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
@@ -191,31 +192,28 @@ class SpeciesHybridTest(unittest.TestCase):
         code[1, T5_DIM + SPECIES_VARIANTS.index('Fluttering')] = 1.0
         model.eval()
         with torch.no_grad():
-            out = ip(x[:1].expand(2, -1, -1, -1), rest_pose[:, :1].expand(-1, 2, -1, -1), joints,
+            out = ip(x[:1].expand(2, -1, -1, -1), rest_pose[:1].expand(2, -1, -1), joints,
                      None, _joint_struct(1).expand(2, -1, -1), species_code=code)
         self.assertFalse(torch.allclose(out[:, 0], out[:, 1]))
 
-    def test_joint_cond_film_reads_pre_dropout_joint_embeddings(self):
-        """The FiLM head must read the *pre-dropout* joint embeddings. With
-        dropout p=1 the dropout-ified copy is all zeros, so a head that
-        accidentally consumed it would receive a zero joint part. The old
-        per-joint spread assertion on the full output could not catch that
-        (pose data alone spreads the joints), so probe the head's input
-        directly instead."""
+    def test_joint_cond_film_reads_the_noised_names(self):
+        """The FiLM head reads the same noised names the projection does: with
+        the zero-initialized (identity) head, its joint input equals what
+        text_embedding receives, and both differ from the clean names."""
         model = _make_model(species_cond=True)
         ip = model.input_process
-        ip.joints_names_dropout.p = 1.0
-        torch.nn.init.normal_(ip.species_film_j[-1].weight, std=0.5)
-        probe = _ProbeHead(ip.species_film_j)
-        ip.species_film_j = probe
+        ip.joint_name_noise.noise_std = 0.2
+        ip.joint_name_noise.set_basis(torch.eye(T5_DIM)[:4], torch.ones(4))
+        film = _ProbeHead(ip.species_film_j)
+        text = _ProbeHead(ip.text_embedding)
+        ip.species_film_j, ip.text_embedding = film, text
         model.train()
-        x, rest_pose, joints, species = _joint_cond_inputs()
+        x, rest_geom, joints, species = _joint_cond_inputs()
         with torch.no_grad():
-            ip(x, rest_pose, joints, None, _joint_struct(*joints.shape[:2]), species_code=species)
-        # Head input: [B, J, T5 + code] = [joint_emb, species_code]. The joint
-        # part must be the un-dropped input, not the zeroed dropout copy.
-        joint_part = probe.last_input[..., :T5_DIM]
-        self.assertTrue(torch.allclose(joint_part, joints))
+            ip(x, rest_geom, joints, None, _joint_struct(*joints.shape[:2]), species_code=species)
+        joint_part = film.last_input[..., :T5_DIM]
+        self.assertTrue(torch.allclose(joint_part, text.last_input))
+        self.assertFalse(torch.allclose(joint_part, joints))
 
     def test_species_code_must_match_the_module(self):
         x, rest_pose, joints, species = _joint_cond_inputs()

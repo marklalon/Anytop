@@ -16,9 +16,9 @@ from data_loaders.truebones.data.dataset import MotionDataset
     ["--mode", "loop", "--mode", "leaf-drop"],
     ["--mode", "motion-speed", "--motion-speed-aug", "0.9"],
     ["--mode", "loop", "--loop-only"],
-    ["--mode", "bone-length", "--bone-length-aug", "0"],
-    ["--mode", "bone-length", "--bone-length-aug", "1"],
-    ["--mode", "bone-length", "--bone-length-aug", "nan"],
+    ["--mode", "bone-length", "--bone-length-aug-max", "0"],
+    ["--mode", "bone-length", "--bone-length-aug-max", "1"],
+    ["--mode", "bone-length", "--bone-length-aug-max", "nan"],
 ])
 def test_cli_rejects_missing_mixed_or_disabled_mode(monkeypatch, argv):
     monkeypatch.setattr(sys, "argv", ["preview", *argv])

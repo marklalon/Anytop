@@ -45,6 +45,13 @@ Features
   (lower is worse).
 - ``lr_phase:<limbs>``: mean relative phase (0 in step, 1 opposite) of the
   left/right limb pairs.
+- ``girdle_cos:<limbs>`` / ``girdle_sin:<limbs>``: cosine and sine of the
+  relative phase of each girdle's left limb against the left limb of the girdle
+  behind it (right against right likewise), averaged over adjacent girdles.
+  ``lr_phase`` and ``lock`` cannot see a girdle whose two sides are swapped --
+  the pairs stay in antiphase and stay locked -- and the sign of the sine is
+  exactly that swap. A girdle is a left/right pair of ``legs``; ``arms`` adds the
+  hand pair of a rig whose hands are not foot chains, against its legs.
 - ``slip:legs``: log of the root's horizontal speed over the legs' stride
   times their step frequency: travel the feet do not account for.
 - ``tempo:<part>``: centroid frequency (cycles per frame) of the part's
@@ -82,7 +89,7 @@ from .physics import SCORE_AT_QUANTILE, PhysicsProfile, Tolerance, rest_position
 from .reference_bank import ReferenceCorpus
 
 # Bump when a feature's definition changes: it keys the on-disk corpus cache.
-PRIOR_VERSION = 3
+PRIOR_VERSION = 4
 
 MIN_CLIP_FRAMES = 8
 CH_POS = slice(0, 3)
@@ -105,6 +112,7 @@ MIN_LAYER_CLIPS = 4
 # make every other value an outlier.
 FEATURE_SCALE_FLOOR: Dict[str, float] = {
     "asym": 0.1, "agree": 0.15, "lock": 0.05, "lr_phase": 0.08, "slip": 0.2, "tempo": 0.01,
+    "girdle_cos": 0.15, "girdle_sin": 0.15,
 }
 # Features whose deviation counts on one side only: +1 high is bad, -1 low is bad.
 ONE_SIDED: Dict[str, int] = {"asym": 1, "agree": -1, "lock": -1}
@@ -193,6 +201,31 @@ class PriorProfile(PhysicsProfile):
                 if _is_mirror_pair(tips[a], tips[b], partner, parents)
             ]
 
+        # Girdles as (left tip, right tip), front to back. ``legs`` relates each
+        # leg girdle to the next one behind it; ``arms`` relates the hand pair
+        # to the front leg girdle.
+        def side_of(j):
+            return sides[j] if j < len(sides) else "center"
+
+        leg_girdles = []
+        for a, b in self.limb_pairs.get("legs", []):
+            ta, tb = legs[a], legs[b]
+            if {side_of(ta), side_of(tb)} == {"left", "right"}:
+                leg_girdles.append((ta, tb) if side_of(ta) == "left" else (tb, ta))
+        leg_girdles.sort(key=lambda g: -float(rest[list(g), 2].mean()))
+        self.girdles: Dict[str, List[Tuple[int, int]]] = {}
+        if len(leg_girdles) >= 2:
+            self.girdles["legs"] = leg_girdles
+        hand_joints = self.parts.get("hand", np.zeros(0, dtype=np.int64))
+        if leg_girdles and not set(legs) & {int(j) for j in hand_joints}:
+            hands = []
+            for side in ("left", "right"):
+                joints = [int(j) for j in hand_joints if side_of(int(j)) == side]
+                if joints:
+                    hands.append(max(joints, key=lambda j: np.linalg.norm(rest[j] - root)))
+            if len(hands) == 2:
+                self.girdles["arms"] = [tuple(hands), leg_girdles[0]]
+
 
 # ── Per-clip features ────────────────────────────────────────────────────────
 def _spectral_centroid(vel: np.ndarray) -> float:
@@ -229,6 +262,25 @@ def _limb_features(name: str, signals: np.ndarray, pairs: Sequence[Tuple[int, in
     return feats
 
 
+def _girdle_features(name: str, swing: np.ndarray, girdles: Sequence[Tuple[int, int]]) -> Dict[str, float]:
+    """Inter-girdle phase features of ``swing`` (T, J) fore-aft positions."""
+    t = swing.shape[0]
+    if t < 2 * PHASE_EDGE_FRAMES + 8:
+        return {}
+    tips = sorted({j for girdle in girdles for j in girdle})
+    centred = swing[:, tips] - swing[:, tips].mean(axis=0)
+    unit = centred / (centred.std(axis=0, keepdims=True) + 1e-9)
+    phase = dict(zip(tips, np.angle(hilbert(unit, axis=0))[PHASE_EDGE_FRAMES:t - PHASE_EDGE_FRAMES].T))
+    rel = np.mean([
+        np.mean(np.exp(1j * (phase[front[s]] - phase[back[s]])))
+        for front, back in zip(girdles[:-1], girdles[1:]) for s in (0, 1)
+    ])
+    if abs(rel) < 1e-6:
+        return {}
+    angle = np.angle(rel)
+    return {f"girdle_cos:{name}": float(np.cos(angle)), f"girdle_sin:{name}": float(np.sin(angle))}
+
+
 def clip_features(motion: np.ndarray, profile: PriorProfile) -> Dict[str, float]:
     """Quality features of one clip (lengths in rest spans, time in frames)."""
     if motion.ndim != 3 or motion.shape[-1] != FEATS_LEN:
@@ -262,6 +314,8 @@ def clip_features(motion: np.ndarray, profile: PriorProfile) -> Dict[str, float]
             stride = np.ptp(signals, axis=1).mean()
             root_speed = np.sqrt(np.mean((np.asarray(motion[:, tri, [9, 11]], dtype=np.float64) * scale) ** 2))
             feats["slip:legs"] = float(np.log((root_speed + SPEED_FLOOR) / (stride * step_freq + SPEED_FLOOR)))
+    for name, girdles in profile.girdles.items():
+        feats.update(_girdle_features(name, local[:, :, 2], girdles))
     return feats
 
 

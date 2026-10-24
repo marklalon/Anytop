@@ -25,12 +25,16 @@ sys.path.insert(0, str(REPO_ROOT))
 from data_loaders.truebones.truebones_utils.topology_relations import (  # noqa: E402
     EDGE_CODES,
     GRAPH_DIST_FAR_BASE,
+    LATERAL_CODES,
+    LATERAL_FLAG,
     MIRROR_TWIN_FLAG,
     NUM_EDGE_CODES,
+    NUM_EDGE_EMBEDDINGS,
     NUM_TOPOLOGY_CODES,
     create_topology_edge_relations,
     refresh_topology_relations_in_cond_dict,
-    resolve_mirror_twin_codes,
+    resolve_edge_codes,
+    split_lateral_codes,
     split_mirror_twin_codes,
 )
 
@@ -280,7 +284,7 @@ class EmittedCodeCoverageTest(unittest.TestCase):
         twin_edge, _ = create_topology_edge_relations(
             HUMANOID_PARENTS, symmetry_partner_indices=HUMANOID_PARTNERS)
         emitted.update(int(v) for v in np.unique(
-            resolve_mirror_twin_codes(torch.as_tensor(twin_edge)).numpy()))
+            resolve_edge_codes(torch.as_tensor(twin_edge)).numpy()))
         declared = set(EDGE_CODES.values()) - {EDGE_CODES['no_relation']}
         self.assertEqual(
             declared - emitted, set(),
@@ -371,16 +375,16 @@ class MirrorTwinTest(unittest.TestCase):
     def test_resolve_maps_twins_and_drop_restores_the_fallback(self):
         edge = torch.as_tensor(self._twin_edge()).unsqueeze(0)
         base, is_twin = split_mirror_twin_codes(edge[0].numpy())
-        kept = resolve_mirror_twin_codes(edge)[0].numpy()
+        kept = resolve_edge_codes(edge)[0].numpy()
         np.testing.assert_array_equal(kept[is_twin], EDGE_CODES['mirror_twin'])
         np.testing.assert_array_equal(kept[~is_twin], base[~is_twin])
-        dropped = resolve_mirror_twin_codes(edge, torch.ones_like(edge, dtype=torch.bool))
+        dropped = resolve_edge_codes(edge, torch.ones_like(edge, dtype=torch.bool))
         np.testing.assert_array_equal(dropped[0].numpy(), base)
         self.assertLess(int(kept.max()), NUM_EDGE_CODES)
 
     def test_zero_padding_never_reads_as_a_twin(self):
         padded = torch.zeros(1, 4, 4, dtype=torch.long)
-        self.assertTrue((resolve_mirror_twin_codes(padded) == 0).all())
+        self.assertTrue((resolve_edge_codes(padded) == 0).all())
 
     def test_decoder_drops_whole_pairs_at_the_requested_rate(self):
         from model.motion_transformer import GraphMotionDecoder, GraphMotionDecoderLayer
@@ -401,6 +405,82 @@ class MirrorTwinTest(unittest.TestCase):
         dec.eval()
         self.assertTrue((dec._resolve_edge_codes(edge)[:, is_twin]
                          == EDGE_CODES['mirror_twin']).all())
+
+
+HUMANOID_SIDES = ['center'] * len(HUMANOID_PARENTS)
+for _j in list(range(4, 8)) + list(range(12, 15)):
+    HUMANOID_SIDES[_j] = 'left'
+for _j in list(range(8, 12)) + list(range(15, 18)):
+    HUMANOID_SIDES[_j] = 'right'
+_LEFT_FOOT, _RIGHT_FOOT, _LEFT_HAND, _RIGHT_HAND = 7, 11, 14, 17
+
+
+class LateralTest(unittest.TestCase):
+    def _edge(self, sides=HUMANOID_SIDES):
+        return create_topology_edge_relations(
+            HUMANOID_PARENTS, symmetry_partner_indices=HUMANOID_PARTNERS,
+            joint_side_labels=sides)[0]
+
+    def test_without_labels_the_matrix_is_unchanged(self):
+        plain = create_topology_edge_relations(
+            HUMANOID_PARENTS, symmetry_partner_indices=HUMANOID_PARTNERS)[0]
+        np.testing.assert_array_equal(self._edge(None), plain)
+        np.testing.assert_array_equal(self._edge(['center'] * len(HUMANOID_PARENTS)), plain)
+        self.assertLess(int(plain.max()), LATERAL_FLAG)
+
+    def test_lateral_flag_leaves_the_twin_and_topological_codes_alone(self):
+        plain = create_topology_edge_relations(
+            HUMANOID_PARENTS, symmetry_partner_indices=HUMANOID_PARTNERS)[0]
+        rest, _ = split_lateral_codes(self._edge())
+        np.testing.assert_array_equal(rest, plain)
+
+    def test_a_hand_tells_the_same_side_foot_from_the_other(self):
+        """The case the flag exists for: identical topology, opposite laterality."""
+        edge = self._edge()
+        base, _ = split_mirror_twin_codes(edge)
+        _, lateral = split_lateral_codes(edge)
+        self.assertEqual(base[_LEFT_HAND, _LEFT_FOOT], base[_LEFT_HAND, _RIGHT_FOOT])
+        self.assertEqual(lateral[_LEFT_HAND, _LEFT_FOOT], LATERAL_CODES['same_side'])
+        self.assertEqual(lateral[_LEFT_HAND, _RIGHT_FOOT], LATERAL_CODES['opposite_side'])
+        self.assertEqual(lateral[_RIGHT_HAND, _RIGHT_FOOT], LATERAL_CODES['same_side'])
+        np.testing.assert_array_equal(lateral, lateral.T)
+
+    def test_midline_pairs_and_the_diagonal_are_neutral(self):
+        _, lateral = split_lateral_codes(self._edge())
+        self.assertTrue((np.diag(lateral) == LATERAL_CODES['neutral']).all())
+        self.assertTrue((lateral[[0, 1, 2, 3, 18, 19]] == LATERAL_CODES['neutral']).all())
+
+    def test_a_label_list_of_the_wrong_length_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._edge(['left'])
+
+    def test_resolve_folds_laterality_into_the_index_and_drop_neutralizes_it(self):
+        edge = torch.as_tensor(self._edge()).unsqueeze(0)
+        base = resolve_edge_codes(torch.as_tensor(create_topology_edge_relations(
+            HUMANOID_PARENTS, symmetry_partner_indices=HUMANOID_PARTNERS)[0]).unsqueeze(0))
+        _, lateral = split_lateral_codes(edge[0].numpy())
+        resolved = resolve_edge_codes(edge)
+        np.testing.assert_array_equal(resolved[0].numpy(), base[0].numpy() + NUM_EDGE_CODES * lateral)
+        self.assertLess(int(resolved.max()), NUM_EDGE_EMBEDDINGS)
+        dropped = resolve_edge_codes(edge, lateral_drop=torch.ones(1, 1, 1, dtype=torch.bool))
+        np.testing.assert_array_equal(dropped.numpy(), base.numpy())
+
+    def test_decoder_drops_laterality_per_sample(self):
+        from model.motion_transformer import GraphMotionDecoder, GraphMotionDecoderLayer
+        layer = GraphMotionDecoderLayer(d_model=8, nhead=2, dim_feedforward=16)
+        dec = GraphMotionDecoder(layer, num_layers=1, cross_limb=False, lateral_drop_prob=0.3)
+        self.assertEqual(dec.edge_key_emb.num_embeddings, NUM_EDGE_EMBEDDINGS)
+        edge = torch.as_tensor(self._edge()).unsqueeze(0).expand(20000, -1, -1)
+        torch.manual_seed(0)
+        dec.train()
+        sided = (dec._resolve_edge_codes(edge) >= NUM_EDGE_CODES).flatten(1)
+        # A sample keeps all of its lateral codes or none of them.
+        counts = sided.sum(dim=1)
+        self.assertEqual(set(counts.unique().tolist()), {0, int(counts.max())})
+        kept = counts > 0
+        self.assertAlmostEqual(1.0 - kept.float().mean().item(), 0.3, delta=0.015)
+        dec.eval()
+        self.assertTrue((dec._resolve_edge_codes(edge) >= NUM_EDGE_CODES).flatten(1).any(dim=1).all())
 
 
 class CondRefreshTest(unittest.TestCase):

@@ -92,7 +92,7 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 
 1. 名字先经规范化（`canonicalize_joint_name`）：拆分粘连词、去掉物种前缀 / 绑定前缀（如 `Bip01`、`npc`）、折叠同义词与左右/前后/上下缩写码（`Lf` → Front、`TL` → Upper 等，只在上下文能区分时才读码）；
 2. 侧别来自几何（`joint_side_labels`），不是名字；侧别词放句首（`Right Finger`），保持 T5 见过的名词短语构造；
-3. **结构派生信息不进文本**：链上位置、同级编号、触地 / 末端标记归结构通道。因此同级重复部件（蜈蚣的腿对、蝙蝠的翼指）**共享同一段文本**，区分它们是 `sib_rank` / `fore_aft_n` / `lateral_signed` 的工作；
+3. **结构派生信息不进文本**：链上位置、同级编号、触地 / 末端标记归结构通道。因此同级重复部件（蜈蚣的腿对、蝙蝠的翼指）**共享同一段文本**，区分它们是 `sib_rank` / `side` 与 `rest_geom` 的工作；
 4. **无意义名字得到空文本**：辅助 / 占位节点（helper）、非解剖标记、仅由绑定戳构成的名字、孤立出现在肢体之外的肢体词，一律输出 `''`。
 
 空文本编码为**全零行**，与 padding 行相同。模型因此只需学一个"名字未知"状态，同时覆盖：真的无名、被训练期随机隐藏、推理时遇到训练没见过的名字。
@@ -162,7 +162,7 @@ variant 在数据里是按物种打的，与骨架高度相关（例如所有 Fl
 
 关节名只应当携带"身体部位"语义。"这个关节在骨架中的位置"由**纯几何 / 拓扑**的结构特征给出，只读 `parents` 与物理 rest 位置，**不读任何关节名、不读触地信号**（触地是启发式猜测，把它作为条件等于把它的错误交给模型）。因此重命名骨架不会改变它。
 
-[joint_struct_features.py](../data_loaders/truebones/truebones_utils/joint_struct_features.py) 的 `JOINT_STRUCT_FEATURE_NAMES` 给出每个关节的特征：沿无分叉链的位置（`depth_norm` / `run_len_inv`）、是否叶子、归一化高度、带符号的横向偏移（左 ≠ 右）、前后偏移、该链起点的高度（肢体挂在哪）、子树规模、同级排序与同级数量。
+[joint_struct_features.py](../data_loaders/truebones/truebones_utils/joint_struct_features.py) 的 `JOINT_STRUCT_FEATURE_NAMES` 给出每个关节的特征：沿无分叉链的位置（`depth_norm` / `run_len_inv`）、是否叶子、子树规模、同级排序与同级数量、左右侧符号 `side`（-1 / 0 / +1，左 ≠ 右）。只含拓扑与侧别；rest 几何只经 `rest_geom_features` 进入模型。
 
 - 训练与生成**必须**调用同一个 `build_joint_struct_features`，从 cond 条目现场计算，不写进 `cond.npy`，否则两边会对同一骨架给出不同条件。
 - 经 `struct_embedding`（MLP）投影后加到 token 上；**常规初始化，不是零初始化**——它要从第一步就携带信号。

@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
+from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from model.anytop import AnyTop, create_sin_embedding  # noqa: E402
 from model.cfg_sampler import ClassifierFreeTempoModel  # noqa: E402
 
@@ -52,7 +53,7 @@ def _make_model(tempo_cfg_drop_prob=0.1):
 def _make_y(frames=3, **extra):
     y = {
         'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-        'rest_pose': torch.linspace(-1.0, 1.0, 2 * 4 * 12).view(2, 4, 12),
+        'rest_geom': torch.linspace(-1.0, 1.0, 2 * 4 * REST_GEOM_DIM).view(2, 4, REST_GEOM_DIM),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),

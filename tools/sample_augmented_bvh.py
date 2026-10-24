@@ -44,7 +44,8 @@ Usage
 Arguments
 ---------
   --mode              Required: loop / motion-speed / leaf-drop / bone-length (one only)
-  --bone-length-aug   Relative group-scale range (default: 0.1 = +/-10%)
+  --bone-length-aug-max  Max relative group-length change (default: 0.2 = +/-20%)
+  --bone-length-aug-min  Min relative group-length change (default: 0.1 = +/-10%)
   --n                 Number of samples to export  (default: 10)
   --num-frames        Window length in frames, must match --num_frames in training (default: 60)
   --motion-speed-aug  Speed range R >= 1, log-uniform in [1/R, R] (default: 1.3)
@@ -55,6 +56,7 @@ Arguments
   --seed              RNG seed for reproducibility (default: 1234)
   --dataset-dir       Dataset root (auto-detected if omitted)
   --output-dir        Where to write BVH files (default: ./augmented_bvh_samples)
+  --purge             Delete existing *.bvh files in the output directory first
 """
 from __future__ import annotations
 
@@ -270,8 +272,10 @@ def parse_args() -> argparse.Namespace:
                    choices=("loop", "motion-speed", "leaf-drop", "bone-length"),
                    help="Preview exactly one augmentation, enabled with probability 100%%.")
     p.add_argument("--n", type=int, default=10, help="Number of samples to export.")
-    p.add_argument('--bone-length-aug', type=float, default=0.1,
-                   help='Relative body-proportion range; 0.1 = +/-10%% (bone-length mode only).')
+    p.add_argument('--bone-length-aug-max', type=float, default=0.2,
+                   help='Max relative body-proportion change; 0.2 = +/-20%% (bone-length mode only).')
+    p.add_argument('--bone-length-aug-min', type=float, default=0.1,
+                   help='Min relative body-proportion change; 0.1 = +/-10%% (bone-length mode only).')
     p.add_argument("--num-frames", type=int, default=60,
                    help="Temporal window length in frames (must match --num_frames in training).")
     p.add_argument("--loop-tile-single-prob", type=float, default=0.5,
@@ -296,6 +300,8 @@ def parse_args() -> argparse.Namespace:
                    help="Processed dataset root (auto-detected if omitted).")
     p.add_argument("--output-dir", default="outputs/augmented_bvh_samples",
                    help="Directory to write BVH files.")
+    p.add_argument("--purge", action="store_true",
+                   help="Delete existing *.bvh files in the output directory before exporting.")
     args = p.parse_args()
     if args.mode == "motion-speed" and (
         not np.isfinite(args.motion_speed_aug) or args.motion_speed_aug < 1.0
@@ -304,9 +310,11 @@ def parse_args() -> argparse.Namespace:
     if not 0.0 <= args.loop_tile_single_prob <= 1.0:
         p.error("--loop-tile-single-prob must be in [0, 1]")
     if args.mode == 'bone-length' and (
-        not np.isfinite(args.bone_length_aug) or not 0.0 < args.bone_length_aug < 1.0
+        not np.isfinite(args.bone_length_aug_max) or not 0.0 < args.bone_length_aug_max < 1.0
     ):
-        p.error('--bone-length-aug must be finite and in (0, 1) in bone-length mode')
+        p.error('--bone-length-aug-max must be finite and in (0, 1) in bone-length mode')
+    if args.mode == 'bone-length' and not 0.0 <= args.bone_length_aug_min <= args.bone_length_aug_max:
+        p.error('--bone-length-aug-min must be in [0, --bone-length-aug-max] in bone-length mode')
     if args.n <= 0 or args.num_frames <= 0:
         p.error("--n and --num-frames must be positive")
     return args
@@ -353,12 +361,18 @@ def main() -> int:
     opt.motion_speed_aug_prob = 1.0 if args.mode == "motion-speed" else 0.0
     opt.leaf_drop_prob = 1.0 if args.mode == "leaf-drop" else 0.0
     opt.bone_length_aug_prob = 1.0 if args.mode == 'bone-length' else 0.0
-    opt.bone_length_aug = args.bone_length_aug
+    opt.bone_length_aug_max = args.bone_length_aug_max
+    opt.bone_length_aug_min = args.bone_length_aug_min
     opt.loop_tile_single_prob = args.loop_tile_single_prob
     opt.motion_cache_size = 0  # no cache needed for sampling
 
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    if args.purge:
+        stale = sorted(output_dir.glob("*.bvh"))
+        for path in stale:
+            path.unlink()
+        print(f"[INFO] Purged {len(stale)} old BVH file(s) from: {output_dir}")
 
     print(f"[INFO] Loading condition data from: {opt.cond_file}")
     cond_dict = _build_cond_dict(opt)
@@ -451,7 +465,7 @@ def main() -> int:
                 motion_canonical,  # (num_frames, J, 12) canonical model space
                 m_length,     # prepared-motion frame count; _prepare_sample resamples to num_frames, so the [:m_length] slice is the whole array
                 parents,
-                rest_pose,
+                _rest_geom,
                 offsets,
                 _joints_graph_dist,
                 _joints_relations,
