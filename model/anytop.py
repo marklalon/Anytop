@@ -7,7 +7,7 @@ from model.motion_transformer import (
     run_in_fp32,
 )
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
-from utils.device_transfer import host_to_device
+from utils.device_transfer import check_on_device, host_to_device
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from data_loaders.truebones.truebones_utils.canonical_features import MODEL_CHANNELS
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
@@ -377,8 +377,9 @@ class AnyTop(nn.Module):
         # `.all()` in a python `if` is a data-dependent value that forces a
         # torch.compile graph break every step, so skip the finiteness guard
         # under compilation (eager eval/inference still validates).
-        if not torch.compiler.is_compiling() and not torch.isfinite(raw_resample_speed_cond).all():
-            raise ValueError("resample_speed_cond must be finite")
+        if not torch.compiler.is_compiling():
+            check_on_device(torch.isfinite(raw_resample_speed_cond).all(),
+                             "resample_speed_cond must be finite")
         return raw_resample_speed_cond.to(dtype=dtype)
 
     def _tempo_frame_embedding(self, y, batch_size, nframes, device):
@@ -575,11 +576,10 @@ class AnyTop(nn.Module):
         if not torch.compiler.is_compiling():
             vocab_size = int(self.action_word_embeddings.shape[0])
             live = fields['action_word_mask']
-            if bool(((word_ids < 0) | (word_ids >= vocab_size))[live].any()):
-                raise ValueError(
-                    f"action_word_ids holds an id outside 0..{vocab_size - 1}; the "
-                    "loader's ordered vocabulary is not this model's."
-                )
+            check_on_device(
+                ~(((word_ids < 0) | (word_ids >= vocab_size)) & live).any(),
+                f"action_word_ids holds an id outside 0..{vocab_size - 1}; the "
+                "loader's ordered vocabulary is not this model's.")
         return word_ids, fields['action_slot_ids'], fields['action_word_mask']
 
     def _action_slot_member_weights(self, slot_ids, word_mask, dtype):

@@ -1180,14 +1180,13 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     "loop_phase_mask batch dimension must match the motion batch size, got "
                     f"{loop_phase_mask.numel()} for batch {B}"
                 )
-            # `bool(.any())` is an all-False fast path. Under torch.compile it
-            # forces a graph break, so always build the mask-zeroed table there:
-            # all-False zeroes the phase, so the result is identical.
-            if torch.compiler.is_compiling() or bool(loop_phase_mask.any()):
-                loop_phase_embedding = (
-                    circular_phase_embedding(T, self.d_model, tgt.device, tgt.dtype).unsqueeze(1)
-                    * loop_phase_mask.view(1, B, 1)
-                )
+            # Always the mask-zeroed table: an all-False fast path would read
+            # the mask back (a stream sync, and a graph break under
+            # torch.compile), and all-False zeroes the phase anyway.
+            loop_phase_embedding = (
+                circular_phase_embedding(T, self.d_model, tgt.device, tgt.dtype).unsqueeze(1)
+                * loop_phase_mask.view(1, B, 1)
+            )
         first_cl_layer = (
             self.num_layers - self.cross_limb_last_n
             if self.cross_limb_last_n > 0 else 0

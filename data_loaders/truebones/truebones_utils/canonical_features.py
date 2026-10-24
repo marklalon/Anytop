@@ -343,6 +343,20 @@ def _rig_geometry(rest_bytes, parents_bytes):
     return L, frames
 
 
+def _cached_joint_depths(parents):
+    """:func:`joint_depths` of one rig's parents row, read-only, cached like
+    ``_rig_geometry``."""
+    parents = np.ascontiguousarray(np.asarray(parents, dtype=np.int64).reshape(-1))
+    return _joint_depths_of(parents.tobytes())
+
+
+@functools.lru_cache(maxsize=_RIG_GEOMETRY_CACHE_SIZE)
+def _joint_depths_of(parents_bytes):
+    depths = joint_depths(np.frombuffer(parents_bytes, dtype=np.int64))
+    depths.setflags(write=False)
+    return depths
+
+
 def _spatial_L_vectors(n_feats):
     """Return a per-channel ``uses_L`` vector of length ``n_feats``.
 
@@ -634,14 +648,17 @@ def _view_root_stat(stat, feature_ndim):
     return root.reshape(1, 3)
 
 
+_TWIST_REFERENCE_AXES_ARRAY = np.asarray(_TWIST_REFERENCE_AXES, dtype=np.float64)
+
+
 def _twist_references(directions):
     """``[K, 3]`` unit twist references ``p`` for unit directions ``[K, 3]``."""
-    axes = np.asarray(_TWIST_REFERENCE_AXES, dtype=np.float64)
+    axes = _TWIST_REFERENCE_AXES_ARRAY
     cos = directions @ axes.T
     usable = np.abs(cos) <= _TWIST_REFERENCE_MAX_COS
     # The first usable axis; the last one when none is.
     choice = np.where(usable.any(axis=1), usable.argmax(axis=1), len(axes) - 1)
-    reference = axes[choice] - cos[np.arange(choice.size), choice][:, None] * directions
+    reference = axes[choice] - np.take_along_axis(cos, choice[:, None], axis=1) * directions
     return reference / np.linalg.norm(reference, axis=-1, keepdims=True)
 
 
@@ -875,26 +892,29 @@ def _apply_rotation_frames(feature, cond_entry, inverse: bool):
         result = where((parent_index < 0)[:, None, :, None, None], global_rot, local)
     else:
         parents_host = parent_index.detach().cpu().numpy() if is_torch else parent_index
-        depths = np.stack([joint_depths(row) for row in parents_host])
+        depths = np.stack([_cached_joint_depths(row) for row in parents_host])
         if is_torch:
             global_rot = matrices
             for level in range(1, int(depths.max(initial=0)) + 1):
                 at_level = torch.as_tensor(depths == level, device=out.device)
                 composed = _gather_parent(global_rot, parent_index) @ matrices
                 global_rot = where(at_level[:, None, :, None, None], composed, global_rot)
+            result = global_rot @ frames
         else:
             # In place, one chain level at a time, touching only that level's
-            # joints; each rig row composes its own chains.
-            global_rot = matrices.copy()
+            # joints; each rig row composes its own chains. Joint-major
+            # ([J, N, T, 3, 3]), so a level's joints are whole contiguous blocks.
+            joint_major = np.ascontiguousarray(np.moveaxis(matrices, 2, 0))
+            global_rot = joint_major.copy()
             shared = depths.shape[0] == 1
             for row in range(depths.shape[0]):
                 rows = slice(None) if shared else slice(row, row + 1)
                 for level in range(1, int(depths[row].max(initial=0)) + 1):
                     joints = np.flatnonzero(depths[row] == level)
-                    global_rot[rows, :, joints] = (
-                        global_rot[rows, :, parents_host[row, joints]] @ matrices[rows, :, joints]
+                    global_rot[joints, rows] = (
+                        global_rot[parents_host[row, joints], rows] @ joint_major[joints, rows]
                     )
-        result = global_rot @ frames
+            result = np.moveaxis(global_rot @ np.moveaxis(frames, 2, 0), 0, 2)
 
     if is_torch:
         result6d = torch.cat([result[..., :, 0], result[..., :, 1]], dim=-1).to(out.dtype)

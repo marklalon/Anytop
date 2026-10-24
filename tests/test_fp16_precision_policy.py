@@ -99,7 +99,12 @@ class LossScaleCapTests(unittest.TestCase):
         def get_scale(self):
             return self._scale
 
+        def _get_scale_async(self):
+            return torch.tensor(self._scale)
+
         def update(self, new_scale=None):
+            if torch.is_tensor(new_scale):
+                new_scale = float(new_scale)
             self.update_calls.append(new_scale)
             if new_scale is not None:
                 self._scale = float(new_scale)
@@ -120,7 +125,14 @@ class LossScaleCapTests(unittest.TestCase):
         trainer = self._trainer(GRAD_SCALER_MAX_SCALE / 4)
         trainer._cap_loss_scale()
         self.assertEqual(trainer.scaler.get_scale(), GRAD_SCALER_MAX_SCALE / 4)
-        self.assertEqual(trainer.scaler.update_calls, [])
+
+    def test_real_scaler_is_capped_on_device(self):
+        model = nn.Linear(3, 3)
+        trainer = MixedPrecisionTrainer(model=model, amp_enabled=False, log_norms=False)
+        trainer.scaler = torch.amp.GradScaler('cpu', init_scale=GRAD_SCALER_MAX_SCALE * 8)
+        trainer.scaler.scale(torch.ones(()))  # creates the scale tensor
+        trainer._cap_loss_scale()
+        self.assertEqual(trainer.scaler.get_scale(), float(GRAD_SCALER_MAX_SCALE))
 
     def test_disabled_scaler_is_untouched(self):
         model = nn.Linear(3, 3)

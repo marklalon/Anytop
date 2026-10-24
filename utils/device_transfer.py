@@ -21,3 +21,18 @@ def host_to_device(value, device, dtype=None):
     if not tensor.is_pinned():
         tensor = tensor.pin_memory()
     return tensor.to(device, non_blocking=True)
+
+
+def check_on_device(condition, message):
+    """Raise ``ValueError(message)`` unless the bool tensor ``condition`` holds,
+    without a stream sync.
+
+    A host tensor is checked at once. A device one is asserted on the device
+    (``torch._assert_async``): reading it back in a python ``if`` would wait for
+    every queued kernel, and the failure surfaces at the next sync instead.
+    """
+    if condition.device.type == 'cpu':
+        if not bool(condition):
+            raise ValueError(message)
+        return
+    torch._assert_async(condition, message)

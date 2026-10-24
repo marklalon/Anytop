@@ -22,11 +22,13 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_STD_KEY,
     DPOS_LOSS_WEIGHT_KEY,
     MODEL_CHANNELS,
+    PARENT_INDEX_KEY,
     ROOT_STAT_SLICE,
     _length_scale_from_cond,
     canonical_to_physical_hml,
     root_relative_positions,
 )
+from utils.device_transfer import host_to_device
 
 
 # Floor of the rest length that normalizes the bone-vector loss, as a fraction
@@ -600,15 +602,20 @@ class GaussianDiffusion:
         rest_pos = rest_pos.to(device=device, dtype=pred_physical.dtype)  # [bs, J, 3]
 
         # Padded [bs, max_joints] parent-index tensor + per-joint bone validity
-        # (False for the root, which has no parent bone). Small python loop over
-        # the batch; this loss runs eager, so the per-step cost is negligible.
-        parents_idx = th.zeros(bs, max_joints, dtype=th.long, device=device)
-        parent_is_bone = th.zeros(bs, max_joints, dtype=th.bool, device=device)
-        for b, p in enumerate(parents_list):
-            p_t = th.as_tensor(np.asarray(p).reshape(-1), dtype=th.long, device=device)
-            n = min(int(p_t.numel()), max_joints)
-            parents_idx[b, :n] = p_t[:n].clamp(min=0)
-            parent_is_bone[b, :n] = p_t[:n] >= 0
+        # (False for the root, which has no parent bone). The collate's
+        # PARENT_INDEX_KEY already is that tensor (-1 at roots and padding) and
+        # arrives with the batch; without it the per-sample arrays are padded on
+        # the host and copied once, not once per sample (each a stream sync).
+        parent_index = (y or {}).get(PARENT_INDEX_KEY)
+        if parent_index is None or tuple(parent_index.shape) != (bs, max_joints):
+            padded = np.full((bs, max_joints), -1, dtype=np.int64)
+            for b, p in enumerate(parents_list):
+                p = np.asarray(p).reshape(-1)[:max_joints]
+                padded[b, :p.size] = p
+            parent_index = host_to_device(padded, device)
+        parent_index = parent_index.to(device=device, dtype=th.long)
+        parents_idx = parent_index.clamp(min=0)
+        parent_is_bone = parent_index >= 0
 
         # The all-RIC view: a bone off the root must not carry its world XZ.
         pos_pred = root_relative_positions(pred_physical[:, :, 0:3, :])    # [bs, J, 3, T]
