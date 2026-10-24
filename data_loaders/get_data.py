@@ -17,7 +17,6 @@ from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import Truebones
 from data_loaders.truebones.truebones_utils.bone_length_aug import (
     DEFAULT_BONE_LENGTH_AUG, DEFAULT_BONE_LENGTH_AUG_MIN)
-from data_loaders.truebones.truebones_utils.rest_repose_aug import DEFAULT_REST_REPOSE_MAX_DEG
 from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
 
 
@@ -185,8 +184,6 @@ def get_dataset(
     bone_length_aug_prob=0.0,
     bone_length_aug_max=DEFAULT_BONE_LENGTH_AUG,
     bone_length_aug_min=DEFAULT_BONE_LENGTH_AUG_MIN,
-    rest_repose_prob=0.0,
-    rest_repose_max_deg=DEFAULT_REST_REPOSE_MAX_DEG,
     cond_path=None,
     species_table=None,
     ref_encoder=False,
@@ -213,8 +210,6 @@ def get_dataset(
         bone_length_aug_prob=bone_length_aug_prob,
         bone_length_aug_max=bone_length_aug_max,
         bone_length_aug_min=bone_length_aug_min,
-        rest_repose_prob=rest_repose_prob,
-        rest_repose_max_deg=rest_repose_max_deg,
         cond_path=cond_path,
         species_table=species_table,
         ref_encoder=ref_encoder,
@@ -249,8 +244,6 @@ def get_dataset_loader(
     bone_length_aug_prob=0.0,
     bone_length_aug_max=DEFAULT_BONE_LENGTH_AUG,
     bone_length_aug_min=DEFAULT_BONE_LENGTH_AUG_MIN,
-    rest_repose_prob=0.0,
-    rest_repose_max_deg=DEFAULT_REST_REPOSE_MAX_DEG,
     cond_path=None,
     joint_buckets=JOINT_BUCKETS,
     species_table=None,
@@ -287,8 +280,6 @@ def get_dataset_loader(
         bone_length_aug_prob=bone_length_aug_prob,
         bone_length_aug_max=bone_length_aug_max,
         bone_length_aug_min=bone_length_aug_min,
-        rest_repose_prob=rest_repose_prob,
-        rest_repose_max_deg=rest_repose_max_deg,
         cond_path=cond_path,
         species_table=species_table,
         ref_encoder=ref_encoder,

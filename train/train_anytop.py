@@ -31,7 +31,6 @@ from train.training_loop import TrainLoop
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.truebones_utils.bone_length_aug import (
     DEFAULT_BONE_LENGTH_AUG, DEFAULT_BONE_LENGTH_AUG_MIN)
-from data_loaders.truebones.truebones_utils.rest_repose_aug import DEFAULT_REST_REPOSE_MAX_DEG
 from utils.model_util import create_model_and_diffusion_general_skeleton, resolve_t5_out_dim
 from model.joint_name_noise import joint_name_noise_basis
 from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform, WandBPlatform #required
@@ -314,8 +313,6 @@ def create_training_data_loader(args):
         bone_length_aug_prob=getattr(args, 'bone_length_aug_prob', 0.0),
         bone_length_aug_max=getattr(args, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG),
         bone_length_aug_min=getattr(args, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN),
-        rest_repose_prob=getattr(args, 'rest_repose_prob', 0.0),
-        rest_repose_max_deg=getattr(args, 'rest_repose_max_deg', DEFAULT_REST_REPOSE_MAX_DEG),
         species_table=getattr(args, 'species_descriptor_table', None),
     )
 
