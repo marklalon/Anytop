@@ -70,10 +70,14 @@ sample that need the full physical rows call :func:`rebuild_derived_velocity`.
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 
 from data_loaders.truebones.truebones_utils.param_utils import (
     HML_REF_REST_LENGTH_SCALE,
+    ancestor_matrix,
+    joint_depths,
     rest_tree_spread,
 )
 
@@ -141,6 +145,9 @@ _TWIST_REFERENCE_MAX_COS = 0.95
 _MIN_CHILD_DIRECTION_NORM = 0.3
 # Rest bones shorter than this fraction of ``L`` carry no direction.
 _MIN_BONE_FRAC_OF_L = 1e-3
+# Rigs whose ``L`` and rest bone frames stay cached per process: every stored
+# rig plus the recent augmented ones.
+_RIG_GEOMETRY_CACHE_SIZE = 2048
 
 # Channels whose std falls below this floor are treated as unit-variance so the
 # encode divide never explodes (mirrors the old std_safe floor).
@@ -264,10 +271,31 @@ def _length_scale_from_rest(rest_pos, parents):
     ignored). Derived purely from skeleton geometry -- no motion stats. A
     collapsed or non-finite rest lands on the floor.
     """
+    return _rig_geometry(*_rig_key(rest_pos, parents))[0]
+
+
+def _rig_key(rest_pos, parents):
+    """Hashable ``(rest bytes, parents bytes)`` of one rig for ``_rig_geometry``:
+    the unpadded rest as float64, so float32 and float64 copies of it agree."""
     if _is_torch_tensor(rest_pos):
         rest_pos = rest_pos.detach().cpu().numpy()
+    parents = np.ascontiguousarray(np.asarray(parents, dtype=np.int64).reshape(-1))
+    rest_pos = np.ascontiguousarray(np.asarray(rest_pos, dtype=np.float64)[:parents.size, :3])
+    return rest_pos.tobytes(), parents.tobytes()
+
+
+# A training sample derives its rig's geometry several times (target and
+# reference encode, collate), and most samples use their species' stored rig.
+@functools.lru_cache(maxsize=_RIG_GEOMETRY_CACHE_SIZE)
+def _rig_geometry(rest_bytes, parents_bytes):
+    """``(L, rest bone frames [J, 3, 3] read-only)`` of the rig a ``_rig_key`` names."""
+    parents = np.frombuffer(parents_bytes, dtype=np.int64)
+    rest_pos = np.frombuffer(rest_bytes, dtype=np.float64).reshape(parents.size, 3)
     L = rest_tree_spread(rest_pos, parents)
-    return max(L if np.isfinite(L) else 0.0, REST_LENGTH_SCALE_FLOOR)
+    L = max(L if np.isfinite(L) else 0.0, REST_LENGTH_SCALE_FLOOR)
+    frames = _bone_frames(rest_pos, parents, L)
+    frames.setflags(write=False)
+    return L, frames
 
 
 def _spatial_L_vectors(n_feats):
@@ -521,34 +549,17 @@ def _apply_global_stats(feature, cond_entry, inverse: bool):
     return out.astype(np.float32, copy=False)
 
 
-def _joint_depths(parents):
-    """Chain depth of every joint (0 for a root), for any joint ordering."""
-    parents = np.asarray(parents, dtype=np.int64).reshape(-1)
-    depths = np.full(parents.size, -1, dtype=np.int64)
-    for joint in range(parents.size):
-        chain = []
-        cursor = joint
-        while cursor >= 0 and depths[cursor] < 0:
-            chain.append(cursor)
-            if len(chain) > parents.size:
-                raise ValueError("parents contain a cycle.")
-            cursor = int(parents[cursor])
-        depth = -1 if cursor < 0 else int(depths[cursor])
-        for node in reversed(chain):
-            depth += 1
-            depths[node] = depth
-    return depths
-
-
-def _frame_from_direction(direction):
-    """``[3, 3]`` frame with columns ``d``, twist reference ``p``, ``d x p``."""
-    for axis in _TWIST_REFERENCE_AXES:
-        axis = np.asarray(axis, dtype=np.float64)
-        if abs(float(axis @ direction)) <= _TWIST_REFERENCE_MAX_COS:
-            break
-    reference = axis - float(axis @ direction) * direction
-    reference /= np.linalg.norm(reference)
-    return np.stack([direction, reference, np.cross(direction, reference)], axis=-1)
+def _frames_from_directions(directions):
+    """``[K, 3, 3]`` frames with columns ``d``, twist reference ``p``, ``d x p``
+    for unit directions ``[K, 3]``."""
+    axes = np.asarray(_TWIST_REFERENCE_AXES, dtype=np.float64)
+    cos = directions @ axes.T
+    usable = np.abs(cos) <= _TWIST_REFERENCE_MAX_COS
+    # The first usable axis; the last one when none is.
+    choice = np.where(usable.any(axis=1), usable.argmax(axis=1), len(axes) - 1)
+    reference = axes[choice] - cos[np.arange(choice.size), choice][:, None] * directions
+    reference /= np.linalg.norm(reference, axis=-1, keepdims=True)
+    return np.stack([directions, reference, np.cross(directions, reference)], axis=-1)
 
 
 def rest_bone_frames(rest_pos, parents):
@@ -568,21 +579,20 @@ def rest_bone_frames(rest_pos, parents):
     joint's rest frame turns rigidly -- that is what keeps the canonical
     rotation independent of the rest pose.
     """
-    parents = np.asarray(parents, dtype=np.int64).reshape(-1)
-    n_joints = parents.size
-    rest_pos = np.asarray(rest_pos, dtype=np.float64)[:n_joints]
-    order = np.argsort(_joint_depths(parents), kind="stable")
-    has_parent = parents >= 0
+    return _rig_geometry(*_rig_key(rest_pos, parents))[1].copy()
 
-    subtree = np.ones(n_joints, dtype=np.float64)
-    for joint in order[::-1]:
-        if has_parent[joint]:
-            subtree[parents[joint]] += subtree[joint]
+
+def _bone_frames(rest_pos, parents, length_scale):
+    """:func:`rest_bone_frames` of an unpadded float64 rest whose ``L`` is known."""
+    n_joints = parents.size
+    ancestors, depths = ancestor_matrix(parents)
+    has_parent = parents >= 0
+    subtree = ancestors.sum(axis=0).astype(np.float64)
 
     offsets = np.zeros_like(rest_pos)
     offsets[has_parent] = rest_pos[has_parent] - rest_pos[parents[has_parent]]
     lengths = np.linalg.norm(offsets, axis=-1)
-    min_len = _MIN_BONE_FRAC_OF_L * float(_length_scale_from_rest(rest_pos, parents))
+    min_len = _MIN_BONE_FRAC_OF_L * length_scale
     live_bone = has_parent & (lengths > min_len)
     unit = np.zeros_like(offsets)
     unit[live_bone] = offsets[live_bone] / lengths[live_bone, None]
@@ -593,20 +603,21 @@ def rest_bone_frames(rest_pos, parents):
     np.add.at(weighted, parents[live], subtree[live, None] * unit[live])
     np.add.at(weight, parents[live], subtree[live])
 
-    frames = np.repeat(np.eye(3)[None], n_joints, axis=0)
-    for joint in order:
-        direction = None
-        if weight[joint] > 0.0:
-            mean = weighted[joint] / weight[joint]
-            norm = float(np.linalg.norm(mean))
-            if norm >= _MIN_CHILD_DIRECTION_NORM:
-                direction = mean / norm
-        if direction is None and live_bone[joint]:
-            direction = unit[joint]
-        if direction is not None:
-            frames[joint] = _frame_from_direction(direction)
-        elif has_parent[joint]:
-            frames[joint] = frames[parents[joint]]
+    mean = np.divide(weighted, weight[:, None], out=np.zeros_like(weighted), where=weight[:, None] > 0.0)
+    mean_norm = np.linalg.norm(mean, axis=-1)
+    from_children = (weight > 0.0) & (mean_norm >= _MIN_CHILD_DIRECTION_NORM)
+    has_direction = from_children | live_bone
+    direction = np.where(
+        from_children[:, None], mean / np.maximum(mean_norm, _MIN_CHILD_DIRECTION_NORM)[:, None], unit
+    )
+    own = np.repeat(np.eye(3)[None], n_joints, axis=0)
+    own[has_direction] = _frames_from_directions(direction[has_direction])
+
+    # A joint without a direction takes the frame of its deepest ancestor that
+    # has one, identity when none does.
+    holders = ancestors & has_direction[None, :]
+    source = np.where(holders, depths[None, :], -1).argmax(axis=1)
+    frames = np.where(holders.any(axis=1)[:, None, None], own[source], np.eye(3))
     return frames.astype(np.float32)
 
 
@@ -754,14 +765,25 @@ def _apply_rotation_frames(feature, cond_entry, inverse: bool):
         result = where((parent_index < 0)[:, None, :, None, None], global_rot, local)
     else:
         parents_host = parent_index.detach().cpu().numpy() if is_torch else parent_index
-        depths = np.stack([_joint_depths(row) for row in parents_host])
-        global_rot = matrices
-        for level in range(1, int(depths.max(initial=0)) + 1):
-            at_level = depths == level
-            if is_torch:
-                at_level = torch.as_tensor(at_level, device=out.device)
-            composed = _gather_parent(global_rot, parent_index) @ matrices
-            global_rot = where(at_level[:, None, :, None, None], composed, global_rot)
+        depths = np.stack([joint_depths(row) for row in parents_host])
+        if is_torch:
+            global_rot = matrices
+            for level in range(1, int(depths.max(initial=0)) + 1):
+                at_level = torch.as_tensor(depths == level, device=out.device)
+                composed = _gather_parent(global_rot, parent_index) @ matrices
+                global_rot = where(at_level[:, None, :, None, None], composed, global_rot)
+        else:
+            # In place, one chain level at a time, touching only that level's
+            # joints; each rig row composes its own chains.
+            global_rot = matrices.copy()
+            shared = depths.shape[0] == 1
+            for row in range(depths.shape[0]):
+                rows = slice(None) if shared else slice(row, row + 1)
+                for level in range(1, int(depths[row].max(initial=0)) + 1):
+                    joints = np.flatnonzero(depths[row] == level)
+                    global_rot[rows, :, joints] = (
+                        global_rot[rows, :, parents_host[row, joints]] @ matrices[rows, :, joints]
+                    )
         result = global_rot @ frames
 
     if is_torch:
