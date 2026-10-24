@@ -9,14 +9,24 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import build_j
 
 
 def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, shared=None):
-    """Augment the encoder input's skeleton after time sampling.
+    """One encoder input from a clip used whole: its skeleton augmentation
+    (``augment_reference_skeleton``), then ``finish_reference_sample``."""
+    if augment:
+        motion, cond, shared, _changed = augment_reference_skeleton(motion, cond, metadata, opt, shared=shared)
+    return finish_reference_sample(motion, cond, opt, augment=augment, shared=shared)
+
+
+def augment_reference_skeleton(motion, cond, metadata, opt, *, shared=None):
+    """Return ``(motion, cond, shared, changed)``: the encoder input's skeleton
+    augmentation, drawn on the whole stored clip before time sampling, as the
+    target's is, so both are grounded on the same clip.
 
     The draws are independent of the target's own skeleton augmentation;
-    ``motion`` / ``cond`` are the stored rig's window. ``shared`` holds
-    channels already derived from this same motion and cond; they are reused
-    while no augmentation changes the skeleton, and the structural channel
-    also across the rest re-pose. The augmentations return new
-    arrays, so the caller's motion and cond are never written.
+    ``motion`` / ``cond`` are the stored rig's clip. ``shared`` holds channels
+    already derived from this same rig; they are kept while no augmentation
+    changes the skeleton, and the structural channel also across the
+    bone-length and rest re-pose stages. The augmentations return new arrays,
+    so the caller's motion and cond are never written.
     """
     import random
     from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS
@@ -27,33 +37,43 @@ def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, share
         DEFAULT_REST_REPOSE_MAX_DEG, augment_rest_repose)
 
     metadata = dict(metadata)
-    topology_prob = getattr(opt, 'topology_aug_prob', 0.0) if augment else 0.0
-    bone_prob = getattr(opt, 'bone_length_aug_prob', 0.0) if augment else 0.0
-    repose_prob = getattr(opt, 'rest_repose_prob', 0.0) if augment else 0.0
+    topology_prob = getattr(opt, 'topology_aug_prob', 0.0)
+    bone_prob = getattr(opt, 'bone_length_aug_prob', 0.0)
+    repose_prob = getattr(opt, 'rest_repose_prob', 0.0)
+    shared = dict(shared or {})
     changed = False
     if topology_prob and random.random() < topology_prob:
         motion, cond, info = augment_topology(
             motion, cond, metadata['translation_root_index'], getattr(opt, 'max_joints', MAX_JOINTS))
         if info['applied']:
             metadata['translation_root_index'] = info['translation_root_index']
+            shared = dict(joint_struct=build_joint_struct_features(cond))
             changed = True
+    # The structural channel names the rig's joints, not its rest geometry, so
+    # the bone-length and re-pose stages keep it (see rest_repose_aug).
+    struct_cond = cond
+    geometry_changed = False
     if bone_prob and random.random() < bone_prob:
         motion, cond, info = augment_bone_lengths(
             motion, cond, metadata, getattr(opt, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG),
             getattr(opt, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN))
-        changed = changed or info['applied']
-    if changed:
-        shared = None
+        geometry_changed = info['applied']
     if repose_prob and random.random() < repose_prob:
-        # The structural channel names the rig's joints, so it is the one
-        # built before the re-pose (see rest_repose_aug).
-        struct = (shared or {}).get('joint_struct')
-        if struct is None:
-            struct = build_joint_struct_features(cond)
         motion, cond, info = augment_rest_repose(
             motion, cond, metadata, getattr(opt, 'rest_repose_max_deg', DEFAULT_REST_REPOSE_MAX_DEG))
-        if info['applied']:
-            shared = dict(joint_struct=struct)
+        geometry_changed = geometry_changed or info['applied']
+    if geometry_changed:
+        struct = shared.get('joint_struct')
+        shared = dict(joint_struct=build_joint_struct_features(struct_cond) if struct is None else struct)
+    return motion, cond, shared, changed or geometry_changed
+
+
+def finish_reference_sample(motion, cond, opt, *, augment=True, shared=None):
+    """The encoder input of a time-sampled ``motion`` on its (augmented) rig
+    ``cond``, with the joint-name drop when ``augment``; ``shared`` as
+    ``reference_sample`` takes it."""
+    import random
+
     names = np.asarray(cond['joints_names_embs'], dtype=np.float32)
     prob = getattr(opt, 'joint_name_drop_prob', 0.0) if augment else 0.0
     if prob:

@@ -190,6 +190,56 @@ def test_canonical_features_are_rest_invariant():
         physical_hml_to_canonical(motion, cond)[..., :9], atol=1e-4)
 
 
+def frame_edge_fixture(frames=12, seed=0):
+    """Rest frames ``_bone_frames`` takes from a joint's own bone: a spine (7)
+    whose two clavicles cancel sideways, and a mirror pair whose right arm
+    (11) is a leaf while the left one (10) carries a hand."""
+    parents = np.array([-1, 0, 1, 2, 0, 4, 5, 0, 7, 7, 8, 9, 10])
+    offsets = np.array([[0, 0, 0], [.2, 0, 0], [0, -.5, .05], [0, -.5, 0],
+                        [-.2, 0, 0], [0, -.5, .05], [0, -.5, 0],
+                        [0, .3, 0], [.2, 0, 0], [-.2, 0, 0], [.3, 0, 0], [-.3, 0, 0],
+                        [.2, 0, 0]], dtype=np.float32)
+    partners = [-1, 4, 5, 6, 1, 2, 3, -1, 9, 8, 11, 10, -1]
+    rng = np.random.default_rng(seed)
+    rest = offsets.astype(np.float64).copy()
+    rest[0, 1] = 1
+    for j in range(1, len(parents)):
+        rest[j] += rest[parents[j]]
+    rest_feature = np.zeros((len(parents), 12), np.float32)
+    rest_feature[:, :3] = rest
+    rest_feature[:, 3] = rest_feature[:, 7] = 1
+    cond = dict(parents=parents, offsets=offsets, rest_pos_ric_hml=rest.astype(np.float32),
+                rest_pose=rest_feature, symmetry_partner_indices=partners, translation_root_index=0,
+                canonical_feature_mean=np.zeros(15), canonical_feature_std=np.ones(15))
+    motion = np.broadcast_to(rest_feature, (frames, len(parents), 12)).copy()
+    motion[..., 3:9] = _matrix_to_rotation_6d(random_rotations(rng, (frames, len(parents))).transforms())
+    return motion, cond, dict(translation_root_index=0, is_loop=False)
+
+
+def test_canonical_rotation_is_exact_where_frames_follow_the_parent():
+    from data_loaders.truebones.truebones_utils.canonical_features import physical_hml_to_canonical
+    motion, cond, metadata = frame_edge_fixture()
+    base = physical_hml_to_canonical(motion, cond)[..., 3:9]
+    applied = 0
+    for seed in range(40):
+        new_motion, new_cond, info = augment_rest_repose(
+            motion, cond, metadata, 40.0, rng=random.Random(seed))
+        applied += info['applied']
+        np.testing.assert_allclose(
+            physical_hml_to_canonical(new_motion, new_cond)[..., 3:9], base, atol=1e-4, err_msg=str(seed))
+    assert applied
+
+
+def test_reference_keeps_the_structural_channel_across_bone_lengths():
+    motion, cond, metadata = fixture()
+    stored = build_joint_struct_features(cond)
+    opt = SimpleNamespace(bone_length_aug_prob=1., bone_length_aug_max=.5, bone_length_aug_min=.4)
+    random.seed(0)
+    sample = prepare_reference_sample(motion, cond, metadata, opt, shared=dict(joint_struct=stored))
+    np.testing.assert_array_equal(sample['joint_struct'], stored)
+    assert not np.allclose(sample['rest_pose'], rest_geometry(cond)[:, REST_POSE_COLUMNS])
+
+
 def test_bent_limbs_stay_on_their_side():
     motion, cond, metadata = fixture()
     side = cond['rest_pos_ric_hml'][:, 0] - cond['rest_pos_ric_hml'][0, 0]

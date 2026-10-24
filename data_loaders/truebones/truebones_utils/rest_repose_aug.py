@@ -32,7 +32,7 @@ import numpy as np
 
 from data_loaders.truebones.truebones_utils.bone_length_aug import _parent_order
 from data_loaders.truebones.truebones_utils.canonical_features import (
-    _TWIST_REFERENCE_AXES, _twist_references, rest_bone_frames)
+    _TWIST_REFERENCE_AXES, _twist_references, rest_bone_frames, rest_frame_follows_children)
 
 # Largest rest rotation of a joint whose subtree is a vanishing part of the rig.
 DEFAULT_REST_REPOSE_MAX_DEG = 20.0
@@ -158,22 +158,25 @@ def _draw_rest_rotations(cond, order, children, tri, max_rad, rng):
     """``[J, 3, 3]`` local rest rotations, identity where nothing is drawn.
 
     A joint's largest angle shrinks with the share of the rig it moves, so a
-    hub carrying most of the body barely turns and a root never does. A paired
-    joint turns about one of the twist reference axes and hands the mirrored
-    rotation to its partner; an unpaired joint turns about the lateral axis
-    only. A draw is kept only when every frame under the joint (and its
-    partner) keeps its canonical rotation exactly and stays on its side of
-    the midline (``_subtree_valid``).
+    hub carrying most of the body barely turns and a root never does. Only a
+    joint whose rest frame follows its child bones turns
+    (``rest_frame_follows_children``): ``_subtree_valid`` takes every frame to
+    turn with its joint's own rest, and any other joint's frame turns with
+    its parent's instead. A paired joint turns about one of the twist
+    reference axes and hands the mirrored rotation to its partner, so a pair
+    turns only when both joints may; an unpaired joint turns about the
+    lateral axis only. A draw is kept only when every frame under the joint
+    (and its partner) keeps its canonical rotation exactly and stays on its
+    side of the midline (``_subtree_valid``).
     """
     parents = np.asarray(cond['parents'], dtype=np.int64)
     offsets = np.asarray(cond['offsets'], dtype=np.float64)
     joint_count = len(parents)
-    lengths = np.linalg.norm(offsets, axis=-1)
-    threshold = max(1e-6, float(lengths[parents >= 0].max(initial=0.0)) * 1e-4)
     sizes = _subtree_sizes(order, parents)
     partners = _partners(cond, joint_count)
     rest = np.asarray(cond['rest_pos_ric_hml'], dtype=np.float64)
     frames = rest_bone_frames(rest, parents)
+    bendable = rest_frame_follows_children(rest, parents)
     rotations = np.repeat(np.eye(3)[None], joint_count, axis=0)
     drawn = np.zeros(joint_count, dtype=bool)
     twist_axes = np.asarray(_TWIST_REFERENCE_AXES, dtype=np.float64)
@@ -182,11 +185,13 @@ def _draw_rest_rotations(cond, order, children, tri, max_rad, rng):
         j = int(j)
         if parents[j] < 0 or j == tri or drawn[j]:
             continue
-        if not any(lengths[c] > threshold for c in children[j]):
+        if not bendable[j]:
+            continue
+        partner = int(partners[j])
+        if partner >= 0 and not bendable[partner]:
             continue
         limit = max_rad * (1.0 - sizes[j] / float(joint_count))
         angle = rng.uniform(-limit, limit)
-        partner = int(partners[j])
         if partner < 0:
             axes = [np.array([1.0, 0.0, 0.0])]
         else:
@@ -267,7 +272,7 @@ def augment_rest_repose(motion, cond, metadata, max_deg=DEFAULT_REST_REPOSE_MAX_
         raise ValueError('Invalid rest re-pose translation root index.')
     local, drawn = _draw_rest_rotations(cond, order, children, tri, np.radians(max_deg), rng)
     if not drawn.any():
-        return skip('no joint with a child bone to bend')
+        return skip('no joint whose rest frame follows its child bones')
     rest_global = _global_rotations(local, parents, order)
     offsets = np.asarray(cond['offsets'], dtype=np.float64)
     old_rest = np.asarray(cond['rest_pos_ric_hml'], dtype=np.float64)

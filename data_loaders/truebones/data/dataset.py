@@ -1410,12 +1410,12 @@ class MotionDataset(data.Dataset):
                 float(getattr(self.opt, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG)),
                 float(getattr(self.opt, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN)),
             )
+            # The structural channel stays the one built above: it names this
+            # rig's joints, not its rest geometry (see rest_repose_aug).
             if bone_length_info['applied']:
                 rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
                 offsets = cond['offsets']
-                joint_struct = build_joint_struct_features(cond, source=str(object_type))
-        # Last skeleton stage: the structural channel stays the one built above,
-        # since it names this rig's joints, not its rest geometry.
+        # Last skeleton stage; the structural channel stays as well.
         rest_repose_info = {'applied': False, 'skip_reason': 'probability draw'}
         rest_repose_prob = float(getattr(self.opt, 'rest_repose_prob', 0.0))
         if rest_repose_prob > 0.0 and random.random() < rest_repose_prob:
@@ -1426,6 +1426,15 @@ class MotionDataset(data.Dataset):
             if rest_repose_info['applied']:
                 rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
                 offsets = cond['offsets']
+        # The reference encoder's input draws its skeleton augmentation here too,
+        # on its whole stored clip, so it is grounded on the same clip as the target.
+        ref_skeleton_changed = False
+        if ref_source is not None:
+            from data_loaders.reference import augment_reference_skeleton
+            ref_clip, ref_cond, ref_joint_struct, ref_root_index, ref_geometry = ref_source
+            ref_clip, ref_cond, ref_shared, ref_skeleton_changed = augment_reference_skeleton(
+                ref_clip, ref_cond, dict(motion_metadata, translation_root_index=ref_root_index), self.opt,
+                shared=dict(joint_struct=ref_joint_struct, geometry=ref_geometry))
         # Preview can replay temporal draws on the original skeleton exactly.
         bone_length_rng_state = random.getstate() if return_aug_info else None
         loop_phase_offset = 0
@@ -1447,12 +1456,10 @@ class MotionDataset(data.Dataset):
             m_length = int(motion.shape[0])
         target_skeleton_changed = bool(topology_info['applied']
                                        or bone_length_info['applied'] or rest_repose_info['applied'])
-        ref_separate_rig = ref_partner or target_skeleton_changed
+        ref_separate_rig = ref_partner or target_skeleton_changed or ref_skeleton_changed
         if ref_source is not None and ref_separate_rig:
             # The target's verdict, so both sides share one time axis below.
-            ref_motion = ref_source[0][:m_length]
-        elif ref_source is not None:
-            ref_motion = motion
+            ref_motion = ref_clip[:m_length]
 
         # A high-frequency clip (high_frequency.py) is never resampled to fewer
         # frames, so its source budget is the window itself: the speed draw
@@ -1579,20 +1586,15 @@ class MotionDataset(data.Dataset):
         ).astype(np.float32, copy=False)
         reference = None
         if ref_source is not None:
-            from data_loaders.reference import prepare_reference_sample
-            _, ref_cond, ref_joint_struct, ref_root_index, ref_geometry = ref_source
-            reference_metadata = dict(motion_metadata, is_loop=loop_condition_active,
-                                      translation_root_index=ref_root_index)
+            from data_loaders.reference import finish_reference_sample
             if ref_separate_rig:
-                reference = prepare_reference_sample(
-                    sample_window(ref_motion), ref_cond, reference_metadata, self.opt,
-                    shared=dict(joint_struct=ref_joint_struct, geometry=ref_geometry))
+                reference = finish_reference_sample(
+                    sample_window(ref_motion), ref_cond, self.opt, shared=ref_shared)
             else:
-                # The target kept the stored rig, so the reference starts from
-                # the same window and reuses its derived channels until its own
-                # augmentation changes the skeleton.
-                reference = prepare_reference_sample(
-                    physical_motion, cond, reference_metadata, self.opt,
+                # Both sides kept the stored rig, so the reference is the
+                # target's window and reuses its derived channels.
+                reference = finish_reference_sample(
+                    physical_motion, cond, self.opt,
                     shared=dict(feats=motion, joint_struct=joint_struct, geometry=ref_geometry))
         m_length = target_num_frames
 

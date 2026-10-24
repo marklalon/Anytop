@@ -672,10 +672,22 @@ def rest_bone_frames(rest_pos, parents):
     return _rig_geometry(*_rig_key(rest_pos, parents))[1].copy()
 
 
-def _bone_frames(rest_pos, parents, length_scale):
-    """:func:`rest_bone_frames` of an unpadded float64 rest whose ``L`` is known."""
+def rest_frame_follows_children(rest_pos, parents):
+    """``[J]`` bool: the rest bone frame's direction is the mean of the joint's
+    child bones (:func:`rest_bone_frames`), so turning the joint's own rest
+    turns its frame. Every other joint's frame follows its parent's turn."""
+    parents = np.asarray(parents, dtype=np.int64).reshape(-1)
+    rest_pos = np.asarray(rest_pos, dtype=np.float64)[:parents.size, :3]
+    _direction, from_children, _live_bone = _rest_directions(
+        rest_pos, parents, _length_scale_from_rest(rest_pos, parents), ancestor_matrix(parents)[0])
+    return from_children
+
+
+def _rest_directions(rest_pos, parents, length_scale, ancestors):
+    """``(direction [J, 3], from_children [J], live_bone [J])`` of
+    :func:`rest_bone_frames`: the subtree-weighted mean child direction where
+    it does not cancel out, else the joint's own bone."""
     n_joints = parents.size
-    ancestors, depths = ancestor_matrix(parents)
     has_parent = parents >= 0
     subtree = ancestors.sum(axis=0).astype(np.float64)
 
@@ -696,10 +708,18 @@ def _bone_frames(rest_pos, parents, length_scale):
     mean = np.divide(weighted, weight[:, None], out=np.zeros_like(weighted), where=weight[:, None] > 0.0)
     mean_norm = np.linalg.norm(mean, axis=-1)
     from_children = (weight > 0.0) & (mean_norm >= _MIN_CHILD_DIRECTION_NORM)
-    has_direction = from_children | live_bone
     direction = np.where(
         from_children[:, None], mean / np.maximum(mean_norm, _MIN_CHILD_DIRECTION_NORM)[:, None], unit
     )
+    return direction, from_children, live_bone
+
+
+def _bone_frames(rest_pos, parents, length_scale):
+    """:func:`rest_bone_frames` of an unpadded float64 rest whose ``L`` is known."""
+    n_joints = parents.size
+    ancestors, depths = ancestor_matrix(parents)
+    direction, from_children, live_bone = _rest_directions(rest_pos, parents, length_scale, ancestors)
+    has_direction = from_children | live_bone
     own = np.repeat(np.eye(3)[None], n_joints, axis=0)
     own[has_direction] = _frames_from_directions(direction[has_direction])
 

@@ -14,10 +14,16 @@ from data_loaders.truebones.truebones_utils.bone_length_aug import (
 from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
 )
-from data_loaders.truebones.truebones_utils.joint_struct_features import build_joint_struct_features
+from data_loaders.truebones.truebones_utils.joint_struct_features import (
+    JOINT_STRUCT_FEATURE_NAMES, build_joint_struct_features,
+)
 from data_loaders.reference import REST_GEOM_COLUMNS, rest_geometry
 from data_loaders.truebones.data.dataset import MotionDataset
 from utils.retarget_core import batch_forward_kinematics_np
+
+# Structural columns read off ``parents`` alone.
+TOPOLOGY_STRUCT_COLUMNS = [i for i, name in enumerate(JOINT_STRUCT_FEATURE_NAMES)
+                           if name not in ('sib_rank', 'side')]
 
 
 def fixture():
@@ -319,13 +325,13 @@ def pin_target_leaf_drop(monkeypatch, dropped):
     monkeypatch.setattr(topology_aug, 'augment_topology', reference)
 
 
-def test_loader_rebuilds_geometry_and_canonical_roundtrip():
+def test_loader_rebuilds_geometry_keeps_structural_channel_and_canonical_roundtrip():
     dataset, data = make_dataset()
     random.seed(3)
     sample = dataset._prepare_sample('test', data, return_aug_info=True)
     assert sample[13]['bone_length_aug']['applied']
     new_cond = sample[13]['object_cond']
-    np.testing.assert_allclose(sample[12]['joint_struct'], build_joint_struct_features(new_cond))
+    np.testing.assert_array_equal(sample[12]['joint_struct'], dataset._joint_struct_cache['test'])
     np.testing.assert_allclose(sample[3], rest_geometry(new_cond)[:, REST_GEOM_COLUMNS])
     decoded = canonical_to_physical_hml(sample[0], sample[12])
     np.testing.assert_allclose(decoded[:, [3, 6], 1], 0, atol=1e-6)
@@ -413,7 +419,14 @@ def test_real_training_combines_bone_leaf_and_temporal_augmentation():
         random.seed(rng.randrange(10000))
         sample = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
         cond = sample[13]['object_cond']
-        np.testing.assert_allclose(sample[12]['joint_struct'], build_joint_struct_features(cond))
+        struct, rebuilt = sample[12]['joint_struct'], build_joint_struct_features(cond)
+        # Bone lengths move no topology column; the geometric ones (sib_rank,
+        # side) stay those of the rig before the bone-length stage.
+        np.testing.assert_array_equal(struct[:, TOPOLOGY_STRUCT_COLUMNS], rebuilt[:, TOPOLOGY_STRUCT_COLUMNS])
+        if not sample[13]['bone_length_aug']['applied']:
+            np.testing.assert_array_equal(struct, rebuilt)
+        elif not sample[13]['topology_aug']['applied']:
+            np.testing.assert_array_equal(struct, dataset._joint_struct_cache[sample[7]])
         assert np.isfinite(sample[0]).all()
         leaf_seen |= sample[13]['topology_aug']['applied']
         bone_seen |= sample[13]['bone_length_aug']['applied']

@@ -308,7 +308,9 @@ def test_unaugmented_reference_reuses_shared_target_channels():
     options = SimpleNamespace(bone_length_aug_prob=1, bone_length_aug_max=.2)
     random.seed(5)
     augmented = prepare_reference_sample(motion, cond, metadata, options, shared=shared)
-    assert all(augmented[k] is not shared[k] for k in shared)
+    # New lengths make new features; the structural channel names the same joints.
+    assert augmented['feats'] is not shared['feats']
+    assert augmented['joint_struct'] is shared['joint_struct']
 
 
 def test_reference_dropout_extremes_and_frame_mismatch():
@@ -485,6 +487,31 @@ def test_target_augmentation_leaves_reference_on_stored_rig(monkeypatch):
     _, kwargs = truebones_batch_collate([sample], joint_buckets=(stored_joints - 1, stored_joints))
     assert kwargs['y']['ref_mask'].shape[1] == stored_joints
     assert kwargs['y']['ref_mask'].sum() == stored_joints
+
+
+def test_reference_skeleton_is_augmented_on_the_whole_stored_clip(monkeypatch):
+    import data_loaders.reference as reference_module
+    dataset, data = make_dataset()
+    dataset.opt.ref_encoder = True
+    dataset.opt.topology_aug_prob = 0
+    dataset.opt.bone_length_aug_prob = 1
+    dataset.opt.joint_name_drop_prob = 0
+    stored = dataset._load_physical_motion(data)[0]
+    seen = []
+    augment = reference_module.augment_reference_skeleton
+
+    def record(motion, *args, **kwargs):
+        seen.append(np.array(motion, copy=True))
+        return augment(motion, *args, **kwargs)
+
+    monkeypatch.setattr(reference_module, 'augment_reference_skeleton', record)
+    random.seed(3)
+    sample = dataset._prepare_sample('test', data)
+    # Grounded on the clip the target is grounded on, not on its window.
+    assert len(seen) == 1
+    np.testing.assert_array_equal(seen[0], stored)
+    reference = sample[12]['reference']
+    assert reference['feats'].shape[0] == sample[0].shape[0]
 
 
 def test_target_augmentation_keeps_loop_reference_time_aligned(monkeypatch):
