@@ -12,10 +12,13 @@ probability 100%; other augmentations are disabled:
   leaf-drop     — remove eligible leaf joints and export the reduced skeleton
   bone-length   — symmetric body proportions, paired original/augmented BVHs
                   with actual scales in filenames and contact residuals in logs
+  rest-repose   — a randomly bent rest pose; the motion features are unchanged
+                  by it, so a one-frame rest-pose BVH pair is exported
 
 Every mode also writes <stem>__original.bvh beside each augmented file: the same
-clip with augmentations off as a control. Bone-length and loop replay the same
-temporal draws; motion-speed keeps the deterministic fit instead of the sampled tempo.
+clip with augmentations off as a control (rest-repose: the stored rig's rest).
+Bone-length and loop replay the same temporal draws; motion-speed keeps the
+deterministic fit instead of the sampled tempo.
 
 All modes keep training's automatic speed fitting for phase-anchored actions,
 capped by MAX_FIT_SPEEDUP. Clips still above the source-length budget are randomly
@@ -43,9 +46,10 @@ Usage
 
 Arguments
 ---------
-  --mode              Required: loop / motion-speed / leaf-drop / bone-length (one only)
+  --mode              Required: loop / motion-speed / leaf-drop / bone-length / rest-repose (one only)
   --bone-length-aug-max  Max relative group-length change (default: 0.2 = +/-20%)
   --bone-length-aug-min  Min relative group-length change (default: 0.1 = +/-10%)
+  --rest-repose-max-deg  Largest rest rotation per joint in degrees (default: 20)
   --n                 Number of samples to export  (default: 10)
   --num-frames        Window length in frames, must match --num_frames in training (default: 60)
   --motion-speed-aug  Speed range R >= 1, log-uniform in [1/R, R] (default: 1.3)
@@ -189,6 +193,11 @@ def _bvh_joint_names(object_cond: dict[str, object], n_joints: int) -> list[str]
     return joints_names
 
 
+def _rest_pose_bvh_features(object_cond: dict[str, object]) -> np.ndarray:
+    """The cond's rest as a one-frame physical (1, J, 12) feature tensor."""
+    return np.asarray(object_cond["rest_pose"], dtype=np.float32)[None]
+
+
 def _decode_for_export(
     motion_canonical: np.ndarray,
     m_length: int,
@@ -229,18 +238,21 @@ def _replay_original(
     in loop mode the clip keeps its loop flag and replays the same roll and tile.
     """
     opt = dataset.opt
-    saved = (opt.preview_mode, opt.leaf_drop_prob, opt.bone_length_aug_prob, opt.motion_speed_aug_prob)
+    saved = (opt.preview_mode, opt.leaf_drop_prob, opt.bone_length_aug_prob, opt.rest_repose_prob,
+             opt.motion_speed_aug_prob)
     post_state = random.getstate()
     try:
         if saved[0] != "loop":
             opt.preview_mode = "baseline"
         opt.leaf_drop_prob = 0.0
         opt.bone_length_aug_prob = 0.0
+        opt.rest_repose_prob = 0.0
         opt.motion_speed_aug_prob = 0.0
         random.setstate(aug_info["bone_length_rng_state"])
         baseline = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
     finally:
-        opt.preview_mode, opt.leaf_drop_prob, opt.bone_length_aug_prob, opt.motion_speed_aug_prob = saved
+        (opt.preview_mode, opt.leaf_drop_prob, opt.bone_length_aug_prob, opt.rest_repose_prob,
+         opt.motion_speed_aug_prob) = saved
         random.setstate(post_state)
     baseline_aug = baseline[13]
     baseline_cond = baseline_aug["object_cond"]
@@ -267,13 +279,15 @@ def parse_args() -> argparse.Namespace:
         description="Export augmented training motions as BVH files for manual verification."
     )
     p.add_argument("--mode", required=True, action=_SingleMode,
-                   choices=("loop", "motion-speed", "leaf-drop", "bone-length"),
+                   choices=("loop", "motion-speed", "leaf-drop", "bone-length", "rest-repose"),
                    help="Preview exactly one augmentation, enabled with probability 100%%.")
     p.add_argument("--n", type=int, default=10, help="Number of samples to export.")
     p.add_argument('--bone-length-aug-max', type=float, default=0.2,
                    help='Max relative body-proportion change; 0.2 = +/-20%% (bone-length mode only).')
     p.add_argument('--bone-length-aug-min', type=float, default=0.1,
                    help='Min relative body-proportion change; 0.1 = +/-10%% (bone-length mode only).')
+    p.add_argument('--rest-repose-max-deg', type=float, default=20.0,
+                   help='Largest rest rotation per joint in degrees (rest-repose mode only).')
     p.add_argument("--num-frames", type=int, default=60,
                    help="Temporal window length in frames (must match --num_frames in training).")
     p.add_argument("--loop-tile-single-prob", type=float, default=0.5,
@@ -313,6 +327,9 @@ def parse_args() -> argparse.Namespace:
         p.error('--bone-length-aug-max must be finite and in (0, 1) in bone-length mode')
     if args.mode == 'bone-length' and not 0.0 <= args.bone_length_aug_min <= args.bone_length_aug_max:
         p.error('--bone-length-aug-min must be in [0, --bone-length-aug-max] in bone-length mode')
+    if args.mode == 'rest-repose' and not (np.isfinite(args.rest_repose_max_deg)
+                                           and 0.0 < args.rest_repose_max_deg <= 90.0):
+        p.error('--rest-repose-max-deg must be finite and in (0, 90] in rest-repose mode')
     if args.n <= 0 or args.num_frames <= 0:
         p.error("--n and --num-frames must be positive")
     return args
@@ -361,6 +378,8 @@ def main() -> int:
     opt.bone_length_aug_prob = 1.0 if args.mode == 'bone-length' else 0.0
     opt.bone_length_aug_max = args.bone_length_aug_max
     opt.bone_length_aug_min = args.bone_length_aug_min
+    opt.rest_repose_prob = 1.0 if args.mode == 'rest-repose' else 0.0
+    opt.rest_repose_max_deg = args.rest_repose_max_deg
     opt.loop_tile_single_prob = args.loop_tile_single_prob
     opt.motion_cache_size = 0  # no cache needed for sampling
 
@@ -481,6 +500,9 @@ def main() -> int:
             if args.mode == 'bone-length':
                 if not bone_info.get('applied'):
                     raise _AugmentationNotApplicable(bone_info.get('skip_reason', 'No eligible body groups.'))
+            repose_info = aug_info.get('rest_repose_aug', {})
+            if args.mode == 'rest-repose' and not repose_info.get('applied'):
+                raise _AugmentationNotApplicable(repose_info.get('skip_reason', 'No joint to bend.'))
             leaf_drop_count = int(aug_info.get("leaf_drop_count", 0))
             if args.mode == "leaf-drop" and leaf_drop_count == 0:
                 raise _AugmentationNotApplicable("No eligible leaf joints to drop.")
@@ -491,9 +513,13 @@ def main() -> int:
             # ----------------------------------------------------------------
             # Decode canonical model-space features back to physical HML-like features.
             # ----------------------------------------------------------------
-            motion_raw = _decode_for_export(
-                motion_canonical, m_length, object_cond, aug_info, args.num_frames, args.real_time,
-            )
+            skeleton_mode = args.mode == "rest-repose"
+            if skeleton_mode:
+                motion_raw = _rest_pose_bvh_features(object_cond)
+            else:
+                motion_raw = _decode_for_export(
+                    motion_canonical, m_length, object_cond, aug_info, args.num_frames, args.real_time,
+                )
             export_frames = int(motion_raw.shape[0])
 
             # ----------------------------------------------------------------
@@ -532,14 +558,22 @@ def main() -> int:
                 tags.append(f"drop{leaf_drop_count}j")
             if args.mode == 'bone-length':
                 tags.extend(f'{group}{factor:.3f}' for group, factor in bone_info['scales'].items())
+            if args.mode == 'rest-repose':
+                tags.append(f"repose{repose_info['max_rest_angle_deg']:.0f}deg")
 
             fname = f"{stem}__{'+'.join(tags)}.bvh"
             save_path = output_dir / fname
 
-            # Control: the same clip with augmentations off, on the same temporal draws.
-            original_raw, original_cond, original_names = _replay_original(
-                dataset, name, aug_info, args.num_frames, args.real_time,
-            )
+            # Control: the stored rig's rest, or the same clip with augmentations
+            # off on the same temporal draws.
+            if skeleton_mode:
+                original_cond = dataset.cond_dict[str(object_type)]
+                original_raw = _rest_pose_bvh_features(original_cond)
+                original_names = _bvh_joint_names(original_cond, original_raw.shape[1])
+            else:
+                original_raw, original_cond, original_names = _replay_original(
+                    dataset, name, aug_info, args.num_frames, args.real_time,
+                )
             original_path = output_dir / f'{stem}__original.bvh'
             if not _export_bvh(original_path, original_raw, original_names, original_cond):
                 raise RuntimeError('Original control BVH export failed.')
@@ -552,7 +586,7 @@ def main() -> int:
             )
             if ok:
                 loop_note = ""
-                if is_source_loop:
+                if is_source_loop and not skeleton_mode:
                     loop_note = (
                         f", loop_applied={bool(aug_info.get('loop_applied'))}"
                         f", loop_uncond={bool(aug_info.get('loop_uncond'))}"
@@ -568,6 +602,9 @@ def main() -> int:
                     speed_note += f", scales={bone_info['scales']}, contact_ik=off"
                     if bone_info['notes']:
                         speed_note += f", notes={'; '.join(bone_info['notes'])}"
+                if args.mode == 'rest-repose':
+                    speed_note += (f", rotated={repose_info['rotated_joints']}j"
+                                   f", max_angle={repose_info['max_rest_angle_deg']:.1f}deg")
                 print(f"OK  → {save_path.name}  [{export_frames}f, {object_type}{loop_note}{speed_note}]")
                 exported += 1
             else:
@@ -589,7 +626,7 @@ def main() -> int:
         print(f"       {skipped} clip(s) skipped — requested augmentation not applicable.")
     if failed:
         print(f"       {failed} file(s) failed — check error messages above.")
-    return 1 if failed or (args.mode == 'bone-length' and exported == 0) else 0
+    return 1 if failed or (args.mode in ('bone-length', 'rest-repose') and exported == 0) else 0
 
 
 if __name__ == "__main__":

@@ -81,6 +81,11 @@ from data_loaders.truebones.truebones_utils.bone_length_aug import (
     augment_bone_lengths,
     validate_bone_length_aug,
 )
+from data_loaders.truebones.truebones_utils.rest_repose_aug import (
+    DEFAULT_REST_REPOSE_MAX_DEG,
+    augment_rest_repose,
+    validate_rest_repose_aug,
+)
 from data_loaders.truebones.truebones_utils.dataset_tags import (
     assert_cond_species_tags_current,
     assert_species_tags_cover,
@@ -1410,6 +1415,18 @@ class MotionDataset(data.Dataset):
                 rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
                 offsets = cond['offsets']
                 joint_struct = build_joint_struct_features(cond, source=str(object_type))
+        # Last skeleton stage: the structural channel stays the one built above,
+        # since it names this rig's joints, not its rest geometry.
+        rest_repose_info = {'applied': False, 'skip_reason': 'probability draw'}
+        rest_repose_prob = float(getattr(self.opt, 'rest_repose_prob', 0.0))
+        if rest_repose_prob > 0.0 and random.random() < rest_repose_prob:
+            motion, cond, rest_repose_info = augment_rest_repose(
+                motion, cond, motion_metadata,
+                float(getattr(self.opt, 'rest_repose_max_deg', DEFAULT_REST_REPOSE_MAX_DEG)),
+            )
+            if rest_repose_info['applied']:
+                rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
+                offsets = cond['offsets']
         # Preview can replay temporal draws on the original skeleton exactly.
         bone_length_rng_state = random.getstate() if return_aug_info else None
         loop_phase_offset = 0
@@ -1429,7 +1446,8 @@ class MotionDataset(data.Dataset):
         if is_loop:
             motion = _drop_loop_closing_frame(motion)
             m_length = int(motion.shape[0])
-        target_skeleton_changed = bool(leaf_drop_count or bone_length_info['applied'])
+        target_skeleton_changed = bool(leaf_drop_count or bone_length_info['applied']
+                                       or rest_repose_info['applied'])
         ref_separate_rig = ref_partner or target_skeleton_changed
         if ref_source is not None and ref_separate_rig:
             # The target's verdict, so both sides share one time axis below.
@@ -1622,6 +1640,7 @@ class MotionDataset(data.Dataset):
                 'motion_speed_applied': float(motion_speed_applied),
                 'leaf_drop_count': int(leaf_drop_count),
                 'bone_length_aug': bone_length_info,
+                'rest_repose_aug': rest_repose_info,
                 'bone_length_rng_state': bone_length_rng_state,
                 'object_cond': cond,  # Exact per-sample skeleton for augmentation previews.
             }
@@ -1896,6 +1915,11 @@ class Truebones(data.Dataset):
                                  self.opt.bone_length_aug_min)
         if self.opt.bone_length_aug_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
             raise ValueError('bone-length augmentation is for training splits only; pass 0.0.')
+        self.opt.rest_repose_prob = float(kwargs.get('rest_repose_prob', 0.0))
+        self.opt.rest_repose_max_deg = float(kwargs.get('rest_repose_max_deg', DEFAULT_REST_REPOSE_MAX_DEG))
+        validate_rest_repose_aug(self.opt.rest_repose_prob, self.opt.rest_repose_max_deg)
+        if self.opt.rest_repose_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
+            raise ValueError('rest re-pose augmentation is for training splits only; pass 0.0.')
         if not 0.0 <= self.opt.leaf_drop_prob <= 1.0:
             raise ValueError(
                 f"leaf_drop_prob must be in [0, 1], got {self.opt.leaf_drop_prob}."
