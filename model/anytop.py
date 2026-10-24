@@ -8,9 +8,7 @@ from model.motion_transformer import (
 )
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
 from utils.device_transfer import host_to_device
-from data_loaders.truebones.truebones_utils.joint_struct_features import (
-    STRUCT_TOPOLOGY_DIM, joint_struct_topology,
-)
+from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from data_loaders.truebones.truebones_utils.canonical_features import (
     JOINT_MODEL_CHANNELS,
     ROOT_MODEL_CHANNELS,
@@ -1215,7 +1213,7 @@ class InputProcess(nn.Module):
         # signal from step one, and it is a per-joint identity left when
         # joint_name_drop_prob blanks a joint's name.
         self.struct_embedding = nn.Sequential(
-            nn.Linear(STRUCT_TOPOLOGY_DIM, self.latent_dim),
+            nn.Linear(JOINT_STRUCT_DIM, self.latent_dim),
             nn.GELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
@@ -1306,7 +1304,7 @@ class InputProcess(nn.Module):
         # missing name.
         struct_latent = run_in_fp32(
             self.struct_embedding,
-            joint_struct_topology(joint_struct.to(device=x.device, dtype=x.dtype)),
+            joint_struct.to(device=x.device, dtype=x.dtype),
         )
         rest_geom = rest_geom.to(device=x.device, dtype=x.dtype)
         if rest_geom_drop is not None:

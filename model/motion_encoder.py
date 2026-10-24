@@ -4,9 +4,7 @@ from torch import nn
 
 from model.motion_transformer import GraphMotionDecoder, GraphMotionDecoderLayer
 from model.joint_name_noise import JointNameNoise
-from data_loaders.truebones.truebones_utils.joint_struct_features import (
-    STRUCT_TOPOLOGY_DIM, joint_struct_topology,
-)
+from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 
 
 class MotionEncoder(nn.Module):
@@ -41,7 +39,7 @@ class MotionEncoder(nn.Module):
         self.joint_name_noise = JointNameNoise(joint_name_noise_std)
         self.text_embedding = nn.Linear(t5_out_dim, width)
         self.struct_embedding = nn.Sequential(
-            nn.Linear(STRUCT_TOPOLOGY_DIM, width),
+            nn.Linear(JOINT_STRUCT_DIM, width),
             nn.GELU(),
             nn.Linear(width, width),
         )
@@ -79,7 +77,7 @@ class MotionEncoder(nn.Module):
             self.joint_embedding(pose[:, :, 1:]),
         ], dim=2)
         names = self.text_embedding(self.joint_name_noise(y['ref_joints_names_embs']))
-        static = (names + self.struct_embedding(joint_struct_topology(y['ref_joint_struct']))
+        static = (names + self.struct_embedding(y['ref_joint_struct'])
                   + self.rest_embedding(y['ref_rest_pose']))
         # Re-zero after the projections: their biases would make padding live.
         tokens = tokens + (static * valid[..., None].to(names.dtype))[None]

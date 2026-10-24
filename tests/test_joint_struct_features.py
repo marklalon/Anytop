@@ -25,7 +25,6 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
     JOINT_STRUCT_DIM,
     JOINT_STRUCT_FEATURE_NAMES,
     JointStructFeatureError,
-    joint_struct_topology,
     build_joint_struct_features,
 )
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa: E402
@@ -95,14 +94,6 @@ class BranchFreeRuns(unittest.TestCase):
         # 1 and 2 share a run of two; the fork's children are runs of one each.
         np.testing.assert_allclose(run_len_inv, [1.0, 0.5, 0.5, 1.0, 1.0], atol=1e-6)
 
-    def test_attach_height_is_the_run_start_not_the_joint(self):
-        features = build_joint_struct_features(_biped())
-        height = _channel(features, 'height_n')
-        attach = _channel(features, 'attach_h_n')
-        # Every joint of the left leg reports the thigh's height.
-        np.testing.assert_allclose(attach[[3, 4, 5]], [height[3]] * 3, atol=1e-6)
-        self.assertGreater(float(attach[5]), float(height[5]))
-
 
 class Shape(unittest.TestCase):
     def test_a_contact_annotation_changes_nothing(self):
@@ -113,43 +104,22 @@ class Shape(unittest.TestCase):
         ))
         self.assertTrue(np.array_equal(baseline, annotated))
 
-    def test_leaves_heights_and_subtree_sizes(self):
+    def test_leaves_and_subtree_sizes(self):
         features = build_joint_struct_features(_biped())
         np.testing.assert_allclose(
             _channel(features, 'is_leaf'), [0, 0, 1, 0, 0, 1, 0, 0, 1], atol=1e-6
         )
-        height = _channel(features, 'height_n')
-        self.assertAlmostEqual(float(height[2]), 1.0)  # Head is the top
-        self.assertAlmostEqual(float(height[5]), 0.0)  # LFoot is the bottom
         subtree = _channel(features, 'subtree_n')
         self.assertAlmostEqual(float(subtree[0]), 1.0)  # the root's subtree is all of it
         self.assertAlmostEqual(float(subtree[2]), 1 / 9)
         self.assertAlmostEqual(float(subtree[3]), 3 / 9)
 
-    def test_feet_stay_on_the_floor_under_a_hanging_tail(self):
-        """The floor is the authored y=0, not the lowest joint: a tail drooping
-        below the feet must not lift the feet into mid-air."""
-        rest = np.vstack([_BIPED_REST, [[0.0, -0.6, -0.5]]]).astype(np.float32)
-        features = build_joint_struct_features(_biped(
-            parents=np.asarray(_BIPED_PARENTS + [0], dtype=np.int64), rest_pos_ric_hml=rest,
-        ))
-        height = _channel(features, 'height_n')
-        self.assertAlmostEqual(float(height[5]), 0.0)  # LFoot still on the floor
-        self.assertLess(float(height[9]), 0.0)         # the tail hangs below it
-
-    def test_a_hovering_rig_floors_on_its_lowest_joint(self):
-        lifted = _BIPED_REST + np.array([0.0, 3.0, 0.0], dtype=np.float32)
-        np.testing.assert_allclose(
-            build_joint_struct_features(_biped(rest_pos_ric_hml=lifted)),
-            build_joint_struct_features(_biped()), atol=1e-6,
-        )
-
     def test_lateral_is_signed_so_left_and_right_never_coincide(self):
         features = build_joint_struct_features(_biped())
-        lateral = _channel(features, 'lateral_signed')
-        self.assertLess(float(lateral[3]), 0.0)
-        self.assertGreater(float(lateral[6]), 0.0)
-        self.assertAlmostEqual(float(lateral[0]), 0.0)
+        side = _channel(features, 'side')
+        self.assertEqual(float(side[3]), -1.0)
+        self.assertEqual(float(side[6]), 1.0)
+        self.assertEqual(float(side[0]), 0.0)
 
     def test_sibling_rank_separates_a_mirrored_pair(self):
         features = build_joint_struct_features(_biped())
@@ -292,7 +262,7 @@ class PaddingSurvivesTheProjection(unittest.TestCase):
         x = torch.zeros(1, 4, FEATS_LEN, 3)
         names = torch.zeros(1, 4, 32)
         with torch.no_grad():
-            raw = process.struct_embedding(joint_struct_topology(struct))
+            raw = process.struct_embedding(struct)
             out = process(x, rest_geom, names, valid, struct)
             bare = process(x, torch.zeros_like(rest_geom), names, torch.zeros_like(valid), struct)
         self.assertGreater(float(raw[0, 2:].abs().max()), 0.0)

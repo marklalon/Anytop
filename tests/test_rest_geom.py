@@ -22,9 +22,6 @@ from data_loaders.tensors import truebones_batch_collate  # noqa: E402
 from data_loaders.truebones.truebones_utils.leaf_drop import drop_joints_from_cond  # noqa: E402
 from sample.conditioning import create_condition  # noqa: E402
 from tests.test_bone_length_aug import make_dataset  # noqa: E402
-from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
-    JOINT_STRUCT_FEATURE_NAMES,
-)
 from tests.test_joint_name_dropout import (  # noqa: E402
     _joint_cond_inputs, _joint_struct, _make_model,
 )
@@ -103,22 +100,6 @@ def test_dropped_joints_read_as_absent():
         dropped = ip(x, rest_geom, names, None, struct, rest_geom_drop=drop)
         reference = ip(x, hidden, names, None, struct)
     assert torch.equal(dropped, reference)
-
-
-def test_joint_struct_geometry_columns_never_reach_the_denoiser():
-    """Only the topology columns and the side sign of joint_struct are read, so
-    the rest geometry has one path in, the one rest_geom_drop hides."""
-    ip = _make_model().input_process.eval()
-    x, rest_geom, names = _joint_cond_inputs()
-    struct = _joint_struct()
-    moved = struct.clone()
-    for name in ('height_n', 'fore_aft_n', 'attach_h_n'):
-        moved[..., JOINT_STRUCT_FEATURE_NAMES.index(name)] += 0.37
-    side = JOINT_STRUCT_FEATURE_NAMES.index('lateral_signed')
-    moved[..., side] *= 3.0  # same sign, other magnitude
-    with torch.no_grad():
-        torch.testing.assert_close(ip(x, rest_geom, names, None, struct),
-                                   ip(x, rest_geom, names, None, moved), rtol=0, atol=0)
 
 
 def test_fully_dropped_rest_geom_hides_the_rest():

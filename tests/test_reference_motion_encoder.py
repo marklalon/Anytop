@@ -183,25 +183,6 @@ def test_reference_rest_pose_is_the_pose_of_the_rest():
     np.testing.assert_allclose(sample['rest_pose'], reference_pose(rest[None], cond)[0])
 
 
-def test_encoder_reads_topology_and_side_but_not_rest_geometry():
-    from data_loaders.truebones.truebones_utils.joint_struct_features import (
-        JOINT_STRUCT_FEATURE_NAMES,
-    )
-    m = model().eval()
-    _, y = inputs()
-    z = m.motion_encoder(y)
-    column = JOINT_STRUCT_FEATURE_NAMES.index
-    geometry = copy.deepcopy(y)
-    for name in ('height_n', 'fore_aft_n', 'attach_h_n'):
-        geometry['ref_joint_struct'][..., column(name)] = torch.randn(2, 6)
-    side = geometry['ref_joint_struct'][..., column('lateral_signed')]
-    side.copy_(side.sign() * (side.abs() + torch.rand_like(side)))  # magnitude only
-    torch.testing.assert_close(z, m.motion_encoder(geometry), rtol=0, atol=0)
-    flipped = copy.deepcopy(y)
-    flipped['ref_joint_struct'][..., column('lateral_signed')] *= -1
-    assert not torch.allclose(z, m.motion_encoder(flipped))
-
-
 def test_bone_directions_are_facing_frame_units():
     parents = np.array([-1, 0, 1, 1])
     rest = np.array([[0, 1, 0], [0, 1, 0], [0, 1, -1], [0, 1.0005, -1]], np.float32)

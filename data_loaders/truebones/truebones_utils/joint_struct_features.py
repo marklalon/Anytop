@@ -30,48 +30,23 @@ import numpy as np
 JOINT_STRUCT_FEATURE_SCHEMA_VERSION = 3
 
 # Order is the channel order of the returned array; changing it is a schema bump.
+# Topology only: rest geometry reaches a model through ``rest_geom_features``.
 JOINT_STRUCT_FEATURE_NAMES = (
     'depth_norm',        # (k + 1) / L      -- position along its branch-free run
     'run_len_inv',       # 1 / L            -- bounded run length, pairs with depth_norm
     'is_leaf',           # no children
-    'height_n',          # (y - floor) / y_span   -- floor: see rest_floor_height
-    'lateral_signed',    # (x - x_root) / scale   -- signed, so left != right
-    'fore_aft_n',        # (z - z_mean) / scale
-    'attach_h_n',        # height_n of the run's first joint -- where the limb attaches
     'subtree_n',         # subtree size / J
     'sib_rank',          # rank among same-parent siblings, in [0, 1]
     'sib_n_inv',         # 1 / (number of same-parent siblings)
+    'side',              # sign of the lateral offset from the root: -1 / 0 (midline) / +1
 )
 
 JOINT_STRUCT_DIM = len(JOINT_STRUCT_FEATURE_NAMES)
 
-# The columns the models read: topology only. The rest-geometry columns
-# (heights, fore-aft offset, attach height) are left out, and the lateral
-# offset is reduced to its side sign, so the rest geometry reaches a model
-# through ``rest_geom_features`` alone.
-STRUCT_TOPOLOGY_COLUMNS = ('depth_norm', 'run_len_inv', 'is_leaf', 'subtree_n',
-                           'sib_rank', 'sib_n_inv')
-STRUCT_SIDE_COLUMN = 'lateral_signed'
 # A lateral offset within this fraction of the rig's span is the midline.
 STRUCT_SIDE_TOLERANCE = 1e-3
-STRUCT_TOPOLOGY_DIM = len(STRUCT_TOPOLOGY_COLUMNS) + 1
-_TOPOLOGY_INDICES = [JOINT_STRUCT_FEATURE_NAMES.index(c) for c in STRUCT_TOPOLOGY_COLUMNS]
-_SIDE_INDEX = JOINT_STRUCT_FEATURE_NAMES.index(STRUCT_SIDE_COLUMN)
 
 _EPS = 1e-6
-
-
-def joint_struct_topology(joint_struct):
-    """``[..., STRUCT_TOPOLOGY_DIM]`` topology columns plus the side sign (-1/0/1).
-
-    Takes a torch tensor of ``build_joint_struct_features`` rows; the single
-    view of the structural channel that the denoiser and the reference
-    encoder read.
-    """
-    import torch  # Local: the rest of this module is numpy-only.
-    side = joint_struct[..., _SIDE_INDEX:_SIDE_INDEX + 1]
-    side = side.sign() * (side.abs() > STRUCT_SIDE_TOLERANCE)
-    return torch.cat([joint_struct[..., _TOPOLOGY_INDICES], side], dim=-1)
 
 
 class JointStructFeatureError(ValueError):
@@ -219,19 +194,6 @@ def _subtree_sizes(parents, children):
     return sizes
 
 
-def rest_floor_height(heights):
-    """The rest pose's ground: the authored floor y=0, clamped into the body's
-    own height range.
-
-    A legged rig is authored standing on y=0, so this is where its feet are
-    even when a tail or wing tip hangs below them -- taking the lowest joint
-    instead would put such a rig's feet in mid-air. A rig wholly above y=0 (a
-    hovering spirit) or wholly below it falls back to its nearest extreme.
-    """
-    heights = np.asarray(heights, dtype=np.float64)
-    return float(np.clip(0.0, heights.min(), heights.max()))
-
-
 def build_joint_struct_features(object_cond, source='cond entry'):
     """``[J, JOINT_STRUCT_DIM]`` float32 structural descriptors for one species.
 
@@ -246,16 +208,11 @@ def build_joint_struct_features(object_cond, source='cond entry'):
     _run_of, position_in_run, run_members = _branch_free_runs(parents, children, source)
 
     spans = rest_pos.max(axis=0) - rest_pos.min(axis=0)
-    # One isotropic scale for the two signed axes, so a limb's lateral offset is
-    # not rescaled by how flat or how tall this particular species happens to be.
     # A degenerate rig (every joint at one point) floors at _EPS rather than
     # dividing by zero, and lands on the all-equal features that describes.
     scale = float(max(spans.max(), _EPS))
-    floor = rest_floor_height(rest_pos[:, 1])
-    y_span = float(max(spans[1], _EPS))
-    height_n = (rest_pos[:, 1] - floor) / y_span
-    lateral_signed = (rest_pos[:, 0] - float(rest_pos[0, 0])) / scale
-    fore_aft_n = (rest_pos[:, 2] - float(rest_pos[:, 2].mean())) / scale
+    lateral = (rest_pos[:, 0] - float(rest_pos[0, 0])) / scale
+    side = np.sign(lateral) * (np.abs(lateral) > STRUCT_SIDE_TOLERANCE)
 
     subtree_sizes = _subtree_sizes(parents, children)
 
@@ -284,11 +241,9 @@ def build_joint_struct_features(object_cond, source='cond entry'):
             sib_n_inv[joint_index] = 1.0 / float(sibling_count)
 
     run_length = np.zeros(joint_count, dtype=np.float64)
-    run_start_index = np.zeros(joint_count, dtype=np.int64)
     for members in run_members:
         for joint_index in members:
             run_length[joint_index] = float(len(members))
-            run_start_index[joint_index] = members[0]
 
     is_leaf = np.asarray(
         [0.0 if children[joint_index] else 1.0 for joint_index in range(joint_count)],
@@ -299,13 +254,10 @@ def build_joint_struct_features(object_cond, source='cond entry'):
             (position_in_run.astype(np.float64) + 1.0) / run_length,
             1.0 / run_length,
             is_leaf,
-            height_n,
-            lateral_signed,
-            fore_aft_n,
-            height_n[run_start_index],
             subtree_sizes / float(joint_count),
             sib_rank,
             sib_n_inv,
+            side,
         ],
         axis=1,
     )
