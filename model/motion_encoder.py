@@ -12,8 +12,8 @@ class MotionEncoder(nn.Module):
 
     Every per-frame input means the same thing on every skeleton: the unit
     bone direction and the joint height (over ``L``) in the rest-facing frame,
-    and the root's XZ velocity. There is no rest token, no rest-centered
-    position residual, no local rotation and no rest geometry.
+    and the root's XZ velocity. There is no rest token, no local rotation and
+    no rest geometry.
 
     One static per-joint input carries the source's rest: the same pose
     channels evaluated on the rest (``ref_rest_pose``). The per-frame inputs

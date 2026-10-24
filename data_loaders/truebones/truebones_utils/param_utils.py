@@ -193,14 +193,65 @@ HML_REF_MAX_SPAN = float(np.linalg.norm(
         axis=-1,
 ).max())
 
-# RMS spread of the SMPL rest joints about their centroid -- the canonical
-# per-skeleton length ``L`` (canonical_features._length_scale_from_rest) of the
-# reference skeleton the scale normalization above targets. Every species is
-# scaled into these units, so this is what ``L`` of a normally-rigged body
-# measures (dataset median 0.229 against this 0.260).
-HML_REF_REST_LENGTH_SCALE = float(np.sqrt(
-        ((_SMPL_REST_POSITIONS - _SMPL_REST_POSITIONS.mean(axis=0)) ** 2).mean()
-))
+
+
+def rest_tree_spread(rest_positions, parents):
+    """RMS joint spread of a skeleton with distances measured along its tree.
+
+    The centroid RMS spread ``sqrt(mean |x_i - mean x|^2 / 3)`` equals
+    ``sqrt(sum_ij |x_i - x_j|^2 / (6 n^2))``; this replaces each ``|x_i - x_j|``
+    with the summed bone length of the chain between the two joints. Only bone
+    lengths and topology enter, so any re-pose of the rest leaves it unchanged,
+    and a rig whose bones all lie on one line gets its centroid spread. Joints
+    of separate trees (several roots) are joined through their roots' straight
+    distance.
+    """
+    positions = np.asarray(rest_positions, dtype=np.float64)
+    parents = np.asarray(parents, dtype=np.int64).reshape(-1)
+    n_joints = parents.size
+    if n_joints == 0:
+        return 0.0
+    positions = positions[:n_joints]
+    from_root = np.zeros(n_joints)
+    tree_root = np.arange(n_joints)
+    ancestors = np.zeros((n_joints, n_joints), dtype=bool)
+    done = np.zeros(n_joints, dtype=bool)
+    for joint in range(n_joints):
+        chain = []
+        cursor = joint
+        while cursor >= 0 and not done[cursor]:
+            chain.append(cursor)
+            if len(chain) > n_joints:
+                raise ValueError("parents contain a cycle.")
+            cursor = int(parents[cursor])
+        for node in reversed(chain):
+            parent = int(parents[node])
+            if parent >= 0:
+                from_root[node] = from_root[parent] + np.linalg.norm(positions[node] - positions[parent])
+                ancestors[node] = ancestors[parent]
+                tree_root[node] = tree_root[parent]
+            ancestors[node, node] = True
+            done[node] = True
+
+    # Distance from the root to each pair's deepest common ancestor: the largest
+    # root distance among the joints both descend from.
+    common = np.zeros((n_joints, n_joints))
+    for joint in range(n_joints):
+        below = ancestors[:, joint]
+        common[np.ix_(below, below)] = np.maximum(common[np.ix_(below, below)], from_root[joint])
+    pair = from_root[:, None] + from_root[None, :]
+    same_tree = tree_root[:, None] == tree_root[None, :]
+    roots_apart = np.linalg.norm(
+        positions[tree_root][:, None, :] - positions[tree_root][None, :, :], axis=-1
+    )
+    distance = np.where(same_tree, pair - 2.0 * common, pair + roots_apart)
+    return float(np.sqrt((distance ** 2).sum() / (6.0 * n_joints ** 2)))
+
+
+# Tree RMS spread of the SMPL rest -- the canonical per-skeleton length ``L``
+# (canonical_features._length_scale_from_rest) of the reference skeleton the
+# scale normalization above targets. Every species is scaled into these units.
+HML_REF_REST_LENGTH_SCALE = rest_tree_spread(_SMPL_REST_POSITIONS, SMPL_PARENTS)
 
 # Geometric blend weight between axial mean bone length and whole-body max span.
 # 0 keeps the existing axial-only scaling; 1 becomes pure max-span scaling.

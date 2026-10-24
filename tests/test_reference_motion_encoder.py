@@ -19,7 +19,7 @@ from data_loaders.reference import (
     reference_pose, reference_sample,
 )
 from data_loaders.truebones.data.dataset import resample_motion_features
-from data_loaders.truebones.truebones_utils.canonical_features import rest_pos_from_cond
+from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml, rest_pos_from_cond
 from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from sample.reference_motion import _prepare_encoder_reference_bundle
@@ -505,7 +505,11 @@ def test_target_augmentation_keeps_loop_reference_time_aligned(monkeypatch):
     assert reference['feats'].shape[0] == sample[0].shape[0]
     assert reference['feats'].shape[1] == sample[0].shape[1] + 1
     kept = [j for j in range(reference['feats'].shape[1]) if j != 3]
-    np.testing.assert_allclose(reference['feats'][:, kept], sample[0], atol=1e-4)
+    # Compared as physical positions: dropping the leaf changes the rig's L and
+    # its parent's rest bone frame, so the canonical rows differ by design.
+    full = canonical_to_physical_hml(reference['feats'], dataset.cond_dict['test'])
+    dropped = canonical_to_physical_hml(sample[0], sample[12])
+    np.testing.assert_allclose(full[:, kept, 0:3], dropped[..., 0:3], atol=1e-4)
 
 
 def test_compile_full_graph_keeps_reference_and_null_tensor_contract():

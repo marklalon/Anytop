@@ -34,7 +34,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 # of the skeleton's length scale L: bones shorter than this (finger tips, toe
 # segments) are weighted as if they had this length, which bounds how much
 # louder the shortest bones can be than an L-long one.
-BONE_REST_FLOOR_FRAC = 0.1
+BONE_REST_FLOOR_FRAC = 0.06
 
 _EXTRACT_TENSOR_CACHE = {}
 _EXTRACT_TENSOR_CACHE_FINALIZERS = {}
