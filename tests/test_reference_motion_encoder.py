@@ -129,16 +129,16 @@ def test_encoder_permutation_invariance_padding_and_actual_channel_contract():
               'ref_joint_struct'):
         permuted[k] = y[k][:, permutation]
     torch.testing.assert_close(z, encoder(permuted), rtol=1e-5, atol=1e-6)
-    # Only the root XZ velocity of the canonical window is read: the
-    # rest-centered positions, rotations and other velocities never are.
+    # Only the root's world XZ of the canonical window is read: the other
+    # joints' positions, every rotation and the root's height never are.
     changed = copy.deepcopy(y)
     changed['ref_feats'][:, 1:] = 100
-    changed['ref_feats'][:, 0, :9] = 100
-    changed['ref_feats'][:, 0, 10] = 100
+    changed['ref_feats'][:, 0, 1] = 100
+    changed['ref_feats'][:, 0, 3:] = 100
     changed['species_emb'] = torch.randn(2, 99)
     torch.testing.assert_close(z, encoder(changed), rtol=0, atol=0)
     moved = copy.deepcopy(y)
-    moved['ref_feats'][:, 0, 9] += 1
+    moved['ref_feats'][:, 0, 0] += 1
     assert not torch.allclose(z, encoder(moved))
     padded = dict(y)
     for k in ('ref_feats', 'ref_pose', 'ref_rest_pose', 'ref_mask', 'ref_joints_names_embs',

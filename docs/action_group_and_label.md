@@ -269,7 +269,7 @@ checkpoint 的 load / resume / bind 受两层指纹把关，不兼容的 checkpo
 - `is_loop` 来自 sidecar（§2），与标签一起进入条件。
 - **phase-free** vs **phase-anchored**（`loop_is_phase_free`）：只有每个主词都在 `PHASE_FREE_LOOP_HEADS`（步态、翅拍、呼吸、持续姿态：`walk run swim fly idle crawl climb roll rest fall`）且每个修饰词都在 `PHASE_FREE_LOOP_MODIFIERS`（步态 / 速度 / 保持的姿态 / 手持物）的 loop，才做**循环滚动与平铺**增强。其余 loop 是一个"离开准备姿态再回来"的事件（打击、跳、吼、`idle, look`…），frame 0 就是准备姿态，窗口里正好一次事件，滚动会打乱事件时序。白名单制：新词默认 anchored（少做一点增强，好过打乱时序）。
 - `--loop_cond_prob`：loop clip 被**告知**自己是 loop 的概率。失败时仍做物理上的 loop 增强，但窗口按开放 clip 重采样、`is_loop=False` 输入，故意引入标签噪声，防止 `is_loop` 被模型当作内容键。
-- loop 相关损失权重（`--lambda_loop_wrap` / `--lambda_loop_root_closure`）见 `train_all.bat`。
+- loop 相关损失权重（`--lambda_loop_wrap`）见 `train_all.bat`。
 
 ---
 

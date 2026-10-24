@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 50
+CKPT_VERSION = 51
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -242,34 +242,17 @@ def add_model_options(parser):
     group.add_argument("--species_film_bottleneck", default=128, type=int,
                        help="Hidden width of the joint x species FiLM head (default 128; 0 = latent_dim).")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
-    # Increase root-trajectory supervision and reduce position-step weight
-    # relative to the initial loss-share estimates; validate with training runs.
-    group.add_argument("--lambda_root_vel", default=0.1, type=float,
-                       help="Weight of the root's X/Z velocity MSE, the only velocity the model "
-                            "predicts: every other joint's velocity is its own position step plus the root's, "
-                            "so the canonical space drops it. Per sample, in canonical units, scaled by the "
-                            "species' root_vel_loss_weight from cond.npy.")
     group.add_argument("--lambda_dpos", default=0.04, type=float,
                        help="Weight of the frame-to-frame position-step MSE against the target, "
                             "in units of the corpus position-step RMS; a loop sample also counts its wrap "
-                            "step pos[0]-pos[-1]. It is the position supervision the dropped non-root "
-                            "velocity channels used to carry. Scaled by the species' dpos_loss_weight.")
+                            "step pos[0]-pos[-1]. The root's step is its world XZ step, so this also "
+                            "supervises the root trajectory and a loop's closure. Scaled by the species' "
+                            "dpos_loss_weight.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for the loop-only rotation seam continuity loss on denormalized "
                             "outputs: the wrap step's rotation angle matches its neighbouring steps. A loop "
                             "window's last frame is one step before frame 0, never a copy of it; the "
                             "position seam is --lambda_dpos's wrap step.")
-    group.add_argument("--lambda_loop_root_closure", default=0.0, type=float,
-                       help="Weight for the loop-only full-cycle closure of the translation root's XZ "
-                            "velocity (0.0=off): ||sum_t vel_xz[t] * step||^2 over ALL rows, the terminal "
-                            "wrap row included, on denormalized outputs. The root's world XZ path lives "
-                            "only in ch9/ch11 and every loop target sums to exactly zero there; l_simple "
-                            "cannot see the DC bias that integrates into a seam pop, and loop_wrap masks "
-                            "the root's XZ. Linear in the output, so the weight carries no bias cost, but "
-                            "it is one scalar per sample pushing T*2 elements: on a converged model a "
-                            "weight well below 1 already matches l_simple's gradient norm at low t, and "
-                            "1.0 is an order of magnitude above it. loop_root_xz_drift (the per-cycle "
-                            "seam pop in physical units) is logged whenever this or --lambda_loop_wrap is on.")
     group.add_argument("--lambda_bone", default=0.0, type=float,
                        help="Weight for the target-relative, rest-length-normalized bone-vector loss (0.0=off). "
                             "Penalizes |v_pred - v_gt| for every parent->child bone vector of the position "

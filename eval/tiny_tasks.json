@@ -1,8 +1,8 @@
 {
   "_comment": "Quick battery for train_tiny.bat.",
   "checkpoint": {
-    "RUN_NAME": "zoo_locomotion_tiny_v38",
-    "OUTPUT_DIR": "zoo_locomotion_tiny_v38_tiny"
+    "RUN_NAME": "zoo_locomotion_tiny_v39",
+    "OUTPUT_DIR": "zoo_locomotion_tiny_v39_tiny"
   },
   "tasks": [
     {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Buffalo", "--action_label", "run, forward"]},

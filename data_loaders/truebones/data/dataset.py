@@ -52,11 +52,11 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_MEAN_KEY,
     CANONICAL_STD_KEY,
     DPOS_LOSS_WEIGHT_KEY,
-    ROOT_VEL_LOSS_WEIGHT_KEY,
     assert_single_canonical_frame,
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
+    with_root_world_xz,
 )
 from data_loaders.truebones.truebones_utils.joint_embedding_text import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
@@ -237,7 +237,6 @@ _REQUIRED_CANONICAL_KEYS = (
     CANONICAL_MEAN_KEY,
     CANONICAL_STD_KEY,
     CANONICAL_DPOS_STD_KEY,
-    ROOT_VEL_LOSS_WEIGHT_KEY,
     DPOS_LOSS_WEIGHT_KEY,
 )
 
@@ -326,7 +325,6 @@ def resample_step_scale(source_frames, target_num_frames, *, periodic=False):
     An open clip maps its first and last frame onto the window's, so ``L``
     frames span ``L - 1`` steps: ``(L - 1) / (T - 1)``. A periodic one maps the
     cycle's ``L`` steps (the wrap included) onto the window's ``T``: ``L / T``.
-    GaussianDiffusion._physical_velocity_step_scale must agree with this.
     """
     source_frames = float(source_frames)
     target_num_frames = float(target_num_frames)
@@ -368,10 +366,8 @@ def resample_motion_features(motion, target_num_frames, *, periodic=False):
 
     if resampled.shape[-1] >= 12:
         # Velocity channels are stored so that `vel[t] * step_scale` recovers
-        # the target-frame position delta — matching the contract that
-        # velocity_consistency_loss and loop_wrap_loss multiply by step_scale
-        # (reconstructed from resample_speed_cond and is_loop) before comparing
-        # with pos deltas.
+        # the target-frame position delta (the stored contract
+        # rebuild_derived_velocity writes).
         # Linear interpolation of source velocities would give the instantaneous
         # value at src[t], which is off whenever step_scale != 1; instead we
         # integrate to a position path, interpolate that, then take target-step
@@ -709,14 +705,11 @@ def _drop_loop_closing_frame(motion, ratio=LOOP_CLOSING_FRAME_RATIO,
                              local_ratio=LOOP_CLOSING_FRAME_LOCAL_RATIO):
     """Drop the closing key when the last frame repeats frame 0; else unchanged.
 
-    Positions are root-relative and cannot see root travel, so the terminal
-    velocity row (the wrap delta last->first that preprocessing writes for a
-    loop) is judged as a third stack.  After the drop no channel needs
-    rewriting: the new last frame's velocity is already the wrap delta to
-    frame 0 within the tolerance that let the frame go.
+    ``motion`` is in the working layout, so the position stack sees the root's
+    world XZ as well as every joint's pose.
     """
     frame_count = int(motion.shape[0])
-    if frame_count < 3 or motion.shape[-1] < 12:
+    if frame_count < 3 or motion.shape[-1] < 9:
         return motion
     frames = np.asarray(motion, dtype=np.float64)
     voted = 0
@@ -732,12 +725,6 @@ def _drop_loop_closing_frame(motion, ratio=LOOP_CLOSING_FRAME_RATIO,
         voted += 1
         gap = float(np.linalg.norm(stack[-1] - stack[0], axis=-1).max())
         if gap > ratio * reference or gap > local_ratio * float(steps[-1]):
-            return motion
-    velocity = frames[:, :, 9:12]
-    reference = float(np.median(np.linalg.norm(velocity[:-1], axis=-1).max(axis=1)))
-    if reference > LOOP_CLOSING_FRAME_MIN_MOTION:
-        voted += 1
-        if float(np.linalg.norm(velocity[-1], axis=-1).max()) > ratio * reference:
             return motion
     if voted == 0:
         return motion
@@ -1680,8 +1667,7 @@ class MotionDataset(data.Dataset):
         # A loop-conditioned window is resampled periodically, so its period is
         # exactly the window (what circular_phase_embedding encodes) and its
         # step is L/T = resample_speed_cond; everything else, including a loop
-        # the model is told is not one, is open, at step (L-1)/(T-1). The loss
-        # reads which one from y['is_loop'] (_physical_velocity_step_scale).
+        # the model is told is not one, is open, at step (L-1)/(T-1).
         def sample_window(clip):
             if scaled_length != source_length:
                 return resample_time_scaled_window(
@@ -1760,7 +1746,6 @@ class MotionDataset(data.Dataset):
                 'canonical_feature_mean': cond.get('canonical_feature_mean'),
                 'canonical_feature_std': cond.get('canonical_feature_std'),
                 CANONICAL_DPOS_STD_KEY: cond.get(CANONICAL_DPOS_STD_KEY),
-                ROOT_VEL_LOSS_WEIGHT_KEY: cond.get(ROOT_VEL_LOSS_WEIGHT_KEY),
                 DPOS_LOSS_WEIGHT_KEY: cond.get(DPOS_LOSS_WEIGHT_KEY),
                 'feature_space': cond.get('feature_space', CANONICAL_FEATURE_SPACE),
             }, {
@@ -1787,7 +1772,6 @@ class MotionDataset(data.Dataset):
             'canonical_feature_mean': cond.get('canonical_feature_mean'),
             'canonical_feature_std': cond.get('canonical_feature_std'),
             CANONICAL_DPOS_STD_KEY: cond.get(CANONICAL_DPOS_STD_KEY),
-            ROOT_VEL_LOSS_WEIGHT_KEY: cond.get(ROOT_VEL_LOSS_WEIGHT_KEY),
             DPOS_LOSS_WEIGHT_KEY: cond.get(DPOS_LOSS_WEIGHT_KEY),
             'feature_space': cond.get('feature_space', CANONICAL_FEATURE_SPACE),
         }
@@ -1825,13 +1809,14 @@ class MotionDataset(data.Dataset):
         }
 
     def _load_physical_motion(self, data):
+        """The stored clip in the working layout (canonical_features, "Root")."""
         object_type = data['object_type']
         cond = self.cond_dict[object_type]
         motion_path = data['motion_path']
         if self.motion_cache_size > 0:
             motion = self.motion_cache.get(motion_path)
             if motion is None:
-                motion = np.load(motion_path).astype(np.float32, copy=False)
+                motion = with_root_world_xz(np.load(motion_path))
                 self.motion_cache[motion_path] = motion
                 self.motion_cache.move_to_end(motion_path)
                 while len(self.motion_cache) > self.motion_cache_size:
@@ -1839,7 +1824,7 @@ class MotionDataset(data.Dataset):
             else:
                 self.motion_cache.move_to_end(motion_path)
         else:
-            motion = np.load(motion_path).astype(np.float32, copy=False)
+            motion = with_root_world_xz(np.load(motion_path))
 
         m_length = motion.shape[0]
         rest_geom = self._rest_geom_cache[object_type]

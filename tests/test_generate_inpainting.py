@@ -14,12 +14,12 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
+    CANONICAL_STAT_LEN,
     canonical_to_physical_hml,
 )
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT  # noqa: E402
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from sample.conditioning import create_condition  # noqa: E402
-from sample.export import _zero_root_ric_xz  # noqa: E402
 from sample.inpaint import (  # noqa: E402
     _contiguous_frame_runs,
     _map_frame_ranges_to_internal,
@@ -87,8 +87,8 @@ def _make_full_cond_entry(n_joints: int, feature_len: int = 12) -> dict:
         "canonical_joint_names": [f"Joint{i}" for i in range(n_joints)],
         "canonical_bvh_joint_names": [f"Joint{i}" for i in range(n_joints)],
         "parents": parents,
-        "canonical_feature_mean": np.zeros((feature_len,), dtype=np.float32),
-        "canonical_feature_std": np.ones((feature_len,), dtype=np.float32),
+        "canonical_feature_mean": np.zeros((CANONICAL_STAT_LEN,), dtype=np.float32),
+        "canonical_feature_std": np.ones((CANONICAL_STAT_LEN,), dtype=np.float32),
         "rest_pose": np.zeros((n_joints, feature_len), dtype=np.float32),
         "joint_relations": np.zeros((n_joints, n_joints), dtype=np.int64),
         "joints_graph_dist": np.zeros((n_joints, n_joints), dtype=np.int64),
@@ -648,8 +648,8 @@ def test_create_condition_can_sample_at_target_joint_count() -> None:
     assert torch.equal(y["n_joints"], torch.tensor([3, 3]))
     # The output coordinate frame is an unconditional model input: AnyTop.forward
     # reads it every step, so the generation path has to stack it per sample too.
-    assert tuple(y["canonical_feature_mean"].shape) == (2, 12)
-    assert tuple(y["canonical_feature_std"].shape) == (2, 12)
+    assert tuple(y["canonical_feature_mean"].shape) == (2, CANONICAL_STAT_LEN)
+    assert tuple(y["canonical_feature_std"].shape) == (2, CANONICAL_STAT_LEN)
 
 
 def test_create_condition_rejects_cond_entry_without_canonical_stats() -> None:
@@ -920,40 +920,6 @@ def test_contiguous_frame_runs_basic():
     assert _contiguous_frame_runs({7}) == [(7, 7)]
     assert _contiguous_frame_runs({3, 4, 5}) == [(3, 5)]
     assert _contiguous_frame_runs({1, 2, 5, 6, 7, 10}) == [(1, 2), (5, 7), (10, 10)]
-
-
-def test_zero_root_ric_xz_clears_only_the_root_position_channels():
-    """The root's RIC X/Z are structurally zero, so model noise there is
-    cleared; everything else (notably the velocity ch9/ch11) must survive."""
-    motion = np.zeros((5, 2, 12), dtype=np.float32)
-    motion[:, 1, 0] = np.linspace(-0.1, 0.1, num=5, dtype=np.float32)
-    motion[:, 1, 2] = np.linspace(0.2, -0.2, num=5, dtype=np.float32)
-    motion[:, 1, 1] = np.linspace(1.0, 1.5, num=5, dtype=np.float32)
-    motion[:-1, 1, 9] = np.array([1.0, 2.0, -1.0, 0.0], dtype=np.float32)
-    motion[:-1, 1, 11] = np.array([0.5, -0.25, 0.25, 1.5], dtype=np.float32)
-    motion[-1, 1, [9, 11]] = 100.0
-    original_nonroot = motion[:, 0].copy()
-    original_root_vel = motion[:, 1, [9, 11]].copy()
-    original_root_height = motion[:, 1, 1].copy()
-
-    _zero_root_ric_xz(motion, translation_root_index=1)
-
-    np.testing.assert_allclose(motion[:, 1, [0, 2]], 0.0, atol=1e-6)
-    # Net XZ displacement is NOT cancelled any more: a loop may travel.
-    np.testing.assert_array_equal(motion[:, 1, [9, 11]], original_root_vel)
-    np.testing.assert_array_equal(motion[:, 1, 1], original_root_height)
-    np.testing.assert_array_equal(motion[:, 0], original_nonroot)
-
-
-def test_zero_root_ric_xz_noop_for_invalid_root():
-    motion = np.zeros((4, 1, 12), dtype=np.float32)
-    motion[:, 0, 0] = 1.0
-    motion[:-1, 0, 9] = 1.0
-    original = motion.copy()
-
-    _zero_root_ric_xz(motion, translation_root_index=5)
-
-    np.testing.assert_array_equal(motion, original)
 
 
 def _make_pos_y_motion(pos_y_by_joint, n_feat=12):

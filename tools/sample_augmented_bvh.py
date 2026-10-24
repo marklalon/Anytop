@@ -97,6 +97,7 @@ from data_loaders.truebones.data.dataset import (
 from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
+    rebuild_derived_velocity,
 )
 
 
@@ -199,7 +200,7 @@ def _decode_for_export(
     num_frames: int,
     real_time: bool,
 ) -> np.ndarray:
-    """Canonical (F, J, 12) window → physical features at the export tempo."""
+    """Canonical (F, J, 12) window → stored-layout physical features at the export tempo."""
     motion_raw = canonical_to_physical_hml(
         motion_canonical[:m_length],
         object_cond,
@@ -212,7 +213,7 @@ def _decode_for_export(
             motion_raw = resample_motion_features(
                 motion_raw, export_frames, periodic=bool(aug_info.get("loop_applied")),
             )
-    return motion_raw
+    return rebuild_derived_velocity(motion_raw, is_loop=bool(aug_info.get("loop_applied")))
 
 
 def _replay_original(

@@ -44,6 +44,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa:
     set_aux_loss_weights,
     set_canonical_global_stats,
     species_aux_loss_weights,
+    with_root_world_xz,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
     load_cond,
@@ -185,7 +186,7 @@ def _recompute_canonical_stats(merged_cond, sources) -> tuple:
             subset = subset_of[object_key]
             try:
                 subset_accs[subset] = accumulate_lnorm_stats(
-                    motion, merged_cond[object_key], acc=subset_accs.get(subset), species=object_key
+                    with_root_world_xz(motion), merged_cond[object_key], acc=subset_accs.get(subset), species=object_key
                 )
             except (KeyError, ValueError):
                 skipped += 1
@@ -197,11 +198,11 @@ def _recompute_canonical_stats(merged_cond, sources) -> tuple:
         raise SystemExit("Cannot compute canonical stats: no usable train clips in any source.")
     subset_stats = {subset: finalize_lnorm_stats(acc) for subset, acc in usable.items()}
     mean, std, dpos_std = pool_global_stats(subset_stats)
-    aux_weights = species_aux_loss_weights(usable.values(), mean, std, dpos_std)
+    aux_weights = species_aux_loss_weights(usable.values(), dpos_std)
 
     for key, entry in merged_cond.items():
         set_canonical_global_stats(entry, mean, std, dpos_std)
-        set_aux_loss_weights(entry, *aux_weights.get(key, (1.0, 1.0)))
+        set_aux_loss_weights(entry, aux_weights.get(key, 1.0))
 
     print(
         f"[OK] recomputed canonical stats over {used} train clip(s) ({skipped} skipped), "

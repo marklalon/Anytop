@@ -3,7 +3,7 @@ import numpy as np
 import torch
 
 from data_loaders.truebones.truebones_utils.canonical_features import (
-    _length_scale_from_cond, physical_hml_to_canonical, rest_pos_from_cond,
+    _length_scale_from_cond, physical_hml_to_canonical, rest_pos_from_cond, root_relative_positions,
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import build_joint_struct_features
 
@@ -91,9 +91,10 @@ def reference_pose(motion, cond):
     """``[T, J, REFERENCE_POSE_CHANNELS]`` rest-free encoder pose.
 
     Bone directions plus each joint's absolute height over the rig's ``L``
-    (ground contact and posture height, comparable across body sizes).
+    (ground contact and posture height, comparable across body sizes), read
+    off the all-RIC view of the working-layout ``motion``.
     """
-    positions = np.asarray(motion, np.float32)[..., :3]
+    positions = root_relative_positions(np.asarray(motion, np.float32)[..., :3])
     height = positions[..., 1:2] / float(_length_scale_from_cond(cond))
     pose = np.concatenate([bone_directions(positions, cond['parents'], rest_pos_from_cond(cond)),
                            height], axis=-1)
@@ -118,8 +119,8 @@ def reference_sample(motion, cond, names, *, feats=None, joint_struct=None):
     The single builder for both the loader and generation, so the two never
     hand the encoder differently derived channels. ``feats`` / ``joint_struct``
     may be passed in when already derived from this same motion and cond.
-    ``feats`` is the canonical window; the encoder reads only its root XZ
-    velocity.
+    ``feats`` is the canonical window; the encoder reads only its root's
+    world XZ.
     """
     if feats is None:
         feats = np.nan_to_num(physical_hml_to_canonical(motion, cond)).astype(np.float32)

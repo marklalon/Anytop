@@ -17,6 +17,7 @@ from data_loaders.truebones.data.dataset import resample_motion_features
 from data_loaders.truebones.truebones_utils.canonical_features import (
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
+    with_root_world_xz,
 )
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
 from sample.generation_runtime import (
@@ -114,6 +115,8 @@ def _prepare_img2img_reference_bundle(
         raise ValueError(
             f"Reference motion must have shape (T, J, F), got {ref_raw.shape}"
         )
+    # A stored clip; everything below reads the working layout.
+    ref_raw = with_root_world_xz(ref_raw)
 
     loaded_reference_frame_count, loaded_reference_joint_count, ref_feats = ref_raw.shape
     # Fixed-window model: always run at native window length (num_frames);

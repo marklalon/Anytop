@@ -12,7 +12,7 @@ class MotionEncoder(nn.Module):
 
     Every per-frame input means the same thing on every skeleton: the unit
     bone direction and the joint height (over ``L``) in the rest-facing frame,
-    and the root's XZ velocity. There is no rest token, no local rotation and
+    and the root's world XZ. There is no rest token, no local rotation and
     no rest geometry.
 
     One static per-joint input carries the source's rest: the same pose
@@ -27,15 +27,15 @@ class MotionEncoder(nn.Module):
                  heads=4, dropout=0.1, joint_name_noise_std=0.0):
         super().__init__()
         from data_loaders.reference import REFERENCE_POSE_CHANNELS
-        from data_loaders.truebones.truebones_utils.canonical_features import ROOT_VEL_CHANNELS
+        from data_loaders.truebones.truebones_utils.canonical_features import ROOT_XZ_CHANNELS
         if min(slots, ref_dim, width, layers, heads) < 1 or width % heads:
             raise ValueError('Invalid reference encoder dimensions / attention heads')
         if width < 4 or width % 2:
             raise ValueError('Reference encoder width must be even and >= 4')
         self.slots, self.ref_dim, self.width = slots, ref_dim, width
-        self.root_vel_channels = tuple(ROOT_VEL_CHANNELS)
+        self.root_xz_channels = tuple(ROOT_XZ_CHANNELS)
         self.joint_embedding = nn.Linear(REFERENCE_POSE_CHANNELS, width)
-        self.root_embedding = nn.Linear(REFERENCE_POSE_CHANNELS + len(ROOT_VEL_CHANNELS), width)
+        self.root_embedding = nn.Linear(REFERENCE_POSE_CHANNELS + len(ROOT_XZ_CHANNELS), width)
         self.joint_name_noise = JointNameNoise(joint_name_noise_std)
         self.text_embedding = nn.Linear(t5_out_dim, width)
         self.struct_embedding = nn.Sequential(
@@ -70,10 +70,10 @@ class MotionEncoder(nn.Module):
                               (torch.arange(joints, device=pose.device)[None] == 0))
         live = valid[:, :, None, None]
         pose = pose.masked_fill(~live, 0).permute(3, 0, 1, 2)  # [T, B, J, C]
-        root_vel = torch.cat([y['ref_feats'][:, 0:1, c:c + 1] for c in self.root_vel_channels], dim=2)
-        root_vel = root_vel.masked_fill(~live[:, :1], 0).permute(3, 0, 1, 2)
+        root_xz = torch.cat([y['ref_feats'][:, 0:1, c:c + 1] for c in self.root_xz_channels], dim=2)
+        root_xz = root_xz.masked_fill(~live[:, :1], 0).permute(3, 0, 1, 2)
         tokens = torch.cat([
-            self.root_embedding(torch.cat([pose[:, :, :1], root_vel], dim=-1)),
+            self.root_embedding(torch.cat([pose[:, :, :1], root_xz], dim=-1)),
             self.joint_embedding(pose[:, :, 1:]),
         ], dim=2)
         names = self.text_embedding(self.joint_name_noise(y['ref_joints_names_embs']))

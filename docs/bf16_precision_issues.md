@@ -187,13 +187,11 @@ def forward(self, output):
     # The x0 prediction must not be quantized to bf16: its per-frame rounding is
     # white noise that time derivatives amplify (docs/bf16_precision_issues.md).
     with torch.autocast(device_type=output.device.type, enabled=False):
-        output = output.float()
-        root_data = self.root_dembedding(output[:, :, 0])
-        all_joints = self.joint_dembedding(output[:, :, 1:])
+        joints_kept = self.joint_dembedding(output.float())
     ...
 ```
 
-- 只涉及两个 256→12 的线性层，计算量可以忽略，与 checkpoint 完全兼容。
+- 只涉及一个小线性层，计算量可以忽略，与 checkpoint 完全兼容。
 - 对 bf16 训练：输出误差降 40%，l_simple 相对差从 6.3e-4 降到 3.5e-4，梯度全局误差减半。
 - 对仍在用 bf16 的推理：jerk 偏差从 +52% 降到 +7%。
 

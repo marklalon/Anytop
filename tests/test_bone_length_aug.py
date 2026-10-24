@@ -39,7 +39,7 @@ def fixture():
                 canonical_joint_names=['Hips', 'Left Thigh', 'Left Knee', 'Left Foot',
                                        'Right Thigh', 'Right Knee', 'Right Foot'],
                 symmetry_partner_indices=[-1, 4, 5, 6, 1, 2, 3], translation_root_index=0,
-                canonical_feature_mean=np.zeros(12), canonical_feature_std=np.ones(12),
+                canonical_feature_mean=np.zeros(15), canonical_feature_std=np.ones(15),
                 joint_mask_candidate_roots=np.zeros(7), joints_names_embs=np.zeros((7, 4)),
                 joints_graph_dist=np.zeros((7, 7)), joint_relations=np.zeros((7, 7)),
                 kinematic_chains=[])
@@ -158,13 +158,12 @@ def test_velocity_and_authored_deformation_with_rotating_parent():
 
 
 @pytest.mark.parametrize('periodic', [False, True])
-def test_nonroot_translation_carrier_and_separate_roots(periodic):
+def test_separate_roots_keep_the_root_world_path(periodic):
     motion, cond, metadata = fixture()
     cond['parents'][4] = -1
     cond['canonical_joint_names'] = ['Hips', 'Tail 1', 'Tail 2', 'Tail 3', '', '', '']
     cond['joint_side_labels'] = ['center'] * 7
     cond.pop('symmetry_partner_indices')
-    cond['translation_root_index'] = metadata['translation_root_index'] = 2
     metadata['is_loop'] = periodic
     rotations = np.zeros((30, 7, 4))
     rotations[..., 0] = 1
@@ -176,28 +175,45 @@ def test_nonroot_translation_carrier_and_separate_roots(periodic):
     local[:, 0, 1] = 1
     world, _ = batch_forward_kinematics_np(rotations, local, cond['parents'])
     from motion_lib.Quaternions import Quaternions
-    motion[..., :3] = world
-    motion[..., 0] -= world[:, 2:3, 0]
-    motion[..., 2] -= world[:, 2:3, 2]
+
+    def working(positions):
+        """The working layout of world positions: RIC, the root at its world XZ."""
+        out = positions.copy()
+        out[:, 1:, 0] -= positions[:, 0:1, 0]
+        out[:, 1:, 2] -= positions[:, 0:1, 2]
+        return out
+
+    def world_of(features):
+        positions = features[..., :3].astype(np.float64).copy()
+        positions[:, 1:, 0] += positions[:, 0:1, 0]
+        positions[:, 1:, 2] += positions[:, 0:1, 2]
+        return positions
+
+    motion[..., :3] = working(world)
     motion[..., 3:9] = Quaternions(rotations).rotation_matrix(cont6d=True)
     motion[:-1, :, 9:12] = np.diff(world, axis=0)
     motion[-1, :, 9:12] = world[0] - world[-1] if periodic else motion[-2, :, 9:12]
     out, _, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(5))
     scaled_local = local.copy()
     groups = body_groups(cond)
-    assert groups['chain_1'] == [1, 3]
+    assert groups['chain_1'] == [1, 2, 3]
     for group, factor in info['scales'].items():
         scaled_local[:, groups[group]] *= factor
     expected, _ = batch_forward_kinematics_np(rotations, scaled_local, cond['parents'])
     expected[..., 1] += world[..., 1].min() - expected[..., 1].min()
-    # World recovery chooses the first carrier's XZ as its origin.
-    expected[..., 0] -= expected[0, 2, 0]
-    expected[..., 2] -= expected[0, 2, 2]
-    actual = recover_from_bvh_ric_np(out, translation_root_index=2)
-    np.testing.assert_allclose(actual, expected, atol=2e-7)
+    # The root's world XZ path is the source's: bone lengths do not move it.
+    np.testing.assert_allclose(out[:, 0, [0, 2]], motion[:, 0, [0, 2]], atol=0)
+    np.testing.assert_allclose(world_of(out), expected, atol=2e-7)
     np.testing.assert_allclose(out[:-1, :, 9:12], np.diff(expected, axis=0), atol=2e-7)
     terminal = expected[0] - expected[-1] if periodic else out[-2, :, 9:12]
     np.testing.assert_allclose(out[-1, :, 9:12], terminal, atol=2e-7)
+
+
+def test_a_non_zero_translation_root_is_refused():
+    motion, cond, metadata = fixture()
+    metadata['translation_root_index'] = 2
+    with pytest.raises(ValueError, match='joint 0'):
+        augment_bone_lengths(motion, cond, metadata, rng=random.Random(5))
 
 
 def test_contact_quality_does_not_reject_sample():

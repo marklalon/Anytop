@@ -17,7 +17,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, extract_into_tensor  # noqa: E402
 from diffusion.respace import SpacedDiffusion, space_timesteps  # noqa: E402
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
-from data_loaders.truebones.truebones_utils.canonical_features import REST_LENGTH_SCALE_FLOOR  # noqa: E402
+from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_STAT_LEN, REST_LENGTH_SCALE_FLOOR  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
@@ -150,10 +150,14 @@ class BoneVectorLossTests(unittest.TestCase):
         self.assertAlmostEqual(loss.item(), expected, places=5)
 
     def test_rigid_translation_is_free(self):
+        # A world translation moves the root's world XZ and every joint's
+        # height; the other joints' RIC XZ do not change.
         diffusion = self._make_diffusion()
         y, target, spat_mask = self._chain([[0, 0, 0], [1, 0, 0], [2, 0, 0]])
         pred = target.clone()
-        pred[:, :, 0:3, :] += torch.tensor([0.3, -0.2, 0.5]).view(1, 1, 3, 1)
+        pred[:, 0, 0, :] += 0.3
+        pred[:, 0, 2, :] += 0.5
+        pred[:, :, 1, :] -= 0.2
         loss = diffusion.bone_vector_consistency_loss(pred, target, spat_mask, y)
         self.assertAlmostEqual(loss.item(), 0.0, places=6)
 
@@ -305,7 +309,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         *,
         model_var_type: ModelVarType,
         lambda_geo: float = 0.0,
-        lambda_root_vel: float = 0.0,
         lambda_dpos: float = 0.0,
         lambda_bone: float = 0.0,
         temporal_span_seam_loss_weight: float = 0.0,
@@ -318,7 +321,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             model_var_type=model_var_type,
             loss_type=LossType.MSE,
             lambda_geo=lambda_geo,
-            lambda_root_vel=lambda_root_vel,
             lambda_dpos=lambda_dpos,
             lambda_bone=lambda_bone,
             temporal_span_seam_loss_weight=temporal_span_seam_loss_weight,
@@ -347,8 +349,8 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
                 # physical space equals the L-normalized space the tests reason about).
                 "rest_pos_ric_hml": torch.arange(n_joints * 3, dtype=torch.float32).reshape(n_joints, 3),
                 "parents": np.arange(-1, n_joints - 1),
-                "canonical_feature_mean": torch.zeros(n_feats, dtype=torch.float32),
-                "canonical_feature_std": torch.ones(n_feats, dtype=torch.float32),
+                "canonical_feature_mean": torch.zeros(CANONICAL_STAT_LEN, dtype=torch.float32),
+                "canonical_feature_std": torch.ones(CANONICAL_STAT_LEN, dtype=torch.float32),
                 "canonical_dpos_std": torch.ones(batch_size, dtype=torch.float32),
             }
         }
@@ -358,7 +360,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         diffusion = self._make_diffusion(
             model_var_type=ModelVarType.FIXED_LARGE,
             lambda_geo=0.25,
-            lambda_root_vel=0.5,
             lambda_dpos=0.5,
         )
         model = _BFloat16Model()
@@ -371,7 +372,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
 
         self.assertEqual(terms["l_simple"].dtype, torch.float32)
         self.assertEqual(terms["geodesic_loss"].dtype, torch.float32)
-        self.assertEqual(terms["root_vel_loss"].dtype, torch.float32)
         self.assertEqual(terms["dpos_loss"].dtype, torch.float32)
         self.assertEqual(terms["loss"].dtype, torch.float32)
 

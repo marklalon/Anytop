@@ -179,8 +179,12 @@ def fit_reference_to_output(reference_features, requested_frames):
         )
     if R < M:
         pad = np.repeat(reference_features[-1:], M - R, axis=0)
+        padded = np.concatenate([reference_features, pad], axis=0)
+        # The pad holds the last pose still, the root included: no step past
+        # the last real frame.
+        padded[R - 1:, :, 9:12] = 0.0
         return (
-            np.concatenate([reference_features, pad], axis=0),
+            padded,
             f'{R}-{M - 1}',
             f'  Reference outpaint: R={R} < M={M} -> appended frames [{R}, {M - 1}]',
         )

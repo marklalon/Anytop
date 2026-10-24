@@ -9,11 +9,7 @@ from model.motion_transformer import (
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
 from utils.device_transfer import host_to_device
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
-from data_loaders.truebones.truebones_utils.canonical_features import (
-    JOINT_MODEL_CHANNELS,
-    ROOT_MODEL_CHANNELS,
-    ROOT_VEL_CHANNELS,
-)
+from data_loaders.truebones.truebones_utils.canonical_features import MODEL_CHANNELS
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_LABEL_SLOTS,
     HEAD_SLOT_PRIMARY_WEIGHT,
@@ -73,10 +69,8 @@ class AnyTop(nn.Module):
         self.dropout = dropout
         self.activation = activation
         # feature_len is the tensor width; the model reads and writes only the
-        # channels canonical_features keeps (the derived velocity is not a
-        # model channel).
-        self.input_feats = len(JOINT_MODEL_CHANNELS)
-        self.root_input_feats = len(ROOT_MODEL_CHANNELS)
+        # channels canonical_features keeps (velocity is not a model channel).
+        self.input_feats = len(MODEL_CHANNELS)
         self.cond_mode = kargs.get('cond_mode', 'no_cond')
         self.value_emb=kargs.get('value_emb', False)
         self.cross_limb=kargs.get('cross_limb', True)
@@ -188,7 +182,7 @@ class AnyTop(nn.Module):
             )
 
         self.input_process = InputProcess(
-            self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim,
+            self.input_feats, self.latent_dim, t5_out_dim,
             joint_name_noise_std=self.joint_name_noise_std, species_cond=self.species_cond,
             species_film_bottleneck=self.species_film_bottleneck,
         )
@@ -273,7 +267,7 @@ class AnyTop(nn.Module):
             
         
         self.output_process = OutputProcess(
-            self.feature_len, self.input_feats, self.root_input_feats, self.max_joints, self.latent_dim
+            self.feature_len, self.input_feats, self.max_joints, self.latent_dim
         )
         self.ref_encoder = bool(kargs.get('ref_encoder', False))
         self.ref_cfg_drop_prob = float(kargs.get('ref_cfg_drop_prob', 0.4))
@@ -1155,13 +1149,13 @@ class AnyTop(nn.Module):
 # in the case of GMDM, the input process is as follows:
 # embed each joint of each frame of each motion in batch by the same MLP, separately !
 class InputProcess(nn.Module):
-    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, joint_name_noise_std=0.0,
+    def __init__(self, input_feats, latent_dim, t5_output_dim, joint_name_noise_std=0.0,
                  species_cond=False, species_film_bottleneck=128):
         super().__init__()
         self.input_feats = input_feats
         self.latent_dim = latent_dim
-        self.root_input_feats = root_input_feats
-        self.root_embedding = nn.Linear(self.root_input_feats, self.latent_dim)
+        # One embedding for every joint, the root included: its channels mean
+        # the same (canonical_features, "Root"), and its name tells it apart.
         self.joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         # Training-time noise in the names' principal subspace (model/joint_name_noise.py):
         # nearby names become interchangeable, so a name carries coarse semantics
@@ -1244,14 +1238,7 @@ class InputProcess(nn.Module):
         """
         # x.shape = [batch_size, joints, feature_len, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
-        n_joint_channels = len(JOINT_MODEL_CHANNELS)
-        all_joints_except_root = self.joint_embedding(x[:, :, 1:, :n_joint_channels])
-        # Slices, not an index list: a list index uploads to the device per call.
-        root_x = x[:, :, 0:1]
-        root_data = self.root_embedding(torch.cat(
-            [root_x[..., :n_joint_channels]] + [root_x[..., c:c + 1] for c in ROOT_VEL_CHANNELS], dim=-1
-        ))
-        x = torch.cat([root_data, all_joints_except_root], dim=2)
+        x = self.joint_embedding(x[..., :len(MODEL_CHANNELS)])
         joints_clean = joints_embedded_names.to(x.device)
         if joint_valid is None:
             # AnyTop.forward always supplies the real mask; a bare InputProcess
@@ -1328,35 +1315,25 @@ class InputProcess(nn.Module):
 
 
 class OutputProcess(nn.Module):
-    """Predicts the kept channels and writes them into a ``feature_len``-wide
-    tensor whose derived velocity channels are zero (canonical_features,
-    "Derived velocity")."""
+    """Predicts the kept channels of every joint and writes them into a
+    ``feature_len``-wide tensor whose velocity channels are zero
+    (canonical_features, "Velocity")."""
 
-    def __init__(self, feature_len, joint_feature_len, root_feature_len, max_joints, latent_dim):
+    def __init__(self, feature_len, joint_feature_len, max_joints, latent_dim):
         super().__init__()
         self.feature_len = feature_len
         self.max_joints = max_joints
         self.latent_dim = latent_dim
         self.joint_feature_len = joint_feature_len
-        self.root_feature_len = root_feature_len
-        self.root_dembedding = nn.Linear(self.latent_dim, self.root_feature_len)
         self.joint_dembedding = nn.Linear(self.latent_dim, self.joint_feature_len)
 
     def forward(self, output):
         # output shape [frames, batch_size, joints, latent_dim]
         # The x0 prediction must not be quantized to bf16: its per-frame rounding is
         # white noise that time derivatives amplify, inflating jerk/snap/spectral
-        # flatness (docs/bf16_precision_issues.md). Two small linears, so fp32 is free.
+        # flatness (docs/bf16_precision_issues.md). A small linear, so fp32 is free.
         with torch.autocast(device_type=output.device.type, enabled=False):
-            output = output.float()
-            root_kept = self.root_dembedding(output[:, :, 0])
-            joints_kept = self.joint_dembedding(output[:, :, 1:])
-        n_joint_channels = self.joint_feature_len
-        root_data = root_kept.new_zeros(root_kept.shape[:-1] + (self.feature_len,))
-        root_data[..., :n_joint_channels] = root_kept[..., :n_joint_channels]
-        for offset, channel in enumerate(ROOT_VEL_CHANNELS):
-            root_data[..., channel] = root_kept[..., n_joint_channels + offset]
-        all_joints = nn.functional.pad(joints_kept, (0, self.feature_len - n_joint_channels))
-        output = torch.cat([root_data.unsqueeze(2), all_joints], dim=-2)
+            joints_kept = self.joint_dembedding(output.float())
+        output = nn.functional.pad(joints_kept, (0, self.feature_len - self.joint_feature_len))
         output = output.permute(1, 2, 3, 0)  # [bs, njoints, nfeats, nframes]
         return output

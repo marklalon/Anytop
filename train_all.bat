@@ -69,8 +69,6 @@ pushd "%SCRIPT_DIR%"
 	--temporal_span_mask_prob 0.2 ^
 	--temporal_span_seam_loss_weight 0.2 ^
 	--lambda_loop_wrap 0.04 ^
-	--lambda_loop_root_closure 0.04 ^
-	--lambda_root_vel 0.1 ^
 	--lambda_dpos 0.08 ^
 	--lambda_geo 0.1 ^
 	--lambda_bone 0.06 ^

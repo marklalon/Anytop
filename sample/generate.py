@@ -44,8 +44,6 @@ from sample.conditioning import (
 from sample.export import (
     _bvh_preview_options,
     _export_motion,
-    _get_batch_translation_root_index,
-    _zero_root_ric_xz,
 )
 from sample.generation_runtime import (
     _checkpoint_cond_loader,
@@ -93,9 +91,9 @@ from utils.parser_util import generate_args
 
 
 def _with_derived_velocity(motion_np, resample_speed, loop):
-    """Fill the derived velocity rows of a decoded ``[T, J, F]`` window, at the
-    window's own step (``vel * step`` is a window-frame step), so the export
-    resample and every reader of the saved rows see full physical velocity."""
+    """A decoded working ``[T, J, F]`` window in the stored layout, its velocity
+    at the window's own step (``vel * step`` is a window-frame step), so the
+    export resample and every reader of the saved rows see the stored clip."""
     n_frames = motion_np.shape[0]
     speed = 1.0 if resample_speed is None else float(resample_speed)
     step = resample_step_scale(speed * n_frames, n_frames, periodic=bool(loop))
@@ -220,12 +218,6 @@ def _generate_all_species(
                     motion_np, species_output_lengths[sp][0], output_frame_count,
                     species_output_lengths[sp][2],
                 )
-
-                translation_root_index = _get_batch_translation_root_index(
-                    model_kwargs, sample_idx,
-                    fallback=sp_entry.get('translation_root_index', 0),
-                )
-                _zero_root_ric_xz(motion_np, translation_root_index)
 
                 joint_names = list(sp_entry.get(
                     'canonical_bvh_joint_names', sp_entry['joints_names'],
@@ -1009,14 +1001,6 @@ def main(args=None, cond_dict=None, runtime=None):
             invert=export_inverts_window,
         )
 
-        # The per-species translation root (the joint carrying the locomotion
-        # XZ velocity; the hierarchy root for every collapsed cond skeleton).
-        translation_root_index = _get_batch_translation_root_index(
-            model_kwargs,
-            sample_idx,
-            fallback=cond_dict[object_type].get('translation_root_index', 0),
-        )
-
         # A frame-range inpaint keeps the clamped frames' own ground; only a
         # joint subset needs re-seating onto the reference.
         if reseat_reference is not None and not (user_inpaint_active and inpaint_frames_arg):
@@ -1039,7 +1023,6 @@ def main(args=None, cond_dict=None, runtime=None):
                     f'    Inpaint reseat: shifted regenerated subtree world-Y by '
                     f'{reseat_delta:+.4f} to re-ground onto the reference'
                 )
-        _zero_root_ric_xz(motion_np, translation_root_index)
 
         npy_name = f'{object_file_token}_{base_index + sample_idx}.npy'
         export_tasks.append((

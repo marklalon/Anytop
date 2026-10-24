@@ -50,6 +50,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E40
 from utils.misc import infer_object_type_from_filename  # noqa: E402
 from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
     CANONICAL_FEATURE_SPACE,
+    CANONICAL_STAT_LEN,
     assert_single_canonical_frame,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
@@ -337,9 +338,9 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
                 msg = f"{object_type} missing canonical_feature_mean/std (regenerate cond.npy)"
                 print_warn(f"validation error: {msg}")
             else:
-                if np.asarray(canon_mean).reshape(-1).shape[0] != FEATS_LEN or \
-                        np.asarray(canon_std).reshape(-1).shape[0] != FEATS_LEN:
-                    msg = f"{object_type} canonical_feature_mean/std must have length {FEATS_LEN}"
+                if np.asarray(canon_mean).reshape(-1).shape[0] != CANONICAL_STAT_LEN or \
+                        np.asarray(canon_std).reshape(-1).shape[0] != CANONICAL_STAT_LEN:
+                    msg = f"{object_type} canonical_feature_mean/std must have length {CANONICAL_STAT_LEN}"
                     print_warn(f"validation error: {msg}")
             if joint_relations.shape != (n_joints, n_joints):
                 msg = f"{object_type} joint_relations shape mismatch: {joint_relations.shape}"

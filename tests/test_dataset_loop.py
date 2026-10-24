@@ -35,13 +35,14 @@ from data_loaders.truebones.data.dataset import (
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_labels import loop_is_phase_free, phase_anchoring_words
-from data_loaders.truebones.truebones_utils.param_utils import MAX_FIT_SPEEDUP, MAX_SOURCE_FRAMES_MULT
+from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN, MAX_FIT_SPEEDUP, MAX_SOURCE_FRAMES_MULT
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
 from data_loaders.truebones.truebones_utils.canonical_features import (
-    ROOT_VEL_CHANNELS,
+    CANONICAL_FEATURE_SPACE,
     canonical_to_physical_hml,
     physical_hml_to_canonical,
     rebuild_derived_velocity,
+    with_root_world_xz,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
@@ -185,7 +186,10 @@ def _load_cond_stamped_with_the_current_schema(*args, **kwargs):
     embedding contract (tests/test_joint_struct_features.py covers that), so they
     accept the cond that is on disk. The baked species_tags are restamped from
     the sidecar for the same reason (tests/test_species_tags_config.py covers the
-    stale-cond guard).
+    stale-cond guard). A cond of an older feature space is restamped too, its
+    root position taking the joints' position stats: every expectation here is
+    encoded with the same cond, so the stats' values do not matter
+    (tests/test_canonical_features.py covers the stats).
     """
     cond_dict = load_cond(*args, **kwargs)
     tags = dataset_tags()
@@ -195,6 +199,12 @@ def _load_cond_stamped_with_the_current_schema(*args, **kwargs):
         entry['joints_names_embs_meta'] = meta
         if 'species_tags' in entry:
             entry['species_tags'] = tags.tags_for(object_type)
+        if entry.get('feature_space') != CANONICAL_FEATURE_SPACE and 'canonical_feature_mean' in entry:
+            mean = np.asarray(entry['canonical_feature_mean'], dtype=np.float32)[:FEATS_LEN]
+            std = np.asarray(entry['canonical_feature_std'], dtype=np.float32)[:FEATS_LEN]
+            entry['canonical_feature_mean'] = np.concatenate([mean, mean[0:3]])
+            entry['canonical_feature_std'] = np.concatenate([std, std[0:3]])
+            entry['feature_space'] = CANONICAL_FEATURE_SPACE
     return cond_dict
 
 
@@ -276,10 +286,10 @@ def test_drop_loop_closing_frame_drops_only_a_repeated_last_frame() -> None:
     assert wrap_gap > 0.5 * float(pose_steps[-1]), "fixture must be one local step short"
     assert _drop_loop_closing_frame(eased) is eased
 
-    # The pose may repeat while the root travelled: the wrap velocity row
-    # (world coordinates) says so, and the frame is NOT a duplicate.
+    # The pose may repeat while the root travelled: the root's world XZ (the
+    # working layout's root position) says so, and the frame is NOT a duplicate.
     transported = with_key.copy()
-    transported[-1, :, 9:12] = np.array([0.0, 0.0, -2.0], dtype=np.float32)
+    transported[-1, 0, 2] -= 2.0
     assert _drop_loop_closing_frame(transported) is transported
 
     # A motionless clip is a held pose; its length is the duration.
@@ -300,7 +310,7 @@ def test_loop_with_closing_key_is_augmented_as_its_clean_period() -> None:
     motion_dataset = dataset.motion_dataset
     data = motion_dataset.data_dict[CLOSING_KEY_LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
-    raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
+    raw = with_root_world_xz(np.load(data["motion_path"]))
     period = _drop_loop_closing_frame(raw)
     assert period.shape[0] == raw.shape[0] - 1, (
         f"fixture clip {CLOSING_KEY_LOOP_MOTION} no longer ships a closing key: "
@@ -389,7 +399,7 @@ def test_phase_anchored_loop_is_never_rolled_or_tiled(loop_cond_prob) -> None:
         data["motion_metadata"]["action_label"]
     ), f"fixture clip {ANCHORED_LOOP_MOTION} is no longer a phase-anchored loop -- re-point it"
     cond = motion_dataset.cond_dict[data["object_type"]]
-    period = _drop_loop_closing_frame(np.load(data["motion_path"]).astype(np.float32, copy=False))
+    period = _drop_loop_closing_frame(with_root_world_xz(np.load(data["motion_path"])))
 
     with patch.object(motion_dataset, '_sample_loop_offset', side_effect=AssertionError("rolled")), \
             patch.object(motion_dataset, '_sample_loop_tile_count', side_effect=AssertionError("tiled")):
@@ -498,7 +508,7 @@ def test_loop_padding_updates_effective_length() -> None:
 
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
-    raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
+    raw = with_root_world_xz(np.load(data["motion_path"]))
     raw_len = raw.shape[0]
     assert raw_len < NUM_FRAMES, "loop regression sample no longer needs padding"
     expected = _resample_raw_then_normalize(raw, cond, NUM_FRAMES, periodic=True)
@@ -520,7 +530,7 @@ def test_loop_padding_can_tile_multiple_cycles_before_resample() -> None:
     motion_dataset = dataset.motion_dataset
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
-    raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
+    raw = with_root_world_xz(np.load(data["motion_path"]))
 
     with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=2):
         sample = motion_dataset.prepare_sample_by_name(LOOP_MOTION, target_num_frames=NUM_FRAMES, loop_offset=0)
@@ -551,7 +561,7 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     motion_dataset = dataset.motion_dataset
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
-    raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
+    raw = with_root_world_xz(np.load(data["motion_path"]))
     raw_len = raw.shape[0]
     offset = raw_len - 4
 
@@ -569,14 +579,11 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     assert motion.shape[0] == NUM_FRAMES, f"expected random-offset loop fill to keep {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"effective length should remain {NUM_FRAMES}, got {m_length}"
     assert_close("loop-filled motion with wraparound offset", motion, expected, atol=3e-5)
-    # Pure circular roll preserves the velocity ring; the root's terminal X/Z
-    # velocity (the wrap-around delta, the only velocity the window keeps) must
-    # equal the expected terminal velocity after resample -- it is NOT forced
-    # to zero/copy.
-    assert_close(
-        "rolled loop terminal velocity",
-        raw_motion[-1, 0, list(ROOT_VEL_CHANNELS)], expected_raw[-1, 0, list(ROOT_VEL_CHANNELS)], atol=3e-5,
-    )
+    # Pure circular roll keeps the root's world path closed: its wrap step,
+    # rebuilt from the window's root position, is the resampled clip's wrap
+    # velocity -- the roll does not open a seam in the trajectory.
+    stored = rebuild_derived_velocity(raw_motion, is_loop=True, step_scale=raw_len / NUM_FRAMES)
+    assert_close("rolled loop terminal velocity", stored[-1, 0, [9, 11]], expected_raw[-1, 0, [9, 11]], atol=3e-5)
 
 
 def test_long_motion_crops_fixed_length_random_window() -> None:
@@ -593,7 +600,7 @@ def test_long_motion_crops_fixed_length_random_window() -> None:
     # loop motions get circular-roll + tile augmentation before the crop, so
     # their window would not match a direct raw crop.
     source_data = motion_dataset.data_dict[LOOP_MOTION]
-    source_raw = np.load(source_data["motion_path"]).astype(np.float32, copy=False)
+    source_raw = with_root_world_xz(np.load(source_data["motion_path"]))
     long_len = BUDGET_FRAMES + 37
     repeat_count = (long_len + source_raw.shape[0] - 1) // source_raw.shape[0]
     long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:long_len]
@@ -685,7 +692,7 @@ def test_loop_uncond_keeps_loop_augmentation_but_hands_over_an_open_window() -> 
 
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
-    raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
+    raw = with_root_world_xz(np.load(data["motion_path"]))
     # The clip is still physically a loop (roll + tile applied above), but the
     # window resample runs in the open mode because the model is told it is
     # not one: absolute time table, open velocity step, no wrap losses.
@@ -753,7 +760,7 @@ def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
     motion_dataset = dataset.motion_dataset
 
     source_data = motion_dataset.data_dict[LOOP_MOTION]
-    source_raw = np.load(source_data["motion_path"]).astype(np.float32, copy=False)
+    source_raw = with_root_world_xz(np.load(source_data["motion_path"]))
     repeat_count = (BUDGET_FRAMES + 8 + source_raw.shape[0] - 1) // source_raw.shape[0]
     long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:BUDGET_FRAMES + 8]
     motion_path = tmp_path / "conditioned_long_loop.npy"
@@ -890,7 +897,7 @@ def test_motion_speed_aug_is_transparent_to_roll_tile_crop_and_resample() -> Non
     motion_dataset = dataset.motion_dataset
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
-    raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
+    raw = with_root_world_xz(np.load(data["motion_path"]))
     raw_len = int(raw.shape[0])
     scaled_len = int(round(raw_len / 1.15))
     assert scaled_len != raw_len
@@ -930,21 +937,15 @@ def test_motion_speed_aug_is_transparent_to_roll_tile_crop_and_resample() -> Non
     assert "motion_speed_applied" in cond_batch["y"]
     assert not any(key.startswith("motion_speed") and key != "motion_speed_applied" for key in cond_batch["y"])
 
-    # What the augmentation changes in the window: the pose/rotation CONTENT
-    # is the same cycle in the same T frames -- the window's time map does not
-    # depend on the scaled length when nothing is rolled, tiled or cropped --
-    # the velocity channels scale with the speed and resample_speed_cond
-    # shrinks by it. That is the whole mechanism -- it spreads the
-    # resample_speed a given content is seen at, it does not invent new poses.
+    # What the augmentation changes in the window: the CONTENT (pose, rotation
+    # and the root's world path) is the same cycle in the same T frames -- the
+    # window's time map does not depend on the scaled length when nothing is
+    # rolled, tiled or cropped -- and resample_speed_cond shrinks by the speed.
+    # That is the whole mechanism -- it spreads the resample_speed a given
+    # content is seen at, it does not invent new poses.
     base, _base_metadata, base_info = prepare(raw_len)
     assert np.isclose(float(base_info["motion_speed_applied"]), 1.0)
-    assert_close("time-scaled loop pose content", motion[..., :9], base[..., :9], atol=3e-5)
-    # Physical root X/Z velocity: the standardized one carries the mean offset.
-    root_vel = lambda window: canonical_to_physical_hml(window, cond)[:, 0, list(ROOT_VEL_CHANNELS)]
-    base_vel, scaled_vel = root_vel(base), root_vel(motion)
-    live = np.abs(base_vel) > 0.1 * np.abs(base_vel).max()
-    vel_ratio = np.median(np.abs(scaled_vel[live]) / np.abs(base_vel[live]))
-    assert abs(vel_ratio - speed) < 0.05 * speed, (vel_ratio, speed)
+    assert_close("time-scaled loop content", motion[..., :9], base[..., :9], atol=3e-5)
     assert float(aug_info["resample_speed_cond"]) < float(base_info["resample_speed_cond"])
 
 
@@ -958,7 +959,7 @@ def test_time_scaled_loop_roll_and_tiles_are_one_interpolation() -> None:
     motion_dataset = dataset.motion_dataset
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
-    raw = _drop_loop_closing_frame(np.load(data["motion_path"]).astype(np.float32, copy=False))
+    raw = _drop_loop_closing_frame(with_root_world_xz(np.load(data["motion_path"])))
     scaled_len = int(round(raw.shape[0] * 1.2))
     offset = 5
     assert 2 * scaled_len <= NUM_FRAMES * MAX_SOURCE_FRAMES_MULT
@@ -1082,7 +1083,7 @@ def test_long_phase_anchored_clip_is_fitted_whole_not_cropped() -> None:
     motion_dataset = dataset.motion_dataset
     source_data = motion_dataset.data_dict[ANCHORED_LOOP_MOTION]
     assert not loop_is_phase_free(source_data["motion_metadata"].get("action_label"))
-    source_raw = np.load(source_data["motion_path"]).astype(np.float32, copy=False)
+    source_raw = with_root_world_xz(np.load(source_data["motion_path"]))
     cond = motion_dataset.cond_dict[source_data["object_type"]]
 
     def prepare(long_len, randint):

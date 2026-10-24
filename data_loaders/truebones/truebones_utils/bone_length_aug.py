@@ -15,6 +15,8 @@ import random
 
 import numpy as np
 
+from data_loaders.truebones.truebones_utils.canonical_features import root_relative_positions
+
 # Largest relative length change of a group when a caller does not choose one.
 DEFAULT_BONE_LENGTH_AUG = 0.2
 # Smallest relative length change, so a draw is always visible.
@@ -126,9 +128,11 @@ def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_A
                          min_magnitude=DEFAULT_BONE_LENGTH_AUG_MIN, *, rng=random):
     """Return (physical motion, private cond, diagnostics); skip is a no-op.
 
-    Position/velocity encoding uses the existing identity-facing HML basis.
-    No temporal operations run here. Closed clips retain their closing key;
-    terminal velocity uses the same last->first convention as preprocessing.
+    ``motion`` is in the working layout (canonical_features, "Root"), whose
+    translation root is joint 0. Position/velocity encoding uses the existing
+    identity-facing HML basis. No temporal operations run here. Closed clips
+    retain their closing key; terminal velocity uses the same last->first
+    convention as preprocessing.
     """
     validate_bone_length_aug(1.0, magnitude, min_magnitude)
     info = {'applied': False, 'scales': {}, 'skip_reason': '', 'notes': [],
@@ -143,8 +147,8 @@ def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_A
     parents = np.asarray(cond['parents'], dtype=np.int64)
     order, children = _parent_order(parents)
     tri = int(metadata.get('translation_root_index', cond.get('translation_root_index', 0)))
-    if not 0 <= tri < len(parents):
-        raise ValueError('Invalid bone-length augmentation translation root index.')
+    if tri != 0:
+        raise ValueError('Bone-length augmentation needs joint 0 as the translation root (the working layout).')
     groups = _topology_groups(cond, order, children, tri)
     if not groups:
         # There is no length to scale on a zero-offset/one-joint rig. Export it
@@ -178,9 +182,10 @@ def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_A
     # Never reuse an L explicitly cached on an input cond.
     new_cond.pop('rest_length_scale', None)
 
-    # Root XZ travel cancels in each bone vector. Work in RIC space directly,
-    # without world recovery, 6D->quaternion conversion, or a second FK pass.
-    source = np.asarray(motion[..., :3], dtype=np.float64)
+    # Root XZ travel cancels in each bone vector. Work in RIC space directly
+    # (the all-RIC view of the working layout), without world recovery,
+    # 6D->quaternion conversion, or a second FK pass.
+    source = np.asarray(root_relative_positions(motion[..., :3]), dtype=np.float64)
     target = _scale_positions(source, parents, order, scales)
     # So does the clip's lowest point: a foot that reached the floor still does.
     target[..., 1] += float(source[..., 1].min() - target[..., 1].min())
@@ -190,6 +195,9 @@ def augment_bone_lengths(motion, cond, metadata, magnitude=DEFAULT_BONE_LENGTH_A
     out[..., :3] = target
     out[..., 0] -= target[:, tri:tri+1, 0]
     out[..., 2] -= target[:, tri:tri+1, 2]
+    # The root keeps its world XZ: bone lengths do not move the trajectory.
+    out[:, tri, 0] = motion[:, tri, 0]
+    out[:, tri, 2] = motion[:, tri, 2]
     # No contact IK: retain the source local-rotation channels exactly.
     # The copy above already carries motion[..., 3:9].
     out[:-1, :, 9:12] = np.diff(target, axis=0)
