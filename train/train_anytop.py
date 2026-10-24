@@ -308,7 +308,7 @@ def create_training_data_loader(args):
         motion_speed_aug=getattr(args, 'motion_speed_aug', 1.0),
         motion_speed_aug_prob=getattr(args, 'motion_speed_aug_prob', 1.0),
         loop_tile_single_prob=getattr(args, 'loop_tile_single_prob', 0.5),
-        leaf_drop_prob=getattr(args, 'leaf_drop_prob', 0.0),
+        topology_aug_prob=getattr(args, 'topology_aug_prob', 0.0),
         ref_encoder=getattr(args, 'ref_encoder', False),
         joint_name_drop_prob=getattr(args, 'joint_name_drop_prob', 0.0),
         bone_length_aug_prob=getattr(args, 'bone_length_aug_prob', 0.0),

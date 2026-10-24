@@ -65,9 +65,10 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
 from data_loaders.reference import REST_GEOM_COLUMNS, rest_geometry
-from data_loaders.truebones.truebones_utils.leaf_drop import (
-    drop_joints_from_cond,
-    sample_leaf_drop,
+from data_loaders.truebones.truebones_utils.topology_aug import (
+    TOPOLOGY_AUG_KINDS,
+    augment_topology,
+    validate_topology_aug,
 )
 from data_loaders.truebones.truebones_utils.high_frequency import (
     HIGH_FREQUENCY_SCORE_THRESHOLD,
@@ -1381,28 +1382,26 @@ class MotionDataset(data.Dataset):
                     self._rest_geometry_cache[partner_type],
                 )
                 ref_partner = True
-        # ── Leaf-drop augmentation (topology; see leaf_drop.py) ──
+        # ── Topology augmentation (leaf drop / bone split / chain merge; see topology_aug.py) ──
         # Runs on the stored clip, before any temporal stage: from here on the
-        # sample IS a rig without those leaves, so every later stage and the
-        # canonical encode (whose L comes from the kept rest) see that rig.
-        leaf_drop_count = 0
-        leaf_drop_prob = float(getattr(self.opt, 'leaf_drop_prob', 0.0))
-        if leaf_drop_prob > 0.0 and random.random() < leaf_drop_prob:
-            dropped = sample_leaf_drop(cond, motion, motion_metadata['translation_root_index'])
-            if dropped:
-                keep, cond = drop_joints_from_cond(cond, dropped)
-                motion = motion[:, keep]
-                motion_metadata['translation_root_index'] = int(
-                    np.searchsorted(keep, int(motion_metadata['translation_root_index']))
-                )
-                parents = cond['parents']
-                joints_graph_dist = cond['joints_graph_dist']
-                joints_relations = cond['joint_relations']
-                rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
-                offsets = cond['offsets']
-                joints_names_embs = cond['joints_names_embs']
-                joint_struct = build_joint_struct_features(cond, source=str(object_type))
-                leaf_drop_count = len(dropped)
+        # sample IS the edited rig, so every later stage and the canonical
+        # encode (whose L comes from the new rest) see that rig.
+        topology_info = {'applied': False, 'kind': None, 'joints': [], 'skip_reason': 'probability draw'}
+        topology_aug_prob = float(getattr(self.opt, 'topology_aug_prob', 0.0))
+        if topology_aug_prob > 0.0 and random.random() < topology_aug_prob:
+            # topology_aug_kinds: the augmentation preview pins one edit.
+            motion, cond, topology_info = augment_topology(
+                motion, cond, motion_metadata['translation_root_index'], self.opt.max_joints,
+                kinds=getattr(self.opt, 'topology_aug_kinds', TOPOLOGY_AUG_KINDS))
+        if topology_info['applied']:
+            motion_metadata['translation_root_index'] = topology_info['translation_root_index']
+            parents = cond['parents']
+            joints_graph_dist = cond['joints_graph_dist']
+            joints_relations = cond['joint_relations']
+            rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
+            offsets = cond['offsets']
+            joints_names_embs = cond['joints_names_embs']
+            joint_struct = build_joint_struct_features(cond, source=str(object_type))
         bone_length_info = {'applied': False, 'scales': {}, 'skip_reason': 'probability draw'}
         bone_length_prob = float(getattr(self.opt, 'bone_length_aug_prob', 0.0))
         if bone_length_prob > 0.0 and random.random() < bone_length_prob:
@@ -1446,8 +1445,8 @@ class MotionDataset(data.Dataset):
         if is_loop:
             motion = _drop_loop_closing_frame(motion)
             m_length = int(motion.shape[0])
-        target_skeleton_changed = bool(leaf_drop_count or bone_length_info['applied']
-                                       or rest_repose_info['applied'])
+        target_skeleton_changed = bool(topology_info['applied']
+                                       or bone_length_info['applied'] or rest_repose_info['applied'])
         ref_separate_rig = ref_partner or target_skeleton_changed
         if ref_source is not None and ref_separate_rig:
             # The target's verdict, so both sides share one time axis below.
@@ -1638,7 +1637,7 @@ class MotionDataset(data.Dataset):
                 'resample_speed_cond': float(resample_speed_cond),
                 'loop_uncond': bool(loop_uncond),
                 'motion_speed_applied': float(motion_speed_applied),
-                'leaf_drop_count': int(leaf_drop_count),
+                'topology_aug': topology_info,
                 'bone_length_aug': bone_length_info,
                 'rest_repose_aug': rest_repose_info,
                 'bone_length_rng_state': bone_length_rng_state,
@@ -1901,7 +1900,7 @@ class Truebones(data.Dataset):
                 f"loop_cond_prob must be in [0, 1], got {self.opt.loop_cond_prob}."
             )
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
-        self.opt.leaf_drop_prob = float(kwargs.get('leaf_drop_prob', 0.0))
+        self.opt.topology_aug_prob = float(kwargs.get('topology_aug_prob', 0.0))
         self.opt.ref_encoder = bool(kwargs.get('ref_encoder', False))
         self.opt.joint_name_drop_prob = float(kwargs.get('joint_name_drop_prob', 0.0))
         if not 0 <= self.opt.joint_name_drop_prob <= 1:
@@ -1920,16 +1919,13 @@ class Truebones(data.Dataset):
         validate_rest_repose_aug(self.opt.rest_repose_prob, self.opt.rest_repose_max_deg)
         if self.opt.rest_repose_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
             raise ValueError('rest re-pose augmentation is for training splits only; pass 0.0.')
-        if not 0.0 <= self.opt.leaf_drop_prob <= 1.0:
-            raise ValueError(
-                f"leaf_drop_prob must be in [0, 1], got {self.opt.leaf_drop_prob}."
-            )
+        validate_topology_aug(self.opt.topology_aug_prob)
         # A training augmentation: on an evaluation split it would change the
         # rigs being scored from one pass to the next.
-        if self.opt.leaf_drop_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
+        if self.opt.topology_aug_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
             raise ValueError(
-                f"leaf_drop_prob={self.opt.leaf_drop_prob} on split '{split}': the "
-                f"leaf-drop augmentation is for training splits only; pass 0.0."
+                f"topology_aug_prob={self.opt.topology_aug_prob} on split '{split}': the "
+                f"topology augmentation is for training splits only; pass 0.0."
             )
         if not 0.0 <= self.opt.loop_tile_single_prob <= 1.0:
             raise ValueError(

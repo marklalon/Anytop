@@ -19,23 +19,23 @@ def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, share
     arrays, so the caller's motion and cond are never written.
     """
     import random
-    from data_loaders.truebones.truebones_utils.leaf_drop import sample_leaf_drop, drop_joints_from_cond
+    from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS
+    from data_loaders.truebones.truebones_utils.topology_aug import augment_topology
     from data_loaders.truebones.truebones_utils.bone_length_aug import (
         DEFAULT_BONE_LENGTH_AUG, DEFAULT_BONE_LENGTH_AUG_MIN, augment_bone_lengths)
     from data_loaders.truebones.truebones_utils.rest_repose_aug import (
         DEFAULT_REST_REPOSE_MAX_DEG, augment_rest_repose)
 
     metadata = dict(metadata)
-    leaf_prob = getattr(opt, 'leaf_drop_prob', 0.0) if augment else 0.0
+    topology_prob = getattr(opt, 'topology_aug_prob', 0.0) if augment else 0.0
     bone_prob = getattr(opt, 'bone_length_aug_prob', 0.0) if augment else 0.0
     repose_prob = getattr(opt, 'rest_repose_prob', 0.0) if augment else 0.0
     changed = False
-    if leaf_prob and random.random() < leaf_prob:
-        dropped = sample_leaf_drop(cond, motion, metadata['translation_root_index'])
-        if dropped:
-            keep, cond = drop_joints_from_cond(cond, dropped)
-            motion = motion[:, keep]
-            metadata['translation_root_index'] = int(np.searchsorted(keep, metadata['translation_root_index']))
+    if topology_prob and random.random() < topology_prob:
+        motion, cond, info = augment_topology(
+            motion, cond, metadata['translation_root_index'], getattr(opt, 'max_joints', MAX_JOINTS))
+        if info['applied']:
+            metadata['translation_root_index'] = info['translation_root_index']
             changed = True
     if bone_prob and random.random() < bone_prob:
         motion, cond, info = augment_bone_lengths(

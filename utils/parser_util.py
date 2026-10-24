@@ -289,20 +289,19 @@ def add_model_options(parser):
                             "single-cycle window -- the regime --loop with the auto length generates in -- "
                             "a small minority of draws, while every other draw is k bit-identical copies "
                             "of the cycle. 1.0 turns loop tiling off. Loader-only, like --motion_speed_aug: no regen, no bump.")
-    group.add_argument("--leaf_drop_prob", default=0.0, type=float,
-                       help="Per-sample probability of the leaf-drop topology augmentation (0.0 = off). "
-                            "The sample's rig loses every eligible terminator leaf (named Nub / end / "
-                            "site / Container, or locally static with either no name tokens or a zero "
-                            "name embedding) plus up to two trailing segments of repeated-name chains, "
-                            "with same-kind mirror twins together. A segment is eligible when its name "
-                            "stem matches its parent's and the stem does not end in leg / arm / foot / "
-                            "hoof / paw / hand. This can include animated ear or eye tips as well as "
-                            "tail, finger, wing and tongue tips; standalone body-part leaves are not "
-                            "selected by that rule. Root, translation root, facing, face and contact "
-                            "joints are protected. Exact on the kept features (a leaf's row moves no other joint); "
-                            "joint_struct, the relation matrices and the length scale L are rebuilt for the "
-                            "smaller rig. Teaches invariance to optional terminators and shorter distal "
-                            "chains. Training split only (the dataset refuses it for val). "
+    group.add_argument("--topology_aug_prob", default=0.0, type=float,
+                       help="Per-sample probability of the topology augmentation (0.0 = off). A firing "
+                            "draw picks one of three edits uniformly, falling back to the others when the "
+                            "rig offers it nothing (truebones_utils/topology_aug.py). Leaf drop: every "
+                            "eligible terminator leaf (named Nub / end / site / Container, or locally "
+                            "static and nameless) plus trailing segments of repeated-name chains, mirror "
+                            "twins together. Bone split: a joint at the midpoint of 1..3 long bones "
+                            "(mirror pairs together), named after its bone. Chain merge: 1..3 single-child "
+                            "joints removed, their child taking the joined bone, only where the merged "
+                            "bone's FK residual stays small on every frame. Leaf drop and split are exact "
+                            "on the kept features; joint_struct, the relation matrices and L are rebuilt "
+                            "for the edited rig. Root, translation root, facing and face joints are never "
+                            "removed. Training split only (the dataset refuses it for val). "
                             "Loader-only: no regen, no model change, no CKPT_VERSION bump.")
     group.add_argument("--bone_length_aug_prob", default=0.0, type=float,
                        help="Probability of symmetric body-proportion augmentation; training only (0 = off).")

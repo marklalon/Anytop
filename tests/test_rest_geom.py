@@ -15,6 +15,7 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import data_loaders.truebones.data.dataset as dataset_module  # noqa: E402
 from data_loaders.reference import (  # noqa: E402
@@ -26,6 +27,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa:
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
 from data_loaders.truebones.truebones_utils.leaf_drop import drop_joints_from_cond  # noqa: E402
 from sample.conditioning import create_condition  # noqa: E402
+from test_bone_length_aug import pin_target_leaf_drop  # noqa: E402
 from tests.test_bone_length_aug import make_dataset  # noqa: E402
 from tests.test_joint_name_dropout import (  # noqa: E402
     _joint_cond_inputs, _joint_struct, _make_model,
@@ -63,8 +65,8 @@ def test_padding_rows_are_zero_and_absent():
 
 def test_leaf_drop_rebuilds_rest_geom(monkeypatch):
     dataset, data = _plain_dataset()
-    dataset.opt.leaf_drop_prob = 1.0
-    monkeypatch.setattr(dataset_module, 'sample_leaf_drop', lambda *a: [3])
+    dataset.opt.topology_aug_prob = 1.0
+    pin_target_leaf_drop(monkeypatch, [3])
     random.seed(0)
     sample = dataset._prepare_sample('test', data)
     _, kept_cond = drop_joints_from_cond(dataset.cond_dict['test'], [3])

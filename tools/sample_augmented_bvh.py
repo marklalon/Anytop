@@ -10,6 +10,8 @@ probability 100%; other augmentations are disabled:
   motion-speed  — time scaling with range --motion-speed-aug (default: 1.3,
                   matching train_all.bat; 1.0 disables random speed changes)
   leaf-drop     — remove eligible leaf joints and export the reduced skeleton
+  bone-split    — insert a joint at the midpoint of long bones
+  chain-merge   — remove single-child joints whose merged bone stays straight
   bone-length   — symmetric body proportions, paired original/augmented BVHs
                   with actual scales in filenames and contact residuals in logs
   rest-repose   — a randomly bent rest pose; the motion features are unchanged
@@ -46,7 +48,8 @@ Usage
 
 Arguments
 ---------
-  --mode              Required: loop / motion-speed / leaf-drop / bone-length / rest-repose (one only)
+  --mode              Required: loop / motion-speed / leaf-drop / bone-split / chain-merge / bone-length /
+                      rest-repose (one only)
   --bone-length-aug-max  Max relative group-length change (default: 0.2 = +/-20%)
   --bone-length-aug-min  Min relative group-length change (default: 0.1 = +/-10%)
   --rest-repose-max-deg  Largest rest rotation per joint in degrees (default: 20)
@@ -103,6 +106,10 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     mark_canonical_cond_entry,
     working_to_stored,
 )
+
+# Preview mode -> the one topology_aug kind it pins, and its filename tag.
+_TOPOLOGY_MODES = {"leaf-drop": "leaf_drop", "bone-split": "split", "chain-merge": "merge"}
+_TOPOLOGY_TAGS = {"leaf_drop": "drop", "split": "split", "merge": "merge"}
 
 
 # ---------------------------------------------------------------------------
@@ -231,27 +238,27 @@ def _replay_original(
 ) -> tuple[np.ndarray, dict[str, object], list[str]]:
     """Replay the augmented sample's temporal draws on the un-augmented clip.
 
-    ``bone_length_rng_state`` is captured after the leaf-drop and bone-length
+    ``bone_length_rng_state`` is captured after the topology and bone-length
     draws, right before the temporal stages, so restoring it keeps the same
     crop and loop-tile draws. Outside loop mode the "baseline" preview mode
     treats the clip as non-loop, so no roll or tile is applied to the control;
     in loop mode the clip keeps its loop flag and replays the same roll and tile.
     """
     opt = dataset.opt
-    saved = (opt.preview_mode, opt.leaf_drop_prob, opt.bone_length_aug_prob, opt.rest_repose_prob,
+    saved = (opt.preview_mode, opt.topology_aug_prob, opt.bone_length_aug_prob, opt.rest_repose_prob,
              opt.motion_speed_aug_prob)
     post_state = random.getstate()
     try:
         if saved[0] != "loop":
             opt.preview_mode = "baseline"
-        opt.leaf_drop_prob = 0.0
+        opt.topology_aug_prob = 0.0
         opt.bone_length_aug_prob = 0.0
         opt.rest_repose_prob = 0.0
         opt.motion_speed_aug_prob = 0.0
         random.setstate(aug_info["bone_length_rng_state"])
         baseline = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
     finally:
-        (opt.preview_mode, opt.leaf_drop_prob, opt.bone_length_aug_prob, opt.rest_repose_prob,
+        (opt.preview_mode, opt.topology_aug_prob, opt.bone_length_aug_prob, opt.rest_repose_prob,
          opt.motion_speed_aug_prob) = saved
         random.setstate(post_state)
     baseline_aug = baseline[13]
@@ -279,7 +286,7 @@ def parse_args() -> argparse.Namespace:
         description="Export augmented training motions as BVH files for manual verification."
     )
     p.add_argument("--mode", required=True, action=_SingleMode,
-                   choices=("loop", "motion-speed", "leaf-drop", "bone-length", "rest-repose"),
+                   choices=("loop", "motion-speed", *_TOPOLOGY_MODES, "bone-length", "rest-repose"),
                    help="Preview exactly one augmentation, enabled with probability 100%%.")
     p.add_argument("--n", type=int, default=10, help="Number of samples to export.")
     p.add_argument('--bone-length-aug-max', type=float, default=0.2,
@@ -374,7 +381,8 @@ def main() -> int:
     opt.loop_cond_prob = 1.0
     opt.motion_speed_aug = args.motion_speed_aug if args.mode == "motion-speed" else 1.0
     opt.motion_speed_aug_prob = 1.0 if args.mode == "motion-speed" else 0.0
-    opt.leaf_drop_prob = 1.0 if args.mode == "leaf-drop" else 0.0
+    opt.topology_aug_prob = 1.0 if args.mode in _TOPOLOGY_MODES else 0.0
+    opt.topology_aug_kinds = (_TOPOLOGY_MODES[args.mode],) if args.mode in _TOPOLOGY_MODES else ()
     opt.bone_length_aug_prob = 1.0 if args.mode == 'bone-length' else 0.0
     opt.bone_length_aug_max = args.bone_length_aug_max
     opt.bone_length_aug_min = args.bone_length_aug_min
@@ -503,9 +511,10 @@ def main() -> int:
             repose_info = aug_info.get('rest_repose_aug', {})
             if args.mode == 'rest-repose' and not repose_info.get('applied'):
                 raise _AugmentationNotApplicable(repose_info.get('skip_reason', 'No joint to bend.'))
-            leaf_drop_count = int(aug_info.get("leaf_drop_count", 0))
-            if args.mode == "leaf-drop" and leaf_drop_count == 0:
-                raise _AugmentationNotApplicable("No eligible leaf joints to drop.")
+            topology_info = aug_info.get("topology_aug", {})
+            topology_count = len(topology_info.get("joints", ())) if topology_info.get("applied") else 0
+            if args.mode in _TOPOLOGY_MODES and topology_count == 0:
+                raise _AugmentationNotApplicable(topology_info.get("skip_reason", "No eligible joints."))
             if (args.mode == "motion-speed" and args.motion_speed_aug > 1.0
                     and float(aug_info["motion_speed_applied"]) == 1.0):
                 raise _AugmentationNotApplicable("Speed draw rounded to the original length.")
@@ -554,8 +563,8 @@ def main() -> int:
             motion_speed_applied = float(aug_info.get("motion_speed_applied", 1.0))
             if args.mode == "motion-speed":
                 tags.append(f"spd{motion_speed_applied:.3f}")
-            if leaf_drop_count:
-                tags.append(f"drop{leaf_drop_count}j")
+            if topology_count:
+                tags.append(f"{_TOPOLOGY_TAGS[topology_info['kind']]}{topology_count}j")
             if args.mode == 'bone-length':
                 tags.extend(f'{group}{factor:.3f}' for group, factor in bone_info['scales'].items())
             if args.mode == 'rest-repose':
@@ -596,8 +605,8 @@ def main() -> int:
                 speed_note = ""
                 if args.mode == "motion-speed":
                     speed_note = f", speed={motion_speed_applied:.3f}"
-                if leaf_drop_count:
-                    speed_note += f", dropped={leaf_drop_count}j, kept={n_joints}j"
+                if topology_count:
+                    speed_note += f", {topology_info['kind']}={topology_count}j, now={n_joints}j"
                 if args.mode == 'bone-length':
                     speed_note += f", scales={bone_info['scales']}, contact_ik=off"
                     if bone_info['notes']:

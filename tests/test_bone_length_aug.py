@@ -298,6 +298,27 @@ def make_dataset():
     return dataset, dict(motion_metadata=metadata)
 
 
+def pin_target_leaf_drop(monkeypatch, dropped):
+    """The target's topology draw drops ``dropped``; the reference's draw
+    leaves its rig whole."""
+    import data_loaders.truebones.data.dataset as dataset_module
+    from data_loaders.truebones.truebones_utils import topology_aug
+    from data_loaders.truebones.truebones_utils.leaf_drop import drop_joints_from_cond
+
+    def target(motion, cond, translation_root_index, max_joints, **kwargs):
+        keep, new_cond = drop_joints_from_cond(cond, dropped)
+        return motion[:, keep], new_cond, {
+            'applied': True, 'kind': 'leaf_drop', 'joints': list(dropped),
+            'translation_root_index': int(np.searchsorted(keep, translation_root_index))}
+
+    def reference(motion, cond, translation_root_index, max_joints, **kwargs):
+        return motion, cond, {'applied': False, 'kind': None, 'joints': [], 'skip_reason': 'pinned',
+                              'translation_root_index': int(translation_root_index)}
+
+    monkeypatch.setattr(dataset_module, 'augment_topology', target)
+    monkeypatch.setattr(topology_aug, 'augment_topology', reference)
+
+
 def test_loader_rebuilds_geometry_and_canonical_roundtrip():
     dataset, data = make_dataset()
     random.seed(3)
@@ -381,7 +402,7 @@ def test_real_training_combines_bone_leaf_and_temporal_augmentation():
     if not cond_path.exists():
         pytest.skip('Merged dataset absent')
     dataset = get_dataset(num_frames=60, split='train', objects_subset='all',
-                          bone_length_aug_prob=1., bone_length_aug_max=.1, leaf_drop_prob=1.,
+                          bone_length_aug_prob=1., bone_length_aug_max=.1, topology_aug_prob=1.,
                           motion_speed_aug=1.3, cond_path=str(cond_path)).motion_dataset
     candidates = list(dataset.name_list)
     assert candidates
@@ -394,7 +415,7 @@ def test_real_training_combines_bone_leaf_and_temporal_augmentation():
         cond = sample[13]['object_cond']
         np.testing.assert_allclose(sample[12]['joint_struct'], build_joint_struct_features(cond))
         assert np.isfinite(sample[0]).all()
-        leaf_seen |= sample[13]['leaf_drop_count'] > 0
+        leaf_seen |= sample[13]['topology_aug']['applied']
         bone_seen |= sample[13]['bone_length_aug']['applied']
         samples.append(sample[:13])
     assert leaf_seen and bone_seen
