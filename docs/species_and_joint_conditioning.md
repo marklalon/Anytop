@@ -162,7 +162,7 @@ variant 在数据里是按物种打的，与骨架高度相关（例如所有 Fl
 
 关节名只应当携带"身体部位"语义。"这个关节在骨架中的位置"由**纯几何 / 拓扑**的结构特征给出，只读 `parents` 与物理 rest 位置，**不读任何关节名、不读触地信号**（触地是启发式猜测，把它作为条件等于把它的错误交给模型）。因此重命名骨架不会改变它。
 
-[joint_struct_features.py](../data_loaders/truebones/truebones_utils/joint_struct_features.py) 的 `JOINT_STRUCT_FEATURE_NAMES` 给出每个关节的特征：沿无分叉链的位置（`depth_norm` / `run_len_inv`）、是否叶子、子树规模、同级排序与同级数量、左右侧符号 `side`（-1 / 0 / +1，左 ≠ 右）。只含拓扑与侧别；rest 几何只经 `rest_geom_features` 进入模型。
+[joint_struct_features.py](../data_loaders/truebones/truebones_utils/joint_struct_features.py) 的 `JOINT_STRUCT_FEATURE_NAMES` 给出每个关节的特征：沿无分叉链的位置（`depth_norm` / `run_len_inv`）、是否叶子、子树规模、同级排序与同级数量、左右侧符号 `side`（-1 / 0 / +1，左 ≠ 右）。只含拓扑与侧别；rest 几何只经 `rest_geometry` 进入模型：主干读 rest 位置 + 父子偏移（/L），参考编码器读 rest 上的骨向 + 高度。
 
 - 训练与生成**必须**调用同一个 `build_joint_struct_features`，从 cond 条目现场计算，不写进 `cond.npy`，否则两边会对同一骨架给出不同条件。
 - 经 `struct_embedding`（MLP）投影后加到 token 上；**常规初始化，不是零初始化**——它要从第一步就携带信号。

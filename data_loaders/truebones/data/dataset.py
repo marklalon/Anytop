@@ -64,7 +64,7 @@ from data_loaders.truebones.truebones_utils.joint_embedding_text import (
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
-from data_loaders.reference import rest_geom_features
+from data_loaders.reference import REST_GEOM_COLUMNS, rest_geometry
 from data_loaders.truebones.truebones_utils.leaf_drop import (
     drop_joints_from_cond,
     sample_leaf_drop,
@@ -1021,9 +1021,10 @@ class MotionDataset(data.Dataset):
         # The rest geometry depends only on the per-species cond entry
         # (not on the clip), so it is constant across all samples of a species.
         # Precompute once at construction instead of rebuilding it inside the
-        # per-sample hot path (_load_physical_motion).
-        self._rest_geom_cache = {
-            object_key: rest_geom_features(entry)
+        # per-sample hot path (_load_physical_motion). The target reads the
+        # REST_GEOM_COLUMNS slice; a reference on the stored rig reuses the full array.
+        self._rest_geometry_cache = {
+            object_key: rest_geometry(entry)
             for object_key, entry in cond_dict.items()
         }
         # Structural joint descriptors: same story -- a pure function of the cond
@@ -1362,7 +1363,8 @@ class MotionDataset(data.Dataset):
         if getattr(self.opt, 'ref_encoder', False):
             partner = random.choice(getattr(self, "reference_groups", {}).get(name, (name,)))
             if partner == name:
-                ref_source = (motion, cond, joint_struct, int(motion_metadata['translation_root_index']))
+                ref_source = (motion, cond, joint_struct, int(motion_metadata['translation_root_index']),
+                              self._rest_geometry_cache[object_type])
             else:
                 partner_data = self.data_dict[partner]
                 partner_type = partner_data['object_type']
@@ -1371,6 +1373,7 @@ class MotionDataset(data.Dataset):
                     self.cond_dict[partner_type],
                     self._joint_struct_cache[partner_type],
                     int(partner_data['motion_metadata']['translation_root_index']),
+                    self._rest_geometry_cache[partner_type],
                 )
                 ref_partner = True
         # ── Leaf-drop augmentation (topology; see leaf_drop.py) ──
@@ -1390,7 +1393,7 @@ class MotionDataset(data.Dataset):
                 parents = cond['parents']
                 joints_graph_dist = cond['joints_graph_dist']
                 joints_relations = cond['joint_relations']
-                rest_geom = rest_geom_features(cond)
+                rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
                 offsets = cond['offsets']
                 joints_names_embs = cond['joints_names_embs']
                 joint_struct = build_joint_struct_features(cond, source=str(object_type))
@@ -1404,7 +1407,7 @@ class MotionDataset(data.Dataset):
                 float(getattr(self.opt, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN)),
             )
             if bone_length_info['applied']:
-                rest_geom = rest_geom_features(cond)
+                rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
                 offsets = cond['offsets']
                 joint_struct = build_joint_struct_features(cond, source=str(object_type))
         # Preview can replay temporal draws on the original skeleton exactly.
@@ -1560,20 +1563,20 @@ class MotionDataset(data.Dataset):
         reference = None
         if ref_source is not None:
             from data_loaders.reference import prepare_reference_sample
-            _, ref_cond, ref_joint_struct, ref_root_index = ref_source
+            _, ref_cond, ref_joint_struct, ref_root_index, ref_geometry = ref_source
             reference_metadata = dict(motion_metadata, is_loop=loop_condition_active,
                                       translation_root_index=ref_root_index)
             if ref_separate_rig:
                 reference = prepare_reference_sample(
                     sample_window(ref_motion), ref_cond, reference_metadata, self.opt,
-                    shared=dict(joint_struct=ref_joint_struct))
+                    shared=dict(joint_struct=ref_joint_struct, geometry=ref_geometry))
             else:
                 # The target kept the stored rig, so the reference starts from
                 # the same window and reuses its derived channels until its own
                 # augmentation changes the skeleton.
                 reference = prepare_reference_sample(
                     physical_motion, cond, reference_metadata, self.opt,
-                    shared=dict(feats=motion, joint_struct=joint_struct))
+                    shared=dict(feats=motion, joint_struct=joint_struct, geometry=ref_geometry))
         m_length = target_num_frames
 
         # is_loop is the whole loop condition the model sees: a closed window.
@@ -1688,7 +1691,7 @@ class MotionDataset(data.Dataset):
             motion = stored_to_working(np.load(motion_path))
 
         m_length = motion.shape[0]
-        rest_geom = self._rest_geom_cache[object_type]
+        rest_geom = self._rest_geometry_cache[object_type][:, REST_GEOM_COLUMNS]
         offsets = cond['offsets']
         return (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], rest_geom, offsets, cond['joints_names_embs'], cond['kinematic_chains'])
         

@@ -582,8 +582,8 @@ class GaussianDiffusion:
                 "bone_vector_consistency_loss requires y['parents'] (per-sample "
                 "parent arrays from the collate); none were provided."
             )
-        # Rest bone lengths MUST come from the PHYSICAL rest pose; y['rest_geom']
-        # holds unit bone directions, not lengths.
+        # Rest bone lengths MUST come from the PHYSICAL rest pose: y['rest_geom']
+        # is divided by L, so it carries only relative lengths.
         rest_pos = (y or {}).get('rest_pos_ric_hml')
         if rest_pos is None:
             rest_physical = (y or {}).get('rest_pose_physical')

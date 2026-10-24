@@ -15,7 +15,7 @@ import sys
 
 import numpy as np
 
-from data_loaders.reference import rest_geom_features
+from data_loaders.reference import REST_GEOM_COLUMNS, rest_geometry
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_FEATURE_SPACE,
@@ -329,7 +329,7 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         mark_canonical_cond_entry(cond_dict[object_type])
         parents = cond_dict[object_type]['parents']
         n_joints = len(parents)
-        rest_geom = rest_geom_features(cond_dict[object_type])
+        rest_geom = rest_geometry(cond_dict[object_type])[:, REST_GEOM_COLUMNS]
         joint_relations = cond_dict[object_type]['joint_relations']
         joints_graph_dist = cond_dict[object_type]['joints_graph_dist']
         offsets = cond_dict[object_type]['offsets']

@@ -15,7 +15,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import build_joint_struct_features
-from data_loaders.reference import rest_geom_features
+from data_loaders.reference import REST_GEOM_COLUMNS, rest_geometry
 from data_loaders.truebones.data.dataset import MotionDataset
 from utils.retarget_core import batch_forward_kinematics_np
 
@@ -290,9 +290,10 @@ def make_dataset():
     dataset.action_conditioning = None
     dataset.cond_dict = {'test': cond}
     dataset._joint_struct_cache = {'test': build_joint_struct_features(cond)}
+    dataset._rest_geometry_cache = {'test': rest_geometry(cond)}
     dataset._load_physical_motion = lambda data: (
         motion, len(motion), 'test', cond['parents'], cond['joints_graph_dist'],
-        cond['joint_relations'], rest_geom_features(cond), cond['offsets'],
+        cond['joint_relations'], rest_geometry(cond)[:, REST_GEOM_COLUMNS], cond['offsets'],
         cond['joints_names_embs'], [])
     return dataset, dict(motion_metadata=metadata)
 
@@ -304,7 +305,7 @@ def test_loader_rebuilds_geometry_and_canonical_roundtrip():
     assert sample[13]['bone_length_aug']['applied']
     new_cond = sample[13]['object_cond']
     np.testing.assert_allclose(sample[12]['joint_struct'], build_joint_struct_features(new_cond))
-    np.testing.assert_allclose(sample[3], rest_geom_features(new_cond))
+    np.testing.assert_allclose(sample[3], rest_geometry(new_cond)[:, REST_GEOM_COLUMNS])
     decoded = canonical_to_physical_hml(sample[0], sample[12])
     np.testing.assert_allclose(decoded[:, [3, 6], 1], 0, atol=1e-6)
     assert not np.allclose(sample[4], dataset.cond_dict['test']['offsets'])

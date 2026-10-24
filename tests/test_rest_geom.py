@@ -1,4 +1,4 @@
-"""The rest-geometry channel, y['rest_geom']: rest_geom_features plus a present flag.
+"""The rest-geometry channel, y['rest_geom']: rest_geometry's REST_GEOM_COLUMNS plus a present flag.
 
 The loader and generation must hand the model the same rows, the rows must
 follow the augmented skeleton, the training-only drop must hide a joint's
@@ -17,7 +17,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import data_loaders.truebones.data.dataset as dataset_module  # noqa: E402
-from data_loaders.reference import REST_GEOM_DIM, rest_geom_features  # noqa: E402
+from data_loaders.reference import (  # noqa: E402
+    REST_GEOM_COLUMNS, REST_GEOM_DIM, REST_POSE_COLUMNS, reference_pose, reference_sample, rest_geometry,
+)
+from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
+    _length_scale_from_cond, rest_pos_from_cond,
+)
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
 from data_loaders.truebones.truebones_utils.leaf_drop import drop_joints_from_cond  # noqa: E402
 from sample.conditioning import create_condition  # noqa: E402
@@ -42,7 +47,7 @@ def test_loader_and_generation_build_identical_rest_geom():
     assert torch.equal(loaded['y']['rest_geom'], generated['y']['rest_geom'])
     rest_geom = generated['y']['rest_geom'][0]
     assert rest_geom.shape == (dataset.opt.max_joints, REST_GEOM_DIM)
-    np.testing.assert_array_equal(rest_geom[:, :-1].numpy(), rest_geom_features(cond))
+    np.testing.assert_array_equal(rest_geom[:, :-1].numpy(), rest_geometry(cond)[:, REST_GEOM_COLUMNS])
     assert rest_geom[:, -1].tolist() == [1.0] * len(cond['parents'])
 
 
@@ -63,7 +68,7 @@ def test_leaf_drop_rebuilds_rest_geom(monkeypatch):
     random.seed(0)
     sample = dataset._prepare_sample('test', data)
     _, kept_cond = drop_joints_from_cond(dataset.cond_dict['test'], [3])
-    np.testing.assert_array_equal(sample[3], rest_geom_features(kept_cond))
+    np.testing.assert_array_equal(sample[3], rest_geometry(kept_cond)[:, REST_GEOM_COLUMNS])
 
 
 def test_rest_geom_drop_is_training_only():
@@ -124,3 +129,34 @@ def test_every_frame_token_reads_the_rest_geometry():
         b = ip(x, rest_geom + 1.0, names, None, struct)
     assert a.shape[0] == x.shape[-1]
     assert bool(((a - b).abs().flatten(1).amax(1) > 0).all())
+
+
+def test_rest_geometry_columns():
+    """The encoder's columns are its pose channels on the rest; the denoiser's
+    are the rest's RIC position and parent offset over L."""
+    dataset, _ = _plain_dataset()
+    cond = dataset.cond_dict['test']
+    geometry = rest_geometry(cond)
+    rest = np.asarray(rest_pos_from_cond(cond), np.float32)
+    np.testing.assert_array_equal(geometry[:, REST_POSE_COLUMNS],
+                                  reference_pose(rest[None], cond)[0])
+    position = (rest - rest[0] * np.array([1, 0, 1], np.float32)) / float(_length_scale_from_cond(cond))
+    denoiser = geometry[:, REST_GEOM_COLUMNS]
+    assert denoiser.shape[1] == REST_GEOM_DIM - 1
+    np.testing.assert_allclose(denoiser[:, :3], position[:, [1, 0, 2]], atol=1e-6)
+    parents = np.asarray(cond['parents'])
+    child = np.flatnonzero(parents >= 0)
+    np.testing.assert_allclose(denoiser[child, 3:], position[child] - position[parents[child]], atol=1e-6)
+    np.testing.assert_array_equal(denoiser[0, 3:], 0)
+
+
+def test_reference_reuses_the_shared_geometry():
+    dataset, _ = _plain_dataset()
+    cond = dataset.cond_dict['test']
+    motion = np.zeros((4, len(cond['parents']), 12), np.float32)
+    names = np.asarray(cond['joints_names_embs'], np.float32)
+    marked = np.arange(len(cond['parents']) * 9, dtype=np.float32).reshape(-1, 9)
+    sample = reference_sample(motion, cond, names, geometry=marked)
+    np.testing.assert_array_equal(sample['rest_pose'], marked[:, REST_POSE_COLUMNS])
+    fresh = reference_sample(motion, cond, names)
+    np.testing.assert_array_equal(fresh['rest_pose'], rest_geometry(cond)[:, REST_POSE_COLUMNS])

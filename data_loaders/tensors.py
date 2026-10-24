@@ -338,7 +338,7 @@ def truebones_batch_collate(batch, joint_buckets=None):
         [0]  motion          – np.ndarray, (frames, n_joints, n_feats)
         [1]  m_length        – int, motion length in frames
         [2]  parents         – np.ndarray, parent indices
-        [3]  rest_geom – np.ndarray, (n_joints, REFERENCE_POSE_CHANNELS) rest_geom_features
+        [3]  rest_geom – np.ndarray, (n_joints, REST_GEOM_DIM - 1) rest_geometry's REST_GEOM_COLUMNS
         [4]  offsets         – np.ndarray, bone offsets
         [5]  joints_graph_dist – np.ndarray, graph distance matrix
         [6]  joints_relations  – np.ndarray, joint relation matrix

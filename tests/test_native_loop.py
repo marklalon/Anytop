@@ -13,7 +13,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
-from data_loaders.reference import REFERENCE_POSE_CHANNELS  # noqa: E402
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.data.dataset import resample_motion_features  # noqa: E402
@@ -64,7 +63,7 @@ def _make_batch_item(
     n_feats = FEATS_LEN
     max_joints = 3
     motion = np.zeros((n_frames, n_joints, n_feats), dtype=np.float32)
-    tpose = np.zeros((n_joints, REFERENCE_POSE_CHANNELS), dtype=np.float32)
+    tpose = np.zeros((n_joints, REST_GEOM_DIM - 1), dtype=np.float32)
     offsets = np.zeros((n_joints, 3), dtype=np.float32)
     graph = np.zeros((n_joints, n_joints), dtype=np.int64)
     relations = np.zeros((n_joints, n_joints), dtype=np.int64)

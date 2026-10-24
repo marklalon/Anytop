@@ -30,7 +30,7 @@ import numpy as np
 JOINT_STRUCT_FEATURE_SCHEMA_VERSION = 3
 
 # Order is the channel order of the returned array; changing it is a schema bump.
-# Topology only: rest geometry reaches a model through ``rest_geom_features``.
+# Topology only: rest geometry reaches a model through ``rest_geometry``.
 JOINT_STRUCT_FEATURE_NAMES = (
     'depth_norm',        # (k + 1) / L      -- position along its branch-free run
     'run_len_inv',       # 1 / L            -- bounded run length, pairs with depth_norm

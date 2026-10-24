@@ -7,7 +7,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data_loaders.reference import REFERENCE_POSE_CHANNELS
+from data_loaders.reference import REST_GEOM_DIM
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils import canonical_features as cf
 from data_loaders.truebones.truebones_utils.canonical_features import (
@@ -303,7 +303,7 @@ def test_truebones_collate_drops_motion_stats_and_carries_global_stats():
         motion,
         4,
         np.array([-1, 0], dtype=np.int64),
-        np.zeros((2, REFERENCE_POSE_CHANNELS), dtype=np.float32),
+        np.zeros((2, REST_GEOM_DIM - 1), dtype=np.float32),
         np.zeros((2, 3), dtype=np.float32),
         np.zeros((2, 2), dtype=np.float32),
         np.zeros((2, 2), dtype=np.float32),
@@ -354,7 +354,7 @@ def _collate_item(cond, rest_pos, max_joints, name):
         np.zeros((4, n_joints, 12), dtype=np.float32),
         4,
         np.arange(-1, n_joints - 1, dtype=np.int64),
-        np.zeros((n_joints, REFERENCE_POSE_CHANNELS), dtype=np.float32),
+        np.zeros((n_joints, REST_GEOM_DIM - 1), dtype=np.float32),
         np.zeros((n_joints, 3), dtype=np.float32),
         np.zeros((n_joints, n_joints), dtype=np.float32),
         np.zeros((n_joints, n_joints), dtype=np.float32),

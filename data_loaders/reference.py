@@ -54,9 +54,18 @@ BONE_DIRECTION_MIN_REST_FRACTION = 1e-3
 
 # Per-joint encoder pose: unit bone direction (3) and height over ``L`` (1).
 REFERENCE_POSE_CHANNELS = 4
-# Target rest-geometry channel: the rest's pose channels plus a present flag, since an
-# all-zero geometry (root, coincident helper, grounded joint) is a real value.
-REST_GEOM_DIM = REFERENCE_POSE_CHANNELS + 1
+# Rest geometry per joint (``rest_geometry``): the encoder pose channels of the
+# rest, then the rest's RIC X/Z over ``L``, then the parent->joint offset over
+# ``L``. Height is shared, so each consumer's columns are one contiguous slice.
+REST_GEOMETRY_DIM = REFERENCE_POSE_CHANNELS + 2 + 3
+# Reference encoder: the rest in the space of its per-frame pose.
+REST_POSE_COLUMNS = slice(0, REFERENCE_POSE_CHANNELS)
+# Denoiser: rest position (height, X, Z) and offset over ``L``, the space of
+# the position channels it outputs.
+REST_GEOM_COLUMNS = slice(REFERENCE_POSE_CHANNELS - 1, REST_GEOMETRY_DIM)
+# Target rest-geometry channel: the denoiser columns plus a present flag, since an
+# all-zero geometry (a root on the ground) is a real value.
+REST_GEOM_DIM = REST_GEOM_COLUMNS.stop - REST_GEOM_COLUMNS.start + 1
 
 
 def bone_directions(positions, parents, rest_positions):
@@ -101,24 +110,35 @@ def reference_pose(motion, cond):
     return np.nan_to_num(pose).astype(np.float32)
 
 
-def rest_geom_features(cond):
-    """``[J, REFERENCE_POSE_CHANNELS]`` rest geometry: the pose channels of the rest.
+def rest_geometry(cond):
+    """``[J, REST_GEOMETRY_DIM]`` rest geometry, built once for both consumers.
 
-    The same bone-direction / height channels evaluated on the rest positions,
-    so a frame's pose and the rest sit in one space and their difference is
-    linear in the inputs. The single builder for both rest inputs: the reference
-    encoder's static per-joint context and the denoiser's per-joint rest-geometry
-    channel (``y['rest_geom']``, loader and generation alike).
+    The reference encoder reads ``REST_POSE_COLUMNS``: the pose channels
+    evaluated on the rest, so a frame's pose and the rest sit in one space and
+    their difference is linear in the inputs. The denoiser reads
+    ``REST_GEOM_COLUMNS`` (``y['rest_geom']``, loader and generation alike):
+    where each joint sits and how long and which way its bone points, in the
+    position channels' RIC / ``L`` space.
     """
-    return reference_pose(rest_pos_from_cond(cond)[None], cond)[0]
+    rest = np.asarray(rest_pos_from_cond(cond), np.float32)
+    parents = np.asarray(cond['parents']).reshape(-1)
+    pose = reference_pose(rest[None], cond)[0]
+    position = rest - rest[0] * np.array([1.0, 0.0, 1.0], np.float32)
+    position = position / float(_length_scale_from_cond(cond))
+    offset = np.zeros_like(position)
+    child = np.flatnonzero(parents >= 0)
+    offset[child] = position[child] - position[parents[child]]
+    geometry = np.concatenate([pose, position[:, [0, 2]], offset], axis=-1)
+    return np.nan_to_num(geometry).astype(np.float32)
 
 
-def reference_sample(motion, cond, names, *, feats=None, joint_struct=None):
+def reference_sample(motion, cond, names, *, feats=None, joint_struct=None, geometry=None):
     """One encoder input from physical features on their own skeleton.
 
     The single builder for both the loader and generation, so the two never
     hand the encoder differently derived channels. ``feats`` / ``joint_struct``
-    may be passed in when already derived from this same motion and cond.
+    / ``geometry`` (``rest_geometry``) may be passed in when already derived
+    from this same motion and cond.
     ``feats`` is the canonical window; the encoder reads only its root's
     world XZ.
     """
@@ -127,7 +147,7 @@ def reference_sample(motion, cond, names, *, feats=None, joint_struct=None):
     return {
         'feats': feats,
         'pose': reference_pose(motion, cond),
-        'rest_pose': rest_geom_features(cond),
+        'rest_pose': (rest_geometry(cond) if geometry is None else geometry)[:, REST_POSE_COLUMNS],
         'joints_names_embs': names,
         'joint_struct': build_joint_struct_features(cond) if joint_struct is None else joint_struct,
     }
