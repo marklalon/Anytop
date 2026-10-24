@@ -135,12 +135,12 @@ padding 已被 attention mask 和 loss 排除，不会混淆）。它不同于�
 每个关节还有一个与名字无关的结构描述，包括：
 
 - branch-free run 内的归一化位置和 run 长度；
-- run 是否落到 contact、当前 joint 是否 contact、contact 是否已知；
 - leaf 标记；
-- 归一化高度、左右 signed offset、前后位置、附着高度；
-- subtree 大小、sibling rank 和 sibling count 的倒数。
+- subtree 大小的 log2 分桶（绝对大小，不除以 J，token 不携带关节总数）；
+- sibling rank 和 sibling count 的倒数；
+- 左右侧符号 side（-1 / 0 / +1）。
 
-这条通道由 `parents`、物理 rest positions 和 contact annotation 确定。改关节名不会改变它。
+这条通道只由 `parents` 和物理 rest positions 确定。改关节名不会改变它。
 它经独立 MLP 投影后加到 token，并在投影后重新清零 padding rows。
 
 ## 4. 条件总线

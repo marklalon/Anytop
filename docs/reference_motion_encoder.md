@@ -65,7 +65,7 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 ### 3.1 运动编码器 E（`model/motion_encoder.py`）
 
 **结构**：
-- 输入：逐帧量都是与源骨架 rest 无关的绝对量，另有一个静态 rest 上下文（见下文「rest 上下文」）。逐帧逐关节读 `ref_pose [J_s, 4, T]`：父→子骨骼单位方向 + 关节绝对高度 / L；根关节额外读 canonical 特征里的根 XZ 速度。逐关节静态读关节名 embedding 与 structural channel 的拓扑列（链上位置、链长、是否叶子、子树大小、兄弟序、兄弟数）加左右侧符号。投影权重独立，不复用 InputProcess。
+- 输入：逐帧量都是与源骨架 rest 无关的绝对量，另有一个静态 rest 上下文（见下文「rest 上下文」）。逐帧逐关节读 `ref_pose [J_s, 4, T]`：父→子骨骼单位方向 + 关节绝对高度 / L；根关节额外读 canonical 特征里的根 XZ 速度。逐关节静态读关节名 embedding 与 structural channel 的拓扑列（链上位置、链长、是否叶子、子树大小分桶、兄弟序、兄弟数）加左右侧符号。投影权重独立，不复用 InputProcess。
 - 少量层 spatial + temporal attention，复用 `GraphMotionDecoder` 的层实现，宽度小于主干（构造时校验）。spatial attention 不带拓扑 / 边关系偏置（`graph_relations=False`），走普通 SDPA；骨架身份只经关节名、structural channel 的拓扑列与骨骼方向进入 E。
 - 每帧用 K 个 learned query 对全部有效关节做 cross-attention 池化，输出 `z [T, K, d_z]`。
 

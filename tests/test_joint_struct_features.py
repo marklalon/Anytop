@@ -109,10 +109,19 @@ class Shape(unittest.TestCase):
         np.testing.assert_allclose(
             _channel(features, 'is_leaf'), [0, 0, 1, 0, 0, 1, 0, 0, 1], atol=1e-6
         )
-        subtree = _channel(features, 'subtree_n')
-        self.assertAlmostEqual(float(subtree[0]), 1.0)  # the root's subtree is all of it
-        self.assertAlmostEqual(float(subtree[2]), 1 / 9)
-        self.assertAlmostEqual(float(subtree[3]), 3 / 9)
+        subtree = _channel(features, 'subtree_bucket')
+        self.assertAlmostEqual(float(subtree[0]), 1.0)  # 9 joints: the open-ended bucket
+        self.assertAlmostEqual(float(subtree[2]), 0.0)  # a leaf
+        self.assertAlmostEqual(float(subtree[3]), 1 / 3)  # 3 joints: bucket 2-3
+        self.assertAlmostEqual(float(subtree[1]), 1 / 3)  # Spine + Head
+
+    def test_subtree_bucket_ignores_the_joint_count(self):
+        """Extra joints under joint 2 change only its ancestors; the legs keep their bucket."""
+        small = _channel(build_joint_struct_features(_biped()), 'subtree_bucket')
+        parents = np.concatenate([_BIPED_PARENTS, [2, 9, 10]])
+        rest = np.concatenate([_BIPED_REST, _BIPED_REST[2] + np.array([[0, 0.1, 0], [0, 0.2, 0], [0, 0.3, 0]])])
+        large = _channel(build_joint_struct_features({'parents': parents, 'rest_pos_ric_hml': rest}), 'subtree_bucket')
+        np.testing.assert_allclose(large[3:9], small[3:9], atol=1e-6)
 
     def test_lateral_is_signed_so_left_and_right_never_coincide(self):
         features = build_joint_struct_features(_biped())
