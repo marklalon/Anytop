@@ -1382,7 +1382,7 @@ class MotionDataset(data.Dataset):
                     self._rest_geometry_cache[partner_type],
                 )
                 ref_partner = True
-        # ── Topology augmentation (leaf drop / bone split / chain merge; see topology_aug.py) ──
+        # ── Topology augmentation (leaf drop / chain merge; see topology_aug.py) ──
         # Runs on the stored clip, before any temporal stage: from here on the
         # sample IS the edited rig, so every later stage and the canonical
         # encode (whose L comes from the new rest) see that rig.
@@ -1391,7 +1391,7 @@ class MotionDataset(data.Dataset):
         if topology_aug_prob > 0.0 and random.random() < topology_aug_prob:
             # topology_aug_kinds: the augmentation preview pins one edit.
             motion, cond, topology_info = augment_topology(
-                motion, cond, motion_metadata['translation_root_index'], self.opt.max_joints,
+                motion, cond, motion_metadata['translation_root_index'],
                 kinds=getattr(self.opt, 'topology_aug_kinds', TOPOLOGY_AUG_KINDS))
         if topology_info['applied']:
             motion_metadata['translation_root_index'] = topology_info['translation_root_index']

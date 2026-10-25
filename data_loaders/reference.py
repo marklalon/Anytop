@@ -29,7 +29,6 @@ def augment_reference_skeleton(motion, cond, metadata, opt, *, shared=None):
     so the caller's motion and cond are never written.
     """
     import random
-    from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS
     from data_loaders.truebones.truebones_utils.topology_aug import augment_topology
     from data_loaders.truebones.truebones_utils.bone_length_aug import (
         DEFAULT_BONE_LENGTH_AUG, DEFAULT_BONE_LENGTH_AUG_MIN, augment_bone_lengths)
@@ -43,8 +42,7 @@ def augment_reference_skeleton(motion, cond, metadata, opt, *, shared=None):
     shared = dict(shared or {})
     changed = False
     if topology_prob and random.random() < topology_prob:
-        motion, cond, info = augment_topology(
-            motion, cond, metadata['translation_root_index'], getattr(opt, 'max_joints', MAX_JOINTS))
+        motion, cond, info = augment_topology(motion, cond, metadata['translation_root_index'])
         if info['applied']:
             metadata['translation_root_index'] = info['translation_root_index']
             shared = dict(joint_struct=build_joint_struct_features(cond))

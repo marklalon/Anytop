@@ -311,13 +311,13 @@ def pin_target_leaf_drop(monkeypatch, dropped):
     from data_loaders.truebones.truebones_utils import topology_aug
     from data_loaders.truebones.truebones_utils.leaf_drop import drop_joints_from_cond
 
-    def target(motion, cond, translation_root_index, max_joints, **kwargs):
+    def target(motion, cond, translation_root_index, **kwargs):
         keep, new_cond = drop_joints_from_cond(cond, dropped)
         return motion[:, keep], new_cond, {
             'applied': True, 'kind': 'leaf_drop', 'joints': list(dropped),
             'translation_root_index': int(np.searchsorted(keep, translation_root_index))}
 
-    def reference(motion, cond, translation_root_index, max_joints, **kwargs):
+    def reference(motion, cond, translation_root_index, **kwargs):
         return motion, cond, {'applied': False, 'kind': None, 'joints': [], 'skip_reason': 'pinned',
                               'translation_root_index': int(translation_root_index)}
 

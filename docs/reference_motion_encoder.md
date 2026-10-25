@@ -135,7 +135,7 @@ E 不读取 species descriptor，也没有自己的 species 条件。`ref_pose` 
 
 | 增强 | 现有实现 | 打破的是什么 |
 |---|---|---|
-| 拓扑（leaf-drop / 骨中点插入 / 无分支链合并，触发时三选一） | `truebones_utils/topology_aug.py`（leaf-drop 在 `leaf_drop.py`） | 扰动关节数、末端和链的分段，鼓励减少对精确拓扑的依赖 |
+| 拓扑（leaf-drop / 无分支链合并，触发时二选一） | `truebones_utils/topology_aug.py`（leaf-drop 在 `leaf_drop.py`） | 扰动关节数、末端和链的分段，鼓励减少对精确拓扑的依赖 |
 | 骨长比例 | `truebones_utils/bone_length_aug.py` | 扰动身体比例，鼓励减少对源骨长的依赖 |
 | 整关节名置空 | 与 `joint_name_drop_prob` 同一机制 | 隐藏部分名字，鼓励结合几何和运动识别部位 |
 

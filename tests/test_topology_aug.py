@@ -1,10 +1,9 @@
-"""Bone split / chain merge and the three-way topology draw
+"""Chain merge and the topology draw
 (data_loaders/truebones/truebones_utils/topology_aug.py).
 
-The synthetic tests pin the cond remapping and the motion identities each edit
-rests on: a split keeps every forward-kinematics position and adds the
-midpoint, a merge keeps every kept joint's position and global rotation. The
-real-data test checks the same through the loader's canonical encode.
+The synthetic tests pin the motion identity a merge rests on: every kept
+joint keeps its position and global rotation. The real-data test checks the
+same through the loader's canonical encode.
 """
 
 from __future__ import annotations
@@ -27,12 +26,8 @@ from data_loaders.truebones.truebones_utils.topology_aug import (
     augment_topology,
     merge_candidates,
     merge_joints,
-    split_bones_in_cond,
-    split_bones_in_motion,
-    split_candidates,
 )
 from data_loaders.truebones.truebones_utils.topology_relations import create_topology_edge_relations
-from utils.rotation_conversions import rotation_6d_to_matrix_np
 
 _NAMES = ['Root', 'Spine 1', 'Spine 2', 'Neck', 'Head',
           'Left Upper Arm', 'Left Forearm', 'Left Hand',
@@ -44,7 +39,7 @@ _OFFSETS = [[0, 1, 0], [0, .3, 0], [0, .3, 0], [0, .2, .1], [0, .1, .2],
             [-.3, 0, 0], [-.3, 0, 0], [-.1, 0, 0],
             [0, 0, -.4], [0, 0, -.4]]
 _PAIRS = ((5, 8), (6, 9), (7, 10))
-_SPINE_1, _SPINE_2, _L_FOREARM, _R_FOREARM, _TAIL_1 = 1, 2, 6, 9, 11
+_SPINE_1, _SPINE_2, _L_FOREARM, _R_FOREARM = 1, 2, 6, 9
 
 
 def _entry():
@@ -111,56 +106,6 @@ def _ric(motion):
     return out
 
 
-def test_split_candidates_are_long_bones_with_twins():
-    units = split_candidates(_entry())
-    # Mean bone length is ~0.27: spine, arms' upper/forearm, tail, root->spine.
-    assert (_L_FOREARM, _R_FOREARM) in units and (_TAIL_1,) in units
-    assert all(len(unit) == 1 or tuple(sorted(unit)) in {(5, 8), (6, 9)} for unit in units)
-    assert not any(7 in unit or 10 in unit for unit in units)  # hands are short
-
-
-def test_split_remaps_cond_and_keeps_motion():
-    entry = _entry()
-    children = [_L_FOREARM, _R_FOREARM, _TAIL_1]
-    source, new_index, mid_index, new = split_bones_in_cond(entry, children)
-    assert len(new['parents']) == len(_PARENTS) + 3
-    for child in children:
-        mid = mid_index[child]
-        assert new['parents'][new_index[child]] == mid
-        assert new['parents'][mid] == new_index[_PARENTS[child]]
-        np.testing.assert_allclose(new['offsets'][mid], np.asarray(_OFFSETS[child]) / 2)
-        np.testing.assert_allclose(new['offsets'][new_index[child]], np.asarray(_OFFSETS[child]) / 2)
-        np.testing.assert_allclose(
-            new['rest_pos_ric_hml'][mid],
-            (entry['rest_pos_ric_hml'][child] + entry['rest_pos_ric_hml'][_PARENTS[child]]) / 2)
-        assert new['joint_side_labels'][mid] == entry['joint_side_labels'][child]
-        np.testing.assert_array_equal(new['tpose_rest_rotations'][mid], [1, 0, 0, 0])
-    # Every new parent precedes its child.
-    assert all(p < j for j, p in enumerate(new['parents']) if p >= 0)
-    # Named after the bone it splits, its parent on the same side.
-    assert new['canonical_joint_names'][mid_index[_L_FOREARM]] == 'Left Upper Arm Mid'
-    assert len(set(new['joints_names'])) == len(new['joints_names'])
-    left, right = mid_index[_L_FOREARM], mid_index[_R_FOREARM]
-    assert new['symmetry_partner_indices'][left] == right
-    assert [left, right] in new['symmetric_joint_pairs']
-    assert new['face_joints'] == [int(new_index[5]), int(new_index[8])]
-    assert new['forward_joint_index'] == int(new_index[4])
-    assert [int(new_index[2]), int(new_index[5]), left, int(new_index[6]), int(new_index[7])] \
-        in new['kinematic_chains']
-    edge, dist = create_topology_edge_relations(
-        new['parents'], symmetry_partner_indices=new['symmetry_partner_indices'],
-        joint_side_labels=new['joint_side_labels'])
-    np.testing.assert_array_equal(new['joint_relations'], edge)
-    np.testing.assert_array_equal(new['joints_graph_dist'], dist)
-
-    motion = _motion(entry, {5: ((0, 0, 1), .8), 6: ((0, 1, 0), .6), 11: ((1, 0, 0), .5)})
-    out = split_bones_in_motion(motion, entry, mid_index, source)
-    np.testing.assert_array_equal(out[:, new_index], motion)
-    # The split rig's FK lands on the stored positions, the midpoints included.
-    _globals, positions = _forward_kinematics(out, new)
-    np.testing.assert_allclose(positions - positions[:, :1], _ric(out) - _ric(out)[:, :1], atol=1e-5)
-
-
 def test_merge_keeps_positions_and_global_rotations():
     entry = _entry()
     # A twist about the bone below it moves nothing: Spine 2's child bone is +Y.
@@ -220,23 +165,23 @@ def test_draw_covers_every_kind_and_respects_limits():
     seen = set()
     rng = random.Random(0)
     for _ in range(60):
-        out, new, info = augment_topology(motion, entry, 0, max_joints=15, rng=rng)
+        out, new, info = augment_topology(motion, entry, 0, rng=rng)
         assert info['applied']
         seen.add(info['kind'])
-        assert out.shape[1] == len(new['parents']) <= 15
+        assert out.shape[1] == len(new['parents']) < len(_PARENTS)
         assert len(new['parents']) >= topology_aug.LEAF_DROP_MIN_KEPT_JOINTS
         assert info['translation_root_index'] == 0
     assert seen == set(TOPOLOGY_AUG_KINDS)
 
 
-def test_draw_falls_back_when_a_kind_has_nothing():
+def test_draw_falls_back_when_a_kind_has_nothing(monkeypatch):
     entry = _entry()
     motion = _motion(entry, {})
     rng = random.Random(1)
+    monkeypatch.setattr(topology_aug, 'sample_leaf_drop', lambda *args, **kwargs: [])
     for _ in range(20):
-        # No room to split: the draw lands on a merge (no leaf is droppable).
-        _out, _new, info = augment_topology(motion, entry, 0, max_joints=len(_PARENTS),
-                                            kinds=('split', 'merge'), rng=rng)
+        # No leaf is droppable: the draw lands on a merge.
+        _out, _new, info = augment_topology(motion, entry, 0, rng=rng)
         assert info['kind'] == 'merge'
 
 
@@ -246,8 +191,7 @@ _needs_merged = pytest.mark.skipif(not os.path.isfile(_MERGED_COND), reason='mer
 
 
 @_needs_merged
-@pytest.mark.parametrize('kind', ['split', 'merge'])
-def test_kept_rows_decode_to_the_stored_motion(kind):
+def test_kept_rows_decode_to_the_stored_motion():
     import data_loaders.truebones.data.dataset as dataset_module
     from data_loaders.get_data import get_dataset
     from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
@@ -257,7 +201,7 @@ def test_kept_rows_decode_to_the_stored_motion(kind):
         num_frames=60, split='train', objects_subset='all', action_group='all',
         topology_aug_prob=1.0, cond_path=_MERGED_COND,
     ).motion_dataset
-    motion_dataset.opt.topology_aug_kinds = (kind,)
+    motion_dataset.opt.topology_aug_kinds = ('merge',)
     captured = {}
     real_augment = dataset_module.augment_topology
 
@@ -293,8 +237,7 @@ def test_kept_rows_decode_to_the_stored_motion(kind):
             kept = np.flatnonzero(new_index >= 0)
             expected = canonical_to_physical_hml(plain[0], plain[12])[:, kept]
             actual = canonical_to_physical_hml(augmented[0], augmented[12])[:, new_index[kept]]
-            channels = slice(0, 9) if kind == 'split' else slice(0, 3)
-            np.testing.assert_allclose(actual[..., channels], expected[..., channels], atol=1e-4)
+            np.testing.assert_allclose(actual[..., :3], expected[..., :3], atol=1e-4)
             assert augmented[12]['joint_struct'].shape[0] == augmented[0].shape[1]
             checked += 1
     finally:
