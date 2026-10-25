@@ -224,7 +224,7 @@ def prepare_generation_runtime(args=None, cond_dict=None):
         device = torch.device('cpu')
     payload = torch.load(args.model_path, map_location=device, weights_only=False)
     state_dict, _state_dict_avg, checkpoint_metadata = load_checkpoint_weights(
-        payload, args.model_path, prefer_ema=True)
+        payload, args.model_path, prefer_ema=True, align_vocab=True)
     if payload.get('model_avg') is not None:
         print('EMA checkpoint detected, loading model_avg weights.')
     assert model is not None, 'BUG: create_model_and_diffusion_general_skeleton returned None for model'

@@ -38,7 +38,7 @@ def load_checkpoint(path, device):
     args = argparse.Namespace(**json.loads((path.parent / 'args.json').read_text()))
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
     payload = torch.load(path, map_location='cpu', weights_only=False)
-    state, _, metadata = load_checkpoint_weights(payload, str(path), prefer_ema=True)
+    state, _, metadata = load_checkpoint_weights(payload, str(path), prefer_ema=True, align_vocab=True)
     load_model(model, state)
     bind_checkpoint_action_conditioning(model, metadata, str(path))
     model.to(device)

@@ -488,6 +488,37 @@ def test_checkpoint_carries_both_fingerprints():
     validate_action_conditioning_metadata(action, source='payload')
 
 
+def test_checkpoint_with_a_removed_vocab_word_loads_for_inference():
+    bundle = make_test_bundle()
+    model = _model(bundle)
+    payload = build_checkpoint_payload(model.state_dict(), model.state_dict(), model)
+    # Re-create a checkpoint saved when the vocabulary still held one more word.
+    extra_row = 3
+    contract = dict(payload['metadata']['action_conditioning']['embedding_contract'])
+    sources = list(contract['ordered_token_sources'])
+    sources.insert(extra_row, {'token': 'removed_word', 'text': 'removed'})
+    for key in ('model', 'model_avg'):
+        table = payload[key]['action_word_embeddings']
+        payload[key]['action_word_embeddings'] = torch.cat(
+            [table[:extra_row], torch.randn(1, table.shape[1]), table[extra_row:]])
+    contract['ordered_token_sources'] = sources
+    contract['word_table_sha256'] = word_table_sha256(
+        payload['model']['action_word_embeddings'].numpy())
+    payload['metadata']['action_conditioning'] = {
+        **payload['metadata']['action_conditioning'], 'embedding_contract': contract}
+
+    state, _avg, metadata = load_checkpoint_weights(
+        payload, 'old.pt', prefer_ema=True, align_vocab=True)
+    restored = _model(None)
+    load_model(restored, state)
+    bind_checkpoint_action_conditioning(restored, metadata, 'old.pt')
+    assert torch.equal(restored.action_word_embeddings, model.action_word_embeddings)
+
+    # Resuming training does not align: the changed vocabulary stays visible.
+    unaligned, _avg, _meta = load_checkpoint_weights(payload, 'old.pt', prefer_ema=True)
+    assert unaligned['action_word_embeddings'].shape[0] == len(CONTROLLED_VOCAB) + 1
+
+
 def test_save_load_resume_round_trip_keeps_the_condition(tmp_path):
     bundle = make_test_bundle()
     model = _model(bundle)
