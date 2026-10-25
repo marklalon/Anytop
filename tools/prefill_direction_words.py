@@ -28,8 +28,8 @@ fills them, under four rules that never bend:
 
 Out of scope, whatever the motion says: the actions that have no planar
 direction to name (``motion_labels.NO_PLANAR_DIRECTION_WORDS`` -- hurt,
-getup, idle, rest, stop, draw, sheathe, headbutt, bite). A hit reaction or an
-idle is aimed nowhere, a headbutt is delivered with a CENTER joint, and the
+getup, idle, rest, stop, draw, sheathe, bite). A hit reaction or an
+idle is aimed nowhere, a bite is delivered with a CENTER joint, and the
 side of a draw is the scabbard's, so the side energy of such a clip reads its
 incidental lean and would spell it into a condition every species shares. Those
 rows are neither judged nor used to calibrate. Their VERTICAL word is
@@ -497,7 +497,7 @@ def kind_of(clip) -> str | None:
         # touches, so an exempt jump stays in scope (jump_verdict drops the
         # planar half of the verdict for it).
         return "jump"
-    # hurt / getup / idle / rest / stop / draw / sheathe / headbutt / bite are
+    # hurt / getup / idle / rest / stop / draw / sheathe / bite are
     # aimed nowhere: whatever side energy or support foot reads off them is
     # incidental, so neither measurement runs and neither calibrates on them.
     if not takes_planar_direction(words):

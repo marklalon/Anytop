@@ -39,13 +39,7 @@ def test_inverse_recovers_every_channel(frames, periodic):
     window = resample_motion_features(clip, WINDOW, periodic=periodic)
     recovered = invert_resample_motion_features(window, frames, periodic=periodic)
     assert recovered.shape == clip.shape
-    np.testing.assert_allclose(recovered[:, :, :9], clip[:, :, :9], atol=1e-4)
-    # An open clip's terminal velocity row is not a step: the forward resample
-    # never reads it, and the inverse repeats the last step there.
-    visible = slice(None) if periodic else slice(0, -1)
-    np.testing.assert_allclose(recovered[visible, :, 9:12], clip[visible, :, 9:12], atol=1e-4)
-    if not periodic:
-        np.testing.assert_allclose(recovered[-1, :, 9:12], recovered[-2, :, 9:12])
+    np.testing.assert_allclose(recovered, clip, atol=1e-4)
 
 
 def test_inverse_beats_linear_on_a_wing_beat():
@@ -199,32 +193,6 @@ def test_composed_window_equals_two_steps_when_the_speed_step_is_exact(periodic)
         clip, scaled, window, WINDOW, source_periodic=periodic, window_periodic=periodic, shift=shift,
     )
     np.testing.assert_allclose(composed, two_step, atol=1e-5)
-
-
-def _consistent_loop(frames, joints=2, seed=1):
-    """A loop whose position channel is its own velocity integral, closing on
-    itself (zero drift per cycle), as a root-relative RIC position is."""
-    rng = np.random.default_rng(seed)
-    clip = rng.normal(size=(frames, joints, 12))
-    steps = rng.normal(size=(frames, joints, 3))
-    steps -= steps.mean(axis=0, keepdims=True)
-    clip[:, :, 9:12] = steps
-    clip[:, :, 0:3] = np.concatenate([np.zeros((1, joints, 3)), np.cumsum(steps, axis=0)[:-1]], axis=0)
-    return clip
-
-
-@pytest.mark.parametrize('scaled,tiles,shift', [(31, 1, 0), (23, 2, 5), (37, 1, 12)])
-def test_composed_velocity_steps_match_the_positions(scaled, tiles, shift):
-    # The contract velocity_consistency_loss checks: vel[t] * step == the
-    # window's position delta, the wrap step included.
-    clip = _consistent_loop(26)
-    window = scaled * tiles
-    out = resample_time_scaled_window(
-        clip, scaled, window, WINDOW, source_periodic=True, window_periodic=True, shift=shift,
-    )
-    step = window / WINDOW
-    deltas = np.roll(out[:, :, 0:3], -1, axis=0) - out[:, :, 0:3]
-    np.testing.assert_allclose(out[:, :, 9:12] * step, deltas, atol=1e-9)
 
 
 def test_composed_window_keeps_a_wing_beat_the_two_step_pipeline_flattens():

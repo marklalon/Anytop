@@ -7,7 +7,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data_loaders.reference import REFERENCE_POSE_CHANNELS
+from data_loaders.reference import REST_GEOM_DIM
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils import canonical_features as cf
 from data_loaders.truebones.truebones_utils.canonical_features import (
@@ -20,9 +20,11 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 
 
 def _global_stats():
-    # Non-trivial per-channel mean/std so the standardization step is exercised.
-    mean = (np.arange(12, dtype=np.float32) * 0.1).astype(np.float32)
-    std = np.full(12, 2.0, dtype=np.float32)
+    # Non-trivial per-channel mean/std so the standardization step is exercised;
+    # the root position's own stats differ from the joints'.
+    mean = (np.arange(cf.CANONICAL_STAT_LEN, dtype=np.float32) * 0.1).astype(np.float32)
+    std = np.full(cf.CANONICAL_STAT_LEN, 2.0, dtype=np.float32)
+    std[cf.ROOT_STAT_SLICE] = [0.5, 0.75, 0.5]
     return mean, std
 
 
@@ -60,19 +62,25 @@ def test_canonical_feature_roundtrip_numpy():
     recovered = canonical_to_physical_hml(canonical, cond)
 
     # Exact inversion on every kept channel is the contract that every call
-    # site depends on; the derived velocity channels decode to zero.
-    np.testing.assert_allclose(recovered, cf.zero_derived_velocity(physical), atol=1e-5)
-    np.testing.assert_allclose(canonical[:, 1:, 9:12], 0.0)
-    np.testing.assert_allclose(canonical[:, 0, 10], 0.0)
-    # The root's X/Z velocity is rescaled by L and standardized -> must differ
-    # from the input.
-    assert not np.allclose(canonical[:, 0, [9, 11]], physical[:, 0, [9, 11]])
+    # site depends on; velocity is not a model channel and decodes to zero.
+    np.testing.assert_allclose(recovered, cf.zero_velocity(physical), atol=1e-5)
+    np.testing.assert_allclose(canonical[..., 9:12], 0.0)
+    # The root's position takes its own stats, every other joint the shared ones.
+    mean, std = _global_stats()
+    L = cf._length_scale_from_cond(cond)
+    np.testing.assert_allclose(
+        canonical[:, 0, 0:3], (physical[:, 0, 0:3] / L - mean[cf.ROOT_STAT_SLICE]) / std[cf.ROOT_STAT_SLICE],
+        rtol=1e-5, atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        canonical[:, 1, 0:3], (physical[:, 1, 0:3] / L - mean[0:3]) / std[0:3], rtol=1e-5, atol=1e-5,
+    )
 
 
 def test_lnorm_scale_uses_per_skeleton_length():
     # The L-normalization step (physical_hml_to_lnorm, stats-free) scales
-    # position/velocity by the per-skeleton length L while rotation is
-    # size-independent. This is the space the global stats are calibrated in.
+    # position by the per-skeleton length L while rotation is size-independent
+    # and velocity is dropped. This is the space the global stats are calibrated in.
     small = mark_canonical_cond_entry(
         {"rest_pose": np.tile(np.array([[0.1, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], dtype=np.float32), (2, 1)),
          "parents": np.array([-1, 0])}
@@ -92,8 +100,9 @@ def test_lnorm_scale_uses_per_skeleton_length():
     phys = np.ones((3, 2, 12), dtype=np.float32)
     enc_small = physical_hml_to_lnorm(phys, small)
     enc_big = physical_hml_to_lnorm(phys, big)
-    # bigger skeleton -> larger pos/vel divisor -> smaller encoded magnitude
-    assert np.abs(enc_big[..., 9:12]).mean() < np.abs(enc_small[..., 9:12]).mean()
+    # bigger skeleton -> larger position divisor -> smaller encoded magnitude
+    assert np.abs(enc_big[..., 0:3]).mean() < np.abs(enc_small[..., 0:3]).mean()
+    np.testing.assert_allclose(enc_small[..., 9:12], 0.0)
     # rotation is L-independent -> identical across skeletons
     np.testing.assert_allclose(enc_small[..., 3:9], enc_big[..., 3:9], atol=1e-6)
 
@@ -124,7 +133,7 @@ def test_canonical_decode_torch_batch_layout():
     canonical = physical_hml_to_canonical(physical, y)
     recovered = canonical_to_physical_hml(canonical, y)
 
-    torch.testing.assert_close(recovered, cf.zero_derived_velocity(physical), atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(recovered, cf.zero_velocity(physical), atol=1e-4, rtol=1e-4)
 
 
 def test_canonical_decode_torch_multi_skeleton_batch():
@@ -148,7 +157,7 @@ def test_canonical_decode_torch_multi_skeleton_batch():
     canonical = physical_hml_to_canonical(physical, y)
     recovered = canonical_to_physical_hml(canonical, y)
 
-    torch.testing.assert_close(recovered, cf.zero_derived_velocity(physical), atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(recovered, cf.zero_velocity(physical), atol=1e-4, rtol=1e-4)
     # different skeleton sizes -> different encoded position magnitudes per sample
     assert not torch.allclose(
         canonical[0, :, 0:3].abs().mean(), canonical[1, :, 0:3].abs().mean()
@@ -262,10 +271,10 @@ def test_canonical_roundtrip_is_exact_for_a_floored_rig():
 
     lnorm = physical_hml_to_lnorm(physical, cond)
     np.testing.assert_allclose(
-        lnorm[..., 9:12], physical[..., 9:12] / cf.REST_LENGTH_SCALE_FLOOR, rtol=1e-5
+        lnorm[..., 0:3], physical[..., 0:3] / cf.REST_LENGTH_SCALE_FLOOR, rtol=1e-5
     )
     recovered = canonical_to_physical_hml(physical_hml_to_canonical(physical, cond), cond)
-    np.testing.assert_allclose(recovered, cf.zero_derived_velocity(physical), atol=1e-5)
+    np.testing.assert_allclose(recovered, cf.zero_velocity(physical), atol=1e-5)
 
 
 def test_length_scale_is_tree_spread_and_ignores_the_rest_pose():
@@ -294,7 +303,7 @@ def test_truebones_collate_drops_motion_stats_and_carries_global_stats():
         motion,
         4,
         np.array([-1, 0], dtype=np.int64),
-        np.zeros((2, REFERENCE_POSE_CHANNELS), dtype=np.float32),
+        np.zeros((2, REST_GEOM_DIM - 1), dtype=np.float32),
         np.zeros((2, 3), dtype=np.float32),
         np.zeros((2, 2), dtype=np.float32),
         np.zeros((2, 2), dtype=np.float32),
@@ -321,10 +330,10 @@ def test_truebones_collate_drops_motion_stats_and_carries_global_stats():
     assert y["feature_space"] == [cf.CANONICAL_FEATURE_SPACE]
     assert tuple(y["rest_pos_ric_hml"].shape) == (1, 2, 3)
     # Per-object_subset standardization stats flow through per-sample, stacked in
-    # batch order as [B, FEATS_LEN] so a mixed-species batch de-standardizes each sample
-    # with its own object_subset's stats.
-    assert tuple(y["canonical_feature_mean"].shape) == (1, 12)
-    assert tuple(y["canonical_feature_std"].shape) == (1, 12)
+    # batch order as [B, CANONICAL_STAT_LEN] so a mixed-species batch de-standardizes
+    # each sample with its own object_subset's stats.
+    assert tuple(y["canonical_feature_mean"].shape) == (1, cf.CANONICAL_STAT_LEN)
+    assert tuple(y["canonical_feature_std"].shape) == (1, cf.CANONICAL_STAT_LEN)
     # The rest length scale is fixed at collate time from the unpadded rest, so
     # the training decode never derives it from the padded rows.
     assert tuple(y[cf.REST_LENGTH_SCALE_KEY].shape) == (1,)
@@ -345,7 +354,7 @@ def _collate_item(cond, rest_pos, max_joints, name):
         np.zeros((4, n_joints, 12), dtype=np.float32),
         4,
         np.arange(-1, n_joints - 1, dtype=np.int64),
-        np.zeros((n_joints, REFERENCE_POSE_CHANNELS), dtype=np.float32),
+        np.zeros((n_joints, REST_GEOM_DIM - 1), dtype=np.float32),
         np.zeros((n_joints, 3), dtype=np.float32),
         np.zeros((n_joints, n_joints), dtype=np.float32),
         np.zeros((n_joints, n_joints), dtype=np.float32),
@@ -419,8 +428,7 @@ def test_rest_length_scale_in_cond_takes_precedence_over_rest_rows():
     base = cf._apply_L_scale(feature, cond, inverse=True)
     scaled = cf._apply_L_scale(feature, with_key, inverse=True)
     np.testing.assert_allclose(scaled[..., 0:3, :], base[..., 0:3, :] * 4.0, rtol=1e-6)
-    np.testing.assert_allclose(scaled[..., 9:12, :], base[..., 9:12, :] * 4.0, rtol=1e-6)
-    np.testing.assert_allclose(scaled[..., 3:9, :], base[..., 3:9, :], rtol=0)
+    np.testing.assert_allclose(scaled[..., 3:12, :], base[..., 3:12, :], rtol=0)
 
 
 def _raw_subset_stats():
@@ -430,16 +438,17 @@ def _raw_subset_stats():
     is ~4x its horizontal one; quadruped's is ~1.8x).
     """
     quadruped_std = np.array(
-        [0.468, 0.720, 0.824, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 0.5, 0.6, 0.7],
+        [0.468, 0.720, 0.824, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 0.0, 0.0, 0.0, 0.2, 0.4, 0.3],
         dtype=np.float32,
     )
     aquatic_std = np.array(
-        [0.687, 2.810, 1.294, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 0.8, 0.9, 1.0],
+        [0.687, 2.810, 1.294, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 0.0, 0.0, 0.0, 0.25, 0.9, 0.15],
         dtype=np.float32,
     )
+    n = cf.CANONICAL_STAT_LEN
     return {
-        "quadruped": (np.arange(12, dtype=np.float32) * 0.01, quadruped_std, np.float32(0.2)),
-        "aquatic": (np.arange(12, dtype=np.float32) * -0.02, aquatic_std, np.float32(0.05)),
+        "quadruped": (np.arange(n, dtype=np.float32) * 0.01, quadruped_std, np.float32(0.2)),
+        "aquatic": (np.arange(n, dtype=np.float32) * -0.02, aquatic_std, np.float32(0.05)),
     }
 
 
@@ -447,7 +456,7 @@ def test_pool_global_stats_weights_subsets_equally_per_block():
     raw = _raw_subset_stats()
     mean, std, dpos_std = cf.pool_global_stats(raw)
 
-    assert mean.shape == (12,) and std.shape == (12,)
+    assert mean.shape == (cf.CANONICAL_STAT_LEN,) and std.shape == (cf.CANONICAL_STAT_LEN,)
     # The position-step RMS is pooled like a block scalar.
     np.testing.assert_allclose(dpos_std, 0.1, rtol=1e-6)
     # mean is the plain average of the subset means, whatever the clip counts.
@@ -455,17 +464,21 @@ def test_pool_global_stats_weights_subsets_equally_per_block():
         mean, (raw["quadruped"][0] + raw["aquatic"][0]) / 2.0, rtol=1e-6
     )
     # Every block is one scalar: the geometric mean of the subsets' block means.
-    for block in (slice(0, 3), slice(3, 9), slice(9, 12)):
+    # The root's X and Z share one (the horizontal plane stays isotropic), its Y
+    # has its own, and the velocity block is the identity.
+    np.testing.assert_allclose(std[9:12], 1.0)
+    for block in (slice(0, 3), slice(3, 9), [12, 14], [13]):
         assert len(set(std[block].tolist())) == 1
         expected = float(np.exp(np.mean(np.log([
             raw["quadruped"][1][block].mean(), raw["aquatic"][1][block].mean()
         ]))))
-        np.testing.assert_allclose(std[block.start], expected, rtol=1e-6)
+        np.testing.assert_allclose(std[block][0], expected, rtol=1e-6)
 
 
 def test_pool_global_stats_tolerates_degenerate_blocks():
     raw = {
-        "serpentine": (np.zeros(12, dtype=np.float32), np.zeros(12, dtype=np.float32), np.float32(0.0)),
+        "serpentine": (np.zeros(cf.CANONICAL_STAT_LEN, dtype=np.float32),
+                       np.zeros(cf.CANONICAL_STAT_LEN, dtype=np.float32), np.float32(0.0)),
         "aquatic": _raw_subset_stats()["aquatic"],
     }
     _mean, std, dpos_std = cf.pool_global_stats(raw)
@@ -518,53 +531,82 @@ def test_cond_of_another_feature_space_is_refused_unless_restamped():
     cf.assert_single_canonical_frame({"Dog": current})
 
 
-def test_rebuild_derived_velocity_matches_the_stored_world_steps():
-    # A stored clip's velocity rows are world steps (RIC removes the root's
-    # world XZ from every joint). Decoding keeps the root's X/Z and rebuilds
-    # the rest from positions; the result equals the stored rows.
-    rng = np.random.default_rng(7)
-    n_frames, n_joints, step = 6, 3, 0.75
+def _stored_clip(rng, n_frames, n_joints):
+    """A stored clip of a random world motion: RIC positions, velocity rows
+    that are world steps, frame 0's root on the origin."""
     world = np.cumsum(rng.normal(size=(n_frames, n_joints, 3)), axis=0).astype(np.float64)
+    world[:, :, [0, 2]] -= world[0:1, 0:1, [0, 2]]
     ric = world.copy()
     ric[:, :, [0, 2]] -= world[:, 0:1, [0, 2]]
     motion = np.zeros((n_frames, n_joints, 12), dtype=np.float32)
     motion[..., 0:3] = ric
-    motion[:-1, :, 9:12] = (world[1:] - world[:-1]) / step
+    motion[..., 3:9] = rng.normal(size=(n_frames, n_joints, 6))
+    motion[:-1, :, 9:12] = world[1:] - world[:-1]
     motion[-1, :, 9:12] = motion[-2, :, 9:12]
+    return world, motion
 
-    rebuilt = cf.rebuild_derived_velocity(cf.zero_derived_velocity(motion), is_loop=False, step_scale=step)
-    np.testing.assert_allclose(rebuilt, motion, atol=1e-5)
+
+def test_working_layout_carries_the_root_world_xz():
+    world, stored = _stored_clip(np.random.default_rng(3), 6, 3)
+    working = cf.stored_to_working(stored)
+    np.testing.assert_allclose(working[:, 0, [0, 2]], world[:, 0, [0, 2]], atol=1e-5)
+    np.testing.assert_array_equal(working[:, 0, 1], stored[:, 0, 1])
+    np.testing.assert_array_equal(working[:, :, 3:9], stored[:, :, 3:9])
+    np.testing.assert_array_equal(working[:, 1:, 0:3], stored[:, 1:, 0:3])
+    # The working layout carries no velocity.
+    np.testing.assert_array_equal(working[..., 9:12], 0.0)
+    # The all-RIC view is the stored positions again, numpy and [B, J, F, T] torch.
+    np.testing.assert_allclose(cf.root_relative_positions(working)[..., 0:3], stored[..., 0:3], atol=1e-5)
+    rel = cf.root_relative_positions(torch.as_tensor(working).permute(1, 2, 0).unsqueeze(0))
+    np.testing.assert_allclose(rel[0].permute(2, 0, 1)[..., 0:3].numpy(), stored[..., 0:3], atol=1e-5)
+
+
+def test_working_to_stored_writes_the_root_velocity():
+    # A working clip goes back to the stored layout: RIC positions and the
+    # root's world steps, the only velocity a stored-clip reader uses.
+    world, stored = _stored_clip(np.random.default_rng(7), 6, 3)
+    working = cf.stored_to_working(stored)
+    expected = cf.zero_velocity(stored)
+    expected[:, 0, 9:12] = stored[:, 0, 9:12]
+    np.testing.assert_allclose(cf.working_to_stored(working, is_loop=False), expected, atol=1e-5)
 
     # A loop's terminal row is the wrap step.
-    looped = motion.copy()
-    looped[-1, :, 9:12] = (world[0] - world[-1]) / step
-    looped[-1, 0, [9, 11]] = (world[0, 0, [0, 2]] - world[-1, 0, [0, 2]]) / step
-    rebuilt_loop = cf.rebuild_derived_velocity(cf.zero_derived_velocity(looped), is_loop=True, step_scale=step)
-    np.testing.assert_allclose(rebuilt_loop, looped, atol=1e-5)
+    expected[-1, 0, 9:12] = world[0, 0] - world[-1, 0]
+    np.testing.assert_allclose(cf.working_to_stored(working, is_loop=True), expected, atol=1e-5)
+
+    # Reading it back gives the same working clip.
+    np.testing.assert_allclose(cf.stored_to_working(cf.working_to_stored(working, is_loop=True)), working, atol=1e-5)
 
 
 def test_species_aux_loss_weights_only_scale_down():
-    mean = np.zeros(12, dtype=np.float32)
-    std = np.ones(12, dtype=np.float32)
-    acc = None
     slow = np.zeros((5, 2, 12), dtype=np.float32)
-    slow[:, 0, 9] = 0.1
     fast = np.zeros((5, 2, 12), dtype=np.float32)
-    fast[:, 0, 9] = 10.0
     fast[:, :, 0] = np.arange(5, dtype=np.float32)[:, None] * 10.0
     cond = mark_canonical_cond_entry(
         {"rest_pose": np.zeros((2, 12), dtype=np.float32), "parents": np.array([-1, 0])}
     )
     cond[cf.REST_LENGTH_SCALE_KEY] = np.float32(1.0)
-    acc = cf.accumulate_lnorm_stats(slow, cond, acc=acc, species="slow")
+    acc = cf.accumulate_lnorm_stats(slow, cond, species="slow")
     acc = cf.accumulate_lnorm_stats(fast, cond, acc=acc, species="fast")
-    weights = cf.species_aux_loss_weights([acc], mean, std, dpos_std=1.0)
-    assert weights["slow"] == (1.0, 1.0)
-    root_weight, step_weight = weights["fast"]
-    assert 0.0 < root_weight < 1.0 and 0.0 < step_weight < 1.0
-    # Root X/Z energy is (100 + 0) / 2 = 50; XYZ step energy is 100 / 3.
-    np.testing.assert_allclose(root_weight, 0.2, rtol=1e-6)
-    np.testing.assert_allclose(step_weight, np.sqrt(0.06), rtol=1e-6)
+    weights = cf.species_aux_loss_weights([acc], dpos_std=1.0)
+    assert weights["slow"] == 1.0
+    # XYZ step energy is 100 / 3.
+    np.testing.assert_allclose(weights["fast"], np.sqrt(0.06), rtol=1e-6)
+
+
+def test_lnorm_stats_measure_the_root_position_on_its_own():
+    _world, stored = _stored_clip(np.random.default_rng(5), 8, 3)
+    working = cf.stored_to_working(stored)
+    cond = mark_canonical_cond_entry(
+        {"rest_pose": np.zeros((3, 12), dtype=np.float32), "parents": np.array([-1, 0, 1])}
+    )
+    cond[cf.REST_LENGTH_SCALE_KEY] = np.float32(1.0)
+    mean, std, _dpos = cf.finalize_lnorm_stats(cf.accumulate_lnorm_stats(working, cond))
+    assert mean.shape == (cf.CANONICAL_STAT_LEN,)
+    np.testing.assert_allclose(mean[cf.ROOT_STAT_SLICE], working[:, 0, 0:3].mean(axis=0), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(std[cf.ROOT_STAT_SLICE], working[:, 0, 0:3].std(axis=0), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(mean[9:12], 0.0)
+    np.testing.assert_allclose(std[9:12], 0.0)
 
 
 def _arm_rig():

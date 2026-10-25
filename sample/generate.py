@@ -19,11 +19,12 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from data_loaders.truebones.data.dataset import ensure_joint_name_embeddings, resample_step_scale
+from data_loaders.truebones.data.dataset import ensure_joint_name_embeddings
 from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
-    rebuild_derived_velocity,
+    stored_to_working,
+    working_to_stored,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import (
@@ -44,8 +45,6 @@ from sample.conditioning import (
 from sample.export import (
     _bvh_preview_options,
     _export_motion,
-    _get_batch_translation_root_index,
-    _zero_root_ric_xz,
 )
 from sample.generation_runtime import (
     _checkpoint_cond_loader,
@@ -90,16 +89,6 @@ from utils import dist_util
 from utils.fixseed import fixseed
 from utils.misc import infer_object_type_from_filename
 from utils.parser_util import generate_args
-
-
-def _with_derived_velocity(motion_np, resample_speed, loop):
-    """Fill the derived velocity rows of a decoded ``[T, J, F]`` window, at the
-    window's own step (``vel * step`` is a window-frame step), so the export
-    resample and every reader of the saved rows see full physical velocity."""
-    n_frames = motion_np.shape[0]
-    speed = 1.0 if resample_speed is None else float(resample_speed)
-    step = resample_step_scale(speed * n_frames, n_frames, periodic=bool(loop))
-    return rebuild_derived_velocity(motion_np, is_loop=bool(loop), step_scale=step)
 
 
 def _generate_all_species(
@@ -211,21 +200,12 @@ def _generate_all_species(
                 motion = motion[:n_joints]
                 # Decode with full cond entry (carries rest geometry + global standardization stats).
                 motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), sp_entry)[0]
-                motion_np = _with_derived_velocity(
-                    motion_physical.cpu().permute(2, 0, 1).numpy(),
-                    species_output_lengths[sp][1], species_output_lengths[sp][2],
-                )
-
                 motion_np = _resample_window_to_output(
-                    motion_np, species_output_lengths[sp][0], output_frame_count,
+                    motion_physical.cpu().permute(2, 0, 1).numpy(),
+                    species_output_lengths[sp][0], output_frame_count,
                     species_output_lengths[sp][2],
                 )
-
-                translation_root_index = _get_batch_translation_root_index(
-                    model_kwargs, sample_idx,
-                    fallback=sp_entry.get('translation_root_index', 0),
-                )
-                _zero_root_ric_xz(motion_np, translation_root_index)
+                motion_np = working_to_stored(motion_np, is_loop=bool(species_output_lengths[sp][2]))
 
                 joint_names = list(sp_entry.get(
                     'canonical_bvh_joint_names', sp_entry['joints_names'],
@@ -709,6 +689,7 @@ def main(args=None, cond_dict=None, runtime=None):
         loop_condition = resolve_loop_condition(
             loop_mode, _action_condition, reference_features=ref_features,
             translation_root_index=int(source_cond.get('translation_root_index', 0)))
+        ref_features = stored_to_working(ref_features)
         if requested_output_frames is None:
             auto_frames = int(np.clip(len(ref_features), min_length, MAX_SOURCE_FRAMES_MULT * internal_num_frames))
             requested_output_frames, target_output_frames, resample_speed_cond_value = (
@@ -751,6 +732,7 @@ def main(args=None, cond_dict=None, runtime=None):
             reference_features=ref_features_full,
             translation_root_index=int(cond_dict[object_type].get('translation_root_index', 0)),
         )
+        ref_features_full = stored_to_working(ref_features_full)
 
         # Finalize output lengths from R (if --num_frames not specified).
         if requested_output_frames is None:
@@ -1000,21 +982,9 @@ def main(args=None, cond_dict=None, runtime=None):
         # Decode with the full per-species cond entry (rest geometry + global
         # standardization stats), not a minimal dict that would drop the stats.
         motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), cond_dict[object_type])[0]
-        motion_np = _with_derived_velocity(
-            motion_physical.cpu().permute(2, 0, 1).numpy(), resample_speed_cond_value, loop_condition,
-        )
-
         motion_np = _resample_window_to_output(
-            motion_np, target_output_frames, output_frame_count, loop_condition,
-            invert=export_inverts_window,
-        )
-
-        # The per-species translation root (the joint carrying the locomotion
-        # XZ velocity; the hierarchy root for every collapsed cond skeleton).
-        translation_root_index = _get_batch_translation_root_index(
-            model_kwargs,
-            sample_idx,
-            fallback=cond_dict[object_type].get('translation_root_index', 0),
+            motion_physical.cpu().permute(2, 0, 1).numpy(), target_output_frames, output_frame_count,
+            loop_condition, invert=export_inverts_window,
         )
 
         # A frame-range inpaint keeps the clamped frames' own ground; only a
@@ -1039,7 +1009,7 @@ def main(args=None, cond_dict=None, runtime=None):
                     f'    Inpaint reseat: shifted regenerated subtree world-Y by '
                     f'{reseat_delta:+.4f} to re-ground onto the reference'
                 )
-        _zero_root_ric_xz(motion_np, translation_root_index)
+        motion_np = working_to_stored(motion_np, is_loop=bool(loop_condition))
 
         npy_name = f'{object_file_token}_{base_index + sample_idx}.npy'
         export_tasks.append((

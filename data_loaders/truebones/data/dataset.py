@@ -52,11 +52,11 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_MEAN_KEY,
     CANONICAL_STD_KEY,
     DPOS_LOSS_WEIGHT_KEY,
-    ROOT_VEL_LOSS_WEIGHT_KEY,
     assert_single_canonical_frame,
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
+    stored_to_working,
 )
 from data_loaders.truebones.truebones_utils.joint_embedding_text import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
@@ -64,10 +64,11 @@ from data_loaders.truebones.truebones_utils.joint_embedding_text import (
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
-from data_loaders.reference import rest_geom_features
-from data_loaders.truebones.truebones_utils.leaf_drop import (
-    drop_joints_from_cond,
-    sample_leaf_drop,
+from data_loaders.reference import REST_GEOM_COLUMNS, rest_geometry
+from data_loaders.truebones.truebones_utils.topology_aug import (
+    TOPOLOGY_AUG_KINDS,
+    augment_topology,
+    validate_topology_aug,
 )
 from data_loaders.truebones.truebones_utils.high_frequency import (
     HIGH_FREQUENCY_SCORE_THRESHOLD,
@@ -80,6 +81,11 @@ from data_loaders.truebones.truebones_utils.bone_length_aug import (
     DEFAULT_BONE_LENGTH_AUG_MIN,
     augment_bone_lengths,
     validate_bone_length_aug,
+)
+from data_loaders.truebones.truebones_utils.rest_repose_aug import (
+    DEFAULT_REST_REPOSE_MAX_DEG,
+    augment_rest_repose,
+    validate_rest_repose_aug,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import (
     assert_cond_species_tags_current,
@@ -237,7 +243,6 @@ _REQUIRED_CANONICAL_KEYS = (
     CANONICAL_MEAN_KEY,
     CANONICAL_STD_KEY,
     CANONICAL_DPOS_STD_KEY,
-    ROOT_VEL_LOSS_WEIGHT_KEY,
     DPOS_LOSS_WEIGHT_KEY,
 )
 
@@ -247,8 +252,8 @@ def _copy_required_motion_metadata(motion_name: str, motion_metadata) -> dict[st
         raise KeyError(f"Motion '{motion_name}' is missing explicit motion metadata.")
     if 'translation_root_index' not in motion_metadata:
         raise KeyError(f"Motion '{motion_name}' metadata is missing translation_root_index.")
-    # The canonical space keeps velocity on joint 0 alone (canonical_features,
-    # "Derived velocity"), so joint 0 must be the one carrying the locomotion.
+    # The working layout holds the root's world XZ on joint 0 (canonical_features,
+    # "Root"), so joint 0 must be the one carrying the locomotion.
     if int(motion_metadata['translation_root_index']) != 0:
         raise ValueError(
             f"Motion '{motion_name}' has translation_root_index="
@@ -326,7 +331,6 @@ def resample_step_scale(source_frames, target_num_frames, *, periodic=False):
     An open clip maps its first and last frame onto the window's, so ``L``
     frames span ``L - 1`` steps: ``(L - 1) / (T - 1)``. A periodic one maps the
     cycle's ``L`` steps (the wrap included) onto the window's ``T``: ``L / T``.
-    GaussianDiffusion._physical_velocity_step_scale must agree with this.
     """
     source_frames = float(source_frames)
     target_num_frames = float(target_num_frames)
@@ -344,13 +348,16 @@ def resample_motion_features(motion, target_num_frames, *, periodic=False):
     frames ``0 .. L-1`` end to end.
 
     ``periodic=True`` treats it as one closed cycle whose frame ``L`` is frame
-    0 (a loop after ``_drop_loop_closing_frame``, whose terminal velocity row
-    is the wrap delta): target frame ``t`` samples source time ``t * L / T``
+    0 (a loop after ``_drop_loop_closing_frame``): target frame ``t`` samples
+    source time ``t * L / T``
     and interpolates across the wrap, so the window's own wrap step is one
     ordinary target step and the result is periodic in ``T``. The open mapping
     would instead give a loop an interior step of ``(L-1)/(T-1)`` source frames
     against a wrap step of exactly 1, a non-uniform period that is only
     uniform when ``L == T``.
+
+    ``motion`` is in the working layout (canonical_features, "Root"): every
+    channel is a position or a rotation, so each is interpolated the same way.
     """
     source_frames = int(motion.shape[0])
     target_num_frames = int(target_num_frames)
@@ -361,50 +368,11 @@ def resample_motion_features(motion, target_num_frames, *, periodic=False):
     if source_frames == target_num_frames:
         return motion
 
-    step_scale = resample_step_scale(source_frames, target_num_frames, periodic=periodic)
     lo, hi, w = _resample_frame_weights(source_frames, target_num_frames, periodic=periodic)
     w = w[:, None, None].astype(np.float32)
     resampled = (motion[lo] * (1.0 - w) + motion[hi] * w).astype(motion.dtype, copy=False)
 
-    if resampled.shape[-1] >= 12:
-        # Velocity channels are stored so that `vel[t] * step_scale` recovers
-        # the target-frame position delta — matching the contract that
-        # velocity_consistency_loss and loop_wrap_loss multiply by step_scale
-        # (reconstructed from resample_speed_cond and is_loop) before comparing
-        # with pos deltas.
-        # Linear interpolation of source velocities would give the instantaneous
-        # value at src[t], which is off whenever step_scale != 1; instead we
-        # integrate to a position path, interpolate that, then take target-step
-        # differences divided by step_scale.
-        #
-        # The path has one node per source frame boundary, L + 1 of them, the
-        # last one reached through the terminal row. A periodic clip samples it
-        # at T + 1 positions, the last at source time L, so the terminal target
-        # row is the wrap delta; an open clip has no step past its last frame
-        # and repeats its last visible velocity.
-        velocity = motion[:, :, 9:12].astype(np.float64, copy=False)
-        source_velocity_path = np.zeros((source_frames + 1, motion.shape[1], 3), dtype=np.float64)
-        source_velocity_path[1:] = np.cumsum(velocity, axis=0)
-        path_lo, path_hi, path_w, _ = _resample_path_weights(
-            source_frames, target_num_frames, periodic=periodic
-        )
-        path_w = path_w[:, None, None]
-        resampled_velocity_path = (
-            source_velocity_path[path_lo] * (1.0 - path_w)
-            + source_velocity_path[path_hi] * path_w
-        )
-        rebuilt_velocity = (
-            (resampled_velocity_path[1:] - resampled_velocity_path[:-1]) / step_scale
-        ).astype(motion.dtype, copy=False)
-        if periodic:
-            resampled[:, :, 9:12] = rebuilt_velocity
-        elif target_num_frames > 1:
-            resampled[:-1, :, 9:12] = rebuilt_velocity
-            resampled[-1, :, 9:12] = rebuilt_velocity[-1]
-        else:
-            resampled[0, :, 9:12] = 0.0
-
-    return resampled.astype(motion.dtype, copy=False)
+    return resampled
 
 
 def _resample_frame_weights(source_frames, target_num_frames, *, periodic=False):
@@ -421,24 +389,6 @@ def _resample_frame_weights(source_frames, target_num_frames, *, periodic=False)
         lo = np.floor(src).astype(np.int64).clip(0, source_frames - 1)
         hi = np.minimum(lo + 1, source_frames - 1)
     return lo, hi, src - lo
-
-
-def _resample_path_weights(source_frames, target_num_frames, *, periodic=False):
-    """Where ``resample_motion_features`` samples the velocity path (node ``k``
-    = position after ``k`` source steps), plus the number of source nodes it
-    reads. A periodic clip samples ``T + 1`` positions up to node ``L`` (so its
-    terminal target row is the wrap delta); an open one samples its ``T``
-    frame positions and never reads past node ``L - 1``, so the terminal row
-    (not a step of an open clip) is never used."""
-    if periodic:
-        path_src = np.arange(target_num_frames + 1, dtype=np.float64) * source_frames / target_num_frames
-        last_node = source_frames
-    else:
-        path_src = np.linspace(0.0, float(source_frames - 1), target_num_frames, endpoint=True, dtype=np.float64)
-        last_node = source_frames - 1
-    path_lo = np.floor(path_src).astype(np.int64).clip(0, last_node)
-    path_hi = np.minimum(path_lo + 1, last_node)
-    return path_lo, path_hi, path_src - path_lo, last_node + 1
 
 
 def _interpolation_matrix(lo, hi, w, columns):
@@ -461,10 +411,6 @@ def invert_resample_motion_features(window, source_frames, *, periodic=False):
     linear map when it upsamples, so solving it instead recovers the source
     exactly from an exact window and averages a noisy one. Only defined for
     ``source_frames <= T``; the caller falls back to linear resampling above.
-
-    The velocity channels are inverted through their position path, the same
-    way the forward resample builds them, so they keep the "per source frame"
-    contract.
     """
     target_num_frames = int(window.shape[0])
     source_frames = int(source_frames)
@@ -481,31 +427,6 @@ def invert_resample_motion_features(window, source_frames, *, periodic=False):
     source = np.linalg.lstsq(frame_matrix, flat, rcond=None)[0]
     source = source.reshape((source_frames,) + window.shape[1:])
 
-    if window.shape[-1] >= 12:
-        step_scale = resample_step_scale(source_frames, target_num_frames, periodic=periodic)
-        velocity = window[:, :, 9:12].astype(np.float64)
-        # Window path nodes, in positions: a periodic window's T rows are its T
-        # steps (the last one the wrap); an open window's last row repeats the
-        # one before it and is not a step.
-        steps = velocity if periodic else velocity[:-1]
-        window_path = np.zeros((steps.shape[0] + 1,) + velocity.shape[1:], dtype=np.float64)
-        window_path[1:] = np.cumsum(steps * step_scale, axis=0)
-        path_lo, path_hi, path_w, source_nodes = _resample_path_weights(
-            source_frames, target_num_frames, periodic=periodic
-        )
-        path_matrix = _interpolation_matrix(path_lo, path_hi, path_w, source_nodes)
-        # Node 0 is the path origin on both sides; solve for the rest.
-        source_path = np.zeros((source_nodes,) + velocity.shape[1:], dtype=np.float64)
-        source_path[1:] = np.linalg.lstsq(
-            path_matrix[:, 1:], window_path.reshape(window_path.shape[0], -1), rcond=None
-        )[0].reshape((source_nodes - 1,) + velocity.shape[1:])
-        source_velocity = np.diff(source_path, axis=0)
-        if periodic:
-            source[:, :, 9:12] = source_velocity
-        else:
-            source[:-1, :, 9:12] = source_velocity
-            source[-1, :, 9:12] = source_velocity[-1]
-
     return source.astype(window.dtype, copy=False)
 
 
@@ -518,14 +439,6 @@ def time_scale_motion_features(motion, target_num_frames, *, periodic=False):
     stage (loop roll / tile, crop, the window resample and its
     ``resample_speed_cond``) treats it exactly like a clip recorded at that
     tempo, and the model is told nothing about it.
-
-    ``resample_motion_features`` deliberately leaves the velocity channels in
-    "per SOURCE frame" units (the loss multiplies them by the step scale it
-    reconstructs from ``resample_speed_cond``); here the new frames ARE the
-    source frames, so the velocities are rescaled to "per new frame" -- without
-    that the positions would advance ``speed``x per frame while the velocity
-    channel still claimed 1x, and the velocity-consistency / loop-wrap losses
-    would be fed a self-contradicting target.
 
     ``periodic`` is the loop flag: a loop clip is time-scaled periodically
     (see ``resample_motion_features``), so it stays uniformly periodic.
@@ -546,12 +459,7 @@ def time_scale_motion_features(motion, target_num_frames, *, periodic=False):
     if target_num_frames == source_frames:
         return motion, 1.0
     speed = resample_step_scale(source_frames, target_num_frames, periodic=periodic)
-    scaled = resample_motion_features(
-        motion, target_num_frames, periodic=periodic
-    )
-    if scaled.shape[-1] >= 12:
-        scaled[..., 9:12] *= np.asarray(speed, dtype=scaled.dtype)
-    return scaled, speed
+    return resample_motion_features(motion, target_num_frames, periodic=periodic), speed
 
 
 def _sample_frames_at(motion, num, den, *, periodic):
@@ -572,30 +480,6 @@ def _sample_frames_at(motion, num, den, *, periodic):
     return motion[lo] * (1.0 - w) + motion[hi] * w
 
 
-def _sample_velocity_path_at(velocity, num, den, *, periodic):
-    """Position path of ``velocity`` (node ``k`` = displacement after ``k``
-    rows) at source times ``num / den``. A periodic clip's path runs past
-    node ``L`` through its terminal (wrap) row and repeats with that cycle's
-    drift, which is what tiling the clip does; an open one has no step past
-    node ``L - 1``."""
-    source_frames = int(velocity.shape[0])
-    path = np.zeros((source_frames + 1,) + velocity.shape[1:], dtype=np.float64)
-    path[1:] = np.cumsum(velocity, axis=0)
-    if periodic:
-        cycles = num // (source_frames * den)
-        num = num - cycles * source_frames * den
-        lo = num // den
-        hi = lo + 1
-        drift = cycles[:, None, None] * path[source_frames]
-    else:
-        last_node = source_frames - 1
-        lo = (num // den).clip(0, last_node)
-        hi = np.minimum(lo + 1, last_node)
-        drift = 0.0
-    w = ((num - lo * den) / den)[:, None, None]
-    return path[lo] * (1.0 - w) + path[hi] * w + drift
-
-
 def resample_time_scaled_window(motion, scaled_frames, window_source_frames, target_num_frames,
                                 *, source_periodic, window_periodic, shift=0):
     """The loader's time-scale, shift and window resample as ONE interpolation.
@@ -613,9 +497,6 @@ def resample_time_scaled_window(motion, scaled_frames, window_source_frames, tar
 
     Times are exact rationals (window ``t`` -> scaled ``(t*a + shift*b)/b`` ->
     source ``*c/d``), so a time that lands on a source frame reads it exactly.
-    The velocity channels keep the window contract of
-    ``resample_motion_features``: displacement per scaled frame, rebuilt
-    from the source's position path.
     """
     source_frames = int(motion.shape[0])
     scaled_frames = int(scaled_frames)
@@ -644,24 +525,8 @@ def resample_time_scaled_window(motion, scaled_frames, window_source_frames, tar
         c, d = source_frames, scaled_frames
     else:
         c, d = source_frames - 1, scaled_frames - 1
-    den = b * d
-    path_count = target_num_frames + 1 if window_periodic else target_num_frames
-    num = (np.arange(path_count, dtype=np.int64) * a + shift * b) * c
-
-    resampled = _sample_frames_at(
-        motion.astype(np.float64, copy=False), num[:target_num_frames], den, periodic=source_periodic
-    )
-    if motion.shape[-1] >= 12:
-        positions = _sample_velocity_path_at(
-            motion[:, :, 9:12].astype(np.float64, copy=False), num, den, periodic=source_periodic
-        )
-        step_scale = resample_step_scale(window_source_frames, target_num_frames, periodic=window_periodic)
-        rebuilt_velocity = np.diff(positions, axis=0) / step_scale
-        if window_periodic:
-            resampled[:, :, 9:12] = rebuilt_velocity
-        else:
-            resampled[:-1, :, 9:12] = rebuilt_velocity
-            resampled[-1, :, 9:12] = rebuilt_velocity[-1]
+    num = (np.arange(target_num_frames, dtype=np.int64) * a + shift * b) * c
+    resampled = _sample_frames_at(motion.astype(np.float64, copy=False), num, b * d, periodic=source_periodic)
     return resampled.astype(motion.dtype, copy=False)
 
 
@@ -678,9 +543,9 @@ def _circular_roll_motion(motion, offset):
 # frame at every seam.  Many loops ship that way, so the frame is dropped at load
 # time, leaving a clean period.
 #
-# The test is scale-free: each pose stack (RIC positions, 6-D rotations) and the
-# wrap velocity row are judged against the clip's own median frame step, and
-# every moving stack must call the pair a repeat.  A frame that fails is real
+# The test is scale-free: each pose stack (positions -- the root's world XZ among
+# them -- and 6-D rotations) is judged against the clip's own median frame step,
+# and every moving stack must call the pair a repeat.  A frame that fails is real
 # motion and stays.
 #
 # Only a frame IDENTICAL to frame 0 is a closing key -- not one a little short
@@ -709,14 +574,11 @@ def _drop_loop_closing_frame(motion, ratio=LOOP_CLOSING_FRAME_RATIO,
                              local_ratio=LOOP_CLOSING_FRAME_LOCAL_RATIO):
     """Drop the closing key when the last frame repeats frame 0; else unchanged.
 
-    Positions are root-relative and cannot see root travel, so the terminal
-    velocity row (the wrap delta last->first that preprocessing writes for a
-    loop) is judged as a third stack.  After the drop no channel needs
-    rewriting: the new last frame's velocity is already the wrap delta to
-    frame 0 within the tolerance that let the frame go.
+    ``motion`` is in the working layout, so the position stack sees the root's
+    world XZ as well as every joint's pose.
     """
     frame_count = int(motion.shape[0])
-    if frame_count < 3 or motion.shape[-1] < 12:
+    if frame_count < 3 or motion.shape[-1] < 9:
         return motion
     frames = np.asarray(motion, dtype=np.float64)
     voted = 0
@@ -733,12 +595,6 @@ def _drop_loop_closing_frame(motion, ratio=LOOP_CLOSING_FRAME_RATIO,
         gap = float(np.linalg.norm(stack[-1] - stack[0], axis=-1).max())
         if gap > ratio * reference or gap > local_ratio * float(steps[-1]):
             return motion
-    velocity = frames[:, :, 9:12]
-    reference = float(np.median(np.linalg.norm(velocity[:-1], axis=-1).max(axis=1)))
-    if reference > LOOP_CLOSING_FRAME_MIN_MOTION:
-        voted += 1
-        if float(np.linalg.norm(velocity[-1], axis=-1).max()) > ratio * reference:
-            return motion
     if voted == 0:
         return motion
     return motion[:-1]
@@ -747,13 +603,13 @@ def _drop_loop_closing_frame(motion, ratio=LOOP_CLOSING_FRAME_RATIO,
 def _tile_loop_motion(motion, repeat_count):
     """Concatenate ``repeat_count`` copies of a loop motion along the time axis.
 
-    Feature consistency at tile boundaries is guaranteed because preprocessing
-    writes the terminal velocity (channels 9-11) as the wrap-around delta
-    ``pos[0] - pos[-1]`` for all motions classified as loop
-    (``detect_motion_loop`` / ``_compute_terminal_local_velocity``), and the
-    caller has already dropped a closing key that repeats frame 0
-    (``_drop_loop_closing_frame``): the step from copy *k*'s last frame to copy
-    *k+1*'s first is one ordinary frame step, not a stall.
+    Feature consistency at tile boundaries is guaranteed because a loop's root
+    returns to its frame-0 world XZ over one cycle (preprocessing writes its
+    terminal velocity row as the wrap-around delta ``pos[0] - pos[-1]``, so the
+    working layout's root path closes), and the caller has already dropped a
+    closing key that repeats frame 0 (``_drop_loop_closing_frame``): the step
+    from copy *k*'s last frame to copy *k+1*'s first is one ordinary frame
+    step, not a stall.
 
     The 6-D rotations (channels 3-8) are unaffected by tiling.  Tiling
     operates in whichever feature space the
@@ -953,8 +809,8 @@ REFERENCE_PAIRS_FILE = "reference_pairs.jsonl"
 def load_reference_groups(sources, data_dict) -> dict[str, tuple[str, ...]]:
     """``{clip id: every clip id of its group}`` for the clips in ``data_dict``.
 
-    A group lists its own clip too, so drawing uniformly from it includes the
-    self-reference. Group members outside this run's pool (a split, subset or
+    A group lists its own clip too; the loader draws a grouped clip's reference
+    from the other members only. Group members outside this run's pool (a split, subset or
     action-group filter) are left out; a group left with one member is no
     group. Every member must have the same stored length and is_loop flag,
     since the reference encoder reads the partner on the target's time axis.
@@ -1171,9 +1027,10 @@ class MotionDataset(data.Dataset):
         # The rest geometry depends only on the per-species cond entry
         # (not on the clip), so it is constant across all samples of a species.
         # Precompute once at construction instead of rebuilding it inside the
-        # per-sample hot path (_load_physical_motion).
-        self._rest_geom_cache = {
-            object_key: rest_geom_features(entry)
+        # per-sample hot path (_load_physical_motion). The target reads the
+        # REST_GEOM_COLUMNS slice; a reference on the stored rig reuses the full array.
+        self._rest_geometry_cache = {
+            object_key: rest_geometry(entry)
             for object_key, entry in cond_dict.items()
         }
         # Structural joint descriptors: same story -- a pure function of the cond
@@ -1311,7 +1168,7 @@ class MotionDataset(data.Dataset):
         self.data_dict = data_dict
         self.name_list = name_list
         # Same-motion groups across rigs (REFERENCE_PAIRS_FILE): a grouped clip
-        # draws its encoder input uniformly from its group.
+        # draws its encoder input uniformly from the other members of its group.
         self.reference_groups = (
             load_reference_groups(opt.sources, data_dict) if getattr(opt, 'ref_encoder', False) else {}
         )
@@ -1488,7 +1345,7 @@ class MotionDataset(data.Dataset):
         # gets every loop augmentation below (closing-key drop, periodic time
         # scale, circular roll, tiling), but the window is then resampled as an
         # open clip and handed over with is_loop=False -- absolute time table,
-        # open velocity step, no wrap losses. That is deliberate label noise:
+        # no wrap step, no wrap losses. That is deliberate label noise:
         # the flag is confounded with content in the corpus (see the model's
         # is_loop note), and a flag the model cannot trust as a content key is
         # one it has to read as time topology only. An explicit loop_offset
@@ -1506,13 +1363,16 @@ class MotionDataset(data.Dataset):
         joint_struct = self._joint_struct_cache[object_type]
         # The reference encoder's input draws its own skeleton augmentation, so
         # it starts from the stored rig, not from the target's augmented one.
-        # A grouped clip draws that rig uniformly from its group, itself included.
+        # A grouped clip draws that rig uniformly from the rest of its group,
+        # never itself: its self-reference is disabled.
         ref_source = None
         ref_partner = False
         if getattr(self.opt, 'ref_encoder', False):
-            partner = random.choice(getattr(self, "reference_groups", {}).get(name, (name,)))
+            group = getattr(self, "reference_groups", {}).get(name)
+            partner = random.choice([member for member in group if member != name]) if group else name
             if partner == name:
-                ref_source = (motion, cond, joint_struct, int(motion_metadata['translation_root_index']))
+                ref_source = (motion, cond, joint_struct, int(motion_metadata['translation_root_index']),
+                              self._rest_geometry_cache[object_type])
             else:
                 partner_data = self.data_dict[partner]
                 partner_type = partner_data['object_type']
@@ -1521,44 +1381,62 @@ class MotionDataset(data.Dataset):
                     self.cond_dict[partner_type],
                     self._joint_struct_cache[partner_type],
                     int(partner_data['motion_metadata']['translation_root_index']),
+                    self._rest_geometry_cache[partner_type],
                 )
                 ref_partner = True
-        # ── Leaf-drop augmentation (topology; see leaf_drop.py) ──
+        # ── Topology augmentation (leaf drop / chain merge; see topology_aug.py) ──
         # Runs on the stored clip, before any temporal stage: from here on the
-        # sample IS a rig without those leaves, so every later stage and the
-        # canonical encode (whose L comes from the kept rest) see that rig.
-        leaf_drop_count = 0
-        leaf_drop_prob = float(getattr(self.opt, 'leaf_drop_prob', 0.0))
-        if leaf_drop_prob > 0.0 and random.random() < leaf_drop_prob:
-            dropped = sample_leaf_drop(cond, motion, motion_metadata['translation_root_index'])
-            if dropped:
-                keep, cond = drop_joints_from_cond(cond, dropped)
-                motion = motion[:, keep]
-                motion_metadata['translation_root_index'] = int(
-                    np.searchsorted(keep, int(motion_metadata['translation_root_index']))
-                )
-                parents = cond['parents']
-                joints_graph_dist = cond['joints_graph_dist']
-                joints_relations = cond['joint_relations']
-                rest_geom = rest_geom_features(cond)
-                offsets = cond['offsets']
-                joints_names_embs = cond['joints_names_embs']
-                joint_struct = build_joint_struct_features(cond, source=str(object_type))
-                leaf_drop_count = len(dropped)
+        # sample IS the edited rig, so every later stage and the canonical
+        # encode (whose L comes from the new rest) see that rig.
+        topology_info = {'applied': False, 'kind': None, 'joints': [], 'skip_reason': 'probability draw'}
+        topology_aug_prob = float(getattr(self.opt, 'topology_aug_prob', 0.0))
+        if topology_aug_prob > 0.0 and random.random() < topology_aug_prob:
+            # topology_aug_kinds: the augmentation preview pins one edit.
+            motion, cond, topology_info = augment_topology(
+                motion, cond, motion_metadata['translation_root_index'],
+                kinds=getattr(self.opt, 'topology_aug_kinds', TOPOLOGY_AUG_KINDS))
+        if topology_info['applied']:
+            motion_metadata['translation_root_index'] = topology_info['translation_root_index']
+            parents = cond['parents']
+            joints_graph_dist = cond['joints_graph_dist']
+            joints_relations = cond['joint_relations']
+            rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
+            offsets = cond['offsets']
+            joints_names_embs = cond['joints_names_embs']
+            joint_struct = build_joint_struct_features(cond, source=str(object_type))
         bone_length_info = {'applied': False, 'scales': {}, 'skip_reason': 'probability draw'}
         bone_length_prob = float(getattr(self.opt, 'bone_length_aug_prob', 0.0))
         if bone_length_prob > 0.0 and random.random() < bone_length_prob:
-            bone_metadata = dict(motion_metadata)
-            bone_metadata['is_loop'] = bool(bone_metadata.get('bone_length_source_is_loop', is_loop))
             motion, cond, bone_length_info = augment_bone_lengths(
-                motion, cond, bone_metadata,
+                motion, cond, motion_metadata,
                 float(getattr(self.opt, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG)),
                 float(getattr(self.opt, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN)),
             )
+            # The structural channel stays the one built above: it names this
+            # rig's joints, not its rest geometry (see rest_repose_aug).
             if bone_length_info['applied']:
-                rest_geom = rest_geom_features(cond)
+                rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
                 offsets = cond['offsets']
-                joint_struct = build_joint_struct_features(cond, source=str(object_type))
+        # Last skeleton stage; the structural channel stays as well.
+        rest_repose_info = {'applied': False, 'skip_reason': 'probability draw'}
+        rest_repose_prob = float(getattr(self.opt, 'rest_repose_prob', 0.0))
+        if rest_repose_prob > 0.0 and random.random() < rest_repose_prob:
+            motion, cond, rest_repose_info = augment_rest_repose(
+                motion, cond, motion_metadata,
+                float(getattr(self.opt, 'rest_repose_max_deg', DEFAULT_REST_REPOSE_MAX_DEG)),
+            )
+            if rest_repose_info['applied']:
+                rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
+                offsets = cond['offsets']
+        # The reference encoder's input draws its skeleton augmentation here too,
+        # on its whole stored clip, so it is grounded on the same clip as the target.
+        ref_skeleton_changed = False
+        if ref_source is not None:
+            from data_loaders.reference import augment_reference_skeleton
+            ref_clip, ref_cond, ref_joint_struct, ref_root_index, ref_geometry = ref_source
+            ref_clip, ref_cond, ref_shared, ref_skeleton_changed = augment_reference_skeleton(
+                ref_clip, ref_cond, dict(motion_metadata, translation_root_index=ref_root_index), self.opt,
+                shared=dict(joint_struct=ref_joint_struct, geometry=ref_geometry))
         # Preview can replay temporal draws on the original skeleton exactly.
         bone_length_rng_state = random.getstate() if return_aug_info else None
         loop_phase_offset = 0
@@ -1571,20 +1449,19 @@ class MotionDataset(data.Dataset):
         # A loop authored with its last frame repeating frame 0 is the loop
         # plus one redundant frame.  It goes first, on the clip as stored:
         # every stage below treats the clip as periodic (the speed resample's wrap
-        # velocity, the circular roll, the tile seams, the window resample),
+        # step, the circular roll, the tile seams, the window resample),
         # and each would turn that frame into a one-frame stall at a random
         # phase of the window.  The roll also makes it undetectable afterwards
         # -- once rolled, first and last are no longer the repeated pair.
         if is_loop:
             motion = _drop_loop_closing_frame(motion)
             m_length = int(motion.shape[0])
-        target_skeleton_changed = bool(leaf_drop_count or bone_length_info['applied'])
-        ref_separate_rig = ref_partner or target_skeleton_changed
+        target_skeleton_changed = bool(topology_info['applied']
+                                       or bone_length_info['applied'] or rest_repose_info['applied'])
+        ref_separate_rig = ref_partner or target_skeleton_changed or ref_skeleton_changed
         if ref_source is not None and ref_separate_rig:
             # The target's verdict, so both sides share one time axis below.
-            ref_motion = ref_source[0][:m_length]
-        elif ref_source is not None:
-            ref_motion = motion
+            ref_motion = ref_clip[:m_length]
 
         # A high-frequency clip (high_frequency.py) is never resampled to fewer
         # frames, so its source budget is the window itself: the speed draw
@@ -1605,8 +1482,8 @@ class MotionDataset(data.Dataset):
         # model is told nothing. Its purpose is the corpus' length distribution
         # -- much of it piles up on a few exact frame counts, so without it
         # resample_speed is a comb and an inference num_frames between the
-        # teeth is out of distribution. A loop clip is time-scaled with its
-        # terminal wrap velocity intact, so it is still a closed cycle.
+        # teeth is out of distribution. A loop clip is time-scaled periodically,
+        # so it is still a closed cycle.
         # A phase-anchored clip (any label loop_is_phase_free rejects, loop or
         # not) is also sped up toward the budget here, so it enters the window
         # whole instead of being cropped mid-event (see the sampler).
@@ -1680,8 +1557,7 @@ class MotionDataset(data.Dataset):
         # A loop-conditioned window is resampled periodically, so its period is
         # exactly the window (what circular_phase_embedding encodes) and its
         # step is L/T = resample_speed_cond; everything else, including a loop
-        # the model is told is not one, is open, at step (L-1)/(T-1). The loss
-        # reads which one from y['is_loop'] (_physical_velocity_step_scale).
+        # the model is told is not one, is open, at step (L-1)/(T-1).
         def sample_window(clip):
             if scaled_length != source_length:
                 return resample_time_scaled_window(
@@ -1712,21 +1588,16 @@ class MotionDataset(data.Dataset):
         ).astype(np.float32, copy=False)
         reference = None
         if ref_source is not None:
-            from data_loaders.reference import prepare_reference_sample
-            _, ref_cond, ref_joint_struct, ref_root_index = ref_source
-            reference_metadata = dict(motion_metadata, is_loop=loop_condition_active,
-                                      translation_root_index=ref_root_index)
+            from data_loaders.reference import finish_reference_sample
             if ref_separate_rig:
-                reference = prepare_reference_sample(
-                    sample_window(ref_motion), ref_cond, reference_metadata, self.opt,
-                    shared=dict(joint_struct=ref_joint_struct))
+                reference = finish_reference_sample(
+                    sample_window(ref_motion), ref_cond, self.opt, shared=ref_shared)
             else:
-                # The target kept the stored rig, so the reference starts from
-                # the same window and reuses its derived channels until its own
-                # augmentation changes the skeleton.
-                reference = prepare_reference_sample(
-                    physical_motion, cond, reference_metadata, self.opt,
-                    shared=dict(feats=motion, joint_struct=joint_struct))
+                # Both sides kept the stored rig, so the reference is the
+                # target's window and reuses its derived channels.
+                reference = finish_reference_sample(
+                    physical_motion, cond, self.opt,
+                    shared=dict(feats=motion, joint_struct=joint_struct, geometry=ref_geometry))
         m_length = target_num_frames
 
         # is_loop is the whole loop condition the model sees: a closed window.
@@ -1760,7 +1631,6 @@ class MotionDataset(data.Dataset):
                 'canonical_feature_mean': cond.get('canonical_feature_mean'),
                 'canonical_feature_std': cond.get('canonical_feature_std'),
                 CANONICAL_DPOS_STD_KEY: cond.get(CANONICAL_DPOS_STD_KEY),
-                ROOT_VEL_LOSS_WEIGHT_KEY: cond.get(ROOT_VEL_LOSS_WEIGHT_KEY),
                 DPOS_LOSS_WEIGHT_KEY: cond.get(DPOS_LOSS_WEIGHT_KEY),
                 'feature_space': cond.get('feature_space', CANONICAL_FEATURE_SPACE),
             }, {
@@ -1771,8 +1641,9 @@ class MotionDataset(data.Dataset):
                 'resample_speed_cond': float(resample_speed_cond),
                 'loop_uncond': bool(loop_uncond),
                 'motion_speed_applied': float(motion_speed_applied),
-                'leaf_drop_count': int(leaf_drop_count),
+                'topology_aug': topology_info,
                 'bone_length_aug': bone_length_info,
+                'rest_repose_aug': rest_repose_info,
                 'bone_length_rng_state': bone_length_rng_state,
                 'object_cond': cond,  # Exact per-sample skeleton for augmentation previews.
             }
@@ -1787,7 +1658,6 @@ class MotionDataset(data.Dataset):
             'canonical_feature_mean': cond.get('canonical_feature_mean'),
             'canonical_feature_std': cond.get('canonical_feature_std'),
             CANONICAL_DPOS_STD_KEY: cond.get(CANONICAL_DPOS_STD_KEY),
-            ROOT_VEL_LOSS_WEIGHT_KEY: cond.get(ROOT_VEL_LOSS_WEIGHT_KEY),
             DPOS_LOSS_WEIGHT_KEY: cond.get(DPOS_LOSS_WEIGHT_KEY),
             'feature_space': cond.get('feature_space', CANONICAL_FEATURE_SPACE),
         }
@@ -1825,13 +1695,14 @@ class MotionDataset(data.Dataset):
         }
 
     def _load_physical_motion(self, data):
+        """The stored clip in the working layout (canonical_features, "Root")."""
         object_type = data['object_type']
         cond = self.cond_dict[object_type]
         motion_path = data['motion_path']
         if self.motion_cache_size > 0:
             motion = self.motion_cache.get(motion_path)
             if motion is None:
-                motion = np.load(motion_path).astype(np.float32, copy=False)
+                motion = stored_to_working(np.load(motion_path))
                 self.motion_cache[motion_path] = motion
                 self.motion_cache.move_to_end(motion_path)
                 while len(self.motion_cache) > self.motion_cache_size:
@@ -1839,10 +1710,10 @@ class MotionDataset(data.Dataset):
             else:
                 self.motion_cache.move_to_end(motion_path)
         else:
-            motion = np.load(motion_path).astype(np.float32, copy=False)
+            motion = stored_to_working(np.load(motion_path))
 
         m_length = motion.shape[0]
-        rest_geom = self._rest_geom_cache[object_type]
+        rest_geom = self._rest_geometry_cache[object_type][:, REST_GEOM_COLUMNS]
         offsets = cond['offsets']
         return (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], rest_geom, offsets, cond['joints_names_embs'], cond['kinematic_chains'])
         
@@ -2033,7 +1904,7 @@ class Truebones(data.Dataset):
                 f"loop_cond_prob must be in [0, 1], got {self.opt.loop_cond_prob}."
             )
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
-        self.opt.leaf_drop_prob = float(kwargs.get('leaf_drop_prob', 0.0))
+        self.opt.topology_aug_prob = float(kwargs.get('topology_aug_prob', 0.0))
         self.opt.ref_encoder = bool(kwargs.get('ref_encoder', False))
         self.opt.joint_name_drop_prob = float(kwargs.get('joint_name_drop_prob', 0.0))
         if not 0 <= self.opt.joint_name_drop_prob <= 1:
@@ -2047,16 +1918,18 @@ class Truebones(data.Dataset):
                                  self.opt.bone_length_aug_min)
         if self.opt.bone_length_aug_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
             raise ValueError('bone-length augmentation is for training splits only; pass 0.0.')
-        if not 0.0 <= self.opt.leaf_drop_prob <= 1.0:
-            raise ValueError(
-                f"leaf_drop_prob must be in [0, 1], got {self.opt.leaf_drop_prob}."
-            )
+        self.opt.rest_repose_prob = float(kwargs.get('rest_repose_prob', 0.0))
+        self.opt.rest_repose_max_deg = float(kwargs.get('rest_repose_max_deg', DEFAULT_REST_REPOSE_MAX_DEG))
+        validate_rest_repose_aug(self.opt.rest_repose_prob, self.opt.rest_repose_max_deg)
+        if self.opt.rest_repose_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
+            raise ValueError('rest re-pose augmentation is for training splits only; pass 0.0.')
+        validate_topology_aug(self.opt.topology_aug_prob)
         # A training augmentation: on an evaluation split it would change the
         # rigs being scored from one pass to the next.
-        if self.opt.leaf_drop_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
+        if self.opt.topology_aug_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
             raise ValueError(
-                f"leaf_drop_prob={self.opt.leaf_drop_prob} on split '{split}': the "
-                f"leaf-drop augmentation is for training splits only; pass 0.0."
+                f"topology_aug_prob={self.opt.topology_aug_prob} on split '{split}': the "
+                f"topology augmentation is for training splits only; pass 0.0."
             )
         if not 0.0 <= self.opt.loop_tile_single_prob <= 1.0:
             raise ValueError(

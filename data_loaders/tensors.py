@@ -8,7 +8,6 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_DPOS_STD_KEY,
     CANONICAL_FEATURE_SPACE,
     DPOS_LOSS_WEIGHT_KEY,
-    ROOT_VEL_LOSS_WEIGHT_KEY,
     PARENT_INDEX_KEY,
     REST_BONE_FRAME_KEY,
     REST_LENGTH_SCALE_KEY,
@@ -203,7 +202,7 @@ def truebones_collate(batch):
 
     # Per-sample scalars the loss reads ([B]), emitted only when every item has
     # them for the same reason as the stats above.
-    for scalar_key in (CANONICAL_DPOS_STD_KEY, ROOT_VEL_LOSS_WEIGHT_KEY, DPOS_LOSS_WEIGHT_KEY):
+    for scalar_key in (CANONICAL_DPOS_STD_KEY, DPOS_LOSS_WEIGHT_KEY):
         scalar_vals = [batch_item.get(scalar_key) for batch_item in notnone_batches]
         if all(v is not None for v in scalar_vals):
             cond['y'][scalar_key] = torch.tensor([float(v) for v in scalar_vals], dtype=torch.float32)
@@ -339,7 +338,7 @@ def truebones_batch_collate(batch, joint_buckets=None):
         [0]  motion          – np.ndarray, (frames, n_joints, n_feats)
         [1]  m_length        – int, motion length in frames
         [2]  parents         – np.ndarray, parent indices
-        [3]  rest_geom – np.ndarray, (n_joints, REFERENCE_POSE_CHANNELS) rest_geom_features
+        [3]  rest_geom – np.ndarray, (n_joints, REST_GEOM_DIM - 1) rest_geometry's REST_GEOM_COLUMNS
         [4]  offsets         – np.ndarray, bone offsets
         [5]  joints_graph_dist – np.ndarray, graph distance matrix
         [6]  joints_relations  – np.ndarray, joint relation matrix
@@ -460,7 +459,7 @@ def truebones_batch_collate(batch, joint_buckets=None):
                 np.asarray(extra_cond['canonical_feature_std'], dtype=np.float32).reshape(-1)
             )
         if extra_cond is not None:
-            for scalar_key in (CANONICAL_DPOS_STD_KEY, ROOT_VEL_LOSS_WEIGHT_KEY, DPOS_LOSS_WEIGHT_KEY):
+            for scalar_key in (CANONICAL_DPOS_STD_KEY, DPOS_LOSS_WEIGHT_KEY):
                 if extra_cond.get(scalar_key) is not None:
                     item[scalar_key] = float(extra_cond[scalar_key])
             item['feature_space'] = extra_cond.get('feature_space', CANONICAL_FEATURE_SPACE)

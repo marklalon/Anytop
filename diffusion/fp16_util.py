@@ -426,15 +426,12 @@ class MixedPrecisionTrainer:
         Without this the scaler climbs until a step overflows, which is the
         source of the periodic skipped steps under fp16 (see the constant's
         comment).
-        ``get_scale()`` reads a device scalar, but every call site has already
-        synced on the gradient norm this step, so it adds no new sync.
+        Clamped on the device: reading the scale back (``get_scale()``) would
+        wait for the optimizer step just queued, draining the GPU every step.
         """
-        if not self.scaler.is_enabled():
+        if not self.scaler.is_enabled() or not GRAD_SCALER_MAX_SCALE:
             return
-        scale = self.scaler.get_scale()
-        if GRAD_SCALER_MAX_SCALE and scale > GRAD_SCALER_MAX_SCALE:
-            self.scaler.update(float(GRAD_SCALER_MAX_SCALE))
-            scale = float(GRAD_SCALER_MAX_SCALE)
+        self.scaler.update(self.scaler._get_scale_async().clamp(max=float(GRAD_SCALER_MAX_SCALE)))
 
     def _optimize_amp(self, opt: th.optim.Optimizer):
         if self.scaler.is_enabled():

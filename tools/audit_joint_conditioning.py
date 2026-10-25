@@ -201,14 +201,12 @@ def audit_model_padding(audit):
     import torch  # local: the data-side checks must run without a torch build
 
     from data_loaders.reference import REST_GEOM_DIM
-    from data_loaders.truebones.truebones_utils.canonical_features import (
-        JOINT_MODEL_CHANNELS, ROOT_MODEL_CHANNELS,
-    )
+    from data_loaders.truebones.truebones_utils.canonical_features import MODEL_CHANNELS
     from model.anytop import InputProcess
 
     torch.manual_seed(0)
     latent_dim, t5_dim, frames, max_joints = 16, 32, 3, 5
-    process = InputProcess(len(JOINT_MODEL_CHANNELS), len(ROOT_MODEL_CHANNELS), latent_dim, t5_dim).eval()
+    process = InputProcess(len(MODEL_CHANNELS), latent_dim, t5_dim).eval()
 
     x = torch.randn(2, max_joints, FEATS_LEN, frames)
     rest_geom = torch.randn(1, 2, max_joints, REST_GEOM_DIM)

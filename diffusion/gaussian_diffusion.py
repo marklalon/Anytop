@@ -16,18 +16,19 @@ from copy import deepcopy
 from diffusion import logger
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
-from utils.device_transfer import host_to_device
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
 from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_DPOS_STD_KEY,
     CANONICAL_STD_KEY,
     DPOS_LOSS_WEIGHT_KEY,
-    JOINT_MODEL_CHANNELS,
-    ROOT_VEL_CHANNELS,
-    ROOT_VEL_LOSS_WEIGHT_KEY,
+    MODEL_CHANNELS,
+    PARENT_INDEX_KEY,
+    ROOT_STAT_SLICE,
     _length_scale_from_cond,
     canonical_to_physical_hml,
+    root_relative_positions,
 )
+from utils.device_transfer import host_to_device
 
 
 # Floor of the rest length that normalizes the bone-vector loss, as a fraction
@@ -217,10 +218,8 @@ class GaussianDiffusion:
         loss_type,
         rescale_timesteps=False,
         lambda_geo=0.,
-        lambda_root_vel=0.,
         lambda_dpos=0.,
         lambda_loop_wrap=0.,
-        lambda_loop_root_closure=0.,
         lambda_bone=0.,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
@@ -231,10 +230,8 @@ class GaussianDiffusion:
         self.loss_type = loss_type
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
-        self.lambda_root_vel = float(lambda_root_vel)
         self.lambda_dpos = float(lambda_dpos)
         self.lambda_loop_wrap = float(lambda_loop_wrap)
-        self.lambda_loop_root_closure = float(lambda_loop_root_closure)
         self.lambda_bone = float(lambda_bone)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
@@ -246,10 +243,6 @@ class GaussianDiffusion:
             )
         if self.lambda_loop_wrap < 0.0:
             raise ValueError(f"lambda_loop_wrap must be >= 0, got {self.lambda_loop_wrap}")
-        if self.lambda_loop_root_closure < 0.0:
-            raise ValueError(
-                f"lambda_loop_root_closure must be >= 0, got {self.lambda_loop_root_closure}"
-            )
         if self.lambda_bone < 0.0:
             raise ValueError(f"lambda_bone must be >= 0, got {self.lambda_bone}")
         if self.temporal_span_seam_loss_weight < 0.0:
@@ -465,53 +458,6 @@ class GaussianDiffusion:
         loss_val = loss / non_zero_elements
         return loss_val
 
-    def _coerce_resample_speed_batch(self, value, batch_size, device, dtype):
-        if value is None:
-            return th.ones(batch_size, device=device, dtype=dtype)
-        on_accelerator = th.is_tensor(value) and value.device.type != 'cpu'
-        value = host_to_device(value, device, dtype=dtype).reshape(-1)
-        if value.numel() == 1 and batch_size != 1:
-            value = value.expand(batch_size)
-        elif value.numel() != batch_size:
-            raise ValueError(
-                f"resample_speed_cond has length {value.numel()} but expected {batch_size}."
-            )
-        if on_accelerator:
-            # Checked on the device: reading it back would sync every step, in
-            # each of the three losses that call this. A bad value still aborts
-            # the run, as a device-side assert.
-            th._assert_async(
-                (th.isfinite(value) & (value > 0)).all(),
-                "resample_speed_cond must be finite and positive",
-            )
-            return value
-        if not th.isfinite(value).all():
-            raise ValueError("resample_speed_cond must be finite")
-        if bool((value <= 0).any()):
-            raise ValueError("resample_speed_cond must be positive")
-        return value
-
-    def _physical_velocity_step_scale(self, y, batch_size, n_frames, device, dtype):
-        """Source frames per window frame, as dataset.resample_step_scale.
-
-        An open window spans its ``L = resample_speed * T`` source frames end
-        to end, ``(L - 1) / (T - 1)``; a loop window is resampled periodically,
-        ``L / T``, which is resample_speed itself.
-        """
-        if n_frames <= 1:
-            return th.ones(batch_size, device=device, dtype=dtype)
-        y = y if isinstance(y, dict) else {}
-        resample_speed = self._coerce_resample_speed_batch(
-            y.get('resample_speed_cond'),
-            batch_size,
-            device,
-            dtype,
-        )
-        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
-        source_frames = (resample_speed * float(n_frames)).clamp_min(1.0)
-        open_step = ((source_frames - 1.0) / float(n_frames - 1)).clamp_min(0.0)
-        return th.where(is_loop, resample_speed, open_step)
-
     def _per_sample_y_scalar(self, y, key, batch_size, device, default=None):
         """A ``[B]`` float tensor from ``y[key]`` (``default`` when absent)."""
         value = y.get(key) if isinstance(y, dict) else None
@@ -519,7 +465,7 @@ class GaussianDiffusion:
             if default is None:
                 raise KeyError(
                     f"y[{key!r}] is missing; the training loader collates it from cond.npy "
-                    "(regenerate the cond if it predates root-only velocity)."
+                    "(regenerate the cond if it predates it)."
                 )
             return th.full((batch_size,), float(default), device=device, dtype=th.float32)
         value = value if torch.is_tensor(value) else th.as_tensor(np.asarray(value, dtype=np.float32))
@@ -528,39 +474,29 @@ class GaussianDiffusion:
             value = value.expand(batch_size)
         return value
 
-    def root_velocity_loss(self, target, model_output, y):
-        """Per-sample MSE of the root's X/Z velocity, the one velocity the
-        model writes, in canonical units. Scaled by the species'
-        ``root_vel_loss_weight``. ``[B]``."""
-        channels = [target[:, 0, c, :] for c in ROOT_VEL_CHANNELS]
-        predicted = [model_output[:, 0, c, :] for c in ROOT_VEL_CHANNELS]
-        err = sum((p - t) ** 2 for p, t in zip(predicted, channels))       # [B, T]
-        per_sample = err.mean(dim=-1) / float(len(ROOT_VEL_CHANNELS))
-        weight = self._per_sample_y_scalar(
-            y, ROOT_VEL_LOSS_WEIGHT_KEY, target.shape[0], target.device, default=1.0
-        )
-        return per_sample * weight
-
     def position_step_loss(self, target, model_output, spat_mask, n_joints, y):
         """Per-sample MSE of every joint's frame-to-frame position step against
         the target's, in units of the corpus position-step RMS. A loop sample
-        also counts its wrap step ``pos[0] - pos[-1]``. This is the
-        supervision the non-root velocity channels used to give the positions,
-        without the root's step repeated on every joint. Scaled by the
-        species' ``dpos_loss_weight``. ``[B]``."""
-        batch_size, _max_joints, _n_feats, n_frames = target.shape
+        also counts its wrap step ``pos[0] - pos[-1]``. The root's step is its
+        world XZ step, so this is also the root trajectory's step and, on a
+        loop, its closure. Scaled by the species' ``dpos_loss_weight``. ``[B]``."""
+        batch_size, max_joints, _n_feats, n_frames = target.shape
         device = target.device
         if n_frames < 2:
             return target.new_zeros(batch_size)
         y = y if isinstance(y, dict) else {}
-        pos_std = y.get(CANONICAL_STD_KEY)
-        if pos_std is None:
+        std = y.get(CANONICAL_STD_KEY)
+        if std is None:
             raise KeyError(f"y[{CANONICAL_STD_KEY!r}] is missing; the position-step loss needs it.")
-        pos_std = pos_std.to(device=device, dtype=th.float32)
-        pos_std = (pos_std.reshape(1, -1).expand(batch_size, -1) if pos_std.dim() == 1
-                   else pos_std.reshape(batch_size, -1))[:, 0:3]
+        std = std.to(device=device, dtype=th.float32)
+        std = std.reshape(1, -1).expand(batch_size, -1) if std.dim() == 1 else std.reshape(batch_size, -1)
+        # Joint 0 is standardized by the root's own stats (canonical_features, "Root").
+        pos_std = th.cat([
+            std[:, ROOT_STAT_SLICE].unsqueeze(1),
+            std[:, 0:3].unsqueeze(1).expand(-1, max_joints - 1, -1),
+        ], dim=1)                                                                   # [B, J, 3]
         dpos_std = self._per_sample_y_scalar(y, CANONICAL_DPOS_STD_KEY, batch_size, device)
-        scale = (pos_std / dpos_std.clamp_min(1e-8).unsqueeze(1)).view(batch_size, 1, 3, 1)
+        scale = (pos_std / dpos_std.clamp_min(1e-8).view(batch_size, 1, 1)).unsqueeze(-1)
 
         def steps(x):
             pos = x[:, :, 0:3, :]
@@ -648,8 +584,8 @@ class GaussianDiffusion:
                 "bone_vector_consistency_loss requires y['parents'] (per-sample "
                 "parent arrays from the collate); none were provided."
             )
-        # Rest bone lengths MUST come from the PHYSICAL rest pose; y['rest_geom']
-        # holds unit bone directions, not lengths.
+        # Rest bone lengths MUST come from the PHYSICAL rest pose: y['rest_geom']
+        # is divided by L, so it carries only relative lengths.
         rest_pos = (y or {}).get('rest_pos_ric_hml')
         if rest_pos is None:
             rest_physical = (y or {}).get('rest_pose_physical')
@@ -666,18 +602,24 @@ class GaussianDiffusion:
         rest_pos = rest_pos.to(device=device, dtype=pred_physical.dtype)  # [bs, J, 3]
 
         # Padded [bs, max_joints] parent-index tensor + per-joint bone validity
-        # (False for the root, which has no parent bone). Small python loop over
-        # the batch; this loss runs eager, so the per-step cost is negligible.
-        parents_idx = th.zeros(bs, max_joints, dtype=th.long, device=device)
-        parent_is_bone = th.zeros(bs, max_joints, dtype=th.bool, device=device)
-        for b, p in enumerate(parents_list):
-            p_t = th.as_tensor(np.asarray(p).reshape(-1), dtype=th.long, device=device)
-            n = min(int(p_t.numel()), max_joints)
-            parents_idx[b, :n] = p_t[:n].clamp(min=0)
-            parent_is_bone[b, :n] = p_t[:n] >= 0
+        # (False for the root, which has no parent bone). The collate's
+        # PARENT_INDEX_KEY already is that tensor (-1 at roots and padding) and
+        # arrives with the batch; without it the per-sample arrays are padded on
+        # the host and copied once, not once per sample (each a stream sync).
+        parent_index = (y or {}).get(PARENT_INDEX_KEY)
+        if parent_index is None or tuple(parent_index.shape) != (bs, max_joints):
+            padded = np.full((bs, max_joints), -1, dtype=np.int64)
+            for b, p in enumerate(parents_list):
+                p = np.asarray(p).reshape(-1)[:max_joints]
+                padded[b, :p.size] = p
+            parent_index = host_to_device(padded, device)
+        parent_index = parent_index.to(device=device, dtype=th.long)
+        parents_idx = parent_index.clamp(min=0)
+        parent_is_bone = parent_index >= 0
 
-        pos_pred = pred_physical[:, :, 0:3, :]                 # [bs, J, 3, T]
-        pos_tgt = target_physical[:, :, 0:3, :]
+        # The all-RIC view: a bone off the root must not carry its world XZ.
+        pos_pred = root_relative_positions(pred_physical[:, :, 0:3, :])    # [bs, J, 3, T]
+        pos_tgt = root_relative_positions(target_physical[:, :, 0:3, :])
 
         gather_bt = parents_idx.view(bs, max_joints, 1, 1).expand(-1, -1, 3, n_frames)
         vec_pred = pos_pred - th.gather(pos_pred, 1, gather_bt)               # [bs, J, 3, T]
@@ -731,20 +673,6 @@ class GaussianDiffusion:
                 f"Boolean batch value has length {value.numel()} but expected {batch_size}."
             )
         return value
-
-    def _coerce_index_batch(self, value, batch_size, device):
-        if value is None:
-            return th.zeros(batch_size, device=device, dtype=th.long)
-        if not torch.is_tensor(value):
-            value = [0 if item is None else int(item) for item in value]
-        result = host_to_device(value, device, dtype=th.long).reshape(-1)
-        if result.numel() == 1 and batch_size != 1:
-            result = result.expand(batch_size)
-        elif result.numel() != batch_size:
-            raise ValueError(
-                f"translation_root_index has length {result.numel()} but expected {batch_size}."
-            )
-        return result
 
     def loop_wrap_loss(self, model_output, y, n_joints):
         """Rotation seam continuity of loop samples, on denormalized outputs.
@@ -800,70 +728,6 @@ class GaussianDiffusion:
             'loop_wrap_loss': rot_loss,
             'loop_wrap_rot': rot_loss,
         }
-
-    def loop_root_xz_closure_loss(self, model_output, y, n_joints):
-        """Full-cycle closure of the translation root's XZ velocity on loop samples.
-
-        The root's world XZ path is carried ONLY by its velocity channels
-        (ch9/ch11 -- its RIC ch0/ch2 are structurally zero) and the exporter
-        integrates them. A loop clip's terminal velocity row is the wrap delta
-        ``pos[0] - pos[-1]`` (features._compute_terminal_local_velocity, kept by
-        the circular roll / tile / resample in dataset._prepare_sample), so on
-        every loop training target the T root velocity rows sum to exactly zero
-        (|sum| <= 2e-16 on all 2629 loop clips of the three datasets).
-
-        Nothing else supervises that integral: ``l_simple`` is per-frame and
-        blind to a DC bias of ~1% of the velocity std, while over a cycle that
-        bias IS the seam pop (v7 --loop samples drifted ~0.01 per cycle, more
-        than the root's own in-cycle sway, all in the same direction -- the
-        pooled canonical velocity mean decoded back into the root channels).
-        ``loop_wrap_loss`` masks the root's ch0/ch2 for its terminal term, so
-        the root's XZ closure was the one loop invariant left open.
-
-        The constraint is linear in the output, so the posterior-mean x0
-        prediction can satisfy it at every timestep (E[sum v] = sum E[v] = 0);
-        unlike a geodesic term the weight carries no bias cost. It does carry
-        an optimization cost: one scalar per sample pushes T*2 elements, and
-        on the converged v7 weights lambda=0.1 already matches l_simple's
-        gradient norm at t=10 while 1.0 is ~12x it -- hence the 0.05-0.2 range
-        on --lambda_loop_root_closure.
-
-        Returns the squared per-cycle closure ``||sum_t vel_xz[t] * step||^2``
-        in physical units, averaged over the active loop samples, plus the
-        mean closure magnitude ``loop_root_xz_drift`` (the seam pop, in the
-        same units as the dataset's LOOP_DETECTION_ROOT_XZ_TOLERANCE) as a
-        metric to read against the weight.
-        """
-        batch_size, max_joints, n_feats, n_frames = model_output.shape
-        device = model_output.device
-        zero = model_output.new_zeros(())
-        if n_frames < 2 or n_feats < 12:
-            return {'loop_root_xz_closure': zero, 'loop_root_xz_drift': zero}
-        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
-        valid_joints = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1).clamp(min=0, max=max_joints)
-        root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
-        root_valid = (root_indices >= 0) & (root_indices < valid_joints)
-        active_valid = is_loop & root_valid
-        active_weight = active_valid.to(dtype=model_output.dtype)
-        active_denom = active_weight.sum().clamp(min=1.0)
-
-        step_scale = self._physical_velocity_step_scale(
-            y, batch_size, n_frames, device, model_output.dtype,
-        ).view(batch_size, 1)
-        batch_indices = th.arange(batch_size, device=device)
-        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
-        root_rows = model_output[batch_indices, root_indices_clamped]
-        # Stacked, not indexed with a host list (a blocking upload per step).
-        root_vel_xz = th.stack([root_rows[:, 9], root_rows[:, 11]], dim=1)            # [bs, 2, T]
-        # Every row, the terminal one included: that is the identity the
-        # stored tensors satisfy, and summing the visible rows alone would
-        # add a pull of the terminal row toward zero on top.
-        closure = root_vel_xz.sum(dim=-1) * step_scale                                 # [bs, 2]
-        closure_sq = (closure ** 2).sum(dim=-1)
-        closure_sq = th.where(active_valid, closure_sq, th.zeros_like(closure_sq))
-        loss = (closure_sq * active_weight).sum() / active_denom
-        drift = (th.sqrt(closure_sq) * active_weight).sum() / active_denom
-        return {'loop_root_xz_closure': loss, 'loop_root_xz_drift': drift}
 
     def q_mean_variance(self, x_start, t):
         """
@@ -1964,19 +1828,15 @@ class GaussianDiffusion:
                 lengths_fp32 = lengths.float()
                 actual_joints_fp32 = actual_joints.float()
 
-                # Position and rotation only: the root's X/Z velocity has its
-                # own term and every other velocity channel is derived.
-                n_joint_channels = len(JOINT_MODEL_CHANNELS)
+                # Position and rotation only: velocity is not a model channel.
+                n_model_channels = len(MODEL_CHANNELS)
                 terms["l_simple"] = self.spatial_masked_l2(
-                    target_fp32[:, :, :n_joint_channels], model_output_fp32[:, :, :n_joint_channels],
+                    target_fp32[:, :, :n_model_channels], model_output_fp32[:, :, :n_model_channels],
                     joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32,
                 )
                 terms["loss"] = terms["l_simple"].clone()
 
                 y_for_decode = (model_kwargs or {}).get('y', {})
-                if self.lambda_root_vel > 0.:
-                    terms["root_vel_loss"] = self.root_velocity_loss(target_fp32, model_output_fp32, y_for_decode)
-                    terms["loss"] = terms["loss"] + self.lambda_root_vel * terms["root_vel_loss"]
                 if self.lambda_dpos > 0.:
                     terms["dpos_loss"] = self.position_step_loss(
                         target_fp32, model_output_fp32, joints_padding_mask_fp32,
@@ -2036,23 +1896,6 @@ class GaussianDiffusion:
                     )
                     terms.update(loop_terms)
                     terms["loss"] = terms["loss"] + self.lambda_loop_wrap * terms["loop_wrap_loss"]
-
-                if self.lambda_loop_wrap > 0.0 or self.lambda_loop_root_closure > 0.0:
-                    # Computed whenever loop supervision is on, so a run with
-                    # lambda_loop_root_closure=0 still logs loop_root_xz_drift
-                    # as the baseline the weighted run is read against.
-                    y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
-                    closure_terms = self.loop_root_xz_closure_loss(
-                        model_output_physical,
-                        y,
-                        actual_joints,
-                    )
-                    terms.update(closure_terms)
-                    if self.lambda_loop_root_closure > 0.0:
-                        terms["loss"] = (
-                            terms["loss"]
-                            + self.lambda_loop_root_closure * terms["loop_root_xz_closure"]
-                        )
 
         else:
             raise NotImplementedError(self.loss_type)

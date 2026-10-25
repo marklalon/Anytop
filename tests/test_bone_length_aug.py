@@ -14,12 +14,16 @@ from data_loaders.truebones.truebones_utils.bone_length_aug import (
 from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
 )
-from data_loaders.truebones.truebones_utils.joint_struct_features import build_joint_struct_features
-from data_loaders.reference import rest_geom_features
-from data_loaders.truebones.truebones_utils.features import recover_from_bvh_ric_np
+from data_loaders.truebones.truebones_utils.joint_struct_features import (
+    JOINT_STRUCT_FEATURE_NAMES, build_joint_struct_features,
+)
+from data_loaders.reference import REST_GEOM_COLUMNS, rest_geometry
 from data_loaders.truebones.data.dataset import MotionDataset
-from tools.sample_augmented_bvh import PreviewMotionDataset
 from utils.retarget_core import batch_forward_kinematics_np
+
+# Structural columns read off ``parents`` alone.
+TOPOLOGY_STRUCT_COLUMNS = [i for i, name in enumerate(JOINT_STRUCT_FEATURE_NAMES)
+                           if name not in ('sib_rank', 'side')]
 
 
 def fixture():
@@ -39,13 +43,28 @@ def fixture():
                 canonical_joint_names=['Hips', 'Left Thigh', 'Left Knee', 'Left Foot',
                                        'Right Thigh', 'Right Knee', 'Right Foot'],
                 symmetry_partner_indices=[-1, 4, 5, 6, 1, 2, 3], translation_root_index=0,
-                canonical_feature_mean=np.zeros(12), canonical_feature_std=np.ones(12),
+                canonical_feature_mean=np.zeros(15), canonical_feature_std=np.ones(15),
                 joint_mask_candidate_roots=np.zeros(7), joints_names_embs=np.zeros((7, 4)),
                 joints_graph_dist=np.zeros((7, 7)), joint_relations=np.zeros((7, 7)),
                 kinematic_chains=[])
     motion = np.broadcast_to(rest_feature, (30, 7, 12)).copy()
     metadata = dict(action_label='walk', translation_root_index=0, is_loop=False)
     return motion, cond, metadata
+
+
+def working(positions):
+    """The working layout of world positions: RIC, the root at its world XZ."""
+    out = positions.copy()
+    out[:, 1:, 0] -= positions[:, 0:1, 0]
+    out[:, 1:, 2] -= positions[:, 0:1, 2]
+    return out
+
+
+def world_of(features):
+    positions = features[..., :3].astype(np.float64).copy()
+    positions[:, 1:, 0] += positions[:, 0:1, 0]
+    positions[:, 1:, 2] += positions[:, 0:1, 2]
+    return positions
 
 
 @pytest.mark.parametrize('prob, magnitude', [(-.1, .1), (1.1, .1), (np.nan, .1),
@@ -117,7 +136,7 @@ def test_all_actions_and_missing_labels_are_augmented(label):
     assert not np.allclose(new_cond['offsets'], cond['offsets'])
 
 
-def test_velocity_and_authored_deformation_with_rotating_parent():
+def test_authored_deformation_with_rotating_parent():
     motion, cond, metadata = fixture()
     cond['canonical_joint_names'] = ['Hips', 'Tail 1', 'Tail 2', 'Tail 3', '', '', '']
     cond['joint_side_labels'] = ['center'] * 7
@@ -135,15 +154,11 @@ def test_velocity_and_authored_deformation_with_rotating_parent():
     positions[:, 2, 1] *= np.linspace(1, 1.05, 30)
     world, _ = batch_forward_kinematics_np(rotations, positions, cond['parents'])
     from motion_lib.Quaternions import Quaternions
-    motion[..., :3] = world
-    motion[..., 0] -= world[:, :1, 0]
+    motion[..., :3] = working(world)
     motion[..., 3:9] = Quaternions(rotations).rotation_matrix(cont6d=True)
-    motion[:-1, :, 9:12] = np.diff(world, axis=0)
-    motion[-1, :, 9:12] = motion[-2, :, 9:12]
     out, new_cond, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(5))
     assert info['applied']
-    actual = recover_from_bvh_ric_np(out, translation_root_index=0)
-    np.testing.assert_allclose(np.diff(actual, axis=0), out[:-1, :, 9:12], atol=2e-7)
+    actual = world_of(out)
     factor = info['scales']['chain_1']
     scaled_positions = positions.copy()
     scaled_positions[:, [1, 2, 3]] *= factor
@@ -157,15 +172,12 @@ def test_velocity_and_authored_deformation_with_rotating_parent():
     np.testing.assert_allclose(out[..., 3:9], motion[..., 3:9], atol=2e-7)
 
 
-@pytest.mark.parametrize('periodic', [False, True])
-def test_nonroot_translation_carrier_and_separate_roots(periodic):
+def test_separate_roots_keep_the_root_world_path():
     motion, cond, metadata = fixture()
     cond['parents'][4] = -1
     cond['canonical_joint_names'] = ['Hips', 'Tail 1', 'Tail 2', 'Tail 3', '', '', '']
     cond['joint_side_labels'] = ['center'] * 7
     cond.pop('symmetry_partner_indices')
-    cond['translation_root_index'] = metadata['translation_root_index'] = 2
-    metadata['is_loop'] = periodic
     rotations = np.zeros((30, 7, 4))
     rotations[..., 0] = 1
     angle = np.linspace(0, .5, 30)
@@ -176,28 +188,27 @@ def test_nonroot_translation_carrier_and_separate_roots(periodic):
     local[:, 0, 1] = 1
     world, _ = batch_forward_kinematics_np(rotations, local, cond['parents'])
     from motion_lib.Quaternions import Quaternions
-    motion[..., :3] = world
-    motion[..., 0] -= world[:, 2:3, 0]
-    motion[..., 2] -= world[:, 2:3, 2]
+
+    motion[..., :3] = working(world)
     motion[..., 3:9] = Quaternions(rotations).rotation_matrix(cont6d=True)
-    motion[:-1, :, 9:12] = np.diff(world, axis=0)
-    motion[-1, :, 9:12] = world[0] - world[-1] if periodic else motion[-2, :, 9:12]
     out, _, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(5))
     scaled_local = local.copy()
     groups = body_groups(cond)
-    assert groups['chain_1'] == [1, 3]
+    assert groups['chain_1'] == [1, 2, 3]
     for group, factor in info['scales'].items():
         scaled_local[:, groups[group]] *= factor
     expected, _ = batch_forward_kinematics_np(rotations, scaled_local, cond['parents'])
     expected[..., 1] += world[..., 1].min() - expected[..., 1].min()
-    # World recovery chooses the first carrier's XZ as its origin.
-    expected[..., 0] -= expected[0, 2, 0]
-    expected[..., 2] -= expected[0, 2, 2]
-    actual = recover_from_bvh_ric_np(out, translation_root_index=2)
-    np.testing.assert_allclose(actual, expected, atol=2e-7)
-    np.testing.assert_allclose(out[:-1, :, 9:12], np.diff(expected, axis=0), atol=2e-7)
-    terminal = expected[0] - expected[-1] if periodic else out[-2, :, 9:12]
-    np.testing.assert_allclose(out[-1, :, 9:12], terminal, atol=2e-7)
+    # The root's world XZ path is the source's: bone lengths do not move it.
+    np.testing.assert_allclose(out[:, 0, [0, 2]], motion[:, 0, [0, 2]], atol=0)
+    np.testing.assert_allclose(world_of(out), expected, atol=2e-7)
+
+
+def test_a_non_zero_translation_root_is_refused():
+    motion, cond, metadata = fixture()
+    metadata['translation_root_index'] = 2
+    with pytest.raises(ValueError, match='joint 0'):
+        augment_bone_lengths(motion, cond, metadata, rng=random.Random(5))
 
 
 def test_contact_quality_does_not_reject_sample():
@@ -274,51 +285,57 @@ def test_non_parent_first_joint_order_is_supported():
     np.testing.assert_allclose(out[:, np.flatnonzero(np.isin(order, [3, 6])), 1], 0, atol=1e-6)
 
 
-def make_dataset(cls=MotionDataset):
+def make_dataset():
     motion, cond, metadata = fixture()
-    dataset = cls.__new__(cls)
+    dataset = MotionDataset.__new__(MotionDataset)
     dataset.opt = SimpleNamespace(bone_length_aug_prob=1., bone_length_aug_max=.1,
-                                  motion_speed_aug=1., preview_mode='bone-length')
+                                  motion_speed_aug=1.)
     dataset.max_motion_length = 30
     dataset.min_length = 2
     dataset.opt.max_joints = 7
     dataset.action_conditioning = None
     dataset.cond_dict = {'test': cond}
     dataset._joint_struct_cache = {'test': build_joint_struct_features(cond)}
+    dataset._rest_geometry_cache = {'test': rest_geometry(cond)}
     dataset._load_physical_motion = lambda data: (
         motion, len(motion), 'test', cond['parents'], cond['joints_graph_dist'],
-        cond['joint_relations'], rest_geom_features(cond), cond['offsets'],
+        cond['joint_relations'], rest_geometry(cond)[:, REST_GEOM_COLUMNS], cond['offsets'],
         cond['joints_names_embs'], [])
     return dataset, dict(motion_metadata=metadata)
 
 
-def test_loader_rebuilds_geometry_and_canonical_roundtrip():
+def pin_target_leaf_drop(monkeypatch, dropped):
+    """The target's topology draw drops ``dropped``; the reference's draw
+    leaves its rig whole."""
+    import data_loaders.truebones.data.dataset as dataset_module
+    from data_loaders.truebones.truebones_utils import topology_aug
+    from data_loaders.truebones.truebones_utils.leaf_drop import drop_joints_from_cond
+
+    def target(motion, cond, translation_root_index, **kwargs):
+        keep, new_cond = drop_joints_from_cond(cond, dropped)
+        return motion[:, keep], new_cond, {
+            'applied': True, 'kind': 'leaf_drop', 'joints': list(dropped),
+            'translation_root_index': int(np.searchsorted(keep, translation_root_index))}
+
+    def reference(motion, cond, translation_root_index, **kwargs):
+        return motion, cond, {'applied': False, 'kind': None, 'joints': [], 'skip_reason': 'pinned',
+                              'translation_root_index': int(translation_root_index)}
+
+    monkeypatch.setattr(dataset_module, 'augment_topology', target)
+    monkeypatch.setattr(topology_aug, 'augment_topology', reference)
+
+
+def test_loader_rebuilds_geometry_keeps_structural_channel_and_canonical_roundtrip():
     dataset, data = make_dataset()
     random.seed(3)
     sample = dataset._prepare_sample('test', data, return_aug_info=True)
     assert sample[13]['bone_length_aug']['applied']
     new_cond = sample[13]['object_cond']
-    np.testing.assert_allclose(sample[12]['joint_struct'], build_joint_struct_features(new_cond))
-    np.testing.assert_allclose(sample[3], rest_geom_features(new_cond))
+    np.testing.assert_array_equal(sample[12]['joint_struct'], dataset._joint_struct_cache['test'])
+    np.testing.assert_allclose(sample[3], rest_geometry(new_cond)[:, REST_GEOM_COLUMNS])
     decoded = canonical_to_physical_hml(sample[0], sample[12])
     np.testing.assert_allclose(decoded[:, [3, 6], 1], 0, atol=1e-6)
     assert not np.allclose(sample[4], dataset.cond_dict['test']['offsets'])
-
-
-def test_preview_retains_source_loop_for_physical_augmentation(monkeypatch):
-    dataset, data = make_dataset(PreviewMotionDataset)
-    data['motion_metadata']['is_loop'] = True
-    captured = {}
-    import data_loaders.truebones.data.dataset as module
-    real_aug = module.augment_bone_lengths
-    def spy(motion, cond, metadata, magnitude, min_magnitude):
-        captured.update(metadata)
-        return real_aug(motion, cond, metadata, magnitude, min_magnitude)
-    monkeypatch.setattr(module, 'augment_bone_lengths', spy)
-    sample = dataset._prepare_sample('test', data, return_aug_info=True)
-    assert captured['is_loop']
-    assert sample[13]['loop_applied'] is False
-    assert data['motion_metadata']['is_loop'] is True
 
 
 def test_disabled_loader_does_not_draw_rng(monkeypatch):
@@ -329,15 +346,12 @@ def test_disabled_loader_does_not_draw_rng(monkeypatch):
     assert not sample[13]['bone_length_aug']['applied']
 
 
-def test_loop_closing_pose_and_terminal_velocity_survive():
+def test_loop_closing_pose_survives():
     motion, cond, metadata = fixture()
     metadata['is_loop'] = True
-    # A travelling clip with a repeated closing pose and nonzero root speed.
-    motion[:, :, 9] = .01
     out, new_cond, info = augment_bone_lengths(motion, cond, metadata, rng=random.Random(2))
     assert info['applied'], info
     np.testing.assert_allclose(out[0, :, :9], out[-1, :, :9], atol=1e-6)
-    np.testing.assert_allclose(out[-1, :, 9:12], motion[-1, :, 9:12], atol=1e-6)
 
 
 def test_bvh_export_uses_augmented_offsets(tmp_path):
@@ -394,7 +408,7 @@ def test_real_training_combines_bone_leaf_and_temporal_augmentation():
     if not cond_path.exists():
         pytest.skip('Merged dataset absent')
     dataset = get_dataset(num_frames=60, split='train', objects_subset='all',
-                          bone_length_aug_prob=1., bone_length_aug_max=.1, leaf_drop_prob=1.,
+                          bone_length_aug_prob=1., bone_length_aug_max=.1, topology_aug_prob=1.,
                           motion_speed_aug=1.3, cond_path=str(cond_path)).motion_dataset
     candidates = list(dataset.name_list)
     assert candidates
@@ -405,9 +419,16 @@ def test_real_training_combines_bone_leaf_and_temporal_augmentation():
         random.seed(rng.randrange(10000))
         sample = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
         cond = sample[13]['object_cond']
-        np.testing.assert_allclose(sample[12]['joint_struct'], build_joint_struct_features(cond))
+        struct, rebuilt = sample[12]['joint_struct'], build_joint_struct_features(cond)
+        # Bone lengths move no topology column; the geometric ones (sib_rank,
+        # side) stay those of the rig before the bone-length stage.
+        np.testing.assert_array_equal(struct[:, TOPOLOGY_STRUCT_COLUMNS], rebuilt[:, TOPOLOGY_STRUCT_COLUMNS])
+        if not sample[13]['bone_length_aug']['applied']:
+            np.testing.assert_array_equal(struct, rebuilt)
+        elif not sample[13]['topology_aug']['applied']:
+            np.testing.assert_array_equal(struct, dataset._joint_struct_cache[sample[7]])
         assert np.isfinite(sample[0]).all()
-        leaf_seen |= sample[13]['leaf_drop_count'] > 0
+        leaf_seen |= sample[13]['topology_aug']['applied']
         bone_seen |= sample[13]['bone_length_aug']['applied']
         samples.append(sample[:13])
     assert leaf_seen and bone_seen

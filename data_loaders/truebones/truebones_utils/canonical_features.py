@@ -10,8 +10,8 @@ was authored in:
 
   1. Rotation re-expression: each joint's local rotation becomes its
      bone-aligned global rotation ``G_j @ A_j`` (see "Rotation channel").
-  2. Per-skeleton size normalization (L-scaling): the position and velocity
-     channels are divided by the skeleton's own geometric length ``L`` (the
+  2. Per-skeleton size normalization (L-scaling): the position channels are
+     divided by the skeleton's own geometric length ``L`` (the
      joints' RMS spread measured along the bone tree, so bone lengths and
      topology decide it and the rest pose does not) so that every species lands
      in a size-free space (cross-species fair). Rotation (6d) is
@@ -20,7 +20,7 @@ was authored in:
      has almost no joint spread, and dividing its body-scale root trajectory by
      that spread blew a fall up to tens of std.
   3. Global standardization: subtract a per-channel mean and divide by a
-     *block-collapsed* std (12-vectors). One pair of vectors for the whole
+     *block-collapsed* std (see "Statistics layout"). One pair of vectors for the whole
      corpus, computed at preprocessing time in the L-normalized space of step
      (2) by :func:`pool_global_stats`: clips are first pooled per object_subset,
      then the subsets are combined with equal weight so the largest subsets do
@@ -31,16 +31,35 @@ was authored in:
      ``canonical_feature_std``) and are identical across entries; a new
      species copies them from any entry of the training cond.
 
-     Each block (position / rotation-6d / velocity) of ``std`` is one scalar,
-     so ``l_simple`` weights every joint and axis of a block uniformly.
+     Each block (position / rotation-6d) of ``std`` is one scalar, so
+     ``l_simple`` weights every joint and axis of a block uniformly.
 
 Channel layout per joint (n_feats == 12):
-    0:3   position   (absolute RIC: world position minus the root's XZ)
+    0:3   position   (RIC: world position minus the translation root's XZ;
+                      the root itself holds its world position, see "Root")
     3:9   rotation 6d (bone-aligned global rotation)
-    9:12  local velocity
+    9:12  velocity   (zero in the working layout, see "Velocity")
 
-Every channel belongs to exactly one of the three blocks, so ``pool_global_stats``
-covers the whole vector.
+Root. A stored clip (preprocessing's ``.npy``) keeps the translation root's
+X/Z at zero and its world XZ path in the velocity rows. The loader turns it
+into the working layout before any temporal stage (:func:`stored_to_working`):
+the root's ch0/ch2 become its world XZ, integrated from frame 0, which
+preprocessing centres on the origin. Every other joint stays RIC, so its world
+position is its RIC position plus the root's XZ (:func:`root_relative_positions`
+is the all-RIC view). The model reads and writes the root's position like any
+joint's; only its standardization differs: the root's world XZ spreads far less
+than the joints' RIC positions, so the root's position takes its own mean and
+std, one scalar shared by X and Z (the horizontal plane stays isotropic) and
+one for Y.
+
+Statistics layout. ``canonical_feature_mean`` / ``canonical_feature_std`` are
+``FEATS_LEN + 3`` vectors: the per-channel statistics of every joint, then the
+root position's (``ROOT_STAT_SLICE``), which replace channels 0:3 on joint 0.
+
+Velocity. Every velocity is a position step, so the working layout carries
+none: its velocity channels are zero, every temporal stage interpolates
+positions and rotations only, and the velocity statistics are the identity.
+:func:`working_to_stored` writes a working clip back in the stored layout.
 
 Rotation channel. A physical rotation is identity AT THE REST POSE, so the same
 world motion stored on a T-pose rig and on an A-pose rig of the same skeleton
@@ -57,14 +76,6 @@ rest that turns joint ``j``'s frame by ``Q`` turns ``d_j`` by ``Q`` and turns
 an arm lowered from T to A about Z, a leg swung about X) the canonical rotation
 is exactly unchanged. Decoding reads the TARGET rig's frames, so a decoded clip
 is re-expressed against that rig's own rest.
-
-Derived velocity. A joint's world step is its own RIC position step plus the
-translation root's XZ step, so the only velocity the positions do not already
-carry is the root's X/Z. The canonical space therefore keeps velocity on the
-root (joint 0) X/Z only (``ROOT_VEL_CHANNELS``): every other velocity channel is
-zero after encode and after decode, the model neither reads nor writes it, and
-the velocity block's statistics are the root X/Z's. Consumers of a decoded
-sample that need the full physical rows call :func:`rebuild_derived_velocity`.
 
 """
 
@@ -87,11 +98,12 @@ except Exception:  # pragma: no cover - torch is present in training/runtime.
     torch = None
 
 
-CANONICAL_FEATURE_SPACE = "canonical_motion_v5"
+CANONICAL_FEATURE_SPACE = "canonical_motion_v6"
 PHYSICAL_FEATURE_SPACE = "hml_like_v_current"
 
 # Keys under which the global per-channel standardization statistics are stored
-# on each cond entry. Every entry carries the same 12-vectors. Computed at
+# on each cond entry (see "Statistics layout"). Every entry carries the same
+# vectors. Computed at
 # preprocessing time over the L-normalized training distribution -- see
 # ``pool_global_stats``.
 CANONICAL_MEAN_KEY = "canonical_feature_mean"
@@ -100,11 +112,10 @@ CANONICAL_STD_KEY = "canonical_feature_std"
 # position-step loss divides by it so its weight means the same on every corpus.
 CANONICAL_DPOS_STD_KEY = "canonical_dpos_std"
 
-# Per-species weights of the root-velocity and position-step losses: a species
-# whose own energy in that term exceeds ``AUX_LOSS_ENERGY_CAP`` (in the global
-# canonical units) is weighted by sqrt(cap / energy), never up. This softens
-# the influence of fast movers without capping their weighted loss energy.
-ROOT_VEL_LOSS_WEIGHT_KEY = "root_vel_loss_weight"
+# Per-species weight of the position-step loss: a species whose own energy in
+# that term exceeds ``AUX_LOSS_ENERGY_CAP`` (in the global canonical units) is
+# weighted by sqrt(cap / energy), never up. This softens the influence of fast
+# movers without capping their weighted loss energy.
 DPOS_LOSS_WEIGHT_KEY = "dpos_loss_weight"
 AUX_LOSS_ENERGY_CAP = 2.0
 
@@ -114,15 +125,14 @@ _FEATURE_SPACE_BOUND_KEYS = (
     CANONICAL_MEAN_KEY,
     CANONICAL_STD_KEY,
     CANONICAL_DPOS_STD_KEY,
-    ROOT_VEL_LOSS_WEIGHT_KEY,
     DPOS_LOSS_WEIGHT_KEY,
 )
 
-# The model's channel contract (see "Derived velocity" above). Joint 0 is the
-# translation root of every cond skeleton.
-ROOT_VEL_CHANNELS = (9, 11)
-JOINT_MODEL_CHANNELS = tuple(range(0, 9))
-ROOT_MODEL_CHANNELS = JOINT_MODEL_CHANNELS + ROOT_VEL_CHANNELS
+# The model's channel contract (see "Velocity" above), the same on every joint.
+# Joint 0 is the translation root of every cond skeleton.
+MODEL_CHANNELS = tuple(range(0, 9))
+# The root's world X/Z channels (see "Root").
+ROOT_XZ_CHANNELS = (0, 2)
 
 # Per-sample geometric length ``L`` (``[B]``) that the training collate
 # precomputes from each sample's unpadded rig and stores in ``y``; see
@@ -166,81 +176,106 @@ _STD_FLOOR = 1e-5
 _POS_SLICE = slice(0, 3)
 _ROT_SLICE = slice(3, 9)
 _VEL_SLICE = slice(9, 12)
+# Where the root position's statistics sit in the stat vectors, and their length.
+ROOT_STAT_SLICE = slice(_VEL_SLICE.stop, _VEL_SLICE.stop + 3)
+CANONICAL_STAT_LEN = ROOT_STAT_SLICE.stop
 
 
 def _is_torch_tensor(value) -> bool:
     return torch is not None and torch.is_tensor(value)
 
 
-def _kept_channel_mask(n_joints, n_feats):
-    """``[J, F]`` float mask: 0 on the derived velocity channels, 1 elsewhere."""
+_MASK_TENSOR_CACHE = {}
+
+
+def _channel_mask(n_joints, n_feats, which):
+    """``[J, F]`` float mask, 0 on the channels ``which`` names, 1 elsewhere:
+    ``"velocity"`` is every joint's velocity block, ``"root_xz"`` the root's
+    world X/Z."""
     mask = np.ones((int(n_joints), int(n_feats)), dtype=np.float32)
-    if n_feats >= _VEL_SLICE.stop:
-        mask[:, _VEL_SLICE] = 0.0
-        if n_joints > 0:
-            mask[0, list(ROOT_VEL_CHANNELS)] = 1.0
+    if which == "velocity":
+        if n_feats >= _VEL_SLICE.stop:
+            mask[:, _VEL_SLICE] = 0.0
+    elif n_joints > 0:
+        mask[0, list(ROOT_XZ_CHANNELS)] = 0.0
     return mask
 
 
-_KEPT_MASK_TENSOR_CACHE = {}
-
-
-def zero_derived_velocity(feature):
-    """Zero every velocity channel except the root's X/Z.
-
-    Accepts ``[B, J, F, T]`` (torch or numpy) or channels-last ``[..., J, F]``.
-    """
+def _apply_channel_mask(feature, which):
+    """``feature`` times :func:`_channel_mask`. Accepts ``[B, J, F, T]`` (torch
+    or numpy) or channels-last ``[..., J, F]``; never writes the input."""
+    four_d = (feature.dim() if _is_torch_tensor(feature) else np.ndim(feature)) == 4
+    shape = feature.shape
+    n_joints, n_feats = (shape[1], shape[2]) if four_d else (shape[-2], shape[-1])
     if _is_torch_tensor(feature):
-        if feature.dim() == 4:
-            n_joints, n_feats = feature.shape[1], feature.shape[2]
-        else:
-            n_joints, n_feats = feature.shape[-2], feature.shape[-1]
-        key = (int(n_joints), int(n_feats), str(feature.device), feature.dtype)
-        mask = _KEPT_MASK_TENSOR_CACHE.get(key)
+        key = (int(n_joints), int(n_feats), which, str(feature.device), feature.dtype)
+        mask = _MASK_TENSOR_CACHE.get(key)
         if mask is None:
             mask = torch.as_tensor(
-                _kept_channel_mask(n_joints, n_feats), device=feature.device, dtype=feature.dtype
+                _channel_mask(n_joints, n_feats, which), device=feature.device, dtype=feature.dtype
             )
-            _KEPT_MASK_TENSOR_CACHE[key] = mask
-        if feature.dim() == 4:
-            return feature * mask.view(1, n_joints, n_feats, 1)
-        return feature * mask
+            _MASK_TENSOR_CACHE[key] = mask
+        return feature * (mask.view(1, n_joints, n_feats, 1) if four_d else mask)
 
     out = np.asarray(feature, dtype=np.float32)
-    if out.ndim == 4:
-        mask = _kept_channel_mask(out.shape[1], out.shape[2])[None, :, :, None]
-    else:
-        mask = _kept_channel_mask(out.shape[-2], out.shape[-1])
-    return (out * mask).astype(np.float32, copy=False)
+    mask = _channel_mask(n_joints, n_feats, which)
+    return (out * (mask[None, :, :, None] if four_d else mask)).astype(np.float32, copy=False)
 
 
-def rebuild_derived_velocity(motion, *, is_loop, step_scale=1.0):
-    """Fill the derived velocity rows of a decoded physical ``[T, J, F]`` clip.
+def zero_velocity(feature):
+    """Zero every velocity channel (see "Velocity")."""
+    return _apply_channel_mask(feature, "velocity")
 
-    ``vel[t] * step_scale`` is the world step from frame ``t`` to ``t + 1``: the
-    joint's RIC position step plus the root's XZ step (RIC removes the root's
-    world XZ from every joint, the root included). The terminal row follows
-    preprocessing: a loop's wrap step, otherwise the last step repeated. The
-    root's X/Z rows are the model's own and are kept.
+
+def root_relative_positions(feature):
+    """The all-RIC view of a working feature: the root's world X/Z zeroed, so
+    every joint's position is relative to the root's XZ (see "Root"). Parent
+    to child differences and per-joint heights read this view."""
+    return _apply_channel_mask(feature, "root_xz")
+
+
+def stored_to_working(motion):
+    """A stored ``[T, J, F]`` clip in the working layout (see "Root").
+
+    The root's ch0/ch2 take its world XZ: the sum of the root velocity rows
+    before each frame, zero at frame 0. Every velocity channel is then zeroed.
+    """
+    out = np.array(motion, dtype=np.float32, copy=True)
+    if out.ndim != 3 or out.shape[-1] < _VEL_SLICE.stop or out.shape[0] == 0:
+        return out
+    vel_xz = [_VEL_SLICE.start + c for c in ROOT_XZ_CHANNELS]
+    steps = out[:-1, 0, vel_xz].astype(np.float64)
+    world_xz = np.zeros((out.shape[0], 2), dtype=np.float64)
+    world_xz[1:] = np.cumsum(steps, axis=0)
+    out[:, 0, list(ROOT_XZ_CHANNELS)] = world_xz
+    out[..., _VEL_SLICE] = 0.0
+    return out
+
+
+def working_to_stored(motion, *, is_loop):
+    """A working ``[T, J, F]`` clip in the stored layout, one row per frame.
+
+    The root's position goes back to RIC (ch0/ch2 zero) and its velocity rows
+    take its world steps: row ``t`` is the step from frame ``t`` to ``t + 1``,
+    the terminal row a loop's wrap step, otherwise the last step repeated.
+    That is the only velocity a stored-clip reader uses (the exporter
+    integrates it into the trajectory, the loop detector reads its closure);
+    every other joint's velocity row stays zero.
     """
     out = np.array(motion, dtype=np.float32, copy=True)
     n_frames = out.shape[0]
     if out.ndim != 3 or out.shape[-1] < _VEL_SLICE.stop or n_frames == 0:
         return out
-    step = float(step_scale) if step_scale and step_scale > 0 else 1.0
-    pos = out[..., 0:3].astype(np.float64)
-    root_xz_step = np.zeros((n_frames, 1, 3), dtype=np.float64)
-    root_xz_step[:, 0, 0] = out[:, 0, 9] * step
-    root_xz_step[:, 0, 2] = out[:, 0, 11] * step
-    world_step = np.zeros(pos.shape, dtype=np.float64)
-    world_step[:-1] = pos[1:] - pos[:-1] + root_xz_step[:-1]
+    root = np.asarray(out[:, 0, _POS_SLICE], dtype=np.float64)
+    step = np.zeros_like(root)
+    step[:-1] = root[1:] - root[:-1]
     if is_loop or n_frames == 1:
-        world_step[-1] = pos[0] - pos[-1] + root_xz_step[-1]
+        step[-1] = root[0] - root[-1]
     else:
-        world_step[-1] = world_step[-2]
-    root_xz = out[:, 0, list(ROOT_VEL_CHANNELS)].copy()
-    out[..., _VEL_SLICE] = (world_step / step).astype(np.float32)
-    out[:, 0, list(ROOT_VEL_CHANNELS)] = root_xz
+        step[-1] = step[-2]
+    out[..., _VEL_SLICE] = 0.0
+    out[:, 0, _VEL_SLICE] = step.astype(np.float32)
+    out[:, 0, list(ROOT_XZ_CHANNELS)] = 0.0
     return out
 
 
@@ -308,17 +343,30 @@ def _rig_geometry(rest_bytes, parents_bytes):
     return L, frames
 
 
+def _cached_joint_depths(parents):
+    """:func:`joint_depths` of one rig's parents row, read-only, cached like
+    ``_rig_geometry``."""
+    parents = np.ascontiguousarray(np.asarray(parents, dtype=np.int64).reshape(-1))
+    return _joint_depths_of(parents.tobytes())
+
+
+@functools.lru_cache(maxsize=_RIG_GEOMETRY_CACHE_SIZE)
+def _joint_depths_of(parents_bytes):
+    depths = joint_depths(np.frombuffer(parents_bytes, dtype=np.int64))
+    depths.setflags(write=False)
+    return depths
+
+
 def _spatial_L_vectors(n_feats):
     """Return a per-channel ``uses_L`` vector of length ``n_feats``.
 
-    ``uses_L[c] == 1`` for the position and velocity groups (size-dependent) and
-    ``0`` for rotation (size-independent). The L-scaling divides those channels
-    by the per-skeleton length ``L`` (encode) / multiplies (decode).
+    ``uses_L[c] == 1`` for the position group (size-dependent) and ``0``
+    elsewhere (rotation is size-independent, velocity is zero). The L-scaling
+    divides those channels by the per-skeleton length ``L`` (encode) /
+    multiplies (decode).
     """
     uses_L = np.zeros(n_feats, dtype=np.float64)
     uses_L[_POS_SLICE] = 1.0
-    if n_feats >= _VEL_SLICE.stop:
-        uses_L[_VEL_SLICE] = 1.0
     return uses_L
 
 
@@ -370,7 +418,7 @@ def _spatial_L_vector_tensor(n_feats, device, dtype):
 
 
 def _apply_L_scale(feature, cond_entry, inverse: bool):
-    """Divide (encode) or multiply (decode) the position/velocity channels by the
+    """Divide (encode) or multiply (decode) the position channels by the
     per-skeleton length ``L``. Exact inverse of itself with flipped ``inverse``.
     Rotation channels are left unchanged. ``L`` may be a scalar or ``[B]``.
     """
@@ -438,12 +486,13 @@ def get_canonical_dpos_std(cond_entry):
 
 
 def set_canonical_global_stats(cond_entry, mean, std, dpos_std):
-    """Store the global mean/std (12-vectors) and the position-step RMS on a
-    cond entry, flooring near-constant channels to unit std so the encode
-    divide is safe.
+    """Store the global mean/std (see "Statistics layout") and the
+    position-step RMS on a cond entry, flooring near-constant channels to unit
+    std so the encode divide is safe.
     """
     mean = np.asarray(mean, dtype=np.float32).reshape(-1)
     std = np.asarray(std, dtype=np.float32).reshape(-1)
+    _check_root_stats(min(mean.size, std.size))
     std = np.where(std < _STD_FLOOR, 1.0, std).astype(np.float32, copy=False)
     dpos_std = float(dpos_std)
     if not np.isfinite(dpos_std) or dpos_std < _STD_FLOOR:
@@ -454,9 +503,8 @@ def set_canonical_global_stats(cond_entry, mean, std, dpos_std):
     return cond_entry
 
 
-def set_aux_loss_weights(cond_entry, root_vel_weight=1.0, dpos_weight=1.0):
-    """Store a species' root-velocity / position-step loss weights."""
-    cond_entry[ROOT_VEL_LOSS_WEIGHT_KEY] = np.float32(root_vel_weight)
+def set_aux_loss_weights(cond_entry, dpos_weight=1.0):
+    """Store a species' position-step loss weight."""
     cond_entry[DPOS_LOSS_WEIGHT_KEY] = np.float32(dpos_weight)
     return cond_entry
 
@@ -546,29 +594,78 @@ def _apply_global_stats(feature, cond_entry, inverse: bool):
             .to(device=out.device, dtype=out.dtype)
         std_t = (std if _is_torch_tensor(std) else torch.as_tensor(np.asarray(std, dtype=np.float32))) \
             .to(device=out.device, dtype=out.dtype)
+        _check_root_stats(mean_t.shape[-1])
         mean_v = _view_stat_torch(mean_t, out.shape, n_feats)
         std_v = _view_stat_torch(std_t, out.shape, n_feats)
-        return (out * std_v) + mean_v if inverse else (out - mean_v) / std_v
+        out = (out * std_v) + mean_v if inverse else (out - mean_v) / std_v
+        root_mean = _view_root_stat(mean_t, ndim)
+        root_std = _view_root_stat(std_t, ndim)
+        if ndim == 4:
+            root = feature[:, 0:1, _POS_SLICE]
+            root = root * root_std + root_mean if inverse else (root - root_mean) / root_std
+            return torch.cat([torch.cat([root, out[:, 0:1, _POS_SLICE.stop:]], dim=2), out[:, 1:]], dim=1)
+        root = feature[..., 0:1, _POS_SLICE]
+        root = root * root_std + root_mean if inverse else (root - root_mean) / root_std
+        return torch.cat([torch.cat([root, out[..., 0:1, _POS_SLICE.stop:]], dim=-1), out[..., 1:, :]], dim=-2)
 
     out = np.asarray(feature, dtype=np.float32)
     ndim = out.ndim
     n_feats = out.shape[2] if ndim == 4 else out.shape[-1]
-    mean_v = _view_stat_numpy(np.asarray(mean, dtype=np.float32), out.shape, n_feats)
-    std_v = _view_stat_numpy(np.asarray(std, dtype=np.float32), out.shape, n_feats)
-    out = (out * std_v) + mean_v if inverse else (out - mean_v) / std_v
-    return out.astype(np.float32, copy=False)
+    mean = np.asarray(mean, dtype=np.float32)
+    std = np.asarray(std, dtype=np.float32)
+    _check_root_stats(mean.shape[-1])
+    mean_v = _view_stat_numpy(mean, out.shape, n_feats)
+    std_v = _view_stat_numpy(std, out.shape, n_feats)
+    result = (out * std_v) + mean_v if inverse else (out - mean_v) / std_v
+    root_mean = _view_root_stat(mean, ndim)
+    root_std = _view_root_stat(std, ndim)
+    root = out[:, 0:1, _POS_SLICE] if ndim == 4 else out[..., 0:1, _POS_SLICE]
+    root = root * root_std + root_mean if inverse else (root - root_mean) / root_std
+    if ndim == 4:
+        result[:, 0:1, _POS_SLICE] = root
+    else:
+        result[..., 0:1, _POS_SLICE] = root
+    return result.astype(np.float32, copy=False)
+
+
+def _check_root_stats(width):
+    if width < ROOT_STAT_SLICE.stop:
+        raise ValueError(
+            f"canonical stats have {width} entries, the root position's sit at "
+            f"{ROOT_STAT_SLICE.start}:{ROOT_STAT_SLICE.stop} (see 'Statistics layout'). "
+            "Regenerate cond.npy."
+        )
+
+
+def _view_root_stat(stat, feature_ndim):
+    """The root position's stat (``ROOT_STAT_SLICE``), shaped to broadcast
+    against joint 0's position slice of a feature of rank ``feature_ndim``:
+    ``[N, 1, 3, 1]`` for ``[B, J, F, T]``, ``[1, 3]`` for channels-last."""
+    root = stat[..., ROOT_STAT_SLICE]
+    if feature_ndim == 4:
+        rows = root.reshape(-1, 3)
+        return rows.reshape(rows.shape[0], 1, 3, 1)
+    return root.reshape(1, 3)
+
+
+_TWIST_REFERENCE_AXES_ARRAY = np.asarray(_TWIST_REFERENCE_AXES, dtype=np.float64)
+
+
+def _twist_references(directions):
+    """``[K, 3]`` unit twist references ``p`` for unit directions ``[K, 3]``."""
+    axes = _TWIST_REFERENCE_AXES_ARRAY
+    cos = directions @ axes.T
+    usable = np.abs(cos) <= _TWIST_REFERENCE_MAX_COS
+    # The first usable axis; the last one when none is.
+    choice = np.where(usable.any(axis=1), usable.argmax(axis=1), len(axes) - 1)
+    reference = axes[choice] - np.take_along_axis(cos, choice[:, None], axis=1) * directions
+    return reference / np.linalg.norm(reference, axis=-1, keepdims=True)
 
 
 def _frames_from_directions(directions):
     """``[K, 3, 3]`` frames with columns ``d``, twist reference ``p``, ``d x p``
     for unit directions ``[K, 3]``."""
-    axes = np.asarray(_TWIST_REFERENCE_AXES, dtype=np.float64)
-    cos = directions @ axes.T
-    usable = np.abs(cos) <= _TWIST_REFERENCE_MAX_COS
-    # The first usable axis; the last one when none is.
-    choice = np.where(usable.any(axis=1), usable.argmax(axis=1), len(axes) - 1)
-    reference = axes[choice] - cos[np.arange(choice.size), choice][:, None] * directions
-    reference /= np.linalg.norm(reference, axis=-1, keepdims=True)
+    reference = _twist_references(directions)
     return np.stack([directions, reference, np.cross(directions, reference)], axis=-1)
 
 
@@ -592,10 +689,22 @@ def rest_bone_frames(rest_pos, parents):
     return _rig_geometry(*_rig_key(rest_pos, parents))[1].copy()
 
 
-def _bone_frames(rest_pos, parents, length_scale):
-    """:func:`rest_bone_frames` of an unpadded float64 rest whose ``L`` is known."""
+def rest_frame_follows_children(rest_pos, parents):
+    """``[J]`` bool: the rest bone frame's direction is the mean of the joint's
+    child bones (:func:`rest_bone_frames`), so turning the joint's own rest
+    turns its frame. Every other joint's frame follows its parent's turn."""
+    parents = np.asarray(parents, dtype=np.int64).reshape(-1)
+    rest_pos = np.asarray(rest_pos, dtype=np.float64)[:parents.size, :3]
+    _direction, from_children, _live_bone = _rest_directions(
+        rest_pos, parents, _length_scale_from_rest(rest_pos, parents), ancestor_matrix(parents)[0])
+    return from_children
+
+
+def _rest_directions(rest_pos, parents, length_scale, ancestors):
+    """``(direction [J, 3], from_children [J], live_bone [J])`` of
+    :func:`rest_bone_frames`: the subtree-weighted mean child direction where
+    it does not cancel out, else the joint's own bone."""
     n_joints = parents.size
-    ancestors, depths = ancestor_matrix(parents)
     has_parent = parents >= 0
     subtree = ancestors.sum(axis=0).astype(np.float64)
 
@@ -616,10 +725,18 @@ def _bone_frames(rest_pos, parents, length_scale):
     mean = np.divide(weighted, weight[:, None], out=np.zeros_like(weighted), where=weight[:, None] > 0.0)
     mean_norm = np.linalg.norm(mean, axis=-1)
     from_children = (weight > 0.0) & (mean_norm >= _MIN_CHILD_DIRECTION_NORM)
-    has_direction = from_children | live_bone
     direction = np.where(
         from_children[:, None], mean / np.maximum(mean_norm, _MIN_CHILD_DIRECTION_NORM)[:, None], unit
     )
+    return direction, from_children, live_bone
+
+
+def _bone_frames(rest_pos, parents, length_scale):
+    """:func:`rest_bone_frames` of an unpadded float64 rest whose ``L`` is known."""
+    n_joints = parents.size
+    ancestors, depths = ancestor_matrix(parents)
+    direction, from_children, live_bone = _rest_directions(rest_pos, parents, length_scale, ancestors)
+    has_direction = from_children | live_bone
     own = np.repeat(np.eye(3)[None], n_joints, axis=0)
     own[has_direction] = _frames_from_directions(direction[has_direction])
 
@@ -775,26 +892,29 @@ def _apply_rotation_frames(feature, cond_entry, inverse: bool):
         result = where((parent_index < 0)[:, None, :, None, None], global_rot, local)
     else:
         parents_host = parent_index.detach().cpu().numpy() if is_torch else parent_index
-        depths = np.stack([joint_depths(row) for row in parents_host])
+        depths = np.stack([_cached_joint_depths(row) for row in parents_host])
         if is_torch:
             global_rot = matrices
             for level in range(1, int(depths.max(initial=0)) + 1):
                 at_level = torch.as_tensor(depths == level, device=out.device)
                 composed = _gather_parent(global_rot, parent_index) @ matrices
                 global_rot = where(at_level[:, None, :, None, None], composed, global_rot)
+            result = global_rot @ frames
         else:
             # In place, one chain level at a time, touching only that level's
-            # joints; each rig row composes its own chains.
-            global_rot = matrices.copy()
+            # joints; each rig row composes its own chains. Joint-major
+            # ([J, N, T, 3, 3]), so a level's joints are whole contiguous blocks.
+            joint_major = np.ascontiguousarray(np.moveaxis(matrices, 2, 0))
+            global_rot = joint_major.copy()
             shared = depths.shape[0] == 1
             for row in range(depths.shape[0]):
                 rows = slice(None) if shared else slice(row, row + 1)
                 for level in range(1, int(depths[row].max(initial=0)) + 1):
                     joints = np.flatnonzero(depths[row] == level)
-                    global_rot[rows, :, joints] = (
-                        global_rot[rows, :, parents_host[row, joints]] @ matrices[rows, :, joints]
+                    global_rot[joints, rows] = (
+                        global_rot[parents_host[row, joints], rows] @ joint_major[joints, rows]
                     )
-        result = global_rot @ frames
+            result = np.moveaxis(global_rot @ np.moveaxis(frames, 2, 0), 0, 2)
 
     if is_torch:
         result6d = torch.cat([result[..., :, 0], result[..., :, 1]], dim=-1).to(out.dtype)
@@ -804,54 +924,47 @@ def _apply_rotation_frames(feature, cond_entry, inverse: bool):
 
 
 def physical_hml_to_lnorm(feature, cond_entry):
-    """Encode HML-like physical features into the *L-normalized* intermediate
-    space (steps 1-2): re-express the rotation channel as the bone-aligned
-    global rotation, then divide the position/velocity channels by the
-    per-skeleton length ``L``. This is the space in which the GLOBAL
-    standardization statistics are calibrated.
+    """Encode working-layout physical features into the *L-normalized*
+    intermediate space (steps 1-2): zero the velocity, re-express the rotation
+    channel as the bone-aligned global rotation, then divide the position
+    channels by the per-skeleton length ``L``. This is the space in which the
+    GLOBAL standardization statistics are calibrated.
     """
-    rotated = _apply_rotation_frames(feature, cond_entry, inverse=False)
+    rotated = _apply_rotation_frames(zero_velocity(feature), cond_entry, inverse=False)
     return _apply_L_scale(rotated, cond_entry, inverse=False)
 
 
 def physical_hml_to_canonical(feature, cond_entry):
-    """Encode HML-like physical features into canonical model features.
+    """Encode working-layout physical features into canonical model features.
 
-    Encode order: re-express the rotation channel (bone-aligned global),
-    divide the position/velocity channels by ``L``, standardize every channel
-    by the global mean/std, then zero the derived velocity channels.
+    Encode order: zero the velocity, re-express the rotation channel
+    (bone-aligned global), divide the position channels by ``L``, standardize
+    every channel by the global mean/std, then zero the velocity again.
     """
     lnorm = physical_hml_to_lnorm(feature, cond_entry)
-    return zero_derived_velocity(_apply_global_stats(lnorm, cond_entry, inverse=False))
+    return zero_velocity(_apply_global_stats(lnorm, cond_entry, inverse=False))
 
 
 def canonical_to_physical_hml(feature, cond_entry):
-    """Decode canonical model features back to HML-like physical features.
+    """Decode canonical model features back to working-layout physical features.
 
     Decode order (inverse of encode on every kept channel): de-standardize by
-    the global mean/std, multiply the position/velocity channels by ``L``, then
-    turn the rotation channel back into local rotations against ``cond_entry``'s
-    own rest. The derived velocity channels come back as zero;
-    :func:`rebuild_derived_velocity` fills them.
+    the global mean/std, multiply the position channels by ``L``, then turn the
+    rotation channel back into local rotations against ``cond_entry``'s own
+    rest. The velocity channels come back as zero;
+    :func:`working_to_stored` writes the stored layout.
     """
     lnorm = _apply_global_stats(feature, cond_entry, inverse=True)
     unscaled = _apply_L_scale(lnorm, cond_entry, inverse=True)
-    return zero_derived_velocity(_apply_rotation_frames(unscaled, cond_entry, inverse=True))
+    return zero_velocity(_apply_rotation_frames(unscaled, cond_entry, inverse=True))
 
 
-def _new_term_acc(n_feats):
-    return {
-        "root_sum": np.zeros(n_feats), "root_sumsq": np.zeros(n_feats), "root_count": 0,
-        "dpos_sumsq": 0.0, "dpos_count": 0,
-    }
+def _new_step_acc():
+    return {"dpos_sumsq": 0.0, "dpos_count": 0}
 
 
-def _accumulate_terms(acc, lnorm):
-    """Root-row and position-step sums of one finite ``[T, J, F]`` clip."""
-    root = lnorm[:, 0, :]
-    acc["root_sum"] += root.sum(axis=0)
-    acc["root_sumsq"] += (root ** 2).sum(axis=0)
-    acc["root_count"] += root.shape[0]
+def _accumulate_steps(acc, lnorm):
+    """Position-step sums of one finite ``[T, J, F]`` clip."""
     if lnorm.shape[0] > 1:
         steps = lnorm[1:, :, _POS_SLICE] - lnorm[:-1, :, _POS_SLICE]
         acc["dpos_sumsq"] += float((steps ** 2).sum())
@@ -859,12 +972,12 @@ def _accumulate_terms(acc, lnorm):
 
 
 def accumulate_lnorm_stats(feature, cond_entry, acc=None, species=None):
-    """Accumulate the L-normalized statistics of one physical ``[T, J, F]`` clip.
+    """Accumulate the L-normalized statistics of one working-layout physical
+    ``[T, J, F]`` clip.
 
-    Per-channel sum / sum-of-squares over every joint and frame (position and
-    rotation blocks), the same over the root row alone (the velocity block, see
-    "Derived velocity"), and the sum of squared position steps. With
-    ``species`` the root and step sums are also kept per species for
+    Per-channel sum / sum-of-squares over every joint and frame, the same over
+    the root's position alone (see "Root"), and the sum of squared position
+    steps. With ``species`` the step sums are also kept per species for
     :func:`species_aux_loss_weights`. ``acc`` is a mutable dict carried across
     clips; finalize_lnorm_stats() turns it into ``(mean, std, dpos_std)``.
     """
@@ -872,76 +985,60 @@ def accumulate_lnorm_stats(feature, cond_entry, acc=None, species=None):
     n_feats = lnorm.shape[-1]
     if acc is None:
         acc = {"sum": np.zeros(n_feats), "sumsq": np.zeros(n_feats), "count": 0,
-               "species": {}, **_new_term_acc(n_feats)}
+               "root_sum": np.zeros(3), "root_sumsq": np.zeros(3), "root_count": 0,
+               "species": {}, **_new_step_acc()}
     if lnorm.ndim != 3 or not np.isfinite(lnorm).all():
-        # A clip with a non-finite value is left out whole: the step and root
-        # sums need its frames contiguous.
+        # A clip with a non-finite value is left out whole: the step sums need
+        # its frames contiguous.
         return acc
     flat = lnorm.reshape(-1, n_feats)
     acc["sum"] += flat.sum(axis=0)
     acc["sumsq"] += (flat ** 2).sum(axis=0)
     acc["count"] += flat.shape[0]
-    _accumulate_terms(acc, lnorm)
+    root = lnorm[:, 0, _POS_SLICE]
+    acc["root_sum"] += root.sum(axis=0)
+    acc["root_sumsq"] += (root ** 2).sum(axis=0)
+    acc["root_count"] += root.shape[0]
+    _accumulate_steps(acc, lnorm)
     if species is not None:
-        _accumulate_terms(acc["species"].setdefault(species, _new_term_acc(n_feats)), lnorm)
+        _accumulate_steps(acc["species"].setdefault(species, _new_step_acc()), lnorm)
     return acc
 
 
 def finalize_lnorm_stats(acc):
     """Turn an accumulator from accumulate_lnorm_stats() into
-    ``(mean, std, dpos_std)``: 12-vectors whose velocity block is the root's X/Z
-    (the derived channels get mean 0 and a zero std, which pooling skips and
+    ``(mean, std, dpos_std)``: stat vectors in the "Statistics layout" (the
+    velocity block gets mean 0 and a zero std, which pooling skips and
     set_canonical_global_stats() floors to one), and the position-step RMS.
     """
     if acc is None or acc["count"] <= 0 or acc["root_count"] <= 0:
         raise ValueError("No finite samples accumulated for canonical stats.")
     mean = acc["sum"] / acc["count"]
     var = np.maximum(acc["sumsq"] / acc["count"] - mean ** 2, 0.0)
-    n_feats = mean.shape[0]
-    if n_feats >= _VEL_SLICE.stop:
-        root_mean = acc["root_sum"] / acc["root_count"]
-        root_var = np.maximum(acc["root_sumsq"] / acc["root_count"] - root_mean ** 2, 0.0)
-        mean[_VEL_SLICE] = 0.0
-        var[_VEL_SLICE] = 0.0
-        channels = list(ROOT_VEL_CHANNELS)
-        mean[channels] = root_mean[channels]
-        var[channels] = root_var[channels]
+    mean[_VEL_SLICE] = 0.0
+    var[_VEL_SLICE] = 0.0
+    root_mean = acc["root_sum"] / acc["root_count"]
+    root_var = np.maximum(acc["root_sumsq"] / acc["root_count"] - root_mean ** 2, 0.0)
+    mean = np.concatenate([mean, root_mean])
+    var = np.concatenate([var, root_var])
     dpos_std = np.sqrt(acc["dpos_sumsq"] / acc["dpos_count"]) if acc["dpos_count"] > 0 else 0.0
     return mean.astype(np.float32), np.sqrt(var).astype(np.float32), np.float32(dpos_std)
 
 
-def _term_energy(term_acc, mean, std, dpos_std):
-    """A species' mean squared root X/Z velocity and position step, both in
-    the global canonical units."""
-    channels = list(ROOT_VEL_CHANNELS)
-    n = term_acc["root_count"]
-    root_energy = None
-    if n > 0:
-        m = np.asarray(mean, dtype=np.float64)[channels]
-        s = np.asarray(std, dtype=np.float64)[channels]
-        centered_sq = (
-            term_acc["root_sumsq"][channels] - 2.0 * m * term_acc["root_sum"][channels] + n * m ** 2
-        ) / n
-        root_energy = float(np.mean(centered_sq / np.maximum(s, _STD_FLOOR) ** 2))
-    step_energy = None
-    if term_acc["dpos_count"] > 0:
-        step_energy = term_acc["dpos_sumsq"] / term_acc["dpos_count"] / max(float(dpos_std), _STD_FLOOR) ** 2
-    return root_energy, step_energy
-
-
-def species_aux_loss_weights(accs, mean, std, dpos_std):
-    """``{species: (root_vel_weight, dpos_weight)}`` from the per-species sums
-    of one or more accumulators: ``min(1, sqrt(AUX_LOSS_ENERGY_CAP / energy))``."""
-    def weight(energy):
-        if energy is None or not np.isfinite(energy) or energy <= AUX_LOSS_ENERGY_CAP:
-            return 1.0
-        return float(np.sqrt(AUX_LOSS_ENERGY_CAP / energy))
-
+def species_aux_loss_weights(accs, dpos_std):
+    """``{species: dpos_weight}`` from the per-species step sums of one or more
+    accumulators: ``min(1, sqrt(AUX_LOSS_ENERGY_CAP / energy))``, where the
+    energy is the species' mean squared position step in units of
+    ``dpos_std``."""
     weights = {}
     for acc in accs:
-        for species, term_acc in acc.get("species", {}).items():
-            root_energy, step_energy = _term_energy(term_acc, mean, std, dpos_std)
-            weights[species] = (weight(root_energy), weight(step_energy))
+        for species, step_acc in acc.get("species", {}).items():
+            weight = 1.0
+            if step_acc["dpos_count"] > 0:
+                energy = step_acc["dpos_sumsq"] / step_acc["dpos_count"] / max(float(dpos_std), _STD_FLOOR) ** 2
+                if np.isfinite(energy) and energy > AUX_LOSS_ENERGY_CAP:
+                    weight = float(np.sqrt(AUX_LOSS_ENERGY_CAP / energy))
+            weights[species] = weight
     return weights
 
 
@@ -962,18 +1059,18 @@ def _block_std_scalar(std, block):
 def pool_global_stats(subset_stats):
     """Combine per-object_subset L-normalized stats into the one global frame.
 
-    ``subset_stats``: ``{object_subset: (mean12, std12, dpos_std)}`` ->
-    ``(mean12, std12, dpos_std)``.
+    ``subset_stats``: ``{object_subset: (mean, std, dpos_std)}`` ->
+    ``(mean, std, dpos_std)``, stat vectors in the "Statistics layout".
 
     Every subset gets equal weight, whatever its clip count:
 
     * ``mean`` is the average of the subset means.
-    * ``std``: within each subset, each block (position / rotation-6d /
-      velocity) is collapsed to the mean of its per-channel stds, and the block
-      scalar is the geometric mean of those subset scalars (a gain is
-      multiplicative, so the geometric mean spreads every subset's resulting
-      variance symmetrically around one in log space). ``dpos_std`` is pooled
-      the same way.
+    * ``std``: within each subset, each block (position / rotation-6d, and the
+      root's X/Z and its Y) is collapsed to the mean of its per-channel stds,
+      and the block scalar is the geometric mean of those subset scalars (a
+      gain is multiplicative, so the geometric mean spreads every subset's
+      resulting variance symmetrically around one in log space). ``dpos_std``
+      is pooled the same way. The velocity block stays at one.
 
     ``l_simple`` is computed in this standardized space, so ``1 / std`` is an
     implicit per-channel loss weight; a single scalar per block weights every
@@ -987,18 +1084,18 @@ def pool_global_stats(subset_stats):
         raise ValueError("object_subset stats disagree on the feature width.")
     mean_out = np.mean(np.stack(means, axis=0), axis=0)
 
+    _check_root_stats(mean_out.shape[0])
     std_out = np.ones_like(mean_out)
-    n_feats = std_out.shape[0]
-    for block in (_POS_SLICE, _ROT_SLICE, _VEL_SLICE):
-        if block.start >= n_feats:
-            continue
+    root = ROOT_STAT_SLICE.start
+    blocks = (_POS_SLICE, _ROT_SLICE, [root + c for c in ROOT_XZ_CHANNELS], [root + 1])
+    for block in blocks:
         scalars = [
             value for value in (_block_std_scalar(stats[1], block) for stats in subset_stats.values())
             if value is not None
         ]
         if not scalars:
             continue
-        std_out[block.start:min(block.stop, n_feats)] = _geometric_mean(scalars)
+        std_out[block] = _geometric_mean(scalars)
     dpos_scalars = [float(stats[2]) for stats in subset_stats.values() if float(stats[2]) > _STD_FLOOR]
     dpos_out = _geometric_mean(dpos_scalars) if dpos_scalars else 1.0
     return mean_out.astype(np.float32), std_out.astype(np.float32), np.float32(dpos_out)

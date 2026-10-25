@@ -69,7 +69,6 @@ from .rest_geometry import reseat_rest_onto_clips
 from .canonical_features import (
     CANONICAL_FEATURE_SPACE,
     DPOS_LOSS_WEIGHT_KEY,
-    ROOT_VEL_LOSS_WEIGHT_KEY,
     assert_single_canonical_frame,
     mark_canonical_cond_entry,
     get_canonical_dpos_std,
@@ -1808,9 +1807,9 @@ def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_
                 "standardization statistics before merging new skeletons."
             )
         set_canonical_global_stats(object_cond, *chosen)
-    # Until the next stats pass measures this species' clips, its root-velocity
-    # and position-step losses keep full weight.
-    if object_cond.get(ROOT_VEL_LOSS_WEIGHT_KEY) is None or object_cond.get(DPOS_LOSS_WEIGHT_KEY) is None:
+    # Until the next stats pass measures this species' clips, its position-step
+    # loss keeps full weight.
+    if object_cond.get(DPOS_LOSS_WEIGHT_KEY) is None:
         set_aux_loss_weights(object_cond)
     # tpose_reference_path is None for retarget/direct-input updates that reuse the
     # target's existing sidecar entry (preserved by _save_cond_with_tpose_sidecar).

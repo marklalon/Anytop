@@ -27,21 +27,26 @@ import numpy as np
 # Recorded in args.json at train time and re-checked at resume/generation: a
 # checkpoint fitted on schema N cannot read schema N+1 features, and a pure
 # reordering would leave every shape lining up.
-JOINT_STRUCT_FEATURE_SCHEMA_VERSION = 3
+JOINT_STRUCT_FEATURE_SCHEMA_VERSION = 4
 
 # Order is the channel order of the returned array; changing it is a schema bump.
-# Topology only: rest geometry reaches a model through ``rest_geom_features``.
+# Topology only: rest geometry reaches a model through ``rest_geometry``.
 JOINT_STRUCT_FEATURE_NAMES = (
     'depth_norm',        # (k + 1) / L      -- position along its branch-free run
     'run_len_inv',       # 1 / L            -- bounded run length, pairs with depth_norm
     'is_leaf',           # no children
-    'subtree_n',         # subtree size / J
+    'subtree_bucket',    # log2 bucket of the subtree size, in [0, 1]
     'sib_rank',          # rank among same-parent siblings, in [0, 1]
     'sib_n_inv',         # 1 / (number of same-parent siblings)
     'side',              # sign of the lateral offset from the root: -1 / 0 (midline) / +1
 )
 
 JOINT_STRUCT_DIM = len(JOINT_STRUCT_FEATURE_NAMES)
+
+# Subtree sizes fall into this many log2 buckets: 1, 2-3, 4-7, ... with the
+# last bucket open-ended. Absolute sizes, never a fraction of J, so a token
+# does not carry the rig's joint count.
+SUBTREE_SIZE_BUCKETS = 4
 
 # A lateral offset within this fraction of the rig's span is the midline.
 STRUCT_SIDE_TOLERANCE = 1e-3
@@ -215,6 +220,10 @@ def build_joint_struct_features(object_cond, source='cond entry'):
     side = np.sign(lateral) * (np.abs(lateral) > STRUCT_SIDE_TOLERANCE)
 
     subtree_sizes = _subtree_sizes(parents, children)
+    subtree_bucket = (
+        np.minimum(np.floor(np.log2(subtree_sizes)), SUBTREE_SIZE_BUCKETS - 1)
+        / float(SUBTREE_SIZE_BUCKETS - 1)
+    )
 
     # Sibling rank: a stable order over same-parent children, so a centipede's
     # repeated leg pairs are told apart by where they sit rather than by whatever
@@ -254,7 +263,7 @@ def build_joint_struct_features(object_cond, source='cond entry'):
             (position_in_run.astype(np.float64) + 1.0) / run_length,
             1.0 / run_length,
             is_leaf,
-            subtree_sizes / float(joint_count),
+            subtree_bucket,
             sib_rank,
             sib_n_inv,
             side,

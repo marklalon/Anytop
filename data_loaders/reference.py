@@ -3,41 +3,75 @@ import numpy as np
 import torch
 
 from data_loaders.truebones.truebones_utils.canonical_features import (
-    _length_scale_from_cond, physical_hml_to_canonical, rest_pos_from_cond,
+    _length_scale_from_cond, physical_hml_to_canonical, rest_pos_from_cond, root_relative_positions,
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import build_joint_struct_features
 
 
 def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, shared=None):
-    """Augment the encoder input's skeleton after time sampling.
+    """One encoder input from a clip used whole: its skeleton augmentation
+    (``augment_reference_skeleton``), then ``finish_reference_sample``."""
+    if augment:
+        motion, cond, shared, _changed = augment_reference_skeleton(motion, cond, metadata, opt, shared=shared)
+    return finish_reference_sample(motion, cond, opt, augment=augment, shared=shared)
+
+
+def augment_reference_skeleton(motion, cond, metadata, opt, *, shared=None):
+    """Return ``(motion, cond, shared, changed)``: the encoder input's skeleton
+    augmentation, drawn on the whole stored clip before time sampling, as the
+    target's is, so both are grounded on the same clip.
 
     The draws are independent of the target's own skeleton augmentation;
-    ``motion`` / ``cond`` are the stored rig's window. ``shared`` holds
-    channels already derived from this same motion and cond; they are reused
-    while no augmentation changes the skeleton. The augmentations return new
-    arrays, so the caller's motion and cond are never written.
+    ``motion`` / ``cond`` are the stored rig's clip. ``shared`` holds channels
+    already derived from this same rig; they are kept while no augmentation
+    changes the skeleton, and the structural channel also across the
+    bone-length and rest re-pose stages. The augmentations return new arrays,
+    so the caller's motion and cond are never written.
     """
     import random
-    from data_loaders.truebones.truebones_utils.leaf_drop import sample_leaf_drop, drop_joints_from_cond
+    from data_loaders.truebones.truebones_utils.topology_aug import augment_topology
     from data_loaders.truebones.truebones_utils.bone_length_aug import (
         DEFAULT_BONE_LENGTH_AUG, DEFAULT_BONE_LENGTH_AUG_MIN, augment_bone_lengths)
+    from data_loaders.truebones.truebones_utils.rest_repose_aug import (
+        DEFAULT_REST_REPOSE_MAX_DEG, augment_rest_repose)
 
     metadata = dict(metadata)
-    leaf_prob = getattr(opt, 'leaf_drop_prob', 0.0) if augment else 0.0
-    bone_prob = getattr(opt, 'bone_length_aug_prob', 0.0) if augment else 0.0
+    topology_prob = getattr(opt, 'topology_aug_prob', 0.0)
+    bone_prob = getattr(opt, 'bone_length_aug_prob', 0.0)
+    repose_prob = getattr(opt, 'rest_repose_prob', 0.0)
+    shared = dict(shared or {})
     changed = False
-    if leaf_prob and random.random() < leaf_prob:
-        dropped = sample_leaf_drop(cond, motion, metadata['translation_root_index'])
-        if dropped:
-            keep, cond = drop_joints_from_cond(cond, dropped)
-            motion = motion[:, keep]
-            metadata['translation_root_index'] = int(np.searchsorted(keep, metadata['translation_root_index']))
+    if topology_prob and random.random() < topology_prob:
+        motion, cond, info = augment_topology(motion, cond, metadata['translation_root_index'])
+        if info['applied']:
+            metadata['translation_root_index'] = info['translation_root_index']
+            shared = dict(joint_struct=build_joint_struct_features(cond))
             changed = True
+    # The structural channel names the rig's joints, not its rest geometry, so
+    # the bone-length and re-pose stages keep it (see rest_repose_aug).
+    struct_cond = cond
+    geometry_changed = False
     if bone_prob and random.random() < bone_prob:
         motion, cond, info = augment_bone_lengths(
             motion, cond, metadata, getattr(opt, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG),
             getattr(opt, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN))
-        changed = changed or info['applied']
+        geometry_changed = info['applied']
+    if repose_prob and random.random() < repose_prob:
+        motion, cond, info = augment_rest_repose(
+            motion, cond, metadata, getattr(opt, 'rest_repose_max_deg', DEFAULT_REST_REPOSE_MAX_DEG))
+        geometry_changed = geometry_changed or info['applied']
+    if geometry_changed:
+        struct = shared.get('joint_struct')
+        shared = dict(joint_struct=build_joint_struct_features(struct_cond) if struct is None else struct)
+    return motion, cond, shared, changed or geometry_changed
+
+
+def finish_reference_sample(motion, cond, opt, *, augment=True, shared=None):
+    """The encoder input of a time-sampled ``motion`` on its (augmented) rig
+    ``cond``, with the joint-name drop when ``augment``; ``shared`` as
+    ``reference_sample`` takes it."""
+    import random
+
     names = np.asarray(cond['joints_names_embs'], dtype=np.float32)
     prob = getattr(opt, 'joint_name_drop_prob', 0.0) if augment else 0.0
     if prob:
@@ -45,7 +79,7 @@ def prepare_reference_sample(motion, cond, metadata, opt, *, augment=True, share
         if drop.any():
             names = names.copy()
             names[drop] = 0
-    return reference_sample(motion, cond, names, **({} if changed else (shared or {})))
+    return reference_sample(motion, cond, names, **(shared or {}))
 
 
 # A bone shorter than this fraction of the rig's longest rest bone is a
@@ -54,9 +88,18 @@ BONE_DIRECTION_MIN_REST_FRACTION = 1e-3
 
 # Per-joint encoder pose: unit bone direction (3) and height over ``L`` (1).
 REFERENCE_POSE_CHANNELS = 4
-# Target rest-geometry channel: the rest's pose channels plus a present flag, since an
-# all-zero geometry (root, coincident helper, grounded joint) is a real value.
-REST_GEOM_DIM = REFERENCE_POSE_CHANNELS + 1
+# Rest geometry per joint (``rest_geometry``): the encoder pose channels of the
+# rest, then the parent->joint bone length over ``L``, so each consumer's
+# columns are one contiguous slice.
+REST_GEOMETRY_DIM = REFERENCE_POSE_CHANNELS + 1
+# Reference encoder: the rest in the space of its per-frame pose.
+REST_POSE_COLUMNS = slice(0, REFERENCE_POSE_CHANNELS)
+# Denoiser: the encoder's rest channels plus bone length, which a near
+# horizontal bone's direction and height cannot recover.
+REST_GEOM_COLUMNS = slice(0, REST_GEOMETRY_DIM)
+# Target rest-geometry channel: the denoiser columns plus a present flag, since an
+# all-zero geometry (a root on the ground) is a real value.
+REST_GEOM_DIM = REST_GEOM_COLUMNS.stop - REST_GEOM_COLUMNS.start + 1
 
 
 def bone_directions(positions, parents, rest_positions):
@@ -91,42 +134,53 @@ def reference_pose(motion, cond):
     """``[T, J, REFERENCE_POSE_CHANNELS]`` rest-free encoder pose.
 
     Bone directions plus each joint's absolute height over the rig's ``L``
-    (ground contact and posture height, comparable across body sizes).
+    (ground contact and posture height, comparable across body sizes), read
+    off the all-RIC view of the working-layout ``motion``.
     """
-    positions = np.asarray(motion, np.float32)[..., :3]
+    positions = root_relative_positions(np.asarray(motion, np.float32)[..., :3])
     height = positions[..., 1:2] / float(_length_scale_from_cond(cond))
     pose = np.concatenate([bone_directions(positions, cond['parents'], rest_pos_from_cond(cond)),
                            height], axis=-1)
     return np.nan_to_num(pose).astype(np.float32)
 
 
-def rest_geom_features(cond):
-    """``[J, REFERENCE_POSE_CHANNELS]`` rest geometry: the pose channels of the rest.
+def rest_geometry(cond):
+    """``[J, REST_GEOMETRY_DIM]`` rest geometry, built once for both consumers.
 
-    The same bone-direction / height channels evaluated on the rest positions,
-    so a frame's pose and the rest sit in one space and their difference is
-    linear in the inputs. The single builder for both rest inputs: the reference
-    encoder's static per-joint context and the denoiser's per-joint rest-geometry
-    channel (``y['rest_geom']``, loader and generation alike).
+    The reference encoder reads ``REST_POSE_COLUMNS``: the pose channels
+    evaluated on the rest, so a frame's pose and the rest sit in one space and
+    their difference is linear in the inputs. The denoiser reads
+    ``REST_GEOM_COLUMNS`` (``y['rest_geom']``, loader and generation alike):
+    the same channels plus each joint's rest bone length over ``L`` (zero at
+    roots).
     """
-    return reference_pose(rest_pos_from_cond(cond)[None], cond)[0]
+    rest = np.asarray(rest_pos_from_cond(cond), np.float32)
+    parents = np.asarray(cond['parents']).reshape(-1)
+    pose = reference_pose(rest[None], cond)[0]
+    length = np.zeros((len(rest), 1), np.float32)
+    child = np.flatnonzero(parents >= 0)
+    length[child, 0] = np.linalg.norm(rest[child] - rest[parents[child]], axis=-1)
+    length = length / float(_length_scale_from_cond(cond))
+    geometry = np.concatenate([pose, length], axis=-1)
+    return np.nan_to_num(geometry).astype(np.float32)
 
 
-def reference_sample(motion, cond, names, *, feats=None, joint_struct=None):
+def reference_sample(motion, cond, names, *, feats=None, joint_struct=None, geometry=None):
     """One encoder input from physical features on their own skeleton.
 
     The single builder for both the loader and generation, so the two never
     hand the encoder differently derived channels. ``feats`` / ``joint_struct``
-    may be passed in when already derived from this same motion and cond.
-    ``feats`` is the canonical window; the encoder reads only its root XZ
-    velocity.
+    / ``geometry`` (``rest_geometry``) may be passed in when already derived
+    from this same motion and cond.
+    ``feats`` is the canonical window; the encoder reads only its root's
+    world XZ.
     """
     if feats is None:
         feats = np.nan_to_num(physical_hml_to_canonical(motion, cond)).astype(np.float32)
     return {
         'feats': feats,
         'pose': reference_pose(motion, cond),
-        'rest_pose': rest_geom_features(cond),
+        'rest_pose': (rest_geometry(cond) if geometry is None else geometry)[:, REST_POSE_COLUMNS],
         'joints_names_embs': names,
         'joint_struct': build_joint_struct_features(cond) if joint_struct is None else joint_struct,
     }

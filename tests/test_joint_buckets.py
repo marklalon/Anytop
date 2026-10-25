@@ -28,7 +28,7 @@ from data_loaders.joint_buckets import (  # noqa: E402
     bucket_ids_for_joint_counts,
     resolve_joint_buckets,
 )
-from data_loaders.reference import REFERENCE_POSE_CHANNELS  # noqa: E402
+from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
@@ -163,7 +163,7 @@ def _item(n_joints, max_joints, frames=3, seed=0):
     return [
         rng.standard_normal((frames, n_joints, FEATS)).astype(np.float32), frames,
         np.asarray(_BIPED_PARENTS[:n_joints], dtype=np.int64),
-        rng.standard_normal((n_joints, REFERENCE_POSE_CHANNELS)).astype(np.float32),
+        rng.standard_normal((n_joints, REST_GEOM_DIM - 1)).astype(np.float32),
         np.zeros((n_joints, 3), dtype=np.float32),
         rng.integers(0, 4, size=(n_joints, n_joints)).astype(np.int64),
         rng.integers(0, 4, size=(n_joints, n_joints)).astype(np.int64),

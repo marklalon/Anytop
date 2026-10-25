@@ -8,7 +8,10 @@ import torch
 from model.anytop import AnyTop
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_CHECKPOINT_VERSION,
+    CONTROLLED_VOCAB,
     ActionConditioningError,
+    build_action_conditioning_bundle,
+    word_table_sha256,
 )
 from diffusion import gaussian_diffusion as gd
 from diffusion.respace import SpacedDiffusion, space_timesteps
@@ -129,13 +132,62 @@ def read_checkpoint_metadata(payload, source: str):
     return metadata
 
 
-def load_checkpoint_weights(payload, source: str, prefer_ema: bool):
-    """``(model_state, model_avg_state, metadata)`` from a validated payload."""
+def _align_checkpoint_vocab(model_state, model_avg_state, metadata, source: str):
+    """Re-index a checkpoint's word table onto this code's vocabulary, by word.
+
+    A word removed from the vocabulary after the checkpoint was trained leaves the
+    table with extra rows. The weights act on slot-pooled word vectors, not on ids,
+    so the surviving rows are still exactly what they were fitted on; the table is
+    cut down to this vocabulary and the contract rebuilt from the checkpoint's own
+    vectors. A checkpoint missing a word this code has is left untouched, and the
+    ordinary validation reports it.
+    """
+    action_conditioning = (metadata or {}).get('action_conditioning')
+    if not isinstance(action_conditioning, dict):
+        return model_state, model_avg_state, metadata
+    contract = dict(action_conditioning.get('embedding_contract') or {})
+    sources = contract.get('ordered_token_sources') or []
+    saved_vocab = [entry.get('token') for entry in sources]
+    current_vocab = list(CONTROLLED_VOCAB)
+    if saved_vocab == current_vocab or not set(current_vocab) <= set(saved_vocab):
+        return model_state, model_avg_state, metadata
+    row_of = {word: row for row, word in enumerate(saved_vocab)}
+    keep = [row_of[word] for word in current_vocab]
+
+    def cut(state):
+        if state is None or 'action_word_embeddings' not in state:
+            return state
+        state = dict(state)
+        state['action_word_embeddings'] = state['action_word_embeddings'][keep].contiguous()
+        return state
+
+    model_state, model_avg_state = cut(model_state), cut(model_avg_state)
+    table_source = model_avg_state if model_avg_state is not None else model_state
+    table = table_source['action_word_embeddings'].detach().cpu().numpy()
+    contract['ordered_token_sources'] = [sources[row] for row in keep]
+    contract['word_table_sha256'] = word_table_sha256(table)
+    bundle = build_action_conditioning_bundle(
+        table, contract, source=source, check_token_sources=False)
+    dropped = [word for word in saved_vocab if word not in set(current_vocab)]
+    print(f'{source}: dropped removed action words {dropped} from the checkpoint word table.')
+    return model_state, model_avg_state, {**metadata, 'action_conditioning': bundle.checkpoint_metadata()}
+
+
+def load_checkpoint_weights(payload, source: str, prefer_ema: bool, align_vocab: bool = False):
+    """``(model_state, model_avg_state, metadata)`` from a validated payload.
+
+    ``align_vocab`` is for inference: a checkpoint whose vocabulary is a superset
+    of this code's is cut down to it. Resuming training leaves it off, so a resume
+    still refuses a changed vocabulary.
+    """
     metadata = read_checkpoint_metadata(payload, source)
     model_state = payload.get('model')
     model_avg_state = payload.get('model_avg')
     if model_state is None and model_avg_state is None:
         raise ActionConditioningError(f"{source} carries no weights")
+    if align_vocab:
+        model_state, model_avg_state, metadata = _align_checkpoint_vocab(
+            model_state, model_avg_state, metadata, source)
     if prefer_ema and model_avg_state is not None:
         return model_avg_state, model_avg_state, metadata
     return (model_state if model_state is not None else model_avg_state,
@@ -244,10 +296,8 @@ def create_gaussian_diffusion(args):
         loss_type=loss_type,
         rescale_timesteps=rescale_timesteps,
         lambda_geo=args.lambda_geo,
-        lambda_root_vel=getattr(args, 'lambda_root_vel', 0.0),
         lambda_dpos=getattr(args, 'lambda_dpos', 0.0),
         lambda_loop_wrap=getattr(args, 'lambda_loop_wrap', 0.0),
-        lambda_loop_root_closure=getattr(args, 'lambda_loop_root_closure', 0.0),
         lambda_bone=getattr(args, 'lambda_bone', 0.0),
         temporal_span_seam_loss_weight=getattr(args, 'temporal_span_seam_loss_weight', 0.0),
         temporal_span_seam_width=getattr(args, 'temporal_span_seam_width', 2),

@@ -14,7 +14,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     load_motion_metadata,
     write_motion_metadata,
 )
-from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE
+from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE, CANONICAL_STAT_LEN
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import build_species_file_tokens
@@ -1360,8 +1360,8 @@ def test_write_object_outputs_rejects_clip_name_collision(tmp_path):
 
 def _cond_entry_with_stats(object_type, mean_fill, std_fill):
     entry = _make_cond_entry(object_type)
-    entry["canonical_feature_mean"] = np.full((FEATS_LEN,), mean_fill, dtype=np.float32)
-    entry["canonical_feature_std"] = np.full((FEATS_LEN,), std_fill, dtype=np.float32)
+    entry["canonical_feature_mean"] = np.full((CANONICAL_STAT_LEN,), mean_fill, dtype=np.float32)
+    entry["canonical_feature_std"] = np.full((CANONICAL_STAT_LEN,), std_fill, dtype=np.float32)
     entry["canonical_dpos_std"] = np.float32(0.1 * std_fill)
     return entry
 
@@ -1377,10 +1377,10 @@ def test_inherit_canonical_stats_copies_global_frame_without_species_tags(tmp_pa
     assert dataset_pipeline_mod._inherit_canonical_stats_from_dataset(
         "NewWingedSpecies", target, reference_cond_path=reference_path,
     )
-    np.testing.assert_array_equal(target["canonical_feature_mean"], np.full(FEATS_LEN, 0.5))
-    np.testing.assert_array_equal(target["canonical_feature_std"], np.full(FEATS_LEN, 2.0))
+    np.testing.assert_array_equal(target["canonical_feature_mean"], np.full(CANONICAL_STAT_LEN, 0.5))
+    np.testing.assert_array_equal(target["canonical_feature_std"], np.full(CANONICAL_STAT_LEN, 2.0))
     assert np.isclose(float(target["canonical_dpos_std"]), 0.2)
-    assert float(target["root_vel_loss_weight"]) == 1.0 and float(target["dpos_loss_weight"]) == 1.0
+    assert float(target["dpos_loss_weight"]) == 1.0 and "root_vel_loss_weight" not in target
 
 
 @pytest.mark.parametrize("mean_fill,std_fill", [(0.7, 2.0), (0.5, 3.0)])
@@ -1415,8 +1415,8 @@ def test_merge_copies_global_canonical_stats_onto_any_new_species(tmp_path):
 
     merged = _cond_by_species(dataset_dir)
     for name in ("Dog", "Dragon"):
-        np.testing.assert_allclose(merged[name]["canonical_feature_mean"], np.full((FEATS_LEN,), 0.5, dtype=np.float32))
-        np.testing.assert_allclose(merged[name]["canonical_feature_std"], np.full((FEATS_LEN,), 2.0, dtype=np.float32))
+        np.testing.assert_allclose(merged[name]["canonical_feature_mean"], np.full((CANONICAL_STAT_LEN,), 0.5, dtype=np.float32))
+        np.testing.assert_allclose(merged[name]["canonical_feature_std"], np.full((CANONICAL_STAT_LEN,), 2.0, dtype=np.float32))
         assert np.isclose(float(merged[name]["canonical_dpos_std"]), 0.2)
 
 
@@ -1445,7 +1445,7 @@ def test_merge_update_preserves_species_own_prior_stats(tmp_path):
     )
 
     merged = _cond_by_species(dataset_dir)
-    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_mean"], np.full((FEATS_LEN,), 0.3, dtype=np.float32))
-    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_std"], np.full((FEATS_LEN,), 1.5, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_mean"], np.full((CANONICAL_STAT_LEN,), 0.3, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_std"], np.full((CANONICAL_STAT_LEN,), 1.5, dtype=np.float32))
 
 

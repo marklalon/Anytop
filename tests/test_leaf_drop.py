@@ -268,22 +268,23 @@ def test_evaluation_splits_refuse_the_augmentation(split):
 
     with pytest.raises(ValueError, match='training splits only'):
         get_dataset(num_frames=60, split=split, objects_subset='all', action_group='all',
-                    leaf_drop_prob=0.5, cond_path=_MERGED_COND)
+                    topology_aug_prob=0.5, cond_path=_MERGED_COND)
 
 
 @_needs_merged
 def test_kept_rows_decode_to_the_stored_motion():
-    import data_loaders.truebones.data.dataset as dataset_module
     from data_loaders.get_data import get_dataset
+    from data_loaders.truebones.truebones_utils import topology_aug
     from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
     from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
 
     motion_dataset = get_dataset(
         num_frames=60, split='train', objects_subset='all', action_group='all',
-        leaf_drop_prob=1.0, cond_path=_MERGED_COND,
+        topology_aug_prob=1.0, cond_path=_MERGED_COND,
     ).motion_dataset
+    motion_dataset.opt.topology_aug_kinds = ('leaf_drop',)
     captured = {}
-    real_drop = dataset_module.drop_joints_from_cond
+    real_drop = topology_aug.drop_joints_from_cond
 
     def spy(entry, dropped):
         keep, new_entry = real_drop(entry, dropped)
@@ -304,14 +305,14 @@ def test_kept_rows_decode_to_the_stored_motion():
     ]
     checked = 0
     try:
-        dataset_module.drop_joints_from_cond = spy
+        topology_aug.drop_joints_from_cond = spy
         for name in random.Random(0).sample(names, min(60, len(names))):
             data = motion_dataset.data_dict[name]
-            motion_dataset.opt.leaf_drop_prob = 0.0
+            motion_dataset.opt.topology_aug_prob = 0.0
             random.seed(7)
             plain = motion_dataset._prepare_sample(name, data)
             captured.clear()
-            motion_dataset.opt.leaf_drop_prob = 1.0
+            motion_dataset.opt.topology_aug_prob = 1.0
             random.seed(7)
             augmented = motion_dataset._prepare_sample(name, data)
             if 'keep' not in captured or augmented[1] != plain[1]:
@@ -325,5 +326,5 @@ def test_kept_rows_decode_to_the_stored_motion():
             assert augmented[12]['joint_struct'].shape[0] == keep.shape[0]
             checked += 1
     finally:
-        dataset_module.drop_joints_from_cond = real_drop
+        topology_aug.drop_joints_from_cond = real_drop
     assert checked > 0

@@ -23,7 +23,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import canonical_
 from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from sample.reference_motion import _prepare_encoder_reference_bundle
-from test_bone_length_aug import fixture, make_dataset
+from test_bone_length_aug import fixture, make_dataset, pin_target_leaf_drop
 
 
 def model(**kwargs):
@@ -129,16 +129,16 @@ def test_encoder_permutation_invariance_padding_and_actual_channel_contract():
               'ref_joint_struct'):
         permuted[k] = y[k][:, permutation]
     torch.testing.assert_close(z, encoder(permuted), rtol=1e-5, atol=1e-6)
-    # Only the root XZ velocity of the canonical window is read: the
-    # rest-centered positions, rotations and other velocities never are.
+    # Only the root's world XZ of the canonical window is read: the other
+    # joints' positions, every rotation and the root's height never are.
     changed = copy.deepcopy(y)
     changed['ref_feats'][:, 1:] = 100
-    changed['ref_feats'][:, 0, :9] = 100
-    changed['ref_feats'][:, 0, 10] = 100
+    changed['ref_feats'][:, 0, 1] = 100
+    changed['ref_feats'][:, 0, 3:] = 100
     changed['species_emb'] = torch.randn(2, 99)
     torch.testing.assert_close(z, encoder(changed), rtol=0, atol=0)
     moved = copy.deepcopy(y)
-    moved['ref_feats'][:, 0, 9] += 1
+    moved['ref_feats'][:, 0, 0] += 1
     assert not torch.allclose(z, encoder(moved))
     padded = dict(y)
     for k in ('ref_feats', 'ref_pose', 'ref_rest_pose', 'ref_mask', 'ref_joints_names_embs',
@@ -308,7 +308,9 @@ def test_unaugmented_reference_reuses_shared_target_channels():
     options = SimpleNamespace(bone_length_aug_prob=1, bone_length_aug_max=.2)
     random.seed(5)
     augmented = prepare_reference_sample(motion, cond, metadata, options, shared=shared)
-    assert all(augmented[k] is not shared[k] for k in shared)
+    # New lengths make new features; the structural channel names the same joints.
+    assert augmented['feats'] is not shared['feats']
+    assert augmented['joint_struct'] is shared['joint_struct']
 
 
 def test_reference_dropout_extremes_and_frame_mismatch():
@@ -409,7 +411,7 @@ def test_augmentation_has_independent_cond_and_target_is_untouched():
     motion, cond, metadata = fixture()
     before_motion, before_cond = motion.copy(), copy.deepcopy(cond)
     options = SimpleNamespace(bone_length_aug_prob=1, bone_length_aug_max=.2,
-                              joint_name_drop_prob=1, leaf_drop_prob=0)
+                              joint_name_drop_prob=1, topology_aug_prob=0)
     cond['joints_names_embs'][:] = 1
     random.seed(5)
     sample = prepare_reference_sample(motion, cond, metadata, options)
@@ -466,18 +468,17 @@ def test_invalid_reference_configuration(kwargs):
 
 def test_target_augmentation_leaves_reference_on_stored_rig(monkeypatch):
     from data_loaders.tensors import truebones_batch_collate
-    import data_loaders.truebones.data.dataset as dataset_module
     dataset, data = make_dataset()
     dataset.opt.bone_length_aug_prob = 0
     dataset.opt.ref_encoder = True
-    dataset.opt.leaf_drop_prob = 0
+    dataset.opt.topology_aug_prob = 0
     dataset.opt.bone_length_aug_prob = 0
     dataset.opt.joint_name_drop_prob = 0
     random.seed(2)
     plain = dataset._prepare_sample('test', data)
     stored_joints = plain[0].shape[1]
-    dataset.opt.leaf_drop_prob = 1
-    monkeypatch.setattr(dataset_module, 'sample_leaf_drop', lambda *a: [3])
+    dataset.opt.topology_aug_prob = 1
+    pin_target_leaf_drop(monkeypatch, [3])
     sample = dataset._prepare_sample('test', data)
     reference = sample[12]['reference']
     assert sample[0].shape[1] == stored_joints - 1
@@ -488,17 +489,41 @@ def test_target_augmentation_leaves_reference_on_stored_rig(monkeypatch):
     assert kwargs['y']['ref_mask'].sum() == stored_joints
 
 
+def test_reference_skeleton_is_augmented_on_the_whole_stored_clip(monkeypatch):
+    import data_loaders.reference as reference_module
+    dataset, data = make_dataset()
+    dataset.opt.ref_encoder = True
+    dataset.opt.topology_aug_prob = 0
+    dataset.opt.bone_length_aug_prob = 1
+    dataset.opt.joint_name_drop_prob = 0
+    stored = dataset._load_physical_motion(data)[0]
+    seen = []
+    augment = reference_module.augment_reference_skeleton
+
+    def record(motion, *args, **kwargs):
+        seen.append(np.array(motion, copy=True))
+        return augment(motion, *args, **kwargs)
+
+    monkeypatch.setattr(reference_module, 'augment_reference_skeleton', record)
+    random.seed(3)
+    sample = dataset._prepare_sample('test', data)
+    # Grounded on the clip the target is grounded on, not on its window.
+    assert len(seen) == 1
+    np.testing.assert_array_equal(seen[0], stored)
+    reference = sample[12]['reference']
+    assert reference['feats'].shape[0] == sample[0].shape[0]
+
+
 def test_target_augmentation_keeps_loop_reference_time_aligned(monkeypatch):
-    import data_loaders.truebones.data.dataset as dataset_module
     dataset, data = make_dataset()
     dataset.opt.bone_length_aug_prob = 0
     dataset.opt.ref_encoder = True
-    dataset.opt.leaf_drop_prob = 0
+    dataset.opt.topology_aug_prob = 0
     dataset.opt.bone_length_aug_prob = 0
     dataset.opt.joint_name_drop_prob = 0
-    dataset.opt.leaf_drop_prob = 1
+    dataset.opt.topology_aug_prob = 1
     data['motion_metadata']['is_loop'] = True
-    monkeypatch.setattr(dataset_module, 'sample_leaf_drop', lambda *a: [3])
+    pin_target_leaf_drop(monkeypatch, [3])
     random.seed(4)
     sample = dataset._prepare_sample('test', data)
     reference = sample[12]['reference']

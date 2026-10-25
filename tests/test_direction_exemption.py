@@ -58,7 +58,8 @@ def test_every_exempt_word_is_a_real_action_word():
 def test_the_exemption_matches_anywhere_in_the_label_not_just_the_head():
     assert not takes_planar_direction(["idle", "look"])
     assert not takes_planar_direction(["attack", "bite"])       # modifier
-    assert not takes_planar_direction(["attack", "hover", "headbutt"])
+    assert not takes_planar_direction(["attack", "hover", "bite"])
+    assert takes_planar_direction(["attack", "left", "headbutt"])  # a head strike can be aimed
     assert takes_planar_direction(["attack", "swat"])           # an aimed strike
     assert takes_planar_direction(["walk"])
 

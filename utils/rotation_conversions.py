@@ -539,25 +539,29 @@ def rotation_6d_to_matrix(d6: torch.Tensor) -> torch.Tensor:
     b3 = torch.cross(b1, b2, dim=-1)
     return torch.stack((b1, b2, b3), dim=-2)
 
+def _cross_np(a, b):
+    """``np.cross(a, b, axis=-1)`` for 3-vectors, the same arithmetic without
+    its axis bookkeeping."""
+    a0, a1, a2 = a[..., 0], a[..., 1], a[..., 2]
+    b0, b1, b2 = b[..., 0], b[..., 1], b[..., 2]
+    return np.stack([a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0], axis=-1)
+
+
 def rotation_6d_to_matrix_np(cont6d):
     assert cont6d.shape[-1] == 6, "The last dimension must be 6"
     epsilon = 1e-8
     x_raw = cont6d[..., 0:3]
     y_raw = cont6d[..., 3:6]
-    x_norm = np.linalg.norm(x_raw, axis=-1, keepdims=True)
+    x_norm = np.sqrt(np.square(x_raw).sum(axis=-1, keepdims=True))
     x = np.zeros_like(x_raw)
     np.divide(x_raw, x_norm, out=x, where=x_norm > epsilon)
-    z = np.cross(x, y_raw, axis=-1)
-    z_norm = np.linalg.norm(z, axis=-1, keepdims=True)
+    z = _cross_np(x, y_raw)
+    z_norm = np.sqrt(np.square(z).sum(axis=-1, keepdims=True))
     z_normed = np.zeros_like(z)
     np.divide(z, z_norm, out=z_normed, where=z_norm > epsilon)
     z = z_normed
-    y = np.cross(z, x, axis=-1)
-    x = x[..., None]
-    y = y[..., None]
-    z = z[..., None]
-    mat = np.concatenate([x, y, z], axis=-1)
-    return mat
+    y = _cross_np(z, x)
+    return np.stack([x, y, z], axis=-1)
 
 def rotation_6d_to_matrix_safe(cont6d):
     assert cont6d.shape[-1] == 6, "The last dimension must be 6"

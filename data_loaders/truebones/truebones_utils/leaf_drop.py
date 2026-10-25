@@ -1,7 +1,7 @@
 """Leaf-joint removal: a topology augmentation that is exact on the features.
 
-Every joint's row holds its own root-relative position, its own local rotation
-and its own velocity, and a leaf's rotation moves nothing but the leaf. Deleting
+Every joint's row holds its own position and its own local rotation, and a
+leaf's rotation moves nothing but the leaf. Deleting
 a leaf's row therefore leaves every other row a valid description of the same
 motion on a skeleton that never had that leaf -- no FK re-run, no approximation.
 The same holds for a chain peeled leaf by leaf: each step removes a leaf of the

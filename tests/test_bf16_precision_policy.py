@@ -33,7 +33,7 @@ class _MatmulPrecisionRestore(unittest.TestCase):
 class OutputProcessPrecisionTests(unittest.TestCase):
     def test_x0_prediction_is_computed_in_fp32_under_bf16_autocast(self):
         torch.manual_seed(0)
-        head = OutputProcess(feature_len=12, joint_feature_len=9, root_feature_len=11, max_joints=4, latent_dim=16)
+        head = OutputProcess(feature_len=12, joint_feature_len=9, max_joints=4, latent_dim=16)
         latent = torch.randn(5, 2, 4, 16)  # [frames, batch, joints, latent_dim]
         expected = head(latent)
 
@@ -45,7 +45,7 @@ class OutputProcessPrecisionTests(unittest.TestCase):
 
     def test_bf16_residual_stream_is_upcast_before_projection(self):
         torch.manual_seed(0)
-        head = OutputProcess(feature_len=12, joint_feature_len=9, root_feature_len=11, max_joints=4, latent_dim=16)
+        head = OutputProcess(feature_len=12, joint_feature_len=9, max_joints=4, latent_dim=16)
         latent_bf16 = torch.randn(5, 2, 4, 16).to(torch.bfloat16)
 
         with torch.autocast(device_type="cpu", dtype=torch.bfloat16):

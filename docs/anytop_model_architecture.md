@@ -77,7 +77,7 @@ attention，最后由因子化注意力输出的预测就是干净动作。骨�
 ```text
 x_t [B, J, F, T]
   │
-  ├─ motion projection（root / non-root 分开）
+  ├─ motion projection（全部关节共用，含根关节）
   ├─ rest-pose projection，作为第 0 个时间 token
   ├─ frozen-T5 joint-name embedding → 可选 species FiLM → trainable projection
   ├─ joint structural descriptor → MLP
@@ -100,7 +100,7 @@ GraphMotionDecoder × L
   └─ FFN
   │
   ▼
-root / non-root output projections
+output projection（全部关节共用）
   │
   └─ 丢弃第 0 个 rest-pose token → 预测 x_0 [B, J, F, T]
 ```
@@ -113,7 +113,7 @@ root / non-root output projections
 
 ### 3.1 动作与 rest-pose token
 
-根关节和普通关节分别使用线性投影。rest pose 也有独立的 root/non-root 投影，并作为领先
+全部关节（含根关节）共用同一个动作线性投影：根的 position 通道是它的世界坐标（见 §4.3），与其他关节的 RIC 位置含义一致，根靠关节名区分。rest pose 也有独立的 root/non-root 投影，并作为领先
 时间 token 拼到动作帧前面。因此 decoder 实际处理 `T+1` 个时间位置，输出时再删除第 0 个。
 
 ### 3.2 关节名称
@@ -135,12 +135,12 @@ padding 已被 attention mask 和 loss 排除，不会混淆）。它不同于�
 每个关节还有一个与名字无关的结构描述，包括：
 
 - branch-free run 内的归一化位置和 run 长度；
-- run 是否落到 contact、当前 joint 是否 contact、contact 是否已知；
 - leaf 标记；
-- 归一化高度、左右 signed offset、前后位置、附着高度；
-- subtree 大小、sibling rank 和 sibling count 的倒数。
+- subtree 大小的 log2 分桶（绝对大小，不除以 J，token 不携带关节总数）；
+- sibling rank 和 sibling count 的倒数；
+- 左右侧符号 side（-1 / 0 / +1）。
 
-这条通道由 `parents`、物理 rest positions 和 contact annotation 确定。改关节名不会改变它。
+这条通道只由 `parents` 和物理 rest positions 确定。改关节名不会改变它。
 它经独立 MLP 投影后加到 token，并在投影后重新清零 padding rows。
 
 ## 4. 条件总线
@@ -217,6 +217,14 @@ action token，而标签集的 slot-source 秩有限，头再宽也用不满，�
 cond entry 携带同一对向量（loader 用 `assert_single_canonical_frame` 校验），所以它不是
 模型输入——输出空间对所有物种相同，也就不携带任何 body plan 信息。它们仍随 `y` collate，
 供只读 `y` 的解码路径（训练 aux-loss）反标准化。
+
+每个关节的模型通道是 position 与 rotation，没有速度。非根关节的 position 是 RIC（世界坐标减去根的
+XZ）；根的 position 是它的世界坐标，XZ 从 clip 第 0 帧（预处理放在原点）起算，loader 在任何时间
+阶段之前由存储的根速度积分得到，之后工作布局里不再有速度（`canonical_features.stored_to_working`），
+所以所有时间阶段（变速、roll、tile、窗口重采样）都只插值位置与旋转。根的世界 XZ 分布比关节
+的 RIC 位置窄得多，所以统计向量在每通道统计之后另带根 position 的一组 mean/std：X、Z 共用一个
+标量（水平面保持各向同性），Y 一个。导出时 `working_to_stored` 把解码结果写回存储格式：根的
+position 回到 RIC，速度行写入根的世界步长（读存储 clip 的代码只读这一路速度），其余关节的速度行为零。
 
 `resample_speed_cond = source_frames / internal_frames` 以**逐帧物理时间**注入：窗口第 `i` 帧
 对应源帧 `i * step`（loop 为 `L / T`，open 为 `(L - 1) / (T - 1)`，与 loader 的 resample step 一致），
@@ -364,7 +372,7 @@ k 份 tile 经周期重采样后是 k 份逐位相同的拷贝（周期 T/k 帧�
 
 真实 loop clip 以概率 `--loop_cond_prob` 被告知它是 loop（取 1 即总是）；其余的抽签
 （`loop_uncond`）仍做它本该有的全部 loop 增广（closing-key drop、周期变速，无固定相位的再加 circular roll、tile），但按开放
-clip 重采样窗口、以 `is_loop=False` 交给模型（零 circular phase、开放速度步长、无 wrap 损失）。
+clip 重采样窗口、以 `is_loop=False` 交给模型（零 circular phase、无回绕步、无 wrap 损失）。
 这是有意的标签噪声，目的与不把 loop flag 放进条件总线相同：flag 与内容相关时模型会把它
 当内容键，而一个不可信的 flag 只能被当作时间拓扑来读。它不是 CFG（没有 null 态、推理端不消费），
 eval loader 总是告知。另一处降级是超出源帧预算被裁剪的 clip（环被裁开，按非 loop 告知）。
@@ -389,15 +397,15 @@ checkpoint 的窗口，超过窗口的高频 loop 按非 loop 计票，所以不
 
 **变速、roll、tile、裁剪和窗口重采样只插值一次。** 这几步都是时间的线性映射，loader 不逐步生成
 中间 clip：变速只定下变速后的长度，roll、tile、裁剪只改一个帧偏移（以变速后的帧计，对源可以是
-小数）和窗口长度，最后由 `resample_time_scaled_window` 按复合映射（精确有理数）从源 clip 插值一次，
-速度通道沿源的位置路径采样后差分，契约与 `resample_motion_features` 相同。两次线性插值连做时，
+小数）和窗口长度，最后由 `resample_time_scaled_window` 按复合映射（精确有理数）从源 clip 插值一次。两次线性插值连做时，
 即使两步都是放大采样，第二步也会切掉落在两个中间帧之间的源关键帧，周期几帧的内容会被削平。
 不变速的 clip 不经过它：roll、tile、裁剪按整数帧取下标，窗口重采样是唯一一次插值。
 
 ### 6.3 损失侧
 
-- `loop_wrap_loss`：loop 首尾的 position、rotation 和 terminal velocity 闭合；
-- `loop_root_xz_closure_loss`：translation root 的整周期 XZ velocity 积分闭合。
+- `loop_wrap_loss`：loop 首尾的 rotation 闭合；
+- position step 的回绕步 `pos[0] - pos[-1]`：loop 首尾的 position 闭合，根的世界 XZ 在内，
+  所以根轨迹的整周期闭合也由它监督。
 
 loop 路径不使用 loop-aware temporal mask。
 
@@ -422,17 +430,15 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 
 ## 8. 损失
 
-模型预测 `x_0`。基础 `l_simple` 是按有效关节、有效帧计算的 MSE，只覆盖 position 与 rotation 通道；
-root 的 XZ velocity 有单独的项，其余速度通道是派生量，不直接监督。其余项是否启用与权重由训练配置决定：
+模型预测 `x_0`。基础 `l_simple` 是按有效关节、有效帧计算的 MSE，覆盖 position 与 rotation 通道
+（根的世界坐标在内）；速度不是模型通道。其余项是否启用与权重由训练配置决定：
 
 | 损失 | 约束 |
 |---|---|
-| root velocity | 根 XZ 速度的 MSE |
-| position step | 每个关节逐帧位置步长对 GT 的 MSE（loop 样本含首尾回绕步），补回派生速度通道原先给位置的监督 |
+| position step | 每个关节逐帧位置步长对 GT 的 MSE（loop 样本含首尾回绕步）；根的步长是它的世界 XZ 步长，所以也监督根轨迹 |
 | geodesic | 预测/目标 6D rotation 转 SO(3) 后的角距离 |
 | bone vector | 父→子骨向量相对 GT 的差（同时管长度和方向），按 rest 骨长归一化（下限为 L 的一个比例），按 `alphas_cumprod[t]` 加权；每个叶子关节另加一根局部坐标系下的单位虚拟子骨，方向各向同性（`‖R_pred − R_gt‖_F / √3`），让叶子的旋转和有子关节的关节一样受约束 |
-| loop wrap | loop 首尾闭合 |
-| loop root XZ closure | 根 XZ 速度整周期积分为零 |
+| loop wrap | loop 首尾 rotation 闭合 |
 | temporal-span seam | span 边界附近 position 二阶差分匹配 GT |
 
 ## 9. 参考动作与编辑
@@ -450,7 +456,7 @@ root 的 XZ velocity 有单独的项，其余速度通道是派生量，不直�
 retarget，也不使用 img2img 初始化或 clamp：参考在自己的骨架上提取干净特征，经独立的、
 比主干窄的 spatial/temporal encoder 和每帧 learned-query 池化，得到 `[B,T,K,d_z]`。
 编码器只读与源骨架 rest 无关的量：每个关节在骨架规范化静止朝向系下的父→子单位骨骼方向与
-绝对高度 / L（`ref_pose`）、translation root 的 XZ velocity、关节名和 structural channel 的拓扑列；
+绝对高度 / L（`ref_pose`）、translation root 的世界 XZ、关节名和 structural channel 的拓扑列；
 不读 rest token、残差 position、局部 rotation，也不读取 species descriptor。
 目标 decoder 仍保留自己的骨架条件；参考生效的行 per-joint species FiLM 一律 bypass。
 
@@ -465,7 +471,7 @@ encode 的 CFG 顺序计算无参考无文字、参考无文字、参考加文�
 
 **窗口到输出长度。** 模型总是生成固定的内部窗口，再换算成请求的 M 帧（`_resample_window_to_output`）。
 M 小于窗口时，窗口是 loader 会把 M 帧源动作放大成的样子，所以输出按最小二乘**反解**训练时的线性
-插值（`invert_resample_motion_features`，速度通道沿位置路径反解），而不是再插值一次：插值会漏掉
+插值（`invert_resample_motion_features`），而不是再插值一次：插值会漏掉
 落在两个窗口帧之间的源帧，削平几帧周期的内容，反解对精确的窗口逐帧还原、对有噪声的窗口做平均。
 M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参考的 inpaint/outpaint 也保留线性插值：
 它的 mask 只放开每个输出帧插值所读的那两个窗口帧，而反解的每个输出帧都以衰减权重读整个窗口，

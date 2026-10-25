@@ -65,7 +65,7 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 ### 3.1 运动编码器 E（`model/motion_encoder.py`）
 
 **结构**：
-- 输入：逐帧量都是与源骨架 rest 无关的绝对量，另有一个静态 rest 上下文（见下文「rest 上下文」）。逐帧逐关节读 `ref_pose [J_s, 4, T]`：父→子骨骼单位方向 + 关节绝对高度 / L；根关节额外读 canonical 特征里的根 XZ 速度。逐关节静态读关节名 embedding 与 structural channel 的拓扑列（链上位置、链长、是否叶子、子树大小、兄弟序、兄弟数）加左右侧符号。投影权重独立，不复用 InputProcess。
+- 输入：逐帧量都是与源骨架 rest 无关的绝对量，另有一个静态 rest 上下文（见下文「rest 上下文」）。逐帧逐关节读 `ref_pose [J_s, 4, T]`：父→子骨骼单位方向 + 关节绝对高度 / L；根关节额外读 canonical 特征里的根 XZ 速度。逐关节静态读关节名 embedding 与 structural channel 的拓扑列（链上位置、链长、是否叶子、子树大小分桶、兄弟序、兄弟数）加左右侧符号。投影权重独立，不复用 InputProcess。
 - 少量层 spatial + temporal attention，复用 `GraphMotionDecoder` 的层实现，宽度小于主干（构造时校验）。spatial attention 不带拓扑 / 边关系偏置（`graph_relations=False`），走普通 SDPA；骨架身份只经关节名、structural channel 的拓扑列与骨骼方向进入 E。
 - 每帧用 K 个 learned query 对全部有效关节做 cross-attention 池化，输出 `z [T, K, d_z]`。
 
@@ -121,7 +121,7 @@ E 不读取 species descriptor，也没有自己的 species 条件。`ref_pose` 
 
 ### 4.1 目标与 dropout
 
-- **编码器输入**：同一个 clip（属于同源组时从组内抽取，§4.4）的同一时间窗，干净的物理特征（经过 §4.2 的编码器侧增强）按 §3.1 转成编码器输入。**解码器目标**：同一个 clip，按主干自己的 `--leaf_drop_prob` / `--bone_length_aug_prob` 独立抽签增强。
+- **编码器输入**：同一个 clip（属于同源组时从组内抽取，§4.4）的同一时间窗，干净的物理特征（经过 §4.2 的编码器侧增强）按 §3.1 转成编码器输入。**解码器目标**：同一个 clip，按主干自己的 `--topology_aug_prob` / `--bone_length_aug_prob` 独立抽签增强。
 - `--ref_cfg_drop_prob` 对 ref 做硬丢弃。参考生效的行：species FiLM 与 action_label 一律旁路（训练与推理相同）；无参考的行按 `--action_label_cfg_drop_prob` 抽签，species FiLM 一律开启。
 - 每个 batch 随机保留固定数量（由丢弃概率换算）的参考行，编码器只对这些行前向（形状静态，可编译）；被丢弃的行被硬旁路，其 z 不会被读取。
 - 共享主干不冻结、不对参考样本做 stop-gradient：两种模式共同更新共享参数；E、ref cross-attn 及其 gate 仅由参考激活样本训练。
@@ -135,19 +135,19 @@ E 不读取 species descriptor，也没有自己的 species 条件。`ref_pose` 
 
 | 增强 | 现有实现 | 打破的是什么 |
 |---|---|---|
-| leaf-drop | `truebones_utils/leaf_drop.py` | 扰动拓扑末端，鼓励减少对精确关节数和末端链长的依赖 |
+| 拓扑（leaf-drop / 无分支链合并，触发时二选一） | `truebones_utils/topology_aug.py`（leaf-drop 在 `leaf_drop.py`） | 扰动关节数、末端和链的分段，鼓励减少对精确拓扑的依赖 |
 | 骨长比例 | `truebones_utils/bone_length_aug.py` | 扰动身体比例，鼓励减少对源骨长的依赖 |
 | 整关节名置空 | 与 `joint_name_drop_prob` 同一机制 | 隐藏部分名字，鼓励结合几何和运动识别部位 |
 
-编码器侧复用目标侧的 `--leaf_drop_prob`、`--bone_length_aug_prob`、`--joint_name_drop_prob` 等参数，但各自独立抽样。
+编码器侧复用目标侧的 `--topology_aug_prob`、`--bone_length_aug_prob`、`--joint_name_drop_prob` 等参数，但各自独立抽样。
 
-**理由与限制**：这些增强保留时间对应，鼓励编码器从变化后的输入恢复原始运动；它们提供的是形态扰动鲁棒性，不强制 z 不变，也不建立不同 body plan 的对应。骨长增强保留局部旋转，但会改变末端位置、速度和可能的接触状态；leaf-drop 也会丢失被删末端的运动。因此必须控制强度，并比较增强前后的动作内容与交换结果，不能假定运动信息完全无损。
+**理由与限制**：这些增强保留时间对应，鼓励编码器从变化后的输入恢复原始运动；它们提供的是形态扰动鲁棒性，不强制 z 不变，也不建立不同 body plan 的对应。骨长增强保留局部旋转，但会改变末端位置、速度和可能的接触状态；leaf-drop 也会丢失被删末端的运动；链合并丢掉被删关节处的弯折（只在合并后骨的 FK 残差足够小时才合并）。因此必须控制强度，并比较增强前后的动作内容与交换结果，不能假定运动信息完全无损。
 
 **目标侧也做**：主干在非参考训练里本来就用 leaf-drop 和骨长增强；参考训练沿用同一组参数，两侧抽签互相独立。于是源和目标的形态差异两个方向都有：参考关节比目标少（编码器侧 leaf-drop），也有参考关节比目标多（目标侧 leaf-drop），后者对应推理时源骨架比目标多出尾巴、手指的情形。
 
 **实现要点**：
 - 目标侧增强在时间采样前作用于存储 clip（与非参考训练完全相同）；编码器输入从存储骨架出发，复用目标的 closing-key 判定和同一时间窗，再做自己的增强。
-- 编码器侧没有增强生效时，直接复用目标的 canonical 特征与 structural channel（`reference_sample` 可接收已算好的这两项），只有 leaf-drop 或骨长增强生效时才重算。
+- 编码器侧没有增强生效时，直接复用目标的 canonical 特征与 structural channel（`reference_sample` 可接收已算好的这两项），只有拓扑或骨长增强生效时才重算。
 - 参考可能比目标宽，collate 按两者中较宽的关节数选 joint bucket；存储骨架的关节数决定 sampler 的 bucket，所以仍落在同一 bucket 里。
 
 **不做时间增强**：编码器输入与目标必须逐帧对齐（§3.1）。
