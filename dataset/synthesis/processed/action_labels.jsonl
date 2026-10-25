@@ -20,3 +20,23 @@
 {"clip": "SYN_LH_Hero_Trot", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "SYN_MXO_Human_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "SYN_MXO_Human_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
+{"clip": "SYN_Dog-2_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_ORA_Cat_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_ORA_Lion2_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_Cat_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_PP_Giraffe_SlowWalk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_Hyena_Running", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_Tiger_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_KingCobra_WalkSlow", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_Alligator_Running", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_Chicken_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_ORA_Goat_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_ORA_Sabertooth_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_ORA_ShortFacedBear_RunLoop", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_Raptor3_SlowWalk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
+{"clip": "SYN_ORA_Cat_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "SYN_ORA_Lion2_SlowIdle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "SYN_Cat_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "SYN_Hyena_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "SYN_Raptor3_Idle2", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
+{"clip": "SYN_Puppy_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
