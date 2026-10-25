@@ -809,8 +809,8 @@ REFERENCE_PAIRS_FILE = "reference_pairs.jsonl"
 def load_reference_groups(sources, data_dict) -> dict[str, tuple[str, ...]]:
     """``{clip id: every clip id of its group}`` for the clips in ``data_dict``.
 
-    A group lists its own clip too, so drawing uniformly from it includes the
-    self-reference. Group members outside this run's pool (a split, subset or
+    A group lists its own clip too; the loader draws a grouped clip's reference
+    from the other members only. Group members outside this run's pool (a split, subset or
     action-group filter) are left out; a group left with one member is no
     group. Every member must have the same stored length and is_loop flag,
     since the reference encoder reads the partner on the target's time axis.
@@ -1168,7 +1168,7 @@ class MotionDataset(data.Dataset):
         self.data_dict = data_dict
         self.name_list = name_list
         # Same-motion groups across rigs (REFERENCE_PAIRS_FILE): a grouped clip
-        # draws its encoder input uniformly from its group.
+        # draws its encoder input uniformly from the other members of its group.
         self.reference_groups = (
             load_reference_groups(opt.sources, data_dict) if getattr(opt, 'ref_encoder', False) else {}
         )
@@ -1363,11 +1363,13 @@ class MotionDataset(data.Dataset):
         joint_struct = self._joint_struct_cache[object_type]
         # The reference encoder's input draws its own skeleton augmentation, so
         # it starts from the stored rig, not from the target's augmented one.
-        # A grouped clip draws that rig uniformly from its group, itself included.
+        # A grouped clip draws that rig uniformly from the rest of its group,
+        # never itself: its self-reference is disabled.
         ref_source = None
         ref_partner = False
         if getattr(self.opt, 'ref_encoder', False):
-            partner = random.choice(getattr(self, "reference_groups", {}).get(name, (name,)))
+            group = getattr(self, "reference_groups", {}).get(name)
+            partner = random.choice([member for member in group if member != name]) if group else name
             if partner == name:
                 ref_source = (motion, cond, joint_struct, int(motion_metadata['translation_root_index']),
                               self._rest_geometry_cache[object_type])
