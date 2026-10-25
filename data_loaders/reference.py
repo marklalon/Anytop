@@ -89,14 +89,14 @@ BONE_DIRECTION_MIN_REST_FRACTION = 1e-3
 # Per-joint encoder pose: unit bone direction (3) and height over ``L`` (1).
 REFERENCE_POSE_CHANNELS = 4
 # Rest geometry per joint (``rest_geometry``): the encoder pose channels of the
-# rest, then the rest's RIC X/Z over ``L``, then the parent->joint offset over
-# ``L``. Height is shared, so each consumer's columns are one contiguous slice.
-REST_GEOMETRY_DIM = REFERENCE_POSE_CHANNELS + 2 + 3
+# rest, then the parent->joint bone length over ``L``, so each consumer's
+# columns are one contiguous slice.
+REST_GEOMETRY_DIM = REFERENCE_POSE_CHANNELS + 1
 # Reference encoder: the rest in the space of its per-frame pose.
 REST_POSE_COLUMNS = slice(0, REFERENCE_POSE_CHANNELS)
-# Denoiser: rest position (height, X, Z) and offset over ``L``, the space of
-# the position channels it outputs.
-REST_GEOM_COLUMNS = slice(REFERENCE_POSE_CHANNELS - 1, REST_GEOMETRY_DIM)
+# Denoiser: the encoder's rest channels plus bone length, which a near
+# horizontal bone's direction and height cannot recover.
+REST_GEOM_COLUMNS = slice(0, REST_GEOMETRY_DIM)
 # Target rest-geometry channel: the denoiser columns plus a present flag, since an
 # all-zero geometry (a root on the ground) is a real value.
 REST_GEOM_DIM = REST_GEOM_COLUMNS.stop - REST_GEOM_COLUMNS.start + 1
@@ -151,18 +151,17 @@ def rest_geometry(cond):
     evaluated on the rest, so a frame's pose and the rest sit in one space and
     their difference is linear in the inputs. The denoiser reads
     ``REST_GEOM_COLUMNS`` (``y['rest_geom']``, loader and generation alike):
-    where each joint sits and how long and which way its bone points, in the
-    position channels' RIC / ``L`` space.
+    the same channels plus each joint's rest bone length over ``L`` (zero at
+    roots).
     """
     rest = np.asarray(rest_pos_from_cond(cond), np.float32)
     parents = np.asarray(cond['parents']).reshape(-1)
     pose = reference_pose(rest[None], cond)[0]
-    position = rest - rest[0] * np.array([1.0, 0.0, 1.0], np.float32)
-    position = position / float(_length_scale_from_cond(cond))
-    offset = np.zeros_like(position)
+    length = np.zeros((len(rest), 1), np.float32)
     child = np.flatnonzero(parents >= 0)
-    offset[child] = position[child] - position[parents[child]]
-    geometry = np.concatenate([pose, position[:, [0, 2]], offset], axis=-1)
+    length[child, 0] = np.linalg.norm(rest[child] - rest[parents[child]], axis=-1)
+    length = length / float(_length_scale_from_cond(cond))
+    geometry = np.concatenate([pose, length], axis=-1)
     return np.nan_to_num(geometry).astype(np.float32)
 
 

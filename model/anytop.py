@@ -1211,8 +1211,8 @@ class InputProcess(nn.Module):
             nn.GELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
-        # Rest-geometry channel: rest_geometry's REST_GEOM_COLUMNS (rest position
-        # and parent offset over L) plus the present flag,
+        # Rest-geometry channel: rest_geometry's REST_GEOM_COLUMNS (rest bone
+        # direction, height and bone length over L) plus the present flag,
         # projected into every frame's token. The only path by which the rest
         # geometry reaches the denoiser, so rest_geom_drop hides all of it.
         self.rest_geom_embedding = nn.Sequential(

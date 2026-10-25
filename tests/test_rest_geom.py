@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import data_loaders.truebones.data.dataset as dataset_module  # noqa: E402
 from data_loaders.reference import (  # noqa: E402
-    REST_GEOM_COLUMNS, REST_GEOM_DIM, REST_POSE_COLUMNS, reference_pose, reference_sample, rest_geometry,
+    REST_GEOM_COLUMNS, REST_GEOM_DIM, REST_GEOMETRY_DIM, REST_POSE_COLUMNS, reference_pose, reference_sample, rest_geometry,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
     _length_scale_from_cond, rest_pos_from_cond,
@@ -135,21 +135,21 @@ def test_every_frame_token_reads_the_rest_geometry():
 
 def test_rest_geometry_columns():
     """The encoder's columns are its pose channels on the rest; the denoiser's
-    are the rest's RIC position and parent offset over L."""
+    are the same channels plus the rest bone length over L."""
     dataset, _ = _plain_dataset()
     cond = dataset.cond_dict['test']
     geometry = rest_geometry(cond)
     rest = np.asarray(rest_pos_from_cond(cond), np.float32)
-    np.testing.assert_array_equal(geometry[:, REST_POSE_COLUMNS],
-                                  reference_pose(rest[None], cond)[0])
-    position = (rest - rest[0] * np.array([1, 0, 1], np.float32)) / float(_length_scale_from_cond(cond))
+    pose = reference_pose(rest[None], cond)[0]
+    np.testing.assert_array_equal(geometry[:, REST_POSE_COLUMNS], pose)
     denoiser = geometry[:, REST_GEOM_COLUMNS]
     assert denoiser.shape[1] == REST_GEOM_DIM - 1
-    np.testing.assert_allclose(denoiser[:, :3], position[:, [1, 0, 2]], atol=1e-6)
+    np.testing.assert_array_equal(denoiser[:, :pose.shape[1]], pose)
     parents = np.asarray(cond['parents'])
     child = np.flatnonzero(parents >= 0)
-    np.testing.assert_allclose(denoiser[child, 3:], position[child] - position[parents[child]], atol=1e-6)
-    np.testing.assert_array_equal(denoiser[0, 3:], 0)
+    length = np.linalg.norm(rest[child] - rest[parents[child]], axis=-1) / float(_length_scale_from_cond(cond))
+    np.testing.assert_allclose(denoiser[child, -1], length, atol=1e-6)
+    np.testing.assert_array_equal(denoiser[parents < 0, -1], 0)
 
 
 def test_reference_reuses_the_shared_geometry():
@@ -157,7 +157,7 @@ def test_reference_reuses_the_shared_geometry():
     cond = dataset.cond_dict['test']
     motion = np.zeros((4, len(cond['parents']), 12), np.float32)
     names = np.asarray(cond['joints_names_embs'], np.float32)
-    marked = np.arange(len(cond['parents']) * 9, dtype=np.float32).reshape(-1, 9)
+    marked = np.arange(len(cond['parents']) * REST_GEOMETRY_DIM, dtype=np.float32).reshape(-1, REST_GEOMETRY_DIM)
     sample = reference_sample(motion, cond, names, geometry=marked)
     np.testing.assert_array_equal(sample['rest_pose'], marked[:, REST_POSE_COLUMNS])
     fresh = reference_sample(motion, cond, names)
