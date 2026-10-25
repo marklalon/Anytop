@@ -90,6 +90,11 @@ class MotionEncoder(nn.Module):
         values = self.pool_norm(tokens).reshape(frames * batch, joints, -1)
         queries = self.queries[None].expand(frames * batch, -1, -1)
         mask = (~safe_valid)[None].expand(frames, -1, -1).reshape(frames * batch, joints)
-        pooled, _ = self.pool(queries, values, values, key_padding_mask=mask, need_weights=False)
+        # fp32 island: under fp16 autocast + torch.compile this padded-key pool
+        # returns non-finite gradients for the whole encoder trunk on some
+        # batches (eager is clean). The pool is small next to the decoder.
+        with torch.autocast(device_type=values.device.type, enabled=False):
+            pooled, _ = self.pool(queries.float(), values.float(), values.float(),
+                                  key_padding_mask=mask, need_weights=False)
         z = self.output(pooled).reshape(frames, batch, self.slots, self.ref_dim)
         return z.permute(1, 0, 2, 3).contiguous()  # [B, T, K, d_z], no extra time PE

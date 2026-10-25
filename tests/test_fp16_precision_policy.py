@@ -7,6 +7,8 @@ B: the fp16 GradScaler's loss scale is capped, so it stops probing the overflow
 C: a loss-scale overflow is classified apart from a real gradient spike.
 D: the broadcast conditioning heads run in fp32 (largest weight gradients in the
    network, hence the first to overflow).
+E: the reference encoder's slot pool is an fp32 island (under fp16 + compile it
+   returned non-finite gradients for the whole encoder trunk).
 """
 from __future__ import annotations
 
@@ -22,7 +24,10 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.fp16_util import GRAD_SCALER_MAX_SCALE, MixedPrecisionTrainer  # noqa: E402
 from model.anytop import run_in_fp32  # noqa: E402
+from model.motion_encoder import MotionEncoder  # noqa: E402
 from model.motion_transformer import CrossLimbTemporalBlock  # noqa: E402
+from data_loaders.reference import REFERENCE_POSE_CHANNELS  # noqa: E402
+from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM  # noqa: E402
 from train.training_loop import AMP_OVERFLOW_MAX_DUMPS, classify_grad_event  # noqa: E402
 
 
@@ -83,6 +88,58 @@ class CrossKFp32IslandTests(unittest.TestCase):
         again = block(x, mask)
         self.assertTrue(torch.equal(expected, again))
         self.assertEqual(expected.dtype, torch.float32)
+
+
+class ReferencePoolFp32IslandTests(unittest.TestCase):
+    """E: the encoder's slot pool stays fp32 under any autocast."""
+
+    def _encoder_and_inputs(self):
+        torch.manual_seed(0)
+        encoder = MotionEncoder(t5_out_dim=8, slots=2, ref_dim=4, width=16, layers=1,
+                                heads=2, dropout=0.0)
+        encoder.eval()
+        batch, joints, frames = 2, 5, 3
+        mask = torch.ones(batch, joints, dtype=torch.bool)
+        mask[1, 3:] = False
+        y = {
+            'ref_pose': torch.randn(batch, joints, REFERENCE_POSE_CHANNELS, frames),
+            'ref_feats': torch.randn(batch, joints, 9, frames),
+            'ref_mask': mask,
+            'ref_joints_names_embs': torch.randn(batch, joints, 8),
+            'ref_joint_struct': torch.randn(batch, joints, JOINT_STRUCT_DIM),
+            'ref_rest_pose': torch.randn(batch, joints, REFERENCE_POSE_CHANNELS),
+        }
+        return encoder, y
+
+    def _run_and_record(self, dtype):
+        encoder, y = self._encoder_and_inputs()
+        seen = {}
+
+        def record(name):
+            def hook(module, args, output):
+                tensor = output[0] if isinstance(output, tuple) else output
+                seen[name] = tensor.dtype
+            return hook
+
+        handles = [
+            encoder.pool.register_forward_hook(record('pool')),
+            encoder.decoder.layers[0].linear1.register_forward_hook(record('trunk_linear')),
+        ]
+        try:
+            with torch.autocast(device_type='cpu', dtype=dtype):
+                encoder(y)
+        finally:
+            for handle in handles:
+                handle.remove()
+        return seen
+
+    def test_pool_runs_in_fp32_under_autocast(self):
+        for dtype in (torch.bfloat16, torch.float16):
+            with self.subTest(dtype=str(dtype)):
+                self.assertEqual(self._run_and_record(dtype)['pool'], torch.float32)
+
+    def test_the_island_is_local_to_the_pool(self):
+        self.assertEqual(self._run_and_record(torch.bfloat16)['trunk_linear'], torch.bfloat16)
 
 
 class LossScaleCapTests(unittest.TestCase):
