@@ -1199,9 +1199,7 @@
 {"clip": "MU04_GrimReaper_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_ProjectileAttack", "action_group": "stationary", "action_label": "attack, projectile", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_SlashAttack01", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
-{"clip": "MU04_GrimReaper_SlashAttack01Mirror", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": false, "pending_delete": true}
 {"clip": "MU04_GrimReaper_SlashAttack02", "action_group": "stationary", "action_label": "attack, right, slash", "is_loop": true, "reviewed": true}
-{"clip": "MU04_GrimReaper_SlashAttack02Mirror", "action_group": "stationary", "action_label": "attack, left, slash", "is_loop": true, "reviewed": false, "pending_delete": true}
 {"clip": "MU04_GrimReaper_Spawn", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "MU04_GrimReaper_SpinAttack", "action_group": "stationary", "action_label": "attack, spin", "is_loop": true, "reviewed": true}
 {"clip": "MU04_GrimReaper_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
