@@ -116,7 +116,7 @@ action_labels.jsonl ──► dataset loader ──► word / slot / mask ids �
 | 类 | 常量 | 说明 |
 |---|---|---|
 | 主词 | `HEAD_VOCAB` | 标签"关于什么"：一个身体状态（`idle` `run` `rear`…）或一个整段事件（`die` `getup` `land` `draw` `sheathe` `stop`…） |
-| 修饰词 | `MODIFIER_VOCAB` | 其余动作词：执行方式（`hover`；`glide` 翅膀不动的滑翔。步态快慢由 `--num_frames` 决定，物种整体的运动风格是 species_tags 的 variant，都不写成修饰词）、叠加的次要动作（`bite` `eat` `look` `shake`）、打击类型（`swat` `slash` `punch`…）、情绪手势、活动/物件、持械（`bow` `gun` `hammer` `shield` `weapon`） |
+| 修饰词 | `MODIFIER_VOCAB` | 其余动作词：执行方式（`hover`；`glide` 翅膀不动的滑翔。步态快慢由 `--num_frames` 决定，物种整体的运动风格是 species_tags 的 variant，都不写成修饰词）、叠加的次要动作（`bite` `eat` `look` `shake`）、打击类型（`swat` `slash` `stab`…）、情绪手势、活动/物件、持械（`bow` `gun` `hammer` `shield` `weapon`） |
 | 方向词 | `DIRECTION_VOCAB` | `forward backward left right up down` |
 
 要点：
@@ -190,7 +190,7 @@ sidecar 里的 label 必须**已经是**规范拼写，否则加载失败。推�
 ### 5.4 词向量表（sidecar）
 
 - `dataset/action_word_embeddings.npy`，由 `tools/build_action_label_embeddings.py` 生成：每个词一个向量，**按词索引**，不按标签字符串。只依赖词表，所以改标签不会使它过期。
-- T5 词的编码文本由 `vocab_t5_text` 给出：多数词用自身，少数裸词会落进错误的语义邻域（`punch` 是饮料、`land` 是地形、`rear` 是后侧），在 `_VOCAB_T5_TEXT` 里改写成能表达动作的短语（`land` → "touching down"）。改写必须保持"展开后的 T5 文本互不相同"。
+- T5 词的编码文本由 `vocab_t5_text` 给出：多数词用自身，少数裸词会落进错误的语义邻域（`shake` 是奶昔、`land` 是地形、`rear` 是后侧），在 `_VOCAB_T5_TEXT` 里改写成能表达动作的短语（`land` → "touching down"）。改写必须保持"展开后的 T5 文本互不相同"。
 - 编码设置（池化 / EOS / 后处理 `center_l2`）由契约固定，不是选项；对 T5 编码词做居中，合成码行不参与居中（否则破坏正交性）。
 - T5 型号必须与 `cond.npy` 的 `joints_names_embs` 一致，否则维度对不上，建模型时报错。
 
@@ -321,7 +321,7 @@ out = out_uncond + s * (out_cond - out_uncond)
 
 - **有单一主导侧向或平面朝向 → 必须写方向词；对称 / 交替 / 旋转 / 原地 → 不写。**
 - stationary 只补 `left` / `right`（按定义无净位移，不补 `forward` / `backward`）。
-- **本身不指向任何方向的动作一律不写平面方向词**（`NO_PLANAR_DIRECTION_WORDS`）：`hurt` `getup` `idle` `rest` `stop` `draw` `sheathe` `headbutt` `bite`。理由：受击和身体状态不是"朝哪发力"；`draw` / `sheathe` 的侧向是刀鞘位置；`headbutt` / `bite` 由头部（中心关节）发起，侧向能量读到的是身体转向。匹配**不限于头词**（`idle, right, look` → `idle, look`），已 reviewed 的行也适用。镜像的两条 clip 因此可以拥有**相同**标签（`Trex_BiteLeft` / `Trex_BiteRight` 都是 `attack, bite`）。
+- **本身不指向任何方向的动作一律不写平面方向词**（`NO_PLANAR_DIRECTION_WORDS`）：`hurt` `getup` `idle` `rest` `stop` `draw` `sheathe` `bite`。理由：受击和身体状态不是"朝哪发力"；`draw` / `sheathe` 的侧向是刀鞘位置；`bite` 由头部（中心关节）发起，侧向能量读到的是身体转向。匹配**不限于头词**（`idle, right, look` → `idle, look`），已 reviewed 的行也适用。镜像的两条 clip 因此可以拥有**相同**标签（`Trex_BiteLeft` / `Trex_BiteRight` 都是 `attack, bite`）。
 - **竖直轴不在豁免内**：`up` / `down` 说的是动作真的向上 / 向下，`idle, up, aim, bow` 保留。
 - `hover` 是原地悬停，没有水平朝向要写（`NO_HEADING_WORDS`）。`dive` / `fall` / `up` / `down` 在竖直轴上，不要求平面朝向（`VERTICAL_WORDS`）。
 - **jump 的方向**：方向槽有 dropout，所以裸 `jump` 只能表示"任意跳"。原地竖直跳写 `jump, up`；前跳写 `jump, forward`；行进中的跳写 `run, forward, jump` 这类。

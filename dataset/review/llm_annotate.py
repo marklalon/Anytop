@@ -963,7 +963,7 @@ stationary -- the character acts WITHOUT travelling across the ground.
     "idle, scratch" (grooming, licking), "idle, taunt", "idle, happy",
     "idle, talk", "idle, sit", "idle, rear".
   - Attacks name the strike whenever one is visible: bite, headbutt, kick, swat
-    (unarmed lateral sweep of paw / claw / tail), sting, stab, slash, punch,
+    (any unarmed strike of paw / claw / fist / tail), sting, stab, slash,
     smash (heavy overhead or ground slam), throw, cast (magic),
     firebreath, projectile, charge (wind-up or lunge in place), spin; and the
     implement when the strike IS its motion: bow, gun, hammer, shield; any

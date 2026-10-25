@@ -96,7 +96,7 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     "crouch", "dead", "sit", "sleep",
     # -- block C: how a strike is delivered (manner before strike type) --
     "spin", "charge",
-    "headbutt", "punch", "swat", "slash", "stab", "smash", "whip",
+    "headbutt", "swat", "slash", "stab", "smash", "whip",
     "block", "cast", "firebreath", "projectile",
     # -- block D: affect / social gesture --
     "happy", "talk", "clap", "wave", "cry",
@@ -203,13 +203,13 @@ NO_HEADING_WORDS: tuple[str, ...] = ("hover",)
 # Actions with NO PLANAR DIRECTION TO NAME, whatever their group. The planar
 # words (left / right / forward / backward) say which way an action is aimed or
 # travels; these actions are not aimed anywhere (a reaction or a body state,
-# a draw/sheathe, or a head strike), so no rule may demand a planar word of
+# a draw/sheathe, or a bite), so no rule may demand a planar word of
 # them and the prefill tools never propose one. The VERTICAL axis is
 # untouched: "idle, up, aim, bow" aims upward and keeps its word. Matched
 # anywhere in the label, not just as the head ("idle, right, look" ->
 # "idle, look").
 NO_PLANAR_DIRECTION_WORDS: tuple[str, ...] = (
-    "hurt", "getup", "idle", "rest", "stop", "draw", "sheathe", "headbutt", "bite",
+    "hurt", "getup", "idle", "rest", "stop", "draw", "sheathe", "bite",
 )
 
 _unknown_directionless = set(NO_PLANAR_DIRECTION_WORDS) - set(ACTION_VOCAB)
@@ -364,7 +364,6 @@ _VOCAB_T5_TEXT: dict[str, str] = {
     "cry": "weeping",                    # bare "cry" reads as shouting out
     "firebreath": "breathing fire",      # glued compound is no English word; T5 splits it into subword shards
     "land": "touching down",             # bare "land" is terrain -- overwhelmingly
-    "punch": "punching",                 # bare "punch" is the drink
     "rear": "rearing up",                # bare "rear" is the back side
     "rest": "resting",                   # bare "rest" is the remainder
     "saw": "sawing wood",                # bare "saw" is the past tense of see
@@ -585,7 +584,7 @@ LOCOMOTION_NAME_WORDS: frozenset[str] = frozenset({
 NON_LOCOMOTION_NAME_WORDS: frozenset[str] = frozenset({
     "attack", "idle", "start", "end", "land", "landing", "death", "die", "dead",
     "hurt", "hit", "damage", "take", "stop", "spell", "cast", "defend", "aim",
-    "shoot", "shot", "punch", "recover", "startled", "getup", "to", "draw", "grenade",
+    "shoot", "shot", "swat", "recover", "startled", "getup", "to", "draw", "grenade",
 })
 
 

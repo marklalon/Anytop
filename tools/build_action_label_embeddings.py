@@ -9,8 +9,8 @@ baked once into ``dataset/action_word_embeddings.npy``.
 
 One vector per ``CONTROLLED_VOCAB`` token, in vocabulary order. A
 ``T5_ENCODED_VOCAB`` token is encoded from ``vocab_t5_text(token)`` -- not from
-the token spelling, which reads as the drink for "punch" and as terrain for
-"land". A ``SYNTHETIC_CODE_VOCAB`` token (the direction axis) is not
+the token spelling, which reads as a milkshake for "shake" and as terrain
+for "land". A ``SYNTHETIC_CODE_VOCAB`` token (the direction axis) is not
 encoded at all: its row is an orthonormal code written by
 ``synthetic_code_rows``, because T5's geometry on that closed axis put every
 member next to its own antonym. The two halves are stitched into one table by
