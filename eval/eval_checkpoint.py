@@ -519,6 +519,18 @@ def _task_object_type(file_token: str, task_cond: dict | None) -> str:
     return file_token
 
 
+def _adopted_reference_bvh(record: dict) -> Path | None:
+    """The preview of a raw reference file that generate preprocessed itself.
+
+    It is in the generated samples' space; the raw .glb keeps its own units.
+    """
+    task_dir = record.get("task_dir")
+    if not task_dir:
+        return None
+    previews = sorted((Path(task_dir) / "_reference_cond" / "bvhs").glob("*.bvh"))
+    return previews[0] if previews else None
+
+
 def _find_reference_bvh(reference_motion: str | None) -> Path | None:
     """Find the actual .bvh/.glb file for a reference motion path.
 
@@ -830,7 +842,7 @@ def write_html_report(
     """Write the portable motion review UI, assets, and local rating server."""
     from eval.checkpoint_report import write_report
 
-    records = [dict(record, reference_bvh=_find_reference_bvh(
+    records = [dict(record, reference_bvh=_adopted_reference_bvh(record) or _find_reference_bvh(
         record.get("last_output_resolved") or record.get("reference_motion")
     )) for record in records]
     write_report(report_path, model_path, run_name, model_name, records, all_scores,

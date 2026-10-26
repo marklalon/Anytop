@@ -45,3 +45,18 @@ def test_main_preview_is_success_only_and_can_be_disabled(tmp_path, monkeypatch,
                         "--output_root", str(root), "--dataset_root", str(tmp_path), *flags])
     assert evaluation.main() == (1 if failed else 0)
     assert len(launches) == expected_launches
+
+
+def test_report_reference_prefers_preprocessed_preview(tmp_path, monkeypatch):
+    raw = tmp_path / "Buffalo_walk.glb"
+    raw.write_bytes(b"glb")
+    task_dir = tmp_path / "MotionFix/task1"
+    preview = task_dir / "_reference_cond/bvhs/Buffalo_Walk.bvh"
+    preview.parent.mkdir(parents=True)
+    preview.write_text("HIERARCHY")
+    captured = []
+    monkeypatch.setattr(review, "write_report", lambda _path, _model, _run, _name, records, *a, **k: captured.extend(records))
+    records = [dict(task_dir=str(task_dir), reference_motion=str(raw)),
+               dict(task_dir=str(tmp_path / "MotionFix/task2"), reference_motion=str(raw))]
+    evaluation.write_html_report(tmp_path / "r.html", tmp_path / "m.pt", "run", "m", records, [])
+    assert [record["reference_bvh"] for record in captured] == [preview, raw]

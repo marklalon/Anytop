@@ -36,8 +36,7 @@ main { display:grid; grid-template-columns:450px minmax(0,1fr) 390px; flex:1; mi
 .view-message { position:absolute; inset:45px 12px 40px; display:flex; align-items:center; justify-content:center; text-align:center; color:var(--dim); overflow-wrap:anywhere; }
 .empty { color:var(--dim); padding:20px; grid-column:1/-1; }
 #transport { display:flex; align-items:center; gap:7px; padding:9px 10px; background:var(--bar); border-top:1px solid var(--edge); }
-#scrub-track { flex:1; min-width:40px; display:flex; touch-action:none; cursor:pointer; }
-#scrub { flex:1; min-width:0; accent-color:var(--accent); padding:0; pointer-events:none; }
+#scrub { flex:1; min-width:40px; accent-color:var(--accent); padding:0; cursor:pointer; }
 #scrub:focus,#scrub:focus-visible { outline:none; }
 #time { font:11px Consolas,monospace; white-space:nowrap; min-width:112px; text-align:right; }
 aside { overflow-y:auto; border-left:1px solid var(--edge); background:var(--panel); }
@@ -52,7 +51,13 @@ aside section { padding:16px; border-bottom:1px solid var(--edge); }
 .red { color:var(--red); } .orange { color:var(--orange); } .yellow { color:var(--yellow); } .green { color:var(--green); }
 #save-status { margin-top:9px; font-size:12px; overflow-wrap:anywhere; }
 #task-status { margin-top:8px; }
-#command { font:11px/1.7 Consolas,monospace; white-space:pre-wrap; overflow-wrap:anywhere; background:#252525; border:1px solid var(--edge); padding:9px; border-radius:4px; }
+#command-box { position:relative; }
+#copy-command { position:absolute; top:4px; right:4px; display:flex; padding:4px; border:none; background:none; color:var(--dim); }
+#copy-command:hover:not(:disabled) { color:var(--text); }
+#copy-command svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.3; stroke-linecap:round; stroke-linejoin:round; }
+#copy-command .icon-done, #copy-command.copied .icon-copy { display:none; }
+#copy-command.copied .icon-done { display:block; color:var(--green); }
+#command { font:11px/1.7 Consolas,monospace; white-space:pre-wrap; overflow-wrap:anywhere; background:#252525; border:1px solid var(--edge); padding:9px 28px 9px 9px; border-radius:4px; }
 .help { font-size:12px; line-height:1.9; }
 dialog { color:var(--text); background:var(--panel); border:1px solid #666; border-radius:8px; width:min(930px,92vw); max-height:86vh; padding:20px 24px; }
 dialog::backdrop { background:rgba(0,0,0,.65); }

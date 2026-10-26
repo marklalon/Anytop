@@ -284,6 +284,18 @@ def _adopt_reference_file_cond(args):
         raise RuntimeError(f'process_new_skeleton wrote no motion clip for {reference}')
     args.cond_path = result['cond_npy']
     args.reference_motion = os.path.join(save_dir, 'motions', clips[0])
+    # The eval report shows this preview as the reference: the raw file keeps
+    # its own units and frame, the processed clip is in the samples' space.
+    from data_loaders.truebones.truebones_utils.param_utils import FPS
+    from utils.npy_restore import write_feature_bvh
+    (reference_entry,) = load_cond(args.cond_path).values()
+    mark_canonical_cond_entry(reference_entry)
+    os.makedirs(os.path.join(save_dir, 'bvhs'), exist_ok=True)
+    write_feature_bvh(
+        np.load(args.reference_motion), reference_entry,
+        os.path.join(save_dir, 'bvhs', clips[0].replace('.npy', '.bvh')),
+        fps=FPS, **_bvh_preview_options(args),
+    )
     print(f"[generate] editing {reference} on its own skeleton: cond {args.cond_path}")
 
 

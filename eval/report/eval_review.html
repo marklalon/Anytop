@@ -26,8 +26,8 @@
         <button id="play" title="空格：播放 / 暂停" disabled>暂停</button>
         <button id="step-back" title="上一帧" disabled>‹</button>
         <button id="step-forward" title="下一帧" disabled>›</button>
-        <span id="scrub-track"><input id="scrub" type="range" min="0" max="1" step="any" value="0" aria-label="共享时间轴（1 秒循环）" disabled></span>
-        <span id="time">0.00 s</span>
+        <input id="scrub" type="range" min="0" max="0" step="any" value="0" aria-label="帧（所有动作共用，按最长动作循环）" disabled>
+        <span id="time">1 / 1 帧</span>
         <select id="speed" aria-label="播放速度">
           <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
           <option value="1" selected>1×</option><option value="2">2×</option>
@@ -43,7 +43,7 @@
         <button id="clear-rating" disabled>清除评分</button>
         <div id="save-status" role="status" class="muted">连接后可评分</div>
       </section>
-      <section id="task-details"><b>任务信息</b><div id="task-status"></div><div id="score-label" class="muted"></div><pre id="command"></pre></section>
+      <section id="task-details"><b>任务信息</b><div id="task-status"></div><div id="score-label" class="muted"></div><div id="command-box"><pre id="command"></pre><button id="copy-command" title="复制任务参数" aria-label="复制任务参数" disabled><svg class="icon-copy" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1"/></svg><svg class="icon-done" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></button></div></section>
       <section class="help muted">中键旋转 · 滚轮缩放 · 右键或 Shift+中键平移<br>在一个视图中调整相机，会同步到所有视图；下方时间轴控制全部动作。短动作播放到末尾后等待本轮结束。<br>空格播放 / 暂停，↑ ↓ 切换任务，小键盘 1–9 评分。</section>
     </aside>
   </main>
