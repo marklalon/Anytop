@@ -270,6 +270,31 @@ assert _HEAD_VOCAB_SET.isdisjoint(MODIFIER_VOCAB), (
     "a word is a head or a modifier, never both: "
     + str(sorted(_HEAD_VOCAB_SET & set(MODIFIER_VOCAB)))
 )
+
+# The action_group a label's FIRST word (its primary head) commits it to: a
+# closed map, exactly one group per head. A row whose action_group differs
+# contradicts its own label -- "walk" under stationary, "die" under locomotion
+# (see action_group_conflict). A new head word needs its group here.
+HEAD_ACTION_GROUP: dict[str, str] = {
+    "attack": "stationary", "hurt": "stationary", "idle": "stationary",
+    "jump": "stationary", "lift": "stationary", "pickup": "stationary",
+    "putdown": "stationary", "rest": "stationary", "roar": "stationary",
+    "work": "stationary",
+    "climb": "locomotion", "crawl": "locomotion", "fall": "locomotion",
+    "fly": "locomotion", "roll": "locomotion", "run": "locomotion",
+    "swim": "locomotion", "walk": "locomotion",
+    "burrow": "transition", "die": "transition", "draw": "transition",
+    "getup": "transition", "kneel": "transition", "land": "transition",
+    "laydown": "transition", "rear": "transition", "sheathe": "transition",
+    "sitdown": "transition", "spawn": "transition", "stop": "transition",
+    "takeoff": "transition", "turn": "transition",
+}
+assert set(HEAD_ACTION_GROUP) == _HEAD_VOCAB_SET, (
+    "HEAD_ACTION_GROUP must map every head word exactly: missing "
+    + str(sorted(_HEAD_VOCAB_SET - set(HEAD_ACTION_GROUP)))
+    + ", extra " + str(sorted(set(HEAD_ACTION_GROUP) - _HEAD_VOCAB_SET))
+)
+assert set(HEAD_ACTION_GROUP.values()) <= set(ACTION_GROUPS)
 assert len(_HEAD_VOCAB_SET) == len(HEAD_VOCAB), "HEAD_VOCAB has a repeat"
 
 # At most this many heads per label: a primary head, optionally qualified by
@@ -512,6 +537,25 @@ def parse_action_label(label: str) -> list[str]:
                 f"weapon no implement word names; keep only the specific word."
             )
     return tokens
+
+
+def action_group_conflict(group: str, tokens) -> str | None:
+    """Why *group* contradicts the parsed label *tokens*, or ``None``.
+
+    The label's first word is its primary head, and :data:`HEAD_ACTION_GROUP`
+    names the one group that head belongs to. An empty label commits to no
+    group.
+    """
+    if not tokens:
+        return None
+    expected = HEAD_ACTION_GROUP.get(tokens[0])
+    if expected is None or expected == group:
+        return None
+    return (
+        f"action_label starts with {tokens[0]!r}, a {expected} head, but "
+        f"action_group is {group!r}: change the group to {expected!r} or "
+        f"lead the label with a {group} head"
+    )
 
 
 def canonical_action_label(words) -> str:

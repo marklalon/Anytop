@@ -347,6 +347,7 @@
     <option value="done">已核验</option>
     <option value="pending">待删除</option>
     <option value="autofill">autofill</option>
+    <option value="invalid">非法 label</option>
   </select>
 
   <label class="f" for="loop">loop</label>
@@ -536,6 +537,16 @@ const normalizeLabel = (s) => {
     if (head === anchor) canonical.push(...directions);
   }
   return canonical.concat(modifiers).join(', ');
+};
+
+// Mirrors action_group_conflict: a label's first word is its primary head,
+// and head_action_group names the one group that head belongs to.
+const groupConflict = (group, label) => {
+  const first = String(label || '').split(',')[0].trim();
+  const expected = labelContract && labelContract.head_action_group[first];
+  if (!expected || expected === group) return null;
+  return '首词 “' + first + '” 属于 ' + expected + '，与 action_group ' + group +
+    ' 不符：把 group 改成 ' + expected + '，或换一个 ' + group + ' 的首词';
 };
 
 // navigator.clipboard needs a secure context (localhost qualifies; a LAN
@@ -813,6 +824,7 @@ function applyFilters(keepPage, keepScroll) {
     if (s === 'done' && !isReviewed(r)) return false;
     if (s === 'pending' && !isPending(r)) return false;
     if (s === 'autofill' && !isAutofill(r)) return false;
+    if (s === 'invalid' && !r.label_error) return false;
     if (l !== 'all' && loopState(r) !== l) return false;
     if (q) {
       // "run,forward" matches "run, forward": spacing around commas is ignored.
@@ -1107,6 +1119,8 @@ function edit(el, row, label) {
     let next;
     try {
       next = normalizeLabel(input.value);
+      const conflict = groupConflict(row.action_group, next);
+      if (conflict) throw new Error(conflict);
     } catch (err) {
       input.classList.add('invalid');
       input.setCustomValidity(err.message);

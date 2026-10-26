@@ -79,6 +79,30 @@ def test_store_sorts_valid_startup_labels_and_exposes_invalid_ones(tmp_path):
     assert "label_error" not in store.snapshot()[1]
 
 
+def test_store_reports_and_blocks_a_label_that_contradicts_its_group(tmp_path):
+    """The label's first word fixes the group (HEAD_ACTION_GROUP)."""
+    labels = tmp_path / "action_labels.jsonl"
+    row = {"clip": "Toad_Walk.npy", "action_group": "stationary", "action_label": "walk, backward"}
+    labels.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    store = review.LabelStore(labels)
+
+    assert "locomotion" in store.snapshot()[0]["label_error"]
+
+    # A label edit must agree with the group, and a rejected save writes nothing.
+    with pytest.raises(review.ActionLabelError):
+        store.update("Toad_Walk.npy", action_label="run", is_loop=True)
+    assert json.loads(labels.read_text(encoding="utf-8")) == row
+
+    # The group stays free: the label may be the wrong side, so a group that
+    # contradicts it is saved and reported, not refused.
+    moved = store.update("Toad_Walk.npy", action_group="transition")
+    assert "locomotion" in moved["label_error"]
+    fixed = store.update("Toad_Walk.npy", action_group="locomotion")
+    assert "label_error" not in fixed
+    relabeled = store.update("Toad_Walk.npy", action_group="stationary", action_label="idle")
+    assert "label_error" not in relabeled
+
+
 def test_a_hand_edit_drops_the_prefill_flag_but_signing_it_off_keeps_it(tmp_path):
     """The ``autofill`` flag says the label on the row was written by a tool.
 

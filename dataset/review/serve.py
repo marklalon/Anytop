@@ -167,8 +167,10 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     DIRECTION_VOCAB,
     LOOP_FLAG_KEY,
     MOTION_METADATA_SCHEMA_VERSION,
+    HEAD_ACTION_GROUP,
     HEAD_VOCAB,
     ActionLabelError,
+    action_group_conflict,
     canonical_action_label,
     parse_action_label,
     set_loop_flag,
@@ -239,6 +241,19 @@ def normalize_action_label(value):
     # labels need 1..2 head words and may contain at most 8 controlled tokens.
     parsed = parse_action_label(normalized)
     return canonical_action_label(parsed)
+
+
+def group_conflict(group, label):
+    """The action_group / action_label contradiction on a row, or ``None``.
+
+    A label that does not parse has no primary head to check; its own error is
+    what the row reports.
+    """
+    try:
+        tokens = parse_action_label(label or "")
+    except ActionLabelError:
+        return None
+    return action_group_conflict(group, tokens)
 
 
 def clip_stem(clip):
@@ -613,13 +628,18 @@ class LabelStore:
         os.replace(tmp, self.path)
         self.mtime = self.path.stat().st_mtime_ns
 
+    def _label_error(self, row):
+        """The parse error kept from load, else the row's group conflict."""
+        return (self.label_errors.get(row.get("clip"))
+                or group_conflict(row.get("action_group"), row.get("action_label")))
+
     def snapshot(self):
         with self.lock:
             self._reload_if_stale()
             result = []
             for row in self.rows:
                 item = dict(row)
-                error = self.label_errors.get(row.get("clip"))
+                error = self._label_error(row)
                 if error:
                     item["label_error"] = error
                 result.append(item)
@@ -632,6 +652,22 @@ class LabelStore:
             row = self.index.get(clip)
             if row is None:
                 raise KeyError(clip)
+            # Validate the edit before touching the row, so a rejected save
+            # leaves nothing half-applied. Only a label edit is checked against
+            # the group: the group stays free, because the label already on the
+            # row may be the side that is wrong.
+            if action_label is not None:
+                action_label = normalize_action_label(action_label)
+                if not action_label:
+                    raise ActionLabelError("action_label must not be empty")
+                conflict = group_conflict(
+                    row.get("action_group") if action_group is None else action_group,
+                    action_label,
+                )
+                if conflict:
+                    raise ActionLabelError(conflict)
+            if action_group is not None and not action_group:
+                raise ValueError("action_group must not be empty")
             if is_loop is not None:
                 # Always written, never popped: a verdict, once made, stays a
                 # verdict (a row WITHOUT the key means "not judged yet" and
@@ -645,9 +681,6 @@ class LabelStore:
                 row.clear()
                 row.update(ordered)
             if action_label is not None:
-                action_label = normalize_action_label(action_label)
-                if not action_label:
-                    raise ActionLabelError("action_label must not be empty")
                 if action_label != row.get("action_label"):
                     # The flag says a prefill tool wrote the label that is on
                     # the row (tools/prefill_direction_words.py). Typing a
@@ -658,8 +691,6 @@ class LabelStore:
                 row["action_label"] = action_label
                 self.label_errors.pop(clip, None)
             if action_group is not None:
-                if not action_group:
-                    raise ValueError("action_group must not be empty")
                 row["action_group"] = action_group
             if reviewed is not None:
                 if reviewed:
@@ -673,7 +704,7 @@ class LabelStore:
                     row.pop("pending_delete", None)
             self._write()
             result = dict(row)
-            error = self.label_errors.get(clip)
+            error = self._label_error(row)
             if error:
                 result["label_error"] = error
             return result
@@ -1348,6 +1379,7 @@ class Handler(BaseHTTPRequestHandler):
                     "direction_vocab": list(DIRECTION_VOCAB),
                     "max_words": ACTION_LABEL_MAX_WORDS,
                     "max_heads": ACTION_LABEL_MAX_HEADS,
+                    "head_action_group": HEAD_ACTION_GROUP,
                 },
                 "species_contract": {
                     "body_plans": list(SPECIES_BODY_PLANS),
