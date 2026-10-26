@@ -25,9 +25,11 @@ from .motion_labels import (
     ACTION_GROUPS,
     LOOP_FLAG_KEY,
     build_motion_labels,
+    clip_key,
     clip_name_is_locomotion,
     load_action_labels,
     load_motion_metadata,
+    load_pending_delete_clips,
     normalize_action_group,
     write_motion_metadata,
 )
@@ -516,6 +518,17 @@ def enumerate_object_clips(object_type, raw_data_dir=None):
     }
 
 
+def pending_delete_sources(object_type, pending_clips, raw_data_dir=None):
+    """Realpaths of ``object_type``'s sources whose clip is marked ``pending_delete``."""
+    if not pending_clips:
+        return set()
+    return {
+        os.path.realpath(file_path)
+        for clip, file_path in enumerate_object_clips(object_type, raw_data_dir).items()
+        if clip in pending_clips
+    }
+
+
 def frozen_root_contract(existing_cond, object_type):
     """``(translation_root_index, root_promote_depth)`` an existing cond froze for a species.
 
@@ -979,8 +992,9 @@ def _resample_animation(anim, target_len):
 
 """Prepare processed tensors for all the files of a given object without writing them to disk yet.
 
-``skip_source_paths`` (incremental preprocessing): realpaths of source anim files whose
-clips on disk are up to date. Matching files are dropped from this run so only new and
+``skip_source_paths``: realpaths of source anim files not to build -- in incremental
+preprocessing those whose clips on disk are up to date, in either mode those of
+``pending_delete`` clips. Matching files are dropped from this run so only new and
 modified source files are (re)processed. The rest-pose reference carrier is still selected
 from the full file list, so the per-object cond stays stable regardless of which clips
 are new. Returns None when no source files remain to process (object fully up to date)."""
@@ -1019,10 +1033,10 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         kept = [f for f in anim_files if os.path.realpath(f) not in skip_norm]
         skipped = len(anim_files) - len(kept)
         if skipped:
-            print(f'{object_type}: skipping {skipped} up-to-date source file(s), {len(kept)} new or modified to process')
+            print(f'{object_type}: skipping {skipped} up-to-date or pending_delete source file(s), {len(kept)} to process')
         anim_files = kept
         if len(anim_files) == 0:
-            print(f'skipping {object_type}: all source files up to date')
+            print(f'skipping {object_type}: every source file is up to date or pending_delete')
             return None
 
     # Root confirmation sees anim_files as-is: full builds scan every selected
@@ -1552,6 +1566,23 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
                 ]
             )
 
+    # A pending_delete clip is never built, in either mode, and a copy already
+    # on disk is neither rebuilt nor removed as stale: it stays until the review
+    # UI's "clean" retires it.
+    pending_clips = load_pending_delete_clips(target_dataset_dir)
+    if pending_clips:
+        for object_type in objects:
+            pending_sources = pending_delete_sources(object_type, pending_clips, raw_data_dir)
+            if not pending_sources:
+                continue
+            print(f'{object_type}: ignoring {len(pending_sources)} pending_delete source file(s)')
+            per_object_skip[object_type] = set(per_object_skip.get(object_type) or ()) | pending_sources
+            if object_type in per_object_stale_clips:
+                per_object_stale_clips[object_type] = {
+                    name: src for name, src in per_object_stale_clips[object_type].items()
+                    if clip_key(name) not in pending_clips
+                }
+
     # Locomotion clips receive detrend + the tighter extent bound; no other
     # group enters that path.
     locomotion_clips = load_locomotion_clip_names(target_dataset_dir)
@@ -1942,16 +1973,21 @@ def find_source_changes(objects, dataset_dir=None, raw_data_dir=None):
     missing or older than the source (:func:`_clip_is_stale`). Objects with
     neither are omitted. Used by the incremental preprocessing path to decide
     which objects need any work at all (cheap: reads stored metadata + stats
-    files, no geometry loading)."""
+    files, no geometry loading). Sources of ``pending_delete`` clips are never
+    reported: the build ignores them."""
     target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
     existing_meta = _load_motion_metadata_raw(target_dataset_dir)
+    pending_clips = load_pending_delete_clips(target_dataset_dir)
     result = {}
     for object_type in objects:
         known = _object_processed_sources(existing_meta, object_type)
         stale = set(_object_stale_clips(existing_meta, object_type, target_dataset_dir).values())
+        ignored = pending_delete_sources(object_type, pending_clips, raw_data_dir)
         new_files, stale_files = [], []
         for f in list_object_source_files(object_type, raw_data_dir):
             real = os.path.realpath(f)
+            if real in ignored:
+                continue
             if real not in known:
                 new_files.append(f)
             elif real in stale:

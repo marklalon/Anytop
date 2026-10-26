@@ -1051,6 +1051,81 @@ def test_run_preprocessing_calls_create_data_samples_directly(monkeypatch):
     assert captured['incremental'] is True
 
 
+def _mark_pending_delete(dataset_dir, *clips):
+    path = Path(dataset_dir) / 'action_labels.jsonl'
+    rows = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    for row in rows:
+        if row['clip'] in clips:
+            row['pending_delete'] = True
+    path.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+
+
+def test_create_data_samples_skips_pending_delete_sources(monkeypatch, tmp_path):
+    """A pending_delete clip is not built and needs no loop verdict."""
+    dataset_dir = tmp_path / 'dataset'
+    (tmp_path / 'raw' / 'Cat').mkdir(parents=True)
+    for source in ('Walk.fbx', 'Run.fbx'):
+        (tmp_path / 'raw' / 'Cat' / source).write_bytes(b'')
+    _write_action_labels(
+        dataset_dir,
+        {'Cat_Walk': ('locomotion', 'walk', True), 'Cat_Run': ('locomotion', 'run')},
+        is_loop=None,
+    )
+    _mark_pending_delete(dataset_dir, 'Cat_Run')
+    _write_species_tags(dataset_dir, species=("Cat",))
+
+    class Reached(Exception):
+        pass
+
+    def fake_prepare_object_outputs(object_type, *args, skip_source_paths=None, **kwargs):
+        raise Reached(sorted(os.path.basename(p) for p in skip_source_paths or ()))
+
+    monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare_object_outputs)
+
+    with pytest.raises(Reached) as exc_info:
+        dataset_pipeline_mod.create_data_samples(
+            objects=['Cat'],
+            dataset_dir=str(dataset_dir),
+            raw_data_dir=str(tmp_path / 'raw'),
+            object_workers=1,
+        )
+    assert exc_info.value.args[0] == ['Run.fbx']
+
+
+def test_find_source_changes_ignores_pending_delete_sources(monkeypatch, tmp_path):
+    raw = tmp_path / 'raw'
+    (raw / 'Cat').mkdir(parents=True)
+    walk = raw / 'Cat' / 'Walk.fbx'
+    run = raw / 'Cat' / 'Run.fbx'
+    idle = raw / 'Cat' / 'Idle.fbx'
+    for source in (walk, run, idle):
+        source.write_text('x')
+    monkeypatch.setattr(dataset_pipeline_mod, 'should_skip_anim', lambda f, o: False)
+
+    dataset_dir = tmp_path / 'dataset'
+    dataset_dir.mkdir()
+    built = walk.stat().st_mtime
+    _write_clip(dataset_dir, 'Cat_Walk.npy', mtime=built)
+    # Cat_Walk's source was edited after its clip was built; Cat_Run is new.
+    os.utime(walk, (built + 60, built + 60))
+    write_motion_metadata(
+        dataset_dir,
+        {'Cat_Walk.npy': {'object_type': 'Cat', 'source_fbx_path': str(walk)}},
+        1,
+    )
+    _write_action_labels(
+        dataset_dir,
+        {'Cat_Walk': ('locomotion', 'walk'), 'Cat_Run': ('locomotion', 'run'),
+         'Cat_Idle': ('idle', 'idle')},
+    )
+    _mark_pending_delete(dataset_dir, 'Cat_Walk', 'Cat_Run')
+
+    result = dataset_pipeline_mod.find_source_changes(['Cat'], str(dataset_dir), str(raw))
+
+    assert [os.path.basename(p) for p in result['Cat']['new']] == ['Idle.fbx']
+    assert result['Cat']['stale'] == []
+
+
 def _write_clip(dataset_dir, motion_name, mtime=None):
     path = dataset_dir / 'motions' / motion_name
     path.parent.mkdir(parents=True, exist_ok=True)

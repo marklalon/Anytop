@@ -53,6 +53,11 @@ Loop flag ("is_loop" in action_labels.jsonl -- proposed by a tool, hand-verified
     (serve.py), then preprocess. A build whose target clips are not all judged
     fails before any source is loaded, naming the clips.
 
+Retired clips ("pending_delete": true in action_labels.jsonl, set in dataset/review):
+    Skipped, never cleaned: such a clip is not built and needs no "is_loop", and a
+    copy already on disk is neither rebuilt nor deleted. The review page's "clean"
+    button is what removes it.
+
 Examples:
     # Default workflow: process only newly added source animations -> validate
     python preprocess_and_validate.py

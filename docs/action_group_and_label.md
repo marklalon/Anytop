@@ -45,7 +45,7 @@ action_labels.jsonl ──► dataset loader ──► word / slot / mask ids �
 | `action_label` | 可为空（= 无条件）；非空必须通过 §4 的解析与规范拼写校验 |
 | `is_loop` | 布尔，预处理**必需**；缺失直接退出。由 `tools/prefill_loop_flags.py` 提议，人工核验 |
 
-行级额外字段（`reviewed`、`pending_delete`、`autofill`）只给审核工具用，`load_action_labels` 不读。
+行级额外字段（`reviewed`、`pending_delete`、`autofill`）只给审核工具用，`load_action_labels` 不读。例外：预处理会读 `pending_delete`——标了它的 clip 不构建、也不要求 `is_loop`；已在 `motions/` 里的不重建也不删除，真正移除仍由审核页的「清理」完成。
 
 **sidecar 是唯一真源。**
 

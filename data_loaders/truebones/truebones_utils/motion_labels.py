@@ -22,6 +22,11 @@ LOOP_FLAG_KEY = "is_loop"
 # once signed off.
 AUTOFILL_KEY = "autofill"
 
+# Flag the review UI sets on a row whose clip is being retired. Preprocessing
+# builds nothing for such a clip and leaves a copy already on disk alone; the
+# review UI's "clean" is what actually removes it.
+PENDING_DELETE_KEY = "pending_delete"
+
 
 # Bump when the on-disk shape of motion_metadata.json changes: a field is
 # added, dropped, or moves between this file and action_labels.jsonl.
@@ -757,6 +762,28 @@ def clip_key(name: str) -> str:
     """The sidecar key for a clip: its file name WITHOUT the ``.npy`` extension."""
     name = str(name)
     return name[:-4] if name.endswith(".npy") else name
+
+
+def load_pending_delete_clips(dataset_dir: str | Path) -> frozenset[str]:
+    """Sidecar keys of the ``action_labels.jsonl`` rows marked ``pending_delete``.
+
+    Reads the raw rows (``load_action_labels`` does not keep review-only keys)
+    and validates nothing else: the build loads the sidecar strictly anyway. A
+    missing file yields an empty set and leaves the fail-fast to that load.
+    """
+    labels_path = Path(dataset_dir) / ACTION_LABELS_FILE
+    if not labels_path.exists():
+        return frozenset()
+    pending = set()
+    with open(labels_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            if isinstance(entry, dict) and entry.get(PENDING_DELETE_KEY) is True and entry.get("clip"):
+                pending.add(clip_key(entry["clip"]))
+    return frozenset(pending)
 
 
 def set_loop_flag(entry: dict, verdict: bool) -> dict:
