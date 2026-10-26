@@ -64,6 +64,7 @@ from data_loaders.truebones.truebones_utils.topology_relations import (  # noqa:
     split_lateral_codes,
     split_mirror_twin_codes,
 )
+from data_loaders.truebones.truebones_utils.text_encoder import DEFAULT_TEXT_ENCODER  # noqa: E402
 from data_loaders.truebones.truebones_utils import ignore_warnings  # noqa: E402
 from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
     bare_species_name,
@@ -1097,7 +1098,7 @@ def _expected_action_label_t5_name(cond: dict) -> str:
         t5_name = meta.get("t5_name")
         if t5_name:
             return str(t5_name)
-    return "t5-base"
+    return DEFAULT_TEXT_ENCODER
 
 
 def _action_word_embeddings_staleness(cond: dict) -> str | None:

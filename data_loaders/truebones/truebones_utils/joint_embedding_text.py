@@ -28,6 +28,7 @@ from .joint_name_canonical import (
     report_joint_name_collisions,
 )
 from .joint_struct_features import child_lists
+from .text_encoder import DEFAULT_TEXT_ENCODER
 
 
 # Quadruped limb codes (Lf/Rf = left/right fore, Lb/Rb or Lr/Rr = hind),
@@ -255,6 +256,8 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
     # arthropod appendages, one family instead of three spellings
     'antenna': 'Feeler',
     'antennae': 'Feeler',
+    'antennas': 'Feeler',
+    'feelers': 'Feeler',
     'piers': 'Pincers',
     'pliers': 'Pincers',
     # misspellings
@@ -285,6 +288,7 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
     'clav': 'Clavicle',
     'scap': 'Clavicle',
     'shin': 'Calf',
+    'shins': 'Calf',
     'pelv': 'Pelvis',
     'chk': 'Cheek',
     'lips': 'Lip',
@@ -308,7 +312,7 @@ _EMBED_TEXT_HEAD_PART_TOKENS = frozenset({
 # or refinement, or what goes into the sentence. Stored name embeddings are keyed
 # by this version, so a bump makes the loader reject stale cond files until
 # preprocessing re-runs.
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 23
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 24
 
 
 # Adjacent tokens that name one part together ("upper leg" -> Thigh). Applied
@@ -891,7 +895,19 @@ def _blank_unseen_joint_texts(embedding_texts_by_object, known_texts):
     return blanked_by_object
 
 
-def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', report_collisions=True,
+def _cache_cond_encoder_name(cache_cond):
+    """The one text encoder *cache_cond*'s joint names were encoded with, else None."""
+    names = {
+        str((entry.get('joints_names_embs_meta') or {}).get('t5_name') or '')
+        for entry in (cache_cond or {}).values() if isinstance(entry, dict)
+    }
+    names.discard('')
+    if len(names) > 1:
+        raise ValueError(f'the reference cond mixes text encoders: {sorted(names)}')
+    return names.pop() if names else None
+
+
+def attach_t5_embeddings_to_cond(cond, save_dir, t5_name=None, report_collisions=True,
                                   t5_conditioner=None, embedding_cache_cond=None,
                                   blank_unseen_joint_names=False):
     """Bake joint-name T5 embeddings into every entry of *cond*.
@@ -902,6 +918,10 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', report_colli
     ``embedding_cache_cond`` is an already-encoded cond (e.g. the checkpoint's
     reference cond.npy): any text it holds under the same T5 model is reused
     verbatim, and T5 is loaded only when some text is missing from it.
+
+    ``t5_name`` defaults to the encoder ``embedding_cache_cond`` was encoded
+    with, so a new skeleton lands in its checkpoint's space; without a cache it
+    is ``DEFAULT_TEXT_ENCODER``.
 
     ``blank_unseen_joint_names`` gives every joint whose text that reference
     never encodes the blank (all-zero) name instead of a fresh T5 vector; the
@@ -914,6 +934,8 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', report_colli
 
     if not cond:
         return
+    if t5_name is None:
+        t5_name = _cache_cond_encoder_name(embedding_cache_cond) or DEFAULT_TEXT_ENCODER
 
     inspection_dir = pjoin(save_dir, 'joint_name_inspection')
     os.makedirs(inspection_dir, exist_ok=True)
@@ -961,17 +983,9 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', report_colli
     if missing:
         if t5_conditioner is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            print(f'Loading T5 model {t5_name} on {device.upper()} ...')
-            from model.conditioners import T5Conditioner
-            t5_conditioner = T5Conditioner(
-                name=t5_name,
-                finetune=False,
-                word_dropout=0.0,
-                normalize_text=False,
-                device=device,
-                autocast_dtype=None,
-                local_files_only=True,
-            )
+            print(f'Loading text encoder {t5_name} on {device.upper()} ...')
+            from model.conditioners import build_text_conditioner
+            t5_conditioner = build_text_conditioner(t5_name, device)
         if text_cache:
             print(f'Texts not in the cache: {missing}')
         print(f'Encoding {len(missing)} texts via T5 ...')

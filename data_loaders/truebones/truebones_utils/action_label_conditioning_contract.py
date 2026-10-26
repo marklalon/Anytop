@@ -16,6 +16,7 @@ from typing import Any, Iterable, Mapping
 
 import numpy as np
 
+from data_loaders.truebones.truebones_utils.text_encoder import text_encoder_pooling
 from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_LABEL_MAX_HEADS,
     ACTION_LABEL_MAX_WORDS,
@@ -587,12 +588,10 @@ def slot_source_rank_report(word_vectors: np.ndarray, latent_dim: int) -> dict[s
 # ---------------------------------------------------------------------------
 # The frozen word table and the runtime bundle
 # ---------------------------------------------------------------------------
-# Selected by the geometry preflight (variant ``slot/eos_keep/center_l2``) and
-# frozen here: the sidecar builder encodes with exactly these, and both
+# Frozen here: the sidecar builder encodes with exactly these, and both
 # fingerprints record them, so a rebuild that quietly switched pooling or
-# postprocess could not be read as the same contract.
-ACTION_WORD_EMBEDDING_POOLING = "masked_mean"
-ACTION_WORD_EMBEDDING_EOS_POLICY = "keep"
+# postprocess could not be read as the same contract. Pooling and EOS policy
+# belong to the encoder (``text_encoder_pooling``); the postprocess is shared.
 ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS = "center_l2"
 ACTION_WORD_EMBEDDING_KEYING = "word"
 ACTION_WORD_EMBEDDING_DTYPE = "float32"
@@ -735,10 +734,11 @@ def build_action_conditioning_bundle(
             f"{source}: embedding_contract declares embedding_dim {declared_dim} but "
             f"the table is {int(table.shape[1])}-dimensional"
         )
+    expected_pooling, expected_eos_policy = text_encoder_pooling(str(contract.get("t5_name")))
     for field, expected in (
         ("schema_version", ACTION_WORD_EMBEDDING_SCHEMA_VERSION),
-        ("pooling", ACTION_WORD_EMBEDDING_POOLING),
-        ("eos_policy", ACTION_WORD_EMBEDDING_EOS_POLICY),
+        ("pooling", expected_pooling),
+        ("eos_policy", expected_eos_policy),
         ("vector_postprocess", ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS),
     ):
         if contract.get(field) != expected:

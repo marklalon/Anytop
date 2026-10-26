@@ -22,8 +22,6 @@ from data_loaders.tensors import _build_action_slot_batch  # noqa: E402
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (  # noqa: E402
     ACTION_LABEL_SLOTS,
     ACTION_WORD_EMBEDDING_DTYPE,
-    ACTION_WORD_EMBEDDING_EOS_POLICY,
-    ACTION_WORD_EMBEDDING_POOLING,
     ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS,
     action_label_slots,
     build_action_conditioning_bundle,
@@ -37,13 +35,14 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     T5_ENCODED_VOCAB,
     parse_action_label,
 )
+from data_loaders.truebones.truebones_utils.text_encoder import text_encoder_pooling  # noqa: E402
 
 
 # The stand-in table's encoded half is dense random, so every slot's sources are
 # independent -- the same full-rank property the real T5 table has and the model
 # checks for. Its direction and hands blocks are the real orthonormal code, which
 # is full rank by construction.
-# 768 is t5-base's width, the one the real sidecar is encoded at.
+# 768 is the default text encoder's width, the one the real sidecar is encoded at.
 TEST_T5_DIM = 768
 # At least the total slot source rank (the slots partition the vocabulary, so
 # the ranks add to its size), which model construction refuses to go under:
@@ -75,8 +74,8 @@ def make_test_bundle(dim: int = TEST_T5_DIM, seed: int = 20260906, t5_name: str 
         t5_artifact_sha256=f"test-artifact-{seed}",
         tokenizer_class="T5Tokenizer",
         tokenizer_version="0.0.0-test",
-        pooling=ACTION_WORD_EMBEDDING_POOLING,
-        eos_policy=ACTION_WORD_EMBEDDING_EOS_POLICY,
+        pooling=text_encoder_pooling(t5_name)[0],
+        eos_policy=text_encoder_pooling(t5_name)[1],
         vector_postprocess=ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS,
         embedding_dim=dim,
         dtype=ACTION_WORD_EMBEDDING_DTYPE,

@@ -120,6 +120,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     get_raw_data_dir,
 )
 from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
+from data_loaders.truebones.truebones_utils.text_encoder import DEFAULT_TEXT_ENCODER  # noqa: E402
 from data_loaders.truebones.truebones_utils import ignore_warnings  # noqa: E402
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
     load_cond,
@@ -1085,7 +1086,7 @@ def run_remove_motions(
 def run_regenerate_side_artifacts(
     dataset_dir: str = "",
     preserved_side_artifacts: PreservedSideArtifacts | None = None,
-    t5_model: str = "t5-base",
+    t5_model: str = DEFAULT_TEXT_ENCODER,
 ) -> int:
     """Regenerate non-motion dataset artifacts without re-preprocessing motions."""
 

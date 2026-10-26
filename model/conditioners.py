@@ -16,10 +16,13 @@ from torch import nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 
+from data_loaders.truebones.truebones_utils.text_encoder import SENTENCE_ENCODER_SPECS, is_sentence_encoder
+
 # Heavy imports deferred to where they are actually used:
 #   spacy       -> WhiteSpaceTokenizer.__init__  (only when normalize_text=True)
 #   transformers -> T5Conditioner.__init__ / _resolve_t5_local_dir
 #   safetensors  -> T5Conditioner.__init__  (direct weight loading)
+#   sentence_transformers -> SentenceEmbeddingConditioner.__init__
 
 CUDA_LAUNCH_BLOCKING=1
 
@@ -493,3 +496,60 @@ class T5Conditioner(TextConditioner):
         with torch.set_grad_enabled(self.finetune), self.autocast:
             embeds = (self.t5(**inputs).last_hidden_state * mask.unsqueeze(-1)).sum(dim=-2) / torch.where(mask.sum(dim=-1) == 0, 1, mask.sum(dim=-1)).unsqueeze(-1)
         return embeds
+
+
+class SentenceEmbeddingConditioner(TextConditioner):
+    """Frozen sentence-transformers encoder with the T5Conditioner call shape.
+
+    ``tokenize_entries`` only carries the texts; ``forward`` runs the model's own
+    pooling under its spec's prompt and returns unit vectors. An empty text is
+    the all-zero row, as with T5Conditioner's fully masked entry.
+    """
+
+    def __init__(self, name: str, device: str, t5_path: tp.Optional[str] = None):
+        from sentence_transformers import SentenceTransformer
+
+        spec = SENTENCE_ENCODER_SPECS[name]
+        super().__init__(spec["dim"])
+        self.name = name
+        self.device = device
+        self.prompt_name = spec["prompt_name"]
+        previous_level = logging.root.manager.disable
+        logging.disable(logging.ERROR)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model = SentenceTransformer(
+                    _resolve_t5_local_dir(name, t5_path), device=device, local_files_only=True,
+                ).eval()
+        finally:
+            logging.disable(previous_level)
+        # Kept out of the module tree, like a frozen T5, so it never reaches a checkpoint.
+        self.__dict__['model'] = model
+
+    def tokenize_entries(self, entries: tp.List[str]) -> tp.Dict[str, tp.List[str]]:
+        return {"texts": [str(entry) for entry in entries]}
+
+    def forward(self, inputs: tp.Dict[str, tp.List[str]]) -> torch.Tensor:
+        texts = inputs["texts"]
+        out = torch.zeros(len(texts), self.dim, device=self.device)
+        kept = [i for i, text in enumerate(texts) if text != ""]
+        if kept:
+            with torch.no_grad():
+                embs = self.model.encode(
+                    [texts[i] for i in kept], prompt_name=self.prompt_name,
+                    convert_to_tensor=True, normalize_embeddings=True,
+                    batch_size=len(kept), show_progress_bar=False,
+                )
+            out[kept] = embs.to(device=self.device, dtype=out.dtype)
+        return out
+
+
+def build_text_conditioner(name: str, device: str, t5_path: tp.Optional[str] = None):
+    """The frozen encoder *name* names, ready for ``tokenize_entries`` + call."""
+    if is_sentence_encoder(name):
+        return SentenceEmbeddingConditioner(name, device, t5_path=t5_path)
+    return T5Conditioner(
+        name=name, finetune=False, word_dropout=0.0, normalize_text=False,
+        device=device, autocast_dtype=None, local_files_only=True, t5_path=t5_path,
+    )

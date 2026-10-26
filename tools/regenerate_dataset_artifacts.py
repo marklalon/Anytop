@@ -9,7 +9,7 @@ Usage:
 
 Options:
     --dataset-dir PATH      Path to dataset directory (uses default if not specified)
-    --t5-model NAME         T5 model name to use (default: t5-base)
+    --t5-model NAME         Text encoder to use (default: google/embeddinggemma-300m)
     --no-rest-reseat        Skip the rest-vs-clip geometry re-seat (normally always on)
 
 Examples:
@@ -41,6 +41,7 @@ sys.path.insert(0, str(ANYTOP_DIR))
 # Package-qualified imports only: a short-name import (via a sys.path entry
 # inside the package) would create a SECOND copy of these modules in this
 # process, each with its own module globals.
+from data_loaders.truebones.truebones_utils.text_encoder import DEFAULT_TEXT_ENCODER  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_GROUPS,
     build_motion_labels,
@@ -414,7 +415,7 @@ def _validate_object_translation_roots(
 
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
-    t5_model: str = "t5-base",
+    t5_model: str = DEFAULT_TEXT_ENCODER,
     reseat_rest: bool = True,
 ) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
@@ -429,7 +430,7 @@ def regenerate_dataset_artifacts(
 
 def _regenerate_dataset_artifacts(
     dataset_dir_path: Path,
-    t5_model: str = "t5-base",
+    t5_model: str = DEFAULT_TEXT_ENCODER,
     reseat_rest: bool = True,
 ) -> Path:
     motions_dir = dataset_dir_path / MOTION_DIR
@@ -613,9 +614,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--t5-model",
-        default="t5-base",
+        default=DEFAULT_TEXT_ENCODER,
         type=str,
-        help="T5 model to use for joint name embeddings (default: t5-base).",
+        help=f"Text encoder for joint names, species descriptors and action words (default: {DEFAULT_TEXT_ENCODER}).",
     )
     parser.add_argument(
         "--species-tags-file",

@@ -14,8 +14,8 @@ are encoded into one table, and ``species_emb`` never lives in a dataset's cond.
   read only the checkpoint's copy, and refuse a descriptor it lacks rather
   than encoding one the weights never saw.
 
-The rows are ``T5Conditioner``'s masked token mean of the descriptor text, the
-same encoding a cond entry's ``species_emb`` always had.
+The rows are the descriptor text under the same frozen text encoder
+(``build_text_conditioner``) that encodes the cond's joint names.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 import numpy as np
+
+from data_loaders.truebones.truebones_utils.text_encoder import DEFAULT_TEXT_ENCODER
 
 from data_loaders.truebones.truebones_utils.dataset_tags import (
     SPECIES_VARIANTS,
@@ -196,19 +198,11 @@ def cond_t5_name(cond_dict) -> str:
 def load_t5_conditioner(t5_name: str):
     import torch
 
-    from model.conditioners import T5Conditioner
+    from model.conditioners import build_text_conditioner
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Loading T5 model {t5_name} on {device.upper()} ...")
-    return T5Conditioner(
-        name=t5_name,
-        finetune=False,
-        word_dropout=0.0,
-        normalize_text=False,
-        device=device,
-        autocast_dtype=None,
-        local_files_only=True,
-    )
+    print(f"Loading text encoder {t5_name} on {device.upper()} ...")
+    return build_text_conditioner(t5_name, device)
 
 
 def encode_species_descriptors(descriptors, t5_conditioner) -> np.ndarray:
@@ -227,7 +221,7 @@ def encode_species_descriptors(descriptors, t5_conditioner) -> np.ndarray:
 
 def build_species_descriptor_table(
     out_path=None,
-    t5_name: str = "t5-base",
+    t5_name: str = DEFAULT_TEXT_ENCODER,
     *,
     t5_conditioner=None,
 ) -> SpeciesDescriptorTable:

@@ -99,7 +99,7 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 
 ### 3.2 编码与存放
 
-- 用冻结 T5（默认 `t5-base`，宽度 `t5_out_dim`）对每段文本做 masked token mean，**烘焙进 `cond.npy` 的 `joints_names_embs`**；训练和生成都读它，运行时不跑 T5。
+- 用冻结文本编码器（默认 `google/embeddinggemma-300m`，STS prompt，自带池化 + L2 归一化；宽度 `t5_out_dim`）对每段文本编码，**烘焙进 `cond.npy` 的 `joints_names_embs`**；训练和生成都读它，运行时不跑编码器。编码器由 `text_encoder.py` 选择，`model.conditioners.build_text_conditioner` 构造。
 - 同一 T5 型号下，同一段文本的向量与来自哪个 cond 无关，所以可跨 cond 复用（`embedding_cache_cond`）。
 - `JOINT_NAME_EMBEDDING_SCHEMA_VERSION`（文本规则版本）记录在 checkpoint 的 `args.json`，不匹配则拒绝加载：张量形状能对上，含义已经变了。
 

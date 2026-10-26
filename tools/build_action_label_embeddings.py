@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Precompute the frozen-T5 word table the action-label conditioner runs on.
+Precompute the frozen text-encoder word table the action-label conditioner runs on.
 
 Training conditions on the controlled vocabulary token by token: every label is
 assembled at runtime from these vectors. Encoding them on the fly would mean a
-resident T5 in every training process for vectors that never change, so they are
+resident encoder in every training process for vectors that never change, so they are
 baked once into ``dataset/action_word_embeddings.npy``.
 
 One vector per ``CONTROLLED_VOCAB`` token, in vocabulary order. A
@@ -21,21 +21,22 @@ whenever anyone edited a label and could not represent an unseen combination at
 all; this table depends on the vocabulary alone, so it is one global file and
 relabelling never stales it.
 
-The encoder settings are not options: pooling, EOS policy and vector
-postprocessing are fixed by the conditioning contract
-(``slot/eos_keep/center_l2``) and recorded in ``embedding_contract``, whose hash
-is the ``embedding_fingerprint`` a checkpoint is bound to.
+The encoder settings are not options: pooling and EOS policy come with the
+encoder (``text_encoder_pooling``), the vector postprocess is fixed by the
+conditioning contract (``center_l2``), and all three are recorded in
+``embedding_contract``, whose hash is the ``embedding_fingerprint`` a checkpoint
+is bound to.
 
 Usage:
     python tools/build_action_label_embeddings.py [--t5-model NAME] [--force]
     python tools/build_action_label_embeddings.py --out path/to/table.npy
 
 Options:
-    --t5-model NAME   T5 model to encode with (default: t5-base). MUST match the
+    --t5-model NAME   Text encoder to encode with (default: google/embeddinggemma-300m). MUST match the
                       model that built cond.npy's joints_names_embs, or the word
                       vectors land in a different space than the model's
                       t5_out_dim expects and construction fails.
-    --t5-path DIR     Local model directory (default: ``Anytop/.models/<name>``).
+    --t5-path DIR     Local model directory (default: ``Anytop/.models/<name>``, then the HF cache).
                       Its files are hashed into the contract, so pointing this at
                       different weights re-encodes the table even when
                       --t5-model is unchanged.
@@ -60,9 +61,7 @@ sys.path.insert(0, str(ANYTOP_DIR))
 sys.path.insert(0, str(TOOLS_DIR))
 
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (  # noqa: E402
-    ACTION_WORD_EMBEDDING_EOS_POLICY,
     ACTION_WORD_EMBEDDING_DTYPE,
-    ACTION_WORD_EMBEDDING_POOLING,
     ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS,
     ActionConditioningError,
     action_word_embedding_payload,
@@ -82,13 +81,21 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     get_action_word_embeddings_path,
 )
+from data_loaders.truebones.truebones_utils.text_encoder import (  # noqa: E402
+    DEFAULT_TEXT_ENCODER,
+    is_sentence_encoder,
+    text_encoder_pooling,
+)
 
 
-# The files whose bytes decide what the encoder produces.
+# The files whose bytes decide what a T5 produces. A sentence-transformers
+# encoder spreads its pooling and dense heads over subdirectories, so every
+# file in its directory is hashed instead.
 _T5_HASHED_FILES = (
     "config.json", "generation_config.json", "model.safetensors",
     "spiece.model", "special_tokens_map.json", "tokenizer_config.json",
 )
+_UNHASHED_SUFFIXES = (".md", ".gitattributes")
 
 
 def _sha256_files(root: Path, names) -> str:
@@ -108,7 +115,12 @@ def _sha256_files(root: Path, names) -> str:
 
 
 def _resolve_t5_dir(t5_path: str | None, t5_name: str) -> Path:
-    path = Path(t5_path) if t5_path else ANYTOP_DIR / ".models" / t5_name
+    if t5_path:
+        path = Path(t5_path)
+    else:
+        from model.conditioners import _resolve_t5_local_dir
+
+        path = Path(_resolve_t5_local_dir(t5_name))
     path = path.resolve()
     if not path.is_dir():
         raise FileNotFoundError(
@@ -126,40 +138,14 @@ def _resolve_t5_material(t5_model: str, t5_path: str | None):
     bytes, which is exactly what an explicit --t5-path is for.
     """
     t5_dir = _resolve_t5_dir(t5_path, t5_model)
-    return t5_dir, _sha256_files(t5_dir, _T5_HASHED_FILES)
-
-
-def _pool_masked_mean(tokenizer, encoder, device, texts, batch_size) -> np.ndarray:
-    """Mean of the encoder's hidden states over the kept tokens, per text.
-
-    ``ACTION_WORD_EMBEDDING_EOS_POLICY`` decides whether the EOS token is one of
-    them; it is part of the contract the fingerprint covers, not an option here.
-    """
-    import torch
-
-    eos_id = tokenizer.eos_token_id
-    if eos_id is None:
-        raise ValueError("the tokenizer has no eos_token_id")
-    keep_eos = ACTION_WORD_EMBEDDING_EOS_POLICY == "keep"
-    chunks: list[np.ndarray] = []
-    with torch.no_grad():
-        for start in range(0, len(texts), batch_size):
-            batch = texts[start:start + batch_size]
-            inputs = tokenizer(batch, return_tensors="pt", padding=True)
-            inputs = {key: value.to(device) for key, value in inputs.items()}
-            hidden = encoder(**inputs).last_hidden_state.float()
-            mask = inputs["attention_mask"].bool()
-            if not keep_eos:
-                mask = mask & inputs["input_ids"].ne(eos_id)
-            counts = mask.sum(dim=-1, keepdim=True)
-            if torch.any(counts == 0):
-                raise ValueError(
-                    f"EOS policy {ACTION_WORD_EMBEDDING_EOS_POLICY!r} produced an "
-                    "empty token sequence"
-                )
-            pooled = (hidden * mask.unsqueeze(-1)).sum(dim=-2) / counts
-            chunks.append(pooled.cpu().numpy().astype(np.float32, copy=False))
-    return np.concatenate(chunks, axis=0)
+    if is_sentence_encoder(t5_model):
+        names = [
+            path.relative_to(t5_dir).as_posix() for path in t5_dir.rglob("*")
+            if path.is_file() and not path.name.endswith(_UNHASHED_SUFFIXES)
+        ]
+    else:
+        names = _T5_HASHED_FILES
+    return t5_dir, _sha256_files(t5_dir, names)
 
 
 def _postprocess_atoms(vectors: np.ndarray, mode: str) -> np.ndarray:
@@ -181,38 +167,34 @@ def _postprocess_atoms(vectors: np.ndarray, mode: str) -> np.ndarray:
 
 
 def _encode_vocabulary(t5_dir, t5_hash: str, t5_model: str, batch_size: int):
-    """Encode every token under the contract's pooling / EOS / postprocess."""
+    """Encode every token with the encoder's own pooling, then the shared postprocess."""
     import torch
-    from transformers import T5Config, T5EncoderModel, T5Tokenizer
+
+    from model.conditioners import build_text_conditioner
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = T5Tokenizer.from_pretrained(str(t5_dir), local_files_only=True)
-    safetensors_path = t5_dir / "model.safetensors"
-    if safetensors_path.is_file():
-        import safetensors.torch
-
-        config = T5Config.from_pretrained(str(t5_dir), local_files_only=True)
-        encoder = T5EncoderModel(config)
-        encoder.load_state_dict(
-            safetensors.torch.load_file(str(safetensors_path)), strict=False
-        )
-    else:
-        encoder = T5EncoderModel.from_pretrained(str(t5_dir), local_files_only=True)
-    encoder = encoder.eval().to(device)
+    encoder = build_text_conditioner(t5_model, device, t5_path=str(t5_dir))
+    tokenizer = encoder.t5_tokenizer if hasattr(encoder, "t5_tokenizer") else encoder.model.tokenizer
 
     texts = [vocab_t5_text(token) for token in T5_ENCODED_VOCAB]
-    pooled = _pool_masked_mean(tokenizer, encoder, device, texts, batch_size)
+    chunks = []
+    with torch.no_grad():
+        for start in range(0, len(texts), batch_size):
+            tokens = encoder.tokenize_entries(texts[start:start + batch_size])
+            chunks.append(encoder(tokens).float().cpu().numpy())
+    pooled = np.concatenate(chunks, axis=0)
     encoded = _postprocess_atoms(pooled, ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS)
     table = scatter_synthetic_code_rows(np.asarray(encoded, dtype=np.float32))
 
+    pooling, eos_policy = text_encoder_pooling(t5_model)
     contract = embedding_contract_payload(
         token_sources=ordered_token_sources(),
         t5_name=t5_model,
         t5_artifact_sha256=t5_hash,
         tokenizer_class=type(tokenizer).__name__,
         tokenizer_version=importlib.metadata.version("transformers"),
-        pooling=ACTION_WORD_EMBEDDING_POOLING,
-        eos_policy=ACTION_WORD_EMBEDDING_EOS_POLICY,
+        pooling=pooling,
+        eos_policy=eos_policy,
         vector_postprocess=ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS,
         embedding_dim=int(table.shape[1]),
         dtype=ACTION_WORD_EMBEDDING_DTYPE,
@@ -242,7 +224,7 @@ def build_word_table(out_path: Path, t5_model: str, t5_path: str | None,
     # counts as current only when it was encoded from THESE weights, and the
     # contract already records the hash to compare against. Matching on t5_name
     # alone let an explicit --t5-path holding different weights be silently
-    # ignored, because the name is "t5-base" either way.
+    # ignored, because the name is the same either way.
     t5_dir, t5_hash = _resolve_t5_material(t5_model, t5_path)
     existing = None if force else _current_bundle(out_path)
     if existing is not None:
@@ -304,8 +286,8 @@ def build_word_table(out_path: Path, t5_model: str, t5_path: str | None,
     np.save(out_path, action_word_embedding_payload(table, contract), allow_pickle=True)
     print(
         f"[OK] wrote {out_path} ({table.shape[0]} words x {table.shape[1]}d, "
-        f"pooling={ACTION_WORD_EMBEDDING_POOLING}, "
-        f"eos={ACTION_WORD_EMBEDDING_EOS_POLICY}, "
+        f"pooling={contract['pooling']}, "
+        f"eos={contract['eos_policy']}, "
         f"postprocess={ACTION_WORD_EMBEDDING_VECTOR_POSTPROCESS}; "
         f"{len(SYNTHETIC_CODE_VOCAB)} of them orthonormal code rows)"
     )
@@ -318,7 +300,7 @@ def build_word_table(out_path: Path, t5_model: str, t5_path: str | None,
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Precompute the frozen-T5 action-word table.",
+        description="Precompute the frozen text-encoder action-word table.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -326,8 +308,8 @@ def main() -> int:
         "--out", dest="out", type=str, default=None,
         help="Where to write the table (default: dataset/action_word_embeddings.npy).",
     )
-    parser.add_argument("--t5-model", "--t5_model", dest="t5_model", default="t5-base",
-                        help="T5 model to encode with (default: t5-base).")
+    parser.add_argument("--t5-model", "--t5_model", dest="t5_model", default=DEFAULT_TEXT_ENCODER,
+                        help=f"Text encoder to encode with (default: {DEFAULT_TEXT_ENCODER}).")
     parser.add_argument("--t5-path", "--t5_path", dest="t5_path", default=None,
                         help="Local T5 directory, if it is not the default cache.")
     parser.add_argument("--batch-size", dest="batch_size", type=int, default=64)

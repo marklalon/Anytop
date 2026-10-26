@@ -889,7 +889,10 @@ def _edit_distance(left: str, right: str) -> int:
 
 
 class T5Pieces:
-    """How the pipeline's T5 tokenizer splits one embedding word.
+    """How the t5-base tokenizer splits one embedding word.
+
+    Its SentencePiece vocabulary serves as a dictionary of real words here,
+    independent of which encoder bakes the embeddings.
 
     A word T5 holds as one whole piece ("Hat", "Flower") is a real word even
     when it sits one edit away from a known one; a word it has to assemble
