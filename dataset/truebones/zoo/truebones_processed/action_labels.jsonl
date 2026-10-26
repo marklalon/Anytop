@@ -1,8 +1,6 @@
-{"clip": "Alligator_Bite1", "action_group": "stationary", "action_label": "attack, charge", "is_loop": true, "reviewed": true}
 {"clip": "Alligator_Bite3", "action_group": "stationary", "action_label": "attack, charge", "is_loop": true, "reviewed": true}
 {"clip": "Alligator_Catch", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
 {"clip": "Alligator_DIe", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
-{"clip": "Alligator_Dash2", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
 {"clip": "Alligator_Dash", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
 {"clip": "Alligator_Shake", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "Alligator_StandIdle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
@@ -884,12 +882,9 @@
 {"clip": "Trex_ChaseBite", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
 {"clip": "Trex_ChaseHeadButtLeft", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "Trex_ChaseRoar", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
-{"clip": "Trex_HeadButtLeft", "action_group": "stationary", "action_label": "attack, headbutt", "is_loop": false, "reviewed": true}
 {"clip": "Trex_HitHead3", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "Trex_HitTorsoLeft", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "Trex_HitTorsoRight", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
-{"clip": "Trex_HumanBite", "action_group": "stationary", "action_label": "attack, bite", "is_loop": false, "reviewed": true}
-{"clip": "Trex_HumanKill", "action_group": "stationary", "action_label": "attack, bite", "is_loop": false, "reviewed": true}
 {"clip": "Trex_IdleAttack", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Trex_IdleInvestigaeOut", "action_group": "stationary", "action_label": "idle, look", "is_loop": false, "reviewed": true}
 {"clip": "Trex_IdleInvestigateLoop", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
@@ -907,8 +902,6 @@
 {"clip": "Trex_Roar", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "Trex_RunHeadButtRight", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
 {"clip": "Trex_RunHeadLoop", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
-{"clip": "Trex_RunHeadLow2", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
-{"clip": "Trex_RunHeadLow", "action_group": "stationary", "action_label": "attack, charge", "is_loop": false, "reviewed": true}
 {"clip": "Trex_RunToStop", "action_group": "transition", "action_label": "stop", "is_loop": false, "reviewed": true}
 {"clip": "Trex_SprintLoop", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "Trex_StepBack", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
