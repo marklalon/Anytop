@@ -315,6 +315,25 @@ def test_glued_side_letter_on_a_wing_drives_side_detection() -> None:
     assert joint_signature('RigLwing1') == joint_signature('RigRwing1')
 
 
+def test_unsided_child_of_sided_parent_takes_parent_side() -> None:
+    # Two-headed rig: only the left head carries a "HeadNub", so no twin pairs it
+    # and its name has no side word; it still sits on the left neck.
+    joint_names = [
+        'Bip01', 'Bip01 Spine',
+        'Bip01 Neck_L1', 'Bip01 Head_L', 'Bip01 HeadNub',
+        'Neck_R1', 'Head_R',
+    ]
+    parents = np.array([-1, 0, 1, 2, 3, 1, 5])
+    rest_positions = np.array([
+        [0.0, 0.0, 0.0], [0.0, 0.0, 0.1],
+        [0.05, 0.0, 0.2], [0.07, 0.0, 0.3], [0.10, 0.0, 0.4],
+        [-0.05, 0.0, 0.2], [-0.07, 0.0, 0.3],
+    ])
+    sides, _partners, _pairs = infer_symmetry_metadata(joint_names, parents, rest_positions)
+    assert sides[4] == 'left'
+    assert sides[1] == 'center'
+
+
 def test_mirrored_name_typo_still_pairs_with_its_twin() -> None:
     # One pack mirrored its left bones and ran a global L -> R replace over the
     # copied names, corrupting the words: "Lower_Arm_L" against "Rower_Arm_R",

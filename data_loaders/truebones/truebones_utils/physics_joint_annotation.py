@@ -708,6 +708,13 @@ def infer_symmetry_metadata(joint_names, parents, rest_positions, return_details
             symmetric_joint_pairs.append([left_index, right_index])
             changed = True
 
+    # A joint still unsided under a sided parent hangs off that limb: a weapon in
+    # the hand, a pauldron plate, the nub of one head of a two-headed rig.
+    for joint_index in sorted(range(len(joint_names)), key=lambda index: depths[index]):
+        parent_index = parents[joint_index]
+        if parent_index >= 0 and joint_side_labels[joint_index] == 'center':
+            joint_side_labels[joint_index] = joint_side_labels[parent_index]
+
     if return_details:
         return {
             'joint_side_labels': joint_side_labels,
