@@ -86,6 +86,7 @@ def _make_full_cond_entry(n_joints: int, feature_len: int = 12) -> dict:
         "joints_names": [f"Joint{i}" for i in range(n_joints)],
         "canonical_joint_names": [f"Joint{i}" for i in range(n_joints)],
         "canonical_bvh_joint_names": [f"Joint{i}" for i in range(n_joints)],
+        "joint_side_labels": ["center"] * n_joints,
         "parents": parents,
         "canonical_feature_mean": np.zeros((CANONICAL_STAT_LEN,), dtype=np.float32),
         "canonical_feature_std": np.ones((CANONICAL_STAT_LEN,), dtype=np.float32),

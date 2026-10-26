@@ -2,7 +2,7 @@
 
 The token tables that fold a canonical name into body-part words (filler,
 non-anatomical markers, limb and face codes, synonyms, pair merges) and
-``build_joint_embedding_texts``, which turns each joint into "side + body part".
+``build_joint_embedding_texts``, which turns each joint into its body part.
 ``JOINT_NAME_EMBEDDING_SCHEMA_VERSION`` keys the stored embeddings to this text.
 ``attach_t5_embeddings_to_cond`` encodes those texts with T5 (or reuses a
 reference cond's vectors) and bakes them into each cond entry.
@@ -186,9 +186,9 @@ _EMBED_TEXT_HELPER_NODE_TOKENS = frozenset({
     'fx',
     'ik',
 })
-# Side words dropped from the name. build_joint_embedding_texts re-attaches the
-# side from the geometry-derived joint_side_labels, so every rig spells it the
-# same way ("R_thigh", "RightThigh" -> "Right Thigh").
+# Side words dropped from the name: the text names the part alone, so mirror
+# twins share one text ("R_thigh", "LeftThigh" -> "Thigh"). Side reaches the
+# model through the structural channel, which reads joint_side_labels.
 _EMBED_TEXT_SIDE_TOKENS = {
     'left',
     'right',
@@ -308,7 +308,7 @@ _EMBED_TEXT_HEAD_PART_TOKENS = frozenset({
 # or refinement, or what goes into the sentence. Stored name embeddings are keyed
 # by this version, so a bump makes the loader reject stale cond files until
 # preprocessing re-runs.
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 22
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 23
 
 
 # Adjacent tokens that name one part together ("upper leg" -> Thigh). Applied
@@ -725,11 +725,9 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
         return refined_tokens
 
     # Nothing survived, so hand back the raw canonical tokens -- minus the side
-    # word, which build_joint_embedding_texts is about to re-attach from the
-    # geometry label. spider_tarantula names its leg segments "R4_00".."L2_03",
-    # which reduce to a side word plus two index runs; keeping the side word here
-    # spelled it twice ("Right Right 4 00"). The indices stay: for these 24
-    # joints they are the only thing telling leg 4 from leg 2.
+    # word, which the text never carries. spider_tarantula names its leg
+    # segments "R4_00".."L2_03", which reduce to a side word plus two index runs.
+    # The indices stay: they are the only thing telling leg 4 from leg 2.
     fallback_tokens = [
         token for token in canonical_name.split()
         if clean_embedding_token(token) not in _EMBED_TEXT_SIDE_TOKENS
@@ -738,11 +736,11 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
 
 
 def build_joint_embedding_texts(object_cond):
-    """Per-joint T5 sentences: side + body part.
+    """Per-joint T5 sentences: the body part alone.
 
     Structure-derived tokens (chain position, sibling numbering, contact and
-    end-effector flags) belong to the structural channel, never to the text.
-    Repeated siblings (a centipede's leg pairs, a bat's wing fingers) therefore
+    end-effector flags) belong to the structural channel, never to the text,
+    and so does side: mirror twins share one text. Repeated siblings (a centipede's leg pairs, a bat's wing fingers) therefore
     share one text on purpose: telling them apart is what sib_rank / side
     and rest_geom do, comparably across species.
     """
@@ -755,7 +753,6 @@ def build_joint_embedding_texts(object_cond):
         raw_joint_names,
         object_cond.get('species_name') or object_cond.get('object_type'),
     )
-    joint_side_labels = list(object_cond.get('joint_side_labels') or ['center'] * len(base_joint_names))
     bare_arm_flags = _bare_arm_means_upper_arm(
         raw_joint_names,
         object_cond.get('parents'),
@@ -806,11 +803,7 @@ def build_joint_embedding_texts(object_cond):
             texts.append('')
             continue
 
-        # Side leads, so the text opens as a plain English noun phrase
-        # ("Right Finger") -- a construction T5 saw in pretraining.
-        side = joint_side_labels[joint_index] if joint_index < len(joint_side_labels) else 'center'
-        side_tokens = [side.capitalize()] if side in ('left', 'right') else []
-        texts.append(' '.join([*side_tokens, *refined_tokens]))
+        texts.append(' '.join(refined_tokens))
     return texts
 
 

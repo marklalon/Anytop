@@ -88,10 +88,10 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 
 ### 3.1 文本如何生成
 
-每个关节的名字被转换成一句**"侧别 + 身体部位"**的短文本（`build_joint_embedding_texts`，[joint_embedding_text.py](../data_loaders/truebones/truebones_utils/joint_embedding_text.py)），例如 `Left Upper Arm`、`Right Finger`。步骤概述：
+每个关节的名字被转换成一段**只含身体部位**的短文本（`build_joint_embedding_texts`，[joint_embedding_text.py](../data_loaders/truebones/truebones_utils/joint_embedding_text.py)），例如 `UpperArm`、`Front Calf`。步骤概述：
 
 1. 名字先经规范化（`canonicalize_joint_name`）：拆分粘连词、去掉物种前缀 / 绑定前缀（如 `Bip01`、`npc`）、折叠同义词与左右/前后/上下缩写码（`Lf` → Front、`TL` → Upper 等，只在上下文能区分时才读码）；
-2. 侧别来自几何（`joint_side_labels`），不是名字；侧别词放句首（`Right Finger`），保持 T5 见过的名词短语构造；
+2. **侧别不进文本**：左右词在规范化后丢弃，镜像孪生关节共享同一段文本；侧别由结构通道的 `side` 读 `joint_side_labels` 提供。T5 里同侧不同部位的相似度会被侧别词抬高（`Left Leg` 的最近邻是 `Left Arm`），放进结构通道就避开了这种纠缠；
 3. **结构派生信息不进文本**：链上位置、同级编号、触地 / 末端标记归结构通道。因此同级重复部件（蜈蚣的腿对、蝙蝠的翼指）**共享同一段文本**，区分它们是 `sib_rank` / `side` 与 `rest_geom` 的工作；
 4. **无意义名字得到空文本**：辅助 / 占位节点（helper）、非解剖标记、仅由绑定戳构成的名字、孤立出现在肢体之外的肢体词，一律输出 `''`。
 

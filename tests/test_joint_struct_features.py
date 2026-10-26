@@ -63,6 +63,7 @@ def _biped(**overrides):
         'rest_pos_ric_hml': _BIPED_REST.copy(),
         'joints_names': ['Hips', 'Spine', 'Head', 'LThigh', 'LShin', 'LFoot',
                          'RThigh', 'RShin', 'RFoot'],
+        'joint_side_labels': ['center'] * 3 + ['left'] * 3 + ['right'] * 3,
     }
     entry.update(overrides)
     return entry
@@ -89,6 +90,7 @@ class BranchFreeRuns(unittest.TestCase):
             'rest_pos_ric_hml': np.array(
                 [[0, 0, 0], [0, 1, 0], [0, 2, 0], [-1, 3, 0], [1, 3, 0]], dtype=np.float32
             ),
+            'joint_side_labels': ['center'] * 5,
         }
         run_len_inv = _channel(build_joint_struct_features(entry), 'run_len_inv')
         # 1 and 2 share a run of two; the fork's children are runs of one each.
@@ -120,15 +122,26 @@ class Shape(unittest.TestCase):
         small = _channel(build_joint_struct_features(_biped()), 'subtree_bucket')
         parents = np.concatenate([_BIPED_PARENTS, [2, 9, 10]])
         rest = np.concatenate([_BIPED_REST, _BIPED_REST[2] + np.array([[0, 0.1, 0], [0, 0.2, 0], [0, 0.3, 0]])])
-        large = _channel(build_joint_struct_features({'parents': parents, 'rest_pos_ric_hml': rest}), 'subtree_bucket')
+        sides = _biped()['joint_side_labels'] + ['center'] * 3
+        large = _channel(build_joint_struct_features(
+            {'parents': parents, 'rest_pos_ric_hml': rest, 'joint_side_labels': sides}), 'subtree_bucket')
         np.testing.assert_allclose(large[3:9], small[3:9], atol=1e-6)
 
-    def test_lateral_is_signed_so_left_and_right_never_coincide(self):
+    def test_side_is_signed_so_left_and_right_never_coincide(self):
         features = build_joint_struct_features(_biped())
         side = _channel(features, 'side')
-        self.assertEqual(float(side[3]), -1.0)
-        self.assertEqual(float(side[6]), 1.0)
+        self.assertEqual(float(side[3]), 1.0)
+        self.assertEqual(float(side[6]), -1.0)
         self.assertEqual(float(side[0]), 0.0)
+
+    def test_side_follows_the_label_not_the_joint_position(self):
+        """A clavicle pivot across the midline from its arm (Bip01 quadrupeds)
+        keeps its labelled side, and a spine a hair off the midline stays centre."""
+        rest = _BIPED_REST.copy()
+        rest[3, 0], rest[6, 0] = 0.05, -0.05
+        rest[1, 0] = 0.01
+        side = _channel(build_joint_struct_features(_biped(rest_pos_ric_hml=rest)), 'side')
+        np.testing.assert_array_equal(side, [0, 0, 0, 1, 1, 1, -1, -1, -1])
 
     def test_sibling_rank_separates_a_mirrored_pair(self):
         features = build_joint_struct_features(_biped())
@@ -151,12 +164,20 @@ class Shape(unittest.TestCase):
                 [[0, 0, 0], [0, 1, 0], [-1, 2, 0], [-.3, 2, 0], [.3, 2, 0], [1, 2, 0]],
                 dtype=np.float32,
             ),
+            'joint_side_labels': ['center'] * 6,
         }
         necks = build_joint_struct_features(entry)[2:]
         self.assertEqual(len({tuple(row) for row in necks.tolist()}), 4)
 
 
 class NameInvarianceAndDeterminism(unittest.TestCase):
+    def test_training_and_generation_share_one_builder(self):
+        import data_loaders.truebones.data.dataset as dataset_module
+        import sample.conditioning as conditioning_module
+
+        self.assertIs(dataset_module.build_joint_struct_features, build_joint_struct_features)
+        self.assertIs(conditioning_module.build_joint_struct_features, build_joint_struct_features)
+
     def test_renaming_every_joint_changes_nothing(self):
         baseline = build_joint_struct_features(_biped())
         renamed = build_joint_struct_features(_biped(
@@ -215,6 +236,18 @@ class MalformedInputIsRefused(unittest.TestCase):
 
     def test_a_rest_pose_of_the_wrong_length(self):
         self._expect(rest_pos_ric_hml=_BIPED_REST[:5].copy())
+
+    def test_missing_side_labels(self):
+        entry = _biped()
+        del entry['joint_side_labels']
+        with self.assertRaises(JointStructFeatureError):
+            build_joint_struct_features(entry)
+
+    def test_side_labels_of_the_wrong_length(self):
+        self._expect(joint_side_labels=['center'] * 5)
+
+    def test_an_unknown_side_label(self):
+        self._expect(joint_side_labels=['center'] * 8 + ['up'])
 
     def test_missing_parents(self):
         with self.assertRaises(JointStructFeatureError):

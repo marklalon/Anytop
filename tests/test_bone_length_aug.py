@@ -21,9 +21,9 @@ from data_loaders.reference import REST_GEOM_COLUMNS, rest_geometry
 from data_loaders.truebones.data.dataset import MotionDataset
 from utils.retarget_core import batch_forward_kinematics_np
 
-# Structural columns read off ``parents`` alone.
+# Structural columns bone lengths cannot move: everything but the geometric sib_rank.
 TOPOLOGY_STRUCT_COLUMNS = [i for i, name in enumerate(JOINT_STRUCT_FEATURE_NAMES)
-                           if name not in ('sib_rank', 'side')]
+                           if name != 'sib_rank']
 
 
 def fixture():
@@ -420,8 +420,8 @@ def test_real_training_combines_bone_leaf_and_temporal_augmentation():
         sample = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
         cond = sample[13]['object_cond']
         struct, rebuilt = sample[12]['joint_struct'], build_joint_struct_features(cond)
-        # Bone lengths move no topology column; the geometric ones (sib_rank,
-        # side) stay those of the rig before the bone-length stage.
+        # Bone lengths move no topology column; the geometric sib_rank stays
+        # that of the rig before the bone-length stage.
         np.testing.assert_array_equal(struct[:, TOPOLOGY_STRUCT_COLUMNS], rebuilt[:, TOPOLOGY_STRUCT_COLUMNS])
         if not sample[13]['bone_length_aug']['applied']:
             np.testing.assert_array_equal(struct, rebuilt)

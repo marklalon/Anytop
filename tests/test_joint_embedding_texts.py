@@ -23,6 +23,7 @@ from data_loaders.truebones.truebones_utils.animation_utils import (
 
 
 def _embedding_texts(joint_names, parents, offsets=None, species_name=None):
+    """Per-joint "side + part": the side label joined to the side-free text."""
     parents = np.asarray(parents, dtype=np.int64)
     if offsets is None:
         # A plain chain down -Y, mirrored on X for the Left/Right pairs, is
@@ -46,7 +47,14 @@ def _embedding_texts(joint_names, parents, offsets=None, species_name=None):
     object_cond['parents'] = parents
     if species_name:
         object_cond['species_name'] = species_name
-    return build_joint_embedding_texts(object_cond)
+    texts = build_joint_embedding_texts(object_cond)
+    # What a joint reads as to the model: side from the structural channel
+    # (joint_side_labels), the part from the text, which never names a side.
+    sided = []
+    for text, side in zip(texts, object_cond['joint_side_labels']):
+        assert not {'left', 'right'} & {token.lower() for token in text.split()}, text
+        sided.append(f'{side.capitalize()} {text}' if text and side in ('left', 'right') else text)
+    return sided
 
 
 def test_skeleton_wide_species_prefix_is_removed_from_embedding_text():
@@ -587,3 +595,15 @@ def test_an_arthropod_leg_chain_is_never_read_as_a_calf():
         [-1, 0, 1, 2, 3, 4],
     )
     assert 'Calf' not in ' '.join(texts), texts
+
+
+def test_mirror_twins_share_one_text_and_differ_only_in_side():
+    parents = np.asarray([-1, 0, 1, 0, 3], dtype=np.int64)
+    names = ['Hips', 'LeftThigh', 'LeftCalf', 'RightThigh', 'RightCalf']
+    offsets = np.asarray([[0, 0, 0], [-1, -1, 0], [0, -1, 0], [1, -1, 0], [0, -1, 0]], dtype=np.float64)
+    object_cond = dict(build_semantic_metadata(joint_names=names, parents=parents, offsets=offsets))
+    object_cond.update(joints_names=names, parents=parents)
+    texts = build_joint_embedding_texts(object_cond)
+    assert texts[1] == texts[3] == 'Thigh', texts
+    assert texts[2] == texts[4] == 'Calf', texts
+    assert object_cond['joint_side_labels'][1] != object_cond['joint_side_labels'][3]

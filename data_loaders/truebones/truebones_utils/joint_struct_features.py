@@ -7,11 +7,17 @@ token "I am the third link of a limb that ends on the ground". This module
 computes that missing per-joint signal from geometry and topology alone, so the
 name is free to carry body-part semantics and nothing else.
 
-Read ONLY from ``parents`` and the physical rest positions. Deliberately *not*
-from any joint name: the whole point is a channel
-that is bit-identical when a rig is renamed. Nor from ground
+Read ONLY from ``parents``, the physical rest positions and the cond's
+``joint_side_labels``. Deliberately *not* from any joint name: the whole point
+is a channel that is bit-identical when a rig is renamed. Nor from ground
 contacts: they are a heuristic guess, and a condition carrying one hands the
 model its mistakes.
+
+``side`` reads the stored side label rather than the sign of a joint's own
+lateral offset: a clavicle pivot can sit across the midline from the arm it
+carries, and a spine joint a hair off it, so the per-joint sign mislabels both.
+The label is settled once at preprocessing and is the same one the lateral
+relation in ``joint_relations`` reads.
 
 The features are pure functions of the cond entry, so they are recomputed on
 both sides rather than written into cond.npy: training and generation MUST call
@@ -27,7 +33,7 @@ import numpy as np
 # Recorded in args.json at train time and re-checked at resume/generation: a
 # checkpoint fitted on schema N cannot read schema N+1 features, and a pure
 # reordering would leave every shape lining up.
-JOINT_STRUCT_FEATURE_SCHEMA_VERSION = 4
+JOINT_STRUCT_FEATURE_SCHEMA_VERSION = 5
 
 # Order is the channel order of the returned array; changing it is a schema bump.
 # Topology only: rest geometry reaches a model through ``rest_geometry``.
@@ -38,7 +44,7 @@ JOINT_STRUCT_FEATURE_NAMES = (
     'subtree_bucket',    # log2 bucket of the subtree size, in [0, 1]
     'sib_rank',          # rank among same-parent siblings, in [0, 1]
     'sib_n_inv',         # 1 / (number of same-parent siblings)
-    'side',              # sign of the lateral offset from the root: -1 / 0 (midline) / +1
+    'side',              # joint_side_labels: +1 left / 0 center / -1 right
 )
 
 JOINT_STRUCT_DIM = len(JOINT_STRUCT_FEATURE_NAMES)
@@ -48,8 +54,7 @@ JOINT_STRUCT_DIM = len(JOINT_STRUCT_FEATURE_NAMES)
 # does not carry the rig's joint count.
 SUBTREE_SIZE_BUCKETS = 4
 
-# A lateral offset within this fraction of the rig's span is the midline.
-STRUCT_SIDE_TOLERANCE = 1e-3
+_SIDE_SIGN = {'left': 1.0, 'center': 0.0, 'right': -1.0}
 
 _EPS = 1e-6
 
@@ -131,6 +136,21 @@ def _validated_rest_positions(object_cond, joint_count, source):
     return rest_pos
 
 
+def _validated_sides(object_cond, joint_count, source):
+    labels = object_cond.get('joint_side_labels')
+    if labels is None:
+        raise JointStructFeatureError(f"{source}: cond entry has no 'joint_side_labels'.")
+    labels = [str(label) for label in labels]
+    if len(labels) != joint_count:
+        raise JointStructFeatureError(
+            f"{source}: {len(labels)} side labels for {joint_count} joints."
+        )
+    unknown = sorted(set(labels) - set(_SIDE_SIGN))
+    if unknown:
+        raise JointStructFeatureError(f"{source}: unknown side label(s) {unknown}.")
+    return np.asarray([_SIDE_SIGN[label] for label in labels], dtype=np.float64)
+
+
 def child_lists(parents):
     children = [[] for _ in range(len(parents))]
     for joint_index, parent_index in enumerate(parents):
@@ -202,13 +222,14 @@ def _subtree_sizes(parents, children):
 def build_joint_struct_features(object_cond, source='cond entry'):
     """``[J, JOINT_STRUCT_DIM]`` float32 structural descriptors for one species.
 
-    Deterministic and name-invariant: two cond entries with the same ``parents``
-    and rest positions produce bit-identical output whatever their joints are
-    called.
+    Deterministic and name-invariant: two cond entries with the same ``parents``,
+    rest positions and side labels produce bit-identical output whatever their
+    joints are called.
     """
     parents = _validated_parents(object_cond, source)
     joint_count = int(parents.shape[0])
     rest_pos = _validated_rest_positions(object_cond, joint_count, source)
+    side = _validated_sides(object_cond, joint_count, source)
     children = child_lists(parents)
     _run_of, position_in_run, run_members = _branch_free_runs(parents, children, source)
 
@@ -216,8 +237,6 @@ def build_joint_struct_features(object_cond, source='cond entry'):
     # A degenerate rig (every joint at one point) floors at _EPS rather than
     # dividing by zero, and lands on the all-equal features that describes.
     scale = float(max(spans.max(), _EPS))
-    lateral = (rest_pos[:, 0] - float(rest_pos[0, 0])) / scale
-    side = np.sign(lateral) * (np.abs(lateral) > STRUCT_SIDE_TOLERANCE)
 
     subtree_sizes = _subtree_sizes(parents, children)
     subtree_bucket = (

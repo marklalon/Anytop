@@ -138,9 +138,9 @@ padding 已被 attention mask 和 loss 排除，不会混淆）。它不同于�
 - leaf 标记；
 - subtree 大小的 log2 分桶（绝对大小，不除以 J，token 不携带关节总数）；
 - sibling rank 和 sibling count 的倒数；
-- 左右侧符号 side（-1 / 0 / +1）。
+- 左右侧符号 side（左 +1 / 中 0 / 右 −1），读 `joint_side_labels`，与 `joint_relations` 的侧别同源；关节名文本不含左右词，侧别只从这里进入 token。
 
-这条通道只由 `parents` 和物理 rest positions 确定。改关节名不会改变它。
+这条通道只由 `parents`、物理 rest positions 和 `joint_side_labels` 确定。改关节名不会改变它。
 它经独立 MLP 投影后加到 token，并在投影后重新清零 padding rows。
 
 ## 4. 条件总线

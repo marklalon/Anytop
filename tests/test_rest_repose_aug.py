@@ -29,6 +29,7 @@ OFFSETS = np.array([[0, 0, 0], [.2, 0, 0], [0, -.5, .05], [0, -.5, 0],
                     [-.2, 0, 0], [0, -.5, .05], [0, -.5, 0],
                     [0, .1, -.2], [0, 0, -.3], [0, -.1, -.3]], dtype=np.float32)
 PARTNERS = [-1, 4, 5, 6, 1, 2, 3, -1, -1, -1]
+SIDES = ['center'] + ['left'] * 3 + ['right'] * 3 + ['center'] * 3
 
 
 def random_rotations(rng, shape):
@@ -48,7 +49,7 @@ def fixture(frames=12, seed=0):
     rest_feature[:, 3] = rest_feature[:, 7] = 1
     cond = dict(parents=PARENTS, offsets=OFFSETS.copy(), rest_pos_ric_hml=rest.astype(np.float32),
                 rest_pose=rest_feature, symmetry_partner_indices=PARTNERS, translation_root_index=0,
-                tpose_rest_rotations=random_rotations(rng, (len(PARENTS),)).qs.astype(np.float32),
+                joint_side_labels=list(SIDES), tpose_rest_rotations=random_rotations(rng, (len(PARENTS),)).qs.astype(np.float32),
                 canonical_feature_mean=np.zeros(15), canonical_feature_std=np.ones(15),
                 joint_mask_candidate_roots=np.zeros(len(PARENTS)),
                 joints_names_embs=np.zeros((len(PARENTS), 4)),
