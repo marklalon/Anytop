@@ -635,7 +635,7 @@
 {"clip": "MB_TigerDrago_FlyDodgeL", "action_group": "locomotion", "action_label": "roll, fly, left", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyDodgeR", "action_group": "locomotion", "action_label": "roll, fly, right", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyDown", "action_group": "locomotion", "action_label": "fly, down, glide", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_FlyFallRecover", "action_group": "transition", "action_label": "fall, fly", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_FlyFallRecover", "action_group": "locomotion", "action_label": "fall, fly", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyFall", "action_group": "locomotion", "action_label": "fall, dead", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyFowardL", "action_group": "locomotion", "action_label": "fly, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyFowardR", "action_group": "locomotion", "action_label": "fly, turn, right", "is_loop": false, "reviewed": true}
@@ -645,7 +645,7 @@
 {"clip": "MB_TigerDrago_FlyGlideL", "action_group": "locomotion", "action_label": "fly, left, glide", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyGlideR", "action_group": "locomotion", "action_label": "fly, right, glide", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyGlide", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
-{"clip": "MB_TigerDrago_FlyHitAndFall", "action_group": "transition", "action_label": "hurt, fall", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_FlyHitAndFall", "action_group": "stationary", "action_label": "hurt, fall", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyIdle", "action_group": "stationary", "action_label": "idle, hover", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyL", "action_group": "locomotion", "action_label": "fly, right", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_FlyLand", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
@@ -735,7 +735,7 @@
 {"clip": "MB_Unka_FlyForwardLeft", "action_group": "locomotion", "action_label": "fly, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FlyForwardRight", "action_group": "locomotion", "action_label": "fly, turn, right", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FlyForward", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": true, "reviewed": true}
-{"clip": "MB_Unka_FlyHitDeath", "action_group": "transition", "action_label": "hurt, fall", "is_loop": false, "reviewed": true}
+{"clip": "MB_Unka_FlyHitDeath", "action_group": "stationary", "action_label": "hurt, fall", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FlyStand", "action_group": "stationary", "action_label": "idle, hover", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FlyStrafeLeft", "action_group": "locomotion", "action_label": "fly, left", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyStrafeRight", "action_group": "locomotion", "action_label": "fly, right", "is_loop": true, "reviewed": true}

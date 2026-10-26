@@ -137,7 +137,7 @@
 {"clip": "DMM_Thief01_Unlock", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief04_Cast", "action_group": "stationary", "action_label": "attack, throw", "is_loop": false, "reviewed": true}
 {"clip": "DMM_Thief04_Crawl", "action_group": "locomotion", "action_label": "crawl, hurt, forward", "is_loop": true, "reviewed": true}
-{"clip": "DMM_Thief04_Dead", "action_group": "stationary", "action_label": "crawl, idle", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief04_Dead", "action_group": "stationary", "action_label": "idle, crawl", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief04_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "DMM_Thief04_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief04_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
@@ -151,7 +151,7 @@
 {"clip": "DMM_Thief04_ToolAttack01", "action_group": "stationary", "action_label": "idle, pull", "is_loop": false, "reviewed": true}
 {"clip": "DMM_Thief04_Unlock", "action_group": "stationary", "action_label": "work, crouch", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief06_Crawl", "action_group": "locomotion", "action_label": "crawl, hurt, forward", "is_loop": true, "reviewed": true}
-{"clip": "DMM_Thief06_Dead", "action_group": "stationary", "action_label": "crawl, idle", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief06_Dead", "action_group": "stationary", "action_label": "idle, crawl", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief06_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "DMM_Thief06_Hurt", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief06_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
@@ -447,7 +447,7 @@
 {"clip": "MXO_Human_SheathingSword", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "sheathe"}
 {"clip": "MXO_Human_ShootingArrow", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, bow"}
 {"clip": "MXO_Human_ShootingArrowMirror", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, bow"}
-{"clip": "MXO_Human_SleepingIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest"}
+{"clip": "MXO_Human_SleepingIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, sleep"}
 {"clip": "MXO_Human_Snatch", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "pickup"}
 {"clip": "MXO_Human_Stabbing", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, stab"}
 {"clip": "MXO_Human_StabbingMirror", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, stab"}
@@ -535,11 +535,11 @@
 {"clip": "ORA_Crawly_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "ORA_Crawly_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "ORA_CubeHumanoid_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
-{"clip": "ORA_DickTum_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
+{"clip": "ORA_DickTum_Airborne", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
 {"clip": "ORA_DickTum_Attack", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "roar"}
 {"clip": "ORA_DickTum_Damage", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt"}
 {"clip": "ORA_DickTum_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}
-{"clip": "ORA_DickTum_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest"}
+{"clip": "ORA_DickTum_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, sleep"}
 {"clip": "ORA_DickTum_Fall", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, fall"}
 {"clip": "ORA_DickTum_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "ORA_DickTum_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
@@ -566,11 +566,11 @@
 {"clip": "ORA_Goat_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, look"}
 {"clip": "ORA_Goat_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "ORA_GrappleGuardian_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
-{"clip": "ORA_Gumiho_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
+{"clip": "ORA_Gumiho_Airborne", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
 {"clip": "ORA_Gumiho_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
 {"clip": "ORA_Gumiho_Damage", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "ORA_Gumiho_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, left"}
-{"clip": "ORA_Gumiho_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest"}
+{"clip": "ORA_Gumiho_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, sleep"}
 {"clip": "ORA_Gumiho_Fall", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, fall"}
 {"clip": "ORA_Gumiho_Fly", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "ORA_Gumiho_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
@@ -587,11 +587,11 @@
 {"clip": "ORA_Hinata_Kick", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, kick"}
 {"clip": "ORA_Hinata_KickMirror", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, kick"}
 {"clip": "ORA_HoodieMan_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "ORA_Hound_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
+{"clip": "ORA_Hound_Airborne", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
 {"clip": "ORA_Hound_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, bite"}
 {"clip": "ORA_Hound_Damage", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "ORA_Hound_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, right"}
-{"clip": "ORA_Hound_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest"}
+{"clip": "ORA_Hound_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, sleep"}
 {"clip": "ORA_Hound_Fall", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, fall"}
 {"clip": "ORA_Hound_FlyAvoid", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, run, left"}
 {"clip": "ORA_Hound_FlyAvoidMirror", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, run, right"}
@@ -607,13 +607,13 @@
 {"clip": "ORA_Hound_TamingSuccess", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, yawn"}
 {"clip": "ORA_Hound_Walk", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
 {"clip": "ORA_Humpback_Swim", "action_group": "locomotion", "action_label": "swim, forward", "is_loop": true, "reviewed": true}
-{"clip": "ORA_Kargoyle_Airborne", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
+{"clip": "ORA_Kargoyle_Airborne", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt, fall"}
 {"clip": "ORA_Kargoyle_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, firebreath"}
 {"clip": "ORA_Kargoyle_Avoid", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "roll, fly, left"}
 {"clip": "ORA_Kargoyle_AvoidMirror", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "roll, fly, right"}
 {"clip": "ORA_Kargoyle_Damage", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt, hover"}
 {"clip": "ORA_Kargoyle_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, right"}
-{"clip": "ORA_Kargoyle_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest"}
+{"clip": "ORA_Kargoyle_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, sleep"}
 {"clip": "ORA_Kargoyle_Fall", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, fall"}
 {"clip": "ORA_Kargoyle_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
 {"clip": "ORA_Kargoyle_Idle2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
@@ -1129,7 +1129,7 @@
 {"clip": "DNL_Banshee_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}
 {"clip": "DNL_Banshee_Eat", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, eat"}
 {"clip": "DNL_Banshee_Evolution", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "idle, rear"}
-{"clip": "DNL_Banshee_Fatigue", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest"}
+{"clip": "DNL_Banshee_Fatigue", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, sleep"}
 {"clip": "DNL_Banshee_FatigueEat", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, eat"}
 {"clip": "DNL_Banshee_FlyFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}
 {"clip": "DNL_Banshee_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
@@ -1241,7 +1241,7 @@
 {"clip": "DNL_Devil_FlyFlapLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, left, glide"}
 {"clip": "DNL_Devil_FlyFlapRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, right, glide"}
 {"clip": "DNL_Devil_FlyFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}
-{"clip": "DNL_Devil_FlyIdle", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
+{"clip": "DNL_Devil_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
 {"clip": "DNL_Devil_FlyLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, left"}
 {"clip": "DNL_Devil_FlyRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, right"}
 {"clip": "DNL_Devil_FlyStaticFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward, glide"}
@@ -1409,7 +1409,7 @@
 {"clip": "DNL_Pegasus_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
 {"clip": "DNL_Pegasus_FlyLeft", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, run, left"}
 {"clip": "DNL_Pegasus_FlyRight", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, run, right"}
-{"clip": "DNL_Pegasus_FlyStartled", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rear, hover"}
+{"clip": "DNL_Pegasus_FlyStartled", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, rear, hover"}
 {"clip": "DNL_Pegasus_GroundAttack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, smash"}
 {"clip": "DNL_Pegasus_GroundHurtLeft", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "DNL_Pegasus_GroundHurtRight", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
@@ -1425,7 +1425,7 @@
 {"clip": "DNL_Pegasus_SleepingStartled", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
 {"clip": "DNL_Pegasus_StruggleEat", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, eat"}
 {"clip": "DNL_Pegasus_StruggleFree", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
-{"clip": "DNL_Pegasus_StruggleIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest"}
+{"clip": "DNL_Pegasus_StruggleIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, sleep"}
 {"clip": "DNL_Pegasus_StruggleTamed", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
 {"clip": "DNL_Pegasus_TakeOff", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "takeoff"}
 {"clip": "DNL_Twohead_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, hover"}

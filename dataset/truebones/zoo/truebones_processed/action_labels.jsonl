@@ -66,7 +66,7 @@
 {"clip": "Bear_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Bear_JumpBite", "action_group": "stationary", "action_label": "attack, jump, bite", "is_loop": true, "reviewed": true}
 {"clip": "Bear_LayDown", "action_group": "transition", "action_label": "laydown", "is_loop": false, "reviewed": true}
-{"clip": "Bear_RiseRoar", "action_group": "stationary", "action_label": "rear, roar", "is_loop": false, "reviewed": true}
+{"clip": "Bear_RiseRoar", "action_group": "stationary", "action_label": "roar, rear", "is_loop": false, "reviewed": true}
 {"clip": "Bear_RunningBear", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Bear_SlowWalk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Bear_Stalking", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
