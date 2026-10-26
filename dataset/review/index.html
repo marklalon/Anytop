@@ -369,6 +369,12 @@
       <text x="16" y="14.5" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700" font-family="sans-serif">ab</text>
     </svg>
   </button>
+  <button id="startsWith" class="search-toggle" type="button" title="Start with（label / clip 须以输入开头；species tags 每个词须是某个 tag 的开头）" aria-label="Start with" aria-pressed="false">
+    <svg viewBox="0 0 32 20" aria-hidden="true" focusable="false">
+      <path d="M2 2v16" fill="none" stroke="currentColor" stroke-width="2"/>
+      <text x="17" y="14.5" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700" font-family="sans-serif">^ab</text>
+    </svg>
+  </button>
 
   <span class="counts" id="counts"></span>
   <span class="spacer"></span>
@@ -748,28 +754,29 @@ function refreshGroups() {
   $('group').value = groups.includes(prev) ? prev : 'all';
 }
 
-function containsSearchTerm(value, query, wholeWord) {
+function containsSearchTerm(value, query, wholeWord, startsWith) {
   const text = String(value || '').toLowerCase();
-  if (!wholeWord) return text.includes(query);
+  if (!wholeWord) return startsWith ? text.startsWith(query) : text.includes(query);
   const isWordChar = (char) => /[\p{L}\p{N}]/u.test(char);
   let start = 0;
   while ((start = text.indexOf(query, start)) !== -1) {
     const end = start + query.length;
     if ((start === 0 || !isWordChar(text[start - 1])) &&
         (end === text.length || !isWordChar(text[end]))) return true;
+    if (startsWith) return false;
     start++;
   }
   return false;
 }
 
 // Every term must hit its own tag (no tag serves two terms): "winged, w" needs two tags.
-function matchDistinctTags(terms, tags, used = new Set()) {
+function matchDistinctTags(terms, tags, startsWith, used = new Set()) {
   if (!terms.length) return true;
   const [term, ...rest] = terms;
   return tags.some((t, i) => {
-    if (used.has(i) || !t.includes(term)) return false;
+    if (used.has(i) || !(startsWith ? t.startsWith(term) : t.includes(term))) return false;
     used.add(i);
-    const ok = matchDistinctTags(rest, tags, used);
+    const ok = matchDistinctTags(rest, tags, startsWith, used);
     used.delete(i);
     return ok;
   });
@@ -799,6 +806,7 @@ function applyFilters(keepPage, keepScroll) {
   const searchField = $('searchField').value;
   const q = $('q').value.trim().toLowerCase();
   const wholeWord = $('wholeWord').getAttribute('aria-pressed') === 'true';
+  const startsWith = $('startsWith').getAttribute('aria-pressed') === 'true';
   view = rows.filter(r => {
     if (g !== 'all' && r.action_group !== g) return false;
     if (s === 'todo' && isReviewed(r)) return false;
@@ -812,8 +820,8 @@ function applyFilters(keepPage, keepScroll) {
       const labelQuery = tightCommas(q);
       const inLabel = wholeWord
         ? labelText.trim() === labelQuery
-        : labelText.includes(labelQuery);
-      const inClip = containsSearchTerm(r.clip, q, wholeWord);
+        : startsWith ? labelText.startsWith(labelQuery) : labelText.includes(labelQuery);
+      const inClip = containsSearchTerm(r.clip, q, wholeWord, startsWith);
       if (searchField === 'species_tags') {
         const tags = (r._species_tags || []).map(t => String(t).toLowerCase());
         // "a, b" = every term must hit some tag (AND). An empty term ("winged, ")
@@ -822,7 +830,7 @@ function applyFilters(keepPage, keepScroll) {
         // Whole word: the tag set must be exactly the terms ("winged" excludes "Winged, X").
         const inTags = wholeWord
           ? tags.length === terms.length && terms.every(term => !term || tags.includes(term))
-          : matchDistinctTags(terms, tags);
+          : matchDistinctTags(terms, tags, startsWith);
         if (!inTags) return false;
       }
       if (searchField === 'label' && !inLabel) return false;
@@ -1438,11 +1446,13 @@ $('q').oninput = () => {                 // debounce: a keystroke must not rebui
   clearTimeout($('q')._t);
   $('q')._t = setTimeout(() => applyFilters(), 200);
 };
-$('wholeWord').onclick = () => {
-  const button = $('wholeWord');
-  button.setAttribute('aria-pressed', button.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
-  applyFilters();
-};
+for (const id of ['wholeWord', 'startsWith']) {
+  $(id).onclick = () => {
+    const button = $(id);
+    button.setAttribute('aria-pressed', button.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+    applyFilters();
+  };
+}
 $('prev').onclick = () => { page--; render(); };
 $('next').onclick = () => { page++; render(); };
 $('jump').onchange = () => { page = parseInt($('jump').value, 10) || 1; render(); };
