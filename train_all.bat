@@ -21,7 +21,7 @@ pushd "%SCRIPT_DIR%"
 	--action_group all ^
 	--rare_head_word_floor 20 ^
 	--rare_head_word_max_boost 4 ^
-	--head_word_weights hurt,idle=0.6 ^
+	--head_word_weights attack,hurt=0.8,idle=0.6 ^
 	--train_split train ^
     --noise_schedule_shift 2 ^
 	--latent_dim 384 ^
