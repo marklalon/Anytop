@@ -20,7 +20,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 53
+CKPT_VERSION = 54
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -561,7 +561,7 @@ def add_training_options(parser):
                             "Selected frames are re-noised for all real joints to teach native frame inpainting.")
     group.add_argument("--temporal_span_mask_min_frames", default=4, type=int,
                        help="Minimum length of each sampled training-time temporal span perturbation.")
-    group.add_argument("--temporal_span_mask_max_frames", default=12, type=int,
+    group.add_argument("--temporal_span_mask_max_frames", default=30, type=int,
                        help="Maximum length of each sampled training-time temporal span perturbation. "
                             "Must be >= temporal_span_mask_min_frames.")
     group.add_argument("--temporal_span_seam_loss_weight", default=0.0, type=float,
@@ -785,7 +785,11 @@ def add_generate_options(parser):
                             "you restyle the generated motion (e.g. make a Winged Dragon move as a "
                             "Quadruped, or a human walk like a machine). "
                             "Requires a checkpoint trained with --species_cond. "
-                            "Incompatible with --object_type all.")
+                            "Incompatible with --object_type all. The restyle is ignored wherever "
+                            "the reference itself drives the motion and the species descriptor is "
+                            "bypassed: an encoded --reference_motion, and the --inpaint_* pass. "
+                            "Editing a raw .glb/.fbx of a species the checkpoint does not know "
+                            "still reads the tags, as that skeleton's own descriptor.")
     group.add_argument("--tempo_cfg_scale", default=1.0, type=float,
                        help="Classifier-free guidance scale over the tempo condition (the output "
                             "length, --num_frames or the clip-length prior's default), applied on "

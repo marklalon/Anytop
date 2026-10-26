@@ -78,8 +78,10 @@ from sample.reference_motion import (
     _REFERENCE_MOTION_PREPROCESS_SUFFIXES,
     _build_source_cond_dict,
     _extract_edit_reference,
+    _hide_inpaint_region_from_reference,
     _prepare_img2img_reference_bundle,
     _prepare_encoder_reference_bundle,
+    _prepare_window_encoder_reference,
     _load_raw_encoder_reference,
     _resolve_reference_source_type,
     _validate_reference_motion_path,
@@ -88,7 +90,42 @@ from sample.sampling import _sample_batch
 from utils import dist_util
 from utils.fixseed import fixseed
 from utils.misc import infer_object_type_from_filename
+from utils.model_util import unwrap_anytop_model
 from utils.parser_util import generate_args
+
+
+def _refuse_label_under_self_reference(action_condition):
+    """An inpaint edit is conditioned on the reference itself (see
+    ``edit_self_reference`` in main). The model bypasses the action label on
+    every reference row and the label has no other use, so asking for one
+    there is refused. --species_tags is not: a raw file's own cond may need the
+    tags, so the inpaint pass only ignores the restyle (_self_reference_sampling)."""
+    if action_condition is not None:
+        sys.exit(
+            "ERROR: --inpaint_* conditions the edit on the reference itself (encoded as z), "
+            "and the model ignores --action_label on a referenced sample. Drop --action_label. "
+            "A plain --skip_timesteps edit takes it, and so does a length extension "
+            "(--outpaint), where it steers the pass that appends frames."
+        )
+
+
+def _warn_inpaint_span_beyond_training(inpaint_mask, model):
+    """Warn when a frame range frees more contiguous window frames than the
+    training spans (``temporal_span_mask_max_frames``, window frames) reached."""
+    trained = int(getattr(unwrap_anytop_model(model), 'temporal_span_mask_max_frames', 0) or 0)
+    if trained <= 0:
+        return
+    free = (inpaint_mask[0, :, 0, :] > 0).any(dim=0).cpu().numpy()
+    longest = run = 0
+    for flag in free:
+        run = run + 1 if flag else 0
+        longest = max(longest, run)
+    if longest > trained:
+        print(
+            f"  WARNING: the inpaint range frees {longest} contiguous window frames, longer than "
+            f"the {trained}-frame spans this checkpoint trained on "
+            "(temporal_span_mask_max_frames); expect a weaker fill."
+        )
 
 
 def _generate_all_species(
@@ -283,6 +320,8 @@ def _adopt_reference_file_cond(args):
     if not clips:
         raise RuntimeError(f'process_new_skeleton wrote no motion clip for {reference}')
     args.cond_path = result['cond_npy']
+    # The tags are now the new cond's own descriptor, not a restyle request.
+    args.species_tags = ''
     args.reference_motion = os.path.join(save_dir, 'motions', clips[0])
     # The eval report shows this preview as the reference: the raw file keeps
     # its own units and frame, the processed clip is in the samples' space.
@@ -331,6 +370,14 @@ def main(args=None, cond_dict=None, runtime=None):
             str(getattr(args, 'inpaint_frames', '') or '').strip(),
             str(getattr(args, 'inpaint_joints', '') or '').strip(),
             getattr(args, 'num_frames', None),
+        )
+
+    # With a reference and no --num_frames the output length IS the reference's,
+    # so --outpaint would have nothing to append.
+    if getattr(args, 'outpaint', False) and getattr(args, 'num_frames', None) is None:
+        sys.exit(
+            "ERROR: --outpaint extends the reference to --num_frames M, which must be "
+            "given (and exceed the reference's frame count)."
         )
 
     if _inpaint_early and skip_timesteps_raw is None:
@@ -406,8 +453,8 @@ def main(args=None, cond_dict=None, runtime=None):
     # Output length, in priority order:
     #   1. --num_frames itself. An explicit number is the user's decision and
     #      outranks everything, reference included (the reference is resampled
-    #      to M, or under --outpaint outpainted when R < M and cropped when
-    #      R > M, loop or not): it is finalized right here, and every
+    #      to M, or under --outpaint outpainted to M > R, loop or not): it is
+    #      finalized right here, and every
     #      fallback below is guarded on requested_output_frames still being None.
     #   2. a --reference_motion's own frame count R -- with no number given, the
     #      reference IS the requested length.
@@ -652,6 +699,20 @@ def main(args=None, cond_dict=None, runtime=None):
     # With a reference both wait for the clip itself (further down): its length
     # is the window, and --loop auto reads whether it closes off the tensor.
     _action_condition = _resolve_action_condition(args, model)
+    # An inpaint edit is conditioned on the reference itself, encoded as z:
+    # training gives most rows the target's own window as reference, and with
+    # no z the denoiser falls back to its unconditional prior across the
+    # re-drawn frames (they sink and drift toward another gait). The inpainted
+    # cells are hidden from the encoder, as training hides its re-noised ones.
+    # A plain img2img edit (--skip_timesteps alone) runs without z, so a label
+    # can steer it away from defects in the reference; so does a length
+    # extension's pass that appends frames (see two_pass_outpaint).
+    edit_self_reference = bool(
+        reference_edit and getattr(model, 'ref_encoder', False)
+        and (inpaint_joints_arg or inpaint_frames_arg)
+    )
+    if edit_self_reference and not getattr(args, 'outpaint', False):
+        _refuse_label_under_self_reference(_action_condition)
     loop_condition = None
     if not reference_motion_path:
         loop_condition = resolve_loop_condition(loop_mode, _action_condition)
@@ -685,6 +746,7 @@ def main(args=None, cond_dict=None, runtime=None):
     prepared_reference_path = reference_motion_path
     effective_reference_path = reference_motion_path
     encoder_reference = None
+    self_reference = None
     if reference_encode:
         if reference_is_raw_anim:
             ref_features, source_cond = _load_raw_encoder_reference(
@@ -763,10 +825,10 @@ def main(args=None, cond_dict=None, runtime=None):
         M = int(requested_output_frames)
 
         # Fit the reference to M. By default it is resampled to M (tempo
-        # change, nothing to fill). --outpaint fits by length instead: crop
-        # (R > M) or outpaint-pad (R < M). A loop reference is no exception --
-        # R < M appends frames from noise, which under is_loop is exactly where
-        # the model gets to close the cycle.
+        # change, nothing to fill). --outpaint fits by length instead and needs
+        # R < M: the appended frames come from noise. A loop reference is no
+        # exception -- under is_loop they are exactly where the model gets to
+        # close the cycle.
         fit_reference = (
             fit_reference_to_output if getattr(args, 'outpaint', False)
             else resample_reference_to_output
@@ -827,6 +889,14 @@ def main(args=None, cond_dict=None, runtime=None):
             min_length=min_length,
         )
         ref_motion = reference_bundle['reference_motion']
+        # The same fitted clip on the same window, so z is frame aligned with
+        # the clamp source. A two-pass outpaint encodes its completed
+        # reference instead, once pass 1 has produced it.
+        if edit_self_reference and not two_pass_outpaint:
+            self_reference = _prepare_encoder_reference_bundle(
+                ref_features_full, cond_dict[object_type], batch_size=args.batch_size,
+                n_frames=n_frames, visible_frames=target_output_frames, min_length=min_length,
+            )
         output_frame_count = reference_bundle['output_frame_count']
         loaded_reference_frame_count = reference_bundle['loaded_reference_frame_count']
         loaded_reference_joint_count = reference_bundle['loaded_reference_joint_count']
@@ -874,13 +944,23 @@ def main(args=None, cond_dict=None, runtime=None):
     )
 
     # ── --species_tags: restyle the target species' motion descriptor ────────
-    _species_code_override = _resolve_species_code_override(
-        args,
-        model,
-        cond_dict,
-        object_type,
-        runtime.species_table,
-    )
+    # An encoded reference supplies the motion and the model bypasses the
+    # species FiLM on its rows, so a restyle has nothing to act on there; the
+    # only place it would land is the null branch of a reference CFG, where it
+    # would steer AWAY from the requested species. Ignored, not refused: other
+    # steps may still read the tags (a raw file's own cond, for one).
+    if reference_encode and str(getattr(args, 'species_tags', '') or '').strip():
+        print('  --species_tags ignored: an encoded reference drives the motion '
+              '(no species restyle on referenced samples)')
+        _species_code_override = None
+    else:
+        _species_code_override = _resolve_species_code_override(
+            args,
+            model,
+            cond_dict,
+            object_type,
+            runtime.species_table,
+        )
 
     _, model_kwargs = create_condition(
         obj_batch,
@@ -901,6 +981,12 @@ def main(args=None, cond_dict=None, runtime=None):
     if encoder_reference is not None:
         model_kwargs['y'].update(encoder_reference)
 
+    def _build_user_inpaint_mask():
+        mask = _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg)
+        if inpaint_frames_arg:
+            _warn_inpaint_span_beyond_training(mask, model)
+        return mask
+
     def _build_inpaint_mask_for(frames_arg, joints_arg):
         return build_inpaint_mask(
             cond_dict[object_type],
@@ -914,11 +1000,37 @@ def main(args=None, cond_dict=None, runtime=None):
             loop=bool(loop_condition),
         )
 
-    def _run_sample(reference_motion, skip_ts, inpaint_mask):
+    def _self_reference_sampling(reference, inpaint_mask):
+        """Sampling model + kwargs of a pass conditioned on the reference's z:
+        the reference CFG wrapper, and neither the label nor a species restyle
+        (the model bypasses both on reference rows)."""
+        _hide_inpaint_region_from_reference(
+            reference, inpaint_mask, frames_given=bool(inpaint_frames_arg),
+            free_joints=_resolve_inpaint_joint_indices(
+                cond_dict[object_type], inpaint_joints_arg, inpaint_include_subtree)[0]
+            if inpaint_joints_arg else None,
+        )
+        _, ref_kwargs = create_condition(
+            obj_batch, cond_dict, output_frame_count, max_joints=max_joints,
+            feature_len=opt.feature_len, loop=loop_condition,
+        )
+        ref_kwargs['y']['resample_speed_cond'] = model_kwargs['y']['resample_speed_cond']
+        ref_kwargs['y'].update(reference)
+        print('  Inpaint conditioned on the reference itself (z; inpainted cells hidden from the encoder)')
+        if str(getattr(args, 'species_tags', '') or '').strip():
+            print('  --species_tags ignored for the inpaint: the reference drives the motion '
+                  '(no species restyle on referenced samples)')
+        return _wrap_tempo_cfg(_wrap_reference_cfg(model, args, None), args), ref_kwargs
+
+    def _run_sample(reference_motion, skip_ts, inpaint_mask, self_ref=None):
+        sampling_model, kwargs = (
+            (_sampling_model, model_kwargs) if self_ref is None
+            else _self_reference_sampling(self_ref, inpaint_mask)
+        )
         return _sample_batch(
             diffusion=diffusion,
-            model=_sampling_model,
-            model_kwargs=model_kwargs,
+            model=sampling_model,
+            model_kwargs=kwargs,
             sampling_method=sampling_method,
             sample_shape=(args.batch_size, max_joints, model.feature_len, output_frame_count),
             ddim_eta=ddim_eta,
@@ -938,17 +1050,21 @@ def main(args=None, cond_dict=None, runtime=None):
         completed_reference = _run_sample(ref_motion, 0, outpaint_mask)
         # Pass 2: apply the requested skip / inpaint to the completed reference.
         print('  [two-pass] pass 2/2: applying requested skip/inpaint to the completed reference')
-        pass2_mask = (
-            _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg)
-            if user_inpaint_active else None
+        pass2_mask = _build_user_inpaint_mask() if user_inpaint_active else None
+        # Pass 1 took the label; pass 2's z is the completed reference itself,
+        # every row its own, frame aligned with what pass 2 clamps to.
+        pass2_reference = (
+            _prepare_window_encoder_reference(
+                completed_reference, cond_dict[object_type], n_joints=max_joints)
+            if edit_self_reference else None
         )
-        sample = _run_sample(completed_reference, skip_timesteps, pass2_mask)
+        sample = _run_sample(completed_reference, skip_timesteps, pass2_mask, pass2_reference)
     elif single_pass_outpaint:
         outpaint_mask = _build_inpaint_mask_for(auto_outpaint_range, '')
         sample = _run_sample(ref_motion, 0, outpaint_mask)
     elif user_inpaint_active:
-        user_mask = _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg)
-        sample = _run_sample(ref_motion, skip_timesteps, user_mask)
+        user_mask = _build_user_inpaint_mask()
+        sample = _run_sample(ref_motion, skip_timesteps, user_mask, self_reference)
     else:
         # Plain img2img (reference present) or plain generation (ref_motion None).
         sample = _run_sample(ref_motion, skip_timesteps, None)

@@ -1156,7 +1156,10 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             loop_phase_mask: Optional[Tensor] = None,
             action_adaln_cond: Optional[Tensor] = None,
             ref_z: Optional[Tensor] = None,
-            ref_active: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            ref_active: Optional[Tensor] = None,
+            temporal_key_padding_mask: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+        # temporal_key_padding_mask: (B, T) bool, True = no frame may attend to
+        # this frame in temporal attention (the frame still queries).
         topology_rel = edge_rel = None
         if self.graph_relations:
             topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
@@ -1219,7 +1222,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     loop_phase_embedding=loop_phase_embedding,
                     adaln=None if adaln is None else adaln[:, layer_ind],
-                    ref_z=ref_z, ref_active=ref_active)
+                    ref_z=ref_z, ref_active=ref_active,
+                    temporal_key_padding_mask=temporal_key_padding_mask)
         if self.norm is not None:
             output = self.norm(output)
         return output
@@ -1320,8 +1324,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             # Summed onto the absolute PE already in x (InputProcess), not a
             # replacement; zero-init scale, so a fresh model starts phase-free.
             x = x + self.temporal_phase_scale * loop_phase_embedding.unsqueeze(2)
-        # Temporal self-attention is unmasked: every frame token attends over the
-        # whole window.
+        # Every frame token attends over the whole window, except frames flagged
+        # in key_padding_mask ((B * J, T); only the reference encoder passes one).
         x = x.view(frames, bs * njoints, feats)
         output_attn, _ = self.temporal_attn(
             x,
@@ -1358,7 +1362,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         loop_phase_embedding: Optional[Tensor] = None,
         adaln: Optional[Tensor] = None,
         ref_z: Optional[Tensor] = None,
-        ref_active: Optional[Tensor] = None) -> Tensor:
+        ref_active: Optional[Tensor] = None,
+        temporal_key_padding_mask: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
         bs = x.shape[1]
         x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
@@ -1370,8 +1375,13 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         # Branch input only; the residual adds to the unmodulated x. The
         # modulation lands BEFORE the circular phase, which _temporal_mha_block
         # sums in, so a loop sample's phase is never scaled by the label.
+        temporal_padding = None
+        if temporal_key_padding_mask is not None:
+            # (B, T) -> (B * J, T), the row order of the temporal view.
+            temporal_padding = temporal_key_padding_mask.to(device=x.device, dtype=torch.bool) \
+                .repeat_interleave(x.shape[2], dim=0)
         x = self.norm2(x + self._temporal_mha_block_sin_joint(
-            _modulate(x, adaln, ADALN_TEMPORAL), None,
+            _modulate(x, adaln, ADALN_TEMPORAL), temporal_padding,
             loop_phase_embedding=loop_phase_embedding))
         if cross_limb_block is not None:
             x = cross_limb_block(

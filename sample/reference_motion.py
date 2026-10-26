@@ -253,3 +253,46 @@ def _prepare_encoder_reference_bundle(features, source_cond, *, batch_size, n_fr
         canvas.new_zeros(batch_size, canvas.shape[1], source_cond['joints_names_embs'].shape[-1]),
         canvas.new_zeros(batch_size, canvas.shape[1], JOINT_STRUCT_DIM),
     )
+
+
+def _prepare_window_encoder_reference(window, cond, *, n_joints):
+    """The encoder input of an already sampled window, one reference per row.
+
+    ``window`` is the sampler's canonical ``[B, J, F, T]`` output on ``cond``'s
+    rig (the completed reference of a two-pass outpaint, whose rows differ). It
+    is decoded to physical features and goes through the same builder as a
+    loaded clip, so the encoder sees the frames the next pass clamps to.
+    """
+    from data_loaders.reference import collate_reference, reference_sample
+    from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
+    from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
+    if int(cond.get('translation_root_index', 0)) != 0:
+        raise ValueError('Reference source must use the canonical joint-zero translation root; reprocess the source')
+    rows = window[:, :n_joints]
+    physical = canonical_to_physical_hml(rows.float(), cond).permute(0, 3, 1, 2).cpu().numpy()
+    names = cond['joints_names_embs']
+    samples = [reference_sample(row, cond, names) for row in physical]
+    return collate_reference(
+        samples, rows,
+        rows.new_zeros(rows.shape[0], rows.shape[1], names.shape[-1]),
+        rows.new_zeros(rows.shape[0], rows.shape[1], JOINT_STRUCT_DIM),
+    )
+
+
+def _hide_inpaint_region_from_reference(reference, inpaint_mask, *, frames_given, free_joints):
+    """Withhold the inpainted cells from the encoder, as training withholds its
+    re-noised span / joints (``GaussianDiffusion._hide_corruption_from_reference``).
+
+    A frame range hides every joint on those window frames (a joint subset on
+    top of it is covered by that); a joint subset alone drops those joints, the
+    reference being the target's own rig. ``inpaint_mask`` is the sampler's
+    ``[B, J, 1, T]`` mask, 1 = re-drawn.
+    """
+    if frames_given:
+        hidden = (inpaint_mask[:, :, 0, :] > 0).any(dim=1)
+        reference['ref_frame_mask'] = hidden.to(reference['ref_frame_mask'].device)
+    elif free_joints:
+        ref_mask = reference['ref_mask'].clone()
+        ref_mask[:, list(free_joints)] = False
+        reference['ref_mask'] = ref_mask
+    return reference

@@ -21,6 +21,13 @@ class MotionEncoder(nn.Module):
     from its rest (a tail raised far above where it hangs at rest), which the
     absolute direction alone cannot tell apart from a rig whose tail simply
     rests high.
+
+    ``ref_frame_mask`` (``[B, T]``, True = hidden) withholds frames: their
+    per-frame inputs are zeroed and replaced by ``hidden_frame_embedding``, and
+    temporal attention never reads them as keys. A hidden frame still yields a
+    z, inferred from the visible frames. Training hides the target's re-noised
+    temporal span, so z cannot carry the motion the denoiser has to inpaint;
+    generation hides the inpainted frames the same way.
     """
 
     def __init__(self, t5_out_dim, slots=2, ref_dim=8, width=64, layers=2,
@@ -44,6 +51,7 @@ class MotionEncoder(nn.Module):
             nn.Linear(width, width),
         )
         self.rest_embedding = nn.Linear(REFERENCE_POSE_CHANNELS, width)
+        self.hidden_frame_embedding = nn.Parameter(torch.zeros(width))
         # Plain spatial attention, no topology / edge bias: that bias costs as
         # much as in the shared decoder whatever the width. Skeleton identity
         # reaches the encoder through names and the topology columns.
@@ -68,7 +76,18 @@ class MotionEncoder(nn.Module):
         # attention row gets a zero sentinel, then the decoder hard-bypasses it.
         safe_valid = valid | ((~valid.any(-1, keepdim=True)) &
                               (torch.arange(joints, device=pose.device)[None] == 0))
-        live = valid[:, :, None, None]
+        hidden = y.get('ref_frame_mask')
+        if hidden is not None:
+            hidden = hidden.to(device=pose.device, dtype=torch.bool)
+            if hidden.shape != (batch, frames):
+                raise ValueError('ref_frame_mask must have shape [B, T]')
+            # A row with every frame hidden has no key left to attend to; it
+            # keeps its frames (it is a null row or the caller's error).
+            hidden = hidden & ~hidden.all(-1, keepdim=True)
+            live_frames = ~hidden[:, None, None, :]
+        else:
+            live_frames = torch.ones(batch, 1, 1, frames, dtype=torch.bool, device=pose.device)
+        live = valid[:, :, None, None] & live_frames
         pose = pose.masked_fill(~live, 0).permute(3, 0, 1, 2)  # [T, B, J, C]
         root_xz = torch.cat([y['ref_feats'][:, 0:1, c:c + 1] for c in self.root_xz_channels], dim=2)
         root_xz = root_xz.masked_fill(~live[:, :1], 0).permute(3, 0, 1, 2)
@@ -81,11 +100,15 @@ class MotionEncoder(nn.Module):
                   + self.rest_embedding(y['ref_rest_pose']))
         # Re-zero after the projections: their biases would make padding live.
         tokens = tokens + (static * valid[..., None].to(names.dtype))[None]
+        if hidden is not None:
+            hidden_tokens = (hidden.transpose(0, 1)[:, :, None] & valid[None]).to(tokens.dtype)
+            tokens = tokens + hidden_tokens[..., None] * self.hidden_frame_embedding.to(tokens.dtype)
         positions = torch.arange(frames, device=pose.device).view(1, -1, 1)
         tokens = tokens + create_sin_embedding(positions, self.width)[0].to(tokens.dtype)[:, None, None]
         tokens = self.decoder(
             tokens, tokens.new_zeros(batch, tokens.shape[-1]), None,
             tgt_key_padding_mask=~safe_valid, y={},
+            temporal_key_padding_mask=hidden,
         )
         values = self.pool_norm(tokens).reshape(frames * batch, joints, -1)
         queries = self.queries[None].expand(frames * batch, -1, -1)

@@ -159,10 +159,11 @@ def fit_reference_to_output(reference_features, requested_frames):
     it, for an output of M frames.  Returns ``(features, outpaint_range, note)``.
 
     The reference is a ONE-SHOT clip whatever the loop condition says: it covers
-    exactly the R frames it holds, so R against M is a coverage question.  R > M
-    crops the tail off; R < M leaves ``[R, M)`` with no reference behind it and
-    the caller outpaints that span from noise (``outpaint_range`` names those
-    frames).
+    exactly the R frames it holds, so R against M is a coverage question. R < M
+    leaves ``[R, M)`` with no reference behind it and the caller outpaints that
+    span from noise (``outpaint_range`` names those frames). R >= M extends
+    nothing and is refused: the default fit (``resample_reference_to_output``)
+    is the way to reach a length the reference already covers.
 
     ``--loop`` is a statement about the WINDOW, not about the reference.  It
     reaches the model as ``is_loop`` -- its circular phase table, the wrap loss
@@ -173,18 +174,18 @@ def fit_reference_to_output(reference_features, requested_frames):
     """
     R = int(reference_features.shape[0])
     M = int(requested_frames)
-    if R > M:
-        return reference_features[:M], None, (
-            f'  Reference cropped: R={R} > M={M} -> using first {M} frames'
+    if R >= M:
+        raise ValueError(
+            f"--outpaint extends the reference, but it already has R={R} frames for "
+            f"--num_frames {M}. Pass --num_frames above {R}, or drop --outpaint to "
+            "resample the reference to that length."
         )
-    if R < M:
-        pad = np.repeat(reference_features[-1:], M - R, axis=0)
-        return (
-            np.concatenate([reference_features, pad], axis=0),
-            f'{R}-{M - 1}',
-            f'  Reference outpaint: R={R} < M={M} -> appended frames [{R}, {M - 1}]',
-        )
-    return reference_features, None, None
+    pad = np.repeat(reference_features[-1:], M - R, axis=0)
+    return (
+        np.concatenate([reference_features, pad], axis=0),
+        f'{R}-{M - 1}',
+        f'  Reference outpaint: R={R} < M={M} -> appended frames [{R}, {M - 1}]',
+    )
 
 
 def resample_reference_to_output(reference_features, requested_frames):

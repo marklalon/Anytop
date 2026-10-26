@@ -1598,6 +1598,7 @@ class MotionDataset(data.Dataset):
                 reference = finish_reference_sample(
                     physical_motion, cond, self.opt,
                     shared=dict(feats=motion, joint_struct=joint_struct, geometry=ref_geometry))
+                reference['same_rig'] = True
         m_length = target_num_frames
 
         # is_loop is the whole loop condition the model sees: a closed window.

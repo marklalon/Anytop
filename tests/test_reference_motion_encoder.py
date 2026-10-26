@@ -569,3 +569,76 @@ def test_validation_pairs_reference_and_null_with_same_noise_and_target():
     assert all(c[0] is x and c[1] is t and c[2] is noise for c in calls)
     assert not calls[0][3].any() and calls[1][3].all()
     assert y['ref_active'].all()
+
+
+def test_hidden_frames_never_reach_any_z():
+    m = model().eval()
+    _, y = inputs(frames=6)
+    encoder = m.motion_encoder
+    with torch.no_grad():
+        encoder.hidden_frame_embedding.normal_()
+    hidden = torch.zeros(2, 6, dtype=torch.bool)
+    hidden[0, 2:4] = True
+    y['ref_frame_mask'] = hidden
+    z = encoder(y)
+    # Whatever the hidden frames hold, no frame's z -- hidden ones included --
+    # sees it: their inputs are zeroed and temporal attention never reads them.
+    changed = copy.deepcopy(y)
+    changed['ref_pose'][0, :, :, 2:4] = 50
+    changed['ref_feats'][0, 0, :, 2:4] = 50
+    torch.testing.assert_close(z, encoder(changed), rtol=0, atol=0)
+    # The unmasked row is untouched by another row's mask.
+    torch.testing.assert_close(z[1], encoder({**y, 'ref_frame_mask': torch.zeros_like(hidden)})[1],
+                               rtol=1e-5, atol=1e-6)
+    assert not torch.allclose(z[0], encoder(changed | {'ref_frame_mask': torch.zeros_like(hidden)})[0])
+    # A row with every frame hidden keeps its frames.
+    all_hidden = torch.ones_like(hidden)
+    torch.testing.assert_close(encoder({**y, 'ref_frame_mask': all_hidden}),
+                               encoder({**y, 'ref_frame_mask': torch.zeros_like(hidden)}),
+                               rtol=1e-5, atol=1e-6)
+
+
+def test_collate_carries_frame_mask_and_same_rig():
+    motion, cond, _ = fixture()
+    sample = prepare_reference_sample(motion[:30], cond, {'translation_root_index': 0},
+                                      SimpleNamespace(), augment=False)
+    joints = len(cond['parents'])
+    own = dict(sample, same_rig=True)
+    out = collate_reference([own, sample, None], torch.zeros(3, joints, 12, 30),
+                            torch.zeros(3, joints, 4), torch.zeros(3, joints, JOINT_STRUCT_DIM))
+    assert out['ref_frame_mask'].shape == (3, 30) and not out['ref_frame_mask'].any()
+    assert out['ref_same_rig'].tolist() == [True, False, False]
+
+
+def test_training_hides_corrupted_cells_from_the_reference():
+    from diffusion.gaussian_diffusion import GaussianDiffusion
+    y = dict(ref_frame_mask=torch.zeros(2, 6, dtype=torch.bool),
+             ref_mask=torch.ones(2, 4, dtype=torch.bool),
+             ref_same_rig=torch.tensor([True, False]))
+    span = torch.zeros(2, 4, 6, dtype=torch.bool)
+    span[:, :3, 1:3] = True          # real joints share the span; padding stays False
+    subtree = torch.zeros(2, 4, dtype=torch.bool)
+    subtree[:, 2] = True
+    GaussianDiffusion._hide_corruption_from_reference(y, subtree, span)
+    assert y['ref_frame_mask'].tolist() == [[False, True, True, False, False, False]] * 2
+    # Joints only where the reference is the target's own rig.
+    assert y['ref_mask'].tolist() == [[True, True, False, True], [True, True, True, True]]
+    untouched = dict(ref_mask=torch.ones(1, 4, dtype=torch.bool))
+    GaussianDiffusion._hide_corruption_from_reference(untouched, subtree[:1], span[:1])
+    assert set(untouched) == {'ref_mask'}
+
+
+def test_generation_hides_the_inpaint_region_from_the_reference():
+    from sample.reference_motion import _hide_inpaint_region_from_reference
+    reference = dict(ref_frame_mask=torch.zeros(2, 6, dtype=torch.bool),
+                     ref_mask=torch.ones(2, 4, dtype=torch.bool))
+    mask = torch.zeros(2, 4, 1, 6)
+    mask[:, 1:3, 0, 2:5] = 1
+    _hide_inpaint_region_from_reference(reference, mask, frames_given=True, free_joints=[1, 2])
+    assert reference['ref_frame_mask'][0].tolist() == [False, False, True, True, True, False]
+    assert reference['ref_mask'].all()
+    joints_only = dict(ref_frame_mask=torch.zeros(2, 6, dtype=torch.bool),
+                       ref_mask=torch.ones(2, 4, dtype=torch.bool))
+    _hide_inpaint_region_from_reference(joints_only, mask, frames_given=False, free_joints=[1, 2])
+    assert not joints_only['ref_frame_mask'].any()
+    assert joints_only['ref_mask'][0].tolist() == [True, False, False, True]

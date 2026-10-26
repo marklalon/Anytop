@@ -1653,6 +1653,9 @@ class GaussianDiffusion:
                 else (corruption_mask | temporal_span_mask)
             )
 
+        if y is not None:
+            self._hide_corruption_from_reference(y, subtree_mask, temporal_span_mask)
+
         if corruption_mask is None:
             if y is not None:
                 y.pop('cross_limb_unreliable_mask', None)
@@ -1685,6 +1688,34 @@ class GaussianDiffusion:
         fresh_noise = th.randn_like(x_start)
         x_t_random = self.q_sample(x_start, t_random, noise=fresh_noise)
         return th.where(corruption_mask[:, :, None, :], x_t_random, x_t), temporal_span_mask
+
+    @staticmethod
+    def _hide_corruption_from_reference(y, subtree_mask, temporal_span_mask):
+        """Withhold the re-noised cells from the reference encoder.
+
+        The reference is frame aligned with the target -- the target's own
+        window, or a reference-group partner holding the same motion -- so
+        without this z would hand the denoiser the very motion it is asked to
+        repair, and inpainting from the clamped context would only be learned
+        on reference-free rows. A temporal span hides its frames on every
+        reference (``ref_frame_mask``); a joint subset drops those joints from
+        ``ref_mask`` only where the reference is the target's own rig
+        (``ref_same_rig``), the one case with a joint correspondence.
+        Generation hides its inpaint region the same way.
+        """
+        if 'ref_frame_mask' not in y:
+            return
+        if temporal_span_mask is not None:
+            y['ref_frame_mask'] = temporal_span_mask.any(dim=1)
+        if subtree_mask is not None:
+            ref_mask = y['ref_mask'].to(device=subtree_mask.device, dtype=th.bool)
+            if ref_mask.shape != subtree_mask.shape:
+                raise ValueError(
+                    "ref_mask and the subtree joint mask must share the batch joint "
+                    f"bucket, got {tuple(ref_mask.shape)} and {tuple(subtree_mask.shape)}"
+                )
+            same_rig = y['ref_same_rig'].to(device=subtree_mask.device, dtype=th.bool)
+            y['ref_mask'] = ref_mask & ~(subtree_mask & same_rig[:, None])
 
     def _sample_renoise_timesteps(self, t, device):
         """Draw the independent timestep the flagged cells are re-noised at.

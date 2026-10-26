@@ -201,6 +201,12 @@ def collate_reference(samples, motion, names, joint_struct):
         'ref_active': torch.zeros(batch, dtype=torch.bool, device=motion.device),
         'ref_joints_names_embs': torch.zeros_like(names),
         'ref_joint_struct': torch.zeros_like(joint_struct),
+        # Frames withheld from the encoder (MotionEncoder); training and
+        # generation fill it in once they know what is re-drawn.
+        'ref_frame_mask': torch.zeros(batch, frames, dtype=torch.bool, device=motion.device),
+        # The reference is the target's own window on the target's rig, so
+        # its joint j is the target's joint j (sample['same_rig']).
+        'ref_same_rig': torch.zeros(batch, dtype=torch.bool, device=motion.device),
     }
     for i, sample in enumerate(samples):
         if sample is None:
@@ -223,6 +229,7 @@ def collate_reference(samples, motion, names, joint_struct):
             sample['rest_pose'], dtype=motion.dtype, device=motion.device)
         result['ref_mask'][i, :count] = True
         result['ref_active'][i] = True
+        result['ref_same_rig'][i] = bool(sample.get('same_rig', False))
         for key in ('joints_names_embs', 'joint_struct'):
             result['ref_' + key][i, :count] = torch.as_tensor(sample[key], device=motion.device)
     return result
