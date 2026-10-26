@@ -15,3 +15,5 @@ Pet_Miho_Idle02
 #prop-socket joint(s) for LOL_Akali
 #prop-socket joint(s) for DNL_Centaur
 #BVH end-site joint(s) for LOL_Jinx
+#skeleton exceeds MAX_JOINTS (*) for DNL_Argonian
+#skeleton exceeds MAX_JOINTS (*) for DNL_FireDragon

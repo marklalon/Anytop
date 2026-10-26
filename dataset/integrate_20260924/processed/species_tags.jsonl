@@ -227,3 +227,20 @@
 {"species": "DNL_Voidray", "species_tags": ["Aquatic"]}
 {"species": "DNL_Werewolf", "species_tags": ["Biped"]}
 {"species": "DNL_Yeti", "species_tags": ["Biped"]}
+{"species": "DNL_Argonian", "species_tags": ["Biped"]}
+{"species": "DNL_Elf", "species_tags": ["Winged", "Fluttering"]}
+{"species": "DNL_FireDragon", "species_tags": ["Winged"]}
+{"species": "DNL_Horse", "species_tags": ["Quadruped"]}
+{"species": "DNL_Lavatiger", "species_tags": ["Quadruped"]}
+{"species": "DNL_Moth", "species_tags": ["Winged", "Fluttering"]}
+{"species": "DNL_MushanBeast", "species_tags": ["Quadruped"]}
+{"species": "DNL_Piranha", "species_tags": ["Aquatic"]}
+{"species": "DNL_Sheep", "species_tags": ["Quadruped"]}
+{"species": "DNL_Skeleton", "species_tags": ["Biped", "Waddling"]}
+{"species": "DNL_Treant", "species_tags": ["Biped"]}
+{"species": "DNL_Turkey", "species_tags": ["Biped"]}
+{"species": "MON_Centipede", "species_tags": ["Multiped"]}
+{"species": "MON_Crab", "species_tags": ["Multiped"]}
+{"species": "MON_Scorpion", "species_tags": ["Multiped"]}
+{"species": "MON_Snake", "species_tags": ["Serpentine"]}
+{"species": "MON_Toad", "species_tags": ["Quadruped"]}
