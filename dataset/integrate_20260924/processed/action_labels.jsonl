@@ -1534,6 +1534,7 @@
 {"clip": "DNL_Elf_Fwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}
 {"clip": "DNL_Elf_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
 {"clip": "DNL_FireDragon_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, swat"}
+{"clip": "DNL_FireDragon_Attack1Mirror", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, swat"}
 {"clip": "DNL_FireDragon_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, smash"}
 {"clip": "DNL_FireDragon_BigHurtLeft", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "DNL_FireDragon_BigHurtRight", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
@@ -1564,6 +1565,7 @@
 {"clip": "DNL_Horse_SwimIdle", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, idle"}
 {"clip": "DNL_Horse_SwimmingFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
 {"clip": "DNL_Lavatiger_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, swat"}
+{"clip": "DNL_Lavatiger_Attack1Mirror", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, swat"}
 {"clip": "DNL_Lavatiger_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, bite"}
 {"clip": "DNL_Lavatiger_BigHurtLeft", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "DNL_Lavatiger_BigHurtRight", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt"}
@@ -1629,7 +1631,7 @@
 {"clip": "DNL_Sheep_SleepingStartled", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
 {"clip": "DNL_Skeleton_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, jump"}
 {"clip": "DNL_Skeleton_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, slash"}
-{"clip": "DNL_Skeleton_Attack3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, right"}
+{"clip": "DNL_Skeleton_Attack3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, slash"}
 {"clip": "DNL_Skeleton_Attack4", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, smash"}
 {"clip": "DNL_Skeleton_BreakHook", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, taunt"}
 {"clip": "DNL_Skeleton_ChargeFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, weapon"}
@@ -1637,6 +1639,7 @@
 {"clip": "DNL_Skeleton_MoveFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward, weapon"}
 {"clip": "DNL_Treant_Attack", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, smash"}
 {"clip": "DNL_Treant_AttackSwat", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, swat"}
+{"clip": "DNL_Treant_AttackSwatMirror", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, swat"}
 {"clip": "DNL_Treant_BigHurtLeft", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "DNL_Treant_BigHurtRight", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "DNL_Treant_ChargeFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
@@ -1664,6 +1667,7 @@
 {"clip": "DNL_Turkey_SwimIdle", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, idle"}
 {"clip": "DNL_Turkey_SwimmingFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
 {"clip": "MON_Centipede_Atk", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, right, swat"}
+{"clip": "MON_Centipede_AtkMirror", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, left, swat"}
 {"clip": "MON_Centipede_Atk003", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, smash"}
 {"clip": "MON_Centipede_Atk004", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, charge"}
 {"clip": "MON_Centipede_CBStandL", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, taunt"}
@@ -1683,7 +1687,7 @@
 {"clip": "MON_Centipede_TurnR90", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "turn, right"}
 {"clip": "MON_Centipede_WalkL", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
 {"clip": "MON_Crab_Atk01", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, swat"}
-{"clip": "MON_Crab_Atk02", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, right"}
+{"clip": "MON_Crab_Atk02", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, swat"}
 {"clip": "MON_Crab_Breath", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "roar"}
 {"clip": "MON_Crab_BubbleFieldE", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, cast"}
 {"clip": "MON_Crab_CBStandL", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
@@ -1708,7 +1712,7 @@
 {"clip": "MON_Crab_TurnR90", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "turn, right"}
 {"clip": "MON_Crab_WalkFL", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
 {"clip": "MON_Scorpion_Atk01", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, swat"}
-{"clip": "MON_Scorpion_Atk02", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, right"}
+{"clip": "MON_Scorpion_Atk02", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, swat"}
 {"clip": "MON_Scorpion_Atk03", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, sting"}
 {"clip": "MON_Scorpion_Breath", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "roar"}
 {"clip": "MON_Scorpion_CBStandL", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
