@@ -854,7 +854,7 @@
 {"clip": "Spider_Barking", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Fangy", "action_group": "stationary", "action_label": "idle, taunt", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Injuredwalk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "Spider_Jump", "action_group": "stationary", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "Spider_Jump", "action_group": "stationary", "action_label": "jump, forward", "is_loop": false, "reviewed": true}
 {"clip": "Spider_LandinHAir", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "Spider_Landing", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
 {"clip": "Spider_RetreatInjured", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}

@@ -32,7 +32,7 @@
 {"clip": "CU_Cat_StandDig", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true}
 {"clip": "CU_Cat_StandEat", "action_group": "stationary", "action_label": "idle, eat, crouch", "is_loop": true, "reviewed": true}
 {"clip": "CU_Cat_StandIdle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "CU_Cat_StandJump", "action_group": "stationary", "action_label": "jump, forward", "is_loop": true, "reviewed": true}
+{"clip": "CU_Cat_StandJump", "action_group": "stationary", "action_label": "jump, forward", "is_loop": false, "reviewed": true}
 {"clip": "CU_Cat_StandPunchR", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "CU_Cat_StandPunchRMirror", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}
 {"clip": "CU_Cat_StandRun", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
@@ -406,7 +406,7 @@
 {"clip": "MXO_Human_FallingToLanding", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, jump"}
 {"clip": "MXO_Human_FishingCast", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, fishing"}
 {"clip": "MXO_Human_FishingIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, fishing"}
-{"clip": "MXO_Human_ForwardJump", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "jump, forward"}
+{"clip": "MXO_Human_ForwardJump", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "jump, forward"}
 {"clip": "MXO_Human_GettingUp", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup, crawl"}
 {"clip": "MXO_Human_IdleCrouchingAiming", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, crouch, aim"}
 {"clip": "MXO_Human_JoggingWithBox", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward, carry"}
@@ -414,7 +414,7 @@
 {"clip": "MXO_Human_JumpAttack", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, jump"}
 {"clip": "MXO_Human_JumpBackward", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, backward"}
 {"clip": "MXO_Human_JumpDownForwardRoll", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "roll, forward"}
-{"clip": "MXO_Human_JumpForward", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "jump, forward"}
+{"clip": "MXO_Human_JumpForward", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "jump, forward"}
 {"clip": "MXO_Human_JumpForwardOfficial", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, forward, gun"}
 {"clip": "MXO_Human_JumpOver", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
 {"clip": "MXO_Human_JumpSideToSideLeft", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "jump, left"}
@@ -652,7 +652,7 @@
 {"clip": "ORA_MechStriker_HitFront2", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "ORA_MechStriker_HitFront3", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "ORA_MechStriker_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
-{"clip": "ORA_MechStriker_Jump", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "jump, forward"}
+{"clip": "ORA_MechStriker_Jump", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "jump, forward"}
 {"clip": "ORA_MechStriker_KickLeft", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, left, kick"}
 {"clip": "ORA_MechStriker_KickRight", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, right, kick"}
 {"clip": "ORA_MechStriker_Landing", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, jump"}
@@ -1305,7 +1305,7 @@
 {"clip": "DNL_Harpy_GetHit1", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "roar"}
 {"clip": "DNL_Harpy_Glide", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward, glide"}
 {"clip": "DNL_Harpy_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
-{"clip": "DNL_Harpy_Jump", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "jump, forward"}
+{"clip": "DNL_Harpy_Jump", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "jump, forward"}
 {"clip": "DNL_Harpy_Landing", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, hover"}
 {"clip": "DNL_Harpy_Run", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "DNL_Harpy_StrafeL", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, left"}
