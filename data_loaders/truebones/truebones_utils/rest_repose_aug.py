@@ -299,6 +299,73 @@ def _reposed_tpose_rotations(tpose_quats, rest_local, parents, order):
     return quats.astype(np.asarray(tpose_quats).dtype)
 
 
+def rest_offsets_from_rotations(offsets, parents, local):
+    """``(new offsets, global rest rotations)`` of the rest that the local rest
+    rotations ``local`` ``[J, 3, 3]`` make of the bones ``offsets``; the root's
+    own offset is kept."""
+    parents = np.asarray(parents, dtype=np.int64)
+    order, _children = _parent_order(parents)
+    local = np.asarray(local, dtype=np.float64)
+    rest_global = _global_rotations(local, parents, order)
+    offsets = np.asarray(offsets, dtype=np.float64)
+    new_offsets = offsets.copy()
+    has_parent = parents >= 0
+    new_offsets[has_parent] = np.einsum(
+        'jab,jb->ja', rest_global[parents[has_parent]], offsets[has_parent])
+    return new_offsets, rest_global
+
+
+def apply_rest_rotations(motion, cond, local):
+    """Return (physical motion, private cond) of ``motion`` re-expressed on the
+    rest that the local rest rotations ``local`` ``[J, 3, 3]`` make of
+    ``cond``'s; identity rows leave a joint's rest as it is.
+
+    Exact for any ``local``: the world motion is unchanged, and the physical
+    position channels are returned as they are. Only the rotation channel and
+    the rest-derived cond entries change.
+    """
+    parents = np.asarray(cond['parents'], dtype=np.int64)
+    order, _children = _parent_order(parents)
+    local = np.asarray(local, dtype=np.float64)
+    new_offsets, rest_global = rest_offsets_from_rotations(cond['offsets'], parents, local)
+    old_rest = np.asarray(cond['rest_pos_ric_hml'], dtype=np.float64)
+    rest = old_rest.copy()
+    for j in order:
+        p = parents[j]
+        if p >= 0:
+            rest[j] = rest[p] + new_offsets[j]
+    # The rest's lowest joint keeps its height (its grounding convention).
+    rest[:, 1] += float(old_rest[:, 1].min() - rest[:, 1].min())
+    new_cond = dict(cond)
+    new_cond['offsets'] = new_offsets.astype(np.asarray(cond['offsets']).dtype)
+    new_cond['rest_pos_ric_hml'] = rest.astype(np.float32)
+    for key in ('rest_pose', 'rest_pose_physical'):
+        if key in cond:
+            new_cond[key] = np.array(cond[key], copy=True)
+            new_cond[key][..., :3] = rest
+    # Never reuse an L explicitly cached on an input cond.
+    new_cond.pop('rest_length_scale', None)
+    if cond.get('tpose_rest_rotations') is not None:
+        new_cond['tpose_rest_rotations'] = _reposed_tpose_rotations(
+            cond['tpose_rest_rotations'], local, parents, order)
+
+    # R'_j = G_p R_j Q_j^T G_p^T; a joint whose parent frame and own rest are
+    # both unrotated keeps its stored channel bit for bit.
+    identity = np.eye(3)[None]
+    parent_global = np.repeat(identity, len(parents), axis=0)
+    has_parent = parents >= 0
+    parent_global[has_parent] = rest_global[parents[has_parent]]
+    changed = np.any(local != identity, axis=(1, 2)) | np.any(parent_global != identity, axis=(1, 2))
+    rot = _rotation_6d_to_matrix(motion[..., changed, 3:9])
+    g = parent_global[changed]
+    rot = g @ rot @ np.swapaxes(local[changed], -1, -2) @ np.swapaxes(g, -1, -2)
+    out = np.array(motion, dtype=np.float32, copy=True)
+    out[..., changed, 3:9] = _matrix_to_rotation_6d(rot)
+    if not np.isfinite(out).all():
+        raise ValueError('Non-finite rest re-pose motion; invalid numerical input.')
+    return out, new_cond
+
+
 def augment_rest_repose(motion, cond, metadata, max_deg=DEFAULT_REST_REPOSE_MAX_DEG, *, rng=random):
     """Return (physical motion, private cond, diagnostics); a skip is a no-op.
 
@@ -322,44 +389,7 @@ def augment_rest_repose(motion, cond, metadata, max_deg=DEFAULT_REST_REPOSE_MAX_
     local, drawn = _draw_rest_rotations(cond, order, children, tri, np.radians(max_deg), rng)
     if not drawn.any():
         return skip('no joint whose rest frame follows its child bones')
-    rest_global = _global_rotations(local, parents, order)
-    offsets = np.asarray(cond['offsets'], dtype=np.float64)
-    old_rest = np.asarray(cond['rest_pos_ric_hml'], dtype=np.float64)
-    new_offsets = offsets.copy()
-    rest = old_rest.copy()
-    for j in order:
-        p = parents[j]
-        if p >= 0:
-            new_offsets[j] = rest_global[p] @ offsets[j]
-            rest[j] = rest[p] + new_offsets[j]
-    # The rest's lowest joint keeps its height (its grounding convention).
-    rest[:, 1] += float(old_rest[:, 1].min() - rest[:, 1].min())
-    new_cond = dict(cond)
-    new_cond['offsets'] = new_offsets.astype(np.asarray(cond['offsets']).dtype)
-    new_cond['rest_pos_ric_hml'] = rest.astype(np.float32)
-    for key in ('rest_pose', 'rest_pose_physical'):
-        if key in cond:
-            new_cond[key] = np.array(cond[key], copy=True)
-            new_cond[key][..., :3] = rest
-    # Never reuse an L explicitly cached on an input cond.
-    new_cond.pop('rest_length_scale', None)
-    if cond.get('tpose_rest_rotations') is not None:
-        new_cond['tpose_rest_rotations'] = _reposed_tpose_rotations(
-            cond['tpose_rest_rotations'], local, parents, order)
-
-    # R'_j = G_p R_j Q_j^T G_p^T; a joint whose parent frame and own rest are
-    # both unrotated keeps its stored channel bit for bit.
-    parent_global = np.repeat(np.eye(3)[None], len(parents), axis=0)
-    has_parent = parents >= 0
-    parent_global[has_parent] = rest_global[parents[has_parent]]
-    changed = drawn | np.any(parent_global != np.eye(3)[None], axis=(1, 2))
-    rot = _rotation_6d_to_matrix(motion[..., changed, 3:9])
-    g = parent_global[changed]
-    rot = g @ rot @ np.swapaxes(local[changed], -1, -2) @ np.swapaxes(g, -1, -2)
-    out = np.array(motion, dtype=np.float32, copy=True)
-    out[..., changed, 3:9] = _matrix_to_rotation_6d(rot)
-    if not np.isfinite(out).all():
-        raise ValueError('Non-finite rest re-pose motion; invalid numerical input.')
+    out, new_cond = apply_rest_rotations(motion, cond, local)
     angles = np.degrees(np.arccos(np.clip((np.trace(local, axis1=1, axis2=2) - 1.0) / 2.0, -1.0, 1.0)))
     info.update(applied=True, rotated_joints=int(drawn.sum()), max_rest_angle_deg=float(angles.max()))
     return out, new_cond, info

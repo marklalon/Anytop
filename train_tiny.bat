@@ -53,6 +53,7 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --ref_layers 2 ^
     --ref_cfg_drop_prob 0.6 ^
     --rest_repose_prob 0.1 ^
+    --rest_variant_prob 0.5 ^
     --topology_aug_prob 0.2 ^
     --bone_length_aug_prob 0.2 ^
     --motion_speed_aug 1.3 ^

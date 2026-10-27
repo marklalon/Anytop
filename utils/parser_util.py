@@ -327,6 +327,13 @@ def add_model_options(parser):
                             "joints turn about a twist reference axis and mirror to the partner; "
                             "midline joints turn about the lateral axis. A joint whose turn would change "
                             "the canonical rotation channel stays unbent.")
+    group.add_argument("--rest_variant_prob", default=0.0, type=float,
+                       help="Probability of re-expressing a sample on one of its species' hand-made rest "
+                            "variants (TPose_<tag>.glb beside the primary TPose, drawn uniformly; target "
+                            "and reference input draw independently); training only (0 = off). Exact like "
+                            "--rest_repose_prob, but with real, large rest differences (T- vs A-pose). "
+                            "Species without variants are untouched. The structural channel stays the "
+                            "primary rest's. Loader-only: no checkpoint schema change.")
     group.add_argument("--loop_cond_prob", default=1.0, type=float,
                        help="Probability that a loop training clip is TOLD it is a loop (is_loop=1: "
                             "circular time table, periodic window resample, wrap losses). The rest of "

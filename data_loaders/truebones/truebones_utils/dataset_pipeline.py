@@ -41,6 +41,7 @@ from .fbx_filename_rules import (
     find_tpose_reference_path,
     normalize_action_name,
     should_skip_anim,
+    tpose_variant_paths,
 )
 
 from .animation_utils import (
@@ -816,6 +817,138 @@ def _encode_rest_on_root(tp, object_type, max_joints, scale_factor, translation_
     return fixed_rest[0][0]
 
 
+# A rest variant's bones may differ from the primary's by this fraction of the
+# rig's mean bone length; more means a different skeleton, not another rest.
+REST_VARIANT_BONE_TOLERANCE = 0.01
+# A variant's root turned by more than this off the primary's is reported: the
+# root keeps the primary's rest, so that turn is dropped.
+REST_VARIANT_ROOT_WARN_DEG = 5.0
+# A variant whose joints all stay within this of the primary rest is the
+# primary itself: usually a skin still bound in the primary pose, whose bind the
+# importer takes as the rest.
+REST_VARIANT_MIN_TURN_DEG = 1.0
+
+
+def object_rest_variant_paths(rest_reference_path):
+    """``[(tag, path)]`` of the rest variants beside a species' primary rest file."""
+    species_dir = os.path.dirname(str(rest_reference_path))
+    files = sorted(
+        pjoin(species_dir, f) for f in os.listdir(species_dir)
+        if f.lower().endswith(('.fbx', '.glb', '.gltf'))
+    )
+    return tpose_variant_paths(files)
+
+
+def measure_rest_variants(object_type, rest_reference_path, variant_paths, joint_names=None,
+                          promote_root_depth=0, *, crop_enabled=True, warn=None):
+    """The ``rest_variants`` cond block of a species (see rest_variants.py).
+
+    Each variant is read on the primary rest exactly as a clip is: same joint
+    drops, root fold, crop, facing and scale, then re-expressed against the
+    primary bind (``get_hml_aligned_anim``). Its one frame of local rotations
+    is then the rest rotation of every joint, in the convention
+    ``apply_rest_rotations`` takes. The root keeps the primary's rest.
+
+    ``joint_names`` (the cond's) must still be what the primary yields; None
+    skips that check (precheck, before any cond exists). ``warn`` receives the
+    non-fatal findings; a fatal one raises ``DatasetPreprocessingError``.
+    """
+    from .animation_utils import _warn
+    from .rest_variants import empty_rest_variants
+
+    block = empty_rest_variants(rest_reference_sha1(rest_reference_path))
+    if not variant_paths:
+        return block
+    tp = get_common_features_from_rest_pose(
+        rest_reference_path, object_type,
+        max_joints=MAX_JOINTS if crop_enabled else 2 ** 16,
+        promote_root_depth=int(promote_root_depth),
+    )
+    if joint_names is not None and list(tp.names) != list(joint_names):
+        raise DatasetPreprocessingError([
+            f"[FAIL] Object '{object_type}': rest reference {os.path.basename(str(rest_reference_path))} "
+            f"no longer yields the cond's joints; rebuild the species with --overwrite."
+        ])
+    rotations = []
+    for tag, path in variant_paths:
+        label = f"{object_type} rest variant '{os.path.basename(str(path))}'"
+        raw_anim, names, _frame_time = _load_motion_source(
+            path, object_type, crop_enabled=crop_enabled,
+            prop_socket_names=tp.prop_socket_names, end_site_names=tp.end_site_names,
+            promote_root_depth=int(promote_root_depth),
+        )
+        if list(names) != list(tp.names):
+            missing = sorted(set(tp.names) - set(names))
+            extra = sorted(set(names) - set(tp.names))
+            raise DatasetPreprocessingError([
+                f"[FAIL] {label}: joints differ from the primary rest "
+                f"(missing {missing[:6]}, extra {extra[:6]}{', order differs' if not missing and not extra else ''})"
+            ])
+        rotations.append(_measure_rest_variant(tp, raw_anim, names, path, object_type, label, warn or _warn))
+        block['tags'].append(str(tag))
+        block['sha1'].append(rest_reference_sha1(path))
+    block['rotations'] = np.stack(rotations)
+    return block
+
+
+def _rotation_angles_deg(rotations):
+    return np.degrees(np.arccos(np.clip((np.trace(rotations, axis1=-2, axis2=-1) - 1.0) / 2.0, -1.0, 1.0)))
+
+
+def _measure_rest_variant(tp, raw_anim, names, path, object_type, label, warn):
+    """``[J, 3, 3]`` local rest rotations of one loaded variant on the primary rest ``tp``."""
+    from motion_lib.Animation import offsets_from_positions, positions_global
+    from .rest_repose_aug import rest_offsets_from_rotations
+    from .root_motion import rest_pose_animation
+
+    parents = np.asarray(tp.tpos_anim.parents, dtype=np.int64)
+    has_parent = parents >= 0
+    root = int(np.flatnonzero(~has_parent)[0])
+    offsets = np.asarray(tp.offsets, dtype=np.float64)
+    bone_lengths = np.linalg.norm(offsets, axis=-1)
+    mean_bone = float(bone_lengths[has_parent].mean())
+    tolerance = REST_VARIANT_BONE_TOLERANCE * mean_bone
+    new_anim, processed, _names, _root_xz = get_hml_aligned_anim(
+        path, object_type, tp.tpos_rots, tp.offsets, {},
+        scale_factor=tp.scale_factor, orientation_quat=tp.orientation_quat,
+        preloaded=(rest_pose_animation(raw_anim), names), clamp_vertical=False,
+    )
+    variant_offsets = offsets_from_positions(positions_global(processed)[0], processed.parents)
+
+    def worst_bone(error):
+        worst = int(np.flatnonzero(has_parent)[error.argmax()])
+        return f"bone '{tp.names[worst]}' is off by {error.max() / mean_bone:.1%}"
+
+    bone_error = np.abs(np.linalg.norm(variant_offsets, axis=-1) - bone_lengths)[has_parent]
+    if bone_error.max() > tolerance:
+        raise DatasetPreprocessingError([
+            f"[FAIL] {label}: {worst_bone(bone_error)} of the mean bone length in length "
+            f"(> {REST_VARIANT_BONE_TOLERANCE:.0%}); a variant may only turn joints"
+        ])
+    local = new_anim.rotations[0].transforms().astype(np.float64)
+    # The loader rebuilds the variant from the primary's bones and these
+    # rotations alone (apply_rest_rotations); they must give back its bones.
+    rebuilt, _rest_global = rest_offsets_from_rotations(offsets, parents, local)
+    rebuild_error = np.linalg.norm(rebuilt - variant_offsets, axis=-1)[has_parent]
+    if rebuild_error.max() > tolerance:
+        raise DatasetPreprocessingError([
+            f"[FAIL] {label}: the measured rest rotations do not rebuild the variant: "
+            f"{worst_bone(rebuild_error)} of the mean bone length (> {REST_VARIANT_BONE_TOLERANCE:.0%})"
+        ])
+    root_deg = float(_rotation_angles_deg(local[root]))
+    if root_deg > REST_VARIANT_ROOT_WARN_DEG:
+        warn(f"{label}: root turned {root_deg:.1f} deg off the primary rest; "
+             f"the root keeps the primary's rest")
+    local[root] = np.eye(3)
+    if _rotation_angles_deg(local).max() < REST_VARIANT_MIN_TURN_DEG:
+        raise DatasetPreprocessingError([
+            f"[FAIL] {label}: no joint turns more than {REST_VARIANT_MIN_TURN_DEG:g} deg off the "
+            f"primary rest; its bind pose must be the variant pose (bind == rest), "
+            f"not the primary's"
+        ])
+    return local.astype(np.float32)
+
+
 def _resample_short_result(result, resample_min_length, object_type, max_joints, orientation_quat):
     """Bring a clip shorter than ``resample_min_length`` up to it, in place."""
     if resample_min_length <= 0 or result['motion'].shape[0] >= resample_min_length:
@@ -1016,6 +1149,9 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         # removes a static reference file from anim_files, as it should be used only for
         # extracting common characteristics. If this is not the case, disable this part
         anim_files.remove(t_pos_path)
+        # Rest variants never become clips (regenerate_dataset_artifacts measures them).
+        for _tag, variant_path in tpose_variant_paths(anim_files):
+            anim_files.remove(variant_path)
     reference_sha1 = rest_reference_sha1(t_pos_path)
     if max_files is not None:
         anim_files = anim_files[:max_files]

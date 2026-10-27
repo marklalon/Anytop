@@ -95,6 +95,7 @@ from data_loaders.truebones.truebones_utils.fbx_filename_rules import (  # noqa:
     _strip_leading_object_prefix,
     find_tpose_reference_path,
     should_skip_anim,
+    tpose_variant_paths,
 )
 from data_loaders.truebones.truebones_utils.joint_name_canonical import (  # noqa: E402
     JAPANESE_GATED_REPLACEMENTS,
@@ -703,17 +704,27 @@ def _check_layout(root: Path, species_dirs: list[Path], report: Report) -> None:
                            "content checks skip it", entry.name)
 
 
-def _check_filenames(species: str, files: list[Path], report: Report) -> tuple[Path | None, list[Path]]:
-    """Returns (rest-pose reference file, files that would become clips)."""
+def _check_filenames(species: str, files: list[Path],
+                     report: Report) -> tuple[Path | None, list[Path], list[tuple[str, Path]]]:
+    """Returns (rest-pose reference file, files that would become clips, rest variants)."""
     if not files:
         report.add(ERROR, species, "filenames", "no GLB/GLTF/FBX files")
-        return None, []
+        return None, [], []
     for path in files:
         if not path.name.isascii():
             report.add(WARN, species, "filenames",
                        "file name has non-ASCII characters; they are dropped from the clip name", path.name)
 
     anim_files = [str(p) for p in files]
+    try:
+        variants = [(tag, Path(path)) for tag, path in tpose_variant_paths(anim_files)]
+    except ValueError as exc:
+        report.add(ERROR, species, "filenames", str(exc))
+        variants = []
+    if variants:
+        report.add(INFO, species, "filenames",
+                   f"rest variant(s) {', '.join(f'{tag} ({path.name})' for tag, path in variants)}: "
+                   f"measured on the primary rest, never clips")
     reference = Path(find_tpose_reference_path(anim_files))
     if not _is_tpose_reference_path(str(reference)):
         report.add(WARN, species, "filenames",
@@ -764,7 +775,35 @@ def _check_filenames(species: str, files: list[Path], report: Report) -> tuple[P
                        f"{len(sources)} files normalize to the same clip '{clip}': {', '.join(sources)}")
     if not kept:
         report.add(ERROR, species, "filenames", "no file survives the filename rules; the species produces no clips")
-    return reference, kept
+    return reference, kept, variants
+
+
+def _check_rest_variants(species: str, reference: Path, variants: list[tuple[str, Path]],
+                         promote_depth: int, report: Report) -> None:
+    """Measure the rest variants exactly as regenerate_dataset_artifacts will
+    (``measure_rest_variants``): same joints, same bones, a real turn, and
+    rotations that rebuild the variant."""
+    from data_loaders.truebones.truebones_utils.dataset_pipeline import (
+        REST_VARIANT_MIN_TURN_DEG, DatasetPreprocessingError, _rotation_angles_deg, measure_rest_variants)
+
+    def warn(message):
+        report.add(WARN, species, "rest variants", message)
+
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            block = measure_rest_variants(species, reference, [(tag, str(path)) for tag, path in variants],
+                                          promote_root_depth=promote_depth, warn=warn)
+    except DatasetPreprocessingError as exc:
+        for message in exc.motion_errors:
+            report.add(ERROR, species, "rest variants", message.removeprefix("[FAIL] "))
+        return
+    except Exception as exc:    # noqa: BLE001 -- one bad file must not end the run
+        report.add(ERROR, species, "rest variants", f"{type(exc).__name__}: {exc}")
+        return
+    for tag, turn in zip(block["tags"], _rotation_angles_deg(block["rotations"].astype(np.float64))):
+        report.add(INFO, species, "rest variants",
+                   f"variant {tag}: {int((turn >= REST_VARIANT_MIN_TURN_DEG).sum())} joint(s) turned, "
+                   f"up to {turn.max():.0f} deg")
 
 
 def _check_file_content(species: str, facts: FileFacts, is_reference: bool, report: Report) -> None:
@@ -1481,16 +1520,19 @@ def main() -> int:
             key=lambda p: p.name.lower(),
         )
         total_files += len(files)
-        reference, _kept = _check_filenames(species, files, report)
+        reference, _kept, variants = _check_filenames(species, files, report)
+        rest_files = {reference, *(path for _tag, path in variants)}
         facts_list = [_read_file_facts(path) for path in files]
         for facts in facts_list:
-            _check_file_content(species, facts, facts.path == reference, report)
+            _check_file_content(species, facts, facts.path in rest_files, report)
             _check_raw_joint_names(species, facts, report)
         base = _check_species_consistency(species, facts_list, reference, report)
         if base is not None:
             report.joint_tables[species] = _check_joint_names(
                 species, base, vocabulary, t5, report, promote_depths.get(species.lower(), 0),
             )
+        if reference is not None and variants:
+            _check_rest_variants(species, reference, variants, promote_depths.get(species.lower(), 0), report)
         print(f"checked {species} ({len(files)} files)", file=sys.stderr)
 
     _print_report(report, show_info=not args.no_info)

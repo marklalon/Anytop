@@ -15,9 +15,12 @@ probability 100%; other augmentations are disabled:
                   with actual scales in filenames and contact residuals in logs
   rest-repose   — a randomly bent rest pose; the motion features are unchanged
                   by it, so a one-frame rest-pose BVH pair is exported
+  rest-variant  — one of the species' hand-made rest variants (TPose_<tag>.glb),
+                  only species that have one; exported like rest-repose
 
 Every mode also writes <stem>__original.bvh beside each augmented file: the same
-clip with augmentations off as a control (rest-repose: the stored rig's rest).
+clip with augmentations off as a control (rest-repose / rest-variant: the
+stored rig's rest).
 Bone-length and loop replay the same temporal draws; motion-speed keeps the
 deterministic fit instead of the sampled tempo.
 
@@ -48,7 +51,7 @@ Usage
 Arguments
 ---------
   --mode              Required: loop / motion-speed / leaf-drop / chain-merge / bone-length /
-                      rest-repose (one only)
+                      rest-repose / rest-variant (one only)
   --bone-length-aug-max  Max relative group-length change (default: 0.2 = +/-20%)
   --bone-length-aug-min  Min relative group-length change (default: 0.1 = +/-10%)
   --rest-repose-max-deg  Largest rest rotation per joint in degrees (default: 20)
@@ -100,6 +103,7 @@ from data_loaders.truebones.data.dataset import (
     SUPPORTED_SPLITS,
     _build_joint_mask_candidate_roots,
 )
+from data_loaders.truebones.truebones_utils.rest_variants import rest_variant_count
 from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     mark_canonical_cond_entry,
@@ -245,7 +249,7 @@ def _replay_original(
     """
     opt = dataset.opt
     saved = (opt.preview_mode, opt.topology_aug_prob, opt.bone_length_aug_prob, opt.rest_repose_prob,
-             opt.motion_speed_aug_prob)
+             opt.rest_variant_prob, opt.motion_speed_aug_prob)
     post_state = random.getstate()
     try:
         if saved[0] != "loop":
@@ -253,12 +257,13 @@ def _replay_original(
         opt.topology_aug_prob = 0.0
         opt.bone_length_aug_prob = 0.0
         opt.rest_repose_prob = 0.0
+        opt.rest_variant_prob = 0.0
         opt.motion_speed_aug_prob = 0.0
         random.setstate(aug_info["bone_length_rng_state"])
         baseline = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
     finally:
         (opt.preview_mode, opt.topology_aug_prob, opt.bone_length_aug_prob, opt.rest_repose_prob,
-         opt.motion_speed_aug_prob) = saved
+         opt.rest_variant_prob, opt.motion_speed_aug_prob) = saved
         random.setstate(post_state)
     baseline_aug = baseline[13]
     baseline_cond = baseline_aug["object_cond"]
@@ -285,7 +290,8 @@ def parse_args() -> argparse.Namespace:
         description="Export augmented training motions as BVH files for manual verification."
     )
     p.add_argument("--mode", required=True, action=_SingleMode,
-                   choices=("loop", "motion-speed", *_TOPOLOGY_MODES, "bone-length", "rest-repose"),
+                   choices=("loop", "motion-speed", *_TOPOLOGY_MODES, "bone-length", "rest-repose",
+                            "rest-variant"),
                    help="Preview exactly one augmentation, enabled with probability 100%%.")
     p.add_argument("--n", type=int, default=10, help="Number of samples to export.")
     p.add_argument('--bone-length-aug-max', type=float, default=0.2,
@@ -387,6 +393,7 @@ def main() -> int:
     opt.bone_length_aug_min = args.bone_length_aug_min
     opt.rest_repose_prob = 1.0 if args.mode == 'rest-repose' else 0.0
     opt.rest_repose_max_deg = args.rest_repose_max_deg
+    opt.rest_variant_prob = 1.0 if args.mode == 'rest-variant' else 0.0
     opt.loop_tile_single_prob = args.loop_tile_single_prob
     opt.motion_cache_size = 0  # no cache needed for sampling
 
@@ -449,6 +456,15 @@ def main() -> int:
         if not candidate_names:
             print("[ERROR] No motions match --filter. Check the species pattern.")
             return 1
+    if args.mode == 'rest-variant':
+        candidate_names = [
+            name for name in candidate_names
+            if rest_variant_count(dataset.cond_dict[dataset.data_dict[name]['object_type']])
+        ]
+        print(f"[INFO] Candidates from species with rest variants: {len(candidate_names)}")
+        if not candidate_names:
+            print("[ERROR] No species with a rest variant (TPose_<tag>.glb) after filtering.")
+            return 1
     if args.mode == 'bone-length':
         print(f'[INFO] Bone-length candidates (all actions and skeletons): {len(candidate_names)}')
     if args.mode == "loop":
@@ -510,6 +526,9 @@ def main() -> int:
             repose_info = aug_info.get('rest_repose_aug', {})
             if args.mode == 'rest-repose' and not repose_info.get('applied'):
                 raise _AugmentationNotApplicable(repose_info.get('skip_reason', 'No joint to bend.'))
+            variant_info = aug_info.get('rest_variant', {})
+            if args.mode == 'rest-variant' and not variant_info.get('applied'):
+                raise _AugmentationNotApplicable(variant_info.get('skip_reason', 'No rest variant.'))
             topology_info = aug_info.get("topology_aug", {})
             topology_count = len(topology_info.get("joints", ())) if topology_info.get("applied") else 0
             if args.mode in _TOPOLOGY_MODES and topology_count == 0:
@@ -521,7 +540,7 @@ def main() -> int:
             # ----------------------------------------------------------------
             # Decode canonical model-space features back to physical HML-like features.
             # ----------------------------------------------------------------
-            skeleton_mode = args.mode == "rest-repose"
+            skeleton_mode = args.mode in ("rest-repose", "rest-variant")
             if skeleton_mode:
                 motion_raw = _rest_pose_bvh_features(object_cond)
             else:
@@ -568,6 +587,8 @@ def main() -> int:
                 tags.extend(f'{group}{factor:.3f}' for group, factor in bone_info['scales'].items())
             if args.mode == 'rest-repose':
                 tags.append(f"repose{repose_info['max_rest_angle_deg']:.0f}deg")
+            if args.mode == 'rest-variant':
+                tags.append(f"variant-{variant_info['tag']}")
 
             fname = f"{stem}__{'+'.join(tags)}.bvh"
             save_path = output_dir / fname
@@ -634,7 +655,7 @@ def main() -> int:
         print(f"       {skipped} clip(s) skipped — requested augmentation not applicable.")
     if failed:
         print(f"       {failed} file(s) failed — check error messages above.")
-    return 1 if failed or (args.mode in ('bone-length', 'rest-repose') and exported == 0) else 0
+    return 1 if failed or (args.mode in ('bone-length', 'rest-repose', 'rest-variant') and exported == 0) else 0
 
 
 if __name__ == "__main__":

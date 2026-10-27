@@ -120,6 +120,35 @@ def _is_fly_reference_path(file_path):
     return _matches_reference_tail(file_path, _FLY_REFERENCE_TAIL_PATTERN)
 
 
+# A rest-pose variant of a species: its stem ends in ``TPose_<tag>`` (``TPose_A``,
+# ``Bear-TPose_2``). A primary rest file never carries a tag after the word.
+_TPOSE_VARIANT_PATTERN = re.compile(r't-?pose[_\- ]+([0-9a-z]+)$', re.IGNORECASE)
+
+
+def tpose_variant_tag(file_path):
+    """The tag of a rest-pose variant file (``TPose_A.glb`` -> ``'A'``), else None."""
+    if is_retargeted_anim_path(file_path):
+        return None
+    stem = os.path.splitext(os.path.basename(str(file_path or '')))[0]
+    match = _TPOSE_VARIANT_PATTERN.search(stem)
+    return match.group(1) if match else None
+
+
+def tpose_variant_paths(anim_files):
+    """``[(tag, path)]`` of the rest-pose variant files among ``anim_files``, by tag.
+
+    A variant is the species' skeleton held in another rest; it never becomes a
+    clip or the primary rest (``find_tpose_reference_path`` drops it).
+    """
+    variants = sorted((tag, path) for path in anim_files
+                      if (tag := tpose_variant_tag(path)) is not None)
+    tags = [tag.lower() for tag, _path in variants]
+    duplicates = sorted({tag for tag in tags if tags.count(tag) > 1})
+    if duplicates:
+        raise ValueError(f"rest-pose variant tag(s) used by more than one file: {duplicates}")
+    return variants
+
+
 def find_tpose_reference_path(anim_files):
     """Find a character-level rest-pose reference carrier.
 
@@ -128,8 +157,12 @@ def find_tpose_reference_path(anim_files):
     cleanest skeleton/mesh container: T-pose/rest/bind > idle > walk > run > fly.
 
     Offline-retargeted clips are never eligible: they are exported from another
-    skeleton's motion and must not define this species' rest pose.
+    skeleton's motion and must not define this species' rest pose. Rest-pose
+    variants (``tpose_variant_paths``) are removed from ``anim_files`` in place
+    and are never eligible either.
     """
+    for file_path in [f for f in anim_files if tpose_variant_tag(f) is not None]:
+        anim_files.remove(file_path)
     own_files = [f for f in anim_files if not is_retargeted_anim_path(f)]
 
     for file_path in own_files:
@@ -404,6 +437,8 @@ __all__ = [
     'RETARGET_MARKER',
     'find_tpose_reference_path',
     'is_retargeted_anim_path',
+    'tpose_variant_paths',
+    'tpose_variant_tag',
     'strip_retarget_marker',
     '_compact_normalized_text',
     '_is_all_bundle_stem',

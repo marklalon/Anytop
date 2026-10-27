@@ -316,6 +316,7 @@ def create_training_data_loader(args):
         bone_length_aug_min=getattr(args, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN),
         rest_repose_prob=getattr(args, 'rest_repose_prob', 0.0),
         rest_repose_max_deg=getattr(args, 'rest_repose_max_deg', DEFAULT_REST_REPOSE_MAX_DEG),
+        rest_variant_prob=getattr(args, 'rest_variant_prob', 0.0),
         species_table=getattr(args, 'species_descriptor_table', None),
     )
 

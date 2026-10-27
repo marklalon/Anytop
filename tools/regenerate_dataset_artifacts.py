@@ -77,11 +77,16 @@ from data_loaders.truebones.truebones_utils.rest_geometry import (  # noqa: E402
     finalize_rest_vs_clip,
     reseat_candidates,
 )
+from data_loaders.truebones.truebones_utils.rest_variants import (  # noqa: E402
+    REST_VARIANTS_KEY,
+    empty_rest_variants,
+)
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     FEATS_LEN,
     MOTION_DIR,
     MOTION_METADATA_FILE,
     ACTION_LABELS_FILE,
+    TPOSE_REFERENCE_SIDECAR,
     get_action_word_embeddings_path,
     get_dataset_dir,
 )
@@ -195,6 +200,56 @@ def _reseat_rest_to_clip_geometry(
               f"across {len(moved_species)} species")
     else:
         print("[OK] rest geometry already agrees with the clips; nothing re-seated")
+
+
+def _refresh_rest_variants(rebuilt_cond: dict[str, dict], dataset_dir_path: Path) -> None:
+    """Measure each species' rest variants (``TPose_<tag>`` files beside its
+    primary rest; see rest_variants.py) into its cond entry.
+
+    Clips never depend on a variant, so adding, editing or deleting one needs no
+    clip rebuild: a species is re-measured only when its variant files or its
+    primary rest no longer match the ``sha1`` recorded in its block. A species
+    whose primary rest file is not on this machine keeps the block it has.
+    """
+    from data_loaders.truebones.truebones_utils.dataset_pipeline import (
+        measure_rest_variants,
+        object_rest_variant_paths,
+        rest_reference_sha1,
+    )
+    from utils.misc import load_tpose_reference_sidecar, resolve_dataset_path
+
+    refs = load_tpose_reference_sidecar(str(dataset_dir_path / TPOSE_REFERENCE_SIDECAR))
+    measured = []
+    for object_key, entry in sorted(rebuilt_cond.items()):
+        species = str(entry.get("species_name", object_key.rpartition("/")[2]))
+        try:
+            primary = resolve_dataset_path(refs.get(species) or refs.get(object_key))
+        except FileNotFoundError:
+            primary = None
+        current = entry.get(REST_VARIANTS_KEY)
+        if primary is None:
+            if current is None:
+                entry[REST_VARIANTS_KEY] = empty_rest_variants()
+            continue
+        variants = object_rest_variant_paths(primary)
+        if not variants:
+            if current is None or current["tags"]:
+                entry[REST_VARIANTS_KEY] = empty_rest_variants()
+            continue
+        if (current is not None
+                and current["tags"] == [tag for tag, _path in variants]
+                and current["primary_sha1"] == rest_reference_sha1(primary)
+                and current["sha1"] == [rest_reference_sha1(path) for _tag, path in variants]):
+            continue
+        entry[REST_VARIANTS_KEY] = measure_rest_variants(
+            species, primary, variants, entry["joints_names"],
+            int(entry.get("root_promote_depth", 0)),
+        )
+        measured.append(f"{species} [{', '.join(tag for tag, _path in variants)}]")
+    with_variants = sum(1 for entry in rebuilt_cond.values() if entry[REST_VARIANTS_KEY]["tags"])
+    if measured:
+        print(f"[OK] rest variants measured: {'; '.join(measured)}")
+    print(f"[OK] {with_variants} species carry rest variants")
 
 
 def _compute_canonical_stats(
@@ -552,6 +607,10 @@ def _regenerate_dataset_artifacts(
     )
     print(f"[OK] T5 embeddings attached in {time.time() - t0:.1f}s")
     report_joint_name_collisions(rebuilt_cond)
+
+    t0 = time.time()
+    _refresh_rest_variants(rebuilt_cond, dataset_dir_path)
+    print(f"[OK] rest variants checked in {time.time() - t0:.1f}s")
 
     if reseat_rest:
         t0 = time.time()

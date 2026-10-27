@@ -24,8 +24,8 @@ def augment_reference_skeleton(motion, cond, metadata, opt, *, shared=None):
     The draws are independent of the target's own skeleton augmentation;
     ``motion`` / ``cond`` are the stored rig's clip. ``shared`` holds channels
     already derived from this same rig; they are kept while no augmentation
-    changes the skeleton, and the structural channel also across the
-    bone-length and rest re-pose stages. The augmentations return new arrays,
+    changes the skeleton, and the structural channel also across the rest
+    variant, bone-length and rest re-pose stages. The augmentations return new arrays,
     so the caller's motion and cond are never written.
     """
     import random
@@ -34,35 +34,46 @@ def augment_reference_skeleton(motion, cond, metadata, opt, *, shared=None):
         DEFAULT_BONE_LENGTH_AUG, DEFAULT_BONE_LENGTH_AUG_MIN, augment_bone_lengths)
     from data_loaders.truebones.truebones_utils.rest_repose_aug import (
         DEFAULT_REST_REPOSE_MAX_DEG, augment_rest_repose)
+    from data_loaders.truebones.truebones_utils.rest_variants import (
+        augment_rest_variant, stored_rest_struct_cond)
 
     metadata = dict(metadata)
+    variant_prob = getattr(opt, 'rest_variant_prob', 0.0)
     topology_prob = getattr(opt, 'topology_aug_prob', 0.0)
     bone_prob = getattr(opt, 'bone_length_aug_prob', 0.0)
     repose_prob = getattr(opt, 'rest_repose_prob', 0.0)
     shared = dict(shared or {})
     changed = False
+    stored_cond = cond
+    variant_applied = False
+    # Drawn independently of the target's, so a self-reference can see the same
+    # clip under another of the species' rests.
+    if variant_prob and random.random() < variant_prob:
+        motion, cond, info = augment_rest_variant(motion, cond)
+        variant_applied = info['applied']
     if topology_prob and random.random() < topology_prob:
         motion, cond, info = augment_topology(motion, cond, metadata['translation_root_index'])
         if info['applied']:
             metadata['translation_root_index'] = info['translation_root_index']
-            shared = dict(joint_struct=build_joint_struct_features(cond))
+            struct_cond = (stored_rest_struct_cond(cond, stored_cond, info['new_index'])
+                           if variant_applied else cond)
+            shared = dict(joint_struct=build_joint_struct_features(struct_cond))
             changed = True
     # The structural channel names the rig's joints, not its rest geometry, so
-    # the bone-length and re-pose stages keep it (see rest_repose_aug).
-    struct_cond = cond
-    geometry_changed = False
+    # the rest variant, bone-length and re-pose stages keep it (see rest_repose_aug).
+    geometry_changed = variant_applied
     if bone_prob and random.random() < bone_prob:
         motion, cond, info = augment_bone_lengths(
             motion, cond, metadata, getattr(opt, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG),
             getattr(opt, 'bone_length_aug_min', DEFAULT_BONE_LENGTH_AUG_MIN))
-        geometry_changed = info['applied']
+        geometry_changed = geometry_changed or info['applied']
     if repose_prob and random.random() < repose_prob:
         motion, cond, info = augment_rest_repose(
             motion, cond, metadata, getattr(opt, 'rest_repose_max_deg', DEFAULT_REST_REPOSE_MAX_DEG))
         geometry_changed = geometry_changed or info['applied']
     if geometry_changed:
         struct = shared.get('joint_struct')
-        shared = dict(joint_struct=build_joint_struct_features(struct_cond) if struct is None else struct)
+        shared = dict(joint_struct=build_joint_struct_features(stored_cond) if struct is None else struct)
     return motion, cond, shared, changed or geometry_changed
 
 

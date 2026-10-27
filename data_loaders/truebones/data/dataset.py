@@ -87,6 +87,11 @@ from data_loaders.truebones.truebones_utils.rest_repose_aug import (
     augment_rest_repose,
     validate_rest_repose_aug,
 )
+from data_loaders.truebones.truebones_utils.rest_variants import (
+    augment_rest_variant,
+    stored_rest_struct_cond,
+    validate_rest_variant_prob,
+)
 from data_loaders.truebones.truebones_utils.dataset_tags import (
     assert_cond_species_tags_current,
     assert_species_tags_cover,
@@ -1384,6 +1389,18 @@ class MotionDataset(data.Dataset):
                     self._rest_geometry_cache[partner_type],
                 )
                 ref_partner = True
+        # ── Rest variant (the species' hand-made rest poses; see rest_variants.py) ──
+        # First skeleton stage: from here on the sample is the stored rig held in
+        # another rest, and the stages below edit that rig. The structural
+        # channel keeps naming the stored rig's joints.
+        stored_cond = cond
+        rest_variant_info = {'applied': False, 'tag': None, 'index': -1, 'skip_reason': 'probability draw'}
+        rest_variant_prob = float(getattr(self.opt, 'rest_variant_prob', 0.0))
+        if rest_variant_prob > 0.0 and random.random() < rest_variant_prob:
+            motion, cond, rest_variant_info = augment_rest_variant(motion, cond)
+            if rest_variant_info['applied']:
+                rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
+                offsets = cond['offsets']
         # ── Topology augmentation (leaf drop / chain merge; see topology_aug.py) ──
         # Runs on the stored clip, before any temporal stage: from here on the
         # sample IS the edited rig, so every later stage and the canonical
@@ -1403,7 +1420,9 @@ class MotionDataset(data.Dataset):
             rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
             offsets = cond['offsets']
             joints_names_embs = cond['joints_names_embs']
-            joint_struct = build_joint_struct_features(cond, source=str(object_type))
+            struct_cond = (stored_rest_struct_cond(cond, stored_cond, topology_info['new_index'])
+                           if rest_variant_info['applied'] else cond)
+            joint_struct = build_joint_struct_features(struct_cond, source=str(object_type))
         bone_length_info = {'applied': False, 'scales': {}, 'skip_reason': 'probability draw'}
         bone_length_prob = float(getattr(self.opt, 'bone_length_aug_prob', 0.0))
         if bone_length_prob > 0.0 and random.random() < bone_length_prob:
@@ -1456,7 +1475,7 @@ class MotionDataset(data.Dataset):
         if is_loop:
             motion = _drop_loop_closing_frame(motion)
             m_length = int(motion.shape[0])
-        target_skeleton_changed = bool(topology_info['applied']
+        target_skeleton_changed = bool(rest_variant_info['applied'] or topology_info['applied']
                                        or bone_length_info['applied'] or rest_repose_info['applied'])
         ref_separate_rig = ref_partner or target_skeleton_changed or ref_skeleton_changed
         if ref_source is not None and ref_separate_rig:
@@ -1642,6 +1661,7 @@ class MotionDataset(data.Dataset):
                 'resample_speed_cond': float(resample_speed_cond),
                 'loop_uncond': bool(loop_uncond),
                 'motion_speed_applied': float(motion_speed_applied),
+                'rest_variant': rest_variant_info,
                 'topology_aug': topology_info,
                 'bone_length_aug': bone_length_info,
                 'rest_repose_aug': rest_repose_info,
@@ -1924,6 +1944,10 @@ class Truebones(data.Dataset):
         validate_rest_repose_aug(self.opt.rest_repose_prob, self.opt.rest_repose_max_deg)
         if self.opt.rest_repose_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
             raise ValueError('rest re-pose augmentation is for training splits only; pass 0.0.')
+        self.opt.rest_variant_prob = float(kwargs.get('rest_variant_prob', 0.0))
+        validate_rest_variant_prob(self.opt.rest_variant_prob)
+        if self.opt.rest_variant_prob > 0.0 and split not in ('train', ALL_SPLIT_NAME):
+            raise ValueError('rest variant sampling is for training splits only; pass 0.0.')
         validate_topology_aug(self.opt.topology_aug_prob)
         # A training augmentation: on an evaluation split it would change the
         # rigs being scored from one pass to the next.
