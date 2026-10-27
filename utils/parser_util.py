@@ -269,6 +269,11 @@ def add_model_options(parser):
                             "|R_pred - R_gt|_F / sqrt(3)), so a leaf's rotation is held like a joint with a child. "
                             "Weighted by alphas_cumprod[t] so it fades out at high noise. Computed on "
                             "denormalized outputs; recommended range ~0.1-0.3.")
+    group.add_argument("--lambda_limb_corr", default=0.0, type=float,
+                       help="Weight of the inter-limb coordination loss: the lagged, normalized correlations "
+                            "between limb-tip steps (one tip per hand, foot and wing chain) against the target's, weighted by "
+                            "the target's limb motion so a still limb drops out. Invariant to time shift and "
+                            "amplitude, so it supervises relative timing between limbs only. 0 disables it.")
     group.add_argument("--motion_speed_aug", default=1.0, type=float,
                        help="Motion-speed augmentation range R (1.0 = off). Each training clip is first "
                             "time-scaled by a log-uniform ratio in [1/R, R] -- played faster (fewer frames) "

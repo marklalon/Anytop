@@ -105,6 +105,7 @@ for clips, it matches a word bounded by non-alphanumerics. ``group`` keeps the
 rows that group owns.
 """
 import argparse
+import copy
 import difflib
 import json
 import os
@@ -152,6 +153,10 @@ from data_loaders.truebones.truebones_utils.fbx_filename_rules import (  # noqa:
 from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noqa: E402
     build_joint_embedding_texts,
 )
+from data_loaders.truebones.truebones_utils.joint_name_canonical import (  # noqa: E402
+    refresh_joint_metadata_in_object_cond,
+)
+from data_loaders.truebones.truebones_utils.joint_parts import prefill_limb_tips  # noqa: E402
 from data_loaders.truebones.truebones_utils.tpose_bvh import (  # noqa: E402
     tpose_dfs_order,
     write_tpose_bvh,
@@ -1041,6 +1046,10 @@ class JointNamesStore:
         sides = list(entry.get("joint_side_labels") or ["center"] * len(names))
         twins = list(entry.get("symmetry_partner_indices") or [-1] * len(names))
         parents = [int(parent) for parent in entry["parents"]]
+        # The limb tips the training loader picks, on the metadata it refreshes.
+        refreshed = copy.deepcopy(entry)
+        refresh_joint_metadata_in_object_cond(refreshed)
+        limb_tips = set(prefill_limb_tips(refreshed))
         joints = [{
             "index": index,
             "name": name,
@@ -1049,6 +1058,7 @@ class JointNamesStore:
             "parent": parents[index],
             "side": sides[index],
             "twin": int(twins[index]),
+            "limb_tip": index in limb_tips,
         } for index, name in enumerate(names)]
         return {
             "species": species,

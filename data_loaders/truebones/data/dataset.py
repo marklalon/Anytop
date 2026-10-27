@@ -64,6 +64,11 @@ from data_loaders.truebones.truebones_utils.joint_embedding_text import (
 from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
+from data_loaders.truebones.truebones_utils.joint_parts import (
+    bone_path_lengths,
+    limb_tips,
+    prefill_limb_end_chains,
+)
 from data_loaders.reference import REST_GEOM_COLUMNS, rest_geometry
 from data_loaders.truebones.truebones_utils.topology_aug import (
     TOPOLOGY_AUG_KINDS,
@@ -687,6 +692,35 @@ def _is_anatomical_non_helper_joint_name(joint_name: str) -> bool:
     return bool(filtered_tokens)
 
 
+def _build_limb_chains(object_cond) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-joint id of the limb-end chain (``prefill_limb_end_chains``) the
+    joint belongs to, -1 off every chain, whether that chain is a wing, and
+    the joint's ``bone_path_lengths`` on the stored rig. Per-joint, so
+    topology augmentation slices all three with the rig, and the rest-pose
+    and bone-length augmentations leave them as stored."""
+    joint_count = len(object_cond['parents'])
+    chain_ids = np.full((joint_count,), -1, dtype=np.int64)
+    wing = np.zeros((joint_count,), dtype=np.bool_)
+    chains, is_wing = prefill_limb_end_chains(object_cond)
+    for chain_id, (chain, chain_is_wing) in enumerate(zip(chains, is_wing)):
+        chain_ids[chain] = chain_id
+        wing[chain] = chain_is_wing
+    reach = bone_path_lengths(object_cond['parents'], object_cond['offsets'])
+    return chain_ids, wing, reach
+
+
+def _limb_tip_mask(object_cond) -> np.ndarray:
+    """Per-joint flag of each limb's tip (``limb_tips``) among the joints
+    left of its limb-end chain."""
+    chain_ids = np.asarray(object_cond['limb_chain_id'], dtype=np.int64)
+    wing = np.asarray(object_cond['limb_wing'], dtype=np.bool_)
+    chains = [np.flatnonzero(chain_ids == chain_id) for chain_id in np.unique(chain_ids[chain_ids >= 0])]
+    tips = np.zeros(chain_ids.shape, dtype=np.bool_)
+    tips[limb_tips(object_cond['parents'], chains, [bool(wing[c[0]]) for c in chains],
+                   object_cond['limb_reach'])] = True
+    return tips
+
+
 def _build_joint_mask_candidate_roots(object_cond) -> np.ndarray:
     parents = [int(parent_index) for parent_index in object_cond.get('parents', [])]
     joint_count = len(parents)
@@ -1046,6 +1080,10 @@ class MotionDataset(data.Dataset):
             object_key: build_joint_struct_features(entry, source=str(object_key))
             for object_key, entry in cond_dict.items()
         }
+        # Per-joint, so the skeleton augmentations carry it with the rig; the
+        # limb tips are picked from it per sample (_limb_tip_mask).
+        for entry in cond_dict.values():
+            entry['limb_chain_id'], entry['limb_wing'], entry['limb_reach'] = _build_limb_chains(entry)
         self.head_word_weights = parse_head_word_weights(head_word_weights)
         self.rare_head_word_floor, self.rare_head_word_max_boost = parse_rare_head_word_floor(
             rare_head_word_floor, rare_head_word_max_boost
@@ -1643,6 +1681,7 @@ class MotionDataset(data.Dataset):
             return motion, m_length, parents, rest_geom, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
                 'reference': reference,
                 'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
+                'limb_tip_mask': _limb_tip_mask(cond),
                 'joint_struct': joint_struct,
                 'species_code': cond.get('species_code'),
                 'parents': cond['parents'],
@@ -1671,6 +1710,7 @@ class MotionDataset(data.Dataset):
         return motion, m_length, parents, rest_geom, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
             'reference': reference,
             'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
+            'limb_tip_mask': _limb_tip_mask(cond),
             'joint_struct': joint_struct,
             'species_code': cond.get('species_code'),
             'parents': cond['parents'],

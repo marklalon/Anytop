@@ -37,6 +37,12 @@ from utils.device_transfer import host_to_device
 # segments) are weighted as if they had this length, which bounds how much
 # louder the shortest bones can be than an L-long one.
 BONE_REST_FLOOR_FRAC = 0.06
+# Lags of the limb correlation loss, as fractions of the window: zero lag reads
+# whether limbs move together, the others which one leads.
+LIMB_CORR_LAG_FRACS = (0.0, 0.125, 0.25)
+# Mean squared limb-tip step, in L per frame, below which a limb counts as
+# still: it sits between a breathing idle's tips and a walk's.
+LIMB_CORR_ENERGY_FLOOR = 1e-4
 
 _EXTRACT_TENSOR_CACHE = {}
 _EXTRACT_TENSOR_CACHE_FINALIZERS = {}
@@ -223,6 +229,7 @@ class GaussianDiffusion:
         lambda_root_dpos=0.,
         lambda_loop_wrap=0.,
         lambda_bone=0.,
+        lambda_limb_corr=0.,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
         renoise_same_level_prob=1.0,
@@ -236,6 +243,7 @@ class GaussianDiffusion:
         self.lambda_root_dpos = float(lambda_root_dpos)
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_bone = float(lambda_bone)
+        self.lambda_limb_corr = float(lambda_limb_corr)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
         self.renoise_same_level_prob = float(renoise_same_level_prob)
@@ -248,6 +256,8 @@ class GaussianDiffusion:
             raise ValueError(f"lambda_loop_wrap must be >= 0, got {self.lambda_loop_wrap}")
         if self.lambda_bone < 0.0:
             raise ValueError(f"lambda_bone must be >= 0, got {self.lambda_bone}")
+        if self.lambda_limb_corr < 0.0:
+            raise ValueError(f"lambda_limb_corr must be >= 0, got {self.lambda_limb_corr}")
         if self.temporal_span_seam_loss_weight < 0.0:
             raise ValueError(
                 "temporal_span_seam_loss_weight must be >= 0, got "
@@ -701,6 +711,76 @@ class GaussianDiffusion:
         if t is not None:
             signal = extract_into_tensor(self.alphas_cumprod, t, (bs, 1, 1)).to(pred_physical.dtype)
         return self._masked_smooth_l1(rel, valid_bt, weight=signal)
+
+    def limb_correlation_loss(self, pred_physical, target_physical, y, lengths):
+        """Inter-limb coordination: the prediction's lagged limb-tip correlations
+        against the target's. ``[B]``.
+
+        Each limb tip (``y['limb_tip_mask']``) contributes its frame-to-frame
+        step relative to the root joint, in units of L. For every ordered pair
+        of tips and every lag of ``LIMB_CORR_LAG_FRACS`` the normalized
+        correlation ``<v_i(t), v_j(t + lag)> / (|v_i| |v_j|)`` is compared with
+        the target's; positive lags over ordered pairs also cover the negative
+        ones. It matches whatever structure the target has -- antiphase gait,
+        a jump's in-phase push, a one-sided strike -- and adds no gait prior.
+
+        * Shifting the whole clip in time keeps it, so absolute timing stays
+          with ``l_simple``; scaling the amplitude keeps it, so the blurred
+          high-noise x0 is not pulled away from the posterior mean.
+        * Pairs are weighted by ``sqrt(E_i E_j)`` of the target's tip energies:
+          a limb the target holds still has no meaningful correlation and
+          drops out. The norms carry ``LIMB_CORR_ENERGY_FLOOR`` so a still
+          predicted limb gives a bounded gradient.
+        * Per sample the weights are normalized by their sum, floored at the
+          pair count times ``LIMB_CORR_ENERGY_FLOOR``: a many-legged rig weighs
+          what a quadruped does, and a near-still clip fades out.
+        """
+        batch_size, max_joints, _n_feats, n_frames = pred_physical.shape
+        tips = (y or {}).get('limb_tip_mask')
+        if tips is None or n_frames < 2:
+            return pred_physical.new_zeros(batch_size)
+        device, dtype = pred_physical.device, pred_physical.dtype
+        tips = tips.to(device=device, dtype=dtype).reshape(batch_size, max_joints)
+        length_scale = th.as_tensor(
+            _length_scale_from_cond(y, like=pred_physical), dtype=dtype, device=device,
+        ).reshape(-1).expand(batch_size)
+        n_steps = n_frames - 1
+        step_valid = (
+            th.arange(n_steps, device=device).view(1, n_steps)
+            < (th.as_tensor(lengths, device=device).reshape(-1, 1) - 1)
+        ).to(dtype)                                                              # [B, T-1]
+        step_count = step_valid.sum(dim=1).clamp_min(1.0)
+        norm_floor = (step_count * LIMB_CORR_ENERGY_FLOOR).view(batch_size, 1)
+
+        def tip_steps(physical):
+            pos = root_relative_positions(physical[:, :, 0:3, :])
+            pos = pos - pos[:, 0:1]
+            steps = (pos[..., 1:] - pos[..., :-1]) / length_scale.view(batch_size, 1, 1, 1)
+            return steps * step_valid.view(batch_size, 1, 1, n_steps) * tips.view(batch_size, max_joints, 1, 1)
+
+        def correlations(steps):
+            sq_norm = steps.pow(2).sum(dim=(2, 3))                               # [B, J]
+            inv_norm = (sq_norm + norm_floor).rsqrt()
+            out = []
+            for frac in LIMB_CORR_LAG_FRACS:
+                lag = int(round(frac * n_steps))
+                if lag >= n_steps:
+                    continue
+                gram = th.einsum('bict,bjct->bij', steps[..., :n_steps - lag], steps[..., lag:])
+                out.append(gram * inv_norm.unsqueeze(2) * inv_norm.unsqueeze(1))
+            return th.stack(out, dim=1), sq_norm                                 # [B, lags, J, J]
+
+        corr_pred, _ = correlations(tip_steps(pred_physical))
+        corr_tgt, tgt_sq_norm = correlations(tip_steps(target_physical))
+        energy = tgt_sq_norm / step_count.view(batch_size, 1)
+        pair = tips.unsqueeze(2) * tips.unsqueeze(1) * (1.0 - th.eye(max_joints, device=device, dtype=dtype))
+        weight = (energy.unsqueeze(2) * energy.unsqueeze(1)).clamp_min(0.0).sqrt() * pair
+        err = (corr_pred - corr_tgt).pow(2).mean(dim=1)                          # [B, J, J]
+        denom = th.maximum(
+            weight.sum(dim=(1, 2)),
+            pair.sum(dim=(1, 2)).clamp_min(1.0) * LIMB_CORR_ENERGY_FLOOR,
+        )
+        return (err * weight).sum(dim=(1, 2)) / denom
 
     def _coerce_bool_batch(self, value, batch_size, device, default=False):
         if value is None:
@@ -1962,6 +2042,12 @@ class GaussianDiffusion:
                         joints_padding_mask_fp32, y_for_decode, t=t, rotations=rotations,
                     )
                     terms["loss"] = terms["loss"] + self.lambda_bone * terms["bone_loss"]
+
+                if self.lambda_limb_corr > 0.:
+                    terms["limb_corr_loss"] = self.limb_correlation_loss(
+                        model_output_physical, target_physical, y_for_decode, lengths_fp32,
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_limb_corr * terms["limb_corr_loss"]
 
                 if self.lambda_loop_wrap > 0.0:
                     y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}

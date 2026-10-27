@@ -273,7 +273,13 @@ def truebones_collate(batch):
         for batch_item in notnone_batches:
             candidate_root_batch.append(batch_item.get('joint_mask_candidate_roots', torch.zeros(databatchTensor.shape[1], dtype=torch.bool)).bool())
         cond['y'].update({'joint_mask_candidate_roots': torch.stack(candidate_root_batch)})
-    
+
+    if any('limb_tip_mask' in batch_item for batch_item in notnone_batches):
+        cond['y']['limb_tip_mask'] = torch.stack([
+            batch_item.get('limb_tip_mask', torch.zeros(databatchTensor.shape[1], dtype=torch.bool)).bool()
+            for batch_item in notnone_batches
+        ])
+
     if 'parents' in notnone_batches[0]:
         parentsbatch = [b['parents'] for b in notnone_batches]
         cond['y'].update({'parents': parentsbatch})
@@ -404,6 +410,12 @@ def truebones_batch_collate(batch, joint_buckets=None):
             if candidate_count > 0:
                 padded_candidate_roots[:candidate_count] = torch.from_numpy(raw_candidates[:candidate_count])
             item['joint_mask_candidate_roots'] = padded_candidate_roots
+        if extra_cond is not None and 'limb_tip_mask' in extra_cond:
+            raw_tips = np.asarray(extra_cond['limb_tip_mask'], dtype=np.bool_)
+            padded_tips = torch.zeros((max_joints,), dtype=torch.bool)
+            tip_count = min(max_joints, n_joints, int(raw_tips.shape[0]))
+            padded_tips[:tip_count] = torch.from_numpy(raw_tips[:tip_count])
+            item['limb_tip_mask'] = padded_tips
         if extra_cond is not None and extra_cond.get('species_code') is not None:
             item['species_code'] = torch.from_numpy(np.asarray(extra_cond['species_code'], dtype=np.float32))
         if extra_cond is not None and 'rest_pos_ric_hml' in extra_cond:

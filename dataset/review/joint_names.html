@@ -428,7 +428,10 @@ function disposeSkeleton() {
   if (skel.group) {
     skel.group.traverse((obj) => {
       if (obj.geometry) obj.geometry.dispose();
-      if (obj.material) [].concat(obj.material).forEach((material) => material.dispose());
+      if (obj.material) [].concat(obj.material).forEach((material) => {
+        if (material.map) material.map.dispose();
+        material.dispose();
+      });
     });
     scene.remove(skel.group);
     skel.group = null;
@@ -518,6 +521,17 @@ function buildSkeleton(bvhText, payload) {
     mesh.frustumCulled = false;
     group.add(mesh);
   }
+  // Limb tips (the joints the limb correlation loss follows): a white camera-facing
+  // ring the size of the joint sphere, drawn over everything so it stays visible
+  // through the mesh.
+  const tipMaterial = new THREE.SpriteMaterial({ map: ringTexture(), transparent: true, depthTest: false, depthWrite: false });
+  skel.tipRings = payload.joints.filter((j) => j.limb_tip).map((j) => {
+    const sprite = new THREE.Sprite(tipMaterial);
+    sprite.userData.joint = j.index;
+    sprite.renderOrder = 10;
+    group.add(sprite);
+    return sprite;
+  });
 
   const lineGeo = new THREE.BufferGeometry();
   const segments = payload.joints.filter((j) => j.parent >= 0);
@@ -542,6 +556,18 @@ const tmpMatrix = new THREE.Matrix4();
 const zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
 const SPHERE_RADIUS = 0.018, HALO_SCALE = 1.3;
 
+function ringTexture() {
+  const size = 64, canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, size / 2 - 4, 0, 2 * Math.PI);
+  ctx.stroke();
+  return new THREE.CanvasTexture(canvas);
+}
+
 function refreshVisuals() {
   if (!skel.group || !state.current) return;
   const joints = state.current.joints;
@@ -561,6 +587,10 @@ function refreshVisuals() {
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
   skel.solid.computeBoundingSphere();   // the raycaster culls against it when picking
+  for (const sprite of skel.tipRings) {
+    sprite.position.copy(skel.positions[sprite.userData.joint]);
+    sprite.scale.set(2 * r, 2 * r, 1);
+  }
   const colors = skel.lines.geometry.getAttribute('color');
   skel.lines.userData.segments.forEach((child, s) => {
     tmpColor.set(SIDE_COLORS[joints[child].side] || SIDE_COLORS.center);
@@ -985,7 +1015,8 @@ function pick(event) {
 
 function jointTip(j) {
   const twin = j.twin >= 0 ? state.current.joints[j.twin].name : '—';
-  return `${j.name}\nCanonical: ${j.canonical}\nEmbedText: ${j.text || '（空）'}\n侧：${SIDE_LABELS[j.side] || j.side} · 镜像：${twin}`;
+  return `${j.name}\nCanonical: ${j.canonical}\nEmbedText: ${j.text || '（空）'}\n侧：${SIDE_LABELS[j.side] || j.side} · 镜像：${twin}`
+    + (j.limb_tip ? '\n肢体末端（白圈）' : '');
 }
 
 let drag = null;

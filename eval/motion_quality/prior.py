@@ -59,7 +59,7 @@ Features
   dimension's business -- out of the tempo.
 
 ``legs`` are the foot chains of ``joint_parts.prefill_foot_chains``, each
-followed by its lowest joint's fore-aft swing; ``wings`` are the wing tips
+followed by its tip's (``joint_parts.chain_tips``) fore-aft swing; ``wings`` are the wing tips
 (the farthest wing joint of each side), followed by their height.
 """
 
@@ -77,7 +77,7 @@ from scipy.signal import hilbert
 
 from data_loaders.truebones.offline_reference_dataset import resolve_sources
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
-from data_loaders.truebones.truebones_utils.joint_parts import prefill_foot_chains
+from data_loaders.truebones.truebones_utils.joint_parts import prefill_foot_chain_tips
 from data_loaders.truebones.truebones_utils.motion_labels import (
     head_words_in,
     load_motion_metadata,
@@ -177,7 +177,7 @@ class PriorProfile(PhysicsProfile):
             if left and right:
                 self.sided[part] = (np.asarray(left), np.asarray(right))
 
-        legs = [int(min(chain, key=lambda j: rest[j, 1])) for chain in prefill_foot_chains(object_cond)]
+        legs = prefill_foot_chain_tips(object_cond)
         wings = []
         wing_joints = self.parts.get("wing", np.zeros(0, dtype=np.int64))
         root = rest[self.translation_root_index]

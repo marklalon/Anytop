@@ -297,6 +297,10 @@ def make_dataset():
     dataset.cond_dict = {'test': cond}
     dataset._joint_struct_cache = {'test': build_joint_struct_features(cond)}
     dataset._rest_geometry_cache = {'test': rest_geometry(cond)}
+    # MotionDataset.__init__ sets it; the fixture rig has no foot chains.
+    cond['limb_chain_id'] = np.full(len(cond['parents']), -1)
+    cond['limb_wing'] = np.zeros(len(cond['parents']), dtype=bool)
+    cond['limb_reach'] = np.zeros(len(cond['parents']))
     dataset._load_physical_motion = lambda data: (
         motion, len(motion), 'test', cond['parents'], cond['joints_graph_dist'],
         cond['joint_relations'], rest_geometry(cond)[:, REST_GEOM_COLUMNS], cond['offsets'],

@@ -75,21 +75,37 @@ def foot_chains(parents, parts, contact=None) -> list[list[int]]:
     joints holding a ``contact`` joint (a quadruped's fore hooves). ``parts``
     is one part name per joint, ``contact`` one flag per joint (None: no hand
     stands)."""
+    return [
+        chain for chain in limb_end_chains(parents, parts)
+        if parts[chain[0]] == 'foot'
+        or (parts[chain[0]] == 'hand' and contact is not None and any(contact[j] for j in chain))
+    ]
+
+
+# Parts whose runs end a limb. A wing is a forelimb (a bat's or bird's hand) or
+# an insect's flapping limb, labelled as a whole.
+LIMB_END_PARTS = ('foot', 'hand', 'wing')
+
+
+def limb_end_chains(parents, parts, sides=None) -> list[list[int]]:
+    """Every connected run of each ``LIMB_END_PARTS`` part, standing or not,
+    one sorted list per run; a run holds one part. With ``sides`` (one side
+    label per joint) a ``center`` joint is trunk, never limb: a wing root on
+    the body's midline leaves its left and right wings as two runs."""
     parents = np.asarray(parents, dtype=np.int64)
     chains: dict[int, list[int]] = {}
     top_of: dict[int, int] = {}
     for index in _topological_order(parents)[0]:
-        if parts[index] not in ('foot', 'hand'):
+        if parts[index] not in LIMB_END_PARTS:
+            continue
+        if sides is not None and sides[index] == 'center':
             continue
         parent = int(parents[index])
         same_run = parent >= 0 and parent in top_of and parts[parent] == parts[index]
         top = top_of[parent] if same_run else index
         top_of[index] = top
         chains.setdefault(top, []).append(int(index))
-    return [
-        sorted(chain) for top, chain in sorted(chains.items())
-        if parts[top] == 'foot' or (contact is not None and any(contact[j] for j in chain))
-    ]
+    return [sorted(chain) for top, chain in sorted(chains.items())]
 
 
 def prefill_foot_chains(cond_entry) -> list[list[int]]:
@@ -98,6 +114,95 @@ def prefill_foot_chains(cond_entry) -> list[list[int]]:
     rows = [prefill[str(name)] for name in cond_entry['joints_names']]
     return foot_chains(cond_entry['parents'], [row['part'] for row in rows],
                        [bool(row['contact']) for row in rows])
+
+
+def chain_tips(parents, chains) -> list[int]:
+    """The tip of each chain: the end of its unbranched run, walking down from
+    the chain's top while a joint has exactly one child in the chain. A foot
+    that splits into toes is its own tip; a single-toe hoof runs to the leaf.
+    So the tip follows the limb, not a toe's own animation, and a T-pose that
+    holds a mid-leg joint lowest does not move it."""
+    parents = np.asarray(parents, dtype=np.int64)
+    tips = []
+    for chain in chains:
+        members = set(int(j) for j in chain)
+        children = {j: [k for k in sorted(members) if int(parents[k]) == j] for j in members}
+        joint = _chain_top(parents, members)
+        while len(children[joint]) == 1:
+            joint = children[joint][0]
+        tips.append(joint)
+    return tips
+
+
+def bone_path_lengths(parents, offsets) -> np.ndarray:
+    """Per joint, the summed bone lengths from its tree root down to it. Bone
+    lengths only, so a re-posed rest leaves it unchanged."""
+    parents = np.asarray(parents, dtype=np.int64)
+    bone = np.linalg.norm(np.asarray(offsets, dtype=np.float64), axis=-1)
+    reach = np.zeros(parents.shape, dtype=np.float64)
+    for index in _topological_order(parents)[0]:
+        parent = int(parents[index])
+        if parent >= 0:
+            reach[index] = reach[parent] + bone[index]
+    return reach
+
+
+def wing_tips(chains, reach) -> list[int]:
+    """The tip of each wing chain: its joint of greatest ``reach``
+    (:func:`bone_path_lengths`), the far end of the wing along its bones.
+    Feathers fork off the upper arm, so the unbranched run of
+    :func:`chain_tips` would stop at the shoulder; the wing's span is what
+    flaps."""
+    return [max(sorted(int(j) for j in chain), key=lambda j: float(reach[j])) for chain in chains]
+
+
+def _chain_top(parents, members) -> int:
+    return min(j for j in members if int(parents[j]) not in members)
+
+
+def prefill_foot_chain_tips(cond_entry) -> list[int]:
+    """:func:`chain_tips` of :func:`prefill_foot_chains`, one per standing limb."""
+    return chain_tips(cond_entry['parents'], prefill_foot_chains(cond_entry))
+
+
+# Species tag of high-frequency flappers (insects): their wings are not limbs
+# of the limb correlation loss, the other losses hold them.
+FLUTTERING_TAG = 'Fluttering'
+
+
+def prefill_limb_end_chains(cond_entry) -> tuple[list[list[int]], list[bool]]:
+    """:func:`limb_end_chains` of the prefilled parts and side labels of
+    ``cond_entry`` (every left/right hand, foot and wing, whether the T-pose
+    reads it as standing or not), and whether each is a wing. A
+    ``FLUTTERING_TAG`` species keeps its legs only."""
+    prefill = prefill_joint_parts(cond_entry)
+    names = cond_entry['joints_names']
+    parts = [prefill[str(name)]['part'] for name in names]
+    sides = list(cond_entry.get('joint_side_labels') or ['center'] * len(names))
+    chains = limb_end_chains(cond_entry['parents'], parts, sides)
+    is_wing = [parts[chain[0]] == 'wing' for chain in chains]
+    if FLUTTERING_TAG in (cond_entry.get('species_tags') or ()):
+        chains = [chain for chain, wing in zip(chains, is_wing) if not wing]
+        is_wing = [False] * len(chains)
+    return chains, is_wing
+
+
+def limb_tips(parents, chains, is_wing, reach) -> list[int]:
+    """One tip per limb chain: :func:`wing_tips` for a wing, :func:`chain_tips`
+    otherwise. A rig with fewer than two limbs gets none, since the limb
+    correlation loss needs a pair."""
+    if len(chains) < 2:
+        return []
+    wing = iter(wing_tips([c for c, w in zip(chains, is_wing) if w], reach))
+    other = iter(chain_tips(parents, [c for c, w in zip(chains, is_wing) if not w]))
+    return [next(wing) if w else next(other) for w in is_wing]
+
+
+def prefill_limb_tips(cond_entry) -> list[int]:
+    """:func:`limb_tips` of :func:`prefill_limb_end_chains`, one per limb."""
+    chains, is_wing = prefill_limb_end_chains(cond_entry)
+    reach = bone_path_lengths(cond_entry['parents'], cond_entry['offsets'])
+    return limb_tips(cond_entry['parents'], chains, is_wing, reach)
 
 
 def ground_floors(lowest_heights, chains) -> np.ndarray:
