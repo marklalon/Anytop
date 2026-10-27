@@ -1,8 +1,8 @@
 {
   "_comment": "Quick battery for train_tiny.bat.",
   "checkpoint": {
-    "RUN_NAME": "merged_all_v56",
-    "OUTPUT_DIR": "merged_all_v56_tiny"
+    "RUN_NAME": "merged_all_v58",
+    "OUTPUT_DIR": "merged_all_v58_tiny"
   },
   "tasks": [
     {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Buffalo", "--action_label", "run, forward"]},

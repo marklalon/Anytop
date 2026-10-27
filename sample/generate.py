@@ -77,6 +77,7 @@ from sample.output_lengths import (
 from sample.reference_motion import (
     _REFERENCE_MOTION_PREPROCESS_SUFFIXES,
     _build_source_cond_dict,
+    _edit_uses_self_reference,
     _extract_edit_reference,
     _hide_inpaint_region_from_reference,
     _prepare_img2img_reference_bundle,
@@ -95,17 +96,17 @@ from utils.parser_util import generate_args
 
 
 def _refuse_label_under_self_reference(action_condition):
-    """An inpaint edit is conditioned on the reference itself (see
+    """A frame inpaint is conditioned on the reference itself (see
     ``edit_self_reference`` in main). The model bypasses the action label on
     every reference row and the label has no other use, so asking for one
     there is refused. --species_tags is not: a raw file's own cond may need the
     tags, so the inpaint pass only ignores the restyle (_self_reference_sampling)."""
     if action_condition is not None:
         sys.exit(
-            "ERROR: --inpaint_* conditions the edit on the reference itself (encoded as z), "
+            "ERROR: --inpaint_frames conditions the edit on the reference itself (encoded as z), "
             "and the model ignores --action_label on a referenced sample. Drop --action_label. "
-            "A plain --skip_timesteps edit takes it, and so does a length extension "
-            "(--outpaint), where it steers the pass that appends frames."
+            "A joint-only --inpaint_joints edit takes it, as does a plain --skip_timesteps "
+            "edit and a length extension (--outpaint), where it steers the pass that appends frames."
         )
 
 
@@ -699,17 +700,10 @@ def main(args=None, cond_dict=None, runtime=None):
     # With a reference both wait for the clip itself (further down): its length
     # is the window, and --loop auto reads whether it closes off the tensor.
     _action_condition = _resolve_action_condition(args, model)
-    # An inpaint edit is conditioned on the reference itself, encoded as z:
-    # training gives most rows the target's own window as reference, and with
-    # no z the denoiser falls back to its unconditional prior across the
-    # re-drawn frames (they sink and drift toward another gait). The inpainted
-    # cells are hidden from the encoder, as training hides its re-noised ones.
-    # A plain img2img edit (--skip_timesteps alone) runs without z, so a label
-    # can steer it away from defects in the reference; so does a length
-    # extension's pass that appends frames (see two_pass_outpaint).
-    edit_self_reference = bool(
-        reference_edit and getattr(model, 'ref_encoder', False)
-        and (inpaint_joints_arg or inpaint_frames_arg)
+    edit_self_reference = _edit_uses_self_reference(
+        reference_edit=reference_edit,
+        ref_encoder=getattr(model, 'ref_encoder', False),
+        inpaint_frames=inpaint_frames_arg,
     )
     if edit_self_reference and not getattr(args, 'outpaint', False):
         _refuse_label_under_self_reference(_action_condition)
@@ -1004,12 +998,7 @@ def main(args=None, cond_dict=None, runtime=None):
         """Sampling model + kwargs of a pass conditioned on the reference's z:
         the reference CFG wrapper, and neither the label nor a species restyle
         (the model bypasses both on reference rows)."""
-        _hide_inpaint_region_from_reference(
-            reference, inpaint_mask, frames_given=bool(inpaint_frames_arg),
-            free_joints=_resolve_inpaint_joint_indices(
-                cond_dict[object_type], inpaint_joints_arg, inpaint_include_subtree)[0]
-            if inpaint_joints_arg else None,
-        )
+        _hide_inpaint_region_from_reference(reference, inpaint_mask)
         _, ref_kwargs = create_condition(
             obj_batch, cond_dict, output_frame_count, max_joints=max_joints,
             feature_len=opt.feature_len, loop=loop_condition,

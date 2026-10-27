@@ -279,20 +279,30 @@ def _prepare_window_encoder_reference(window, cond, *, n_joints):
     )
 
 
-def _hide_inpaint_region_from_reference(reference, inpaint_mask, *, frames_given, free_joints):
-    """Withhold the inpainted cells from the encoder, as training withholds its
-    re-noised span / joints (``GaussianDiffusion._hide_corruption_from_reference``).
+def _edit_uses_self_reference(*, reference_edit, ref_encoder, inpaint_frames):
+    """Whether an edit is conditioned on the reference's own z.
 
-    A frame range hides every joint on those window frames (a joint subset on
-    top of it is covered by that); a joint subset alone drops those joints, the
-    reference being the target's own rig. ``inpaint_mask`` is the sampler's
+    A frame inpaint is: training gives most rows the target's own window as
+    reference, and with no z the denoiser falls back to its unconditional prior
+    across the re-drawn frames (they sink and drift toward another gait). The
+    inpainted frames are hidden from the encoder, as training hides its
+    re-noised span; the frames around them still carry the motion. A joint-only
+    inpaint runs without z: hiding the re-drawn joints leaves z nothing about
+    them, and the label is what drives them. So does a plain img2img edit
+    (--skip_timesteps alone), where a label can steer it away from defects in
+    the reference, and a length extension's pass that appends frames.
+    """
+    return bool(reference_edit and ref_encoder and inpaint_frames)
+
+
+def _hide_inpaint_region_from_reference(reference, inpaint_mask):
+    """Withhold the inpainted frames from the encoder, as training withholds its
+    re-noised span (``GaussianDiffusion._hide_corruption_from_reference``).
+
+    Every joint on a re-drawn window frame is hidden (a joint subset on top of
+    the frame range is covered by that). ``inpaint_mask`` is the sampler's
     ``[B, J, 1, T]`` mask, 1 = re-drawn.
     """
-    if frames_given:
-        hidden = (inpaint_mask[:, :, 0, :] > 0).any(dim=1)
-        reference['ref_frame_mask'] = hidden.to(reference['ref_frame_mask'].device)
-    elif free_joints:
-        ref_mask = reference['ref_mask'].clone()
-        ref_mask[:, list(free_joints)] = False
-        reference['ref_mask'] = ref_mask
+    hidden = (inpaint_mask[:, :, 0, :] > 0).any(dim=1)
+    reference['ref_frame_mask'] = hidden.to(reference['ref_frame_mask'].device)
     return reference

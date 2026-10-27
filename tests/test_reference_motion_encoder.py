@@ -634,11 +634,17 @@ def test_generation_hides_the_inpaint_region_from_the_reference():
                      ref_mask=torch.ones(2, 4, dtype=torch.bool))
     mask = torch.zeros(2, 4, 1, 6)
     mask[:, 1:3, 0, 2:5] = 1
-    _hide_inpaint_region_from_reference(reference, mask, frames_given=True, free_joints=[1, 2])
+    _hide_inpaint_region_from_reference(reference, mask)
     assert reference['ref_frame_mask'][0].tolist() == [False, False, True, True, True, False]
     assert reference['ref_mask'].all()
-    joints_only = dict(ref_frame_mask=torch.zeros(2, 6, dtype=torch.bool),
-                       ref_mask=torch.ones(2, 4, dtype=torch.bool))
-    _hide_inpaint_region_from_reference(joints_only, mask, frames_given=False, free_joints=[1, 2])
-    assert not joints_only['ref_frame_mask'].any()
-    assert joints_only['ref_mask'][0].tolist() == [True, False, False, True]
+
+
+def test_only_a_frame_inpaint_edit_is_conditioned_on_its_own_z():
+    from sample.reference_motion import _edit_uses_self_reference
+    uses = lambda **kw: _edit_uses_self_reference(**{
+        'reference_edit': True, 'ref_encoder': True, 'inpaint_frames': '', **kw})
+    assert uses(inpaint_frames='20-30')
+    # Joint-only inpaint, plain skip and outpaint keep the label instead.
+    assert not uses()
+    assert not uses(inpaint_frames='20-30', ref_encoder=False)
+    assert not uses(inpaint_frames='20-30', reference_edit=False)

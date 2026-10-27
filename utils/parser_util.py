@@ -787,7 +787,7 @@ def add_generate_options(parser):
                             "Requires a checkpoint trained with --species_cond. "
                             "Incompatible with --object_type all. The restyle is ignored wherever "
                             "the reference itself drives the motion and the species descriptor is "
-                            "bypassed: an encoded --reference_motion, and the --inpaint_* pass. "
+                            "bypassed: an encoded --reference_motion, and the --inpaint_frames pass. "
                             "Editing a raw .glb/.fbx of a species the checkpoint does not know "
                             "still reads the tags, as that skeleton's own descriptor.")
     group.add_argument("--tempo_cfg_scale", default=1.0, type=float,
