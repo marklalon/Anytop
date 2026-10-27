@@ -24,6 +24,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     MODEL_CHANNELS,
     PARENT_INDEX_KEY,
     ROOT_STAT_SLICE,
+    ROOT_XZ_CHANNELS,
     _length_scale_from_cond,
     canonical_to_physical_hml,
     root_relative_positions,
@@ -219,6 +220,7 @@ class GaussianDiffusion:
         rescale_timesteps=False,
         lambda_geo=0.,
         lambda_dpos=0.,
+        lambda_root_dpos=0.,
         lambda_loop_wrap=0.,
         lambda_bone=0.,
         temporal_span_seam_loss_weight=0.0,
@@ -231,6 +233,7 @@ class GaussianDiffusion:
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
         self.lambda_dpos = float(lambda_dpos)
+        self.lambda_root_dpos = float(lambda_root_dpos)
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_bone = float(lambda_bone)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
@@ -474,6 +477,32 @@ class GaussianDiffusion:
             value = value.expand(batch_size)
         return value
 
+    def _position_step_stats(self, y, batch_size, device):
+        """The per-sample canonical std ``[B, F]`` and position-step RMS ``[B]``
+        the position-step losses measure in."""
+        std = y.get(CANONICAL_STD_KEY)
+        if std is None:
+            raise KeyError(f"y[{CANONICAL_STD_KEY!r}] is missing; the position-step loss needs it.")
+        std = std.to(device=device, dtype=th.float32)
+        std = std.reshape(1, -1).expand(batch_size, -1) if std.dim() == 1 else std.reshape(batch_size, -1)
+        dpos_std = self._per_sample_y_scalar(y, CANONICAL_DPOS_STD_KEY, batch_size, device)
+        return std, dpos_std.clamp_min(1e-8)
+
+    @staticmethod
+    def _position_steps(pos):
+        """Frame-to-frame steps along the last axis, the wrap step
+        ``pos[0] - pos[-1]`` last."""
+        inner = pos[..., 1:] - pos[..., :-1]
+        wrap = pos[..., 0:1] - pos[..., -1:]
+        return th.cat([inner, wrap], dim=-1)
+
+    def _position_step_frame_weight(self, y, batch_size, n_frames, device, dtype):
+        """``[B, T]`` step weights: every inner step, plus the wrap step on a loop."""
+        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
+        frame_weight = th.ones(batch_size, n_frames, device=device, dtype=dtype)
+        frame_weight[:, -1] = is_loop.to(dtype=dtype)
+        return frame_weight
+
     def position_step_loss(self, target, model_output, spat_mask, n_joints, y):
         """Per-sample MSE of every joint's frame-to-frame position step against
         the target's, in units of the corpus position-step RMS. A loop sample
@@ -485,34 +514,45 @@ class GaussianDiffusion:
         if n_frames < 2:
             return target.new_zeros(batch_size)
         y = y if isinstance(y, dict) else {}
-        std = y.get(CANONICAL_STD_KEY)
-        if std is None:
-            raise KeyError(f"y[{CANONICAL_STD_KEY!r}] is missing; the position-step loss needs it.")
-        std = std.to(device=device, dtype=th.float32)
-        std = std.reshape(1, -1).expand(batch_size, -1) if std.dim() == 1 else std.reshape(batch_size, -1)
+        std, dpos_std = self._position_step_stats(y, batch_size, device)
         # Joint 0 is standardized by the root's own stats (canonical_features, "Root").
         pos_std = th.cat([
             std[:, ROOT_STAT_SLICE].unsqueeze(1),
             std[:, 0:3].unsqueeze(1).expand(-1, max_joints - 1, -1),
         ], dim=1)                                                                   # [B, J, 3]
-        dpos_std = self._per_sample_y_scalar(y, CANONICAL_DPOS_STD_KEY, batch_size, device)
-        scale = (pos_std / dpos_std.clamp_min(1e-8).view(batch_size, 1, 1)).unsqueeze(-1)
+        scale = (pos_std / dpos_std.view(batch_size, 1, 1)).unsqueeze(-1)
 
-        def steps(x):
-            pos = x[:, :, 0:3, :]
-            inner = pos[..., 1:] - pos[..., :-1]
-            wrap = pos[..., 0:1] - pos[..., -1:]
-            return th.cat([inner, wrap], dim=-1)                         # [B, J, 3, T]
-
-        err = ((steps(model_output) - steps(target)) * scale) ** 2
-        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
-        frame_weight = th.ones(batch_size, n_frames, device=device, dtype=err.dtype)
-        frame_weight[:, -1] = is_loop.to(dtype=err.dtype)
+        steps = self._position_steps
+        err = ((steps(model_output[:, :, 0:3, :]) - steps(target[:, :, 0:3, :])) * scale) ** 2
+        frame_weight = self._position_step_frame_weight(y, batch_size, n_frames, device, err.dtype)
         joint_weight = spat_mask.float().transpose(1, 3).reshape(batch_size, -1, 1, 1)
         weighted = err * joint_weight * frame_weight.view(batch_size, 1, 1, n_frames)
         n_joints_f = th.as_tensor(n_joints, device=device, dtype=err.dtype).reshape(-1)
         denom = (frame_weight.sum(dim=1) * n_joints_f * 3.0).clamp_min(1.0)
         per_sample = sum_flat(weighted) / denom
+        weight = self._per_sample_y_scalar(y, DPOS_LOSS_WEIGHT_KEY, batch_size, device, default=1.0)
+        return per_sample * weight
+
+    def root_position_step_loss(self, target, model_output, y):
+        """The root's share of :meth:`position_step_loss` on its own: the MSE of
+        its world X/Z step, in the same units and with the same wrap step and
+        species weight. In the all-joint mean it is two channels among every
+        joint's three, and no other joint carries the root's world XZ, so it
+        gets its own weight. ``[B]``."""
+        batch_size, _max_joints, _n_feats, n_frames = target.shape
+        device = target.device
+        if n_frames < 2:
+            return target.new_zeros(batch_size)
+        y = y if isinstance(y, dict) else {}
+        std, dpos_std = self._position_step_stats(y, batch_size, device)
+        xz = list(ROOT_XZ_CHANNELS)
+        scale = (std[:, ROOT_STAT_SLICE][:, xz] / dpos_std.view(batch_size, 1)).unsqueeze(-1)  # [B, 2, 1]
+
+        steps = self._position_steps
+        err = ((steps(model_output[:, 0, xz, :]) - steps(target[:, 0, xz, :])) * scale) ** 2   # [B, 2, T]
+        frame_weight = self._position_step_frame_weight(y, batch_size, n_frames, device, err.dtype)
+        denom = (frame_weight.sum(dim=1) * float(len(xz))).clamp_min(1.0)
+        per_sample = (err * frame_weight.unsqueeze(1)).sum(dim=(1, 2)) / denom
         weight = self._per_sample_y_scalar(y, DPOS_LOSS_WEIGHT_KEY, batch_size, device, default=1.0)
         return per_sample * weight
 
@@ -1874,6 +1914,11 @@ class GaussianDiffusion:
                         actual_joints_fp32, y_for_decode,
                     )
                     terms["loss"] = terms["loss"] + self.lambda_dpos * terms["dpos_loss"]
+                if self.lambda_root_dpos > 0.:
+                    terms["root_dpos_loss"] = self.root_position_step_loss(
+                        target_fp32, model_output_fp32, y_for_decode,
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_root_dpos * terms["root_dpos_loss"]
 
                 target_physical = canonical_to_physical_hml(target_fp32, y_for_decode)
                 model_output_physical = canonical_to_physical_hml(model_output_fp32, y_for_decode)

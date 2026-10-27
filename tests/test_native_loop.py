@@ -315,6 +315,45 @@ class NativeLoopTests(unittest.TestCase):
             )[0]))
         self.assertAlmostEqual(losses[0], 9.0 * losses[1], places=5)
 
+    def test_root_position_step_loss_is_the_root_xz_share_of_the_position_step_loss(self):
+        # Only the root's world X/Z steps count, in the root's own units, with
+        # the wrap step on loops; the same error is the all-joint mean's
+        # 2 / (3 * n_joints) share of it.
+        diffusion = self._make_diffusion()
+        n_frames, n_joints = 6, 3
+        target = torch.zeros(2, n_joints, 12, n_frames, dtype=torch.float32)
+        std = torch.ones(CANONICAL_STAT_LEN, dtype=torch.float32)
+        std[ROOT_STAT_SLICE] = 3.0
+        y = {
+            'is_loop': torch.tensor([True, False]),
+            'canonical_feature_std': std,
+            'canonical_dpos_std': torch.ones(2, dtype=torch.float32),
+        }
+        spat_mask = torch.ones(2, 1, 1, n_joints, dtype=torch.float32)
+
+        prediction = target.clone()
+        prediction[:, 0, 0, -1] += 1.0
+        root = diffusion.root_position_step_loss(target, prediction, y)
+        self.assertAlmostEqual(float(root[0]), 9.0 * 2.0 / (n_frames * 2), places=5)
+        self.assertAlmostEqual(float(root[1]), 9.0 * 1.0 / ((n_frames - 1) * 2), places=5)
+        dpos = diffusion.position_step_loss(
+            target, prediction, spat_mask, torch.tensor([n_joints, n_joints]), y,
+        )
+        self.assertTrue(torch.allclose(dpos, root * 2.0 / (3.0 * n_joints)))
+
+        # The root's height and every other joint are not its business.
+        for joint, channel in ((0, 1), (1, 0), (2, 2)):
+            prediction = target.clone()
+            prediction[:, joint, channel, -1] += 1.0
+            self.assertEqual(float(diffusion.root_position_step_loss(target, prediction, y).abs().max()), 0.0)
+
+        # The species weight scales it like the position-step loss.
+        prediction = target.clone()
+        prediction[:, 0, 2, -1] += 1.0
+        unweighted = diffusion.root_position_step_loss(target, prediction, y)
+        y['dpos_loss_weight'] = torch.tensor([0.5, 0.5])
+        self.assertTrue(torch.allclose(diffusion.root_position_step_loss(target, prediction, y), 0.5 * unweighted))
+
     def test_create_gaussian_diffusion_preserves_loop_args(self):
         class Args:
             noise_schedule = 'cosine'
@@ -323,11 +362,13 @@ class NativeLoopTests(unittest.TestCase):
             sigma_small = True
             lambda_geo = 0.0
             lambda_loop_wrap = 0.75
+            lambda_root_dpos = 0.17
             temporal_span_seam_loss_weight = 0.0
             temporal_span_seam_width = 2
 
         diffusion = create_gaussian_diffusion(Args())
         self.assertEqual(diffusion.lambda_loop_wrap, 0.75)
+        self.assertEqual(diffusion.lambda_root_dpos, 0.17)
 
     def test_anytop_forwards_is_loop_as_the_only_loop_condition(self):
         model = AnyTop(

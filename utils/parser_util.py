@@ -248,6 +248,11 @@ def add_model_options(parser):
                             "step pos[0]-pos[-1]. The root's step is its world XZ step, so this also "
                             "supervises the root trajectory and a loop's closure. Scaled by the species' "
                             "dpos_loss_weight.")
+    group.add_argument("--lambda_root_dpos", default=0.0, type=float,
+                       help="Weight of the root's world X/Z step MSE on its own: --lambda_dpos's root "
+                            "term, same units, wrap step and species weight. In --lambda_dpos it is two "
+                            "channels among every joint's three, too little to keep the root's in-stride "
+                            "lateral/fore-aft sway, which no other joint carries. 0 disables it.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for the loop-only rotation seam continuity loss on denormalized "
                             "outputs: the wrap step's rotation angle matches its neighbouring steps. A loop "

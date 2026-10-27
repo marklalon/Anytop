@@ -310,6 +310,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         model_var_type: ModelVarType,
         lambda_geo: float = 0.0,
         lambda_dpos: float = 0.0,
+        lambda_root_dpos: float = 0.0,
         lambda_bone: float = 0.0,
         temporal_span_seam_loss_weight: float = 0.0,
         temporal_span_seam_width: int = 0,
@@ -322,6 +323,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             loss_type=LossType.MSE,
             lambda_geo=lambda_geo,
             lambda_dpos=lambda_dpos,
+            lambda_root_dpos=lambda_root_dpos,
             lambda_bone=lambda_bone,
             temporal_span_seam_loss_weight=temporal_span_seam_loss_weight,
             temporal_span_seam_width=temporal_span_seam_width,
@@ -361,6 +363,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             model_var_type=ModelVarType.FIXED_LARGE,
             lambda_geo=0.25,
             lambda_dpos=0.5,
+            lambda_root_dpos=0.5,
         )
         model = _BFloat16Model()
         x_start = torch.randn(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
@@ -373,6 +376,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertEqual(terms["l_simple"].dtype, torch.float32)
         self.assertEqual(terms["geodesic_loss"].dtype, torch.float32)
         self.assertEqual(terms["dpos_loss"].dtype, torch.float32)
+        self.assertEqual(terms["root_dpos_loss"].dtype, torch.float32)
         self.assertEqual(terms["loss"].dtype, torch.float32)
 
     def test_geodesic_and_bone_losses_share_one_rotation_conversion(self):
