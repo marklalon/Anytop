@@ -44,7 +44,7 @@ def fixture():
                                        'Right Thigh', 'Right Knee', 'Right Foot'],
                 symmetry_partner_indices=[-1, 4, 5, 6, 1, 2, 3], translation_root_index=0,
                 canonical_feature_mean=np.zeros(15), canonical_feature_std=np.ones(15),
-                joint_mask_candidate_roots=np.zeros(7), joints_names_embs=np.zeros((7, 4)),
+                joints_names_embs=np.zeros((7, 4)),
                 joints_graph_dist=np.zeros((7, 7)), joint_relations=np.zeros((7, 7)),
                 kinematic_chains=[])
     motion = np.broadcast_to(rest_feature, (30, 7, 12)).copy()

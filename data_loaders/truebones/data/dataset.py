@@ -9,7 +9,6 @@ from os.path import join as pjoin
 from pathlib import Path
 import math
 import random
-import re
 from typing import Optional
 import warnings
 from torch.utils.data._utils.collate import default_collate
@@ -633,65 +632,6 @@ def _tile_loop_motion(motion, repeat_count):
     return np.concatenate([motion] * repeat_count, axis=0).astype(motion.dtype, copy=False)
 
 
-_JOINT_MASK_SKIP_TOKENS = {
-    'mid',
-    'rear',
-    'front',
-    'back',
-    'base',
-    'tip',
-}
-_JOINT_MASK_EXCLUDE_TOKENS = {
-    'brain',
-    'bip',
-    'center',
-    'chain',
-    'cog',
-    'copy',
-    'ctrl',
-    'dummy',
-    'end',
-    'fur',
-    'hair',
-    'helper',
-    'ik',
-    'joint',
-    'link',
-    'locator',
-    'mane',
-    'mesh',
-    'node',
-    'nub',
-    'ponytail',
-    'projectile',
-    'reins',
-    'saddle',
-    'site',
-    'trajectory',
-    'xtra',
-}
-
-
-def _joint_mask_name_tokens(joint_name: str) -> list[str]:
-    tokens = []
-    for token in str(joint_name or '').split():
-        clean_token = re.sub(r'[^a-z0-9]+', '', token.lower())
-        clean_token = re.sub(r'\d+$', '', clean_token)
-        if clean_token and not clean_token.isdigit():
-            tokens.append(clean_token)
-    return tokens
-
-
-def _is_anatomical_non_helper_joint_name(joint_name: str) -> bool:
-    tokens = _joint_mask_name_tokens(joint_name)
-    if not tokens:
-        return False
-    if any(token in _JOINT_MASK_EXCLUDE_TOKENS for token in tokens):
-        return False
-    filtered_tokens = [token for token in tokens if token not in _JOINT_MASK_SKIP_TOKENS]
-    return bool(filtered_tokens)
-
-
 def _build_limb_chains(object_cond) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-joint id of the limb-end chain (``prefill_limb_end_chains``) the
     joint belongs to, -1 off every chain, whether that chain is a wing, and
@@ -721,36 +661,26 @@ def _limb_tip_mask(object_cond) -> np.ndarray:
     return tips
 
 
-def _build_joint_mask_candidate_roots(object_cond) -> np.ndarray:
-    parents = [int(parent_index) for parent_index in object_cond.get('parents', [])]
-    joint_count = len(parents)
-    candidate_roots = np.zeros((joint_count,), dtype=np.bool_)
-    if joint_count <= 1:
-        return candidate_roots
-
-    helper_joint_indices = {int(joint_index) for joint_index in object_cond.get('helper_joint_indices') or []}
-    canonical_joint_names = list(object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or [])
-
-    for joint_index, parent_index in enumerate(parents):
-        if joint_index == 0 or parent_index < 0:
+def _limb_root_mask(object_cond) -> np.ndarray:
+    """Per-joint flag of each limb's root, the joint the subtree joint mask
+    hides the whole limb from: the top of its limb-end chain
+    (``limb_chain_id``), walked up through the ancestors on the same body side
+    until the parent is a midline joint -- the thigh or clavicle above a foot
+    or hand run. Without side labels the chain top is the root."""
+    parents = np.asarray(object_cond['parents'], dtype=np.int64)
+    chain_ids = np.asarray(object_cond['limb_chain_id'], dtype=np.int64)
+    side_labels = object_cond.get('joint_side_labels')
+    sides = [str(side) for side in side_labels] if side_labels is not None else []
+    roots = np.zeros(chain_ids.shape, dtype=np.bool_)
+    for joint, chain_id in enumerate(chain_ids):
+        parent = int(parents[joint])
+        if chain_id < 0 or (parent >= 0 and chain_ids[parent] == chain_id):
             continue
-        if joint_index in helper_joint_indices:
-            continue
-        joint_name = canonical_joint_names[joint_index] if joint_index < len(canonical_joint_names) else ''
-        if _is_anatomical_non_helper_joint_name(joint_name):
-            candidate_roots[joint_index] = True
-
-    if np.any(candidate_roots):
-        return candidate_roots
-
-    # Fallback: keep all non-root non-helper joints if the semantic filter is too strict.
-    for joint_index, parent_index in enumerate(parents):
-        if joint_index == 0 or parent_index < 0:
-            continue
-        if joint_index in helper_joint_indices:
-            continue
-        candidate_roots[joint_index] = True
-    return candidate_roots
+        side = sides[joint] if joint < len(sides) else 'center'
+        while side != 'center' and int(parents[joint]) > 0 and sides[int(parents[joint])] == side:
+            joint = int(parents[joint])
+        roots[joint] = True
+    return roots
 
 
 def _list_motion_files(motion_dir: str) -> list[str]:
@@ -1081,7 +1011,8 @@ class MotionDataset(data.Dataset):
             for object_key, entry in cond_dict.items()
         }
         # Per-joint, so the skeleton augmentations carry it with the rig; the
-        # limb tips are picked from it per sample (_limb_tip_mask).
+        # limb tips and roots are picked from it per sample (_limb_tip_mask,
+        # _limb_root_mask).
         for entry in cond_dict.values():
             entry['limb_chain_id'], entry['limb_wing'], entry['limb_reach'] = _build_limb_chains(entry)
         self.head_word_weights = parse_head_word_weights(head_word_weights)
@@ -1680,7 +1611,7 @@ class MotionDataset(data.Dataset):
         if return_aug_info:
             return motion, m_length, parents, rest_geom, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
                 'reference': reference,
-                'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
+                'joint_mask_limb_roots': _limb_root_mask(cond),
                 'limb_tip_mask': _limb_tip_mask(cond),
                 'joint_struct': joint_struct,
                 'species_code': cond.get('species_code'),
@@ -1709,7 +1640,7 @@ class MotionDataset(data.Dataset):
             }
         return motion, m_length, parents, rest_geom, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
             'reference': reference,
-            'joint_mask_candidate_roots': cond['joint_mask_candidate_roots'],
+            'joint_mask_limb_roots': _limb_root_mask(cond),
             'limb_tip_mask': _limb_tip_mask(cond),
             'joint_struct': joint_struct,
             'species_code': cond.get('species_code'),
@@ -2030,7 +1961,6 @@ class Truebones(data.Dataset):
                     "Regenerate cond.npy (tools/merge_dataset_cond.py for a merged cond, "
                     "tools/regenerate_dataset_artifacts.py for a dataset)."
                 )
-            cond['joint_mask_candidate_roots'] = _build_joint_mask_candidate_roots(cond)
         assert_single_canonical_frame(cond_dict, source=opt.cond_file)
 
         motion_metadata_lookup = {

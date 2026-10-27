@@ -34,7 +34,7 @@ def _args(**overrides):
     a = SimpleNamespace(
         t5_out_dim=T5, latent_dim=D, ff_size=FF, layers=L, dropout_prob=0.0,
         value_emb=False, cross_limb_latents=2, cross_limb_dim=8, cross_limb_last_n=1,
-        joint_mask_prob=0.0, joint_mask_budget=0.15, unreliable_mask_drop_prob=0.0,
+        joint_mask_prob=0.0, unreliable_mask_drop_prob=0.0,
         temporal_span_mask_prob=0.0, species_cond=True,
         joint_name_drop_prob=0.0, action_label_cond=True,
         direction_slot_drop_prob=0.0, modifier_slot_drop_prob=0.0,

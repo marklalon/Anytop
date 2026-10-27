@@ -560,7 +560,7 @@ class TrainLoop:
 
     # Read only by the host-side joint-mask sampler (AnyTop.sample_subtree_joint_mask_train):
     # moving it to the device just to read it back cost a stream sync per step.
-    HOST_ONLY_COND_KEYS = ('joint_mask_candidate_roots',)
+    HOST_ONLY_COND_KEYS = ('joint_mask_limb_roots',)
 
     # Loss terms that have no value under eval(); validation does not log them.
     TRAIN_ONLY_LOSS_KEYS = ('part_loss',)

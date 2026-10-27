@@ -61,7 +61,6 @@ _ROW_KEYS = (
     'rest_pos_ric_hml',
     'tpose_rest_rotations',
     'joints_names_embs',
-    'joint_mask_candidate_roots',
     'limb_chain_id',
     'limb_wing',
     'limb_reach',

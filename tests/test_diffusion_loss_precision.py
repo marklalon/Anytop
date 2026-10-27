@@ -880,7 +880,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             dropout=0.0,
             cross_limb=True,
             joint_mask_prob=1.0,
-            joint_mask_budget=1.0,
         )
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder
@@ -897,7 +896,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "canonical_feature_mean": torch.zeros(12, dtype=torch.float32),
             "canonical_feature_std": torch.ones(12, dtype=torch.float32),
             "parents": torch.tensor([[-1, 0, 1, 2]], dtype=torch.int64),
-            "joint_mask_candidate_roots": torch.tensor([[False, True, True, True]], dtype=torch.bool),
+            "joint_mask_limb_roots": torch.tensor([[False, True, True, True]], dtype=torch.bool),
         }
 
         model(x, torch.tensor([1], dtype=torch.int64), y=y)
@@ -1034,7 +1033,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             dropout=0.0,
             cross_limb=False,
             joint_mask_prob=1.0,
-            joint_mask_budget=0.5,
         )
         model.train()
 
@@ -1045,17 +1043,17 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             ],
             dtype=torch.int64,
         )
-        candidate_root_mask = torch.tensor(
+        limb_root_mask = torch.tensor(
             [
                 [False, True, False, False, False, True, False, True, False],
-                [False, True, False, True, False, False, False, False, False],
+                [False, True, False, False, True, False, False, False, False],
             ],
             dtype=torch.bool,
         )
         y = {
             "n_joints": torch.tensor([9, 5], dtype=torch.int64),
             "parents": parents,
-            "joint_mask_candidate_roots": candidate_root_mask,
+            "joint_mask_limb_roots": limb_root_mask,
         }
 
         np.random.seed(123)
@@ -1066,8 +1064,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         for batch_index, valid_joint_count in enumerate((9, 5)):
             per_sample_mask = sample_subtree_joint_mask(
                 parents=parents[batch_index, :valid_joint_count].tolist(),
-                candidate_root_mask=candidate_root_mask[batch_index, :valid_joint_count].numpy(),
-                joint_mask_budget=0.5,
+                limb_root_mask=limb_root_mask[batch_index, :valid_joint_count].numpy(),
                 rng=np.random,
             )
             if per_sample_mask is not None:
@@ -1201,7 +1198,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
 
         # A positive but vanishing probability: the feature is on, yet no draw
         # selects anything.
-        joint_model = self._empty_draw_model(joint_mask_prob=1e-12, joint_mask_budget=0.5)
+        joint_model = self._empty_draw_model(joint_mask_prob=1e-12)
         np.random.seed(0)
         subtree_mask = joint_model.sample_subtree_joint_mask_train(y, njoints=4, device=device)
 
@@ -1259,7 +1256,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         )
 
         enabled = self._empty_draw_model(
-            joint_mask_prob=1.0, joint_mask_budget=0.5, temporal_span_mask_prob=1.0
+            joint_mask_prob=1.0, temporal_span_mask_prob=1.0
         )
         enabled.eval()
         self.assertIsNone(enabled.sample_subtree_joint_mask_train(y, njoints=4, device=device))

@@ -318,7 +318,7 @@ def test_truebones_collate_drops_motion_stats_and_carries_global_stats():
             "canonical_feature_mean": cond["canonical_feature_mean"],
             "canonical_feature_std": cond["canonical_feature_std"],
             "feature_space": cf.CANONICAL_FEATURE_SPACE,
-            "joint_mask_candidate_roots": np.array([False, True]),
+            "joint_mask_limb_roots": np.array([False, True]),
         },
     )
 

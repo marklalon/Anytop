@@ -234,7 +234,6 @@ def get_gmdm_args(args):
             'species_film_bottleneck': getattr(args, 'species_film_bottleneck', 128),
             'last_layer_ff': getattr(args, 'last_layer_ff', 0),
             'joint_mask_prob': getattr(args, 'joint_mask_prob', 0.5),
-            'joint_mask_budget': getattr(args, 'joint_mask_budget', 0.15),
             'unreliable_mask_drop_prob': getattr(args, 'unreliable_mask_drop_prob', 0.0),
             'temporal_span_mask_prob': getattr(args, 'temporal_span_mask_prob', 0.0),
             'temporal_span_mask_min_frames': getattr(args, 'temporal_span_mask_min_frames', 4),

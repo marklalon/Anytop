@@ -101,7 +101,6 @@ from data_loaders.truebones.data.dataset import (
     resample_motion_features,
     ALL_SPLIT_NAME,
     SUPPORTED_SPLITS,
-    _build_joint_mask_candidate_roots,
 )
 from data_loaders.truebones.truebones_utils.rest_variants import rest_variant_count
 from data_loaders.truebones.truebones_utils.canonical_features import (
@@ -165,8 +164,6 @@ def _build_cond_dict(opt) -> dict:
         n_joints = np.asarray(cond["parents"]).shape[0]
         if "joints_names_embs" not in cond:
             cond["joints_names_embs"] = np.zeros((n_joints, 768), dtype=np.float32)
-        # Required sample metadata even though this tool does not mask joints.
-        cond["joint_mask_candidate_roots"] = _build_joint_mask_candidate_roots(cond)
 
     return cond_dict
 
@@ -514,7 +511,7 @@ def main() -> int:
                 _max_joints,
                 motion_metadata,
                 _name,
-                _candidate_roots_info,
+                _extra_cond,
                 aug_info,     # dict: loop_applied, resample_speed_cond, ...
             ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 

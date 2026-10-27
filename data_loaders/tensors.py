@@ -268,11 +268,11 @@ def truebones_collate(batch):
             )
         })
 
-    if any('joint_mask_candidate_roots' in batch_item for batch_item in notnone_batches):
-        candidate_root_batch = []
-        for batch_item in notnone_batches:
-            candidate_root_batch.append(batch_item.get('joint_mask_candidate_roots', torch.zeros(databatchTensor.shape[1], dtype=torch.bool)).bool())
-        cond['y'].update({'joint_mask_candidate_roots': torch.stack(candidate_root_batch)})
+    if any('joint_mask_limb_roots' in batch_item for batch_item in notnone_batches):
+        cond['y']['joint_mask_limb_roots'] = torch.stack([
+            batch_item.get('joint_mask_limb_roots', torch.zeros(databatchTensor.shape[1], dtype=torch.bool)).bool()
+            for batch_item in notnone_batches
+        ])
 
     if any('limb_tip_mask' in batch_item for batch_item in notnone_batches):
         cond['y']['limb_tip_mask'] = torch.stack([
@@ -353,7 +353,7 @@ def truebones_batch_collate(batch, joint_buckets=None):
         [9]  max_joints      – int
         [10] motion_metadata – dict or None (action group/label, loop info, etc.)
         [11] name            – str, motion name
-        [12+] extras         – dicts (joint_mask_candidate_roots, aug info, …)
+        [12+] extras         – dicts (joint_mask_limb_roots, aug info, …)
     """
     max_joints = batch[0][9]
     if joint_buckets is not None:
@@ -383,7 +383,7 @@ def truebones_batch_collate(batch, joint_buckets=None):
         extra_cond = None
         for extra in b[10:]:
             if isinstance(extra, dict):
-                if any(key in extra for key in ('joint_mask_candidate_roots', 'rest_pos_ric_hml', 'joint_struct')):
+                if any(key in extra for key in ('joint_mask_limb_roots', 'rest_pos_ric_hml', 'joint_struct')):
                     extra_cond = extra
                 elif any(key in extra for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'resample_speed_cond', 'motion_speed_applied', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
                     motion_metadata = extra
@@ -403,13 +403,12 @@ def truebones_batch_collate(batch, joint_buckets=None):
         }
         if extra_cond is not None:
             item['reference'] = extra_cond.get('reference')
-        if extra_cond is not None and 'joint_mask_candidate_roots' in extra_cond:
-            raw_candidates = np.asarray(extra_cond['joint_mask_candidate_roots'], dtype=np.bool_)
-            padded_candidate_roots = torch.zeros((max_joints,), dtype=torch.bool)
-            candidate_count = min(max_joints, n_joints, int(raw_candidates.shape[0]))
-            if candidate_count > 0:
-                padded_candidate_roots[:candidate_count] = torch.from_numpy(raw_candidates[:candidate_count])
-            item['joint_mask_candidate_roots'] = padded_candidate_roots
+        if extra_cond is not None and 'joint_mask_limb_roots' in extra_cond:
+            raw_roots = np.asarray(extra_cond['joint_mask_limb_roots'], dtype=np.bool_)
+            padded_roots = torch.zeros((max_joints,), dtype=torch.bool)
+            root_count = min(max_joints, n_joints, int(raw_roots.shape[0]))
+            padded_roots[:root_count] = torch.from_numpy(raw_roots[:root_count])
+            item['joint_mask_limb_roots'] = padded_roots
         if extra_cond is not None and 'limb_tip_mask' in extra_cond:
             raw_tips = np.asarray(extra_cond['limb_tip_mask'], dtype=np.bool_)
             padded_tips = torch.zeros((max_joints,), dtype=torch.bool)

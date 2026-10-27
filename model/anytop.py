@@ -86,7 +86,6 @@ class AnyTop(nn.Module):
                 f"species_film_bottleneck must be >= 0, got {self.species_film_bottleneck}"
             )
         self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.5))
-        self.joint_mask_budget=float(kargs.get('joint_mask_budget', 0.15))
         self.temporal_span_mask_prob=float(kargs.get('temporal_span_mask_prob', 0.0))
         self.temporal_span_mask_min_frames=int(kargs.get('temporal_span_mask_min_frames', 4))
         self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 20))
@@ -158,8 +157,6 @@ class AnyTop(nn.Module):
         self.action_label_adaln = self.action_label_cond
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
-        if not 0.0 <= self.joint_mask_budget <= 1.0:
-            raise ValueError(f"joint_mask_budget must be in [0, 1], got {self.joint_mask_budget}")
         if not 0.0 <= self.temporal_span_mask_prob <= 1.0:
             raise ValueError(
                 f"temporal_span_mask_prob must be in [0, 1], got {self.temporal_span_mask_prob}"
@@ -777,9 +774,8 @@ class AnyTop(nn.Module):
         """Select subtrees of joints to perturb during training.
 
         Returns a bool tensor of shape ``[B, njoints]`` (True = joint selected),
-        or ``None`` if not in training mode or if ``joint_mask_prob == 0`` or
-        ``joint_mask_budget == 0`` -- so eval-mode loss reports a clean
-        diffusion objective.
+        or ``None`` if not in training mode or if ``joint_mask_prob == 0`` -- so eval-mode
+        loss reports a clean diffusion objective.
 
         When the feature is on but the draw selects nothing, the return is an
         all-False mask, NOT ``None``: ``None`` makes
@@ -797,7 +793,7 @@ class AnyTop(nn.Module):
         timestep mismatch -- the regime inpaint clamping produces at
         inference. The model's forward itself stays vanilla.
         """
-        if (not self.training) or self.joint_mask_prob <= 0.0 or self.joint_mask_budget <= 0.0:
+        if (not self.training) or self.joint_mask_prob <= 0.0:
             return None
         n_joints_cpu = torch.as_tensor(
             y.get('n_joints_cpu', y['n_joints']), device='cpu', dtype=torch.int64
@@ -813,7 +809,7 @@ class AnyTop(nn.Module):
         parents_batch = y.get('parents')
         if parents_batch is None:
             return None
-        candidate_roots_batch = y.get('joint_mask_candidate_roots')
+        limb_roots_batch = y.get('joint_mask_limb_roots')
         if torch.is_tensor(n_joints):
             n_joints_np = n_joints.detach().to(device='cpu', dtype=torch.int64).numpy()
         else:
@@ -824,20 +820,19 @@ class AnyTop(nn.Module):
         else:
             parents_batch_np = [np.asarray(parents, dtype=np.int64) for parents in parents_batch]
 
-        if candidate_roots_batch is None:
-            candidate_roots_np = None
-        elif torch.is_tensor(candidate_roots_batch):
-            candidate_roots_np = candidate_roots_batch.detach().to(device='cpu').numpy()
+        if limb_roots_batch is None:
+            limb_roots_np = None
+        elif torch.is_tensor(limb_roots_batch):
+            limb_roots_np = limb_roots_batch.detach().to(device='cpu').numpy()
         else:
-            candidate_roots_np = np.asarray(candidate_roots_batch, dtype=np.bool_)
+            limb_roots_np = np.asarray(limb_roots_batch, dtype=np.bool_)
 
         subtree_joint_mask_np = sample_subtree_joint_mask_batch(
             parents_batch=parents_batch_np,
-            candidate_root_mask_batch=candidate_roots_np,
+            limb_root_mask_batch=limb_roots_np,
             n_joints=n_joints_np,
             max_joints=njoints,
             joint_mask_prob=self.joint_mask_prob,
-            joint_mask_budget=self.joint_mask_budget,
             rng=np.random,
         )
         if subtree_joint_mask_np is None:

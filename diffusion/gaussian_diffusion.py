@@ -1912,7 +1912,7 @@ class GaussianDiffusion:
         x_t = self.q_sample(x_start, t, noise=noise)
 
         # Subtree perturbation: when the model selects a subset of joints
-        # (via joint_mask_prob and joint_mask_budget), replace those joints' x_t slice with
+        # (via joint_mask_prob), replace those joints' x_t slice with
         # q_sample(x_0, t_random, fresh_noise) -- same x_0 ground truth (so
         # the loss target is unchanged) but at a random independent timestep
         # with fresh independent noise. The selected joints continue to

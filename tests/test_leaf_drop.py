@@ -62,7 +62,6 @@ def _entry():
         'rest_pose': np.concatenate([rest, np.zeros((joint_count, 9), np.float32)], axis=1),
         'rest_pos_ric_hml': rest.copy(),
         'joints_names_embs': embs,
-        'joint_mask_candidate_roots': np.ones(joint_count, dtype=np.bool_),
         'joints_names': [f'j{j}' for j in range(joint_count)],
         'canonical_joint_names': list(_NAMES),
         'symmetry_partner_indices': partners,

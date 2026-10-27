@@ -75,7 +75,7 @@ def _make_batch_item(
         'is_loop': is_loop,
         'resample_speed_cond': resample_speed_cond,
     }
-    extra_cond = {'joint_mask_candidate_roots': np.zeros((n_joints,), dtype=np.bool_)}
+    extra_cond = {'joint_mask_limb_roots': np.zeros((n_joints,), dtype=np.bool_)}
     return (
         motion,
         n_frames,

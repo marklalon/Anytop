@@ -563,11 +563,11 @@ def add_training_options(parser):
                             "RMS error; see train/sample_loss_limit.py). Stops one outlier clip from owning the "
                             "clipped batch gradient, touching only the far tail of the samples. 0 disables it.")
     group.add_argument("--joint_mask_prob", default=0.5, type=float,
-                       help="Per-sample probability of applying a training-time subtree joint perturbation. "
-                           "Selected joints keep their supervision loss and remain visible to attention, but their x_t "
-                           "features are re-noised at an independent timestep to mimic mixed reliability during inpainting.")
-    group.add_argument("--joint_mask_budget", default=0.15, type=float,
-                       help="Maximum fraction of non-root joints to include in each sampled subtree perturbation.")
+                       help="Per-sample probability of applying a training-time subtree joint perturbation: one or "
+                           "two whole limbs (so a limb's phase must come from the other limbs), or one subtree of at "
+                           "most half the rig (the --inpaint_joints shapes). Selected joints keep their supervision "
+                           "loss and remain visible to attention, but their x_t features are re-noised at an "
+                           "independent timestep to mimic mixed reliability during inpainting.")
     group.add_argument("--unreliable_mask_drop_prob", default=0.0, type=float,
                        help="Per-sample probability of hiding the training-time unreliable mask from the model. "
                             "The selected joints / frames are still re-noised, the model just is not told which ones, "

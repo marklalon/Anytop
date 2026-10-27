@@ -1,8 +1,15 @@
 """Shared utilities for subtree joint mask sampling.
 
-Core logic used by both:
-  - ``model/anytop.py`` (PyTorch, batched)
-  - ``tools/sample_augmented_bvh.py`` (NumPy, single-sample)
+Core logic used by ``model/anytop.py`` (``AnyTop._sample_subtree_joint_mask``).
+
+A masked draw takes one of two forms:
+  * whole limbs: one or two of the rig's limbs (``limb_root_mask``), each with
+    every joint below its root. With the limb's own proximal joints gone too,
+    its phase can only be recovered from the other limbs -- this is what
+    trains inter-limb coordination;
+  * one subtree: the subtree of a single non-root, non-leaf joint covering at
+    most half the rig -- a tail, a head, a hand -- the shapes
+    ``--inpaint_joints`` regenerates at inference.
 """
 
 from __future__ import annotations
@@ -10,6 +17,13 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import numpy as np
+
+
+# Share of masked draws that take whole limbs, on rigs with at least two limbs;
+# the rest take one subtree.
+LIMB_MASK_SHARE = 0.6
+# Within a whole-limb draw, the share that takes two limbs instead of one.
+LIMB_PAIR_SHARE = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -33,116 +47,77 @@ def collect_subtree_indices(root_index: int, children: list[list[int]]) -> list[
 
 def sample_subtree_joint_mask(
     parents: list[int],
-    candidate_root_mask: np.ndarray,
-    joint_mask_budget: float,
+    limb_root_mask: np.ndarray,
     rng: Any,
 ) -> Optional[np.ndarray]:
-    """Replicate AnyTop._sample_subtree_joint_mask for a single skeleton.
+    """Draw one joint mask for a single skeleton.
 
     Parameters
     ----------
     parents : list[int]
         Parent indices, length = J.
-    candidate_root_mask : np.ndarray
-        Boolean array of shape ``(J,)`` — ``True`` where a joint is a valid
-        subtree root.
-    joint_mask_budget : float
-        Fraction of non-root joints to mask (budget).  Must be in ``[0, 1]``.
+    limb_root_mask : np.ndarray
+        Boolean array of shape ``(J,)`` -- ``True`` at the top joint of each
+        limb (``_limb_root_mask`` in the dataset).
     rng : object
-        NumPy-compatible RNG object exposing ``choice`` and ``permutation``.
+        NumPy-compatible RNG object exposing ``random`` and ``choice``.
         This can be a ``np.random.Generator`` or the global ``np.random``
         module so training can participate in checkpointed NumPy RNG state.
 
     Returns
     -------
     np.ndarray or None
-        Boolean mask of shape ``(J,)`` — ``True`` = joint is masked, or
-        ``None`` if no masking occurred.
+        Boolean mask of shape ``(J,)`` -- ``True`` = joint is masked, or
+        ``None`` if the rig has nothing to mask.
     """
     n_joints = len(parents)
-    non_root_count = max(n_joints - 1, 0)
-    budget = min(int(joint_mask_budget * non_root_count), non_root_count)
-    if budget <= 0 or n_joints <= 1:
+    if n_joints <= 1:
         return None
 
-    # Build children lookup
     children = [[] for _ in range(n_joints)]
     for child_idx in range(1, n_joints):
         p = int(parents[child_idx])
         if 0 <= p < n_joints:
             children[p].append(child_idx)
 
-    # Root (index 0) is never a candidate
-    root_mask = candidate_root_mask.copy()
-    root_mask[0] = False
-    candidate_root_indices = np.flatnonzero(root_mask)
-
-    # Collect all candidate subtrees that fit within the budget
-    candidate_subtrees = []
-    for root_idx in candidate_root_indices:
-        subtree = collect_subtree_indices(int(root_idx), children)
-        if 0 < len(subtree) <= budget:
-            candidate_subtrees.append(subtree)
-
-    if not candidate_subtrees:
-        return None
-
-    # Prefer larger connected regions so subtree masking more often removes
-    # a coherent limb/body part instead of accumulating many tiny subtrees.
     mask = np.zeros(n_joints, dtype=bool)
-    remaining = budget
-    subtree_sizes = np.asarray([len(subtree) for subtree in candidate_subtrees], dtype=np.float64)
-    available = np.ones(len(candidate_subtrees), dtype=bool)
-    while remaining > 0:
-        compatible_positions = []
-        compatible_weights = []
-        for pos, subtree in enumerate(candidate_subtrees):
-            if not available[pos]:
-                continue
-            sz = int(subtree_sizes[pos])
-            if sz > remaining:
-                continue
-            if np.any(mask[subtree]):
-                continue
-            compatible_positions.append(pos)
-            compatible_weights.append(float(sz * sz))
+    limb_roots = np.flatnonzero(np.asarray(limb_root_mask, dtype=bool)[:n_joints])
+    limb_roots = limb_roots[limb_roots != 0]
+    if limb_roots.size >= 2 and float(rng.random()) < LIMB_MASK_SHARE:
+        count = 2 if float(rng.random()) < LIMB_PAIR_SHARE else 1
+        for root_idx in rng.choice(limb_roots, size=count, replace=False):
+            mask[collect_subtree_indices(int(root_idx), children)] = True
+        return mask
 
-        if not compatible_positions:
-            break
-
-        weights = np.asarray(compatible_weights, dtype=np.float64)
-        weights /= weights.sum()
-        chosen_pos = int(rng.choice(np.asarray(compatible_positions, dtype=np.int64), p=weights))
-        subtree = candidate_subtrees[chosen_pos]
-        sz = len(subtree)
-        mask[subtree] = True
-        remaining -= sz
-        available[chosen_pos] = False
-        if remaining == 0:
-            break
-
-    if not np.any(mask):
+    subtrees = [
+        subtree
+        for subtree in (
+            collect_subtree_indices(idx, children)
+            for idx in range(1, n_joints) if children[idx]
+        )
+        if len(subtree) <= n_joints // 2
+    ]
+    if not subtrees:
         return None
+    mask[subtrees[int(rng.choice(len(subtrees)))]] = True
     return mask
 
 
 def sample_subtree_joint_mask_batch(
     parents_batch: Any,
-    candidate_root_mask_batch: Optional[np.ndarray],
+    limb_root_mask_batch: Optional[np.ndarray],
     n_joints: np.ndarray,
     max_joints: int,
     joint_mask_prob: float,
-    joint_mask_budget: float,
     rng: Any,
 ) -> Optional[np.ndarray]:
     """Batch wrapper around ``sample_subtree_joint_mask``.
 
-    ``joint_mask_prob`` gates whether each sample is perturbed at all;
-    ``joint_mask_budget`` caps the size of the selected subtrees. Mask
+    ``joint_mask_prob`` gates whether each sample is perturbed at all. Mask
     assembly stays on the CPU in one NumPy array and is copied back to torch
     only once.
     """
-    if joint_mask_prob <= 0.0 or joint_mask_budget <= 0.0:
+    if joint_mask_prob <= 0.0:
         return None
 
     batch_size = int(np.asarray(n_joints).shape[0])
@@ -157,19 +132,16 @@ def sample_subtree_joint_mask_batch(
             continue
 
         parents = np.asarray(parents_batch[batch_index], dtype=np.int64)[:valid_joint_count].tolist()
-        if candidate_root_mask_batch is None:
-            candidate_root_mask = np.ones(valid_joint_count, dtype=bool)
+        if limb_root_mask_batch is None:
+            limb_root_mask = np.zeros(valid_joint_count, dtype=bool)
         else:
-            candidate_root_mask = np.asarray(
-                candidate_root_mask_batch[batch_index, :valid_joint_count],
-                dtype=bool,
-            ).copy()
-        candidate_root_mask[0] = False
+            limb_root_mask = np.asarray(
+                limb_root_mask_batch[batch_index, :valid_joint_count], dtype=bool,
+            )
 
         per_sample_mask = sample_subtree_joint_mask(
             parents=parents,
-            candidate_root_mask=candidate_root_mask,
-            joint_mask_budget=joint_mask_budget,
+            limb_root_mask=limb_root_mask,
             rng=rng,
         )
         if per_sample_mask is not None:

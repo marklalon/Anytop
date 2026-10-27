@@ -319,9 +319,8 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets_all.jsonl
   两份实现并存且行为故意不同——那一份丢弃单字符 token 含孤立数字。
   改任何一份都要同步检查另一份（`_LIMB_CODE_SIGNATURE_TOKENS` 在两边各有一份，必须一起改）。
   A 层的替换表（A3/A4/A6）两份共用同一个常量，加表时两边都要接上。
-- **`data/dataset.py` 的 `_JOINT_MASK_EXCLUDE_TOKENS` 是另一张"非本体"词表，故意不和 B4/B9 合并。**
-  它决定训练 mask 能采哪些关节，还排除了头发/鬃毛/马尾这类次级运动和 `end`/`nub` 链端；
-  B4/B9 改了，要单独判断 mask 采样是否也该跟着改。
+- **训练 joint mask 的肢体根来自 `limb_chain_id` + `joint_side_labels`（`data/dataset.py` 的 `_limb_root_mask`），不读关节名。**
+  侧标签标错（中线关节标成 left/right）会让肢体根爬过它，连躯干一起 mask 掉。
 - **`EMBED_TEXT_CREATURE_TOKENS`（`joint_name_canonical.py`）是手工列表，不是从 `species_tags.jsonl` 派生的。**
   加新物种时**必须手工补**，没有任何机制会提醒你。
   （没做成自动派生，是因为变体 rig 里会出现数据集中并不存在的生物名，比如 antilope 的 Quilin/Moose。）
