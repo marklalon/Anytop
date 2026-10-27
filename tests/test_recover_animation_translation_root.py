@@ -569,7 +569,7 @@ def test_recover_bvh_rot_np_normalizes_non_root_quaternion_sign_flips():
     if not os.path.isabs(motion_dir):
         motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
 
-    motion_path, motion_name = _find_motion_file(motion_dir, 'Alligator_Bite1.npy')
+    motion_path, motion_name = _find_motion_file(motion_dir, 'Alligator_Bite3.npy')
     raw = np.load(motion_path).astype(np.float32, copy=False)
     motion_metadata = _with_translation_root_index(
         _load_motion_metadata_entry(opt, motion_name),

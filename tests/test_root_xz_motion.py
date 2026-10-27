@@ -1256,7 +1256,8 @@ def test_validator_holds_a_locomotion_clip_to_the_tighter_bound(capsys):
     from utils.validate_anytop_dataset import _validate_root_xz_ceiling
 
     # Inside the dataset-wide ceiling, past what a locomotion clip may keep.
-    motion = _motion_with_root_path(_closed_excursion(40, 0.5))
+    reach = 0.5 * (ROOT_XZ_LOCOMOTION_LIMIT + ROOT_XZ_SOFT_CLAMP_LIMIT)
+    motion = _motion_with_root_path(_closed_excursion(40, reach))
 
     assert _run_ceiling_validator(motion, 1, capsys) == ''
 
