@@ -161,8 +161,11 @@ def object_policy(obj):
 
 def _load_motion_source(file_path, object_type, *, crop_enabled=True,
                         prop_socket_names=(), end_site_names=(),
-                        promote_root_depth=0, raw_load_cache=None):
+                        promote_root_depth=0, raw_load_cache=None, rest_pose=False):
     """Load and structurally normalize one source file before root resolution.
+
+    ``rest_pose`` marks a file read only for its rest (a rest variant): it has no
+    frame rate, so the clip FPS check is skipped.
 
     ``raw_load_cache`` holds the PRE-normalization bpy import keyed by real path.
     Folding a wrapper changes the skeleton every clip is aligned against, so a
@@ -187,7 +190,7 @@ def _load_motion_source(file_path, object_type, *, crop_enabled=True,
         # already fired on, and re-warning would double-count it in the run
         # summary.
         fps = 1.0 / frame_time if frame_time > 0 else 0.0
-        if fps and abs(fps - 30.0) > 0.1:
+        if fps and abs(fps - 30.0) > 0.1 and not rest_pose:
             from .animation_utils import _warn
             _warn(
                 f"FPS mismatch: '{os.path.basename(str(file_path))}' runs at "
@@ -875,7 +878,7 @@ def measure_rest_variants(object_type, rest_reference_path, variant_paths, joint
         raw_anim, names, _frame_time = _load_motion_source(
             path, object_type, crop_enabled=crop_enabled,
             prop_socket_names=tp.prop_socket_names, end_site_names=tp.end_site_names,
-            promote_root_depth=int(promote_root_depth),
+            promote_root_depth=int(promote_root_depth), rest_pose=True,
         )
         if list(names) != list(tp.names):
             missing = sorted(set(tp.names) - set(names))

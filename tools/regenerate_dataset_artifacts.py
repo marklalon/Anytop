@@ -210,7 +210,10 @@ def _refresh_rest_variants(rebuilt_cond: dict[str, dict], dataset_dir_path: Path
     clip rebuild: a species is re-measured only when its variant files or its
     primary rest no longer match the ``sha1`` recorded in its block. A species
     whose primary rest file is not on this machine keeps the block it has.
+    Warnings raised while measuring honour the dataset's ignore_warnings.txt
+    ``#`` patterns, as preprocess_and_validate's summary does.
     """
+    from data_loaders.truebones.truebones_utils import animation_utils, ignore_warnings
     from data_loaders.truebones.truebones_utils.dataset_pipeline import (
         measure_rest_variants,
         object_rest_variant_paths,
@@ -218,37 +221,54 @@ def _refresh_rest_variants(rebuilt_cond: dict[str, dict], dataset_dir_path: Path
     )
     from utils.misc import load_tpose_reference_sidecar, resolve_dataset_path
 
+    patterns = ignore_warnings.load(dataset_dir_path).patterns
+    print_warn = animation_utils._warn
+    suppressed = 0
+
+    def filtered_warn(message):
+        nonlocal suppressed
+        if any(ignore_warnings.matches_pattern(message, pattern) for pattern in patterns):
+            suppressed += 1
+        else:
+            print_warn(message)
+
     refs = load_tpose_reference_sidecar(str(dataset_dir_path / TPOSE_REFERENCE_SIDECAR))
     measured = []
-    for object_key, entry in sorted(rebuilt_cond.items()):
-        species = str(entry.get("species_name", object_key.rpartition("/")[2]))
-        try:
-            primary = resolve_dataset_path(refs.get(species) or refs.get(object_key))
-        except FileNotFoundError:
-            primary = None
-        current = entry.get(REST_VARIANTS_KEY)
-        if primary is None:
-            if current is None:
-                entry[REST_VARIANTS_KEY] = empty_rest_variants()
-            continue
-        variants = object_rest_variant_paths(primary)
-        if not variants:
-            if current is None or current["tags"]:
-                entry[REST_VARIANTS_KEY] = empty_rest_variants()
-            continue
-        if (current is not None
-                and current["tags"] == [tag for tag, _path in variants]
-                and current["primary_sha1"] == rest_reference_sha1(primary)
-                and current["sha1"] == [rest_reference_sha1(path) for _tag, path in variants]):
-            continue
-        entry[REST_VARIANTS_KEY] = measure_rest_variants(
-            species, primary, variants, entry["joints_names"],
-            int(entry.get("root_promote_depth", 0)),
-        )
-        measured.append(f"{species} [{', '.join(tag for tag, _path in variants)}]")
+    animation_utils._warn = filtered_warn
+    try:
+        for object_key, entry in sorted(rebuilt_cond.items()):
+            species = str(entry.get("species_name", object_key.rpartition("/")[2]))
+            try:
+                primary = resolve_dataset_path(refs.get(species) or refs.get(object_key))
+            except FileNotFoundError:
+                primary = None
+            current = entry.get(REST_VARIANTS_KEY)
+            if primary is None:
+                if current is None:
+                    entry[REST_VARIANTS_KEY] = empty_rest_variants()
+                continue
+            variants = object_rest_variant_paths(primary)
+            if not variants:
+                if current is None or current["tags"]:
+                    entry[REST_VARIANTS_KEY] = empty_rest_variants()
+                continue
+            if (current is not None
+                    and current["tags"] == [tag for tag, _path in variants]
+                    and current["primary_sha1"] == rest_reference_sha1(primary)
+                    and current["sha1"] == [rest_reference_sha1(path) for _tag, path in variants]):
+                continue
+            entry[REST_VARIANTS_KEY] = measure_rest_variants(
+                species, primary, variants, entry["joints_names"],
+                int(entry.get("root_promote_depth", 0)),
+            )
+            measured.append(f"{species} [{', '.join(tag for tag, _path in variants)}]")
+    finally:
+        animation_utils._warn = print_warn
     with_variants = sum(1 for entry in rebuilt_cond.values() if entry[REST_VARIANTS_KEY]["tags"])
     if measured:
         print(f"[OK] rest variants measured: {'; '.join(measured)}")
+    if suppressed:
+        print(f"[OK] {suppressed} rest-variant warning(s) suppressed by ignore_warnings.txt patterns")
     print(f"[OK] {with_variants} species carry rest variants")
 
 
