@@ -89,7 +89,7 @@ class AnyTop(nn.Module):
         self.joint_mask_budget=float(kargs.get('joint_mask_budget', 0.15))
         self.temporal_span_mask_prob=float(kargs.get('temporal_span_mask_prob', 0.0))
         self.temporal_span_mask_min_frames=int(kargs.get('temporal_span_mask_min_frames', 4))
-        self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 30))
+        self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 20))
         self.unreliable_mask_drop_prob=float(kargs.get('unreliable_mask_drop_prob', 0.0))
         self.tempo_cfg_drop_prob=float(kargs.get('tempo_cfg_drop_prob', 0.1))
         if not 0.0 <= self.tempo_cfg_drop_prob <= 1.0:

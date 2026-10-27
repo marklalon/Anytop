@@ -568,7 +568,7 @@ def add_training_options(parser):
                             "Selected frames are re-noised for all real joints to teach native frame inpainting.")
     group.add_argument("--temporal_span_mask_min_frames", default=4, type=int,
                        help="Minimum length of each sampled training-time temporal span perturbation.")
-    group.add_argument("--temporal_span_mask_max_frames", default=30, type=int,
+    group.add_argument("--temporal_span_mask_max_frames", default=20, type=int,
                        help="Maximum length of each sampled training-time temporal span perturbation. "
                             "Must be >= temporal_span_mask_min_frames.")
     group.add_argument("--temporal_span_seam_loss_weight", default=0.0, type=float,
