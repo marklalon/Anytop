@@ -1,7 +1,7 @@
 {
   "_comment": "Evaluation task battery for eval_checkpoint.py. checkpoint.RUN_NAME is required; checkpoint.MODEL_FILE is optional and defaults to the newest model*.pt; checkpoint.OUTPUT_DIR is optional and names the run folder the results are written under (a bare name goes under outputs/eval_checkpoint/, default RUN_NAME; <MODEL_NAME> is appended either way). Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task. A task without --action_label must set eval_label (the action of its reference clip); it is only used to pick the reference prior the clips are scored against.",
   "checkpoint": {
-    "RUN_NAME": "merged_all_v58"
+    "RUN_NAME": "merged_all_v62"
   },
   "tasks": [
     { "category": "Buffalo", "args": ["--object_type", "Buffalo", "--action_label", "run, forward"] },
@@ -19,7 +19,7 @@
     { "category": "Spider", "args": ["--object_type", "spider_tarantula", "--action_label", "run, forward", "--loop"] },
     { "category": "Spider", "args": ["--object_type", "spider_tarantula", "--action_label", "jump, up"] },
     { "category": "Spider", "args": ["--object_type", "spider_tarantula", "--action_label", "burrow", "--action_label_cfg_scale", "3"] },
-    { "category": "Spider", "args": ["--object_type", "spider_tarantula", "--action_label", "attack, bite"] },
+    { "category": "Spider", "args": ["--object_type", "spider_tarantula", "--action_label", "attack, bite", "--action_label_cfg_scale", "3"] },
     { "category": "Spider", "args": ["--object_type", "spider_tarantula", "--action_label", "hurt"] },
 
     { "category": "Parrot", "args": ["--object_type", "Parrot2", "--action_label", "fly, forward"] },
@@ -31,7 +31,7 @@
     { "category": "Human", "args": ["--cond_path", "outputs/test/cond/Human/cond.npy", "--action_label", "run, forward"] },
     { "category": "Human", "args": ["--cond_path", "outputs/test/cond/Human/cond.npy", "--action_label", "swim, jump"] },
     { "category": "Human", "args": ["--cond_path", "outputs/test/cond/Human/cond.npy", "--action_label", "attack, jump"] },
-    { "category": "Human", "args": ["--cond_path", "outputs/test/cond/Human/cond.npy", "--action_label", "attack, swat"] },
+    { "category": "Human", "args": ["--cond_path", "outputs/test/cond/Human/cond.npy", "--action_label", "attack, left, swat", "--action_label_cfg_scale", "3"] },
     { "category": "Human", "args": ["--cond_path", "outputs/test/cond/Human/cond.npy", "--action_label", "fly, forward"] },
     
     { "category": "RedDragon", "args": ["--cond_path", "outputs/test/cond/RedDragon/cond.npy", "--action_label", "fly, forward"] },
@@ -42,13 +42,13 @@
 
     { "category": "Elephant", "args": ["--cond_path", "outputs/test/cond/Elephant/cond.npy", "--action_label", "run, forward"] },
     { "category": "Elephant", "args": ["--cond_path", "outputs/test/cond/Elephant/cond.npy", "--action_label", "jump, up"] },
-    { "category": "Elephant", "args": ["--cond_path", "outputs/test/cond/Elephant/cond.npy", "--action_label", "attack, headbutt"] },
+    { "category": "Elephant", "args": ["--cond_path", "outputs/test/cond/Elephant/cond.npy", "--action_label", "attack, headbutt", "--action_label_cfg_scale", "3"] },
     { "category": "Elephant", "args": ["--cond_path", "outputs/test/cond/Elephant/cond.npy", "--action_label", "die"] },
     { "category": "Elephant", "args": ["--cond_path", "outputs/test/cond/Elephant/cond.npy", "--action_label", "getup"] },
     
     { "category": "Horse", "args": ["--cond_path", "outputs/test/cond/Horse/cond.npy", "--action_label", "run, forward"] },
     { "category": "Horse", "args": ["--cond_path", "outputs/test/cond/Horse/cond.npy", "--action_label", "jump, up"] },
-    { "category": "Horse", "args": ["--cond_path", "outputs/test/cond/Horse/cond.npy", "--action_label", "attack, rear"] },
+    { "category": "Horse", "args": ["--cond_path", "outputs/test/cond/Horse/cond.npy", "--action_label", "attack, rear", "--action_label_cfg_scale", "3"] },
     { "category": "Horse", "args": ["--cond_path", "outputs/test/cond/Horse/cond.npy", "--action_label", "die"] },
     { "category": "Horse", "args": ["--cond_path", "outputs/test/cond/Horse/cond.npy", "--action_label", "getup"] },
 
