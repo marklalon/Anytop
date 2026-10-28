@@ -65,7 +65,7 @@ pushd "%SCRIPT_DIR%"
 	--direction_slot_drop_prob 0.15 ^
 	--modifier_slot_drop_prob 0.15 ^
 	--temporal_span_mask_prob 0.15 ^
-	--temporal_span_seam_loss_weight 0.2 ^
+	--temporal_span_seam_loss_weight 0.5 ^
 	--lambda_loop_wrap 0.04 ^
 	--lambda_dpos 0.08 ^
 	--lambda_root_dpos 0.35 ^
