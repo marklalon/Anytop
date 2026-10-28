@@ -61,14 +61,14 @@ ROOT_Y_DRIFT_THRESHOLD = 0.25
 # slide recognisable at a magnitude the representation can carry -- the old
 # extent gate answered the same question by zeroing the whole trajectory.
 ROOT_XZ_SOFT_CLAMP_KNEE = 0.2
-ROOT_XZ_SOFT_CLAMP_LIMIT = 0.4
+ROOT_XZ_SOFT_CLAMP_LIMIT = 0.5
 
 # Locomotion's own extent bound, tighter than the soft clamp above and applied to
 # EVERY clip the root-XZ policy selects -- all locomotion -- not only the ones
 # that travelled. That is what makes it
 # an invariant of the selected set rather than of whether a clip happened to move.
 # The knee sits inside a normal gait's range (post-detrend extent runs p50 0.013,
-# p90 0.110, p95 0.159), so unlike the 0.6 ceiling it is touched routinely and must
+# p90 0.110, p95 0.159), so unlike the 0.5 ceiling it is touched routinely and must
 # leave the cycle's shape alone: it scales the whole clip by ONE factor, not each
 # frame's radius (see ``scale_root_xz_extent``).
 ROOT_XZ_LOCOMOTION_KNEE = 0.1
@@ -395,15 +395,18 @@ def _get_reference_body_length(anim):
 
 
 def _get_reference_standing_height(anim, translation_root_index):
-    """Height of the translation root above the rest pose's lowest joint.
+    """Height of the translation root above the floor (Y=0) in the rest pose.
 
-    The root height the species stands at, so the vertical band can tell flight
-    from a tall stance. Read off the rest pose like the body length, which keeps
-    it a species property. The rest pose is FK'd from ``orients`` and so skips
-    ``orientation_quat``; that rotation is a pure yaw, which leaves heights alone.
+    The root height the species stands or hovers at, so the vertical band can
+    tell flight from a tall stance or a hover. Measured from the floor, not from
+    the rest pose's lowest joint: a hovering rig's rest floats, and its lowest
+    joint's clearance is part of the height its clips hold. Read off the rest
+    pose like the body length, which keeps it a species property. The rest pose
+    is FK'd from ``orients`` and so skips ``orientation_quat``; that rotation is
+    a pure yaw, which leaves heights alone.
     """
     rest_positions = positions_global(rest_pose_animation(anim))[0]
-    return max(float(rest_positions[int(translation_root_index), 1] - rest_positions[:, 1].min()), 0.0)
+    return max(float(rest_positions[int(translation_root_index), 1]), 0.0)
 
 
 def _excursion_scale(extent, min_h, max_h):

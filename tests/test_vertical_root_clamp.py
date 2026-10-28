@@ -408,14 +408,15 @@ def test_clearing_the_knee_by_a_hair_barely_moves_the_clip():
 def _long_legged_root_y(values, leg=1.0, neck=0.5):
     """``Root(0)`` with a leg hanging ``leg`` below it and a neck ``neck`` above.
 
-    The rest pose stands the root ``leg`` above its lowest joint, higher than
-    ``VERTICAL_CLAMP_MIN_RATIO`` of the ``leg + neck`` span -- a flamingo's stance.
+    The rest pose stands the foot on the floor and the root ``leg`` above it,
+    higher than ``VERTICAL_CLAMP_MIN_RATIO`` of the ``leg + neck`` span -- a
+    flamingo's stance.
     """
     frames = len(values)
     parents = np.array([-1, 0, 0], dtype=np.int32)
     offsets = np.array(
         [
-            [0.0, 0.0, 0.0],
+            [0.0, float(leg), 0.0],
             [0.0, float(neck), 0.0],
             [0.0, -float(leg), 0.0],
         ],
@@ -437,6 +438,16 @@ def test_the_band_never_compresses_a_long_legged_stance():
     leg, span = 1.0, 1.5
     assert leg > span * VERTICAL_CLAMP_MIN_RATIO
     anim = _long_legged_root_y([leg, leg - 0.05, leg], leg=leg)
+
+    assert clamp_vertical_trajectory(anim, "Pteranodon") is anim
+
+
+def test_the_band_never_compresses_a_hover_held_at_rest_height():
+    """A rest that floats counts its clearance as stance: the hover is not flight."""
+    leg, span, hover = 0.2, 0.7, 1.0
+    assert hover > span * VERTICAL_CLAMP_MIN_RATIO
+    anim = _long_legged_root_y([hover, hover + 0.1, hover], leg=leg)
+    anim.offsets[0, 1] = hover
 
     assert clamp_vertical_trajectory(anim, "Pteranodon") is anim
 

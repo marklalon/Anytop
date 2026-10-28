@@ -105,12 +105,14 @@ MAX_PATH_LEN = 5
 # shape -- until its peak approaches VERTICAL_CLAMP_MAX_RATIO without reaching
 # it (aquatic clips get the same band mirrored onto swim depth).
 VERTICAL_CLAMP_MIN_RATIO = 0.5
-VERTICAL_CLAMP_MAX_RATIO = 0.7
-# Headroom above the species' standing height, as a fraction of that height,
-# before the band's knee: a tall-legged ground bird's hop or jump-attack rises a
-# fraction of its own stance, which is not flight. The knee is the larger of
-# VERTICAL_CLAMP_MIN_RATIO of the body span and the stance plus this headroom, so
-# a low-slung flyer (stance well under the span) keeps its span-based knee.
+VERTICAL_CLAMP_MAX_RATIO = 0.8
+# Headroom above the species' standing height (the rest-pose root's height above
+# the floor), as a fraction of that height, before the band's knee: a tall-legged
+# ground bird's hop or jump-attack rises a fraction of its own stance, and a
+# hovering rig's bob a fraction of its hover height, neither of which is flight.
+# The knee is the larger of VERTICAL_CLAMP_MIN_RATIO of the body span and the
+# stance plus this headroom, so a low-slung flyer (stance well under the span)
+# keeps its span-based knee.
 VERTICAL_CLAMP_STANCE_HEADROOM = 0.7
 # Soft lower bound on the translation root's world Y height, in HML-normalised
 # units -- the same units the exported motion features use. It sits a fraction of

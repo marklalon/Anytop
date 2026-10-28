@@ -277,12 +277,12 @@ assert _HEAD_VOCAB_SET.isdisjoint(MODIFIER_VOCAB), (
 # (see action_group_conflict). A new head word needs its group here.
 HEAD_ACTION_GROUP: dict[str, str] = {
     "attack": "stationary", "hurt": "stationary", "idle": "stationary",
-    "jump": "stationary", "lift": "stationary", "pickup": "stationary",
+    "lift": "stationary", "pickup": "stationary",
     "putdown": "stationary", "rest": "stationary", "roar": "stationary",
     "work": "stationary",
     "climb": "locomotion", "crawl": "locomotion", "fall": "locomotion",
-    "fly": "locomotion", "roll": "locomotion", "run": "locomotion",
-    "swim": "locomotion", "walk": "locomotion",
+    "fly": "locomotion", "jump": "locomotion", "roll": "locomotion",
+    "run": "locomotion", "swim": "locomotion", "walk": "locomotion",
     "burrow": "transition", "die": "transition", "draw": "transition",
     "getup": "transition", "kneel": "transition", "land": "transition",
     "laydown": "transition", "rear": "transition", "sheathe": "transition",

@@ -24,7 +24,7 @@
 {"species": "MLS_Knome", "species_tags": ["Biped", "Waddling"]}
 {"species": "MLS_RockGolem", "species_tags": ["Biped", "Waddling"]}
 {"species": "MLS_Treeant", "species_tags": ["Biped", "Waddling"]}
-{"species": "MU01_Bat", "species_tags": ["Winged", "Waddling"]}
+{"species": "MU01_Bat", "species_tags": ["Drifting"]}
 {"species": "MU01_BatLord", "species_tags": ["Winged"]}
 {"species": "MU01_Bee", "species_tags": ["Winged", "Fluttering"]}
 {"species": "MU01_Bird", "species_tags": ["Winged"]}
@@ -62,9 +62,9 @@
 {"species": "MU04_Spore", "species_tags": ["Biped", "Waddling"]}
 {"species": "MU04_Worm", "species_tags": ["Drifting"]}
 {"species": "MU04_Wraith", "species_tags": ["Winged"]}
-{"species": "MU06_Angel", "species_tags": ["Winged", "Waddling"]}
-{"species": "MU06_AngelMage", "species_tags": ["Winged", "Waddling"]}
-{"species": "MU06_Archangel", "species_tags": ["Winged", "Waddling"]}
+{"species": "MU06_Angel", "species_tags": ["Drifting"]}
+{"species": "MU06_AngelMage", "species_tags": ["Drifting"]}
+{"species": "MU06_Archangel", "species_tags": ["Drifting"]}
 {"species": "MU06_Death", "species_tags": ["Drifting"]}
 {"species": "MU06_DeathMage", "species_tags": ["Drifting"]}
 {"species": "MU06_Fire", "species_tags": ["Drifting"]}
@@ -82,7 +82,7 @@
 {"species": "PC_PolygonalGolem", "species_tags": ["Biped"]}
 {"species": "PC_PolygonalKingCobra", "species_tags": ["Serpentine"]}
 {"species": "PC_PolygonalMagma", "species_tags": ["Drifting"]}
-{"species": "PC_PolygonalOneEyedBat", "species_tags": ["Winged"]}
+{"species": "PC_PolygonalOneEyedBat", "species_tags": ["Drifting"]}
 {"species": "PC_PolygonalSpiderlingVenom", "species_tags": ["Multiped"]}
 {"species": "PC_PolygonalTreant", "species_tags": ["Quadruped"]}
 {"species": "PC_PolygonalWolf", "species_tags": ["Quadruped", "Waddling"]}
