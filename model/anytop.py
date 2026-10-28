@@ -4,6 +4,7 @@ import numpy as np
 from model.motion_transformer import (
     GraphMotionDecoderLayer,
     GraphMotionDecoder,
+    circular_phase_embedding,
     run_in_fp32,
 )
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
@@ -53,6 +54,14 @@ def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 
     phase = positions / (max_period_tensor ** (adim / (half_dim - 1)))
     return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
 
+def _zero_init_mlp(width):
+    """Two-layer MLP whose last layer starts at zero (a no-op head)."""
+    mlp = nn.Sequential(nn.Linear(width, width), nn.GELU(), nn.Linear(width, width))
+    nn.init.zeros_(mlp[-1].weight)
+    nn.init.zeros_(mlp[-1].bias)
+    return mlp
+
+
 class AnyTop(nn.Module):
     def __init__(self, max_joints, feature_len,
                  latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
@@ -94,6 +103,13 @@ class AnyTop(nn.Module):
         if not 0.0 <= self.tempo_cfg_drop_prob <= 1.0:
             raise ValueError(
                 f"tempo_cfg_drop_prob must be in [0, 1], got {self.tempo_cfg_drop_prob}"
+            )
+        # Training-time probability that a loop window's cycle count is
+        # replaced by "unknown" (_resolve_loop_cycles_known).
+        self.loop_cycles_drop_prob=float(kargs.get('loop_cycles_drop_prob', 0.1))
+        if not 0.0 <= self.loop_cycles_drop_prob <= 1.0:
+            raise ValueError(
+                f"loop_cycles_drop_prob must be in [0, 1], got {self.loop_cycles_drop_prob}"
             )
         # --species_cond: the species code (body plan + variant) FiLM-modulates
         # each joint-name embedding in InputProcess; that is its only entry point.
@@ -193,10 +209,11 @@ class AnyTop(nn.Module):
         # path starts as a no-op.
         self.unreliable_embedding = nn.Parameter(torch.zeros(self.latent_dim))
         # y['is_loop'] (0/1, whether the window is a closed cycle) is NOT summed
-        # into the condition embedding. It only selects the circular time table
-        # in the decoder (see seqTransDecoder's loop_phase_mask): a closed
-        # window is a statement about time topology, and the phase table is
-        # the one place that can express it. A global 0/1 token was tried and
+        # into the condition embedding. It selects the loop time encoding
+        # (_frame_position_embedding, _tempo_frame_embedding,
+        # _loop_cycles_embedding): a closed window is a statement about time
+        # topology, and the circular table is the place that can express it.
+        # A global 0/1 token was tried and
         # removed: in the corpus the flag is confounded with content (two in
         # three loop clips are stationary idles, and within a species-tag
         # cluster the loop-authored gaits differ from the one-shot ones), so
@@ -204,21 +221,25 @@ class AnyTop(nn.Module):
         # the low-lift, phase-scrambled gait of the cluster's other loops
         # instead of the species' own one-shot runs, while the phase table
         # alone closed the window just as well (docs/anytop_model_architecture.md §6).
-        # resample_speed_cond (source frames per window, M / T) is NOT summed
-        # into the condition embedding either. It enters as the physical time
-        # of every window frame (_tempo_frame_embedding): a statement about the
-        # window's time scale, added per frame next to the absolute frame PE,
-        # instead of a global token beside the action label where the frame
-        # count became a content key that could outvote the label. Zero-init
-        # last layer, so a fresh model starts tempo-blind; dropped in training
-        # with tempo_cfg_drop_prob as a regularizer.
-        self.tempo_projection = nn.Sequential(
-            nn.Linear(self.latent_dim, self.latent_dim),
-            nn.GELU(),
-            nn.Linear(self.latent_dim, self.latent_dim),
-        )
-        nn.init.zeros_(self.tempo_projection[-1].weight)
-        nn.init.zeros_(self.tempo_projection[-1].bias)
+        # resample_speed_cond (source frames per window, L / T) is NOT summed
+        # into the condition embedding either. It enters per frame
+        # (_tempo_frame_embedding): an open window gets each frame's physical
+        # time, a loop window the physical length of one cycle, L / k. A
+        # statement about the window's time scale, instead of a global token
+        # beside the action label where the frame count became a content key
+        # that could outvote the label. The two get separate heads because
+        # the same input value means a frame time in one and a period in the
+        # other. Zero-init last layers, so a fresh model starts tempo-blind;
+        # dropped in training with tempo_cfg_drop_prob as a regularizer.
+        self.tempo_projection = _zero_init_mlp(self.latent_dim)
+        self.loop_period_projection = _zero_init_mlp(self.latent_dim)
+        # The loop window's cycle count k (y['loop_tile_count'] on loop rows):
+        # sinusoidal, so a large k, which only short cycles can reach, borrows
+        # from its neighbours. An unknown count is its own learned vector, not
+        # a point on the k axis. Without it k = 1 and "unknown" would look the
+        # same (both a period-T table and L as the cycle length).
+        self.loop_cycles_projection = _zero_init_mlp(self.latent_dim)
+        self.loop_cycles_null_emb = nn.Parameter(torch.zeros(self.latent_dim))
         if self.action_label_cond:
             # Project the concatenated slot channels and add the result to the
             # timestep token. One
@@ -379,37 +400,120 @@ class AnyTop(nn.Module):
                              "resample_speed_cond must be finite")
         return raw_resample_speed_cond.to(dtype=dtype)
 
-    def _tempo_frame_embedding(self, y, batch_size, nframes, device):
-        """``[nframes, B, D]`` embedding of each window frame's physical time.
+    @staticmethod
+    def _per_sample(raw, batch_size, device, dtype, name):
+        value = torch.as_tensor(raw, device=device).to(dtype).reshape(-1)
+        if value.numel() == 1 and batch_size != 1:
+            return value.expand(batch_size)
+        if value.numel() != batch_size:
+            raise ValueError(
+                f"{name} batch dimension must match the motion batch size, got "
+                f"{value.numel()} for batch {batch_size}"
+            )
+        return value
 
-        Window frame ``i`` sits at source frame ``i * step``, ``step`` being the
-        loader's resample step (dataset.resample_step_scale): ``L / T`` for a
-        loop window, ``(L - 1) / (T - 1)`` for an open one, with
-        ``L = resample_speed_cond * T``. A dropped row (``tempo_active`` False)
-        gets zeros (the training-time tempo drop).
+    def _resolve_loop_cycles_known(self, raw_known, batch_size, device):
+        """Per-sample "the cycle count is given" mask. An explicit
+        y['loop_cycles_active'] overrides (inference: False for
+        ``--loop_cycles none`` and for a run with a reference);
+        otherwise training drops it with probability loop_cycles_drop_prob and
+        eval keeps every sample."""
+        if raw_known is not None:
+            return self._per_sample(raw_known, batch_size, device, torch.bool, 'loop_cycles_active')
+        if self.training and self.loop_cycles_drop_prob > 0.0:
+            return torch.rand(batch_size, device=device) >= self.loop_cycles_drop_prob
+        return torch.ones(batch_size, device=device, dtype=torch.bool)
+
+    def _loop_condition(self, y, batch_size, device, ref_active=None):
+        """``(is_loop, cycles, cycles_known)``, each ``[B]``.
+
+        ``cycles`` is the loop window's cycle count k, from
+        y['loop_tile_count'] (the loader's tile count, 1 when absent), and
+        reads 1 wherever it is not known -- an open row, a dropped one, or a
+        reference-active one (``ref_active``) -- so it can feed the period of
+        the circular table directly. A reference supplies the motion, its
+        cycles included, so like the action label and the species FiLM the
+        count is bypassed there, in training and at inference alike.
+        Branch-free on tensor values (compile).
         """
+        raw_loop = y.get('is_loop')
+        if raw_loop is None:
+            is_loop = torch.zeros(batch_size, device=device, dtype=torch.bool)
+        else:
+            is_loop = self._per_sample(raw_loop, batch_size, device, torch.bool, 'is_loop')
+        raw_cycles = y.get('loop_tile_count')
+        if raw_cycles is None:
+            cycles = torch.ones(batch_size, device=device, dtype=torch.long)
+        else:
+            cycles = self._per_sample(
+                raw_cycles, batch_size, device, torch.long, 'loop_tile_count',
+            ).clamp(min=1)
+        cycles_known = is_loop & self._resolve_loop_cycles_known(
+            y.get('loop_cycles_active'), batch_size, device,
+        )
+        if ref_active is not None:
+            cycles_known = cycles_known & ~ref_active
+        cycles = torch.where(cycles_known, cycles, torch.ones_like(cycles))
+        return is_loop, cycles, cycles_known
+
+    def _frame_position_embedding(self, nframes, is_loop, cycles, device):
+        """``[T, B, D]`` fp32 frame-position signal: the absolute frame PE for
+        an open window, the circular table of period ``T / k`` for a loop one.
+
+        A loop window gets no absolute PE: it would hand the model a frame
+        position that bypasses the circular table and jumps at the seam.
+        """
+        positions = torch.arange(nframes, device=device).view(1, -1, 1)
+        absolute = create_sin_embedding(positions, self.latent_dim)[0].unsqueeze(1)  # [T, 1, D]
+        circular = circular_phase_embedding(
+            nframes, self.latent_dim, device, torch.float32, cycles=cycles,
+        )                                                                          # [T, B, D]
+        return torch.where(is_loop.view(1, -1, 1), circular, absolute)
+
+    def _loop_cycles_embedding(self, is_loop, cycles, cycles_known):
+        """``[B, D]`` cycle-count embedding, added to every frame of a loop row
+        (zero on open rows); an unknown count reads loop_cycles_null_emb."""
+        known = run_in_fp32(
+            self.loop_cycles_projection,
+            create_sin_embedding(cycles.view(1, -1, 1), self.latent_dim)[0],
+        )
+        emb = torch.where(cycles_known.view(-1, 1), known, self.loop_cycles_null_emb.float())
+        return emb * is_loop.view(-1, 1).to(emb.dtype)
+
+    def _tempo_frame_embedding(self, y, batch_size, nframes, device, is_loop=None, cycles=None):
+        """``[nframes, B, D]`` tempo embedding.
+
+        An open window: each frame's physical time, frame ``i`` at source frame
+        ``i * (L - 1) / (T - 1)``. A loop window: the physical length of one
+        cycle, ``L / k``, the same at every frame (``cycles`` is 1 when the
+        count is unknown, so that row reads ``L``) -- frame positions inside
+        the cycle are the circular table's job, and a ramp would jump at the
+        seam. ``L = resample_speed_cond * T``. A dropped row (``tempo_active``
+        False) gets zeros (the training-time tempo drop). ``is_loop`` /
+        ``cycles`` default to :meth:`_loop_condition` of ``y``.
+        """
+        if is_loop is None or cycles is None:
+            is_loop, cycles, _ = self._loop_condition(y, batch_size, device)
         speed = self._coerce_resample_speed_cond(
             y.get('resample_speed_cond'), batch_size=batch_size, device=device, dtype=torch.float32,
         )
-        is_loop = y.get('is_loop')
-        if is_loop is None:
-            is_loop = torch.zeros(batch_size, device=device, dtype=torch.bool)
-        is_loop = torch.as_tensor(is_loop, device=device).to(torch.bool).reshape(-1)
-        if is_loop.numel() == 1 and batch_size != 1:
-            is_loop = is_loop.expand(batch_size)
+        source_frames = speed * float(nframes)
         if nframes > 1:
-            source_frames = (speed * float(nframes)).clamp_min(1.0)
-            open_step = ((source_frames - 1.0) / float(nframes - 1)).clamp_min(0.0)
-            step = torch.where(is_loop, speed, open_step)
+            open_step = ((source_frames.clamp_min(1.0) - 1.0) / float(nframes - 1)).clamp_min(0.0)
         else:
-            step = torch.ones_like(speed)
+            open_step = torch.ones_like(speed)
         frame_times = (
             torch.arange(nframes, device=device, dtype=torch.float32).view(1, -1, 1)
-            * step.view(-1, 1, 1)
+            * open_step.view(-1, 1, 1)
         )
-        tempo_emb = run_in_fp32(
+        open_emb = run_in_fp32(
             self.tempo_projection, create_sin_embedding(frame_times, self.latent_dim)
-        )
+        )                                                                          # [B, T, D]
+        period = (source_frames / cycles.to(torch.float32)).view(-1, 1, 1)
+        loop_emb = run_in_fp32(
+            self.loop_period_projection, create_sin_embedding(period, self.latent_dim)
+        )                                                                          # [B, 1, D]
+        tempo_emb = torch.where(is_loop.view(-1, 1, 1), loop_emb, open_emb)
         active = self._resolve_tempo_active(y.get('tempo_active'), batch_size, device)
         tempo_emb = tempo_emb * active.view(-1, 1, 1).to(tempo_emb.dtype)
         return tempo_emb.transpose(0, 1)
@@ -1055,12 +1159,18 @@ class AnyTop(nn.Module):
             )
         joint_name_drop = self._sample_joint_name_drop(bs, njoints, x.device)
         rest_geom_drop = self._sample_rest_geom_drop(bs, njoints, x.device)
+        is_loop, loop_cycles, loop_cycles_known = self._loop_condition(y, bs, x.device, ref_active)
         x = self.input_process(x, rest_geom, y['joints_names_embs'], joint_valid, y['joint_struct'],
                                joint_name_drop=joint_name_drop, rest_geom_drop=rest_geom_drop,
                                species_code=species_code,
-                               species_active=species_active) # applies linear layer on each frame to convert it to latent dim
-        tempo_emb = self._tempo_frame_embedding(y, bs, nframes, x.device)
+                               species_active=species_active,
+                               frame_pos_emb=self._frame_position_embedding(
+                                   nframes, is_loop, loop_cycles, x.device,
+                               )) # applies linear layer on each frame to convert it to latent dim
+        tempo_emb = self._tempo_frame_embedding(y, bs, nframes, x.device, is_loop, loop_cycles)
         x = x + tempo_emb.unsqueeze(2).to(x.dtype)
+        cycles_emb = self._loop_cycles_embedding(is_loop, loop_cycles, loop_cycles_known)
+        x = x + cycles_emb.view(1, bs, 1, -1).to(x.dtype)
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
         spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
@@ -1076,9 +1186,8 @@ class AnyTop(nn.Module):
         if cross_limb_unreliable_mask is not None:
             x = x + cross_limb_unreliable_mask.unsqueeze(-1) * self.unreliable_embedding
 
-        # is_loop is the only loop conditioning: it selects the circular time
-        # table (closed over the window) for those samples. The decoder coerces
-        # and size-checks it.
+        # The decoder re-adds the same circular table (period T / k) per layer
+        # on loop rows.
         output = self.seqTransDecoder(
             tgt=x,
             timesteps_embs=timesteps_emb,
@@ -1087,7 +1196,8 @@ class AnyTop(nn.Module):
             tgt_key_padding_mask=joint_key_padding_mask,
             y=y,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
-            loop_phase_mask=y.get('is_loop'),
+            loop_phase_mask=is_loop,
+            loop_cycles=loop_cycles,
             # Same token the additive path summed in above, so a CFG-dropped row
             # modulates by the null embedding rather than skipping the head.
             action_adaln_cond=action_label_token if self.action_label_adaln else None,
@@ -1218,7 +1328,7 @@ class InputProcess(nn.Module):
 
     def forward(self, x, rest_geom, joints_embedded_names, joint_valid=None,
                 joint_struct=None, joint_name_drop=None, rest_geom_drop=None,
-                species_code=None, species_active=None):
+                species_code=None, species_active=None, frame_pos_emb=None):
         """Embed every (frame, joint) with its static per-joint channels.
 
         ``rest_geom`` is ``[B, J, REST_GEOM_DIM]`` (y['rest_geom']).
@@ -1231,6 +1341,9 @@ class InputProcess(nn.Module):
         ``species_code`` ([B, species_code_dim]) drives the species FiLM and is
         required exactly when it exists; a row whose ``species_active`` is False
         bypasses the FiLM entirely.
+
+        ``frame_pos_emb`` ([T, B, D], AnyTop._frame_position_embedding) is the
+        frame-position signal; None adds the absolute frame PE to every sample.
         """
         # x.shape = [batch_size, joints, feature_len, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
@@ -1299,14 +1412,12 @@ class InputProcess(nn.Module):
         # its "geometry unknown" input.
         valid = joint_valid.unsqueeze(-1).to(struct_latent.dtype)
         x = x + ((struct_latent + rest_latent) * valid)[None, ...]
-        # Absolute frame PE, the baseline frame signal for every sample (loop
-        # samples add a circular phase on top, per decoder layer -- see
-        # circular_phase_embedding). Batch dim 1: only row 0 is kept, so a
-        # [B, T, C] table would be (B-1)/B wasted. fp32 on purpose: this add
-        # promotes the bf16 residual stream back to fp32 before the decoder.
-        positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1)
-        pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
-        x = x + pos_emb.unsqueeze(1).unsqueeze(1)
+        # fp32 on purpose: this add promotes the bf16 residual stream back to
+        # fp32 before the decoder.
+        if frame_pos_emb is None:
+            positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1)
+            frame_pos_emb = create_sin_embedding(positions, self.latent_dim)[0].unsqueeze(1)
+        x = x + frame_pos_emb.to(device=x.device, dtype=torch.float32).unsqueeze(2)
         return x
 
 

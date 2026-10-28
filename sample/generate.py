@@ -70,8 +70,12 @@ from sample.output_lengths import (
     _resample_window_to_output,
     _resolve_auto_output_lengths,
     fit_reference_to_output,
+    loop_period,
+    reference_loop_cycles,
     resample_reference_to_output,
     resolve_loop_condition,
+    resolve_loop_cycles,
+    warn_loop_cycles_range,
 )
 from sample.reference_motion import (
     _REFERENCE_MOTION_PREPROCESS_SUFFIXES,
@@ -155,7 +159,7 @@ def _generate_all_species(
     skeleton.
 
     ``species_output_lengths`` is ``{species: (target_output_frames,
-    resample_speed_cond, is_loop)}``. Length is per species for the same reason
+    resample_speed_cond, is_loop, loop_cycles)}``. Length is per species for the same reason
     the conditioning is: a Pigeon's walk cycle is not a Horse's, so one shared
     number would put every species but the average one off its training
     distribution. All three values are already per-sample in the batch (the
@@ -208,6 +212,7 @@ def _generate_all_species(
                 # every temporal resample of it is periodic.
                 loop=[species_output_lengths[sp][2] for sp in batch_species],
                 action_condition=action_condition,
+                loop_cycles=[species_output_lengths[sp][3] for sp in batch_species],
             )
             model_kwargs['y']['resample_speed_cond'] = torch.tensor(
                 [species_output_lengths[sp][1] for sp in batch_species],
@@ -488,10 +493,11 @@ def main(args=None, cond_dict=None, runtime=None):
     inpaint_joints_arg = str(getattr(args, 'inpaint_joints', '') or '').strip()
     inpaint_frames_arg = str(getattr(args, 'inpaint_frames', '') or '').strip()
     inpaint_include_subtree = bool(getattr(args, 'inpaint_include_subtree', True))
-    # --loop is the whole loop condition: the model is asked for a closed window
-    # (y['is_loop'], the circular phase table, the loader's periodic window
-    # resample), and the sampled window is exported with the matching periodic
-    # resample so nothing downstream breaks the cycle open. A reference is not
+    # --loop asks the model for a closed window (y['is_loop'], the circular
+    # phase table, the loader's periodic window resample), and the sampled
+    # window is exported with the matching periodic resample so nothing
+    # downstream breaks the cycle open. How many cycles the window holds is
+    # --loop_cycles (resolve_loop_cycles). A reference is not
     # part of that: it only supplies the verdict under 'auto' and is otherwise a
     # one-shot clip. 'auto' needs the action label (resolve_loop_condition),
     # so the bool is fixed further down, right before the length that depends
@@ -562,6 +568,8 @@ def main(args=None, cond_dict=None, runtime=None):
             default_frames=_ckpt_num_frames,
             loop_mode=loop_mode,
             fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file),
+            loop_cycles=getattr(args, 'loop_cycles', None),
+            motion_speed_aug=getattr(args, 'motion_speed_aug', 1.0),
         )
         _generate_all_species(
             cond_dict=cond_dict,
@@ -707,8 +715,35 @@ def main(args=None, cond_dict=None, runtime=None):
     if edit_self_reference and not getattr(args, 'outpaint', False):
         _refuse_label_under_self_reference(_action_condition)
     loop_condition = None
+    # The loop window's cycle count (None = unknown), see resolve_loop_cycles.
+    # With a reference it is always unknown (reference_loop_cycles).
+    loop_cycles = None
+    loop_period_value = None
+    action_label_text = _action_condition['action_label'] if _action_condition else ''
     if not reference_motion_path:
         loop_condition = resolve_loop_condition(loop_mode, _action_condition)
+        if loop_condition:
+            loop_period_value = loop_period(
+                cond_dict, object_type, _action_condition, min_length=min_length,
+                internal_num_frames=internal_num_frames,
+                fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file),
+            )
+        loop_cycles, cycle_frames = resolve_loop_cycles(
+            getattr(args, 'loop_cycles', None), requested_output_frames,
+            loop=loop_condition, action_label=action_label_text, period=loop_period_value,
+        )
+        if requested_output_frames is None and cycle_frames is not None:
+            max_frames = MAX_SOURCE_FRAMES_MULT * internal_num_frames
+            if not min_length <= cycle_frames <= max_frames:
+                sys.exit(
+                    f"ERROR: --loop_cycles {loop_cycles} x period {loop_period_value[0]} = "
+                    f"{cycle_frames} frames is outside [min_length={min_length}, "
+                    f"{MAX_SOURCE_FRAMES_MULT}*num_frames={max_frames}]; pick another "
+                    "--loop_cycles or pass --num_frames."
+                )
+            requested_output_frames, target_output_frames, resample_speed_cond_value = (
+                _finalize_output_lengths(cycle_frames, min_length, internal_num_frames)
+            )
     if requested_output_frames is None and not reference_motion_path:
         # A reference outranks the label: with one present the length is its own
         # R, finalized from the loaded reference further down.
@@ -723,6 +758,12 @@ def main(args=None, cond_dict=None, runtime=None):
                 loop=loop_condition,
                 fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file),
             )
+        )
+    if not reference_motion_path and loop_condition:
+        warn_loop_cycles_range(
+            loop_cycles, requested_output_frames, period=loop_period_value,
+            internal_num_frames=internal_num_frames,
+            motion_speed_aug=getattr(args, 'motion_speed_aug', 1.0),
         )
 
     # Prepare reference motion (normalize + reshape)
@@ -761,6 +802,7 @@ def main(args=None, cond_dict=None, runtime=None):
             auto_frames = int(np.clip(len(ref_features), min_length, MAX_SOURCE_FRAMES_MULT * internal_num_frames))
             requested_output_frames, target_output_frames, resample_speed_cond_value = (
                 _finalize_output_lengths(auto_frames, min_length, internal_num_frames))
+        loop_cycles = reference_loop_cycles(getattr(args, 'loop_cycles', None), loop=loop_condition)
         ref_features, _, _ = resample_reference_to_output(ref_features, int(requested_output_frames))
         encoder_reference = _prepare_encoder_reference_bundle(
             ref_features, source_cond, batch_size=args.batch_size, n_frames=n_frames,
@@ -847,6 +889,7 @@ def main(args=None, cond_dict=None, runtime=None):
             window_frames=n_frames,
             loop=loop_condition,
         )
+        loop_cycles = reference_loop_cycles(getattr(args, 'loop_cycles', None), loop=loop_condition)
 
         # Appended [R, M) frames need a pure-noise start (full schedule), which
         # conflicts with skip_timesteps/explicit inpaint. When both are present,
@@ -963,6 +1006,7 @@ def main(args=None, cond_dict=None, runtime=None):
         loop=loop_condition,
         action_condition=_action_condition,
         species_code_override=_species_code_override,
+        loop_cycles=loop_cycles,
     )
     model_kwargs['y']['resample_speed_cond'] = torch.full(
         (args.batch_size,),
@@ -999,7 +1043,7 @@ def main(args=None, cond_dict=None, runtime=None):
         _hide_inpaint_region_from_reference(reference, inpaint_mask)
         _, ref_kwargs = create_condition(
             obj_batch, cond_dict, output_frame_count, max_joints=max_joints,
-            feature_len=opt.feature_len, loop=loop_condition,
+            feature_len=opt.feature_len, loop=loop_condition, loop_cycles=loop_cycles,
         )
         ref_kwargs['y']['resample_speed_cond'] = model_kwargs['y']['resample_speed_cond']
         ref_kwargs['y'].update(reference)

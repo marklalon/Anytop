@@ -201,9 +201,9 @@ def merge_prior_pool(primary, fallback) -> dict:
     return pool
 
 
-def _effective_buckets(cond_entry, matches, window_frames):
-    """The ``(loop_lengths, oneshot_lengths)`` of one species under the labels
-    ``matches`` accepts, pooled across those labels, as the loader trains them.
+def _effective_clips(cond_entry, matches, window_frames) -> list[tuple[int, bool, bool]]:
+    """``(length, trained_as_loop, high_frequency)`` of every clip of one
+    species under the labels ``matches`` accepts, as the loader trains them.
 
     A high-frequency clip is never downsampled, so its source budget is the
     window: one longer than ``window_frames`` contributes the window, and a
@@ -211,8 +211,7 @@ def _effective_buckets(cond_entry, matches, window_frames):
     keeps its recorded length (the generation's range clamp handles the rest).
     """
     window_frames = int(window_frames)
-    loops: list[int] = []
-    oneshots: list[int] = []
+    clips: list[tuple[int, bool, bool]] = []
     for key, buckets in _table_for(cond_entry).items():
         if not matches(key) or not isinstance(buckets, Mapping):
             continue
@@ -220,11 +219,17 @@ def _effective_buckets(cond_entry, matches, window_frames):
             for value in buckets.get(name) or ():
                 value = int(value)
                 if high_frequency and value > window_frames:
-                    oneshots.append(window_frames)
-                elif is_loop:
-                    loops.append(value)
+                    clips.append((window_frames, False, True))
                 else:
-                    oneshots.append(value)
+                    clips.append((value, bool(is_loop), bool(high_frequency)))
+    return clips
+
+
+def _effective_buckets(cond_entry, matches, window_frames):
+    """The ``(loop_lengths, oneshot_lengths)`` of :func:`_effective_clips`."""
+    clips = _effective_clips(cond_entry, matches, window_frames)
+    loops = [length for length, is_loop, _ in clips if is_loop]
+    oneshots = [length for length, is_loop, _ in clips if not is_loop]
     return loops, oneshots
 
 
@@ -430,3 +435,48 @@ def auto_num_frames(
         return None
     lengths, explanation = found
     return _pooled_median(lengths, min_frames, max_frames), f"median of {explanation}"
+
+
+def _loop_periods_for(cond_entry, matches, window_frames) -> list[tuple[int, bool]]:
+    """``(length, high_frequency)`` of every loop clip of one species that the
+    loader trains as a loop (a high-frequency one longer than the window is
+    cropped open, so it is left out)."""
+    return [
+        (length, high_frequency)
+        for length, is_loop, high_frequency in _effective_clips(cond_entry, matches, window_frames)
+        if is_loop
+    ]
+
+
+def loop_period_prior(
+    cond_dict: Mapping[str, Mapping[str, object]],
+    target_type: Optional[str],
+    *,
+    action_group: str,
+    action_label: str,
+    min_frames: int,
+    max_frames: int,
+    window_frames: int,
+) -> Optional[tuple[tuple[int, bool], str]]:
+    """``((period, high_frequency), explanation)`` for a loop of
+    ``action_label``, or ``None``.
+
+    A loop clip closes over its whole length, so its length is one period, and
+    ``period`` is the median of the same pool :func:`auto_num_frames` reads
+    with ``loop=True``. ``high_frequency`` is True when most clips of the pool
+    are high-frequency (``truebones_utils/high_frequency.py``): the loader only
+    slows those down, so the cycle lengths they trained at are ``>= period``.
+    """
+    matchers = _matchers_for(action_group, action_label)
+    if not matchers:
+        return None
+    found = _first_pool(
+        cond_dict, target_type, matchers,
+        lambda entry, matches: _loop_periods_for(entry, matches, window_frames),
+    )
+    if found is None:
+        return None
+    periods, explanation = found
+    period = _pooled_median([value for value, _ in periods], min_frames, max_frames)
+    high_frequency = 2 * sum(hf for _, hf in periods) > len(periods)
+    return (period, high_frequency), f"median of {explanation}"

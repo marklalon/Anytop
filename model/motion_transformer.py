@@ -316,58 +316,65 @@ def circular_phase_embedding(
     dim: int,
     device: torch.device,
     dtype: torch.dtype,
+    cycles: Optional[Tensor] = None,
 ) -> Tensor:
-    """Sinusoidal time table closed over the window, shape ``(length, dim)``.
+    """Sinusoidal time table closed over the window.
 
-    The ``motion_frames = length`` frames sit at phase ``2*pi*f*t / motion_frames``, so the frame AFTER
-    the last one is in phase with the first. That is the loader's convention: a
-    loop window holds no closing key (``_drop_loop_closing_frame``) and is
-    resampled periodically (``resample_motion_features(periodic=True)``), so its
-    last frame is one ordinary step before frame 0. A period of
-    ``motion_frames - 1`` gave the first and last frame the same phase and
-    generated loops whose last frame copied the first -- a one-frame stall at
-    every seam.
+    Without ``cycles`` the shape is ``(length, dim)`` and frame ``t`` sits at
+    phase ``2*pi*f*t / length``. With ``cycles`` (``[B]``, the loop window's
+    cycle count ``k``) the shape is ``(length, B, dim)`` and the period is
+    ``length / k``: phase ``2*pi*f*k*t / length``. A k-tiled loop window holds
+    each copy of the cycle in exactly ``length / k`` frames (the loader's
+    periodic window resample), so copies that land on the same frames get the
+    same rows.
 
-    Closure holds only in real arithmetic: in fp32 the phase at
-    ``t = motion_frames`` misses ``2*pi*f`` by a rounding error that grows with
-    ``dim``, so tests must scale their tolerance with ``dim``.
+    The frame AFTER the last one is in phase with the first. That is the
+    loader's convention: a loop window holds no closing key
+    (``_drop_loop_closing_frame``) and is resampled periodically
+    (``resample_motion_features(periodic=True)``), so its last frame is one
+    ordinary step before frame 0. A period of ``(length - 1) / k`` gave the
+    first and last frame the same phase and generated loops whose last frame
+    copied the first -- a one-frame stall at every seam.
 
-    This does not replace the absolute frame embedding ``InputProcess`` adds
-    for every sample: it is summed on top of it at every decoder layer
-    (``GraphMotionDecoderLayer.temporal_phase_scale``), and only for loop
-    samples.
+    The phase is reduced modulo the window on integers (``f * k * t mod
+    length``) before the trig, so closure is exact and every ``k`` reads rows
+    of the ``k = 1`` table: a permutation of it when ``gcd(k, length) = 1``,
+    otherwise ``length / gcd`` of its rows each repeated ``gcd`` times.
+    ``cycles`` must hold integers; a fractional value is truncated.
 
-    The period is the window itself; how many gait cycles it holds is NOT
-    encoded. It used to be (period ``(motion_frames - 1)/k`` for the ``k``
-    loader tiles), which made generation guess ``k`` from a per-species table
-    and forced a wrong stride when the guess was off. The cycle count is now
-    learned from resample_speed_cond and the species/action prior, as for a
-    one-shot clip.
+    For a loop sample this is the only frame-position signal: AnyTop adds it
+    at the input in place of the absolute frame PE, and every decoder layer
+    adds it again (``GraphMotionDecoderLayer.temporal_phase_scale``).
 
     Frequencies run over ``1..dim // 2`` unconditionally, so at production
-    shapes (``motion_frames < dim // 2``) the table is redundant: ``f`` and
-    ``f + motion_frames`` coincide at integer ``t``, multiples of
-    ``motion_frames`` are constant ``(1, 0)``, and ``f`` /
-    ``motion_frames - f`` share a cosine with negated sine. At
-    ``--num_frames 60`` that is 60 distinct pairs out of 128. Wasted capacity,
-    not a conflict, so it is left alone: clamping to Nyquist would only swap
-    them for zero channels.
+    shapes (``length < dim // 2``) the table is redundant: ``f`` and
+    ``f + length`` coincide at integer ``t``, multiples of ``length`` are
+    constant ``(1, 0)``, and ``f`` / ``length - f`` share a cosine with negated
+    sine. Wasted capacity, not a conflict, so it is left alone: clamping to
+    Nyquist would only swap them for zero channels.
     """
     if length <= 0:
         raise ValueError(f"length must be positive, got {length}")
-    motion_frames = length
     half_dim = dim // 2
+    batched = cycles is not None
+    if cycles is None:
+        cycles = torch.ones(1, device=device, dtype=torch.long)
+    cycles = torch.as_tensor(cycles, device=device).reshape(-1).to(torch.long)
     if half_dim == 0:
-        return torch.zeros((length, dim), device=device, dtype=dtype)
+        table = torch.zeros((length, cycles.numel(), dim), device=device, dtype=dtype)
+        return table if batched else table[:, 0]
 
-    period = float(motion_frames)
-    frame_positions = torch.arange(motion_frames, device=device, dtype=dtype).unsqueeze(1)
-    frequencies = torch.arange(1, half_dim + 1, device=device, dtype=dtype).unsqueeze(0)
-    phase = (2.0 * math.pi / period) * frame_positions * frequencies
-    motion_emb = torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
+    frame_positions = torch.arange(length, device=device, dtype=torch.long)
+    frequencies = torch.arange(1, half_dim + 1, device=device, dtype=torch.long)
+    # [T, B]: the frame's position inside the k-cycle window, folded back to
+    # one period of the table.
+    position = torch.remainder(frame_positions[:, None] * cycles[None, :], length)
+    residue = torch.remainder(position[..., None] * frequencies, length)  # [T, B, F]
+    phase = residue.to(torch.float32) * (2.0 * math.pi / float(length))
+    motion_emb = torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1).to(dtype)
     if motion_emb.shape[-1] < dim:
         motion_emb = F.pad(motion_emb, (0, dim - motion_emb.shape[-1]))
-    return motion_emb
+    return motion_emb if batched else motion_emb[:, 0]
 
 
 class CrossLimbTemporalBlock(nn.Module):
@@ -1154,6 +1161,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             memory_key_padding_mask: Optional[Tensor] = None, y=None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
             loop_phase_mask: Optional[Tensor] = None,
+            loop_cycles: Optional[Tensor] = None,
             action_adaln_cond: Optional[Tensor] = None,
             ref_z: Optional[Tensor] = None,
             ref_active: Optional[Tensor] = None,
@@ -1169,10 +1177,11 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         T, B = tgt.shape[0], tgt.shape[1]
         # The loop phase table is built once here and shared by every layer:
         # the circular phase added before temporal attention, zeroed for
-        # non-loop samples. It does not replace the absolute PE InputProcess
-        # already put in `tgt`; the main path adds the phase on top (loop
-        # samples only). The cross-limb blocks take no table: their latents
-        # inherit the frame PE through cross-in (see CrossLimbTemporalBlock).
+        # non-loop samples. Its period is T / loop_cycles ([B], the window's
+        # cycle count, 1 for an unknown one) -- the same table AnyTop put in
+        # `tgt` for loop samples in place of the absolute PE. The cross-limb
+        # blocks take no table: their latents inherit the frame PE through
+        # cross-in (see CrossLimbTemporalBlock).
         loop_phase_embedding = None
         if loop_phase_mask is not None:
             loop_phase_mask = torch.as_tensor(loop_phase_mask, device=tgt.device, dtype=torch.bool).reshape(-1)
@@ -1186,10 +1195,13 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             # Always the mask-zeroed table: an all-False fast path would read
             # the mask back (a stream sync, and a graph break under
             # torch.compile), and all-False zeroes the phase anyway.
-            loop_phase_embedding = (
-                circular_phase_embedding(T, self.d_model, tgt.device, tgt.dtype).unsqueeze(1)
-                * loop_phase_mask.view(1, B, 1)
-            )
+            if loop_cycles is None:
+                table = circular_phase_embedding(T, self.d_model, tgt.device, tgt.dtype).unsqueeze(1)
+            else:
+                table = circular_phase_embedding(
+                    T, self.d_model, tgt.device, tgt.dtype, cycles=loop_cycles,
+                )
+            loop_phase_embedding = table * loop_phase_mask.view(1, B, 1)
         first_cl_layer = (
             self.num_layers - self.cross_limb_last_n
             if self.cross_limb_last_n > 0 else 0
@@ -1321,8 +1333,9 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                     "loop_phase_embedding must have shape "
                     f"{(frames, bs, feats)}, got {tuple(loop_phase_embedding.shape)}"
                 )
-            # Summed onto the absolute PE already in x (InputProcess), not a
-            # replacement; zero-init scale, so a fresh model starts phase-free.
+            # The same table AnyTop already put in x for loop samples, re-added
+            # per layer; zero-init scale, so a fresh model starts at the input
+            # table alone.
             x = x + self.temporal_phase_scale * loop_phase_embedding.unsqueeze(2)
         # Every frame token attends over the whole window, except frames flagged
         # in key_padding_mask ((B * J, T); only the reference encoder passes one).

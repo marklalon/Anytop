@@ -226,14 +226,20 @@ XZ）；根的 position 是它的世界坐标，XZ 从 clip 第 0 帧（预处�
 标量（水平面保持各向同性），Y 一个。导出时 `working_to_stored` 把解码结果写回存储格式：根的
 position 回到 RIC，速度行写入根的世界步长（读存储 clip 的代码只读这一路速度），其余关节的速度行为零。
 
-`resample_speed_cond = source_frames / internal_frames` 以**逐帧物理时间**注入：窗口第 `i` 帧
-对应源帧 `i * step`（loop 为 `L / T`，open 为 `(L - 1) / (T - 1)`，与 loader 的 resample step 一致），
-经 sinusoidal embedding 和 `tempo_projection`（末层零初始化）后加到该帧所有关节的 token 上，
-rest-pose 槽不加。它只表达"每帧代表多少源时间"，不与 action label 共用条件 token，
-避免帧数变成压过标签的内容索引。
+`resample_speed_cond = source_frames / internal_frames`（`L = resample_speed_cond · T`）逐帧注入，
+不与 action label 共用条件 token，避免帧数变成压过标签的内容索引：
 
-训练以 `--tempo_cfg_drop_prob` 整行丢弃（该行不加 tempo embedding），只作正则，
-让动作不单靠长度决定；推理始终保留 tempo 条件，没有 tempo CFG。推理的长度默认来自
+- open 窗口：**逐帧物理时间**，窗口第 `i` 帧对应源帧 `i · (L - 1) / (T - 1)`（与 loader 的 resample step 一致），
+  经 sinusoidal embedding 和 `tempo_projection` 加到该帧所有关节的 token 上；
+- loop 窗口：**一个周期的物理长度** `L / k`（k 未知时为 `L`），每帧相同，经独立的
+  `loop_period_projection`。帧在周期内的位置由 §6.1 的循环表给出；斜坡会在接缝处跳回 0。
+  两种行用不同的头，是因为同一个输入值在 open 行是帧时间、在 loop 行是周期长度。
+
+两个头的末层都零初始化。
+
+训练以 `--tempo_cfg_drop_prob` 整行丢弃（该行不加 tempo embedding，loop 行同样），只作正则，
+让动作不单靠长度决定；推理始终保留 tempo 条件，没有 tempo CFG。loop 行被丢弃时仍保留
+循环表和 k 嵌入，只是不知道一个周期对应多少源帧。推理的长度默认来自
 `clip_length_prior`。
 
 数据侧的 `motion_speed_aug` 改变源长度 `L`，模型经 tempo 条件看到，不应与
@@ -346,18 +352,30 @@ Loop 不是单一布尔 token，而是模型、数据和损失共同组成的一
   一旦把它作为全局 token 加到 condition bus，模型就会把它学成内容键：推理时 `--loop on`
   会借同簇其它 loop 的小幅度、相位散乱步态，而不是本物种 one-shot 的步态。
   一个闭合窗口是时间拓扑的陈述，phase table 是唯一能表达它的地方；
-- 主 temporal path 使用 absolute PE，并在 loop 样本上额外加入 circular phase embedding；
-- cross-limb latents 通过 cross-in 继承关节 token 里的帧 PE（§5.3），没有自己的
-  loop/absolute 时间表；
-- circular table 在窗口的第一个和最后一个动作帧闭合；第 0 行 rest-pose token 为零。
+- 窗口的周期数 `k = y['loop_tile_count']`（loader 的 tile 数；loop clip 只在整条长度上闭合，
+  所以一份 tile 就是一个周期）。训练以 `--loop_cycles_drop_prob` 换成「未知」
+  （`y['loop_cycles_active']` 为假），推理由 `--loop_cycles` 给出；open 行不读 k；
+  参考动作激活的行（`ref_active`）在训练和推理里都把 k 当作未知，周期由参考动作自身决定，
+  与 action label、species FiLM 在这些行被绕过相同；
+- loop 样本**不加** absolute PE，输入层改加周期为 `T / k` 的 circular table
+  （`circular_phase_embedding(cycles=k)`，相位 `2π·f·k·i/T`，k 未知时周期为 `T`），这是它唯一的帧位置信号。
+  k 份 tile 各占 `T / k` 帧，k 整除 T 时各份编码逐位相同；k 与 T 互素时，表是 k=1 表的行置换。
+  相位在整数上对 T 取模后再算三角函数，所以闭合是精确的；
+- 每层在 temporal attention 前再加一次同一张表，乘以 learned scalar `temporal_phase_scale`（0 初始化）；
+- k 嵌入：`create_sin_embedding(k)` 经 `loop_cycles_projection`（末层零初始化），k 未知时用
+  `loop_cycles_null_emb`，加到 loop 行每帧所有关节的 token 上。没有它，k=1 与「未知」的输入相同
+  （都是周期 T 的表，周期长度都是 L）；
+- cross-limb latents 通过 cross-in 继承关节 token 里的帧 PE（§5.3），没有自己的时间表；
+- circular table 在窗口的第一个和最后一个动作帧闭合：最后一帧是第 0 帧的前一步，周期取 `T / k`
+  而不是 `(T - 1) / k`。
 
-每层的 phase scale（`temporal_phase_scale`）是 learned scalar，以 0 初始化；训练后通常只有
-靠前的层学到非零值，圆周相位在浅层就被消费完。
+推理端 k 与长度的解析规则
+（`sample/output_lengths.resolve_loop_cycles`）见 `docs/loop_cycle_condition.md` §4。
 
 ### 6.2 数据侧
 
 真实 loop clip 会做随机 circular roll 和随机 tile，然后统一 resample 到内部窗口。tile count
-和 phase offset 只用于诊断，不直接喂给模型。
+在 loop 条件生效的行上就是模型的周期数 k（§6.1）；phase offset 只用于诊断。
 roll 和 tile 只作用于**无固定相位**的 loop：label 的每个 head 都在 `PHASE_FREE_LOOP_HEADS`
 （步态、振翅、呼吸、保持姿态）里，且每个 modifier 都在 `PHASE_FREE_LOOP_MODIFIERS`（步态/速度、
 持续的姿态如 sit/sleep、手持物）里。其余 loop 是**有固定相位**的（attack、roar、hurt、jump 这类

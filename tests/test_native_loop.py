@@ -139,9 +139,8 @@ class NativeLoopTests(unittest.TestCase):
                 self.assertTrue(torch.equal(emb[0], expected_first))
 
     def test_circular_phase_wraps_exactly_once_per_window(self):
-        """The period is the window, never a cycle count: no frame after the
-        first repeats its phase, so the embedding cannot tell the model how
-        many gait cycles the window holds."""
+        """Without a cycle count the period is the window: no frame after
+        the first repeats its phase."""
         for length, dim in _PHASE_SHAPES:
             with self.subTest(length=length, dim=dim):
                 emb = circular_phase_embedding(

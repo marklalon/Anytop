@@ -1511,8 +1511,9 @@ class MotionDataset(data.Dataset):
 
         source_len_for_resample_speed = int(m_length)
         resample_speed_cond = float(source_len_for_resample_speed) / float(target_num_frames)
-        # A loop-conditioned window is resampled periodically, so its period is
-        # exactly the window (what circular_phase_embedding encodes) and its
+        # A loop-conditioned window is resampled periodically, so it closes
+        # over the window, each of its loop_tile_count copies takes exactly
+        # T / k frames (the period circular_phase_embedding encodes), and its
         # step is L/T = resample_speed_cond; everything else, including a loop
         # the model is told is not one, is open, at step (L-1)/(T-1).
         def sample_window(clip):
@@ -1558,12 +1559,13 @@ class MotionDataset(data.Dataset):
                 reference['same_rig'] = True
         m_length = target_num_frames
 
-        # is_loop is the whole loop condition the model sees: a closed window.
-        # The tile count is deliberately NOT passed on -- generation has no
-        # tile count, so the model must learn the cycle count from
-        # resample_speed_cond (= tiles * period / T) and the species/action prior,
-        # exactly as it does for a one-shot clip. loop_tile_count and
-        # loop_phase_offset are logged for diagnostics only.
+        # is_loop says the window is closed; on those rows loop_tile_count is
+        # the window's cycle count k the model is conditioned on (a stored loop
+        # clip closes over its whole length, so it is one cycle, and k copies
+        # are k cycles). A phase-anchored loop is never tiled: k = 1. On an
+        # open row (loop_uncond, the over-long crop) the model ignores it and
+        # only the temporal-span mask reads it. loop_phase_offset is logged
+        # for diagnostics only.
         motion_metadata['is_loop'] = bool(loop_condition_active)
         motion_metadata['resample_speed_cond'] = float(resample_speed_cond)
         motion_metadata['loop_data_aug_applied'] = bool(is_loop)

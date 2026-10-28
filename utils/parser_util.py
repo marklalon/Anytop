@@ -9,6 +9,24 @@ import copy
 # module stays import-light (that one reaches numpy through param_utils).
 # tests/test_action_group_checkpoint_binding.py pins the two together.
 ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
+# --loop_cycles value for "the cycle count is unknown" (the model's null k).
+LOOP_CYCLES_NULL = 'none'
+
+
+def parse_loop_cycles(raw):
+    """argparse type of ``--loop_cycles``: a positive int, or ``'none'``."""
+    text = str(raw).strip().lower()
+    if text == LOOP_CYCLES_NULL:
+        return LOOP_CYCLES_NULL
+    try:
+        cycles = int(text)
+    except ValueError:
+        cycles = 0
+    if cycles < 1:
+        raise argparse.ArgumentTypeError(
+            f"--loop_cycles must be a positive integer or '{LOOP_CYCLES_NULL}', got {raw!r}"
+        )
+    return cycles
 # The training value for one model over the whole corpus
 # (docs/action_group_and_label.md). Recorded in args.json in a group's
 # place; generation then reads the group off the label instead of the weights.
@@ -20,7 +38,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 54
+CKPT_VERSION = 55
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -412,6 +430,13 @@ def add_model_options(parser):
                             "frame's physical time, from resample_speed_cond) during training, as a "
                             "regularizer so the motion does not lean on the length alone. "
                             "Inference always keeps the condition.")
+    group.add_argument("--loop_cycles_drop_prob", default=0.1, type=float,
+                       help="Per-sample probability in training that a loop window's cycle count (the "
+                            "loader's tile count k) is replaced by 'unknown': the circular frame table "
+                            "falls back to one period per window, the cycle length to the whole L, and "
+                            "the cycle-count embedding to its null vector. Trains generate's "
+                            "--loop_cycles none and every generation with a --reference_motion. A "
+                            "reference-active row always reads the count as unknown.")
     group.add_argument("--species_cond", action='store_true',
                        help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_code], "
                             "species_code = [T5(body plan) || variant one-hot]. Zero-initialized to "
@@ -663,6 +688,16 @@ def add_sampling_options(parser):
                             "held-object modifiers -- the loader's roll/tile whitelist) and 'off' for an "
                             "anchored event (heads jump, attack ...; modifiers look, eat, shake ...); "
                             "else 'off'.")
+    group.add_argument("--loop_cycles", default=None, type=parse_loop_cycles,
+                       help="How many cycles a loop window holds (the model's cycle-count condition k). "
+                            "Unset: with neither this nor --num_frames, 1 cycle at the label's loop period "
+                            "P (the median loop clip length the auto length uses); with --num_frames N, the "
+                            "integer nearest N / P in log space (rounded down for a high-frequency label, "
+                            "which training only slows down). Given alone, --num_frames defaults to k * P. "
+                            "'none': the count is unknown (the null condition). With a --reference_motion "
+                            "the count is always unknown (the reference is taken as unseen, its cycles are "
+                            "its own), and the flag is refused. A phase-anchored loop label accepts only 1. "
+                            "Warns when the cycle length N / k or the source budget is outside what training drew.")
     group.add_argument("--fullbody_ik", action='store_true',
                        help="Decode the BVH preview with the same full-body IK as restore_glb_from_npy --fullbody-ik: "
                             "rotations are re-solved on the rigid cond skeleton so the position channels are honoured "

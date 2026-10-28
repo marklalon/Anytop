@@ -1,6 +1,6 @@
 # Loop 周期数条件与循环时间编码
 
-> 本文是方案，尚未实现。目标是修复 phase-free loop（run / fly / swim / idle / hover 等）生成中的
+> 本文是方案，已实现（CKPT_VERSION 55），待按 §6 做 A/B。目标是修复 phase-free loop（run / fly / swim / idle / hover 等）生成中的
 > **周期混叠**（一个周期没结束，新周期已经开始，表现为某个肢体按双倍频率运动）和
 > **速度时快时慢**。
 > 相关代码：`data_loaders/truebones/data/dataset.py`（loop roll / tile / 窗口重采样）、
@@ -51,7 +51,8 @@
 | 相位锁定 loop（`loop_is_phase_free` 为假） | 固定为 1（这类 loop 不做 roll / tile） |
 | `loop_uncond`（loop clip 按开放 clip 训练，content 可能已 tile）、超长被裁剪的 loop、非 loop | 不定义，走开放窗口路径 |
 
-训练时 k 按 `--loop_cycles_drop_prob` 的概率替换为 **null**（「周期数未知」），用于推理时不给 k 的情况和可选的 CFG。
+训练时 k 按 `--loop_cycles_drop_prob` 的概率替换为 **null**（「周期数未知」），用于推理时不给 k 的情况。
+参考动作激活的行（`ref_active`）在训练和推理里都强制为 null（§3.3）。
 null 必须和 k=1 区分开（见 §3.3）。
 
 **k 的训练分布**：`_sample_loop_tile_count` 保证 `k · P_s ≤ max_source_length`（`P_s` 为变速后的 clip 长度；
@@ -135,9 +136,10 @@ tempo drop 只在训练时触发，作为正则；推理始终给出 L，没有 
 训练：k 来自 batch 里已有的 `y['loop_tile_count']`（目前用于诊断和 temporal-span 掩码），只在 loop 条件生效的行使用，
 按 `--loop_cycles_drop_prob` 换成 null。
 
-可选：`--loop_cycles_cfg_scale`，与 action CFG 一样只作用于高噪声的一半步数，默认关闭。
-它的无条件分支是 null 行，所以 §3.1 的周期、§3.2 的 `L/k` 和 k 嵌入三者同时回到 null 状态：
-guidance 的方向是「整个周期结构」，而不只是 k 这个 token。
+参考动作激活的行把 k 强制为 null，训练和推理相同，与 action label、species FiLM 在这些行被绕过一致：
+参考动作给出动作内容，周期也由它自己决定。训练里参考与目标共用一条时间轴、一起 tile，
+z 逐帧对齐，k 份拷贝的结构由 z 给出。如果训练时 ref 行能看到 k，模型会靠 k 抄近路而不读 z，
+推理遇到 k 未知的参考就成了训练里少见的组合。
 
 ### 3.4 不改的部分
 
@@ -176,12 +178,13 @@ guidance 的方向是「整个周期结构」，而不只是 k 这个 token。
   从未按 loop 训练过。例如 Horse 给 `--loop_cycles 4`，L≈124，速度正常，但超过了 120。
 - 相位锁定的 label 只允许 k=1，给出更大的 k 直接报错（训练时这类 loop 从未拼接过）。
 
-参考动作路径（encode / 编辑）：N 默认取参考长度 R。
+参考动作路径（encode / 编辑 / outpaint）：N 默认取参考长度 R，k 一律为 null，给出 `--loop_cycles` 直接报错。
 
-- 参考是数据集 clip（`reference_loop_verdict` 用的是存储的 loop 判定）：clip 是一个周期，k=1；
-  给了 `--num_frames` 时，k 按上表的规则从 `N / R` 推出。
-- 参考是外部动作（loop 判定来自检测）：clip 里有几个周期并不知道，默认 k 为 null，可以用 `--loop_cycles` 覆盖。
-  默认给 k=1 等于断言「只有 1 个周期」，判断错了反而会坏事；null 正是「未知」的意思。
+- 推理时假定参考动作都不在训练集里，它有几个周期并不知道；默认给 k=1 等于断言「只有 1 个周期」，
+  判断错了反而会坏事，null 正是「未知」的意思。
+- 窗口里的周期本来就由参考决定：默认的拟合把整条参考重采样到 N 帧，只改速度、不复制周期；
+  `--outpaint` 追加的帧从噪声生成，周期数也不确定。
+- 参考动作激活的行在模型里本来就把 k 当作 null（§3.3）；没有 ref encoder 的 img2img / inpaint 同样给 null，规则统一。
 
 非 loop 生成不涉及 k。
 
@@ -238,9 +241,10 @@ guidance 的方向是「整个周期结构」，而不只是 k 这个 token。
 2. 模型：
    - loop 行的输入层用循环表（周期 `T/k`，null 为 T）替换绝对帧 PE，按 `[T, B, D]` 计算；每层循环相位用同一张表；
    - loop 行的 tempo 改为 `L/k` 经 `loop_period_projection` 的每帧相同嵌入，乘以 `tempo_active`；
-   - 新增 k 嵌入（正弦编码 + MLP，零初始化）和 null 向量。
+   - 新增 k 嵌入（正弦编码 + MLP，零初始化）和 null 向量；
+   - 参考动作激活的行把 k 强制为 null。
 3. 推理：`--loop_cycles`（整数或 none）、§4 的长度与 k 解析规则（普通 label 用 log 最近整数，高频 label 向下取整）、
-   速度范围和源帧预算警告、相位锁定 label 的检查、参考路径的 k 默认值；可选 `--loop_cycles_cfg_scale`。
+   速度范围和源帧预算警告、相位锁定 label 的检查、参考路径的 k 一律为 null。
 4. bump `CKPT_VERSION`；更新 `docs/anytop_model_architecture.md` 中 loop 相关章节，
    以及 `circular_phase_embedding` 的 docstring（它现在写的是「不替换绝对 PE、不编码周期数」）。
 5. 测试：

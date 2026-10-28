@@ -89,16 +89,43 @@ class TempoConditionTest(unittest.TestCase):
         self.assertTrue(torch.equal(slow['timesteps_embs'], fast['timesteps_embs']))
         self.assertFalse(torch.allclose(slow['tgt'], fast['tgt']))
 
-    def test_frame_times_follow_the_loader_resample_step(self):
+    def test_open_frame_times_follow_the_loader_resample_step(self):
         model = _make_model().eval()
         frames, speed = 5, torch.tensor([2.0, 2.0])
-        y = _make_y(frames, resample_speed_cond=speed, is_loop=torch.tensor([True, False]))
+        y = _make_y(frames, resample_speed_cond=speed, is_loop=torch.tensor([False, False]))
         emb = model._tempo_frame_embedding(y, 2, frames, torch.device('cpu'))
-        # Loop: step L/T = 2; open: (L-1)/(T-1) = 9/4.
-        steps = torch.tensor([2.0, 9.0 / 4.0])
-        times = torch.arange(frames, dtype=torch.float32).view(1, -1, 1) * steps.view(-1, 1, 1)
+        # Open: step (L-1)/(T-1) = 9/4.
+        times = torch.arange(frames, dtype=torch.float32).view(1, -1, 1) * (9.0 / 4.0)
         expected = model.tempo_projection(create_sin_embedding(times, LATENT)).transpose(0, 1)
-        self.assertTrue(torch.allclose(emb, expected, atol=1e-6))
+        self.assertTrue(torch.allclose(emb[:, 0], expected[:, 0], atol=1e-6))
+
+    def test_loop_rows_read_the_cycle_length_at_every_frame(self):
+        """A loop row gets L / k through loop_period_projection, the same at
+        every frame; an unknown k reads L."""
+        model = _make_model().eval()
+        torch.nn.init.normal_(model.loop_period_projection[-1].weight, std=0.5)
+        frames = 5
+        y = _make_y(frames, resample_speed_cond=torch.tensor([2.0, 2.0]),
+                    is_loop=torch.tensor([True, True]), loop_tile_count=torch.tensor([2, 2]),
+                    loop_cycles_active=torch.tensor([True, False]))
+        emb = model._tempo_frame_embedding(y, 2, frames, torch.device('cpu'))
+        periods = torch.tensor([10.0 / 2.0, 10.0]).view(-1, 1, 1)
+        expected = model.loop_period_projection(create_sin_embedding(periods, LATENT))  # [B, 1, D]
+        for row in range(2):
+            for frame in range(frames):
+                self.assertTrue(torch.allclose(emb[frame, row], expected[row, 0], atol=1e-6))
+        # The open head is not read on loop rows.
+        open_y = dict(y, is_loop=torch.tensor([False, False]))
+        self.assertFalse(torch.allclose(model._tempo_frame_embedding(open_y, 2, frames, torch.device('cpu')), emb))
+
+    def test_dropped_loop_rows_get_no_cycle_length(self):
+        model = _make_model().eval()
+        torch.nn.init.normal_(model.loop_period_projection[-1].weight, std=0.5)
+        torch.nn.init.normal_(model.loop_period_projection[-1].bias, std=0.5)
+        y = _make_y(4, resample_speed_cond=torch.tensor([2.0, 2.0]), is_loop=torch.tensor([True, True]),
+                    loop_tile_count=torch.tensor([2, 1]), tempo_active=torch.zeros(2, dtype=torch.bool))
+        emb = model._tempo_frame_embedding(y, 2, 4, torch.device('cpu'))
+        self.assertTrue(torch.equal(emb, torch.zeros_like(emb)))
 
     def test_rest_pose_slot_carries_no_tempo(self):
         model = _make_model().eval()

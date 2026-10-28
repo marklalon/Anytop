@@ -545,15 +545,16 @@ def test_all_species_lengths_share_the_label_loop_verdict(capsys):
         loop_mode="auto",
     )
     # jump is anchored: open window for every species, each timed by its own clips.
-    assert lengths["ns/Horse"] == (20, pytest.approx(20 / 60), False)
-    assert lengths["ns/Frog"] == (40, pytest.approx(40 / 60), False)
+    assert lengths["ns/Horse"] == (20, pytest.approx(20 / 60), False, None)
+    assert lengths["ns/Frog"] == (40, pytest.approx(40 / 60), False, None)
     assert "loop (auto): off for every species" in capsys.readouterr().out
     lengths = _all_species_output_lengths(
         cond, {"action_group": "transition", "action_label": "jump, up"},
         explicit=(30, 0.5), min_length=10, internal_num_frames=60, default_frames=60,
         loop_mode="on",
     )
-    assert lengths == {"ns/Horse": (30, 0.5, True), "ns/Frog": (30, 0.5, True)}
+    # A phase-anchored loop is never tiled: one cycle.
+    assert lengths == {"ns/Horse": (30, 0.5, True, 1), "ns/Frog": (30, 0.5, True, 1)}
 
 
 # -- High-frequency clips -----------------------------------------------------

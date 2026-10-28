@@ -271,16 +271,18 @@ def _coerce_loop_flag(flag):
     raise TypeError(f"create_condition: loop must be a bool or one of 'on'/'off', got {type(flag).__name__}")
 
 
-def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len, loop=False, action_condition=None, species_code_override=None):
+def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len, loop=False, action_condition=None, species_code_override=None, loop_cycles=None):
     """Build model_kwargs for a batch of object_types.
 
     action_condition: {'action_group', 'action_label', 'action_slots'} applied
         to every object in the batch, or None for unconditional generation.
     species_code_override: [species_code_dim] vector replacing the bound species_code for all objects.
     loop: ask for a closed window -- one bool for the whole batch, or one per
-        object_type. It is the whole loop condition -- how many gait cycles the
-        window holds is the model's to decide from resample_speed and the
-        species/action prior, so nothing here needs a period table.
+        object_type.
+    loop_cycles: how many cycles a loop window holds (y['loop_tile_count']),
+        one int or None for the whole batch, or one per object_type; None is
+        "unknown" (y['loop_cycles_active'] False). Read on loop rows only
+        (sample.output_lengths.resolve_loop_cycles picks it).
     """
     if isinstance(loop, (list, tuple)):
         if len(loop) != len(object_types):
@@ -290,13 +292,24 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         loop_flags = [_coerce_loop_flag(flag) for flag in loop]
     else:
         loop_flags = [_coerce_loop_flag(loop)] * len(object_types)
+    if isinstance(loop_cycles, (list, tuple)):
+        if len(loop_cycles) != len(object_types):
+            raise ValueError(
+                f"create_condition: {len(loop_cycles)} loop_cycles for {len(object_types)} object_types"
+            )
+        cycle_counts = list(loop_cycles)
+    else:
+        cycle_counts = [loop_cycles] * len(object_types)
+    for cycles in cycle_counts:
+        if cycles is not None and (isinstance(cycles, bool) or int(cycles) != cycles or int(cycles) < 1):
+            raise ValueError(f"create_condition: loop_cycles must be a positive int or None, got {cycles!r}")
     batches = list()
     # One entry per species, not per sample: the structural descriptors are a pure
     # function of the cond entry, and this is the same builder the dataset caches
     # at construction -- a second implementation here would silently condition
     # generation on something training never saw.
     joint_struct_by_object = {}
-    for object_type, is_loop in zip(object_types, loop_flags):
+    for object_type, is_loop, cycles in zip(object_types, loop_flags, cycle_counts):
         if object_type not in cond_dict:
             available = ', '.join(sorted(cond_dict.keys()))
             raise KeyError(
@@ -323,6 +336,8 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         batch.append(max_joints)
         metadata = {
             'is_loop': is_loop,
+            'loop_tile_count': 1 if cycles is None else int(cycles),
+            'loop_cycles_active': cycles is not None,
             'translation_root_index': cond_dict[object_type].get('translation_root_index', 0),
         }
         if 'species_code' in cond_dict[object_type]:
