@@ -2,7 +2,7 @@
 setlocal
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_all_v64
+set RUN_NAME=merged_all_v65
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM train_anytop requires bundled TinyCC for --compile, overriding inherited CC.
@@ -36,7 +36,7 @@ pushd "%SCRIPT_DIR%"
 	--ref_slots 3 ^
 	--ref_dim 8 ^
 	--ref_width 256 ^
-	--ref_layers 3 ^
+	--ref_layers 2 ^
 	--ref_cfg_drop_prob 0.6 ^
     --rest_repose_prob 0.1 ^
     --rest_variant_prob 0.5 ^
@@ -59,17 +59,17 @@ pushd "%SCRIPT_DIR%"
 	--action_label_cfg_drop_prob 0.2 ^
 	--tempo_cfg_drop_prob 0.1 ^
 	--joint_mask_prob 0.15 ^
-	--unreliable_mask_drop_prob 0.2 ^
-	--renoise_same_level_prob 0.5 ^
+	--unreliable_mask_drop_prob 0.15 ^
+	--renoise_same_level_prob 0.6 ^
 	--joint_name_drop_prob 0.15 ^
 	--direction_slot_drop_prob 0.15 ^
 	--modifier_slot_drop_prob 0.15 ^
 	--temporal_span_mask_prob 0.15 ^
-	--temporal_span_seam_loss_weight 0.5 ^
+	--temporal_span_seam_loss_weight 0.2 ^
 	--lambda_loop_wrap 0.04 ^
 	--lambda_dpos 0.08 ^
-	--lambda_root_dpos 0.35 ^
-	--lambda_root_acc 0.7 ^
+	--lambda_root_dpos 0.1 ^
+	--lambda_root_acc 0.1 ^
 	--lambda_limb_corr 0.1 ^
 	--lambda_geo 0.1 ^
 	--lambda_bone 0.06 ^
