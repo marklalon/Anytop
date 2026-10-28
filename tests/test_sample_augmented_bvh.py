@@ -1,4 +1,4 @@
-"""CLI exclusivity, isolated random augmentations and shared speed fitting."""
+"""CLI exclusivity and isolated random augmentations."""
 
 import sys
 from pathlib import Path
@@ -45,33 +45,20 @@ def test_other_modes_bypass_loop_stages_without_mutating_source(monkeypatch, mod
     assert sample["motion_metadata"]["action_label"] == "walk"
 
 
-@pytest.mark.parametrize("mode", ["loop", "motion-speed", "leaf-drop"])
-@pytest.mark.parametrize("length, expected", [(180, 120), (300, 200)])
-def test_all_modes_speed_fit_overlong_anchored_actions(mode, length, expected):
-    dataset = PreviewMotionDataset.__new__(PreviewMotionDataset)
-    dataset.opt = SimpleNamespace(
-        preview_mode=mode, motion_speed_aug=1.3 if mode == "motion-speed" else 1.0,
-        motion_speed_aug_prob=float(mode == "motion-speed"),
-    )
-    dataset.min_length = 20
-    assert dataset._sample_motion_speed_target_length(length, False, 120, fit_budget=True) == expected
-
-
-def test_speed_mode_preserves_training_fit_flag(monkeypatch):
+def test_speed_mode_preserves_training_slow_only_flag(monkeypatch):
     dataset = PreviewMotionDataset.__new__(PreviewMotionDataset)
     dataset.opt = SimpleNamespace(preview_mode="motion-speed", motion_speed_aug=1.3)
     captured = {}
 
-    def sampler(self, length, is_loop, budget, *, fit_budget, slow_only):
-        captured["fit_budget"] = fit_budget
+    def sampler(self, length, is_loop, budget, *, slow_only):
         captured["slow_only"] = slow_only
         return 250
 
     monkeypatch.setattr(MotionDataset, "_sample_motion_speed_target_length", sampler)
-    assert dataset._sample_motion_speed_target_length(300, False, 120, fit_budget=True) == 250
-    assert captured == {"fit_budget": True, "slow_only": False}
+    assert dataset._sample_motion_speed_target_length(300, False, 120) == 250
+    assert captured == {"slow_only": False}
     assert dataset._sample_motion_speed_target_length(30, False, 60, slow_only=True) == 250
-    assert captured == {"fit_budget": False, "slow_only": True}
+    assert captured == {"slow_only": True}
 
 
 def test_speed_preview_default(monkeypatch):
@@ -80,19 +67,18 @@ def test_speed_preview_default(monkeypatch):
     assert args.motion_speed_aug == 1.3
 
 
-def test_explicit_unit_speed_keeps_fitting_but_disables_random_speed(monkeypatch):
+def test_explicit_unit_speed_disables_random_speed(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["preview", "--mode", "motion-speed", "--motion-speed-aug", "1.0"])
     args = parse_args()
     dataset = PreviewMotionDataset.__new__(PreviewMotionDataset)
     dataset.opt = SimpleNamespace(preview_mode=args.mode, motion_speed_aug=args.motion_speed_aug)
     dataset.min_length = 20
-    assert dataset._sample_motion_speed_target_length(300, False, 120, fit_budget=True) == 200
-    assert dataset._sample_motion_speed_target_length(300, False, 120, fit_budget=False) == 300
+    assert dataset._sample_motion_speed_target_length(300, False, 120) == 300
 
 
 @pytest.mark.parametrize("mode", ["loop", "leaf-drop"])
-def test_non_speed_modes_do_not_speed_fit_phase_free_actions(mode):
+def test_non_speed_modes_keep_the_recorded_length(mode):
     dataset = PreviewMotionDataset.__new__(PreviewMotionDataset)
     dataset.opt = SimpleNamespace(preview_mode=mode, motion_speed_aug=1.0)
     dataset.min_length = 20
-    assert dataset._sample_motion_speed_target_length(300, False, 120, fit_budget=False) == 300
+    assert dataset._sample_motion_speed_target_length(300, False, 120) == 300

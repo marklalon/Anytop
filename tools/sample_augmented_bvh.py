@@ -21,12 +21,11 @@ probability 100%; other augmentations are disabled:
 Every mode also writes <stem>__original.bvh beside each augmented file: the same
 clip with augmentations off as a control (rest-repose / rest-variant: the
 stored rig's rest).
-Bone-length and loop replay the same temporal draws; motion-speed keeps the
-deterministic fit instead of the sampled tempo.
+Bone-length and loop replay the same temporal draws; motion-speed's control is
+played at the recorded tempo.
 
-All modes keep training's automatic speed fitting for phase-anchored actions,
-capped by MAX_FIT_SPEEDUP. Clips still above the source-length budget are randomly
-cropped, followed by the normal model-window resampling.
+Clips above the source-length budget are randomly cropped, followed by the
+normal model-window resampling.
 
 Exported filenames encode the applied augmentations, e.g.:
   Horse_Gallop__loop+loop7x+roll12.bvh
@@ -129,17 +128,15 @@ class PreviewMotionDataset(MotionDataset):
         return super()._prepare_sample(name, data, **kwargs)
 
     def _sample_motion_speed_target_length(
-        self, length, is_loop, max_source_length, *, fit_budget=False, slow_only=False,
+        self, length, is_loop, max_source_length, *, slow_only=False,
     ):
         if self.opt.preview_mode != "motion-speed" or self.opt.motion_speed_aug == 1.0:
-            # The training sampler keeps deterministic fitting even when
-            # random speed augmentation is disabled (R=1 or probability=0).
             return super()._sample_motion_speed_target_length(
-                length, is_loop, max_source_length, fit_budget=fit_budget, slow_only=slow_only,
+                length, is_loop, max_source_length, slow_only=slow_only,
             )
         for _ in range(32):
             target_length = super()._sample_motion_speed_target_length(
-                length, is_loop, max_source_length, fit_budget=fit_budget, slow_only=slow_only,
+                length, is_loop, max_source_length, slow_only=slow_only,
             )
             if target_length != length:
                 return target_length

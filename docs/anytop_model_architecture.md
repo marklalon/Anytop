@@ -377,20 +377,12 @@ clip 重采样窗口、以 `is_loop=False` 交给模型（零 circular phase、�
 当内容键，而一个不可信的 flag 只能被当作时间拓扑来读。它不是 CFG（没有 null 态、推理端不消费），
 eval loader 总是告知。另一处降级是超出源帧预算被裁剪的 clip（环被裁开，按非 loop 告知）。
 
-超预算的**有固定相位** clip（label 不满足 `loop_is_phase_free`，loop 与否都算）在变速一步里有一个
-速度下限 `min(L/budget, MAX_FIT_SPEEDUP)`：超出预算不多（`MAX_FIT_SPEEDUP` 倍以内）的被加速到恰好放进窗口、
-整段进入训练（loop 因此保住 `is_loop`），也不会被 `motion_speed_aug` 再放慢出去；更长的先加速到
-`MAX_FIT_SPEEDUP` 倍再裁剪，让窗口尽量多地保留事件。`motion_speed_aug` 在 `[下限, max(R, 下限)]`
-里抽，两者是同一次变速。这个下限是数据准备而不是增广，eval loader 同样生效。无固定相位的 clip
-（步态、呼吸等，任意一段仍是同一动作）按录制速度裁剪，不受影响。
-
 **高频 clip 永不降采样。** 某个关节的旋转在周期不超过几帧的频段里能量足够大（逐帧锁定的昆虫
 振翅、一两帧完成的急速动作；判据见 `truebones_utils/high_frequency.py`，分数随 clip 长度一起缓存在
 `cache/motion_lengths.npy`），线性插值一旦把它压到更少的帧就会混叠：周期只有几帧的振翅变成慢拍频，
 更短周期的几乎静止。这类 clip 的源帧预算等于窗口本身：变速只减速、且不减速出窗口，tile
-不超过窗口，超长的按 `resample_speed = 1` 裁剪到窗口长度而不是压进窗口，也不走上面有固定相位
-clip 的强制加速（改为裁剪，事件可能不完整）。超过窗口长度的高频 loop 因此总被裁开、按非 loop
-告知。代价是这类 clip 只出现在 `resample_speed <= 1` 的区间。生成端自动选长度和 `--loop auto`
+不超过窗口，超长的按 `resample_speed = 1` 裁剪到窗口长度而不是压进窗口。超过窗口长度的高频
+loop 因此总被裁开、按非 loop 告知。代价是这类 clip 只出现在 `resample_speed <= 1` 的区间。生成端自动选长度和 `--loop auto`
 用的 clip-length prior（`utils/clip_length_prior.py`）按同一规则读表：高频 clip 的长度上限是
 checkpoint 的窗口，超过窗口的高频 loop 按非 loop 计票，所以不会替这类动作选出训练里没见过的长度
 或 loop 条件。

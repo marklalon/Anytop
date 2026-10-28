@@ -17,7 +17,6 @@ from data_loaders.truebones.truebones_utils.action_label_conditioning_contract i
     load_action_conditioning_bundle,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (
-    MAX_FIT_SPEEDUP,
     MAX_SOURCE_FRAMES_MULT,
     get_action_word_embeddings_path,
 )
@@ -1209,7 +1208,7 @@ class MotionDataset(data.Dataset):
             return 1
         return int(random.randint(2, max_tile_count))
 
-    def _sample_motion_speed_target_length(self, length, is_loop, max_source_length, *, fit_budget=False, slow_only=False):
+    def _sample_motion_speed_target_length(self, length, is_loop, max_source_length, *, slow_only=False):
         """Pick the frame count a clip is time-scaled to before any other
         augmentation, or ``length`` for no change.
 
@@ -1228,21 +1227,10 @@ class MotionDataset(data.Dataset):
           so slowing it down cannot push it into the crop branch that
           downgrades it to non-loop.
 
-        ``fit_budget`` marks a phase-anchored clip (the caller passes
-        ``not loop_is_phase_free(label)``): one whose crop loses part of the
-        event rather than some cycles of it. Such a clip gets a speed FLOOR,
-        ``min(L / budget, MAX_FIT_SPEEDUP)``, applied whether or not the
-        augmentation draws -- a clip within ``MAX_FIT_SPEEDUP`` of the budget
-        is played just fast enough to enter the window whole (and, like a
-        fitting loop, is never slowed back out of it), a longer one is played
-        ``MAX_FIT_SPEEDUP`` faster so the crop keeps as much of the event as
-        it can. The augmentation then draws in ``[floor, max(R, floor)]``, so
-        the speed-up and the augmentation are one time-scale, not two.
-
         ``slow_only`` marks a high-frequency clip (see high_frequency.py),
         which must never be resampled to fewer frames: the draw is capped at
         speed 1, and a clip that fits the budget -- loop or not -- is never
-        slowed past it. It excludes ``fit_budget``, which is a speed-up.
+        slowed past it.
 
         The narrowed interval is sampled directly rather than clipped into,
         so no probability mass piles up at the bounds (which would just be a
@@ -1256,21 +1244,10 @@ class MotionDataset(data.Dataset):
             raise ValueError(f"motion_speed_aug must be >= 1.0 (1.0 = off), got {ratio}.")
         if not 0.0 <= prob <= 1.0:
             raise ValueError(f"motion_speed_aug_prob must be in [0, 1], got {prob}.")
-        if fit_budget and slow_only:
-            raise ValueError("fit_budget (a forced speed-up) and slow_only are exclusive.")
         if length < 2:
             return length
         floor_length = max(2, min(int(self.min_length), length))
-        # The speed floor; below 1 (a clip that already fits) it binds only
-        # through the ceiling.
-        fit_speed = 0.0
-        ceil_length = None
-        if fit_budget:
-            fit_speed = min(float(length) / float(budget), float(MAX_FIT_SPEEDUP))
-            if length <= MAX_FIT_SPEEDUP * budget:
-                ceil_length = budget
-        elif (is_loop or slow_only) and length <= budget:
-            ceil_length = budget
+        ceil_length = budget if (is_loop or slow_only) and length <= budget else None
 
         def scaled_length(speed):
             target_length = max(int(round(float(length) / speed)), floor_length)
@@ -1278,18 +1255,17 @@ class MotionDataset(data.Dataset):
                 target_length = min(target_length, ceil_length)
             return target_length
 
-        fitted_length = scaled_length(fit_speed) if fit_speed > 1.0 else length
         if ratio == 1.0 or random.random() >= prob:
-            return fitted_length
+            return length
         # speed > 1 shortens the clip.
-        speed_lo = max(1.0 / ratio, fit_speed)
-        speed_hi = max(min(ratio, float(length) / float(floor_length)), fit_speed)
+        speed_lo = 1.0 / ratio
+        speed_hi = min(ratio, float(length) / float(floor_length))
         if slow_only:
             speed_hi = min(speed_hi, 1.0)
         if ceil_length is not None:
             speed_lo = max(speed_lo, float(length) / float(ceil_length))
         if speed_lo >= speed_hi:
-            return fitted_length
+            return length
         return scaled_length(math.exp(random.uniform(math.log(speed_lo), math.log(speed_hi))))
 
     def prepare_sample_by_name(self, name, target_num_frames=None, loop_offset=None):
@@ -1455,8 +1431,7 @@ class MotionDataset(data.Dataset):
         # frames, so its source budget is the window itself: the speed draw
         # only slows it down and never past the window, tiling stays within
         # the window, and an over-long one is cropped to the window at
-        # resample_speed 1 instead of squeezed into it. It also skips the
-        # phase-anchored speed-up and is cropped mid-event instead.
+        # resample_speed 1 instead of squeezed into it.
         high_frequency = bool(data.get('high_frequency', False))
         if high_frequency:
             max_source_length = target_num_frames
@@ -1472,9 +1447,6 @@ class MotionDataset(data.Dataset):
         # resample_speed is a comb and an inference num_frames between the
         # teeth is out of distribution. A loop clip is time-scaled periodically,
         # so it is still a closed cycle.
-        # A phase-anchored clip (any label loop_is_phase_free rejects, loop or
-        # not) is also sped up toward the budget here, so it enters the window
-        # whole instead of being cropped mid-event (see the sampler).
         #
         # The stages from here to the window resample are linear maps of time,
         # so none of them is materialized: the speed draw only sets the scaled
@@ -1488,7 +1460,6 @@ class MotionDataset(data.Dataset):
         motion_speed_applied = 1.0
         time_scaled_length = self._sample_motion_speed_target_length(
             m_length, is_loop, max_source_length,
-            fit_budget=not label_phase_free and not high_frequency,
             slow_only=high_frequency,
         )
         if time_scaled_length != m_length:
@@ -1525,10 +1496,8 @@ class MotionDataset(data.Dataset):
 
         if m_length > max_source_length:
             # A clip longer than the source budget (n*MAX_SOURCE_FRAMES_MULT, or
-            # n for a high-frequency clip) is cropped (a phase-anchored one only
-            # past MAX_FIT_SPEEDUP of it: below that the speed sampler already
-            # fitted it), which breaks the closed loop, so a loop is downgraded
-            # to non-loop here and told so.
+            # n for a high-frequency clip) is cropped, which breaks the closed
+            # loop, so a loop is downgraded to non-loop here and told so.
             # The crop LENGTH is fixed at the full budget -- every over-long
             # clip contributes budget source frames, resampled to the target
             # length below at resample_speed budget/n -- while the window

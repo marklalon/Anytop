@@ -110,13 +110,6 @@ def test_slow_only_never_shortens_nor_slows_past_the_window(length, is_loop):
     assert len(draws) > 1 or length >= WINDOW
 
 
-def test_slow_only_excludes_fit_budget():
-    with pytest.raises(ValueError):
-        MotionDataset._sample_motion_speed_target_length(
-            _sampler(), 30, False, WINDOW, fit_budget=True, slow_only=True
-        )
-
-
 # ── One interpolation for time-scale + shift + window resample ──
 
 def _reference_pose_window(clip, scaled, window_frames, *, source_periodic, window_periodic, shift):
