@@ -297,6 +297,7 @@ def create_gaussian_diffusion(args):
         lambda_geo=args.lambda_geo,
         lambda_dpos=getattr(args, 'lambda_dpos', 0.0),
         lambda_root_dpos=getattr(args, 'lambda_root_dpos', 0.0),
+        lambda_root_acc=getattr(args, 'lambda_root_acc', 0.0),
         lambda_loop_wrap=getattr(args, 'lambda_loop_wrap', 0.0),
         lambda_bone=getattr(args, 'lambda_bone', 0.0),
         lambda_limb_corr=getattr(args, 'lambda_limb_corr', 0.0),

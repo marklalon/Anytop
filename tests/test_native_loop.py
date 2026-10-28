@@ -354,6 +354,43 @@ class NativeLoopTests(unittest.TestCase):
         y['dpos_loss_weight'] = torch.tensor([0.5, 0.5])
         self.assertTrue(torch.allclose(diffusion.root_position_step_loss(target, prediction, y), 0.5 * unweighted))
 
+    def test_root_acceleration_loss_counts_second_differences_of_the_root_xz(self):
+        # A one-frame bump on the root's X gives the scaled steps (+3, -3) and
+        # the accelerations (3, -6, 3); a loop averages over every frame, an
+        # open clip over its inner second differences only.
+        diffusion = self._make_diffusion()
+        n_frames, n_joints = 6, 3
+        target = torch.zeros(2, n_joints, 12, n_frames, dtype=torch.float32)
+        std = torch.ones(CANONICAL_STAT_LEN, dtype=torch.float32)
+        std[ROOT_STAT_SLICE] = 3.0
+        y = {
+            'is_loop': torch.tensor([True, False]),
+            'canonical_feature_std': std,
+            'canonical_dpos_std': torch.ones(2, dtype=torch.float32),
+        }
+        prediction = target.clone()
+        prediction[:, 0, 0, 2] += 1.0
+        acc = diffusion.root_acceleration_loss(target, prediction, y)
+        self.assertAlmostEqual(float(acc[0]), 54.0 / (n_frames * 2), places=5)
+        self.assertAlmostEqual(float(acc[1]), 54.0 / ((n_frames - 2) * 2), places=5)
+
+        # A constant speed error has no acceleration on an open clip.
+        prediction = target.clone()
+        prediction[:, 0, 2, :] += torch.arange(n_frames, dtype=torch.float32)
+        self.assertEqual(float(diffusion.root_acceleration_loss(target, prediction, y)[1]), 0.0)
+
+        # The root's height and every other joint are not its business.
+        for joint, channel in ((0, 1), (1, 0), (2, 2)):
+            prediction = target.clone()
+            prediction[:, joint, channel, 2] += 1.0
+            self.assertEqual(float(diffusion.root_acceleration_loss(target, prediction, y).abs().max()), 0.0)
+
+        prediction = target.clone()
+        prediction[:, 0, 2, 2] += 1.0
+        unweighted = diffusion.root_acceleration_loss(target, prediction, y)
+        y['dpos_loss_weight'] = torch.tensor([0.5, 0.5])
+        self.assertTrue(torch.allclose(diffusion.root_acceleration_loss(target, prediction, y), 0.5 * unweighted))
+
     def test_create_gaussian_diffusion_preserves_loop_args(self):
         class Args:
             noise_schedule = 'cosine'
@@ -363,12 +400,14 @@ class NativeLoopTests(unittest.TestCase):
             lambda_geo = 0.0
             lambda_loop_wrap = 0.75
             lambda_root_dpos = 0.17
+            lambda_root_acc = 0.23
             temporal_span_seam_loss_weight = 0.0
             temporal_span_seam_width = 2
 
         diffusion = create_gaussian_diffusion(Args())
         self.assertEqual(diffusion.lambda_loop_wrap, 0.75)
         self.assertEqual(diffusion.lambda_root_dpos, 0.17)
+        self.assertEqual(diffusion.lambda_root_acc, 0.23)
 
     def test_anytop_forwards_is_loop_as_the_only_loop_condition(self):
         model = AnyTop(

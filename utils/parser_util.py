@@ -253,6 +253,12 @@ def add_model_options(parser):
                             "term, same units, wrap step and species weight. In --lambda_dpos it is two "
                             "channels among every joint's three, too little to keep the root's in-stride "
                             "lateral/fore-aft sway, which no other joint carries. 0 disables it.")
+    group.add_argument("--lambda_root_acc", default=0.0, type=float,
+                       help="Weight of the root's world X/Z acceleration MSE (the step of its step), in "
+                            "--lambda_root_dpos's units and species weight; a loop also counts the "
+                            "circular second differences across its wrap. It weighs a sway component by the "
+                            "fourth power of its frequency where --lambda_root_dpos weighs it by the square, "
+                            "so it covers the stride band of fast gaits. 0 disables it.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for the loop-only rotation seam continuity loss on denormalized "
                             "outputs: the wrap step's rotation angle matches its neighbouring steps. A loop "

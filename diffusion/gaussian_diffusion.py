@@ -227,6 +227,7 @@ class GaussianDiffusion:
         lambda_geo=0.,
         lambda_dpos=0.,
         lambda_root_dpos=0.,
+        lambda_root_acc=0.,
         lambda_loop_wrap=0.,
         lambda_bone=0.,
         lambda_limb_corr=0.,
@@ -241,6 +242,7 @@ class GaussianDiffusion:
         self.lambda_geo = lambda_geo
         self.lambda_dpos = float(lambda_dpos)
         self.lambda_root_dpos = float(lambda_root_dpos)
+        self.lambda_root_acc = float(lambda_root_acc)
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_bone = float(lambda_bone)
         self.lambda_limb_corr = float(lambda_limb_corr)
@@ -550,20 +552,51 @@ class GaussianDiffusion:
         joint's three, and no other joint carries the root's world XZ, so it
         gets its own weight. ``[B]``."""
         batch_size, _max_joints, _n_feats, n_frames = target.shape
-        device = target.device
         if n_frames < 2:
             return target.new_zeros(batch_size)
         y = y if isinstance(y, dict) else {}
-        std, dpos_std = self._position_step_stats(y, batch_size, device)
+        err = self._root_xz_step_error(target, model_output, y) ** 2                  # [B, 2, T]
+        frame_weight = self._position_step_frame_weight(y, batch_size, n_frames, target.device, err.dtype)
+        return self._root_xz_weighted_mean(err, frame_weight, y)
+
+    def root_acceleration_loss(self, target, model_output, y):
+        """MSE of the root's world X/Z acceleration, the step of its step, in
+        :meth:`root_position_step_loss`'s units and species weight. A loop
+        counts every circular second difference, an open clip only those of
+        its inner steps. The step loss weighs an in-stride sway component by
+        the square of its frequency and this one by the fourth power, so it
+        reaches the stride band of fast gaits that the step loss underweights.
+        ``[B]``."""
+        batch_size, _max_joints, _n_feats, n_frames = target.shape
+        if n_frames < 3:
+            return target.new_zeros(batch_size)
+        y = y if isinstance(y, dict) else {}
+        step_err = self._root_xz_step_error(target, model_output, y)                   # [B, 2, T]
+        # acc[t] = step[t + 1] - step[t]; the last two read the wrap step.
+        err = (th.roll(step_err, shifts=-1, dims=-1) - step_err) ** 2
+        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, target.device, default=False)
+        frame_weight = th.ones(batch_size, n_frames, device=target.device, dtype=err.dtype)
+        frame_weight[:, -2:] = is_loop.to(dtype=err.dtype).unsqueeze(1)
+        return self._root_xz_weighted_mean(err, frame_weight, y)
+
+    def _root_xz_step_error(self, target, model_output, y):
+        """The output's minus the target's root world X/Z steps
+        (:meth:`_position_steps`), in units of the position-step RMS.
+        ``[B, 2, T]``."""
+        batch_size = target.shape[0]
+        std, dpos_std = self._position_step_stats(y, batch_size, target.device)
         xz = list(ROOT_XZ_CHANNELS)
         scale = (std[:, ROOT_STAT_SLICE][:, xz] / dpos_std.view(batch_size, 1)).unsqueeze(-1)  # [B, 2, 1]
-
         steps = self._position_steps
-        err = ((steps(model_output[:, 0, xz, :]) - steps(target[:, 0, xz, :])) * scale) ** 2   # [B, 2, T]
-        frame_weight = self._position_step_frame_weight(y, batch_size, n_frames, device, err.dtype)
-        denom = (frame_weight.sum(dim=1) * float(len(xz))).clamp_min(1.0)
+        return (steps(model_output[:, 0, xz, :]) - steps(target[:, 0, xz, :])) * scale
+
+    def _root_xz_weighted_mean(self, err, frame_weight, y):
+        """``[B]`` mean of ``err`` ``[B, 2, T]`` over the ``frame_weight``
+        ``[B, T]`` frames and both channels, scaled by the species' dpos weight."""
+        batch_size = err.shape[0]
+        denom = (frame_weight.sum(dim=1) * float(err.shape[1])).clamp_min(1.0)
         per_sample = (err * frame_weight.unsqueeze(1)).sum(dim=(1, 2)) / denom
-        weight = self._per_sample_y_scalar(y, DPOS_LOSS_WEIGHT_KEY, batch_size, device, default=1.0)
+        weight = self._per_sample_y_scalar(y, DPOS_LOSS_WEIGHT_KEY, batch_size, err.device, default=1.0)
         return per_sample * weight
 
     def _masked_smooth_l1(self, x, mask, beta=0.1, weight=None):
@@ -1999,6 +2032,11 @@ class GaussianDiffusion:
                         target_fp32, model_output_fp32, y_for_decode,
                     )
                     terms["loss"] = terms["loss"] + self.lambda_root_dpos * terms["root_dpos_loss"]
+                if self.lambda_root_acc > 0.:
+                    terms["root_acc_loss"] = self.root_acceleration_loss(
+                        target_fp32, model_output_fp32, y_for_decode,
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_root_acc * terms["root_acc_loss"]
 
                 target_physical = canonical_to_physical_hml(target_fp32, y_for_decode)
                 model_output_physical = canonical_to_physical_hml(model_output_fp32, y_for_decode)
