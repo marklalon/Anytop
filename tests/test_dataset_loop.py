@@ -894,9 +894,9 @@ def test_motion_speed_sampler_is_off_by_default_and_draws_nothing() -> None:
     sampler = _speed_sampler(1.0)
     # Off: no RNG consumed, so tests that count random draws stay valid.
     with patch.object(dataset_module.random, 'random', side_effect=AssertionError("must not draw")):
-        assert sampler._sample_motion_speed_target_length(31, False, BUDGET_FRAMES) == 31
+        assert sampler._sample_motion_speed_target_length(31, BUDGET_FRAMES) == 31
     sampler = _speed_sampler(1.2, prob=0.0)
-    assert sampler._sample_motion_speed_target_length(31, False, BUDGET_FRAMES) == 31
+    assert sampler._sample_motion_speed_target_length(31, BUDGET_FRAMES) == 31
 
 
 def test_motion_speed_sampler_stays_inside_the_clip_boundaries() -> None:
@@ -904,21 +904,24 @@ def test_motion_speed_sampler_stays_inside_the_clip_boundaries() -> None:
     rng = random.Random(7)
     with patch.object(dataset_module.random, 'random', rng.random),             patch.object(dataset_module.random, 'uniform', rng.uniform):
         # Plain clip: log-uniform ratio in [1/1.2, 1.2] around 31 frames.
-        draws = {sampler._sample_motion_speed_target_length(31, False, BUDGET_FRAMES) for _ in range(2000)}
+        draws = {sampler._sample_motion_speed_target_length(31, BUDGET_FRAMES) for _ in range(2000)}
         assert min(draws) == 26 and max(draws) == 37, sorted(draws)
         assert len(draws) >= 10, "the augmentation should spread the clip length, not pick a few values"
         # min_length clip: may only slow down.
-        draws = {sampler._sample_motion_speed_target_length(20, False, BUDGET_FRAMES) for _ in range(2000)}
+        draws = {sampler._sample_motion_speed_target_length(20, BUDGET_FRAMES) for _ in range(2000)}
         assert min(draws) == 20 and max(draws) == 24, sorted(draws)
-        # A loop that fits the source budget keeps fitting (never crop-downgraded).
-        draws = {sampler._sample_motion_speed_target_length(115, True, BUDGET_FRAMES) for _ in range(2000)}
+        # A clip that fits the source budget keeps fitting (never cropped).
+        draws = {sampler._sample_motion_speed_target_length(115, BUDGET_FRAMES) for _ in range(2000)}
         assert max(draws) == BUDGET_FRAMES and min(draws) == 96, sorted(draws)
-        # A loop already over the budget is not forced anywhere.
-        draws = {sampler._sample_motion_speed_target_length(150, True, BUDGET_FRAMES) for _ in range(2000)}
-        assert min(draws) == 125 and max(draws) == 180, sorted(draws)
-        # A non-loop clip over the budget gets cropped either way: no ceiling.
-        draws = {sampler._sample_motion_speed_target_length(115, False, BUDGET_FRAMES) for _ in range(2000)}
-        assert max(draws) > BUDGET_FRAMES, sorted(draws)
+        # A clip over the budget is only sped up.
+        draws = {sampler._sample_motion_speed_target_length(150, BUDGET_FRAMES) for _ in range(2000)}
+        assert min(draws) == 125 and max(draws) == 150, sorted(draws)
+    sampler = _speed_sampler(1.3)
+    rng = random.Random(7)
+    with patch.object(dataset_module.random, 'random', rng.random),             patch.object(dataset_module.random, 'uniform', rng.uniform):
+        # ... and may land under the budget, skipping the crop.
+        draws = {sampler._sample_motion_speed_target_length(150, BUDGET_FRAMES) for _ in range(2000)}
+        assert min(draws) == 115 and max(draws) == 150, sorted(draws)
 
 
 def test_long_phase_anchored_clip_is_cropped_at_the_recorded_tempo() -> None:
@@ -969,7 +972,7 @@ def test_motion_speed_sampler_rejects_bad_settings() -> None:
     for ratio, prob in ((0.8, 1.0), (1.2, 1.5), (1.2, -0.1)):
         sampler = _speed_sampler(ratio, prob)
         try:
-            sampler._sample_motion_speed_target_length(31, False, BUDGET_FRAMES)
+            sampler._sample_motion_speed_target_length(31, BUDGET_FRAMES)
         except ValueError:
             pass
         else:

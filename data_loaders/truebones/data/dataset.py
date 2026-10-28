@@ -1208,7 +1208,7 @@ class MotionDataset(data.Dataset):
             return 1
         return int(random.randint(2, max_tile_count))
 
-    def _sample_motion_speed_target_length(self, length, is_loop, max_source_length, *, slow_only=False):
+    def _sample_motion_speed_target_length(self, length, max_source_length, *, slow_only=False):
         """Pick the frame count a clip is time-scaled to before any other
         augmentation, or ``length`` for no change.
 
@@ -1216,21 +1216,23 @@ class MotionDataset(data.Dataset):
         ``opt.motion_speed_aug``; 1.0 = off), drawn with probability
         ``opt.motion_speed_aug_prob``; the recorded tempo is one point of that
         continuum, not a mode. The range is then narrowed so the augmentation
-        never carries a clip across a boundary it was not across already --
-        the point is to fill the gaps between the corpus' clustered clip
-        lengths, not to change what else happens to the clip:
+        never carries a clip into the crop branch -- the point is to fill the
+        gaps between the corpus' clustered clip lengths, not to change what
+        else happens to the clip:
 
         * the scaled clip stays >= ``min_length`` (inference never asks for a
           shorter window, so anything below is training the model on a
           ``resample_speed`` it will never see);
-        * a loop clip that fits the ``max_source_length`` budget still fits,
-          so slowing it down cannot push it into the crop branch that
-          downgrades it to non-loop.
+        * a clip that fits the ``max_source_length`` budget still fits, so
+          slowing it down never crops it (a loop would also be downgraded to
+          non-loop there);
+        * a clip over the budget is only sped up, so its crop keeps at least
+          the recorded share of the clip; it may land under the budget and
+          skip the crop altogether.
 
         ``slow_only`` marks a high-frequency clip (see high_frequency.py),
         which must never be resampled to fewer frames: the draw is capped at
-        speed 1, and a clip that fits the budget -- loop or not -- is never
-        slowed past it.
+        speed 1, so one over the budget is left at its recorded tempo.
 
         The narrowed interval is sampled directly rather than clipped into,
         so no probability mass piles up at the bounds (which would just be a
@@ -1247,7 +1249,7 @@ class MotionDataset(data.Dataset):
         if length < 2:
             return length
         floor_length = max(2, min(int(self.min_length), length))
-        ceil_length = budget if (is_loop or slow_only) and length <= budget else None
+        ceil_length = budget if length <= budget else None
 
         def scaled_length(speed):
             target_length = max(int(round(float(length) / speed)), floor_length)
@@ -1264,6 +1266,8 @@ class MotionDataset(data.Dataset):
             speed_hi = min(speed_hi, 1.0)
         if ceil_length is not None:
             speed_lo = max(speed_lo, float(length) / float(ceil_length))
+        else:
+            speed_lo = max(speed_lo, 1.0)
         if speed_lo >= speed_hi:
             return length
         return scaled_length(math.exp(random.uniform(math.log(speed_lo), math.log(speed_hi))))
@@ -1429,7 +1433,7 @@ class MotionDataset(data.Dataset):
 
         # A high-frequency clip (high_frequency.py) is never resampled to fewer
         # frames, so its source budget is the window itself: the speed draw
-        # only slows it down and never past the window, tiling stays within
+        # only slows one that fits and never past the window, tiling stays within
         # the window, and an over-long one is cropped to the window at
         # resample_speed 1 instead of squeezed into it.
         high_frequency = bool(data.get('high_frequency', False))
@@ -1459,7 +1463,7 @@ class MotionDataset(data.Dataset):
         source_length = int(m_length)
         motion_speed_applied = 1.0
         time_scaled_length = self._sample_motion_speed_target_length(
-            m_length, is_loop, max_source_length,
+            m_length, max_source_length,
             slow_only=high_frequency,
         )
         if time_scaled_length != m_length:

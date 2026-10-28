@@ -128,15 +128,15 @@ class PreviewMotionDataset(MotionDataset):
         return super()._prepare_sample(name, data, **kwargs)
 
     def _sample_motion_speed_target_length(
-        self, length, is_loop, max_source_length, *, slow_only=False,
+        self, length, max_source_length, *, slow_only=False,
     ):
         if self.opt.preview_mode != "motion-speed" or self.opt.motion_speed_aug == 1.0:
             return super()._sample_motion_speed_target_length(
-                length, is_loop, max_source_length, slow_only=slow_only,
+                length, max_source_length, slow_only=slow_only,
             )
         for _ in range(32):
             target_length = super()._sample_motion_speed_target_length(
-                length, is_loop, max_source_length, slow_only=slow_only,
+                length, max_source_length, slow_only=slow_only,
             )
             if target_length != length:
                 return target_length

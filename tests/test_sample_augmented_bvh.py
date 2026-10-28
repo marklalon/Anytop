@@ -50,14 +50,14 @@ def test_speed_mode_preserves_training_slow_only_flag(monkeypatch):
     dataset.opt = SimpleNamespace(preview_mode="motion-speed", motion_speed_aug=1.3)
     captured = {}
 
-    def sampler(self, length, is_loop, budget, *, slow_only):
+    def sampler(self, length, budget, *, slow_only):
         captured["slow_only"] = slow_only
         return 250
 
     monkeypatch.setattr(MotionDataset, "_sample_motion_speed_target_length", sampler)
-    assert dataset._sample_motion_speed_target_length(300, False, 120) == 250
+    assert dataset._sample_motion_speed_target_length(300, 120) == 250
     assert captured == {"slow_only": False}
-    assert dataset._sample_motion_speed_target_length(30, False, 60, slow_only=True) == 250
+    assert dataset._sample_motion_speed_target_length(30, 60, slow_only=True) == 250
     assert captured == {"slow_only": True}
 
 
@@ -73,7 +73,7 @@ def test_explicit_unit_speed_disables_random_speed(monkeypatch):
     dataset = PreviewMotionDataset.__new__(PreviewMotionDataset)
     dataset.opt = SimpleNamespace(preview_mode=args.mode, motion_speed_aug=args.motion_speed_aug)
     dataset.min_length = 20
-    assert dataset._sample_motion_speed_target_length(300, False, 120) == 300
+    assert dataset._sample_motion_speed_target_length(300, 120) == 300
 
 
 @pytest.mark.parametrize("mode", ["loop", "leaf-drop"])
@@ -81,4 +81,4 @@ def test_non_speed_modes_keep_the_recorded_length(mode):
     dataset = PreviewMotionDataset.__new__(PreviewMotionDataset)
     dataset.opt = SimpleNamespace(preview_mode=mode, motion_speed_aug=1.0)
     dataset.min_length = 20
-    assert dataset._sample_motion_speed_target_length(300, False, 120) == 300
+    assert dataset._sample_motion_speed_target_length(300, 120) == 300

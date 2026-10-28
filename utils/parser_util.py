@@ -307,8 +307,8 @@ def add_model_options(parser):
                             "regen, no model change, no CKPT_VERSION bump. Spreads the clustered clip lengths "
                             "(the corpus piles up on a few exact frame counts) so an inference num_frames "
                             "between the clusters is in distribution. The range is narrowed per clip so the "
-                            "scaled clip stays >= min_length and a loop that fits the source budget still "
-                            "fits (never downgraded to non-loop by slowing down).")
+                            "scaled clip stays >= min_length, a clip that fits the source budget still fits "
+                            "(never cropped by slowing down), and a clip over the budget is only sped up.")
     group.add_argument("--motion_speed_aug_prob", default=1.0, type=float,
                        help="Per-sample probability of applying --motion_speed_aug (default 1.0 = every clip). "
                             "The recorded tempo is one point of the continuum, so leaving a mass at exactly "

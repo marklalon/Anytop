@@ -94,20 +94,23 @@ def _sampler(ratio=1.3):
     )
 
 
-@pytest.mark.parametrize('length,is_loop', [(20, True), (26, False), (45, True), (59, False), (90, True), (151, False)])
-def test_slow_only_never_shortens_nor_slows_past_the_window(length, is_loop):
+@pytest.mark.parametrize('length', [20, 26, 45, 59, 90, 151])
+def test_slow_only_never_shortens_nor_slows_past_the_window(length):
     random.seed(0)
     sampler = _sampler()
     draws = {
         MotionDataset._sample_motion_speed_target_length(
-            sampler, length, is_loop, WINDOW, slow_only=True
+            sampler, length, WINDOW, slow_only=True
         )
         for _ in range(500)
     }
+    if length > WINDOW:
+        # Over the window: left at the recorded tempo, cropped later.
+        assert draws == {length}
+        return
     assert min(draws) >= length
-    if length <= WINDOW:
-        assert max(draws) <= WINDOW
-    assert len(draws) > 1 or length >= WINDOW
+    assert max(draws) <= WINDOW
+    assert len(draws) > 1 or length == WINDOW
 
 
 # ── One interpolation for time-scale + shift + window resample ──
