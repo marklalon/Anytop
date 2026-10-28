@@ -21,7 +21,7 @@ pushd "%SCRIPT_DIR%"
 	--action_group all ^
 	--rare_head_word_floor 20 ^
 	--rare_head_word_max_boost 4 ^
-	--head_word_weights attack,hurt=0.8,idle=0.6 ^
+	--head_word_weights hurt=0.8,attack=0.7,idle=0.6 ^
 	--train_split train ^
     --noise_schedule_shift 2 ^
 	--latent_dim 384 ^
@@ -35,7 +35,7 @@ pushd "%SCRIPT_DIR%"
 	--ref_encoder ^
 	--ref_slots 3 ^
 	--ref_dim 8 ^
-	--ref_width 256 ^
+	--ref_width 128 ^
 	--ref_layers 2 ^
 	--ref_cfg_drop_prob 0.6 ^
     --rest_repose_prob 0.1 ^
