@@ -409,8 +409,9 @@ def add_model_options(parser):
                             "never drops.")
     group.add_argument("--tempo_cfg_drop_prob", default=0.1, type=float,
                        help="Per-sample probability of dropping the tempo condition (each window "
-                            "frame's physical time, from resample_speed_cond) during training, "
-                            "enabling tempo classifier-free guidance (--tempo_cfg_scale).")
+                            "frame's physical time, from resample_speed_cond) during training, as a "
+                            "regularizer so the motion does not lean on the length alone. "
+                            "Inference always keeps the condition.")
     group.add_argument("--species_cond", action='store_true',
                        help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_code], "
                             "species_code = [T5(body plan) || variant one-hot]. Zero-initialized to "
@@ -810,13 +811,6 @@ def add_generate_options(parser):
                             "bypassed: an encoded --reference_motion, and the --inpaint_frames pass. "
                             "Editing a raw .glb/.fbx of a species the checkpoint does not know "
                             "still reads the tags, as that skeleton's own descriptor.")
-    group.add_argument("--tempo_cfg_scale", default=1.0, type=float,
-                       help="Classifier-free guidance scale over the tempo condition (the output "
-                            "length, --num_frames or the clip-length prior's default), applied on "
-                            "the high-noise half of the steps only. Below 1 lets the action label "
-                            "and species outweigh a length the corpus rarely pairs with them; above "
-                            "1 holds the motion to it. 1.0 (default) costs no extra forward. "
-                            "Requires a checkpoint trained with --tempo_cfg_drop_prob > 0.")
 
 def train_args():
     parser = ArgumentParser()

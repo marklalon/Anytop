@@ -107,27 +107,6 @@ class ClassifierFreeActionModel(nn.Module):
         return uncond_out + scale * (cond_out - uncond_out)
 
 
-class ClassifierFreeTempoModel(ClassifierFreeActionModel):
-    """Guide the tempo condition (each window frame's physical time) against
-    its trained dropped mode; every other condition is identical in both passes.
-
-    A scale below 1 lets the action label and species outweigh a requested
-    length the corpus rarely pairs with them; above 1 holds the motion to it.
-    """
-
-    def forward(self, x, timesteps, y=None, **kwargs):
-        cond_out = self.model(x, timesteps, y=y, **kwargs)
-        scale = self._staged_scale(self.guidance_scale, timesteps)
-        if self._is_identity(scale):
-            return cond_out
-        uncond_y = dict(y or {})
-        uncond_y['tempo_active'] = torch.zeros(
-            x.shape[0], dtype=torch.bool, device=x.device
-        )
-        uncond_out = self.model(x, timesteps, y=uncond_y, **kwargs)
-        return uncond_out + scale * (cond_out - uncond_out)
-
-
 class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
     """Guide the encoded reference against the fully unconditional mode.
 

@@ -38,7 +38,6 @@ from sample.conditioning import (
     _resolve_action_condition,
     _resolve_species_code_override,
     _wrap_action_label_cfg,
-    _wrap_tempo_cfg,
     _wrap_reference_cfg,
     create_condition,
 )
@@ -178,7 +177,7 @@ def _generate_all_species(
     if action_condition is not None:
         print(f'  Action label: {action_condition["action_label"]!r} '
               f'(group={action_condition["action_group"]})')
-    sampling_model = _wrap_tempo_cfg(_wrap_action_label_cfg(model, args, action_condition), args)
+    sampling_model = _wrap_action_label_cfg(model, args, action_condition)
 
     for batch_idx, batch_species in enumerate(species_batches, 1):
             actual_bs = len(batch_species)
@@ -931,10 +930,9 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # Create condition with effective frame count (shared across passes).
     obj_batch = [object_type] * args.batch_size
-    _sampling_model = _wrap_tempo_cfg(
+    _sampling_model = (
         _wrap_reference_cfg(model, args, _action_condition) if reference_encode else
-        _wrap_action_label_cfg(model, args, _action_condition),
-        args,
+        _wrap_action_label_cfg(model, args, _action_condition)
     )
 
     # ── --species_tags: restyle the target species' motion descriptor ────────
@@ -1009,7 +1007,7 @@ def main(args=None, cond_dict=None, runtime=None):
         if str(getattr(args, 'species_tags', '') or '').strip():
             print('  --species_tags ignored for the inpaint: the reference drives the motion '
                   '(no species restyle on referenced samples)')
-        return _wrap_tempo_cfg(_wrap_reference_cfg(model, args, None), args), ref_kwargs
+        return _wrap_reference_cfg(model, args, None), ref_kwargs
 
     def _run_sample(reference_motion, skip_ts, inpaint_mask, self_ref=None):
         sampling_model, kwargs = (

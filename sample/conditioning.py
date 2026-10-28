@@ -10,7 +10,6 @@
   from the checkpoint's descriptor table replacing the species' own
   ``species_code``.
 """
-import math
 import sys
 
 import numpy as np
@@ -30,10 +29,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (
     build_joint_struct_features,
 )
 from data_loaders.truebones.truebones_utils.species_descriptor_table import species_code
-from model.cfg_sampler import (
-    ClassifierFreeActionModel,
-    ClassifierFreeTempoModel,
-)
+from model.cfg_sampler import ClassifierFreeActionModel
 from utils.model_util import unwrap_anytop_model
 
 
@@ -246,25 +242,6 @@ def _wrap_reference_cfg(model, args, action_condition):
     return ClassifierFreeReferenceModel(
         model, getattr(args, 'ref_cfg_scale', 1.0), num_timesteps=args.diffusion_steps,
         switch_t=cfg_switch_timestep(args),
-    )
-
-
-def _wrap_tempo_cfg(model, args):
-    """Guide the tempo condition (the requested length), outermost wrapper."""
-    raw_scale = getattr(args, 'tempo_cfg_scale', None)
-    scale = 1.0 if raw_scale is None else float(raw_scale)
-    if not math.isfinite(scale) or scale < 0.0:
-        sys.exit(f"ERROR: --tempo_cfg_scale must be finite and >= 0, got {scale}.")
-    if scale == 1.0:
-        return model
-    if float(getattr(args, 'tempo_cfg_drop_prob', 0.0) or 0.0) <= 0.0:
-        sys.exit(
-            "ERROR: --tempo_cfg_scale requires a checkpoint trained with "
-            "--tempo_cfg_drop_prob > 0."
-        )
-    print(f"[generate] tempo CFG: scale={scale:g} (doubles the model forwards on the high-noise steps)")
-    return ClassifierFreeTempoModel(
-        model, scale, args.diffusion_steps, switch_t=cfg_switch_timestep(args),
     )
 
 

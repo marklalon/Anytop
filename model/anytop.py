@@ -210,8 +210,8 @@ class AnyTop(nn.Module):
         # window's time scale, added per frame next to the absolute frame PE,
         # instead of a global token beside the action label where the frame
         # count became a content key that could outvote the label. Zero-init
-        # last layer, so a fresh model starts tempo-blind; CFG-droppable via
-        # tempo_cfg_drop_prob.
+        # last layer, so a fresh model starts tempo-blind; dropped in training
+        # with tempo_cfg_drop_prob as a regularizer.
         self.tempo_projection = nn.Sequential(
             nn.Linear(self.latent_dim, self.latent_dim),
             nn.GELU(),
@@ -386,7 +386,7 @@ class AnyTop(nn.Module):
         loader's resample step (dataset.resample_step_scale): ``L / T`` for a
         loop window, ``(L - 1) / (T - 1)`` for an open one, with
         ``L = resample_speed_cond * T``. A dropped row (``tempo_active`` False)
-        gets zeros, the unconditional mode tempo CFG guides against.
+        gets zeros (the training-time tempo drop).
         """
         speed = self._coerce_resample_speed_cond(
             y.get('resample_speed_cond'), batch_size=batch_size, device=device, dtype=torch.float32,
@@ -987,7 +987,7 @@ class AnyTop(nn.Module):
 
     def _resolve_tempo_active(self, raw_tempo_active, batch_size, device):
         """Per-sample keep mask for the tempo condition. An explicit
-        y['tempo_active'] (e.g. the unconditional branch at sampling) overrides;
+        y['tempo_active'] overrides;
         otherwise training samples a Bernoulli keep so the condition is hard-dropped
         with probability tempo_cfg_drop_prob; eval/inference keeps every sample."""
         if raw_tempo_active is not None:

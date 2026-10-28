@@ -108,7 +108,7 @@ loop 样本不再用 tempo 斜坡 `i·L/T`，改为每帧相同的嵌入，内�
   loop 行的输入是一个每帧相同的周期长度，速度体现在它的绝对值里。共用一个逐帧 MLP 时，同一个输入值 30
   在两种行里含义不同，只能靠下游从 PE 类型去分辨。独立投影只多一组 2·D² 参数，就消除了这个歧义。
 
-tempo CFG 不变：drop 的行把输出乘以 `tempo_active`，`loop_period_projection` 的输出也乘以同一个 `tempo_active`。
+tempo drop 不变：drop 的行把输出乘以 `tempo_active`，`loop_period_projection` 的输出也乘以同一个 `tempo_active`。
 
 ### 3.3 显式 k 嵌入
 
@@ -127,7 +127,7 @@ tempo CFG 不变：drop 的行把输出乘以 `tempo_active`，`loop_period_proj
 训练：k 来自 batch 里已有的 `y['loop_tile_count']`（目前用于诊断和 temporal-span 掩码），只在 loop 条件生效的行使用，
 按 `--loop_cycles_drop_prob` 换成 null。
 
-可选：`--loop_cycles_cfg_scale`，与 action / tempo CFG 一样只作用于高噪声的一半步数，默认关闭。
+可选：`--loop_cycles_cfg_scale`，与 action CFG 一样只作用于高噪声的一半步数，默认关闭。
 它的无条件分支是 null 行，所以 §3.1 的周期、§3.2 的 `L/k` 和 k 嵌入三者同时回到 null 状态：
 guidance 的方向是「整个周期结构」，而不只是 k 这个 token。
 

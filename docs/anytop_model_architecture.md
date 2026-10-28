@@ -232,10 +232,9 @@ position 回到 RIC，速度行写入根的世界步长（读存储 clip 的代�
 rest-pose 槽不加。它只表达"每帧代表多少源时间"，不与 action label 共用条件 token，
 避免帧数变成压过标签的内容索引。
 
-训练以 `--tempo_cfg_drop_prob` 整行丢弃（该行不加 tempo embedding），推理用
-`--tempo_cfg_scale` 做 tempo CFG：小于 1 时让 label/species 压过语料里少见的长度，大于 1
-时让动作更贴合所给长度。推理的长度默认来自 `clip_length_prior`，丢弃态只作为 CFG 的
-无条件分支，所以 drop 概率取低值。
+训练以 `--tempo_cfg_drop_prob` 整行丢弃（该行不加 tempo embedding），只作正则，
+让动作不单靠长度决定；推理始终保留 tempo 条件，没有 tempo CFG。推理的长度默认来自
+`clip_length_prior`。
 
 数据侧的 `motion_speed_aug` 改变源长度 `L`，模型经 tempo 条件看到，不应与
 `resample_speed_cond` 本身混为一谈。

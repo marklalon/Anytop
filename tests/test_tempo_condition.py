@@ -1,10 +1,9 @@
 """The tempo condition: resample_speed_cond enters as each window frame's
 physical time, added per frame (never through the timestep token), and is
-CFG-droppable via tempo_cfg_drop_prob / tempo_active."""
+dropped in training via tempo_cfg_drop_prob / tempo_active."""
 from __future__ import annotations
 
 import sys
-import types
 import unittest
 from pathlib import Path
 
@@ -18,7 +17,6 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
 )
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from model.anytop import AnyTop, create_sin_embedding  # noqa: E402
-from model.cfg_sampler import ClassifierFreeTempoModel  # noqa: E402
 
 T5_DIM = 512
 LATENT = 8
@@ -129,33 +127,17 @@ class TempoConditionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             _make_model(tempo_cfg_drop_prob=1.5)
 
-    def test_tempo_cfg_matches_explicit_branches(self):
+    def test_dropped_row_changes_the_output(self):
         model = _make_model().eval()
         model.seqTransDecoder = _TimestepEchoDecoder()
         x, t = torch.randn(2, 4, 12, 3), torch.tensor([98, 99])
         y = _make_y(resample_speed_cond=torch.tensor([0.5, 2.0]))
         with torch.no_grad():
-            cond = model(x, t, y=dict(y, tempo_active=torch.ones(2, dtype=torch.bool)))
-            uncond = model(x, t, y=dict(y, tempo_active=torch.zeros(2, dtype=torch.bool)))
-            guided = ClassifierFreeTempoModel(model, 0.5, 100)(x, t, y=y)
-        self.assertFalse(torch.allclose(cond, uncond))
-        self.assertTrue(torch.allclose(guided, uncond + 0.5 * (cond - uncond), atol=1e-6))
-        self.assertNotIn('tempo_active', y)
-
-    def test_wrap_requires_a_trained_drop(self):
-        from sample.conditioning import _wrap_tempo_cfg
-        model = _make_model()
-        args = types.SimpleNamespace(tempo_cfg_scale=1.0, tempo_cfg_drop_prob=0.0, diffusion_steps=100)
-        self.assertIs(_wrap_tempo_cfg(model, args), model)
-        args.tempo_cfg_scale = 0.5
-        with self.assertRaises(SystemExit):
-            _wrap_tempo_cfg(model, args)
-        args.tempo_cfg_drop_prob = 0.1
-        self.assertIsInstance(_wrap_tempo_cfg(model, args), ClassifierFreeTempoModel)
-        args.tempo_cfg_scale = float('nan')
-        with self.assertRaises(SystemExit):
-            _wrap_tempo_cfg(model, args)
-
+            kept = model(x, t, y=dict(y, tempo_active=torch.ones(2, dtype=torch.bool)))
+            dropped = model(x, t, y=dict(y, tempo_active=torch.zeros(2, dtype=torch.bool)))
+            default = model(x, t, y=y)
+        self.assertFalse(torch.allclose(kept, dropped))
+        self.assertTrue(torch.allclose(default, kept))
 
 if __name__ == '__main__':
     unittest.main()
