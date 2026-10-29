@@ -663,6 +663,9 @@ def add_sampling_options(parser):
                             "softmax stays fp32. Requires a CUDA device with bf16 support (Ampere+). "
                             "bf16 rounding adds frame-to-frame noise that inflates jerk/snap scores "
                             "(docs/bf16_precision_issues.md).")
+    group.add_argument("--no_ema", action='store_true',
+                       help="Load the online weights (payload 'model') instead of the EMA copy, for "
+                            "checkpoints whose EMA still lags the online model (short runs).")
     group.add_argument("--loop", nargs='?', const='on', default='auto', choices=['auto', 'on', 'off'],
                        help="Whether to generate a closed window (loop conditioning + loop-aware temporal masks). "
                             "'on' (also a bare --loop): the window is periodic -- its last frame is one step "

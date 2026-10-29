@@ -223,10 +223,12 @@ def prepare_generation_runtime(args=None, cond_dict=None):
     if device is None or device.type != 'cuda':
         device = torch.device('cpu')
     payload = torch.load(args.model_path, map_location=device, weights_only=False)
+    prefer_ema = not getattr(args, 'no_ema', False)
     state_dict, _state_dict_avg, checkpoint_metadata = load_checkpoint_weights(
-        payload, args.model_path, prefer_ema=True, align_vocab=True)
+        payload, args.model_path, prefer_ema=prefer_ema, align_vocab=True)
     if payload.get('model_avg') is not None:
-        print('EMA checkpoint detected, loading model_avg weights.')
+        print('EMA checkpoint detected, loading '
+              + ('model_avg weights.' if prefer_ema else 'online weights (--no_ema).'))
     assert model is not None, 'BUG: create_model_and_diffusion_general_skeleton returned None for model'
     # model.to(device) may return None (CUDA 12.8 + torch 2.7.1); parameter move is in-place.
     model.to(device)
