@@ -61,7 +61,7 @@ ROOT_Y_DRIFT_THRESHOLD = 0.25
 # slide recognisable at a magnitude the representation can carry -- the old
 # extent gate answered the same question by zeroing the whole trajectory.
 ROOT_XZ_SOFT_CLAMP_KNEE = 0.2
-ROOT_XZ_SOFT_CLAMP_LIMIT = 0.5
+ROOT_XZ_SOFT_CLAMP_LIMIT = 0.8
 
 # Locomotion's own extent bound, tighter than the soft clamp above and applied to
 # EVERY clip the root-XZ policy selects -- all locomotion -- not only the ones
