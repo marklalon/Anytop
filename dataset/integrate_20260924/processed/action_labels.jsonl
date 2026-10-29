@@ -593,8 +593,8 @@
 {"clip": "ORA_Hound_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, right"}
 {"clip": "ORA_Hound_Down", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, sleep"}
 {"clip": "ORA_Hound_Fall", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, fall"}
-{"clip": "ORA_Hound_FlyAvoid", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, run, left"}
-{"clip": "ORA_Hound_FlyAvoidMirror", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, run, right"}
+{"clip": "ORA_Hound_FlyAvoid", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, fly, left"}
+{"clip": "ORA_Hound_FlyAvoidMirror", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "roll, fly, right"}
 {"clip": "ORA_Hound_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
 {"clip": "ORA_Hound_FlySprint", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward, glide"}
 {"clip": "ORA_Hound_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
