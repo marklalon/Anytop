@@ -384,6 +384,10 @@ def add_model_options(parser):
                             "layers (0 = all layers). Each active layer gets its "
                             "own independent block, so this also controls the "
                             "cross-limb parameter count.")
+    group.add_argument("--temporal_rope", action='store_true',
+                       help="Rotary position encoding on the denoiser's temporal attention q / k "
+                            "(frame index, geometric frequencies up to Nyquist), so every layer reads "
+                            "frame offsets directly. Parameter-free; off reproduces the model without it.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
     group.add_argument("--joint_name_drop_prob", default=0.0, type=float,

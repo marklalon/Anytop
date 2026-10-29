@@ -230,6 +230,7 @@ def get_gmdm_args(args):
             'cross_limb_latents': args.cross_limb_latents,
             'cross_limb_dim': getattr(args, 'cross_limb_dim', 64),
             'cross_limb_last_n': getattr(args, 'cross_limb_last_n', 0),
+            'temporal_rope': bool(getattr(args, 'temporal_rope', False)),
             'action_adaln_bottleneck': getattr(args, 'action_adaln_bottleneck', 0),
             'species_film_bottleneck': getattr(args, 'species_film_bottleneck', 128),
             'last_layer_ff': getattr(args, 'last_layer_ff', 0),

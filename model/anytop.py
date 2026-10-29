@@ -86,6 +86,7 @@ class AnyTop(nn.Module):
         self.cross_limb_latents=kargs.get('cross_limb_latents', 8)
         self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
+        self.temporal_rope=bool(kargs.get('temporal_rope', False))
         # Hidden widths of conditioning heads; 0 selects latent_dim.
         self.action_adaln_bottleneck=int(kargs.get('action_adaln_bottleneck', 0))
         self.species_film_bottleneck=int(kargs.get('species_film_bottleneck', 128))
@@ -271,7 +272,8 @@ class AnyTop(nn.Module):
                                                         action_adaln_bottleneck=self.action_adaln_bottleneck,
                                                         last_layer_ff=self.last_layer_ff,
                                                         mirror_twin_drop_prob=self.mirror_twin_drop_prob,
-                                                        lateral_drop_prob=self.lateral_drop_prob)
+                                                        lateral_drop_prob=self.lateral_drop_prob,
+                                                        temporal_rope=self.temporal_rope)
             
         
         self.output_process = OutputProcess(

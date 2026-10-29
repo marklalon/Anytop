@@ -81,6 +81,35 @@ class _AttentionOutProjection(nn.Module):
             nn.init.uniform_(self.bias, -bound, bound)
 
 
+# Temporal RoPE frequency range (--temporal_rope), in radians per window frame.
+# The fastest pair turns half a cycle per frame (Nyquist, a two-frame period);
+# the slowest has a period far beyond the window, so the low pairs read as a
+# smooth distance kernel. The pairs in between are spaced geometrically.
+TEMPORAL_ROPE_MAX_FREQ = math.pi
+TEMPORAL_ROPE_MAX_PERIOD = 240.0
+
+
+def temporal_rope_tables(length: int, head_dim: int, device: torch.device) -> Tuple[Tensor, Tensor]:
+    """``(cos, sin)``, each ``[length, head_dim // 2]``, for frames ``0..length-1``."""
+    if head_dim % 2 != 0:
+        raise ValueError(f"temporal RoPE needs an even head_dim, got {head_dim}")
+    pairs = head_dim // 2
+    min_freq = 2.0 * math.pi / TEMPORAL_ROPE_MAX_PERIOD
+    ramp = torch.arange(pairs, device=device, dtype=torch.float32) / max(pairs - 1, 1)
+    freqs = TEMPORAL_ROPE_MAX_FREQ * (min_freq / TEMPORAL_ROPE_MAX_FREQ) ** ramp
+    angles = torch.arange(length, device=device, dtype=torch.float32)[:, None] * freqs[None, :]
+    return torch.cos(angles), torch.sin(angles)
+
+
+def apply_temporal_rope(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
+    """Rotate ``x`` [..., T, head_dim] pairwise (first half, second half) by the
+    per-frame angles, so a query-key product depends on the frame offset."""
+    half = x.shape[-1] // 2
+    x1 = x[..., :half].float()
+    x2 = x[..., half:].float()
+    return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).to(x.dtype)
+
+
 class SelectiveMultiheadAttention(nn.Module):
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0, bias: bool = True):
         super().__init__()
@@ -100,7 +129,13 @@ class SelectiveMultiheadAttention(nn.Module):
         else:
             self.register_parameter('in_proj_bias', None)
         self.out_proj = _AttentionOutProjection(embed_dim, bias=bias)
+        # Temporal RoPE on q / k (enable_rope); parameter-free, so it does not
+        # change the state_dict.
+        self.rope = False
         self._reset_parameters()
+
+    def enable_rope(self):
+        self.rope = True
 
     def _reset_parameters(self):
         nn.init.xavier_uniform_(self.in_proj_weight)
@@ -285,6 +320,13 @@ class SelectiveMultiheadAttention(nn.Module):
         # QK-norm: bound per-head q/k magnitude so logits can't run away.
         q = self.q_norm(q)
         k = self.k_norm(k)
+        if self.rope:
+            # Self-attention over one window: query and key share frame indices.
+            if tgt_len != src_len:
+                raise ValueError(f"temporal RoPE needs tgt_len == src_len, got {tgt_len} and {src_len}")
+            cos, sin = temporal_rope_tables(tgt_len, self.head_dim, q.device)
+            q = apply_temporal_rope(q, cos, sin)
+            k = apply_temporal_rope(k, cos, sin)
 
         attn_weights_fp32 = None
         if need_weights:
@@ -995,7 +1037,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
                  cross_limb_last_n=0, action_label_adaln=False,
                  action_adaln_bottleneck=0, last_layer_ff=0,
-                 mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0, graph_relations=True):
+                 mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0, graph_relations=True,
+                 temporal_rope=False):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
         # graph_relations=False: spatial attention without the topology / edge
@@ -1123,6 +1166,11 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             nn.init.zeros_(self.action_adaln[-1].bias)
         else:
             self.action_adaln = None
+        # --temporal_rope: every layer's temporal attention (the replaced last
+        # layer included) rotates q / k by frame index.
+        if temporal_rope:
+            for layer in self.layers:
+                layer.temporal_attn.enable_rope()
 
     def _resolve_edge_codes(self, edge_rel: Tensor) -> Tensor:
         """Stored ``[B, J, J]`` codes -> embedding indices, with twin and
