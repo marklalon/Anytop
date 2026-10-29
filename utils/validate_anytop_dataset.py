@@ -251,7 +251,7 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
     
     # Determine which object types to validate
     if objects_subset != "all":
-        objects_to_validate = set(dataset_tags().object_subsets[objects_subset])
+        objects_to_validate = set(dataset_tags().species_for(objects_subset))
         missing_objects = sorted(objects_to_validate - cond_keys)
         if missing_objects:
             print_warn(f"cond.npy is missing objects from subset {objects_subset}: {missing_objects}")
@@ -1273,7 +1273,7 @@ def _validate_generated_artifacts_consistency(dataset_dir: Path, cond: dict, obj
         is_consistent = False
 
     if objects_subset != "all":
-        expected_subset = set(dataset_tags().object_subsets[objects_subset])
+        expected_subset = set(dataset_tags().species_for(objects_subset))
         missing_subset_objects = sorted(expected_subset - object_types_in_motions)
         if missing_subset_objects:
             print_warn(

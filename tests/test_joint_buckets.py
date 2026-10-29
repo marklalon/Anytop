@@ -96,17 +96,31 @@ class BucketBatchSamplerTest(unittest.TestCase):
             RandomSampler(_Indexable(len(counts))), 8, ids, num_buckets=3, drop_last=True
         )
         batches = list(sampler)
-        self.assertEqual(len(batches), len(sampler))
         seen = Counter()
         for batch in batches:
             self.assertEqual(len(batch), 8)
             self.assertEqual(len({int(ids[i]) for i in batch}), 1)
             seen.update(batch)
         self.assertTrue(all(v == 1 for v in seen.values()))
-        # Exactly the per-bucket remainders are dropped -- the same rule a plain
-        # drop_last loader applies to its single trailing batch.
+        # The first pass holds back exactly the per-bucket remainders ...
         per_bucket = np.bincount(ids, minlength=3)
         self.assertEqual(sum(seen.values()), int(np.sum(per_bucket // 8) * 8))
+        # ... and the next pass opens with them, so no drawn index is lost.
+        held_back = set(range(len(counts))) - set(seen)
+        second = [i for batch in sampler for i in batch]
+        self.assertTrue(held_back <= set(second))
+
+    def test_drop_last_trains_a_bucket_smaller_than_one_batch(self):
+        """A bucket that never fills a batch within one pass still yields its
+        indices, a full batch every few passes, instead of being dropped forever."""
+        ids = np.array([0] * 20 + [1] * 3)
+        sampler = JointBucketBatchSampler(
+            SequentialSampler(_Indexable(len(ids))), 8, ids, num_buckets=2, drop_last=True
+        )
+        self.assertEqual(len(sampler), 2)
+        seen = Counter(i for _ in range(8) for batch in sampler for i in batch)
+        self.assertEqual(set(seen), set(range(len(ids))))
+        self.assertTrue(all(len(batch) == 8 for batch in sampler))
 
     def test_without_drop_last_the_remainders_are_emitted(self):
         buckets = (32, 64, 100)

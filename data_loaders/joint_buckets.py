@@ -10,8 +10,9 @@ of shapes -- one static ``torch.compile`` graph per bucket -- instead of one
 over-padded shape.
 
 The sampling distribution is untouched: every index the base sampler draws is
-still used exactly once (dropping the same trailing partial batch per bucket
-that ``drop_last`` drops today); only which indices share a batch changes.
+still used exactly once; only which indices share a batch changes. Under
+``drop_last`` a bucket's partial batch is carried into the next pass instead of
+being dropped, so a bucket smaller than one batch still trains.
 """
 
 from __future__ import annotations
@@ -73,8 +74,9 @@ class JointBucketBatchSampler(Sampler[list[int]]):
     shuffle / species weighting is exactly preserved) and parked in one queue
     per bucket; a queue that fills to ``batch_size`` is emitted immediately.
     Whatever is left in the queues when the sampler is exhausted is the epoch's
-    partial batches: dropped under ``drop_last`` like a plain loader's single
-    trailing partial batch, otherwise emitted as short batches.
+    partial batches: under ``drop_last`` they stay queued and open the next
+    pass (no short batch is ever emitted and no drawn index is lost), otherwise
+    they are emitted as short batches.
     """
 
     def __init__(
@@ -96,9 +98,13 @@ class JointBucketBatchSampler(Sampler[list[int]]):
             raise ValueError("bucket_ids must be a flat sequence indexed by sampler index")
         if self.bucket_ids.size and (self.bucket_ids.min() < 0 or self.bucket_ids.max() >= self.num_buckets):
             raise ValueError("bucket_ids must lie in [0, num_buckets)")
+        self._carried: list[list[int]] = [[] for _ in range(self.num_buckets)]
 
     def __iter__(self) -> Iterator[list[int]]:
-        queues: list[list[int]] = [[] for _ in range(self.num_buckets)]
+        if self.drop_last:
+            queues, self._carried = self._carried, [[] for _ in range(self.num_buckets)]
+        else:
+            queues = [[] for _ in range(self.num_buckets)]
         for index in self.index_sampler:
             index = int(index)
             queue = queues[self.bucket_ids[index]]
@@ -106,7 +112,9 @@ class JointBucketBatchSampler(Sampler[list[int]]):
             if len(queue) == self.batch_size:
                 yield list(queue)
                 queue.clear()
-        if not self.drop_last:
+        if self.drop_last:
+            self._carried = queues
+        else:
             for queue in queues:
                 if queue:
                     yield list(queue)
@@ -135,5 +143,8 @@ class JointBucketBatchSampler(Sampler[list[int]]):
     def __len__(self) -> int:
         counts = self.expected_bucket_counts()
         if self.drop_last:
-            return int(np.sum(np.floor(counts) // self.batch_size))
+            # Carried remainders make this the long-run mean per pass; a subset
+            # smaller than one batch still yields a batch every few passes.
+            total = float(np.sum(counts))
+            return max(1, int(total // self.batch_size)) if total > 0 else 0
         return int(np.sum(np.ceil(counts / self.batch_size)))

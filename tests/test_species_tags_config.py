@@ -57,6 +57,30 @@ def test_configure_loads_custom_species_tags(tmp_path):
     assert tags.species_for("Pikefish") == ["Pikefish"]
 
 
+def test_species_for_unions_items_and_intersects_tags(tmp_path):
+    path = tmp_path / "species_tags.jsonl"
+    path.write_text(
+        '{"species": "Eagle", "species_tags": ["Winged"]}\n'
+        '{"species": "Giantbee", "species_tags": ["Winged", "Fluttering"]}\n'
+        '{"species": "Moth", "species_tags": ["Multiped", "Fluttering"]}\n'
+        '{"species": "Horse", "species_tags": ["Quadruped"]}\n',
+        encoding="utf-8",
+    )
+    dt.configure(species_tags_file=path)
+    tags = dt.dataset_tags()
+
+    # ',' intersects tags at any position, case-insensitively.
+    assert tags.species_for("Winged,Fluttering") == ["Giantbee"]
+    assert tags.species_for("fluttering, multiped") == ["Moth"]
+    # A lone non-key tag matches at any position; a subset key keeps first-tag grouping.
+    assert tags.species_for("Fluttering") == ["Giantbee", "Moth"]
+    assert tags.species_for("winged") == ["Eagle", "Giantbee"]
+    # ';' unions items in order without duplicates.
+    assert tags.species_for("horse;Winged,Fluttering;winged") == ["Horse", "Giantbee", "Eagle"]
+    # Unmatched items pass through for the caller to resolve or report.
+    assert tags.species_for("Nonesuch;Horse") == ["Nonesuch", "Horse"]
+
+
 def test_configure_does_no_io_until_first_use(tmp_path):
     """configure() only records sources, so it is safe before consumers exist."""
     missing = tmp_path / "absent_species_tags.jsonl"

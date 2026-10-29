@@ -474,7 +474,11 @@ def add_data_options(parser, training=False):
                        dest='train_split',
                        help="Dataset selection: 'train'=all non-validation datasets, 'val'=validation dataset, 'all'=all datasets.")
     group.add_argument("--objects_subset", default='all', type=str,
-                       help="Object subset. Can be a predefined category (e.g. 'all', 'quadruped', 'winged', 'biped', 'multiped', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
+                       help="Object subset: ';'-separated items, unioned. Each item is a predefined category (e.g. 'all', 'quadruped', 'winged'), a species name (e.g. 'Horse'), or ','-separated species tags a species must all carry (e.g. 'Winged,Fluttering'). Example: 'Horse;Winged,Fluttering'.")
+    group.add_argument("--joint_buckets", default=None, type=int, nargs='+',
+                       help="Training batch padding widths (joint-count ceilings); MAX_JOINTS is always appended. "
+                            "Default: param_utils.JOINT_BUCKETS. A small subset whose rigs span several buckets can "
+                            "pass one ceiling (e.g. '--joint_buckets 80') so its clips share batches.")
     if training:
         group.add_argument("--action_group", required=True, type=str,
                            choices=list(ACTION_GROUPS) + [ACTION_GROUP_ALL],

@@ -176,18 +176,41 @@ class DatasetTags:
     def species_for(self, selector) -> list[str]:
         """Species named by an ``--object_subsets`` selector.
 
-        A selector is either a subset key ("all", "quadruped", ...) or
-        a single species name ("Horse"), which under a multi-source configuration
-        is resolved to its canonical key.
+        A selector is one or more ``;``-separated items, unioned in order
+        (``"Horse;Winged,Fluttering"``). Each item is one of:
+
+        - a subset key ("all", "quadruped", ...);
+        - a single species name ("Horse"), which under a multi-source
+          configuration is resolved to its canonical key;
+        - ``,``-separated species tags, selecting the species that carry all of
+          them at any position (``"Winged,Fluttering"``); a lone tag that is
+          neither a subset key nor a species name is matched the same way.
+
+        An item that matches nothing is returned unchanged so the caller can
+        resolve it against its own cond keys or report it.
         """
-        members = self.object_subsets.get(selector)
-        if members is not None:
-            return list(members)
-        lowered = str(selector).strip().lower()
-        for key in self.species_tags:
-            if key.lower() == lowered or bare_species_name(key).lower() == lowered:
-                return [key]
-        return [selector]
+        selected: list[str] = []
+        for item in str(selector).split(";"):
+            item = item.strip()
+            if item:
+                selected.extend(s for s in self._species_for_item(item) if s not in selected)
+        return selected
+
+    def _species_for_item(self, item: str) -> list[str]:
+        if "," not in item:
+            members = self.object_subsets.get(item)
+            if members is not None:
+                return list(members)
+            lowered = item.lower()
+            for key in self.species_tags:
+                if key.lower() == lowered or bare_species_name(key).lower() == lowered:
+                    return [key]
+        wanted = {tag.strip().lower() for tag in item.split(",") if tag.strip()}
+        matches = [
+            key for key, tags in self.species_tags.items()
+            if wanted <= {tag.strip().lower() for tag in tags}
+        ]
+        return matches if matches else [item]
 
 
 # ── Tag normalization ────────────────────────────────────────────────────────

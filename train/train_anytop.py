@@ -38,7 +38,7 @@ from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform,
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.data.dataset import load_action_conditioning
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
-from data_loaders.truebones.truebones_utils.param_utils import SPECIES_DESCRIPTOR_TABLE_FILE
+from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS, SPECIES_DESCRIPTOR_TABLE_FILE
 from data_loaders.truebones.truebones_utils.species_descriptor_table import (
     build_species_descriptor_table,
     cond_t5_name,
@@ -318,6 +318,7 @@ def create_training_data_loader(args):
         rest_repose_max_deg=getattr(args, 'rest_repose_max_deg', DEFAULT_REST_REPOSE_MAX_DEG),
         rest_variant_prob=getattr(args, 'rest_variant_prob', 0.0),
         species_table=getattr(args, 'species_descriptor_table', None),
+        joint_buckets=getattr(args, 'joint_buckets', None) or JOINT_BUCKETS,
     )
 
 

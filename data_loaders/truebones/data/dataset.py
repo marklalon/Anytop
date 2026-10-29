@@ -98,6 +98,7 @@ from data_loaders.truebones.truebones_utils.rest_variants import (
 from data_loaders.truebones.truebones_utils.dataset_tags import (
     assert_cond_species_tags_current,
     assert_species_tags_cover,
+    dataset_tags,
 )
 
 
@@ -1908,15 +1909,26 @@ class Truebones(data.Dataset):
             )
         cond_dict = load_cond(opt.cond_file)
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
-        # Support both predefined subsets and single species names. A species
-        # name is user input, so it goes through the same bare-name / suffix /
-        # canonical-key resolution the CLI uses everywhere else.
-        if self.objects_subset in opt.subsets_dict:
-            subset = opt.subsets_dict[self.objects_subset]
-        else:
-            resolved = resolve_species_key(cond_dict, self.objects_subset)
-            subset = [resolved] if resolved is not None else [self.objects_subset]
-        cond_dict = {k: cond_dict[k] for k in subset if k in cond_dict}
+        # Subset keys, species names and tag sets (see ``species_for``). A
+        # species name is user input, so it goes through the same bare-name /
+        # suffix / canonical-key resolution the CLI uses everywhere else. Each
+        # ';' item must select something, so a typo in one item cannot be
+        # silently dropped from a union.
+        subset = []
+        for item in filter(None, (part.strip() for part in str(self.objects_subset).split(';'))):
+            keys = [
+                key for key in (
+                    resolve_species_key(cond_dict, name) or name
+                    for name in dataset_tags().species_for(item)
+                )
+                if key in cond_dict
+            ]
+            if not keys:
+                raise ValueError(f"objects_subset item {item!r} selects no species in {opt.cond_file}.")
+            subset.extend(key for key in keys if key not in subset)
+        if not subset:
+            raise ValueError(f"objects_subset {self.objects_subset!r} selects no species.")
+        cond_dict = {k: cond_dict[k] for k in subset}
         # Fast-fail before training if any species being trained lacks a motion
         # tag (the per-species condition has no fallback).
         assert_species_tags_cover(cond_dict.keys())
