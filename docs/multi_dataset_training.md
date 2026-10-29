@@ -25,7 +25,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets_all.jsonl
 新增模块：[`dataset_sources.py`](../data_loaders/truebones/truebones_utils/dataset_sources.py)（namespace / 规范键 / 文件名 token / 清单）、
 [`cond_schema.py`](../data_loaders/truebones/truebones_utils/cond_schema.py)（v4 读写与就地升级）。
 
-> 清单与合并 cond 按用途加后缀：`datasets_all.jsonl` → `cond_all.npy`（全部数据集），`datasets_tiny.jsonl` → `cond_tiny.npy`（仅 `truebones/zoo` + `truebones/zoo_upgrade`，供 `train_tiny.bat`）；
+> 清单与合并 cond 按用途加后缀：`datasets_all.jsonl` → `cond_all.npy`（全部数据集），`datasets_tiny.jsonl` → `cond_tiny.npy`（仅 `truebones/zoo` + `truebones/zoo_upgrade`）；`train_tiny.bat` 与 `train_all.bat` 同用 `cond_all.npy`，只靠 `--action_group locomotion` 缩小数据；
 > 新建一套只需另写一份清单，再用 `merge_dataset_cond.py --datasets <清单> --out <cond>` 生成。
 
 > 旧版 cond.npy 在**加载时自动升级到 v4**（namespace 由目录推断），所以未迁移的数据集也能直接跑；
