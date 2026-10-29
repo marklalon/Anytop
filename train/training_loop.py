@@ -742,8 +742,7 @@ class TrainLoop:
         return total_step
 
     def evaluate(self):
-        """Log the loss over the whole val split, for the online model and (with
-        --use_ema) the EMA copy the checkpoints are used through.
+        """Log the loss over the whole val split, for the online model only.
 
         ``model.eval()`` turns off every training-time stochastic path (dropout,
         CFG label drop, joint / temporal masks), so this is the fully conditioned
@@ -757,18 +756,12 @@ class TrainLoop:
         on a high t, and the curve swung 0.05 -> 0.3 between evaluations while
         the train loss was flat.  The strata have equal width, so the plain
         mean over them is still an unbiased estimate of the uniform-t
-        objective, i.e. the same quantity as ``Loss/loss``.  The live and EMA
-        models see identical (t, noise) draws, so their curves are a paired
-        comparison.
+        objective, i.e. the same quantity as ``Loss/loss``.
         """
         if self.eval_data is None:
             return
-        models = {'': self.model}
-        if self.model_avg is not None:
-            models['ema_'] = self.model_avg
-        was_training = {prefix: model.training for prefix, model in models.items()}
-        for model in models.values():
-            model.eval()
+        was_training = self.model.training
+        self.model.eval()
 
         num_strata = max(int(getattr(self.args, 'val_t_strata', 1)), 1)
         num_timesteps = self.diffusion.num_timesteps
@@ -789,16 +782,13 @@ class TrainLoop:
                         t = ((stratum + offsets) * (num_timesteps / num_strata)).long()
                         t = t.clamp_(max=num_timesteps - 1)
                         draws.append((t, torch.randn_like(motion)))
-                    for prefix, model in models.items():
-                        for t, noise in draws:
-                            for key, value in self._validation_losses(
-                                    model, motion, cond, t, noise).items():
-                                name = prefix + key
-                                sums[name] = sums.get(name, 0.0) + value * (batch_size / num_strata)
+                    for t, noise in draws:
+                        for key, value in self._validation_losses(
+                                self.model, motion, cond, t, noise).items():
+                            sums[key] = sums.get(key, 0.0) + value * (batch_size / num_strata)
                     sample_count += batch_size
         finally:
-            for prefix, model in models.items():
-                model.train(was_training[prefix])
+            self.model.train(was_training)
 
         if sample_count == 0:
             tqdm.write('Validation skipped: val split returned no samples.')
@@ -806,10 +796,7 @@ class TrainLoop:
 
         completed_step = self.total_step() + 1
         metrics = {name: float((total / sample_count).item()) for name, total in sums.items()}
-        summary = ' '.join(
-            f'{name}[{metrics[name]:.5f}]' for name in ('loss', 'ema_loss') if name in metrics
-        )
-        tqdm.write(f'val_step[{completed_step}]: {summary} ({sample_count} clips)')
+        tqdm.write(f"val_step[{completed_step}]: loss[{metrics['loss']:.5f}] ({sample_count} clips)")
         for name, value in metrics.items():
             self.train_platform.report_scalar(name=name, value=value, iteration=completed_step, group_name='Val')
 

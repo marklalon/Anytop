@@ -1,11 +1,11 @@
 """TrainLoop.evaluate() is a plain val-loss pass.
 
 It runs the same ``training_losses`` as a training step over the whole val
-split, for the online model and the EMA copy, under seeded RNG streams that
-reduce validation variance.  The synchronous fixtures here also verify that
+split, for the online model, under seeded RNG streams that reduce validation
+variance.  The synchronous fixtures here also verify that
 their caller RNG states are restored; production background prefetch does not
 promise bit-for-bit reproducibility.  Each clip is scored once per timestep
-stratum (--val_t_strata), and both models see the same in-pass draws.
+stratum (--val_t_strata).
 """
 
 import random
@@ -78,12 +78,12 @@ def _batches():
     ]
 
 
-def test_evaluate_logs_per_clip_mean_for_online_and_ema_models():
+def test_evaluate_logs_per_clip_mean_for_online_model_only():
     stub = _stub(_batches(), use_ema=True)
     stub.evaluate()
 
     logged = {name: value for group, name, value, _ in stub.train_platform.scalars if group == "Val"}
-    assert set(logged) == {"loss", "l_simple", "ema_loss", "ema_l_simple"}
+    assert set(logged) == {"loss", "l_simple"}
     assert all(it == 42 for _, _, _, it in stub.train_platform.scalars)
     # Per clip and per stratum, the mean over clips and strata: recompute it
     # from the (t, noise) draws the pass actually made.
@@ -92,35 +92,27 @@ def test_evaluate_logs_per_clip_mean_for_online_and_ema_models():
     # Snapshot: the recomputation below goes through the same recording stub.
     for scale, t, noise in list(stub.diffusion.calls):
         motion = torch.full(noise.shape, 1.0 if noise.shape[0] == 4 else 3.0)
-        prefix = "" if scale == 1.0 else "ema_"
+        assert scale == 1.0
         for key, value in stub.diffusion.training_losses(_Model(scale), motion, t, noise=noise).items():
             if torch.is_tensor(value):
-                expected[prefix + key] = expected.get(prefix + key, 0.0) + float(value.mean()) * noise.shape[0]
-        if prefix == "":
-            count += noise.shape[0]
+                expected[key] = expected.get(key, 0.0) + float(value.mean()) * noise.shape[0]
+        count += noise.shape[0]
     for name, total in expected.items():
         assert abs(logged[name] - total / count) < 1e-5 * abs(total / count)
-    # The EMA copy is a different model, so its loss is a different number.
-    assert logged["ema_loss"] != logged["loss"]
     assert abs(logged["l_simple"] - 0.5 * logged["loss"]) < 1e-6
 
 
-def test_evaluate_scores_each_clip_once_per_timestep_stratum_with_paired_draws():
+def test_evaluate_scores_each_clip_once_per_timestep_stratum():
     strata = 4
     stub = _stub(_batches(), use_ema=True, val_t_strata=strata)
     stub.evaluate()
     calls = stub.diffusion.calls
-    # Per batch: `strata` calls for the online model, then the same for EMA.
-    assert len(calls) == 2 * strata * len(_batches())
+    # Per batch: `strata` calls, online model only even with --use_ema.
+    assert len(calls) == strata * len(_batches())
     width = _Diffusion.num_timesteps / strata
-    for batch_start in range(0, len(calls), 2 * strata):
+    for batch_start in range(0, len(calls), strata):
         live = calls[batch_start:batch_start + strata]
-        ema = calls[batch_start + strata:batch_start + 2 * strata]
         assert all(scale == 1.0 for scale, _, _ in live)
-        assert all(scale == 2.0 for scale, _, _ in ema)
-        # Both models see identical (t, noise) draws: a paired comparison.
-        for (_, t_live, n_live), (_, t_ema, n_ema) in zip(live, ema):
-            assert torch.equal(t_live, t_ema) and torch.equal(n_live, n_ema)
         # Each clip lands in stratum k on pass k, at the same offset in every
         # stratum, and the noise differs between strata.
         offsets = (live[0][1].float() - 0) / width
@@ -141,11 +133,11 @@ def test_single_stratum_is_a_plain_uniform_draw():
 def test_evaluate_runs_in_eval_mode_and_restores_training_mode():
     stub = _stub(_batches(), use_ema=True)
     stub.model.train()
-    stub.model_avg.eval()
+    stub.model_avg.train()
     stub.evaluate()
     assert stub.diffusion.seen_training_flags and not any(stub.diffusion.seen_training_flags)
     assert stub.model.training is True
-    assert stub.model_avg.training is False
+    assert stub.model_avg.training is True
 
 
 def test_synchronous_evaluate_uses_fixed_draws_and_restores_caller_rng():
