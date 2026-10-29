@@ -33,7 +33,7 @@ pushd "%SCRIPT_DIR%"
 	--species_film_bottleneck 64 ^
 	--species_cond ^
 	--ref_encoder ^
-	--ref_slots 3 ^
+	--ref_slots 2 ^
 	--ref_dim 8 ^
 	--ref_width 256 ^
 	--ref_layers 2 ^
@@ -45,6 +45,8 @@ pushd "%SCRIPT_DIR%"
 	--motion_speed_aug 1.3 ^
 	--loop_cond_prob 0.8 ^
 	--cross_limb_dim 256 ^
+	--cross_limb_last_n 4 ^
+    --temporal_rope ^
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
 	--batch_size 16 ^
@@ -67,7 +69,7 @@ pushd "%SCRIPT_DIR%"
 	--temporal_span_mask_prob 0.15 ^
 	--temporal_span_seam_loss_weight 0.2 ^
 	--lambda_loop_wrap 0.04 ^
-	--lambda_dpos 0.08 ^
+	--lambda_dpos 0.1 ^
 	--lambda_root_dpos 0.1 ^
 	--lambda_root_acc 0.1 ^
 	--lambda_limb_corr 0.1 ^

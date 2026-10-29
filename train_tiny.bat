@@ -59,6 +59,7 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --motion_speed_aug 1.3 ^
     --loop_cond_prob 0.8 ^
     --cross_limb_dim 128 ^
+	--cross_limb_last_n 4 ^
     --temporal_rope ^
     --diffusion_steps 100 ^
     --num_frames 60 ^
