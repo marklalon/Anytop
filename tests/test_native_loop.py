@@ -241,7 +241,7 @@ class NativeLoopTests(unittest.TestCase):
         self.assertNotIn('loop_wrap_vel', terms)
         self.assertNotIn('loop_wrap_contact', terms)
         self.assertNotIn('loop_wrap_terminal_vel', terms)
-        self.assertLess(float(terms['loop_wrap_rot'].item()), 1e-5)
+        self.assertLess(float(terms['loop_wrap_loss'].item()), 1e-5)
 
     def test_loop_wrap_rotation_penalizes_a_stalled_seam(self):
         # The last frame copying frame 0 is what the old period and pose/rot
@@ -257,7 +257,7 @@ class NativeLoopTests(unittest.TestCase):
             self._rotating_cycle(8, stall_seam=True), y, n_joints=torch.tensor([2]),
         )
         step = 2.0 * math.pi / 8.0
-        self.assertAlmostEqual(float(terms['loop_wrap_rot'].item()), 1.5 * step, places=4)
+        self.assertAlmostEqual(float(terms['loop_wrap_loss'].item()), 1.5 * step, places=4)
 
     def test_position_step_loss_counts_the_wrap_step_only_on_loops(self):
         # Moving the last frame by one unit changes two steps: the last inner

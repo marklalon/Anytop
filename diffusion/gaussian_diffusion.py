@@ -841,10 +841,7 @@ class GaussianDiffusion:
         device = model_output.device
         zero = model_output.new_zeros(())
         if n_frames < 2:
-            return {
-                'loop_wrap_loss': zero,
-                'loop_wrap_rot': zero,
-            }
+            return {'loop_wrap_loss': zero}
         active = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
         n_joints_long = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1)
 
@@ -877,10 +874,7 @@ class GaussianDiffusion:
         rot_per_sample = th.where(active_valid, rot_per_sample, th.zeros_like(rot_per_sample))
         rot_loss = (rot_per_sample * active_weight).sum() / active_denom
 
-        return {
-            'loop_wrap_loss': rot_loss,
-            'loop_wrap_rot': rot_loss,
-        }
+        return {'loop_wrap_loss': rot_loss}
 
     def q_mean_variance(self, x_start, t):
         """
