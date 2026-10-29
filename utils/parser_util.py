@@ -31,7 +31,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 56
+CKPT_VERSION = 57
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -387,7 +387,8 @@ def add_model_options(parser):
     group.add_argument("--temporal_rope", action='store_true',
                        help="Rotary position encoding on the denoiser's temporal attention q / k "
                             "(frame index, geometric frequencies up to Nyquist), so every layer reads "
-                            "frame offsets directly. Parameter-free; off reproduces the model without it.")
+                            "frame offsets directly. Loop samples use whole turns per window, so their "
+                            "offsets wrap at the seam. Parameter-free; off reproduces the model without it.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
     group.add_argument("--joint_name_drop_prob", default=0.0, type=float,

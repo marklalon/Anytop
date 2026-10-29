@@ -89,15 +89,30 @@ TEMPORAL_ROPE_MAX_FREQ = math.pi
 TEMPORAL_ROPE_MAX_PERIOD = 240.0
 
 
-def temporal_rope_tables(length: int, head_dim: int, device: torch.device) -> Tuple[Tensor, Tensor]:
-    """``(cos, sin)``, each ``[length, head_dim // 2]``, for frames ``0..length-1``."""
+def temporal_rope_tables(length: int, head_dim: int, device: torch.device,
+                         loop: bool = False) -> Tuple[Tensor, Tensor]:
+    """``(cos, sin)``, each ``[length, head_dim // 2]``, for frames ``0..length-1``.
+
+    ``loop=True`` is the table of a closed window (frame ``length`` is frame 0):
+    each geometric frequency snaps to the nearest whole number of turns per
+    window, so a query-key product depends on the offset modulo ``length`` and
+    the seam is an ordinary one-frame step. The slowest pairs land on one turn
+    per window, the circular distance kernel.
+    """
     if head_dim % 2 != 0:
         raise ValueError(f"temporal RoPE needs an even head_dim, got {head_dim}")
     pairs = head_dim // 2
     min_freq = 2.0 * math.pi / TEMPORAL_ROPE_MAX_PERIOD
     ramp = torch.arange(pairs, device=device, dtype=torch.float32) / max(pairs - 1, 1)
     freqs = TEMPORAL_ROPE_MAX_FREQ * (min_freq / TEMPORAL_ROPE_MAX_FREQ) ** ramp
-    angles = torch.arange(length, device=device, dtype=torch.float32)[:, None] * freqs[None, :]
+    frames = torch.arange(length, device=device)
+    if loop:
+        turns = torch.round(freqs * length / (2.0 * math.pi)).long().clamp(1, max(length // 2, 1))
+        # Integer phase (t * m mod length) keeps the period exact in fp32.
+        phase = (frames[:, None] * turns[None, :]) % length
+        angles = phase.float() * (2.0 * math.pi / length)
+    else:
+        angles = frames.float()[:, None] * freqs[None, :]
     return torch.cos(angles), torch.sin(angles)
 
 
@@ -129,13 +144,7 @@ class SelectiveMultiheadAttention(nn.Module):
         else:
             self.register_parameter('in_proj_bias', None)
         self.out_proj = _AttentionOutProjection(embed_dim, bias=bias)
-        # Temporal RoPE on q / k (enable_rope); parameter-free, so it does not
-        # change the state_dict.
-        self.rope = False
         self._reset_parameters()
-
-    def enable_rope(self):
-        self.rope = True
 
     def _reset_parameters(self):
         nn.init.xavier_uniform_(self.in_proj_weight)
@@ -295,7 +304,10 @@ class SelectiveMultiheadAttention(nn.Module):
         key_padding_mask: Optional[Tensor] = None,
         need_weights: bool = True,
         average_attn_weights: bool = True,
+        rope: Optional[Tuple[Tensor, Tensor]] = None,
     ):
+        # rope: temporal RoPE ``(cos, sin)``, each [batch, T, head_dim // 2]
+        # (one table per attention row, see temporal_rope_tables), rotating q / k.
         tgt_len, batch_size, _ = query.shape
         src_len = key.shape[0]
 
@@ -320,11 +332,11 @@ class SelectiveMultiheadAttention(nn.Module):
         # QK-norm: bound per-head q/k magnitude so logits can't run away.
         q = self.q_norm(q)
         k = self.k_norm(k)
-        if self.rope:
+        if rope is not None:
             # Self-attention over one window: query and key share frame indices.
             if tgt_len != src_len:
                 raise ValueError(f"temporal RoPE needs tgt_len == src_len, got {tgt_len} and {src_len}")
-            cos, sin = temporal_rope_tables(tgt_len, self.head_dim, q.device)
+            cos, sin = (table.unsqueeze(1) for table in rope)
             q = apply_temporal_rope(q, cos, sin)
             k = apply_temporal_rope(k, cos, sin)
 
@@ -1167,10 +1179,9 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         else:
             self.action_adaln = None
         # --temporal_rope: every layer's temporal attention (the replaced last
-        # layer included) rotates q / k by frame index.
-        if temporal_rope:
-            for layer in self.layers:
-                layer.temporal_attn.enable_rope()
+        # layer included) rotates q / k by frame index; parameter-free, so it
+        # does not change the state_dict.
+        self.temporal_rope = bool(temporal_rope)
 
     def _resolve_edge_codes(self, edge_rel: Tensor) -> Tensor:
         """Stored ``[B, J, J]`` codes -> embedding indices, with twin and
@@ -1250,6 +1261,19 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     T, self.d_model, tgt.device, tgt.dtype, cycles=loop_cycles,
                 )
             loop_phase_embedding = table * loop_phase_mask.view(1, B, 1)
+        # Temporal RoPE tables, [B, T, head_dim // 2] each: the closed-window
+        # table on loop samples, the open one elsewhere.
+        temporal_rope = None
+        if self.temporal_rope:
+            head_dim = self.layers[0].temporal_attn.head_dim
+            cos, sin = temporal_rope_tables(T, head_dim, tgt.device)
+            cos, sin = cos.expand(B, -1, -1), sin.expand(B, -1, -1)
+            if loop_phase_mask is not None:
+                loop_cos, loop_sin = temporal_rope_tables(T, head_dim, tgt.device, loop=True)
+                is_loop = loop_phase_mask.view(B, 1, 1)
+                cos = torch.where(is_loop, loop_cos, cos)
+                sin = torch.where(is_loop, loop_sin, sin)
+            temporal_rope = (cos, sin)
         first_cl_layer = (
             self.num_layers - self.cross_limb_last_n
             if self.cross_limb_last_n > 0 else 0
@@ -1283,7 +1307,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     loop_phase_embedding=loop_phase_embedding,
                     adaln=None if adaln is None else adaln[:, layer_ind],
                     ref_z=ref_z, ref_active=ref_active,
-                    temporal_key_padding_mask=temporal_key_padding_mask)
+                    temporal_key_padding_mask=temporal_key_padding_mask,
+                    temporal_rope=temporal_rope)
         if self.norm is not None:
             output = self.norm(output)
         return output
@@ -1373,7 +1398,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     
     
         # temporal attention block
-    def _temporal_mha_block_sin_joint(self, x: Tensor, key_padding_mask: Optional[Tensor], loop_phase_embedding: Optional[Tensor] = None) -> Tensor:
+    def _temporal_mha_block_sin_joint(self, x: Tensor, key_padding_mask: Optional[Tensor], loop_phase_embedding: Optional[Tensor] = None,
+                                      temporal_rope: Optional[Tuple[Tensor, Tensor]] = None) -> Tensor:
         frames, bs, njoints, feats= x.size()
         if loop_phase_embedding is not None:
             if loop_phase_embedding.shape != (frames, bs, feats):
@@ -1388,12 +1414,17 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         # Every frame token attends over the whole window, except frames flagged
         # in key_padding_mask ((B * J, T); only the reference encoder passes one).
         x = x.view(frames, bs * njoints, feats)
+        rope = None
+        if temporal_rope is not None:
+            # (B, T, P) -> (B * J, T, P), the row order of the temporal view.
+            rope = tuple(table.repeat_interleave(njoints, dim=0) for table in temporal_rope)
         output_attn, _ = self.temporal_attn(
             x,
             x,
             x,
             key_padding_mask=key_padding_mask,
             need_weights=False,
+            rope=rope,
         )
         output_attn = output_attn.view(frames, bs ,njoints, feats)
         return self.dropout2(output_attn)
@@ -1424,7 +1455,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         adaln: Optional[Tensor] = None,
         ref_z: Optional[Tensor] = None,
         ref_active: Optional[Tensor] = None,
-        temporal_key_padding_mask: Optional[Tensor] = None) -> Tensor:
+        temporal_key_padding_mask: Optional[Tensor] = None,
+        temporal_rope: Optional[Tuple[Tensor, Tensor]] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
         bs = x.shape[1]
         x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
@@ -1443,7 +1475,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 .repeat_interleave(x.shape[2], dim=0)
         x = self.norm2(x + self._temporal_mha_block_sin_joint(
             _modulate(x, adaln, ADALN_TEMPORAL), temporal_padding,
-            loop_phase_embedding=loop_phase_embedding))
+            loop_phase_embedding=loop_phase_embedding, temporal_rope=temporal_rope))
         if cross_limb_block is not None:
             x = cross_limb_block(
                 x,
