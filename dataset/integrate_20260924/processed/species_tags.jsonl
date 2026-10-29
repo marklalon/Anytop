@@ -244,3 +244,6 @@
 {"species": "MON_Scorpion", "species_tags": ["Multiped"]}
 {"species": "MON_Snake", "species_tags": ["Serpentine"]}
 {"species": "MON_Toad", "species_tags": ["Quadruped"]}
+{"species": "DNL_Gryphon", "species_tags": ["Winged"]}
+{"species": "DNL_WindElement", "species_tags": ["Drifting"]}
+{"species": "DNL_Wyvern", "species_tags": ["Winged"]}
