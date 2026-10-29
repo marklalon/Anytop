@@ -3,3 +3,4 @@
 {"namespace": "unitybundles",          "path": "dataset/unitybundles/processed",                     "raw": "dataset/unitybundles/raw", "split": "train"}
 {"namespace": "integrate_20260924",    "path": "dataset/integrate_20260924/processed",               "raw": "dataset/integrate_20260924/raw", "split": "train"}
 {"namespace": "synthesis",             "path": "dataset/synthesis/processed",                        "raw": "dataset/synthesis/raw", "split": "train", "sample_weight": 2}
+{"namespace": "validation",            "path": "dataset/validation/processed",                       "raw": "dataset/validation/raw", "split": "val"}
