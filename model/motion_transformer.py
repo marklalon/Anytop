@@ -1178,7 +1178,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # The loop phase table is built once here and shared by every layer:
         # the circular phase added before temporal attention, zeroed for
         # non-loop samples. Its period is T / loop_cycles ([B], the window's
-        # cycle count, 1 for an unknown one) -- the same table AnyTop put in
+        # cycle count, 1 on a reference-active row) -- the same table AnyTop put in
         # `tgt` for loop samples in place of the absolute PE. The cross-limb
         # blocks take no table: their latents inherit the frame PE through
         # cross-in (see CrossLimbTemporalBlock).

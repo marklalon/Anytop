@@ -1,7 +1,6 @@
 """The loop cycle-count condition (docs/loop_cycle_condition.md): a loop row's
 frame position is the circular table of period T / k, its tempo the cycle
-length L / k, plus an explicit k embedding with a null for "unknown"; and
-generation's rules for picking k and the output length."""
+length L / k; and generation's rules for picking k and the output length."""
 from __future__ import annotations
 
 import math
@@ -24,7 +23,7 @@ from sample.output_lengths import (  # noqa: E402
     warn_loop_cycles_range,
 )
 from utils.clip_length_prior import build_clip_length_prior, COND_KEY, loop_period_prior  # noqa: E402
-from utils.parser_util import LOOP_CYCLES_NULL, parse_loop_cycles  # noqa: E402
+from utils.parser_util import parse_loop_cycles  # noqa: E402
 
 CPU = torch.device('cpu')
 T5_DIM = 32
@@ -46,10 +45,9 @@ def _model(**kwargs):
     model = AnyTop(max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32, num_layers=1,
                    num_heads=2, dropout=0.0, cross_limb=True, t5_out_dim=T5_DIM, **kwargs)
     # Trained heads: the zero-init last layers would hide every effect.
-    for head in (model.tempo_projection, model.loop_period_projection, model.loop_cycles_projection):
+    for head in (model.tempo_projection, model.loop_period_projection):
         torch.nn.init.normal_(head[-1].weight, std=0.5)
         torch.nn.init.normal_(head[-1].bias, std=0.5)
-    torch.nn.init.normal_(model.loop_cycles_null_emb, std=0.5)
     return model.eval()
 
 
@@ -134,31 +132,11 @@ def test_decoder_gets_the_same_period_as_the_input():
     assert kwargs['loop_phase_mask'].tolist() == [True, False]
 
 
-def test_unknown_k_and_k1_give_different_inputs():
-    """Both have a period-T table and L as the cycle length; only the null
-    vector tells them apart."""
-    model = _model()
-    loop = dict(is_loop=torch.tensor([True, True]), loop_tile_count=torch.tensor([1, 1]))
-    known = _decoder_input(model, _y(2, **loop, loop_cycles_active=torch.tensor([True, True])), 6)
-    unknown = _decoder_input(model, _y(2, **loop, loop_cycles_active=torch.tensor([False, False])), 6)
-    assert not torch.allclose(known['tgt'], unknown['tgt'])
-    assert torch.equal(known['loop_cycles'], unknown['loop_cycles'])
-
-
-def test_unknown_k_reads_as_one_period_per_window():
-    model = _model()
-    loop = dict(is_loop=torch.tensor([True]), loop_tile_count=torch.tensor([3]),
-                loop_cycles_active=torch.tensor([False]))
-    is_loop, cycles, known = model._loop_condition(_y(1, **loop), 1, CPU)
-    assert cycles.tolist() == [1] and known.tolist() == [False]
-
-
 def test_open_rows_ignore_the_cycle_count():
     model = _model()
     base = dict(is_loop=torch.tensor([False, False]))
     a = _decoder_input(model, _y(2, **base, loop_tile_count=torch.tensor([1, 1])), 6)
-    b = _decoder_input(model, _y(2, **base, loop_tile_count=torch.tensor([3, 2]),
-                                 loop_cycles_active=torch.tensor([False, True])), 6)
+    b = _decoder_input(model, _y(2, **base, loop_tile_count=torch.tensor([3, 2])), 6)
     assert torch.equal(a['tgt'], b['tgt'])
 
 
@@ -172,45 +150,34 @@ def test_cycle_count_survives_the_tempo_drop():
     assert not torch.allclose(one['tgt'], two['tgt'])
 
 
-def test_training_drops_the_cycle_count():
-    model = _model(loop_cycles_drop_prob=1.0)
+def test_training_keeps_the_cycle_count():
+    model = _model()
     model.train()
     y = _y(4, is_loop=torch.ones(4, dtype=torch.bool), loop_tile_count=torch.full((4,), 2))
-    _, cycles, known = model._loop_condition(y, 4, CPU)
-    assert not known.any() and cycles.tolist() == [1, 1, 1, 1]
-    model.eval()
-    _, cycles, known = model._loop_condition(y, 4, CPU)
-    assert known.all() and cycles.tolist() == [2, 2, 2, 2]
-    with pytest.raises(ValueError):
-        _model(loop_cycles_drop_prob=1.5)
+    _, cycles = model._loop_condition(y, 4, CPU)
+    assert cycles.tolist() == [2, 2, 2, 2]
 
 
-def test_reference_rows_read_the_count_as_unknown():
+def test_reference_rows_read_one_cycle():
     """A reference-active row bypasses the cycle count, like the label."""
     model = _model()
     y = _y(3, is_loop=torch.ones(3, dtype=torch.bool), loop_tile_count=torch.tensor([2, 2, 3]))
-    _, cycles, known = model._loop_condition(y, 3, CPU, ref_active=torch.tensor([True, False, True]))
-    assert known.tolist() == [False, True, False]
+    _, cycles = model._loop_condition(y, 3, CPU, ref_active=torch.tensor([True, False, True]))
     assert cycles.tolist() == [1, 2, 1]
 
 
-def test_create_condition_maps_none_to_unknown():
+def test_collate_carries_the_tile_count():
     from data_loaders.tensors import truebones_batch_collate
-    items = []
-    for cycles in (2, None):
-        metadata = {'is_loop': True, 'loop_tile_count': 1 if cycles is None else cycles,
-                    'loop_cycles_active': cycles is not None, 'translation_root_index': 0}
-        items.append(metadata)
     # The collate reads the keys from the motion metadata.
     from tests.test_native_loop import _make_batch_item
     batch = []
-    for metadata in items:
+    for cycles in (2, 1):
         item = list(_make_batch_item(True))
-        item[10] = dict(item[10], **metadata)
+        item[10] = dict(item[10], is_loop=True, loop_tile_count=cycles, translation_root_index=0)
         batch.append(tuple(item))
     _, cond = truebones_batch_collate(batch)
     assert cond['y']['loop_tile_count'].tolist() == [2, 1]
-    assert cond['y']['loop_cycles_active'].tolist() == [True, False]
+    assert 'loop_cycles_active' not in cond['y']
 
 
 # -- Generation: picking k and the length --------------------------------------
@@ -220,8 +187,7 @@ RUN = 'run, forward'
 def test_parse_loop_cycles():
     import argparse
     assert parse_loop_cycles('3') == 3
-    assert parse_loop_cycles('None') == LOOP_CYCLES_NULL
-    for bad in ('0', '-1', 'two'):
+    for bad in ('0', '-1', 'two', 'none'):
         with pytest.raises(argparse.ArgumentTypeError):
             parse_loop_cycles(bad)
 
@@ -261,9 +227,9 @@ def test_both_given_are_kept():
                                verbose=False) == (3, 50)
 
 
-def test_none_is_unknown():
-    assert resolve_loop_cycles(LOOP_CYCLES_NULL, 50, loop=True, action_label=RUN,
-                               period=(31, False), verbose=False) == (None, 50)
+def test_no_period_is_one_cycle():
+    assert resolve_loop_cycles(None, 50, loop=True, action_label=RUN, period=None,
+                               verbose=False) == (1, 50)
 
 
 def test_phase_anchored_loop_takes_one_cycle_only():
@@ -280,9 +246,9 @@ def test_open_window_has_no_cycle_count():
         resolve_loop_cycles(2, 40, loop=False, action_label=RUN, verbose=False)
 
 
-def test_reference_cycle_count_is_always_unknown():
-    assert reference_loop_cycles(None, loop=True, verbose=False) is None
-    assert reference_loop_cycles(LOOP_CYCLES_NULL, loop=True, verbose=False) is None
+def test_reference_window_is_one_cycle():
+    assert reference_loop_cycles(None, loop=True, verbose=False) == 1
+    assert reference_loop_cycles(None, loop=False, verbose=False) is None
     with pytest.raises(SystemExit):
         reference_loop_cycles(1, loop=True, verbose=False)
 

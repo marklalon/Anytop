@@ -715,8 +715,8 @@ def main(args=None, cond_dict=None, runtime=None):
     if edit_self_reference and not getattr(args, 'outpaint', False):
         _refuse_label_under_self_reference(_action_condition)
     loop_condition = None
-    # The loop window's cycle count (None = unknown), see resolve_loop_cycles.
-    # With a reference it is always unknown (reference_loop_cycles).
+    # The loop window's cycle count (None on an open window), see
+    # resolve_loop_cycles. With a reference it is 1 (reference_loop_cycles).
     loop_cycles = None
     loop_period_value = None
     action_label_text = _action_condition['action_label'] if _action_condition else ''

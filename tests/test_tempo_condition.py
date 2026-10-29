@@ -101,13 +101,12 @@ class TempoConditionTest(unittest.TestCase):
 
     def test_loop_rows_read_the_cycle_length_at_every_frame(self):
         """A loop row gets L / k through loop_period_projection, the same at
-        every frame; an unknown k reads L."""
+        every frame."""
         model = _make_model().eval()
         torch.nn.init.normal_(model.loop_period_projection[-1].weight, std=0.5)
         frames = 5
         y = _make_y(frames, resample_speed_cond=torch.tensor([2.0, 2.0]),
-                    is_loop=torch.tensor([True, True]), loop_tile_count=torch.tensor([2, 2]),
-                    loop_cycles_active=torch.tensor([True, False]))
+                    is_loop=torch.tensor([True, True]), loop_tile_count=torch.tensor([2, 1]))
         emb = model._tempo_frame_embedding(y, 2, frames, torch.device('cpu'))
         periods = torch.tensor([10.0 / 2.0, 10.0]).view(-1, 1, 1)
         expected = model.loop_period_projection(create_sin_embedding(periods, LATENT))  # [B, 1, D]

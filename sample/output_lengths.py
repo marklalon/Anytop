@@ -34,8 +34,6 @@ from utils.clip_length_prior import (
     merge_prior_pool,
 )
 
-from utils.parser_util import LOOP_CYCLES_NULL
-
 LOOP_MODES = ('auto', 'on', 'off')
 
 
@@ -200,23 +198,24 @@ def resolve_loop_cycles(requested_cycles, requested_frames, *, loop, action_labe
                         period=None, verbose=True):
     """The loop window's cycle count ``k`` and the output length, from
     ``--loop_cycles`` and ``--num_frames``. Returns ``(k, frames)``: ``k`` is
-    an int or ``None`` ("unknown", the model's null), ``frames`` the length to
-    finalize or ``None`` to keep the caller's own rule.
+    an int on a loop window and ``None`` on an open one, ``frames`` the length
+    to finalize or ``None`` to keep the caller's own rule.
 
-    ``requested_cycles`` is ``None`` (flag unset), :data:`LOOP_CYCLES_NULL`,
-    or an int; ``period`` is ``(P, high_frequency)`` -- the species' loop
+    ``requested_cycles`` is ``None`` (flag unset) or an int; ``period`` is
+    ``(P, high_frequency)`` -- the species' loop
     period for the label (:func:`loop_period`), or a dataset reference's own
     length -- or ``None`` when nothing is known.
 
     ===========  ==============================  ==============
     given        k                               frames
     ===========  ==============================  ==============
-    neither      1 (``None`` without a period)   caller's rule
+    neither      1                               caller's rule
     k only       k                               k * P
     frames only  nearest to frames / P           frames
     both         k                               frames
-    'none'       ``None``                        caller's rule
     ===========  ==============================  ==============
+
+    Without a period, an unset count is 1 whatever the length.
 
     A phase-anchored label (not :func:`loop_is_phase_free`) is never tiled in
     training, so it takes k = 1 and refuses a larger one. An open window has
@@ -226,10 +225,6 @@ def resolve_loop_cycles(requested_cycles, requested_frames, *, loop, action_labe
         if requested_cycles is not None:
             sys.exit("ERROR: --loop_cycles needs a loop window (--loop on, or --loop auto "
                      "resolving to on).")
-        return None, requested_frames
-    if requested_cycles == LOOP_CYCLES_NULL:
-        if verbose:
-            print('  loop_cycles -> unknown (--loop_cycles none)')
         return None, requested_frames
     if action_label and not loop_is_phase_free(action_label):
         if requested_cycles is not None and int(requested_cycles) != 1:
@@ -255,8 +250,8 @@ def resolve_loop_cycles(requested_cycles, requested_frames, *, loop, action_labe
         return cycles, requested_frames
     if period is None:
         if verbose:
-            print('  loop_cycles -> unknown (no loop period known)')
-        return None, requested_frames
+            print('  loop_cycles -> 1 (no loop period known)')
+        return 1, requested_frames
     if requested_frames is None:
         if verbose:
             print(f'  loop_cycles -> 1 (one period, {period[0]} frames)')
@@ -270,20 +265,22 @@ def resolve_loop_cycles(requested_cycles, requested_frames, *, loop, action_labe
 
 def reference_loop_cycles(requested_cycles, *, loop, verbose=True):
     """The cycle count of a window generated with a ``--reference_motion``:
-    always unknown (``None``).
+    1 on a loop window, ``None`` on an open one.
 
     A reference is taken to be unseen, so how many cycles it holds is not
-    known, and the model reads the count as unknown on reference-active rows
-    anyway. An explicit ``--loop_cycles`` is refused rather than ignored.
+    known; the model reads a reference-active loop row as one cycle anyway.
+    An explicit ``--loop_cycles`` is refused rather than ignored.
     """
-    if requested_cycles is not None and requested_cycles != LOOP_CYCLES_NULL:
+    if requested_cycles is not None:
         sys.exit(
             f"ERROR: --loop_cycles {requested_cycles} cannot be combined with --reference_motion: "
-            "the reference's own cycles set the window, and its cycle count is unknown."
+            "the reference's own cycles set the window, and the window is read as one cycle."
         )
-    if verbose and loop:
-        print('  loop_cycles -> unknown (a --reference_motion sets its own cycles)')
-    return None
+    if not loop:
+        return None
+    if verbose:
+        print('  loop_cycles -> 1 (a --reference_motion sets its own cycles)')
+    return 1
 
 
 def warn_loop_cycles_range(cycles, frames, *, period, internal_num_frames, motion_speed_aug):
@@ -512,9 +509,9 @@ def _all_species_output_lengths(
 
     print(f'  loop ({loop_mode}): {"on" if is_loop else "off"} for every species')
     if is_loop:
-        counts = sorted({cycles for *_, cycles in lengths.values()}, key=lambda c: (c is None, c or 0))
+        counts = sorted({cycles for *_, cycles in lengths.values()})
         print('  loop_cycles: ' + ', '.join(
-            f'{"unknown" if c is None else c} x{sum(v[3] == c for v in lengths.values())}' for c in counts
+            f'{c} x{sum(v[3] == c for v in lengths.values())}' for c in counts
         ))
         if off_range:
             preview = ', '.join(off_range[:6]) + ('...' if len(off_range) > 6 else '')

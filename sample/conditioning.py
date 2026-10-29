@@ -280,8 +280,8 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
     loop: ask for a closed window -- one bool for the whole batch, or one per
         object_type.
     loop_cycles: how many cycles a loop window holds (y['loop_tile_count']),
-        one int or None for the whole batch, or one per object_type; None is
-        "unknown" (y['loop_cycles_active'] False). Read on loop rows only
+        one int or None for the whole batch, or one per object_type; None (an
+        open window) reads as 1. Read on loop rows only
         (sample.output_lengths.resolve_loop_cycles picks it).
     """
     if isinstance(loop, (list, tuple)):
@@ -337,7 +337,6 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         metadata = {
             'is_loop': is_loop,
             'loop_tile_count': 1 if cycles is None else int(cycles),
-            'loop_cycles_active': cycles is not None,
             'translation_root_index': cond_dict[object_type].get('translation_root_index', 0),
         }
         if 'species_code' in cond_dict[object_type]:

@@ -268,14 +268,6 @@ def truebones_collate(batch):
             )
         })
 
-    if any('loop_cycles_active' in batch_item for batch_item in notnone_batches):
-        cond['y'].update({
-            'loop_cycles_active': torch.as_tensor(
-                [bool(batch_item.get('loop_cycles_active', True)) for batch_item in notnone_batches],
-                dtype=torch.bool,
-            )
-        })
-
     if any('joint_mask_limb_roots' in batch_item for batch_item in notnone_batches):
         cond['y']['joint_mask_limb_roots'] = torch.stack([
             batch_item.get('joint_mask_limb_roots', torch.zeros(databatchTensor.shape[1], dtype=torch.bool)).bool()
@@ -393,7 +385,7 @@ def truebones_batch_collate(batch, joint_buckets=None):
             if isinstance(extra, dict):
                 if any(key in extra for key in ('joint_mask_limb_roots', 'rest_pos_ric_hml', 'joint_struct')):
                     extra_cond = extra
-                elif any(key in extra for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'resample_speed_cond', 'motion_speed_applied', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count', 'loop_cycles_active')):
+                elif any(key in extra for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'resample_speed_cond', 'motion_speed_applied', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
                     motion_metadata = extra
             elif isinstance(extra, str):
                 motion_name = extra
@@ -483,7 +475,7 @@ def truebones_batch_collate(batch, joint_buckets=None):
                     item[scalar_key] = float(extra_cond[scalar_key])
             item['feature_space'] = extra_cond.get('feature_space', CANONICAL_FEATURE_SPACE)
         if motion_metadata is not None:
-            for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'resample_speed_cond', 'motion_speed_applied', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count', 'loop_cycles_active', 'bone_length_aug_applied'):
+            for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'resample_speed_cond', 'motion_speed_applied', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count', 'bone_length_aug_applied'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
             if 'species_code' in motion_metadata:
