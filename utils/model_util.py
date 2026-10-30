@@ -274,6 +274,7 @@ def create_gaussian_diffusion(args):
     betas = gd.get_named_beta_schedule(
         args.noise_schedule, steps, scale_beta,
         shift=getattr(args, 'noise_schedule_shift', 1.0),
+        shift_min=getattr(args, 'noise_schedule_shift_min', None),
     )
     loss_type = gd.LossType.MSE
 
