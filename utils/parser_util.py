@@ -485,6 +485,11 @@ def add_data_options(parser, training=False):
                             "Default: param_utils.JOINT_BUCKETS. A small subset whose rigs span several buckets can "
                             "pass one ceiling (e.g. '--joint_buckets 80') so its clips share batches.")
     if training:
+        group.add_argument("--dataset_namespaces", default=None, type=str,
+                           help="Train on part of --cond_path: ';'-separated dataset namespaces "
+                                "(e.g. 'truebones/zoo;unitybundles'); an item also selects every "
+                                "namespace below it ('truebones' = truebones/zoo + truebones/zoo_upgrade). "
+                                "Default: every dataset in the cond. The validation loader ignores it.")
         group.add_argument("--action_group", required=True, type=str,
                            choices=list(ACTION_GROUPS) + [ACTION_GROUP_ALL],
                            help="REQUIRED. The corpus to train on: one group -- 'locomotion' "

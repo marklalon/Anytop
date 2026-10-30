@@ -1929,6 +1929,26 @@ class Truebones(data.Dataset):
         if not subset:
             raise ValueError(f"objects_subset {self.objects_subset!r} selects no species.")
         cond_dict = {k: cond_dict[k] for k in subset}
+        # Dataset filter: each item names a namespace or a parent of some, and
+        # must select at least one species that survived objects_subset.
+        dataset_namespaces = kwargs.get('dataset_namespaces')
+        if dataset_namespaces:
+            known_namespaces = {source.namespace for source in opt.sources}
+            kept = set()
+            for item in filter(None, (part.strip().strip('/') for part in str(dataset_namespaces).split(';'))):
+                matched = {ns for ns in known_namespaces if ns == item or ns.startswith(item + '/')}
+                if not matched:
+                    raise ValueError(
+                        f"dataset_namespaces item {item!r} matches no dataset in {opt.cond_file} "
+                        f"(known: {sorted(known_namespaces)})."
+                    )
+                selected = {k for k, entry in cond_dict.items() if entry['dataset_namespace'] in matched}
+                if not selected:
+                    raise ValueError(
+                        f"dataset_namespaces item {item!r} selects no species of objects_subset {self.objects_subset!r}."
+                    )
+                kept |= selected
+            cond_dict = {k: v for k, v in cond_dict.items() if k in kept}
         # Fast-fail before training if any species being trained lacks a motion
         # tag (the per-species condition has no fallback).
         assert_species_tags_cover(cond_dict.keys())

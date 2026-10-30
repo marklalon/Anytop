@@ -295,6 +295,7 @@ def create_training_data_loader(args):
         rare_head_word_floor=args.rare_head_word_floor,
         rare_head_word_max_boost=args.rare_head_word_max_boost,
         objects_subset=args.objects_subset,
+        dataset_namespaces=getattr(args, 'dataset_namespaces', None),
         sample_limit=args.sample_limit,
         drop_last=True,
         action_group=getattr(args, 'action_group', ''),

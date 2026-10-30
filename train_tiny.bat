@@ -5,7 +5,7 @@ REM Usage: train_tiny.bat [run_name]
 REM See docs/tiny_locomotion_baseline.md for the fixed ablation protocol.
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
-set "RUN_NAME=zoo_locomotion_tiny_v50"
+set "RUN_NAME=zoo_locomotion_tiny_v52"
 if not "%~1"=="" set "RUN_NAME=%~1"
 
 if not exist "%PYTHON_EXE%" (
@@ -24,6 +24,8 @@ REM A new run trains the reference encoder from scratch; auto_resume continues t
 REM Target and reference input draw topology and bone-length augmentation independently.
 REM Keep the full locomotion pool; no ordered sample_limit truncation.
 REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
+REM --dataset_namespaces: ';'-separated namespaces from dataset\datasets_all.jsonl, e.g.
+REM "truebones/zoo;unitybundles"; a parent such as "truebones" selects all its children; "" = every dataset.
 "%PYTHON_EXE%" train/train_anytop.py ^
     --cond_path dataset/cond_all.npy ^
     --save_dir "save/%RUN_NAME%" ^
@@ -32,10 +34,11 @@ REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
     --log_interval 100 ^
     --auto_resume ^
     --ml_platform_type TensorboardPlatform ^
+    --dataset_namespaces "truebones/zoo;integrate_20260924" ^
     --objects_subset Winged ^
     --action_group locomotion ^
-    --rare_head_word_floor 20 ^
-    --rare_head_word_max_boost 4 ^
+    --rare_head_word_floor 10 ^
+    --rare_head_word_max_boost 2 ^
     --train_split train ^
     --noise_schedule_shift 2 ^
     --latent_dim 256 ^
