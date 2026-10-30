@@ -78,7 +78,6 @@ REM "truebones/zoo;unitybundles"; a parent such as "truebones" selects all its c
     --num_steps 10000 ^
     --dropout_prob 0.1 ^
     --action_label_cfg_drop_prob 0.2 ^
-    --tempo_cfg_drop_prob 0.1 ^
     --joint_mask_prob 0.15 ^
     --unreliable_mask_drop_prob 0.15 ^
     --renoise_same_level_prob 0.6 ^

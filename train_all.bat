@@ -48,6 +48,8 @@ pushd "%SCRIPT_DIR%"
 	--cross_limb_dim 256 ^
 	--cross_limb_last_n 4 ^
     --temporal_rope ^
+    --temporal_rope_ref_drop_prob 0.8 ^
+    --temporal_rope_drop_prob 0.2 ^
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
 	--batch_size 16 ^
@@ -60,7 +62,6 @@ pushd "%SCRIPT_DIR%"
 	--num_steps 300000 ^
 	--dropout_prob 0.1 ^
 	--action_label_cfg_drop_prob 0.2 ^
-	--tempo_cfg_drop_prob 0.1 ^
 	--joint_mask_prob 0.15 ^
 	--unreliable_mask_drop_prob 0.15 ^
 	--renoise_same_level_prob 0.6 ^
