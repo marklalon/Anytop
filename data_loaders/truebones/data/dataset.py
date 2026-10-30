@@ -76,10 +76,8 @@ from data_loaders.truebones.truebones_utils.topology_aug import (
     validate_topology_aug,
 )
 from data_loaders.truebones.truebones_utils.high_frequency import (
-    HIGH_FREQUENCY_SCORE_THRESHOLD,
-    HIGH_FREQUENCY_SCORE_VERSION,
-    high_frequency_score,
-    is_high_frequency,
+    HIGH_FREQUENCY_COND_KEY,
+    high_frequency_clips,
 )
 from data_loaders.truebones.truebones_utils.bone_length_aug import (
     DEFAULT_BONE_LENGTH_AUG,
@@ -926,10 +924,8 @@ def _save_motion_length_cache(cache_path: Path, entries: dict[str, dict]) -> Non
     np.save(cache_path, {"entries": entries}, allow_pickle=True)
 
 
-def _read_motion_stats(motion_path: str) -> tuple[int, float]:
-    """(frame count, high_frequency_score) of a stored clip."""
-    motion = np.load(motion_path, mmap_mode='r')
-    return len(motion), high_frequency_score(motion)
+def _read_motion_length(motion_path: str) -> int:
+    return len(np.load(motion_path, mmap_mode='r'))
 
 
 def ensure_joint_name_embeddings(
@@ -1079,6 +1075,7 @@ class MotionDataset(data.Dataset):
 
             for object_key, species_name in source_species:
                 object_motions = [name for name in all_motion_files if name.startswith(f'{species_name}_')]
+                high_frequency_names = high_frequency_clips(self.cond_dict[object_key], opt.cond_file)
 
                 for name in object_motions:
                     motion_metadata = _require_motion_metadata_entry(name, source_metadata)
@@ -1090,18 +1087,14 @@ class MotionDataset(data.Dataset):
                             cache_entry is not None
                             and cache_entry.get('mtime_ns') == stat.st_mtime_ns
                             and cache_entry.get('size_bytes') == stat.st_size
-                            and cache_entry.get('hf_score_version') == HIGH_FREQUENCY_SCORE_VERSION
                         ):
                             motion_length = int(cache_entry['length'])
-                            hf_score = float(cache_entry['hf_score'])
                         else:
-                            motion_length, hf_score = _read_motion_stats(motion_path)
+                            motion_length = _read_motion_length(motion_path)
                             motion_length_cache[name] = {
                                 'length': int(motion_length),
                                 'mtime_ns': int(stat.st_mtime_ns),
                                 'size_bytes': int(stat.st_size),
-                                'hf_score': float(hf_score),
-                                'hf_score_version': HIGH_FREQUENCY_SCORE_VERSION,
                             }
                             cache_dirty = True
                         key = clip_id(namespace, name)
@@ -1112,7 +1105,7 @@ class MotionDataset(data.Dataset):
                                             'motion_metadata': motion_metadata,
                                             'source_namespace': namespace,
                                             'motion_name': name,
-                                            'high_frequency': is_high_frequency(hf_score),
+                                            'high_frequency': name in high_frequency_names,
                                             'sample_weight': source.sample_weight,
                                            }
 
@@ -1169,7 +1162,7 @@ class MotionDataset(data.Dataset):
             )
         high_frequency_count = sum(bool(entry['high_frequency']) for entry in data_dict.values())
         print(
-            f"[dataset] high-frequency clips (score >= {HIGH_FREQUENCY_SCORE_THRESHOLD}): "
+            f"[dataset] high-frequency clips (cond {HIGH_FREQUENCY_COND_KEY}): "
             f"{high_frequency_count} / {len(data_dict)}, never downsampled"
         )
         self.reset_min_len(self.min_length)

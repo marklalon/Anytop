@@ -95,6 +95,13 @@ from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
 
 
 from utils.misc import infer_object_type_from_filename
+from data_loaders.truebones.truebones_utils.high_frequency import (  # noqa: E402
+    HIGH_FREQUENCY_COND_KEY,
+    bake_high_frequency_clips,
+    high_frequency_clips,
+    high_frequency_score,
+    is_high_frequency,
+)
 from utils.clip_length_prior import (  # noqa: E402
     COND_KEY as CLIP_LENGTH_PRIOR_COND_KEY,
     build_clip_length_prior,
@@ -341,6 +348,26 @@ def _compute_canonical_stats(
         print(f"     dpos_std {float(dpos_std):.4f}")
 
 
+def _bake_high_frequency_clips(
+    rebuilt_cond: dict[str, dict],
+    motion_files: list[Path],
+    cond_lookup: dict[str, str],
+) -> int:
+    """Score every stored clip once (``truebones_utils/high_frequency.py``) and
+    record each species' high-frequency clips in its cond entry, where the
+    loader, the clip-length prior and the review page read them."""
+    names: dict[str, list[str]] = {object_type: [] for object_type in rebuilt_cond}
+    for motion_path in motion_files:
+        object_type = _infer_object_type_from_motion_name(motion_path.name, cond_lookup)
+        if object_type not in names:
+            continue
+        if is_high_frequency(high_frequency_score(np.load(motion_path, mmap_mode="r"))):
+            names[object_type].append(motion_path.name)
+    for object_type, object_cond in rebuilt_cond.items():
+        object_cond[HIGH_FREQUENCY_COND_KEY] = bake_high_frequency_clips(names[object_type])
+    return sum(map(len, names.values()))
+
+
 def _compute_clip_length_prior(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
@@ -359,17 +386,13 @@ def _compute_clip_length_prior(
     period. The loader's own speed augmentation, tiling and source-frame crop
     spread the distribution around that value; they do not move it, so they are
     deliberately not simulated here. Each clip also records whether it is
-    high-frequency -- scored on the stored clip, exactly as the loader scores it
-    -- because the loader caps those at the window, which the lookup applies
+    high-frequency -- the verdict ``_bake_high_frequency_clips`` stored, which
+    the loader reads too -- because the loader caps those at the window, which the lookup applies
     once it knows the checkpoint's window.
     """
     # Local import: the loader pulls torch, which this tool otherwise only needs
     # transitively, and the closing-key rule must be the loader's own.
     from data_loaders.truebones.data.dataset import _drop_loop_closing_frame
-    from data_loaders.truebones.truebones_utils.high_frequency import (
-        high_frequency_score,
-        is_high_frequency,
-    )
 
     records: dict[str, list[tuple[str, str, bool, int, bool]]] = {}
     for motion_path in motion_files:
@@ -386,7 +409,7 @@ def _compute_clip_length_prior(
         is_loop = bool(entry.get("is_loop"))
         motion = np.load(motion_path)
         length = source_clip_length(motion, is_loop, _drop_loop_closing_frame)
-        high_frequency = is_high_frequency(high_frequency_score(motion))
+        high_frequency = motion_path.name in high_frequency_clips(rebuilt_cond[object_type])
         records.setdefault(object_type, []).append(
             (str(entry.get("action_group") or ""), action_label, is_loop, length, high_frequency)
         )
@@ -603,6 +626,13 @@ def _regenerate_dataset_artifacts(
         species_lookup_map(rebuilt_cond),
     )
     print(f"[OK] translation root contracts validated in {time.time() - t0:.1f}s")
+
+    t0 = time.time()
+    high_frequency = _bake_high_frequency_clips(rebuilt_cond, motion_files, species_lookup_map(rebuilt_cond))
+    print(
+        f"[OK] high-frequency clips baked ({high_frequency}/{len(motion_files)}) "
+        f"in {time.time() - t0:.1f}s"
+    )
 
     t0 = time.time()
     _compute_clip_length_prior(

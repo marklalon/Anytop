@@ -15,7 +15,16 @@ from data_loaders.truebones.data.dataset import (
     time_scale_motion_features,
 )
 from data_loaders.truebones.truebones_utils.high_frequency import (
+    HIGH_FREQUENCY_COND_KEY,
+    HIGH_FREQUENCY_MAX_PERIOD,
     HIGH_FREQUENCY_SCORE_THRESHOLD,
+    HIGH_FREQUENCY_STRONG_RMS,
+    HIGH_FREQUENCY_SUSTAINED_MAX_PERIOD,
+    HIGH_FREQUENCY_SUSTAINED_MIN_CYCLES,
+    HIGH_FREQUENCY_SCORE_VERSION,
+    HIGH_FREQUENCY_SUSTAINED_RMS,
+    bake_high_frequency_clips,
+    high_frequency_clips,
     high_frequency_score,
     is_high_frequency,
 )
@@ -76,7 +85,7 @@ def test_score_flags_a_frame_locked_beat_not_a_slow_swing():
 
 @pytest.mark.parametrize('frames', [40, 41])
 @pytest.mark.parametrize('period', [2, 3, 4])
-def test_score_is_the_rms_of_a_pure_high_frequency_signal(frames, period):
+def test_sustained_score_is_the_rms_over_the_sustained_threshold(frames, period):
     # Covers the Nyquist bin of an even-length clip (period 2, 40 frames),
     # which has no mirror and must not be counted twice.
     t = np.arange(frames)
@@ -84,7 +93,69 @@ def test_score_is_the_rms_of_a_pure_high_frequency_signal(frames, period):
     motion = np.zeros((frames, 1, 12))
     motion[:, 0, 3] = signal
     rms = np.sqrt(((signal - signal.mean()) ** 2).mean())
-    assert high_frequency_score(motion) == pytest.approx(rms, rel=0.02)
+    assert high_frequency_score(motion) == pytest.approx(rms / HIGH_FREQUENCY_SUSTAINED_RMS, rel=0.02)
+
+
+def _tremble(frames, amplitude, period=4.0, slow=0.0):
+    t = np.arange(frames)
+    motion = np.zeros((frames, 2, 12))
+    motion[:, 1, 3] = amplitude * np.sin(2 * np.pi * t / period) + slow * np.sin(2 * np.pi * t / frames)
+    return motion
+
+
+def test_small_sustained_tremble_is_flagged():
+    # Far below the strong RMS, but dominant and present through the clip.
+    tremble = _tremble(60, amplitude=0.1, slow=0.1)
+    assert 0.1 / np.sqrt(2) < HIGH_FREQUENCY_STRONG_RMS
+    assert is_high_frequency(high_frequency_score(tremble))
+
+
+def test_small_tremble_not_dominant_on_its_joint_is_not_flagged():
+    assert not is_high_frequency(high_frequency_score(_tremble(60, amplitude=0.1, slow=1.0)))
+
+
+def test_small_tremble_with_too_few_cycles_is_not_flagged():
+    # A short clip: the period-5 content is a harmonic of the clip-long swing.
+    frames = HIGH_FREQUENCY_SUSTAINED_MIN_CYCLES * 5 - 5
+    assert not is_high_frequency(high_frequency_score(_tremble(frames, amplitude=0.1, period=5.0)))
+
+
+def test_small_one_off_snap_is_not_flagged():
+    snap = np.zeros((60, 2, 12))
+    snap[30, 1, 3] = 0.6
+    snap[31, 1, 3] = -0.6
+    assert not is_high_frequency(high_frequency_score(snap))
+
+
+def test_one_frame_flip_on_a_still_joint_is_not_flagged():
+    # A joint flips 180 degrees for one key and back, twice: a data glitch,
+    # not an oscillation, though it dominates the joint's spectrum.
+    frames = np.arange(61)
+    glitch = np.zeros((61, 2, 12))
+    glitch[:, 1, 3] = 0.7 + 0.02 * np.sin(2 * np.pi * frames / 30.0)
+    glitch[[17, 47], 1, 3] *= -1
+    assert not is_high_frequency(high_frequency_score(glitch))
+    # Back-to-back flips are a period-2 beat and still count.
+    beat = glitch.copy()
+    beat[::2, 1, 3] *= -1
+    assert is_high_frequency(high_frequency_score(beat))
+
+
+def test_fast_large_swat_is_not_flagged():
+    # A big swing out and back in a few frames: strong high-band RMS, but
+    # spread over a broad band beside its slow content.
+    t = np.arange(40)
+    swat = np.zeros((40, 2, 12))
+    swat[:, 1, 3] = 3.0 * np.exp(-0.5 * ((t - 20) / 1.5) ** 2)
+    rotations = swat[:, :, 3:9] - swat[:, :, 3:9].mean(axis=0)
+    assert np.sqrt((rotations[:, 1] ** 2).sum(axis=1).mean()) > HIGH_FREQUENCY_STRONG_RMS
+    assert not is_high_frequency(high_frequency_score(swat))
+
+
+def test_small_chatter_near_the_band_edge_is_not_sustained():
+    period = HIGH_FREQUENCY_SUSTAINED_MAX_PERIOD + 0.3
+    assert period <= HIGH_FREQUENCY_MAX_PERIOD
+    assert not is_high_frequency(high_frequency_score(_tremble(97, amplitude=0.1, period=period)))
 
 
 def _sampler(ratio=1.3):
@@ -217,3 +288,21 @@ def test_composed_window_rejects_an_open_crop_past_the_clip():
         resample_time_scaled_window(
             _clip(30), 40, 30, WINDOW, source_periodic=False, window_periodic=False, shift=11,
         )
+
+
+def test_baked_verdicts_read_back_from_cond():
+    entry = {HIGH_FREQUENCY_COND_KEY: bake_high_frequency_clips(["Bee_Fly.npy", "Bee_Buzz.npy"])}
+    assert high_frequency_clips(entry) == {"Bee_Fly.npy", "Bee_Buzz.npy"}
+    assert high_frequency_clips({HIGH_FREQUENCY_COND_KEY: bake_high_frequency_clips([])}) == set()
+
+
+@pytest.mark.parametrize("baked", [
+    None,
+    {"version": HIGH_FREQUENCY_SCORE_VERSION - 1, "clips": ["Bee_Fly.npy"]},
+])
+def test_missing_or_stale_bake_is_refused(baked):
+    entry = {"object_type": "zoo/Bee"}
+    if baked is not None:
+        entry[HIGH_FREQUENCY_COND_KEY] = baked
+    with pytest.raises(RuntimeError, match="regenerate_dataset_artifacts"):
+        high_frequency_clips(entry)
