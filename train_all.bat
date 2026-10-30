@@ -24,7 +24,7 @@ pushd "%SCRIPT_DIR%"
 	--rare_head_word_max_boost 4 ^
 	--head_word_weights attack,hurt=0.8,idle=0.6 ^
 	--train_split train ^
-    --noise_schedule_shift 2 ^
+    --noise_schedule_shift 1.5 ^
     --noise_schedule_shift_min 0.5 ^
 	--latent_dim 384 ^
 	--ff_size 2048 ^
@@ -77,7 +77,7 @@ pushd "%SCRIPT_DIR%"
 	--lambda_root_acc 0.1 ^
 	--lambda_limb_corr 0.1 ^
 	--lambda_geo 0.1 ^
-	--lambda_bone 0.06 ^
+	--lambda_bone 0.08 ^
 	--motion_cache_size 16384 ^
 	--amp_dtype fp16 ^
 	--main_process_prefetch_batches 64 ^
