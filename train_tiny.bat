@@ -5,7 +5,7 @@ REM Usage: train_tiny.bat [run_name]
 REM See docs/tiny_locomotion_baseline.md for the fixed ablation protocol.
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
-set "RUN_NAME=zoo_locomotion_tiny_v52"
+set "RUN_NAME=zoo_locomotion_tiny_v56"
 if not "%~1"=="" set "RUN_NAME=%~1"
 
 if not exist "%PYTHON_EXE%" (
@@ -64,6 +64,8 @@ REM "truebones/zoo;unitybundles"; a parent such as "truebones" selects all its c
     --cross_limb_dim 128 ^
 	--cross_limb_last_n 4 ^
     --temporal_rope ^
+    --temporal_rope_ref_drop_prob 0.8 ^
+    --temporal_rope_drop_prob 0.2 ^
     --diffusion_steps 100 ^
     --num_frames 60 ^
     --batch_size 16 ^
@@ -73,7 +75,7 @@ REM "truebones/zoo;unitybundles"; a parent such as "truebones" selects all its c
     --weight_decay 0.03 ^
     --use_ema ^
     --ema_rate 0.995 ^
-    --num_steps 20000 ^
+    --num_steps 10000 ^
     --dropout_prob 0.1 ^
     --action_label_cfg_drop_prob 0.2 ^
     --tempo_cfg_drop_prob 0.1 ^

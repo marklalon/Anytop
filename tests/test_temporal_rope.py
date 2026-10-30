@@ -79,3 +79,27 @@ def test_decoder_loop_rows_are_circular_shift_equivariant():
     # the loop row has no seam, the open row does.
     assert torch.allclose(torch.roll(out[:, 0], 5, dims=0), shifted[:, 0], atol=1e-4)
     assert not torch.allclose(torch.roll(out[:, 1], 5, dims=0), shifted[:, 1], atol=1e-3)
+
+
+def test_decoder_rope_off_rows_match_the_model_without_rope():
+    from model.motion_transformer import GraphMotionDecoder, GraphMotionDecoderLayer
+
+    torch.manual_seed(0)
+    frames, batch, joints, width, heads = 12, 2, 3, 16, 2
+    layer = GraphMotionDecoderLayer(width, heads, dim_feedforward=32, dropout=0.0)
+    with_rope = GraphMotionDecoder(layer, num_layers=2, cross_limb=False, temporal_rope=True).eval()
+    without = GraphMotionDecoder(layer, num_layers=2, cross_limb=False, temporal_rope=False).eval()
+    without.load_state_dict(with_rope.state_dict())
+    y = {
+        "graph_dist": torch.zeros(batch, joints, joints, dtype=torch.int64),
+        "joints_relations": torch.zeros(batch, joints, joints, dtype=torch.int64),
+    }
+    x = torch.randn(frames, batch, joints, width)
+    kw = dict(timesteps_embs=torch.zeros(batch, width), memory=None, y=y)
+    with torch.no_grad():
+        off = with_rope(tgt=x, temporal_rope_off=torch.tensor([True, False]), **kw)
+        rope = with_rope(tgt=x, **kw)
+        plain = without(tgt=x, **kw)
+    assert torch.allclose(off[:, 0], plain[:, 0], atol=1e-5)
+    assert torch.allclose(off[:, 1], rope[:, 1], atol=1e-5)
+    assert not torch.allclose(rope[:, 0], plain[:, 0], atol=1e-3)

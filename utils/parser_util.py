@@ -389,6 +389,15 @@ def add_model_options(parser):
                             "(frame index, geometric frequencies up to Nyquist), so every layer reads "
                             "frame offsets directly. Loop samples use whole turns per window, so their "
                             "offsets wrap at the seam. Parameter-free; off reproduces the model without it.")
+    group.add_argument("--temporal_rope_ref_drop_prob", default=0.0, type=float,
+                       help="With --temporal_rope: training probability that a reference-active row runs its "
+                            "temporal attention without RoPE (identity table; frame positions then come from "
+                            "the input PE alone). Above 0, inference runs every reference-active row, and the "
+                            "reference CFG null pass, without RoPE. Parameter-free.")
+    group.add_argument("--temporal_rope_drop_prob", default=0.0, type=float,
+                       help="With --temporal_rope: the same RoPE drop on rows without a reference, training "
+                            "only; it also trains the regime of the reference CFG null pass. Label-only "
+                            "inference keeps RoPE.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
     group.add_argument("--joint_name_drop_prob", default=0.0, type=float,
