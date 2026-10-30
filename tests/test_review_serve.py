@@ -556,3 +556,19 @@ def test_update_api_returns_the_row_with_its_species_fields(tmp_path):
     # The page adopts this row wholesale; the species bar must survive a label edit.
     assert payload["row"]["_species"] == "ORA_PlayerHumanoid"
     assert payload["row"]["_species_tags"] == ["Biped"]
+
+
+def test_store_writes_sample_weight_and_drops_the_default(tmp_path):
+    labels = tmp_path / "action_labels.jsonl"
+    row = {"clip": "Wolf_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": True}
+    labels.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    store = review.LabelStore(labels)
+
+    assert store.update("Wolf_Idle", sample_weight=2.0)["sample_weight"] == 2
+    assert load_action_labels(tmp_path)["Wolf_Idle"]["sample_weight"] == 2.0
+    assert store.update("Wolf_Idle", sample_weight=0.25)["sample_weight"] == 0.25
+    for bad in (0, -1, float("nan"), True, "2"):
+        with pytest.raises(ValueError):
+            store.update("Wolf_Idle", sample_weight=bad)
+    assert "sample_weight" not in store.update("Wolf_Idle", sample_weight=1)
+    assert "sample_weight" not in json.loads(labels.read_text(encoding="utf-8"))

@@ -2,7 +2,7 @@
 """Local multi-dataset review server for action_labels.jsonl.
 
 Serves review/index.html (a GIF grid) and applies label / loop / reviewed /
-pending_delete edits straight back into each dataset's action_labels.jsonl so
+pending_delete / sample_weight edits straight back into each dataset's action_labels.jsonl so
 the page and the file never drift apart.  A dropdown in the header picks which
 dataset is on screen.
 
@@ -48,6 +48,11 @@ not show it; the review pass finds these rows as unreviewed. Typing a different
 label clears the mark --
 the label is then a person's -- while signing the proposal off unchanged keeps
 it as provenance.
+
+``sample_weight`` is the clip's optional draw multiplier in training
+(``TruebonesSampler``): a finite number > 0, absent = 1. Setting it back to 1
+drops the key instead of writing the default. The sampler reads it at load
+time, so an edit needs no regen.
 
 ``action_label`` edits are normalized and validated before being written.
 Tokens are lowercased, repeated words are dropped (first occurrence kept),
@@ -174,9 +179,12 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     MOTION_METADATA_SCHEMA_VERSION,
     HEAD_ACTION_GROUP,
     HEAD_VOCAB,
+    DEFAULT_SAMPLE_WEIGHT,
+    SAMPLE_WEIGHT_KEY,
     ActionLabelError,
     action_group_conflict,
     canonical_action_label,
+    normalize_clip_sample_weight,
     parse_action_label,
     set_loop_flag,
 )
@@ -388,7 +396,8 @@ def _write_metadata(path, payload):
     ``schema_version`` is preserved from the file (default: the current one).
     """
     motions = payload.get("motions") or {}
-    dropped = ("action_group", "action_label", LOOP_FLAG_KEY, "action_tags", "species_label")
+    dropped = ("action_group", "action_label", LOOP_FLAG_KEY, SAMPLE_WEIGHT_KEY,
+               "action_tags", "species_label")
     sanitized = {
         name: {k: v for k, v in entry.items() if k not in dropped}
         for name, entry in motions.items()
@@ -651,7 +660,7 @@ class LabelStore:
             return result
 
     def update(self, clip, action_label=None, action_group=None, reviewed=None,
-               pending_delete=None, is_loop=None):
+               pending_delete=None, is_loop=None, sample_weight=None):
         with self.lock:
             self._reload_if_stale()
             row = self.index.get(clip)
@@ -673,6 +682,8 @@ class LabelStore:
                     raise ActionLabelError(conflict)
             if action_group is not None and not action_group:
                 raise ValueError("action_group must not be empty")
+            if sample_weight is not None:
+                sample_weight = normalize_clip_sample_weight(sample_weight)
             if is_loop is not None:
                 # Always written, never popped: a verdict, once made, stays a
                 # verdict (a row WITHOUT the key means "not judged yet" and
@@ -707,6 +718,12 @@ class LabelStore:
                     row["pending_delete"] = True
                 else:
                     row.pop("pending_delete", None)
+            if sample_weight is not None:
+                if sample_weight == DEFAULT_SAMPLE_WEIGHT:
+                    row.pop(SAMPLE_WEIGHT_KEY, None)
+                else:
+                    # An integral weight is written as 2, not 2.0.
+                    row[SAMPLE_WEIGHT_KEY] = int(sample_weight) if sample_weight.is_integer() else sample_weight
             self._write()
             result = dict(row)
             error = self._label_error(row)
@@ -1618,6 +1635,7 @@ class Handler(BaseHTTPRequestHandler):
                 reviewed=payload.get("reviewed"),
                 pending_delete=payload.get("pending_delete"),
                 is_loop=is_loop,
+                sample_weight=payload.get(SAMPLE_WEIGHT_KEY),
             )
         except KeyError:
             return self._send_json(404, {"error": f"clip not in labels file: {clip}"})

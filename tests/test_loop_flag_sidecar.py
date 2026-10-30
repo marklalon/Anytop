@@ -37,6 +37,7 @@ from data_loaders.truebones.truebones_utils.loop_verdict import (
 from data_loaders.truebones.truebones_utils.motion_labels import (
     LOOP_FLAG_KEY,
     MOTION_METADATA_SCHEMA_VERSION,
+    SAMPLE_WEIGHT_KEY,
     load_action_labels,
     load_motion_metadata,
     write_motion_metadata,
@@ -389,3 +390,36 @@ def test_the_review_metadata_writer_strips_the_flag(tmp_path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["schema_version"] == MOTION_METADATA_SCHEMA_VERSION
     assert LOOP_FLAG_KEY not in payload["motions"]["a.npy"]
+
+
+# ── sample_weight ─────────────────────────────────────────────────────────
+
+def test_sample_weight_is_optional_joined_and_stripped(tmp_path):
+    (tmp_path / "motion_metadata.json").write_text(json.dumps({
+        "schema_version": 8, "total_clips": 2,
+        "motions": {
+            "a.npy": {"object_type": "A", "translation_root_index": 0},
+            "b.npy": {"object_type": "A", "translation_root_index": 0},
+        },
+    }), encoding="utf-8")
+    _write_labels(tmp_path / "action_labels.jsonl", [
+        {"clip": "a", "action_group": "stationary", "action_label": "idle", "is_loop": True, "sample_weight": 3},
+        {"clip": "b", "action_group": "stationary", "action_label": "idle", "is_loop": True},
+    ])
+    labels = load_action_labels(tmp_path)
+    assert labels["a"][SAMPLE_WEIGHT_KEY] == 3.0
+    assert SAMPLE_WEIGHT_KEY not in labels["b"]
+    joined = load_motion_metadata(tmp_path)
+    assert joined["a.npy"][SAMPLE_WEIGHT_KEY] == 3.0
+    write_motion_metadata(tmp_path, joined, 2)
+    payload = json.loads((tmp_path / "motion_metadata.json").read_text(encoding="utf-8"))
+    assert SAMPLE_WEIGHT_KEY not in payload["motions"]["a.npy"]
+
+
+@pytest.mark.parametrize("bad", [0, -1, "2", True, None])
+def test_a_bad_sample_weight_is_refused(tmp_path, bad):
+    _write_labels(tmp_path / "action_labels.jsonl", [
+        {"clip": "a", "action_group": "stationary", "action_label": "idle", "sample_weight": bad},
+    ])
+    with pytest.raises(SystemExit):
+        load_action_labels(tmp_path)

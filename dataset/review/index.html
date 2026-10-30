@@ -48,6 +48,7 @@
   }
   select#dataset { border-color: var(--accent); max-width: 260px; }
   input[type=search] { width: 200px; }
+  input[type=search].invalid { border-color: #ef5350; }
   button.search-toggle { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 29px; padding: 3px; color: var(--dim); }
   button.search-toggle svg { width: 23px; height: 18px; }
   button.search-toggle[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: #28405e; }
@@ -122,6 +123,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, 224px);
     justify-content: center;
+    align-items: start;   /* a wrapped label grows its own card, not the whole grid row */
     gap: 16px 14px;
     padding: 16px;
   }
@@ -302,17 +304,21 @@
   }
   .tick:hover { color: var(--warn); background: #454545; border-color: var(--warn); }
 
-  /* Mode toggle: which annotation the card's bottom bar shows and edits. */
-  .mode-toggle { display: inline-flex; border: 1px solid var(--accent); border-radius: 4px; overflow: hidden; }
-  .mode-toggle button { border: none; border-radius: 0; background: #3d3d3d; color: var(--dim); }
-  .mode-toggle button + button { border-left: 1px solid var(--accent); }
-  .mode-toggle button[aria-pressed="true"] { background: #28405e; color: var(--text); }
+  /* Mode: which annotation the card's bottom bar shows and edits. */
+  select#mode { border-color: var(--accent); }
   .species-tags { color: #c9dcff; }
   .species-tags .sp { color: var(--dim); font-size: 11px; }
   .species-tags.missing { color: #ffcf8f; }
   .tag-edit { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
   .tag-edit select { width: 100%; padding: 2px 4px; }
   .tag-edit select.bad { border-color: #ef5350; }
+  /* action weight mode: the clip's sample_weight in place of its label. */
+  .weight-box { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: 25px; }
+  .weight-box input[type=range] { flex: 1; min-width: 0; margin: 0; accent-color: var(--dim); cursor: pointer; }
+  .weight-box.set input[type=range] { accent-color: #ffd27f; }
+  .weight-box input[type=range]:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+  .weight-value { flex: none; width: 28px; text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .weight-box.set .weight-value { color: #ffd27f; }
 
   .empty { grid-column: 1 / -1; padding: 60px; text-align: center; color: var(--dim); }
 
@@ -376,6 +382,7 @@
     <option value="label" selected>label</option>
     <option value="clip">clip</option>
     <option value="species_tags">species tags</option>
+    <option value="weight">weight</option>
   </select>
   <input type="search" id="q" placeholder="搜索 label">
   <button id="wholeWord" class="search-toggle" type="button" title="Match whole word（label 完全匹配；clip 按单词匹配；species tags 的 tag 集合须与输入完全一致）" aria-label="Match whole word" aria-pressed="false">
@@ -403,10 +410,11 @@
       <button id="clean" disabled title="清理当前数据集所有标记为待删除的动作">清理待删除</button>
     </div>
   </details>
-  <div class="mode-toggle" role="group" aria-label="模式">
-    <button type="button" id="modeLabel" aria-pressed="true" title="卡片底部显示并编辑 action_label">action label</button>
-    <button type="button" id="modeSpecies" aria-pressed="false" title="卡片底部显示并编辑物种的 species_tags（同一物种的所有动作共享）">species tags</button>
-  </div>
+  <select id="mode" title="卡片底部显示并编辑的字段" aria-label="模式">
+    <option value="label" title="卡片底部显示并编辑 action_label">action label</option>
+    <option value="species" title="卡片底部显示并编辑物种的 species_tags（同一物种的所有动作共享）">species tags</option>
+    <option value="weight" title="卡片底部显示并编辑每个动作的训练采样权重 sample_weight（缺省 1）">action weight</option>
+  </select>
 
   <div class="pager">
     <button id="prev" class="page-btn" title="上一页" aria-label="上一页">
@@ -448,6 +456,8 @@ let labelContract = null; // vocabulary/order supplied by the shared Python cont
 let speciesContract = null; // {body_plans, variants}: species_tags' closed vocabularies
 const MODE_KEY = 'actionReview.mode';
 const SPECIES_MODE = 'species';
+const WEIGHT_MODE = 'weight';
+const MODES = ['label', SPECIES_MODE, WEIGHT_MODE];
 let mode = (() => { try { return localStorage.getItem(MODE_KEY) || 'label'; } catch (err) { return 'label'; } })();
 
 // A page holds 100 animated GIFs; decoding them all at once is what kills the
@@ -484,6 +494,9 @@ const isAutofill = (r) => r.autofill === true;
 // tools/prefill_loop_flags.py or set here); a row without the key has not been
 // judged yet.
 const loopState = (r) => (r.is_loop === true ? 'yes' : r.is_loop === false ? 'no' : 'none');
+// sample_weight: the clip's training draw multiplier; a row without the key is 1.
+const sampleWeight = (r) => (typeof r.sample_weight === 'number' ? r.sample_weight : 1);
+const isWeighted = (r) => sampleWeight(r) !== 1;
 const stripNpy = (clip) => clip.replace(/\.npy$/i, '');
 // GIF lives under /gif/<dataset id>/<clip>.gif on the server. Aggregate rows
 // carry their own dataset id because different datasets may use the same clip.
@@ -604,9 +617,11 @@ function counts() {
   const invalid = rows.filter(r => !!r.label_error).length;
   const loops = rows.filter(r => loopState(r) === 'yes').length;
   const unjudged = rows.filter(r => loopState(r) === 'none').length;
+  const weighted = rows.filter(isWeighted).length;
   $('counts').innerHTML = '已核验 <b>' + done + '</b> / ' + rows.length +
     ' &nbsp;·&nbsp; 循环 <b>' + loops + '</b>' +
     (unjudged ? ' <span style="color:#ffcf8f">(未判定 <b>' + unjudged + '</b>)</span>' : '') +
+    (mode === WEIGHT_MODE ? ' &nbsp;·&nbsp; 权重≠1 <b>' + weighted + '</b>' : '') +
     (pending ? ' &nbsp;·&nbsp; 待删除 <b>' + pending + '</b>' : '') +
     (invalid ? ' &nbsp;·&nbsp; <span style="color:#ff8a80">非法 label <b>' + invalid + '</b></span>' : '') +
     ' &nbsp;·&nbsp; 当前筛选 <b>' + view.length + '</b>' +
@@ -813,6 +828,25 @@ function matchDistinctTags(terms, tags, startsWith, used = new Set()) {
   });
 }
 
+// Weight search: comma-separated conditions, all must hold -- "2", "<1",
+// ">=1", "!=1", ">0.5, <2". A bare number means equality. Returns a predicate
+// on the weight, or null when the query does not parse.
+const WEIGHT_OPS = {
+  '<': (w, x) => w < x, '<=': (w, x) => w <= x, '>': (w, x) => w > x, '>=': (w, x) => w >= x,
+  '=': (w, x) => w === x, '==': (w, x) => w === x, '!=': (w, x) => w !== x, '<>': (w, x) => w !== x,
+};
+function parseWeightQuery(q) {
+  const tests = [];
+  for (const part of q.split(/[,，]/).map(p => p.trim()).filter(Boolean)) {
+    const m = part.match(/^(<=|>=|!=|<>|==|=|<|>)?\s*([+-]?(?:\d+\.?\d*|\.\d+))$/);
+    if (!m) return null;
+    const op = WEIGHT_OPS[m[1] || '='];
+    const x = Number(m[2]);
+    tests.push((w) => op(w, x));
+  }
+  return tests.length ? (w) => tests.every(t => t(w)) : null;
+}
+
 function tightCommas(value) {
   return String(value || '').toLowerCase().replace(/\s*[,，]\s*/g, ',');
 }
@@ -838,6 +872,10 @@ function applyFilters(keepPage, keepScroll) {
   const q = $('q').value.trim().toLowerCase();
   const wholeWord = $('wholeWord').getAttribute('aria-pressed') === 'true';
   const startsWith = $('startsWith').getAttribute('aria-pressed') === 'true';
+  const weightTest = searchField === 'weight' && q ? parseWeightQuery(q) : null;
+  const badWeightQuery = searchField === 'weight' && q && !weightTest;
+  $('q').classList.toggle('invalid', !!badWeightQuery);
+  $('q').title = badWeightQuery ? '无法解析的 weight 条件：用 2、<1、>=1、!=1 或 >0.5, <2' : '';
   view = rows.filter(r => {
     if (g !== 'all' && r.action_group !== g) return false;
     if (s === 'todo' && isReviewed(r)) return false;
@@ -865,6 +903,8 @@ function applyFilters(keepPage, keepScroll) {
           : matchDistinctTags(terms, tags, startsWith);
         if (!inTags) return false;
       }
+      // An unparsable weight condition matches nothing (the box turns red).
+      if (searchField === 'weight' && !(weightTest && weightTest(sampleWeight(r)))) return false;
       if (searchField === 'label' && !inLabel) return false;
       if (searchField === 'clip' && !inClip) return false;
     }
@@ -989,7 +1029,8 @@ function card(row) {
 
   const bar = document.createElement('div');
   bar.className = 'row';
-  bar.appendChild(mode === SPECIES_MODE ? speciesBar(el, row) : labelBar(el, row));
+  if (mode === WEIGHT_MODE) bar.appendChild(weightSlider(row));
+  else bar.appendChild(mode === SPECIES_MODE ? speciesBar(el, row) : labelBar(el, row));
 
   if (isReviewed(row)) {
     const tick = document.createElement('button');
@@ -1021,6 +1062,66 @@ function labelBar(el, row) {
     : '点击修改（保存时检查词表并自动按 canonical order 排序）';
   label.onclick = () => edit(el, row, label);
   return label;
+}
+
+// The clip's sample_weight as a slider; saved when released (change), the
+// readout follows while dragging. 1 is the default: the server drops the key
+// instead of writing it.
+const WEIGHT_MIN = 0.1, WEIGHT_MAX = 10, WEIGHT_STEP = 0.1;
+// One decimal, matching the step; also keeps 0.1 * 3 from saving as 0.30000000000000004.
+const roundWeight = (w) => Math.round(w * 10) / 10;
+const weightText = (w) => (Number.isInteger(w) ? String(w) : w.toFixed(1));
+
+function weightSlider(row) {
+  const box = document.createElement('div');
+  box.className = 'weight-box' + (isWeighted(row) ? ' set' : '');
+  const current = sampleWeight(row);
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = WEIGHT_MIN;
+  slider.max = WEIGHT_MAX;
+  slider.step = WEIGHT_STEP;
+  slider.value = current;   // the browser clamps a hand-written weight outside the range
+  slider.title = '训练采样权重 sample_weight：权重 w 的动作被抽中的频率是权重 1 的 w 倍' +
+    '（与 head word / 数据集权重相乘）。缺省 1；松开保存';
+  slider.setAttribute('aria-label', 'sample_weight');
+  const value = document.createElement('span');
+  value.className = 'weight-value';
+  value.textContent = weightText(current);
+  slider.oninput = () => { value.textContent = weightText(roundWeight(Number(slider.value))); };
+  // change fires on release and on every arrow key press; the short debounce
+  // turns a run of key presses into one save.
+  slider.onchange = () => {
+    clearTimeout(slider._t);
+    slider._t = setTimeout(() => saveWeight(row, box, roundWeight(Number(slider.value))), 300);
+  };
+  box.append(slider, value);
+  return box;
+}
+
+// Saves a weight without re-rendering: rebuilding the card (or the grid, as
+// save() does for filter-moving edits) would reload GIFs and drop the slider's
+// focus. A card that no longer matches a weight search stays until the next filter run.
+async function saveWeight(row, box, next) {
+  if (next === sampleWeight(row)) return;
+  try {
+    const res = await fetch('api/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataset: row._dataset || ds, clip: row.clip, sample_weight: next })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+    for (const k of Object.keys(row)) if (!(k in data.row)) delete row[k];
+    Object.assign(row, data.row);
+    box.classList.toggle('set', isWeighted(row));
+    counts();
+  } catch (err) {
+    toast('保存权重失败：' + err.message);
+    const slider = box.querySelector('input');
+    slider.value = sampleWeight(row);
+    box.querySelector('.weight-value').textContent = weightText(sampleWeight(row));
+  }
 }
 
 // species_tags of the clip's species: [body plan] or [body plan, variant]. One row per
@@ -1116,11 +1217,16 @@ async function saveSpecies(row, tags) {
 }
 
 function setMode(next) {
-  mode = next === SPECIES_MODE ? SPECIES_MODE : 'label';
+  const prev = mode;
+  mode = MODES.includes(next) ? next : 'label';
   try { localStorage.setItem(MODE_KEY, mode); } catch (err) { /* per-viewer convenience only */ }
-  $('modeLabel').setAttribute('aria-pressed', String(mode !== SPECIES_MODE));
-  $('modeSpecies').setAttribute('aria-pressed', String(mode === SPECIES_MODE));
-  if (rows.length) { page = 1; render(); }
+  $('mode').value = mode;
+  if (!rows.length) return;
+  // label and weight modes list the same cards, so page and scroll carry over;
+  // species mode collapses them to one card per species, so it starts over.
+  const sameCards = prev !== SPECIES_MODE && mode !== SPECIES_MODE;
+  if (!sameCards) page = 1;
+  render(sameCards);
 }
 
 function edit(el, row, label) {
@@ -1466,15 +1572,14 @@ function onDatasetChange() {
 }
 
 $('dataset').onchange = onDatasetChange;
-$('modeLabel').onclick = () => setMode('label');
-$('modeSpecies').onclick = () => setMode(SPECIES_MODE);
+$('mode').onchange = () => setMode($('mode').value);
 setMode(mode);
 $('group').onchange = () => applyFilters();
 $('state').onchange = () => applyFilters();
 $('loop').onchange = () => applyFilters();
 $('searchField').onchange = () => {
   const field = $('searchField').value;
-  $('q').placeholder = '搜索 ' + field.replace('_', ' ');
+  $('q').placeholder = field === 'weight' ? 'weight 条件，如 <1、>=1、!=1' : '搜索 ' + field.replace('_', ' ');
   applyFilters();
 };
 $('q').oninput = () => {                 // debounce: a keystroke must not rebuild 100 cards

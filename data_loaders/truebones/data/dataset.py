@@ -23,7 +23,9 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_GROUPS,
     ActionLabelError,
+    DEFAULT_SAMPLE_WEIGHT,
     HEAD_VOCAB,
+    SAMPLE_WEIGHT_KEY,
     head_words_in,
     load_motion_metadata,
     loop_is_phase_free,
@@ -119,6 +121,9 @@ ALL_SPLIT_NAME = "all"
 #   --head_word_weights word=w,...: an explicit per-word multiplier on top of
 #       that, for the case where one word needs a hand-set weight.
 #
+# On top of both sit the dataset's manifest sample_weight and the clip's own
+# sample_weight in action_labels.jsonl (set in dataset/review).
+#
 # There is no other balancing rule: the sqrt-of-group-count scheme this
 # replaced (2026-09-21) halved the exposure of every attack clip -- 891 clips,
 # but spread over 110 labels -- to lift a tail that mostly needs data, not
@@ -152,6 +157,11 @@ def clip_action_head_word(motion_metadata, clip_name: str = "?") -> str:
             f"parsed, so --head_word_weights cannot key it: {exc}"
         ) from exc
     return heads[0]
+
+
+def clip_sample_weight(motion_metadata) -> float:
+    """The clip's own draw multiplier from action_labels.jsonl (default 1)."""
+    return float((motion_metadata or {}).get(SAMPLE_WEIGHT_KEY, DEFAULT_SAMPLE_WEIGHT))
 
 
 def parse_rare_head_word_floor(floor, max_boost) -> tuple[int, float]:
@@ -1020,8 +1030,10 @@ class MotionDataset(data.Dataset):
             rare_head_word_floor, rare_head_word_max_boost
         )
         # A weighted sampler drives indexing when any head word can be
-        # weighted (a floor or an explicit list); it yields absolute name_list
-        # indices, so __getitem__ must skip the pointer offset in that case.
+        # weighted (a floor or an explicit list), or any dataset or clip
+        # carries a sample_weight; it yields absolute name_list indices, so
+        # __getitem__ must skip the pointer offset in that case. The clip
+        # weights are only known once the clips are listed (below).
         self.use_weighted_sampler = bool(self.head_word_weights) or (
             self.rare_head_word_floor > RARE_HEAD_WORD_FLOOR_OFF
         ) or any(source.sample_weight != 1.0 for source in opt.sources)
@@ -1137,6 +1149,10 @@ class MotionDataset(data.Dataset):
             data_dict = {name: data_dict[name] for name in name_list}
         else:
             data_dict = {name: data_dict[name] for name in name_list}
+        self.use_weighted_sampler = self.use_weighted_sampler or any(
+            clip_sample_weight(entry['motion_metadata']) != DEFAULT_SAMPLE_WEIGHT
+            for entry in data_dict.values()
+        )
         self.length_arr = np.array(length_list)
         self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
@@ -1735,7 +1751,8 @@ class TruebonesSampler(WeightedRandomSampler):
       applied on top, for a word that needs a hand-set weight.
 
     A third multiplier is the clip's dataset ``sample_weight`` (the
-    manifest's per-dataset field, baked into the merged cond).
+    manifest's per-dataset field, baked into the merged cond), and a fourth
+    the clip's own ``sample_weight`` row field in action_labels.jsonl.
 
     A clip of final weight w is drawn w times as often as a weight-1 clip.
     Nothing else moves: species are not balanced, and the words neither rule
@@ -1787,12 +1804,16 @@ class TruebonesSampler(WeightedRandomSampler):
             boost = 1.0 if head == UNLABELED_ACTION_GROUP else rare_head_word_boost(count, floor, max_boost)
             multiplier[head] = boost * head_word_weights.get(head, 1.0)
         dataset_weight_of: dict[str, float] = {}
+        weighted_clips = 0
         for index, head in head_of_index.items():
             entry = data_dict[name_list[index]]
             dataset_weight = float(entry.get('sample_weight', 1.0))
-            weights[index] = multiplier[head] * dataset_weight
+            clip_weight = clip_sample_weight(entry.get('motion_metadata'))
+            weights[index] = multiplier[head] * dataset_weight * clip_weight
             if dataset_weight != 1.0:
                 dataset_weight_of[entry['source_namespace']] = dataset_weight
+            if clip_weight != DEFAULT_SAMPLE_WEIGHT:
+                weighted_clips += 1
         total = float(weights.sum())
         weights /= total
 
@@ -1827,6 +1848,12 @@ class TruebonesSampler(WeightedRandomSampler):
                 f"{ns} x{weight:g} {share[ns]:.2%}" for ns, weight in sorted(dataset_weight_of.items())
             )
             print(f"[sampler] dataset weights (draw share): {shown}")
+        if weighted_clips and os.environ.get("LOCAL_RANK", "0") == "0":
+            share = sum(
+                weights[index] for index in head_of_index
+                if clip_sample_weight(data_dict[name_list[index]].get('motion_metadata')) != DEFAULT_SAMPLE_WEIGHT
+            )
+            print(f"[sampler] clip sample_weight on {weighted_clips} / {pool} clips (draw share {share:.2%})")
 
         super().__init__(num_samples=num_samples, weights=weights)
 

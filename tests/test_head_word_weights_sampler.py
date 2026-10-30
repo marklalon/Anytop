@@ -44,16 +44,20 @@ class _FakeMotionDataset:
     """The attributes TruebonesSampler reads, and nothing else."""
 
     def __init__(self, labels, object_types=None, head_word_weights=None, pointer=0,
-                 rare_head_word_floor=0, rare_head_word_max_boost=4.0):
+                 rare_head_word_floor=0, rare_head_word_max_boost=4.0, clip_weights=None):
         object_types = list(object_types or ["A"] * len(labels))
+        clip_weights = dict(clip_weights or {})
         self.name_list = [f"clip{index}" for index in range(len(labels))]
         self.data_dict = {
             name: {
                 "object_type": object_type,
                 "motion_name": name,
-                "motion_metadata": {"action_label": label},
+                "motion_metadata": {
+                    "action_label": label,
+                    **({"sample_weight": clip_weights[index]} if index in clip_weights else {}),
+                },
             }
-            for name, label, object_type in zip(self.name_list, labels, object_types)
+            for index, (name, label, object_type) in enumerate(zip(self.name_list, labels, object_types))
         }
         self.cond_dict = {object_type: {} for object_type in dict.fromkeys(object_types)}
         self.head_word_weights = parse_head_word_weights(head_word_weights)
@@ -296,3 +300,18 @@ def test_floor_alone_turns_on_the_weighted_sampler_flag():
 def test_floor_rejects_bad_values(floor, max_boost, message):
     with pytest.raises(ValueError, match=message):
         parse_rare_head_word_floor(floor, max_boost)
+
+
+# --------------------------------------------------------------------------
+# Per-clip sample_weight (action_labels.jsonl)
+# --------------------------------------------------------------------------
+def test_a_clip_sample_weight_multiplies_only_that_clip():
+    weights = _weights(["attack", "attack", "attack"], clip_weights={1: 2.5})
+    assert weights[1] / weights[0] == pytest.approx(2.5)
+    assert weights[2] == pytest.approx(weights[0])
+
+
+def test_clip_sample_weight_stacks_with_head_word_weights():
+    weights = _weights(["attack", "stop", "stop"], head_word_weights="stop=3", clip_weights={2: 0.5})
+    assert weights[1] / weights[0] == pytest.approx(3.0)
+    assert weights[2] / weights[0] == pytest.approx(1.5)

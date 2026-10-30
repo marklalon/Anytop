@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -26,6 +27,27 @@ AUTOFILL_KEY = "autofill"
 # builds nothing for such a clip and leaves a copy already on disk alone; the
 # review UI's "clean" is what actually removes it.
 PENDING_DELETE_KEY = "pending_delete"
+
+# Optional per-clip draw multiplier: a clip of weight w is drawn w times as
+# often as a weight-1 clip (stacks with the head-word and dataset weights in
+# TruebonesSampler). Absent means the default; the review UI drops the key
+# rather than writing it.
+SAMPLE_WEIGHT_KEY = "sample_weight"
+DEFAULT_SAMPLE_WEIGHT = 1.0
+
+
+def normalize_clip_sample_weight(value) -> float:
+    """Validate a ``sample_weight`` value: a finite JSON number > 0.
+
+    Raises ``ValueError`` otherwise. A bool is refused: ``true`` would read as
+    weight 1 that nobody chose.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{SAMPLE_WEIGHT_KEY} must be a number, got {value!r}")
+    weight = float(value)
+    if not math.isfinite(weight) or weight <= 0.0:
+        raise ValueError(f"{SAMPLE_WEIGHT_KEY} must be a finite number > 0, got {value!r}")
+    return weight
 
 
 # Bump when the on-disk shape of motion_metadata.json changes: a field is
@@ -867,6 +889,9 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
     for a clip nobody has annotated yet, and a value already there is never
     overwritten. It is returned only when the row has it, so a caller can tell
     "annotated" from "not yet".
+
+    ``sample_weight`` is OPTIONAL too (absent = :data:`DEFAULT_SAMPLE_WEIGHT`)
+    and likewise returned only when the row has it.
     """
     labels_path = Path(dataset_dir) / ACTION_LABELS_FILE
     if not labels_path.exists():
@@ -933,6 +958,11 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
                         f"to propose one)",
                     )
                 row[LOOP_FLAG_KEY] = is_loop
+            if SAMPLE_WEIGHT_KEY in entry:
+                try:
+                    row[SAMPLE_WEIGHT_KEY] = normalize_clip_sample_weight(entry[SAMPLE_WEIGHT_KEY])
+                except ValueError as exc:
+                    _fail_action_labels(line_number, f"clip '{clip}': {exc}")
             action_labels[str(clip)] = row
             rows.append((line_number, group, str(clip), label.split(", ") if label else []))
     # Cross-row rule, so it can only run once the whole file is in.
@@ -996,9 +1026,12 @@ def load_motion_metadata(
         # metadata is stale the moment the row is edited, so it never survives
         # the join (write_motion_metadata strips it on the way out too).
         entry.pop(LOOP_FLAG_KEY, None)
+        entry.pop(SAMPLE_WEIGHT_KEY, None)
         entry.pop(_RETIRED_AUX_ACTION_GROUPS_KEY, None)
         entry["action_group"] = action["action_group"]
         entry["action_label"] = action["action_label"]
+        if SAMPLE_WEIGHT_KEY in action:
+            entry[SAMPLE_WEIGHT_KEY] = action[SAMPLE_WEIGHT_KEY]
         if LOOP_FLAG_KEY in action:
             entry[LOOP_FLAG_KEY] = bool(action[LOOP_FLAG_KEY])
         elif require_loop_flag:
@@ -1047,8 +1080,8 @@ def write_motion_metadata(
     sidecar, and every rebuild path round-trips loaded entries back through here.
     Persisting them would leave a second copy that silently diverges the moment
     ``action_labels.jsonl`` is edited -- the sidecar is the single source of
-    truth, so the joined fields (including ``is_loop`` from schema 7) are
-    dropped on the way out. Stripping ``action_tags``, ``species_label`` and the
+    truth, so the joined fields (including ``is_loop`` from schema 7 and
+    ``sample_weight``) are dropped on the way out. Stripping ``action_tags``, ``species_label`` and the
     retired ``aux_action_groups`` clears the stale copies earlier rebuilds baked
     in.
     """
@@ -1057,6 +1090,7 @@ def write_motion_metadata(
         "action_group",
         "action_label",
         LOOP_FLAG_KEY,
+        SAMPLE_WEIGHT_KEY,
         _RETIRED_AUX_ACTION_GROUPS_KEY,
         "action_tags",
         "species_label",
