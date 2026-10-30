@@ -178,11 +178,12 @@ def cfg_switch_timestep(args):
     steps = int(args.diffusion_steps)
     switch_t = ClassifierFreeActionModel.CFG_SWITCH * steps
     shift = float(getattr(args, 'noise_schedule_shift', 1.0))
-    if shift == 1.0:
+    shift_min = getattr(args, 'noise_schedule_shift_min', None)
+    if shift == 1.0 and shift_min in (None, 1.0):
         return switch_t
     return matching_shifted_timestep(
         get_named_beta_schedule(args.noise_schedule, steps),
-        get_named_beta_schedule(args.noise_schedule, steps, shift=shift),
+        get_named_beta_schedule(args.noise_schedule, steps, shift=shift, shift_min=shift_min),
         switch_t,
     )
 

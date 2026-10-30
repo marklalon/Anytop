@@ -79,7 +79,8 @@ def _cached_extract_source_tensor(arr, device):
     return tensor
 
 
-def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1., shift=1.):
+def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1., shift=1.,
+                            shift_min=None):
     """
     Get a pre-defined beta schedule for the given name.
 
@@ -90,6 +91,7 @@ def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=
 
     ``shift`` moves every noise level of the named schedule toward noise
     (see ``shift_beta_schedule``); 1 is the named schedule itself.
+    ``shift_min`` is the shift of the lowest-noise step (None = ``shift``).
     """
     if schedule_name == "linear":
         # Linear schedule from Ho et al, extended to work for any number of
@@ -107,10 +109,10 @@ def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=
         )
     else:
         raise NotImplementedError(f"unknown beta schedule: {schedule_name}")
-    return shift_beta_schedule(betas, shift)
+    return shift_beta_schedule(betas, shift, shift_min=shift_min)
 
 
-def shift_beta_schedule(betas, shift, max_beta=0.999):
+def shift_beta_schedule(betas, shift, max_beta=0.999, shift_min=None):
     """Divide the SNR of every step by ``shift ** 2`` (log-SNR minus ``2 ln shift``).
 
     The step count and the uniform training draw over steps are unchanged, so a
@@ -118,15 +120,36 @@ def shift_beta_schedule(betas, shift, max_beta=0.999):
     high noise, where a clip's global structure (its tempo, its posture) is
     decided, and fewer at the low-noise detail end. ``shift == 1`` returns
     ``betas`` untouched.
+
+    ``shift_min`` (<= ``shift``; None = ``shift``) is the shift of the first,
+    lowest-noise step. Over the steps where ``betas`` has SNR > 1, ln(shift)
+    moves linearly in ln(sigma) from ``shift_min`` at the first step to
+    ``shift`` at SNR 1; the noisier steps keep ``shift``. A ``shift_min``
+    below 1 lowers the smallest noise level, so motion smaller than the
+    plain schedule's first-step noise still has steps where it stands above
+    the noise, while the high-noise half is the plain shifted schedule.
     """
     shift = float(shift)
-    if not math.isfinite(shift) or shift <= 0.0:
-        raise ValueError(f"noise schedule shift must be finite and > 0, got {shift}")
+    shift_min = shift if shift_min is None else float(shift_min)
+    for name, value in (('shift', shift), ('shift_min', shift_min)):
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"noise schedule {name} must be finite and > 0, got {value}")
+    # A shift falling with t could raise the SNR from one step to the next.
+    if shift_min > shift:
+        raise ValueError(f"noise schedule shift_min ({shift_min}) must be <= shift ({shift})")
     betas = np.asarray(betas, dtype=np.float64)
-    if shift == 1.0:
+    if shift == 1.0 and shift_min == 1.0:
         return betas
     alphas_cumprod = np.cumprod(1.0 - betas)
-    shifted = alphas_cumprod / (alphas_cumprod + shift ** 2 * (1.0 - alphas_cumprod))
+    log_sigma = 0.5 * (np.log1p(-alphas_cumprod) - np.log(alphas_cumprod))
+    shifts = np.full_like(alphas_cumprod, shift)
+    if shift_min != shift:
+        if log_sigma[0] >= 0.0:
+            raise ValueError("noise schedule shift_min needs a first step with SNR > 1")
+        # 1 at the first step, 0 from SNR 1 on.
+        ramp = np.clip(log_sigma / log_sigma[0], 0.0, 1.0)
+        shifts = np.exp(math.log(shift) + ramp * (math.log(shift_min) - math.log(shift)))
+    shifted = alphas_cumprod / (alphas_cumprod + shifts ** 2 * (1.0 - alphas_cumprod))
     previous = np.concatenate(([1.0], shifted[:-1]))
     return np.minimum(1.0 - shifted / previous, max_beta)
 

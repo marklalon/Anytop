@@ -219,6 +219,14 @@ def add_base_options(parser):
                             "1 = the plain schedule. A training-time choice: generation reads it "
                             "from the checkpoint, and the same --skip_timesteps then starts from "
                             "more noise.")
+    group.add_argument("--noise_schedule_shift_min", default=None, type=float,
+                       help="Shift of the lowest-noise step; over the steps the plain schedule "
+                            "has at SNR > 1 the shift grows (linear in log sigma) up to "
+                            "--noise_schedule_shift, which every noisier step keeps. "
+                            "Must be <= --noise_schedule_shift. Below 1 it lowers the smallest "
+                            "noise level, so small motion detail has training steps where it "
+                            "stands above the noise. Unset = --noise_schedule_shift on every step. "
+                            "A training-time choice, read from the checkpoint at generation.")
     group.add_argument("--diffusion_steps", default=100, type=int,
                        help="Number of diffusion steps (denoted T in the paper)")
     group.add_argument("--sigma_small", default=True, type=bool, help="Use smaller sigma values.")
@@ -389,6 +397,15 @@ def add_model_options(parser):
                             "(frame index, geometric frequencies up to Nyquist), so every layer reads "
                             "frame offsets directly. Loop samples use whole turns per window, so their "
                             "offsets wrap at the seam. Parameter-free; off reproduces the model without it.")
+    group.add_argument("--temporal_rope_ref_drop_prob", default=0.0, type=float,
+                       help="With --temporal_rope: training probability that a reference-active row runs its "
+                            "temporal attention without RoPE (identity table; frame positions then come from "
+                            "the input PE alone). Above 0, inference runs every reference-active row, and the "
+                            "reference CFG null pass, without RoPE. Parameter-free.")
+    group.add_argument("--temporal_rope_drop_prob", default=0.0, type=float,
+                       help="With --temporal_rope: the same RoPE drop on rows without a reference, training "
+                            "only; it also trains the regime of the reference CFG null pass. Label-only "
+                            "inference keeps RoPE.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
     group.add_argument("--joint_name_drop_prob", default=0.0, type=float,

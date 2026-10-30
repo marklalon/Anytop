@@ -67,6 +67,25 @@ class NoiseScheduleShiftTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 shift_beta_schedule(betas, shift)
 
+    def test_shift_min_ramps_log_snr(self):
+        base = get_named_beta_schedule('cosine', 100)
+        np.testing.assert_array_equal(
+            get_named_beta_schedule('cosine', 100, shift=2.0, shift_min=2.0),
+            get_named_beta_schedule('cosine', 100, shift=2.0))
+        shifted = get_named_beta_schedule('cosine', 100, shift=2.0)
+        ramped = get_named_beta_schedule('cosine', 100, shift=2.0, shift_min=0.25)
+        # First step carries shift_min, the noisy half is the plain shifted schedule.
+        self.assertAlmostEqual(_log_snr(ramped)[0], _log_snr(base)[0] - 2.0 * math.log(0.25), places=6)
+        noisy = _log_snr(base) < 0.0
+        np.testing.assert_allclose(_log_snr(ramped)[noisy], _log_snr(shifted)[noisy], rtol=0, atol=1e-9)
+        self.assertTrue(np.all(np.diff(_log_snr(ramped)[:-1]) < 0))
+
+    def test_shift_min_above_shift_rejected(self):
+        betas = get_named_beta_schedule('cosine', 100)
+        for shift_min in (3.0, 0.0, float('nan')):
+            with self.assertRaises(ValueError):
+                shift_beta_schedule(betas, 2.0, shift_min=shift_min)
+
     def test_matching_timestep(self):
         base = get_named_beta_schedule('cosine', 100)
         self.assertEqual(matching_shifted_timestep(base, base, 50.0), 50.0)
@@ -97,6 +116,15 @@ class NoiseScheduleShiftTest(unittest.TestCase):
         np.testing.assert_allclose(
             diffusion.alphas_cumprod,
             np.cumprod(1.0 - get_named_beta_schedule('cosine', 100, shift=2.0)))
+        self.assertIsNone(args.noise_schedule_shift_min)
+        args.noise_schedule_shift_min = 0.25
+        np.testing.assert_allclose(
+            create_gaussian_diffusion(args).alphas_cumprod,
+            np.cumprod(1.0 - get_named_beta_schedule('cosine', 100, shift=2.0, shift_min=0.25)))
+        # CFG switch reads the same ramped schedule.
+        ramped = _args(2.0)
+        ramped.noise_schedule_shift_min = 0.25
+        self.assertNotEqual(cfg_switch_timestep(ramped), cfg_switch_timestep(_args(2.0)))
 
 
 if __name__ == '__main__':

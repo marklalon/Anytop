@@ -24,7 +24,8 @@ pushd "%SCRIPT_DIR%"
 	--rare_head_word_max_boost 4 ^
 	--head_word_weights attack,hurt=0.8,idle=0.6 ^
 	--train_split train ^
-    --noise_schedule_shift 2 ^
+    --noise_schedule_shift 1.5 ^
+    --noise_schedule_shift_min 0.5 ^
 	--latent_dim 384 ^
 	--ff_size 2048 ^
 	--last_layer_ff 256 ^
@@ -48,6 +49,8 @@ pushd "%SCRIPT_DIR%"
 	--cross_limb_dim 256 ^
 	--cross_limb_last_n 4 ^
     --temporal_rope ^
+    --temporal_rope_ref_drop_prob 0.8 ^
+    --temporal_rope_drop_prob 0.2 ^
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
 	--batch_size 16 ^
@@ -60,7 +63,6 @@ pushd "%SCRIPT_DIR%"
 	--num_steps 300000 ^
 	--dropout_prob 0.1 ^
 	--action_label_cfg_drop_prob 0.2 ^
-	--tempo_cfg_drop_prob 0.1 ^
 	--joint_mask_prob 0.15 ^
 	--unreliable_mask_drop_prob 0.15 ^
 	--renoise_same_level_prob 0.6 ^
@@ -75,7 +77,7 @@ pushd "%SCRIPT_DIR%"
 	--lambda_root_acc 0.1 ^
 	--lambda_limb_corr 0.1 ^
 	--lambda_geo 0.1 ^
-	--lambda_bone 0.06 ^
+	--lambda_bone 0.08 ^
 	--motion_cache_size 16384 ^
 	--amp_dtype fp16 ^
 	--main_process_prefetch_batches 64 ^

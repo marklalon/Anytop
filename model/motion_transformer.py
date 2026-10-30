@@ -1224,9 +1224,12 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             action_adaln_cond: Optional[Tensor] = None,
             ref_z: Optional[Tensor] = None,
             ref_active: Optional[Tensor] = None,
-            temporal_key_padding_mask: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            temporal_key_padding_mask: Optional[Tensor] = None,
+            temporal_rope_off: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         # temporal_key_padding_mask: (B, T) bool, True = no frame may attend to
         # this frame in temporal attention (the frame still queries).
+        # temporal_rope_off: (B,) bool, True = that row's temporal attention
+        # uses the identity RoPE table (see AnyTop._temporal_rope_off).
         topology_rel = edge_rel = None
         if self.graph_relations:
             topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
@@ -1273,6 +1276,10 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 is_loop = loop_phase_mask.view(B, 1, 1)
                 cos = torch.where(is_loop, loop_cos, cos)
                 sin = torch.where(is_loop, loop_sin, sin)
+            if temporal_rope_off is not None:
+                off = temporal_rope_off.to(device=tgt.device, dtype=torch.bool).view(B, 1, 1)
+                cos = torch.where(off, torch.ones_like(cos), cos)
+                sin = torch.where(off, torch.zeros_like(sin), sin)
             temporal_rope = (cos, sin)
         first_cl_layer = (
             self.num_layers - self.cross_limb_last_n

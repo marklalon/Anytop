@@ -648,3 +648,38 @@ def test_only_a_frame_inpaint_edit_is_conditioned_on_its_own_z():
     assert not uses()
     assert not uses(inpaint_frames='20-30', ref_encoder=False)
     assert not uses(inpaint_frames='20-30', reference_edit=False)
+
+
+def test_temporal_rope_drop_per_row_in_training_and_ref_rows_off_at_inference():
+    m = model(ref_cfg_drop_prob=0, temporal_rope=True, temporal_rope_ref_drop_prob=1.0,
+              temporal_rope_drop_prob=0.0).train()
+    active = torch.tensor([True, False])
+    assert m._temporal_rope_off({}, 2, 'cpu', active).tolist() == [True, False]
+    m.temporal_rope_ref_drop_prob, m.temporal_rope_drop_prob = 0.0, 1.0
+    assert m._temporal_rope_off({}, 2, 'cpu', active).tolist() == [False, True]
+    m.temporal_rope_ref_drop_prob, m.temporal_rope_drop_prob = 0.8, 0.2
+    torch.manual_seed(0)
+    draws = torch.stack([m._temporal_rope_off({}, 2, 'cpu', active) for _ in range(4000)]).float().mean(0)
+    assert abs(draws[0] - 0.8) < 0.03 and abs(draws[1] - 0.2) < 0.03
+    m.eval()
+    assert m._temporal_rope_off({}, 2, 'cpu', active).tolist() == [True, False]
+    null = {'temporal_rope_off': torch.ones(2, dtype=torch.bool)}
+    assert m._temporal_rope_off(null, 2, 'cpu', torch.zeros(2, dtype=torch.bool)).all()
+    m.temporal_rope_ref_drop_prob = 0.0
+    assert m._temporal_rope_off(null, 2, 'cpu', active) is None
+    assert model(temporal_rope=True)._temporal_rope_off({}, 2, 'cpu', active) is None
+
+
+def test_reference_cfg_null_pass_flags_temporal_rope_off():
+    seen = []
+
+    class Inner(torch.nn.Module):
+        def forward(self, x, t, y=None):
+            seen.append(y.get('temporal_rope_off'))
+            return x
+
+    wrapper = ClassifierFreeReferenceModel(Inner(), 2.0, num_timesteps=100)
+    x = torch.zeros(2, 1, 1, 1)
+    wrapper(x, torch.full((2,), 99), y={'ref_active': torch.ones(2, dtype=torch.bool)})
+    assert any(flag is not None and flag.all() for flag in seen)
+    assert any(flag is None for flag in seen)
