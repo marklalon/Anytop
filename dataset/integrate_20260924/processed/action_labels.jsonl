@@ -1543,8 +1543,8 @@
 {"clip": "DNL_FireDragon_FlyFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}
 {"clip": "DNL_FireDragon_FlyIdle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, hover"}
 {"clip": "DNL_FireDragon_FlyStaticFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward, glide"}
-{"clip": "DNL_FireDragon_HurtByHookLeft", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt, glide"}
-{"clip": "DNL_FireDragon_HurtByHookRight", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt, glide"}
+{"clip": "DNL_FireDragon_HurtByHookLeft", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt, glide"}
+{"clip": "DNL_FireDragon_HurtByHookRight", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "hurt, glide"}
 {"clip": "DNL_FireDragon_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "DNL_FireDragon_Land", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "land, hover"}
 {"clip": "DNL_FireDragon_MoveFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
