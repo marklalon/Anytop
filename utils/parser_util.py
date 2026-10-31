@@ -400,8 +400,8 @@ def add_model_options(parser):
     group.add_argument("--temporal_rope_ref_drop_prob", default=0.0, type=float,
                        help="With --temporal_rope: training probability that a reference-active row runs its "
                             "temporal attention without RoPE (identity table; frame positions then come from "
-                            "the input PE alone). Above 0, inference runs every reference-active row, and the "
-                            "reference CFG null pass, without RoPE. Parameter-free.")
+                            "the input PE alone). Above 0, inference runs every reference-active row "
+                            "without RoPE; the reference CFG null pass keeps RoPE on. Parameter-free.")
     group.add_argument("--temporal_rope_drop_prob", default=0.0, type=float,
                        help="With --temporal_rope: the same RoPE drop on rows without a reference, training "
                             "only; it also trains the regime of the reference CFG null pass. Label-only "

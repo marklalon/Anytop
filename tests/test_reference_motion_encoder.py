@@ -670,16 +670,22 @@ def test_temporal_rope_drop_per_row_in_training_and_ref_rows_off_at_inference():
     assert model(temporal_rope=True)._temporal_rope_off({}, 2, 'cpu', active) is None
 
 
-def test_reference_cfg_null_pass_flags_temporal_rope_off():
+def test_reference_cfg_null_pass_keeps_rope_while_reference_drops_it():
     seen = []
+    rope_model = model(temporal_rope=True, temporal_rope_ref_drop_prob=0.8,
+                       temporal_rope_drop_prob=0.2).eval()
 
     class Inner(torch.nn.Module):
         def forward(self, x, t, y=None):
-            seen.append(y.get('temporal_rope_off'))
+            seen.append(rope_model._temporal_rope_off(y, x.shape[0], x.device, y['ref_active']))
             return x
 
     wrapper = ClassifierFreeReferenceModel(Inner(), 2.0, num_timesteps=100)
     x = torch.zeros(2, 1, 1, 1)
-    wrapper(x, torch.full((2,), 99), y={'ref_active': torch.ones(2, dtype=torch.bool)})
-    assert any(flag is not None and flag.all() for flag in seen)
-    assert any(flag is None for flag in seen)
+    wrapper(x, torch.full((2,), 99), y={
+        'ref_active': torch.ones(2, dtype=torch.bool),
+        'temporal_rope_off': torch.ones(2, dtype=torch.bool),
+    })
+    null_off, ref_off = seen
+    assert not null_off.any()
+    assert ref_off.all()
