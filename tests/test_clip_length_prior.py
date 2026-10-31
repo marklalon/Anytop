@@ -608,3 +608,48 @@ def test_an_old_schema_table_is_ignored():
     entry = _entry([("stationary", "idle, hover", True, 40)])
     entry[COND_KEY] = dict(entry[COND_KEY], schema=1)
     assert not has_clip_length_prior({"ns/Bee": entry})
+
+
+@pytest.mark.parametrize('loop', [False, True])
+def test_glide_hf_crop_cannot_fall_back_to_long_normal_flying(loop):
+    cond = {'ns/Eagle': _entry([
+        ('locomotion', 'fly, forward, glide', True, 101, True),
+        ('locomotion', 'fly, forward', True, 106, False),
+    ])}
+    frames, _ = _ask(cond, 'ns/Eagle', 'fly, forward, glide', loop=loop)
+    assert frames == 60
+    assert _ask(cond, 'ns/Eagle', 'fly, forward', loop=True)[0] == 106
+
+
+def test_glide_auto_length_cap_applies_before_loop_period_shortcut(capsys):
+    from sample.output_lengths import _all_species_output_lengths
+    from utils.clip_length_prior import loop_period_prior
+    cond = {'ns/Eagle': _entry([
+        ('locomotion', 'fly, forward, glide', True, 101, True),
+        ('locomotion', 'fly, forward', True, 106, False),
+    ])}
+    action = {'action_group':'locomotion', 'action_label':'fly, forward, glide'}
+    assert loop_period_prior(cond, 'ns/Eagle', **action,
+                             min_frames=20, max_frames=300, window_frames=60)[0][0] == 106
+    lengths = _all_species_output_lengths(cond, action, explicit=None, min_length=20,
+                                          internal_num_frames=60, default_frames=60, loop_mode='auto')
+    assert lengths['ns/Eagle'][0] == 60 and lengths['ns/Eagle'][1] == 1
+    assert lengths['ns/Eagle'][2] is True
+    assert 'outside training' not in capsys.readouterr().out
+    # An explicitly chosen output length is still the caller's decision.
+    explicit = _all_species_output_lengths(cond, action, explicit=(106,106/60), min_length=20,
+                                          internal_num_frames=60, default_frames=60, loop_mode='auto')
+    assert explicit['ns/Eagle'][0] == 106
+
+
+def test_high_frequency_changes_length_but_not_label_based_auto_loop():
+    from sample.output_lengths import _all_species_output_lengths
+    cond = {'ns/Eagle': _entry([
+        ('locomotion', 'fly, forward, glide', True, 101, True),
+        ('locomotion', 'fly, forward', True, 106, False)]),
+        'ns/Bird': _entry([('locomotion', 'fly, forward, glide', True, 40, False)])}
+    action = {'action_group':'locomotion', 'action_label':'fly, forward, glide'}
+    lengths = _all_species_output_lengths(cond, action, explicit=None, min_length=20,
+                                          internal_num_frames=60, default_frames=60, loop_mode='auto')
+    assert lengths['ns/Eagle'][:3] == (60,1,True)
+    assert lengths['ns/Bird'][:3] == (40,pytest.approx(40/60),True)

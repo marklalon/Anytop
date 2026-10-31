@@ -32,9 +32,28 @@ from utils.clip_length_prior import (
     has_clip_length_prior,
     loop_period_prior,
     merge_prior_pool,
+    high_frequency_frame_cap,
 )
 
 LOOP_MODES = ('auto', 'on', 'off')
+
+
+def cap_auto_output_frames(cond_dict, target_type, action_condition, frames, *,
+                           internal_num_frames, fallback_cond_loader=None, verbose=True):
+    """Cap only an inferred output length; loop policy/period stay untouched."""
+    if action_condition is None:
+        return int(frames)
+    def ask(pool):
+        cap = high_frequency_frame_cap(pool, target_type,
+            action_group=action_condition['action_group'], action_label=action_condition['action_label'],
+            window_frames=internal_num_frames)
+        return (cap, 'matching high-frequency training window') if cap is not None else None
+    resolved, _ = _ask_prior(cond_dict, fallback_cond_loader, ask)
+    if resolved is not None and frames > resolved[0]:
+        if verbose:
+            print(f'  num_frames (auto) capped: {frames} -> {resolved[0]} ({resolved[1]})')
+        return int(resolved[0])
+    return int(frames)
 
 
 def _ask_prior(cond_dict, fallback_cond_loader, ask):
@@ -460,8 +479,8 @@ def _all_species_output_lengths(
     not a hint. Otherwise each species is resolved on its own prior: one shared
     median would time every species but the average one wrongly, and the length
     is free to differ because it is per-sample in the batch anyway. ``--loop``
-    (``loop_mode``, the raw flag) depends on the label only, so every species
-    gets the same verdict. The cycle count (``loop_cycles``, the raw
+    (``loop_mode``, the raw flag) follows the label independently of frequency.
+    The cycle count (``loop_cycles``, the raw
     ``--loop_cycles``) is resolved per species against its own loop period
     (:func:`resolve_loop_cycles`); a ``k * P`` past the length range is
     clamped into it.
@@ -472,6 +491,7 @@ def _all_species_output_lengths(
     lengths = {}
     off_range = []
     for species in cond_dict:
+        auto_length_capped = False
         period = loop_period(
             cond_dict, species, action_condition, min_length=min_length,
             internal_num_frames=internal_num_frames, fallback_cond_loader=fallback_cond_loader,
@@ -483,6 +503,10 @@ def _all_species_output_lengths(
         if explicit is not None:
             target, speed = explicit
         elif frames is not None:
+            uncapped_frames = frames
+            frames = cap_auto_output_frames(cond_dict, species, action_condition, frames,
+                internal_num_frames=internal_num_frames, fallback_cond_loader=fallback_cond_loader, verbose=False)
+            auto_length_capped = frames != uncapped_frames
             _, target, speed = _finalize_output_lengths(
                 int(np.clip(frames, min_length, max_frames)), min_length, internal_num_frames,
             )
@@ -499,7 +523,11 @@ def _all_species_output_lengths(
                 verbose=False,
             )
         lengths[species] = (target, speed, is_loop, cycles)
-        if is_loop and cycles is not None and period is not None:
+        if explicit is None and period is not None and target < period[0]:
+            capped_period = cap_auto_output_frames(cond_dict, species, action_condition, period[0],
+                internal_num_frames=internal_num_frames, fallback_cond_loader=fallback_cond_loader, verbose=False)
+            auto_length_capped |= capped_period < period[0]
+        if is_loop and cycles is not None and period is not None and not auto_length_capped:
             with contextlib.redirect_stdout(io.StringIO()):
                 if warn_loop_cycles_range(
                     cycles, target, period=period, internal_num_frames=internal_num_frames,

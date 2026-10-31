@@ -76,6 +76,7 @@ from sample.output_lengths import (
     resolve_loop_condition,
     resolve_loop_cycles,
     warn_loop_cycles_range,
+    cap_auto_output_frames,
 )
 from sample.reference_motion import (
     _REFERENCE_MOTION_PREPROCESS_SUFFIXES,
@@ -719,6 +720,7 @@ def main(args=None, cond_dict=None, runtime=None):
     # resolve_loop_cycles. With a reference it is 1 (reference_loop_cycles).
     loop_cycles = None
     loop_period_value = None
+    auto_length_capped = False
     action_label_text = _action_condition['action_label'] if _action_condition else ''
     if not reference_motion_path:
         loop_condition = resolve_loop_condition(loop_mode, _action_condition)
@@ -733,6 +735,12 @@ def main(args=None, cond_dict=None, runtime=None):
             loop=loop_condition, action_label=action_label_text, period=loop_period_value,
         )
         if requested_output_frames is None and cycle_frames is not None:
+            uncapped_cycle_frames = cycle_frames
+            cycle_frames = cap_auto_output_frames(
+                cond_dict, object_type, _action_condition, cycle_frames,
+                internal_num_frames=internal_num_frames,
+                fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file))
+            auto_length_capped = cycle_frames != uncapped_cycle_frames
             max_frames = MAX_SOURCE_FRAMES_MULT * internal_num_frames
             if not min_length <= cycle_frames <= max_frames:
                 sys.exit(
@@ -759,7 +767,14 @@ def main(args=None, cond_dict=None, runtime=None):
                 fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file),
             )
         )
-    if not reference_motion_path and loop_condition:
+    if (motion_frames is None and not reference_motion_path and loop_period_value is not None
+            and requested_output_frames < loop_period_value[0]):
+        # A normal-action fallback period cannot validate a capped HF window.
+        capped_period = cap_auto_output_frames(cond_dict, object_type, _action_condition,
+            loop_period_value[0], internal_num_frames=internal_num_frames,
+            fallback_cond_loader=_checkpoint_cond_loader(args, actual_cond_file), verbose=False)
+        auto_length_capped |= capped_period < loop_period_value[0]
+    if not reference_motion_path and loop_condition and not auto_length_capped:
         warn_loop_cycles_range(
             loop_cycles, requested_output_frames, period=loop_period_value,
             internal_num_frames=internal_num_frames,

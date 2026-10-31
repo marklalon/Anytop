@@ -398,6 +398,28 @@ def _first_pool(cond_dict, target_type, matchers, collect):
     return None
 
 
+def high_frequency_frame_cap(cond_dict, target_type, *, action_group, action_label, window_frames):
+    """Auto output ceiling from the closest label pool, before loop filtering.
+
+    Cropping a long HF loop makes it an open training window. Filtering it out
+    first must not let another action (e.g. normal Flying) supply a longer
+    output period for glide. The cap applies whenever the first non-empty pool
+    holds at least one HF clip -- mixed pools included, since the HF clip is
+    what the model fitted for this label. A pool with no HF clip at all leaves
+    the length untouched.
+    """
+    matchers = _matchers_for(action_group, action_label)
+    if not matchers:
+        return None
+    found = _first_pool(
+        cond_dict, target_type, matchers,
+        lambda entry, matches: _effective_clips(entry, matches, window_frames),
+    )
+    if found is not None and any(hf for _, _, hf in found[0]):
+        return int(window_frames)
+    return None
+
+
 def auto_num_frames(
     cond_dict: Mapping[str, Mapping[str, object]],
     target_type: Optional[str],
@@ -412,9 +434,10 @@ def auto_num_frames(
     """Median training clip length for ``action_label``, or ``None``.
 
     Returns ``(frames, explanation)`` with ``frames`` clamped into
-    ``[min_frames, max_frames]``; ``None`` means the corpus says nothing about
-    this label and the caller should keep its own default. The pool is the
-    first rung of :func:`_first_pool`'s ladder that holds a clip.
+    ``[min_frames, max_frames]`` (the high-frequency cap below is the one
+    exception: it is the raw window); ``None`` means the corpus says nothing
+    about this label and the caller should keep its own default. The pool is
+    the first rung of :func:`_first_pool`'s ladder that holds a clip.
 
     ``loop`` restricts every tier to loop clips, whose recorded length is one
     period: a one-shot clip's length is not a period and would hand ``--loop`` a
@@ -422,6 +445,10 @@ def auto_num_frames(
 
     ``window_frames`` is the checkpoint's native window, the source budget of a
     high-frequency clip (see :func:`_effective_buckets`).
+    The closest label pool (before loop filtering, see
+    :func:`high_frequency_frame_cap`) also supplies a hard ceiling whenever it
+    holds an HF clip, so a cropped HF window cannot be replaced by a longer
+    ordinary action's duration.
     """
     matchers = _matchers_for(action_group, action_label)
     if not matchers:
@@ -431,10 +458,15 @@ def auto_num_frames(
         cond_dict, target_type, matchers,
         lambda entry, matches: _lengths_for(entry, matches, loop_only, window_frames),
     )
+    cap = high_frequency_frame_cap(cond_dict, target_type, action_group=action_group,
+                                   action_label=action_label, window_frames=window_frames)
     if found is None:
-        return None
+        return (cap, 'high-frequency training-window cap') if cap is not None else None
     lengths, explanation = found
-    return _pooled_median(lengths, min_frames, max_frames), f"median of {explanation}"
+    frames = _pooled_median(lengths, min_frames, max_frames)
+    if cap is not None and frames > cap:
+        return cap, f'median of {explanation}; high-frequency training-window cap {cap}'
+    return frames, f"median of {explanation}"
 
 
 def _loop_periods_for(cond_entry, matches, window_frames) -> list[tuple[int, bool]]:
