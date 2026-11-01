@@ -375,18 +375,29 @@ _PHASE_FREE_LOOP_WORD_SET: frozenset[str] = (
 def phase_anchoring_words(label) -> list[str]:
     """The words of *label* that anchor its phase, in written order: every
     head outside :data:`PHASE_FREE_LOOP_HEADS` and every modifier outside
-    :data:`PHASE_FREE_LOOP_MODIFIERS`. Empty for a phase-free label."""
-    return [word for word in parse_action_label(label) if word not in _PHASE_FREE_LOOP_WORD_SET]
+    :data:`PHASE_FREE_LOOP_MODIFIERS`. Empty for a phase-free label.
+
+    A label whose primary head is ``idle`` has no anchoring words at all: idle
+    carries no distinguished frame, so any state or event layered on it is
+    treated as part of the idle state and its loop may be rolled and tiled
+    regardless of what follows.
+    """
+    words = parse_action_label(label)
+    heads = head_words_in(words)
+    if heads and heads[0] == "idle":
+        return []
+    return [word for word in words if word not in _PHASE_FREE_LOOP_WORD_SET]
 
 
 def loop_is_phase_free(label) -> bool:
     """Whether a loop clip carrying *label* may be circularly rolled and tiled.
 
-    True only when every head word is in :data:`PHASE_FREE_LOOP_HEADS` and
-    every modifier in :data:`PHASE_FREE_LOOP_MODIFIERS`; one anchored head
-    ("idle, rear", "attack, hover") or one one-shot event modifier ("idle, bite",
-    "idle, hover, shake") anchors the clip. An empty label has no evidence either way
-    and is anchored.
+    A label whose primary head is ``idle`` is always phase-free (see
+    :func:`phase_anchoring_words`). Otherwise, True only when every head word
+    is in :data:`PHASE_FREE_LOOP_HEADS` and every modifier in
+    :data:`PHASE_FREE_LOOP_MODIFIERS`; one anchored head ("attack, hover") or
+    one one-shot event modifier ("walk, bite") anchors the clip. An empty label
+    has no evidence either way and is anchored.
     """
     words = parse_action_label(label)
     return bool(head_words_in(words)) and not phase_anchoring_words(label)

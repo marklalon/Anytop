@@ -143,7 +143,7 @@
 {"clip": "DMM_Thief04_InCage", "action_group": "locomotion", "action_label": "fall", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief04_Jump", "action_group": "stationary", "action_label": "jump, up", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief04_LevelUp", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "DMM_Thief04_Run01", "action_group": "locomotion", "action_label": "run, forward, happy", "is_loop": true, "reviewed": true}
+{"clip": "DMM_Thief04_Run01", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief04_Run02", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief04_StandUnlock", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
 {"clip": "DMM_Thief04_Throw", "action_group": "stationary", "action_label": "attack, throw", "is_loop": false, "reviewed": true}

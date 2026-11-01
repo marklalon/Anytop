@@ -601,7 +601,7 @@
 {"clip": "LH_Hero_TorchWalkBackward", "action_group": "locomotion", "action_label": "walk, backward, carry", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_TorchWalkForward", "action_group": "locomotion", "action_label": "walk, forward, carry", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_TreadWater", "action_group": "locomotion", "action_label": "swim, idle", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_Victory", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Victory", "action_group": "stationary", "action_label": "jump, up, happy", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_WalkBackward", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_WaveHand", "action_group": "stationary", "action_label": "idle, wave", "is_loop": true, "reviewed": true}
@@ -1430,7 +1430,7 @@
 {"clip": "MU06_FireMage_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "MU06_FireMage_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "MU06_FireMage_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
-{"clip": "MU06_Flame_CastSpell", "action_group": "stationary", "action_label": "idle, spin, cast", "is_loop": true, "reviewed": true}
+{"clip": "MU06_Flame_CastSpell", "action_group": "stationary", "action_label": "attack, spin, cast", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Flame_ClapAttack", "action_group": "stationary", "action_label": "attack, swat", "is_loop": true, "reviewed": true}
 {"clip": "MU06_Flame_Die", "action_group": "transition", "action_label": "die", "is_loop": false, "reviewed": true}
 {"clip": "MU06_Flame_FlyForward", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
