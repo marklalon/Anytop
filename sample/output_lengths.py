@@ -143,8 +143,8 @@ def resolve_loop_condition(
     label is phase-free (:func:`loop_is_phase_free` -- a gait cycle, a
     wingbeat, an idle, a held posture), the same rule that decides which loop
     clips the loader rolls and tiles. A phase-anchored head (jump, attack,
-    roar ...) or event modifier (look, eat, shake ...) is one event in an open
-    window. Without a label there is nothing to key the verdict on, so
+    roar ...) or one-shot event modifier (bite, shake, throw ...) is one event
+    in an open window. Without a label there is nothing to key the verdict on, so
     ``'off'``.
     """
     if isinstance(loop_mode, bool):

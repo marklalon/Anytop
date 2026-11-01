@@ -374,11 +374,11 @@ def test_resolve_loop_condition_modes(capsys):
     assert "loop (auto) -> on (head word(s) swim: phase-free)" in capsys.readouterr().out
     assert resolve_loop_condition("auto", jump) is False
     assert "loop (auto) -> off (phase-anchored by jump)" in capsys.readouterr().out
-    # An event modifier anchors a phase-free head.
+    # A one-shot event modifier anchors a phase-free head.
     assert resolve_loop_condition(
-        "auto", {"action_group": "stationary", "action_label": "idle, look"},
+        "auto", {"action_group": "stationary", "action_label": "idle, bite"},
     ) is False
-    assert "loop (auto) -> off (phase-anchored by look)" in capsys.readouterr().out
+    assert "loop (auto) -> off (phase-anchored by bite)" in capsys.readouterr().out
     # One anchored head anchors the whole label.
     assert resolve_loop_condition(
         "auto", {"action_group": "locomotion", "action_label": "run, jump, forward"},

@@ -324,16 +324,21 @@ def test_loop_is_phase_free_needs_every_head_phase_free() -> None:
 
 
 def test_event_modifier_anchors_a_phase_free_head() -> None:
-    # Gait, held posture and held object keep the state phase-free.
+    # Gait, held posture, held object and a subtle secondary action
+    # (a glance, feeding, a yawn, scratching, sniffing) keep the state phase-free.
     assert loop_is_phase_free("walk, forward, carry")
     assert loop_is_phase_free("idle, crouch, sleep")
     assert loop_is_phase_free("idle, sit")
     assert loop_is_phase_free("run, forward, weapon")
-    # An event layered on the state anchors it.
-    assert not loop_is_phase_free("idle, look")
-    assert not loop_is_phase_free("idle, hover, eat")
-    assert not loop_is_phase_free("idle, scratch, sit")
-    assert phase_anchoring_words("idle, look, crouch") == ["look"]
+    assert loop_is_phase_free("idle, look")
+    assert loop_is_phase_free("idle, hover, eat")
+    assert loop_is_phase_free("idle, scratch, sit")
+    # A one-shot event layered on the state anchors it.
+    assert not loop_is_phase_free("idle, bite")
+    assert not loop_is_phase_free("idle, hover, shake")
+    assert not loop_is_phase_free("idle, spin, sit")
+    assert phase_anchoring_words("idle, look, crouch") == []
+    assert phase_anchoring_words("idle, bite, crouch") == ["bite"]
     assert phase_anchoring_words("attack, hover, bite") == ["attack", "bite"]
     assert phase_anchoring_words("walk, left, carry") == []
 

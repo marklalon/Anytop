@@ -345,18 +345,22 @@ assert _PHASE_FREE_LOOP_HEAD_SET <= _HEAD_VOCAB_SET, (
 
 # The modifiers that leave a phase-free head phase-free: how the state is
 # carried out (suspension, wing state), a posture held through it (sit,
-# sleep), or what is held during it (carry, weapon). Every other modifier names
-# an EVENT layered on the state -- a glance, a bite of food, a shake, a yawn --
-# and anchors the clip exactly like an anchored head: rolling "idle, look"
-# moves the glance to a random phase and cropping it keeps only part of it, so
-# the label stops meaning any particular motion. A whitelist for the same
-# reason as the heads: a new modifier defaults to anchored. Direction words are
-# not modifiers and never anchor.
+# sleep), what is held during it (carry, weapon), or a SUBTLE secondary action
+# layered on it (a glance, feeding, a yawn, scratching, sniffing). These have
+# no single distinguished frame, so rolling or tiling the window keeps the
+# label true. Every OTHER modifier names a one-shot EVENT -- a bite, a shake,
+# a throw, a taunt -- that leaves a ready pose and returns to it; rolling
+# "idle, bite" moves the bite to a random phase and cropping it keeps only
+# part of it, so the label stops meaning any particular motion. A whitelist for
+# the same reason as the heads: a new modifier defaults to anchored. Direction
+# words are not modifiers and never anchor.
 PHASE_FREE_LOOP_MODIFIERS: tuple[str, ...] = (
     "hover", "glide", "flopping",
     "crouch", "dead", "sit", "sleep",
     "aim", "carry",
     "bow", "gun", "hammer", "shield", "weapon",
+    # subtle secondary actions: no distinguished frame, safe to roll/tile
+    "look", "eat", "yawn", "scratch", "sniff",
 )
 _PHASE_FREE_LOOP_MODIFIER_SET: frozenset[str] = frozenset(PHASE_FREE_LOOP_MODIFIERS)
 assert _PHASE_FREE_LOOP_MODIFIER_SET <= set(MODIFIER_VOCAB), (
@@ -380,8 +384,8 @@ def loop_is_phase_free(label) -> bool:
 
     True only when every head word is in :data:`PHASE_FREE_LOOP_HEADS` and
     every modifier in :data:`PHASE_FREE_LOOP_MODIFIERS`; one anchored head
-    ("idle, rear", "attack, hover") or one event modifier ("idle, look",
-    "idle, hover, eat") anchors the clip. An empty label has no evidence either way
+    ("idle, rear", "attack, hover") or one one-shot event modifier ("idle, bite",
+    "idle, hover, shake") anchors the clip. An empty label has no evidence either way
     and is anchored.
     """
     words = parse_action_label(label)
