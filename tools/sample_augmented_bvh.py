@@ -426,6 +426,7 @@ def main() -> int:
         sample_limit=0,
         allowed_motion_names=allowed_motion_names,
         motion_metadata_lookup=motion_metadata_lookup,
+        split=args.split,
     )
     print(f"[INFO] Dataset size (after min-length filter): {len(dataset)} motions")
 

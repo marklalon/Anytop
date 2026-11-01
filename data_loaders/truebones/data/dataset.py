@@ -988,8 +988,12 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, head_word_weights: Optional[dict[str, float]] = None, rare_head_word_floor: int = 0, rare_head_word_max_boost: float = 4.0):
+    def __init__(self, opt, cond_dict, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, head_word_weights: Optional[dict[str, float]] = None, rare_head_word_floor: int = 0, rare_head_word_max_boost: float = 4.0, split: str = "train"):
         self.opt = opt
+        # Only used to label the per-dataset counts printed below: a training run
+        # builds one loader per split, and the two prints are otherwise
+        # indistinguishable.
+        self.split = split
         # None means the caller does not want label conditioning, so no word ids
         # are attached at all. The bundle is the model's bundle: the loader emits
         # positions into ITS ordered vocabulary, so the two cannot be different
@@ -1162,7 +1166,7 @@ class MotionDataset(data.Dataset):
             )
         high_frequency_count = sum(bool(entry['high_frequency']) for entry in data_dict.values())
         print(
-            f"[dataset] high-frequency clips (cond {HIGH_FREQUENCY_COND_KEY}): "
+            f"[dataset] high-frequency clips (split {self.split}, cond {HIGH_FREQUENCY_COND_KEY}): "
             f"{high_frequency_count} / {len(data_dict)}, never downsampled"
         )
         self.reset_min_len(self.min_length)
@@ -2012,6 +2016,7 @@ class Truebones(data.Dataset):
             head_word_weights=self.head_word_weights,
             rare_head_word_floor=self.rare_head_word_floor,
             rare_head_word_max_boost=self.rare_head_word_max_boost,
+            split=split,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \
