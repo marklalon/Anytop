@@ -721,7 +721,7 @@
 {"clip": "MB_Unka_FallDownFoward", "action_group": "locomotion", "action_label": "fly, down, glide", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FallLand", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
 {"clip": "MB_Unka_FallLow", "action_group": "locomotion", "action_label": "fall, jump", "is_loop": true, "reviewed": true}
-{"clip": "MB_Unka_FireBreath", "action_group": "stationary", "action_label": "attack, firebreath", "is_loop": true, "reviewed": true}
+{"clip": "MB_Unka_FireBreath", "action_group": "stationary", "action_label": "attack, firebreath", "is_loop": true, "reviewed": true, "sample_weight": 5}
 {"clip": "MB_Unka_FlyBackwards", "action_group": "locomotion", "action_label": "fly, backward", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyClosedWings50", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}
 {"clip": "MB_Unka_FlyClosedWings75", "action_group": "locomotion", "action_label": "fly, forward, glide", "is_loop": true, "reviewed": true}

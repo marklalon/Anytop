@@ -329,7 +329,7 @@
 {"clip": "Dragon_WyvernFly3", "action_group": "locomotion", "action_label": "fly, forward", "is_loop": false, "reviewed": true}
 {"clip": "Dragon_WyvernIdle2", "action_group": "stationary", "action_label": "idle, hover", "is_loop": true, "reviewed": true}
 {"clip": "Dragon_WyvernIdle3", "action_group": "stationary", "action_label": "idle, hover", "is_loop": true, "reviewed": true}
-{"clip": "Dragon_WyvernIdle", "action_group": "stationary", "action_label": "attack, hover, firebreath", "is_loop": false, "reviewed": true}
+{"clip": "Dragon_WyvernIdle", "action_group": "stationary", "action_label": "attack, hover, firebreath", "is_loop": false, "reviewed": true, "sample_weight": 5}
 {"clip": "Dragon_WyvernSlowFly1", "action_group": "stationary", "action_label": "idle, hover", "is_loop": true, "reviewed": true}
 {"clip": "Dragon_WyvernSlowFly2", "action_group": "stationary", "action_label": "idle, hover", "is_loop": true, "reviewed": true}
 {"clip": "Eagle_EggSteal", "action_group": "stationary", "action_label": "attack, hover, kick", "is_loop": true, "reviewed": true}
