@@ -48,9 +48,9 @@ def test_slot_source_rank_covers_the_full_domain_and_projection_width():
     # to the vocabulary size.
     assert report["total_rank"] == 88
     assert {name: item["rank"] for name, item in report["slots"].items()} == {
-        "head": 36,
+        "head": 37,
         "direction": 6,
-        "modifier": 46,
+        "modifier": 45,
     }
     assert sum(report["slots"][name]["rank"] for name in report["slots"]) == len(
         CONTROLLED_VOCAB

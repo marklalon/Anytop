@@ -107,9 +107,9 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 HEAD_VOCAB: tuple[str, ...] = (
     "attack", "burrow", "climb", "crawl", "dance", "die", "draw", "fall",
     "fishing", "fly", "getup", "hurt", "idle", "jump", "kneel", "land", "laydown",
-    "lift", "pickup", "putdown", "rear", "rest", "roar", "roll", "run", "sheathe",
-    "sitdown", "spawn", "stop", "swim", "takeoff", "talk", "turn", "walk", "wave",
-    "work",
+    "lift", "pickup", "putdown", "rear", "rest", "roar", "roll", "run", "shake",
+    "sheathe", "sitdown", "spawn", "stop", "swim", "takeoff", "talk", "turn", "walk",
+    "wave", "work",
 )
 
 # Blocks order the spelling only; nothing weights a word by its block.
@@ -120,7 +120,7 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     # style the whole species shows is its species_tags variant, not a word here.
     "hover", "glide", "flopping",
     # -- block B: secondary action layered on the head --
-    "bite", "eat", "look", "shake", "throw", "taunt",
+    "bite", "eat", "look", "throw", "taunt",
     "sniff", "yawn", "sting", "kick", "scratch",
     "crouch", "dead", "sit", "sleep",
     # -- block C: how a strike is delivered (manner before strike type) --
@@ -303,8 +303,8 @@ HEAD_ACTION_GROUP: dict[str, str] = {
     "attack": "stationary", "dance": "stationary", "fishing": "stationary",
     "hurt": "stationary", "idle": "stationary", "jump": "stationary",
     "lift": "stationary", "pickup": "stationary", "putdown": "stationary",
-    "rest": "stationary", "roar": "stationary", "talk": "stationary",
-    "wave": "stationary", "work": "stationary",
+    "rest": "stationary", "roar": "stationary", "shake": "stationary",
+    "talk": "stationary", "wave": "stationary", "work": "stationary",
     "climb": "locomotion", "crawl": "locomotion", "fall": "locomotion",
     "fly": "locomotion", "roll": "locomotion", "run": "locomotion",
     "swim": "locomotion", "walk": "locomotion",
@@ -351,8 +351,8 @@ assert _PHASE_FREE_LOOP_HEAD_SET <= _HEAD_VOCAB_SET, (
 # sleep), what is held during it (carry, weapon), or a SUBTLE secondary action
 # layered on it (a glance, feeding, a yawn, scratching, sniffing). These have
 # no single distinguished frame, so rolling or tiling the window keeps the
-# label true. Every OTHER modifier names a one-shot EVENT -- a bite, a shake,
-# a throw, a taunt -- that leaves a ready pose and returns to it; rolling
+# label true. Every OTHER modifier names a one-shot EVENT -- a bite, a throw,
+# a taunt -- that leaves a ready pose and returns to it; rolling
 # "idle, bite" moves the bite to a random phase and cropping it keeps only
 # part of it, so the label stops meaning any particular motion. A whitelist for
 # the same reason as the heads: a new modifier defaults to anchored. Direction

@@ -313,7 +313,7 @@ def test_idle_primary_is_always_phase_free() -> None:
     # An idle-primary label is phase-free regardless of what follows, and
     # phase_anchoring_words agrees (empty).
     for label in ("idle", "idle, look", "idle, rear", "idle, spin", "idle, talk",
-                  "idle, cry", "idle, happy", "idle, hover, spin, happy", "idle, shake"):
+                  "idle, cry", "idle, happy", "idle, hover, spin, happy", "idle, throw"):
         assert loop_is_phase_free(label), label
         assert phase_anchoring_words(label) == [], label
     # ...unless the primary head is not idle.
@@ -342,11 +342,11 @@ def test_event_modifier_anchors_a_phase_free_head() -> None:
     assert loop_is_phase_free("run, forward, weapon")
     # A one-shot event layered on a NON-idle phase-free head anchors it.
     assert not loop_is_phase_free("walk, bite")
-    assert not loop_is_phase_free("run, hover, shake")
+    assert not loop_is_phase_free("run, hover, throw")
     assert not loop_is_phase_free("fly, spin, sit")
     # An idle-primary label is the exception: nothing layered on idle anchors it.
     assert loop_is_phase_free("idle, bite")
-    assert loop_is_phase_free("idle, hover, shake")
+    assert loop_is_phase_free("idle, hover, throw")
     assert loop_is_phase_free("idle, spin, sit")
     assert phase_anchoring_words("walk, bite") == ["bite"]
     assert phase_anchoring_words("idle, bite, crouch") == []

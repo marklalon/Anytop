@@ -110,7 +110,7 @@
 {"clip": "IAC_Mammoth_RunTurnLeft", "action_group": "locomotion", "action_label": "run, turn, left", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_RunTurnRight", "action_group": "locomotion", "action_label": "run, turn, right", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
-{"clip": "IAC_Mammoth_Shake", "action_group": "stationary", "action_label": "idle, shake", "is_loop": true, "reviewed": true}
+{"clip": "IAC_Mammoth_Shake", "action_group": "stationary", "action_label": "shake", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Mammoth_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_TurnRight", "action_group": "transition", "action_label": "turn, right", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_WalkTurnLeft", "action_group": "locomotion", "action_label": "walk, turn, left", "is_loop": false, "reviewed": true}
@@ -553,7 +553,7 @@
 {"clip": "LH_Hero_RunBackward", "action_group": "locomotion", "action_label": "run, backward", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SawingWood", "action_group": "stationary", "action_label": "work, right, saw", "is_loop": true, "reviewed": true}
-{"clip": "LH_Hero_ShakeHead", "action_group": "stationary", "action_label": "talk", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_ShakeHead", "action_group": "stationary", "action_label": "shake", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Sitting", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SpawnGround", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "LH_Hero_SpearCastSpell01", "action_group": "stationary", "action_label": "attack, right, cast", "is_loop": true, "reviewed": true}

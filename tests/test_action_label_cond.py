@@ -170,7 +170,8 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             self.assertNotIn(absent, HEAD_VOCAB, absent)
             self.assertIn(absent, MODIFIER_VOCAB, absent)
         for present in ('idle', 'attack', 'rear', 'draw', 'sheathe',
-                        'stop', 'kneel', 'talk', 'wave', 'fishing', 'dance'):
+                        'stop', 'kneel', 'talk', 'wave', 'fishing', 'dance',
+                        'shake'):
             self.assertIn(present, HEAD_VOCAB, present)
 
     def test_t5_text_map_is_one_to_one_on_the_expanded_table(self):
@@ -308,10 +309,10 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         self.assertEqual(ACTION_LABEL_MAX_HEADS, 2)
 
     def test_eight_total_words_are_accepted_and_nine_are_rejected(self):
-        eight = 'idle, carry, bite, eat, look, shake, throw, taunt'
+        eight = 'idle, carry, bite, eat, look, throw, taunt, sniff'
         self.assertEqual(len(parse_action_label(eight)), 8)
         with self.assertRaises(ActionLabelError):
-            parse_action_label(eight + ', sniff')
+            parse_action_label(eight + ', crouch')
 
     def test_validator_hard_fails_on_a_non_canonical_or_unknown_label(self):
         from data_loaders.truebones.truebones_utils import motion_labels
