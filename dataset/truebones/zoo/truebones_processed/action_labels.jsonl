@@ -15,7 +15,7 @@
 {"clip": "Anaconda_Idle2", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "Anaconda_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Anaconda_Rise2", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
-{"clip": "Anaconda_Rise", "action_group": "stationary", "action_label": "attack, rear", "is_loop": true, "reviewed": true}
+{"clip": "Anaconda_Rise", "action_group": "transition", "action_label": "rear", "is_loop": true, "reviewed": true}
 {"clip": "Anaconda_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "Anaconda_Sneaky", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Anaconda_Spin", "action_group": "stationary", "action_label": "attack, bite, spin", "is_loop": true, "reviewed": true}
@@ -156,7 +156,7 @@
 {"clip": "Camel_ScrapeHoof_slice1", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": false, "reviewed": true}
 {"clip": "Camel_ScrapeHoof_slice2", "action_group": "stationary", "action_label": "idle, look", "is_loop": false, "reviewed": true}
 {"clip": "Camel_SlowWalk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "Camel_Specail_slice1", "action_group": "stationary", "action_label": "idle, rear", "is_loop": false, "reviewed": true}
+{"clip": "Camel_Specail_slice1", "action_group": "transition", "action_label": "rear", "is_loop": false, "reviewed": true}
 {"clip": "Camel_Specail_slice2", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": false, "reviewed": true}
 {"clip": "Camel_StandUp", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "Camel_StopWalk", "action_group": "transition", "action_label": "stop", "is_loop": false, "reviewed": true}
@@ -260,7 +260,7 @@
 {"clip": "Deer_Grazing", "action_group": "stationary", "action_label": "idle, eat", "is_loop": false, "reviewed": true}
 {"clip": "Deer_IdleEarFlik", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "Deer_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "Deer_RearUp", "action_group": "stationary", "action_label": "idle, rear", "is_loop": false, "reviewed": true}
+{"clip": "Deer_RearUp", "action_group": "transition", "action_label": "rear", "is_loop": false, "reviewed": true}
 {"clip": "Deer_Squirly", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "Deer_Trot", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Deer_TurnLeft", "action_group": "transition", "action_label": "turn, left", "is_loop": false, "reviewed": true}
@@ -318,7 +318,7 @@
 {"clip": "Dog_WalkBackwardsLoop", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "Dog_WalkLoop", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "Dog_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
-{"clip": "Dog_Wine", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
+{"clip": "Dog_Wine", "action_group": "stationary", "action_label": "talk", "is_loop": true, "reviewed": true}
 {"clip": "Dog_Woof", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "Dragon_WyvernAttack3_slice1", "action_group": "stationary", "action_label": "idle, hover", "is_loop": false, "reviewed": true}
 {"clip": "Dragon_WyvernAttack3_slice2", "action_group": "stationary", "action_label": "attack, hover", "is_loop": false, "reviewed": true}
@@ -453,7 +453,7 @@
 {"clip": "Horse_Attack", "action_group": "stationary", "action_label": "attack, charge", "is_loop": true, "reviewed": true}
 {"clip": "Horse_BackUp", "action_group": "locomotion", "action_label": "walk, backward", "is_loop": true, "reviewed": true}
 {"clip": "Horse_Dying", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
-{"clip": "Horse_FeetUp", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
+{"clip": "Horse_FeetUp", "action_group": "transition", "action_label": "rear", "is_loop": true, "reviewed": true}
 {"clip": "Horse_GetUp", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "Horse_HoofScrape2", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true}
 {"clip": "Horse_HoofScrape", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true}
@@ -464,10 +464,10 @@
 {"clip": "Horse_JumpLand", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
 {"clip": "Horse_Jumping", "action_group": "stationary", "action_label": "attack, jump, smash", "is_loop": false, "reviewed": true}
 {"clip": "Horse_LandRun", "action_group": "transition", "action_label": "land, jump", "is_loop": false, "reviewed": true}
-{"clip": "Horse_LoneRanger", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
+{"clip": "Horse_LoneRanger", "action_group": "transition", "action_label": "rear", "is_loop": true, "reviewed": true}
 {"clip": "Horse_Lying", "action_group": "stationary", "action_label": "rest, sleep", "is_loop": true, "reviewed": true}
-{"clip": "Horse_Rearing2", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
-{"clip": "Horse_Rearing", "action_group": "stationary", "action_label": "idle, rear", "is_loop": false, "reviewed": true}
+{"clip": "Horse_Rearing2", "action_group": "transition", "action_label": "rear", "is_loop": true, "reviewed": true}
+{"clip": "Horse_Rearing", "action_group": "transition", "action_label": "rear", "is_loop": false, "reviewed": true}
 {"clip": "Horse_Restless3", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Horse_Restless", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "Horse_RunLoop", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
@@ -767,8 +767,8 @@
 {"clip": "SandMouse_DigIn", "action_group": "transition", "action_label": "burrow", "is_loop": false, "reviewed": true}
 {"clip": "SandMouse_DigOut", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
 {"clip": "SandMouse_Idle2", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
-{"clip": "SandMouse_Idle3", "action_group": "stationary", "action_label": "idle, talk", "is_loop": true, "reviewed": true}
-{"clip": "SandMouse_Idle4", "action_group": "stationary", "action_label": "idle, rear", "is_loop": true, "reviewed": true}
+{"clip": "SandMouse_Idle3", "action_group": "stationary", "action_label": "talk", "is_loop": true, "reviewed": true}
+{"clip": "SandMouse_Idle4", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true}
 {"clip": "SandMouse_Idle", "action_group": "stationary", "action_label": "idle, scratch", "is_loop": true, "reviewed": true}
 {"clip": "SandMouse_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "SandMouse_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}

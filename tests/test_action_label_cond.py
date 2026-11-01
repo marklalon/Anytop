@@ -170,7 +170,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             self.assertNotIn(absent, HEAD_VOCAB, absent)
             self.assertIn(absent, MODIFIER_VOCAB, absent)
         for present in ('idle', 'attack', 'rear', 'draw', 'sheathe',
-                        'stop', 'kneel'):
+                        'stop', 'kneel', 'talk', 'wave', 'fishing', 'dance'):
             self.assertIn(present, HEAD_VOCAB, present)
 
     def test_t5_text_map_is_one_to_one_on_the_expanded_table(self):

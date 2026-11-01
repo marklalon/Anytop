@@ -1,7 +1,7 @@
 {"clip": "DNL_Cattle_Angry", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, taunt"}
 {"clip": "DNL_Cattle_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, rear, headbutt"}
 {"clip": "DNL_Cattle_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, backward, kick"}
-{"clip": "DNL_Cattle_BreakHook", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, rear"}
+{"clip": "DNL_Cattle_BreakHook", "action_group": "transition", "reviewed": true, "is_loop": true, "action_label": "rear"}
 {"clip": "DNL_Cattle_Calling", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "roar"}
 {"clip": "DNL_Cattle_ChargeFwd", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "run, forward"}
 {"clip": "DNL_Cattle_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, right"}

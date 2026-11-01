@@ -115,7 +115,7 @@ action_labels.jsonl ──► dataset loader ──► word / slot / mask ids �
 
 | 类 | 常量 | 说明 |
 |---|---|---|
-| 主词 | `HEAD_VOCAB` | 标签"关于什么"：一个身体状态（`idle` `run` `rear`…）或一个整段事件（`die` `getup` `land` `draw` `sheathe` `stop`…） |
+| 主词 | `HEAD_VOCAB` | 标签"关于什么"：一个身体状态（`idle` `run` `rear`…）、一个本身就是整段 clip 的活动（`talk` `wave` `fishing` `dance`）或一个整段事件（`die` `getup` `land` `draw` `sheathe` `stop`…） |
 | 修饰词 | `MODIFIER_VOCAB` | 其余动作词：执行方式（`hover`；`glide` 翅膀不动的滑翔。步态快慢由 `--num_frames` 决定，物种整体的运动风格是 species_tags 的 variant，都不写成修饰词）、叠加的次要动作（`bite` `eat` `look` `shake`）、打击类型（`swat` `slash` `stab`…）、情绪手势、活动/物件、持械（`bow` `gun` `hammer` `shield` `weapon`） |
 | 方向词 | `DIRECTION_VOCAB` | `forward backward left right up down` |
 

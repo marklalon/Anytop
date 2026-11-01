@@ -90,8 +90,9 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # maintained controlled set, not a fixed list.
 #
 # HEAD_VOCAB is the closed set of words a label can be ABOUT: a state the body
-# is in (idle, run, rear ...) or an event that is the whole clip (die,
-# getup, land, draw, sheathe, stop ...). Words are spelled in WRITTEN order;
+# is in (idle, run, rear ...), an activity that IS the clip (talk, wave,
+# fishing, dance), or an event that is the whole clip (die, getup, land, draw,
+# sheathe, stop ...). Words are spelled in WRITTEN order;
 # tuple position decides nothing. Every head word feeds the head slot, the
 # FIRST weighted above the later ones (see slot_member_weights), so head order
 # IS the condition: "attack, jump" and "jump, attack" are two labels, and one
@@ -104,10 +105,11 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # the modifiers follow in tuple order -- one combination, exactly one spelling
 # (see canonical_action_label).
 HEAD_VOCAB: tuple[str, ...] = (
-    "attack", "burrow", "climb", "crawl", "die", "draw", "fall",
-    "fly", "getup", "hurt", "idle", "jump", "kneel", "land", "laydown",
+    "attack", "burrow", "climb", "crawl", "dance", "die", "draw", "fall",
+    "fishing", "fly", "getup", "hurt", "idle", "jump", "kneel", "land", "laydown",
     "lift", "pickup", "putdown", "rear", "rest", "roar", "roll", "run", "sheathe",
-    "sitdown", "spawn", "stop", "swim", "takeoff", "turn", "walk", "work",
+    "sitdown", "spawn", "stop", "swim", "takeoff", "talk", "turn", "walk", "wave",
+    "work",
 )
 
 # Blocks order the spelling only; nothing weights a word by its block.
@@ -126,9 +128,9 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     "headbutt", "swat", "slash", "stab", "smash", "whip",
     "block", "cast", "firebreath", "projectile",
     # -- block D: affect / social gesture --
-    "happy", "talk", "clap", "wave", "cry",
+    "happy", "clap", "cry",
     # -- block E: activity and object handling --
-    "aim", "carry", "fishing", "cook", "reload",
+    "aim", "carry", "cook", "reload",
     "saw", "shovel", "pull", "push",
     # -- block F: the implement an action is performed with: archery,
     # shooting, tool work, shield bash, and ``weapon`` -- the catch-all for a
@@ -298,10 +300,11 @@ assert _HEAD_VOCAB_SET.isdisjoint(MODIFIER_VOCAB), (
 # contradicts its own label -- "walk" under stationary, "die" under locomotion
 # (see action_group_conflict). A new head word needs its group here.
 HEAD_ACTION_GROUP: dict[str, str] = {
-    "attack": "stationary", "hurt": "stationary", "idle": "stationary",
-    "jump": "stationary", "lift": "stationary", "pickup": "stationary",
-    "putdown": "stationary", "rest": "stationary", "roar": "stationary",
-    "work": "stationary",
+    "attack": "stationary", "dance": "stationary", "fishing": "stationary",
+    "hurt": "stationary", "idle": "stationary", "jump": "stationary",
+    "lift": "stationary", "pickup": "stationary", "putdown": "stationary",
+    "rest": "stationary", "roar": "stationary", "talk": "stationary",
+    "wave": "stationary", "work": "stationary",
     "climb": "locomotion", "crawl": "locomotion", "fall": "locomotion",
     "fly": "locomotion", "roll": "locomotion", "run": "locomotion",
     "swim": "locomotion", "walk": "locomotion",
