@@ -23,8 +23,25 @@ def _sample_batch(
     skip_timesteps=0,
     inpaint_mask=None,
     autocast_dtype=None,
+    row_seeds=None,
+    progress=True,
 ):
     skip_timesteps = int(skip_timesteps) if skip_timesteps is not None else 0
+
+    # Separate generators keep each row's diffusion noise independent of batching.
+    noise_sampler = None
+    if row_seeds is not None:
+        if len(row_seeds) != sample_shape[0]:
+            raise ValueError('row_seeds must contain one seed per batch row')
+        if reference_motion is not None or inpaint_mask is not None or skip_timesteps:
+            raise ValueError('row_seeds supports plain generation only')
+        generators = [torch.Generator(device=device).manual_seed(int(s)) for s in row_seeds]
+
+        def noise_sampler(like):
+            return torch.cat([
+                torch.randn((1, *like.shape[1:]), generator=g, device=like.device, dtype=like.dtype)
+                for g in generators
+            ])
 
     inpainting = inpaint_mask is not None
     if inpainting:
@@ -77,6 +94,8 @@ def _sample_batch(
             init_image=init_image,
             skip_timesteps=skip_ts,
         )
+        if noise_sampler is not None:
+            common_kwargs['noise_sampler'] = noise_sampler
         # Only p_* / ddim_* loops accept the inpaint kwargs.
         inpaint_kwargs = dict(
             inpaint_mask=inpaint_mask_, inpaint_reference=inpaint_reference_
@@ -84,14 +103,14 @@ def _sample_batch(
         with _autocast_context():
             if sampling_method == 'ddim':
                 return diffusion.ddim_sample_loop(
-                    progress=True,
+                    progress=progress,
                     eta=ddim_eta,
                     **inpaint_kwargs,
                     **common_kwargs,
                 )
             if sampling_method in ('p', 'ddpm'):
                 return diffusion.p_sample_loop(
-                    progress=True,
+                    progress=progress,
                     dump_steps=None,
                     const_noise=False,
                     **inpaint_kwargs,
@@ -140,7 +159,8 @@ def _sample_batch(
         )
     # Plain generation: full denoising from pure noise.
     return _run_loop(
-        noise=torch.randn(sample_shape, device=device),
+        noise=(torch.randn(sample_shape, device=device) if noise_sampler is None
+               else noise_sampler(torch.empty(sample_shape, device=device))),
         init_image=None,
         skip_ts=0,
         inpaint_mask_=None,

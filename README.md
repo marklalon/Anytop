@@ -171,6 +171,14 @@ with `--action_group locomotion|stationary|transition`. The full argument set of
 the current run lives in that script; every flag is a plain CLI option of
 `python train/train_anytop.py --help`.
 
+## Motion detail refinement
+
+An optional frozen-backbone all-band motion calibrator is available separately from
+diffusion training. The default backbone is `zoo_locomotion_tiny_v67`; see
+[the implementation and commands](docs/motion_detail_refiner.md)
+for cache generation, independent training, evaluation and `--refiner_path`.
+The selected checkpoint is `save/detail_v67_v3_200/refiner_latest.pt` (64x3, 0.30 rad, 200 updates per condition). It passes 121/124 formal condition gates; full motion quality acceptance is still pending.
+
 ## Acknowledgments
 We want to thank the following contributors that our code is based on:
 [mdm](https://github.com/GuyTevet/motion-diffusion-model), [GRPE](https://github.com/lenscloth/GRPE/tree/master), [audiocraft](https://github.com/facebookresearch/audiocraft)

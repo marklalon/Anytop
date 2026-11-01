@@ -1,7 +1,20 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_all_v65
+set RUN_NAME=zoo_locomotion_tiny_v67
+
+rem set MODEL_FILE=model000020000.pt
+
+rem ---- Optional motion detail refiner (see docs/motion_detail_refiner.md) ----
+rem Leave REFINER_PATH empty to disable refinement (plain backbone output).
+rem A bare save-dir name (e.g. detail_v67_v3_200) resolves to save\<name>\refiner_latest.pt;
+rem a full path to the .pt is used as-is.
+rem The backbone checkpoint must match the refiner's contract (zoo_locomotion_tiny_v67).
+rem set REFINER_PATH=detail_v67_v3_200
+set REFINER_PATH=detail_v67_v3_200
+set REFINER_ALPHA=1.0
+set REFINER_SEED=20001
+
 REM ----------------------------------------------------------------------
 REM Combination rules for target skeleton + reference motion (passed via %* to sample/generate.py):
 REM   1) --object_type Horse only                          : random generation for Horse
@@ -20,8 +33,6 @@ REM   5) neither provided -> error and exit
 REM Supports zero-shot inference on object types not seen during training.
 REM ----------------------------------------------------------------------
 set BATCH_SIZE=8
-
-rem set MODEL_FILE=model000020000.pt
 
 pushd "%SCRIPT_DIR%"
 
@@ -43,7 +54,9 @@ set STEP_NUM=%MODEL_FILE:.pt=%
 set STEP_NUM=%STEP_NUM:model=%
 
 set MODEL_PATH=save\%RUN_NAME%\%MODEL_FILE%
-set OUTPUT_DIR=outputs\%RUN_NAME%\generate_step%STEP_NUM%
+set DIR_SUFFIX=
+if not "%REFINER_PATH%"=="" set DIR_SUFFIX=_refiner
+set OUTPUT_DIR=outputs\%RUN_NAME%\generate_step%STEP_NUM%%DIR_SUFFIX%
 
 if exist %OUTPUT_DIR% (
     echo Cleaning output directory: %OUTPUT_DIR%
@@ -53,11 +66,21 @@ mkdir %OUTPUT_DIR% 2>nul
 
 echo Output dir: %OUTPUT_DIR%
 
+set REFINER_FILE=%REFINER_PATH%
+if exist "save\%REFINER_PATH%\refiner_latest.pt" set REFINER_FILE=save\%REFINER_PATH%\refiner_latest.pt
+if not "%REFINER_PATH%"=="" if not exist "%REFINER_FILE%" (
+    echo Error: Refiner checkpoint not found: %REFINER_FILE%
+    popd
+    exit /b 1
+)
+set REFINER_ARGS=
+if not "%REFINER_PATH%"=="" set REFINER_ARGS=--refiner_path "%REFINER_FILE%" --refiner_alpha %REFINER_ALPHA% --refiner_seed %REFINER_SEED%
+
 %PYTHON_EXE% sample/generate.py ^
     --model_path "%MODEL_PATH%" ^
     --output_dir %OUTPUT_DIR% ^
     --batch_size %BATCH_SIZE% ^
-    --amp_dtype fp32 %*
+    --amp_dtype fp32 %REFINER_ARGS% %*
 
 popd
 

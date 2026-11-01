@@ -92,6 +92,9 @@ from sample.reference_motion import (
     _validate_reference_motion_path,
 )
 from sample.sampling import _sample_batch
+from sample.detail_refinement import (
+    base_export_motion, refine_generated_batch, transport_export_positions,
+)
 from utils import dist_util
 from utils.fixseed import fixseed
 from utils.misc import infer_object_type_from_filename
@@ -131,6 +134,23 @@ def _warn_inpaint_span_beyond_training(inpaint_mask, model):
             f"the {trained}-frame spans this checkpoint trained on "
             "(temporal_span_mask_max_frames); expect a weaker fill."
         )
+
+
+def _refiner_base_export_task(args, row, npy_name, cond_entry, joint_names, fps,
+                              target_frames, window_frames, loop, *, invert=True):
+    """Export the frozen backbone's motion for one refined sample.
+
+    The clip keeps the refined one's file name but is written into
+    ``refiner_comparisons/``, so base and refined differ only by directory.
+    ``None`` when this run does not refine.
+    """
+    base = base_export_motion(args, row)
+    if base is None:
+        return None
+    base = _resample_window_to_output(base, target_frames, window_frames, loop, invert=invert)
+    base = working_to_stored(base, is_loop=bool(loop))
+    return (base, cond_entry, npy_name, joint_names,
+            str(args._detail_comparison_dir), fps, _bvh_preview_options(args))
 
 
 def _generate_all_species(
@@ -233,8 +253,11 @@ def _generate_all_species(
                 autocast_dtype=inference_autocast_dtype,
             )
 
+            sample = refine_generated_batch(sample, model_kwargs['y'], model, args, out_path,
+                                            [species_output_lengths[sp][0] for sp in batch_species])
             # ── Per-sample export with per-species metadata ──────────
             export_tasks = []
+            base_tasks = []
             for sample_idx, motion in enumerate(sample):
                 sp = batch_species[sample_idx]
                 sp_entry = cond_dict[sp]
@@ -248,6 +271,8 @@ def _generate_all_species(
                     species_output_lengths[sp][0], output_frame_count,
                     species_output_lengths[sp][2],
                 )
+                motion_np = transport_export_positions(motion_np, args, sample_idx,
+                    species_output_lengths[sp][0], output_frame_count, species_output_lengths[sp][2])
                 motion_np = working_to_stored(motion_np, is_loop=bool(species_output_lengths[sp][2]))
 
                 joint_names = list(sp_entry.get(
@@ -263,10 +288,20 @@ def _generate_all_species(
                     motion_np, sp_entry, npy_name, joint_names, out_path, fps,
                     _bvh_preview_options(args),
                 ))
+                base_task = _refiner_base_export_task(
+                    args, sample_idx, npy_name, sp_entry, joint_names, fps,
+                    species_output_lengths[sp][0], output_frame_count,
+                    species_output_lengths[sp][2],
+                )
+                if base_task is not None:
+                    base_tasks.append(base_task)
 
             for task in tqdm(export_tasks, desc=f'batch {batch_idx} export'):
                 npy_name = _export_motion(task)
                 print(f'    Created: {npy_name}')
+            if base_tasks:
+                for task in tqdm(base_tasks, desc=f'batch {batch_idx} refiner base export'):
+                    print(f'    Created base: {_export_motion(task)}')
 
 
 def _reference_is_edit(args):
@@ -1138,6 +1173,7 @@ def main(args=None, cond_dict=None, runtime=None):
         if f.startswith(object_file_token) and f.endswith('.npy')
     )
 
+    sample = refine_generated_batch(sample, model_kwargs['y'], model, args, out_path, target_output_frames)
     # Collect export tasks (in-process, no pickling needed)
     joint_names = list(cond_dict[object_type].get(
         'canonical_bvh_joint_names',
@@ -1148,6 +1184,7 @@ def main(args=None, cond_dict=None, runtime=None):
     # interpolation preimage, so it keeps the interpolating export.
     export_inverts_window = not (inpaint_frames_arg or outpaint_active)
     export_tasks = []
+    base_tasks = []
     mark_canonical_cond_entry(cond_dict[object_type])
     for sample_idx, motion in enumerate(sample):
         n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
@@ -1160,6 +1197,8 @@ def main(args=None, cond_dict=None, runtime=None):
             motion_physical.cpu().permute(2, 0, 1).numpy(), target_output_frames, output_frame_count,
             loop_condition, invert=export_inverts_window,
         )
+        motion_np = transport_export_positions(motion_np, args, sample_idx,
+            target_output_frames, output_frame_count, loop_condition, invert=export_inverts_window)
 
         # A frame-range inpaint keeps the clamped frames' own ground; only a
         # joint subset needs re-seating onto the reference.
@@ -1195,10 +1234,20 @@ def main(args=None, cond_dict=None, runtime=None):
             fps,
             preview_options,
         ))
+        base_task = _refiner_base_export_task(
+            args, sample_idx, npy_name, cond_dict[object_type], joint_names, fps,
+            target_output_frames, output_frame_count, loop_condition,
+            invert=export_inverts_window,
+        )
+        if base_task is not None:
+            base_tasks.append(base_task)
 
     for task in tqdm(export_tasks, desc=f'{object_file_token} export'):
         npy_name = _export_motion(task)
         print(f'    Created motion: {npy_name}')
+    if base_tasks:
+        for task in tqdm(base_tasks, desc=f'{object_file_token} refiner base export'):
+            print(f'    Created base motion: {_export_motion(task)}')
 
     return out_path
 

@@ -1180,6 +1180,7 @@ class GaussianDiffusion:
         cond_fn=None,
         model_kwargs=None,
         const_noise=False,
+        noise_sampler=None,
     ):
         """
         Sample x_{t-1} from the model at the given timestep.
@@ -1206,7 +1207,7 @@ class GaussianDiffusion:
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
         )
-        noise = th.randn_like(x)
+        noise = th.randn_like(x) if noise_sampler is None else noise_sampler(x)
         # print('const_noise', const_noise)
         if const_noise:
             noise = noise[[0]].repeat(x.shape[0], 1, 1, 1)
@@ -1316,6 +1317,7 @@ class GaussianDiffusion:
         const_noise=False,
         inpaint_mask=None,
         inpaint_reference=None,
+        noise_sampler=None,
     ):
         """
         Generate samples from the model.
@@ -1345,6 +1347,7 @@ class GaussianDiffusion:
             model,
             shape,
             noise=noise,
+            noise_sampler=noise_sampler,
             clip_denoised=clip_denoised,
             denoised_fn=denoised_fn,
             cond_fn=cond_fn,
@@ -1385,6 +1388,7 @@ class GaussianDiffusion:
         const_noise=False,
         inpaint_mask=None,
         inpaint_reference=None,
+        noise_sampler=None,
     ):
         """
         Generate samples from the model and yield intermediate samples from
@@ -1394,13 +1398,16 @@ class GaussianDiffusion:
         Returns a generator over dicts, where each dict is the return value of
         p_sample().
         """
+        if noise_sampler is not None and (cond_fn_with_grad or randomize_class or inpaint_mask is not None):
+            raise ValueError('Custom noise supports plain, non-gradient sampling only')
         if device is None:
             device = next(model.parameters()).device
         assert isinstance(shape, (tuple, list))
         if noise is not None:
             img = noise
         else:
-            img = th.randn(*shape, device=device)
+            img = (th.randn(*shape, device=device) if noise_sampler is None
+                   else noise_sampler(th.empty(*shape, device=device)))
 
         if skip_timesteps and init_image is None:
             init_image = th.zeros_like(img)
@@ -1428,6 +1435,7 @@ class GaussianDiffusion:
                                                device=model_kwargs['y'].device)
             with th.no_grad():
                 sample_fn = self.p_sample_with_grad if cond_fn_with_grad else self.p_sample
+                noise_kwargs = {} if noise_sampler is None else {'noise_sampler': noise_sampler}
                 out = sample_fn(
                     model,
                     img,
@@ -1436,6 +1444,7 @@ class GaussianDiffusion:
                     denoised_fn=denoised_fn,
                     cond_fn=cond_fn,
                     model_kwargs=model_kwargs,
+                    **noise_kwargs,
                     const_noise=const_noise,
                 )
                 out["sample"] = self._inpaint_project(
@@ -1455,6 +1464,7 @@ class GaussianDiffusion:
         cond_fn=None,
         model_kwargs=None,
         eta=0.0,
+        noise_sampler=None,
     ):
         """
         Sample x_{t-1} from the model using DDIM.
@@ -1486,7 +1496,7 @@ class GaussianDiffusion:
             * th.sqrt(1 - alpha_bar / alpha_bar_prev)
         )
         # Equation 12.
-        noise = th.randn_like(x)
+        noise = th.randn_like(x) if noise_sampler is None else noise_sampler(x)
         mean_pred = (
             out["pred_xstart"] * th.sqrt(alpha_bar_prev)
             + th.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
@@ -1612,6 +1622,7 @@ class GaussianDiffusion:
         const_noise=False,
         inpaint_mask=None,
         inpaint_reference=None,
+        noise_sampler=None,
     ):
         """
         Generate samples from the model using DDIM.
@@ -1628,6 +1639,7 @@ class GaussianDiffusion:
             model,
             shape,
             noise=noise,
+            noise_sampler=noise_sampler,
             clip_denoised=clip_denoised,
             denoised_fn=denoised_fn,
             cond_fn=cond_fn,
@@ -1663,6 +1675,7 @@ class GaussianDiffusion:
         cond_fn_with_grad=False,
         inpaint_mask=None,
         inpaint_reference=None,
+        noise_sampler=None,
     ):
         """
         Use DDIM to sample from the model and yield intermediate samples from
@@ -1670,13 +1683,16 @@ class GaussianDiffusion:
 
         Same usage as p_sample_loop_progressive().
         """
+        if noise_sampler is not None and (cond_fn_with_grad or randomize_class or inpaint_mask is not None):
+            raise ValueError('Custom noise supports plain, non-gradient sampling only')
         if device is None:
             device = next(model.parameters()).device
         assert isinstance(shape, (tuple, list))
         if noise is not None:
             img = noise
         else:
-            img = th.randn(*shape, device=device)
+            img = (th.randn(*shape, device=device) if noise_sampler is None
+                   else noise_sampler(th.empty(*shape, device=device)))
 
         if skip_timesteps and init_image is None:
             init_image = th.zeros_like(img)
@@ -1704,6 +1720,7 @@ class GaussianDiffusion:
                                                device=model_kwargs['y'].device)
             with th.no_grad():
                 sample_fn = self.ddim_sample_with_grad if cond_fn_with_grad else self.ddim_sample
+                noise_kwargs = {} if noise_sampler is None else {'noise_sampler': noise_sampler}
                 out = sample_fn(
                     model,
                     img,
@@ -1712,6 +1729,7 @@ class GaussianDiffusion:
                     denoised_fn=denoised_fn,
                     cond_fn=cond_fn,
                     model_kwargs=model_kwargs,
+                    **noise_kwargs,
                     eta=eta,
                 )
                 out["sample"] = self._inpaint_project(
