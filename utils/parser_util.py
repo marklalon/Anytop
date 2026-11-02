@@ -543,11 +543,13 @@ def add_training_options(parser):
     group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'fp16', 'bf16'], type=str,
                        help="Autocast precision for training. fp32 disables AMP; fp16 uses selective autocast with GradScaler; bf16 uses selective autocast on linear and attention modules only.")
     group.add_argument("--compile", default='None',
-                       choices=['None', 'default', 'max-autotune-no-cudagraphs'],
-                       help="Wrap the transformer decoder with torch.compile to fuse the many tiny "
+                       choices=['None', 'default', 'reduce-overhead', 'max-autotune-no-cudagraphs'],
+                       help="Wrap the model forward with torch.compile to fuse the many tiny "
                             "per-layer kernels (training is kernel-launch-bound). "
                             "Mode: 'None' (no compile), 'default' (torch.compile default), "
-                            "'max-autotune-no-cudagraphs'. On Windows, requires Triton's bundled "
+                            "'reduce-overhead' (CUDA Graphs for eligible model forward/backward regions), "
+                            "'max-autotune-no-cudagraphs'. Sampling, optimizer and logging stay outside "
+                            "the compiled region. On Windows, requires Triton's bundled "
                             "TinyCC; MSVC is not used and C++ codegen is disabled. "
                             "First step pays a one-time compile "
                             "cost; shapes are static so no recompile thrashing afterward "

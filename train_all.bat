@@ -4,9 +4,11 @@ set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
 set RUN_NAME=merged_all_v69
 set TORCH_LOGS=recompiles,graph_breaks
+set "TORCHINDUCTOR_CUDAGRAPHS=1"
 
 REM train_anytop requires bundled TinyCC for --compile, overriding inherited CC.
 REM Inductor C++ codegen is disabled; no Visual Studio environment is needed.
+REM reduce-overhead uses CUDA Graphs for eligible model forward/backward regions.
 
 pushd "%SCRIPT_DIR%"
 
@@ -79,7 +81,7 @@ pushd "%SCRIPT_DIR%"
 	--amp_dtype fp16 ^
 	--main_process_prefetch_batches 64 ^
 	--num_workers 2 ^
-	--compile default
+	--compile reduce-overhead
 
 set "EXIT_CODE=%ERRORLEVEL%"
 popd

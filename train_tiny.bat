@@ -5,6 +5,7 @@ REM Usage: train_tiny.bat [run_name]
 REM See docs/tiny_locomotion_baseline.md for the fixed ablation protocol.
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
+set "TORCHINDUCTOR_CUDAGRAPHS=1"
 set "RUN_NAME=zoo_locomotion_tiny_v69"
 if not "%~1"=="" set "RUN_NAME=%~1"
 
@@ -24,6 +25,7 @@ REM A new run trains the reference encoder from scratch; auto_resume continues t
 REM Target and reference input draw topology and bone-length augmentation independently.
 REM Keep the full locomotion pool; no ordered sample_limit truncation.
 REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
+REM reduce-overhead uses CUDA Graphs for eligible model forward/backward regions.
 REM --dataset_namespaces: ';'-separated namespaces from dataset\datasets_all.jsonl, e.g.
 REM "truebones/zoo;unitybundles"; a parent such as "truebones" selects all its children; "" = every dataset.
 "%PYTHON_EXE%" train/train_anytop.py ^
@@ -95,7 +97,7 @@ REM "truebones/zoo;unitybundles"; a parent such as "truebones" selects all its c
     --amp_dtype fp16 ^
     --main_process_prefetch_batches 64 ^
     --num_workers 2 ^
-	--compile default
+	--compile reduce-overhead
 
 set "EXIT_CODE=%ERRORLEVEL%"
 popd

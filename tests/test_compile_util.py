@@ -83,7 +83,8 @@ def test_non_windows_does_not_import_triton(monkeypatch):
     assert compile_util.configure_triton_c_compiler() is None
 
 
-def test_training_selects_compiler_before_lazy_compile(monkeypatch, tmp_path):
+@pytest.mark.parametrize('mode', ['default', 'reduce-overhead'])
+def test_training_selects_compiler_before_lazy_compile(monkeypatch, tmp_path, mode):
     import torch
     from train.training_loop import TrainLoop
     events = []
@@ -92,14 +93,17 @@ def test_training_selects_compiler_before_lazy_compile(monkeypatch, tmp_path):
         return str(tmp_path / 'tcc.exe')
     def compile_model(model, **kwargs):
         events.append('compile')
-        assert kwargs == {'dynamic': False}
+        expected = {'dynamic': False}
+        if mode != 'default':
+            expected['mode'] = mode
+        assert kwargs == expected
         return model
     monkeypatch.setattr(compile_util, 'configure_triton_c_compiler', configure)
     monkeypatch.setattr(torch, 'compile', compile_model)
     monkeypatch.setattr(torch, 'set_float32_matmul_precision', lambda *_: None)
     model = object()
     loop = types.SimpleNamespace(forward_model=model)
-    TrainLoop._compile_forward_model(loop)
+    TrainLoop._compile_forward_model(loop, mode)
     assert events == ['compiler', 'compile']
     assert loop.forward_model is model
 
