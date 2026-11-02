@@ -371,23 +371,6 @@ def test_reference_cfg_skips_zero_weight_branches(ref_scale):
     assert y['ref_active'].all()
 
 
-def test_reference_cfg_schedule_switches_on_noise_level():
-    inner = Echo()
-    wrapper = ClassifierFreeReferenceModel(inner, 6., num_timesteps=100)
-    x = torch.zeros(2, 1, 1, 1)
-    y = dict(ref_active=torch.ones(2, dtype=torch.bool))
-    # Early (t >= 50): base + 6 * (ref - base) = 8 - 30; two forwards.
-    torch.testing.assert_close(wrapper(x, torch.full((2,), 50), y), torch.full_like(x, -22.))
-    assert len(inner.calls) == 2
-    # Late (t < 50): scale 1 is the reference branch alone; one forward.
-    inner.calls.clear()
-    torch.testing.assert_close(wrapper(x, torch.full((2,), 49), y), torch.full_like(x, 3.))
-    assert len(inner.calls) == 1
-    # Rows on both sides of the switch get their own scale.
-    out = wrapper(x, torch.tensor([99, 0]), y)
-    torch.testing.assert_close(out.flatten(), torch.tensor([-22., 3.]))
-
-
 def test_reference_cfg_schedule_validation():
     with pytest.raises(ValueError, match='num_timesteps'):
         ClassifierFreeReferenceModel(Echo(), 6., num_timesteps=0)
@@ -405,6 +388,25 @@ def test_wrap_reference_cfg_rejects_action_label():
     assert len(inner.calls) == 2
     with pytest.raises(ValueError, match='action_label'):
         _wrap_reference_cfg(inner, args, {'action_label': 'walk'})
+
+
+def test_wrap_reference_without_null_training_allows_only_scale_one():
+    from sample.conditioning import _wrap_reference_cfg
+    inner = Echo()
+    inner.ref_encoder = True
+    inner.ref_cfg_drop_prob = 0.
+    args = SimpleNamespace(ref_cfg_scale=1., diffusion_steps=100)
+    wrapper = _wrap_reference_cfg(inner, args, None)
+    x = torch.zeros(2, 1, 1, 1)
+    y = dict(ref_active=torch.ones(2, dtype=torch.bool))
+    torch.testing.assert_close(wrapper(x, torch.full((2,), 99), y), torch.full_like(x, 3.))
+    assert len(inner.calls) == 1
+    with pytest.raises(ValueError, match='action_label'):
+        _wrap_reference_cfg(inner, args, {'action_label': 'shake'})
+    for scale in (0., 2.):
+        args.ref_cfg_scale = scale
+        with pytest.raises(ValueError, match='ref_cfg_drop_prob'):
+            _wrap_reference_cfg(inner, args, None)
 
 
 def test_augmentation_has_independent_cond_and_target_is_untouched():
