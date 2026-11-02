@@ -354,6 +354,10 @@ def add_model_options(parser):
                             "model cannot trust as a content key is one it has to read as time "
                             "topology only. 1.0 = off. Loader-only, like --motion_speed_aug: no regen, "
                             "no bump. The eval loader always uses 1.0.")
+    group.add_argument("--loop_cond_prob_free", default=None, type=float,
+                       help="Override --loop_cond_prob for phase-free loop samples. Defaults to --loop_cond_prob.")
+    group.add_argument("--loop_cond_prob_anchored", default=None, type=float,
+                       help="Override --loop_cond_prob for phase-anchored loop samples. Defaults to --loop_cond_prob.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")

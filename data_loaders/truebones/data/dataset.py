@@ -1321,7 +1321,16 @@ class MotionDataset(data.Dataset):
         # is_loop note), and a flag the model cannot trust as a content key is
         # one it has to read as time topology only. An explicit loop_offset
         # (prepare_sample_by_name, the diagnostics path) always keeps the flag.
-        loop_cond_prob = float(getattr(self.opt, 'loop_cond_prob', 1.0))
+        label_phase_free = loop_is_phase_free(motion_metadata.get('action_label'))
+        specific_loop_cond_prob = getattr(
+            self.opt,
+            'loop_cond_prob_free' if label_phase_free else 'loop_cond_prob_anchored',
+            None,
+        )
+        loop_cond_prob = float(
+            getattr(self.opt, 'loop_cond_prob', 1.0)
+            if specific_loop_cond_prob is None else specific_loop_cond_prob
+        )
         loop_uncond = bool(
             is_loop
             and loop_offset is None
@@ -1906,10 +1915,15 @@ class Truebones(data.Dataset):
         self.opt.motion_speed_aug = float(kwargs.get('motion_speed_aug', 1.0))
         self.opt.motion_speed_aug_prob = float(kwargs.get('motion_speed_aug_prob', 1.0))
         self.opt.loop_cond_prob = float(kwargs.get('loop_cond_prob', 1.0))
-        if not 0.0 <= self.opt.loop_cond_prob <= 1.0:
-            raise ValueError(
-                f"loop_cond_prob must be in [0, 1], got {self.opt.loop_cond_prob}."
-            )
+        self.opt.loop_cond_prob_free = kwargs.get('loop_cond_prob_free')
+        self.opt.loop_cond_prob_anchored = kwargs.get('loop_cond_prob_anchored')
+        for prob_name in ('loop_cond_prob', 'loop_cond_prob_free', 'loop_cond_prob_anchored'):
+            value = getattr(self.opt, prob_name)
+            if value is not None:
+                value = float(value)
+                if not 0.0 <= value <= 1.0:
+                    raise ValueError(f"{prob_name} must be in [0, 1], got {value}.")
+                setattr(self.opt, prob_name, value)
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
         self.opt.topology_aug_prob = float(kwargs.get('topology_aug_prob', 0.0))
         self.opt.ref_encoder = bool(kwargs.get('ref_encoder', False))
