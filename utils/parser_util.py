@@ -640,12 +640,6 @@ def add_sampling_options(parser):
     group = parser.add_argument_group('sampling')
     group.add_argument("--model_path", required=True, type=str,
                        help="Path to model####.pt file to be sampled.")
-    group.add_argument('--refiner_path', default='', type=str,
-                       help='Optional separate motion detail checkpoint; backbone/cond/sampler must match.')
-    group.add_argument('--refiner_alpha', default=1., type=float,
-                       help='Detail strength in [0,1]; zero returns the untouched backbone sample.')
-    group.add_argument('--refiner_seed', default=20001, type=int,
-                       help='Independent temporal detail noise seed.')
     group.add_argument("--output_dir", default='', type=str,
                        help="Path to results dir (auto created by the script). "
                             "If empty, will create dir in parallel to checkpoint.")
