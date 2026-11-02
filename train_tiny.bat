@@ -72,7 +72,7 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --weight_decay 0.03 ^
     --use_ema ^
     --ema_rate 0.995 ^
-    --num_steps 10000 ^
+    --num_steps 15000 ^
     --dropout_prob 0.1 ^
     --action_label_cfg_drop_prob 0.2 ^
     --joint_mask_prob 0.15 ^
