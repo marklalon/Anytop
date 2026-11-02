@@ -101,6 +101,8 @@ def assert_close(name: str, actual: np.ndarray, expected: np.ndarray, atol: floa
 
 
 def _normalize_motion(raw: np.ndarray, cond: dict[str, np.ndarray]) -> np.ndarray:
+    raw = raw.copy()
+    raw[:, 0, [0, 2]] -= raw[0, 0, [0, 2]]
     return np.nan_to_num(physical_hml_to_canonical(raw, cond)).astype(np.float32, copy=False)
 
 

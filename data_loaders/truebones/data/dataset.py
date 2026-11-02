@@ -1536,25 +1536,31 @@ class MotionDataset(data.Dataset):
         # the model is told is not one, is open, at step (L-1)/(T-1).
         def sample_window(clip):
             if scaled_length != source_length:
-                return resample_time_scaled_window(
+                clip = resample_time_scaled_window(
                     clip, scaled_length, m_length, target_num_frames,
                     source_periodic=bool(is_loop), window_periodic=loop_condition_active,
                     shift=frame_shift,
                 )
-            # No speed change: the shift and window are whole source frames
-            # (a loop's roll and tiles wrap it), and the window resample is the
-            # only interpolation.
-            frames = np.arange(m_length, dtype=np.int64) + frame_shift
-            if is_loop:
-                frames %= source_length
-            if m_length != source_length or frame_shift != 0:
-                clip = clip[frames]
-            if m_length != target_num_frames:
-                clip = resample_motion_features(
-                    clip,
-                    target_num_frames,
-                    periodic=loop_condition_active,
-                )
+            else:
+                # No speed change: the shift and window are whole source
+                # frames, and the window resample is the only interpolation.
+                frames = np.arange(m_length, dtype=np.int64) + frame_shift
+                if is_loop:
+                    frames %= source_length
+                if m_length != source_length or frame_shift != 0:
+                    clip = clip[frames]
+                if m_length != target_num_frames:
+                    clip = resample_motion_features(
+                        clip,
+                        target_num_frames,
+                        periodic=loop_condition_active,
+                    )
+            # Anchor each final window after every temporal operation, before
+            # canonical standardization. Only the root carries world XZ; the
+            # other joints are already RIC. Copy even on the identity path so
+            # cached source clips and the reference's source stay untouched.
+            clip = clip.copy()
+            clip[:, 0, [0, 2]] -= clip[0, 0, [0, 2]]
             return clip
 
         motion = sample_window(source_motion)

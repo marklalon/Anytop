@@ -52,6 +52,10 @@ than the joints' RIC positions, so the root's position takes its own mean and
 std, one scalar shared by X and Z (the horizontal plane stays isotropic) and
 one for Y.
 
+The training loader re-centres each final temporal window on its own first
+frame's root XZ after crop, phase roll, tiling and resampling, before size
+normalization and standardization. Root Y and the other joints' RIC stay as is.
+
 Statistics layout. ``canonical_feature_mean`` / ``canonical_feature_std`` are
 ``FEATS_LEN + 3`` vectors: the per-channel statistics of every joint, then the
 root position's (``ROOT_STAT_SLICE``), which replace channels 0:3 on joint 0.

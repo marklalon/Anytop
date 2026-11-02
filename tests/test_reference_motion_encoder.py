@@ -489,6 +489,59 @@ def test_target_augmentation_leaves_reference_on_stored_rig(monkeypatch):
     assert kwargs['y']['ref_mask'].sum() == stored_joints
 
 
+@pytest.mark.parametrize('case', ['identity', 'crop', 'scaled_crop', 'loop', 'scaled_loop'])
+@pytest.mark.parametrize('separate_rig', [False, True])
+def test_final_window_anchors_root_xz_without_changing_other_channels(monkeypatch, case, separate_rig):
+    from data_loaders.truebones.data.dataset import resample_time_scaled_window
+
+    dataset, data = make_dataset()
+    dataset.opt.ref_encoder = True
+    dataset.opt.bone_length_aug_prob = 0
+    dataset.opt.topology_aug_prob = int(separate_rig)
+    if separate_rig:
+        pin_target_leaf_drop(monkeypatch, [3])
+    loaded = dataset._load_physical_motion(data)
+    source = loaded[0].copy()
+    t = np.arange(len(source), dtype=np.float32)
+    source[:, 0, 0] = 2 + np.sin(t * .2)
+    source[:, 0, 2] = -3 + np.cos(t * .2)
+    source[:, 0, 1] += .1 * np.sin(t * .3)
+    source[:, 2, 0] += .1 * np.cos(t * .4)
+    before = source.copy()
+    dataset._load_physical_motion = lambda _: (source, len(source), *loaded[2:])
+    # Nonzero means make an accidental post-standardization anchoring visible.
+    cond = dataset.cond_dict['test']
+    cond['canonical_feature_mean'][12:15] = [.3, .4, -.2]
+    cond['canonical_feature_std'][12:15] = [.7, 1.2, .7]
+
+    loop = 'loop' in case
+    data['motion_metadata']['is_loop'] = loop
+    target_frames = 40 if loop else (30 if case == 'identity' else 8)
+    scaled_frames = 36 if case.startswith('scaled') else len(source)
+    shift = 5 if loop else (0 if case == 'identity' else 7)
+    window_frames = 2 * scaled_frames if loop else min(scaled_frames, target_frames * 2)
+    monkeypatch.setattr(dataset, '_sample_motion_speed_target_length', lambda *a, **k: scaled_frames)
+    monkeypatch.setattr(dataset, '_sample_loop_tile_count', lambda *a, **k: 2)
+    monkeypatch.setattr(random, 'randint', lambda *a: shift)
+    sample = dataset._prepare_sample(
+        'test', data, target_num_frames=target_frames,
+        loop_offset=shift if loop else None, return_aug_info=True)
+
+    expected = resample_time_scaled_window(
+        source, scaled_frames, window_frames, target_frames,
+        source_periodic=loop, window_periodic=loop, shift=shift)
+    expected[:, 0, [0, 2]] -= expected[0, 0, [0, 2]]
+    target = canonical_to_physical_hml(sample[0], sample[-1]['object_cond'])
+    kept = [j for j in range(source.shape[1]) if not (separate_rig and j == 3)]
+    np.testing.assert_allclose(target[..., :3], expected[:, kept, :3], atol=1e-6)
+    np.testing.assert_allclose(target[..., 3:9], expected[:, kept, 3:9], atol=1e-6)
+    reference = canonical_to_physical_hml(sample[12]['reference']['feats'], cond)
+    np.testing.assert_allclose(reference[..., :9], expected[..., :9], atol=1e-6)
+    np.testing.assert_allclose(target[0, 0, [0, 2]], 0, atol=1e-6)
+    np.testing.assert_allclose(reference[0, 0, [0, 2]], 0, atol=1e-6)
+    np.testing.assert_array_equal(source, before)
+
+
 def test_reference_skeleton_is_augmented_on_the_whole_stored_clip(monkeypatch):
     import data_loaders.reference as reference_module
     dataset, data = make_dataset()
