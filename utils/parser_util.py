@@ -132,35 +132,6 @@ def assert_checkpoint_version(model_args, args_path):
     )
 
 
-def apply_checkpoint_action_group(args, model_args, args_path):
-    """Set this generation's action group from the checkpoint being sampled.
-
-    A single-group checkpoint was trained on that group's corpus alone, so the
-    group is a property of the weights and generation has no ``--action_group``
-    flag to contradict it: the value comes out of args.json and nowhere else.
-
-    An ``all`` checkpoint was trained on the whole corpus and carries no group
-    condition. It leaves the group EMPTY, which every consumer reads as "any
-    group": the label's first head word determines the group by itself, so
-    nothing downstream needs the value except the clip-length prior, which
-    matches across groups when it is empty (utils/clip_length_prior).
-
-    A run predating the mandatory flag also records no group.
-    """
-    recorded_group = str(model_args.get('action_group', '') or '').strip().lower()
-    if recorded_group == ACTION_GROUP_ALL:
-        recorded_group = ''
-    elif recorded_group and recorded_group not in ACTION_GROUPS:
-        print(
-            f"[parser_util] WARNING: {args_path} records action_group "
-            f"'{recorded_group}', which is not one of {', '.join(ACTION_GROUPS)} "
-            f"or '{ACTION_GROUP_ALL}'. Treating this checkpoint as group-less: "
-            f"the clip-length prior will match a label across every group."
-        )
-        recorded_group = ''
-    args.action_group = recorded_group
-
-
 def extract_args(args, args_to_overwrite, model_path):
     args_path = os.path.join(os.path.dirname(model_path), 'args.json')
     assert os.path.exists(args_path), 'Arguments json file was not found!'
@@ -169,7 +140,6 @@ def extract_args(args, args_to_overwrite, model_path):
 
     assert_checkpoint_version(model_args, args_path)
     assert_joint_condition_schema(model_args, args_path)
-    apply_checkpoint_action_group(args, model_args, args_path)
 
     for a in args_to_overwrite:
         if a in model_args.keys():
@@ -484,44 +454,23 @@ def add_model_options(parser):
                             "Default 0.15.")
 
 def add_data_options(parser, training=False):
-    """Dataset selection. ``training=True`` adds the training-only options.
-
-    ``--action_group`` is one of those: it is mandatory when training (it splits
-    the corpus, and each group trains its own model) and absent when generating,
-    where the group is read back out of the checkpoint instead -- see
-    :func:`apply_checkpoint_action_group`.
-    """
+    """Training selects all clips by default; optional JSON rules narrow the pool."""
     group = parser.add_argument_group('dataset')
     group.add_argument("--train_split", default='train', choices=['train', 'val', 'all'], type=str,
                        dest='train_split',
                        help="Dataset selection: 'train'=all non-validation datasets, 'val'=validation dataset, 'all'=all datasets.")
-    group.add_argument("--objects_subset", default='all', type=str,
-                       help="Object subset: ';'-separated items, unioned. Each item is a predefined category (e.g. 'all', 'quadruped', 'winged'), a species name (e.g. 'Horse'), or ','-separated species tags a species must all carry (e.g. 'Winged,Fluttering'). Example: 'Horse;Winged,Fluttering'.")
+    if not training:
+        group.add_argument("--objects_subset", default='all', type=str,
+                           help="Legacy checkpoint object subset (read from checkpoint settings).")
     group.add_argument("--joint_buckets", default=None, type=int, nargs='+',
                        help="Training batch padding widths (joint-count ceilings); MAX_JOINTS is always appended. "
                             "Default: param_utils.JOINT_BUCKETS. A small subset whose rigs span several buckets can "
                             "pass one ceiling (e.g. '--joint_buckets 80') so its clips share batches.")
     if training:
-        group.add_argument("--dataset_namespaces", default=None, type=str,
-                           help="Train on part of --cond_path: ';'-separated dataset namespaces "
-                                "(e.g. 'truebones/zoo;unitybundles'); an item also selects every "
-                                "namespace below it ('truebones' = truebones/zoo + truebones/zoo_upgrade). "
-                                "Default: every dataset in the cond. The validation loader ignores it.")
-        group.add_argument("--action_group", required=True, type=str,
-                           choices=list(ACTION_GROUPS) + [ACTION_GROUP_ALL],
-                           help="REQUIRED. The corpus to train on: one group -- 'locomotion' "
-                                "(sustained displacement), 'stationary' (in-place / interactive), "
-                                "'transition' (pose changes) -- or 'all' for one model over the "
-                                "whole corpus. No lists: each clip belongs to exactly one group. "
-                                "'all' carries NO group condition; the action label's first head "
-                                "word already determines the group (a property of the corpus), "
-                                "so a group token would "
-                                "add no information the label does not already carry. Draws are "
-                                "uniform over clips, so the group mix is the corpus's own; "
-                                "see --rare_head_word_floor for the tail. "
-                                "Recorded in the checkpoint's args.json, where generation reads it "
-                                "back -- a single-group checkpoint can only ever be sampled as that "
-                                "group. See docs/action_group_and_label.md.")
+        group.add_argument("--sample_filter", default=None, type=str,
+                           help="Optional JSON include/exclude clip rules. Default: all clips in the training split.")
+        group.add_argument("--val_sample_filter", default=None, type=str,
+                           help="Independent JSON filter for the validation split (never inherits the training filter).")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -902,9 +851,7 @@ def generate_args(argv=None):
     add_generate_options(parser)
     # These CLI args are generation-time overrides and must NOT be
     # overwritten by the training args.json (which stores their defaults).
-    # There is deliberately no --action_group here: the group belongs to the
-    # weights, so apply_checkpoint_action_group() sets args.action_group from the
-    # checkpoint's own args.json.
+    # Checkpoint action_group is training metadata and is not restored for generation.
     preserve_cli_args = {'action_label', 'species_tags', 'reference_action_group'}
     args = parse_and_load_from_model(
         parser, argv=argv,

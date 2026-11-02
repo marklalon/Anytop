@@ -20,8 +20,6 @@ pushd "%SCRIPT_DIR%"
 	--eval_interval 5000 ^
 	--auto_resume ^
 	--ml_platform_type TensorboardPlatform ^
-	--objects_subset all ^
-	--action_group all ^
 	--rare_head_word_floor 20 ^
 	--rare_head_word_max_boost 4 ^
 	--head_word_weights attack,hurt=0.8,idle=0.6 ^

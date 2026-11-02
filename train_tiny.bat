@@ -26,8 +26,7 @@ REM Target and reference input draw topology and bone-length augmentation indepe
 REM Keep the full locomotion pool; no ordered sample_limit truncation.
 REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
 REM reduce-overhead uses CUDA Graphs for eligible model forward/backward regions.
-REM --dataset_namespaces: ';'-separated namespaces from dataset\datasets_all.jsonl, e.g.
-REM "truebones/zoo;unitybundles"; a parent such as "truebones" selects all its children; "" = every dataset.
+REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
 "%PYTHON_EXE%" train/train_anytop.py ^
     --cond_path dataset/cond_all.npy ^
     --save_dir "save/%RUN_NAME%" ^
@@ -36,9 +35,7 @@ REM "truebones/zoo;unitybundles"; a parent such as "truebones" selects all its c
     --log_interval 100 ^
     --auto_resume ^
     --ml_platform_type TensorboardPlatform ^
-    --dataset_namespaces "truebones/zoo;integrate_20260924" ^
-    --objects_subset Winged ^
-    --action_group locomotion ^
+    --sample_filter configs/sample_filters/tiny.json ^
     --rare_head_word_floor 10 ^
     --rare_head_word_max_boost 2 ^
     --train_split train ^

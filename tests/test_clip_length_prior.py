@@ -42,12 +42,11 @@ def _entry(records, **extra):
     return entry
 
 
-def _ask(cond, target, label, *, group="locomotion", loop=False,
+def _ask(cond, target, label, *, loop=False,
          min_frames=20, max_frames=120, window_frames=60):
     return auto_num_frames(
         cond,
         target,
-        action_group=group,
         action_label=label,
         loop=loop,
         min_frames=min_frames,
@@ -120,7 +119,7 @@ def test_head_word_fallback_ignores_action_modifiers():
         ("transition", "draw, gun", False, 46),
     ])}
     frames, why = _ask(
-        cond, "ns/Archer", "draw", group="transition", loop=False
+        cond, "ns/Archer", "draw", loop=False
     )
     assert frames == 44
     assert "draw" in why
@@ -150,9 +149,29 @@ def test_loop_falls_through_to_the_default_rather_than_borrowing_one_shots():
     assert _ask(cond, "ns/Horse", "walk, turn, left", loop=False)[0] == 28
 
 
-def test_head_word_fallback_stays_inside_the_group():
+def test_head_word_fallback_matches_across_groups():
     cond = {"ns/Horse": _entry([("stationary", "walk, backward", True, 84)])}
-    assert _ask(cond, "ns/Horse", "walk, forward", loop=True) is None
+    assert _ask(cond, "ns/Horse", "walk, forward", loop=True)[0] == 84
+
+
+def test_exact_label_pools_groups_without_a_group_condition():
+    from sample.output_lengths import _resolve_auto_output_lengths, loop_period, cap_auto_output_frames
+    cond = {"ns/Bird": _entry([
+        ('locomotion', 'fly, forward', True, 30),
+        ('transition', 'fly, forward', True, 90),
+    ])}
+    action = {'action_label': 'fly, forward'}
+    frames, _, _ = _resolve_auto_output_lengths(
+        cond, 'ns/Bird', action, min_length=20, internal_num_frames=60,
+        default_frames=60, loop=True, verbose=False)
+    assert frames == 60
+    assert loop_period(cond, 'ns/Bird', action, min_length=20, internal_num_frames=60) == (60, False)
+    assert cap_auto_output_frames(cond, 'ns/Bird', action, 90, internal_num_frames=60) == 90
+    # Older callers carrying a stale group field cannot narrow the prior pool.
+    stale_action = dict(action, action_group='locomotion')
+    assert _resolve_auto_output_lengths(
+        cond, 'ns/Bird', stale_action, min_length=20, internal_num_frames=60,
+        default_frames=60, loop=True, verbose=False)[0] == frames
 
 
 def test_neighbours_are_pooled_when_the_species_has_no_such_clip():
@@ -292,7 +311,7 @@ def test_auto_output_lengths_falls_back_to_the_native_window(capsys):
     # A label the corpus knows -> its median, and the matching speed condition.
     requested, target, speed = _resolve_auto_output_lengths(
         cond, "ns/Horse",
-        {"action_group": "locomotion", "action_label": "walk, forward"},
+        {"action_label": "walk, forward"},
         min_length=20, internal_num_frames=60, default_frames=60, loop=True,
     )
     assert (requested, target) == (84, 84)
@@ -304,7 +323,7 @@ def test_auto_output_lengths_names_an_unbaked_cond(capsys):
 
     frames, _, _ = _resolve_auto_output_lengths(
         {"ns/Horse": {}}, "ns/Horse",
-        {"action_group": "locomotion", "action_label": "walk, forward"},
+        {"action_label": "walk, forward"},
         min_length=20, internal_num_frames=60, default_frames=60, loop=False,
     )
     assert frames == 60
@@ -318,7 +337,7 @@ def test_auto_output_lengths_tells_a_baked_cond_apart_from_an_unbaked_one(capsys
 
     frames, _, _ = _resolve_auto_output_lengths(
         {"ns/Horse": _entry([])}, "ns/Horse",
-        {"action_group": "locomotion", "action_label": "walk, forward"},
+        {"action_label": "walk, forward"},
         min_length=20, internal_num_frames=60, default_frames=60, loop=False,
     )
     assert frames == 60
@@ -340,7 +359,7 @@ def test_auto_output_lengths_falls_back_to_the_checkpoint_cond(capsys):
 
     frames, _, _ = _resolve_auto_output_lengths(
         {"ns/Horse": {}}, "ns/Horse",
-        {"action_group": "locomotion", "action_label": "walk, forward"},
+        {"action_label": "walk, forward"},
         min_length=20, internal_num_frames=60, default_frames=60, loop=True,
         fallback_cond_loader=loader,
     )
@@ -352,7 +371,7 @@ def test_auto_output_lengths_falls_back_to_the_checkpoint_cond(capsys):
     calls.clear()
     _resolve_auto_output_lengths(
         {"ns/Horse": _entry([("locomotion", "walk, forward", True, 40)])}, "ns/Horse",
-        {"action_group": "locomotion", "action_label": "walk, forward"},
+        {"action_label": "walk, forward"},
         min_length=20, internal_num_frames=60, default_frames=60, loop=True,
         fallback_cond_loader=loader,
     )
@@ -363,8 +382,8 @@ def test_auto_output_lengths_falls_back_to_the_checkpoint_cond(capsys):
 def test_resolve_loop_condition_modes(capsys):
     from sample.output_lengths import resolve_loop_condition
 
-    jump = {"action_group": "locomotion", "action_label": "jump, up"}
-    swim = {"action_group": "locomotion", "action_label": "swim, forward"}
+    jump = {"action_label": "jump, up"}
+    swim = {"action_label": "swim, forward"}
     # Explicit modes ignore the label.
     assert resolve_loop_condition("on", None) is True
     assert resolve_loop_condition("off", swim) is False
@@ -376,17 +395,17 @@ def test_resolve_loop_condition_modes(capsys):
     assert "loop (auto) -> off (phase-anchored by jump)" in capsys.readouterr().out
     # A one-shot event modifier anchors a non-idle phase-free head.
     assert resolve_loop_condition(
-        "auto", {"action_group": "locomotion", "action_label": "walk, bite"},
+        "auto", {"action_label": "walk, bite"},
     ) is False
     assert "loop (auto) -> off (phase-anchored by bite)" in capsys.readouterr().out
     # An idle-primary label is phase-free no matter what follows.
     assert resolve_loop_condition(
-        "auto", {"action_group": "stationary", "action_label": "idle, bite"},
+        "auto", {"action_label": "idle, bite"},
     ) is True
     assert "loop (auto) -> on (head word(s) idle: phase-free)" in capsys.readouterr().out
     # One anchored head anchors the whole label.
     assert resolve_loop_condition(
-        "auto", {"action_group": "locomotion", "action_label": "run, jump, forward"},
+        "auto", {"action_label": "run, jump, forward"},
     ) is False
     capsys.readouterr()
     # A reference outranks the label...
@@ -545,7 +564,7 @@ def test_all_species_lengths_share_the_label_loop_verdict(capsys):
         "ns/Frog": _entry([("transition", "jump, up", False, 40)] * 2),
     }
     lengths = _all_species_output_lengths(
-        cond, {"action_group": "transition", "action_label": "jump, up"},
+        cond, {"action_label": "jump, up"},
         explicit=None, min_length=10, internal_num_frames=60, default_frames=60,
         loop_mode="auto",
     )
@@ -554,7 +573,7 @@ def test_all_species_lengths_share_the_label_loop_verdict(capsys):
     assert lengths["ns/Frog"] == (40, pytest.approx(40 / 60), False, None)
     assert "loop (auto): off for every species" in capsys.readouterr().out
     lengths = _all_species_output_lengths(
-        cond, {"action_group": "transition", "action_label": "jump, up"},
+        cond, {"action_label": "jump, up"},
         explicit=(30, 0.5), min_length=10, internal_num_frames=60, default_frames=60,
         loop_mode="on",
     )
@@ -588,7 +607,7 @@ def test_high_frequency_lengths_are_capped_at_the_window():
         ("stationary", "idle, hover", False, 79, True),
         ("stationary", "idle, hover", False, 90, True),
     ])}
-    frames, _ = _ask(cond, "ns/Bee", "idle, hover", group="stationary", window_frames=60)
+    frames, _ = _ask(cond, "ns/Bee", "idle, hover", window_frames=60)
     assert frames == 60
     # The same lengths without the flag only meet the 2T clamp.
     plain = {"ns/Bee": _entry([
@@ -596,7 +615,7 @@ def test_high_frequency_lengths_are_capped_at_the_window():
         ("stationary", "idle, hover", False, 79),
         ("stationary", "idle, hover", False, 90),
     ])}
-    assert _ask(plain, "ns/Bee", "idle, hover", group="stationary", window_frames=60)[0] == 90
+    assert _ask(plain, "ns/Bee", "idle, hover", window_frames=60)[0] == 90
 
 
 def test_high_frequency_loop_past_the_window_counts_as_a_oneshot():
@@ -606,7 +625,7 @@ def test_high_frequency_loop_past_the_window_counts_as_a_oneshot():
         ("stationary", "idle, hover", True, 72, True),   # cropped: trained open
     ])}
     # The loop pool keeps only the clip that stayed a loop.
-    assert _ask(cond, "ns/Bee", "idle, hover", group="stationary", loop=True)[0] == 40
+    assert _ask(cond, "ns/Bee", "idle, hover", loop=True)[0] == 40
 
 
 def test_an_old_schema_table_is_ignored():
@@ -633,7 +652,7 @@ def test_glide_auto_length_cap_applies_before_loop_period_shortcut(capsys):
         ('locomotion', 'fly, forward, glide', True, 101, True),
         ('locomotion', 'fly, forward', True, 106, False),
     ])}
-    action = {'action_group':'locomotion', 'action_label':'fly, forward, glide'}
+    action = {'action_label':'fly, forward, glide'}
     assert loop_period_prior(cond, 'ns/Eagle', **action,
                              min_frames=20, max_frames=300, window_frames=60)[0][0] == 106
     lengths = _all_species_output_lengths(cond, action, explicit=None, min_length=20,
@@ -653,7 +672,7 @@ def test_high_frequency_changes_length_but_not_label_based_auto_loop():
         ('locomotion', 'fly, forward, glide', True, 101, True),
         ('locomotion', 'fly, forward', True, 106, False)]),
         'ns/Bird': _entry([('locomotion', 'fly, forward, glide', True, 40, False)])}
-    action = {'action_group':'locomotion', 'action_label':'fly, forward, glide'}
+    action = {'action_label':'fly, forward, glide'}
     lengths = _all_species_output_lengths(cond, action, explicit=None, min_length=20,
                                           internal_num_frames=60, default_frames=60, loop_mode='auto')
     assert lengths['ns/Eagle'][:3] == (60,1,True)

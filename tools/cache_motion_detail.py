@@ -147,9 +147,19 @@ def main(argv=None):
     bundle = ActionConditioningBundle(word_embeddings=model.action_word_embeddings.cpu().numpy(),
         embedding_contract=metadata['embedding_contract'], conditioning_contract=metadata['conditioning_contract'], source=args.model_path)
     recorded = json.loads(Path(args.model_path).with_name('args.json').read_text())
+    selection_path = Path(args.model_path).with_name('sample_selection.json')
+    if selection_path.is_file():
+        selection = json.loads(selection_path.read_text(encoding='utf-8'))
+        pool_options = {'sample_filter': {'include': [
+            {'clips': [record['clip_id'] for record in selection['clips']]}
+        ]}}
+    else:
+        # Older checkpoints predate the unified filter and its clip snapshot.
+        pool_options = dict(objects_subset=recorded.get('objects_subset', 'all'),
+                            dataset_namespaces=recorded.get('dataset_namespaces'),
+                            action_group=recorded.get('action_group', 'all'))
     dataset = get_dataset(num_frames=recorded['num_frames'], split='train',
-        objects_subset=recorded['objects_subset'], dataset_namespaces=recorded.get('dataset_namespaces'),
-        action_group=args.action_group, action_label_cond=True, action_conditioning=bundle,
+        **pool_options, action_label_cond=True, action_conditioning=bundle,
         cond_path=runtime.actual_cond_file, species_table=runtime.species_table,
         motion_speed_aug=1., loop_cond_prob=1., loop_tile_single_prob=1., min_length=recorded.get('min_length', 20))
     groups = {}

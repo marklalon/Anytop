@@ -7,6 +7,7 @@ import os
 import json
 import re
 import shutil
+from argparse import Namespace
 
 # Ensure parent directory is in path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -143,13 +144,9 @@ def _normalized_action_group(raw):
 def assert_resume_keeps_action_group(args, save_dir):
     """Refuse a resume that would rewrite the checkpoint's recorded action_group.
 
-    args.json is rewritten on every launch, and it is the only place generation
-    reads the group from (utils.parser_util.apply_checkpoint_action_group; there
-    is no --action_group at generation). So a resume launched with another group
-    would not just feed the existing weights the wrong clips -- it would relabel
-    the checkpoint inference trusts, so every later generation would believe the
-    weights were fitted on a corpus they never saw. Changing groups means a fresh
-    save_dir.
+    args.json is rewritten on every launch. Keep its training-corpus metadata
+    consistent with the resumed weights. Generation does not consume this field.
+    Changing groups means a fresh save_dir.
     """
     if not getattr(args, 'resume_checkpoint', ''):
         return
@@ -164,8 +161,8 @@ def assert_resume_keeps_action_group(args, save_dir):
         return
     if previous_group:
         recorded = f"'{previous_group}'"
-        remedy = (f"Pass --action_group {previous_group} to continue this run, or "
-                  f"train '{current_group}' in its own --save_dir.")
+        remedy = ("Use a sample_filter selecting the recorded training pool to continue, "
+                  "or choose a fresh --save_dir.")
         # 'all' and a single group are different corpora, so this catches
         # resuming a unified run as one group and the reverse.
     else:
@@ -175,9 +172,8 @@ def assert_resume_keeps_action_group(args, save_dir):
     raise SystemExit(
         f"[ERROR] Resuming {args.resume_checkpoint} would change its action_group: "
         f"{args_path} records {recorded}, this run asks for '{current_group}'. The "
-        f"group is baked into the checkpoint -- it names the corpus the weights "
-        f"were fitted on and is the only group this checkpoint can ever be sampled "
-        f"as. {remedy}"
+        f"group records the corpus the resumed weights were fitted on. "
+        f"Changing it would mislabel the training history. {remedy}"
     )
 
 
@@ -216,6 +212,12 @@ def assert_resume_checkpoint_version(args, save_dir):
     )
 
 
+def recorded_training_args(args):
+    """Settings suitable for JSON and experiment trackers, without runtime tables."""
+    runtime_objects = ('action_conditioning', 'species_descriptor_table')
+    return {k: v for k, v in vars(args).items() if k not in runtime_objects}
+
+
 def write_args_json(args, args_path):
     """Record this run's args, stamped with the checkpoint version contract.
 
@@ -234,8 +236,7 @@ def write_args_json(args, args_path):
     # word table's identity travels as the two fingerprints inside every
     # checkpoint, the species table as a file next to it, and a numpy array is
     # not JSON anyway.
-    runtime_objects = ('action_conditioning', 'species_descriptor_table')
-    recorded = {k: v for k, v in vars(args).items() if k not in runtime_objects}
+    recorded = recorded_training_args(args)
     with open(args_path, 'w') as fw:
         json.dump(recorded, fw, indent=4, sort_keys=True)
 
@@ -294,11 +295,10 @@ def create_training_data_loader(args):
         head_word_weights=args.head_word_weights,
         rare_head_word_floor=args.rare_head_word_floor,
         rare_head_word_max_boost=args.rare_head_word_max_boost,
-        objects_subset=args.objects_subset,
-        dataset_namespaces=getattr(args, 'dataset_namespaces', None),
+        sample_filter=getattr(args, 'sample_filter', None) or {'include': [{}]},
+        sample_filter_seed=args.seed,
         sample_limit=args.sample_limit,
         drop_last=True,
-        action_group=getattr(args, 'action_group', ''),
         action_label_cond=getattr(args, 'action_label_cond', False),
         action_conditioning=getattr(args, 'action_conditioning', None),
         motion_cache_size=getattr(args, 'motion_cache_size', 0),
@@ -329,31 +329,34 @@ def run_training(args):
         configure_triton_c_compiler()
     fixseed(args.seed)
     save_dir = prepare_save_dir(args)
-    # The recorded action_group is the checkpoint's inference contract (it is the
-    # only place generation reads the group from), so a resume must not quietly
-    # rewrite it. Checked before anything in save_dir is touched.
-    assert_resume_keeps_action_group(args, save_dir)
-    assert_resume_checkpoint_version(args, save_dir)
+    # Check compatibility before replacing the saved training metadata.
+    resume_dir = (os.path.dirname(args.resume_checkpoint) or save_dir) if args.resume_checkpoint else None
+    assert_resume_checkpoint_version(args, resume_dir or save_dir)
     args.checkpoint_step_numbering = 'completed_steps'
     opt = get_opt(args.device, args.cond_path)
     # The checkpoint directory carries its own inference contract: cond.npy is
     # self-sufficient (baked species tags included), so generation from this
     # save_dir never needs the training dataset directories. Refreshed on every
     # launch, including resumes, so an updated cond does not leave a stale copy.
-    shutil.copy2(opt.cond_file, os.path.join(save_dir, 'cond.npy'))
     resolve_t5_out_dim(args, cond_source=opt.cond_file)
-
-    ml_platform_type = eval(args.ml_platform_type)
-    ml_platform = ml_platform_type(save_dir=args.save_dir)
-    ml_platform.report_args(args, name='Args')
-
-    write_args_json(args, os.path.join(save_dir, 'args.json'))
 
     dist_util.setup_dist(args.device)
 
     bootstrap_action_conditioning(args)
     bootstrap_species_descriptor_table(args, opt.cond_file, save_dir)
     data = create_training_data_loader(args)
+    report = getattr(data.dataset, 'sample_filter_report', None)
+    if report is not None:
+        from data_loaders.truebones.truebones_utils.sample_filter import record_sample_selection
+        args.action_group = report['action_group']
+        args.effective_action_groups = report['effective_action_groups']
+        assert_resume_keeps_action_group(args, resume_dir or save_dir)
+        record_sample_selection(report, save_dir, resume_directory=resume_dir)
+    shutil.copy2(opt.cond_file, os.path.join(save_dir, 'cond.npy'))
+    write_args_json(args, os.path.join(save_dir, 'args.json'))
+    ml_platform_type = eval(args.ml_platform_type)
+    ml_platform = ml_platform_type(save_dir=args.save_dir)
+    ml_platform.report_args(Namespace(**recorded_training_args(args)), name='Args')
     
     # Print motion count in train split
     train_split = getattr(args, 'train_split', 'train')

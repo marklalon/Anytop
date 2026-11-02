@@ -988,7 +988,7 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, head_word_weights: Optional[dict[str, float]] = None, rare_head_word_floor: int = 0, rare_head_word_max_boost: float = 4.0, split: str = "train"):
+    def __init__(self, opt, cond_dict, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, head_word_weights: Optional[dict[str, float]] = None, rare_head_word_floor: int = 0, rare_head_word_max_boost: float = 4.0, split: str = "train", selected_clip_objects=None):
         self.opt = opt
         # Only used to label the per-dataset counts printed below: a training run
         # builds one loader per split, and the two prints are otherwise
@@ -1079,6 +1079,9 @@ class MotionDataset(data.Dataset):
 
             for object_key, species_name in source_species:
                 object_motions = [name for name in all_motion_files if name.startswith(f'{species_name}_')]
+                if selected_clip_objects is not None:
+                    object_motions = [name for name in object_motions
+                                      if selected_clip_objects.get(clip_id(namespace, name)) == object_key]
                 high_frequency_names = high_frequency_clips(self.cond_dict[object_key], opt.cond_file)
 
                 for name in object_motions:
@@ -1878,6 +1881,12 @@ class Truebones(data.Dataset):
         )
         self.objects_subset = kwargs['objects_subset']
         self.action_group = kwargs.get('action_group', '')
+        sample_filter = kwargs.get('sample_filter')
+        self.sample_filter_report = None
+        if sample_filter is not None and (
+            self.objects_subset != 'all' or kwargs.get('dataset_namespaces') or self.action_group
+        ):
+            raise ValueError('sample_filter cannot be combined with legacy dataset filters')
         self.action_label_cond = bool(kwargs.get('action_label_cond', False))
         # One bundle per run: the training entry point builds it and hands the
         # same object to the model, so loader-side word ids and model-side word
@@ -1939,6 +1948,30 @@ class Truebones(data.Dataset):
             )
         cond_dict = load_cond(opt.cond_file)
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
+        motion_metadata_lookup = {
+            source.namespace: load_motion_metadata(source.root)
+            for source in opt.sources
+        }
+        filtered_allowed = None
+        selected_clip_objects = None
+        if sample_filter is not None:
+            from data_loaders.truebones.truebones_utils.sample_filter import resolve_sample_filter
+            self.sample_filter_report = resolve_sample_filter(
+                sample_filter, cond_dict, opt.sources, motion_metadata_lookup,
+                {key: dataset_tags().tags_for(key) for key in cond_dict}, split=split,
+                min_length=self.opt.min_length, sample_limit=self.sample_limit,
+                num_frames=kwargs['num_frames'], seed=kwargs.get('sample_filter_seed', 10),
+            )
+            selected = self.sample_filter_report['clips']
+            selected_clip_objects = {record['clip_id']: record['object_type'] for record in selected}
+            object_types = {record['object_type'] for record in selected}
+            cond_dict = {key: entry for key, entry in cond_dict.items() if key in object_types}
+            filtered_allowed = {source.namespace: set() for source in opt.sources}
+            for record in selected:
+                filtered_allowed[record['namespace']].add(record['clip_id'].rsplit('/', 1)[1])
+            print(f"[sample-filter] {len(selected)} trainable clips / "
+                  f"{self.sample_filter_report['candidate_count']} candidates; "
+                  f"groups={self.sample_filter_report['effective_action_groups']}")
         # Subset keys, species names and tag sets (see ``species_for``). A
         # species name is user input, so it goes through the same bare-name /
         # suffix / canonical-key resolution the CLI uses everywhere else. Each
@@ -2000,12 +2033,8 @@ class Truebones(data.Dataset):
                 )
         assert_single_canonical_frame(cond_dict, source=opt.cond_file)
 
-        motion_metadata_lookup = {
-            source.namespace: load_motion_metadata(source.root)
-            for source in opt.sources
-        }
         self.split_files = []
-        allowed_motion_names = load_allowed_motion_names_per_source(
+        allowed_motion_names = filtered_allowed if filtered_allowed is not None else load_allowed_motion_names_per_source(
             split,
             opt.sources,
             self.action_group,
@@ -2015,7 +2044,7 @@ class Truebones(data.Dataset):
             self.opt,
             cond_dict,
             num_frames=kwargs['num_frames'],
-            sample_limit=self.sample_limit,
+            sample_limit=0 if sample_filter is not None else self.sample_limit,
             allowed_motion_names=allowed_motion_names,
             motion_metadata_lookup=motion_metadata_lookup,
             action_conditioning=self.action_conditioning,
@@ -2023,11 +2052,16 @@ class Truebones(data.Dataset):
             rare_head_word_floor=self.rare_head_word_floor,
             rare_head_word_max_boost=self.rare_head_word_max_boost,
             split=split,
+            selected_clip_objects=selected_clip_objects,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \
                                           'To train and evaluate MDM you should get the FULL data as described ' \
                                           'in the README file.'
+        if self.sample_filter_report is not None:
+            expected = {record['clip_id'] for record in self.sample_filter_report['clips']}
+            if set(self.motion_dataset.name_list) != expected or len(self.motion_dataset.name_list) != len(expected):
+                raise RuntimeError('Loaded clips differ from sample_filter selection; check motion files and object prefixes')
 
     def __getitem__(self, item):
         return self.motion_dataset.__getitem__(item)

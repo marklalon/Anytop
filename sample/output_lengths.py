@@ -45,7 +45,7 @@ def cap_auto_output_frames(cond_dict, target_type, action_condition, frames, *,
         return int(frames)
     def ask(pool):
         cap = high_frequency_frame_cap(pool, target_type,
-            action_group=action_condition['action_group'], action_label=action_condition['action_label'],
+            action_label=action_condition['action_label'],
             window_frames=internal_num_frames)
         return (cap, 'matching high-frequency training window') if cap is not None else None
     resolved, _ = _ask_prior(cond_dict, fallback_cond_loader, ask)
@@ -189,7 +189,6 @@ def loop_period(cond_dict, target_type, action_condition, *, min_length,
         lambda candidates: loop_period_prior(
             candidates,
             target_type,
-            action_group=action_condition['action_group'],
             action_label=action_condition['action_label'],
             min_frames=min_length,
             max_frames=MAX_SOURCE_FRAMES_MULT * internal_num_frames,
@@ -434,7 +433,6 @@ def _resolve_auto_output_lengths(
             lambda candidates: auto_num_frames(
                 candidates,
                 target_type,
-                action_group=action_condition['action_group'],
                 action_label=action_condition['action_label'],
                 loop=loop,
                 min_frames=min_length,

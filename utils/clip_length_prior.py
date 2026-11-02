@@ -75,11 +75,8 @@ _SIMILAR_SPECIES_LIMIT = 16
 def label_key(action_group, action_label) -> str:
     """The table key for one (group, canonical label) pair.
 
-    The group is part of the key because a single-group checkpoint only ever
-    samples its own group's labels, and the same head word could carry a
-    different duration in another group. A request with an EMPTY group (an
-    ``--action_group all`` checkpoint) matches the label part across every
-    group; see :func:`_group_matches`.
+    Keep the baked group prefix for compatibility with existing cond files.
+    Generation matches only the label part, across every group.
     """
     group = str(action_group or "").strip().lower()
     label = str(action_label or "").strip()
@@ -239,46 +236,20 @@ def _lengths_for(cond_entry, matches, loop_only: bool, window_frames) -> list[in
     return loops if loop_only else loops + oneshots
 
 
-def _group_matches(key_group, wanted_group) -> bool:
-    """Does a table key's group satisfy the request's?
-
-    An EMPTY ``wanted_group`` means "any group". That is what an
-    ``--action_group all`` checkpoint asks for: it was trained on the whole
-    corpus, so it has no group of its own to restrict the pool by. Nothing is
-    lost by the wildcard -- the label's first head word determines the group on
-    its own across the corpus, so at most one group can hold a given label
-    anyway, and the wildcard just saves having to say which.
-    """
-    return not wanted_group or key_group == wanted_group
-
-
-def _exact_matcher(action_group, action_label):
-    group = str(action_group or "").strip().lower()
+def _exact_matcher(action_label):
     wanted = label_key("", action_label).lstrip("|")
-
-    def matches(key):
-        key_group, key_label = split_label_key(key)
-        return key_label == wanted and _group_matches(key_group, group)
-
-    return matches
+    return lambda key: split_label_key(key)[1] == wanted
 
 
-def _head_word_matcher(action_group, action_label):
-    """Same group (or any, when none is asked for) and same action head words,
-    whatever the modifiers.
-
-    'fly, forward, glide' falls back to every 'fly' clip of the group: the head
-    word is what sets the duration, a direction or a modifier does not.
-    """
-    group = str(action_group or "").strip().lower()
+def _head_word_matcher(action_label):
+    """Same action head words across all groups, regardless of modifiers."""
     wanted = tuple(head_words_in(vocab_words_in(str(action_label or ""))))
     if not wanted:
         return None
 
     def matches(key):
-        key_group, key_label = split_label_key(key)
-        candidate = tuple(head_words_in(vocab_words_in(key_label)))
-        return candidate == wanted and _group_matches(key_group, group)
+        _, key_label = split_label_key(key)
+        return tuple(head_words_in(vocab_words_in(key_label))) == wanted
 
     return matches
 
@@ -323,14 +294,14 @@ def _ranked_neighbours(cond_dict, target_type, candidates):
         return list(candidates)
 
 
-def _matchers_for(action_group, action_label):
+def _matchers_for(action_label):
     """The label matchers in the order the ladder tries them, or ``[]`` for an
     empty label (nothing to look up)."""
     label = str(action_label or "").strip()
     if not label:
         return []
-    matchers = [("exact label", _exact_matcher(action_group, label))]
-    head_words = _head_word_matcher(action_group, label)
+    matchers = [("exact label", _exact_matcher(label))]
+    head_words = _head_word_matcher(label)
     if head_words is not None:
         words = ", ".join(head_words_in(vocab_words_in(label)))
         matchers.append((f"head word(s) '{words}'", head_words))
@@ -398,7 +369,7 @@ def _first_pool(cond_dict, target_type, matchers, collect):
     return None
 
 
-def high_frequency_frame_cap(cond_dict, target_type, *, action_group, action_label, window_frames):
+def high_frequency_frame_cap(cond_dict, target_type, *, action_label, window_frames):
     """Auto output ceiling from the closest label pool, before loop filtering.
 
     Cropping a long HF loop makes it an open training window. Filtering it out
@@ -408,7 +379,7 @@ def high_frequency_frame_cap(cond_dict, target_type, *, action_group, action_lab
     what the model fitted for this label. A pool with no HF clip at all leaves
     the length untouched.
     """
-    matchers = _matchers_for(action_group, action_label)
+    matchers = _matchers_for(action_label)
     if not matchers:
         return None
     found = _first_pool(
@@ -424,7 +395,6 @@ def auto_num_frames(
     cond_dict: Mapping[str, Mapping[str, object]],
     target_type: Optional[str],
     *,
-    action_group: str,
     action_label: str,
     loop: bool,
     min_frames: int,
@@ -450,7 +420,7 @@ def auto_num_frames(
     holds an HF clip, so a cropped HF window cannot be replaced by a longer
     ordinary action's duration.
     """
-    matchers = _matchers_for(action_group, action_label)
+    matchers = _matchers_for(action_label)
     if not matchers:
         return None
     loop_only = bool(loop)
@@ -458,8 +428,8 @@ def auto_num_frames(
         cond_dict, target_type, matchers,
         lambda entry, matches: _lengths_for(entry, matches, loop_only, window_frames),
     )
-    cap = high_frequency_frame_cap(cond_dict, target_type, action_group=action_group,
-                                   action_label=action_label, window_frames=window_frames)
+    cap = high_frequency_frame_cap(cond_dict, target_type, action_label=action_label,
+                                   window_frames=window_frames)
     if found is None:
         return (cap, 'high-frequency training-window cap') if cap is not None else None
     lengths, explanation = found
@@ -484,7 +454,6 @@ def loop_period_prior(
     cond_dict: Mapping[str, Mapping[str, object]],
     target_type: Optional[str],
     *,
-    action_group: str,
     action_label: str,
     min_frames: int,
     max_frames: int,
@@ -499,7 +468,7 @@ def loop_period_prior(
     are high-frequency (``truebones_utils/high_frequency.py``): the loader only
     slows those down, so the cycle lengths they trained at are ``>= period``.
     """
-    matchers = _matchers_for(action_group, action_label)
+    matchers = _matchers_for(action_label)
     if not matchers:
         return None
     found = _first_pool(

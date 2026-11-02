@@ -200,8 +200,7 @@ def _generate_all_species(
           f'{len(species_batches)} batch(es) of batch_size={batch_size}')
     print(f'  All species: {", ".join(all_species)}')
     if action_condition is not None:
-        print(f'  Action label: {action_condition["action_label"]!r} '
-              f'(group={action_condition["action_group"]})')
+        print(f'  Action label: {action_condition["action_label"]!r}')
     sampling_model = _wrap_action_label_cfg(model, args, action_condition)
 
     for batch_idx, batch_species in enumerate(species_batches, 1):
