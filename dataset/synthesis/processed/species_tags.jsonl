@@ -20,3 +20,11 @@
 {"species": "SYN_ORA_ShortFacedBear", "species_tags": ["Quadruped"]}
 {"species": "SYN_Raptor3", "species_tags": ["Biped"]}
 {"species": "SYN_Puppy", "species_tags": ["Quadruped"]}
+{"species": "SYN_DNL_Banshee", "species_tags": ["Winged", "Fluttering"]}
+{"species": "SYN_DNL_FireDragon", "species_tags": ["Winged", "Fluttering"]}
+{"species": "SYN_DNL_Gryphon", "species_tags": ["Winged", "Fluttering"]}
+{"species": "SYN_Bat", "species_tags": ["Winged", "Fluttering"]}
+{"species": "SYN_Bird", "species_tags": ["Winged", "Fluttering"]}
+{"species": "SYN_Buzzard", "species_tags": ["Winged", "Fluttering"]}
+{"species": "SYN_Eagle", "species_tags": ["Winged", "Fluttering"]}
+{"species": "SYN_Parrot", "species_tags": ["Winged", "Fluttering"]}
