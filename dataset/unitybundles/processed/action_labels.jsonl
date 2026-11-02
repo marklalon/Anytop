@@ -613,7 +613,9 @@
 {"clip": "MB_TigerDrago_AttackPawR", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_AttackTail", "action_group": "stationary", "action_label": "attack, whip", "is_loop": true, "reviewed": true}
 {"clip": "MB_TigerDrago_Attack", "action_group": "stationary", "action_label": "attack, rear, smash", "is_loop": false, "reviewed": true}
-{"clip": "MB_TigerDrago_Confused", "action_group": "stationary", "action_label": "idle, rear, look", "is_loop": true, "reviewed": true}
+{"clip": "MB_TigerDrago_ConfusedUp", "action_group": "transition", "action_label": "rear, up", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_ConfusedLook", "action_group": "stationary", "action_label": "idle, rear, look", "is_loop": false, "reviewed": true}
+{"clip": "MB_TigerDrago_ConfusedDown", "action_group": "transition", "action_label": "rear, down", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_Death1Recover", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_Death1", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
 {"clip": "MB_TigerDrago_Death2Recover", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
