@@ -15,10 +15,12 @@ from data_loaders.truebones.truebones_utils.sample_filter import (
 )
 
 
-def record(clip, *, tags=('Winged',), group='locomotion', heads=('fly',), object_type=None):
+def record(clip, *, tags=('Winged',), group='locomotion', heads=('fly',), action_label=None,
+           object_type=None):
     namespace = clip.rsplit('/', 1)[0]
     return dict(clip_id=clip, namespace=namespace, object_type=object_type or namespace + '/Bird',
-                species_tags=list(tags), action_group=group, heads=list(heads))
+                species_tags=list(tags), action_group=group, heads=list(heads),
+                action_label=action_label if action_label is not None else ', '.join(heads))
 
 
 def ids(records):
@@ -67,6 +69,25 @@ def test_precise_namespaces_objects_globs_and_head_tokens():
                                                'heads_all': ['run', 'jump'],
                                                'clip_globs': ['*/Bee_*.npy']}]}, records)
     assert ids(selected) == {'truebones/zoo/Bee_Run.npy'}
+
+
+def test_tiny_selects_fly_or_hover_and_shake_across_datasets(dataset):
+    cond, sources, metadata, tags = dataset
+    config = load_sample_filter(Path(__file__).resolve().parents[1] / 'configs/sample_filters/tiny.json')
+    config['include'][0]['namespaces'] = ['zoo']
+    metadata['zoo']['Bird_1.npy'] = {'action_group': 'stationary', 'action_label': 'idle, hover'}
+    metadata['zoo']['Bird_2.npy'] = {'action_group': 'locomotion', 'action_label': 'run'}
+    metadata['zoo']['Bird_3.npy'] = {'action_group': 'stationary', 'action_label': 'idle'}
+    metadata['other']['Bird_2.npy'] = {'action_group': 'stationary', 'action_label': 'shake'}
+    tags['other/Bird'] = ('Quadruped',)
+    report = resolve_sample_filter(config, cond, sources, metadata, tags)
+    assert ids(report['clips']) == {'zoo/Bird_1.npy', 'zoo/Bird_4.npy', 'other/Bird_2.npy'}
+
+
+@pytest.mark.parametrize('field,word', [('heads_any', 'hover'), ('words_any', 'hovering')])
+def test_word_filters_keep_strict_vocabularies(field, word):
+    with pytest.raises(ValueError, match='unknown'):
+        load_sample_filter({'include': [{field: [word]}]})
 
 
 @pytest.mark.parametrize('config', [
@@ -206,8 +227,13 @@ def test_train_and_validation_default_to_all_without_inheriting_group(monkeypatc
     assert seen[-1]['sample_filter'] == 'validation.json'
 
 
-def test_real_tiny_loader_matches_legacy_and_preview(monkeypatch):
-    """Exercise the loader boundary as well as the pure rule engine."""
+def test_real_loader_matches_legacy_flags_and_honours_the_config_file(monkeypatch):
+    """Exercise the loader boundary as well as the pure rule engine.
+
+    The filter must reproduce the removed CLI flags for the equivalent rule, and
+    the shipped config file must drive the pool exactly as its own report says.
+    Its contents are free to change, so nothing here pins them.
+    """
     root = Path(__file__).resolve().parents[1]
     cond_path = root / 'dataset/cond_all.npy'
     if not cond_path.is_file():
@@ -218,9 +244,15 @@ def test_real_tiny_loader_matches_legacy_and_preview(monkeypatch):
     common = dict(num_frames=60, split='train', cond_path=str(cond_path))
     old = get_dataset(**common, objects_subset='Winged', action_group='locomotion',
                       dataset_namespaces='truebones/zoo;integrate_20260924')
-    new = get_dataset(**common, sample_filter=root / 'configs/sample_filters/tiny.json')
-    assert set(old.motion_dataset.name_list) == set(new.motion_dataset.name_list)
-    assert set(new.motion_dataset.name_list) == ids(new.sample_filter_report['clips'])
+    legacy_equivalent = get_dataset(**common, sample_filter={
+        'include': [{'namespaces': ['truebones/zoo', 'integrate_20260924'],
+                     'species_tags_all': ['Winged'], 'action_groups': ['locomotion']}],
+        'exclude': [],
+    })
+    assert set(old.motion_dataset.name_list) == set(legacy_equivalent.motion_dataset.name_list)
+    configured = get_dataset(**common, sample_filter=root / 'configs/sample_filters/tiny.json')
+    assert configured.motion_dataset.name_list
+    assert set(configured.motion_dataset.name_list) == ids(configured.sample_filter_report['clips'])
     limited = get_dataset(**common, sample_filter=root / 'configs/sample_filters/tiny.json',
                           sample_limit=3, sample_filter_seed=37)
     assert len(limited) == 3

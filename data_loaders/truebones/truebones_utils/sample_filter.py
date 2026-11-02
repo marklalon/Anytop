@@ -13,13 +13,13 @@ from pathlib import Path
 import random
 import warnings
 
-from .motion_labels import ACTION_GROUPS, HEAD_VOCAB, head_words_in, parse_action_label
+from .motion_labels import ACTION_GROUPS, CONTROLLED_VOCAB, HEAD_VOCAB, head_words_in, parse_action_label
 
 
 FIELDS = frozenset({
     "namespaces", "namespace_prefixes", "object_types", "action_groups",
     "species_tags_any", "species_tags_all", "species_tags_none", "species_tags_exact",
-    "heads_any", "heads_all", "heads_none", "clips", "clip_globs",
+    "heads_any", "heads_all", "heads_none", "words_any", "clips", "clip_globs",
 })
 
 
@@ -54,6 +54,10 @@ def load_sample_filter(value):
                     unknown = set(values) - set(HEAD_VOCAB)
                     if unknown:
                         raise ValueError(f"{where}.{field}: unknown head words {sorted(unknown)}")
+                if field == "words_any":
+                    unknown = set(values) - set(CONTROLLED_VOCAB)
+                    if unknown:
+                        raise ValueError(f"{where}.{field}: unknown label words {sorted(unknown)}")
                 if field == "action_groups" and set(values) - set(ACTION_GROUPS):
                     raise ValueError(f"{where}: unknown action_groups {values}")
                 normalized[field] = sorted(set(values))
@@ -93,6 +97,8 @@ def matches_rule(record, rule):
         ):
             return False
         if field.startswith("heads_") and not _set_match(record["heads"], wanted, field.removeprefix("heads_")):
+            return False
+        if field == "words_any" and not _set_match(parse_action_label(record["action_label"]), wanted, "any"):
             return False
     return True
 
@@ -225,6 +231,19 @@ def selection_snapshot(report):
     return payload
 
 
+def _format_selection_snapshot(snapshot):
+    """Keep each clip on one line while pretty-printing the surrounding metadata."""
+    fields = []
+    for key, value in snapshot.items():
+        if key == "clips" and value:
+            rows = ["    " + json.dumps(clip, ensure_ascii=False) for clip in value]
+            formatted = "[\n" + ",\n".join(rows) + "\n  ]"
+        else:
+            formatted = json.dumps(value, ensure_ascii=False, indent=2).replace("\n", "\n  ")
+        fields.append("  " + json.dumps(key, ensure_ascii=False) + ": " + formatted)
+    return "{\n" + ",\n".join(fields) + "\n}\n"
+
+
 def record_sample_selection(report, directory, *, resume_directory=None):
     """Check before writing: resumes may not silently change their training pool."""
     snapshot = selection_snapshot(report)
@@ -237,6 +256,6 @@ def record_sample_selection(report, directory, *, resume_directory=None):
             raise ValueError("Resuming would change sample_filter or effective clips; use a fresh save_dir")
     directory = Path(directory)
     (directory / "sample_selection.json").write_text(
-        json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        _format_selection_snapshot(snapshot), encoding="utf-8")
     (directory / "sample_filter.json").write_text(
         json.dumps(report["config"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

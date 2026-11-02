@@ -1,7 +1,6 @@
 # 训练样本过滤器
 
-`--sample_filter configs/sample_filters/tiny.json` 用一个 JSON 文件组合训练样本。
-`train_tiny.bat` 已迁移到该配置，保留原来的两个 namespace、Winged、locomotion 范围。
+`--sample_filter <过滤文件>` 用一个 JSON 文件组合训练样本，文件内容即唯一事实来源；本文只描述规则语义，不重复任何具体配置。
 
 ## 规则
 
@@ -22,6 +21,7 @@
 | `species_tags_exact` | 标签集合相等，忽略顺序 |
 | `action_groups` | `locomotion`、`stationary`、`transition` 中任意一个，不写 `all` |
 | `heads_any / heads_all / heads_none` | 动作标签的全部主词中，包含任一个／全部／一个都不含 |
+| `words_any` | 完整动作标签中包含任一个所列词，支持主词、修饰词和方向词 |
 | `clips` | 精确 `<namespace>/<filename>.npy` |
 | `clip_globs` | 显式通配符匹配完整 clip ID，支持 `*`、`?`、`[...]` |
 
@@ -29,34 +29,15 @@
 动作主词复用现有词表和标签解析，不读取文件名猜测动作，不做子串匹配；多主词标签的任一主词都可被 `heads_any` 命中。
 `tags_all`、`species` 等旧方案名称不是别名，会报未知字段。
 
-## 常用组合
+## 组合思路
 
-当前 tiny 去掉 walk/run，再加 unitybundles 的 shake：
+- 按来源：`namespaces` 精确匹配，`namespace_prefixes` 包含子 namespace。
+- 按物种：`species_tags_*` 匹配标签集合；要限定集合相等用 `species_tags_exact`。
+- 按动作：`heads_*` 只看主词，`words_any` 看完整标签，所以修饰词和方向词也要用 `words_any`。
+- 同一规则内字段是 AND，规则之间是 OR，`exclude` 始终优先。
+- 精确增删单个 clip：在 include 或 exclude 新增 `{"clips": ["<namespace>/<filename>.npy"]}`；只想排除某数据集的某个动作，可在 exclude 的同一条规则中同时写 `namespaces` 和 `heads_any`。
 
-```json
-{
-  "include": [
-    {
-      "namespaces": ["truebones/zoo", "integrate_20260924"],
-      "species_tags_all": ["Winged"],
-      "action_groups": ["locomotion"],
-      "heads_none": ["walk", "run"]
-    },
-    {
-      "namespaces": ["unitybundles"],
-      "heads_any": ["shake"]
-    }
-  ],
-  "exclude": []
-}
-```
-
-只训练 fly：把第一条的 `heads_none` 换成 `"heads_any": ["fly"]`，并去掉第二条。
-仅包含 Winged、不能有其它标签：使用 `"species_tags_exact": ["Winged"]`。
-有 Winged 但不能有 Fluttering：同一条规则中写 `species_tags_all: ["Winged"]` 和 `species_tags_none: ["Fluttering"]`。
-
-精确增加 clip：在 include 新增 `{"clips": ["<namespace>/<filename>.npy"]}`。
-精确删除 clip：在 exclude 新增同样的规则。若只想删除某个数据集中的 run，可在 exclude 的同一条规则中同时写 namespaces 和 heads_any。
+具体组合写在过滤文件里；改完后先用预览确认命中数，再启动训练。
 
 ## 预览
 
@@ -65,8 +46,8 @@
 ```bat
 ..\.venv\Scripts\python.exe tools/preview_sample_filter.py ^
   --cond_path dataset/cond_all.npy ^
-  --sample_filter configs/sample_filters/tiny.json ^
-  --output "%TEMP%\tiny-selection.json"
+  --sample_filter <过滤文件> ^
+  --output "%TEMP%\selection.json"
 ```
 
 预览不初始化模型，不写训练缓存。输出每条规则命中数、候选/命中/长度不合格/最终样本数，以及按数据集、object_type、动作组、主词的分布。

@@ -1,9 +1,12 @@
 {
   "include": [
     {
-      "namespaces": ["truebones/zoo", "integrate_20260924"],
+      "namespaces": ["truebones/zoo", "integrate_20260924", "synthesis"],
       "species_tags_all": ["Winged"],
-      "action_groups": ["locomotion"]
+      "words_any": ["fly", "hover"]
+    },
+    {
+      "heads_any": ["shake"]
     }
   ],
   "exclude": []
