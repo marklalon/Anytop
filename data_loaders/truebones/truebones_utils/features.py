@@ -757,9 +757,11 @@ def extract_motion_features_from_aligned_anims(
         # transport happens to point up -- a swim ascent, a fly-down -- and
         # leaving that travel in contradicts the very invariant the XZ detrend
         # establishes for the same clip. Below the threshold the height is left
-        # exactly as the vertical clamp shaped it, so an ordinary gait's bob,
+        # untouched before the vertical clamp, so an ordinary gait's bob,
         # and every hop that comes back down, are untouched: the two channels
         # are gated separately and a clip can take either, both or neither.
+        # A low wingtip alone is not a dive: the root and lowest joint must
+        # agree on the transport, and neither can contribute more than the other.
         flattened_root_y, root_y_drift = flatten_root_y_drift(
             source_root_y, source_global_positions[..., 1],
         )

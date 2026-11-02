@@ -150,6 +150,49 @@ def test_a_single_frame_track_is_a_no_op():
     assert np.allclose(flattened, [1.5])
 
 
+@pytest.mark.parametrize('reverse_root', [False, True])
+@pytest.mark.parametrize('reverse_floor', [False, True])
+def test_flapping_in_place_does_not_turn_wingtip_motion_into_transport(
+    reverse_root, reverse_floor,
+):
+    # Four 6-frame cycles without a duplicated closing frame, as in FireDragon.
+    root = np.tile([0.824775, 0.817859, 0.820881, 0.832668, 0.838012, 0.832595], 4)
+    floor = np.tile([0.640048, 0.624528, 0.651865, 0.419126, -0.015864, 0.174067], 4)
+    if reverse_root:
+        root = root[::-1]
+    if reverse_floor:
+        floor = floor[::-1]
+    source = _anim(np.stack([np.zeros(24), root, np.zeros(24)], axis=-1))
+    source.positions[:, 1, 1] = floor - root
+
+    features, _xz, y_flattened, motion_anim = _extract(source)
+
+    assert not y_flattened
+    assert np.allclose(_root_height(features), root, atol=1e-6)
+    assert np.allclose(positions_global(motion_anim), positions_global(source))
+
+
+@pytest.mark.parametrize('rise', [-1.0, 1.0])
+def test_a_wingtip_cannot_make_the_correction_exceed_body_travel(rise):
+    root = np.linspace(2.0, 2.0 + rise, 24)
+    floor = root - 0.5 + np.linspace(0.0, np.sign(rise) * 0.7, 24)
+
+    flattened, drift = flatten_root_y_drift(root, np.stack([root, floor], axis=1))
+
+    assert drift == pytest.approx(abs(rise))
+    assert np.allclose(flattened, root[0])
+
+
+def test_opposing_root_and_floor_motion_is_not_transport():
+    root = np.linspace(1.0, 1.5, 24)
+    floor = np.linspace(0.5, -0.5, 24)
+
+    flattened, drift = flatten_root_y_drift(root, np.stack([root, floor], axis=1))
+
+    assert drift == 0.0
+    assert np.array_equal(flattened, root)
+
+
 # -- the gate -------------------------------------------------------------
 
 
