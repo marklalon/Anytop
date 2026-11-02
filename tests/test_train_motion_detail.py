@@ -47,7 +47,7 @@ def test_cosine_schedule_warmup_endpoint_and_short_budget():
 @pytest.mark.parametrize('loop,frames', [(False, 37), (True, 60), (False, 1)])
 @pytest.mark.parametrize('device', ['cpu', pytest.param('cuda', marks=pytest.mark.skipif(
     not torch.cuda.is_available(), reason='CUDA unavailable'))])
-def test_batched_group_matches_serial_output_loss_and_gradients(loop, frames, device):
+def test_batched_group_matches_serial_output_loss_and_gradients(loop, frames, device, full_precision_matmul):
     config, base, y = fixture(loop, frames)
     # Non-unit base rotations, padding and distinct backbone samples matter here.
     base = torch.nn.functional.pad(base, (0, 3, 0, 0, 0, 2))

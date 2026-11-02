@@ -70,7 +70,7 @@ def test_statistics_root_invariance_geometry_independence_and_source_counts():
 
 @pytest.mark.parametrize('loop,frames', [(True, 37), (False, 23), (False, 1)])
 @pytest.mark.parametrize('device', ['cpu', 'cuda'])
-def test_batched_serial_full_and_crop_gradients(loop, frames, device):
+def test_batched_serial_full_and_crop_gradients(loop, frames, device, full_precision_matmul):
     if device == 'cuda' and not torch.cuda.is_available():
         pytest.skip('CUDA unavailable')
     _, base, y = fixture(loop, frames)
