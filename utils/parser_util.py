@@ -231,6 +231,13 @@ def add_model_options(parser):
     group.add_argument("--species_film_bottleneck", default=128, type=int,
                        help="Hidden width of the joint x species FiLM head (default 128; 0 = latent_dim).")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
+    group.add_argument("--lambda_drot", default=0.0, type=float,
+                       help="Weight of target-relative global rotation-step loss: R[t]^T R[t+1], "
+                            "squared chordal error in 0.1-radian units. Includes valid loop wrap steps "
+                            "and is weighted by the diffusion signal fraction alpha_bar[t]. 0 disables it.")
+    group.add_argument("--drot_joint_boost", default=0.0, type=float,
+                       help="Rotation-step GT motion joint weighting: 1 + boost * RMS/max_RMS, "
+                            "renormalized per sample. 0 keeps uniform supervision; try 3.")
     group.add_argument("--lambda_dpos", default=0.04, type=float,
                        help="Weight of the frame-to-frame position-step MSE against the target, "
                             "in units of the corpus position-step RMS; a loop sample also counts its wrap "
