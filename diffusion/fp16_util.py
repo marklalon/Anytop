@@ -13,6 +13,8 @@ from diffusion import logger
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 GRAD_NORM_ABORT_THRESHOLD = 1e12
+# Conservative starting scale for early fp16 gradients; grow up to the cap below.
+GRAD_SCALER_INIT_SCALE = 2 ** 13
 # Ceiling for the fp16 GradScaler's loss scale (None disables the cap).
 #
 # GradScaler doubles the scale every growth_interval until a step overflows, so
@@ -313,11 +315,11 @@ class MixedPrecisionTrainer:
         # optimize() has not run yet. Read by the trainer's spike-capture probe.
         self.last_grad_norm = None
         scaler_enabled = self.amp_enabled and self.amp_dtype == 'fp16' and self.device_type == 'cuda'
-        # Start at the cap as well as enforcing it after every update.  This
-        # avoids one first-step probe at the old default init_scale (2^16).
+        # Start below the cap to reduce early overflow probes. Checkpoint
+        # restore still replaces this initial value with the saved scaler state.
         self.scaler = th.amp.GradScaler(
             'cuda',
-            init_scale=float(GRAD_SCALER_MAX_SCALE),
+            init_scale=float(GRAD_SCALER_INIT_SCALE),
             enabled=scaler_enabled,
         )
 

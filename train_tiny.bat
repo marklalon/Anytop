@@ -6,7 +6,7 @@ REM See docs/tiny_locomotion_baseline.md for the fixed ablation protocol.
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
-set "RUN_NAME=zoo_locomotion_tiny_v69"
+set "RUN_NAME=zoo_locomotion_tiny_v71"
 if not "%~1"=="" set "RUN_NAME=%~1"
 
 if not exist "%PYTHON_EXE%" (
@@ -38,6 +38,7 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --sample_filter configs/sample_filters/tiny.json ^
     --rare_head_word_floor 10 ^
     --rare_head_word_max_boost 2 ^
+    --joint_name_noise_rank 64 ^
     --train_split train ^
     --noise_schedule_shift 2 ^
     --latent_dim 256 ^
@@ -60,6 +61,7 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --bone_length_aug_prob 0.2 ^
     --motion_speed_aug 1.3 ^
     --loop_cond_prob 0.8 ^
+    --drot_joint_boost 3 ^
     --cross_limb_dim 128 ^
 	--cross_limb_last_n 4 ^
     --temporal_rope ^
@@ -72,7 +74,7 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --weight_decay 0.03 ^
     --use_ema ^
     --ema_rate 0.995 ^
-    --num_steps 15000 ^
+    --num_steps 20000 ^
     --dropout_prob 0.1 ^
     --action_label_cfg_drop_prob 0.2 ^
     --joint_mask_prob 0.15 ^
@@ -85,6 +87,7 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --temporal_span_seam_loss_weight 0.2 ^
     --lambda_loop_wrap 0.04 ^
     --lambda_dpos 0.1 ^
+    --lambda_drot 0.1 ^
     --lambda_root_dpos 0.1 ^
     --lambda_root_acc 0.1 ^
     --lambda_limb_corr 0.1 ^

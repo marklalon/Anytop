@@ -2,7 +2,7 @@
 setlocal
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_all_v69
+set RUN_NAME=merged_all_v70
 set TORCH_LOGS=recompiles,graph_breaks
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
 
@@ -45,6 +45,7 @@ pushd "%SCRIPT_DIR%"
 	--bone_length_aug_prob 0.2 ^
 	--motion_speed_aug 1.3 ^
 	--loop_cond_prob 0.8 ^
+    --drot_joint_boost 3 ^
 	--cross_limb_dim 256 ^
 	--cross_limb_last_n 4 ^
     --temporal_rope ^
@@ -70,6 +71,7 @@ pushd "%SCRIPT_DIR%"
 	--temporal_span_seam_loss_weight 0.2 ^
 	--lambda_loop_wrap 0.04 ^
 	--lambda_dpos 0.1 ^
+    --lambda_drot 0.1 ^
 	--lambda_root_dpos 0.1 ^
 	--lambda_root_acc 0.1 ^
 	--lambda_limb_corr 0.1 ^

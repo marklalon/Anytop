@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=zoo_locomotion_tiny_v67
+set RUN_NAME=zoo_locomotion_tiny_v71
 
 rem set MODEL_FILE=model000020000.pt
 
@@ -11,7 +11,7 @@ rem A bare save-dir name (e.g. detail_v67_v3_200) resolves to save\<name>\refine
 rem a full path to the .pt is used as-is.
 rem The backbone checkpoint must match the refiner's contract (zoo_locomotion_tiny_v67).
 rem set REFINER_PATH=detail_v67_v3_200
-set REFINER_PATH=detail_v67_v3_200
+set REFINER_PATH=
 set REFINER_ALPHA=1.0
 set REFINER_SEED=20001
 
