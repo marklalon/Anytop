@@ -38,7 +38,7 @@ class ClassifierFreeActionModel(nn.Module):
 
     # Noise level, as t / T of the unshifted schedule, below which the late
     # scale takes over.
-    CFG_SWITCH = 0.5
+    CFG_SWITCH = 0.1
     # Scale on the low-noise detail steps: the plain conditional prediction.
     CFG_LATE_SCALE = 1.0
 
