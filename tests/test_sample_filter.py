@@ -286,9 +286,8 @@ def test_training_records_derived_group_and_refuses_changed_resume_before_overwr
     monkeypatch.setattr(training, 'bootstrap_action_conditioning', lambda *args: None)
     monkeypatch.setattr(training, 'bootstrap_species_descriptor_table', lambda *args: None)
     monkeypatch.setattr(training, 'create_training_data_loader', lambda *args: data)
-    monkeypatch.setattr(training, 'joint_name_noise_basis', lambda *args: ())
     model = SimpleNamespace(reference_parameter_budget=lambda: {},
-                            set_joint_name_noise_basis=lambda *args: None, to=lambda *args: None)
+                            to=lambda *args: None)
     monkeypatch.setattr(training, 'create_model_and_diffusion_general_skeleton', lambda *args: (model, None))
     monkeypatch.setattr(training, 'TrainLoop', lambda *args: SimpleNamespace(run_loop=lambda: None))
     training.run_training(args)

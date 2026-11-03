@@ -38,7 +38,6 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --sample_filter configs/sample_filters/tiny.json ^
     --rare_head_word_floor 10 ^
     --rare_head_word_max_boost 2 ^
-    --joint_name_noise_rank 64 ^
     --train_split train ^
     --noise_schedule_shift 2 ^
     --latent_dim 256 ^

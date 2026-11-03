@@ -69,7 +69,7 @@ def disable_dropout(model):
     Covers ``nn.Dropout`` modules and the attention modules that keep a float
     ``dropout`` and pass it to SDPA / ``F.dropout`` directly
     (``SelectiveMultiheadAttention``). Conditioning drops -- CFG drop,
-    ``joint_name_drop_prob`` whole-joint substitution, name noise, rest-geometry
+    ``joint_name_drop_prob`` whole-joint substitution, rest-geometry
     drop, joint / temporal masks --
     draw fp32 random numbers independent of the dtype and are left alone.
     Returns the number of rates changed.

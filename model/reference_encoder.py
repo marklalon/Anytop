@@ -3,7 +3,6 @@ import torch
 from torch import nn
 
 from model.motion_transformer import GraphMotionDecoder, GraphMotionDecoderLayer
-from model.joint_name_noise import JointNameNoise
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 
 
@@ -31,7 +30,7 @@ class ReferenceEncoder(nn.Module):
     """
 
     def __init__(self, t5_out_dim, slots=2, ref_dim=8, width=64, layers=2,
-                 heads=4, dropout=0.1, joint_name_noise_std=0.0):
+                 heads=4, dropout=0.1):
         super().__init__()
         from data_loaders.reference import REFERENCE_POSE_CHANNELS
         from data_loaders.truebones.truebones_utils.canonical_features import ROOT_XZ_CHANNELS
@@ -43,7 +42,6 @@ class ReferenceEncoder(nn.Module):
         self.root_xz_channels = tuple(ROOT_XZ_CHANNELS)
         self.joint_embedding = nn.Linear(REFERENCE_POSE_CHANNELS, width)
         self.root_embedding = nn.Linear(REFERENCE_POSE_CHANNELS + len(ROOT_XZ_CHANNELS), width)
-        self.joint_name_noise = JointNameNoise(joint_name_noise_std)
         self.text_embedding = nn.Linear(t5_out_dim, width)
         self.struct_embedding = nn.Sequential(
             nn.Linear(JOINT_STRUCT_DIM, width),
@@ -95,7 +93,7 @@ class ReferenceEncoder(nn.Module):
             self.root_embedding(torch.cat([pose[:, :, :1], root_xz], dim=-1)),
             self.joint_embedding(pose[:, :, 1:]),
         ], dim=2)
-        names = self.text_embedding(self.joint_name_noise(y['ref_joints_names_embs']))
+        names = self.text_embedding(y['ref_joints_names_embs'])
         static = (names + self.struct_embedding(y['ref_joint_struct'])
                   + self.rest_embedding(y['ref_rest_pose']))
         # Re-zero after the projections: their biases would make padding live.

@@ -391,17 +391,8 @@ def add_model_options(parser):
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
     group.add_argument("--joint_name_drop_prob", default=0.0, type=float,
                        help="Per-joint probability of zeroing a joint's ENTIRE name embedding during "
-                            "training. --joint_name_noise_std blurs that "
-                            "vector but never hides the joint's identity, so the model is "
-                            "never trained to fall back on rest geometry/graph_dist/joints_relations and a "
-                            "single rare name token can flip a limb's motion prior. Default 0.0 (off).")
-    group.add_argument("--joint_name_noise_std", default=0.1, type=float,
-                       help="Training-time Gaussian noise on the target's and the reference encoder's name embeddings, in the "
-                            "principal subspace of the training names and scaled by each direction's "
-                            "spread, so nearby names become interchangeable while distant body parts "
-                            "stay apart. All-zero (unknown) names stay zero. Inference adds none.")
-    group.add_argument("--joint_name_noise_rank", default=128, type=int,
-                       help="Number of principal directions of the training names the noise spans.")
+                            "training, encouraging fallback to rest geometry/graph_dist/joints_relations "
+                            "when a name is unknown. Default 0.0 (off).")
     group.add_argument("--rest_geom_drop_prob", default=0.1, type=float,
                        help="Per-sample probability in training of hiding the whole rest geometry "
                             "(y['rest_geom'], present flag included), so the rest is not a species "

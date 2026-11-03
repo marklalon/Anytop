@@ -196,14 +196,10 @@ class SpeciesHybridTest(unittest.TestCase):
                      None, _joint_struct(1).expand(2, -1, -1), species_code=code)
         self.assertFalse(torch.allclose(out[:, 0], out[:, 1]))
 
-    def test_joint_cond_film_reads_the_noised_names(self):
-        """The FiLM head reads the same noised names the projection does: with
-        the zero-initialized (identity) head, its joint input equals what
-        text_embedding receives, and both differ from the clean names."""
+    def test_joint_cond_film_reads_the_same_names_as_projection(self):
+        """The identity FiLM head and projection read the supplied names."""
         model = _make_model(species_cond=True)
         ip = model.input_process
-        ip.joint_name_noise.noise_std = 0.2
-        ip.joint_name_noise.set_basis(torch.eye(T5_DIM)[:4], torch.ones(4))
         film = _ProbeHead(ip.species_film_j)
         text = _ProbeHead(ip.text_embedding)
         ip.species_film_j, ip.text_embedding = film, text
@@ -213,7 +209,7 @@ class SpeciesHybridTest(unittest.TestCase):
             ip(x, rest_geom, joints, None, _joint_struct(*joints.shape[:2]), species_code=species)
         joint_part = film.last_input[..., :T5_DIM]
         self.assertTrue(torch.allclose(joint_part, text.last_input))
-        self.assertFalse(torch.allclose(joint_part, joints))
+        self.assertTrue(torch.allclose(joint_part, joints))
 
     def test_species_code_must_match_the_module(self):
         x, rest_pose, joints, species = _joint_cond_inputs()

@@ -30,7 +30,6 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim
 from data_loaders.reference import REST_GEOM_DIM
-from model.joint_name_noise import JointNameNoise
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -122,9 +121,6 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"joint_name_drop_prob must be in [0, 1], got {self.joint_name_drop_prob}"
             )
-        # Training-only noise on the name embeddings (model/joint_name_noise.py); the
-        # basis is attached after construction by set_joint_name_noise_basis.
-        self.joint_name_noise_std=float(kargs.get('joint_name_noise_std', 0.0))
         # Rest-geometry drop (see _sample_rest_geom_drop): whole sample, then
         # single joints, drawn independently of the name drop.
         self.rest_geom_drop_prob=float(kargs.get('rest_geom_drop_prob', 0.0))
@@ -195,7 +191,7 @@ class AnyTop(nn.Module):
 
         self.input_process = InputProcess(
             self.input_feats, self.latent_dim, t5_out_dim,
-            joint_name_noise_std=self.joint_name_noise_std, species_cond=self.species_cond,
+            species_cond=self.species_cond,
             species_film_bottleneck=self.species_film_bottleneck,
         )
         # Token-type embedding for "this (frame, joint) is being re-drawn",
@@ -298,18 +294,10 @@ class AnyTop(nn.Module):
             self.reference_encoder = ReferenceEncoder(
                 t5_out_dim, slots=int(kargs.get('ref_slots', 2)), ref_dim=ref_dim,
                 width=ref_width, layers=int(kargs.get('ref_layers', 2)),
-                dropout=self.dropout, joint_name_noise_std=self.joint_name_noise_std,
+                dropout=self.dropout,
             )
             for layer in self.seqTransDecoder.layers:
                 layer.enable_reference(ref_dim)
-
-    def set_joint_name_noise_basis(self, basis, std):
-        """Attach the name-noise basis (model/joint_name_noise.joint_name_noise_basis) to
-        the target and reference name paths alike."""
-        device = next(self.parameters()).device
-        self.input_process.joint_name_noise.set_basis(basis, std, device)
-        if self.reference_encoder is not None:
-            self.reference_encoder.joint_name_noise.set_basis(basis, std, device)
 
     def reference_parameter_budget(self):
         encoder = sum(p.numel() for p in self.reference_encoder.parameters()) if self.reference_encoder else 0
@@ -1250,7 +1238,7 @@ class AnyTop(nn.Module):
 # in the case of GMDM, the input process is as follows:
 # embed each joint of each frame of each motion in batch by the same MLP, separately !
 class InputProcess(nn.Module):
-    def __init__(self, input_feats, latent_dim, t5_output_dim, joint_name_noise_std=0.0,
+    def __init__(self, input_feats, latent_dim, t5_output_dim,
                  species_cond=False, species_film_bottleneck=128):
         super().__init__()
         self.input_feats = input_feats
@@ -1258,19 +1246,8 @@ class InputProcess(nn.Module):
         # One embedding for every joint, the root included: its channels mean
         # the same (canonical_features, "Root"), and its name tells it apart.
         self.joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
-        # Training-time noise in the names' principal subspace (model/joint_name_noise.py):
-        # nearby names become interchangeable, so a name carries coarse semantics
-        # rather than an exact per-name identity.
-        self.joint_name_noise = JointNameNoise(joint_name_noise_std)
-        # Whole-joint name dropout. Noise blurs a name but never hides the joint's
-        # identity, so on its own the model is never trained on "I do not know what
-        # this joint is" and never learns to fall back on rest geometry / graph_dist /
-        # joints_relations. The name embedding
-        # is the only per-joint identity signal in the token (it is added straight
-        # onto x below), which is why a single rare token -- Mixamo's "LeftLeg"
-        # landing next to "Left Arm" in T5 space -- can flip a whole limb's motion
-        # prior. Dropping the entire row for a random subset of joints demotes the
-        # name from sole signal to one signal among several.
+        # Whole-joint name dropout encourages fallback to rest geometry,
+        # graph distances and joint relations when a name is unknown.
         # A dropped name is an all-zero row, the same "no name" the padding rows
         # carry. Padding never reaches a live joint (the attention mask and the
         # loss both exclude it), so sharing the zero row costs nothing, and it
@@ -1353,24 +1330,20 @@ class InputProcess(nn.Module):
             )
         else:
             joint_valid = joint_valid.to(device=joints_clean.device, dtype=torch.bool)
-        # Whole-joint dropout runs FIRST, so everything downstream -- the noise,
-        # the FiLM condition, the projection -- sees the zeroed row and the hidden
-        # name cannot leak back in through the species pathway. The noise skips
-        # all-zero rows, so a dropped or unknown name stays exactly zero.
+        # Whole-joint dropout runs before FiLM and projection, so the hidden
+        # name cannot leak back in through the species pathway.
         if joint_name_drop is not None:
             joints_clean = joints_clean.masked_fill(
                 joint_name_drop.to(joints_clean.device).unsqueeze(-1), 0.0
             )
-        joints_embedded_names = self.joint_name_noise(joints_clean)
+        joints_embedded_names = joints_clean
         if self.species_film_j is not None:
             if species_code is None:
                 raise ValueError(
                     "species_cond is enabled but species_code was not passed to "
                     "InputProcess (expected y['species_code'])."
                 )
-            # The FiLM condition reads the same noised names as the projection: the
-            # noise has no train-time rescale, and FiLM should see the same coarse
-            # name the token does.
+            # FiLM and projection read the same names after whole-joint dropout.
             # joints_embedded_names: [B, J, t5]; species_code: [B, code] -> [B, J, code]
             species_broadcast = species_code.to(device=x.device, dtype=joints_embedded_names.dtype).unsqueeze(1).expand(-1, joints_embedded_names.shape[1], -1)
             gamma_residual, beta = run_in_fp32(

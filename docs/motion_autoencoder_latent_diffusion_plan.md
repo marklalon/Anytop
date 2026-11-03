@@ -191,7 +191,7 @@ KL 使用对角高斯到 N(0,I) 的解析形式，先对每个样本的有效 T�
 | topology_aug | 保留，动作与拓扑、索引、mask 同步变更 | 新骨架必须在 AE 验证范围内 |
 | bone_length_aug | 保留，目标为增强后的动作 | 不能仍用原骨长条件；当前增强无 contact IK，不以其产物证明接触正确 |
 | rest_repose、rest_variant | 保留，使用更新后的 rest 与转换信息 | 不假定 latent 完全不变，除非额外验证了不变性 |
-| joint_name_noise、名称或静态条件 dropout | 重建基线先关闭新增随机丢弃，再逐项验证 | 用于实际读取这些条件的网络；概率无需与原模型一致 |
+| 名称或静态条件 dropout | 重建基线先关闭新增随机丢弃，再逐项验证 | 用于实际读取这些条件的网络；概率无需与原模型一致 |
 | action/species CFG dropout | 第一版 AE 不使用这些生成条件 | 第二阶段使用 |
 | ref_cfg_drop_prob | 不适用于新 AE 的唯一路径 latent | 参考生成分支单独设计 |
 | joint_mask、temporal_span_mask、unreliable_mask_drop、renoise | 基础 AE 关闭 | latent 局部补全必须重新设计，不能按原关节索引直接 mask 全局槽 |
