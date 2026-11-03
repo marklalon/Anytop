@@ -241,7 +241,7 @@
 {"clip": "spider_tarantula_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": false, "reviewed": true}
 {"clip": "spider_tarantula_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
 {"clip": "Tiger_Atk", "action_group": "stationary", "action_label": "attack, rear, smash", "is_loop": true, "reviewed": true}
-{"clip": "Tiger_Atk2", "action_group": "stationary", "action_label": "attack, shake", "is_loop": true, "reviewed": true}
+{"clip": "Tiger_Atk2", "action_group": "stationary", "action_label": "shake", "is_loop": true, "reviewed": true}
 {"clip": "Tiger_Death", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
 {"clip": "Tiger_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "Tiger_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": false, "reviewed": true}
