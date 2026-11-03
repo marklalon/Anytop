@@ -1,7 +1,10 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_all_v65
+set RUN_NAME=zoo_locomotion_tiny_v71
+
+rem set MODEL_FILE=model000020000.pt
+
 REM ----------------------------------------------------------------------
 REM Combination rules for target skeleton + reference motion (passed via %* to sample/generate.py):
 REM   1) --object_type Horse only                          : random generation for Horse
@@ -20,8 +23,6 @@ REM   5) neither provided -> error and exit
 REM Supports zero-shot inference on object types not seen during training.
 REM ----------------------------------------------------------------------
 set BATCH_SIZE=8
-
-rem set MODEL_FILE=model000020000.pt
 
 pushd "%SCRIPT_DIR%"
 

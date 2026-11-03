@@ -82,26 +82,19 @@ def _resolve_species_code_override(args, model, cond_dict, object_type, species_
 
 
 def _resolve_action_condition(args, model):
-    """Resolve the checkpoint's action group + ``--action_label`` into one condition.
+    """Resolve ``--action_label`` into the model's slot condition.
 
     Returns ``None`` when no label was requested (the model then falls back to its
-    learned unconditional embedding), otherwise a dict carrying the group, the
-    label text and the word-level ids the model assembles its slot channels from.
+    learned unconditional embedding), otherwise a dict carrying the label text
+    and the word-level ids the model assembles its slot channels from.
     No T5 runs here and no sidecar is read: the frozen word vectors live in the
     checkpoint, so a generated clip is conditioned on exactly the table the
     weights were trained against.
 
-    ``args.action_group`` is the group this checkpoint was trained on, read out of
-    its args.json by parser_util.apply_checkpoint_action_group. There is no
-    ``--action_group`` flag at generation: a single-group checkpoint IS its
-    group, and a foreign one would describe a different checkpoint. It is empty
-    for a checkpoint trained with ``--action_group all`` (and for one predating
-    the mandatory training flag), which is not an error: the label carries the
-    group already, and the value only ever reaches the clip-length prior, whose
-    matchers read an empty group as "any group".
+    Only the action label and its slots condition generation. Length priors
+    match the label across all stored groups.
     """
     label = str(getattr(args, 'action_label', '') or '').strip()
-    group = str(getattr(args, 'action_group', '') or '').strip().lower()
     if not label:
         return None
 
@@ -120,11 +113,6 @@ def _resolve_action_condition(args, model):
             'ERROR: --action_label was passed but this checkpoint was trained '
             'without --action_label_cond. The label would have no effect.'
         )
-    # No group-validity check here: apply_checkpoint_action_group already
-    # normalizes anything but ''/a legal group to '' at load time, so ``group``
-    # is either one of ACTION_GROUPS or '' (an --action_group all checkpoint,
-    # meaning "any group").
-    #
     # Labels are exact controlled tokens. An unrecognized one is a HARD ERROR,
     # not a pass-through: there is no synonym translation any more, and letting
     # free text through would sample from wherever T5 puts an out-of-distribution
@@ -160,7 +148,6 @@ def _resolve_action_condition(args, model):
     # the model a slot assignment training never produced.
     slots = action_label_slots(tokens)
     return {
-        'action_group': group,
         'action_label': label,
         'action_slots': {
             'word_ids': np.asarray(slots['word_ids'], dtype=np.int64),
@@ -236,12 +223,15 @@ def _wrap_reference_cfg(model, args, action_condition):
     from model.cfg_sampler import ClassifierFreeReferenceModel
     if not getattr(unwrap_anytop_model(model), 'ref_encoder', False):
         raise ValueError('--reference_motion requires a checkpoint trained with --ref_encoder')
-    if float(getattr(model, 'ref_cfg_drop_prob', 0.0)) <= 0:
+    scale = getattr(args, 'ref_cfg_scale', 1.0)
+    # Scale 1 uses only the reference-conditioned pass, so it needs no trained
+    # null branch (single-clip overfit can keep the reference on every row).
+    if float(scale) != 1.0 and float(getattr(model, 'ref_cfg_drop_prob', 0.0)) <= 0:
         raise ValueError('Reference CFG requires training with ref_cfg_drop_prob > 0')
     if action_condition is not None:
         raise ValueError('an encoded --reference_motion cannot be combined with --action_label')
     return ClassifierFreeReferenceModel(
-        model, getattr(args, 'ref_cfg_scale', 1.0), num_timesteps=args.diffusion_steps,
+        model, scale, num_timesteps=args.diffusion_steps,
         switch_t=cfg_switch_timestep(args),
     )
 
@@ -275,7 +265,7 @@ def _coerce_loop_flag(flag):
 def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len, loop=False, action_condition=None, species_code_override=None, loop_cycles=None):
     """Build model_kwargs for a batch of object_types.
 
-    action_condition: {'action_group', 'action_label', 'action_slots'} applied
+    action_condition: {'action_label', 'action_slots'} applied
         to every object in the batch, or None for unconditional generation.
     species_code_override: [species_code_dim] vector replacing the bound species_code for all objects.
     loop: ask for a closed window -- one bool for the whole batch, or one per
@@ -345,7 +335,6 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         if species_code_override is not None:
             metadata['species_code'] = species_code_override
         if action_condition is not None:
-            metadata['action_group'] = action_condition['action_group']
             metadata['action_label'] = action_condition['action_label']
             metadata['action_slots'] = action_condition['action_slots']
         batch.append(metadata)

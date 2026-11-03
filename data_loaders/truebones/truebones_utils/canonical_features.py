@@ -52,6 +52,10 @@ than the joints' RIC positions, so the root's position takes its own mean and
 std, one scalar shared by X and Z (the horizontal plane stays isotropic) and
 one for Y.
 
+The training loader re-centres each final temporal window on its own first
+frame's root XZ after crop, phase roll, tiling and resampling, before size
+normalization and standardization. Root Y and the other joints' RIC stay as is.
+
 Statistics layout. ``canonical_feature_mean`` / ``canonical_feature_std`` are
 ``FEATS_LEN + 3`` vectors: the per-channel statistics of every joint, then the
 root position's (``ROOT_STAT_SLICE``), which replace channels 0:3 on joint 0.
@@ -852,7 +856,7 @@ def _gather_parent(matrices, parent_index):
     return np.take_along_axis(matrices, index[:, None, :, None, None], axis=2)
 
 
-def _apply_rotation_frames(feature, cond_entry, inverse: bool):
+def _apply_rotation_frames(feature, cond_entry, inverse: bool, *, return_canonical_rotations=False):
     """Physical local rotation (encode) <-> canonical bone-aligned global
     rotation (decode, ``inverse=True``).
 
@@ -866,6 +870,8 @@ def _apply_rotation_frames(feature, cond_entry, inverse: bool):
     is_torch = _is_torch_tensor(feature)
     out = feature.clone() if is_torch else np.asarray(feature, dtype=np.float32).copy()
     n_feats = out.shape[2] if out.ndim == 4 else out.shape[-1]
+    if return_canonical_rotations and (not inverse or n_feats < _ROT_SLICE.stop):
+        raise ValueError("return_canonical_rotations requires inverse=True and rotation channels")
     if n_feats < _ROT_SLICE.stop:
         return out
     # A copy, not a view: ``out`` is written in place below, and the rotation
@@ -920,7 +926,10 @@ def _apply_rotation_frames(feature, cond_entry, inverse: bool):
         result6d = torch.cat([result[..., :, 0], result[..., :, 1]], dim=-1).to(out.dtype)
     else:
         result6d = np.concatenate([result[..., :, 0], result[..., :, 1]], axis=-1).astype(np.float32)
-    return _write_rotation_view(out, result6d)
+    decoded = _write_rotation_view(out, result6d)
+    if return_canonical_rotations:
+        return decoded, matrices
+    return decoded
 
 
 def physical_hml_to_lnorm(feature, cond_entry):
@@ -945,18 +954,27 @@ def physical_hml_to_canonical(feature, cond_entry):
     return zero_velocity(_apply_global_stats(lnorm, cond_entry, inverse=False))
 
 
-def canonical_to_physical_hml(feature, cond_entry):
+def canonical_to_physical_hml(feature, cond_entry, *, return_canonical_rotations=False):
     """Decode canonical model features back to working-layout physical features.
 
     Decode order (inverse of encode on every kept channel): de-standardize by
     the global mean/std, multiply the position channels by ``L``, then turn the
     rotation channel back into local rotations against ``cond_entry``'s own
-    rest. The velocity channels come back as zero;
+    rest. With ``return_canonical_rotations=True``, also return the decoded
+    bone-aligned global matrices before removing the rest frames, for reuse by
+    rotation-step supervision. The velocity channels come back as zero;
     :func:`working_to_stored` writes the stored layout.
     """
     lnorm = _apply_global_stats(feature, cond_entry, inverse=True)
     unscaled = _apply_L_scale(lnorm, cond_entry, inverse=True)
-    return zero_velocity(_apply_rotation_frames(unscaled, cond_entry, inverse=True))
+    decoded = _apply_rotation_frames(
+        unscaled, cond_entry, inverse=True,
+        return_canonical_rotations=return_canonical_rotations,
+    )
+    if return_canonical_rotations:
+        physical, rotations = decoded
+        return zero_velocity(physical), rotations
+    return zero_velocity(decoded)
 
 
 def _new_step_acc():

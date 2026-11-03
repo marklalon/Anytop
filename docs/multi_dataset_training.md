@@ -25,7 +25,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets_all.jsonl
 新增模块：[`dataset_sources.py`](../data_loaders/truebones/truebones_utils/dataset_sources.py)（namespace / 规范键 / 文件名 token / 清单）、
 [`cond_schema.py`](../data_loaders/truebones/truebones_utils/cond_schema.py)（v4 读写与就地升级）。
 
-> 清单与合并 cond 按用途加后缀：`datasets_all.jsonl` → `cond_all.npy`（全部数据集），`datasets_tiny.jsonl` → `cond_tiny.npy`（仅 `truebones/zoo` + `truebones/zoo_upgrade`）；`train_tiny.bat` 与 `train_all.bat` 同用 `cond_all.npy`，只靠 `--action_group locomotion` 缩小数据；
+> 清单与合并 cond 按用途加后缀：`datasets_all.jsonl` → `cond_all.npy`（全部数据集），`datasets_tiny.jsonl` → `cond_tiny.npy`（仅 `truebones/zoo` + `truebones/zoo_upgrade`）；`train_tiny.bat` 与 `train_all.bat` 同用 `cond_all.npy`。tiny 通过 [`--sample_filter configs/sample_filters/tiny.json`](sample_filter.md) 选择样本；不指定过滤文件时使用当前 split 的全部样本，训练入口已移除旧三个筛选参数。
 > 新建一套只需另写一份清单，再用 `merge_dataset_cond.py --datasets <清单> --out <cond>` 生成。
 
 > 旧版 cond.npy 在**加载时自动升级到 v4**（namespace 由目录推断），所以未迁移的数据集也能直接跑；
@@ -193,7 +193,7 @@ python tools/merge_dataset_cond.py \
 - `train_anytop.py` 新增 `--cond_path`，**必填**（与 `generate.py` 同名）
 - 单数据集训练：`--cond_path dataset/truebones/zoo/truebones_processed/cond.npy`
 - 合并训练：`--cond_path dataset/cond_all.npy`
-- `--objects_subset all` 的含义 = 当前 cond.npy 里的全部物种
+- 训练不指定 `--sample_filter` 时使用当前 cond.npy 和 split 中的全部物种与动作
 
 ### 5.2 `get_opt` / opt
 
@@ -356,7 +356,7 @@ v4 打戳集中在**唯一的落盘点** `_save_cond_with_tpose_sidecar` / `rege
 - [x] `MotionDataset.name_list` 顺序、`pointer`、`length_arr` 一致（268 clip 全等）
 - [x] `TruebonesSampler` 权重向量逐元素一致（maxdiff = 0.0）
 - [x] 生成输出文件名与今天一致（`Horse_0.npy`）
-- [x] `--object_type Horse` / `--objects_subset quadruped` 行为不变
+- [x] 推理的 `--object_type Horse` 行为不变；训练子集统一通过 `--sample_filter` 选择
 - [x] 现有测试迁移后全绿（293 passed / 4 skipped）
 
 **合并模式：**

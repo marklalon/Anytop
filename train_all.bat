@@ -2,11 +2,13 @@
 setlocal
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_all_v67
+set RUN_NAME=merged_all_v70
 set TORCH_LOGS=recompiles,graph_breaks
+set "TORCHINDUCTOR_CUDAGRAPHS=1"
 
 REM train_anytop requires bundled TinyCC for --compile, overriding inherited CC.
 REM Inductor C++ codegen is disabled; no Visual Studio environment is needed.
+REM reduce-overhead uses CUDA Graphs for eligible model forward/backward regions.
 
 pushd "%SCRIPT_DIR%"
 
@@ -18,14 +20,11 @@ pushd "%SCRIPT_DIR%"
 	--eval_interval 5000 ^
 	--auto_resume ^
 	--ml_platform_type TensorboardPlatform ^
-	--objects_subset all ^
-	--action_group all ^
 	--rare_head_word_floor 20 ^
 	--rare_head_word_max_boost 4 ^
 	--head_word_weights attack,hurt=0.8,idle=0.6 ^
 	--train_split train ^
-    --noise_schedule_shift 1.5 ^
-    --noise_schedule_shift_min 0.5 ^
+    --noise_schedule_shift 2 ^
 	--latent_dim 384 ^
 	--ff_size 2048 ^
 	--last_layer_ff 256 ^
@@ -45,12 +44,12 @@ pushd "%SCRIPT_DIR%"
 	--topology_aug_prob 0.2 ^
 	--bone_length_aug_prob 0.2 ^
 	--motion_speed_aug 1.3 ^
-	--loop_cond_prob 0.8 ^
+    --loop_cond_prob_free 0.8 ^
+    --loop_cond_prob_anchored 0.2 ^
+    --drot_joint_boost 1 ^
 	--cross_limb_dim 256 ^
 	--cross_limb_last_n 4 ^
     --temporal_rope ^
-    --temporal_rope_ref_drop_prob 0.8 ^
-    --temporal_rope_drop_prob 0.2 ^
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
 	--batch_size 16 ^
@@ -62,7 +61,7 @@ pushd "%SCRIPT_DIR%"
 	--ema_rate 0.9995 ^
 	--num_steps 300000 ^
 	--dropout_prob 0.1 ^
-	--action_label_cfg_drop_prob 0.2 ^
+    --action_label_cfg_drop_prob 0.15 ^
 	--joint_mask_prob 0.15 ^
 	--unreliable_mask_drop_prob 0.15 ^
 	--renoise_same_level_prob 0.6 ^
@@ -73,16 +72,17 @@ pushd "%SCRIPT_DIR%"
 	--temporal_span_seam_loss_weight 0.2 ^
 	--lambda_loop_wrap 0.04 ^
 	--lambda_dpos 0.1 ^
+    --lambda_drot 0.1 ^
 	--lambda_root_dpos 0.1 ^
 	--lambda_root_acc 0.1 ^
 	--lambda_limb_corr 0.1 ^
 	--lambda_geo 0.1 ^
-	--lambda_bone 0.08 ^
+	--lambda_bone 0.06 ^
 	--motion_cache_size 16384 ^
 	--amp_dtype fp16 ^
 	--main_process_prefetch_batches 64 ^
 	--num_workers 2 ^
-	--compile default
+	--compile reduce-overhead
 
 set "EXIT_CODE=%ERRORLEVEL%"
 popd

@@ -287,7 +287,7 @@ def test_loop_period_prior_reports_high_frequency_majority():
                         + [('locomotion', 'fly, forward', True, 90, True)] * 3),
     }
     (period, high_frequency), _ = loop_period_prior(
-        cond, 'ns/Bee', action_group='locomotion', action_label='fly, forward',
+        cond, 'ns/Bee', action_label='fly, forward',
         min_frames=10, max_frames=120, window_frames=60,
     )
     assert period == 20 and high_frequency

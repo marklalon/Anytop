@@ -38,7 +38,7 @@ class ClassifierFreeActionModel(nn.Module):
 
     # Noise level, as t / T of the unshifted schedule, below which the late
     # scale takes over.
-    CFG_SWITCH = 0.5
+    CFG_SWITCH = 0.1
     # Scale on the low-noise detail steps: the plain conditional prediction.
     CFG_LATE_SCALE = 1.0
 
@@ -138,9 +138,9 @@ class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
         null_y = dict(y or {})
         null_y['ref_active'] = torch.zeros(x.shape[0], dtype=torch.bool, device=x.device)
         null_y['action_label_active'] = torch.zeros_like(null_y['ref_active'])
-        # Read only under --temporal_rope_ref_drop_prob: the null pass runs in the
-        # same no-RoPE regime as the reference pass it is mixed with.
-        null_y['temporal_rope_off'] = torch.ones_like(null_y['ref_active'])
+        # Keep RoPE on in the null pass; reference-active rows still drop it
+        # at inference under --temporal_rope_ref_drop_prob.
+        null_y['temporal_rope_off'] = torch.zeros_like(null_y['ref_active'])
         if nonzero(base_weight):
             out = base_weight * self.model(x, timesteps, y=null_y, **kwargs)
         if nonzero(ref_weight):

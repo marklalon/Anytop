@@ -208,6 +208,18 @@
     cursor: pointer;
     user-select: none;
   }
+  /* High-frequency verdict, bottom-right of the thumb just left of the loop
+     icon and the same size; the group tag gives up that corner too. */
+  .hf-tag {
+    position: absolute; bottom: 0; right: 24px;
+    width: 24px; height: 20px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.55);
+    color: #ffb74d;
+    font-size: 15px; font-weight: 700; line-height: 1;
+    user-select: none;
+  }
+  .thumb.hf .group { max-width: calc(100% - 52px); }
   .loop.yes { color: #7fd4ff; }
   .loop.no { color: var(--dim); }
   .loop.none { color: #ffcf8f; }
@@ -368,6 +380,7 @@
     <option value="pending">待删除</option>
     <option value="autofill">autofill</option>
     <option value="invalid">非法 label</option>
+    <option value="hf" title="训练 loader 判为高频的 clip（high_frequency.py），从不被下采样">高频</option>
   </select>
 
   <label class="f" for="loop">loop</label>
@@ -883,6 +896,7 @@ function applyFilters(keepPage, keepScroll) {
     if (s === 'pending' && !isPending(r)) return false;
     if (s === 'autofill' && !isAutofill(r)) return false;
     if (s === 'invalid' && !r.label_error) return false;
+    if (s === 'hf' && !r.high_frequency) return false;
     if (l !== 'all' && loopState(r) !== l) return false;
     if (q) {
       // "run,forward" matches "run, forward": spacing around commas is ignored.
@@ -1019,6 +1033,14 @@ function card(row) {
   // a loop first (the more common verdict), a second click flips it back.
   loop.onclick = () => save(el, row, { is_loop: ls !== 'yes' });
   thumb.append(img, name, copy, grp, loop);
+  if (row.high_frequency) {
+    const hf = document.createElement('div');
+    hf.className = 'hf-tag';
+    hf.textContent = 'H';
+    hf.title = '高频 clip（high_frequency.py）：训练时从不被下采样';
+    thumb.classList.add('hf');
+    thumb.appendChild(hf);
+  }
   if (isPending(row)) {
     const tag = document.createElement('div');
     tag.className = 'pending-tag';

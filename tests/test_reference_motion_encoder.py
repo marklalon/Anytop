@@ -371,23 +371,6 @@ def test_reference_cfg_skips_zero_weight_branches(ref_scale):
     assert y['ref_active'].all()
 
 
-def test_reference_cfg_schedule_switches_on_noise_level():
-    inner = Echo()
-    wrapper = ClassifierFreeReferenceModel(inner, 6., num_timesteps=100)
-    x = torch.zeros(2, 1, 1, 1)
-    y = dict(ref_active=torch.ones(2, dtype=torch.bool))
-    # Early (t >= 50): base + 6 * (ref - base) = 8 - 30; two forwards.
-    torch.testing.assert_close(wrapper(x, torch.full((2,), 50), y), torch.full_like(x, -22.))
-    assert len(inner.calls) == 2
-    # Late (t < 50): scale 1 is the reference branch alone; one forward.
-    inner.calls.clear()
-    torch.testing.assert_close(wrapper(x, torch.full((2,), 49), y), torch.full_like(x, 3.))
-    assert len(inner.calls) == 1
-    # Rows on both sides of the switch get their own scale.
-    out = wrapper(x, torch.tensor([99, 0]), y)
-    torch.testing.assert_close(out.flatten(), torch.tensor([-22., 3.]))
-
-
 def test_reference_cfg_schedule_validation():
     with pytest.raises(ValueError, match='num_timesteps'):
         ClassifierFreeReferenceModel(Echo(), 6., num_timesteps=0)
@@ -405,6 +388,25 @@ def test_wrap_reference_cfg_rejects_action_label():
     assert len(inner.calls) == 2
     with pytest.raises(ValueError, match='action_label'):
         _wrap_reference_cfg(inner, args, {'action_label': 'walk'})
+
+
+def test_wrap_reference_without_null_training_allows_only_scale_one():
+    from sample.conditioning import _wrap_reference_cfg
+    inner = Echo()
+    inner.ref_encoder = True
+    inner.ref_cfg_drop_prob = 0.
+    args = SimpleNamespace(ref_cfg_scale=1., diffusion_steps=100)
+    wrapper = _wrap_reference_cfg(inner, args, None)
+    x = torch.zeros(2, 1, 1, 1)
+    y = dict(ref_active=torch.ones(2, dtype=torch.bool))
+    torch.testing.assert_close(wrapper(x, torch.full((2,), 99), y), torch.full_like(x, 3.))
+    assert len(inner.calls) == 1
+    with pytest.raises(ValueError, match='action_label'):
+        _wrap_reference_cfg(inner, args, {'action_label': 'shake'})
+    for scale in (0., 2.):
+        args.ref_cfg_scale = scale
+        with pytest.raises(ValueError, match='ref_cfg_drop_prob'):
+            _wrap_reference_cfg(inner, args, None)
 
 
 def test_augmentation_has_independent_cond_and_target_is_untouched():
@@ -487,6 +489,59 @@ def test_target_augmentation_leaves_reference_on_stored_rig(monkeypatch):
     _, kwargs = truebones_batch_collate([sample], joint_buckets=(stored_joints - 1, stored_joints))
     assert kwargs['y']['ref_mask'].shape[1] == stored_joints
     assert kwargs['y']['ref_mask'].sum() == stored_joints
+
+
+@pytest.mark.parametrize('case', ['identity', 'crop', 'scaled_crop', 'loop', 'scaled_loop'])
+@pytest.mark.parametrize('separate_rig', [False, True])
+def test_final_window_anchors_root_xz_without_changing_other_channels(monkeypatch, case, separate_rig):
+    from data_loaders.truebones.data.dataset import resample_time_scaled_window
+
+    dataset, data = make_dataset()
+    dataset.opt.ref_encoder = True
+    dataset.opt.bone_length_aug_prob = 0
+    dataset.opt.topology_aug_prob = int(separate_rig)
+    if separate_rig:
+        pin_target_leaf_drop(monkeypatch, [3])
+    loaded = dataset._load_physical_motion(data)
+    source = loaded[0].copy()
+    t = np.arange(len(source), dtype=np.float32)
+    source[:, 0, 0] = 2 + np.sin(t * .2)
+    source[:, 0, 2] = -3 + np.cos(t * .2)
+    source[:, 0, 1] += .1 * np.sin(t * .3)
+    source[:, 2, 0] += .1 * np.cos(t * .4)
+    before = source.copy()
+    dataset._load_physical_motion = lambda _: (source, len(source), *loaded[2:])
+    # Nonzero means make an accidental post-standardization anchoring visible.
+    cond = dataset.cond_dict['test']
+    cond['canonical_feature_mean'][12:15] = [.3, .4, -.2]
+    cond['canonical_feature_std'][12:15] = [.7, 1.2, .7]
+
+    loop = 'loop' in case
+    data['motion_metadata']['is_loop'] = loop
+    target_frames = 40 if loop else (30 if case == 'identity' else 8)
+    scaled_frames = 36 if case.startswith('scaled') else len(source)
+    shift = 5 if loop else (0 if case == 'identity' else 7)
+    window_frames = 2 * scaled_frames if loop else min(scaled_frames, target_frames * 2)
+    monkeypatch.setattr(dataset, '_sample_motion_speed_target_length', lambda *a, **k: scaled_frames)
+    monkeypatch.setattr(dataset, '_sample_loop_tile_count', lambda *a, **k: 2)
+    monkeypatch.setattr(random, 'randint', lambda *a: shift)
+    sample = dataset._prepare_sample(
+        'test', data, target_num_frames=target_frames,
+        loop_offset=shift if loop else None, return_aug_info=True)
+
+    expected = resample_time_scaled_window(
+        source, scaled_frames, window_frames, target_frames,
+        source_periodic=loop, window_periodic=loop, shift=shift)
+    expected[:, 0, [0, 2]] -= expected[0, 0, [0, 2]]
+    target = canonical_to_physical_hml(sample[0], sample[-1]['object_cond'])
+    kept = [j for j in range(source.shape[1]) if not (separate_rig and j == 3)]
+    np.testing.assert_allclose(target[..., :3], expected[:, kept, :3], atol=1e-6)
+    np.testing.assert_allclose(target[..., 3:9], expected[:, kept, 3:9], atol=1e-6)
+    reference = canonical_to_physical_hml(sample[12]['reference']['feats'], cond)
+    np.testing.assert_allclose(reference[..., :9], expected[..., :9], atol=1e-6)
+    np.testing.assert_allclose(target[0, 0, [0, 2]], 0, atol=1e-6)
+    np.testing.assert_allclose(reference[0, 0, [0, 2]], 0, atol=1e-6)
+    np.testing.assert_array_equal(source, before)
 
 
 def test_reference_skeleton_is_augmented_on_the_whole_stored_clip(monkeypatch):
@@ -670,16 +725,22 @@ def test_temporal_rope_drop_per_row_in_training_and_ref_rows_off_at_inference():
     assert model(temporal_rope=True)._temporal_rope_off({}, 2, 'cpu', active) is None
 
 
-def test_reference_cfg_null_pass_flags_temporal_rope_off():
+def test_reference_cfg_null_pass_keeps_rope_while_reference_drops_it():
     seen = []
+    rope_model = model(temporal_rope=True, temporal_rope_ref_drop_prob=0.8,
+                       temporal_rope_drop_prob=0.2).eval()
 
     class Inner(torch.nn.Module):
         def forward(self, x, t, y=None):
-            seen.append(y.get('temporal_rope_off'))
+            seen.append(rope_model._temporal_rope_off(y, x.shape[0], x.device, y['ref_active']))
             return x
 
     wrapper = ClassifierFreeReferenceModel(Inner(), 2.0, num_timesteps=100)
     x = torch.zeros(2, 1, 1, 1)
-    wrapper(x, torch.full((2,), 99), y={'ref_active': torch.ones(2, dtype=torch.bool)})
-    assert any(flag is not None and flag.all() for flag in seen)
-    assert any(flag is None for flag in seen)
+    wrapper(x, torch.full((2,), 99), y={
+        'ref_active': torch.ones(2, dtype=torch.bool),
+        'temporal_rope_off': torch.ones(2, dtype=torch.bool),
+    })
+    null_off, ref_off = seen
+    assert not null_off.any()
+    assert ref_off.all()

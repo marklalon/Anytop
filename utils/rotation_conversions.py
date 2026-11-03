@@ -571,7 +571,14 @@ def rotation_6d_to_matrix_safe(cont6d):
     x_raw = cont6d[..., 0:3]
     y_raw = cont6d[..., 3:6]
 
-    x = F.normalize(x_raw, dim=-1, eps=epsilon)
+    # A zero first axis used to produce a zero matrix and a stationary point
+    # in rotation-step losses. Anchor only the undefined neighbourhood to +X.
+    # Adding the raw vector (rather than replacing it) keeps a true derivative.
+    x_anchor = torch.zeros_like(x_raw)
+    x_anchor[..., 0] = 1.0
+    x_degenerate = torch.linalg.vector_norm(x_raw, dim=-1, keepdim=True) <= fallback_threshold
+    x_input = torch.where(x_degenerate, x_raw + x_anchor, x_raw)
+    x = F.normalize(x_input, dim=-1, eps=epsilon)
     y = y_raw - (x * y_raw).sum(dim=-1, keepdim=True) * x
 
     # Near-collinear 6D inputs make the Gram-Schmidt residual almost zero,
@@ -583,10 +590,17 @@ def rotation_6d_to_matrix_safe(cont6d):
     fallback_axis[..., 0] = use_x_axis.to(x.dtype)
     fallback_axis[..., 1] = use_y_axis.to(x.dtype)
     fallback_axis[..., 2] = (~(use_x_axis | use_y_axis)).to(x.dtype)
-    fallback_y = torch.cross(fallback_axis, x, dim=-1)
+    # In the +X anchored neighbourhood use +Y consistently; an argmin tie
+    # between Y/Z would otherwise introduce a discontinuity exactly at zero.
+    y_anchor = torch.zeros_like(y_raw)
+    y_anchor[..., 1] = 1.0
+    fallback_axis = torch.where(x_degenerate, y_anchor, fallback_axis)
+    fallback_y = fallback_axis - (fallback_axis * x).sum(dim=-1, keepdim=True) * x
 
     y_norm = torch.linalg.norm(y, dim=-1, keepdims=True)
-    y = torch.where(y_norm > fallback_threshold, y, fallback_y)
+    # Keep the residual's derivative in the fallback branch too. At zero the
+    # result is identity, with finite gradients in all three tangent directions.
+    y = torch.where(y_norm > fallback_threshold, y, y + fallback_y)
     y = F.normalize(y, dim=-1, eps=epsilon)
     z = F.normalize(torch.cross(x, y, dim=-1), dim=-1, eps=epsilon)
 

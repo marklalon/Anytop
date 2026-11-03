@@ -3,6 +3,7 @@ import json
 from io import BytesIO
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 
@@ -13,6 +14,23 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(review)
 
 from data_loaders.truebones.truebones_utils.motion_labels import load_action_labels  # noqa: E402
+from data_loaders.truebones.truebones_utils.high_frequency import (  # noqa: E402
+    HIGH_FREQUENCY_COND_KEY,
+    bake_high_frequency_clips,
+)
+
+
+def _high_frequency_stores(datasets, clips_by_dataset=None):
+    """Build the baked cond stores that the server's main() normally installs."""
+    stores = {}
+    for ds in datasets:
+        cond_path = Path(ds["processed"]) / "cond.npy"
+        clips = (clips_by_dataset or {}).get(ds["id"], [])
+        np.save(cond_path, {"Synthetic": {
+            HIGH_FREQUENCY_COND_KEY: bake_high_frequency_clips(clips),
+        }})
+        stores[ds["id"]] = review.HighFrequencyStore(dict(ds, cond=cond_path))
+    return stores
 
 
 def test_review_normalizer_validates_and_uses_canonical_order():
@@ -158,6 +176,7 @@ def test_all_dataset_view_keeps_the_owner_on_duplicate_clip_names(tmp_path):
     handler.path = "/api/labels?ds=all"
     handler.datasets = datasets
     handler.stores = stores
+    handler.high_frequency_stores = _high_frequency_stores(datasets, {"one": ["shared.npy"]})
     handler._send_json = lambda status, payload: (status, payload)
 
     status, payload = handler.do_GET()
@@ -166,6 +185,7 @@ def test_all_dataset_view_keeps_the_owner_on_duplicate_clip_names(tmp_path):
     assert payload["id"] == "all"
     assert [row["clip"] for row in payload["rows"]] == ["shared.npy", "shared.npy"]
     assert [row["_dataset"] for row in payload["rows"]] == ["one", "two"]
+    assert [row["high_frequency"] for row in payload["rows"]] == [True, False]
 
 
 def test_review_search_matches_whole_words_and_keeps_substring_default():
@@ -197,12 +217,14 @@ def test_labels_api_can_filter_by_group(tmp_path):
     handler = object.__new__(review.Handler)
     handler.datasets = [dataset]
     handler.stores = {"sample": review.LabelStore(labels)}
+    handler.high_frequency_stores = _high_frequency_stores([dataset])
     handler._send_json = lambda status, payload: (status, payload)
 
     handler.path = "/api/labels?ds=sample&group=locomotion"
     status, payload = handler.do_GET()
     assert status == 200
     assert [row["clip"] for row in payload["rows"]] == ["Bear_Walk"]
+    assert payload["rows"][0]["high_frequency"] is False
 
     handler.path = "/api/labels?ds=sample"
     _, payload = handler.do_GET()
@@ -226,6 +248,7 @@ def test_labels_api_can_filter_by_field_and_whole_word(tmp_path):
     handler = object.__new__(review.Handler)
     handler.datasets = [dataset]
     handler.stores = {"sample": review.LabelStore(labels)}
+    handler.high_frequency_stores = _high_frequency_stores([dataset])
     handler._send_json = lambda status, payload: (status, payload)
 
     handler.path = "/api/labels?ds=sample&q=walk&field=clip"
@@ -527,7 +550,8 @@ def test_species_tag_store_rejects_a_row_that_is_not_an_object(tmp_path):
         store.annotate([{"clip": "Cat_Walk"}])
 
 
-def test_update_api_returns_the_row_with_its_species_fields(tmp_path):
+@pytest.mark.parametrize("high_frequency", [False, True])
+def test_update_api_returns_the_row_with_its_species_fields(tmp_path, high_frequency):
     ds = _species_dataset(
         tmp_path,
         '{"species": "ORA_PlayerHumanoid", "species_tags": ["Biped"]}\n',
@@ -544,6 +568,9 @@ def test_update_api_returns_the_row_with_its_species_fields(tmp_path):
     handler.datasets = [dataset]
     handler.stores = {"sample": review.LabelStore(labels)}
     handler.species_stores = {"sample": review.SpeciesTagStore(dataset)}
+    handler.high_frequency_stores = _high_frequency_stores(
+        [dataset], {"sample": ["ORA_PlayerHumanoid_Run.npy"] if high_frequency else []},
+    )
     handler._send_json = lambda status, payload: (status, payload)
     body = json.dumps({"dataset": "sample", "clip": "ORA_PlayerHumanoid_Run",
                        "action_label": "run"}).encode("utf-8")
@@ -556,6 +583,7 @@ def test_update_api_returns_the_row_with_its_species_fields(tmp_path):
     # The page adopts this row wholesale; the species bar must survive a label edit.
     assert payload["row"]["_species"] == "ORA_PlayerHumanoid"
     assert payload["row"]["_species_tags"] == ["Biped"]
+    assert payload["row"]["high_frequency"] is high_frequency
 
 
 def test_store_writes_sample_weight_and_drops_the_default(tmp_path):

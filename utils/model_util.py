@@ -299,6 +299,8 @@ def create_gaussian_diffusion(args):
         loss_type=loss_type,
         rescale_timesteps=rescale_timesteps,
         lambda_geo=args.lambda_geo,
+        lambda_drot=getattr(args, 'lambda_drot', 0.0),
+        drot_joint_boost=getattr(args, 'drot_joint_boost', 0.0),
         lambda_dpos=getattr(args, 'lambda_dpos', 0.0),
         lambda_root_dpos=getattr(args, 'lambda_root_dpos', 0.0),
         lambda_root_acc=getattr(args, 'lambda_root_acc', 0.0),

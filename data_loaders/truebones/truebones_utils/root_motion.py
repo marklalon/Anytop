@@ -34,7 +34,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 # position before this is evaluated.
 ROOT_XZ_DRIFT_THRESHOLD = 0.08
 
-# Net VERTICAL displacement of the skeleton's lowest joint (same HML-normalised
+# Shared net VERTICAL displacement of the root and lowest joint (HML-normalised
 # units) above which the detrend extends from the XZ plane to all three axes.
 #
 # Y is not like XZ: the XZ origin is arbitrary (clips are centred on it), but the
@@ -47,10 +47,11 @@ ROOT_XZ_DRIFT_THRESHOLD = 0.08
 #
 # Measured on the net endpoint offset, like the XZ threshold: a hop or jump that
 # comes back down nets out and keeps its arc, while a clip that ends elsewhere
-# went there and stayed. The lowest joint rather than the translation root,
-# because the root's height is also posture: a jump that takes off from a
+# went there and stayed. Require agreement from the lowest joint and root,
+# because either track alone also measures posture: a jump that takes off from a
 # crouch and lands standing raises the pelvis with both feet on the floor at
-# either end, while a climb or a dive carries the whole body, feet included.
+# either end, while a wingtip can lower the minimum without moving the body.
+# A climb or dive carries both; remove only their common signed displacement.
 ROOT_Y_DRIFT_THRESHOLD = 0.25
 
 # Root XZ soft clamp, in HML-normalised units (a body span is 1.389).
@@ -900,15 +901,27 @@ def flatten_root_y_drift(traj_y, joint_heights):
 
     The entry point preprocessing and the dataset validator share for the
     vertical channel, mirroring :func:`flatten_root_xz_drift`. The travel is
-    measured on the lowest joint -- ``joint_heights`` is the ``(T, J)`` world
-    height of every joint -- and removed from the root's ``traj_y``; FK carries
-    the same ramp to every joint, so the lowest one ends where it started (see
-    ``ROOT_Y_DRIFT_THRESHOLD`` for why not the root's own height). It removes
-    the travel and nothing else; bounding what is left is the caller's business.
+    measured on both the root and the lowest joint -- ``joint_heights`` is the
+    ``(T, J)`` world height of every joint. The minimum alone can mistake a
+    lowered wingtip for a dive, while the root alone can mistake standing up
+    for a climb. Only their common signed endpoint displacement is transport:
+    opposite directions give zero, otherwise take the smaller magnitude. This
+    cannot introduce a net root displacement into an in-place flap or reverse
+    either track's net travel. FK carries the correction to every joint.
     """
+    root_y = np.asarray(traj_y, dtype=np.float64).reshape(-1)
     floor_y = np.asarray(joint_heights, dtype=np.float64).min(axis=1)
-    correction, drift = root_y_drift_correction(floor_y)
-    return np.asarray(traj_y, dtype=np.float64).reshape(-1) - correction, drift
+    root_correction, _ = root_y_drift_correction(root_y)
+    floor_correction, _ = root_y_drift_correction(floor_y)
+    if root_y.size < 2:
+        return root_y.copy(), 0.0
+    root_net = float(root_correction[-1])
+    floor_net = float(floor_correction[-1])
+    if root_net * floor_net <= 0.0:
+        return root_y.copy(), 0.0
+    correction = (root_correction if abs(root_net) <= abs(floor_net)
+                  else floor_correction)
+    return root_y - correction, abs(float(correction[-1]))
 
 
 def soft_clamp_extent(radius, knee=ROOT_XZ_SOFT_CLAMP_KNEE,

@@ -1184,8 +1184,8 @@ class AnyTop(nn.Module):
         Training drops RoPE per row: ``temporal_rope_ref_drop_prob`` on
         reference-active rows, ``temporal_rope_drop_prob`` on the rest. With
         the reference drop on, inference runs every reference-active row
-        without RoPE, and the reference CFG null pass too
-        (y['temporal_rope_off'], set by ClassifierFreeReferenceModel).
+        without RoPE; the reference CFG null pass keeps RoPE on.
+        y['temporal_rope_off'] can additionally disable it on explicit rows.
         """
         ref_p, other_p = self.temporal_rope_ref_drop_prob, self.temporal_rope_drop_prob
         if not self.temporal_rope or (ref_p == 0 and other_p == 0):

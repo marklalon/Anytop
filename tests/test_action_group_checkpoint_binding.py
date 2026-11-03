@@ -1,9 +1,7 @@
 """The action group is a property of the weights, not of the request.
 
-Training requires ``--action_group`` (exactly one of the three groups) and
-records it in the checkpoint's args.json; generation has no such flag and reads
-the group back from there, because the group also fixes the multi-hot mask the
-model was trained with.
+Training derives the group from its selected clips and records it in args.json.
+Generation ignores it and matches clip-length priors across all groups.
 """
 from __future__ import annotations
 
@@ -11,6 +9,7 @@ import json
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -57,18 +56,26 @@ def _generate_args(model_path, *extra):
     return generate_args(argv=['--model_path', model_path, *extra])
 
 
-class ActionGroupIsBoundToTheCheckpoint(unittest.TestCase):
+class GenerationIgnoresTrainingGroup(unittest.TestCase):
 
     def test_parser_groups_match_the_dataset_definition(self):
         # parser_util keeps its own copy to stay import-light; it must not drift.
         self.assertEqual(tuple(parser_util.ACTION_GROUPS), tuple(LABEL_ACTION_GROUPS))
 
-    def test_generation_takes_the_group_from_the_checkpoint(self):
-        for group in parser_util.ACTION_GROUPS:
+    def test_generation_ignores_the_checkpoint_group(self):
+        for group in (*parser_util.ACTION_GROUPS, 'all', 'unknown'):
             with self.subTest(group=group):
                 with tempfile.TemporaryDirectory() as tmp:
                     model_path = _checkpoint_dir(tmp, action_group=group)
-                    self.assertEqual(_generate_args(model_path).action_group, group)
+                    self.assertFalse(hasattr(_generate_args(model_path), 'action_group'))
+
+    def test_action_condition_contains_only_label_and_slots(self):
+        from sample.conditioning import _resolve_action_condition
+        model = SimpleNamespace(action_label_cond=True)
+        condition = _resolve_action_condition(
+            SimpleNamespace(action_label='fly, forward', action_group='stationary'), model)
+        self.assertEqual(set(condition), {'action_label', 'action_slots'})
+        self.assertEqual(condition['action_label'], 'fly, forward')
 
     def test_generation_rejects_an_action_group_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -86,7 +93,7 @@ class ActionGroupIsBoundToTheCheckpoint(unittest.TestCase):
             with self.subTest(recorded=recorded):
                 with tempfile.TemporaryDirectory() as tmp:
                     model_path = _checkpoint_dir(tmp, **recorded)
-                    self.assertEqual(_generate_args(model_path).action_group, '')
+                    self.assertFalse(hasattr(_generate_args(model_path), 'action_group'))
 
     def test_other_dataset_args_still_come_from_the_checkpoint(self):
         # Guards the mechanism the binding rides on: the rest of the dataset group
@@ -98,7 +105,7 @@ class ActionGroupIsBoundToTheCheckpoint(unittest.TestCase):
             self.assertEqual(args.objects_subset, 'quadruped')
 
 
-class TrainingMustNameOneGroupOrTheWholeCorpus(unittest.TestCase):
+class TrainingDefaultsToAllClips(unittest.TestCase):
 
     @staticmethod
     def _training_parser():
@@ -106,27 +113,21 @@ class TrainingMustNameOneGroupOrTheWholeCorpus(unittest.TestCase):
         add_data_options(parser, training=True)
         return parser
 
-    def test_each_group_is_accepted(self):
-        for group in parser_util.ACTION_GROUPS:
-            with self.subTest(group=group):
-                args = self._training_parser().parse_args(['--action_group', group])
-                self.assertEqual(args.action_group, group)
+    def test_no_filter_is_required(self):
+        args = self._training_parser().parse_args([])
+        self.assertIsNone(args.sample_filter)
+        for name in ('action_group', 'objects_subset', 'dataset_namespaces'):
+            self.assertFalse(hasattr(args, name))
 
-    def test_the_flag_is_required(self):
-        with self.assertRaises(SystemExit):
-            self._training_parser().parse_args([])
-
-    def test_empty_and_lists_are_refused(self):
-        for value in ('', 'locomotion,stationary', 'Locomotion'):
-            with self.subTest(value=value):
+    def test_old_training_flags_are_removed(self):
+        for flag in ('--action_group', '--objects_subset', '--dataset_namespaces'):
+            with self.subTest(flag=flag):
                 with self.assertRaises(SystemExit):
-                    self._training_parser().parse_args(['--action_group', value])
+                    self._training_parser().parse_args([flag, 'all'])
 
-    def test_all_names_the_whole_corpus(self):
-        # 'all' is a corpus selector, not a fourth group: it trains one model
-        # over every group and carries no group condition.
-        args = self._training_parser().parse_args(['--action_group', 'all'])
-        self.assertEqual(args.action_group, 'all')
+    def test_optional_filter_is_accepted(self):
+        args = self._training_parser().parse_args(['--sample_filter', 'tiny.json'])
+        self.assertEqual(args.sample_filter, 'tiny.json')
 
 
 class ResumeCannotRewriteTheRecordedGroup(unittest.TestCase):
@@ -182,7 +183,7 @@ class VersionIsBoundToTheCheckpoint(unittest.TestCase):
     def test_current_version_is_accepted(self):
         with tempfile.TemporaryDirectory() as tmp:
             model_path = _checkpoint_dir(tmp, action_group='locomotion')
-            self.assertEqual(_generate_args(model_path).action_group, 'locomotion')
+            self.assertFalse(hasattr(_generate_args(model_path), 'action_group'))
 
     def test_unversioned_checkpoint_is_refused(self):
         # Every checkpoint predating the stamp -- including every --temporal_window

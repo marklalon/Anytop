@@ -101,6 +101,8 @@ def assert_close(name: str, actual: np.ndarray, expected: np.ndarray, atol: floa
 
 
 def _normalize_motion(raw: np.ndarray, cond: dict[str, np.ndarray]) -> np.ndarray:
+    raw = raw.copy()
+    raw[:, 0, [0, 2]] -= raw[0, 0, [0, 2]]
     return np.nan_to_num(physical_hml_to_canonical(raw, cond)).astype(np.float32, copy=False)
 
 
@@ -309,6 +311,18 @@ def test_loop_with_closing_key_is_augmented_as_its_clean_period() -> None:
     assert _drop_loop_closing_frame(period) is period
 
 
+def test_idle_primary_is_always_phase_free() -> None:
+    # An idle-primary label is phase-free regardless of what follows, and
+    # phase_anchoring_words agrees (empty).
+    for label in ("idle", "idle, look", "idle, rear", "idle, spin", "idle, talk",
+                  "idle, cry", "idle, happy", "idle, hover, spin, happy", "idle, throw"):
+        assert loop_is_phase_free(label), label
+        assert phase_anchoring_words(label) == [], label
+    # ...unless the primary head is not idle.
+    assert not loop_is_phase_free("attack, idle")
+    assert not loop_is_phase_free("roar, idle")
+
+
 def test_loop_is_phase_free_needs_every_head_phase_free() -> None:
     assert loop_is_phase_free("walk, forward")
     assert loop_is_phase_free("idle, sleep")
@@ -316,24 +330,29 @@ def test_loop_is_phase_free_needs_every_head_phase_free() -> None:
     assert loop_is_phase_free("idle, hover")
     assert not loop_is_phase_free("attack, projectile")
     assert not loop_is_phase_free("roar")
-    # One anchored head anchors the clip, in either position.
-    assert not loop_is_phase_free("idle, rear")
+    # One anchored (non-idle) head anchors the clip, in either position.
+    assert not loop_is_phase_free("walk, rear")
     assert not loop_is_phase_free("attack, hover")
     assert not loop_is_phase_free("")
     assert not loop_is_phase_free(None)
 
 
 def test_event_modifier_anchors_a_phase_free_head() -> None:
-    # Gait, held posture and held object keep the state phase-free.
+    # Gait, held posture and held object keep a non-idle state phase-free.
     assert loop_is_phase_free("walk, forward, carry")
     assert loop_is_phase_free("idle, crouch, sleep")
-    assert loop_is_phase_free("idle, sit")
     assert loop_is_phase_free("run, forward, weapon")
-    # An event layered on the state anchors it.
-    assert not loop_is_phase_free("idle, look")
-    assert not loop_is_phase_free("idle, hover, eat")
-    assert not loop_is_phase_free("idle, scratch, sit")
-    assert phase_anchoring_words("idle, look, crouch") == ["look"]
+    # A one-shot event layered on a NON-idle phase-free head anchors it.
+    assert not loop_is_phase_free("walk, bite")
+    assert not loop_is_phase_free("run, hover, throw")
+    assert not loop_is_phase_free("fly, spin, sit")
+    # An idle-primary label is the exception: nothing layered on idle anchors it.
+    assert loop_is_phase_free("idle, bite")
+    assert loop_is_phase_free("idle, hover, throw")
+    assert loop_is_phase_free("idle, spin, sit")
+    assert phase_anchoring_words("walk, bite") == ["bite"]
+    assert phase_anchoring_words("idle, bite, crouch") == []
+    assert phase_anchoring_words("idle, spin, sit") == []
     assert phase_anchoring_words("attack, hover, bite") == ["attack", "bite"]
     assert phase_anchoring_words("walk, left, carry") == []
 

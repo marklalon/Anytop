@@ -26,6 +26,9 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     ROOT_STAT_SLICE,
     ROOT_XZ_CHANNELS,
     _length_scale_from_cond,
+    get_canonical_global_stats,
+    _view_stat_torch,
+    _check_root_stats,
     canonical_to_physical_hml,
     root_relative_positions,
 )
@@ -43,6 +46,9 @@ LIMB_CORR_LAG_FRACS = (0.0, 0.125, 0.25)
 # Mean squared limb-tip step, in L per frame, below which a limb counts as
 # still: it sits between a breathing idle's tips and a walk's.
 LIMB_CORR_ENERGY_FLOOR = 1e-4
+# Fixed angular unit: no inverse target-energy weighting, so nearly static
+# joints cannot amplify annotation noise. Chordal error is bounded on SO(3).
+ROTATION_STEP_SCALE_RAD = 0.1
 
 _EXTRACT_TENSOR_CACHE = {}
 _EXTRACT_TENSOR_CACHE_FINALIZERS = {}
@@ -248,6 +254,8 @@ class GaussianDiffusion:
         loss_type,
         rescale_timesteps=False,
         lambda_geo=0.,
+        lambda_drot=0.,
+        drot_joint_boost=0.,
         lambda_dpos=0.,
         lambda_root_dpos=0.,
         lambda_root_acc=0.,
@@ -263,6 +271,12 @@ class GaussianDiffusion:
         self.loss_type = loss_type
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
+        self.lambda_drot = float(lambda_drot)
+        self.drot_joint_boost = float(drot_joint_boost)
+        if not math.isfinite(self.drot_joint_boost) or self.drot_joint_boost < 0.0:
+            raise ValueError("drot_joint_boost must be finite and >= 0")
+        if not math.isfinite(self.lambda_drot) or self.lambda_drot < 0.0:
+            raise ValueError(f"lambda_drot must be finite and >= 0, got {self.lambda_drot}")
         self.lambda_dpos = float(lambda_dpos)
         self.lambda_root_dpos = float(lambda_root_dpos)
         self.lambda_root_acc = float(lambda_root_acc)
@@ -495,6 +509,86 @@ class GaussianDiffusion:
         non_zero_elements = (lengths * n_joints).float()
         loss_val = loss / non_zero_elements
         return loss_val
+
+    def rotation_step_loss(self, pred_physical, target_physical, spat_mask, lengths, y,
+                           t=None, rotations=None):
+        """Target-relative SO(3) increments, one loss per sample.
+
+        With no explicit rotations, reads physical local rotations. Training
+        always supplies global matrices for the global-step objective.
+
+        Delta[t] = R[t]^T R[t+1]. The squared Frobenius error / 2 is the
+        squared chordal angular distance (approximately radians squared for
+        small errors), divided by a fixed 0.1-radian unit squared. It avoids
+        acos' singular gradient at an exact match and any division by a
+        target joint's near-zero motion energy. This matches motion, rather
+        than penalizing motion magnitude. The original pose losses retain
+        responsibility for a time-constant orientation offset.
+
+        Padding never contributes. A loop's last VALID frame steps to frame
+        zero; an open window excludes that step. At high diffusion noise the
+        x0 estimate can average several motions, so alpha_bar[t] fades this
+        nonlinear auxiliary loss instead of demanding a particular step.
+        """
+        batch, joints, _, frames = pred_physical.shape
+        if frames < 2:
+            return pred_physical.new_zeros(batch)
+        if rotations is None:
+            rotations = (self._physical_rotation_matrices(target_physical),
+                         self._physical_rotation_matrices(pred_physical))
+        target_rot, pred_rot = rotations
+        device = pred_rot.device
+        lengths = th.as_tensor(lengths, device=device).long().reshape(batch, 1).clamp(0, frames)
+        frame = th.arange(frames, device=device).view(1, frames)
+        next_frame = th.where(frame + 1 < lengths, frame + 1, 0)
+        gather_index = next_frame[:, :, None, None, None].expand(batch, frames, joints, 3, 3)
+
+        def increments(rot):
+            return rot.transpose(-1, -2) @ rot.gather(1, gather_index)
+
+        target_step = increments(target_rot)
+        error = (increments(pred_rot) - target_step).square().sum(dim=(-1, -2))
+        error = error / (2.0 * ROTATION_STEP_SCALE_RAD ** 2)
+        is_loop = self._coerce_bool_batch((y or {}).get('is_loop'), batch, device, default=False)
+        step_valid = ((frame + 1 < lengths)
+                      | (is_loop[:, None] & (frame == lengths - 1) & (lengths >= 2)))
+        joint_valid = spat_mask.to(device=device, dtype=error.dtype).reshape(batch, joints)
+        weight = step_valid[:, :, None].to(error.dtype) * joint_valid[:, None, :]
+        if self.drot_joint_boost > 0.:
+            # Detached GT RMS chordal speed, computed only on valid steps.
+            # No inverse-energy weighting: static clips retain uniform weights.
+            with th.no_grad():
+                identity = th.eye(3, device=device, dtype=target_step.dtype)
+                energy = (target_step.detach() - identity).square().sum(dim=(-1, -2)) / 2.0
+                rms = ((energy * weight).sum(dim=1)
+                       / weight.sum(dim=1).clamp_min(1.0)).sqrt()
+                relative = rms / rms.amax(dim=1, keepdim=True).clamp_min(1e-8)
+                joint_weight = 1.0 + self.drot_joint_boost * relative
+            weight = weight * joint_weight[:, None, :]
+        loss = (error * weight).sum(dim=(1, 2)) / weight.sum(dim=(1, 2)).clamp_min(1.0)
+        if t is not None:
+            loss = loss * extract_into_tensor(self.alphas_cumprod, t, (batch,)).to(loss.dtype)
+        return loss
+
+    @staticmethod
+    def _canonical_global_rotation_matrices(canonical, y):
+        # Unstandardized canonical rotations are Q_j = G_j A_j, with a
+        # time-constant rest frame A_j. Q[t]^T Q[t+1] = A^T Delta_G A.
+        # Chordal error and activity are invariant under this conjugation,
+        # so no FK or removal of A is needed. Never read standardized 6D
+        # values directly as a rotation matrix.
+        stats = get_canonical_global_stats(y)
+        if stats is None:
+            raise KeyError("canonical rotation decode requires canonical_feature_mean/std")
+        mean, std = (th.as_tensor(stat, device=canonical.device, dtype=canonical.dtype)
+                     for stat in stats)
+        _check_root_stats(mean.shape[-1])
+        _check_root_stats(std.shape[-1])
+        # Slice before arithmetic: positions, velocity and root stats are unused.
+        mean_rot = _view_stat_torch(mean, canonical.shape, canonical.shape[2])[:, :, 3:9]
+        std_rot = _view_stat_torch(std, canonical.shape, canonical.shape[2])[:, :, 3:9]
+        rot6d = canonical[:, :, 3:9] * std_rot + mean_rot
+        return rotation_6d_to_matrix_safe(rot6d.permute(0, 3, 1, 2).float())
 
     def _per_sample_y_scalar(self, y, key, batch_size, device, default=None):
         """A ``[B]`` float tensor from ``y[key]`` (``default`` when absent)."""
@@ -1180,6 +1274,7 @@ class GaussianDiffusion:
         cond_fn=None,
         model_kwargs=None,
         const_noise=False,
+        noise_sampler=None,
     ):
         """
         Sample x_{t-1} from the model at the given timestep.
@@ -1206,7 +1301,7 @@ class GaussianDiffusion:
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
         )
-        noise = th.randn_like(x)
+        noise = th.randn_like(x) if noise_sampler is None else noise_sampler(x)
         # print('const_noise', const_noise)
         if const_noise:
             noise = noise[[0]].repeat(x.shape[0], 1, 1, 1)
@@ -1316,6 +1411,7 @@ class GaussianDiffusion:
         const_noise=False,
         inpaint_mask=None,
         inpaint_reference=None,
+        noise_sampler=None,
     ):
         """
         Generate samples from the model.
@@ -1345,6 +1441,7 @@ class GaussianDiffusion:
             model,
             shape,
             noise=noise,
+            noise_sampler=noise_sampler,
             clip_denoised=clip_denoised,
             denoised_fn=denoised_fn,
             cond_fn=cond_fn,
@@ -1385,6 +1482,7 @@ class GaussianDiffusion:
         const_noise=False,
         inpaint_mask=None,
         inpaint_reference=None,
+        noise_sampler=None,
     ):
         """
         Generate samples from the model and yield intermediate samples from
@@ -1394,13 +1492,16 @@ class GaussianDiffusion:
         Returns a generator over dicts, where each dict is the return value of
         p_sample().
         """
+        if noise_sampler is not None and (cond_fn_with_grad or randomize_class or inpaint_mask is not None):
+            raise ValueError('Custom noise supports plain, non-gradient sampling only')
         if device is None:
             device = next(model.parameters()).device
         assert isinstance(shape, (tuple, list))
         if noise is not None:
             img = noise
         else:
-            img = th.randn(*shape, device=device)
+            img = (th.randn(*shape, device=device) if noise_sampler is None
+                   else noise_sampler(th.empty(*shape, device=device)))
 
         if skip_timesteps and init_image is None:
             init_image = th.zeros_like(img)
@@ -1428,6 +1529,7 @@ class GaussianDiffusion:
                                                device=model_kwargs['y'].device)
             with th.no_grad():
                 sample_fn = self.p_sample_with_grad if cond_fn_with_grad else self.p_sample
+                noise_kwargs = {} if noise_sampler is None else {'noise_sampler': noise_sampler}
                 out = sample_fn(
                     model,
                     img,
@@ -1436,6 +1538,7 @@ class GaussianDiffusion:
                     denoised_fn=denoised_fn,
                     cond_fn=cond_fn,
                     model_kwargs=model_kwargs,
+                    **noise_kwargs,
                     const_noise=const_noise,
                 )
                 out["sample"] = self._inpaint_project(
@@ -1455,6 +1558,7 @@ class GaussianDiffusion:
         cond_fn=None,
         model_kwargs=None,
         eta=0.0,
+        noise_sampler=None,
     ):
         """
         Sample x_{t-1} from the model using DDIM.
@@ -1486,7 +1590,7 @@ class GaussianDiffusion:
             * th.sqrt(1 - alpha_bar / alpha_bar_prev)
         )
         # Equation 12.
-        noise = th.randn_like(x)
+        noise = th.randn_like(x) if noise_sampler is None else noise_sampler(x)
         mean_pred = (
             out["pred_xstart"] * th.sqrt(alpha_bar_prev)
             + th.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
@@ -1612,6 +1716,7 @@ class GaussianDiffusion:
         const_noise=False,
         inpaint_mask=None,
         inpaint_reference=None,
+        noise_sampler=None,
     ):
         """
         Generate samples from the model using DDIM.
@@ -1628,6 +1733,7 @@ class GaussianDiffusion:
             model,
             shape,
             noise=noise,
+            noise_sampler=noise_sampler,
             clip_denoised=clip_denoised,
             denoised_fn=denoised_fn,
             cond_fn=cond_fn,
@@ -1663,6 +1769,7 @@ class GaussianDiffusion:
         cond_fn_with_grad=False,
         inpaint_mask=None,
         inpaint_reference=None,
+        noise_sampler=None,
     ):
         """
         Use DDIM to sample from the model and yield intermediate samples from
@@ -1670,13 +1777,16 @@ class GaussianDiffusion:
 
         Same usage as p_sample_loop_progressive().
         """
+        if noise_sampler is not None and (cond_fn_with_grad or randomize_class or inpaint_mask is not None):
+            raise ValueError('Custom noise supports plain, non-gradient sampling only')
         if device is None:
             device = next(model.parameters()).device
         assert isinstance(shape, (tuple, list))
         if noise is not None:
             img = noise
         else:
-            img = th.randn(*shape, device=device)
+            img = (th.randn(*shape, device=device) if noise_sampler is None
+                   else noise_sampler(th.empty(*shape, device=device)))
 
         if skip_timesteps and init_image is None:
             init_image = th.zeros_like(img)
@@ -1704,6 +1814,7 @@ class GaussianDiffusion:
                                                device=model_kwargs['y'].device)
             with th.no_grad():
                 sample_fn = self.ddim_sample_with_grad if cond_fn_with_grad else self.ddim_sample
+                noise_kwargs = {} if noise_sampler is None else {'noise_sampler': noise_sampler}
                 out = sample_fn(
                     model,
                     img,
@@ -1712,6 +1823,7 @@ class GaussianDiffusion:
                     denoised_fn=denoised_fn,
                     cond_fn=cond_fn,
                     model_kwargs=model_kwargs,
+                    **noise_kwargs,
                     eta=eta,
                 )
                 out["sample"] = self._inpaint_project(
@@ -2055,8 +2167,18 @@ class GaussianDiffusion:
                     )
                     terms["loss"] = terms["loss"] + self.lambda_root_acc * terms["root_acc_loss"]
 
-                target_physical = canonical_to_physical_hml(target_fp32, y_for_decode)
-                model_output_physical = canonical_to_physical_hml(model_output_fp32, y_for_decode)
+                step_rotations = None
+                if self.lambda_drot > 0.:
+                    target_physical, target_global_rot = canonical_to_physical_hml(
+                        target_fp32, y_for_decode, return_canonical_rotations=True,
+                    )
+                    model_output_physical, pred_global_rot = canonical_to_physical_hml(
+                        model_output_fp32, y_for_decode, return_canonical_rotations=True,
+                    )
+                    step_rotations = (target_global_rot, pred_global_rot)
+                else:
+                    target_physical = canonical_to_physical_hml(target_fp32, y_for_decode)
+                    model_output_physical = canonical_to_physical_hml(model_output_fp32, y_for_decode)
 
                 if self.temporal_span_seam_loss_weight > 0.0:
                     temporal_span_seam_weights = self._build_temporal_span_seam_weights(
@@ -2076,13 +2198,20 @@ class GaussianDiffusion:
                                 + self.temporal_span_seam_loss_weight * terms["temporal_span_seam_loss"]
                             )
 
-                # The geodesic and bone losses read the same rotation matrices.
+                # The geodesic and bone losses share physical local matrices.
                 rotations = None
                 if self.lambda_geo > 0. and self.lambda_bone > 0.:
                     rotations = (
                         self._physical_rotation_matrices(target_physical),
                         self._physical_rotation_matrices(model_output_physical),
                     )
+
+                if self.lambda_drot > 0.:
+                    terms["drot_loss"] = self.rotation_step_loss(
+                        model_output_physical, target_physical, joints_padding_mask_fp32,
+                        lengths_fp32, y_for_decode, t=t, rotations=step_rotations,
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_drot * terms["drot_loss"]
 
                 if self.lambda_geo > 0.:
                     terms["geodesic_loss"] = self.geodesic_loss(

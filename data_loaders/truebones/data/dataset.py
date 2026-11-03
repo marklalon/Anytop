@@ -76,10 +76,8 @@ from data_loaders.truebones.truebones_utils.topology_aug import (
     validate_topology_aug,
 )
 from data_loaders.truebones.truebones_utils.high_frequency import (
-    HIGH_FREQUENCY_SCORE_THRESHOLD,
-    HIGH_FREQUENCY_SCORE_VERSION,
-    high_frequency_score,
-    is_high_frequency,
+    HIGH_FREQUENCY_COND_KEY,
+    high_frequency_clips,
 )
 from data_loaders.truebones.truebones_utils.bone_length_aug import (
     DEFAULT_BONE_LENGTH_AUG,
@@ -926,10 +924,8 @@ def _save_motion_length_cache(cache_path: Path, entries: dict[str, dict]) -> Non
     np.save(cache_path, {"entries": entries}, allow_pickle=True)
 
 
-def _read_motion_stats(motion_path: str) -> tuple[int, float]:
-    """(frame count, high_frequency_score) of a stored clip."""
-    motion = np.load(motion_path, mmap_mode='r')
-    return len(motion), high_frequency_score(motion)
+def _read_motion_length(motion_path: str) -> int:
+    return len(np.load(motion_path, mmap_mode='r'))
 
 
 def ensure_joint_name_embeddings(
@@ -992,8 +988,12 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, head_word_weights: Optional[dict[str, float]] = None, rare_head_word_floor: int = 0, rare_head_word_max_boost: float = 4.0):
+    def __init__(self, opt, cond_dict, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None, head_word_weights: Optional[dict[str, float]] = None, rare_head_word_floor: int = 0, rare_head_word_max_boost: float = 4.0, split: str = "train", selected_clip_objects=None):
         self.opt = opt
+        # Only used to label the per-dataset counts printed below: a training run
+        # builds one loader per split, and the two prints are otherwise
+        # indistinguishable.
+        self.split = split
         # None means the caller does not want label conditioning, so no word ids
         # are attached at all. The bundle is the model's bundle: the loader emits
         # positions into ITS ordered vocabulary, so the two cannot be different
@@ -1079,6 +1079,10 @@ class MotionDataset(data.Dataset):
 
             for object_key, species_name in source_species:
                 object_motions = [name for name in all_motion_files if name.startswith(f'{species_name}_')]
+                if selected_clip_objects is not None:
+                    object_motions = [name for name in object_motions
+                                      if selected_clip_objects.get(clip_id(namespace, name)) == object_key]
+                high_frequency_names = high_frequency_clips(self.cond_dict[object_key], opt.cond_file)
 
                 for name in object_motions:
                     motion_metadata = _require_motion_metadata_entry(name, source_metadata)
@@ -1090,18 +1094,14 @@ class MotionDataset(data.Dataset):
                             cache_entry is not None
                             and cache_entry.get('mtime_ns') == stat.st_mtime_ns
                             and cache_entry.get('size_bytes') == stat.st_size
-                            and cache_entry.get('hf_score_version') == HIGH_FREQUENCY_SCORE_VERSION
                         ):
                             motion_length = int(cache_entry['length'])
-                            hf_score = float(cache_entry['hf_score'])
                         else:
-                            motion_length, hf_score = _read_motion_stats(motion_path)
+                            motion_length = _read_motion_length(motion_path)
                             motion_length_cache[name] = {
                                 'length': int(motion_length),
                                 'mtime_ns': int(stat.st_mtime_ns),
                                 'size_bytes': int(stat.st_size),
-                                'hf_score': float(hf_score),
-                                'hf_score_version': HIGH_FREQUENCY_SCORE_VERSION,
                             }
                             cache_dirty = True
                         key = clip_id(namespace, name)
@@ -1112,7 +1112,7 @@ class MotionDataset(data.Dataset):
                                             'motion_metadata': motion_metadata,
                                             'source_namespace': namespace,
                                             'motion_name': name,
-                                            'high_frequency': is_high_frequency(hf_score),
+                                            'high_frequency': name in high_frequency_names,
                                             'sample_weight': source.sample_weight,
                                            }
 
@@ -1169,7 +1169,7 @@ class MotionDataset(data.Dataset):
             )
         high_frequency_count = sum(bool(entry['high_frequency']) for entry in data_dict.values())
         print(
-            f"[dataset] high-frequency clips (score >= {HIGH_FREQUENCY_SCORE_THRESHOLD}): "
+            f"[dataset] high-frequency clips (split {self.split}, cond {HIGH_FREQUENCY_COND_KEY}): "
             f"{high_frequency_count} / {len(data_dict)}, never downsampled"
         )
         self.reset_min_len(self.min_length)
@@ -1321,7 +1321,16 @@ class MotionDataset(data.Dataset):
         # is_loop note), and a flag the model cannot trust as a content key is
         # one it has to read as time topology only. An explicit loop_offset
         # (prepare_sample_by_name, the diagnostics path) always keeps the flag.
-        loop_cond_prob = float(getattr(self.opt, 'loop_cond_prob', 1.0))
+        label_phase_free = loop_is_phase_free(motion_metadata.get('action_label'))
+        specific_loop_cond_prob = getattr(
+            self.opt,
+            'loop_cond_prob_free' if label_phase_free else 'loop_cond_prob_anchored',
+            None,
+        )
+        loop_cond_prob = float(
+            getattr(self.opt, 'loop_cond_prob', 1.0)
+            if specific_loop_cond_prob is None else specific_loop_cond_prob
+        )
         loop_uncond = bool(
             is_loop
             and loop_offset is None
@@ -1539,25 +1548,31 @@ class MotionDataset(data.Dataset):
         # the model is told is not one, is open, at step (L-1)/(T-1).
         def sample_window(clip):
             if scaled_length != source_length:
-                return resample_time_scaled_window(
+                clip = resample_time_scaled_window(
                     clip, scaled_length, m_length, target_num_frames,
                     source_periodic=bool(is_loop), window_periodic=loop_condition_active,
                     shift=frame_shift,
                 )
-            # No speed change: the shift and window are whole source frames
-            # (a loop's roll and tiles wrap it), and the window resample is the
-            # only interpolation.
-            frames = np.arange(m_length, dtype=np.int64) + frame_shift
-            if is_loop:
-                frames %= source_length
-            if m_length != source_length or frame_shift != 0:
-                clip = clip[frames]
-            if m_length != target_num_frames:
-                clip = resample_motion_features(
-                    clip,
-                    target_num_frames,
-                    periodic=loop_condition_active,
-                )
+            else:
+                # No speed change: the shift and window are whole source
+                # frames, and the window resample is the only interpolation.
+                frames = np.arange(m_length, dtype=np.int64) + frame_shift
+                if is_loop:
+                    frames %= source_length
+                if m_length != source_length or frame_shift != 0:
+                    clip = clip[frames]
+                if m_length != target_num_frames:
+                    clip = resample_motion_features(
+                        clip,
+                        target_num_frames,
+                        periodic=loop_condition_active,
+                    )
+            # Anchor each final window after every temporal operation, before
+            # canonical standardization. Only the root carries world XZ; the
+            # other joints are already RIC. Copy even on the identity path so
+            # cached source clips and the reference's source stay untouched.
+            clip = clip.copy()
+            clip[:, 0, [0, 2]] -= clip[0, 0, [0, 2]]
             return clip
 
         motion = sample_window(source_motion)
@@ -1875,6 +1890,12 @@ class Truebones(data.Dataset):
         )
         self.objects_subset = kwargs['objects_subset']
         self.action_group = kwargs.get('action_group', '')
+        sample_filter = kwargs.get('sample_filter')
+        self.sample_filter_report = None
+        if sample_filter is not None and (
+            self.objects_subset != 'all' or kwargs.get('dataset_namespaces') or self.action_group
+        ):
+            raise ValueError('sample_filter cannot be combined with legacy dataset filters')
         self.action_label_cond = bool(kwargs.get('action_label_cond', False))
         # One bundle per run: the training entry point builds it and hands the
         # same object to the model, so loader-side word ids and model-side word
@@ -1894,10 +1915,15 @@ class Truebones(data.Dataset):
         self.opt.motion_speed_aug = float(kwargs.get('motion_speed_aug', 1.0))
         self.opt.motion_speed_aug_prob = float(kwargs.get('motion_speed_aug_prob', 1.0))
         self.opt.loop_cond_prob = float(kwargs.get('loop_cond_prob', 1.0))
-        if not 0.0 <= self.opt.loop_cond_prob <= 1.0:
-            raise ValueError(
-                f"loop_cond_prob must be in [0, 1], got {self.opt.loop_cond_prob}."
-            )
+        self.opt.loop_cond_prob_free = kwargs.get('loop_cond_prob_free')
+        self.opt.loop_cond_prob_anchored = kwargs.get('loop_cond_prob_anchored')
+        for prob_name in ('loop_cond_prob', 'loop_cond_prob_free', 'loop_cond_prob_anchored'):
+            value = getattr(self.opt, prob_name)
+            if value is not None:
+                value = float(value)
+                if not 0.0 <= value <= 1.0:
+                    raise ValueError(f"{prob_name} must be in [0, 1], got {value}.")
+                setattr(self.opt, prob_name, value)
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
         self.opt.topology_aug_prob = float(kwargs.get('topology_aug_prob', 0.0))
         self.opt.ref_encoder = bool(kwargs.get('ref_encoder', False))
@@ -1936,6 +1962,30 @@ class Truebones(data.Dataset):
             )
         cond_dict = load_cond(opt.cond_file)
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
+        motion_metadata_lookup = {
+            source.namespace: load_motion_metadata(source.root)
+            for source in opt.sources
+        }
+        filtered_allowed = None
+        selected_clip_objects = None
+        if sample_filter is not None:
+            from data_loaders.truebones.truebones_utils.sample_filter import resolve_sample_filter
+            self.sample_filter_report = resolve_sample_filter(
+                sample_filter, cond_dict, opt.sources, motion_metadata_lookup,
+                {key: dataset_tags().tags_for(key) for key in cond_dict}, split=split,
+                min_length=self.opt.min_length, sample_limit=self.sample_limit,
+                num_frames=kwargs['num_frames'], seed=kwargs.get('sample_filter_seed', 10),
+            )
+            selected = self.sample_filter_report['clips']
+            selected_clip_objects = {record['clip_id']: record['object_type'] for record in selected}
+            object_types = {record['object_type'] for record in selected}
+            cond_dict = {key: entry for key, entry in cond_dict.items() if key in object_types}
+            filtered_allowed = {source.namespace: set() for source in opt.sources}
+            for record in selected:
+                filtered_allowed[record['namespace']].add(record['clip_id'].rsplit('/', 1)[1])
+            print(f"[sample-filter] {len(selected)} trainable clips / "
+                  f"{self.sample_filter_report['candidate_count']} candidates; "
+                  f"groups={self.sample_filter_report['effective_action_groups']}")
         # Subset keys, species names and tag sets (see ``species_for``). A
         # species name is user input, so it goes through the same bare-name /
         # suffix / canonical-key resolution the CLI uses everywhere else. Each
@@ -1997,12 +2047,8 @@ class Truebones(data.Dataset):
                 )
         assert_single_canonical_frame(cond_dict, source=opt.cond_file)
 
-        motion_metadata_lookup = {
-            source.namespace: load_motion_metadata(source.root)
-            for source in opt.sources
-        }
         self.split_files = []
-        allowed_motion_names = load_allowed_motion_names_per_source(
+        allowed_motion_names = filtered_allowed if filtered_allowed is not None else load_allowed_motion_names_per_source(
             split,
             opt.sources,
             self.action_group,
@@ -2012,18 +2058,24 @@ class Truebones(data.Dataset):
             self.opt,
             cond_dict,
             num_frames=kwargs['num_frames'],
-            sample_limit=self.sample_limit,
+            sample_limit=0 if sample_filter is not None else self.sample_limit,
             allowed_motion_names=allowed_motion_names,
             motion_metadata_lookup=motion_metadata_lookup,
             action_conditioning=self.action_conditioning,
             head_word_weights=self.head_word_weights,
             rare_head_word_floor=self.rare_head_word_floor,
             rare_head_word_max_boost=self.rare_head_word_max_boost,
+            split=split,
+            selected_clip_objects=selected_clip_objects,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \
                                           'To train and evaluate MDM you should get the FULL data as described ' \
                                           'in the README file.'
+        if self.sample_filter_report is not None:
+            expected = {record['clip_id'] for record in self.sample_filter_report['clips']}
+            if set(self.motion_dataset.name_list) != expected or len(self.motion_dataset.name_list) != len(expected):
+                raise RuntimeError('Loaded clips differ from sample_filter selection; check motion files and object prefixes')
 
     def __getitem__(self, item):
         return self.motion_dataset.__getitem__(item)

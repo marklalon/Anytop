@@ -309,6 +309,8 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         *,
         model_var_type: ModelVarType,
         lambda_geo: float = 0.0,
+        lambda_drot: float = 0.0,
+        drot_joint_boost: float = 0.0,
         lambda_dpos: float = 0.0,
         lambda_root_dpos: float = 0.0,
         lambda_root_acc: float = 0.0,
@@ -323,6 +325,8 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             model_var_type=model_var_type,
             loss_type=LossType.MSE,
             lambda_geo=lambda_geo,
+            lambda_drot=lambda_drot,
+            drot_joint_boost=drot_joint_boost,
             lambda_dpos=lambda_dpos,
             lambda_root_dpos=lambda_root_dpos,
             lambda_root_acc=lambda_root_acc,
@@ -364,6 +368,8 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         diffusion = self._make_diffusion(
             model_var_type=ModelVarType.FIXED_LARGE,
             lambda_geo=0.25,
+            lambda_drot=0.1,
+            drot_joint_boost=3.0,
             lambda_dpos=0.5,
             lambda_root_dpos=0.5,
             lambda_root_acc=0.5,
@@ -377,11 +383,39 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             terms = diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs)
 
         self.assertEqual(terms["l_simple"].dtype, torch.float32)
+        self.assertEqual(terms["drot_loss"].dtype, torch.float32)
         self.assertEqual(terms["geodesic_loss"].dtype, torch.float32)
         self.assertEqual(terms["dpos_loss"].dtype, torch.float32)
         self.assertEqual(terms["root_dpos_loss"].dtype, torch.float32)
         self.assertEqual(terms["root_acc_loss"].dtype, torch.float32)
         self.assertEqual(terms["loss"].dtype, torch.float32)
+
+    def test_rotation_step_weight_is_added_to_total_and_zero_disables_it(self):
+        batch_size, joints, features, frames = 2, 3, 12, 5
+        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE,
+                                         lambda_drot=.17, drot_joint_boost=3.)
+        target = torch.randn(batch_size, joints, features, frames)
+        noise = torch.randn_like(target)
+        ts = torch.tensor([0, 2])
+        kwargs = self._make_model_kwargs(batch_size, joints, features, frames)
+        y = kwargs['y']
+        y['canonical_feature_mean'] = torch.linspace(-.2, .2, CANONICAL_STAT_LEN)
+        y['canonical_feature_std'] = torch.linspace(.5, 2., CANONICAL_STAT_LEN)
+        model = _RecordingModel()
+        enabled = diffusion.training_losses(model, target, ts, model_kwargs=kwargs, noise=noise)
+        # The training path must use global steps after undoing standardization.
+        expected_global = diffusion.rotation_step_loss(
+            model.last_x, target, torch.ones(batch_size, 1, 1, joints), y['lengths'], y,
+            t=ts, rotations=(diffusion._canonical_global_rotation_matrices(target, y),
+                             diffusion._canonical_global_rotation_matrices(model.last_x, y)),
+        )
+        torch.testing.assert_close(enabled['drot_loss'], expected_global)
+        torch.testing.assert_close(enabled['loss'], enabled['l_simple'] + .17 * enabled['drot_loss'])
+        diffusion.lambda_drot = 0.
+        disabled = diffusion.training_losses(model, target, ts, model_kwargs=kwargs, noise=noise)
+        self.assertNotIn('drot_loss', disabled)
+        torch.testing.assert_close(enabled['l_simple'], disabled['l_simple'])
+        torch.testing.assert_close(disabled['loss'], disabled['l_simple'])
 
     def test_geodesic_and_bone_losses_share_one_rotation_conversion(self):
         batch_size, n_joints, n_feats, n_frames = 2, 3, 12, 5

@@ -1,7 +1,7 @@
 {"clip": "DNL_Cattle_Angry", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, taunt"}
 {"clip": "DNL_Cattle_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, rear, headbutt"}
 {"clip": "DNL_Cattle_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, backward, kick"}
-{"clip": "DNL_Cattle_BreakHook", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, rear"}
+{"clip": "DNL_Cattle_BreakHook", "action_group": "transition", "reviewed": true, "is_loop": true, "action_label": "rear"}
 {"clip": "DNL_Cattle_Calling", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "roar"}
 {"clip": "DNL_Cattle_ChargeFwd", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "run, forward"}
 {"clip": "DNL_Cattle_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die, right"}
@@ -27,9 +27,6 @@
 {"clip": "DNL_F0006_MoveFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
 {"clip": "DNL_F0006_Swim", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
 {"clip": "DNL_F0006_SwimIdle", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, idle"}
-{"clip": "DNL_Hydrellia_Attack", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "attack, swat"}
-{"clip": "DNL_Hydrellia_ChargeFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, jump, forward"}
-{"clip": "DNL_Hydrellia_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
 {"clip": "DNL_IceDragon_Attack3", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, hover, kick"}
 {"clip": "DNL_IceDragon_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}
 {"clip": "DNL_IceDragon_FlyFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fly, forward"}

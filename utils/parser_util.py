@@ -132,35 +132,6 @@ def assert_checkpoint_version(model_args, args_path):
     )
 
 
-def apply_checkpoint_action_group(args, model_args, args_path):
-    """Set this generation's action group from the checkpoint being sampled.
-
-    A single-group checkpoint was trained on that group's corpus alone, so the
-    group is a property of the weights and generation has no ``--action_group``
-    flag to contradict it: the value comes out of args.json and nowhere else.
-
-    An ``all`` checkpoint was trained on the whole corpus and carries no group
-    condition. It leaves the group EMPTY, which every consumer reads as "any
-    group": the label's first head word determines the group by itself, so
-    nothing downstream needs the value except the clip-length prior, which
-    matches across groups when it is empty (utils/clip_length_prior).
-
-    A run predating the mandatory flag also records no group.
-    """
-    recorded_group = str(model_args.get('action_group', '') or '').strip().lower()
-    if recorded_group == ACTION_GROUP_ALL:
-        recorded_group = ''
-    elif recorded_group and recorded_group not in ACTION_GROUPS:
-        print(
-            f"[parser_util] WARNING: {args_path} records action_group "
-            f"'{recorded_group}', which is not one of {', '.join(ACTION_GROUPS)} "
-            f"or '{ACTION_GROUP_ALL}'. Treating this checkpoint as group-less: "
-            f"the clip-length prior will match a label across every group."
-        )
-        recorded_group = ''
-    args.action_group = recorded_group
-
-
 def extract_args(args, args_to_overwrite, model_path):
     args_path = os.path.join(os.path.dirname(model_path), 'args.json')
     assert os.path.exists(args_path), 'Arguments json file was not found!'
@@ -169,7 +140,6 @@ def extract_args(args, args_to_overwrite, model_path):
 
     assert_checkpoint_version(model_args, args_path)
     assert_joint_condition_schema(model_args, args_path)
-    apply_checkpoint_action_group(args, model_args, args_path)
 
     for a in args_to_overwrite:
         if a in model_args.keys():
@@ -261,6 +231,13 @@ def add_model_options(parser):
     group.add_argument("--species_film_bottleneck", default=128, type=int,
                        help="Hidden width of the joint x species FiLM head (default 128; 0 = latent_dim).")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
+    group.add_argument("--lambda_drot", default=0.0, type=float,
+                       help="Weight of target-relative global rotation-step loss: R[t]^T R[t+1], "
+                            "squared chordal error in 0.1-radian units. Includes valid loop wrap steps "
+                            "and is weighted by the diffusion signal fraction alpha_bar[t]. 0 disables it.")
+    group.add_argument("--drot_joint_boost", default=0.0, type=float,
+                       help="Rotation-step GT motion joint weighting: 1 + boost * RMS/max_RMS, "
+                            "renormalized per sample. 0 keeps uniform supervision; try 3.")
     group.add_argument("--lambda_dpos", default=0.04, type=float,
                        help="Weight of the frame-to-frame position-step MSE against the target, "
                             "in units of the corpus position-step RMS; a loop sample also counts its wrap "
@@ -377,6 +354,10 @@ def add_model_options(parser):
                             "model cannot trust as a content key is one it has to read as time "
                             "topology only. 1.0 = off. Loader-only, like --motion_speed_aug: no regen, "
                             "no bump. The eval loader always uses 1.0.")
+    group.add_argument("--loop_cond_prob_free", default=None, type=float,
+                       help="Override --loop_cond_prob for phase-free loop samples. Defaults to --loop_cond_prob.")
+    group.add_argument("--loop_cond_prob_anchored", default=None, type=float,
+                       help="Override --loop_cond_prob for phase-anchored loop samples. Defaults to --loop_cond_prob.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
@@ -400,8 +381,8 @@ def add_model_options(parser):
     group.add_argument("--temporal_rope_ref_drop_prob", default=0.0, type=float,
                        help="With --temporal_rope: training probability that a reference-active row runs its "
                             "temporal attention without RoPE (identity table; frame positions then come from "
-                            "the input PE alone). Above 0, inference runs every reference-active row, and the "
-                            "reference CFG null pass, without RoPE. Parameter-free.")
+                            "the input PE alone). Above 0, inference runs every reference-active row "
+                            "without RoPE; the reference CFG null pass keeps RoPE on. Parameter-free.")
     group.add_argument("--temporal_rope_drop_prob", default=0.0, type=float,
                        help="With --temporal_rope: the same RoPE drop on rows without a reference, training "
                             "only; it also trains the regime of the reference CFG null pass. Label-only "
@@ -484,44 +465,23 @@ def add_model_options(parser):
                             "Default 0.15.")
 
 def add_data_options(parser, training=False):
-    """Dataset selection. ``training=True`` adds the training-only options.
-
-    ``--action_group`` is one of those: it is mandatory when training (it splits
-    the corpus, and each group trains its own model) and absent when generating,
-    where the group is read back out of the checkpoint instead -- see
-    :func:`apply_checkpoint_action_group`.
-    """
+    """Training selects all clips by default; optional JSON rules narrow the pool."""
     group = parser.add_argument_group('dataset')
     group.add_argument("--train_split", default='train', choices=['train', 'val', 'all'], type=str,
                        dest='train_split',
                        help="Dataset selection: 'train'=all non-validation datasets, 'val'=validation dataset, 'all'=all datasets.")
-    group.add_argument("--objects_subset", default='all', type=str,
-                       help="Object subset: ';'-separated items, unioned. Each item is a predefined category (e.g. 'all', 'quadruped', 'winged'), a species name (e.g. 'Horse'), or ','-separated species tags a species must all carry (e.g. 'Winged,Fluttering'). Example: 'Horse;Winged,Fluttering'.")
+    if not training:
+        group.add_argument("--objects_subset", default='all', type=str,
+                           help="Legacy checkpoint object subset (read from checkpoint settings).")
     group.add_argument("--joint_buckets", default=None, type=int, nargs='+',
                        help="Training batch padding widths (joint-count ceilings); MAX_JOINTS is always appended. "
                             "Default: param_utils.JOINT_BUCKETS. A small subset whose rigs span several buckets can "
                             "pass one ceiling (e.g. '--joint_buckets 80') so its clips share batches.")
     if training:
-        group.add_argument("--dataset_namespaces", default=None, type=str,
-                           help="Train on part of --cond_path: ';'-separated dataset namespaces "
-                                "(e.g. 'truebones/zoo;unitybundles'); an item also selects every "
-                                "namespace below it ('truebones' = truebones/zoo + truebones/zoo_upgrade). "
-                                "Default: every dataset in the cond. The validation loader ignores it.")
-        group.add_argument("--action_group", required=True, type=str,
-                           choices=list(ACTION_GROUPS) + [ACTION_GROUP_ALL],
-                           help="REQUIRED. The corpus to train on: one group -- 'locomotion' "
-                                "(sustained displacement), 'stationary' (in-place / interactive), "
-                                "'transition' (pose changes) -- or 'all' for one model over the "
-                                "whole corpus. No lists: each clip belongs to exactly one group. "
-                                "'all' carries NO group condition; the action label's first head "
-                                "word already determines the group (a property of the corpus), "
-                                "so a group token would "
-                                "add no information the label does not already carry. Draws are "
-                                "uniform over clips, so the group mix is the corpus's own; "
-                                "see --rare_head_word_floor for the tail. "
-                                "Recorded in the checkpoint's args.json, where generation reads it "
-                                "back -- a single-group checkpoint can only ever be sampled as that "
-                                "group. See docs/action_group_and_label.md.")
+        group.add_argument("--sample_filter", default=None, type=str,
+                           help="Optional JSON include/exclude clip rules. Default: all clips in the training split.")
+        group.add_argument("--val_sample_filter", default=None, type=str,
+                           help="Independent JSON filter for the validation split (never inherits the training filter).")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -543,11 +503,13 @@ def add_training_options(parser):
     group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'fp16', 'bf16'], type=str,
                        help="Autocast precision for training. fp32 disables AMP; fp16 uses selective autocast with GradScaler; bf16 uses selective autocast on linear and attention modules only.")
     group.add_argument("--compile", default='None',
-                       choices=['None', 'default', 'max-autotune-no-cudagraphs'],
-                       help="Wrap the transformer decoder with torch.compile to fuse the many tiny "
+                       choices=['None', 'default', 'reduce-overhead', 'max-autotune-no-cudagraphs'],
+                       help="Wrap the model forward with torch.compile to fuse the many tiny "
                             "per-layer kernels (training is kernel-launch-bound). "
                             "Mode: 'None' (no compile), 'default' (torch.compile default), "
-                            "'max-autotune-no-cudagraphs'. On Windows, requires Triton's bundled "
+                            "'reduce-overhead' (CUDA Graphs for eligible model forward/backward regions), "
+                            "'max-autotune-no-cudagraphs'. Sampling, optimizer and logging stay outside "
+                            "the compiled region. On Windows, requires Triton's bundled "
                             "TinyCC; MSVC is not used and C++ codegen is disabled. "
                             "First step pays a one-time compile "
                             "cost; shapes are static so no recompile thrashing afterward "
@@ -894,9 +856,7 @@ def generate_args(argv=None):
     add_generate_options(parser)
     # These CLI args are generation-time overrides and must NOT be
     # overwritten by the training args.json (which stores their defaults).
-    # There is deliberately no --action_group here: the group belongs to the
-    # weights, so apply_checkpoint_action_group() sets args.action_group from the
-    # checkpoint's own args.json.
+    # Checkpoint action_group is training metadata and is not restored for generation.
     preserve_cli_args = {'action_label', 'species_tags', 'reference_action_group'}
     args = parse_and_load_from_model(
         parser, argv=argv,

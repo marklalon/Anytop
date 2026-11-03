@@ -90,8 +90,9 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # maintained controlled set, not a fixed list.
 #
 # HEAD_VOCAB is the closed set of words a label can be ABOUT: a state the body
-# is in (idle, run, rear ...) or an event that is the whole clip (die,
-# getup, land, draw, sheathe, stop ...). Words are spelled in WRITTEN order;
+# is in (idle, run, rear ...), an activity that IS the clip (talk, wave,
+# fishing, dance), or an event that is the whole clip (die, getup, land, draw,
+# sheathe, stop ...). Words are spelled in WRITTEN order;
 # tuple position decides nothing. Every head word feeds the head slot, the
 # FIRST weighted above the later ones (see slot_member_weights), so head order
 # IS the condition: "attack, jump" and "jump, attack" are two labels, and one
@@ -104,10 +105,11 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # the modifiers follow in tuple order -- one combination, exactly one spelling
 # (see canonical_action_label).
 HEAD_VOCAB: tuple[str, ...] = (
-    "attack", "burrow", "climb", "crawl", "die", "draw", "fall",
-    "fly", "getup", "hurt", "idle", "jump", "kneel", "land", "laydown",
-    "lift", "pickup", "putdown", "rear", "rest", "roar", "roll", "run", "sheathe",
-    "sitdown", "spawn", "stop", "swim", "takeoff", "turn", "walk", "work",
+    "attack", "burrow", "climb", "crawl", "dance", "die", "draw", "fall",
+    "fishing", "fly", "getup", "hurt", "idle", "jump", "kneel", "land", "laydown",
+    "lift", "pickup", "putdown", "rear", "rest", "roar", "roll", "run", "shake",
+    "sheathe", "sitdown", "spawn", "stop", "swim", "takeoff", "talk", "turn", "walk",
+    "wave", "work",
 )
 
 # Blocks order the spelling only; nothing weights a word by its block.
@@ -118,7 +120,7 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     # style the whole species shows is its species_tags variant, not a word here.
     "hover", "glide", "flopping",
     # -- block B: secondary action layered on the head --
-    "bite", "eat", "look", "shake", "throw", "taunt",
+    "bite", "eat", "look", "throw", "taunt",
     "sniff", "yawn", "sting", "kick", "scratch",
     "crouch", "dead", "sit", "sleep",
     # -- block C: how a strike is delivered (manner before strike type) --
@@ -126,9 +128,9 @@ MODIFIER_VOCAB: tuple[str, ...] = (
     "headbutt", "swat", "slash", "stab", "smash", "whip",
     "block", "cast", "firebreath", "projectile",
     # -- block D: affect / social gesture --
-    "happy", "talk", "clap", "wave", "cry",
+    "happy", "clap", "cry",
     # -- block E: activity and object handling --
-    "aim", "carry", "fishing", "cook", "reload",
+    "aim", "carry", "cook", "reload",
     "saw", "shovel", "pull", "push",
     # -- block F: the implement an action is performed with: archery,
     # shooting, tool work, shield bash, and ``weapon`` -- the catch-all for a
@@ -298,10 +300,11 @@ assert _HEAD_VOCAB_SET.isdisjoint(MODIFIER_VOCAB), (
 # contradicts its own label -- "walk" under stationary, "die" under locomotion
 # (see action_group_conflict). A new head word needs its group here.
 HEAD_ACTION_GROUP: dict[str, str] = {
-    "attack": "stationary", "hurt": "stationary", "idle": "stationary",
-    "jump": "stationary", "lift": "stationary", "pickup": "stationary",
-    "putdown": "stationary", "rest": "stationary", "roar": "stationary",
-    "work": "stationary",
+    "attack": "stationary", "dance": "stationary", "fishing": "stationary",
+    "hurt": "stationary", "idle": "stationary", "jump": "stationary",
+    "lift": "stationary", "pickup": "stationary", "putdown": "stationary",
+    "rest": "stationary", "roar": "stationary", "shake": "stationary",
+    "talk": "stationary", "wave": "stationary", "work": "stationary",
     "climb": "locomotion", "crawl": "locomotion", "fall": "locomotion",
     "fly": "locomotion", "roll": "locomotion", "run": "locomotion",
     "swim": "locomotion", "walk": "locomotion",
@@ -345,18 +348,22 @@ assert _PHASE_FREE_LOOP_HEAD_SET <= _HEAD_VOCAB_SET, (
 
 # The modifiers that leave a phase-free head phase-free: how the state is
 # carried out (suspension, wing state), a posture held through it (sit,
-# sleep), or what is held during it (carry, weapon). Every other modifier names
-# an EVENT layered on the state -- a glance, a bite of food, a shake, a yawn --
-# and anchors the clip exactly like an anchored head: rolling "idle, look"
-# moves the glance to a random phase and cropping it keeps only part of it, so
-# the label stops meaning any particular motion. A whitelist for the same
-# reason as the heads: a new modifier defaults to anchored. Direction words are
-# not modifiers and never anchor.
+# sleep), what is held during it (carry, weapon), or a SUBTLE secondary action
+# layered on it (a glance, feeding, a yawn, scratching, sniffing). These have
+# no single distinguished frame, so rolling or tiling the window keeps the
+# label true. Every OTHER modifier names a one-shot EVENT -- a bite, a throw,
+# a taunt -- that leaves a ready pose and returns to it; rolling
+# "idle, bite" moves the bite to a random phase and cropping it keeps only
+# part of it, so the label stops meaning any particular motion. A whitelist for
+# the same reason as the heads: a new modifier defaults to anchored. Direction
+# words are not modifiers and never anchor.
 PHASE_FREE_LOOP_MODIFIERS: tuple[str, ...] = (
     "hover", "glide", "flopping",
     "crouch", "dead", "sit", "sleep",
     "aim", "carry",
     "bow", "gun", "hammer", "shield", "weapon",
+    # subtle secondary actions: no distinguished frame, safe to roll/tile
+    "look", "eat", "yawn", "scratch", "sniff",
 )
 _PHASE_FREE_LOOP_MODIFIER_SET: frozenset[str] = frozenset(PHASE_FREE_LOOP_MODIFIERS)
 assert _PHASE_FREE_LOOP_MODIFIER_SET <= set(MODIFIER_VOCAB), (
@@ -371,18 +378,29 @@ _PHASE_FREE_LOOP_WORD_SET: frozenset[str] = (
 def phase_anchoring_words(label) -> list[str]:
     """The words of *label* that anchor its phase, in written order: every
     head outside :data:`PHASE_FREE_LOOP_HEADS` and every modifier outside
-    :data:`PHASE_FREE_LOOP_MODIFIERS`. Empty for a phase-free label."""
-    return [word for word in parse_action_label(label) if word not in _PHASE_FREE_LOOP_WORD_SET]
+    :data:`PHASE_FREE_LOOP_MODIFIERS`. Empty for a phase-free label.
+
+    A label whose primary head is ``idle`` has no anchoring words at all: idle
+    carries no distinguished frame, so any state or event layered on it is
+    treated as part of the idle state and its loop may be rolled and tiled
+    regardless of what follows.
+    """
+    words = parse_action_label(label)
+    heads = head_words_in(words)
+    if heads and heads[0] == "idle":
+        return []
+    return [word for word in words if word not in _PHASE_FREE_LOOP_WORD_SET]
 
 
 def loop_is_phase_free(label) -> bool:
     """Whether a loop clip carrying *label* may be circularly rolled and tiled.
 
-    True only when every head word is in :data:`PHASE_FREE_LOOP_HEADS` and
-    every modifier in :data:`PHASE_FREE_LOOP_MODIFIERS`; one anchored head
-    ("idle, rear", "attack, hover") or one event modifier ("idle, look",
-    "idle, hover, eat") anchors the clip. An empty label has no evidence either way
-    and is anchored.
+    A label whose primary head is ``idle`` is always phase-free (see
+    :func:`phase_anchoring_words`). Otherwise, True only when every head word
+    is in :data:`PHASE_FREE_LOOP_HEADS` and every modifier in
+    :data:`PHASE_FREE_LOOP_MODIFIERS`; one anchored head ("attack, hover") or
+    one one-shot event modifier ("walk, bite") anchors the clip. An empty label
+    has no evidence either way and is anchored.
     """
     words = parse_action_label(label)
     return bool(head_words_in(words)) and not phase_anchoring_words(label)

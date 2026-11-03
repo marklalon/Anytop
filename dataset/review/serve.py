@@ -107,7 +107,10 @@ the rest stays one group. Clip files are never touched.
 returns every row, as the review page needs for its local filters and counts.
 For labels, ``whole_word`` requires the entire action label to equal the query;
 for clips, it matches a word bounded by non-alphanumerics. ``group`` keeps the
-rows that group owns.
+rows that group owns. Every row also carries ``high_frequency``, the verdict
+``tools/regenerate_dataset_artifacts.py`` baked into ``cond.npy``
+(``truebones_utils/high_frequency.py``) and the training loader reads; the
+page's 状态 filter lists those clips for checking.
 """
 import argparse
 import copy
@@ -160,6 +163,9 @@ from data_loaders.truebones.truebones_utils.joint_embedding_text import (  # noq
 )
 from data_loaders.truebones.truebones_utils.joint_name_canonical import (  # noqa: E402
     refresh_joint_metadata_in_object_cond,
+)
+from data_loaders.truebones.truebones_utils.high_frequency import (  # noqa: E402
+    high_frequency_clips,
 )
 from data_loaders.truebones.truebones_utils.joint_parts import prefill_limb_tips  # noqa: E402
 from data_loaders.truebones.truebones_utils.tpose_bvh import (  # noqa: E402
@@ -924,6 +930,46 @@ class SpeciesTagStore:
             return self._row(species), True
 
 
+class HighFrequencyStore:
+    """Each clip's high-frequency verdict, as baked into ``cond.npy`` by
+    ``tools/regenerate_dataset_artifacts.py`` (``truebones_utils/high_frequency.py``)
+    -- the same verdict the training loader reads.
+
+    cond is re-read when its mtime changes. A species whose bake is missing or
+    of an older detector version gives its clips no verdict until the next
+    regen.
+    """
+
+    def __init__(self, ds):
+        self.cond_path = Path(ds["cond"])
+        self.lock = threading.Lock()
+        self.cond_mtime = None
+        self.clips = frozenset()    # motion file names ("<clip>.npy")
+
+    def _refresh(self):
+        try:
+            cond_mtime = self.cond_path.stat().st_mtime_ns
+        except OSError:
+            return
+        if cond_mtime == self.cond_mtime:
+            return
+        clips = set()
+        for entry in load_cond(self.cond_path).values():
+            try:
+                clips |= high_frequency_clips(entry)
+            except RuntimeError:
+                continue
+        self.clips = frozenset(clips)
+        self.cond_mtime = cond_mtime
+
+    def annotate(self, rows):
+        """Set ``high_frequency`` on every row from the baked verdicts."""
+        with self.lock:
+            self._refresh()
+            for row in rows:
+                row["high_frequency"] = f"{clip_stem(row['clip'])}.npy" in self.clips
+
+
 def _species_of(entry, key):
     return str(entry.get("species_name") or key.rsplit("/", 1)[-1])
 
@@ -1234,6 +1280,7 @@ class Handler(BaseHTTPRequestHandler):
     datasets = []       # datasets with action_labels.jsonl (see discover_datasets)
     stores = {}         # dataset id -> LabelStore
     species_stores = {} # dataset id -> SpeciesTagStore
+    high_frequency_stores = {}  # dataset id -> HighFrequencyStore
     joint_datasets = [] # every dataset with cond.npy
     joint_stores = {}   # dataset id -> JointNamesStore
     reference_stores = {}  # dataset id -> ReferencePairsStore (every dataset with cond.npy)
@@ -1379,6 +1426,7 @@ class Handler(BaseHTTPRequestHandler):
                         species_store.annotate(ds_rows)
                 except (OSError, ValueError) as exc:
                     species_errors.append(f"{selected_ds['id']}: {exc}")
+                self.high_frequency_stores[selected_ds["id"]].annotate(ds_rows)
                 rows.extend(ds_rows)
 
             group = params.get("group", "").strip()
@@ -1664,6 +1712,7 @@ class Handler(BaseHTTPRequestHandler):
                 species_store.annotate([out])
             except (OSError, ValueError) as exc:
                 notes.append(f"读取 species_tags 失败：{exc}")
+        self.high_frequency_stores[ds["id"]].annotate([out])
         return self._send_json(200, {"row": out, "dataset": ds["id"], "notes": notes})
 
     def _mark_pending(self, payload):
@@ -1951,6 +2000,7 @@ def main():
                 )
         Handler.stores[d["id"]] = LabelStore(d["labels"])
         Handler.species_stores[d["id"]] = SpeciesTagStore(d)
+        Handler.high_frequency_stores[d["id"]] = HighFrequencyStore(d)
 
     url = f"http://{args.host}:{args.port}/"
     for d in Handler.datasets:

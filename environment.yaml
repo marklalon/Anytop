@@ -96,6 +96,7 @@ dependencies:
       - tokenizers==0.20.3
       - torch==2.4.1
       - tqdm==4.67.1
+      - tensorboard>=2.14.0
       - transformers==4.46.3
       - triton==3.0.0
       - typer==0.4.2

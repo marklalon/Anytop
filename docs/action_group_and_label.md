@@ -24,7 +24,7 @@ action_labels.jsonl ──► dataset loader ──► word / slot / mask ids �
 关键事实：
 
 - 标签是**受控关键词**，不是自然语言；推理时**不跑 T5**，词向量随 checkpoint 一起存放。
-- `action_group` 只影响"用哪部分语料训练"和"服务端选哪个 checkpoint"，**标签本身已经携带 group 信息**（首个主词决定动作类别），所以条件里没有 group token。
+- `action_group` 用于训练样本筛选和语料统计；服务端全部动作共用一个 checkpoint。**标签本身已经携带 group 信息**（首个主词决定动作类别），所以条件里没有 group token。
 - 一个标签词组合只有一种合法拼写；拼写不规范在加载 sidecar 时直接失败。
 
 ---
@@ -69,31 +69,26 @@ action_labels.jsonl ──► dataset loader ──► word / slot / mask ids �
 
 不能用 root 位移自动判：大量 clip 是原地动画，且预处理会对 locomotion clip 做 root XZ 去趋势（见 §8.3）。group 由 LLM 建议、人工核验得出。
 
-### 3.2 训练：`--action_group`
+### 3.2 训练：从最终样本池推导 action_group
 
-`--action_group` 是**训练必填**参数，取值 `locomotion | stationary | transition | all`，不接受列表。
+训练入口不再接受 `--action_group`，默认使用当前 split 的全部样本。需要筛选时使用 [`--sample_filter`](sample_filter.md) 的 action_groups 字段；从最终训练池推导 checkpoint 的 action_group，单组记录该组，跨组记录 all。它仅用于记录训练语料，不进入模型条件，也不限制推理侧的先验匹配。
 
 - **`all`**（`train_all.bat` 的做法）：一个模型覆盖整个语料，**不带任何 group 条件**。采样默认对 clip 均匀，因此 group 配比就是语料自身的配比；稀有尾部靠 §6.4 的采样规则补。
 - **单组**：只用该组 clip 训练，得到该组专属模型。
 
-值写入 checkpoint 的 `args.json`。续训时不允许改变它（`assert_resume_keeps_action_group`）：`args.json` 每次启动都会重写，改了会让旧权重吃另一组的数据，同时悄悄改掉推理所信任的契约。换组 = 换 `--save_dir`。
+推导值写入 checkpoint 的 `args.json`。续训时检查该值和样本快照，避免静默改写旧权重的训练语料信息。更换样本池需要使用新的 `--save_dir`。
 
-### 3.3 推理：group 属于权重
+### 3.3 推理：不使用 action_group
 
-生成侧**没有** `--action_group`。`apply_checkpoint_action_group` 从 checkpoint 的 `args.json` 读出：
+生成侧没有 `--action_group`，也不从 checkpoint 的 `args.json` 恢复该字段。动作条件只包含 action_label 及其词槽。
 
-- 单组 checkpoint → 该组名；
-- `all` checkpoint（或没有记录）→ 空串，所有消费者读作"任意 group"。
-
-空串只会影响**片长先验**（§7.4）：它按 `group|label` 建表，空 group 时跨 group 匹配同一个 label。
+片长先验、循环周期和高频长度上限统一跨 group 匹配标签。已有 cond 的 `group|label` 索引仍可读取，查询时只匹配 label 部分；旧 checkpoint 中的 action_group 不影响生成。
 
 ### 3.4 服务端
 
-`server/anytop_service.py` 按请求里显式给出的 `action_group` 选 checkpoint 槽位（环境变量 `PCVG_ANYTOP_MODEL_PATH_{LOCOMOTION,STATIONARY,TRANSITION}`）：
+`server/anytop_service.py` 只加载 `PCVG_ANYTOP_MODEL_PATH` 配置的一个模型，所有动作共用 `state.anytop`。相对路径按 PCVG 仓库根目录解析；未配置或文件不存在时启动报错。
 
-- 缺失或非法 → 报错并列出三个合法值，**不做文本反推**（"没表达的信息"任何算法都只能赌）；
-- `action_group` 只用来选槽位，不会转发给 `generate`；
-- 加载时 `_assert_checkpoint_declares_group` 校验每个槽位配的 checkpoint 确实是该组训的，配错在启动期就报错，而不是让某组请求被另一个模型静默接管。
+请求和客户端不再需要 action_group，通过 action_label 控制动作。旧请求多带的 action_group 字段会被忽略。原来的三个分组模型环境变量、模型注册表和路由已移除。
 
 ### 3.5 其他使用 group 的地方
 
@@ -115,8 +110,8 @@ action_labels.jsonl ──► dataset loader ──► word / slot / mask ids �
 
 | 类 | 常量 | 说明 |
 |---|---|---|
-| 主词 | `HEAD_VOCAB` | 标签"关于什么"：一个身体状态（`idle` `run` `rear`…）或一个整段事件（`die` `getup` `land` `draw` `sheathe` `stop`…） |
-| 修饰词 | `MODIFIER_VOCAB` | 其余动作词：执行方式（`hover`；`glide` 翅膀不动的滑翔。步态快慢由 `--num_frames` 决定，物种整体的运动风格是 species_tags 的 variant，都不写成修饰词）、叠加的次要动作（`bite` `eat` `look` `shake`）、打击类型（`swat` `slash` `stab`…）、情绪手势、活动/物件、持械（`bow` `gun` `hammer` `shield` `weapon`） |
+| 主词 | `HEAD_VOCAB` | 标签"关于什么"：一个身体状态（`idle` `run` `rear`…）、一个本身就是整段 clip 的活动（`talk` `wave` `fishing` `dance`）或一个整段事件（`die` `getup` `land` `draw` `sheathe` `stop`…） |
+| 修饰词 | `MODIFIER_VOCAB` | 其余动作词：执行方式（`hover`；`glide` 翅膀不动的滑翔。步态快慢由 `--num_frames` 决定，物种整体的运动风格是 species_tags 的 variant，都不写成修饰词）、叠加的次要动作（`bite` `eat` `look` `throw`）、打击类型（`swat` `slash` `stab`…）、情绪手势、活动/物件、持械（`bow` `gun` `hammer` `shield` `weapon`） |
 | 方向词 | `DIRECTION_VOCAB` | `forward backward left right up down` |
 
 要点：
@@ -267,8 +262,9 @@ checkpoint 的 load / resume / bind 受两层指纹把关，不兼容的 checkpo
 ### 6.5 is_loop 与 loop 相关增强
 
 - `is_loop` 来自 sidecar（§2），与标签一起进入条件。
-- **phase-free** vs **phase-anchored**（`loop_is_phase_free`）：只有每个主词都在 `PHASE_FREE_LOOP_HEADS`（步态、翅拍、呼吸、持续姿态：`walk run swim fly idle crawl climb roll rest fall`）且每个修饰词都在 `PHASE_FREE_LOOP_MODIFIERS`（步态 / 速度 / 保持的姿态 / 手持物）的 loop，才做**循环滚动与平铺**增强。其余 loop 是一个"离开准备姿态再回来"的事件（打击、跳、吼、`idle, look`…），frame 0 就是准备姿态，窗口里正好一次事件，滚动会打乱事件时序。白名单制：新词默认 anchored（少做一点增强，好过打乱时序）。
+- **phase-free** vs **phase-anchored**（`loop_is_phase_free`）：**主词为 `idle` 时无条件 phase-free**——idle 没有可区分帧，叠在它上面的状态/事件都视作 idle 状态的一部分，loop 可滚动/平铺（`idle, look` / `idle, rear` / `idle, spin` … 全都不锚定）。非 idle 主词的 loop，才要求每个主词都在 `PHASE_FREE_LOOP_HEADS`（步态、翅拍、呼吸、持续姿态：`walk run swim fly idle crawl climb roll rest fall`）且每个修饰词都在 `PHASE_FREE_LOOP_MODIFIERS`（步态 / 速度 / 保持的姿态 / 手持物 / 细碎次级动作：`look eat yawn scratch sniff`），否则是"离开准备姿态再回来"的一次性事件（打击、跳、吼、`walk, bite`…），frame 0 是准备姿态，窗口里正好一次事件，滚动会打乱事件时序。白名单制：非 idle 的新词默认 anchored（少做一点增强，好过打乱时序）。
 - `--loop_cond_prob`：loop clip 被**告知**自己是 loop 的概率。失败时仍做物理上的 loop 增强，但窗口按开放 clip 重采样、`is_loop=False` 输入，故意引入标签噪声，防止 `is_loop` 被模型当作内容键。
+- `--loop_cond_prob_free` / `--loop_cond_prob_anchored`：分别覆盖 phase-free / phase-anchored loop 的告知概率；省略时回退到 `--loop_cond_prob`。
 - loop 相关损失权重（`--lambda_loop_wrap`）见 `train_all.bat`。
 
 ---
@@ -391,7 +387,7 @@ out = out_uncond + s * (out_cond - out_uncond)
 | 推理 CFG | [`model/cfg_sampler.py`](../model/cfg_sampler.py) |
 | 采样权重（稀有词） | [`dataset.py`](../data_loaders/truebones/data/dataset.py)（`rare_head_word_boost` / `parse_head_word_weights`） |
 | 标签解析与改写、loop auto | [`sample/conditioning.py`](../sample/conditioning.py)、[`sample/generate.py`](../sample/generate.py) |
-| 训练 / 推理的 group 读写 | [`parser_util.py`](../utils/parser_util.py)（`apply_checkpoint_action_group`）、[`train_anytop.py`](../train/train_anytop.py)（`assert_resume_keeps_action_group`） |
+| 训练的 group 记录与续训守卫 | [`train_anytop.py`](../train/train_anytop.py)（`assert_resume_keeps_action_group`）、[`sample_filter.py`](../data_loaders/truebones/truebones_utils/sample_filter.py)（`record_sample_selection`）；推理不读取 group |
 | 服务端路由 | [`server/anytop_service.py`](../../server/anytop_service.py) |
 | 片长先验 | [`utils/clip_length_prior.py`](../utils/clip_length_prior.py) |
 | 评测参考先验 | [`eval/motion_quality/reference_bank.py`](../eval/motion_quality/reference_bank.py) |
