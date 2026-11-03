@@ -288,14 +288,14 @@ class AnyTop(nn.Module):
         self.ref_cfg_drop_prob = float(kargs.get('ref_cfg_drop_prob', 0.4))
         if not 0 <= self.ref_cfg_drop_prob <= 1:
             raise ValueError('ref_cfg_drop_prob must be in [0, 1]')
-        self.motion_encoder = None
+        self.reference_encoder = None
         if self.ref_encoder:
-            from model.motion_encoder import MotionEncoder
+            from model.reference_encoder import ReferenceEncoder
             ref_dim = int(kargs.get('ref_dim', 8))
             ref_width = int(kargs.get('ref_width', 64))
             if ref_width >= self.latent_dim:
                 raise ValueError('ref_width must be smaller than the shared decoder latent_dim')
-            self.motion_encoder = MotionEncoder(
+            self.reference_encoder = ReferenceEncoder(
                 t5_out_dim, slots=int(kargs.get('ref_slots', 2)), ref_dim=ref_dim,
                 width=ref_width, layers=int(kargs.get('ref_layers', 2)),
                 dropout=self.dropout, joint_name_noise_std=self.joint_name_noise_std,
@@ -308,11 +308,11 @@ class AnyTop(nn.Module):
         the target and reference name paths alike."""
         device = next(self.parameters()).device
         self.input_process.joint_name_noise.set_basis(basis, std, device)
-        if self.motion_encoder is not None:
-            self.motion_encoder.joint_name_noise.set_basis(basis, std, device)
+        if self.reference_encoder is not None:
+            self.reference_encoder.joint_name_noise.set_basis(basis, std, device)
 
     def reference_parameter_budget(self):
-        encoder = sum(p.numel() for p in self.motion_encoder.parameters()) if self.motion_encoder else 0
+        encoder = sum(p.numel() for p in self.reference_encoder.parameters()) if self.reference_encoder else 0
         branches = sum(p.numel() for n, p in self.seqTransDecoder.named_parameters()
                        if '.ref_' in n)
         total = sum(p.numel() for p in self.parameters())
@@ -320,7 +320,7 @@ class AnyTop(nn.Module):
                     reference_encoder=encoder, reference_branches=branches)
 
     def _reference_condition(self, y, batch_size, frames, device):
-        if self.motion_encoder is None:
+        if self.reference_encoder is None:
             return None, None
         active = torch.as_tensor(y['ref_active'], device=device, dtype=torch.bool).reshape(-1)
         if active.numel() != batch_size:
@@ -330,12 +330,12 @@ class AnyTop(nn.Module):
         if ref_y['ref_feats'].shape[-1] != frames:
             raise ValueError('Reference and output windows must be frame aligned')
         if not self.training or self.ref_cfg_drop_prob == 0:
-            return self.motion_encoder(ref_y), active
+            return self.reference_encoder(ref_y), active
         # Reference dropout keeps a fixed number of randomly chosen rows per
         # batch, so the encoder runs on those rows only (static shape for
         # compile); a dropped row is hard-bypassed and its z is never read.
         keep = batch_size - round(batch_size * self.ref_cfg_drop_prob)
-        encoder = self.motion_encoder
+        encoder = self.reference_encoder
         if keep == 0:
             z = ref_y['ref_feats'].new_zeros(batch_size, frames, encoder.slots, encoder.ref_dim)
             return z, torch.zeros_like(active)

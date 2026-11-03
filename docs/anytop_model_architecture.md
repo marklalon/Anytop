@@ -42,9 +42,9 @@ diffusion timestep
 编辑在目标骨架上进行，参考必须是目标同一套骨架：已预处理的 `.npy`，或以文件自带 bind pose 为 rest pose 的 `.glb/.fbx`（骨架层级与目标不一致时报错），不做 retarget。
 
 不带这些参数时是 encode；训练时启用 `--ref_encoder` 后可用：参考在源骨架上进入独立的
-MotionEncoder，逐帧输出固定数量的槽。每层 spatial 之后读取这些槽，经独立的零初始化标量
+ReferenceEncoder，逐帧输出固定数量的槽。每层 spatial 之后读取这些槽，经独立的零初始化标量
 gate 加入残差；不设参考专用 FFN。无参考时硬旁路，完整设计与验证边界见
-[reference_motion_encoder.md](reference_motion_encoder.md)。
+[reference_encoder.md](reference_encoder.md)。
 
 基础训练目标是 `MSE(predicted_x0, target_x0)`，不是噪声预测。temporal attention 是全窗口
 注意力；loop 使用条件 token、圆周相位、数据增强与闭合损失，不使用 temporal mask。
@@ -495,7 +495,7 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 | refined topology codes | `data_loaders/truebones/truebones_utils/topology_relations.py` |
 | loop roll/tile/resample | `data_loaders/truebones/data/dataset.py` |
 | reference/inpainting/outpainting | `sample/generate.py` |
-| 源骨架参考编码器 | `model/motion_encoder.py` |
+| 源骨架参考编码器 | `model/reference_encoder.py` |
 | 编码器侧增强与固定字段 | `data_loaders/reference.py` |
 
 ## 11. 宽度分配与设计依据

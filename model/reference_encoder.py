@@ -7,7 +7,7 @@ from model.joint_name_noise import JointNameNoise
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 
 
-class MotionEncoder(nn.Module):
+class ReferenceEncoder(nn.Module):
     """Encodes a reference from absolute per-frame channels plus a static rest context.
 
     Every per-frame input means the same thing on every skeleton: the unit

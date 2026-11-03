@@ -22,7 +22,7 @@
 当前代码入口：
 
 - `model/anytop.py`：目标动作输入投影、动作空间去噪主干、输出头，以及可选参考动作分支。
-- `model/motion_encoder.py`：参考动作编码器，输出逐帧 `z_ref [B,T,K,d]`。
+- `model/reference_encoder.py`：参考动作编码器，输出逐帧 `z_ref [B,T,K,d]`。
 - `model/motion_transformer.py`：时空主干及逐帧参考 cross-attention。
 - `diffusion/gaussian_diffusion.py`：对 canonical 动作加噪、预测 x0、计算动作损失。
 - `data_loaders/truebones/truebones_utils/canonical_features.py`：动作表示、标准化和物理空间转换。
@@ -76,7 +76,7 @@
 
 ## 4. 第一阶段模型：完整动作编码器 + 骨架条件解码器
 
-### 4.1 为什么不能直接使用当前 MotionEncoder
+### 4.1 为什么不能直接使用当前 ReferenceEncoder
 
 当前参考编码器的逐帧输入主要是单位骨方向、高度和根 XZ，另有静态 rest 上下文；它没有完整读取每个关节的旋转扭转信息。其目标是迁移动作内容，而不是完整动作保真压缩。
 
@@ -369,5 +369,5 @@ latent 统计作为绑定到指定 AE checkpoint 的版本化产物保存。若�
 
 - [MLD: Executing Your Commands via Motion Diffusion in Latent Space](https://arxiv.org/abs/2212.04048)：动作 VAE + 潜空间扩散的代表方案，不证明其人体配置可直接用于多拓扑动物。
 - [T2M-GPT](https://arxiv.org/abs/2301.06052)：离散动作表示路线，作为后续方案对照，非本文首版实现。
-- [当前参考编码器设计](reference_motion_encoder.md)：参考迁移目标与新保真压缩任务的区别。
+- [当前参考编码器设计](reference_encoder.md)：参考迁移目标与新保真压缩任务的区别。
 - [当前模型结构](anytop_model_architecture.md)：现有主干与动作空间生成路径；细节以代码为准。

@@ -79,6 +79,6 @@ def test_model_attaches_one_basis_to_both_name_paths_without_new_state():
     basis, std = joint_name_noise_basis(_cond_dict(), 4)
     model.set_joint_name_noise_basis(basis, std)
     assert torch.equal(model.input_process.joint_name_noise.basis, basis)
-    assert torch.equal(model.motion_encoder.joint_name_noise.std, std)
-    assert model.motion_encoder.joint_name_noise.noise_std == 0.1
+    assert torch.equal(model.reference_encoder.joint_name_noise.std, std)
+    assert model.reference_encoder.joint_name_noise.noise_std == 0.1
     assert model.state_dict().keys() == plain.state_dict().keys()

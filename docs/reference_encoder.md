@@ -62,7 +62,7 @@ encode 推理不经过 retarget，也不需要关节对应表；可支持的物�
 
 ## 3. 模型结构
 
-### 3.1 运动编码器 E（`model/motion_encoder.py`）
+### 3.1 运动编码器 E（`model/reference_encoder.py`）
 
 **结构**：
 - 输入：逐帧量都是与源骨架 rest 无关的绝对量，另有一个静态 rest 上下文（见下文「rest 上下文」）。逐帧逐关节读 `ref_pose [J_s, 4, T]`：父→子骨骼单位方向 + 关节绝对高度 / L；根关节额外读 canonical 特征里的根 XZ 速度。逐关节静态读关节名 embedding 与 structural channel 的拓扑列（链上位置、链长、是否叶子、子树大小分桶、兄弟序、兄弟数）加左右侧符号。投影权重独立，不复用 InputProcess。
@@ -264,7 +264,7 @@ out = x0(∅) + s_ref · (x0(ref) − x0(∅))
 
 | 文件 | 内容 |
 |---|---|
-| `model/motion_encoder.py` | 编码器 E |
+| `model/reference_encoder.py` | 编码器 E |
 | `model/motion_transformer.py` | decoder layer 中的 ref cross-attn、独立 LayerNorm 与零初始化 gate |
 | `model/anytop.py` | 调用 E；解析 `ref_active`；硬旁路 |
 | `model/cfg_sampler.py` | reference CFG wrapper |

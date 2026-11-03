@@ -32,6 +32,22 @@ def model(**kwargs):
                   ref_width=8, **kwargs)
 
 
+def test_load_legacy_reference_encoder_checkpoint():
+    from utils.model_util import load_model
+
+    source = model()
+    state = source.state_dict()
+    assert any(k.startswith('reference_encoder.') for k in state)
+    legacy = {
+        ('motion_encoder.' + k[len('reference_encoder.'):] if k.startswith('reference_encoder.') else k): v
+        for k, v in state.items()
+    }
+    restored = model()
+    load_model(restored, legacy)
+    for key, value in restored.state_dict().items():
+        torch.testing.assert_close(value, state[key], rtol=0, atol=0)
+
+
 def inputs(batch=2, joints=4, frames=5, source_joints=6):
     x = torch.randn(batch, joints, 12, frames)
     y = dict(n_joints=torch.full((batch,), joints), rest_geom=torch.randn(batch, joints, REST_GEOM_DIM),
@@ -82,10 +98,10 @@ def test_mixed_hard_bypass_includes_bias_and_source_changes_only_active_rows():
     torch.testing.assert_close(first[0], second[0], rtol=0, atol=0)
     assert not torch.allclose(first[1], second[1])
     # Compare against physically removing the reference branch.
-    saved = m.motion_encoder
-    m.motion_encoder = None
+    saved = m.reference_encoder
+    m.reference_encoder = None
     plain = m(x, torch.zeros(2), y)
-    m.motion_encoder = saved
+    m.reference_encoder = saved
     torch.testing.assert_close(first[0], plain[0], rtol=0, atol=0)
 
 
@@ -99,7 +115,7 @@ def test_null_rows_are_finite_and_have_no_reference_gradients():
     assert torch.isfinite(out).all()
     out.square().mean().backward()
     for n, p in m.named_parameters():
-        if n.startswith('motion_encoder.') or '.ref_' in n:
+        if n.startswith('reference_encoder.') or '.ref_' in n:
             assert p.grad is None or not p.grad.count_nonzero(), n
     assert any(p.grad is not None and p.grad.count_nonzero() for p in m.output_process.parameters())
 
@@ -113,14 +129,14 @@ def test_gates_start_learning_then_encoder_receives_gradient():
     m.zero_grad(set_to_none=True)
     open_gates(m)
     m(x, torch.zeros(2), y).square().mean().backward()
-    assert m.motion_encoder.queries.grad.abs().sum() > 0
+    assert m.reference_encoder.queries.grad.abs().sum() > 0
     assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in m.input_process.parameters())
 
 
 def test_encoder_permutation_invariance_padding_and_actual_channel_contract():
     m = model().eval()
     _, y = inputs()
-    encoder = m.motion_encoder
+    encoder = m.reference_encoder
     z = encoder(y)
     assert z.shape == (2, 5, 2, 8)
     permutation = torch.tensor([0, 4, 1, 5, 2, 3])  # transport root remains zero
@@ -152,27 +168,27 @@ def test_encoder_permutation_invariance_padding_and_actual_channel_contract():
 def test_encoder_reads_bone_directions_and_height():
     m = model().eval()
     _, y = inputs()
-    z = m.motion_encoder(y)
+    z = m.reference_encoder(y)
     for channels in (slice(0, 3), slice(3, 4)):
         changed = copy.deepcopy(y)
         changed['ref_pose'][:, :, channels] = -changed['ref_pose'][:, :, channels]
-        assert not torch.allclose(z, m.motion_encoder(changed))
+        assert not torch.allclose(z, m.reference_encoder(changed))
 
 
 def test_encoder_reads_rest_pose_and_keeps_padding_inert():
     m = model().eval()
     _, y = inputs()
-    z = m.motion_encoder(y)
+    z = m.reference_encoder(y)
     changed = copy.deepcopy(y)
     changed['ref_rest_pose'][:, 2] = -changed['ref_rest_pose'][:, 2]
-    assert not torch.allclose(z, m.motion_encoder(changed))
+    assert not torch.allclose(z, m.reference_encoder(changed))
     padded = dict(y)
     for k in ('ref_feats', 'ref_pose', 'ref_rest_pose', 'ref_mask', 'ref_joints_names_embs',
               'ref_joint_struct'):
         shape = list(y[k].shape)
         shape[1] = 3
         padded[k] = torch.cat([y[k], y[k].new_zeros(shape)], dim=1)
-    torch.testing.assert_close(z, m.motion_encoder(padded), rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(z, m.reference_encoder(padded), rtol=1e-5, atol=1e-6)
 
 
 def test_reference_rest_pose_is_the_pose_of_the_rest():
@@ -230,7 +246,7 @@ def test_collate_rejects_bone_direction_frame_mismatch():
 
 def test_encoder_attention_has_no_graph_relations():
     m = model()
-    names = [n for n, _ in m.motion_encoder.named_parameters()]
+    names = [n for n, _ in m.reference_encoder.named_parameters()]
     assert not any('topology' in n or 'edge_' in n for n in names)
     assert m.seqTransDecoder.topology_key_emb is not None
 
@@ -239,8 +255,8 @@ def test_reference_dropout_keeps_fixed_rows_and_encodes_only_those(monkeypatch):
     m = model(ref_cfg_drop_prob=.5).train()
     x, y = inputs(batch=4)
     seen = []
-    forward = m.motion_encoder.forward
-    monkeypatch.setattr(m.motion_encoder, 'forward',
+    forward = m.reference_encoder.forward
+    monkeypatch.setattr(m.reference_encoder, 'forward',
                         lambda ref_y: seen.append(ref_y['ref_feats'].shape[0]) or forward(ref_y))
     z, active = m._reference_condition(y, 4, 5, x.device)
     assert seen == [2] and int(active.sum()) == 2
@@ -629,7 +645,7 @@ def test_validation_pairs_reference_and_null_with_same_noise_and_target():
 def test_hidden_frames_never_reach_any_z():
     m = model().eval()
     _, y = inputs(frames=6)
-    encoder = m.motion_encoder
+    encoder = m.reference_encoder
     with torch.no_grad():
         encoder.hidden_frame_embedding.normal_()
     hidden = torch.zeros(2, 6, dtype=torch.bool)

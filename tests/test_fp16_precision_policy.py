@@ -24,7 +24,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.fp16_util import GRAD_SCALER_MAX_SCALE, MixedPrecisionTrainer  # noqa: E402
 from model.anytop import run_in_fp32  # noqa: E402
-from model.motion_encoder import MotionEncoder  # noqa: E402
+from model.reference_encoder import ReferenceEncoder  # noqa: E402
 from model.motion_transformer import CrossLimbTemporalBlock  # noqa: E402
 from data_loaders.reference import REFERENCE_POSE_CHANNELS  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM  # noqa: E402
@@ -95,7 +95,7 @@ class ReferencePoolFp32IslandTests(unittest.TestCase):
 
     def _encoder_and_inputs(self):
         torch.manual_seed(0)
-        encoder = MotionEncoder(t5_out_dim=8, slots=2, ref_dim=4, width=16, layers=1,
+        encoder = ReferenceEncoder(t5_out_dim=8, slots=2, ref_dim=4, width=16, layers=1,
                                 heads=2, dropout=0.0)
         encoder.eval()
         batch, joints, frames = 2, 5, 3

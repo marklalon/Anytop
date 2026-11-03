@@ -212,7 +212,7 @@ def collate_reference(samples, motion, names, joint_struct):
         'ref_active': torch.zeros(batch, dtype=torch.bool, device=motion.device),
         'ref_joints_names_embs': torch.zeros_like(names),
         'ref_joint_struct': torch.zeros_like(joint_struct),
-        # Frames withheld from the encoder (MotionEncoder); training and
+        # Frames withheld from the encoder (ReferenceEncoder); training and
         # generation fill it in once they know what is re-drawn.
         'ref_frame_mask': torch.zeros(batch, frames, dtype=torch.bool, device=motion.device),
         # The reference is the target's own window on the target's rig, so

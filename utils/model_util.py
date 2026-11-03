@@ -75,6 +75,11 @@ _DROPPED_STATE_DICT_PREFIXES = ('joint_part_head.',)
 
 def load_model(model, state_dict):
     state_dict = {k: v for k, v in state_dict.items() if not k.startswith(_DROPPED_STATE_DICT_PREFIXES)}
+    # Reference encoder was previously registered as motion_encoder.
+    state_dict = {
+        ('reference_encoder.' + k[len('motion_encoder.'):] if k.startswith('motion_encoder.') else k): v
+        for k, v in state_dict.items()
+    }
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert len(unexpected_keys) == 0, f"Unexpected keys in checkpoint: {unexpected_keys}"
     # QK-norm params (added to bound attention logits) are absent from older

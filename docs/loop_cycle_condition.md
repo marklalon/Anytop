@@ -128,7 +128,7 @@ z 逐帧对齐，k 份拷贝的结构由 z 给出。这些行的表和 tempo 按
 ### 3.4 不改的部分
 
 - 开放窗口（包括 `loop_uncond`）：绝对帧 PE 和 tempo 斜坡保持原样。
-- 参考动作编码器（`motion_encoder`）的时间编码：本方案不涉及。
+- 参考动作编码器（`reference_encoder`）的时间编码：本方案不涉及。
 - 损失函数：不新增；wrap 相关损失照旧。
 - temporal-span 掩码：已经按 `loop_tile_count` 的周期重复，不变。
 
