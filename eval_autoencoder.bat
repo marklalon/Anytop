@@ -5,7 +5,7 @@ REM Set RUN_NAME before calling to select another run, or pass --model_path expl
 REM Outputs original/reconstruction .npy and .bvh pairs; VAE uses posterior mean.
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
-if not defined RUN_NAME set "RUN_NAME=tiny_autoencoder_shake_v3"
+if not defined RUN_NAME set "RUN_NAME=tiny_autoencoder_fly_shake_v2"
 if not exist "%PYTHON_EXE%" (
     echo ERROR: Python environment not found: "%PYTHON_EXE%"
     exit /b 1
