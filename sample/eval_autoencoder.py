@@ -128,7 +128,8 @@ def main(argv=None):
     if checkpoint['decoder_content_version'] != DECODER_CONTENT_VERSION:
         raise ValueError('Checkpoint decoder content version does not match this code')
     model = MotionAutoencoder(**checkpoint['model_config'])
-    model.load_state_dict(checkpoint['model'], strict=True)
+    weights = checkpoint['model_ema'] if checkpoint['args'].get('use_ema', False) else checkpoint['model']
+    model.load_state_dict(weights, strict=True)
     model.to(device).eval()
     frames = int(checkpoint['args']['num_frames'])
     cond_path = resolve_cond_path(checkpoint, model_path, args.cond_path)

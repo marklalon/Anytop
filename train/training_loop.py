@@ -1,5 +1,4 @@
 import functools
-import math
 import os
 import re
 import json
@@ -34,6 +33,7 @@ from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.data.dataset import EmptySplitError
 from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
 from train.sample_loss_limit import SampleLossLimiter
+from utils.lr_schedule import cosine_decay_lr_lambda
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
@@ -123,27 +123,6 @@ def build_optimizer_param_groups(named_params, weight_decay: float):
     if no_decay:
         groups.append({'params': no_decay, 'weight_decay': 0.0})
     return groups
-
-
-def cosine_decay_lr_lambda(lr, lr_final, decay_start, num_steps):
-    """LambdaLR multiplier: constant 1.0 up to ``decay_start``, then a cosine
-    decay reaching ``lr_final / lr`` at ``num_steps``. ``decay_start=None`` keeps
-    the LR constant for the whole run (WSD without the decay phase)."""
-    if decay_start is None:
-        return lambda step: 1.0
-    if not 0 <= decay_start < num_steps:
-        raise ValueError(f"--lr_decay_start {decay_start} must lie in [0, num_steps={num_steps})")
-    if not 0 <= lr_final <= lr:
-        raise ValueError(f"--lr_final {lr_final} must lie in [0, lr={lr}]")
-    floor = lr_final / lr
-    span = num_steps - decay_start
-
-    def multiplier(step):
-        if step < decay_start:
-            return 1.0
-        t = min((step - decay_start) / span, 1.0)
-        return floor + 0.5 * (1.0 - floor) * (1.0 + math.cos(math.pi * t))
-    return multiplier
 
 
 class TrainLoop:

@@ -1,5 +1,6 @@
 """Fixed-window self-reconstruction and latent bypass checks (plan section 7.A)."""
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -22,6 +23,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from data_loaders.truebones.truebones_utils.param_utils import FPS, JOINT_BUCKETS
 from diffusion.losses import geodesic_distance
+from diffusion.nn import update_ema
 from diffusion.logger import HumanOutputFormat
 from model.motion_autoencoder import (
     DECODER_CONTENT_VERSION, MotionAutoencoder,
@@ -29,6 +31,7 @@ from model.motion_autoencoder import (
 )
 from train.motion_reconstruction_losses import LOSS_WEIGHTS, MotionGeometryLosses, MotionReconstructionLosses
 from utils.fixseed import fixseed
+from utils.lr_schedule import cosine_decay_lr_lambda
 from utils.npy_restore import write_feature_bvh
 from torch.utils.tensorboard import SummaryWriter
 
@@ -139,6 +142,24 @@ def scaled_optimizer_step(loss, model, optimizer, scaler):
     scaler.step(optimizer)
     scaler.update()
     return grad_norm, scaler.get_scale() >= previous_scale
+
+
+@torch.no_grad()
+def update_autoencoder_ema(model_avg, model, rate):
+    update_ema(model_avg.parameters(), model.parameters(), rate=rate)
+    # Copy persistent buffers only; attention caches may have dynamic shapes.
+    parameters = set(dict(model_avg.named_parameters()))
+    for name in model_avg.state_dict().keys() - parameters:
+        model_avg.get_buffer(name).copy_(model.get_buffer(name))
+
+
+def create_lr_scheduler(optimizer, args, completed_steps=0):
+    for group in optimizer.param_groups:
+        group['initial_lr'] = args.lr
+    return torch.optim.lr_scheduler.LambdaLR(
+        optimizer, cosine_decay_lr_lambda(
+            args.lr, args.lr_final, args.lr_decay_start, args.num_steps),
+        last_epoch=completed_steps - 1)
 
 
 @torch.no_grad()
@@ -262,7 +283,12 @@ def parser():
     p.add_argument('--amp_dtype', choices=('fp32', 'fp16'), default='fp32')
     p.add_argument('--num_steps', type=int, default=5000)
     p.add_argument('--lr', type=float, default=1e-4)
+    p.add_argument('--lr_final', type=float, default=1e-5)
+    p.add_argument('--lr_decay_start', type=int, default=None,
+                   help='Start cosine decay to lr_final; omitted keeps LR constant')
     p.add_argument('--weight_decay', type=float, default=0.0)
+    p.add_argument('--use_ema', action='store_true', help='Evaluate/export EMA weights')
+    p.add_argument('--ema_rate', type=float, default=0.99)
     p.add_argument('--log_interval', type=int, default=100)
     p.add_argument('--save_interval', type=int, default=1000)
     p.add_argument('--eval_interval', type=int, default=1000)
@@ -283,6 +309,13 @@ def parser():
 
 def main():
     args = parser().parse_args()
+    if not np.isfinite(args.lr) or args.lr <= 0:
+        raise ValueError('lr must be finite and positive')
+    if not np.isfinite(args.weight_decay) or args.weight_decay < 0:
+        raise ValueError('weight_decay must be finite and nonnegative')
+    if not np.isfinite(args.ema_rate) or not 0 <= args.ema_rate <= 1:
+        raise ValueError('ema_rate must lie in [0, 1]')
+    cosine_decay_lr_lambda(args.lr, args.lr_final, args.lr_decay_start, args.num_steps)
     if min(args.num_frames, args.batch_size, args.num_steps, args.log_interval,
            args.save_interval, args.eval_interval) < 1:
         raise ValueError('Lengths, batch size, steps and intervals must be positive')
@@ -333,6 +366,10 @@ def main():
         for key in ('seed', 'num_frames', 'layers', 'heads', 'slots', 'latent_dim', 'batch_size', 'lr', 'weight_decay'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}')
+        for key, default in (('lr_decay_start', None), ('lr_final', 1e-5),
+                             ('use_ema', False), ('ema_rate', 0.99)):
+            if resume['args'].get(key, default) != getattr(args, key):
+                raise ValueError(f'Cannot resume with changed {key}; use a new run')
         for key, fallback in (('encoder_layers', 'layers'), ('decoder_layers', 'layers'),
                               ('encoder_width', 'width'), ('decoder_width', 'width'),
                               ('encoder_ff_size', 'ff_size'), ('decoder_ff_size', 'ff_size')):
@@ -402,6 +439,10 @@ def main():
         torch.set_rng_state(resume['torch_rng'])
         if device.type == 'cuda':
             torch.cuda.set_rng_state(resume['cuda_rng'], device)
+    model_avg = copy.deepcopy(model).eval().requires_grad_(False) if args.use_ema else None
+    if resume is not None and model_avg is not None:
+        model_avg.load_state_dict(resume['model_ema'])
+    lr_scheduler = create_lr_scheduler(optimizer, args, start)
     (save / 'args.json').write_text(json.dumps(vars(args), indent=2), encoding='utf-8')
     console = HumanOutputFormat(sys.stdout)
     tqdm.write(f'[INFO] save_dir: {save}')
@@ -423,6 +464,8 @@ def main():
     tqdm.write(f'[model] latent reads: initial + decoder layers {reader_layers}')
     tqdm.write(f'[INFO] device={device}, train={args.amp_dtype}, losses/evaluation=fp32, '
                f'lr={args.lr:.3e}, beta={args.kl_weight:g}, warmup_steps={args.motion_step_warmup_steps}')
+    tqdm.write(f'[INFO] lr_decay_start={args.lr_decay_start}, lr_final={args.lr_final:.3e}, '
+               f'weight_decay={args.weight_decay:g}, EMA={args.use_ema}, ema_rate={args.ema_rate:g}')
     active_augmentation = {key: value for key, value in augmentation.items()
                            if value != AUGMENTATION_DEFAULTS[key]}
     tqdm.write(f'[INFO] online augmentation: {active_augmentation or "disabled"}')
@@ -446,7 +489,7 @@ def main():
     writer.add_text('config', json.dumps(vars(args), indent=2), start)
 
     def run_eval(step):
-        report, predictions = evaluate(model, x, y, args.batch_size)
+        report, predictions = evaluate(model_avg if model_avg is not None else model, x, y, args.batch_size)
         report['step'] = step
         (save / 'reconstruction_metrics.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
         summary = report['summary']
@@ -480,6 +523,7 @@ def main():
             desc='AE training', unit='step', dynamic_ncols=True) as progress:
         for step in progress:
             model.train()
+            step_lr = optimizer.param_groups[0]['lr']
             target, cond = training_batch_to_device(next(batches), device)
             skeleton, frame, loop = model_inputs(target, cond)
             step_scale = (min(step / args.motion_step_warmup_steps, 1.0)
@@ -511,6 +555,9 @@ def main():
                            f'scale={scaler.get_scale():g}')
             else:
                 raise FloatingPointError(f'Repeated FP16 gradient overflow at step {step}')
+            if model_avg is not None:
+                update_autoencoder_ema(model_avg, model, args.ema_rate)
+            lr_scheduler.step()
             if overflow_retries:
                 writer.add_scalar('train/amp_overflow_retries', overflow_retries, step)
             if step % args.log_interval == 0 or step == start + 1 or step == args.num_steps:
@@ -524,7 +571,7 @@ def main():
                     record['kl_loss_weighted'] = args.kl_weight * step_scale * float(terms['kl_loss'].detach())
                 record['motion_step_warmup_scale'] = step_scale
                 record.update(grad_norm=float(grad_norm), amp_scale=scaler.get_scale())
-                record['lr'] = optimizer.param_groups[0]['lr']
+                record['lr'] = step_lr
                 console.writekvs(record)
                 tqdm.write(f'step[{step}]: loss[{record["loss"]:.5f}]')
                 log.write(json.dumps(record) + '\n')
@@ -537,6 +584,7 @@ def main():
                 payload = dict(kind='motion_autoencoder_7a', step=step, args=vars(args),
                                decoder_content_version=DECODER_CONTENT_VERSION,
                                model_config=model.config, model=model.state_dict(),
+                               model_ema=model_avg.state_dict() if model_avg is not None else None,
                                optimizer=optimizer.state_dict(), data_pipeline='shared_loader_v1',
                                grad_scaler=scaler.state_dict(),
                                fixed_batch=fixed, motion_names=names, canonical_version=CANONICAL_FEATURE_SPACE,

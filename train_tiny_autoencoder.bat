@@ -5,7 +5,7 @@ REM Usage: train_tiny_autoencoder.bat [run_name]
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
-set "RUN_NAME=tiny_autoencoder_shake_v9_root_xyz"
+set "RUN_NAME=tiny_autoencoder_shake_v12_root_xyz"
 if not "%~1"=="" set "RUN_NAME=%~1"
 if not exist "%PYTHON_EXE%" (
     echo ERROR: Python environment not found: "%PYTHON_EXE%"
@@ -38,11 +38,11 @@ if not exist "dataset\cond_all.npy" (
     --rest_repose_prob 0.1 ^
     --rest_variant_prob 0.5 ^
     --auto_resume ^
-    --encoder_width 128 ^
+    --encoder_width 256 ^
     --decoder_width 256 ^
     --encoder_layers 4 ^
     --decoder_layers 8 ^
-    --encoder_ff_size 512 ^
+    --encoder_ff_size 1024 ^
     --decoder_ff_size 1024 ^
     --cross_limb_dim 0 ^
     --cross_limb_last_n 0 ^
@@ -61,6 +61,10 @@ if not exist "dataset\cond_all.npy" (
     --main_process_prefetch_batches 64 ^
     --num_workers 2 ^
     --lr 1e-4 ^
+    --lr_final 5e-5 ^
+    --lr_decay_start 0 ^
+    --use_ema ^
+    --ema_rate 0.995 ^
     --motion_step_warmup_steps 500 ^
     --drot_joint_boost 1 ^
     --lambda_dpos 0.1 ^

@@ -16,6 +16,64 @@ from model.motion_autoencoder import (
 from train.train_motion_autoencoder import reconstruction_mse, scaled_optimizer_step
 
 
+def test_cosine_schedule_resume_matches_uninterrupted_optimizer():
+    from train.train_motion_autoencoder import create_lr_scheduler, parser
+    args = parser().parse_args([
+        '--save_dir', 'unused', '--lr', '1e-4', '--lr_final', '5e-5',
+        '--lr_decay_start', '0', '--num_steps', '10', '--weight_decay', '.03',
+        '--use_ema', '--ema_rate', '.995'])
+    assert args.use_ema and args.ema_rate == .995
+    parameter = torch.nn.Parameter(torch.ones(1))
+    optimizer = torch.optim.AdamW([parameter], lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = create_lr_scheduler(optimizer, args)
+    rates = []
+    for step in range(10):
+        rates.append(optimizer.param_groups[0]['lr'])
+        parameter.grad = torch.ones_like(parameter)
+        optimizer.step()
+        scheduler.step()
+        if step == 3:
+            import copy
+            saved = copy.deepcopy(optimizer.state_dict())
+            saved_parameter = parameter.detach().clone()
+    assert rates[0] == args.lr
+    assert all(a > b for a, b in zip(rates, rates[1:]))
+    assert optimizer.param_groups[0]['lr'] == pytest.approx(args.lr_final)
+    resumed_parameter = torch.nn.Parameter(saved_parameter)
+    resumed = torch.optim.AdamW([resumed_parameter], lr=args.lr)
+    resumed.load_state_dict(saved)
+    resumed_scheduler = create_lr_scheduler(resumed, args, completed_steps=4)
+    for expected in rates[4:]:
+        assert resumed.param_groups[0]['lr'] == pytest.approx(expected)
+        resumed_parameter.grad = torch.ones_like(resumed_parameter)
+        resumed.step()
+        resumed_scheduler.step()
+    torch.testing.assert_close(resumed_parameter, parameter, rtol=0, atol=0)
+
+
+def test_autoencoder_ema_averages_parameters_copies_stats_and_ignores_caches():
+    import copy
+    from train.train_motion_autoencoder import update_autoencoder_ema
+    model = torch.nn.Linear(2, 1)
+    model.register_buffer('stat', torch.tensor(1.))
+    model.register_buffer('cache', torch.zeros(1), persistent=False)
+    averaged = copy.deepcopy(model).eval().requires_grad_(False)
+    original = model.weight.detach().clone()
+    with torch.no_grad():
+        model.weight.add_(2)
+        model.stat.fill_(3)
+        model.cache = torch.zeros(5)
+    update_autoencoder_ema(averaged, model, .995)
+    torch.testing.assert_close(averaged.weight, original + .01)
+    assert averaged.stat.item() == 3
+    assert averaged.cache.shape == (1,)
+    restored = copy.deepcopy(averaged)
+    restored.load_state_dict(averaged.state_dict())
+    update_autoencoder_ema(restored, model, .995)
+    update_autoencoder_ema(averaged, model, .995)
+    torch.testing.assert_close(restored.weight, averaged.weight, rtol=0, atol=0)
+
+
 class LoaderFixture(torch.utils.data.Dataset):
     """Small picklable dataset: both joint buckets are smaller than a batch."""
 
