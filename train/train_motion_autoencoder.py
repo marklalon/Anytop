@@ -35,7 +35,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 SKELETON_KEYS = ('n_joints', 'joints_names_embs', 'rest_geom', 'joint_struct',
                  'graph_dist', 'joints_relations')
-LOOP_KEYS = ('is_loop', 'loop_tile_count')
+TIME_KEYS = ('is_loop', 'loop_tile_count', 'resample_speed_cond')
 
 
 AUGMENTATION_DEFAULTS = dict(motion_speed_aug=1.0, loop_tile_single_prob=1.0,
@@ -119,7 +119,7 @@ def select_batch(x, y, indices):
 def model_inputs(x, y):
     skeleton = {k: y[k] for k in SKELETON_KEYS}
     frame = torch.arange(x.shape[-1], device=x.device)[None] < y['lengths'][:, None]
-    return skeleton, frame, {k: y[k] for k in LOOP_KEYS if k in y}
+    return skeleton, frame, {k: y[k] for k in TIME_KEYS}
 
 
 def reconstruction_mse(prediction, target, skeleton, frame):

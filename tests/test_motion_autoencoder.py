@@ -118,6 +118,58 @@ def test_diffusion_loader_delegates_to_the_same_factory(monkeypatch):
     assert captured['joint_buckets'] == (48, 64, 100)
 
 
+@pytest.mark.parametrize('frames', [1, 2, 60])
+@pytest.mark.parametrize('is_loop', [False, True])
+@pytest.mark.parametrize('cycles', [1, 3])
+def test_physical_time_embedding_matches_old_diffusion(frames, is_loop, cycles):
+    from model.anytop import AnyTop
+    model, _, _ = fixture(frames=frames)
+    # Nonzero heads expose time semantics, including the K=1 30/90 distinction.
+    model.tempo_projection = torch.nn.Identity()
+    model.loop_period_projection = torch.nn.Identity()
+    metadata = dict(resample_speed_cond=torch.tensor([.5, 1.5]),
+                    is_loop=torch.full((2,), is_loop), loop_tile_count=torch.full((2,), cycles))
+    old = SimpleNamespace(latent_dim=model.width, tempo_projection=model.tempo_projection,
+                          loop_period_projection=model.loop_period_projection)
+    old._coerce_resample_speed_cond = lambda raw, **kwargs: AnyTop._coerce_resample_speed_cond(old, raw, **kwargs)
+    old._resolve_tempo_active = lambda raw, batch, device: torch.ones(batch, device=device, dtype=torch.bool)
+    expected = AnyTop._tempo_frame_embedding(old, metadata, 2, frames, torch.device('cpu'),
+                                            metadata['is_loop'], metadata['loop_tile_count'])
+    actual = model._tempo_embedding(torch.ones(2, frames, dtype=torch.bool), metadata).squeeze(2)
+    torch.testing.assert_close(actual, expected)
+    if is_loop or frames > 1:
+        assert not torch.allclose(actual[:, 0], actual[:, 1])
+
+
+@pytest.mark.parametrize('temporal_rope', [False, True])
+def test_encoder_and_decoder_both_learn_physical_time(temporal_rope):
+    model, x, skeleton = fixture(temporal_rope=temporal_rope)
+    metadata = dict(is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2),
+                    resample_speed_cond=torch.tensor([.5, 1.5]))
+    # Both open/loop zero-init heads must get gradients through E and through D.
+    z = model.encode(x, skeleton, loop_metadata=metadata)
+    z.square().mean().backward()
+    for head in (model.tempo_projection, model.loop_period_projection):
+        assert head[-1].weight.grad.abs().sum() > 0
+    model.zero_grad(set_to_none=True)
+    model.decode(z.detach(), skeleton, loop_metadata=metadata).square().mean().backward()
+    for head in (model.tempo_projection, model.loop_period_projection):
+        assert head[-1].weight.grad.abs().sum() > 0
+        torch.nn.init.normal_(head[-1].weight, std=.1)
+    other = dict(metadata, resample_speed_cond=torch.tensor([1.5, .5]))
+    assert not torch.allclose(model.encode(x, skeleton, loop_metadata=metadata),
+                              model.encode(x, skeleton, loop_metadata=other))
+    assert not torch.allclose(model.decode(z, skeleton, loop_metadata=metadata),
+                              model.decode(z, skeleton, loop_metadata=other))
+
+
+@pytest.mark.parametrize('speed', [0., -1., float('nan'), float('inf')])
+def test_invalid_physical_speed_is_rejected(speed):
+    model, _, _ = fixture()
+    with pytest.raises(ValueError, match='finite and positive'):
+        model._tempo_embedding(torch.ones(2, 5, dtype=torch.bool), {'resample_speed_cond': speed})
+
+
 def fixture(joints=4, frames=5, **options):
     torch.manual_seed(42)
     model = MotionAutoencoder(t5_out_dim=6, width=16, layers=1, heads=2, slots=2, latent_dim=4,
@@ -228,6 +280,10 @@ def test_frame_aligned_padding_and_mixed_valid_lengths_match_individual_clips():
                           temporal_rope=True, layerwise_latent=True)
     frame = torch.tensor([[True] * 5 + [False] * 2, [True] * 7])
     loop = dict(is_loop=torch.tensor([True, False]), loop_tile_count=torch.ones(2))
+    loop['resample_speed_cond'] = torch.tensor([.5, 1.5])
+    # Exercise nonzero time heads, rather than only their no-op initialization.
+    torch.nn.init.normal_(model.tempo_projection[-1].weight, std=.1)
+    torch.nn.init.normal_(model.loop_period_projection[-1].weight, std=.1)
     expected = model(x, s, frame, loop)
     for row, length in enumerate([5, 7]):
         single_s = {key: value[row:row + 1] for key, value in s.items()}
@@ -326,7 +382,7 @@ def test_decoder_ignores_dynamic_condition_fields_and_reads_latent():
 
 
 @pytest.mark.parametrize('rope', [False, True])
-def test_decoder_without_time_injection_preserves_constant_latent_and_ignores_phase(monkeypatch, rope):
+def test_decoder_zero_init_tempo_preserves_constant_latent_and_ignores_phase(monkeypatch, rope):
     model, x, skeleton = fixture(temporal_rope=rope,
                                  layerwise_latent=True)
     frame = torch.ones(2, x.shape[-1], dtype=torch.bool)
@@ -391,7 +447,8 @@ def test_layerwise_latent_reader_has_gradients_and_no_dynamic_bypass():
 def test_attention_autoencoder_compiles_as_one_graph():
     model, x, s = fixture(temporal_rope=True, cross_limb_dim=8, cross_limb_last_n=1,
                           layerwise_latent=True, decoder_temporal_kernel=5)
-    metadata = dict(is_loop=torch.tensor([True, False]), loop_tile_count=torch.ones(2))
+    metadata = dict(is_loop=torch.tensor([True, False]), loop_tile_count=torch.ones(2),
+                    resample_speed_cond=torch.tensor([.5, 1.5]))
     compiled = torch.compile(model, backend='eager', fullgraph=True)
     actual = compiled(x, s, loop_metadata=metadata)
     torch.testing.assert_close(actual, model(x, s, loop_metadata=metadata))
@@ -540,7 +597,8 @@ def test_training_name_drop_is_shared_reproducible_and_keeps_clean_inputs(prob):
     _, target, skeleton = fixture()
     clean_names = skeleton['joints_names_embs'].clone()
     conditions = dict(skeleton, lengths=torch.full((2,), target.shape[-1]),
-                      is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2))
+                      is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2),
+                      resample_speed_cond=torch.tensor([.5, 1.5]))
 
     transform = trainer.AutoencoderBatchTransform(joint_name_drop_prob=prob)
     np.random.seed(20)
@@ -565,6 +623,7 @@ def test_training_name_drop_is_shared_reproducible_and_keeps_clean_inputs(prob):
     shared, _, loop = trainer.model_inputs(x, cond)
     assert shared['joints_names_embs'] is cond['joints_names_embs']
     assert loop['is_loop'].tolist() == [False, True]
+    assert loop['resample_speed_cond'] is conditions['resample_speed_cond']
 
 
 @pytest.mark.parametrize('sample_prob,joint_prob', [(1., 0.), (0., 1.), (.1, .1)])

@@ -5,14 +5,16 @@ from torch import nn
 from data_loaders.reference import REST_GEOM_DIM
 from data_loaders.truebones.truebones_utils.canonical_features import MODEL_CHANNELS
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
-from model.anytop import create_sin_embedding
+from model.anytop import create_sin_embedding, _zero_init_mlp
 from model.motion_transformer import (
     GraphMotionDecoder, GraphMotionDecoderLayer,
     TEMPORAL_ROPE_MAX_FREQ, TEMPORAL_ROPE_MAX_PERIOD,
+    run_in_fp32,
 )
+from utils.device_transfer import check_on_device
 
 
-DECODER_CONTENT_VERSION = 'latent_only_v1'
+DECODER_CONTENT_VERSION = 'latent_time_v2'
 
 
 def motion_masks(x, skeleton, frame_mask=None):
@@ -67,7 +69,9 @@ class MotionAutoencoder(nn.Module):
     """Motion-content flows only through frame-aligned z.
 
     Encoder/decoder read only named static skeleton fields, never reference,
-    action labels, or other dynamic fields from a loader condition dictionary.
+    action labels, or other motion-content fields from a loader condition dictionary.
+    Shared temporal metadata carries is_loop, loop_tile_count and
+    resample_speed_cond (source frames / valid internal frames).
     Inputs/outputs are [B,J,9,T]; latents are [B,T,K,d_z].
     """
 
@@ -127,6 +131,10 @@ class MotionAutoencoder(nn.Module):
         self.from_latent = nn.Linear(latent_dim, width)
         self.read_latent = nn.MultiheadAttention(width, heads, dropout=dropout_prob, batch_first=True)
         self.output = nn.Linear(width, len(MODEL_CHANNELS))
+        # As in AnyTop: physical frame times for open motion, cycle length for
+        # loops. Shared by E/D; zero-init heads start as a no-op.
+        self.tempo_projection = _zero_init_mlp(width)
+        self.loop_period_projection = _zero_init_mlp(width)
         # Append after all shared initialization to keep the baseline weights identical.
         self.temporal_refinement = (TemporalResidualConv(width, decoder_temporal_kernel)
                                     if decoder_temporal_kernel else None)
@@ -168,13 +176,55 @@ class MotionAutoencoder(nn.Module):
         angle = torch.where(is_loop[:, None, None], closed, position * frequency)
         return angle.cos(), angle.sin()
 
+    def _tempo_embedding(self, frame, metadata):
+        """[T,B,1,D] physical time, matching AnyTop's tempo semantics.
+
+        Use valid lengths rather than padded tensor width. A missing speed in
+        the low-level API means native time (L=N); training/eval pass it explicitly.
+        """
+        metadata = metadata or {}
+        batch = frame.shape[0]
+
+        def per_sample(key, default, dtype):
+            value = torch.as_tensor(metadata.get(key, default), device=frame.device,
+                                    dtype=dtype).reshape(-1)
+            if value.numel() == 1:
+                value = value.expand(batch)
+            elif value.numel() != batch:
+                raise ValueError(f'{key} batch dimension must match the motion batch size')
+            return value
+
+        speed = per_sample('resample_speed_cond', 1.0, torch.float32)
+        cycles = per_sample('loop_tile_count', 1, torch.float32)
+        is_loop = per_sample('is_loop', False, torch.bool)
+        if not torch.compiler.is_compiling():
+            check_on_device((torch.isfinite(speed) & (speed > 0)).all(),
+                            'resample_speed_cond must be finite and positive')
+            check_on_device((torch.isfinite(cycles) & (cycles >= 1)
+                             & (cycles == cycles.round())).all(),
+                            'loop_tile_count must contain positive integers')
+        length = frame.sum(-1).float()
+        source_frames = speed * length
+        step = torch.where(length > 1,
+                           (source_frames.clamp_min(1) - 1) / (length - 1).clamp_min(1),
+                           torch.ones_like(speed))
+        positions = torch.arange(frame.shape[1], device=frame.device, dtype=torch.float32)
+        times = positions[None, :, None] * step[:, None, None]
+        open_emb = run_in_fp32(self.tempo_projection, create_sin_embedding(times, self.width))
+        period = (source_frames / cycles)[:, None, None]
+        loop_emb = run_in_fp32(self.loop_period_projection, create_sin_embedding(period, self.width))
+        tempo = torch.where(is_loop[:, None, None], loop_emb, open_emb)
+        return tempo.masked_fill(~frame[:, :, None], 0).transpose(0, 1)[:, :, None]
+
     def _trunk(self, module, tokens, skeleton, joint, frame, loop_metadata, z=None):
         # No diffusion timestep. A fixed zero vector only satisfies the reused layer API.
         graph = {k: skeleton[k] for k in ('graph_dist', 'joints_relations')}
         metadata = loop_metadata or {}
+        tokens = tokens + self._tempo_embedding(frame, metadata).to(tokens.dtype)
         rope = self._rope(frame, metadata) if self.temporal_rope else None
         phase = None
-        # Only the encoder receives phase as content. Decoder keeps RoPE alone.
+        # Only the encoder receives phase as content. Decoder uses RoPE and
+        # physical tempo above, without an extra absolute/circular phase table.
         if self.temporal_rope and module is self.encoder:
             is_loop = metadata.get('is_loop', torch.zeros(frame.shape[0], device=frame.device, dtype=torch.bool))
             phase = self._position(frame, metadata).squeeze(2) * is_loop[None, :, None]

@@ -126,6 +126,8 @@ def test_evaluation_reports_both_bone_metrics_independently_of_batch_size():
     y = {key: value.repeat(2, *([1] * (value.ndim - 1))) if torch.is_tensor(value)
          else value * 2 for key, value in y.items()}
     y.update(motion_name=['a', 'b'], object_type=['test', 'test'])
+    y.update(loop_tile_count=torch.ones(2, dtype=torch.long),
+             resample_speed_cond=torch.ones(2))
     target = target.repeat(2, 1, 1, 1)
     first, _ = evaluate(OffsetAutoencoder(), target, y, 1)
     second, _ = evaluate(OffsetAutoencoder(), target, y, 2)

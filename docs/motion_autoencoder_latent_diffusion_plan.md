@@ -74,6 +74,18 @@
 
 长度、真实 frame mask、loop 状态和周期元数据独立传入。解码长度不能由 padding 猜测；周期信息不得误把自由动作强制首尾闭合。
 
+### 3.3 物理时间条件（已实现）
+
+Encoder/Decoder 的 `loop_metadata` 同时携带 `is_loop`、`loop_tile_count=k`、`resample_speed_cond=L/N`。N 为有效内部窗口帧数，L 为增强、循环拼接与裁剪后、重采样前的窗口帧数。该条件是时间坐标，不是逐帧动作内容；即使 k=1，30 帧和 90 帧的动作统一到 N=60 后仍分别携带 0.5 和 1.5，避免丢失物理时长。
+
+时间嵌入沿用旧 AnyTop 的语义：open 帧 i 对应源帧时间 `i*(L-1)/(N-1)`（N=1 时只有时间零）；loop 使用恒定物理周期长度 `L/k`，不加入跨接缝跳变的时间 ramp。两类时间经 sinusoidal embedding 和各自的零初始化 MLP 投影后，加入 Encoder、Decoder 的主干 token；两个主干共享这对投影头。有效长度来自 frame mask，不使用 padding 后的宽度。低层 AE API 省略 speed 时表示原生时间 L=N；正式训练必须显式传入 loader 的时间条件。投影头初始为零，随后参与训练；接通条件不等于已经学会速度控制。
+
+诊断 `eval_autoencoder.py` 保持整段 `R → N → R` 和原有命令行，Encoder/Decoder 使用同一份 `R/N`，不增加 `--num_frames`。训练固定窗口评估及其导出仍为 N 帧。
+
+后续 latent diffusion 必须与 AE 共用同一时间条件：训练时用配对的 L/N 编码目标并条件去噪；生成时将用户输出长度 M 转为 M/N，同时传给去噪网络及 Decoder，最后将 N 帧动作还原为 M 帧。loop/k 同步传递。此处只实现 AE 侧准备，尚未实现 latent diffusion 或最终生成入口。
+
+Checkpoint 的 `decoder_content_version` 更新为 `latent_time_v2`。旧 AE checkpoint 缺少时间投影权重，训练续跑和诊断 eval 均拒绝旧版本；需要新 run 训练，不自动迁移。
+
 ## 4. 第一阶段模型：完整动作编码器 + 骨架条件解码器
 
 ### 4.1 为什么不能直接使用当前 ReferenceEncoder
@@ -344,9 +356,10 @@ G 仍需骨架条件：不能假定 E 已完全剥离骨架身份。可将变长
 接口草案：
 
 ```python
-posterior = ae.encode(x, skeleton, frame_mask)
+  time_metadata = dict(is_loop=is_loop, loop_tile_count=k, resample_speed_cond=L / N)
+  posterior = ae.encode(x, skeleton, frame_mask, time_metadata)
 z = posterior.sample()       # 验证另用 posterior.mean
-x_hat = ae.decode(z, skeleton, frame_mask, loop_metadata)
+  x_hat = ae.decode(z, skeleton, frame_mask, time_metadata)
 losses = reconstruction_losses(x_hat, x, skeleton, frame_mask, loop_metadata)
 ```
 

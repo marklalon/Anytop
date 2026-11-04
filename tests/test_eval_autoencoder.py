@@ -31,9 +31,11 @@ def make_cond():
 
 class IdentityAutoencoder:
     def encode(self, x, skeleton, frame, loop):
+        self.time_metadata = loop
         return x
 
     def decode(self, z, skeleton, frame, loop):
+        assert loop is self.time_metadata
         return z
 
 
@@ -45,8 +47,10 @@ def test_identity_reconstruction_preserves_stored_layout_and_duration(length, is
     working[:, 0, 0] = np.arange(length) * .2
     working[:, 0, 2] = np.arange(length) * -.1
     stored = cf.working_to_stored(working, is_loop=is_loop)
-    actual, mse = reconstruct(IdentityAutoencoder(), stored, 'Test', cond, frames=8,
+    model = IdentityAutoencoder()
+    actual, mse = reconstruct(model, stored, 'Test', cond, frames=8,
                               is_loop=is_loop, cycles=1, device=torch.device('cpu'), amp_dtype='fp32')
+    torch.testing.assert_close(model.time_metadata['resample_speed_cond'], torch.tensor([length / 8]))
     assert mse == 0
     assert actual.shape == stored.shape
     assert actual.dtype == np.float32

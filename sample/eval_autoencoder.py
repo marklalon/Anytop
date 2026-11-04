@@ -97,6 +97,7 @@ def reconstruct(model, stored, object_type, cond, *, frames, is_loop, cycles, de
     skeleton = {key: y[key] for key in SKELETON_KEYS}
     frame = torch.ones((1, frames), dtype=torch.bool, device=device)
     loop = {key: y[key] for key in ('is_loop', 'loop_tile_count')}
+    loop['resample_speed_cond'] = torch.full((1,), len(stored) / frames, device=device)
     with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_dtype == 'fp16'):
         # encode defaults to sample=False, including for a variational checkpoint.
         latent = model.encode(target, skeleton, frame, loop)
