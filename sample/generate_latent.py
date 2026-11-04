@@ -46,7 +46,7 @@ def parser():
     p.add_argument('--reference_object_type')
     p.add_argument('--num_frames', type=int)
     p.add_argument('--num_samples', type=int, default=1)
-    p.add_argument('--loop', choices=('auto', 'on', 'off'), default='auto')
+    p.add_argument('--loop', nargs='?', const='on', choices=('auto', 'on', 'off'), default='auto')
     p.add_argument('--loop_cycles', type=int)
     p.add_argument('--action_label_cfg_scale', type=float, default=1.0)
     p.add_argument('--ref_cfg_scale', type=float, default=1.0)
@@ -109,10 +109,16 @@ def main(argv=None):
             if source is None:
                 raise ValueError('Cannot infer reference skeleton; pass --reference_object_type')
             source_cond = cond[source]
-            features = stored_to_working(np.load(reference_path))
+            features = np.load(reference_path)
         else:
             raise ValueError('Reference must be preprocessed .npy or raw .fbx/.glb/.gltf')
-    loop = resolve_loop_condition(args.loop, action, reference_features=features)
+    # Read the stored terminal-velocity verdict before working-layout conversion
+    # clears those channels. Raw preprocessing returns stored features too.
+    loop = resolve_loop_condition(
+        args.loop, action, reference_features=features,
+        translation_root_index=int(source_cond.get('translation_root_index', 0)) if source_cond else 0)
+    if features is not None:
+        features = stored_to_working(features)
     period = loop_period(cond, object_type, action, min_length=20, internal_num_frames=60)
     if features is not None:
         cycles = reference_loop_cycles(args.loop_cycles, loop=loop)

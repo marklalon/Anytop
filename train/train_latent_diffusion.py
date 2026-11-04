@@ -42,7 +42,7 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--ae_checkpoint', default='save/tiny_autoencoder_shake_v12_root_xyz')
     p.add_argument('--cond_path', default='dataset/cond_all.npy')
-    p.add_argument('--sample_filter', default='configs/sample_filters/tiny.json')
+    p.add_argument('--sample_filter', default=None, help='Optional clip filter JSON; omitted selects the full dataset')
     p.add_argument('--save_dir', required=True)
     p.add_argument('--auto_resume', action='store_true')
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')

@@ -239,7 +239,7 @@ def evaluate(model, x, y, batch_size):
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--cond_path', default='dataset/cond_all.npy')
-    p.add_argument('--sample_filter', default='configs/sample_filters/tiny.json')
+    p.add_argument('--sample_filter', default=None, help='Optional clip filter JSON; omitted selects the full dataset')
     p.add_argument('--save_dir', required=True)
     p.add_argument('--seed', type=int, default=10)
     p.add_argument('--num_frames', type=int, default=60)

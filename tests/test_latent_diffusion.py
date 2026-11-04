@@ -21,6 +21,58 @@ from train.train_latent_diffusion import LatentBatchTransform, parser, training_
 from action_label_test_utils import make_test_bundle, action_cond_fields
 
 
+@pytest.mark.parametrize('is_loop', [True, False])
+@pytest.mark.parametrize('suffix', ['.npy', '.glb'])
+def test_latent_reference_loop_is_read_before_working_conversion(monkeypatch, tmp_path, capsys,
+                                                                is_loop, suffix):
+    import numpy as np
+    from types import SimpleNamespace
+    from sample import generate_latent as generation
+    from data_loaders.truebones.truebones_utils.loop_verdict import apply_loop_verdict
+
+    rng = np.random.default_rng(7)
+    stored = apply_loop_verdict(rng.normal(size=(21, 4, 12)), is_loop, 0)
+    reference_path = tmp_path / ('source_fly' + suffix)
+    if suffix == '.npy':
+        np.save(reference_path, stored)
+    source_cond = {'translation_root_index': 0}
+    model = SimpleNamespace(t5_out_dim=4, species_cond=False, ref_encoder=True)
+    checkpoint = {'args': {'cond_path': str(tmp_path / 'cond.npy')}, 'cond_sha256': 'test'}
+    monkeypatch.setattr(generation, 'load_latent_checkpoint', lambda *a: (model, None, None, checkpoint))
+    monkeypatch.setattr(generation, 'file_sha256', lambda *a: 'test')
+    monkeypatch.setattr(generation, 'load_cond', lambda *a: {'source': source_cond})
+    monkeypatch.setattr(generation, 'mark_canonical_cond_entry', lambda *a: None)
+    monkeypatch.setattr(generation, 'ensure_joint_name_embeddings', lambda *a, **k: None)
+    monkeypatch.setattr(generation, '_resolve_action_condition', lambda *a: None)
+    monkeypatch.setattr(generation, '_resolve_species_code_override', lambda *a: None)
+    monkeypatch.setattr(generation, '_load_raw_encoder_reference', lambda *a: (stored, source_cond))
+    converted = []
+    convert = generation.stored_to_working
+
+    def to_working(features):
+        # Both input formats must reach conversion with their stored rows intact.
+        np.testing.assert_array_equal(features, stored)
+        converted.append(convert(features))
+        return converted[-1]
+
+    monkeypatch.setattr(generation, 'stored_to_working', to_working)
+
+    class SamplingBoundary(Exception):
+        pass
+
+    def stop_before_sampling(*a, **k):
+        raise SamplingBoundary
+
+    monkeypatch.setattr(generation, 'loop_period', stop_before_sampling)
+    with pytest.raises(SamplingBoundary):
+        generation.main(['--model_path', str(tmp_path / 'latent.pt'), '--object_type', 'source',
+                         '--reference_object_type', 'source', '--reference_motion', str(reference_path),
+                         '--output_dir', str(tmp_path / 'output'), '--device', 'cpu'])
+    assert f"loop (auto) -> {'on' if is_loop else 'off'} (the reference's stored loop verdict)" in capsys.readouterr().out
+    assert len(converted) == 1
+    assert np.count_nonzero(converted[0][..., 9:12]) == 0
+
+
 def conditions(batch=2, joints=5, source_joints=3, names=4):
     return dict(n_joints=torch.tensor([joints - 1] * batch), lengths=torch.full((batch,), 60),
                 joints_names_embs=torch.randn(batch, joints, names),
