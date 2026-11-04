@@ -18,6 +18,8 @@ from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
 from diffusion.latent_diffusion import create_latent_diffusion
 from model.latent_motion_denoiser import LatentMotionDenoiser
 from train.train_anytop import bootstrap_action_conditioning, bootstrap_species_descriptor_table
+from train.latent_validation import build_validation_loader
+from train.training_loop import _fixed_validation_rng
 from train.train_motion_autoencoder import (
     AUGMENTATION_DEFAULTS, training_batches, training_batch_to_device,
     scaled_optimizer_step, update_autoencoder_ema, reconstruction_mse, create_lr_scheduler)
@@ -151,6 +153,22 @@ def evaluate(model, ae, norm, diffusion, batch, device):
                     ae_mse=float(reconstruction_mse(baseline, x, skeleton, frame).mean()))
 
 
+def evaluate_validation(model, ae, norm, diffusion, loader, device):
+    if loader is None:
+        return None
+    sums, count = {}, 0
+    with _fixed_validation_rng(device):
+        for batch in loader:
+            size = len(batch[0])
+            metrics = evaluate(model, ae, norm, diffusion, batch, device)
+            for key, value in metrics.items():
+                sums[key] = sums.get(key, 0.0) + value * size
+            count += size
+    if count == 0:
+        return None
+    return {**{key: value / count for key, value in sums.items()}, 'sample_count': count}
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     if args.num_frames != 60:
@@ -202,7 +220,7 @@ def main(argv=None):
     if resume and resume['motion_names'] != motion_names:
         raise ValueError('Selected training clips changed')
     batches = training_batches(loader)
-    fixed = resume['fixed_batch'] if resume else next(batches)
+    val_loader = build_validation_loader(args, LatentBatchTransform())
     norm = (LatentNormalizer.from_metadata(resume['normalization']).to(device) if resume else
             estimate_normalizer(ae, batches, args.stats_batches, device, args.latent_mode))
     config = dict(t5_out_dim=ae.config['t5_out_dim'], slots=ae.slots, latent_channels=ae.latent_dim)
@@ -278,12 +296,14 @@ def main(argv=None):
                     for key, value in record.items():
                         if key != 'step':
                             writer.add_scalar('train/' + key, value, step)
-                if step % args.eval_interval == 0 or step == args.num_steps:
-                    report = evaluate(average if average is not None else model, ae, norm, diffusion, fixed, device)
-                    (save / 'validation.json').write_text(json.dumps(dict(step=step, **report), indent=2))
-                    for key, value in report.items():
-                        writer.add_scalar('validation/' + key, value, step)
-                    tqdm.write(f'validation: {report}')
+                if val_loader is not None and (step % args.eval_interval == 0 or step == args.num_steps):
+                    report = evaluate_validation(
+                        average if average is not None else model, ae, norm, diffusion, val_loader, device)
+                    if report is not None:
+                        (save / 'validation.json').write_text(json.dumps(dict(step=step, split='val', **report), indent=2))
+                        for key, value in report.items():
+                            writer.add_scalar('validation/' + key, value, step)
+                        tqdm.write(f'validation: {report}')
                 if step % args.save_interval == 0 or step == args.num_steps:
                     payload = dict(kind=LATENT_CHECKPOINT_VERSION, step=step, args=current_args,
                                    model_config=model.config, model=model.state_dict(),
@@ -298,7 +318,7 @@ def main(argv=None):
                                    + (['species'] if model.species_cond else [])
                                    + (['encoded_reference'] if model.ref_encoder else []),
                                    motion_names=motion_names,
-                                   fixed_batch=fixed, torch_rng=torch.get_rng_state(),
+                                   eval_split='val', torch_rng=torch.get_rng_state(),
                                    python_rng=random.getstate(), numpy_rng=np.random.get_state(),
                                    cuda_rng=torch.cuda.get_rng_state(device) if device.type == 'cuda' else None)
                     temporary = save / 'latent_diffusion.tmp.pt'

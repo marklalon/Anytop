@@ -83,9 +83,7 @@ echo [1/2] Training full-dataset VAE: %AE_RUN_NAME%
     --num_steps 150000 ^
     --log_interval 100 ^
     --save_interval 10000 ^
-    --eval_interval 5000 ^
-    --export_samples 6 ^
-    --export_motion_names Bear_WetShake PP_Hen_Idle3 SC2_Infestor_Idle3 MON_Crab_Roar LH_Hero_ShakeHead Tukan_Shake
+    --eval_interval 5000
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" goto :finish
 if not exist "save\%AE_RUN_NAME%\autoencoder.pt" (

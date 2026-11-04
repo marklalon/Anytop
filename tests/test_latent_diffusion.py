@@ -253,17 +253,26 @@ def test_frozen_ae_target_ignores_denoiser_drop_and_keeps_truth_time():
     assert 'tempo_active' not in time
 
 
-def test_batch_launcher_arguments_are_accepted():
-    bat = (Path(__file__).resolve().parents[1] / 'train_tiny_latent_diffusion.bat').read_text()
+@pytest.mark.parametrize('launcher', ['train_tiny_vae_diffusion.bat', 'train_all_vae_diffusion.bat'])
+@pytest.mark.parametrize('stage', ['train_motion_autoencoder.py', 'train_latent_diffusion.py'])
+def test_batch_launcher_arguments_are_accepted(launcher, stage):
+    from train.train_motion_autoencoder import parser as vae_parser
+
+    bat = (Path(__file__).resolve().parents[1] / launcher).read_text()
+    bat = bat.split(f'"%PYTHON_EXE%" train/{stage}', 1)[1].split('set "EXIT_CODE=', 1)[0]
     # Check argument parsing without binding the test to a run or checkpoint file.
-    bat = bat.replace('%AE_CKPT_DIR%', 'unused-ae-checkpoint')
+    bat = bat.replace('%AE_RUN_NAME%', 'unused-ae-checkpoint')
     arguments = []
     for line in bat.splitlines():
         if line.strip().startswith('--'):
-            arguments.extend(line.strip().rstrip('^').strip().replace('"save/%RUN_NAME%"', 'unused').split())
-    args = parser().parse_args(arguments)
-    assert args.num_frames == 60 and args.latent_mode == 'mean'
-    assert args.ae_checkpoint == 'save/unused-ae-checkpoint'
+            arguments.extend(line.strip().rstrip('^').strip().replace('"', '').split())
+    args = (vae_parser() if stage == 'train_motion_autoencoder.py' else parser()).parse_args(arguments)
+    assert args.num_frames == 60
+    if stage == 'train_motion_autoencoder.py':
+        assert args.variational
+    else:
+        assert args.latent_mode == 'mean'
+        assert args.ae_checkpoint == 'save/unused-ae-checkpoint'
     assert args.compile == 'reduce-overhead'
 
 

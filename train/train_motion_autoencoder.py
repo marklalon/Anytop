@@ -1,12 +1,12 @@
-"""Fixed-window self-reconstruction and latent bypass checks (plan section 7.A)."""
+"""Train a motion autoencoder with held-out validation and latent bypass checks."""
 import argparse
 import copy
 import hashlib
 import json
 import os
-import random
 import sys
 from datetime import datetime
+from itertools import chain
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -17,11 +17,10 @@ from tqdm import tqdm
 
 from data_loaders.get_data import build_dataset_loader, get_dataset
 from data_loaders.joint_buckets import resolve_joint_buckets
-from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.canonical_features import (
-    CANONICAL_FEATURE_SPACE, canonical_to_physical_hml, working_to_stored,
+    CANONICAL_FEATURE_SPACE, canonical_to_physical_hml,
 )
-from data_loaders.truebones.truebones_utils.param_utils import FPS, JOINT_BUCKETS
+from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
 from diffusion.losses import geodesic_distance
 from diffusion.nn import update_ema
 from diffusion.logger import HumanOutputFormat
@@ -30,9 +29,10 @@ from model.motion_autoencoder import (
     diagonal_gaussian_kl, motion_masks, to_working_motion,
 )
 from train.motion_reconstruction_losses import LOSS_WEIGHTS, MotionGeometryLosses, MotionReconstructionLosses
+from train.latent_validation import build_validation_loader
+from train.training_loop import _fixed_validation_rng
 from utils.fixseed import fixseed
 from utils.lr_schedule import cosine_decay_lr_lambda
-from utils.npy_restore import write_feature_bvh
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -64,7 +64,7 @@ class AutoencoderBatchTransform:
         motion, conditions = batch
         y = {k: v for k, v in conditions['y'].items() if not k.startswith('ref_')}
         # Draw once on CPU with the loader RNG; E and D share these names.
-        # Do not mutate cached names or the fixed clean evaluation bundle.
+        # Do not mutate cached condition tensors.
         if self.joint_name_drop_prob > 0:
             names_emb = y['joints_names_embs']
             drop = torch.from_numpy(np.random.random(names_emb.shape[:2]) < self.joint_name_drop_prob)
@@ -174,7 +174,7 @@ def evaluate(model, x, y, batch_size):
         latents.append(model.encode(target, skeleton, frame, loop))
     z = torch.cat(latents)
     shuffled = z.roll(1, dims=0)
-    records, predictions = [], []
+    records = []
     for indices in torch.arange(len(x)).split(batch_size):
         target, cond = select_batch(x, y, indices)
         skeleton, frame, loop = model_inputs(target, cond)
@@ -218,22 +218,48 @@ def evaluate(model, x, y, batch_size):
             angle = geodesic_distance(rotations[:, 1:], rotations[:, :-1]).squeeze(-1)
             rms.append(((angle.square() * step_live).sum((1, 2))
                         / step_live.sum((1, 2)).clamp_min(1)).sqrt())
-        for row, index in enumerate(indices.tolist()):
+        for row in range(len(target)):
             record = {'motion_name': cond['motion_name'][row], 'object_type': cond['object_type'][row],
                       **{key: float(value[row]) for key, value in errors.items()}}
             record['angular_step_rms_gt'] = float(rms[0][row])
             record['angular_step_rms_reconstruction'] = float(rms[1][row])
             record['angular_step_rms_ratio'] = float(rms[1][row] / rms[0][row]) if rms[0][row] > 1e-4 else None
             records.append(record)
-            joints = int(cond['n_joints'][row])
-            predictions.append((physical_gt[row, :joints].permute(2, 0, 1).cpu().numpy(),
-                                physical_pred[row, :joints].permute(2, 0, 1).cpu().numpy()))
     summary = {key: float(np.mean([r[key] for r in records])) for key in errors}
     summary['sample_count'] = len(records)
     summary['shuffle_available'] = len(x) > 1
     summary['zero_z_mse_increase'] = summary['zero_z_mse'] - summary['mse']
     summary['shuffled_z_mse_increase'] = summary['shuffled_z_mse'] - summary['mse']
-    return {'summary': summary, 'samples': records}, predictions
+    return {'summary': summary, 'samples': records}
+
+
+def evaluate_validation(model, loader, batch_size, device):
+    if loader is None:
+        return None
+    records = []
+    shuffled_records = []
+    with _fixed_validation_rng(device):
+        for batch in loader:
+            x, y = training_batch_to_device(batch, device)
+            report = evaluate(model, x[:, :, :9], y, batch_size)
+            records.extend(report['samples'])
+            if report['summary']['shuffle_available']:
+                shuffled_records.extend(report['samples'])
+    if not records:
+        return None
+    keys = [key for key in records[0] if key not in (
+        'motion_name', 'object_type', 'angular_step_rms_ratio')]
+    summary = {key: float(np.mean([r[key] for r in records])) for key in keys}
+    # A singleton tail batch cannot swap latents. Exclude it from both sides
+    # of the shuffled comparison rather than diluting the diagnostic.
+    if shuffled_records:
+        summary['shuffled_z_mse'] = float(np.mean([r['shuffled_z_mse'] for r in shuffled_records]))
+    summary.update(sample_count=len(records), shuffle_available=bool(shuffled_records),
+                   zero_z_mse_increase=summary['zero_z_mse'] - summary['mse'],
+                   shuffled_z_mse_increase=float(np.mean([
+                       r['shuffled_z_mse'] - r['mse'] for r in shuffled_records
+                   ])) if shuffled_records else 0.0)
+    return {'summary': summary, 'samples': records, 'split': 'val'}
 
 
 def parser():
@@ -287,14 +313,11 @@ def parser():
     p.add_argument('--lr_decay_start', type=int, default=None,
                    help='Start cosine decay to lr_final; omitted keeps LR constant')
     p.add_argument('--weight_decay', type=float, default=0.0)
-    p.add_argument('--use_ema', action='store_true', help='Evaluate/export EMA weights')
+    p.add_argument('--use_ema', action='store_true', help='Evaluate EMA weights')
     p.add_argument('--ema_rate', type=float, default=0.99)
     p.add_argument('--log_interval', type=int, default=100)
     p.add_argument('--save_interval', type=int, default=1000)
     p.add_argument('--eval_interval', type=int, default=1000)
-    p.add_argument('--export_samples', type=int, default=4, help='BVH pairs; all samples also receive .npz exports')
-    p.add_argument('--export_motion_names', nargs='+',
-                   help='Export only these clip stems, in the requested order')
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--auto_resume', action='store_true')
     for argument in LOSS_WEIGHTS.values():
@@ -392,25 +415,15 @@ def main():
         for key in ('variational', 'kl_weight'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
-        fixed = resume['fixed_batch']
-    else:
-        samples = []
-        for index, name in enumerate(names):
-            random.seed(args.seed + index)
-            np.random.seed(args.seed + index)
-            samples.append(source.prepare_sample_by_name(name, loop_offset=0))
-        width = max(sample[0].shape[1] for sample in samples)
-        motion, conditions = truebones_batch_collate(samples, joint_buckets=(width,))
-        # Keep conversion context for metrics/export, but discard the unused reference bundle.
-        y = {k: v for k, v in conditions['y'].items() if not k.startswith('ref_')}
-        fixed = (motion[:, :, :9].contiguous(), y)
-    # Evaluation windows stay unaugmented; training draws fresh data from the same source.
     augmentation = {key: getattr(args, key) for key in AUGMENTATION_DEFAULTS}
     train_loader = create_training_data_loader(args, dataset)
+    batches = training_batches(train_loader)
+    # The training example supplies model dimensions only; evaluation uses val.
+    example = next(batches)
+    batches = chain((example,), batches)
+    val_loader = build_validation_loader(args)
     buckets = resolve_joint_buckets(args.joint_buckets or JOINT_BUCKETS, source.opt.max_joints)
-    x_cpu, y_cpu = fixed
-    x = x_cpu.to(device)
-    y = {k: v.to(device) if torch.is_tensor(v) else v for k, v in y_cpu.items()}
+    x, y = training_batch_to_device(example, device)
     model = MotionAutoencoder(t5_out_dim=y['joints_names_embs'].shape[-1], width=args.width,
                               layers=args.layers, heads=args.heads, slots=args.slots,
                               encoder_width=args.encoder_width, decoder_width=args.decoder_width,
@@ -446,9 +459,9 @@ def main():
     (save / 'args.json').write_text(json.dumps(vars(args), indent=2), encoding='utf-8')
     console = HumanOutputFormat(sys.stdout)
     tqdm.write(f'[INFO] save_dir: {save}')
-    tqdm.write(f'[INFO] Train split: {len(x):,} motions, {x.shape[-1]} frames/window, '
+    tqdm.write(f'[INFO] Train split: {len(names):,} motions, {x.shape[-1]} frames/window, '
                f'joints={int(y["n_joints"].min())}..{int(y["n_joints"].max())} '
-               f'(fixed evaluation padded to {x.shape[1]}), train batch_size={args.batch_size}')
+               f'(first training batch padded to {x.shape[1]}), train batch_size={args.batch_size}')
     tqdm.write(f'[INFO] shared loader: workers={args.num_workers}, '
                f'prefetch={args.main_process_prefetch_batches or 4}, joint_buckets={buckets}; '
                'full training batches, one static shape per bucket')
@@ -469,6 +482,7 @@ def main():
     active_augmentation = {key: value for key, value in augmentation.items()
                            if value != AUGMENTATION_DEFAULTS[key]}
     tqdm.write(f'[INFO] online augmentation: {active_augmentation or "disabled"}')
+    del example, x, y
     if resume is not None:
         tqdm.write(f'[INFO] Resuming {checkpoint} at completed step {start:,}/{args.num_steps:,}')
         tqdm.write('[INFO] Shared prefetch loader restarts its data stream on resume; '
@@ -489,13 +503,16 @@ def main():
     writer.add_text('config', json.dumps(vars(args), indent=2), start)
 
     def run_eval(step):
-        report, predictions = evaluate(model_avg if model_avg is not None else model, x, y, args.batch_size)
+        report = evaluate_validation(
+            model_avg if model_avg is not None else model, val_loader, args.batch_size, device)
+        if report is None:
+            return None
         report['step'] = step
         (save / 'reconstruction_metrics.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
         summary = report['summary']
         tqdm.write(f'eval_step[{step}]: mse[{summary["mse"]:.5f}] '
                    f'rotation_error[{summary["rotation_error_deg"]:.3f} deg] '
-                   f'({summary["sample_count"]} fixed training windows)')
+                   f'({summary["sample_count"]} validation windows)')
         # A shuffled batch of one is unchanged, so it cannot diagnose latent usage.
         console.writekvs({key: value for key, value in summary.items()
                           if key not in ('sample_count', 'shuffle_available')
@@ -510,14 +527,13 @@ def main():
         if ratios:
             writer.add_scalar('eval/angular_step_rms_ratio_median', float(np.median(ratios)), step)
         writer.flush()
-        return report, predictions
+        return report
 
-    initial, _ = run_eval(start)
-    if start == 0:
+    initial = run_eval(start)
+    if start == 0 and initial is not None:
         (save / 'initial_metrics.json').write_text(json.dumps(initial, indent=2), encoding='utf-8')
     tqdm.write(f'train steps: {args.num_steps} (log={args.log_interval}, '
                f'eval={args.eval_interval}, save={args.save_interval})')
-    batches = training_batches(train_loader)
     with (save / 'training.jsonl').open('a', encoding='utf-8') as log, tqdm(
             range(start + 1, args.num_steps + 1), initial=start, total=max(start, args.num_steps),
             desc='AE training', unit='step', dynamic_ncols=True) as progress:
@@ -587,7 +603,8 @@ def main():
                                model_ema=model_avg.state_dict() if model_avg is not None else None,
                                optimizer=optimizer.state_dict(), data_pipeline='shared_loader_v1',
                                grad_scaler=scaler.state_dict(),
-                               fixed_batch=fixed, motion_names=names, canonical_version=CANONICAL_FEATURE_SPACE,
+                               eval_split='val',
+                               motion_names=names, canonical_version=CANONICAL_FEATURE_SPACE,
                                cond_sha256=cond_hash,
                                latent_layout='B,T,K,d',
                                beta=args.kl_weight,
@@ -600,31 +617,8 @@ def main():
                 tqdm.write(f'[INFO] step[{step}]: saved checkpoint to {checkpoint}')
             if step % args.eval_interval == 0 and step != args.num_steps:
                 run_eval(step)
-    report, predictions = run_eval(max(start, args.num_steps))
-    export = save / 'reconstructions'
-    export.mkdir(exist_ok=True)
-    export_indices = list(range(len(report['samples'])))
-    if args.export_motion_names:
-        export_indices = []
-        for name in args.export_motion_names:
-            matches = [i for i, record in enumerate(report['samples'])
-                       if Path(record['motion_name']).stem == name]
-            if len(matches) != 1:
-                raise ValueError(f'Export clip must match exactly once: {name}')
-            export_indices.append(matches[0])
-    for index in export_indices:
-        record, (gt, pred) = report['samples'][index], predictions[index]
-        stem = Path(record['motion_name']).stem if args.export_motion_names else f'{index:03d}'
-        np.savez_compressed(export / f'{stem}.npz', original=gt, reconstruction=pred,
-                            motion_name=record['motion_name'], layout='physical working T,J,12', fps=FPS)
-        if args.export_motion_names or index < args.export_samples:
-            cond = source.cond_dict[record['object_type']]
-            is_loop = bool(y_cpu['is_loop'][index])
-            for label, motion in (('original', gt), ('reconstruction', pred)):
-                stored = working_to_stored(motion, is_loop=is_loop)
-                np.save(export / f'{stem}_{label}.npy', stored)
-                write_feature_bvh(stored, cond, str(export / f'{stem}_{label}.bvh'), fps=FPS)
-    tqdm.write(f'[INFO] Saved checkpoint, metrics and reconstructions to {save}')
+    run_eval(max(start, args.num_steps))
+    tqdm.write(f'[INFO] Saved checkpoint and available validation metrics to {save}')
     writer.close()
 
 

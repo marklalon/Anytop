@@ -109,11 +109,12 @@ x_hat = ae.decode(z, skeleton, frame_mask, time_metadata)
 |---|---|
 | `model/motion_autoencoder.py` | AE/VAE、逐帧池化、时间条件、encode/decode 与工作容器适配 |
 | `train/motion_reconstruction_losses.py` | 共享动作几何损失与 AE 重建目标 |
-| `train/train_motion_autoencoder.py` | 独立训练、固定窗口评估、latent 置零/交换诊断与 checkpoint |
+| `train/train_motion_autoencoder.py` | 独立训练、val 集评估、latent 置零/交换诊断与 checkpoint |
 | `sample/eval_autoencoder.py` | 显式预处理动作文件的整段重建、指标与导出 |
-| `train_tiny_autoencoder.bat`、`eval_autoencoder.bat` | 训练与诊断启动入口 |
+| `train_tiny_vae_diffusion.bat`、`train_all_vae_diffusion.bat` | tiny / 全量数据的 VAE → latent diffusion 顺序训练入口 |
+| `eval_autoencoder.bat` | 独立重建诊断入口 |
 
-训练入口的固定窗口评估包含正常重建、latent 置零和交换对照，并记录姿态、动态、根运动及骨架误差。这些诊断用于检查瓶颈依赖，不直接证明表示解耦或未见骨架泛化。
+训练入口遍历独立 val 集的 60 帧窗口，包含正常重建、latent 置零和批内交换对照，并记录姿态、动态、根运动及骨架误差。val 不继承训练集筛选条件，关闭训练增强；为空或没有满足最小长度的片段时跳过评估，不回退到训练集。训练入口只保存指标和 checkpoint，不导出重建动作。这些诊断用于检查瓶颈依赖，不直接证明表示解耦或未见骨架泛化。
 
 整段诊断将输入动作重采样到 checkpoint 的内部窗口后重建，再恢复原输入帧数；Encoder 与 Decoder 使用同一份时长比例及循环条件。该流程中的重采样属于评估适配，不是 AE 的时间压缩层。
 
@@ -195,7 +196,7 @@ species override 只替换描述码，不改变目标骨架、rest 或 canonical
 
 训练沿用共享 loader，速度、循环拼接、拓扑、骨长及 rest 等增强在目标编码前完成，增强后的动作与目标骨架保持配对。去噪器的名称、geometry、tempo 和 CFG dropout 只改变去噪条件，不改变 AE 的编码目标或最终解码条件。当前使用在线编码，不维护 latent 缓存。
 
-训练入口支持 `--compile None|default|reduce-overhead`，默认 `None`；tiny 启动脚本启用 `--compile reduce-overhead`。编译范围为冻结 AE 的目标编码与去噪器训练前向，使用静态 shape、完整图；各关节桶首次使用时会编译。AE 编码保持 FP32，去噪器沿用 `amp_dtype`。归一化统计和固定批验证使用 eager；优化器、EMA 和 checkpoint 始终使用原始模块，可在续训时切换编译模式。
+训练入口支持 `--compile None|default|reduce-overhead`，默认 `None`；tiny 启动脚本启用 `--compile reduce-overhead`。编译范围为冻结 AE 的目标编码与去噪器训练前向，使用静态 shape、完整图；各关节桶首次使用时会编译。AE 编码保持 FP32，去噪器沿用 `amp_dtype`。归一化统计和 val 集验证使用 eager；优化器、EMA 和 checkpoint 始终使用原始模块，可在续训时切换编译模式。
 
 latent 标准化统计在训练开始时从训练增强分布采集，沿 batch 和时间维归约，保留槽与通道维；后续保持固定，不对每段动作单独消除均值或幅度。确定性 AE 使用编码结果；VAE 支持 posterior 均值或采样，两者均要求统计与训练分布一致。采样模式的统计计入 posterior 方差，退化维度通过标准差下限处理。
 
@@ -214,9 +215,10 @@ CFG 在标准化 latent 的干净样本预测上组合，然后统一逆标准�
 | `model/motion_conditioning.py` | 共用动作槽、reference 优先级、时间条件及条件 dropout |
 | `diffusion/latent_diffusion.py` | latent 加噪、干净样本 MSE 和无动作域裁剪的采样 |
 | `utils/latent_util.py` | 冻结 AE、真实条件筛选、标准化与 checkpoint 绑定校验 |
-| `train/train_latent_diffusion.py` | 在线编码训练、固定批验证、EMA 与保存续训 |
+| `train/train_latent_diffusion.py` | 在线编码训练、val 集验证、EMA 与保存续训 |
+| `train/latent_validation.py` | VAE 与 latent diffusion 共用的独立 val 加载器及空集处理 |
 | `sample/generate_latent.py` | 条件解析、CFG、输出长度恢复及动作导出 |
-| `train_tiny_latent_diffusion.bat` | tiny 数据训练启动入口 |
+| `train_tiny_vae_diffusion.bat`、`train_all_vae_diffusion.bat` | VAE 成功训练后使用其 checkpoint 训练 latent diffusion |
 
 checkpoint 保存去噪器及续训状态，绑定 AE 文件 hash、权重选择、架构、canonical/解码内容版本、latent 布局与标准化统计，以及动作词表/角色槽、species 描述表、参考/时间合同和扩散预测语义。species 描述表随模型目录保存，AE 本体保持独立。加载和续训会校验相应绑定；新 checkpoint 与旧动作空间 diffusion checkpoint 不兼容。
 
@@ -224,7 +226,7 @@ checkpoint 保存去噪器及续训状态，绑定 AE 文件 hash、权重选择
 
 当前支持无动作标签生成、动作条件生成、species 条件和编码参考生成。**不支持时间 padding、joint mask、temporal-span mask、renoise、img2img、inpaint joints/frames 或 outpaint。** 不接受编辑请求；共享 loader 携带的全零参考隐藏帧字段会被移除，实际隐藏帧请求会被拒绝。
 
-验证使用固定批的中间噪声去噪结果，记录 latent MSE、解码 canonical MSE 和 AE 重建基线，用于区分表示误差与去噪误差。这不是完整反向采样的质量验收；条件响应、动作细节、根轨迹、循环接缝及未见骨架泛化仍需生成实验评估。续训恢复模型、优化器、AMP 和主进程 RNG，worker/prefetch 数据流重新启动，不保证逐 batch 精确复现。
+验证遍历独立 val 集，使用中间噪声去噪结果，按样本数汇总 latent MSE、解码 canonical MSE 和 AE 重建基线；保留末尾不足一个 batch 的样本，空 val 集跳过验证。标准化统计仍只从训练分布采集。这不是完整反向采样的质量验收；条件响应、动作细节、根轨迹、循环接缝及未见骨架泛化仍需生成实验评估。续训恢复模型、优化器、AMP 和主进程 RNG，worker/prefetch 数据流重新启动，不保证逐 batch 精确复现；旧 checkpoint 中的训练评估批不再使用。
 
 ## 8. 参考
 

@@ -129,8 +129,8 @@ def test_evaluation_reports_both_bone_metrics_independently_of_batch_size():
     y.update(loop_tile_count=torch.ones(2, dtype=torch.long),
              resample_speed_cond=torch.ones(2))
     target = target.repeat(2, 1, 1, 1)
-    first, _ = evaluate(OffsetAutoencoder(), target, y, 1)
-    second, _ = evaluate(OffsetAutoencoder(), target, y, 2)
+    first = evaluate(OffsetAutoencoder(), target, y, 1)
+    second = evaluate(OffsetAutoencoder(), target, y, 2)
     for key in ('bone_length_error', 'bone_vector_error', 'root_pos_mse',
                 'root_dpos_error', 'root_acc_error'):
         assert first['summary'][key] >= 0

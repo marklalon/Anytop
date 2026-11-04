@@ -1129,6 +1129,8 @@ class MotionDataset(data.Dataset):
             raise RuntimeError("No motion clips were found for the requested dataset subset.")
 
         minimum_valid_index = np.searchsorted([pair[1] for pair in sorted_pairs], self.min_length)
+        if split == 'val' and minimum_valid_index == len(sorted_pairs):
+            raise EmptySplitError(f'No validation clips meet min_length={self.min_length}.')
         if self.sample_limit > 0:
             preferred_valid_index = np.searchsorted([pair[1] for pair in sorted_pairs], self.max_motion_length)
             candidate_pairs = sorted_pairs[preferred_valid_index:]
