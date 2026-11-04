@@ -182,17 +182,20 @@ class StagedScaleTest(unittest.TestCase):
         return stub, out
 
     def test_late_steps_are_plain_conditional_with_one_forward(self):
-        stub, out = self._run([10, 20])
+        switch = ClassifierFreeActionModel.CFG_SWITCH * 100
+        stub, out = self._run([0, switch - 1])
         self.assertEqual(len(stub.calls), 1)
         self.assertTrue(torch.allclose(out, torch.full_like(out, 4.0)))
 
     def test_early_steps_extrapolate(self):
-        stub, out = self._run([60, 99])
+        switch = ClassifierFreeActionModel.CFG_SWITCH * 100
+        stub, out = self._run([switch, 99])
         self.assertEqual(len(stub.calls), 2)
         self.assertTrue(torch.allclose(out, torch.full_like(out, 1.0 + 3.0 * 3.0)))
 
     def test_mixed_rows_use_their_own_scale(self):
-        _, out = self._run([10, 99])
+        switch = ClassifierFreeActionModel.CFG_SWITCH * 100
+        _, out = self._run([switch - 1, switch])
         self.assertTrue(torch.allclose(out[0], torch.full_like(out[0], 4.0)))
         self.assertTrue(torch.allclose(out[1], torch.full_like(out[1], 10.0)))
 

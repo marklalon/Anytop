@@ -103,7 +103,9 @@ class NoiseScheduleShiftTest(unittest.TestCase):
         wrapped = ClassifierFreeActionModel(
             lambda x, t, y=None: x, 2.0, 100, switch_t=cfg_switch_timestep(_args(2.0)))
         self.assertAlmostEqual(wrapped.switch_t, cfg_switch_timestep(_args(2.0)))
-        self.assertEqual(ClassifierFreeActionModel(lambda x, t, y=None: x, 2.0, 100).switch_t, 50.0)
+        self.assertEqual(
+            ClassifierFreeActionModel(lambda x, t, y=None: x, 2.0, 100).switch_t,
+            ClassifierFreeActionModel.CFG_SWITCH * 100)
 
     def test_parser_default_and_diffusion(self):
         parser = ArgumentParser()
