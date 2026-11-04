@@ -79,14 +79,26 @@ class MotionAutoencoder(nn.Module):
                  ff_size=0, last_layer_ff=0, cross_limb_dim=0, cross_limb_last_n=0,
                  temporal_rope=False, layerwise_latent=False, decoder_temporal_kernel=0, variational=False,
                  dropout_prob=0.0, mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0,
-                 encoder_layers=None, decoder_layers=None):
+                 encoder_layers=None, decoder_layers=None,
+                 encoder_width=None, decoder_width=None,
+                 encoder_ff_size=None, decoder_ff_size=None):
         super().__init__()
         encoder_layers = layers if encoder_layers is None else encoder_layers
         decoder_layers = layers if decoder_layers is None else decoder_layers
-        if min(width, layers, encoder_layers, decoder_layers, heads, slots, latent_dim) < 1 or width % heads or width % 2:
+        encoder_width = width if encoder_width is None else encoder_width
+        decoder_width = width if decoder_width is None else decoder_width
+        encoder_ff_size = ff_size if encoder_ff_size is None else encoder_ff_size
+        decoder_ff_size = ff_size if decoder_ff_size is None else decoder_ff_size
+        if (min(width, layers, encoder_layers, decoder_layers, heads, slots, latent_dim,
+                encoder_width, decoder_width) < 1
+                or any(dim % heads or dim % 2 for dim in (encoder_width, decoder_width))):
             raise ValueError('Invalid AE dimensions')
+        if min(encoder_ff_size, decoder_ff_size) < 0:
+            raise ValueError('AE ff_size must be nonnegative (zero uses 4 * width)')
         self.config = dict(t5_out_dim=t5_out_dim, width=width, layers=layers,
                            encoder_layers=encoder_layers, decoder_layers=decoder_layers,
+                           encoder_width=encoder_width, decoder_width=decoder_width,
+                           encoder_ff_size=encoder_ff_size, decoder_ff_size=decoder_ff_size,
                            heads=heads, slots=slots, latent_dim=latent_dim,
                            ff_size=ff_size, last_layer_ff=last_layer_ff,
                            cross_limb_dim=cross_limb_dim, cross_limb_last_n=cross_limb_last_n,
@@ -101,17 +113,21 @@ class MotionAutoencoder(nn.Module):
             raise ValueError('decoder_temporal_kernel must be zero or a positive odd number')
         if cross_limb_dim < 0 or not 0 <= cross_limb_last_n <= min(encoder_layers, decoder_layers):
             raise ValueError('Invalid cross-limb configuration')
-        if temporal_rope and (width // heads) % 2:
+        if temporal_rope and any((dim // heads) % 2 for dim in (encoder_width, decoder_width)):
             raise ValueError('Temporal RoPE requires an even head dimension')
         self.variational = variational
         self.temporal_rope, self.layerwise_latent = temporal_rope, layerwise_latent
-        self.width, self.slots, self.latent_dim = width, slots, latent_dim
+        self.width, self.slots, self.latent_dim = encoder_width, slots, latent_dim
+        self.encoder_width, self.decoder_width = encoder_width, decoder_width
+        width = encoder_width
         self.motion_projection = nn.Linear(len(MODEL_CHANNELS), width)
         self.names = nn.Linear(t5_out_dim, width)
         self.geometry = nn.Linear(REST_GEOM_DIM, width)
         self.structure = nn.Linear(JOINT_STRUCT_DIM, width)
 
         def trunk(decoder=False):
+            width = decoder_width if decoder else encoder_width
+            ff_size = decoder_ff_size if decoder else encoder_ff_size
             return GraphMotionDecoder(
                 GraphMotionDecoderLayer(width, heads, ff_size or width * 4, dropout_prob, 'gelu'),
                 decoder_layers if decoder else encoder_layers,
@@ -128,22 +144,34 @@ class MotionAutoencoder(nn.Module):
         self.queries = nn.Parameter(torch.randn(slots, width) * width ** -0.5)
         self.pool = nn.MultiheadAttention(width, heads, dropout=dropout_prob, batch_first=True)
         self.to_latent = nn.Linear(width, latent_dim)
-        self.from_latent = nn.Linear(latent_dim, width)
-        self.read_latent = nn.MultiheadAttention(width, heads, dropout=dropout_prob, batch_first=True)
-        self.output = nn.Linear(width, len(MODEL_CHANNELS))
+        self.from_latent = nn.Linear(latent_dim, decoder_width)
+        self.read_latent = nn.MultiheadAttention(decoder_width, heads, dropout=dropout_prob, batch_first=True)
+        self.output = nn.Linear(decoder_width, len(MODEL_CHANNELS))
         # As in AnyTop: physical frame times for open motion, cycle length for
         # loops. Shared by E/D; zero-init heads start as a no-op.
         self.tempo_projection = _zero_init_mlp(width)
         self.loop_period_projection = _zero_init_mlp(width)
         # Append after all shared initialization to keep the baseline weights identical.
-        self.temporal_refinement = (TemporalResidualConv(width, decoder_temporal_kernel)
+        self.temporal_refinement = (TemporalResidualConv(decoder_width, decoder_temporal_kernel)
                                     if decoder_temporal_kernel else None)
         self.to_logvar = nn.Linear(width, latent_dim) if variational else None
         if self.to_logvar is not None:
             nn.init.zeros_(self.to_logvar.weight)
             nn.init.zeros_(self.to_logvar.bias)
 
-    def _static(self, skeleton):
+        # Equal widths share skeleton and physical-time projections.
+        if decoder_width != encoder_width:
+            self.decoder_names = nn.Linear(t5_out_dim, decoder_width)
+            self.decoder_geometry = nn.Linear(REST_GEOM_DIM, decoder_width)
+            self.decoder_structure = nn.Linear(JOINT_STRUCT_DIM, decoder_width)
+            self.decoder_tempo_projection = _zero_init_mlp(decoder_width)
+            self.decoder_loop_period_projection = _zero_init_mlp(decoder_width)
+
+    def _static(self, skeleton, decoder=False):
+        if decoder and self.decoder_width != self.encoder_width:
+            return (self.decoder_names(skeleton['joints_names_embs'])
+                    + self.decoder_geometry(skeleton['rest_geom'])
+                    + self.decoder_structure(skeleton['joint_struct']))
         return (self.names(skeleton['joints_names_embs'])
                 + self.geometry(skeleton['rest_geom'])
                 + self.structure(skeleton['joint_struct']))
@@ -161,9 +189,10 @@ class MotionAutoencoder(nn.Module):
         circular = torch.cat((phase.sin(), phase.cos()), dim=-1)
         return torch.where(is_loop[:, None, None], circular, absolute).transpose(0, 1)[:, :, None]
 
-    def _rope(self, frame, metadata):
+    def _rope(self, frame, metadata, width=None):
         """Per-sample open/closed RoPE, independent of right-padded window size."""
-        pairs = self.width // self.config['heads'] // 2
+        width = self.width if width is None else width
+        pairs = width // self.config['heads'] // 2
         ramp = torch.arange(pairs, device=frame.device) / max(pairs - 1, 1)
         frequency = TEMPORAL_ROPE_MAX_FREQ * (
             (2 * torch.pi / TEMPORAL_ROPE_MAX_PERIOD) / TEMPORAL_ROPE_MAX_FREQ) ** ramp
@@ -176,13 +205,17 @@ class MotionAutoencoder(nn.Module):
         angle = torch.where(is_loop[:, None, None], closed, position * frequency)
         return angle.cos(), angle.sin()
 
-    def _tempo_embedding(self, frame, metadata):
+    def _tempo_embedding(self, frame, metadata, decoder=False):
         """[T,B,1,D] physical time, matching AnyTop's tempo semantics.
 
         Use valid lengths rather than padded tensor width. A missing speed in
         the low-level API means native time (L=N); training/eval pass it explicitly.
         """
         metadata = metadata or {}
+        width = self.decoder_width if decoder else self.encoder_width
+        separate = decoder and self.decoder_width != self.encoder_width
+        tempo_projection = self.decoder_tempo_projection if separate else self.tempo_projection
+        period_projection = self.decoder_loop_period_projection if separate else self.loop_period_projection
         batch = frame.shape[0]
 
         def per_sample(key, default, dtype):
@@ -210,9 +243,9 @@ class MotionAutoencoder(nn.Module):
                            torch.ones_like(speed))
         positions = torch.arange(frame.shape[1], device=frame.device, dtype=torch.float32)
         times = positions[None, :, None] * step[:, None, None]
-        open_emb = run_in_fp32(self.tempo_projection, create_sin_embedding(times, self.width))
+        open_emb = run_in_fp32(tempo_projection, create_sin_embedding(times, width))
         period = (source_frames / cycles)[:, None, None]
-        loop_emb = run_in_fp32(self.loop_period_projection, create_sin_embedding(period, self.width))
+        loop_emb = run_in_fp32(period_projection, create_sin_embedding(period, width))
         tempo = torch.where(is_loop[:, None, None], loop_emb, open_emb)
         return tempo.masked_fill(~frame[:, :, None], 0).transpose(0, 1)[:, :, None]
 
@@ -220,15 +253,15 @@ class MotionAutoencoder(nn.Module):
         # No diffusion timestep. A fixed zero vector only satisfies the reused layer API.
         graph = {k: skeleton[k] for k in ('graph_dist', 'joints_relations')}
         metadata = loop_metadata or {}
-        tokens = tokens + self._tempo_embedding(frame, metadata).to(tokens.dtype)
-        rope = self._rope(frame, metadata) if self.temporal_rope else None
+        tokens = tokens + self._tempo_embedding(frame, metadata, decoder=module is self.decoder).to(tokens.dtype)
+        rope = self._rope(frame, metadata, tokens.shape[-1]) if self.temporal_rope else None
         phase = None
         # Only the encoder receives phase as content. Decoder uses RoPE and
         # physical tempo above, without an extra absolute/circular phase table.
         if self.temporal_rope and module is self.encoder:
             is_loop = metadata.get('is_loop', torch.zeros(frame.shape[0], device=frame.device, dtype=torch.bool))
             phase = self._position(frame, metadata).squeeze(2) * is_loop[None, :, None]
-        return module(tokens, tokens.new_zeros(tokens.shape[1], self.width), None,
+        return module(tokens, tokens.new_zeros(tokens.shape[1], tokens.shape[-1]), None,
                       tgt_key_padding_mask=~joint, temporal_key_padding_mask=~frame,
                       y=graph, motion_z=z, temporal_rope_override=rope,
                       loop_phase_override=phase)
@@ -273,7 +306,7 @@ class MotionAutoencoder(nn.Module):
         batch, latent_frames, slots, dim = z.shape
         if (slots, dim) != (self.slots, self.latent_dim):
             raise ValueError('Latent slot layout does not match this AE')
-        static = self._static(skeleton)
+        static = self._static(skeleton, decoder=True)
         joints = static.shape[1]
         frames = latent_frames
         if frame_mask is not None and frame_mask.shape[1] != frames:
@@ -282,10 +315,10 @@ class MotionAutoencoder(nn.Module):
         joint, frame = motion_masks(shape, skeleton, frame_mask)
         z = z.masked_fill(~frame[:, :, None, None], 0)
         queries = static[None].expand(frames, -1, -1, -1)
-        values = self.from_latent(z).transpose(0, 1).reshape(frames * batch, slots, self.width)
-        read, _ = self.read_latent(queries.reshape(frames * batch, joints, self.width),
+        values = self.from_latent(z).transpose(0, 1).reshape(frames * batch, slots, self.decoder_width)
+        read, _ = self.read_latent(queries.reshape(frames * batch, joints, self.decoder_width),
                                    values, values, need_weights=False)
-        tokens = queries + read.reshape(frames, batch, joints, self.width)
+        tokens = queries + read.reshape(frames, batch, joints, self.decoder_width)
         tokens = self._trunk(self.decoder, tokens, skeleton, joint, frame, loop_metadata,
                              z if self.layerwise_latent else None)
         if self.temporal_refinement is not None:

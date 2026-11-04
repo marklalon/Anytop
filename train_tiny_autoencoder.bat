@@ -38,10 +38,12 @@ if not exist "dataset\cond_all.npy" (
     --rest_repose_prob 0.1 ^
     --rest_variant_prob 0.5 ^
     --auto_resume ^
-    --width 256 ^
+    --encoder_width 128 ^
+    --decoder_width 256 ^
     --encoder_layers 4 ^
     --decoder_layers 8 ^
-    --ff_size 1024 ^
+    --encoder_ff_size 512 ^
+    --decoder_ff_size 1024 ^
     --cross_limb_dim 0 ^
     --cross_limb_last_n 0 ^
     --temporal_rope ^

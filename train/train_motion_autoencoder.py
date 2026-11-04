@@ -231,6 +231,10 @@ def parser():
     p.add_argument('--joint_buckets', type=int, nargs='+', default=None,
                    help='Same joint-count ceilings as train_anytop; defaults to JOINT_BUCKETS')
     p.add_argument('--width', type=int, default=128)
+    p.add_argument('--encoder_width', type=int, default=None,
+                   help='Encoder width; defaults to --width when unspecified')
+    p.add_argument('--decoder_width', type=int, default=None,
+                   help='Decoder width; defaults to --width when unspecified')
     p.add_argument('--layers', type=int, default=2)
     p.add_argument('--encoder_layers', type=int, default=None,
                    help='Encoder depth; defaults to --layers when unspecified')
@@ -240,6 +244,10 @@ def parser():
     p.add_argument('--slots', type=int, default=8)
     p.add_argument('--latent_dim', type=int, default=32)
     p.add_argument('--ff_size', type=int, default=0)
+    p.add_argument('--encoder_ff_size', type=int, default=None,
+                   help='Encoder FF size; defaults to --ff_size; zero uses 4 * encoder width')
+    p.add_argument('--decoder_ff_size', type=int, default=None,
+                   help='Decoder FF size; defaults to --ff_size; zero uses 4 * decoder width')
     p.add_argument('--last_layer_ff', type=int, default=0)
     p.add_argument('--cross_limb_dim', type=int, default=0)
     p.add_argument('--cross_limb_last_n', type=int, default=0)
@@ -322,20 +330,22 @@ def main():
                 or resume['canonical_version'] != CANONICAL_FEATURE_SPACE
                 or resume['cond_sha256'] != cond_hash):
             raise ValueError('Checkpoint type, canonical contract, skeleton data or selected training clips changed')
-        for key in ('seed', 'num_frames', 'width', 'layers', 'heads', 'slots', 'latent_dim', 'batch_size', 'lr', 'weight_decay'):
+        for key in ('seed', 'num_frames', 'layers', 'heads', 'slots', 'latent_dim', 'batch_size', 'lr', 'weight_decay'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}')
-        for key in ('encoder_layers', 'decoder_layers'):
+        for key, fallback in (('encoder_layers', 'layers'), ('decoder_layers', 'layers'),
+                              ('encoder_width', 'width'), ('decoder_width', 'width'),
+                              ('encoder_ff_size', 'ff_size'), ('decoder_ff_size', 'ff_size')):
             previous = resume['args'][key]
-            previous = resume['args']['layers'] if previous is None else previous
+            previous = resume['args'][fallback] if previous is None else previous
             current = getattr(args, key)
-            current = args.layers if current is None else current
+            current = getattr(args, fallback) if current is None else current
             if previous != current:
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
         for key in (*LOSS_WEIGHTS.values(), 'drot_joint_boost', 'motion_step_warmup_steps'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run for a new objective')
-        for key in ('ff_size', 'last_layer_ff', 'cross_limb_dim', 'cross_limb_last_n',
+        for key in ('last_layer_ff', 'cross_limb_dim', 'cross_limb_last_n',
                     'temporal_rope', 'layerwise_latent', 'decoder_temporal_kernel'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
@@ -366,6 +376,8 @@ def main():
     y = {k: v.to(device) if torch.is_tensor(v) else v for k, v in y_cpu.items()}
     model = MotionAutoencoder(t5_out_dim=y['joints_names_embs'].shape[-1], width=args.width,
                               layers=args.layers, heads=args.heads, slots=args.slots,
+                              encoder_width=args.encoder_width, decoder_width=args.decoder_width,
+                              encoder_ff_size=args.encoder_ff_size, decoder_ff_size=args.decoder_ff_size,
                               encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers,
                               latent_dim=args.latent_dim, ff_size=args.ff_size,
                               last_layer_ff=args.last_layer_ff, cross_limb_dim=args.cross_limb_dim,
@@ -401,7 +413,10 @@ def main():
                'full training batches, one static shape per bucket')
     tqdm.write(f'[model] {"VAE" if args.variational else "AE"}, '
                f'parameters={sum(p.numel() for p in model.parameters()):,}, '
-               f'width={args.width}, encoder_layers={len(model.encoder.layers)}, '
+               f'encoder_width={model.encoder_width}, decoder_width={model.decoder_width}, '
+               f'encoder_ff_size={model.encoder.layers[0].linear1.out_features}, '
+               f'decoder_ff_size={model.decoder.layers[0].linear1.out_features}, '
+               f'encoder_layers={len(model.encoder.layers)}, '
                f'decoder_layers={len(model.decoder.layers)}, slots={args.slots}, latent_dim={args.latent_dim}')
     reader_layers = [i + 1 for i, layer in enumerate(model.decoder.layers)
                      if hasattr(layer, 'motion_latent_attn')]

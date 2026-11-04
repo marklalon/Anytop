@@ -233,6 +233,12 @@ def test_asymmetric_depth_reads_latent_initially_and_in_all_decoder_layers():
 @pytest.mark.parametrize('options,match', [
     ({'encoder_layers': 0}, 'dimensions'),
     ({'decoder_layers': 0}, 'dimensions'),
+    ({'encoder_width': 0}, 'dimensions'),
+    ({'decoder_width': 15}, 'dimensions'),
+    ({'decoder_width': 18, 'temporal_rope': True}, 'even head'),
+    ({'encoder_width': 18, 'temporal_rope': True}, 'even head'),
+    ({'encoder_ff_size': -1}, 'ff_size'),
+    ({'decoder_ff_size': -1}, 'ff_size'),
 ])
 def test_asymmetric_configuration_validation(options, match):
     with pytest.raises(ValueError, match=match):
@@ -242,13 +248,69 @@ def test_asymmetric_configuration_validation(options, match):
 def test_asymmetric_latent_readers_support_fullgraph_training():
     model, x, skeleton = fixture(
         encoder_layers=1, decoder_layers=3, layerwise_latent=True,
-        temporal_rope=True,
+        temporal_rope=True, encoder_width=8, decoder_width=24,
+        encoder_ff_size=20, decoder_ff_size=40,
     )
     compiled = torch.compile(model, backend='eager', fullgraph=True, dynamic=False)
     prediction = compiled(x, skeleton)
     torch.testing.assert_close(prediction, model(x, skeleton))
     prediction.square().mean().backward()
     assert model.decoder.layers[-1].motion_latent_attn.q_proj_weight.grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize('encoder_width,decoder_width', [(8, 24), (24, 8)])
+@pytest.mark.parametrize('rope', [False, True])
+def test_independent_widths_and_ff_sizes_roundtrip(encoder_width, decoder_width, rope):
+    model, x, skeleton = fixture(
+        encoder_width=encoder_width, decoder_width=decoder_width,
+        encoder_ff_size=20, decoder_ff_size=40, last_layer_ff=12,
+        decoder_layers=2, temporal_rope=rope, variational=True,
+        layerwise_latent=True, decoder_temporal_kernel=3,
+        cross_limb_dim=8, cross_limb_last_n=1,
+    )
+    assert model.encoder.layers[0].linear1.out_features == 20
+    assert model.decoder.layers[0].linear1.out_features == 40
+    assert model.decoder.layers[-1].linear1.out_features == 12
+    frame = torch.tensor([[True] * 5, [True] * 3 + [False] * 2])
+    metadata = dict(is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2))
+    prediction, mu, logvar = model(x, skeleton, frame, metadata, return_posterior=True)
+    assert prediction.shape == x.shape
+    assert mu.shape == logvar.shape == (2, 5, 2, 4)
+    assert prediction[1, :, :, 3:].count_nonzero() == 0
+    prediction.square().mean().backward()
+    for module in (model.motion_projection, model.to_latent, model.from_latent,
+                   model.decoder_names, model.decoder_tempo_projection[-1],
+                   model.decoder_loop_period_projection[-1]):
+        assert module.weight.grad is not None
+        assert torch.isfinite(module.weight.grad).all()
+        assert module.weight.grad.abs().sum() > 0
+    restored = MotionAutoencoder(**model.config).eval()
+    restored.load_state_dict(model.state_dict(), strict=True)
+    torch.testing.assert_close(restored(x, skeleton, frame, metadata), prediction)
+
+
+def test_independent_dimension_defaults():
+    model, _, _ = fixture(ff_size=48)
+    assert model.encoder_width == model.decoder_width == 16
+    assert model.encoder.layers[0].linear1.out_features == 48
+    assert model.decoder.layers[0].linear1.out_features == 48
+    independent, _, _ = fixture(encoder_width=8, decoder_width=24,
+                                ff_size=48, decoder_ff_size=0)
+    assert independent.encoder.layers[0].linear1.out_features == 48
+    assert independent.decoder.layers[0].linear1.out_features == 96
+
+
+def test_independent_dimension_cli():
+    from train.train_motion_autoencoder import parser
+    options = dict(encoder_width=64, decoder_width=128,
+                   encoder_ff_size=256, decoder_ff_size=512)
+    defaults = parser().parse_args(['--save_dir', 'unused'])
+    assert all(getattr(defaults, key) is None for key in options)
+    cli = ['--save_dir', 'unused']
+    for key, value in options.items():
+        cli.extend(['--' + key, str(value)])
+    args = parser().parse_args(cli)
+    assert all(getattr(args, key) == value for key, value in options.items())
 
 
 @pytest.mark.parametrize('frames', [1, 2, 5, 6])

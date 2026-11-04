@@ -236,6 +236,7 @@ KL 使用对角高斯到 N(0,I) 的解析形式，先对每个样本的有效 T�
 
 已实现入口：`train/train_motion_autoencoder.py`，运行 `train_tiny_autoencoder.bat [run_name]`。
 编码器与解码器深度通过 `--encoder_layers`、`--decoder_layers` 独立指定，未指定时继承 `--layers`。`--layerwise_latent` 为所有解码器层分配、执行 latent 读取；初始骨架 query 对 latent 的读取始终保留。改变模型深度需要使用新 run，不能直接续训到不同架构。
+编码器与解码器宽度通过 `--encoder_width`、`--decoder_width` 独立指定，未指定时继承 `--width`；FFN 隐藏维度通过 `--encoder_ff_size`、`--decoder_ff_size` 独立指定，未指定时继承 `--ff_size`，值为 0 时使用对应侧宽度的 4 倍。`--last_layer_ff` 仍只覆盖解码器最后一层。E/D 宽度不同时，骨架和物理时间条件分别投影到对应宽度，latent 形状不变；宽度相同时沿用共享投影。每侧宽度须为正偶数且可被 `--heads` 整除；启用 temporal RoPE 时每个 head 的维度也须为偶数。改变有效宽度或 FFN 维度需要新 run；未单独指定时沿用共享参数默认值；不做旧 checkpoint 迁移。
 按 sample filter 选取训练 clip，评估时每个 clip 使用固定窗口；支持确定性 AE 和对角高斯 VAE，latent 与输入逐帧对齐，不做时间压缩。模型容量、模块开关、损失权重、增强概率、训练步数及精度和编译配置以代码、启动脚本和各 run 保存的配置为准，本文不维护具体实验参数。
 
 重建使用有效 canonical 通道的 MSE，并可配置位置步长、加速度、旋转、根轨迹、骨向量、肢体协同及 loop 接缝损失；不做 diffusion 噪声衰减，保留现有归约与 loop 语义。当前共享 AE 损失要求无时间 padding 的固定窗口。
