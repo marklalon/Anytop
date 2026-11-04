@@ -24,7 +24,7 @@ from data_loaders.truebones.truebones_utils.param_utils import FPS, JOINT_BUCKET
 from diffusion.losses import geodesic_distance
 from diffusion.logger import HumanOutputFormat
 from model.motion_autoencoder import (
-    DECODER_CONTENT_VERSION, MotionAutoencoder, checkpoint_model_config,
+    DECODER_CONTENT_VERSION, MotionAutoencoder,
     diagonal_gaussian_kl, motion_masks, to_working_motion,
 )
 from train.motion_reconstruction_losses import LOSS_WEIGHTS, MotionGeometryLosses, MotionReconstructionLosses
@@ -47,7 +47,6 @@ AUGMENTATION_DEFAULTS = dict(motion_speed_aug=1.0, loop_tile_single_prob=1.0,
 
 
 MODEL_REGULARIZATION_DEFAULTS = dict(dropout_prob=0.0, mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0)
-RECONSTRUCTION_LOSS_VERSION = 'bone_vector_root_xyz_v1'
 
 class AutoencoderBatchTransform:
     """Picklable CPU transform, run inside the shared worker/prefetch pipeline."""
@@ -234,9 +233,9 @@ def parser():
     p.add_argument('--width', type=int, default=128)
     p.add_argument('--layers', type=int, default=2)
     p.add_argument('--encoder_layers', type=int, default=None,
-                   help='Encoder depth; defaults to --layers for legacy configurations')
+                   help='Encoder depth; defaults to --layers when unspecified')
     p.add_argument('--decoder_layers', type=int, default=None,
-                   help='Decoder depth; defaults to --layers for legacy configurations')
+                   help='Decoder depth; defaults to --layers when unspecified')
     p.add_argument('--heads', type=int, default=4)
     p.add_argument('--slots', type=int, default=8)
     p.add_argument('--latent_dim', type=int, default=32)
@@ -305,11 +304,8 @@ def main():
         raise FileExistsError(f'{checkpoint} exists; use --auto_resume or a new --save_dir')
     resume = torch.load(checkpoint, map_location='cpu', weights_only=False) if checkpoint.exists() else None
     if resume is not None:
-        if (any(getattr(args, key) for key in ('lambda_bone', 'lambda_root_pos', 'lambda_root_dpos', 'lambda_root_acc'))
-                and resume.get('reconstruction_loss_version') != RECONSTRUCTION_LOSS_VERSION):
-            raise ValueError('Checkpoint reconstruction objective differs from '
-                             f'{RECONSTRUCTION_LOSS_VERSION}; use a new --save_dir')
-        checkpoint_model_config(resume)
+        if resume['decoder_content_version'] != DECODER_CONTENT_VERSION:
+            raise ValueError('Checkpoint decoder content version does not match this code')
     cond_hash = hashlib.sha256(Path(args.cond_path).read_bytes()).hexdigest()
     dataset = get_dataset(num_frames=args.num_frames, split='train', cond_path=args.cond_path,
                           sample_filter=args.sample_filter, sample_filter_seed=args.seed,
@@ -320,7 +316,7 @@ def main():
     source = dataset.motion_dataset
     names = list(source.name_list)
     if resume is not None:
-        if resume['args'].get('amp_dtype', 'fp32') != args.amp_dtype:
+        if resume['args']['amp_dtype'] != args.amp_dtype:
             raise ValueError('Cannot resume with changed amp_dtype; use a new run')
         if (resume['kind'] != 'motion_autoencoder_7a' or resume['motion_names'] != names
                 or resume['canonical_version'] != CANONICAL_FEATURE_SPACE
@@ -330,24 +326,24 @@ def main():
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}')
         for key in ('encoder_layers', 'decoder_layers'):
-            previous = resume['args'].get(key)
+            previous = resume['args'][key]
             previous = resume['args']['layers'] if previous is None else previous
             current = getattr(args, key)
             current = args.layers if current is None else current
             if previous != current:
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
         for key in (*LOSS_WEIGHTS.values(), 'drot_joint_boost', 'motion_step_warmup_steps'):
-            if resume['args'].get(key, 0.0) != getattr(args, key):
+            if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run for a new objective')
         for key in ('ff_size', 'last_layer_ff', 'cross_limb_dim', 'cross_limb_last_n',
                     'temporal_rope', 'layerwise_latent', 'decoder_temporal_kernel'):
-            if resume['args'].get(key, 0) != getattr(args, key):
+            if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
-        for key, default in (AUGMENTATION_DEFAULTS | MODEL_REGULARIZATION_DEFAULTS).items():
-            if resume['args'].get(key, default) != getattr(args, key):
+        for key in AUGMENTATION_DEFAULTS | MODEL_REGULARIZATION_DEFAULTS:
+            if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
-        for key, default in (('variational', False), ('kl_weight', 0.0)):
-            if resume['args'].get(key, default) != getattr(args, key):
+        for key in ('variational', 'kl_weight'):
+            if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
         fixed = resume['fixed_batch']
     else:
@@ -524,7 +520,6 @@ def main():
                 writer.flush()
             if step % args.save_interval == 0 or step == args.num_steps:
                 payload = dict(kind='motion_autoencoder_7a', step=step, args=vars(args),
-                               reconstruction_loss_version=RECONSTRUCTION_LOSS_VERSION,
                                decoder_content_version=DECODER_CONTENT_VERSION,
                                model_config=model.config, model=model.state_dict(),
                                optimizer=optimizer.state_dict(), data_pipeline='shared_loader_v1',

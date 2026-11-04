@@ -25,7 +25,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key, species_lookup_map
 from data_loaders.truebones.truebones_utils.param_utils import FPS
-from model.motion_autoencoder import MotionAutoencoder, checkpoint_model_config, to_working_motion
+from model.motion_autoencoder import DECODER_CONTENT_VERSION, MotionAutoencoder, to_working_motion
 from sample.conditioning import create_condition
 from sample.export import _bvh_preview_options, _export_motion
 from sample.output_lengths import _resample_window_to_output, reference_loop_verdict
@@ -61,8 +61,8 @@ def resolve_cond_path(checkpoint, model_path, explicit=None):
     candidates = (snapshot, training_path if training_path.is_absolute() else ANYTOP_ROOT / training_path)
     for candidate in candidates:
         if candidate.is_file():
-            expected = checkpoint.get('cond_sha256')
-            if expected and hashlib.sha256(candidate.read_bytes()).hexdigest() != expected:
+            expected = checkpoint['cond_sha256']
+            if hashlib.sha256(candidate.read_bytes()).hexdigest() != expected:
                 raise ValueError(f'{candidate} differs from the training cond. '
                                  'Pass --cond_path explicitly to evaluate with a different cond.')
             return candidate
@@ -120,11 +120,13 @@ def main(argv=None):
     torch.set_num_threads(4)
     model_path = Path(args.model_path).resolve()
     checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
-    if checkpoint.get('kind') != 'motion_autoencoder_7a':
+    if checkpoint['kind'] != 'motion_autoencoder_7a':
         raise ValueError('Expected a train_motion_autoencoder.py checkpoint')
-    if checkpoint.get('canonical_version') != CANONICAL_FEATURE_SPACE:
+    if checkpoint['canonical_version'] != CANONICAL_FEATURE_SPACE:
         raise ValueError('Checkpoint canonical feature version does not match this code')
-    model = MotionAutoencoder(**checkpoint_model_config(checkpoint))
+    if checkpoint['decoder_content_version'] != DECODER_CONTENT_VERSION:
+        raise ValueError('Checkpoint decoder content version does not match this code')
+    model = MotionAutoencoder(**checkpoint['model_config'])
     model.load_state_dict(checkpoint['model'], strict=True)
     model.to(device).eval()
     frames = int(checkpoint['args']['num_frames'])

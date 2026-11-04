@@ -15,20 +15,6 @@ from model.motion_transformer import (
 DECODER_CONTENT_VERSION = 'latent_only_v1'
 
 
-def checkpoint_model_config(checkpoint):
-    """Accept current checkpoints and the equivalent no-time-injection ablation."""
-    config = dict(checkpoint['model_config'])
-    if config.pop('temporal_stride', 1) != 1:
-        raise ValueError('Checkpoint uses temporal compression; train a new run with frame-aligned latents')
-    legacy_injection = config.pop('decoder_time_injection', None)
-    if (legacy_injection is True or
-            (checkpoint.get('decoder_content_version') != DECODER_CONTENT_VERSION
-             and legacy_injection is not False)):
-        raise ValueError('Checkpoint uses the previous decoder time/phase injection; '
-                         'use a no-time-injection checkpoint or train a new run')
-    return config
-
-
 def motion_masks(x, skeleton, frame_mask=None):
     """Return valid joint/frame masks (True = valid)."""
     batch, joints, _, frames = x.shape

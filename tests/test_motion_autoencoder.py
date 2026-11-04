@@ -11,8 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from data_loaders.reference import REST_GEOM_DIM
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from model.motion_autoencoder import (
-    DECODER_CONTENT_VERSION, MotionAutoencoder, TemporalResidualConv,
-    checkpoint_model_config, to_working_motion,
+    MotionAutoencoder, TemporalResidualConv, to_working_motion,
 )
 from train.train_motion_autoencoder import reconstruction_mse, scaled_optimizer_step
 
@@ -173,21 +172,10 @@ def test_asymmetric_depth_reads_latent_initially_and_in_all_decoder_layers():
     assert model.to_latent.weight.grad.abs().sum() > 0
     for layer in model.decoder.layers:
         assert layer.motion_latent_attn.q_proj_weight.grad.abs().sum() > 0
-    restored = MotionAutoencoder(**checkpoint_model_config(dict(
-        model_config=model.config, decoder_content_version=DECODER_CONTENT_VERSION)))
+    restored = MotionAutoencoder(**model.config)
     restored.load_state_dict(model.state_dict(), strict=True)
     restored.eval()
     torch.testing.assert_close(restored(x, skeleton), prediction)
-
-
-def test_legacy_symmetric_all_reader_checkpoint_loads_without_new_options():
-    model, x, skeleton = fixture(layerwise_latent=True)
-    legacy = {key: value for key, value in model.config.items()
-              if key not in ('encoder_layers', 'decoder_layers')}
-    restored = MotionAutoencoder(**checkpoint_model_config(dict(
-        model_config=legacy, decoder_content_version=DECODER_CONTENT_VERSION))).eval()
-    restored.load_state_dict(model.state_dict(), strict=True)
-    torch.testing.assert_close(restored(x, skeleton), model(x, skeleton), rtol=0, atol=0)
 
 
 @pytest.mark.parametrize('options,match', [
@@ -269,7 +257,7 @@ def test_frame_aligned_fullgraph_training_and_exact_odd_decode_length():
         model.decode(mu, s, torch.ones(2, 3, dtype=torch.bool))
 
 
-def test_temporal_stride_is_removed_and_legacy_full_rate_checkpoints_still_load():
+def test_temporal_stride_is_removed():
     from train.train_motion_autoencoder import parser
     args = parser().parse_args(['--save_dir', 'unused'])
     assert not hasattr(args, 'temporal_stride')
@@ -279,15 +267,6 @@ def test_temporal_stride_is_removed_and_legacy_full_rate_checkpoints_still_load(
         fixture(temporal_stride=1)
     model, x, skeleton = fixture(variational=True, layerwise_latent=True)
     assert 'temporal_stride' not in model.config
-    legacy = dict(model_config=dict(model.config, temporal_stride=1),
-                  decoder_content_version=DECODER_CONTENT_VERSION)
-    restored = MotionAutoencoder(**checkpoint_model_config(legacy)).eval()
-    restored.load_state_dict(model.state_dict(), strict=True)
-    torch.testing.assert_close(restored(x, skeleton), model(x, skeleton), rtol=0, atol=0)
-    assert legacy['model_config']['temporal_stride'] == 1
-    legacy['model_config']['temporal_stride'] = 2
-    with pytest.raises(ValueError, match='temporal compression'):
-        checkpoint_model_config(legacy)
 
 
 @pytest.mark.parametrize('joints,frames', [(1, 1), (4, 5), (7, 2)])
@@ -375,7 +354,7 @@ def test_decoder_without_time_injection_preserves_constant_latent_and_ignores_ph
     torch.testing.assert_close(restored.decode(z, skeleton, frame, loop), prediction)
 
 
-def test_decoder_time_option_is_removed_and_checkpoint_migration_preserves_output():
+def test_decoder_time_option_is_removed():
     from train.train_motion_autoencoder import parser
     args = parser().parse_args(['--save_dir', 'unused'])
     assert not hasattr(args, 'decoder_time_injection')
@@ -384,16 +363,8 @@ def test_decoder_time_option_is_removed_and_checkpoint_migration_preserves_outpu
     for option in ('--decoder_time_injection', '--no-decoder_time_injection'):
         with pytest.raises(SystemExit):
             parser().parse_args(['--save_dir', 'unused', option])
-    current = dict(model_config=model.config, decoder_content_version=DECODER_CONTENT_VERSION)
-    legacy = dict(model_config=dict(model.config, decoder_time_injection=False))
-    for checkpoint in (current, legacy):
-        restored = MotionAutoencoder(**checkpoint_model_config(checkpoint)).eval()
-        restored.load_state_dict(model.state_dict(), strict=True)
-        torch.testing.assert_close(restored(x, skeleton), model(x, skeleton), rtol=0, atol=0)
-    assert legacy['model_config']['decoder_time_injection'] is False
-    for config in (model.config, dict(model.config, decoder_time_injection=True)):
-        with pytest.raises(ValueError, match='previous decoder time/phase injection'):
-            checkpoint_model_config(dict(model_config=config))
+    with pytest.raises(TypeError):
+        fixture(decoder_time_injection=False)
 
 
 def test_masked_loss_is_per_sample_and_ignores_padding():

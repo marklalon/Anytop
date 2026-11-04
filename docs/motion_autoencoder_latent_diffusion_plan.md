@@ -94,9 +94,7 @@
 
 先用逐帧 latent 验证空间瓶颈对 shake 的影响，再比较时间压缩方案，并重新验收高频、相位和非整除长度。
 
-当前实现支持可选时间压缩：在关节槽池化后、posterior heads 前，先做时间滤波，再降采样。解码前线性插值恢复完整时间长度，并通过时间残差卷积细化；所有 decoder latent 注入均使用恢复后的表示，无完整帧率内容旁路。open 边界钳制，loop 按有效周期均匀采样并跨首尾插值，padding 不参与聚合。输出长度不能由压缩后的长度唯一确定时，须向 `decode` 传入原始 `frame_mask`；省略时输出长度为 latent 长度乘 stride。VAE 采样和 KL 使用压缩后的 mask，位置编码及 RoPE 保持完整输出帧率。该方案不保证消除抖动，仍需比较真实快速动作细节与重建加速度误差。
-
-压缩率改变必须使用新 run，不能续训旧目标配置的 checkpoint。支持的压缩配置以模型实现和启动脚本为准。
+当前实现使用逐帧 latent，不做时间滤波降采样或解码前时间插值。`decode` 的输出帧数等于 latent 帧数，显式传入的 `frame_mask` 必须具有相同时间长度；VAE 采样和 KL 也使用逐帧 mask。可选的解码输出时间残差卷积保持帧数不变。时间压缩留待后续独立实验。
 
 容量消融分别比较槽数 K 与每槽维度 d_z，观察细节保真和潜空间正则化的权衡。latent 对小关节骨架可能不构成数值压缩；必须报告各骨架的实际表示量和主干计算量，不能仅凭“latent”声称压缩。
 
@@ -225,8 +223,8 @@ KL 使用对角高斯到 N(0,I) 的解析形式，先对每个样本的有效 T�
 - 小集合成功仅作为实现与容量检查，不作为混合训练通过标准。
 
 已实现入口：`train/train_motion_autoencoder.py`，运行 `train_tiny_autoencoder.bat [run_name]`。
-编码器与解码器深度通过 `--encoder_layers`、`--decoder_layers` 独立指定，未指定时继承 `--layers`，兼容旧对称模型。`--layerwise_latent` 为所有解码器层分配、执行 latent 读取；初始骨架 query 对 latent 的读取始终保留。改变模型深度需要使用新 run，不能直接续训到不同架构。
-按 sample filter 选取训练 clip，评估时每个 clip 使用固定窗口；支持确定性 AE 和对角高斯 VAE，以及可选时间压缩。模型容量、模块开关、损失权重、增强概率、训练步数及精度和编译配置以代码、启动脚本和各 run 保存的配置为准，本文不维护具体实验参数。
+编码器与解码器深度通过 `--encoder_layers`、`--decoder_layers` 独立指定，未指定时继承 `--layers`。`--layerwise_latent` 为所有解码器层分配、执行 latent 读取；初始骨架 query 对 latent 的读取始终保留。改变模型深度需要使用新 run，不能直接续训到不同架构。
+按 sample filter 选取训练 clip，评估时每个 clip 使用固定窗口；支持确定性 AE 和对角高斯 VAE，latent 与输入逐帧对齐，不做时间压缩。模型容量、模块开关、损失权重、增强概率、训练步数及精度和编译配置以代码、启动脚本和各 run 保存的配置为准，本文不维护具体实验参数。
 
 重建使用有效 canonical 通道的 MSE，并可配置位置步长、加速度、旋转、根轨迹、骨向量、肢体协同及 loop 接缝损失；不做 diffusion 噪声衰减，保留现有归约与 loop 语义。当前共享 AE 损失要求无时间 padding 的固定窗口。
 
@@ -234,7 +232,7 @@ VAE 训练采样 posterior，评估与导出使用 mu；KL 按每样本有效时
 
 训练通过与 train_tiny/all 共用的 `build_dataset_loader` 在线采样，输入与目标为同一增强样本。共享 worker/后台队列预取、`JointBucketBatchSampler` 和 bucket collate；默认读取 `param_utils.JOINT_BUCKETS`，也支持 `--joint_buckets`。训练使用完整 batch，小桶余数跨 epoch 累积，每个桶对应固定编译形状；拓扑增强后仍按实际关节数选择可容纳的桶。`--num_workers`、`--main_process_prefetch_batches`、`--motion_cache_size` 与 diffusion 入口同义，tiny AE 脚本沿用 2 worker、64 batch 预取和 16384 motion cache。
 
-Encoder/Decoder 共享置空后的名称与 geometry（含 present flag），保留物理转换和损失所需统计与 offsets；条件 dropout 在 CPU worker/后台预取中执行，关系丢弃及网络 dropout 仅训练生效。loop 降级窗口采用开放重采样与开放损失。固定无增强窗口仅用于评估。续训保留模型、优化器、scaler 与步数，但与 train_anytop 一样不保存 worker RNG、预取队列和桶余数，不保证逐 batch 重放；旧串行采样 checkpoint 可以续训，数据流会切换为共享 loader。
+Encoder/Decoder 共享置空后的名称与 geometry（含 present flag），保留物理转换和损失所需统计与 offsets；条件 dropout 在 CPU worker/后台预取中执行，关系丢弃及网络 dropout 仅训练生效。loop 降级窗口采用开放重采样与开放损失。固定无增强窗口仅用于评估。续训保留模型、优化器、scaler 与步数，但与 train_anytop 一样不保存 worker RNG、预取队列和桶余数，不保证逐 batch 重放。训练续训与评估直接读取当前 checkpoint 格式，不提供旧格式迁移或缺失字段兜底。
 
 输出位于 `save/<run_name>/`：`autoencoder.pt` 支持续训并保存固定输入；TensorBoard 日志记录训练各项原始/加权 loss 与定期评估；`reconstruction_metrics.json` 记录逐样本重建、置零/跨样本打乱 latent 的误差和角步长 RMS；`reconstructions/` 保存物理空间 NPZ，并按导出配置保存原始/重建 NPY、BVH。旁路检查只提供诊断，不自动判定通过。
 
