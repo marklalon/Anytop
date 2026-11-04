@@ -5,7 +5,7 @@ REM Usage: train_tiny_autoencoder.bat [run_name]
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
-set "RUN_NAME=tiny_autoencoder_v19_no_decoder_time"
+set "RUN_NAME=tiny_autoencoder_shake_v3"
 if not "%~1"=="" set "RUN_NAME=%~1"
 if not exist "%PYTHON_EXE%" (
     echo ERROR: Python environment not found: "%PYTHON_EXE%"
@@ -45,34 +45,34 @@ if not exist "dataset\cond_all.npy" (
     --cross_limb_last_n 0 ^
     --temporal_rope ^
     --layerwise_latent ^
-    --temporal_stride 2 ^
+    --decoder_temporal_kernel 5 ^
     --compile reduce-overhead ^
     --amp_dtype fp16 ^
     --heads 4 ^
     --slots 8 ^
     --variational ^
-    --kl_weight 2e-4 ^
+    --kl_weight 1e-4 ^
     --latent_dim 32 ^
     --num_frames 60 ^
     --batch_size 16 ^
     --lr 1e-4 ^
-    --lambda_dpos 0.1 ^
-    --lambda_acc 0.04 ^
-    --lambda_drot 0.1 ^
     --motion_step_warmup_steps 500 ^
     --drot_joint_boost 1 ^
+    --lambda_dpos 0.1 ^
+    --lambda_drot 0.1 ^
+    --lambda_acc 0.05 ^
     --lambda_root_dpos 0.1 ^
     --lambda_root_acc 0.1 ^
     --lambda_geo 0.1 ^
-    --lambda_bone 0.06 ^
+    --lambda_bone 0.1 ^
     --lambda_limb_corr 0.1 ^
-    --lambda_loop_wrap 0.04 ^
+    --lambda_loop_wrap 0.1 ^
     --num_steps 3000 ^
     --log_interval 100 ^
     --save_interval 1000 ^
     --eval_interval 1000 ^
-    --export_samples 4 ^
-    --export_motion_names Bear_WetShake PP_Hen_Idle3 SC2_Infestor_Idle3 MON_Crab_Roar
+    --export_samples 6 ^
+    --export_motion_names Bear_WetShake PP_Hen_Idle3 SC2_Infestor_Idle3 MON_Crab_Roar LH_Hero_ShakeHead Tukan_Shake
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
 exit /b %EXIT_CODE%

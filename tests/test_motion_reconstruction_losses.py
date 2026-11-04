@@ -84,7 +84,7 @@ def test_zero_weights_preserve_pose_only_baseline_and_time_padding_is_rejected()
 
 
 @pytest.mark.parametrize('scale', [0.0, 0.005, 0.5, 1.0])
-def test_warmup_only_scales_dpos_drot_contributions_and_gradients(scale):
+def test_warmup_only_scales_dpos_drot_acc_contributions_and_gradients(scale):
     pred, target, y = fixture()
     pred.requires_grad_()
     weights = {argument: .1 for argument in LOSS_WEIGHTS.values()}
@@ -93,9 +93,9 @@ def test_warmup_only_scales_dpos_drot_contributions_and_gradients(scale):
     for key in full.keys() - {'loss'}:
         torch.testing.assert_close(warmed[key], full[key], rtol=0, atol=0)
     # Other auxiliaries and pose retain their full gradient throughout warm-up.
-    without_steps = dict(weights, lambda_dpos=0., lambda_drot=0.)
+    without_steps = dict(weights, lambda_dpos=0., lambda_drot=0., lambda_acc=0.)
     base = MotionReconstructionLosses(**without_steps)(pred, target, y)['loss']
-    expected = base + scale * .1 * (full['dpos_loss'] + full['drot_loss'])
+    expected = base + scale * .1 * (full['dpos_loss'] + full['drot_loss'] + full['acc_loss'])
     torch.testing.assert_close(warmed['loss'], expected)
     actual_grad = torch.autograd.grad(warmed['loss'], pred, retain_graph=True)[0]
     expected_grad = torch.autograd.grad(expected, pred)[0]

@@ -31,33 +31,31 @@ def fixture(joints=4, frames=5, **options):
 
 @pytest.mark.parametrize('frames', [1, 2, 5, 6])
 @pytest.mark.parametrize('variational', [False, True])
-def test_half_rate_latent_shapes_sampling_gradients_and_checkpoint(frames, variational):
+def test_frame_aligned_latent_shapes_sampling_gradients_and_checkpoint(frames, variational):
     from model.motion_autoencoder import diagonal_gaussian_kl
-    model, x, s = fixture(frames=frames, temporal_stride=2, variational=variational,
+    model, x, s = fixture(frames=frames, variational=variational,
                           temporal_rope=True, layerwise_latent=True)
     frame = torch.ones(2, frames, dtype=torch.bool)
     loop = dict(is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2))
     model.train()
     prediction, mu, logvar = model(x, s, frame, loop, return_posterior=True)
-    assert mu.shape == (2, (frames + 1) // 2, 2, 4)
+    assert mu.shape == (2, frames, 2, 4)
     assert prediction.shape == x.shape
     loss = prediction.square().mean()
     if variational:
-        loss = loss + .01 * diagonal_gaussian_kl(mu, logvar, model.latent_frame_mask(frame))
+        loss = loss + .01 * diagonal_gaussian_kl(mu, logvar, frame)
     loss.backward()
-    for layer in (model.to_latent, model.latent_refinement.mix):
-        assert layer.weight.grad.abs().sum() > 0
-        assert torch.isfinite(layer.weight.grad).all()
+    assert model.to_latent.weight.grad.abs().sum() > 0
+    assert torch.isfinite(model.to_latent.weight.grad).all()
     model.eval()
     restored = MotionAutoencoder(**model.config).eval()
     restored.load_state_dict(model.state_dict())
     torch.testing.assert_close(restored(x, s, frame, loop), model(x, s, frame, loop))
 
 
-def test_half_rate_padding_and_mixed_valid_lengths_match_individual_clips():
-    model, x, s = fixture(frames=7, temporal_stride=2, variational=True,
+def test_frame_aligned_padding_and_mixed_valid_lengths_match_individual_clips():
+    model, x, s = fixture(frames=7, variational=True,
                           temporal_rope=True, layerwise_latent=True)
-    torch.nn.init.normal_(model.latent_refinement.mix.weight, std=.05)
     frame = torch.tensor([[True] * 5 + [False] * 2, [True] * 7])
     loop = dict(is_loop=torch.tensor([True, False]), loop_tile_count=torch.ones(2))
     expected = model(x, s, frame, loop)
@@ -72,24 +70,11 @@ def test_half_rate_padding_and_mixed_valid_lengths_match_individual_clips():
     torch.testing.assert_close(actual[..., :7], expected, rtol=1e-4, atol=2e-6)
     assert actual[..., 7:].count_nonzero() == 0
     sampled = model.encode(padded, s, padded_frame, loop, sample=True)
-    assert sampled[~model.latent_frame_mask(padded_frame)].count_nonzero() == 0
+    assert sampled[~padded_frame].count_nonzero() == 0
 
 
-def test_half_rate_filter_removes_nyquist_component_and_interpolation_wraps():
-    model, _, _ = fixture(temporal_stride=2)
-    frame = torch.ones(1, 6, dtype=torch.bool)
-    loop = dict(is_loop=torch.tensor([True]))
-    alternating = ((-1.) ** torch.arange(6))[None, :, None, None].expand(1, 6, 2, 4)
-    compressed, _ = model._compress_time(alternating, frame, loop)
-    torch.testing.assert_close(compressed, torch.zeros_like(compressed))
-    z = torch.tensor([0., 2., 4.])[None, :, None, None].expand(1, 3, 2, 4)
-    expanded = model._expand_time(z, frame, loop)
-    # Last output interpolates last latent -> first latent across the seam.
-    torch.testing.assert_close(expanded[0, :, 0, 0], torch.tensor([0., 1., 2., 3., 4., 2.]))
-
-
-def test_half_rate_fullgraph_training_and_exact_odd_decode_length():
-    model, x, s = fixture(temporal_stride=2, variational=True, layerwise_latent=True)
+def test_frame_aligned_fullgraph_training_and_exact_odd_decode_length():
+    model, x, s = fixture(variational=True, layerwise_latent=True)
     model.train()
     compiled = torch.compile(model, backend='eager', fullgraph=True)
     first, mu, logvar = compiled(x, s, return_posterior=True)
@@ -100,6 +85,27 @@ def test_half_rate_fullgraph_training_and_exact_odd_decode_length():
     assert model.decode(mu, s, frame).shape == x.shape
     with pytest.raises(ValueError, match='Latent time length'):
         model.decode(mu, s, torch.ones(2, 3, dtype=torch.bool))
+
+
+def test_temporal_stride_is_removed_and_legacy_full_rate_checkpoints_still_load():
+    from train.train_motion_autoencoder import parser
+    args = parser().parse_args(['--save_dir', 'unused'])
+    assert not hasattr(args, 'temporal_stride')
+    with pytest.raises(SystemExit):
+        parser().parse_args(['--save_dir', 'unused', '--temporal_stride', '1'])
+    with pytest.raises(TypeError):
+        fixture(temporal_stride=1)
+    model, x, skeleton = fixture(variational=True, layerwise_latent=True)
+    assert 'temporal_stride' not in model.config
+    legacy = dict(model_config=dict(model.config, temporal_stride=1),
+                  decoder_content_version=DECODER_CONTENT_VERSION)
+    restored = MotionAutoencoder(**checkpoint_model_config(legacy)).eval()
+    restored.load_state_dict(model.state_dict(), strict=True)
+    torch.testing.assert_close(restored(x, skeleton), model(x, skeleton), rtol=0, atol=0)
+    assert legacy['model_config']['temporal_stride'] == 1
+    legacy['model_config']['temporal_stride'] = 2
+    with pytest.raises(ValueError, match='temporal compression'):
+        checkpoint_model_config(legacy)
 
 
 @pytest.mark.parametrize('joints,frames', [(1, 1), (4, 5), (7, 2)])
@@ -159,9 +165,8 @@ def test_decoder_ignores_dynamic_condition_fields_and_reads_latent():
 
 
 @pytest.mark.parametrize('rope', [False, True])
-@pytest.mark.parametrize('stride', [1, 2])
-def test_decoder_without_time_injection_preserves_constant_latent_and_ignores_phase(monkeypatch, rope, stride):
-    model, x, skeleton = fixture(temporal_rope=rope, temporal_stride=stride,
+def test_decoder_without_time_injection_preserves_constant_latent_and_ignores_phase(monkeypatch, rope):
+    model, x, skeleton = fixture(temporal_rope=rope,
                                  layerwise_latent=True)
     frame = torch.ones(2, x.shape[-1], dtype=torch.bool)
     loop = dict(is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2))

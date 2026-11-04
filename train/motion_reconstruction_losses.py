@@ -594,7 +594,7 @@ class MotionReconstructionLosses(MotionGeometryLosses):
             raise ValueError('Loss weights and drot_joint_boost must be finite and nonnegative')
 
     def __call__(self, prediction, target, y, step_loss_scale=1.0):
-        """Scale only dpos/drot contributions; returned raw terms stay comparable."""
+        """Scale only dpos/drot/acc contributions; returned raw terms stay comparable."""
         if not math.isfinite(step_loss_scale) or not 0 <= step_loss_scale <= 1:
             raise ValueError('step_loss_scale must be finite and in [0, 1]')
         with torch.autocast(device_type=prediction.device.type, enabled=False):
@@ -648,7 +648,7 @@ class MotionReconstructionLosses(MotionGeometryLosses):
             if weights['loop_wrap_loss']:
                 terms.update(self.loop_wrap_loss(physical_pred, y, n_joints))
         terms['loss'] = terms['pose_mse'] + sum(
-            weights[key] * terms[key] * (step_loss_scale if key in ('dpos_loss', 'drot_loss') else 1.0)
+            weights[key] * terms[key] * (step_loss_scale if key in ('dpos_loss', 'drot_loss', 'acc_loss') else 1.0)
             for key in weights if weights[key])
         return terms
 

@@ -1,4 +1,4 @@
-"""Motion AE / diagonal-Gaussian VAE: optional temporal bottleneck, no skips."""
+"""Motion AE / diagonal-Gaussian VAE: frame-aligned latents, no skips."""
 import torch
 from torch import nn
 
@@ -18,6 +18,8 @@ DECODER_CONTENT_VERSION = 'latent_only_v1'
 def checkpoint_model_config(checkpoint):
     """Accept current checkpoints and the equivalent no-time-injection ablation."""
     config = dict(checkpoint['model_config'])
+    if config.pop('temporal_stride', 1) != 1:
+        raise ValueError('Checkpoint uses temporal compression; train a new run with frame-aligned latents')
     legacy_injection = config.pop('decoder_time_injection', None)
     if (legacy_injection is True or
             (checkpoint.get('decoder_content_version') != DECODER_CONTENT_VERSION
@@ -76,18 +78,17 @@ class TemporalResidualConv(nn.Module):
 
 
 class MotionAutoencoder(nn.Module):
-    """Motion-content flows only through z, optionally at half frame rate.
+    """Motion-content flows only through frame-aligned z.
 
     Encoder/decoder read only named static skeleton fields, never reference,
     action labels, or other dynamic fields from a loader condition dictionary.
-    Inputs/outputs are [B,J,9,T]; latents are [B,ceil(T/r_t),K,d_z].
+    Inputs/outputs are [B,J,9,T]; latents are [B,T,K,d_z].
     """
 
     def __init__(self, t5_out_dim, width=128, layers=2, heads=4, slots=8, latent_dim=32,
                  ff_size=0, last_layer_ff=0, cross_limb_dim=0, cross_limb_last_n=0,
                  temporal_rope=False, layerwise_latent=False, decoder_temporal_kernel=0, variational=False,
-                 dropout_prob=0.0, mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0,
-                 temporal_stride=1):
+                 dropout_prob=0.0, mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0):
         super().__init__()
         if min(width, layers, heads, slots, latent_dim) < 1 or width % heads or width % 2:
             raise ValueError('Invalid AE dimensions')
@@ -98,10 +99,7 @@ class MotionAutoencoder(nn.Module):
                            temporal_rope=temporal_rope, layerwise_latent=layerwise_latent,
                            decoder_temporal_kernel=decoder_temporal_kernel, variational=variational,
                            dropout_prob=dropout_prob, mirror_twin_drop_prob=mirror_twin_drop_prob,
-                           lateral_drop_prob=lateral_drop_prob, temporal_stride=temporal_stride)
-        if temporal_stride not in (1, 2):
-            raise ValueError('temporal_stride must be 1 or 2')
-        self.temporal_stride = temporal_stride
+                           lateral_drop_prob=lateral_drop_prob)
         for key in ('dropout_prob', 'mirror_twin_drop_prob', 'lateral_drop_prob'):
             if not 0 <= self.config[key] <= 1:
                 raise ValueError(f'Invalid {key}: {self.config[key]}')
@@ -145,57 +143,6 @@ class MotionAutoencoder(nn.Module):
         if self.to_logvar is not None:
             nn.init.zeros_(self.to_logvar.weight)
             nn.init.zeros_(self.to_logvar.bias)
-        self.latent_refinement = TemporalResidualConv(latent_dim, 3) if temporal_stride == 2 else None
-
-    def latent_frame_mask(self, frame):
-        """Right-padded output frame mask -> right-padded latent mask."""
-        return frame[:, ::self.temporal_stride]
-
-    @staticmethod
-    def _sample_time(values, positions, lengths, loop):
-        """Linear interpolation of [B,T,K,D], wrap loops, clamp open ends."""
-        lower = positions.floor().long()
-        alpha = (positions - lower).to(values.dtype)[:, :, None, None]
-
-        def read(index):
-            index = torch.where(loop[:, None], index % lengths[:, None],
-                                torch.minimum(index.clamp_min(0), lengths[:, None] - 1))
-            return values.gather(1, index[:, :, None, None].expand(-1, -1, *values.shape[2:]))
-
-        return read(lower) * (1 - alpha) + read(lower + 1) * alpha
-
-    def _compress_time(self, values, frame, metadata):
-        """Anti-alias features before downsampling; posterior heads follow this.
-
-        Open samples use anchors 0,2,4,...; loops use uniformly spaced anchors
-        over their valid period, including odd lengths. Padding is excluded.
-        """
-        if self.temporal_stride == 1:
-            return values, frame
-        length = frame.sum(-1)
-        loop = (metadata or {}).get('is_loop', torch.zeros_like(length, dtype=torch.bool))
-        time = torch.arange(values.shape[1], device=values.device)[None].expand(len(values), -1)
-        filtered = (self._sample_time(values, time - 1, length, loop)
-                    + 2 * values + self._sample_time(values, time + 1, length, loop)) / 4
-        latent_frame = self.latent_frame_mask(frame)
-        count = latent_frame.sum(-1)
-        anchors = torch.arange(latent_frame.shape[1], device=values.device)[None]
-        spacing = torch.where(loop, length.float() / count, self.temporal_stride)
-        pooled = self._sample_time(filtered, anchors * spacing[:, None], length, loop)
-        return pooled.masked_fill(~latent_frame[:, :, None, None], 0), latent_frame
-
-    def _expand_time(self, z, frame, metadata):
-        if self.temporal_stride == 1:
-            return z
-        latent_frame = self.latent_frame_mask(frame)
-        length = frame.sum(-1)
-        count = latent_frame.sum(-1)
-        loop = (metadata or {}).get('is_loop', torch.zeros_like(length, dtype=torch.bool))
-        time = torch.arange(frame.shape[1], device=z.device)[None]
-        spacing = torch.where(loop, count.float() / length, 1.0 / self.temporal_stride)
-        expanded = self._sample_time(z, time * spacing[:, None], count, loop)
-        expanded = self.latent_refinement(expanded.transpose(0, 1), frame, metadata).transpose(0, 1)
-        return expanded.masked_fill(~frame[:, :, None, None], 0)
 
     def _static(self, skeleton):
         return (self.names(skeleton['joints_names_embs'])
@@ -259,10 +206,6 @@ class MotionAutoencoder(nn.Module):
         queries = self.queries[None].expand(frames * batch, -1, -1)
         mask = (~joint)[None].expand(frames, -1, -1).reshape(frames * batch, joints)
         pooled, _ = self.pool(queries, values, values, key_padding_mask=mask, need_weights=False)
-        pooled, frame = self._compress_time(
-            pooled.reshape(frames, batch, self.slots, width).transpose(0, 1), frame, loop_metadata)
-        frames = pooled.shape[1]
-        pooled = pooled.transpose(0, 1).reshape(frames * batch, self.slots, width)
         z = self.to_latent(pooled).reshape(frames, batch, self.slots, self.latent_dim)
         mu = z.permute(1, 0, 2, 3).masked_fill(~frame[:, :, None, None], 0).contiguous()
         logvar = None
@@ -283,8 +226,7 @@ class MotionAutoencoder(nn.Module):
     def encode(self, x, skeleton, frame_mask=None, loop_metadata=None, sample=False):
         """Return posterior mean by default; sample=True draws a VAE latent."""
         mu, logvar = self.encode_posterior(x, skeleton, frame_mask, loop_metadata)
-        latent_frame = self.latent_frame_mask(frame_mask) if frame_mask is not None else None
-        return self.reparameterize(mu, logvar, latent_frame) if sample and self.variational else mu
+        return self.reparameterize(mu, logvar, frame_mask) if sample and self.variational else mu
 
     def decode(self, z, skeleton, frame_mask=None, loop_metadata=None):
         batch, latent_frames, slots, dim = z.shape
@@ -292,15 +234,12 @@ class MotionAutoencoder(nn.Module):
             raise ValueError('Latent slot layout does not match this AE')
         static = self._static(skeleton)
         joints = static.shape[1]
-        # Explicit mask carries the exact output length (needed for odd T).
-        frames = frame_mask.shape[1] if frame_mask is not None else latent_frames * self.temporal_stride
+        frames = latent_frames
+        if frame_mask is not None and frame_mask.shape[1] != frames:
+            raise ValueError('Latent time length does not match output frame mask')
         shape = z.new_empty(batch, joints, len(MODEL_CHANNELS), frames)
         joint, frame = motion_masks(shape, skeleton, frame_mask)
-        latent_frame = self.latent_frame_mask(frame)
-        if latent_frame.shape[1] != latent_frames:
-            raise ValueError('Latent time length does not match output frame mask')
-        z = z.masked_fill(~latent_frame[:, :, None, None], 0)
-        z = self._expand_time(z, frame, loop_metadata)
+        z = z.masked_fill(~frame[:, :, None, None], 0)
         queries = static[None].expand(frames, -1, -1, -1)
         values = self.from_latent(z).transpose(0, 1).reshape(frames * batch, slots, self.width)
         read, _ = self.read_latent(queries.reshape(frames * batch, joints, self.width),
@@ -317,7 +256,7 @@ class MotionAutoencoder(nn.Module):
         if frame_mask is None:
             frame_mask = torch.ones(x.shape[0], x.shape[-1], device=x.device, dtype=torch.bool)
         mu, logvar = self.encode_posterior(x, skeleton, frame_mask, loop_metadata)
-        z = self.reparameterize(mu, logvar, self.latent_frame_mask(frame_mask)) if self.variational and self.training else mu
+        z = self.reparameterize(mu, logvar, frame_mask) if self.variational and self.training else mu
         prediction = self.decode(z, skeleton, frame_mask, loop_metadata)
         return (prediction, mu, logvar) if return_posterior else prediction
 

@@ -229,7 +229,7 @@ KL 使用对角高斯到 N(0,I) 的解析形式，先对每个样本的有效 T�
 
 重建使用有效 canonical 通道的 MSE，并可配置位置步长、加速度、旋转、根轨迹、骨向量、肢体协同及 loop 接缝损失；不做 diffusion 噪声衰减，保留现有归约与 loop 语义。当前共享 AE 损失要求无时间 padding 的固定窗口。
 
-VAE 训练采样 posterior，评估与导出使用 mu；KL 按每样本有效时间、槽和维度平均。KL 与 dpos/drot 支持线性 warm-up；日志记录原始项、加权项及有效权重。续训沿用绝对步数，并校验架构与训练目标配置；切换 AE/VAE 需新建实验。AMP FP16 的损失与评估保持 FP32；GradScaler 在裁剪前 unscale，溢出重试同一批次，checkpoint 保存 scaler 状态。
+VAE 训练采样 posterior，评估与导出使用 mu；KL 按每样本有效时间、槽和维度平均。KL 与 dpos/drot/acc 支持线性 warm-up；日志记录原始项、加权项及 warm-up 比例。续训沿用绝对步数，并校验架构与训练目标配置；切换 AE/VAE 需新建实验。AMP FP16 的损失与评估保持 FP32；GradScaler 在裁剪前 unscale，溢出重试同一批次，checkpoint 保存 scaler 状态。
 
 训练逐步在线采样，输入与目标为同一增强样本。Encoder/Decoder 共享置空后的名称与 geometry（含 present flag），保留物理转换和损失所需统计与 offsets；关系丢弃及网络 dropout 仅训练生效。loop 降级窗口采用开放重采样与开放损失。固定无增强窗口仅用于评估；按绝对步数派生增强随机种子，恢复训练可复现。
 

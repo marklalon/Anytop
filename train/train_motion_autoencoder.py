@@ -199,8 +199,6 @@ def parser():
     p.add_argument('--cross_limb_last_n', type=int, default=0)
     p.add_argument('--temporal_rope', action='store_true')
     p.add_argument('--layerwise_latent', action='store_true')
-    p.add_argument('--temporal_stride', type=int, choices=(1, 2), default=1,
-                   help='Temporal latent compression; 2 uses anti-aliased half-rate features')
     p.add_argument('--decoder_temporal_kernel', type=int, default=0,
                    help='Optional decoder output temporal residual convolution; zero disables')
     p.add_argument('--compile', choices=('None', 'default', 'reduce-overhead'), default='None')
@@ -223,7 +221,7 @@ def parser():
         p.add_argument('--' + argument, type=float, default=0.0)
     p.add_argument('--drot_joint_boost', type=float, default=0.0)
     p.add_argument('--motion_step_warmup_steps', type=int, default=0,
-                   help='Linearly ramp dpos/drot and KL weights from zero to their configured values')
+                   help='Linearly ramp dpos/drot/acc and KL weights from zero to their configured values')
     for key, default in (AUGMENTATION_DEFAULTS | MODEL_REGULARIZATION_DEFAULTS).items():
         p.add_argument('--' + key, type=float, default=default)
     return p
@@ -284,8 +282,6 @@ def main():
                     'temporal_rope', 'layerwise_latent', 'decoder_temporal_kernel'):
             if resume['args'].get(key, 0) != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
-        if resume['args'].get('temporal_stride', 1) != args.temporal_stride:
-            raise ValueError('Cannot resume with changed temporal_stride; use a new run')
         for key, default in (AUGMENTATION_DEFAULTS | MODEL_REGULARIZATION_DEFAULTS).items():
             if resume['args'].get(key, default) != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
@@ -318,7 +314,6 @@ def main():
                               last_layer_ff=args.last_layer_ff, cross_limb_dim=args.cross_limb_dim,
                               cross_limb_last_n=args.cross_limb_last_n, temporal_rope=args.temporal_rope,
                               layerwise_latent=args.layerwise_latent,
-                              temporal_stride=args.temporal_stride,
                               decoder_temporal_kernel=args.decoder_temporal_kernel,
                               variational=args.variational,
                               **{key: getattr(args, key) for key in MODEL_REGULARIZATION_DEFAULTS}).to(device)
@@ -431,7 +426,7 @@ def main():
                         prediction = forward_model(target, skeleton, frame, loop)
                 terms = criterion(prediction, target, cond, step_loss_scale=step_scale)
                 if args.variational:
-                    terms['kl_loss'] = diagonal_gaussian_kl(mu, logvar, model.latent_frame_mask(frame))
+                    terms['kl_loss'] = diagonal_gaussian_kl(mu, logvar, frame)
                     terms['loss'] = terms['loss'] + args.kl_weight * step_scale * terms['kl_loss']
                 loss = terms['loss']
                 if not torch.isfinite(loss):
@@ -449,24 +444,21 @@ def main():
             if step % args.log_interval == 0 or step == start + 1 or step == args.num_steps:
                 record = {'step': step, **{key: float(value.detach()) for key, value in terms.items()}}
                 effective_weights = {
-                    key: weight * (step_scale if key in ('dpos_loss', 'drot_loss') else 1.0)
+                    key: weight * (step_scale if key in ('dpos_loss', 'drot_loss', 'acc_loss') else 1.0)
                     for key, weight in criterion.weights.items() if weight}
                 record.update({key + '_weighted': weight * float(terms[key].detach())
                                for key, weight in effective_weights.items()})
                 if args.variational:
                     record['kl_loss_weighted'] = args.kl_weight * step_scale * float(terms['kl_loss'].detach())
-                    record['kl_effective_weight'] = args.kl_weight * step_scale
                 record['motion_step_warmup_scale'] = step_scale
                 record.update(grad_norm=float(grad_norm), amp_scale=scaler.get_scale())
-                record.update({key + '_effective_weight': weight for key, weight in effective_weights.items()
-                               if key in ('dpos_loss', 'drot_loss')})
                 record['lr'] = optimizer.param_groups[0]['lr']
                 console.writekvs(record)
                 tqdm.write(f'step[{step}]: loss[{record["loss"]:.5f}]')
                 log.write(json.dumps(record) + '\n')
                 log.flush()
                 for key, value in record.items():
-                    if key != 'step' and not key.endswith(('_weighted', '_effective_weight')):
+                    if key != 'step' and not key.endswith('_weighted'):
                         writer.add_scalar('train/' + key, value, step)
                 writer.flush()
             if step % args.save_interval == 0 or step == args.num_steps:
@@ -477,7 +469,7 @@ def main():
                                grad_scaler=scaler.state_dict(),
                                fixed_batch=fixed, motion_names=names, canonical_version=CANONICAL_FEATURE_SPACE,
                                cond_sha256=cond_hash,
-                               latent_layout=f'B,ceil(T/{args.temporal_stride}),K,d; r_t={args.temporal_stride}',
+                               latent_layout='B,T,K,d',
                                beta=args.kl_weight,
                                kl_warmup_steps=args.motion_step_warmup_steps if args.variational else 0,
                                torch_rng=torch.get_rng_state(),
