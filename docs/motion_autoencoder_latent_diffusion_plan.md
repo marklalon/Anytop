@@ -225,6 +225,7 @@ KL 使用对角高斯到 N(0,I) 的解析形式，先对每个样本的有效 T�
 - 小集合成功仅作为实现与容量检查，不作为混合训练通过标准。
 
 已实现入口：`train/train_motion_autoencoder.py`，运行 `train_tiny_autoencoder.bat [run_name]`。
+编码器与解码器深度通过 `--encoder_layers`、`--decoder_layers` 独立指定，未指定时继承 `--layers`，兼容旧对称模型。`--layerwise_latent` 为所有解码器层分配、执行 latent 读取；初始骨架 query 对 latent 的读取始终保留。改变模型深度需要使用新 run，不能直接续训到不同架构。
 按 sample filter 选取训练 clip，评估时每个 clip 使用固定窗口；支持确定性 AE 和对角高斯 VAE，以及可选时间压缩。模型容量、模块开关、损失权重、增强概率、训练步数及精度和编译配置以代码、启动脚本和各 run 保存的配置为准，本文不维护具体实验参数。
 
 重建使用有效 canonical 通道的 MSE，并可配置位置步长、加速度、旋转、根轨迹、骨向量、肢体协同及 loop 接缝损失；不做 diffusion 噪声衰减，保留现有归约与 loop 语义。当前共享 AE 损失要求无时间 padding 的固定窗口。

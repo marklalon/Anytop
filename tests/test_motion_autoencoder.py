@@ -149,6 +149,68 @@ def test_static_bucket_shapes_compile_once_and_reuse_graphs():
     assert len(graphs) == 2
 
 
+def test_asymmetric_depth_reads_latent_initially_and_in_all_decoder_layers():
+    model, x, skeleton = fixture(
+        encoder_layers=4, decoder_layers=6, layerwise_latent=True,
+        temporal_rope=True, variational=True,
+    )
+    assert len(model.encoder.layers) == 4
+    assert len(model.decoder.layers) == 6
+    assert all(hasattr(layer, 'motion_latent_attn') for layer in model.decoder.layers)
+    calls = []
+    handles = [model.read_latent.register_forward_hook(lambda *args: calls.append('initial'))]
+    for index in range(6):
+        handles.append(model.decoder.layers[index].motion_latent_attn.register_forward_hook(
+            lambda *args, index=index: calls.append(index)))
+    try:
+        prediction = model(x, skeleton)
+    finally:
+        for handle in handles:
+            handle.remove()
+    assert calls == ['initial', 0, 1, 2, 3, 4, 5]
+    prediction.square().mean().backward()
+    assert model.read_latent.in_proj_weight.grad.abs().sum() > 0
+    assert model.to_latent.weight.grad.abs().sum() > 0
+    for layer in model.decoder.layers:
+        assert layer.motion_latent_attn.q_proj_weight.grad.abs().sum() > 0
+    restored = MotionAutoencoder(**checkpoint_model_config(dict(
+        model_config=model.config, decoder_content_version=DECODER_CONTENT_VERSION)))
+    restored.load_state_dict(model.state_dict(), strict=True)
+    restored.eval()
+    torch.testing.assert_close(restored(x, skeleton), prediction)
+
+
+def test_legacy_symmetric_all_reader_checkpoint_loads_without_new_options():
+    model, x, skeleton = fixture(layerwise_latent=True)
+    legacy = {key: value for key, value in model.config.items()
+              if key not in ('encoder_layers', 'decoder_layers')}
+    restored = MotionAutoencoder(**checkpoint_model_config(dict(
+        model_config=legacy, decoder_content_version=DECODER_CONTENT_VERSION))).eval()
+    restored.load_state_dict(model.state_dict(), strict=True)
+    torch.testing.assert_close(restored(x, skeleton), model(x, skeleton), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize('options,match', [
+    ({'encoder_layers': 0}, 'dimensions'),
+    ({'decoder_layers': 0}, 'dimensions'),
+])
+def test_asymmetric_configuration_validation(options, match):
+    with pytest.raises(ValueError, match=match):
+        fixture(**options)
+
+
+def test_asymmetric_latent_readers_support_fullgraph_training():
+    model, x, skeleton = fixture(
+        encoder_layers=1, decoder_layers=3, layerwise_latent=True,
+        temporal_rope=True,
+    )
+    compiled = torch.compile(model, backend='eager', fullgraph=True, dynamic=False)
+    prediction = compiled(x, skeleton)
+    torch.testing.assert_close(prediction, model(x, skeleton))
+    prediction.square().mean().backward()
+    assert model.decoder.layers[-1].motion_latent_attn.q_proj_weight.grad.abs().sum() > 0
+
+
 @pytest.mark.parametrize('frames', [1, 2, 5, 6])
 @pytest.mark.parametrize('variational', [False, True])
 def test_frame_aligned_latent_shapes_sampling_gradients_and_checkpoint(frames, variational):

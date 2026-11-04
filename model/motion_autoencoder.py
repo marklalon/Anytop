@@ -88,11 +88,15 @@ class MotionAutoencoder(nn.Module):
     def __init__(self, t5_out_dim, width=128, layers=2, heads=4, slots=8, latent_dim=32,
                  ff_size=0, last_layer_ff=0, cross_limb_dim=0, cross_limb_last_n=0,
                  temporal_rope=False, layerwise_latent=False, decoder_temporal_kernel=0, variational=False,
-                 dropout_prob=0.0, mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0):
+                 dropout_prob=0.0, mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0,
+                 encoder_layers=None, decoder_layers=None):
         super().__init__()
-        if min(width, layers, heads, slots, latent_dim) < 1 or width % heads or width % 2:
+        encoder_layers = layers if encoder_layers is None else encoder_layers
+        decoder_layers = layers if decoder_layers is None else decoder_layers
+        if min(width, layers, encoder_layers, decoder_layers, heads, slots, latent_dim) < 1 or width % heads or width % 2:
             raise ValueError('Invalid AE dimensions')
         self.config = dict(t5_out_dim=t5_out_dim, width=width, layers=layers,
+                           encoder_layers=encoder_layers, decoder_layers=decoder_layers,
                            heads=heads, slots=slots, latent_dim=latent_dim,
                            ff_size=ff_size, last_layer_ff=last_layer_ff,
                            cross_limb_dim=cross_limb_dim, cross_limb_last_n=cross_limb_last_n,
@@ -105,7 +109,7 @@ class MotionAutoencoder(nn.Module):
                 raise ValueError(f'Invalid {key}: {self.config[key]}')
         if decoder_temporal_kernel < 0 or (decoder_temporal_kernel and decoder_temporal_kernel % 2 == 0):
             raise ValueError('decoder_temporal_kernel must be zero or a positive odd number')
-        if cross_limb_dim < 0 or not 0 <= cross_limb_last_n <= layers:
+        if cross_limb_dim < 0 or not 0 <= cross_limb_last_n <= min(encoder_layers, decoder_layers):
             raise ValueError('Invalid cross-limb configuration')
         if temporal_rope and (width // heads) % 2:
             raise ValueError('Temporal RoPE requires an even head dimension')
@@ -120,7 +124,8 @@ class MotionAutoencoder(nn.Module):
         def trunk(decoder=False):
             return GraphMotionDecoder(
                 GraphMotionDecoderLayer(width, heads, ff_size or width * 4, dropout_prob, 'gelu'),
-                layers, cross_limb=cross_limb_dim > 0, cross_limb_dim=cross_limb_dim or 64,
+                decoder_layers if decoder else encoder_layers,
+                cross_limb=cross_limb_dim > 0, cross_limb_dim=cross_limb_dim or 64,
                 cross_limb_last_n=cross_limb_last_n, graph_relations=True,
                 last_layer_ff=last_layer_ff if decoder else 0, temporal_rope=temporal_rope,
                 mirror_twin_drop_prob=mirror_twin_drop_prob, lateral_drop_prob=lateral_drop_prob)

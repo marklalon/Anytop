@@ -223,6 +223,10 @@ def parser():
                    help='Same joint-count ceilings as train_anytop; defaults to JOINT_BUCKETS')
     p.add_argument('--width', type=int, default=128)
     p.add_argument('--layers', type=int, default=2)
+    p.add_argument('--encoder_layers', type=int, default=None,
+                   help='Encoder depth; defaults to --layers for legacy configurations')
+    p.add_argument('--decoder_layers', type=int, default=None,
+                   help='Decoder depth; defaults to --layers for legacy configurations')
     p.add_argument('--heads', type=int, default=4)
     p.add_argument('--slots', type=int, default=8)
     p.add_argument('--latent_dim', type=int, default=32)
@@ -311,6 +315,13 @@ def main():
         for key in ('seed', 'num_frames', 'width', 'layers', 'heads', 'slots', 'latent_dim', 'batch_size', 'lr', 'weight_decay'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}')
+        for key in ('encoder_layers', 'decoder_layers'):
+            previous = resume['args'].get(key)
+            previous = resume['args']['layers'] if previous is None else previous
+            current = getattr(args, key)
+            current = args.layers if current is None else current
+            if previous != current:
+                raise ValueError(f'Cannot resume with changed {key}; use a new run')
         for key in (*LOSS_WEIGHTS.values(), 'drot_joint_boost', 'motion_step_warmup_steps'):
             if resume['args'].get(key, 0.0) != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run for a new objective')
@@ -345,6 +356,7 @@ def main():
     y = {k: v.to(device) if torch.is_tensor(v) else v for k, v in y_cpu.items()}
     model = MotionAutoencoder(t5_out_dim=y['joints_names_embs'].shape[-1], width=args.width,
                               layers=args.layers, heads=args.heads, slots=args.slots,
+                              encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers,
                               latent_dim=args.latent_dim, ff_size=args.ff_size,
                               last_layer_ff=args.last_layer_ff, cross_limb_dim=args.cross_limb_dim,
                               cross_limb_last_n=args.cross_limb_last_n, temporal_rope=args.temporal_rope,
@@ -379,7 +391,11 @@ def main():
                'full training batches, one static shape per bucket')
     tqdm.write(f'[model] {"VAE" if args.variational else "AE"}, '
                f'parameters={sum(p.numel() for p in model.parameters()):,}, '
-               f'width={args.width}, layers={args.layers}, slots={args.slots}, latent_dim={args.latent_dim}')
+               f'width={args.width}, encoder_layers={len(model.encoder.layers)}, '
+               f'decoder_layers={len(model.decoder.layers)}, slots={args.slots}, latent_dim={args.latent_dim}')
+    reader_layers = [i + 1 for i, layer in enumerate(model.decoder.layers)
+                     if hasattr(layer, 'motion_latent_attn')]
+    tqdm.write(f'[model] latent reads: initial + decoder layers {reader_layers}')
     tqdm.write(f'[INFO] device={device}, train={args.amp_dtype}, losses/evaluation=fp32, '
                f'lr={args.lr:.3e}, beta={args.kl_weight:g}, warmup_steps={args.motion_step_warmup_steps}')
     active_augmentation = {key: value for key, value in augmentation.items()
