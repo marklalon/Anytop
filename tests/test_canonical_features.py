@@ -54,6 +54,61 @@ def _cond(with_stats=True):
     return cond
 
 
+@pytest.mark.parametrize('device', ['cpu'] + (['cuda'] if torch.cuda.is_available() else []))
+@pytest.mark.parametrize('dtype', [torch.float32, torch.float64])
+@pytest.mark.parametrize('operation', ['velocity', 'root_xz', 'length_scale'])
+def test_inference_warmed_tensor_caches_support_backward(monkeypatch, device, dtype, operation):
+    # Isolate cache misses: earlier tests must not warm these keys in grad mode.
+    monkeypatch.setattr(cf, '_MASK_TENSOR_CACHE', {})
+    monkeypatch.setattr(cf, '_SPATIAL_L_TENSOR_CACHE', {})
+    feature = torch.ones(1, 2, 12, 3, device=device, dtype=dtype, requires_grad=True)
+    length = torch.tensor([2.], device=device, dtype=dtype, requires_grad=True)
+
+    def apply():
+        if operation == 'length_scale':
+            return cf._apply_L_scale(feature, {'rest_length_scale': length}, inverse=True)
+        return cf._apply_channel_mask(feature, operation)
+
+    with torch.inference_mode():
+        inferred = apply()
+        assert torch.is_inference(inferred)
+    output = apply()
+    output.sum().backward()
+    assert torch.isfinite(feature.grad).all()
+    if operation == 'length_scale':
+        expected = torch.ones_like(feature)
+        expected[:, :, :3] = 2
+        torch.testing.assert_close(feature.grad, expected)
+        torch.testing.assert_close(length.grad, torch.full_like(length, 18.))
+        cached = cf._SPATIAL_L_TENSOR_CACHE
+    else:
+        expected = torch.as_tensor(cf._channel_mask(2, 12, operation), device=device, dtype=dtype)
+        torch.testing.assert_close(feature.grad, expected[None, :, :, None].expand_as(feature))
+        cached = cf._MASK_TENSOR_CACHE
+    assert len(cached) == 1
+    constant = next(iter(cached.values()))
+    assert not torch.is_inference(constant)
+    with torch.inference_mode():
+        apply()
+    # Cache hits keep reusing the same normal constant across both modes.
+    assert next(iter(cached.values())) is constant
+
+
+def test_canonical_decode_after_inference_can_backpropagate(monkeypatch):
+    monkeypatch.setattr(cf, '_MASK_TENSOR_CACHE', {})
+    monkeypatch.setattr(cf, '_SPATIAL_L_TENSOR_CACHE', {})
+    cond = _cond()
+    canonical = torch.randn(1, 2, 12, 5, requires_grad=True)
+    with torch.inference_mode():
+        expected = canonical_to_physical_hml(canonical, cond)
+    decoded = canonical_to_physical_hml(canonical, cond)
+    torch.testing.assert_close(decoded, expected)
+    decoded.square().mean().backward()
+    assert torch.isfinite(canonical.grad).all()
+    assert canonical.grad[:, :, :9].abs().sum() > 0
+    assert canonical.grad[:, :, 9:].count_nonzero() == 0
+
+
 def test_canonical_feature_roundtrip_numpy():
     cond = _cond()
     physical = _with_valid_rotations(np.random.default_rng(123).normal(size=(5, 2, 12)))
