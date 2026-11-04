@@ -1,0 +1,490 @@
+"""Contract checks for the minimal self-reconstruction AE."""
+import sys
+from pathlib import Path
+
+import pytest
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from data_loaders.reference import REST_GEOM_DIM
+from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
+from model.motion_autoencoder import (
+    DECODER_CONTENT_VERSION, MotionAutoencoder, TemporalResidualConv,
+    checkpoint_model_config, to_working_motion,
+)
+from train.train_motion_autoencoder import reconstruction_mse, scaled_optimizer_step
+
+
+def fixture(joints=4, frames=5, **options):
+    torch.manual_seed(42)
+    model = MotionAutoencoder(t5_out_dim=6, width=16, layers=1, heads=2, slots=2, latent_dim=4,
+                              **options).eval()
+    x = torch.randn(2, joints, 9, frames)
+    s = dict(n_joints=torch.tensor([joints, max(1, joints - 1)]),
+             joints_names_embs=torch.randn(2, joints, 6), rest_geom=torch.randn(2, joints, REST_GEOM_DIM),
+             joint_struct=torch.randn(2, joints, JOINT_STRUCT_DIM),
+             graph_dist=torch.zeros(2, joints, joints, dtype=torch.long),
+             joints_relations=torch.zeros(2, joints, joints, dtype=torch.long))
+    return model, x, s
+
+
+@pytest.mark.parametrize('frames', [1, 2, 5, 6])
+@pytest.mark.parametrize('variational', [False, True])
+def test_half_rate_latent_shapes_sampling_gradients_and_checkpoint(frames, variational):
+    from model.motion_autoencoder import diagonal_gaussian_kl
+    model, x, s = fixture(frames=frames, temporal_stride=2, variational=variational,
+                          temporal_rope=True, layerwise_latent=True)
+    frame = torch.ones(2, frames, dtype=torch.bool)
+    loop = dict(is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2))
+    model.train()
+    prediction, mu, logvar = model(x, s, frame, loop, return_posterior=True)
+    assert mu.shape == (2, (frames + 1) // 2, 2, 4)
+    assert prediction.shape == x.shape
+    loss = prediction.square().mean()
+    if variational:
+        loss = loss + .01 * diagonal_gaussian_kl(mu, logvar, model.latent_frame_mask(frame))
+    loss.backward()
+    for layer in (model.to_latent, model.latent_refinement.mix):
+        assert layer.weight.grad.abs().sum() > 0
+        assert torch.isfinite(layer.weight.grad).all()
+    model.eval()
+    restored = MotionAutoencoder(**model.config).eval()
+    restored.load_state_dict(model.state_dict())
+    torch.testing.assert_close(restored(x, s, frame, loop), model(x, s, frame, loop))
+
+
+def test_half_rate_padding_and_mixed_valid_lengths_match_individual_clips():
+    model, x, s = fixture(frames=7, temporal_stride=2, variational=True,
+                          temporal_rope=True, layerwise_latent=True)
+    torch.nn.init.normal_(model.latent_refinement.mix.weight, std=.05)
+    frame = torch.tensor([[True] * 5 + [False] * 2, [True] * 7])
+    loop = dict(is_loop=torch.tensor([True, False]), loop_tile_count=torch.ones(2))
+    expected = model(x, s, frame, loop)
+    for row, length in enumerate([5, 7]):
+        single_s = {key: value[row:row + 1] for key, value in s.items()}
+        single_loop = {key: value[row:row + 1] for key, value in loop.items()}
+        actual = model(x[row:row + 1, :, :, :length], single_s, loop_metadata=single_loop)
+        torch.testing.assert_close(actual[0], expected[row, :, :, :length], rtol=1e-4, atol=2e-6)
+    padded = torch.nn.functional.pad(x, (0, 4), value=123.)
+    padded_frame = torch.nn.functional.pad(frame, (0, 4), value=False)
+    actual = model(padded, s, padded_frame, loop)
+    torch.testing.assert_close(actual[..., :7], expected, rtol=1e-4, atol=2e-6)
+    assert actual[..., 7:].count_nonzero() == 0
+    sampled = model.encode(padded, s, padded_frame, loop, sample=True)
+    assert sampled[~model.latent_frame_mask(padded_frame)].count_nonzero() == 0
+
+
+def test_half_rate_filter_removes_nyquist_component_and_interpolation_wraps():
+    model, _, _ = fixture(temporal_stride=2)
+    frame = torch.ones(1, 6, dtype=torch.bool)
+    loop = dict(is_loop=torch.tensor([True]))
+    alternating = ((-1.) ** torch.arange(6))[None, :, None, None].expand(1, 6, 2, 4)
+    compressed, _ = model._compress_time(alternating, frame, loop)
+    torch.testing.assert_close(compressed, torch.zeros_like(compressed))
+    z = torch.tensor([0., 2., 4.])[None, :, None, None].expand(1, 3, 2, 4)
+    expanded = model._expand_time(z, frame, loop)
+    # Last output interpolates last latent -> first latent across the seam.
+    torch.testing.assert_close(expanded[0, :, 0, 0], torch.tensor([0., 1., 2., 3., 4., 2.]))
+
+
+def test_half_rate_fullgraph_training_and_exact_odd_decode_length():
+    model, x, s = fixture(temporal_stride=2, variational=True, layerwise_latent=True)
+    model.train()
+    compiled = torch.compile(model, backend='eager', fullgraph=True)
+    first, mu, logvar = compiled(x, s, return_posterior=True)
+    second = compiled(x, s)
+    assert first.shape == second.shape == x.shape
+    assert not torch.equal(first, second)
+    frame = torch.ones(2, 5, dtype=torch.bool)
+    assert model.decode(mu, s, frame).shape == x.shape
+    with pytest.raises(ValueError, match='Latent time length'):
+        model.decode(mu, s, torch.ones(2, 3, dtype=torch.bool))
+
+
+@pytest.mark.parametrize('joints,frames', [(1, 1), (4, 5), (7, 2)])
+@pytest.mark.parametrize('kernel', [0, 5])
+def test_complete_channels_latent_and_gradients(joints, frames, kernel):
+    model, x, s = fixture(joints, frames, decoder_temporal_kernel=kernel)
+    x.requires_grad_()
+    z = model.encode(x, s)
+    assert z.shape == (2, frames, 2, 4)
+    pred = model.decode(z, s)
+    assert pred.shape == x.shape
+    pred.square().mean().backward()
+    assert torch.isfinite(x.grad).all()
+    assert x.grad[:, 0, 3:9].abs().sum() > 0
+    working = to_working_motion(pred)
+    assert working.shape[2] == 12
+    assert working[:, :, 9:].count_nonzero() == 0
+
+
+@pytest.mark.parametrize('loop', [False, True])
+@pytest.mark.parametrize('attention', [False, True])
+@pytest.mark.parametrize('kernel', [0, 5])
+def test_joint_and_time_padding_do_not_change_valid_output(loop, attention, kernel):
+    options = dict(temporal_rope=True, cross_limb_dim=8, cross_limb_last_n=1,
+                   layerwise_latent=True, ff_size=32, last_layer_ff=16) if attention else {}
+    model, x, s = fixture(**options, decoder_temporal_kernel=kernel)
+    if kernel:
+        # Exercise a learned, non-identity residual, including boundary padding.
+        torch.nn.init.normal_(model.temporal_refinement.mix.weight, std=.05)
+    frame = torch.ones(2, 5, dtype=torch.bool)
+    metadata = dict(is_loop=torch.full((2,), loop), loop_tile_count=torch.ones(2))
+    expected = model(x, s, frame, metadata)
+    padded_x = torch.nn.functional.pad(x, (0, 3, 0, 0, 0, 2), value=123)
+    padded_s = dict(s)
+    for key in ('joints_names_embs', 'rest_geom', 'joint_struct'):
+        padded_s[key] = torch.nn.functional.pad(s[key], (0, 0, 0, 2), value=321)
+    for key in ('graph_dist', 'joints_relations'):
+        padded_s[key] = torch.nn.functional.pad(s[key], (0, 2, 0, 2))
+    padded_frame = torch.nn.functional.pad(frame, (0, 3), value=False)
+    actual = model(padded_x, padded_s, padded_frame, metadata)
+    torch.testing.assert_close(actual[:, :4, :, :5], expected, rtol=1e-4, atol=2e-6)
+    assert actual[:, :, :, 5:].count_nonzero() == 0
+    assert actual[:, 4:].count_nonzero() == 0
+    loss = reconstruction_mse(actual, padded_x, padded_s, padded_frame)
+    torch.testing.assert_close(loss, reconstruction_mse(expected, x, s, frame))
+
+
+def test_decoder_ignores_dynamic_condition_fields_and_reads_latent():
+    model, x, s = fixture()
+    z = model.encode(x, s)
+    expected = model.decode(z, s)
+    contaminated = dict(s, ref_feats=x * 123, ref_pose=x * -10,
+                        action_label=['shake', 'idle'], target_motion=x)
+    torch.testing.assert_close(model.decode(z, contaminated), expected, rtol=0, atol=0)
+    assert not torch.allclose(model.decode(torch.zeros_like(z), s), expected)
+    assert not torch.allclose(model.decode(z.roll(1, 0), s), expected)
+
+
+@pytest.mark.parametrize('rope', [False, True])
+@pytest.mark.parametrize('stride', [1, 2])
+def test_decoder_without_time_injection_preserves_constant_latent_and_ignores_phase(monkeypatch, rope, stride):
+    model, x, skeleton = fixture(temporal_rope=rope, temporal_stride=stride,
+                                 layerwise_latent=True)
+    frame = torch.ones(2, x.shape[-1], dtype=torch.bool)
+    loop = dict(is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2))
+    # Exercise a nonzero phase scale: the zero initialization would hide a leak.
+    with torch.no_grad():
+        model.decoder.layers[0].temporal_phase_scale.fill_(1.)
+    z = model.encode(x, skeleton, frame, loop)
+    changed_loop = dict(loop, loop_tile_count=torch.full((2,), 3.))
+    assert not torch.allclose(model.encode(x, skeleton, frame, changed_loop)[1], z[1])
+
+    def unexpected_position(*args):
+        raise AssertionError('Decoder must not construct absolute time or phase content')
+
+    monkeypatch.setattr(model, '_position', unexpected_position)
+    prediction = model.decode(z, skeleton, frame, loop)
+    torch.testing.assert_close(model.decode(z, skeleton, frame, changed_loop), prediction,
+                               rtol=0, atol=0)
+    constant_z = z[:, :1].expand_as(z)
+    constant = model.decode(constant_z, skeleton, frame, loop)
+    torch.testing.assert_close(constant, constant[..., :1].expand_as(constant), rtol=1e-4, atol=2e-6)
+    assert not torch.allclose(constant, prediction)
+    restored = MotionAutoencoder(**model.config).eval()
+    restored.load_state_dict(model.state_dict())
+    torch.testing.assert_close(restored.decode(z, skeleton, frame, loop), prediction)
+
+
+def test_decoder_time_option_is_removed_and_checkpoint_migration_preserves_output():
+    from train.train_motion_autoencoder import parser
+    args = parser().parse_args(['--save_dir', 'unused'])
+    assert not hasattr(args, 'decoder_time_injection')
+    model, x, skeleton = fixture(temporal_rope=True, layerwise_latent=True)
+    assert 'decoder_time_injection' not in model.config
+    for option in ('--decoder_time_injection', '--no-decoder_time_injection'):
+        with pytest.raises(SystemExit):
+            parser().parse_args(['--save_dir', 'unused', option])
+    current = dict(model_config=model.config, decoder_content_version=DECODER_CONTENT_VERSION)
+    legacy = dict(model_config=dict(model.config, decoder_time_injection=False))
+    for checkpoint in (current, legacy):
+        restored = MotionAutoencoder(**checkpoint_model_config(checkpoint)).eval()
+        restored.load_state_dict(model.state_dict(), strict=True)
+        torch.testing.assert_close(restored(x, skeleton), model(x, skeleton), rtol=0, atol=0)
+    assert legacy['model_config']['decoder_time_injection'] is False
+    for config in (model.config, dict(model.config, decoder_time_injection=True)):
+        with pytest.raises(ValueError, match='previous decoder time/phase injection'):
+            checkpoint_model_config(dict(model_config=config))
+
+
+def test_masked_loss_is_per_sample_and_ignores_padding():
+    model, target, s = fixture()
+    frame = torch.tensor([[True] * 5, [True, True, False, False, False]])
+    prediction = target + 1
+    prediction[1, 3] = 1000
+    prediction[1, :, :, 2:] = 1000
+    torch.testing.assert_close(reconstruction_mse(prediction, target, s, frame), torch.ones(2))
+
+
+def test_layerwise_latent_reader_has_gradients_and_no_dynamic_bypass():
+    model, x, s = fixture(temporal_rope=True, cross_limb_dim=8, cross_limb_last_n=1,
+                          layerwise_latent=True)
+    z = model.encode(x, s).detach().requires_grad_()
+    pred = model.decode(z, s)
+    pred.square().mean().backward()
+    assert torch.isfinite(z.grad).all() and z.grad.abs().sum() > 0
+    assert model.decoder.layers[0].motion_latent_attn.q_proj_weight.grad.abs().sum() > 0
+    torch.testing.assert_close(model.decode(z, dict(s, target_motion=x * 100)), pred)
+    assert not torch.allclose(model.decode(torch.zeros_like(z), s), pred)
+
+
+def test_attention_autoencoder_compiles_as_one_graph():
+    model, x, s = fixture(temporal_rope=True, cross_limb_dim=8, cross_limb_last_n=1,
+                          layerwise_latent=True, decoder_temporal_kernel=5)
+    metadata = dict(is_loop=torch.tensor([True, False]), loop_tile_count=torch.ones(2))
+    compiled = torch.compile(model, backend='eager', fullgraph=True)
+    actual = compiled(x, s, loop_metadata=metadata)
+    torch.testing.assert_close(actual, model(x, s, loop_metadata=metadata))
+    actual.square().mean().backward()
+    assert torch.isfinite(model.output.weight.grad).all()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA AMP required')
+def test_amp_unscales_before_clipping_and_preserves_weights_on_overflow():
+    model = torch.nn.Linear(2, 1, bias=False).cuda()
+    torch.nn.init.ones_(model.weight)
+    optimizer = torch.optim.SGD(model.parameters(), lr=.1)
+    scaler = torch.amp.GradScaler('cuda', init_scale=8.)
+    x = torch.full((1, 2), 2., device='cuda')
+    with torch.autocast('cuda', dtype=torch.float16):
+        loss = model(x).float().square().mean()
+    norm, updated = scaled_optimizer_step(loss, model, optimizer, scaler)
+    assert updated
+    torch.testing.assert_close(norm, torch.tensor(512., device='cuda').sqrt())
+    expected = torch.full_like(model.weight, 1 - .1 / (2 ** .5))
+    torch.testing.assert_close(model.weight, expected)
+    previous = model.weight.detach().clone()
+    optimizer.zero_grad(set_to_none=True)
+    _, updated = scaled_optimizer_step(model(x).sum() * float('inf'), model, optimizer, scaler)
+    assert not updated and scaler.get_scale() == 4.
+    torch.testing.assert_close(model.weight, previous, rtol=0, atol=0)
+    restored = torch.amp.GradScaler('cuda')
+    restored.load_state_dict(scaler.state_dict())
+    assert restored.get_scale() == scaler.get_scale()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA AMP required')
+def test_autoencoder_fp16_forward_backward_keeps_fp32_parameters():
+    model, x, s = fixture(temporal_rope=True, layerwise_latent=True, decoder_temporal_kernel=5)
+    model = model.cuda().train()
+    x, s = x.cuda(), {k: v.cuda() for k, v in s.items()}
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    scaler = torch.amp.GradScaler('cuda', init_scale=1.)
+    with torch.autocast('cuda', dtype=torch.float16):
+        prediction = model(x, s)
+    assert prediction.dtype == torch.float16
+    loss = (prediction.float() - x).square().mean()
+    norm, updated = scaled_optimizer_step(loss, model, optimizer, scaler)
+    assert updated and torch.isfinite(norm)
+    assert all(p.dtype == torch.float32 and torch.isfinite(p).all() for p in model.parameters())
+
+
+def test_temporal_residual_starts_identical_to_baseline_and_learns():
+    baseline, x, s = fixture()
+    model, _, _ = fixture(decoder_temporal_kernel=5)
+    for key, value in baseline.state_dict().items():
+        torch.testing.assert_close(model.state_dict()[key], value, rtol=0, atol=0)
+    expected = baseline(x, s)
+    actual = model(x, s)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    actual.square().mean().backward()
+    assert model.temporal_refinement.mix.weight.grad.abs().sum() > 0
+
+
+def test_temporal_convolution_wraps_only_loop_rows_and_does_not_mix_joints():
+    block = TemporalResidualConv(2, 5)
+    with torch.no_grad():
+        block.depthwise.weight.fill_(1)
+        block.depthwise.bias.zero_()
+        block.mix.weight.copy_(torch.eye(2).reshape(2, 2, 1))
+        block.mix.bias.zero_()
+    tokens = torch.zeros(7, 2, 2, 2)
+    tokens[-1, :, 0] = torch.tensor([1., -1.])
+    actual = block(tokens, torch.ones(2, 7, dtype=torch.bool),
+                   dict(is_loop=torch.tensor([True, False])))
+    assert actual[0, 0, 0].abs().sum() > 0
+    assert actual[0, 1, 0].count_nonzero() == 0
+    assert actual[:, :, 1].count_nonzero() == 0
+
+
+def test_augmented_batch_is_fresh_reproducible_and_preserves_rng(monkeypatch):
+    import random
+    import numpy as np
+    import train.train_motion_autoencoder as trainer
+
+    class Source:
+        def prepare_sample_by_name(self, name):
+            return name, random.random(), np.random.random()
+
+    def collate(samples, joint_buckets):
+        assert joint_buckets == (7,)
+        data = torch.tensor([[v[1], v[2]] for v in samples])[:, None, :, None]
+        return data, {'y': {'motion_name': [v[0] for v in samples],
+                           'n_joints': torch.ones(len(samples), dtype=torch.long),
+                           'ref_unused': torch.ones(1)}}
+
+    monkeypatch.setattr(trainer, 'truebones_batch_collate', collate)
+    random.seed(40)
+    np.random.seed(40)
+    expected = random.random(), np.random.random()
+    random.seed(40)
+    np.random.seed(40)
+    options = dict(source=Source(), names=['a', 'b'], indices=torch.tensor([1, 0]),
+                   seed=10, joint_width=7, device='cpu')
+    first, cond = trainer.augmented_batch(**options, step=100)
+    again, _ = trainer.augmented_batch(**options, step=100)
+    fresh, _ = trainer.augmented_batch(**options, step=101)
+    assert torch.equal(first, again)
+    assert not torch.equal(first, fresh)
+    assert cond['motion_name'] == ['b', 'a'] and 'ref_unused' not in cond
+    assert (random.random(), np.random.random()) == expected
+
+
+def test_vae_kl_matches_gaussian_formula_and_ignores_padding():
+    from model.motion_autoencoder import diagonal_gaussian_kl
+    mu = torch.randn(2, 4, 2, 3, requires_grad=True)
+    logvar = torch.randn_like(mu, requires_grad=True)
+    frame = torch.tensor([[True, True, False, False], [True, True, True, False]])
+    normal = torch.distributions.Normal(mu, (logvar * .5).exp())
+    expected = torch.distributions.kl_divergence(normal, torch.distributions.Normal(0., 1.))
+    expected = torch.stack([expected[i, frame[i]].mean() for i in range(2)]).mean()
+    actual = diagonal_gaussian_kl(mu, logvar, frame)
+    torch.testing.assert_close(actual, expected)
+    actual.backward()
+    assert mu.grad[~frame].count_nonzero() == logvar.grad[~frame].count_nonzero() == 0
+    assert diagonal_gaussian_kl(torch.zeros_like(mu), torch.zeros_like(mu), frame) == 0
+
+
+def test_vae_sampling_mean_eval_and_posterior_gradients():
+    from model.motion_autoencoder import diagonal_gaussian_kl
+    model, x, skeleton = fixture(variational=True, layerwise_latent=True)
+    frame = torch.tensor([[True, True, True, False, False], [True] * 5])
+    mu, logvar = model.encode_posterior(x, skeleton, frame)
+    torch.testing.assert_close(model.encode(x, skeleton, frame), mu)
+    sampled = model.encode(x, skeleton, frame, sample=True)
+    assert not torch.equal(sampled, mu)
+    assert sampled[~frame].count_nonzero() == 0
+    first, second = model(x, skeleton, frame), model(x, skeleton, frame)
+    torch.testing.assert_close(first, second, rtol=0, atol=0)
+    model.train()
+    first, mean, variance = model(x, skeleton, frame, return_posterior=True)
+    second = model(x, skeleton, frame)
+    assert not torch.equal(first, second)
+    (first.square().mean() + .01 * diagonal_gaussian_kl(mean, variance, frame)).backward()
+    for layer in (model.to_latent, model.to_logvar):
+        assert layer.weight.grad.abs().sum() > 0 and torch.isfinite(layer.weight.grad).all()
+
+
+def test_vae_fullgraph_forward_has_fresh_samples():
+    model, x, skeleton = fixture(variational=True)
+    model.train()
+    compiled = torch.compile(model, backend='eager', fullgraph=True)
+    first, mu, logvar = compiled(x, skeleton, return_posterior=True)
+    second, mu2, logvar2 = compiled(x, skeleton, return_posterior=True)
+    assert not torch.equal(first, second)
+    torch.testing.assert_close(mu, mu2)
+    torch.testing.assert_close(logvar, logvar2)
+
+
+
+@pytest.mark.parametrize('prob', [0.0, 0.5, 1.0])
+def test_training_name_drop_is_shared_reproducible_and_keeps_clean_inputs(monkeypatch, prob):
+    import train.train_motion_autoencoder as trainer
+    _, target, skeleton = fixture()
+    clean_names = skeleton['joints_names_embs'].clone()
+    conditions = dict(skeleton, lengths=torch.full((2,), target.shape[-1]),
+                      is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2))
+
+    class Source:
+        def prepare_sample_by_name(self, name):
+            return name
+
+    def collate(samples, joint_buckets):
+        return target, {'y': dict(conditions)}
+
+    monkeypatch.setattr(trainer, 'truebones_batch_collate', collate)
+    options = dict(source=Source(), names=['a', 'b'], indices=torch.arange(2),
+                   step=20, seed=10, joint_width=4, device='cpu', joint_name_drop_prob=prob)
+    x, cond = trainer.augmented_batch(**options)
+    _, again = trainer.augmented_batch(**options)
+    torch.testing.assert_close(x, target, rtol=0, atol=0)
+    torch.testing.assert_close(skeleton['joints_names_embs'], clean_names, rtol=0, atol=0)
+    torch.testing.assert_close(cond['joints_names_embs'], again['joints_names_embs'], rtol=0, atol=0)
+    dropped = cond['joints_names_embs'].eq(0).all(-1)
+    if prob == 0:
+        assert not dropped.any()
+    elif prob == 1:
+        assert dropped.all()
+    else:
+        assert dropped.any() and not dropped.all()
+    torch.testing.assert_close(cond['joints_names_embs'][~dropped], clean_names[~dropped])
+    # This one condition bundle is passed to both E and D; loop/open metadata
+    # also reaches their positional encoding and the reconstruction losses.
+    shared, _, loop = trainer.model_inputs(x, cond)
+    assert shared['joints_names_embs'] is cond['joints_names_embs']
+    assert loop['is_loop'].tolist() == [False, True]
+
+
+@pytest.mark.parametrize('sample_prob,joint_prob', [(1., 0.), (0., 1.), (.1, .1)])
+def test_geometry_drop_preserves_clean_context_and_replays(monkeypatch, sample_prob, joint_prob):
+    import train.train_motion_autoencoder as trainer
+    _, target, skeleton = fixture(joints=32)
+    geometry = torch.ones_like(skeleton['rest_geom'])
+    offsets = torch.randn(2, 32, 3)
+    conditions = dict(skeleton, rest_geom=geometry, offsets=offsets,
+                      lengths=torch.full((2,), target.shape[-1]), is_loop=torch.zeros(2, dtype=torch.bool))
+
+    class Source:
+        def prepare_sample_by_name(self, name):
+            return name
+
+    monkeypatch.setattr(trainer, 'truebones_batch_collate',
+                        lambda *a, **kw: (target, {'y': dict(conditions)}))
+    options = dict(source=Source(), names=['a', 'b'], indices=torch.arange(2), step=50,
+                   seed=10, joint_width=32, device='cpu', rest_geom_drop_prob=sample_prob,
+                   rest_geom_joint_drop_prob=joint_prob)
+    x, cond = trainer.augmented_batch(**options)
+    _, again = trainer.augmented_batch(**options)
+    torch.testing.assert_close(cond['rest_geom'], again['rest_geom'], rtol=0, atol=0)
+    assert geometry.eq(1).all()  # including the original present flag
+    assert cond['offsets'] is offsets
+    torch.testing.assert_close(x, target, rtol=0, atol=0)
+    dropped = cond['rest_geom'].eq(0).all(-1)
+    if sample_prob == 1 or joint_prob == 1:
+        assert dropped.all()
+    else:
+        assert dropped.any() and not dropped.all()
+    assert cond['rest_geom'][~dropped].eq(1).all()
+
+
+def test_regularized_autoencoder_compiles_trains_and_has_deterministic_eval():
+    options = dict(dropout_prob=.1, mirror_twin_drop_prob=.1, lateral_drop_prob=.1,
+                   temporal_rope=True, layerwise_latent=True)
+    model, x, skeleton = fixture(**options)
+    for trunk in (model.encoder, model.decoder):
+        assert trunk.mirror_twin_drop_prob == trunk.lateral_drop_prob == .1
+        assert trunk.layers[0].dropout1.p == .1
+        assert trunk.layers[0].temporal_attn.dropout == .1
+    assert model.pool.dropout == model.read_latent.dropout == .1
+    assert all(model.config[key] == value for key, value in options.items())
+    model.train()
+    compiled = torch.compile(model, backend='eager', fullgraph=True)
+    first = compiled(x, skeleton)
+    second = compiled(x, skeleton)
+    assert not torch.equal(first, second)
+    first.square().mean().backward()
+    assert torch.isfinite(model.output.weight.grad).all()
+    model.eval()
+    torch.testing.assert_close(model(x, skeleton), model(x, skeleton), rtol=0, atol=0)
+    restored = MotionAutoencoder(**model.config).eval()
+    restored.load_state_dict(model.state_dict())
+    torch.testing.assert_close(restored(x, skeleton), model(x, skeleton), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize('key', ['dropout_prob', 'mirror_twin_drop_prob', 'lateral_drop_prob'])
+@pytest.mark.parametrize('value', [-.1, 1.1, float('nan')])
+def test_regularization_rejects_invalid_probabilities(key, value):
+    with pytest.raises(ValueError, match=key):
+        fixture(**{key: value})

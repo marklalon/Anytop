@@ -517,6 +517,7 @@ class CrossLimbTemporalBlock(nn.Module):
         x: Tensor,
         joints_key_padding_mask: Tensor,
         unreliable_mask: Optional[Tensor] = None,
+        temporal_key_padding_mask: Optional[Tensor] = None,
     ) -> Tensor:
         # x: (T, B, J, d_model); joints_key_padding_mask: (B, J) bool,
         # True == padded joint.
@@ -552,6 +553,10 @@ class CrossLimbTemporalBlock(nn.Module):
             )                                                              # (T, B)
             temporal_key_bias = self.temporal_reliability_bias * frame_unreliable.transpose(0, 1)
             temporal_key_bias = temporal_key_bias.unsqueeze(1).expand(B, K, T).reshape(B * K, T)
+        if temporal_key_padding_mask is not None:
+            padding = temporal_key_padding_mask[:, None].expand(B, K, T).reshape(B * K, T)
+            temporal_key_bias = (padding if temporal_key_bias is None else
+                                 temporal_key_bias.masked_fill(padding, float('-inf')))
         bz, _ = self.cross_in_attn(
             q,
             kv,
@@ -1225,7 +1230,10 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             ref_z: Optional[Tensor] = None,
             ref_active: Optional[Tensor] = None,
             temporal_key_padding_mask: Optional[Tensor] = None,
-            temporal_rope_off: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            temporal_rope_off: Optional[Tensor] = None,
+            motion_z: Optional[Tensor] = None,
+            temporal_rope_override: Optional[Tuple[Tensor, Tensor]] = None,
+            loop_phase_override: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         # temporal_key_padding_mask: (B, T) bool, True = no frame may attend to
         # this frame in temporal attention (the frame still queries).
         # temporal_rope_off: (B,) bool, True = that row's temporal attention
@@ -1266,8 +1274,10 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             loop_phase_embedding = table * loop_phase_mask.view(1, B, 1)
         # Temporal RoPE tables, [B, T, head_dim // 2] each: the closed-window
         # table on loop samples, the open one elsewhere.
-        temporal_rope = None
-        if self.temporal_rope:
+        if loop_phase_override is not None:
+            loop_phase_embedding = loop_phase_override
+        temporal_rope = temporal_rope_override
+        if self.temporal_rope and temporal_rope is None:
             head_dim = self.layers[0].temporal_attn.head_dim
             cos, sin = temporal_rope_tables(T, head_dim, tgt.device)
             cos, sin = cos.expand(B, -1, -1), sin.expand(B, -1, -1)
@@ -1315,7 +1325,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     adaln=None if adaln is None else adaln[:, layer_ind],
                     ref_z=ref_z, ref_active=ref_active,
                     temporal_key_padding_mask=temporal_key_padding_mask,
-                    temporal_rope=temporal_rope)
+                    temporal_rope=temporal_rope, motion_z=motion_z)
         if self.norm is not None:
             output = self.norm(output)
         return output
@@ -1360,6 +1370,22 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.ref_value = nn.Linear(ref_dim, self.heads * self.d_model, bias=False)
         self.ref_out_bias = nn.Parameter(torch.zeros(self.d_model))
         self.ref_attn_gate = nn.Parameter(torch.zeros(()))
+
+    def enable_motion_latent(self, latent_dim):
+        """AE-only, frame-aligned latent reader; each decoder layer owns its weights."""
+        self.motion_latent_norm = nn.LayerNorm(self.d_model)
+        self.motion_latent_attn = nn.MultiheadAttention(
+            self.d_model, self.heads, dropout=self.dropout1.p, batch_first=True,
+            kdim=latent_dim, vdim=latent_dim)
+
+    def _read_motion_latent(self, x, z):
+        frames, batch, joints, width = x.shape
+        if z.shape[:2] != (batch, frames):
+            raise ValueError('Motion latent and output windows must be frame aligned')
+        query = self.motion_latent_norm(x).reshape(frames * batch, joints, width)
+        values = z.transpose(0, 1).reshape(frames * batch, z.shape[2], z.shape[3])
+        read, _ = self.motion_latent_attn(query, values, values, need_weights=False)
+        return x + read.reshape_as(x)
 
     def _read_reference(self, x, z, active):
         """``x`` [F, B, J, D], ``z`` [B, F, K, d_z].
@@ -1463,13 +1489,16 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         ref_z: Optional[Tensor] = None,
         ref_active: Optional[Tensor] = None,
         temporal_key_padding_mask: Optional[Tensor] = None,
-        temporal_rope: Optional[Tuple[Tensor, Tensor]] = None) -> Tensor:
+        temporal_rope: Optional[Tuple[Tensor, Tensor]] = None,
+        motion_z: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
         bs = x.shape[1]
         x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
         spatial_attn_output = self._spatial_mha_block(x, topology_rel, edge_rel, edge_key_emb, edge_query_emb, edge_value_emb,
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
+        if motion_z is not None:
+            x = self._read_motion_latent(x, motion_z)
         if ref_z is not None:
             x = self._read_reference(x, ref_z, ref_active)
         # Branch input only; the residual adds to the unmodulated x. The
@@ -1488,6 +1517,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 x,
                 tgt_key_padding_mask,
                 unreliable_mask=cross_limb_unreliable_mask,
+                temporal_key_padding_mask=temporal_key_padding_mask,
             )
         x = self.norm3(x + self._ff_block(_modulate(x, adaln, ADALN_FF)))
         return x

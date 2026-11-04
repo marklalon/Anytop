@@ -1,6 +1,6 @@
 # AnyTop 改造方案：Motion Autoencoder + Latent Diffusion
 
-> 状态：设计提案，尚未实现。本文中的新文件、接口和参数均为拟议项，不代表当前已有功能。
+> 状态：7.A 已实现确定性 AE 基线及共享动作损失；其余为设计提案，新接口和参数以实际代码为准。
 > 重点：第一阶段在混合数据、多骨架条件下保真重建动作，尤其是 shake 等局部高频动作。
 > 第二阶段：冻结自编码器，在连续 latent 上训练 diffusion，训练目标以 latent MSE 为主，不经过解码器反向。
 
@@ -80,7 +80,7 @@
 
 当前参考编码器的逐帧输入主要是单位骨方向、高度和根 XZ，另有静态 rest 上下文；它没有完整读取每个关节的旋转扭转信息。其目标是迁移动作内容，而不是完整动作保真压缩。
 
-新编码器可以复用图时空层、关节池化和 mask 处理，但必须读取完整的有效 canonical 动作通道。当前 `ref_slots=2, ref_dim=8` 是参考条件瓶颈，不能默认足够编码全部动作细节。
+新编码器可以复用图时空层、关节池化和 mask 处理，但必须读取完整的有效 canonical 动作通道。现有参考条件瓶颈的容量不能默认足够编码全部动作细节。
 
 ### 4.2 Encoder
 
@@ -92,9 +92,13 @@
 4. 每槽预测 `mu, logvar [B,T,K,d_z]`。
 5. 训练采样 `z = mu + exp(0.5 * logvar) * eps`；评测分别报告 mu 重建和采样重建。
 
-第一版 **时间压缩率 r_t=1**：保留逐帧 latent，先验证空间瓶颈对 shake 的影响。之后再试 r_t=2/4，并重新验收高频、相位和非整除长度。
+先用逐帧 latent 验证空间瓶颈对 shake 的影响，再比较时间压缩方案，并重新验收高频、相位和非整除长度。
 
-建议容量消融从 `K=8, d_z=32` 开始，并比较 `K=4, d_z=32` 和 `K=8, d_z=16`。这些是待验证的搜索起点，不是已验证参数。每帧 256 个 latent 标量，对小关节骨架可能不构成数值压缩；必须报告各骨架的实际表示量和主干计算量，不能仅凭“latent”声称压缩。
+当前实现支持可选时间压缩：在关节槽池化后、posterior heads 前，先做时间滤波，再降采样。解码前线性插值恢复完整时间长度，并通过时间残差卷积细化；所有 decoder latent 注入均使用恢复后的表示，无完整帧率内容旁路。open 边界钳制，loop 按有效周期均匀采样并跨首尾插值，padding 不参与聚合。输出长度不能由压缩后的长度唯一确定时，须向 `decode` 传入原始 `frame_mask`；省略时输出长度为 latent 长度乘 stride。VAE 采样和 KL 使用压缩后的 mask，位置编码及 RoPE 保持完整输出帧率。该方案不保证消除抖动，仍需比较真实快速动作细节与重建加速度误差。
+
+压缩率改变必须使用新 run，不能续训旧目标配置的 checkpoint。支持的压缩配置以模型实现和启动脚本为准。
+
+容量消融分别比较槽数 K 与每槽维度 d_z，观察细节保真和潜空间正则化的权衡。latent 对小关节骨架可能不构成数值压缩；必须报告各骨架的实际表示量和主干计算量，不能仅凭“latent”声称压缩。
 
 VAE 的 logvar 数值范围需要稳定处理；KL 不得强迫 posterior 方差塌到不可计算的数值区间。另设同容量 deterministic AE 对照，区分瓶颈损失与 KL 带来的损失。
 
@@ -191,11 +195,11 @@ KL 使用对角高斯到 N(0,I) 的解析形式，先对每个样本的有效 T�
 | topology_aug | 保留，动作与拓扑、索引、mask 同步变更 | 新骨架必须在 AE 验证范围内 |
 | bone_length_aug | 保留，目标为增强后的动作 | 不能仍用原骨长条件；当前增强无 contact IK，不以其产物证明接触正确 |
 | rest_repose、rest_variant | 保留，使用更新后的 rest 与转换信息 | 不假定 latent 完全不变，除非额外验证了不变性 |
-| 名称或静态条件 dropout | 重建基线先关闭新增随机丢弃，再逐项验证 | 用于实际读取这些条件的网络；概率无需与原模型一致 |
+| 名称或静态条件 dropout | Encoder/Decoder 共享置空后的名称与 rest geometry；可选关系丢弃及网络 dropout | 用于实际读取这些条件的网络；概率由实验配置决定 |
 | action/species CFG dropout | 第一版 AE 不使用这些生成条件 | 第二阶段使用 |
 | ref_cfg_drop_prob | 不适用于新 AE 的唯一路径 latent | 参考生成分支单独设计 |
 | joint_mask、temporal_span_mask、unreliable_mask_drop、renoise | 基础 AE 关闭 | latent 局部补全必须重新设计，不能按原关节索引直接 mask 全局槽 |
-| loop_cond_prob 降级 | AE 基线保留真实 loop 信息 | 真实周期标签和对生成模型展示的 loop 条件分开管理 |
+| loop_cond_prob 降级 | AE 保留可配置的 loop→open 降级 | 源周期属性用于物理增强；最终窗口的 loop 条件同时用于 Encoder、Decoder 和损失，降级窗口不计算 wrap |
 
 增强后的 x' 和 s' 必须成对送给 encoder、decoder 和 loss。编码器与解码器不能各自独立随机出两个不同拓扑或骨长，再无配对地重建。
 
@@ -219,6 +223,17 @@ KL 使用对角高斯到 N(0,I) 的解析形式，先对每个样本的有效 T�
 - 确认完整旋转、根轨迹、有效长度、loop 接缝、padding 和变关节数契约。
 - 固定 s，打乱或置零 z，动作内容应明显改变；若仍能复制原目标，检查动态信息泄漏。该测试只能发现部分泄漏，不能单独证明表示解耦。
 - 小集合成功仅作为实现与容量检查，不作为混合训练通过标准。
+
+已实现入口：`train/train_motion_autoencoder.py`，运行 `train_tiny_autoencoder.bat [run_name]`。
+按 sample filter 选取训练 clip，评估时每个 clip 使用固定窗口；支持确定性 AE 和对角高斯 VAE，以及可选时间压缩。模型容量、模块开关、损失权重、增强概率、训练步数及精度和编译配置以代码、启动脚本和各 run 保存的配置为准，本文不维护具体实验参数。
+
+重建使用有效 canonical 通道的 MSE，并可配置位置步长、加速度、旋转、根轨迹、骨向量、肢体协同及 loop 接缝损失；不做 diffusion 噪声衰减，保留现有归约与 loop 语义。当前共享 AE 损失要求无时间 padding 的固定窗口。
+
+VAE 训练采样 posterior，评估与导出使用 mu；KL 按每样本有效时间、槽和维度平均。KL 与 dpos/drot 支持线性 warm-up；日志记录原始项、加权项及有效权重。续训沿用绝对步数，并校验架构与训练目标配置；切换 AE/VAE 需新建实验。AMP FP16 的损失与评估保持 FP32；GradScaler 在裁剪前 unscale，溢出重试同一批次，checkpoint 保存 scaler 状态。
+
+训练逐步在线采样，输入与目标为同一增强样本。Encoder/Decoder 共享置空后的名称与 geometry（含 present flag），保留物理转换和损失所需统计与 offsets；关系丢弃及网络 dropout 仅训练生效。loop 降级窗口采用开放重采样与开放损失。固定无增强窗口仅用于评估；按绝对步数派生增强随机种子，恢复训练可复现。
+
+输出位于 `save/<run_name>/`：`autoencoder.pt` 支持续训并保存固定输入；TensorBoard 日志记录训练各项原始/加权 loss 与定期评估；`reconstruction_metrics.json` 记录逐样本重建、置零/跨样本打乱 latent 的误差和角步长 RMS；`reconstructions/` 保存物理空间 NPZ，并按导出配置保存原始/重建 NPY、BVH。旁路检查只提供诊断，不自动判定通过。
 
 ### B. 混合数据保真基线
 

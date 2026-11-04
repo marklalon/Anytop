@@ -71,10 +71,15 @@ def test_precise_namespaces_objects_globs_and_head_tokens():
     assert ids(selected) == {'truebones/zoo/Bee_Run.npy'}
 
 
-def test_tiny_selects_fly_or_hover_and_shake_across_datasets(dataset):
+def test_tiny_style_selects_fly_or_hover_and_shake_across_datasets(dataset):
     cond, sources, metadata, tags = dataset
-    config = load_sample_filter(Path(__file__).resolve().parents[1] / 'configs/sample_filters/tiny.json')
-    config['include'][0]['namespaces'] = ['zoo']
+    # Mirrors the structure of configs/sample_filters/tiny.json (fly/hover rule
+    # plus shake rule) without reading the file, so editing that config does
+    # not change what this test asserts.
+    config = load_sample_filter({'include': [
+        {'namespaces': ['zoo'], 'species_tags_all': ['Winged'], 'words_any': ['fly', 'hover']},
+        {'heads_any': ['shake']},
+    ], 'exclude': []})
     metadata['zoo']['Bird_1.npy'] = {'action_group': 'stationary', 'action_label': 'idle, hover'}
     metadata['zoo']['Bird_2.npy'] = {'action_group': 'locomotion', 'action_label': 'run'}
     metadata['zoo']['Bird_3.npy'] = {'action_group': 'stationary', 'action_label': 'idle'}
