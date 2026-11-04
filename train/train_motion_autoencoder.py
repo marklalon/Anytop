@@ -47,6 +47,7 @@ AUGMENTATION_DEFAULTS = dict(motion_speed_aug=1.0, loop_tile_single_prob=1.0,
 
 
 MODEL_REGULARIZATION_DEFAULTS = dict(dropout_prob=0.0, mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0)
+RECONSTRUCTION_LOSS_VERSION = 'bone_vector_root_xyz_v1'
 
 class AutoencoderBatchTransform:
     """Picklable CPU transform, run inside the shared worker/prefetch pipeline."""
@@ -165,14 +166,23 @@ def evaluate(model, x, y, batch_size):
                   for name, value in (('mse', pred), ('zero_z_mse', zero), ('shuffled_z_mse', swapped))}
         errors['position_mse'] = reconstruction_mse(pred[:, :, :3], target[:, :, :3], skeleton, frame)
         errors['rotation6d_mse'] = reconstruction_mse(pred[:, :, 3:9], target[:, :, 3:9], skeleton, frame)
-        root = (pred[:, 0, [0, 2]] - target[:, 0, [0, 2]]).square()
-        errors['root_xz_mse'] = (root * frame[:, None]).sum((1, 2)) / (2 * frame.sum(-1))
+        errors['root_pos_mse'] = geometry.root_position_loss(target, pred, cond)
+        errors['root_dpos_error'] = geometry.root_position_step_loss(target, pred, cond, channels=(0, 1, 2))
+        errors['root_acc_error'] = geometry.root_acceleration_loss(target, pred, cond, channels=(0, 1, 2))
         physical_gt, rot_gt = canonical_to_physical_hml(to_working_motion(target), cond,
                                                        return_canonical_rotations=True)
         physical_pred, rot_pred = canonical_to_physical_hml(to_working_motion(pred), cond,
                                                            return_canonical_rotations=True)
         joint, _ = motion_masks(target, skeleton, frame)
         spat_mask = joint[:, None, None, :]
+        # Per-window reductions keep these metrics independent of evaluation batch size.
+        for metric, method in (('bone_length_error', geometry.bone_length_loss),
+                               ('bone_vector_error', geometry.bone_vector_consistency_loss)):
+            errors[metric] = torch.stack([
+                method(physical_pred[b:b + 1], physical_gt[b:b + 1], spat_mask[b:b + 1],
+                       select_batch(target, cond, torch.tensor([b]))[1])
+                for b in range(len(target))
+            ])
         errors['dpos_error'] = geometry.position_step_loss(target, pred, spat_mask, cond['n_joints'], cond)
         errors['acc_error'] = geometry.position_acceleration_loss(target, pred, spat_mask, cond['n_joints'], cond)
         errors['drot_error'] = geometry.rotation_step_loss(
@@ -295,6 +305,10 @@ def main():
         raise FileExistsError(f'{checkpoint} exists; use --auto_resume or a new --save_dir')
     resume = torch.load(checkpoint, map_location='cpu', weights_only=False) if checkpoint.exists() else None
     if resume is not None:
+        if (any(getattr(args, key) for key in ('lambda_bone', 'lambda_root_pos', 'lambda_root_dpos', 'lambda_root_acc'))
+                and resume.get('reconstruction_loss_version') != RECONSTRUCTION_LOSS_VERSION):
+            raise ValueError('Checkpoint reconstruction objective differs from '
+                             f'{RECONSTRUCTION_LOSS_VERSION}; use a new --save_dir')
         checkpoint_model_config(resume)
     cond_hash = hashlib.sha256(Path(args.cond_path).read_bytes()).hexdigest()
     dataset = get_dataset(num_frames=args.num_frames, split='train', cond_path=args.cond_path,
@@ -510,6 +524,7 @@ def main():
                 writer.flush()
             if step % args.save_interval == 0 or step == args.num_steps:
                 payload = dict(kind='motion_autoencoder_7a', step=step, args=vars(args),
+                               reconstruction_loss_version=RECONSTRUCTION_LOSS_VERSION,
                                decoder_content_version=DECODER_CONTENT_VERSION,
                                model_config=model.config, model=model.state_dict(),
                                optimizer=optimizer.state_dict(), data_pipeline='shared_loader_v1',

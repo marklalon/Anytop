@@ -15,7 +15,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     _check_root_stats, canonical_to_physical_hml, root_relative_positions,
 )
 
-# Floor of the rest length that normalizes the bone-vector loss, as a fraction
+# Floor of the rest length that normalizes the bone losses, as a fraction
 # of the skeleton's length scale L: bones shorter than this (finger tips, toe
 # segments) are weighted as if they had this length, which bounds how much
 # louder the shortest bones can be than an L-long one.
@@ -239,22 +239,34 @@ class MotionGeometryLosses:
         weight = self._per_sample_y_scalar(y, DPOS_LOSS_WEIGHT_KEY, batch, target.device, default=1.0)
         return err.sum((1, 2, 3)) / denom * weight
 
-    def root_position_step_loss(self, target, model_output, y):
-        """The root's share of :meth:`position_step_loss` on its own: the MSE of
-        its world X/Z step, in the same units and with the same wrap step and
-        species weight. In the all-joint mean it is two channels among every
-        joint's three, and no other joint carries the root's world XZ, so it
-        gets its own weight. ``[B]``."""
+    def root_position_loss(self, target, model_output, y):
+        """Root XYZ position MSE in canonical standardized units, per sample.
+
+        Uses the root's own axis statistics, just like its share of pose MSE,
+        without dilution by the joint count or motion-energy species weights.
+        """
+        batch, _, _, frames = target.shape
+        lengths = th.as_tensor(y.get('lengths', [frames] * batch), device=target.device).reshape(batch)
+        valid = th.arange(frames, device=target.device)[None] < lengths[:, None]
+        error = (model_output[:, 0, :3].float() - target[:, 0, :3].float()).square()
+        return error.masked_fill(~valid[:, None], 0).sum((1, 2)) / (3 * valid.sum(1)).clamp_min(1)
+
+    def root_position_step_loss(self, target, model_output, y, *, channels=ROOT_XZ_CHANNELS):
+        """Root step MSE in corpus position-step RMS units, per sample.
+
+        Shares wrap handling and species weights with position_step_loss.
+        Diffusion retains XZ by default; the AE explicitly supervises XYZ.
+        """
         batch_size, _max_joints, _n_feats, n_frames = target.shape
         if n_frames < 2:
             return target.new_zeros(batch_size)
         y = y if isinstance(y, dict) else {}
-        err = self._root_xz_step_error(target, model_output, y) ** 2                  # [B, 2, T]
+        err = self._root_step_error(target, model_output, y, channels) ** 2
         frame_weight = self._position_step_frame_weight(y, batch_size, n_frames, target.device, err.dtype)
-        return self._root_xz_weighted_mean(err, frame_weight, y)
+        return self._root_weighted_mean(err, frame_weight, y)
 
-    def root_acceleration_loss(self, target, model_output, y):
-        """MSE of the root's world X/Z acceleration, the step of its step, in
+    def root_acceleration_loss(self, target, model_output, y, *, channels=ROOT_XZ_CHANNELS):
+        """MSE of the root's selected-axis acceleration, the step of its step, in
         :meth:`root_position_step_loss`'s units and species weight. A loop
         counts every circular second difference, an open clip only those of
         its inner steps. The step loss weighs an in-stride sway component by
@@ -265,28 +277,27 @@ class MotionGeometryLosses:
         if n_frames < 3:
             return target.new_zeros(batch_size)
         y = y if isinstance(y, dict) else {}
-        step_err = self._root_xz_step_error(target, model_output, y)                   # [B, 2, T]
+        step_err = self._root_step_error(target, model_output, y, channels)
         # acc[t] = step[t + 1] - step[t]; the last two read the wrap step.
         err = (th.roll(step_err, shifts=-1, dims=-1) - step_err) ** 2
         is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, target.device, default=False)
         frame_weight = th.ones(batch_size, n_frames, device=target.device, dtype=err.dtype)
         frame_weight[:, -2:] = is_loop.to(dtype=err.dtype).unsqueeze(1)
-        return self._root_xz_weighted_mean(err, frame_weight, y)
+        return self._root_weighted_mean(err, frame_weight, y)
 
-    def _root_xz_step_error(self, target, model_output, y):
-        """The output's minus the target's root world X/Z steps
+    def _root_step_error(self, target, model_output, y, channels):
+        """The output's minus the target's selected root-axis steps
         (:meth:`_position_steps`), in units of the position-step RMS.
-        ``[B, 2, T]``."""
+        ``[B, len(channels), T]``."""
         batch_size = target.shape[0]
         std, dpos_std = self._position_step_stats(y, batch_size, target.device)
-        xz = list(ROOT_XZ_CHANNELS)
-        scale = (std[:, ROOT_STAT_SLICE][:, xz] / dpos_std.view(batch_size, 1)).unsqueeze(-1)  # [B, 2, 1]
+        axes = list(channels)
+        scale = (std[:, ROOT_STAT_SLICE][:, axes] / dpos_std.view(batch_size, 1)).unsqueeze(-1)
         steps = self._position_steps
-        return (steps(model_output[:, 0, xz, :]) - steps(target[:, 0, xz, :])) * scale
+        return (steps(model_output[:, 0, axes, :]) - steps(target[:, 0, axes, :])) * scale
 
-    def _root_xz_weighted_mean(self, err, frame_weight, y):
-        """``[B]`` mean of ``err`` ``[B, 2, T]`` over the ``frame_weight``
-        ``[B, T]`` frames and both channels, scaled by the species' dpos weight."""
+    def _root_weighted_mean(self, err, frame_weight, y):
+        """Per-sample mean over weighted frames and axes, with species dpos weights."""
         batch_size = err.shape[0]
         denom = (frame_weight.sum(dim=1) * float(err.shape[1])).clamp_min(1.0)
         per_sample = (err * frame_weight.unsqueeze(1)).sum(dim=(1, 2)) / denom
@@ -349,6 +360,21 @@ class MotionGeometryLosses:
 
         Returns a scalar loss.
         """
+        return self._bone_consistency_loss(
+            pred_physical, target_physical, spat_mask, y, rotations, sample_weight)
+
+    def bone_length_loss(self, pred_physical, target_physical, spat_mask, y, sample_weight=None):
+        """Smooth-L1 of signed GT-relative bone-length error / floored rest length.
+
+        Match each frame's target length, preserving animated stretch. Direction
+        and rotations (including virtual leaf bones) do not contribute.
+        """
+        return self._bone_consistency_loss(
+            pred_physical, target_physical, spat_mask, y,
+            sample_weight=sample_weight, length_only=True)
+
+    def _bone_consistency_loss(self, pred_physical, target_physical, spat_mask, y,
+                               rotations=None, sample_weight=None, length_only=False):
         bs, max_joints, _n_feats, n_frames = pred_physical.shape
         device = pred_physical.device
         parents_list = (y or {}).get('parents')
@@ -412,6 +438,11 @@ class MotionGeometryLosses:
         length_scale = length_scale.expand(bs) if length_scale.numel() == 1 else length_scale
         rest_floor = (BONE_REST_FLOOR_FRAC * length_scale).view(bs, 1)
         inv_rest = (1.0 / th.maximum(rest_len, rest_floor)).unsqueeze(-1)       # [bs, J, 1]
+
+        if length_only:
+            rel = (vec_pred.norm(dim=2) - vec_tgt.norm(dim=2)) * inv_rest
+            valid_bt = bone_valid.unsqueeze(-1).to(rel.dtype).expand(-1, -1, n_frames)
+            return self._masked_smooth_l1(rel, valid_bt, weight=sample_weight)
 
         rel = (vec_pred - vec_tgt).norm(dim=2) * inv_rest                     # [bs, J, T]
 
@@ -568,6 +599,7 @@ LOSS_WEIGHTS = {
     'dpos_loss': 'lambda_dpos',
     'acc_loss': 'lambda_acc',
     'drot_loss': 'lambda_drot',
+    'root_pos_loss': 'lambda_root_pos',
     'root_dpos_loss': 'lambda_root_dpos',
     'root_acc_loss': 'lambda_root_acc',
     'geodesic_loss': 'lambda_geo',
@@ -618,9 +650,11 @@ class MotionReconstructionLosses(MotionGeometryLosses):
         if weights['acc_loss']:
             terms['acc_loss'] = self.position_acceleration_loss(target, prediction, spat_mask, n_joints, y).mean()
         if weights['root_dpos_loss']:
-            terms['root_dpos_loss'] = self.root_position_step_loss(target, prediction, y).mean()
+            terms['root_dpos_loss'] = self.root_position_step_loss(target, prediction, y, channels=(0, 1, 2)).mean()
         if weights['root_acc_loss']:
-            terms['root_acc_loss'] = self.root_acceleration_loss(target, prediction, y).mean()
+            terms['root_acc_loss'] = self.root_acceleration_loss(target, prediction, y, channels=(0, 1, 2)).mean()
+        if weights['root_pos_loss']:
+            terms['root_pos_loss'] = self.root_position_loss(target, prediction, y).mean()
         if any(weights[key] for key in ('drot_loss', 'geodesic_loss', 'bone_loss', 'limb_corr_loss', 'loop_wrap_loss')):
             zeros = prediction.new_zeros(batch, joints, 3, frames)
             physical_gt, global_gt = canonical_to_physical_hml(
