@@ -1,5 +1,6 @@
 """Contract checks for the minimal self-reconstruction AE."""
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,108 @@ from model.motion_autoencoder import (
 from train.train_motion_autoencoder import reconstruction_mse, scaled_optimizer_step
 
 
+class LoaderFixture(torch.utils.data.Dataset):
+    """Small picklable dataset: both joint buckets are smaller than a batch."""
+
+    def __init__(self):
+        self.motion_dataset = self
+        self.opt = SimpleNamespace(max_joints=100)
+        self.use_weighted_sampler = False
+        self.counts = [5, 7, 12]
+
+    def __len__(self):
+        return len(self.counts)
+
+    def sampler_index_joint_counts(self):
+        return self.counts
+
+    def __getitem__(self, index):
+        import numpy as np
+        from .test_joint_buckets import _item
+        item = _item(self.counts[index], 100, seed=index)
+        # Simulate a topology augmentation that crosses the original bucket.
+        if index == 1 and self.opt.topology_aug_prob:
+            item = _item(9, 100, seed=index)
+        item[0] += np.random.random()
+        item[11] = f'clip_{index}'
+        return item
+
+
+@pytest.mark.parametrize('num_workers', [0, 2])
+@pytest.mark.parametrize('topology_prob', [0, 1])
+def test_shared_loader_prefetches_full_bucketed_ae_batches(num_workers, topology_prob, monkeypatch):
+    from itertools import islice
+    from data_loaders.get_data import BackgroundPrefetchLoader, EagerWorkerLoader
+    from train.train_motion_autoencoder import (
+        create_training_data_loader, parser, training_batches, training_batch_to_device,
+    )
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: False)
+    args = parser().parse_args([
+        '--save_dir', 'unused', '--batch_size', '4', '--num_workers', str(num_workers),
+        '--main_process_prefetch_batches', '2', '--joint_buckets', '8', '16', '100',
+        '--joint_name_drop_prob', '1', '--rest_geom_drop_prob', '1',
+        '--topology_aug_prob', str(topology_prob),
+    ])
+    dataset = LoaderFixture()
+    loader = create_training_data_loader(args, dataset)
+    assert isinstance(loader, EagerWorkerLoader if num_workers else BackgroundPrefetchLoader)
+    assert loader.dataset is dataset
+    names, widths = set(), set()
+    try:
+        batches = list(islice(training_batches(loader), 3))
+        for batch in batches:
+            target, cond = training_batch_to_device(batch, 'cpu')
+            assert target.shape[0] == 4 and target.shape[2:] == (9, 3)
+            assert target.shape[1] in (8, 16, 100)
+            assert cond['graph_dist'].shape == (4, target.shape[1], target.shape[1])
+            assert cond['joints_names_embs'].count_nonzero() == 0
+            assert cond['rest_geom'].count_nonzero() == 0
+            assert not any(k.startswith('ref_') for k in cond)
+            names.update(cond['motion_name'])
+            widths.add(target.shape[1])
+        assert names == {'clip_0', 'clip_1', 'clip_2'}
+        # Augmentation grows clip_1 into the next ceiling; no arbitrary widths.
+        assert widths == ({16} if topology_prob else {8, 16})
+        assert not torch.equal(batches[0][0], batches[1][0])
+    finally:
+        if num_workers:
+            loader.loader._iterator._shutdown_workers()
+
+
+def test_ae_loader_defaults_to_diffusion_joint_buckets(monkeypatch):
+    import train.train_motion_autoencoder as trainer
+    from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
+    captured = {}
+    monkeypatch.setattr(trainer, 'build_dataset_loader',
+                        lambda dataset, **kwargs: captured.update(kwargs))
+    args = trainer.parser().parse_args(['--save_dir', 'unused'])
+    trainer.create_training_data_loader(args, LoaderFixture())
+    assert captured['joint_buckets'] is JOINT_BUCKETS
+    assert captured['drop_last'] is True
+
+
+def test_diffusion_loader_delegates_to_the_same_factory(monkeypatch):
+    import data_loaders.get_data as shared
+    dataset = LoaderFixture()
+    captured = {}
+    monkeypatch.setattr(shared, 'get_dataset', lambda **kwargs: dataset)
+
+    def build(actual_dataset, **kwargs):
+        assert actual_dataset is dataset
+        captured.update(kwargs)
+        return 'shared-loader'
+
+    monkeypatch.setattr(shared, 'build_dataset_loader', build)
+    result = shared.get_dataset_loader(
+        batch_size=4, num_frames=3, num_workers=2, main_process_prefetch_batches=64,
+        joint_buckets=(48, 64, 100),
+    )
+    assert result == 'shared-loader'
+    assert captured['num_workers'] == 2
+    assert captured['main_process_prefetch_batches'] == 64
+    assert captured['joint_buckets'] == (48, 64, 100)
+
+
 def fixture(joints=4, frames=5, **options):
     torch.manual_seed(42)
     model = MotionAutoencoder(t5_out_dim=6, width=16, layers=1, heads=2, slots=2, latent_dim=4,
@@ -27,6 +130,23 @@ def fixture(joints=4, frames=5, **options):
              graph_dist=torch.zeros(2, joints, joints, dtype=torch.long),
              joints_relations=torch.zeros(2, joints, joints, dtype=torch.long))
     return model, x, s
+
+
+def test_static_bucket_shapes_compile_once_and_reuse_graphs():
+    model, x8, skeleton8 = fixture(joints=8, temporal_rope=True, layerwise_latent=True)
+    _, x16, skeleton16 = fixture(joints=16, temporal_rope=True, layerwise_latent=True)
+    graphs = []
+
+    def backend(graph, example_inputs):
+        graphs.append(graph)
+        return graph.forward
+
+    compiled = torch.compile(model, backend=backend, fullgraph=True, dynamic=False)
+    for x, skeleton in [(x8, skeleton8), (x16, skeleton16)] * 2:
+        actual = compiled(x, skeleton)
+        torch.testing.assert_close(actual, model(x, skeleton))
+        actual.square().mean().backward()
+    assert len(graphs) == 2
 
 
 @pytest.mark.parametrize('frames', [1, 2, 5, 6])
@@ -314,37 +434,23 @@ def test_temporal_convolution_wraps_only_loop_rows_and_does_not_mix_joints():
     assert actual[:, :, 1].count_nonzero() == 0
 
 
-def test_augmented_batch_is_fresh_reproducible_and_preserves_rng(monkeypatch):
-    import random
+def test_prefetch_transform_filters_reference_and_keeps_nine_channels():
     import numpy as np
-    import train.train_motion_autoencoder as trainer
-
-    class Source:
-        def prepare_sample_by_name(self, name):
-            return name, random.random(), np.random.random()
-
-    def collate(samples, joint_buckets):
-        assert joint_buckets == (7,)
-        data = torch.tensor([[v[1], v[2]] for v in samples])[:, None, :, None]
-        return data, {'y': {'motion_name': [v[0] for v in samples],
-                           'n_joints': torch.ones(len(samples), dtype=torch.long),
-                           'ref_unused': torch.ones(1)}}
-
-    monkeypatch.setattr(trainer, 'truebones_batch_collate', collate)
-    random.seed(40)
+    from train.train_motion_autoencoder import AutoencoderBatchTransform, training_batch_to_device
+    motion = torch.randn(2, 7, 12, 5)
+    y = dict(motion_name=['b', 'a'], ref_unused=torch.ones(1),
+             joints_names_embs=torch.ones(2, 7, 6))
+    transform = AutoencoderBatchTransform(joint_name_drop_prob=.5)
     np.random.seed(40)
-    expected = random.random(), np.random.random()
-    random.seed(40)
+    first = transform((motion, {'y': y}))
     np.random.seed(40)
-    options = dict(source=Source(), names=['a', 'b'], indices=torch.tensor([1, 0]),
-                   seed=10, joint_width=7, device='cpu')
-    first, cond = trainer.augmented_batch(**options, step=100)
-    again, _ = trainer.augmented_batch(**options, step=100)
-    fresh, _ = trainer.augmented_batch(**options, step=101)
-    assert torch.equal(first, again)
-    assert not torch.equal(first, fresh)
+    again = transform((motion, {'y': y}))
+    target, cond = training_batch_to_device(first, 'cpu')
+    torch.testing.assert_close(target, motion[:, :, :9], rtol=0, atol=0)
+    assert target.is_contiguous()
     assert cond['motion_name'] == ['b', 'a'] and 'ref_unused' not in cond
-    assert (random.random(), np.random.random()) == expected
+    torch.testing.assert_close(cond['joints_names_embs'], again[1]['y']['joints_names_embs'])
+    assert 'ref_unused' in y and y['joints_names_embs'].eq(1).all()
 
 
 def test_vae_kl_matches_gaussian_formula_and_ignores_padding():
@@ -395,25 +501,21 @@ def test_vae_fullgraph_forward_has_fresh_samples():
 
 
 @pytest.mark.parametrize('prob', [0.0, 0.5, 1.0])
-def test_training_name_drop_is_shared_reproducible_and_keeps_clean_inputs(monkeypatch, prob):
+def test_training_name_drop_is_shared_reproducible_and_keeps_clean_inputs(prob):
+    import numpy as np
     import train.train_motion_autoencoder as trainer
     _, target, skeleton = fixture()
     clean_names = skeleton['joints_names_embs'].clone()
     conditions = dict(skeleton, lengths=torch.full((2,), target.shape[-1]),
                       is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2))
 
-    class Source:
-        def prepare_sample_by_name(self, name):
-            return name
-
-    def collate(samples, joint_buckets):
-        return target, {'y': dict(conditions)}
-
-    monkeypatch.setattr(trainer, 'truebones_batch_collate', collate)
-    options = dict(source=Source(), names=['a', 'b'], indices=torch.arange(2),
-                   step=20, seed=10, joint_width=4, device='cpu', joint_name_drop_prob=prob)
-    x, cond = trainer.augmented_batch(**options)
-    _, again = trainer.augmented_batch(**options)
+    transform = trainer.AutoencoderBatchTransform(joint_name_drop_prob=prob)
+    np.random.seed(20)
+    x, wrapped = transform((target, {'y': conditions}))
+    cond = wrapped['y']
+    np.random.seed(20)
+    _, again = transform((target, {'y': conditions}))
+    again = again['y']
     torch.testing.assert_close(x, target, rtol=0, atol=0)
     torch.testing.assert_close(skeleton['joints_names_embs'], clean_names, rtol=0, atol=0)
     torch.testing.assert_close(cond['joints_names_embs'], again['joints_names_embs'], rtol=0, atol=0)
@@ -433,7 +535,8 @@ def test_training_name_drop_is_shared_reproducible_and_keeps_clean_inputs(monkey
 
 
 @pytest.mark.parametrize('sample_prob,joint_prob', [(1., 0.), (0., 1.), (.1, .1)])
-def test_geometry_drop_preserves_clean_context_and_replays(monkeypatch, sample_prob, joint_prob):
+def test_geometry_drop_preserves_clean_context_and_replays(sample_prob, joint_prob):
+    import numpy as np
     import train.train_motion_autoencoder as trainer
     _, target, skeleton = fixture(joints=32)
     geometry = torch.ones_like(skeleton['rest_geom'])
@@ -441,17 +544,14 @@ def test_geometry_drop_preserves_clean_context_and_replays(monkeypatch, sample_p
     conditions = dict(skeleton, rest_geom=geometry, offsets=offsets,
                       lengths=torch.full((2,), target.shape[-1]), is_loop=torch.zeros(2, dtype=torch.bool))
 
-    class Source:
-        def prepare_sample_by_name(self, name):
-            return name
-
-    monkeypatch.setattr(trainer, 'truebones_batch_collate',
-                        lambda *a, **kw: (target, {'y': dict(conditions)}))
-    options = dict(source=Source(), names=['a', 'b'], indices=torch.arange(2), step=50,
-                   seed=10, joint_width=32, device='cpu', rest_geom_drop_prob=sample_prob,
-                   rest_geom_joint_drop_prob=joint_prob)
-    x, cond = trainer.augmented_batch(**options)
-    _, again = trainer.augmented_batch(**options)
+    transform = trainer.AutoencoderBatchTransform(
+        rest_geom_drop_prob=sample_prob, rest_geom_joint_drop_prob=joint_prob)
+    np.random.seed(50)
+    x, wrapped = transform((target, {'y': conditions}))
+    cond = wrapped['y']
+    np.random.seed(50)
+    _, again = transform((target, {'y': conditions}))
+    again = again['y']
     torch.testing.assert_close(cond['rest_geom'], again['rest_geom'], rtol=0, atol=0)
     assert geometry.eq(1).all()  # including the original present flag
     assert cond['offsets'] is offsets

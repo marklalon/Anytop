@@ -14,12 +14,13 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from data_loaders.get_data import get_dataset
+from data_loaders.get_data import build_dataset_loader, get_dataset
+from data_loaders.joint_buckets import resolve_joint_buckets
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_FEATURE_SPACE, canonical_to_physical_hml, working_to_stored,
 )
-from data_loaders.truebones.truebones_utils.param_utils import FPS
+from data_loaders.truebones.truebones_utils.param_utils import FPS, JOINT_BUCKETS
 from diffusion.losses import geodesic_distance
 from diffusion.logger import HumanOutputFormat
 from model.motion_autoencoder import (
@@ -47,36 +48,61 @@ AUGMENTATION_DEFAULTS = dict(motion_speed_aug=1.0, loop_tile_single_prob=1.0,
 
 MODEL_REGULARIZATION_DEFAULTS = dict(dropout_prob=0.0, mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0)
 
-def augmented_batch(source, names, indices, *, step, seed, joint_width, device,
-                    joint_name_drop_prob=0.0, rest_geom_drop_prob=0.0, rest_geom_joint_drop_prob=0.0):
-    """Fresh paired input/target, reproducible by absolute step without changing global RNG."""
-    python_state, numpy_state = random.getstate(), np.random.get_state()
-    try:
-        batch_seed = (seed + step * 1000003) % (2 ** 32)
-        random.seed(batch_seed)
-        np.random.seed(batch_seed)
-        samples = [source.prepare_sample_by_name(names[i]) for i in indices.tolist()]
-        motion, conditions = truebones_batch_collate(samples, joint_buckets=(joint_width,))
-        # Draw once on CPU with the step seed; E and D share these names.
+class AutoencoderBatchTransform:
+    """Picklable CPU transform, run inside the shared worker/prefetch pipeline."""
+
+    def __init__(self, joint_name_drop_prob=0.0, rest_geom_drop_prob=0.0,
+                 rest_geom_joint_drop_prob=0.0):
+        self.joint_name_drop_prob = joint_name_drop_prob
+        self.rest_geom_drop_prob = rest_geom_drop_prob
+        self.rest_geom_joint_drop_prob = rest_geom_joint_drop_prob
+
+    def __call__(self, batch):
+        motion, conditions = batch
+        y = {k: v for k, v in conditions['y'].items() if not k.startswith('ref_')}
+        # Draw once on CPU with the loader RNG; E and D share these names.
         # Do not mutate cached names or the fixed clean evaluation bundle.
-        if joint_name_drop_prob > 0:
-            names_emb = conditions['y']['joints_names_embs']
-            drop = torch.from_numpy(np.random.random(names_emb.shape[:2]) < joint_name_drop_prob)
-            conditions['y']['joints_names_embs'] = names_emb.masked_fill(drop[..., None], 0)
+        if self.joint_name_drop_prob > 0:
+            names_emb = y['joints_names_embs']
+            drop = torch.from_numpy(np.random.random(names_emb.shape[:2]) < self.joint_name_drop_prob)
+            y['joints_names_embs'] = names_emb.masked_fill(drop[..., None], 0)
         # Hide all geometry channels, including the present flag. Keep loss
         # conversion context intact; E and D share the same corrupted condition.
-        if rest_geom_drop_prob > 0 or rest_geom_joint_drop_prob > 0:
-            geometry = conditions['y']['rest_geom']
-            sample_drop = np.random.random((geometry.shape[0], 1)) < rest_geom_drop_prob
-            joint_drop = np.random.random(geometry.shape[:2]) < rest_geom_joint_drop_prob
+        if self.rest_geom_drop_prob > 0 or self.rest_geom_joint_drop_prob > 0:
+            geometry = y['rest_geom']
+            sample_drop = np.random.random((geometry.shape[0], 1)) < self.rest_geom_drop_prob
+            joint_drop = np.random.random(geometry.shape[:2]) < self.rest_geom_joint_drop_prob
             drop = torch.from_numpy(sample_drop | joint_drop)
-            conditions['y']['rest_geom'] = geometry.masked_fill(drop[..., None], 0)
-        cond = {k: v.to(device) if torch.is_tensor(v) else v
-                for k, v in conditions['y'].items() if not k.startswith('ref_')}
-        return motion[:, :, :9].contiguous().to(device), cond
-    finally:
-        random.setstate(python_state)
-        np.random.set_state(numpy_state)
+            y['rest_geom'] = geometry.masked_fill(drop[..., None], 0)
+        return motion[:, :, :9].contiguous(), {'y': y}
+
+
+def create_training_data_loader(args, dataset):
+    for key in AUGMENTATION_DEFAULTS:
+        setattr(dataset.motion_dataset.opt, key, getattr(args, key))
+    return build_dataset_loader(
+        dataset, batch_size=args.batch_size, drop_last=True,
+        num_workers=args.num_workers,
+        main_process_prefetch_batches=args.main_process_prefetch_batches,
+        joint_buckets=args.joint_buckets or JOINT_BUCKETS,
+        batch_transform=AutoencoderBatchTransform(
+            args.joint_name_drop_prob, args.rest_geom_drop_prob, args.rest_geom_joint_drop_prob),
+    )
+
+
+def training_batches(loader):
+    # A small bucket may produce no full batch in one pass. The shared sampler
+    # carries its remainder forward; do not treat such a pass as an empty dataset.
+    while True:
+        yield from loader
+
+
+def training_batch_to_device(batch, device):
+    target, conditions = batch
+    return target.to(device, non_blocking=True), {
+        k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v
+        for k, v in conditions['y'].items()
+    }
 
 
 def select_batch(x, y, indices):
@@ -188,6 +214,13 @@ def parser():
     p.add_argument('--seed', type=int, default=10)
     p.add_argument('--num_frames', type=int, default=60)
     p.add_argument('--batch_size', type=int, default=16)
+    p.add_argument('--num_workers', type=int, default=0,
+                   help='Shared loader: 0 uses a background thread; N uses persistent workers')
+    p.add_argument('--main_process_prefetch_batches', type=int, default=4,
+                   help='Training batches prepared ahead of the GPU; 0 selects 4')
+    p.add_argument('--motion_cache_size', type=int, default=0)
+    p.add_argument('--joint_buckets', type=int, nargs='+', default=None,
+                   help='Same joint-count ceilings as train_anytop; defaults to JOINT_BUCKETS')
     p.add_argument('--width', type=int, default=128)
     p.add_argument('--layers', type=int, default=2)
     p.add_argument('--heads', type=int, default=4)
@@ -234,6 +267,8 @@ def main():
         raise ValueError('Lengths, batch size, steps and intervals must be positive')
     if args.motion_step_warmup_steps < 0:
         raise ValueError('motion_step_warmup_steps must be nonnegative')
+    if min(args.num_workers, args.main_process_prefetch_batches, args.motion_cache_size) < 0:
+        raise ValueError('Worker, prefetch and cache counts must be nonnegative')
     for key, default in (AUGMENTATION_DEFAULTS | MODEL_REGULARIZATION_DEFAULTS).items():
         value = getattr(args, key)
         if value is None and default is None:
@@ -260,6 +295,7 @@ def main():
     cond_hash = hashlib.sha256(Path(args.cond_path).read_bytes()).hexdigest()
     dataset = get_dataset(num_frames=args.num_frames, split='train', cond_path=args.cond_path,
                           sample_filter=args.sample_filter, sample_filter_seed=args.seed,
+                          motion_cache_size=args.motion_cache_size,
                           loop_tile_single_prob=1.0, motion_speed_aug=1.0,
                           topology_aug_prob=0.0, bone_length_aug_prob=0.0,
                           rest_repose_prob=0.0, rest_variant_prob=0.0, ref_encoder=False)
@@ -302,9 +338,8 @@ def main():
         fixed = (motion[:, :, :9].contiguous(), y)
     # Evaluation windows stay unaugmented; training draws fresh data from the same source.
     augmentation = {key: getattr(args, key) for key in AUGMENTATION_DEFAULTS}
-    use_augmentation = augmentation != AUGMENTATION_DEFAULTS
-    for key, value in augmentation.items():
-        setattr(source.opt, key, value)
+    train_loader = create_training_data_loader(args, dataset)
+    buckets = resolve_joint_buckets(args.joint_buckets or JOINT_BUCKETS, source.opt.max_joints)
     x_cpu, y_cpu = fixed
     x = x_cpu.to(device)
     y = {k: v.to(device) if torch.is_tensor(v) else v for k, v in y_cpu.items()}
@@ -322,14 +357,12 @@ def main():
     criterion = MotionReconstructionLosses(
         drot_joint_boost=args.drot_joint_boost,
         **{key: getattr(args, key) for key in LOSS_WEIGHTS.values()})
-    generator = torch.Generator().manual_seed(args.seed)
     start = 0
     if resume is not None:
         model.load_state_dict(resume['model'])
         optimizer.load_state_dict(resume['optimizer'])
         if scaler.is_enabled():
             scaler.load_state_dict(resume['grad_scaler'])
-        generator.set_state(resume['sampler_rng'])
         start = resume['step']
         # Network/graph dropout consumes torch RNG even for deterministic AE.
         torch.set_rng_state(resume['torch_rng'])
@@ -340,7 +373,10 @@ def main():
     tqdm.write(f'[INFO] save_dir: {save}')
     tqdm.write(f'[INFO] Train split: {len(x):,} motions, {x.shape[-1]} frames/window, '
                f'joints={int(y["n_joints"].min())}..{int(y["n_joints"].max())} '
-               f'(padded to {x.shape[1]}), batch_size={min(args.batch_size, len(x))}')
+               f'(fixed evaluation padded to {x.shape[1]}), train batch_size={args.batch_size}')
+    tqdm.write(f'[INFO] shared loader: workers={args.num_workers}, '
+               f'prefetch={args.main_process_prefetch_batches or 4}, joint_buckets={buckets}; '
+               'full training batches, one static shape per bucket')
     tqdm.write(f'[model] {"VAE" if args.variational else "AE"}, '
                f'parameters={sum(p.numel() for p in model.parameters()):,}, '
                f'width={args.width}, layers={args.layers}, slots={args.slots}, latent_dim={args.latent_dim}')
@@ -351,6 +387,8 @@ def main():
     tqdm.write(f'[INFO] online augmentation: {active_augmentation or "disabled"}')
     if resume is not None:
         tqdm.write(f'[INFO] Resuming {checkpoint} at completed step {start:,}/{args.num_steps:,}')
+        tqdm.write('[INFO] Shared prefetch loader restarts its data stream on resume; '
+                   'worker RNGs and queued batches are not checkpointed (same as train_anytop).')
     forward_model = model
     if args.compile != 'None':
         from utils.compile_util import configure_triton_c_compiler
@@ -360,7 +398,7 @@ def main():
         forward_model = torch.compile(model, mode=args.compile, dynamic=False, fullgraph=True)
         tqdm.write(f'[INFO] compile={args.compile}, fullgraph=True, CUDA Graphs='
                    f'{args.compile == "reduce-overhead"}, launcher={compiler}; '
-                   'first training step includes compilation')
+                   'the first batch of each joint bucket includes compilation')
     tb_dir = save / datetime.now().strftime('run_%Y%m%d_%H%M%S')
     writer = SummaryWriter(str(tb_dir), purge_step=start + 1 if resume else None)
     tqdm.write(f'[INFO] TensorBoard log_dir: {tb_dir}')
@@ -395,20 +433,13 @@ def main():
         (save / 'initial_metrics.json').write_text(json.dumps(initial, indent=2), encoding='utf-8')
     tqdm.write(f'train steps: {args.num_steps} (log={args.log_interval}, '
                f'eval={args.eval_interval}, save={args.save_interval})')
+    batches = training_batches(train_loader)
     with (save / 'training.jsonl').open('a', encoding='utf-8') as log, tqdm(
             range(start + 1, args.num_steps + 1), initial=start, total=max(start, args.num_steps),
             desc='AE training', unit='step', dynamic_ncols=True) as progress:
         for step in progress:
             model.train()
-            indices = torch.randperm(len(x), generator=generator)[:args.batch_size]
-            if use_augmentation:
-                target, cond = augmented_batch(source, names, indices, step=step, seed=args.seed,
-                                               joint_width=x.shape[1], device=device,
-                                               joint_name_drop_prob=args.joint_name_drop_prob,
-                                               rest_geom_drop_prob=args.rest_geom_drop_prob,
-                                               rest_geom_joint_drop_prob=args.rest_geom_joint_drop_prob)
-            else:
-                target, cond = select_batch(x, y, indices)
+            target, cond = training_batch_to_device(next(batches), device)
             skeleton, frame, loop = model_inputs(target, cond)
             step_scale = (min(step / args.motion_step_warmup_steps, 1.0)
                           if args.motion_step_warmup_steps else 1.0)
@@ -465,7 +496,7 @@ def main():
                 payload = dict(kind='motion_autoencoder_7a', step=step, args=vars(args),
                                decoder_content_version=DECODER_CONTENT_VERSION,
                                model_config=model.config, model=model.state_dict(),
-                               optimizer=optimizer.state_dict(), sampler_rng=generator.get_state(),
+                               optimizer=optimizer.state_dict(), data_pipeline='shared_loader_v1',
                                grad_scaler=scaler.state_dict(),
                                fixed_batch=fixed, motion_names=names, canonical_version=CANONICAL_FEATURE_SPACE,
                                cond_sha256=cond_hash,

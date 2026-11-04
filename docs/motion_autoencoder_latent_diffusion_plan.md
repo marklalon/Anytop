@@ -231,7 +231,9 @@ KL 使用对角高斯到 N(0,I) 的解析形式，先对每个样本的有效 T�
 
 VAE 训练采样 posterior，评估与导出使用 mu；KL 按每样本有效时间、槽和维度平均。KL 与 dpos/drot/acc 支持线性 warm-up；日志记录原始项、加权项及 warm-up 比例。续训沿用绝对步数，并校验架构与训练目标配置；切换 AE/VAE 需新建实验。AMP FP16 的损失与评估保持 FP32；GradScaler 在裁剪前 unscale，溢出重试同一批次，checkpoint 保存 scaler 状态。
 
-训练逐步在线采样，输入与目标为同一增强样本。Encoder/Decoder 共享置空后的名称与 geometry（含 present flag），保留物理转换和损失所需统计与 offsets；关系丢弃及网络 dropout 仅训练生效。loop 降级窗口采用开放重采样与开放损失。固定无增强窗口仅用于评估；按绝对步数派生增强随机种子，恢复训练可复现。
+训练通过与 train_tiny/all 共用的 `build_dataset_loader` 在线采样，输入与目标为同一增强样本。共享 worker/后台队列预取、`JointBucketBatchSampler` 和 bucket collate；默认读取 `param_utils.JOINT_BUCKETS`，也支持 `--joint_buckets`。训练使用完整 batch，小桶余数跨 epoch 累积，每个桶对应固定编译形状；拓扑增强后仍按实际关节数选择可容纳的桶。`--num_workers`、`--main_process_prefetch_batches`、`--motion_cache_size` 与 diffusion 入口同义，tiny AE 脚本沿用 2 worker、64 batch 预取和 16384 motion cache。
+
+Encoder/Decoder 共享置空后的名称与 geometry（含 present flag），保留物理转换和损失所需统计与 offsets；条件 dropout 在 CPU worker/后台预取中执行，关系丢弃及网络 dropout 仅训练生效。loop 降级窗口采用开放重采样与开放损失。固定无增强窗口仅用于评估。续训保留模型、优化器、scaler 与步数，但与 train_anytop 一样不保存 worker RNG、预取队列和桶余数，不保证逐 batch 重放；旧串行采样 checkpoint 可以续训，数据流会切换为共享 loader。
 
 输出位于 `save/<run_name>/`：`autoencoder.pt` 支持续训并保存固定输入；TensorBoard 日志记录训练各项原始/加权 loss 与定期评估；`reconstruction_metrics.json` 记录逐样本重建、置零/跨样本打乱 latent 的误差和角步长 RMS；`reconstructions/` 保存物理空间 NPZ，并按导出配置保存原始/重建 NPY、BVH。旁路检查只提供诊断，不自动判定通过。
 
