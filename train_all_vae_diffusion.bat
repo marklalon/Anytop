@@ -80,9 +80,9 @@ echo [1/2] Training full-dataset VAE: %AE_RUN_NAME%
     --lambda_bone 0.2 ^
     --lambda_limb_corr 0.1 ^
     --lambda_loop_wrap 0.1 ^
-    --num_steps 150000 ^
+    --num_steps 50000 ^
     --log_interval 100 ^
-    --save_interval 10000 ^
+    --save_interval 5000 ^
     --eval_interval 5000
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" goto :finish
@@ -141,9 +141,9 @@ echo [2/2] Training full-dataset latent diffusion: %DIFFUSION_RUN_NAME%
     --ema_rate 0.9995 ^
     --diffusion_steps 100 ^
     --noise_schedule cosine ^
-    --num_steps 150000 ^
+    --num_steps 50000 ^
     --log_interval 100 ^
-    --save_interval 10000 ^
+    --save_interval 5000 ^
     --eval_interval 5000
 set "EXIT_CODE=%ERRORLEVEL%"
 :finish
