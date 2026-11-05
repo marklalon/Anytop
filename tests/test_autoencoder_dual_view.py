@@ -1,4 +1,4 @@
-"""Independent skeleton views must keep one time map and clean decoder/loss conditions."""
+"""Independent views/name masks, source-only geometry drop and clean loss contexts."""
 import random
 import sys
 from pathlib import Path
@@ -101,29 +101,83 @@ def test_independent_topology_has_complete_per_view_canonical_context(monkeypatc
 
 
 def view_batch(variational=False):
-    model, x, skeleton = fixture(variational=variational, temporal_rope=True,
-                                mirror_twin_drop_prob=.5, lateral_drop_prob=.5,
-                                decoder_mirror_twin_drop_prob=0., decoder_lateral_drop_prob=0.)
+    model, x, skeleton = fixture(variational=variational, temporal_rope=True)
     _, other, other_skeleton = fixture(joints=3)
     def conditions(s):
         return dict(s, lengths=torch.full((2,), 5), is_loop=torch.tensor([False, True]),
                     resample_speed_cond=torch.tensor([.5, 1.5]), loop_tile_count=torch.ones(2))
     clean = conditions(skeleton)
     clean.update(ae_view_motion=other, ae_view_cond=conditions(other_skeleton))
-    batch = AutoencoderBatchTransform(1., 1., 1.)((x, {'y': clean}))
+    batch = AutoencoderBatchTransform(1., 1.)((x, {'y': clean}))
     return model, clean, batch
 
 
-def test_drop_only_corrupts_sources_and_keeps_original_and_loss_conditions():
+def test_geometry_drop_only_corrupts_source_names_drop_both_and_loss_stays_clean():
     _, original, batch = view_batch()
     _, cond = training_batch_to_device(batch, 'cpu')
     for clean, saved in ((cond, original), (cond['ae_view_cond'], original['ae_view_cond'])):
         for key in ('rest_geom', 'joints_names_embs'):
             assert clean['ae_source_skeleton'][key].count_nonzero() == 0
             torch.testing.assert_close(clean[key], saved[key], rtol=0, atol=0)
+        assert clean['ae_target_skeleton']['joints_names_embs'].count_nonzero() == 0
+        torch.testing.assert_close(clean['ae_target_skeleton']['rest_geom'], saved['rest_geom'])
         assert clean['ae_source_skeleton']['graph_dist'] is clean['graph_dist']
     assert 'ae_source_skeleton' not in original
     assert 'ae_source_skeleton' not in original['ae_view_cond']
+
+
+def test_each_view_has_independent_encoder_decoder_name_masks_and_complete_target_geometry():
+    _, x, skeleton = fixture(joints=64)
+    _, other_x, other_skeleton = fixture(joints=64)
+    y = dict(skeleton, ae_view_motion=other_x, ae_view_cond=other_skeleton)
+    np.random.seed(27)
+    _, wrapped = AutoencoderBatchTransform(.5, 1.)((x, {'y': y}))
+    cond = wrapped['y']
+    masks = []
+    for view in (cond, cond['ae_view_cond']):
+        for side in ('ae_source_skeleton', 'ae_target_skeleton'):
+            names = view[side]['joints_names_embs']
+            mask = names.eq(0).all(-1)
+            assert mask.any() and not mask.all()
+            masks.append(mask)
+        assert view['ae_source_skeleton']['rest_geom'].count_nonzero() == 0
+        torch.testing.assert_close(view['ae_target_skeleton']['rest_geom'], view['rest_geom'])
+    for index, mask in enumerate(masks):
+        assert all(not torch.equal(mask, previous) for previous in masks[:index])
+    torch.testing.assert_close(cond['joints_names_embs'], skeleton['joints_names_embs'])
+
+
+def test_cross_and_self_decoding_use_target_name_masks_not_clean_loss_names(monkeypatch):
+    model, _, batch = view_batch()
+    x, cond = training_batch_to_device(batch, 'cpu')
+    received = []
+    decode = model.decode
+    def record(z, skeleton, *args, **kwargs):
+        received.append(skeleton)
+        return decode(z, skeleton, *args, **kwargs)
+    monkeypatch.setattr(model, 'decode', record)
+    dual_view_training_terms(model, MotionReconstructionLosses(), x, cond)
+    a, b = cond['ae_target_skeleton'], cond['ae_view_cond']['ae_target_skeleton']
+    assert all(actual is expected for actual, expected in zip(received, (b, a, a, b)))
+    assert len(received) == 4
+
+
+def test_obsolete_dropout_config_loads_weights_without_restoring_removed_mechanisms():
+    from model.motion_autoencoder import MotionAutoencoder
+    from utils.model_config import REMOVED_SKELETON_DROPS, without_removed_skeleton_drops
+    model, x, skeleton = fixture()
+    old_config = dict(model.config, **{key: .5 for key in REMOVED_SKELETON_DROPS})
+    restored = MotionAutoencoder(**without_removed_skeleton_drops(old_config)).eval()
+    restored.load_state_dict(model.state_dict(), strict=True)
+    torch.testing.assert_close(restored(x, skeleton), model(x, skeleton), rtol=0, atol=0)
+    assert not REMOVED_SKELETON_DROPS.intersection(restored.config)
+    assert REMOVED_SKELETON_DROPS.issubset(old_config)
+
+
+@pytest.mark.parametrize('option', ['rest_geom_drop_prob', 'mirror_twin_drop_prob', 'lateral_drop_prob'])
+def test_removed_dropout_cli_options_are_rejected(option):
+    with pytest.raises(SystemExit):
+        parser().parse_args(['--save_dir', 'unused', '--' + option, '.1'])
 
 
 @pytest.fixture
@@ -139,8 +193,6 @@ def fresh_compiler_cache():
 def test_cross_self_loss_routes_both_targets_and_backpropagates_fullgraph(variational, fresh_compiler_cache):
     model, _, batch = view_batch(variational)
     model.train()
-    assert model.encoder.mirror_twin_drop_prob == model.encoder.lateral_drop_prob == .5
-    assert model.decoder.mirror_twin_drop_prob == model.decoder.lateral_drop_prob == 0
     compiled = torch.compile(model, backend='eager', fullgraph=True)
     target, cond = training_batch_to_device(batch, 'cpu')
     calls = []

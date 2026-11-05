@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from utils.model_config import without_removed_skeleton_drops
 from model.motion_autoencoder import MotionAutoencoder, DECODER_CONTENT_VERSION
 from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE
 from diffusion.latent_diffusion import validate_latent_conditions
@@ -34,12 +35,12 @@ def load_frozen_autoencoder(path, device='cpu'):
             or checkpoint.get('decoder_content_version') != DECODER_CONTENT_VERSION
             or checkpoint['args']['num_frames'] != 60):
         raise ValueError('AE checkpoint type, canonical/content version or 60-frame contract mismatch')
-    model = MotionAutoencoder(**checkpoint['model_config'])
+    model = MotionAutoencoder(**without_removed_skeleton_drops(checkpoint['model_config']))
     ema = checkpoint['args'].get('use_ema', False)
     model.load_state_dict(checkpoint['model_ema'] if ema else checkpoint['model'], strict=True)
     model.to(device).eval().requires_grad_(False)
     binding = dict(sha256=file_sha256(path), weights='ema' if ema else 'model',
-                   model_config=model.config, canonical_version=CANONICAL_FEATURE_SPACE,
+                   model_config=checkpoint['model_config'], canonical_version=CANONICAL_FEATURE_SPACE,
                    decoder_content_version=DECODER_CONTENT_VERSION, frames=60,
                    layout='B,T,K,d', path=str(path.resolve()))
     return model, binding
@@ -128,7 +129,7 @@ def load_latent_checkpoint(path, device='cpu', ae_checkpoint=None):
     if {k: v for k, v in binding.items() if k != 'path'} != {
             k: v for k, v in payload['ae_binding'].items() if k != 'path'}:
         raise ValueError('Frozen AE hash/configuration does not match latent checkpoint')
-    model = LatentMotionDenoiser(**payload['model_config'])
+    model = LatentMotionDenoiser(**without_removed_skeleton_drops(payload['model_config']))
     model.load_state_dict(payload['model_ema'] if payload['model_ema'] is not None else payload['model'])
     if model.action_label_cond:
         model.validate_loaded_action_conditioning(payload['action_conditioning'], str(path))

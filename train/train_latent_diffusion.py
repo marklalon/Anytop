@@ -73,7 +73,6 @@ def parser():
                            temporal_rope_ref_drop_prob=0.0, temporal_rope_drop_prob=0.0,
                            noise_schedule_shift=1.0,
                            denoiser_joint_name_drop_prob=0.15,
-                           denoiser_rest_geom_drop_prob=0.0,
                            denoiser_rest_geom_joint_drop_prob=0.1).items():
         p.add_argument('--' + key, type=float, default=value)
     p.add_argument('--lr_decay_start', type=int, default=0)
@@ -81,7 +80,7 @@ def parser():
     p.add_argument('--joint_buckets', type=int, nargs='+')
     # These augment the paired AE target; condition-only drop has separate names.
     for key, value in AUGMENTATION_DEFAULTS.items():
-        if key not in ('joint_name_drop_prob', 'rest_geom_drop_prob', 'rest_geom_joint_drop_prob'):
+        if key not in ('joint_name_drop_prob', 'rest_geom_joint_drop_prob'):
             p.add_argument('--' + key, type=float, default=value)
     return p
 
@@ -122,7 +121,7 @@ def build_loader(args):
               if hasattr(args, key)}
     # Never hide static AE truth as part of denoiser CFG/condition regularization.
     kwargs['joint_name_drop_prob'] = 0.0
-    kwargs.pop('rest_geom_drop_prob', None); kwargs.pop('rest_geom_joint_drop_prob', None)
+    kwargs.pop('rest_geom_joint_drop_prob', None)
     dataset = get_dataset(
         num_frames=60, split='train', cond_path=args.cond_path,
         sample_filter=args.sample_filter, sample_filter_seed=args.seed,
@@ -235,7 +234,7 @@ def main(argv=None):
                 'tempo_cfg_drop_prob', 'temporal_rope_ref_drop_prob', 'temporal_rope_drop_prob',
                 'ref_slots', 'ref_dim', 'ref_width', 'ref_layers', 'ref_cfg_drop_prob'):
         config[key] = getattr(args, key)
-    for key in ('joint_name_drop_prob', 'rest_geom_drop_prob', 'rest_geom_joint_drop_prob'):
+    for key in ('joint_name_drop_prob', 'rest_geom_joint_drop_prob'):
         config[key] = getattr(args, 'denoiser_' + key)
     model = LatentMotionDenoiser(**config, action_conditioning=args.action_conditioning).to(device)
     if resume:

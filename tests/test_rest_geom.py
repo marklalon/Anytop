@@ -75,24 +75,20 @@ def test_leaf_drop_rebuilds_rest_geom(monkeypatch):
 
 def test_rest_geom_drop_is_training_only():
     model = _make_model()
-    model.rest_geom_drop_prob = model.rest_geom_joint_drop_prob = 1.0
+    model.rest_geom_joint_drop_prob = 1.0
     model.eval()
     assert model._sample_rest_geom_drop(2, 4, torch.device('cpu')) is None
     model.train()
     assert bool(model._sample_rest_geom_drop(2, 4, torch.device('cpu')).all())
-    model.rest_geom_drop_prob = model.rest_geom_joint_drop_prob = 0.0
+    model.rest_geom_joint_drop_prob = 0.0
     assert model._sample_rest_geom_drop(2, 4, torch.device('cpu')) is None
 
 
 def test_rest_geom_drop_rates():
     model = _make_model().train()
-    model.rest_geom_drop_prob, model.rest_geom_joint_drop_prob = 0.0, 0.5
+    model.rest_geom_joint_drop_prob = 0.5
     torch.manual_seed(0)
     assert abs(float(model._sample_rest_geom_drop(256, 8, torch.device('cpu')).float().mean()) - 0.5) < 0.05
-    model.rest_geom_drop_prob, model.rest_geom_joint_drop_prob = 0.5, 0.0
-    drop = model._sample_rest_geom_drop(256, 8, torch.device('cpu'))
-    # Whole-sample drop: every joint of a row agrees.
-    assert torch.equal(drop, drop[:, :1].expand_as(drop))
 
 
 def test_dropped_joints_read_as_absent():

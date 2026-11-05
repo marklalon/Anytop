@@ -1054,7 +1054,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
                  cross_limb_last_n=0, action_label_adaln=False,
                  action_adaln_bottleneck=0, last_layer_ff=0,
-                 mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0, graph_relations=True,
+                 graph_relations=True,
                  temporal_rope=False):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
@@ -1063,23 +1063,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         self.graph_relations = bool(graph_relations)
         if value_emb and not self.graph_relations:
             raise ValueError('value_emb needs graph_relations')
-
-        # --mirror_twin_drop_prob: per twin pair, the chance in training that
-        # the pair reads as its plain topological code instead of mirror_twin,
-        # so a skeleton whose pairing missed a twin is still in distribution.
-        self.mirror_twin_drop_prob = float(mirror_twin_drop_prob)
-        if not 0.0 <= self.mirror_twin_drop_prob <= 1.0:
-            raise ValueError(
-                f"mirror_twin_drop_prob must be in [0, 1], got {mirror_twin_drop_prob}"
-            )
-        # --lateral_drop_prob: per sample, the chance in training that every
-        # pair reads as lateral 'neutral', so a rig whose side labels are
-        # missing or all-midline is still in distribution.
-        self.lateral_drop_prob = float(lateral_drop_prob)
-        if not 0.0 <= self.lateral_drop_prob <= 1.0:
-            raise ValueError(
-                f"lateral_drop_prob must be in [0, 1], got {lateral_drop_prob}"
-            )
 
         self.d_model = decoder_layer.d_model
         self.nheads = decoder_layer.heads
@@ -1189,24 +1172,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         self.temporal_rope = bool(temporal_rope)
 
     def _resolve_edge_codes(self, edge_rel: Tensor) -> Tensor:
-        """Stored ``[B, J, J]`` codes -> embedding indices, with twin and
-        lateral dropout.
-
-        The twin drop is drawn per joint at ``q = 1 - sqrt(1 - p)`` and a pair
-        drops when either end does. Each joint has at most one partner, so every
-        pair drops with exactly ``p``, and both directions of a pair together.
-        The lateral drop is per sample: side labels are right or wrong for a
-        whole rig, not for one pair.
-        """
-        twin_drop = lateral_drop = None
-        if self.training and self.mirror_twin_drop_prob > 0.0:
-            q = 1.0 - math.sqrt(1.0 - self.mirror_twin_drop_prob)
-            joint_drop = torch.rand(edge_rel.shape[:-1], device=edge_rel.device) < q
-            twin_drop = joint_drop.unsqueeze(-1) | joint_drop.unsqueeze(-2)
-        if self.training and self.lateral_drop_prob > 0.0:
-            sample_drop = torch.rand(edge_rel.shape[0], device=edge_rel.device) < self.lateral_drop_prob
-            lateral_drop = sample_drop.view(-1, 1, 1)
-        return resolve_edge_codes(edge_rel, twin_drop, lateral_drop)
+        """Resolve stored relation codes without hiding symmetry or laterality."""
+        return resolve_edge_codes(edge_rel)
 
     def _expand_relation_heads(self, relation: Tensor) -> Tensor:
         if relation.dim() == 3:

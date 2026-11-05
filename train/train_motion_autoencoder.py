@@ -48,54 +48,44 @@ AUGMENTATION_DEFAULTS = dict(motion_speed_aug=1.0, loop_tile_single_prob=1.0,
                              loop_cond_prob_anchored=None, joint_name_drop_prob=0.0,
                              topology_aug_prob=0.0, bone_length_aug_prob=0.0,
                              rest_repose_prob=0.0, rest_variant_prob=0.0,
-                             rest_geom_drop_prob=0.0, rest_geom_joint_drop_prob=0.0)
+                             rest_geom_joint_drop_prob=0.0)
 
 
-MODEL_REGULARIZATION_DEFAULTS = dict(dropout_prob=0.0, mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0)
+MODEL_REGULARIZATION_DEFAULTS = dict(dropout_prob=0.0)
 
 class AutoencoderBatchTransform:
     """Picklable CPU transform, run inside the shared worker/prefetch pipeline."""
 
-    def __init__(self, joint_name_drop_prob=0.0, rest_geom_drop_prob=0.0,
-                 rest_geom_joint_drop_prob=0.0):
+    def __init__(self, joint_name_drop_prob=0.0, rest_geom_joint_drop_prob=0.0):
         self.joint_name_drop_prob = joint_name_drop_prob
-        self.rest_geom_drop_prob = rest_geom_drop_prob
         self.rest_geom_joint_drop_prob = rest_geom_joint_drop_prob
+
+    def _skeleton(self, y, *, source):
+        skeleton = {k: y[k] for k in SKELETON_KEYS if k in y}
+        if self.joint_name_drop_prob > 0:
+            names = skeleton['joints_names_embs']
+            drop = torch.from_numpy(np.random.random(names.shape[:2]) < self.joint_name_drop_prob)
+            skeleton['joints_names_embs'] = names.masked_fill(drop[..., None], 0)
+        # Decoder geometry always stays complete. Loss conversion contexts are
+        # never corrupted, including the rest/bind frames and canonical stats.
+        if source and self.rest_geom_joint_drop_prob > 0:
+            geometry = skeleton['rest_geom']
+            drop = torch.from_numpy(np.random.random(geometry.shape[:2]) < self.rest_geom_joint_drop_prob)
+            skeleton['rest_geom'] = geometry.masked_fill(drop[..., None], 0)
+        return skeleton
 
     def __call__(self, batch):
         motion, conditions = batch
         y = conditions['y']
-        if 'ae_view_cond' not in y:
-            return self._single(batch)
         clean = {k: v for k, v in y.items() if not k.startswith(('ref_', 'ae_view_'))}
-        other = {k: v for k, v in y['ae_view_cond'].items() if not k.startswith('ref_')}
-        first_motion, first = self._single((motion, {'y': clean}))
-        second_motion, second = self._single((y['ae_view_motion'], {'y': other}))
-        # Only the encoder receives corrupted conditions. Keep both clean loss
-        # contexts and decoder conditions intact, including rest/bind frames.
-        clean['ae_source_skeleton'] = {k: first['y'][k] for k in SKELETON_KEYS}
-        other['ae_source_skeleton'] = {k: second['y'][k] for k in SKELETON_KEYS}
-        clean.update(ae_view_motion=second_motion, ae_view_cond=other)
-        return first_motion, {'y': clean}
-
-    def _single(self, batch):
-        motion, conditions = batch
-        y = {k: v for k, v in conditions['y'].items() if not k.startswith('ref_')}
-        # Draw once on CPU with the loader RNG; E and D share these names.
-        # Do not mutate cached condition tensors.
-        if self.joint_name_drop_prob > 0:
-            names_emb = y['joints_names_embs']
-            drop = torch.from_numpy(np.random.random(names_emb.shape[:2]) < self.joint_name_drop_prob)
-            y['joints_names_embs'] = names_emb.masked_fill(drop[..., None], 0)
-        # Hide all geometry channels, including the present flag. Keep loss
-        # conversion context intact; E and D share the same corrupted condition.
-        if self.rest_geom_drop_prob > 0 or self.rest_geom_joint_drop_prob > 0:
-            geometry = y['rest_geom']
-            sample_drop = np.random.random((geometry.shape[0], 1)) < self.rest_geom_drop_prob
-            joint_drop = np.random.random(geometry.shape[:2]) < self.rest_geom_joint_drop_prob
-            drop = torch.from_numpy(sample_drop | joint_drop)
-            y['rest_geom'] = geometry.masked_fill(drop[..., None], 0)
-        return motion[:, :, :9].contiguous(), {'y': y}
+        # Independent name masks for encoder and decoder; never mutate cached
+        # tensors or reuse the encoder's name mask as the decoder's mask.
+        clean['ae_source_skeleton'] = self._skeleton(clean, source=True)
+        clean['ae_target_skeleton'] = self._skeleton(clean, source=False)
+        if 'ae_view_cond' in y:
+            other_motion, other = self((y['ae_view_motion'], {'y': y['ae_view_cond']}))
+            clean.update(ae_view_motion=other_motion, ae_view_cond=other['y'])
+        return motion[:, :, :9].contiguous(), {'y': clean}
 
 
 def create_training_data_loader(args, dataset):
@@ -108,7 +98,7 @@ def create_training_data_loader(args, dataset):
         main_process_prefetch_batches=args.main_process_prefetch_batches,
         joint_buckets=args.joint_buckets or JOINT_BUCKETS,
         batch_transform=AutoencoderBatchTransform(
-            args.joint_name_drop_prob, args.rest_geom_drop_prob, args.rest_geom_joint_drop_prob),
+            args.joint_name_drop_prob, args.rest_geom_joint_drop_prob),
     )
 
 
@@ -151,8 +141,8 @@ def dual_view_training_terms(model, criterion, target, cond, *, step_scale=1.0,
                              kl_weight=0.0, self_weight=1.0):
     """Average A->B/B->A and retain equally weighted self reconstruction by default."""
     other, other_cond = cond['ae_view_motion'], cond['ae_view_cond']
-    clean_a, frame, loop = model_inputs(target, cond)
-    clean_b, _, _ = model_inputs(other, other_cond)
+    _, frame, loop = model_inputs(target, cond)
+    clean_a, clean_b = cond['ae_target_skeleton'], other_cond['ae_target_skeleton']
     cross_terms, self_terms, kls = [], [], []
     for source, source_cond, destination, destination_cond, clean_source, clean_target in (
             (target, cond, other, other_cond, clean_a, clean_b),
@@ -406,7 +396,7 @@ def parser():
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--auto_resume', action='store_true')
     p.add_argument('--dual_view', action='store_true',
-                   help='Independent skeleton views, shared time map; bidirectional cross reconstruction with clean decoder conditions')
+                   help='Independent skeleton views, shared time map; bidirectional cross reconstruction with independent encoder/decoder name drop')
     p.add_argument('--dual_view_self_weight', type=float, default=1.0,
                    help='Self reconstruction relative to cross reconstruction in dual-view mode (default: equal weight)')
     for argument in LOSS_WEIGHTS.values():
@@ -531,8 +521,6 @@ def main():
                               layerwise_latent=args.layerwise_latent,
                               decoder_temporal_kernel=args.decoder_temporal_kernel,
                               variational=args.variational,
-                              decoder_mirror_twin_drop_prob=0.0 if args.dual_view else None,
-                              decoder_lateral_drop_prob=0.0 if args.dual_view else None,
                               **{key: getattr(args, key) for key in MODEL_REGULARIZATION_DEFAULTS}).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = torch.amp.GradScaler('cuda', enabled=args.amp_dtype == 'fp16')
@@ -582,7 +570,7 @@ def main():
     tqdm.write(f'[INFO] online augmentation: {active_augmentation or "disabled"}')
     if args.dual_view:
         tqdm.write('[INFO] dual views: independent skeleton augmentation, shared temporal map; '
-                   'source-only condition drop, clean decoder conditions; '
+                   'independent encoder/decoder name drop, source-only joint geometry drop; '
                    f'bidirectional cross/self relative weights=1/{args.dual_view_self_weight:g}')
     del example, x, y
     if resume is not None:
@@ -662,10 +650,12 @@ def main():
                             forward_model, criterion, target, cond, step_scale=step_scale,
                             kl_weight=args.kl_weight, self_weight=args.dual_view_self_weight)
                     elif args.variational:
-                        prediction, mu, logvar = forward_model(target, skeleton, frame, loop,
-                                                               return_posterior=True)
+                        prediction, mu, logvar = forward_model(
+                            target, cond['ae_source_skeleton'], frame, loop,
+                            target_skeleton=cond['ae_target_skeleton'], return_posterior=True)
                     else:
-                        prediction = forward_model(target, skeleton, frame, loop)
+                        prediction = forward_model(target, cond['ae_source_skeleton'], frame, loop,
+                                                   target_skeleton=cond['ae_target_skeleton'])
                 if not args.dual_view:
                     terms = criterion(prediction, target, cond, step_loss_scale=step_scale)
                 if args.variational and not args.dual_view:

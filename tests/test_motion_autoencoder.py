@@ -113,7 +113,7 @@ def test_shared_loader_prefetches_full_bucketed_ae_batches(num_workers, topology
     args = parser().parse_args([
         '--save_dir', 'unused', '--batch_size', '4', '--num_workers', str(num_workers),
         '--main_process_prefetch_batches', '2', '--joint_buckets', '8', '16', '100',
-        '--joint_name_drop_prob', '1', '--rest_geom_drop_prob', '1',
+        '--joint_name_drop_prob', '1', '--rest_geom_joint_drop_prob', '1',
         '--topology_aug_prob', str(topology_prob),
     ])
     dataset = LoaderFixture()
@@ -128,8 +128,10 @@ def test_shared_loader_prefetches_full_bucketed_ae_batches(num_workers, topology
             assert target.shape[0] == 4 and target.shape[2:] == (9, 3)
             assert target.shape[1] in (8, 16, 100)
             assert cond['graph_dist'].shape == (4, target.shape[1], target.shape[1])
-            assert cond['joints_names_embs'].count_nonzero() == 0
-            assert cond['rest_geom'].count_nonzero() == 0
+            assert cond['ae_source_skeleton']['joints_names_embs'].count_nonzero() == 0
+            assert cond['ae_target_skeleton']['joints_names_embs'].count_nonzero() == 0
+            assert cond['ae_source_skeleton']['rest_geom'].count_nonzero() == 0
+            assert torch.equal(cond['ae_target_skeleton']['rest_geom'], cond['rest_geom'])
             assert not any(k.startswith('ref_') for k in cond)
             names.update(cond['motion_name'])
             widths.add(target.shape[1])
@@ -711,7 +713,7 @@ def test_vae_fullgraph_forward_has_fresh_samples():
 
 
 @pytest.mark.parametrize('prob', [0.0, 0.5, 1.0])
-def test_training_name_drop_is_shared_reproducible_and_keeps_clean_inputs(prob):
+def test_training_name_drop_is_independent_reproducible_and_keeps_clean_inputs(prob):
     import numpy as np
     import train.train_motion_autoencoder as trainer
     _, target, skeleton = fixture()
@@ -730,24 +732,28 @@ def test_training_name_drop_is_shared_reproducible_and_keeps_clean_inputs(prob):
     torch.testing.assert_close(x, target, rtol=0, atol=0)
     torch.testing.assert_close(skeleton['joints_names_embs'], clean_names, rtol=0, atol=0)
     torch.testing.assert_close(cond['joints_names_embs'], again['joints_names_embs'], rtol=0, atol=0)
-    dropped = cond['joints_names_embs'].eq(0).all(-1)
+    dropped = cond['ae_source_skeleton']['joints_names_embs'].eq(0).all(-1)
     if prob == 0:
         assert not dropped.any()
     elif prob == 1:
         assert dropped.all()
     else:
         assert dropped.any() and not dropped.all()
-    torch.testing.assert_close(cond['joints_names_embs'][~dropped], clean_names[~dropped])
-    # This one condition bundle is passed to both E and D; loop/open metadata
-    # also reaches their positional encoding and the reconstruction losses.
+    torch.testing.assert_close(cond['ae_source_skeleton']['joints_names_embs'][~dropped], clean_names[~dropped])
+    torch.testing.assert_close(cond['joints_names_embs'], clean_names)
+    for side in ('ae_source_skeleton', 'ae_target_skeleton'):
+        torch.testing.assert_close(cond[side]['joints_names_embs'], again[side]['joints_names_embs'])
+    if prob == .5:
+        assert not torch.equal(cond['ae_source_skeleton']['joints_names_embs'], cond['ae_target_skeleton']['joints_names_embs'])
+    # Time and loss contexts remain clean while E/D have separate name masks.
     shared, _, loop = trainer.model_inputs(x, cond)
     assert shared['joints_names_embs'] is cond['joints_names_embs']
     assert loop['is_loop'].tolist() == [False, True]
     assert loop['resample_speed_cond'] is conditions['resample_speed_cond']
 
 
-@pytest.mark.parametrize('sample_prob,joint_prob', [(1., 0.), (0., 1.), (.1, .1)])
-def test_geometry_drop_preserves_clean_context_and_replays(sample_prob, joint_prob):
+@pytest.mark.parametrize('joint_prob', [0., .5, 1.])
+def test_geometry_drop_preserves_clean_context_and_replays(joint_prob):
     import numpy as np
     import train.train_motion_autoencoder as trainer
     _, target, skeleton = fixture(joints=32)
@@ -757,7 +763,7 @@ def test_geometry_drop_preserves_clean_context_and_replays(sample_prob, joint_pr
                       lengths=torch.full((2,), target.shape[-1]), is_loop=torch.zeros(2, dtype=torch.bool))
 
     transform = trainer.AutoencoderBatchTransform(
-        rest_geom_drop_prob=sample_prob, rest_geom_joint_drop_prob=joint_prob)
+        rest_geom_joint_drop_prob=joint_prob)
     np.random.seed(50)
     x, wrapped = transform((target, {'y': conditions}))
     cond = wrapped['y']
@@ -768,20 +774,22 @@ def test_geometry_drop_preserves_clean_context_and_replays(sample_prob, joint_pr
     assert geometry.eq(1).all()  # including the original present flag
     assert cond['offsets'] is offsets
     torch.testing.assert_close(x, target, rtol=0, atol=0)
-    dropped = cond['rest_geom'].eq(0).all(-1)
-    if sample_prob == 1 or joint_prob == 1:
+    dropped = cond['ae_source_skeleton']['rest_geom'].eq(0).all(-1)
+    if joint_prob == 1:
         assert dropped.all()
+    elif joint_prob == 0:
+        assert not dropped.any()
     else:
         assert dropped.any() and not dropped.all()
-    assert cond['rest_geom'][~dropped].eq(1).all()
+    assert cond['ae_source_skeleton']['rest_geom'][~dropped].eq(1).all()
+    assert cond['rest_geom'].eq(1).all() and cond['ae_target_skeleton']['rest_geom'].eq(1).all()
 
 
 def test_regularized_autoencoder_compiles_trains_and_has_deterministic_eval():
-    options = dict(dropout_prob=.1, mirror_twin_drop_prob=.1, lateral_drop_prob=.1,
+    options = dict(dropout_prob=.1,
                    temporal_rope=True, layerwise_latent=True)
     model, x, skeleton = fixture(**options)
     for trunk in (model.encoder, model.decoder):
-        assert trunk.mirror_twin_drop_prob == trunk.lateral_drop_prob == .1
         assert trunk.layers[0].dropout1.p == .1
         assert trunk.layers[0].temporal_attn.dropout == .1
     assert model.pool.dropout == model.read_latent.dropout == .1
@@ -800,7 +808,7 @@ def test_regularized_autoencoder_compiles_trains_and_has_deterministic_eval():
     torch.testing.assert_close(restored(x, skeleton), model(x, skeleton), rtol=0, atol=0)
 
 
-@pytest.mark.parametrize('key', ['dropout_prob', 'mirror_twin_drop_prob', 'lateral_drop_prob'])
+@pytest.mark.parametrize('key', ['dropout_prob'])
 @pytest.mark.parametrize('value', [-.1, 1.1, float('nan')])
 def test_regularization_rejects_invalid_probabilities(key, value):
     with pytest.raises(ValueError, match=key):

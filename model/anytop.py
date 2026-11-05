@@ -93,16 +93,10 @@ class AnyTop(MotionConditioningMixin, nn.Module):
             raise ValueError(
                 f"joint_name_drop_prob must be in [0, 1], got {self.joint_name_drop_prob}"
             )
-        # Rest-geometry drop (see _sample_rest_geom_drop): whole sample, then
-        # single joints, drawn independently of the name drop.
-        self.rest_geom_drop_prob=float(kargs.get('rest_geom_drop_prob', 0.0))
-        self.rest_geom_joint_drop_prob=float(kargs.get('rest_geom_joint_drop_prob', 0.0))
-        for key in ('rest_geom_drop_prob', 'rest_geom_joint_drop_prob'):
-            if not 0.0 <= getattr(self, key) <= 1.0:
-                raise ValueError(f"{key} must be in [0, 1], got {getattr(self, key)}")
-        # Training-only; validated by GraphMotionDecoder.
-        self.mirror_twin_drop_prob=float(kargs.get('mirror_twin_drop_prob', 0.0))
-        self.lateral_drop_prob=float(kargs.get('lateral_drop_prob', 0.0))
+        # Per-joint geometry drop, independent of name drop.
+        self.rest_geom_joint_drop_prob = float(kargs.get('rest_geom_joint_drop_prob', 0.0))
+        if not 0.0 <= self.rest_geom_joint_drop_prob <= 1.0:
+            raise ValueError('rest_geom_joint_drop_prob must be in [0, 1]')
         # Action-label conditioning: a single pathway -- the frozen T5 vectors of
         # the label's WORDS, pooled into one channel per slot (head /
         # direction / modifier) and concatenated. A channel reads its own slot
@@ -244,8 +238,6 @@ class AnyTop(MotionConditioningMixin, nn.Module):
                                                         action_label_adaln=self.action_label_adaln,
                                                         action_adaln_bottleneck=self.action_adaln_bottleneck,
                                                         last_layer_ff=self.last_layer_ff,
-                                                        mirror_twin_drop_prob=self.mirror_twin_drop_prob,
-                                                        lateral_drop_prob=self.lateral_drop_prob,
                                                         temporal_rope=self.temporal_rope)
             
         

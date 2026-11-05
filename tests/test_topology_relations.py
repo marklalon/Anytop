@@ -372,39 +372,25 @@ class MirrorTwinTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._twin_edge(np.full(3, -1))
 
-    def test_resolve_maps_twins_and_drop_restores_the_fallback(self):
+    def test_resolve_preserves_twins_and_plain_codes(self):
         edge = torch.as_tensor(self._twin_edge()).unsqueeze(0)
         base, is_twin = split_mirror_twin_codes(edge[0].numpy())
         kept = resolve_edge_codes(edge)[0].numpy()
         np.testing.assert_array_equal(kept[is_twin], EDGE_CODES['mirror_twin'])
         np.testing.assert_array_equal(kept[~is_twin], base[~is_twin])
-        dropped = resolve_edge_codes(edge, torch.ones_like(edge, dtype=torch.bool))
-        np.testing.assert_array_equal(dropped[0].numpy(), base)
         self.assertLess(int(kept.max()), NUM_EDGE_CODES)
 
     def test_zero_padding_never_reads_as_a_twin(self):
         padded = torch.zeros(1, 4, 4, dtype=torch.long)
         self.assertTrue((resolve_edge_codes(padded) == 0).all())
 
-    def test_decoder_drops_whole_pairs_at_the_requested_rate(self):
+    def test_decoder_preserves_twins_in_train_and_eval(self):
         from model.motion_transformer import GraphMotionDecoder, GraphMotionDecoderLayer
-        layer = GraphMotionDecoderLayer(d_model=8, nhead=2, dim_feedforward=16)
-        dec = GraphMotionDecoder(layer, num_layers=1, cross_limb=False,
-                                 mirror_twin_drop_prob=0.2)
-        edge = torch.as_tensor(self._twin_edge()).unsqueeze(0).expand(20000, -1, -1)
-        _, is_twin = split_mirror_twin_codes(edge[0].numpy())
-        is_twin = torch.as_tensor(is_twin)
-        torch.manual_seed(0)
-        dec.train()
-        resolved = dec._resolve_edge_codes(edge)
-        kept = resolved == EDGE_CODES['mirror_twin']
-        # Both directions of a pair always agree.
-        self.assertTrue(torch.equal(kept, kept.transpose(1, 2)))
-        rate = 1.0 - kept[:, is_twin].float().mean().item()
-        self.assertAlmostEqual(rate, 0.2, delta=0.01)
-        dec.eval()
-        self.assertTrue((dec._resolve_edge_codes(edge)[:, is_twin]
-                         == EDGE_CODES['mirror_twin']).all())
+        dec = GraphMotionDecoder(GraphMotionDecoderLayer(8, 2, 16), 1, cross_limb=False)
+        edge = torch.as_tensor(self._twin_edge()).unsqueeze(0)
+        for training in (True, False):
+            dec.train(training)
+            torch.testing.assert_close(dec._resolve_edge_codes(edge), resolve_edge_codes(edge))
 
 
 HUMANOID_SIDES = ['center'] * len(HUMANOID_PARENTS)
@@ -454,7 +440,7 @@ class LateralTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._edge(['left'])
 
-    def test_resolve_folds_laterality_into_the_index_and_drop_neutralizes_it(self):
+    def test_resolve_folds_laterality_into_the_index(self):
         edge = torch.as_tensor(self._edge()).unsqueeze(0)
         base = resolve_edge_codes(torch.as_tensor(create_topology_edge_relations(
             HUMANOID_PARENTS, symmetry_partner_indices=HUMANOID_PARTNERS)[0]).unsqueeze(0))
@@ -462,25 +448,14 @@ class LateralTest(unittest.TestCase):
         resolved = resolve_edge_codes(edge)
         np.testing.assert_array_equal(resolved[0].numpy(), base[0].numpy() + NUM_EDGE_CODES * lateral)
         self.assertLess(int(resolved.max()), NUM_EDGE_EMBEDDINGS)
-        dropped = resolve_edge_codes(edge, lateral_drop=torch.ones(1, 1, 1, dtype=torch.bool))
-        np.testing.assert_array_equal(dropped.numpy(), base.numpy())
 
-    def test_decoder_drops_laterality_per_sample(self):
+    def test_decoder_preserves_laterality_in_train_and_eval(self):
         from model.motion_transformer import GraphMotionDecoder, GraphMotionDecoderLayer
-        layer = GraphMotionDecoderLayer(d_model=8, nhead=2, dim_feedforward=16)
-        dec = GraphMotionDecoder(layer, num_layers=1, cross_limb=False, lateral_drop_prob=0.3)
-        self.assertEqual(dec.edge_key_emb.num_embeddings, NUM_EDGE_EMBEDDINGS)
-        edge = torch.as_tensor(self._edge()).unsqueeze(0).expand(20000, -1, -1)
-        torch.manual_seed(0)
-        dec.train()
-        sided = (dec._resolve_edge_codes(edge) >= NUM_EDGE_CODES).flatten(1)
-        # A sample keeps all of its lateral codes or none of them.
-        counts = sided.sum(dim=1)
-        self.assertEqual(set(counts.unique().tolist()), {0, int(counts.max())})
-        kept = counts > 0
-        self.assertAlmostEqual(1.0 - kept.float().mean().item(), 0.3, delta=0.015)
-        dec.eval()
-        self.assertTrue((dec._resolve_edge_codes(edge) >= NUM_EDGE_CODES).flatten(1).any(dim=1).all())
+        dec = GraphMotionDecoder(GraphMotionDecoderLayer(8, 2, 16), 1, cross_limb=False)
+        edge = torch.as_tensor(self._edge()).unsqueeze(0)
+        for training in (True, False):
+            dec.train(training)
+            torch.testing.assert_close(dec._resolve_edge_codes(edge), resolve_edge_codes(edge))
 
 
 class CondRefreshTest(unittest.TestCase):

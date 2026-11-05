@@ -325,15 +325,12 @@ def split_mirror_twin_codes(edge_rel):
     return edge_rel - MIRROR_TWIN_FLAG * is_twin, is_twin
 
 
-def resolve_edge_codes(edge_rel, twin_drop=None, lateral_drop=None):
+def resolve_edge_codes(edge_rel):
     """Map a stored ``edge_rel`` tensor onto embedding indices in
     ``[0, NUM_EDGE_EMBEDDINGS)``.
 
-    A twin cell becomes ``mirror_twin``; where ``twin_drop`` is True it becomes
-    its topological code instead, exactly as if the pair had never been paired.
-    Where ``lateral_drop`` is True the pair reads as ``neutral``, as if the rig
-    had no side labels. Torch-only (all arguments are tensors); the import stays
-    lazy so this module stays numpy-only for the preprocessing side.
+    Mirror pairs and laterality are always preserved. The import stays lazy
+    so preprocessing can use this module without importing torch.
     """
     import torch
 
@@ -341,10 +338,6 @@ def resolve_edge_codes(edge_rel, twin_drop=None, lateral_drop=None):
     edge_rel = edge_rel - LATERAL_FLAG * lateral
     is_twin = edge_rel >= MIRROR_TWIN_FLAG
     base = edge_rel - MIRROR_TWIN_FLAG * is_twin.to(edge_rel.dtype)
-    if twin_drop is not None:
-        is_twin = is_twin & ~twin_drop
-    if lateral_drop is not None:
-        lateral = lateral.masked_fill(lateral_drop, LATERAL_CODES['neutral'])
     code = torch.where(is_twin, torch.full_like(base, EDGE_CODES['mirror_twin']), base)
     return code + NUM_EDGE_CODES * lateral
 

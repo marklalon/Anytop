@@ -107,7 +107,8 @@ def test_vae_trains_and_resumes_without_val_or_export_and_uses_first_batch(monke
         name_list=['train/a', 'train/b'], opt=SimpleNamespace(max_joints=128)))
     monkeypatch.setattr(vae, 'get_dataset', lambda **kwargs: dataset)
     monkeypatch.setattr(vae, 'create_training_data_loader', lambda *args: [
-        (first, {'y': conditions}), (second, {'y': conditions})])
+        vae.AutoencoderBatchTransform()((first, {'y': conditions})),
+        vae.AutoencoderBatchTransform()((second, {'y': conditions}))])
     monkeypatch.setattr(vae, 'build_validation_loader', lambda args: None)
     seen = []
 

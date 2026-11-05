@@ -670,16 +670,12 @@ class MotionConditioningMixin:
     def _sample_rest_geom_drop(self, batch_size, joint_count, device):
         """Rest-geometry drop mask, ``[B, J]`` bool, or None when off.
 
-        In training, a joint's rest geometry is hidden when its whole sample
-        draws ``rest_geom_drop_prob`` or the joint itself draws
-        ``rest_geom_joint_drop_prob``. InputProcess zeroes the selected rows,
-        present flag included. Eval keeps every row. Branch-free on tensor
-        values, like _sample_joint_name_drop.
+        Each joint independently hides its geometry, including its present flag.
+        Eval keeps every row; tensor-only sampling supports torch.compile.
         """
         if not self.training:
             return None
-        if self.rest_geom_drop_prob <= 0.0 and self.rest_geom_joint_drop_prob <= 0.0:
+        if self.rest_geom_joint_drop_prob <= 0.0:
             return None
-        sample_drop = torch.rand(batch_size, 1, device=device) < self.rest_geom_drop_prob
         joint_drop = torch.rand(batch_size, joint_count, device=device) < self.rest_geom_joint_drop_prob
-        return sample_drop | joint_drop
+        return joint_drop

@@ -393,25 +393,10 @@ def add_model_options(parser):
                        help="Per-joint probability of zeroing a joint's ENTIRE name embedding during "
                             "training, encouraging fallback to rest geometry/graph_dist/joints_relations "
                             "when a name is unknown. Default 0.0 (off).")
-    group.add_argument("--rest_geom_drop_prob", default=0.1, type=float,
-                       help="Per-sample probability in training of hiding the whole rest geometry "
-                            "(y['rest_geom'], present flag included), so the rest is not a species "
-                            "fingerprint the model can always read. Inference never drops.")
     group.add_argument("--rest_geom_joint_drop_prob", default=0.1, type=float,
                        help="Per-joint probability in training of hiding one joint's rest geometry, "
-                            "drawn independently of --rest_geom_drop_prob and of the name drop. "
+                            "drawn independently of the name drop. "
                             "Inference never drops.")
-    group.add_argument("--mirror_twin_drop_prob", default=0.1, type=float,
-                       help="Per bilateral twin pair, the probability in training that the pair's "
-                            "mirror_twin edge code is replaced by its plain topological code "
-                            "(sibling / sibling_limb / cousin), so a skeleton whose symmetry pairing "
-                            "missed some twins stays in distribution. Both directions of a pair drop "
-                            "together. Inference never drops.")
-    group.add_argument("--lateral_drop_prob", default=0.1, type=float,
-                       help="Per-sample probability in training that every joint pair's lateral code "
-                            "(same side / opposite side, from joint_side_labels) reads as neutral, so a "
-                            "skeleton whose side labels are missing stays in distribution. Inference "
-                            "never drops.")
     group.add_argument("--tempo_cfg_drop_prob", default=0.1, type=float,
                        help="Per-sample probability of dropping the tempo condition (each window "
                             "frame's physical time, from resample_speed_cond) during training, as a "
