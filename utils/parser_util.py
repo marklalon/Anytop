@@ -486,8 +486,8 @@ def add_training_options(parser):
 
     group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")
     group.add_argument("--eval_interval", default=0, type=int,
-                       help="Compute the loss over the val split every N training steps (and at the "
-                            "last step), logged under Val/. 0 disables validation.")
+                       help="Compute loss over val every N training steps (and at the last step), "
+                            "logged under Val/. 0 disables validation.")
     group.add_argument("--val_t_strata", default=4, type=int,
                        help="Timesteps scored per val clip, one per equal-width stratum of "
                             "[0, T) (1 = a single uniform draw). More strata cut the variance "

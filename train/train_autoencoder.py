@@ -400,7 +400,8 @@ def parser():
     p.add_argument('--ema_rate', type=float, default=0.99)
     p.add_argument('--log_interval', type=int, default=100)
     p.add_argument('--save_interval', type=int, default=1000)
-    p.add_argument('--eval_interval', type=int, default=1000)
+    p.add_argument('--eval_interval', type=int, default=1000,
+                   help='Run validation every N steps (and at the end); 0 disables validation')
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--auto_resume', action='store_true')
     # Persist the fixed training contract in args.json and checkpoints.
@@ -425,8 +426,8 @@ def main():
         raise ValueError('ema_rate must lie in [0, 1]')
     cosine_decay_lr_lambda(args.lr, args.lr_final, args.lr_decay_start, args.num_steps)
     if min(args.num_frames, args.batch_size, args.num_steps, args.log_interval,
-           args.save_interval, args.eval_interval) < 1:
-        raise ValueError('Lengths, batch size, steps and intervals must be positive')
+           args.save_interval) < 1 or args.eval_interval < 0:
+        raise ValueError('Lengths, batch size, steps, log and save intervals must be positive; eval_interval must be nonnegative')
     if args.warmup_steps < 0:
         raise ValueError('warmup_steps must be nonnegative')
     if min(args.num_workers, args.main_process_prefetch_batches, args.motion_cache_size) < 0:
@@ -509,7 +510,7 @@ def main():
     # The training example supplies model dimensions only; evaluation uses val.
     example = next(batches)
     batches = chain((example,), batches)
-    val_loader = build_validation_loader(args)
+    val_loader = build_validation_loader(args) if args.eval_interval > 0 else None
     buckets = resolve_joint_buckets(args.joint_buckets or JOINT_BUCKETS, source.opt.max_joints)
     x, y = training_batch_to_device(example, device)
     model = MotionAutoencoder(t5_out_dim=y['joints_names_embs'].shape[-1], width=args.width,
@@ -626,7 +627,7 @@ def main():
         writer.flush()
         return report
 
-    initial = run_eval(start)
+    initial = run_eval(start) if val_loader is not None else None
     if start == 0 and initial is not None:
         (save / 'initial_metrics.json').write_text(json.dumps(initial, indent=2), encoding='utf-8')
     tqdm.write(f'train steps: {args.num_steps} (log={args.log_interval}, '
@@ -707,10 +708,13 @@ def main():
                 torch.save(payload, temporary)
                 temporary.replace(checkpoint)
                 tqdm.write(f'[INFO] step[{step}]: saved checkpoint to {checkpoint}')
-            if step % args.eval_interval == 0 and step != args.num_steps:
+            if val_loader is not None and step % args.eval_interval == 0 and step != args.num_steps:
                 run_eval(step)
-    run_eval(max(start, args.num_steps))
-    tqdm.write(f'[INFO] Saved checkpoint and available validation metrics to {save}')
+    if val_loader is not None:
+        run_eval(max(start, args.num_steps))
+        tqdm.write(f'[INFO] Saved checkpoint and available validation metrics to {save}')
+    else:
+        tqdm.write(f'[INFO] Saved checkpoint to {save} (validation disabled)')
     writer.close()
 
 

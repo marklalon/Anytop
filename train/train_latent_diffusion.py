@@ -192,8 +192,8 @@ def main(argv=None):
     if args.num_frames != 60:
         raise ValueError('Only fixed 60-frame training is supported')
     if min(args.batch_size, args.stats_batches, args.num_steps, args.log_interval,
-           args.save_interval, args.eval_interval) < 1:
-        raise ValueError('Batch/step/interval counts must be positive')
+           args.save_interval) < 1 or args.eval_interval < 0:
+        raise ValueError('Batch/step/log/save counts must be positive and eval_interval nonnegative')
     if not np.isfinite(args.lr) or args.lr <= 0 or not np.isfinite(args.weight_decay) or args.weight_decay < 0:
         raise ValueError('Invalid optimizer settings')
     if not 0 <= args.ema_rate <= 1:
@@ -241,7 +241,8 @@ def main(argv=None):
     if resume and resume['motion_names'] != motion_names:
         raise ValueError('Selected training clips changed')
     batches = training_batches(loader)
-    val_loader = build_validation_loader(args, LatentBatchTransform())
+    val_loader = (build_validation_loader(args, LatentBatchTransform())
+                  if args.eval_interval > 0 else None)
     norm = (LatentNormalizer.from_metadata(resume['normalization']).to(device) if resume else
             estimate_normalizer(ae, batches, args.stats_batches, device, args.latent_mode))
     config = dict(t5_out_dim=ae.config['t5_out_dim'], slots=ae.slots, latent_channels=ae.latent_dim)
