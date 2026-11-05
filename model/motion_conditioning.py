@@ -180,9 +180,9 @@ class MotionConditioningMixin:
         cycle, ``L / k``, the same at every frame (``cycles`` is 1 on a
         reference-active row, so that row reads ``L``) -- frame positions inside
         the cycle are the circular table's job, and a ramp would jump at the
-        seam. ``L = resample_speed_cond * T``. A dropped row (``tempo_active``
-        False) gets zeros (the training-time tempo drop). ``is_loop`` /
-        ``cycles`` default to :meth:`_loop_condition` of ``y``.
+        seam. ``L = resample_speed_cond * T``. Training and inference always
+        keep tempo. ``is_loop`` / ``cycles`` default to
+        :meth:`_loop_condition` of ``y``.
         """
         if is_loop is None or cycles is None:
             is_loop, cycles = self._loop_condition(y, batch_size, device)
@@ -206,8 +206,6 @@ class MotionConditioningMixin:
             self.loop_period_projection, create_sin_embedding(period, self.latent_dim)
         )                                                                          # [B, 1, D]
         tempo_emb = torch.where(is_loop.view(-1, 1, 1), loop_emb, open_emb)
-        active = self._resolve_tempo_active(y.get('tempo_active'), batch_size, device)
-        tempo_emb = tempo_emb * active.view(-1, 1, 1).to(tempo_emb.dtype)
         return tempo_emb.transpose(0, 1)
 
 
@@ -600,26 +598,6 @@ class MotionConditioningMixin:
                 f"{species_code.shape[0]} for batch {batch_size}"
             )
         return species_code
-
-
-    def _resolve_tempo_active(self, raw_tempo_active, batch_size, device):
-        """Per-sample keep mask for the tempo condition. An explicit
-        y['tempo_active'] overrides;
-        otherwise training samples a Bernoulli keep so the condition is hard-dropped
-        with probability tempo_cfg_drop_prob; eval/inference keeps every sample."""
-        if raw_tempo_active is not None:
-            active = torch.as_tensor(raw_tempo_active, device=device, dtype=torch.bool).reshape(-1)
-            if active.numel() == 1 and batch_size != 1:
-                active = active.expand(batch_size)
-            elif active.numel() != batch_size:
-                raise ValueError(
-                    "tempo_active batch dimension must match the motion batch size, got "
-                    f"{active.numel()} for batch {batch_size}"
-                )
-            return active
-        if self.training and self.tempo_cfg_drop_prob > 0.0:
-            return torch.rand(batch_size, device=device) >= self.tempo_cfg_drop_prob
-        return torch.ones(batch_size, device=device, dtype=torch.bool)
 
 
     def _temporal_rope_off(self, y, batch_size, device, ref_active):

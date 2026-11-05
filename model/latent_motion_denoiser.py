@@ -48,7 +48,7 @@ class LatentMotionDenoiser(MotionConditioningMixin, nn.Module):
                  modifier_slot_drop_prob=0.0, species_cond=True,
                  species_film_bottleneck=128, joint_name_drop_prob=0.15,
                  rest_geom_joint_drop_prob=0.1,
-                 tempo_cfg_drop_prob=0.1, temporal_rope_ref_drop_prob=0.0,
+                 temporal_rope_ref_drop_prob=0.0,
                  temporal_rope_drop_prob=0.0, ref_encoder=True, ref_slots=2,
                  ref_dim=8, ref_width=64, ref_layers=2, ref_cfg_drop_prob=0.4):
         super().__init__()

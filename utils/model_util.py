@@ -246,7 +246,6 @@ def get_gmdm_args(args):
             'temporal_span_mask_prob': getattr(args, 'temporal_span_mask_prob', 0.0),
             'temporal_span_mask_min_frames': getattr(args, 'temporal_span_mask_min_frames', 4),
             'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 20),
-            'tempo_cfg_drop_prob': getattr(args, 'tempo_cfg_drop_prob', 0.1),
             'species_cond': getattr(args, 'species_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
             'rest_geom_joint_drop_prob': getattr(args, 'rest_geom_joint_drop_prob', 0.1),

@@ -397,11 +397,6 @@ def add_model_options(parser):
                        help="Per-joint probability in training of hiding one joint's rest geometry, "
                             "drawn independently of the name drop. "
                             "Inference never drops.")
-    group.add_argument("--tempo_cfg_drop_prob", default=0.1, type=float,
-                       help="Per-sample probability of dropping the tempo condition (each window "
-                            "frame's physical time, from resample_speed_cond) during training, as a "
-                            "regularizer so the motion does not lean on the length alone. "
-                            "Inference always keeps the condition.")
     group.add_argument("--species_cond", action='store_true',
                        help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_code], "
                             "species_code = [T5(body plan) || variant one-hot]. Zero-initialized to "

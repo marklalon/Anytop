@@ -168,7 +168,6 @@ if "%TRAIN_STAGE%"=="diffusion" (
     --ref_cfg_drop_prob 0.6 ^
     --temporal_rope ^
     --action_label_cfg_drop_prob 0.2 ^
-    --tempo_cfg_drop_prob 0.0 ^
     --denoiser_joint_name_drop_prob 0.15 ^
     --denoiser_rest_geom_joint_drop_prob 0.1 ^
     --motion_speed_aug 1.3 ^

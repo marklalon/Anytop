@@ -339,7 +339,7 @@ def test_compiled_training_forwards_preserve_targets_gradients_and_checkpoint_ke
     ae = MotionAutoencoder(t5_out_dim=4, width=16, layers=1, heads=2,
                            slots=2, latent_dim=3).eval().requires_grad_(False)
     norm = LatentNormalizer(torch.zeros(2, 3), torch.ones(2, 3))
-    model = denoiser(ref_cfg_drop_prob=0, tempo_cfg_drop_prob=0)
+    model = denoiser(ref_cfg_drop_prob=0)
     keys = tuple(model.state_dict())
     forward, encoder = training_forwards(model, ae, norm, 'reduce-overhead')
     x, y = torch.randn(2, 5, 9, 60), conditions()
@@ -402,6 +402,11 @@ def test_checkpoint_binding_and_contract_rejection(tmp_path):
     path = tmp_path / 'latent.pt'
     torch.save(payload, path)
     restored, _, _, _ = load_latent_checkpoint(path)
+    torch.testing.assert_close(restored.input.weight, model.input.weight)
+    legacy = dict(payload, model_config=dict(model.config, tempo_cfg_drop_prob=1.0))
+    torch.save(legacy, path)
+    restored, _, _, _ = load_latent_checkpoint(path)
+    assert 'tempo_cfg_drop_prob' not in restored.config
     torch.testing.assert_close(restored.input.weight, model.input.weight)
     for key in ('kind', 'time_contract', 'reference_contract', 'prediction'):
         wrong = dict(payload, **{key: 'incompatible'})

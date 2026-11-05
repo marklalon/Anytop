@@ -193,7 +193,6 @@ def test_physical_time_embedding_matches_old_diffusion(frames, is_loop, cycles):
     old = SimpleNamespace(latent_dim=model.width, tempo_projection=model.tempo_projection,
                           loop_period_projection=model.loop_period_projection)
     old._coerce_resample_speed_cond = lambda raw, **kwargs: AnyTop._coerce_resample_speed_cond(old, raw, **kwargs)
-    old._resolve_tempo_active = lambda raw, batch, device: torch.ones(batch, device=device, dtype=torch.bool)
     expected = AnyTop._tempo_frame_embedding(old, metadata, 2, frames, torch.device('cpu'),
                                             metadata['is_loop'], metadata['loop_tile_count'])
     actual = model._tempo_embedding(torch.ones(2, frames, dtype=torch.bool), metadata).squeeze(2)

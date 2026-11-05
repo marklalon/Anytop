@@ -237,10 +237,8 @@ position 回到 RIC，速度行写入根的世界步长（读存储 clip 的代�
 
 两个头的末层都零初始化。
 
-训练以 `--tempo_cfg_drop_prob` 整行丢弃（该行不加 tempo embedding，loop 行同样），只作正则，
-让动作不单靠长度决定；推理始终保留 tempo 条件，没有 tempo CFG。loop 行被丢弃时仍保留
-周期为 `T / k` 的循环表，只是不知道一个周期对应多少源帧。推理的长度默认来自
-`clip_length_prior`。
+训练和推理始终保留 tempo 条件，open 和 loop 行都不丢弃，没有 tempo CFG。
+推理的长度默认来自 `clip_length_prior`。
 
 数据侧的 `motion_speed_aug` 改变源长度 `L`，模型经 tempo 条件看到，不应与
 `resample_speed_cond` 本身混为一谈。

@@ -76,11 +76,6 @@ class AnyTop(MotionConditioningMixin, nn.Module):
         self.temporal_span_mask_min_frames=int(kargs.get('temporal_span_mask_min_frames', 4))
         self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 20))
         self.unreliable_mask_drop_prob=float(kargs.get('unreliable_mask_drop_prob', 0.0))
-        self.tempo_cfg_drop_prob=float(kargs.get('tempo_cfg_drop_prob', 0.1))
-        if not 0.0 <= self.tempo_cfg_drop_prob <= 1.0:
-            raise ValueError(
-                f"tempo_cfg_drop_prob must be in [0, 1], got {self.tempo_cfg_drop_prob}"
-            )
         # --species_cond: the species code (body plan + variant) FiLM-modulates
         # each joint-name embedding in InputProcess; that is its only entry point.
         # It is on exactly on the rows without an active reference, so it has
@@ -190,8 +185,8 @@ class AnyTop(MotionConditioningMixin, nn.Module):
         # beside the action label where the frame count became a content key
         # that could outvote the label. The two get separate heads because
         # the same input value means a frame time in one and a period in the
-        # other. Zero-init last layers, so a fresh model starts tempo-blind;
-        # dropped in training with tempo_cfg_drop_prob as a regularizer.
+        # other. Zero-init last layers, so a fresh model starts tempo-blind.
+        # Training and inference always keep the tempo condition.
         self.tempo_projection = _zero_init_mlp(self.latent_dim)
         self.loop_period_projection = _zero_init_mlp(self.latent_dim)
         # The loop window's cycle count k (y['loop_tile_count'] on loop rows)

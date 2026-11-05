@@ -140,11 +140,10 @@ def test_open_rows_ignore_the_cycle_count():
     assert torch.equal(a['tgt'], b['tgt'])
 
 
-def test_cycle_count_survives_the_tempo_drop():
-    """A tempo-dropped loop row loses L but keeps k."""
+def test_cycle_count_changes_loop_frame_positions():
+    """The cycle count determines loop frame positions."""
     model = _model()
-    off = torch.zeros(2, dtype=torch.bool)
-    loop = dict(is_loop=torch.tensor([True, True]), tempo_active=off)
+    loop = dict(is_loop=torch.tensor([True, True]))
     one = _decoder_input(model, _y(2, **loop, loop_tile_count=torch.tensor([1, 1])), 6)
     two = _decoder_input(model, _y(2, **loop, loop_tile_count=torch.tensor([2, 2])), 6)
     assert not torch.allclose(one['tgt'], two['tgt'])
