@@ -1651,10 +1651,20 @@ class MotionDataset(data.Dataset):
         if getattr(self.opt, 'autoencoder_dual_view', False) and _temporal_plan is None:
             if ref_source is not None:
                 raise ValueError('AE dual views cannot be combined with ref_encoder')
-            # Start from the stored rig again: skeleton draws are independent,
-            # while temporal sampling and loop labels are shared exactly.
+            # Real reference pairs replace the synthetic second view when
+            # available. Each motion retains its own rig and augmentation;
+            # the validated frame-for-frame pair shares one temporal map.
+            group = (getattr(self, 'reference_groups', {}).get(name)
+                     if getattr(self.opt, 'autoencoder_reference_pairs', False) else None)
+            # Uniform over all members, including self (one of N entries).
+            # Validation excludes self to measure real paired transfer.
+            candidates = ([member for member in group if member != name]
+                          if group and getattr(self.opt, 'autoencoder_reference_only_partners', False)
+                          else group)
+            partner = random.choice(candidates) if candidates else name
+            partner_data = self.data_dict[partner] if partner != name else data
             paired_view = self._prepare_sample(
-                name, data, target_num_frames=target_num_frames,
+                partner, partner_data, target_num_frames=target_num_frames,
                 loop_offset=loop_offset, _temporal_plan=temporal_plan)
 
         if return_aug_info:

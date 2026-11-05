@@ -18,6 +18,7 @@ from tqdm import tqdm
 from data_loaders.get_data import build_dataset_loader, get_dataset
 from data_loaders.joint_buckets import resolve_joint_buckets
 from data_loaders.tensors import truebones_batch_collate
+from data_loaders.truebones.data.dataset import load_reference_groups
 from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_FEATURE_SPACE, canonical_to_physical_hml,
 )
@@ -88,10 +89,19 @@ class AutoencoderBatchTransform:
         return motion[:, :, :9].contiguous(), {'y': clean}
 
 
+def configure_autoencoder_views(source, args):
+    """Resolve pairs within this split/filter before constructing the sampler."""
+    source.opt.autoencoder_dual_view = args.dual_view or args.reference_pairs
+    source.opt.autoencoder_reference_pairs = args.reference_pairs
+    source.opt.autoencoder_reference_only_partners = False
+    source.reference_groups = (load_reference_groups(source.opt.sources, source.data_dict)
+                               if args.reference_pairs else {})
+
+
 def create_training_data_loader(args, dataset):
     for key in AUGMENTATION_DEFAULTS:
         setattr(dataset.motion_dataset.opt, key, getattr(args, key))
-    dataset.motion_dataset.opt.autoencoder_dual_view = args.dual_view
+    configure_autoencoder_views(dataset.motion_dataset, args)
     return build_dataset_loader(
         dataset, batch_size=args.batch_size, drop_last=True,
         num_workers=args.num_workers,
@@ -313,28 +323,46 @@ def evaluate_dual_view_validation(model, loader, args, device):
     source.opt = copy.copy(source.opt)
     for key in ('topology_aug_prob', 'bone_length_aug_prob', 'rest_repose_prob', 'rest_variant_prob'):
         setattr(source.opt, key, getattr(args, key))
+    configure_autoencoder_views(source, args)
     source.opt.autoencoder_dual_view = True
+    source.opt.autoencoder_reference_only_partners = True
     model.eval()
     totals = dict(cross_reconstruction_loss=0., self_reconstruction_loss=0.)
     count = 0
+    paired_totals = dict(cross_reconstruction_loss=0., self_reconstruction_loss=0.)
+    paired_count = 0
     transform = AutoencoderBatchTransform()
     criterion = MotionReconstructionLosses()
     names = source.name_list[source.pointer:]
     with _fixed_validation_rng(device):
-        for start in range(0, len(names), args.batch_size):
-            selected = names[start:start + args.batch_size]
-            samples = [source.prepare_sample_by_name(name) for name in selected]
-            batch = transform(truebones_batch_collate(samples, joint_buckets=args.joint_buckets or JOINT_BUCKETS))
-            x, y = training_batch_to_device(batch, device)
-            terms = dual_view_training_terms(model, criterion, x, y)
-            for key in totals:
-                totals[key] += float(terms[key]) * len(selected)
-            count += len(selected)
+        # Keep paired metrics separate from the synthetic-view fallback.
+        for paired in (False, True):
+            subset = [name for name in names if (name in source.reference_groups) == paired]
+            for start in range(0, len(subset), args.batch_size):
+                selected = subset[start:start + args.batch_size]
+                samples = [source.prepare_sample_by_name(name) for name in selected]
+                batch = transform(truebones_batch_collate(samples, joint_buckets=args.joint_buckets or JOINT_BUCKETS))
+                x, y = training_batch_to_device(batch, device)
+                terms = dual_view_training_terms(model, criterion, x, y)
+                for key in totals:
+                    value = float(terms[key]) * len(selected)
+                    totals[key] += value
+                    if paired:
+                        paired_totals[key] += value
+                count += len(selected)
+                if paired:
+                    paired_count += len(selected)
     if not count:
         return {}
-    return {'dual_view_cross_mse': totals['cross_reconstruction_loss'] / count,
+    metrics = {'dual_view_cross_mse': totals['cross_reconstruction_loss'] / count,
             'dual_view_self_mse': totals['self_reconstruction_loss'] / count,
             'dual_view_sample_count': count}
+    if args.reference_pairs:
+        metrics['reference_pair_sample_count'] = paired_count
+        if paired_count:
+            metrics.update(reference_pair_cross_mse=paired_totals['cross_reconstruction_loss'] / paired_count,
+                           reference_pair_self_mse=paired_totals['self_reconstruction_loss'] / paired_count)
+    return metrics
 
 
 def parser():
@@ -399,6 +427,8 @@ def parser():
                    help='Independent skeleton views, shared time map; bidirectional cross reconstruction with independent encoder/decoder name drop')
     p.add_argument('--dual_view_self_weight', type=float, default=1.0,
                    help='Self reconstruction relative to cross reconstruction in dual-view mode (default: equal weight)')
+    p.add_argument('--reference_pairs', action='store_true',
+                   help='Sample the second view uniformly from reference_pairs.jsonl groups, including self; implies dual_view. Unpaired clips retain synthetic views')
     for argument in LOSS_WEIGHTS.values():
         p.add_argument('--' + argument, type=float, default=0.0)
     p.add_argument('--drot_joint_boost', type=float, default=0.0)
@@ -411,6 +441,7 @@ def parser():
 
 def main():
     args = parser().parse_args()
+    args.dual_view = args.dual_view or args.reference_pairs
     if not np.isfinite(args.lr) or args.lr <= 0:
         raise ValueError('lr must be finite and positive')
     if not np.isfinite(args.weight_decay) or args.weight_decay < 0:
@@ -496,7 +527,7 @@ def main():
         for key in ('variational', 'kl_weight'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
-        for key, default in (('dual_view', False), ('dual_view_self_weight', 1.0)):
+        for key, default in (('dual_view', False), ('dual_view_self_weight', 1.0), ('reference_pairs', False)):
             if resume['args'].get(key, default) != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run for a new objective')
     # Preserve the accepted training contract for inference, including resumes.
@@ -572,6 +603,10 @@ def main():
         tqdm.write('[INFO] dual views: independent skeleton augmentation, shared temporal map; '
                    'independent encoder/decoder name drop, source-only joint geometry drop; '
                    f'bidirectional cross/self relative weights=1/{args.dual_view_self_weight:g}')
+    if args.reference_pairs:
+        tqdm.write(f'[INFO] reference pairs: {len(source.reference_groups)}/{len(names)} training clips; '
+                   'uniform group sampling includes self as one member; '
+                   'unpaired clips use synthetic views; no latent alignment loss')
     del example, x, y
     if resume is not None:
         tqdm.write(f'[INFO] Resuming {checkpoint} at completed step {start:,}/{args.num_steps:,}')

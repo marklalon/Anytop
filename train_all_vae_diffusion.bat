@@ -2,14 +2,57 @@
 setlocal EnableExtensions
 REM Train the full-dataset VAE first, then latent diffusion using its checkpoint.
 REM Capacity and long-run schedule follow train_all.bat; retain the VAE latent bottleneck.
-REM Usage: train_all_vae_diffusion.bat [vae_run_name] [diffusion_run_name]
+REM Usage: train_all_vae_diffusion.bat [--autoencoder-only ^| --latent-diffusion-only] [vae_run_name] [diffusion_run_name]
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
-set "AE_RUN_NAME=all_autoencoder_dual_view_v1"
-set "DIFFUSION_RUN_NAME=all_latent_diffusion_dual_view_v1"
-if not "%~1"=="" set "AE_RUN_NAME=%~1"
-if not "%~2"=="" set "DIFFUSION_RUN_NAME=%~2"
+set "AE_RUN_NAME=all_autoencoder_reference_pairs_v1"
+set "DIFFUSION_RUN_NAME=all_latent_diffusion_reference_pairs_v1"
+set "TRAIN_STAGE=both"
+set "RUN_NAME_COUNT=0"
+:parse_args
+if "%~1"=="" goto :args_done
+if /i "%~1"=="--help" goto :usage
+if /i "%~1"=="-h" goto :usage
+if /i "%~1"=="--autoencoder-only" (
+    if "%TRAIN_STAGE%"=="diffusion" goto :conflicting_stages
+    set "TRAIN_STAGE=autoencoder"
+    shift
+    goto :parse_args
+)
+if /i "%~1"=="--latent-diffusion-only" (
+    if "%TRAIN_STAGE%"=="autoencoder" goto :conflicting_stages
+    set "TRAIN_STAGE=diffusion"
+    shift
+    goto :parse_args
+)
+set "ARG=%~1"
+if "%ARG:~0,1%"=="-" (
+    echo ERROR: Unknown option: %~1
+    exit /b 2
+)
+if "%RUN_NAME_COUNT%"=="2" (
+    echo ERROR: Expected at most two run names.
+    exit /b 2
+)
+if "%RUN_NAME_COUNT%"=="0" set "AE_RUN_NAME=%~1"
+if "%RUN_NAME_COUNT%"=="1" set "DIFFUSION_RUN_NAME=%~1"
+set /a RUN_NAME_COUNT+=1 >nul
+shift
+goto :parse_args
+:conflicting_stages
+echo ERROR: --autoencoder-only and --latent-diffusion-only are mutually exclusive.
+exit /b 2
+:usage
+echo Usage: %~nx0 [--autoencoder-only ^| --latent-diffusion-only] [vae_run_name] [diffusion_run_name]
+echo.
+echo Default: train the VAE, then latent diffusion.
+echo   --autoencoder-only       Train only the VAE.
+echo   --latent-diffusion-only  Train only latent diffusion using save/vae_run_name/autoencoder.pt.
+echo Options can appear before or after the run names.
+echo Omitted run names use the script defaults.
+exit /b 0
+:args_done
 if not exist "%PYTHON_EXE%" (
     echo ERROR: Python environment not found: "%PYTHON_EXE%"
     exit /b 1
@@ -21,12 +64,15 @@ if not exist "dataset\cond_all.npy" (
     popd
     exit /b 1
 )
+set "EXIT_CODE=0"
+if "%TRAIN_STAGE%"=="diffusion" goto :latent_diffusion
 echo [1/2] Training full-dataset VAE: %AE_RUN_NAME%
 "%PYTHON_EXE%" train/train_motion_autoencoder.py ^
     --cond_path dataset/cond_all.npy ^
     --save_dir "save/%AE_RUN_NAME%" ^
     --seed 10 ^
     --dual_view ^
+    --reference_pairs ^
     --dual_view_self_weight 1.0 ^
     --motion_speed_aug 1.3 ^
     --loop_tile_single_prob 0.5 ^
@@ -85,8 +131,11 @@ echo [1/2] Training full-dataset VAE: %AE_RUN_NAME%
     --eval_interval 5000
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" goto :finish
+if "%TRAIN_STAGE%"=="autoencoder" goto :finish
+:latent_diffusion
 if not exist "save\%AE_RUN_NAME%\autoencoder.pt" (
-    echo ERROR: VAE checkpoint not found after training.
+    echo ERROR: VAE checkpoint not found: "save\%AE_RUN_NAME%\autoencoder.pt"
+    echo Train the VAE first or provide an existing vae_run_name.
     set "EXIT_CODE=1"
     goto :finish
 )
