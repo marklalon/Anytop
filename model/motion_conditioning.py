@@ -600,33 +600,6 @@ class MotionConditioningMixin:
         return species_code
 
 
-    def _temporal_rope_off(self, y, batch_size, device, ref_active):
-        """``[B]`` bool, True = the row's temporal attention runs without RoPE,
-        or None when every row keeps it.
-
-        Training drops RoPE per row: ``temporal_rope_ref_drop_prob`` on
-        reference-active rows, ``temporal_rope_drop_prob`` on the rest. With
-        the reference drop on, inference runs every reference-active row
-        without RoPE; the reference CFG null pass keeps RoPE on.
-        y['temporal_rope_off'] can additionally disable it on explicit rows.
-        """
-        ref_p, other_p = self.temporal_rope_ref_drop_prob, self.temporal_rope_drop_prob
-        if not self.temporal_rope or (ref_p == 0 and other_p == 0):
-            return None
-        if ref_active is None:
-            ref_active = torch.zeros(batch_size, device=device, dtype=torch.bool)
-        if self.training:
-            prob = torch.where(ref_active, ref_p, other_p)
-            return torch.rand(batch_size, device=device) < prob
-        if ref_p == 0:
-            return None
-        off = ref_active
-        null_off = y.get('temporal_rope_off')
-        if null_off is not None:
-            off = off | torch.as_tensor(null_off, device=device, dtype=torch.bool).reshape(-1)
-        return off
-
-
     def _sample_joint_name_drop(self, batch_size, joint_count, device):
         """Whole-joint name dropout mask, ``[B, J]`` bool, or None when off.
 

@@ -58,11 +58,6 @@ class AnyTop(MotionConditioningMixin, nn.Module):
         self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
         self.temporal_rope=bool(kargs.get('temporal_rope', False))
-        self.temporal_rope_ref_drop_prob=float(kargs.get('temporal_rope_ref_drop_prob', 0.0))
-        self.temporal_rope_drop_prob=float(kargs.get('temporal_rope_drop_prob', 0.0))
-        for name in ('temporal_rope_ref_drop_prob', 'temporal_rope_drop_prob'):
-            if not 0 <= getattr(self, name) <= 1:
-                raise ValueError(f'{name} must be in [0, 1]')
         # Hidden widths of conditioning heads; 0 selects latent_dim.
         self.action_adaln_bottleneck=int(kargs.get('action_adaln_bottleneck', 0))
         self.species_film_bottleneck=int(kargs.get('species_film_bottleneck', 128))
@@ -571,7 +566,7 @@ class AnyTop(MotionConditioningMixin, nn.Module):
         # The decoder re-adds the same circular table (period T / k) per layer
         # on loop rows.
         output = self.seqTransDecoder(
-            temporal_rope_off=self._temporal_rope_off(y, bs, x.device, ref_active),
+            temporal_rope_off=y.get('temporal_rope_off'),
             tgt=x,
             timesteps_embs=timesteps_emb,
             memory=None,

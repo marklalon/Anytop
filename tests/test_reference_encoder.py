@@ -721,34 +721,12 @@ def test_only_a_frame_inpaint_edit_is_conditioned_on_its_own_z():
     assert not uses(inpaint_frames='20-30', reference_edit=False)
 
 
-def test_temporal_rope_drop_per_row_in_training_and_ref_rows_off_at_inference():
-    m = model(ref_cfg_drop_prob=0, temporal_rope=True, temporal_rope_ref_drop_prob=1.0,
-              temporal_rope_drop_prob=0.0).train()
-    active = torch.tensor([True, False])
-    assert m._temporal_rope_off({}, 2, 'cpu', active).tolist() == [True, False]
-    m.temporal_rope_ref_drop_prob, m.temporal_rope_drop_prob = 0.0, 1.0
-    assert m._temporal_rope_off({}, 2, 'cpu', active).tolist() == [False, True]
-    m.temporal_rope_ref_drop_prob, m.temporal_rope_drop_prob = 0.8, 0.2
-    torch.manual_seed(0)
-    draws = torch.stack([m._temporal_rope_off({}, 2, 'cpu', active) for _ in range(4000)]).float().mean(0)
-    assert abs(draws[0] - 0.8) < 0.03 and abs(draws[1] - 0.2) < 0.03
-    m.eval()
-    assert m._temporal_rope_off({}, 2, 'cpu', active).tolist() == [True, False]
-    null = {'temporal_rope_off': torch.ones(2, dtype=torch.bool)}
-    assert m._temporal_rope_off(null, 2, 'cpu', torch.zeros(2, dtype=torch.bool)).all()
-    m.temporal_rope_ref_drop_prob = 0.0
-    assert m._temporal_rope_off(null, 2, 'cpu', active) is None
-    assert model(temporal_rope=True)._temporal_rope_off({}, 2, 'cpu', active) is None
-
-
-def test_reference_cfg_null_pass_keeps_rope_while_reference_drops_it():
+def test_reference_cfg_passes_keep_explicit_rope_override():
     seen = []
-    rope_model = model(temporal_rope=True, temporal_rope_ref_drop_prob=0.8,
-                       temporal_rope_drop_prob=0.2).eval()
 
     class Inner(torch.nn.Module):
         def forward(self, x, t, y=None):
-            seen.append(rope_model._temporal_rope_off(y, x.shape[0], x.device, y['ref_active']))
+            seen.append((y['ref_active'], y['temporal_rope_off']))
             return x
 
     wrapper = ClassifierFreeReferenceModel(Inner(), 2.0, num_timesteps=100)
@@ -757,6 +735,7 @@ def test_reference_cfg_null_pass_keeps_rope_while_reference_drops_it():
         'ref_active': torch.ones(2, dtype=torch.bool),
         'temporal_rope_off': torch.ones(2, dtype=torch.bool),
     })
-    null_off, ref_off = seen
-    assert not null_off.any()
-    assert ref_off.all()
+    null_active, null_off = seen[0]
+    ref_active, ref_off = seen[1]
+    assert not null_active.any() and ref_active.all()
+    assert null_off.all() and ref_off.all()

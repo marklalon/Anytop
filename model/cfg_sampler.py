@@ -138,9 +138,6 @@ class ClassifierFreeReferenceModel(ClassifierFreeActionModel):
         null_y = dict(y or {})
         null_y['ref_active'] = torch.zeros(x.shape[0], dtype=torch.bool, device=x.device)
         null_y['action_label_active'] = torch.zeros_like(null_y['ref_active'])
-        # Keep RoPE on in the null pass; reference-active rows still drop it
-        # at inference under --temporal_rope_ref_drop_prob.
-        null_y['temporal_rope_off'] = torch.zeros_like(null_y['ref_active'])
         if nonzero(base_weight):
             out = base_weight * self.model(x, timesteps, y=null_y, **kwargs)
         if nonzero(ref_weight):

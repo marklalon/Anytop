@@ -1204,7 +1204,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # temporal_key_padding_mask: (B, T) bool, True = no frame may attend to
         # this frame in temporal attention (the frame still queries).
         # temporal_rope_off: (B,) bool, True = that row's temporal attention
-        # uses the identity RoPE table (see AnyTop._temporal_rope_off).
+        # uses the identity RoPE table when explicitly selected by the caller.
         topology_rel = edge_rel = None
         if self.graph_relations:
             topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))

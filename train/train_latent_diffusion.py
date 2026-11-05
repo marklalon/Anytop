@@ -66,7 +66,6 @@ def parser():
     for key, value in dict(lr=1e-4, lr_final=5e-5, weight_decay=0.0, ema_rate=0.995,
                            dropout=0.05, action_label_cfg_drop_prob=0.2,
                            direction_slot_drop_prob=0.0, modifier_slot_drop_prob=0.0,
-                           temporal_rope_drop_prob=0.0,
                            noise_schedule_shift=1.0,
                            denoiser_joint_name_drop_prob=0.15,
                            denoiser_rest_geom_joint_drop_prob=0.1).items():
@@ -226,8 +225,7 @@ def main(argv=None):
     config = dict(t5_out_dim=ae.config['t5_out_dim'], slots=ae.slots, latent_channels=ae.latent_dim)
     for key in ('width', 'layers', 'heads', 'ff_size', 'skeleton_layers', 'dropout',
                 'temporal_rope', 'action_label_cond', 'species_cond',
-                'action_label_cfg_drop_prob', 'direction_slot_drop_prob', 'modifier_slot_drop_prob',
-                'temporal_rope_drop_prob'):
+                'action_label_cfg_drop_prob', 'direction_slot_drop_prob', 'modifier_slot_drop_prob'):
         config[key] = getattr(args, key)
     for key in ('joint_name_drop_prob', 'rest_geom_joint_drop_prob'):
         config[key] = getattr(args, 'denoiser_' + key)

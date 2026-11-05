@@ -63,8 +63,8 @@ def test_padding_joints_cannot_change_valid_prediction():
     torch.testing.assert_close(model(z, torch.zeros(2), y), model(z, torch.zeros(2), changed))
 
 
-def test_loop_cycles_and_rope_dropout():
-    model = denoiser(temporal_rope_drop_prob=1).train()
+def test_loop_cycles_and_explicit_rope_override():
+    model = denoiser().train()
     y = conditions()
     _, cycles = model._loop_condition(y, 2, torch.device('cpu'))
     assert cycles.tolist() == [3, 3]
@@ -73,7 +73,7 @@ def test_loop_cycles_and_rope_dropout():
         lambda module, args, kwargs: seen.append(kwargs['temporal_rope_off']), with_kwargs=True)
     z, t = torch.randn(2, 60, 2, 3), torch.zeros(2)
     model(z, t, y)
-    assert seen[-1].all()
+    assert seen[-1] is None
     model.eval()(z, t, y)
     assert seen[-1] is None
     model(z, t, dict(y, temporal_rope_off=torch.tensor([True, False])))
@@ -132,6 +132,7 @@ def test_fixed_window_and_shared_collator_transform():
     ('--ref_encoder', None), ('--ref_slots', '2'), ('--ref_dim', '8'),
     ('--ref_width', '64'), ('--ref_layers', '2'), ('--ref_cfg_drop_prob', '0.4'),
     ('--temporal_rope_ref_drop_prob', '0.5'),
+    ('--temporal_rope_drop_prob', '0.5'),
 ])
 def test_training_rejects_removed_reference_options(flag, value):
     with pytest.raises(SystemExit):
@@ -248,7 +249,8 @@ def test_training_saves_loads_and_resumes_without_reference(monkeypatch, tmp_pat
     assert checkpoint['capabilities'] == ['generate']
     assert 'reference_contract' not in checkpoint
     for config in (checkpoint['args'], checkpoint['model_config']):
-        assert not any(key.startswith('ref_') or key == 'temporal_rope_ref_drop_prob' for key in config)
+        assert not any(key.startswith('ref_') or key in (
+            'temporal_rope_ref_drop_prob', 'temporal_rope_drop_prob') for key in config)
     assert not any('reference' in key or 'ref_' in key for key in model.state_dict())
 
 

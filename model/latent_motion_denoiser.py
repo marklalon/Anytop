@@ -46,8 +46,7 @@ class LatentMotionDenoiser(MotionConditioningMixin, nn.Module):
                  action_label_cfg_drop_prob=0.2, direction_slot_drop_prob=0.0,
                  modifier_slot_drop_prob=0.0, species_cond=True,
                  species_film_bottleneck=128, joint_name_drop_prob=0.15,
-                 rest_geom_joint_drop_prob=0.1,
-                 temporal_rope_drop_prob=0.0):
+                 rest_geom_joint_drop_prob=0.1):
         super().__init__()
         config = dict(locals())
         config.pop('self'); config.pop('__class__', None); config.pop('action_conditioning')
@@ -105,13 +104,9 @@ class LatentMotionDenoiser(MotionConditioningMixin, nn.Module):
         x = self.input(z).permute(1, 0, 2, 3) + self.slot_identity[None, None]
         x = x + self._frame_position_embedding(frames, is_loop, cycles, z.device)[:, :, None]
         x = x + self._tempo_frame_embedding(y, batch, frames, z.device, is_loop, cycles)[:, :, None]
-        off = (torch.rand(batch, device=z.device) < self.temporal_rope_drop_prob
-               if self.temporal_rope and self.training and self.temporal_rope_drop_prob else None)
-        # An explicit override must work even when training RoPE drop is disabled.
         explicit = y.get('temporal_rope_off')
-        if explicit is not None:
-            explicit = self._per_sample(explicit, batch, z.device, torch.bool, 'temporal_rope_off')
-            off = explicit if off is None else off | explicit
+        off = (self._per_sample(explicit, batch, z.device, torch.bool, 'temporal_rope_off')
+               if explicit is not None else None)
         x = self.trunk(x, timestep, None, y={}, motion_z=(skeleton, ~valid),
                        loop_phase_mask=is_loop, loop_cycles=cycles, temporal_rope_off=off,
                        action_adaln_cond=action)
