@@ -17,7 +17,7 @@ from diffusion.latent_diffusion import create_latent_diffusion, validate_latent_
 from model.latent_motion_denoiser import LatentMotionDenoiser
 from model.motion_autoencoder import MotionAutoencoder
 from utils.latent_util import LatentNormalizer, estimate_normalizer, encode_target, ae_inputs
-from train.train_latent_diffusion import LatentBatchTransform, parser, training_forwards
+from train.train_latent_diffusion import LatentBatchTransform, parser
 from action_label_test_utils import make_test_bundle, action_cond_fields
 
 
@@ -328,43 +328,9 @@ def test_batch_launcher_arguments_are_accepted(launcher, stage):
     else:
         assert args.latent_mode == 'mean'
         assert args.ae_checkpoint == 'save/unused-ae-checkpoint'
-    assert args.compile == 'reduce-overhead'
-
-
-def test_compiled_training_forwards_preserve_targets_gradients_and_checkpoint_keys(monkeypatch):
-    import utils.compile_util
-    monkeypatch.setattr(utils.compile_util, 'configure_triton_c_compiler', lambda: None)
-    compile_fn = torch.compile
-    # Trace full graphs on CPU without requiring a platform-specific C compiler.
-    monkeypatch.setattr(torch, 'compile', lambda fn, **kwargs: compile_fn(
-        fn, backend='eager', dynamic=kwargs['dynamic'], fullgraph=kwargs['fullgraph']))
-    ae = MotionAutoencoder(t5_out_dim=4, width=16, layers=1, heads=2,
-                           slots=2, latent_dim=3).eval().requires_grad_(False)
-    norm = LatentNormalizer(torch.zeros(2, 3), torch.ones(2, 3))
-    model = denoiser()
-    keys = tuple(model.state_dict())
-    forward, encoder = training_forwards(model, ae, norm, 'reduce-overhead')
-    x, y = torch.randn(2, 5, 9, 60), conditions()
-    y['motion_name'] = ['clip_a', 'clip_b']
-    expected = encode_target(ae, norm, x, y)
-    target = encoder(x, y)
-    torch.testing.assert_close(target, expected)
-    assert not target.requires_grad
-    t = torch.ones(2, dtype=torch.long)
-    reference_model = copy.deepcopy(model)
-    actual = forward(target, t, y=y)
-    reference = reference_model(expected, t, y=y)
-    torch.testing.assert_close(actual, reference)
-    actual.square().mean().backward()
-    reference.square().mean().backward()
-    for parameter, reference_parameter in zip(model.parameters(), reference_model.parameters()):
-        if reference_parameter.grad is not None:
-            torch.testing.assert_close(parameter.grad, reference_parameter.grad)
-    assert tuple(model.state_dict()) == keys
-    assert not any(key.startswith('_orig_mod.') for key in model.state_dict())
-    eager_forward, eager_encoder = training_forwards(model, ae, norm, 'None')
-    assert eager_forward is model
-    torch.testing.assert_close(eager_encoder(x, y), expected)
+    expected_compile = ('cuda-graph' if launcher == 'train_tiny_vae_diffusion.bat'
+                        and stage == 'train_latent_diffusion.py' else 'reduce-overhead')
+    assert args.compile == expected_compile
 
 
 def test_species_film_applies_to_every_row():

@@ -24,7 +24,10 @@ def validate_latent_conditions(y, frames=60):
             raise ValueError(f'{key} is unsupported by latent diffusion; use the autoencoder for motion transfer')
     if frames != 60:
         raise ValueError('Latent diffusion requires a fixed 60-frame window')
-    if 'lengths' in y and not torch.compiler.is_compiling():
+    # Short-circuit before querying CUDA stream state: Dynamo cannot trace the
+    # Python bool returned by is_current_stream_capturing on CUDA-enabled hosts.
+    if ('lengths' in y and not torch.compiler.is_compiling()
+            and not (torch.cuda.is_available() and torch.cuda.is_current_stream_capturing())):
         check_on_device((y['lengths'] == frames).all(),
                         'Latent diffusion does not support padded/invalid frames')
 

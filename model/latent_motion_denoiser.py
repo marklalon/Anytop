@@ -8,6 +8,17 @@ from model.motion_transformer import GraphMotionDecoder, GraphMotionDecoderLayer
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import projection_input_dim
 
 
+# Conditions read by this denoiser and its shared conditioning/graph layers.
+# Keep collator metadata and AE-only inputs out of CUDA graph storage and keys.
+LATENT_CONDITION_KEYS = frozenset((
+    'lengths', 'n_joints', 'joints_names_embs', 'rest_geom', 'joint_struct',
+    'graph_dist', 'joints_relations', 'species_code', 'is_loop',
+    'loop_tile_count', 'resample_speed_cond', 'temporal_rope_off',
+    'action_word_ids', 'action_slot_ids', 'action_word_mask',
+    'action_label_valid', 'action_label_active',
+))
+
+
 class StaticSkeletonEmbedding(InputProcess):
     def __init__(self, width, t5_out_dim, species_cond, bottleneck):
         super().__init__(9, width, t5_out_dim, species_cond, bottleneck)

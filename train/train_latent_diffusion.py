@@ -19,6 +19,7 @@ from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
 from diffusion.latent_diffusion import create_latent_diffusion
 from model.latent_motion_denoiser import LatentMotionDenoiser
 from train.train_anytop import bootstrap_action_conditioning, bootstrap_species_descriptor_table
+from train.latent_cuda_graph import EagerCudaGraphSteps
 from train.latent_validation import build_validation_loader
 from train.training_loop import _fixed_validation_rng
 from train.train_autoencoder import (
@@ -70,9 +71,10 @@ def parser():
     p.add_argument('--auto_resume', action='store_true')
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--amp_dtype', choices=('fp32', 'fp16', 'bf16'), default='fp32')
-    p.add_argument('--compile', choices=('None', 'default', 'reduce-overhead'), default='None',
-                   help='Compile frozen AE target encoding and denoiser training forward; '
-                        'each joint bucket compiles on first use')
+    p.add_argument('--compile', choices=('None', 'default', 'reduce-overhead', 'cuda-graph'), default='None',
+                   help='Training optimization: None, torch.compile mode, or cuda-graph '
+                        '(eager denoiser forward/backward capture without torch.compile; '
+                        'cache up to two input signatures, run additional signatures eagerly)')
     p.add_argument('--latent_mode', choices=('mean', 'sample'), default='mean',
                    help='AE posterior distribution used by both statistics and training')
     p.add_argument('--action_word_embeddings', default=None)
@@ -113,6 +115,8 @@ def training_forwards(model, ae, norm, compile_mode):
         return encode_target(ae, norm, x, y)
 
     if compile_mode == 'None':
+        return model, target_encoder
+    if compile_mode == 'cuda-graph':
         return model, target_encoder
     from utils.compile_util import configure_triton_c_compiler
     compiler = configure_triton_c_compiler()
@@ -205,6 +209,8 @@ def main(argv=None):
     device = torch.device(args.device)
     if args.amp_dtype == 'fp16' and device.type != 'cuda':
         raise ValueError('fp16 requires CUDA')
+    if args.compile == 'cuda-graph' and device.type != 'cuda':
+        raise ValueError('--compile cuda-graph requires a CUDA device')
     save = Path(args.save_dir)
     save.mkdir(parents=True, exist_ok=True)
     path = save / 'latent_diffusion.pt'
@@ -278,6 +284,10 @@ def main(argv=None):
                             shift=args.noise_schedule_shift)
     diffusion = create_latent_diffusion(**diffusion_config)
     forward_model, target_encoder = training_forwards(model, ae, norm, args.compile)
+    graph_steps = (EagerCudaGraphSteps(
+        model, diffusion, optimizer,
+        {'fp32': None, 'bf16': torch.bfloat16, 'fp16': torch.float16}[args.amp_dtype], device, scaler)
+        if args.compile == 'cuda-graph' else None)
     (save / 'args.json').write_text(json.dumps(current_args, indent=2), encoding='utf-8')
     print(f'Frozen AE: {binding["path"]} ({binding["weights"]}); latent={ae.slots}x{ae.latent_dim}; '
           f'{args.latent_mode} statistics: {norm.count} frame tokens; resume step={start}')
@@ -293,19 +303,25 @@ def main(argv=None):
             for step in tqdm(range(start + 1, args.num_steps + 1),
                              desc='Latent diffusion', unit='step', smoothing=0.05):
                 model.train()
-                if args.compile != 'None':
+                if args.compile in ('default', 'reduce-overhead'):
                     torch.compiler.cudagraph_mark_step_begin()
                 x, y = training_batch_to_device(next(batches), device)
                 target = target_encoder(x, y)
                 t = torch.randint(diffusion.num_timesteps, (len(x),), device=device)
                 noise = torch.randn_like(target)
                 for retry in range(17):
-                    optimizer.zero_grad(set_to_none=True)
-                    with torch.autocast(device.type, dtype=dtype, enabled=args.amp_dtype != 'fp32'):
-                        loss = diffusion.training_losses(forward_model, target, t, {'y': y}, noise)['loss'].mean()
+                    if graph_steps is not None:
+                        loss = graph_steps.step(target, t, noise, y)
+                    else:
+                        optimizer.zero_grad(set_to_none=True)
+                        with torch.autocast(device.type, dtype=dtype, enabled=args.amp_dtype != 'fp32'):
+                            loss = diffusion.training_losses(forward_model, target, t, {'y': y}, noise)['loss'].mean()
                     if not torch.isfinite(loss):
                         raise FloatingPointError(f'Nonfinite latent loss at step {step}')
-                    grad_norm, updated = scaled_optimizer_step(loss, model, optimizer, scaler)
+                    if graph_steps is not None:
+                        grad_norm, updated = graph_steps.optimizer_step()
+                    else:
+                        grad_norm, updated = scaled_optimizer_step(loss, model, optimizer, scaler)
                     if updated:
                         break
                 else:
