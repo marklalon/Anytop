@@ -35,10 +35,8 @@ from utils.latent_util import (
 class LatentBatchTransform:
     def __call__(self, batch):
         motion, conditions = batch
-        y = dict(conditions['y'])
-        hidden = y.pop('ref_frame_mask', None)
-        if hidden is not None and bool(hidden.any()):
-            raise ValueError('Reference frame hiding is unsupported in latent diffusion')
+        # The shared collator supplies reference placeholders for motion-space models.
+        y = {key: value for key, value in conditions['y'].items() if not key.startswith('ref_')}
         return motion[:, :, :9].contiguous(), {'y': y}
 
 
@@ -57,20 +55,18 @@ def parser():
     p.add_argument('--latent_mode', choices=('mean', 'sample'), default='mean',
                    help='AE posterior distribution used by both statistics and training')
     p.add_argument('--action_word_embeddings', default=None)
-    for key in ('action_label_cond', 'species_cond', 'ref_encoder', 'temporal_rope', 'use_ema'):
+    for key in ('action_label_cond', 'species_cond', 'temporal_rope', 'use_ema'):
         p.add_argument('--' + key, action=argparse.BooleanOptionalAction, default=True)
     for key, value in dict(seed=10, num_frames=60, batch_size=16, num_workers=2,
                            main_process_prefetch_batches=64, motion_cache_size=16384,
                            width=256, layers=8, heads=4, ff_size=1024, skeleton_layers=2,
-                           ref_slots=2, ref_dim=8, ref_width=64, ref_layers=2,
                            stats_batches=64, num_steps=10000, diffusion_steps=100,
                            log_interval=100, save_interval=1000, eval_interval=1000).items():
         p.add_argument('--' + key, type=int, default=value)
     for key, value in dict(lr=1e-4, lr_final=5e-5, weight_decay=0.0, ema_rate=0.995,
                            dropout=0.05, action_label_cfg_drop_prob=0.2,
                            direction_slot_drop_prob=0.0, modifier_slot_drop_prob=0.0,
-                           ref_cfg_drop_prob=0.4,
-                           temporal_rope_ref_drop_prob=0.0, temporal_rope_drop_prob=0.0,
+                           temporal_rope_drop_prob=0.0,
                            noise_schedule_shift=1.0,
                            denoiser_joint_name_drop_prob=0.15,
                            denoiser_rest_geom_joint_drop_prob=0.1).items():
@@ -103,7 +99,7 @@ def training_forwards(model, ae, norm, compile_mode):
     compiled_encoder = torch.compile(target_encoder, mode=compile_mode, dynamic=False, fullgraph=True)
 
     def encode_batch(x, y):
-        # Ignore reference tensors and clip-name lists: they are not AE inputs
+        # Ignore clip-name lists and denoiser-only conditions: they are not AE inputs
         # and would otherwise produce unnecessary guards/recompilations.
         skeleton, time = ae_inputs(y, x.shape[-1])
         target = compiled_encoder(x, {**skeleton, **time})
@@ -127,7 +123,7 @@ def build_loader(args):
         sample_filter=args.sample_filter, sample_filter_seed=args.seed,
         motion_cache_size=args.motion_cache_size, action_label_cond=args.action_label_cond,
         action_conditioning=args.action_conditioning, species_table=args.species_descriptor_table,
-        ref_encoder=args.ref_encoder, **kwargs)
+        **kwargs)
     loader = build_dataset_loader(
         dataset, batch_size=args.batch_size, drop_last=True, num_workers=args.num_workers,
         main_process_prefetch_batches=args.main_process_prefetch_batches,
@@ -229,10 +225,9 @@ def main(argv=None):
             estimate_normalizer(ae, batches, args.stats_batches, device, args.latent_mode))
     config = dict(t5_out_dim=ae.config['t5_out_dim'], slots=ae.slots, latent_channels=ae.latent_dim)
     for key in ('width', 'layers', 'heads', 'ff_size', 'skeleton_layers', 'dropout',
-                'temporal_rope', 'action_label_cond', 'species_cond', 'ref_encoder',
+                'temporal_rope', 'action_label_cond', 'species_cond',
                 'action_label_cfg_drop_prob', 'direction_slot_drop_prob', 'modifier_slot_drop_prob',
-                'temporal_rope_ref_drop_prob', 'temporal_rope_drop_prob',
-                'ref_slots', 'ref_dim', 'ref_width', 'ref_layers', 'ref_cfg_drop_prob'):
+                'temporal_rope_drop_prob'):
         config[key] = getattr(args, key)
     for key in ('joint_name_drop_prob', 'rest_geom_joint_drop_prob'):
         config[key] = getattr(args, 'denoiser_' + key)
@@ -318,12 +313,10 @@ def main(argv=None):
                                    optimizer=optimizer.state_dict(), grad_scaler=scaler.state_dict(),
                                    ae_binding=binding, normalization=norm.metadata(), cond_sha256=cond_hash,
                                    species_sha256=species_hash, time_contract=TIME_CONTRACT,
-                                   reference_contract='source_pose_rest_v1',
                                    action_conditioning=model.action_conditioning_metadata,
                                    diffusion_config=diffusion_config, prediction='standardized_z0',
                                    capabilities=['generate'] + (['action'] if model.action_label_cond else [])
-                                   + (['species'] if model.species_cond else [])
-                                   + (['encoded_reference'] if model.ref_encoder else []),
+                                   + (['species'] if model.species_cond else []),
                                    motion_names=motion_names,
                                    eval_split='val', torch_rng=torch.get_rng_state(),
                                    python_rng=random.getstate(), numpy_rng=np.random.get_state(),

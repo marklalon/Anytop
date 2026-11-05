@@ -17,9 +17,9 @@ Latent tasks run generate_latent.py in fp32 with 4 samples per task (a task
 with. A relocated AE can be selected with ``--ae_checkpoint``,
 ``checkpoint.AE_CHECKPOINT``, or a task's ``--ae_checkpoint``; its hash must
 match training. A single-species ``--cond_path`` auto-selects the target
-skeleton; otherwise name it with ``--object_type`` or let it be inferred from
-the reference filename. Latent tasks cannot combine ``--reference_motion`` with
-``--action_label``, and motion-only flags (inpaint/outpaint) are rejected.
+skeleton; otherwise name it with ``--object_type``. Latent tasks reject
+``--reference_motion`` and motion-only editing flags (inpaint/outpaint);
+use the autoencoder for motion transfer.
 Each task's clips are scored in-process with the motion quality scorer
 (``eval/motion_quality/quality.py``): every clip gets a physical-plausibility
 and a data-prior score in [0, 1], its quality is their geometric mean, and a

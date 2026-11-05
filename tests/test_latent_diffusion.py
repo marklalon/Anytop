@@ -10,7 +10,7 @@ from torch import nn
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from data_loaders.reference import REST_GEOM_DIM, REFERENCE_POSE_CHANNELS
+from data_loaders.reference import REST_GEOM_DIM
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim
 from diffusion.latent_diffusion import create_latent_diffusion, validate_latent_conditions
@@ -21,112 +21,7 @@ from train.train_latent_diffusion import LatentBatchTransform, parser, training_
 from action_label_test_utils import make_test_bundle, action_cond_fields
 
 
-@pytest.mark.parametrize('is_loop', [True, False])
-@pytest.mark.parametrize('suffix', ['.npy', '.glb'])
-def test_latent_reference_loop_is_read_before_working_conversion(monkeypatch, tmp_path, capsys,
-                                                                is_loop, suffix):
-    import numpy as np
-    from types import SimpleNamespace
-    from sample import generate_latent as generation
-    from data_loaders.truebones.truebones_utils.loop_verdict import apply_loop_verdict
-
-    rng = np.random.default_rng(7)
-    stored = apply_loop_verdict(rng.normal(size=(21, 4, 12)), is_loop, 0)
-    reference_path = tmp_path / ('source_fly' + suffix)
-    if suffix == '.npy':
-        np.save(reference_path, stored)
-    source_cond = {'translation_root_index': 0}
-    model = SimpleNamespace(t5_out_dim=4, species_cond=False, ref_encoder=True)
-    checkpoint = {'args': {'cond_path': str(tmp_path / 'cond.npy')}, 'cond_sha256': 'test'}
-    (tmp_path / 'cond.npy').touch()
-    monkeypatch.setattr(generation, 'load_latent_checkpoint', lambda *a: (model, None, None, checkpoint))
-    monkeypatch.setattr(generation, 'file_sha256', lambda *a: 'test')
-    monkeypatch.setattr(generation, 'load_cond', lambda *a: {'source': source_cond})
-    monkeypatch.setattr(generation, 'mark_canonical_cond_entry', lambda *a: None)
-    monkeypatch.setattr(generation, 'ensure_joint_name_embeddings', lambda *a, **k: None)
-    monkeypatch.setattr(generation, '_resolve_action_condition', lambda *a: None)
-    monkeypatch.setattr(generation, '_resolve_species_code_override', lambda *a: None)
-    monkeypatch.setattr(generation, '_load_raw_encoder_reference', lambda *a: (stored, source_cond))
-    converted = []
-    convert = generation.stored_to_working
-
-    def to_working(features):
-        # Both input formats must reach conversion with their stored rows intact.
-        np.testing.assert_array_equal(features, stored)
-        converted.append(convert(features))
-        return converted[-1]
-
-    monkeypatch.setattr(generation, 'stored_to_working', to_working)
-
-    class SamplingBoundary(Exception):
-        pass
-
-    def stop_before_sampling(*a, **k):
-        raise SamplingBoundary
-
-    monkeypatch.setattr(generation, 'loop_period', stop_before_sampling)
-    with pytest.raises(SamplingBoundary):
-        generation.main(['--model_path', str(tmp_path / 'latent.pt'), '--object_type', 'source',
-                         '--reference_object_type', 'source', '--reference_motion', str(reference_path),
-                         '--output_dir', str(tmp_path / 'output'), '--device', 'cpu'])
-    assert f"loop (auto) -> {'on' if is_loop else 'off'} (the reference's stored loop verdict)" in capsys.readouterr().out
-    assert len(converted) == 1
-    assert np.count_nonzero(converted[0][..., 9:12]) == 0
-
-
-@pytest.mark.parametrize('reference_frames,requested_frames,expected_frames', [
-    (145, None, 120), (10, None, 20), (60, None, 60), (120, None, 120),
-    (145, 80, 80), (145, 145, None), (145, 0, None),
-])
-def test_latent_reference_output_length_matches_motion_generation(
-        monkeypatch, tmp_path, reference_frames, requested_frames, expected_frames):
-    import numpy as np
-    from types import SimpleNamespace
-    from sample import generate_latent as generation
-
-    reference = tmp_path / 'Source_walk.npy'
-    np.save(reference, np.zeros((reference_frames, 3, 12), dtype=np.float32))
-    (tmp_path / 'cond.npy').touch()
-    source_cond = {'translation_root_index': 0, 'parents': [-1, 0, 0]}
-    model = SimpleNamespace(t5_out_dim=4, species_cond=False, ref_encoder=True)
-    monkeypatch.setattr(generation, 'load_latent_checkpoint',
-                        lambda *a: (model, None, None, {'cond_sha256': 'hash'}))
-    monkeypatch.setattr(generation, 'file_sha256', lambda *a: 'hash')
-    monkeypatch.setattr(generation, 'load_cond', lambda *a: {'Source': source_cond, 'Target': source_cond})
-    monkeypatch.setattr(generation, 'mark_canonical_cond_entry', lambda *a: None)
-    monkeypatch.setattr(generation, 'ensure_joint_name_embeddings', lambda *a, **k: None)
-    monkeypatch.setattr(generation, '_resolve_action_condition', lambda *a: None)
-    monkeypatch.setattr(generation, '_resolve_species_code_override', lambda *a: None)
-    monkeypatch.setattr(generation, 'resolve_loop_condition', lambda *a, **k: True)
-    monkeypatch.setattr(generation, 'loop_period', lambda *a, **k: None)
-    monkeypatch.setattr(generation, 'create_condition', lambda *a, **k: (None, {'y': {}}))
-    resample = generation.resample_reference_to_output
-    fitted = []
-
-    class ReferenceBoundary(Exception):
-        pass
-
-    def stop(features, frames):
-        fitted.append(resample(features, frames)[0])
-        raise ReferenceBoundary
-
-    monkeypatch.setattr(generation, 'resample_reference_to_output', stop)
-    flags = ['--model_path', str(tmp_path / 'latent.pt'), '--object_type', 'Target',
-             '--reference_motion', str(reference), '--ref_cfg_scale', '6',
-             '--output_dir', str(tmp_path / 'out'), '--device', '-1']
-    if requested_frames is not None:
-        flags += ['--num_frames', str(requested_frames)]
-    if expected_frames is None:
-        with pytest.raises(SystemExit, match='outside'):
-            generation.main(flags)
-        assert not fitted
-    else:
-        with pytest.raises(ReferenceBoundary):
-            generation.main(flags)
-        assert fitted[0].shape == (expected_frames, 3, 12)
-
-
-def conditions(batch=2, joints=5, source_joints=3, names=4):
+def conditions(batch=2, joints=5, names=4):
     return dict(n_joints=torch.tensor([joints - 1] * batch), lengths=torch.full((batch,), 60),
                 joints_names_embs=torch.randn(batch, joints, names),
                 rest_geom=torch.randn(batch, joints, REST_GEOM_DIM),
@@ -134,22 +29,14 @@ def conditions(batch=2, joints=5, source_joints=3, names=4):
                 graph_dist=torch.zeros(batch, joints, joints, dtype=torch.long),
                 joints_relations=torch.zeros(batch, joints, joints, dtype=torch.long),
                 is_loop=torch.tensor([True] * batch), loop_tile_count=torch.full((batch,), 3),
-                resample_speed_cond=torch.full((batch,), 1.5),
-                ref_active=torch.ones(batch, dtype=torch.bool),
-                ref_mask=torch.ones(batch, source_joints, dtype=torch.bool),
-                ref_feats=torch.randn(batch, source_joints, 12, 60),
-                ref_pose=torch.randn(batch, source_joints, REFERENCE_POSE_CHANNELS, 60),
-                ref_rest_pose=torch.randn(batch, source_joints, REFERENCE_POSE_CHANNELS),
-                ref_joints_names_embs=torch.randn(batch, source_joints, names),
-                ref_joint_struct=torch.randn(batch, source_joints, JOINT_STRUCT_DIM))
+                resample_speed_cond=torch.full((batch,), 1.5))
 
 
 def denoiser(**kwargs):
     return LatentMotionDenoiser(t5_out_dim=4, slots=2, latent_channels=3,
                                 width=16, layers=1, heads=2, ff_size=32, skeleton_layers=1,
-                                action_label_cond=False, species_cond=False, ref_width=8,
-                                ref_layers=1, dropout=0, joint_name_drop_prob=0,
-                                rest_geom_joint_drop_prob=0, **kwargs)
+                                action_label_cond=False, species_cond=False, dropout=0,
+                                joint_name_drop_prob=0, rest_geom_joint_drop_prob=0, **kwargs)
 
 
 def test_forward_backward_variable_skeleton_and_slot_graph_isolation():
@@ -163,11 +50,11 @@ def test_forward_backward_variable_skeleton_and_slot_graph_isolation():
     assert model.skeleton_encoder.graph_relations and not model.trunk.graph_relations
     assert model.trunk.cross_limb_blocks is None
     assert model.skeleton_encoder.cross_limb_blocks is None
-    assert model.trunk.layers[0].ref_attn_gate.grad is not None
+    assert not any('reference' in key or 'ref_' in key for key in model.state_dict())
 
 
 def test_padding_joints_cannot_change_valid_prediction():
-    model = denoiser(ref_encoder=False).eval()
+    model = denoiser().eval()
     z = torch.randn(2, 60, 2, 3)
     y = conditions()
     changed = copy.deepcopy(y)
@@ -176,48 +63,35 @@ def test_padding_joints_cannot_change_valid_prediction():
     torch.testing.assert_close(model(z, torch.zeros(2), y), model(z, torch.zeros(2), changed))
 
 
-def test_reference_null_never_reads_source_and_mixed_inactive_nan_is_safe():
-    model = denoiser().eval()
-    model.trunk.layers[0].ref_attn_gate.data.fill_(1)
-    z = torch.randn(2, 60, 2, 3)
+def test_loop_cycles_and_rope_dropout():
+    model = denoiser(temporal_rope_drop_prob=1).train()
     y = conditions()
-    y['ref_active'][0] = False
-    baseline = model(z, torch.zeros(2), y)
-    for key in ('ref_feats', 'ref_pose', 'ref_rest_pose', 'ref_joints_names_embs'):
-        y[key][0] = float('nan')
-    result = model(z, torch.zeros(2), y)
-    torch.testing.assert_close(result, baseline)
-    y['ref_active'].zero_()
-    for key in list(y):
-        if key.startswith('ref_') and key != 'ref_active':
-            del y[key]
-    assert torch.isfinite(model(z, torch.zeros(2), y)).all()
-
-
-def test_reference_drop_restores_cycle_semantics():
-    model = denoiser(ref_cfg_drop_prob=1).train()
-    y = conditions()
-    _, active = model._reference_condition(y, 2, 60, torch.device('cpu'))
-    assert not active.any()
-    _, cycles = model._loop_condition(y, 2, torch.device('cpu'), active)
+    _, cycles = model._loop_condition(y, 2, torch.device('cpu'))
     assert cycles.tolist() == [3, 3]
-    _, cycles = model._loop_condition(y, 2, torch.device('cpu'), ~active)
-    assert cycles.tolist() == [1, 1]
+    seen = []
+    handle = model.trunk.register_forward_pre_hook(
+        lambda module, args, kwargs: seen.append(kwargs['temporal_rope_off']), with_kwargs=True)
+    z, t = torch.randn(2, 60, 2, 3), torch.zeros(2)
+    model(z, t, y)
+    assert seen[-1].all()
+    model.eval()(z, t, y)
+    assert seen[-1] is None
+    model(z, t, dict(y, temporal_rope_off=torch.tensor([True, False])))
+    assert seen[-1].tolist() == [True, False]
+    handle.remove()
 
 
-def test_action_null_reference_priority_and_shared_adaln_token():
+def test_action_null_and_shared_adaln_token():
     model = LatentMotionDenoiser(t5_out_dim=768, width=144, layers=1, heads=4,
                                  ff_size=32, skeleton_layers=1, slots=2, latent_channels=3,
                                  action_conditioning=make_test_bundle(), species_cond=False,
-                                 ref_encoder=False, dropout=0).eval()
+                                 dropout=0).eval()
     model.action_label_null_emb.data.fill_(0.5)
     y = conditions(names=768)
     y.update(action_cond_fields(['shake', 'walk'], ['stationary', 'locomotion']))
-    active = torch.ones(2, dtype=torch.bool)
-    token = model._build_action_label_token(y, 2, torch.device('cpu'), torch.float32, active)
-    torch.testing.assert_close(token, model.action_label_null_emb.expand(2, -1))
     explicit = dict(y, action_label_active=torch.zeros(2, dtype=torch.bool))
-    torch.testing.assert_close(token, model._build_action_label_token(explicit, 2, torch.device('cpu'), torch.float32))
+    token = model._build_action_label_token(explicit, 2, torch.device('cpu'), torch.float32)
+    torch.testing.assert_close(token, model.action_label_null_emb.expand(2, -1))
     seen = {}
     def hook(module, args, kwargs):
         seen['additive'] = args[1]
@@ -231,24 +105,151 @@ def test_action_null_reference_priority_and_shared_adaln_token():
 
 
 @pytest.mark.parametrize('key', ['joint_mask', 'temporal_span_mask', 'renoise', 'inpaint_joints',
-                                'inpaint_frames', 'outpaint', 'cross_limb_unreliable_mask', 'ref_frame_mask'])
+                                'inpaint_frames', 'outpaint', 'cross_limb_unreliable_mask',
+                                'ref_frame_mask', 'ref_active', 'ref_feats'])
 def test_edits_are_explicitly_rejected(key):
     with pytest.raises(ValueError, match='unsupported'):
         validate_latent_conditions({key: torch.zeros(1), 'lengths': torch.tensor([60])})
 
 
-def test_fixed_window_and_reference_transform():
+def test_fixed_window_and_shared_collator_transform():
     y = conditions()
     y['lengths'][0] = 59
     with pytest.raises((ValueError, RuntimeError), match='invalid frames'):
         validate_latent_conditions(y)
     y['lengths'].fill_(60)
+    y['ref_frame_mask'] = torch.ones(2, 60, dtype=torch.bool)
+    y['ref_feats'] = torch.full((2, 5, 12, 60), float('nan'))
+    y['ref_active'] = torch.ones(2, dtype=torch.bool)
+    motion, transformed = LatentBatchTransform()((torch.zeros(2, 5, 12, 60), {'y': y}))
+    assert motion.shape == (2, 5, 9, 60) and motion.is_contiguous()
+    assert not any(key.startswith('ref_') for key in transformed['y'])
+    assert 'ref_feats' in y  # Do not mutate the shared input batch.
+    validate_latent_conditions(transformed['y'])
+
+
+@pytest.mark.parametrize('flag,value', [
+    ('--ref_encoder', None), ('--ref_slots', '2'), ('--ref_dim', '8'),
+    ('--ref_width', '64'), ('--ref_layers', '2'), ('--ref_cfg_drop_prob', '0.4'),
+    ('--temporal_rope_ref_drop_prob', '0.5'),
+])
+def test_training_rejects_removed_reference_options(flag, value):
+    with pytest.raises(SystemExit):
+        parser().parse_args(['--save_dir', 'unused', flag] + ([] if value is None else [value]))
+
+
+@pytest.mark.parametrize('flag', ['--reference_motion', '--reference_object_type', '--ref_cfg_scale'])
+def test_generation_rejects_removed_reference_options(flag):
+    from sample.generate_latent import parser as generation_parser
+    with pytest.raises(SystemExit):
+        generation_parser().parse_args(['--model_path', 'unused', '--output_dir', 'unused', flag, '1'])
+
+
+def test_generation_without_reference_decodes_and_exports(monkeypatch, tmp_path):
+    import json
+    from sample import generate_latent as generation
+
+    model = denoiser().eval()
+    ae = MotionAutoencoder(t5_out_dim=4, width=16, layers=1, heads=2,
+                           slots=2, latent_dim=3).eval()
+    norm = LatentNormalizer(torch.zeros(2, 3), torch.ones(2, 3))
+    checkpoint = dict(step=1, diffusion_config=dict(steps=10, noise_schedule='cosine', shift=1.0))
+    cond = {'Target': {'parents': [-1, 0, 0, 0, 0], 'joints_names': ['root', 'a', 'b', 'c', 'd']}}
+    monkeypatch.setattr(generation, 'load_latent_checkpoint', lambda *a: (model, ae, norm, checkpoint))
+    monkeypatch.setattr(generation, 'load_cond', lambda *a: cond)
+    monkeypatch.setattr(generation, 'mark_canonical_cond_entry', lambda *a: None)
+    monkeypatch.setattr(generation, 'ensure_joint_name_embeddings', lambda *a, **k: None)
+    monkeypatch.setattr(generation, '_resolve_species_code_override', lambda *a: None)
+    monkeypatch.setattr(generation, 'loop_period', lambda *a, **k: None)
+    y = conditions()
+    y['ref_active'] = torch.zeros(2, dtype=torch.bool)
     y['ref_frame_mask'] = torch.zeros(2, 60, dtype=torch.bool)
-    _, transformed = LatentBatchTransform()((torch.zeros(2, 5, 12, 60), {'y': y}))
-    assert 'ref_frame_mask' not in transformed['y']
-    y['ref_frame_mask'][0, 0] = True
-    with pytest.raises(ValueError, match='hiding'):
-        LatentBatchTransform()((torch.zeros(2, 5, 12, 60), {'y': y}))
+    monkeypatch.setattr(generation, 'create_condition', lambda *a, **k: (None, {'y': y}))
+
+    class Sampler:
+        def sample(self, guided, shape, conditions, device, **kwargs):
+            assert not any(key.startswith('ref_') for key in conditions)
+            return guided(torch.zeros(shape, device=device), torch.zeros(shape[0]), conditions)
+
+    monkeypatch.setattr(generation, 'create_latent_diffusion', lambda **k: Sampler())
+    monkeypatch.setattr(generation, 'canonical_to_physical_hml', lambda motion, cond: motion)
+    exported = []
+    monkeypatch.setattr(generation, '_export_motion', exported.append)
+    out = tmp_path / 'out'
+    generation.main(['--model_path', str(tmp_path / 'latent.pt'), '--cond_path', str(tmp_path / 'cond.npy'),
+                     '--output_dir', str(out), '--batch_size', '2', '--num_frames', '60',
+                     '--loop', 'off', '--device', '-1', '--sampling_steps', '10'])
+    assert len(exported) == 2
+    assert exported[0][0].shape == (60, 5, 12)
+    metadata = json.loads((out / 'generation.json').read_text())
+    assert metadata['object_type'] == 'Target' and metadata['frames'] == 60
+    assert 'reference_motion' not in metadata
+
+
+def test_training_saves_loads_and_resumes_without_reference(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from train import train_latent_diffusion as training
+    from utils.latent_util import load_latent_checkpoint, LATENT_CHECKPOINT_VERSION, TIME_CONTRACT
+    from model.motion_autoencoder import DECODER_CONTENT_VERSION
+    from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE
+
+    ae = MotionAutoencoder(t5_out_dim=4, width=16, layers=1, heads=2, slots=2, latent_dim=3)
+    ae_path = tmp_path / 'ae.pt'
+    torch.save(dict(kind='motion_autoencoder_7a', model_config=ae.config, model=ae.state_dict(),
+                    args=dict(num_frames=60, use_ema=False), canonical_version=CANONICAL_FEATURE_SPACE,
+                    decoder_content_version=DECODER_CONTENT_VERSION), ae_path)
+    cond_path = tmp_path / 'cond.npy'
+    cond_path.write_bytes(b'skeleton snapshot')
+    dataset = SimpleNamespace(motion_dataset=SimpleNamespace(name_list=['clip_a', 'clip_b']))
+    batch = (torch.randn(2, 5, 12, 60), {'y': dict(
+        conditions(), ref_active=torch.zeros(2, dtype=torch.bool),
+        ref_frame_mask=torch.zeros(2, 60, dtype=torch.bool))})
+
+    def get_dataset(**kwargs):
+        assert not kwargs.get('ref_encoder', False)
+        return dataset
+
+    monkeypatch.setattr(training, 'get_dataset', get_dataset)
+    monkeypatch.setattr(training, 'build_dataset_loader',
+                        lambda dataset, **kwargs: [kwargs['batch_transform'](batch)])
+    monkeypatch.setattr(training, 'build_validation_loader', lambda *a: None)
+    # Stop after the first saved step to exercise a real resumed optimizer update.
+    real_forwards = training.training_forwards
+
+    def interrupted_forwards(*args):
+        model, encoder = real_forwards(*args)
+        calls = 0
+
+        def encode(x, y):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError('simulated interruption')
+            return encoder(x, y)
+
+        return model, encode
+
+    monkeypatch.setattr(training, 'training_forwards', interrupted_forwards)
+    save = tmp_path / 'run'
+    argv = ['--ae_checkpoint', str(ae_path), '--cond_path', str(cond_path), '--save_dir', str(save),
+            '--device', 'cpu', '--no-action_label_cond', '--no-species_cond',
+            '--width', '16', '--layers', '1', '--heads', '2', '--ff_size', '32',
+            '--skeleton_layers', '1', '--batch_size', '2', '--stats_batches', '1',
+            '--num_steps', '2', '--save_interval', '1', '--diffusion_steps', '10']
+    with pytest.raises(RuntimeError, match='simulated interruption'):
+        training.main(argv)
+    path = save / 'latent_diffusion.pt'
+    assert torch.load(path, weights_only=False)['step'] == 1
+    monkeypatch.setattr(training, 'training_forwards', real_forwards)
+    training.main(argv + ['--auto_resume'])
+    model, _, _, checkpoint = load_latent_checkpoint(path)
+    assert checkpoint['step'] == 2 and checkpoint['kind'] == LATENT_CHECKPOINT_VERSION
+    assert checkpoint['time_contract'] == TIME_CONTRACT
+    assert checkpoint['capabilities'] == ['generate']
+    assert 'reference_contract' not in checkpoint
+    for config in (checkpoint['args'], checkpoint['model_config']):
+        assert not any(key.startswith('ref_') or key == 'temporal_rope_ref_drop_prob' for key in config)
+    assert not any('reference' in key or 'ref_' in key for key in model.state_dict())
 
 
 def test_latent_mse_respacing_and_sampling_without_clipping():
@@ -297,7 +298,6 @@ def test_frozen_ae_target_ignores_denoiser_drop_and_keeps_truth_time():
     before = encode_target(ae, norm, x, y)
     y['tempo_active'] = torch.zeros(2, dtype=torch.bool)
     y['action_label_active'] = torch.zeros(2, dtype=torch.bool)
-    y['ref_active'].zero_()
     after = encode_target(ae, norm, x, y)
     torch.testing.assert_close(before, after)
     assert not after.requires_grad and not ae.training
@@ -339,7 +339,7 @@ def test_compiled_training_forwards_preserve_targets_gradients_and_checkpoint_ke
     ae = MotionAutoencoder(t5_out_dim=4, width=16, layers=1, heads=2,
                            slots=2, latent_dim=3).eval().requires_grad_(False)
     norm = LatentNormalizer(torch.zeros(2, 3), torch.ones(2, 3))
-    model = denoiser(ref_cfg_drop_prob=0)
+    model = denoiser()
     keys = tuple(model.state_dict())
     forward, encoder = training_forwards(model, ae, norm, 'reduce-overhead')
     x, y = torch.randn(2, 5, 9, 60), conditions()
@@ -365,20 +365,19 @@ def test_compiled_training_forwards_preserve_targets_gradients_and_checkpoint_ke
     torch.testing.assert_close(eager_encoder(x, y), expected)
 
 
-def test_species_film_is_bypassed_only_on_reference_active_rows():
+def test_species_film_applies_to_every_row():
     model = LatentMotionDenoiser(t5_out_dim=4, width=16, layers=1, heads=2,
                                  ff_size=32, skeleton_layers=1, slots=2, latent_channels=3,
-                                 action_label_cond=False, ref_width=8, ref_layers=1,
+                                 action_label_cond=False,
                                  dropout=0, joint_name_drop_prob=0, rest_geom_joint_drop_prob=0).eval()
     torch.nn.init.normal_(model.static.species_film_j[-1].weight, std=0.1)
     y = conditions()
-    y['ref_active'] = torch.tensor([True, False])
     y['species_code'] = torch.randn(2, species_code_dim(4))
     z = torch.randn(2, 60, 2, 3)
     before = model(z, torch.zeros(2), y)
     y['species_code'] = y['species_code'] + 20
     after = model(z, torch.zeros(2), y)
-    torch.testing.assert_close(before[0], after[0])
+    assert not torch.allclose(before[0], after[0])
     assert not torch.allclose(before[1], after[1])
 
 
@@ -394,9 +393,9 @@ def test_checkpoint_binding_and_contract_rejection(tmp_path):
                     decoder_content_version=DECODER_CONTENT_VERSION), ae_path)
     frozen, binding = load_frozen_autoencoder(ae_path)
     assert not frozen.training and all(not p.requires_grad for p in frozen.parameters())
-    model = denoiser(ref_encoder=False)
+    model = denoiser()
     payload = dict(kind=LATENT_CHECKPOINT_VERSION, time_contract=TIME_CONTRACT,
-                   reference_contract='source_pose_rest_v1', prediction='standardized_z0',
+                   prediction='standardized_z0',
                    ae_binding=binding, model_config=model.config, model=model.state_dict(), model_ema=None,
                    normalization=LatentNormalizer(torch.zeros(2, 3), torch.ones(2, 3)).metadata())
     path = tmp_path / 'latent.pt'
@@ -408,11 +407,14 @@ def test_checkpoint_binding_and_contract_rejection(tmp_path):
     restored, _, _, _ = load_latent_checkpoint(path)
     assert 'tempo_cfg_drop_prob' not in restored.config
     torch.testing.assert_close(restored.input.weight, model.input.weight)
-    for key in ('kind', 'time_contract', 'reference_contract', 'prediction'):
+    for key in ('kind', 'time_contract', 'prediction'):
         wrong = dict(payload, **{key: 'incompatible'})
         torch.save(wrong, path)
         with pytest.raises(ValueError, match='contract'):
             load_latent_checkpoint(path)
+    torch.save(dict(payload, kind='latent_diffusion_v1'), path)
+    with pytest.raises(ValueError, match='contract'):
+        load_latent_checkpoint(path)
     wrong = dict(payload, ae_binding={**binding, 'sha256': 'wrong'})
     torch.save(wrong, path)
     with pytest.raises(ValueError, match='hash'):

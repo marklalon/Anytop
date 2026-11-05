@@ -10,8 +10,8 @@ from model.motion_autoencoder import MotionAutoencoder, DECODER_CONTENT_VERSION
 from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE
 from diffusion.latent_diffusion import validate_latent_conditions
 
-LATENT_CHECKPOINT_VERSION = 'latent_diffusion_v1'
-TIME_CONTRACT = 'fixed60_reference_priority_v1'
+LATENT_CHECKPOINT_VERSION = 'latent_diffusion_v2'
+TIME_CONTRACT = 'fixed60_v1'
 SKELETON_KEYS = ('n_joints', 'joints_names_embs', 'rest_geom', 'joint_struct',
                  'graph_dist', 'joints_relations')
 TIME_KEYS = ('is_loop', 'loop_tile_count', 'resample_speed_cond')
@@ -122,7 +122,6 @@ def load_latent_checkpoint(path, device='cpu', ae_checkpoint=None):
     payload = torch.load(path, map_location='cpu', weights_only=False)
     if (payload.get('kind') != LATENT_CHECKPOINT_VERSION
             or payload.get('time_contract') != TIME_CONTRACT
-            or payload.get('reference_contract') != 'source_pose_rest_v1'
             or payload.get('prediction') != 'standardized_z0'):
         raise ValueError('Unsupported latent checkpoint/condition contract')
     ae, binding = load_frozen_autoencoder(ae_checkpoint or payload['ae_binding']['path'], device)

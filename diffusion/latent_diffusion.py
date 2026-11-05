@@ -19,6 +19,9 @@ def validate_latent_conditions(y, frames=60):
     for key in EDIT_KEYS:
         if y.get(key) is not None:
             raise ValueError(f'{key} is unsupported by latent diffusion')
+    for key in y:
+        if key.startswith('ref_'):
+            raise ValueError(f'{key} is unsupported by latent diffusion; use the autoencoder for motion transfer')
     if frames != 60:
         raise ValueError('Latent diffusion requires a fixed 60-frame window')
     if 'lengths' in y and not torch.compiler.is_compiling():

@@ -18,8 +18,8 @@ The backend follows the checkpoint: a latent run (`latent_diffusion*.pt`) is
 generated with `sample/generate_latent.py` against the frozen autoencoder it was
 trained with. `--backend motion|latent` overrides the detection, and
 `--ae_checkpoint <path>` points at a relocated AE (its hash must match
-training). Motion-only flags (inpaint/outpaint) are rejected by the latent
-backend.
+training). Reference motion and motion-only editing flags (inpaint/outpaint) are rejected by
+the latent backend. Use the autoencoder for motion transfer.
 
 ## Quality score
 

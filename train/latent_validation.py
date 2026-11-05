@@ -16,7 +16,6 @@ def build_validation_loader(args, batch_transform=None):
             action_label_cond=getattr(args, 'action_label_cond', False),
             action_conditioning=getattr(args, 'action_conditioning', None),
             species_table=getattr(args, 'species_descriptor_table', None),
-            ref_encoder=getattr(args, 'ref_encoder', False),
             motion_cache_size=args.motion_cache_size,
             motion_speed_aug=1.0, loop_tile_single_prob=0.0, loop_cond_prob=1.0,
             topology_aug_prob=0.0, bone_length_aug_prob=0.0,

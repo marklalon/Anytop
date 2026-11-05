@@ -11,10 +11,8 @@ REM Examples:
 REM   generate_latent.bat --object_type Horse --action_label Run
 REM   generate_latent.bat --cond_path outputs/test/cond/Human/cond.npy --action_label "run, forward"
 REM   generate_latent.bat --object_type Horse --fullbody_ik --stretch_factor 0
-REM   generate_latent.bat --object_type Horse --reference_motion path\Flamingo_Walk.npy
 REM A single-species --cond_path auto-selects its target, as in generate.bat.
-REM Otherwise pass --object_type or infer it from a named reference motion.
-REM --reference_motion and --action_label are mutually exclusive.
+REM Otherwise pass --object_type.
 REM The checkpoint loads its bound frozen AE; use --ae_checkpoint to relocate it.
 REM Extra arguments are forwarded to sample/generate_latent.py via %*.
 

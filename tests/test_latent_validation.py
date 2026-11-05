@@ -20,7 +20,7 @@ def validation_args():
     return SimpleNamespace(cond_path='cond.npy', batch_size=16, num_frames=60,
                            sample_filter='training_only.json', seed=10, motion_cache_size=0,
                            action_label_cond=True, action_conditioning=object(),
-                           species_descriptor_table=object(), ref_encoder=True)
+                           species_descriptor_table=object())
 
 
 def test_validation_uses_independent_split_and_no_training_augmentation(monkeypatch):
@@ -47,6 +47,7 @@ def test_validation_uses_independent_split_and_no_training_augmentation(monkeypa
     assert captured['action_conditioning'] is args.action_conditioning
     assert captured['species_table'] is args.species_descriptor_table
     assert captured['batch_transform'] is transform
+    assert not captured.get('ref_encoder', False)
 
 
 @pytest.mark.parametrize('raise_empty', [True, False])
