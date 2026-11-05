@@ -141,14 +141,15 @@ def test_validation_reports_real_pairs_and_preserves_training_sampling(tmp_path)
     model = MotionAutoencoder(t5_out_dim=4, width=16, layers=1, heads=2, slots=2, latent_dim=4)
     first = evaluate_dual_view_validation(model, loader, args, 'cpu')
     assert first == evaluate_dual_view_validation(model, loader, args, 'cpu')
-    assert first['reference_pair_sample_count'] == first['dual_view_sample_count'] == 2
     assert np.isfinite(first['reference_pair_cross_mse'])
+    assert 'reference_pair_sample_count' not in first
+    assert 'dual_view_cross_mse' not in first
+    assert 'dual_view_sample_count' not in first
     assert 'reference_pair_self_mse' not in first
     assert 'dual_view_self_mse' not in first
-    assert first['reference_pair_cross_mse'] == first['dual_view_cross_mse']
     assert not source.opt.autoencoder_reference_only_partners
     del source.data_dict['fixture/other.npy']
     source.name_list = ['fixture/test.npy']
     report = evaluate_dual_view_validation(model, loader, args, 'cpu')
-    assert report['reference_pair_sample_count'] == 0
+    assert 'reference_pair_sample_count' not in report
     assert 'reference_pair_cross_mse' not in report

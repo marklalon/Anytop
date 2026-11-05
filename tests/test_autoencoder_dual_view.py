@@ -288,7 +288,7 @@ def test_dual_view_prefetch_and_spawn_workers(workers, monkeypatch):
         assert (cond['n_joints'] > cond['ae_view_cond']['n_joints']).all()
 
 
-def test_held_out_dual_view_metrics_replay_without_mutating_loader_or_rng():
+def test_dual_view_validation_is_skipped_without_reference_pairs():
     from model.motion_autoencoder import MotionAutoencoder
     source, data = make_dataset()
     source.data_dict = {'test': data}
@@ -303,7 +303,6 @@ def test_held_out_dual_view_metrics_replay_without_mutating_loader_or_rng():
     assert random.getstate() == expected_rng
     again = evaluate_dual_view_validation(model, loader, args, 'cpu')
     assert first == again
-    assert first['dual_view_sample_count'] == 1
-    assert np.isfinite(first['dual_view_cross_mse']) and first['dual_view_cross_mse'] > 0
+    assert first == {}
     assert 'dual_view_self_mse' not in first
     assert not getattr(source.opt, 'autoencoder_dual_view', False)

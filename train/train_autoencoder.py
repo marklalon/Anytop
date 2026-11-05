@@ -310,7 +310,7 @@ def evaluate_validation(model, loader, batch_size, device):
 @torch.no_grad()
 def evaluate_dual_view_validation(model, loader, args, device):
     """Fixed RNG, held-out motions, independent skeleton views, no condition drops."""
-    if loader is None:
+    if loader is None or not args.reference_pairs:
         return {}
     device = torch.device(device)
     # Do not modify the ordinary validation loader (which may be prefetching).
@@ -322,40 +322,25 @@ def evaluate_dual_view_validation(model, loader, args, device):
     source.opt.autoencoder_dual_view = True
     source.opt.autoencoder_reference_only_partners = True
     model.eval()
-    totals = dict(loss=0.)
-    count = 0
     paired_totals = dict(loss=0.)
     paired_count = 0
     transform = AutoencoderBatchTransform()
     criterion = MotionReconstructionLosses()
     names = source.name_list[source.pointer:]
     with _fixed_validation_rng(device):
-        # Keep paired metrics separate from the synthetic-view fallback.
-        for paired in (False, True):
-            subset = [name for name in names if (name in source.reference_groups) == paired]
-            for start in range(0, len(subset), args.batch_size):
-                selected = subset[start:start + args.batch_size]
-                samples = [source.prepare_sample_by_name(name) for name in selected]
-                batch = transform(truebones_batch_collate(samples, joint_buckets=args.joint_buckets or JOINT_BUCKETS))
-                x, y = training_batch_to_device(batch, device)
-                terms = dual_view_training_terms(model, criterion, x, y)
-                for key in totals:
-                    value = float(terms[key]) * len(selected)
-                    totals[key] += value
-                    if paired:
-                        paired_totals[key] += value
-                count += len(selected)
-                if paired:
-                    paired_count += len(selected)
-    if not count:
+        # Pair validation excludes the synthetic-view fallback and self-pairs.
+        subset = [name for name in names if name in source.reference_groups]
+        for start in range(0, len(subset), args.batch_size):
+            selected = subset[start:start + args.batch_size]
+            samples = [source.prepare_sample_by_name(name) for name in selected]
+            batch = transform(truebones_batch_collate(samples, joint_buckets=args.joint_buckets or JOINT_BUCKETS))
+            x, y = training_batch_to_device(batch, device)
+            terms = dual_view_training_terms(model, criterion, x, y)
+            paired_totals['loss'] += float(terms['loss']) * len(selected)
+            paired_count += len(selected)
+    if not paired_count:
         return {}
-    metrics = {'dual_view_cross_mse': totals['loss'] / count,
-            'dual_view_sample_count': count}
-    if args.reference_pairs:
-        metrics['reference_pair_sample_count'] = paired_count
-        if paired_count:
-            metrics['reference_pair_cross_mse'] = paired_totals['loss'] / paired_count
-    return metrics
+    return {'reference_pair_cross_mse': paired_totals['loss'] / paired_count}
 
 
 def parser():
@@ -623,7 +608,7 @@ def main():
             evaluation_model, val_loader, args.batch_size, device)
         if report is None:
             return None
-        if args.dual_view:
+        if args.reference_pairs:
             report['summary'].update(evaluate_dual_view_validation(
                 evaluation_model, val_loader, args, device))
         report['step'] = step
