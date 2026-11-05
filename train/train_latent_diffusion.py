@@ -4,6 +4,7 @@ import copy
 import json
 import random
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -262,7 +263,9 @@ def main(argv=None):
     print('Online encoding; fixed 60 valid frames; no motion geometry training losses or editing.')
     if resume:
         print('Resume restores optimizer/model RNG; the shared prefetch data stream restarts.')
-    writer = SummaryWriter(str(save / 'tensorboard'), purge_step=start + 1 if resume else None)
+    tb_dir = save / datetime.now().strftime('run_%Y%m%d_%H%M%S')
+    writer = SummaryWriter(str(tb_dir), purge_step=start + 1 if resume else None)
+    tqdm.write(f'[INFO] TensorBoard log_dir: {tb_dir}')
     dtype = torch.bfloat16 if args.amp_dtype == 'bf16' else torch.float16
     try:
         with (save / 'training.jsonl').open('a', encoding='utf-8') as log:
