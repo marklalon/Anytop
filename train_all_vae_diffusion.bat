@@ -6,8 +6,8 @@ REM Usage: train_all_vae_diffusion.bat [--autoencoder-only ^| --latent-diffusion
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
-set "AE_RUN_NAME=all_autoencoder_reference_pairs_v1"
-set "DIFFUSION_RUN_NAME=all_latent_diffusion_reference_pairs_v1"
+set "AE_RUN_NAME=all_autoencoder_v2"
+set "DIFFUSION_RUN_NAME=all_latent_diffusion_v2"
 set "TRAIN_STAGE=both"
 set "RUN_NAME_COUNT=0"
 :parse_args
@@ -66,14 +66,17 @@ if not exist "dataset\cond_all.npy" (
 )
 set "EXIT_CODE=0"
 if "%TRAIN_STAGE%"=="diffusion" goto :latent_diffusion
-echo [1/2] Training full-dataset VAE: %AE_RUN_NAME%
+if "%TRAIN_STAGE%"=="autoencoder" (
+    echo Training full-dataset VAE: %AE_RUN_NAME%
+) else (
+    echo [1/2] Training full-dataset VAE: %AE_RUN_NAME%
+)
 "%PYTHON_EXE%" train/train_motion_autoencoder.py ^
     --cond_path dataset/cond_all.npy ^
     --save_dir "save/%AE_RUN_NAME%" ^
     --seed 10 ^
     --dual_view ^
     --reference_pairs ^
-    --dual_view_self_weight 1.0 ^
     --motion_speed_aug 1.3 ^
     --loop_tile_single_prob 0.5 ^
     --loop_cond_prob_free 0.8 ^
@@ -81,8 +84,8 @@ echo [1/2] Training full-dataset VAE: %AE_RUN_NAME%
     --joint_name_drop_prob 0.15 ^
     --rest_geom_joint_drop_prob 0.1 ^
     --dropout_prob 0.05 ^
-    --topology_aug_prob 0.2 ^
-    --bone_length_aug_prob 0.2 ^
+    --topology_aug_prob 0.3 ^
+    --bone_length_aug_prob 0.3 ^
     --rest_repose_prob 0.1 ^
     --rest_variant_prob 0.5 ^
     --auto_resume ^
@@ -101,7 +104,7 @@ echo [1/2] Training full-dataset VAE: %AE_RUN_NAME%
     --heads 4 ^
     --slots 8 ^
     --variational ^
-    --kl_weight 1e-4 ^
+    --kl_weight 3e-4 ^
     --latent_dim 32 ^
     --num_frames 60 ^
     --batch_size 16 ^
@@ -113,7 +116,7 @@ echo [1/2] Training full-dataset VAE: %AE_RUN_NAME%
     --lr_decay_start 0 ^
     --use_ema ^
     --ema_rate 0.9995 ^
-    --motion_step_warmup_steps 1000 ^
+    --warmup_steps 2000 ^
     --drot_joint_boost 1 ^
     --lambda_dpos 0.1 ^
     --lambda_drot 0.1 ^
@@ -125,10 +128,10 @@ echo [1/2] Training full-dataset VAE: %AE_RUN_NAME%
     --lambda_bone 0.2 ^
     --lambda_limb_corr 0.1 ^
     --lambda_loop_wrap 0.1 ^
-    --num_steps 50000 ^
+    --num_steps 30000 ^
     --log_interval 100 ^
     --save_interval 5000 ^
-    --eval_interval 5000
+    --eval_interval 1000
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" goto :finish
 if "%TRAIN_STAGE%"=="autoencoder" goto :finish
@@ -139,7 +142,11 @@ if not exist "save\%AE_RUN_NAME%\autoencoder.pt" (
     set "EXIT_CODE=1"
     goto :finish
 )
-echo [2/2] Training full-dataset latent diffusion: %DIFFUSION_RUN_NAME%
+if "%TRAIN_STAGE%"=="diffusion" (
+    echo Training full-dataset latent diffusion: %DIFFUSION_RUN_NAME%
+) else (
+    echo [2/2] Training full-dataset latent diffusion: %DIFFUSION_RUN_NAME%
+)
 "%PYTHON_EXE%" train/train_latent_diffusion.py ^
     --ae_checkpoint "save/%AE_RUN_NAME%" ^
     --cond_path dataset/cond_all.npy ^
@@ -192,7 +199,7 @@ echo [2/2] Training full-dataset latent diffusion: %DIFFUSION_RUN_NAME%
     --num_steps 50000 ^
     --log_interval 100 ^
     --save_interval 5000 ^
-    --eval_interval 5000
+    --eval_interval 1000
 set "EXIT_CODE=%ERRORLEVEL%"
 :finish
 popd

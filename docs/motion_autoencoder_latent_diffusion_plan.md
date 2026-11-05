@@ -89,17 +89,19 @@ x_hat = ae.decode(z, skeleton, frame_mask, time_metadata)
 
 ### 独立双视图跨重建
 
-训练入口支持 `--dual_view`；未指定时使用单视图自重建。全量和 tiny 的 VAE→latent diffusion 批处理入口已开启双视图，并使用新的默认 run 名称，避免自动续训旧训练目标。续训会检查双视图开关和自重建权重，旧 checkpoint 仍可推理，但不能用原 run 直接切换训练目标。
+训练入口支持 `--dual_view`；未指定时使用单视图自重建。全量和 tiny 的 VAE→latent diffusion 批处理入口已开启双视图。每步仅编码源视图一次、解码到目标视图一次。checkpoint 记录 `dual_view_objective=source_to_target_v1`；旧的双向 cross/self 训练 checkpoint 仍可推理，但续训时会拒绝静默切换训练目标，需使用新的 run 名称。
 
 每个样本从同一原始动作、原始骨架生成 A/B 两个视图。rest variant、拓扑、骨长、rest repose 分别独立抽样，各视图保留与自身骨架一致的动作、结构特征、canonical 转换上下文和损失条件。变速、循环闭合帧判定、相位偏移、平铺、裁剪、最终重采样及 loop 条件标签共享同一个时间映射，不通过重放随机数模拟同步。两侧按共同的关节 bucket 上界 padding。
 
-每个视图只编码一次，并将同一 latent 解码到自身及另一视图：A→B、B→A 组成 cross loss，A→A、B→B 组成 self loss。两组内部取均值，重建总损失为 `(cross + w * self) / (1 + w)`，其中 `--dual_view_self_weight` 的默认值为 1。各项几何损失使用解码目标自己的完整条件；VAE 的 KL 对两侧 posterior 取均值，再按原权重及 warmup 加入。
+普通增强路径执行 `E(A)→zA→D(zA, skeleton(A′))`，用独立增强后的 A′ 动作监督。这是广义自重建，A′ 可以具有不同拓扑、骨长和 rest pose；不再额外执行严格的 A→A 重建。各项几何损失只使用目标视图自己的完整条件；VAE 的 KL 只计算源视图 posterior，再按原权重及 warmup 加入。已移除 `--dual_view_self_weight`。
+
+双视图与原单视图一样，每步只有一次编码、一次解码、一次重建损失和一次反向传播，不使用激活检查点重算。额外开销来自目标视图的独立数据增强、collate 与传输；共同 padding 上界也可能因目标骨架更大而增加计算量。
 
 `joint_name_drop_prob` 使用同一概率，对每个视图的 Encoder 条件和 Decoder 条件分别独立采样；目标关节名也可能不可靠，因此不复用源侧的名字 mask。`rest_geom_joint_drop_prob` 只对 Encoder 的逐关节几何独立采样，Decoder 始终保留完整几何。整副几何、镜像关系和侧别 drop 已移除，普通网络 dropout 保持原配置。干净条件及损失转换上下文不受任何 drop 影响。旧 checkpoint 的已移除 drop 配置仅在推理加载时过滤，不影响权重加载。
 
-验证保留原始自重建及 latent 使用诊断，另以固定随机种子在 val 动作上应用训练配置的独立骨架增强，报告 `dual_view_cross_mse`、`dual_view_self_mse` 和样本数；验证条件不做 drop，时间处理沿用 val 设置。
+验证保留原始自重建及 latent 使用诊断，另以固定随机种子在 val 动作上应用训练配置的独立骨架增强，按同样的单向源→目标路径报告 `dual_view_cross_mse` 和样本数；不再报告额外严格自重建的 `dual_view_self_mse`。验证条件不做 drop，时间处理沿用 val 设置。
 
-`--reference_pairs` 自动开启双视图训练，复用各数据源 `reference_pairs.jsonl` 的同动作逐帧配对组：有配对的 clip 从完整组内均匀抽取 B（包含自身；N 条动作各占 1/N），无配对的 clip 继续使用同一原始动作的独立增强视图。两侧始终使用自身动作和骨架，独立骨架增强、共享完整时间映射，以 A→B/B→A 和各自 self reconstruction 监督；不增加 `L_align`，也不启用 diffusion 的 reference encoder。组只包含当前 split、sample filter 等筛选后仍存在的成员，并校验原始长度和 loop 标记一致；关节分桶覆盖组内最大骨架。配对验证固定排除自身，仅衡量真实跨样本迁移，单独报告 `reference_pair_sample_count`，有样本时报告 `reference_pair_cross_mse` 和 `reference_pair_self_mse`；计数为零表示该 val split 没有可用配对，不能据此判断真实配对迁移质量。全量/tiny 批处理默认开启此选项并使用新的 run 名称；续训禁止切换配对训练开关。
+`--reference_pairs` 自动开启双视图训练，复用各数据源 `reference_pairs.jsonl` 的同动作逐帧配对组：有配对的 clip 从完整组内均匀抽取 B（包含自身；N 条动作各占 1/N），无配对的 clip 继续使用同一原始动作的独立增强视图。两侧始终使用自身动作和骨架，独立骨架增强、共享完整时间映射，每步仅执行 A→B；B→A 随后续源/目标抽样自然覆盖，不额外执行 A→A、B→B 或 B→A。不增加 `L_align`，也不启用 diffusion 的 reference encoder。组只包含当前 split、sample filter 等筛选后仍存在的成员，并校验原始长度和 loop 标记一致；关节分桶覆盖组内最大骨架。配对验证固定排除自身，仅衡量真实跨样本迁移，单独报告 `reference_pair_sample_count`，有样本时报告 `reference_pair_cross_mse`；计数为零表示该 val split 没有可用配对，不能据此判断真实配对迁移质量。全量/tiny 批处理默认开启此选项；续训禁止切换配对训练开关。
 
 `MotionReconstructionLosses` 直接计算干净动作的重建监督，与 diffusion 共享动作几何损失组件，不构建 diffusion 对象，也不使用噪声时间衰减。
 

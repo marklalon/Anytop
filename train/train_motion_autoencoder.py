@@ -42,6 +42,7 @@ from torch.utils.tensorboard import SummaryWriter
 SKELETON_KEYS = ('n_joints', 'joints_names_embs', 'rest_geom', 'joint_struct',
                  'graph_dist', 'joints_relations')
 TIME_KEYS = ('is_loop', 'loop_tile_count', 'resample_speed_cond')
+DUAL_VIEW_OBJECTIVE = 'source_to_target_v1'
 
 
 AUGMENTATION_DEFAULTS = dict(motion_speed_aug=1.0, loop_tile_single_prob=1.0,
@@ -148,31 +149,25 @@ def model_inputs(x, y):
 
 
 def dual_view_training_terms(model, criterion, target, cond, *, step_scale=1.0,
-                             kl_weight=0.0, self_weight=1.0):
-    """Average A->B/B->A and retain equally weighted self reconstruction by default."""
+                             kl_weight=0.0):
+    """Encode source A once and decode once to independently augmented target B."""
     other, other_cond = cond['ae_view_motion'], cond['ae_view_cond']
     _, frame, loop = model_inputs(target, cond)
-    clean_a, clean_b = cond['ae_target_skeleton'], other_cond['ae_target_skeleton']
-    cross_terms, self_terms, kls = [], [], []
-    for source, source_cond, destination, destination_cond, clean_source, clean_target in (
-            (target, cond, other, other_cond, clean_a, clean_b),
-            (other, other_cond, target, cond, clean_b, clean_a)):
-        prediction, reconstruction, mu, logvar = model(
-            source, source_cond['ae_source_skeleton'], frame, loop,
-            target_skeleton=clean_target, self_skeleton=clean_source)
-        cross_terms.append(criterion(prediction, destination, destination_cond, step_loss_scale=step_scale))
-        self_terms.append(criterion(reconstruction, source, source_cond, step_loss_scale=step_scale))
-        if logvar is not None:
-            kls.append(diagonal_gaussian_kl(mu, logvar, frame))
-    terms = {key: (sum(t[key] for t in cross_terms)
-                   + self_weight * sum(t[key] for t in self_terms)) / (2 * (1 + self_weight))
-             for key in cross_terms[0]}
-    terms['cross_reconstruction_loss'] = sum(t['loss'] for t in cross_terms) / 2
-    terms['self_reconstruction_loss'] = sum(t['loss'] for t in self_terms) / 2
-    if kls:
-        terms['kl_loss'] = sum(kls) / 2
+    prediction, mu, logvar = model(
+        target, cond['ae_source_skeleton'], frame, loop,
+        target_skeleton=other_cond['ae_target_skeleton'], return_posterior=True)
+    terms = criterion(prediction, other, other_cond, step_loss_scale=step_scale)
+    if logvar is not None:
+        terms['kl_loss'] = diagonal_gaussian_kl(mu, logvar, frame)
         terms['loss'] = terms['loss'] + kl_weight * step_scale * terms['kl_loss']
     return terms
+
+
+def validate_dual_view_objective(resume, args):
+    if (args.dual_view and resume is not None
+            and resume.get('dual_view_objective') != DUAL_VIEW_OBJECTIVE):
+        raise ValueError('Cannot resume the old bidirectional cross/self objective as '
+                         'single-pass source-to-target training; use a new --save_dir')
 
 
 def reconstruction_mse(prediction, target, skeleton, frame):
@@ -327,9 +322,9 @@ def evaluate_dual_view_validation(model, loader, args, device):
     source.opt.autoencoder_dual_view = True
     source.opt.autoencoder_reference_only_partners = True
     model.eval()
-    totals = dict(cross_reconstruction_loss=0., self_reconstruction_loss=0.)
+    totals = dict(loss=0.)
     count = 0
-    paired_totals = dict(cross_reconstruction_loss=0., self_reconstruction_loss=0.)
+    paired_totals = dict(loss=0.)
     paired_count = 0
     transform = AutoencoderBatchTransform()
     criterion = MotionReconstructionLosses()
@@ -354,14 +349,12 @@ def evaluate_dual_view_validation(model, loader, args, device):
                     paired_count += len(selected)
     if not count:
         return {}
-    metrics = {'dual_view_cross_mse': totals['cross_reconstruction_loss'] / count,
-            'dual_view_self_mse': totals['self_reconstruction_loss'] / count,
+    metrics = {'dual_view_cross_mse': totals['loss'] / count,
             'dual_view_sample_count': count}
     if args.reference_pairs:
         metrics['reference_pair_sample_count'] = paired_count
         if paired_count:
-            metrics.update(reference_pair_cross_mse=paired_totals['cross_reconstruction_loss'] / paired_count,
-                           reference_pair_self_mse=paired_totals['self_reconstruction_loss'] / paired_count)
+            metrics['reference_pair_cross_mse'] = paired_totals['loss'] / paired_count
     return metrics
 
 
@@ -424,15 +417,13 @@ def parser():
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--auto_resume', action='store_true')
     p.add_argument('--dual_view', action='store_true',
-                   help='Independent skeleton views, shared time map; bidirectional cross reconstruction with independent encoder/decoder name drop')
-    p.add_argument('--dual_view_self_weight', type=float, default=1.0,
-                   help='Self reconstruction relative to cross reconstruction in dual-view mode (default: equal weight)')
+                   help='Encode source once, decode to independently augmented target once; shared time map')
     p.add_argument('--reference_pairs', action='store_true',
                    help='Sample the second view uniformly from reference_pairs.jsonl groups, including self; implies dual_view. Unpaired clips retain synthetic views')
     for argument in LOSS_WEIGHTS.values():
         p.add_argument('--' + argument, type=float, default=0.0)
     p.add_argument('--drot_joint_boost', type=float, default=0.0)
-    p.add_argument('--motion_step_warmup_steps', type=int, default=0,
+    p.add_argument('--warmup_steps', type=int, default=0,
                    help='Linearly ramp dpos/drot/acc and KL weights from zero to their configured values')
     for key, default in (AUGMENTATION_DEFAULTS | MODEL_REGULARIZATION_DEFAULTS).items():
         p.add_argument('--' + key, type=float, default=default)
@@ -452,10 +443,8 @@ def main():
     if min(args.num_frames, args.batch_size, args.num_steps, args.log_interval,
            args.save_interval, args.eval_interval) < 1:
         raise ValueError('Lengths, batch size, steps and intervals must be positive')
-    if args.motion_step_warmup_steps < 0:
-        raise ValueError('motion_step_warmup_steps must be nonnegative')
-    if not np.isfinite(args.dual_view_self_weight) or args.dual_view_self_weight < 0:
-        raise ValueError('dual_view_self_weight must be finite and nonnegative')
+    if args.warmup_steps < 0:
+        raise ValueError('warmup_steps must be nonnegative')
     if min(args.num_workers, args.main_process_prefetch_batches, args.motion_cache_size) < 0:
         raise ValueError('Worker, prefetch and cache counts must be nonnegative')
     for key, default in (AUGMENTATION_DEFAULTS | MODEL_REGULARIZATION_DEFAULTS).items():
@@ -479,6 +468,7 @@ def main():
     if checkpoint.exists() and not args.auto_resume:
         raise FileExistsError(f'{checkpoint} exists; use --auto_resume or a new --save_dir')
     resume = torch.load(checkpoint, map_location='cpu', weights_only=False) if checkpoint.exists() else None
+    validate_dual_view_objective(resume, args)
     if resume is not None:
         if resume['decoder_content_version'] != DECODER_CONTENT_VERSION:
             raise ValueError('Checkpoint decoder content version does not match this code')
@@ -514,7 +504,7 @@ def main():
             current = getattr(args, fallback) if current is None else current
             if previous != current:
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
-        for key in (*LOSS_WEIGHTS.values(), 'drot_joint_boost', 'motion_step_warmup_steps'):
+        for key in (*LOSS_WEIGHTS.values(), 'drot_joint_boost', 'warmup_steps'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run for a new objective')
         for key in ('last_layer_ff', 'cross_limb_dim', 'cross_limb_last_n',
@@ -527,7 +517,7 @@ def main():
         for key in ('variational', 'kl_weight'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
-        for key, default in (('dual_view', False), ('dual_view_self_weight', 1.0), ('reference_pairs', False)):
+        for key, default in (('dual_view', False), ('reference_pairs', False)):
             if resume['args'].get(key, default) != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run for a new objective')
     # Preserve the accepted training contract for inference, including resumes.
@@ -593,7 +583,7 @@ def main():
                      if hasattr(layer, 'motion_latent_attn')]
     tqdm.write(f'[model] latent reads: initial + decoder layers {reader_layers}')
     tqdm.write(f'[INFO] device={device}, train={args.amp_dtype}, losses/evaluation=fp32, '
-               f'lr={args.lr:.3e}, beta={args.kl_weight:g}, warmup_steps={args.motion_step_warmup_steps}')
+               f'lr={args.lr:.3e}, beta={args.kl_weight:g}, warmup_steps={args.warmup_steps}')
     tqdm.write(f'[INFO] lr_decay_start={args.lr_decay_start}, lr_final={args.lr_final:.3e}, '
                f'weight_decay={args.weight_decay:g}, EMA={args.use_ema}, ema_rate={args.ema_rate:g}')
     active_augmentation = {key: value for key, value in augmentation.items()
@@ -602,7 +592,7 @@ def main():
     if args.dual_view:
         tqdm.write('[INFO] dual views: independent skeleton augmentation, shared temporal map; '
                    'independent encoder/decoder name drop, source-only joint geometry drop; '
-                   f'bidirectional cross/self relative weights=1/{args.dual_view_self_weight:g}')
+                   'one source encoding and one target decoding per step; no activation recomputation')
     if args.reference_pairs:
         tqdm.write(f'[INFO] reference pairs: {len(source.reference_groups)}/{len(names)} training clips; '
                    'uniform group sampling includes self as one member; '
@@ -671,8 +661,8 @@ def main():
             step_lr = optimizer.param_groups[0]['lr']
             target, cond = training_batch_to_device(next(batches), device)
             skeleton, frame, loop = model_inputs(target, cond)
-            step_scale = (min(step / args.motion_step_warmup_steps, 1.0)
-                          if args.motion_step_warmup_steps else 1.0)
+            step_scale = (min(step / args.warmup_steps, 1.0)
+                          if args.warmup_steps else 1.0)
             # Retry the same batch after overflow: num_steps counts actual optimizer updates.
             for overflow_retries in range(17):
                 optimizer.zero_grad(set_to_none=True)
@@ -683,7 +673,7 @@ def main():
                     if args.dual_view:
                         terms = dual_view_training_terms(
                             forward_model, criterion, target, cond, step_scale=step_scale,
-                            kl_weight=args.kl_weight, self_weight=args.dual_view_self_weight)
+                            kl_weight=args.kl_weight)
                     elif args.variational:
                         prediction, mu, logvar = forward_model(
                             target, cond['ae_source_skeleton'], frame, loop,
@@ -734,6 +724,7 @@ def main():
                 writer.flush()
             if step % args.save_interval == 0 or step == args.num_steps:
                 payload = dict(kind='motion_autoencoder_7a', step=step, args=vars(args),
+                               dual_view_objective=DUAL_VIEW_OBJECTIVE if args.dual_view else None,
                                decoder_content_version=DECODER_CONTENT_VERSION,
                                model_config=model.config, model=model.state_dict(),
                                model_ema=model_avg.state_dict() if model_avg is not None else None,
@@ -744,7 +735,7 @@ def main():
                                cond_sha256=cond_hash,
                                latent_layout='B,T,K,d',
                                beta=args.kl_weight,
-                               kl_warmup_steps=args.motion_step_warmup_steps if args.variational else 0,
+                               kl_warmup_steps=args.warmup_steps if args.variational else 0,
                                torch_rng=torch.get_rng_state(),
                                cuda_rng=torch.cuda.get_rng_state(device) if device.type == 'cuda' else None)
                 temporary = save / 'autoencoder.tmp.pt'

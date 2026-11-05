@@ -91,7 +91,8 @@ def test_val_with_only_short_clips_is_an_empty_split(monkeypatch, tmp_path):
             motion_metadata_lookup={'val': {name: {}}}, split='val')
 
 
-def test_vae_trains_and_resumes_without_val_or_export_and_uses_first_batch(monkeypatch, tmp_path):
+@pytest.mark.parametrize('dual_view', [False, True])
+def test_vae_trains_and_resumes_without_val_or_export_and_uses_first_batch(monkeypatch, tmp_path, dual_view):
     cond_path = tmp_path / 'cond.npy'
     cond_path.write_bytes(b'test skeleton identity')
     save = tmp_path / 'save'
@@ -103,6 +104,8 @@ def test_vae_trains_and_resumes_without_val_or_export_and_uses_first_batch(monke
         loop_tile_count=torch.ones(2, dtype=torch.long), resample_speed_cond=torch.ones(2))
     first = torch.full((2, 3, 9, 4), .25)
     second = torch.full_like(first, .75)
+    if dual_view:
+        conditions = dict(conditions, ae_view_motion=second, ae_view_cond=dict(conditions))
     dataset = SimpleNamespace(motion_dataset=SimpleNamespace(
         name_list=['train/a', 'train/b'], opt=SimpleNamespace(max_joints=128)))
     monkeypatch.setattr(vae, 'get_dataset', lambda **kwargs: dataset)
@@ -128,12 +131,16 @@ def test_vae_trains_and_resumes_without_val_or_export_and_uses_first_batch(monke
     argv = ['train_motion_autoencoder.py', '--cond_path', str(cond_path), '--save_dir', str(save),
             '--device', 'cpu', '--width', '16', '--layers', '1', '--heads', '2',
             '--slots', '2', '--latent_dim', '4', '--num_frames', '4', '--batch_size', '2', '--num_steps', '1']
+    if dual_view:
+        argv.insert(1, '--dual_view')
     monkeypatch.setattr(sys, 'argv', argv)
     vae.main()
     checkpoint = torch.load(save / 'autoencoder.pt', weights_only=False)
     assert checkpoint['step'] == 1 and checkpoint['eval_split'] == 'val'
     assert 'fixed_batch' not in checkpoint
-    assert seen == [.25]
+    expected_target = .75 if dual_view else .25
+    assert seen == [expected_target]
+    assert checkpoint['dual_view_objective'] == (vae.DUAL_VIEW_OBJECTIVE if dual_view else None)
     assert not (save / 'reconstructions').exists()
     assert not (save / 'reconstruction_metrics.json').exists()
     assert not (save / 'initial_metrics.json').exists()
@@ -144,7 +151,7 @@ def test_vae_trains_and_resumes_without_val_or_export_and_uses_first_batch(monke
     vae.main()
     resumed = torch.load(save / 'autoencoder.pt', weights_only=False)
     assert resumed['step'] == 2 and 'fixed_batch' not in resumed
-    assert seen == [.25, .25]
+    assert seen == [expected_target, expected_target]
 
 
 @pytest.mark.parametrize('loader', [None, []])

@@ -65,7 +65,11 @@ if not exist "dataset\cond_all.npy" (
 )
 set "EXIT_CODE=0"
 if "%TRAIN_STAGE%"=="diffusion" goto :latent_diffusion
-echo [1/2] Training tiny VAE: %AE_RUN_NAME%
+if "%TRAIN_STAGE%"=="autoencoder" (
+    echo Training tiny VAE: %AE_RUN_NAME%
+) else (
+    echo [1/2] Training tiny VAE: %AE_RUN_NAME%
+)
 "%PYTHON_EXE%" train/train_motion_autoencoder.py ^
     --cond_path dataset/cond_all.npy ^
     --sample_filter configs/sample_filters/tiny.json ^
@@ -73,7 +77,6 @@ echo [1/2] Training tiny VAE: %AE_RUN_NAME%
     --seed 10 ^
     --dual_view ^
     --reference_pairs ^
-    --dual_view_self_weight 1.0 ^
     --motion_speed_aug 1.3 ^
     --loop_tile_single_prob 0.5 ^
     --loop_cond_prob_free 0.8 ^
@@ -113,7 +116,7 @@ echo [1/2] Training tiny VAE: %AE_RUN_NAME%
     --lr_decay_start 0 ^
     --use_ema ^
     --ema_rate 0.995 ^
-    --motion_step_warmup_steps 500 ^
+    --warmup_steps 500 ^
     --drot_joint_boost 1 ^
     --lambda_dpos 0.1 ^
     --lambda_drot 0.1 ^
@@ -139,7 +142,11 @@ if not exist "save\%AE_RUN_NAME%\autoencoder.pt" (
     set "EXIT_CODE=1"
     goto :finish
 )
-echo [2/2] Training tiny latent diffusion: %DIFFUSION_RUN_NAME%
+if "%TRAIN_STAGE%"=="diffusion" (
+    echo Training tiny latent diffusion: %DIFFUSION_RUN_NAME%
+) else (
+    echo [2/2] Training tiny latent diffusion: %DIFFUSION_RUN_NAME%
+)
 "%PYTHON_EXE%" train/train_latent_diffusion.py ^
     --ae_checkpoint "save/%AE_RUN_NAME%" ^
     --cond_path dataset/cond_all.npy ^

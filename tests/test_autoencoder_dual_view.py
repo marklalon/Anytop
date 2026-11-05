@@ -147,7 +147,7 @@ def test_each_view_has_independent_encoder_decoder_name_masks_and_complete_targe
     torch.testing.assert_close(cond['joints_names_embs'], skeleton['joints_names_embs'])
 
 
-def test_cross_and_self_decoding_use_target_name_masks_not_clean_loss_names(monkeypatch):
+def test_single_decoding_uses_target_name_mask_not_clean_loss_names(monkeypatch):
     model, _, batch = view_batch()
     x, cond = training_batch_to_device(batch, 'cpu')
     received = []
@@ -157,9 +157,8 @@ def test_cross_and_self_decoding_use_target_name_masks_not_clean_loss_names(monk
         return decode(z, skeleton, *args, **kwargs)
     monkeypatch.setattr(model, 'decode', record)
     dual_view_training_terms(model, MotionReconstructionLosses(), x, cond)
-    a, b = cond['ae_target_skeleton'], cond['ae_view_cond']['ae_target_skeleton']
-    assert all(actual is expected for actual, expected in zip(received, (b, a, a, b)))
-    assert len(received) == 4
+    assert len(received) == 1
+    assert received[0] is cond['ae_view_cond']['ae_target_skeleton']
 
 
 def test_obsolete_dropout_config_loads_weights_without_restoring_removed_mechanisms():
@@ -190,31 +189,76 @@ def fresh_compiler_cache():
 
 
 @pytest.mark.parametrize('variational', [False, True])
-def test_cross_self_loss_routes_both_targets_and_backpropagates_fullgraph(variational, fresh_compiler_cache):
+@pytest.mark.parametrize('compiled', [False, True])
+def test_single_pass_matches_direct_source_to_target_loss_and_gradients(
+        variational, compiled, fresh_compiler_cache):
+    import copy
+    from model.motion_autoencoder import diagonal_gaussian_kl
+    from train.train_motion_autoencoder import model_inputs
     model, _, batch = view_batch(variational)
     model.train()
-    compiled = torch.compile(model, backend='eager', fullgraph=True)
+    expected_model = copy.deepcopy(model)
     target, cond = training_batch_to_device(batch, 'cpu')
-    calls = []
-    criterion = MotionReconstructionLosses()
-    def loss(prediction, target, y, **kwargs):
-        result = criterion(prediction, target, y, **kwargs)
-        calls.append((target, y, result['loss']))
-        return result
-    terms = dual_view_training_terms(compiled, loss, target, cond, self_weight=.5, kl_weight=.01)
     other, other_cond = cond['ae_view_motion'], cond['ae_view_cond']
-    for call, expected_target, expected_cond in zip(calls, (other, target, target, other),
-                                                  (other_cond, cond, cond, other_cond)):
-        assert call[0] is expected_target and call[1] is expected_cond
-    expected = (calls[0][2] + calls[2][2] + .5 * (calls[1][2] + calls[3][2])) / 3
-    if variational:
-        expected = expected + .01 * terms['kl_loss']
-    torch.testing.assert_close(terms['loss'], expected)
+    criterion = MotionReconstructionLosses()
+    calls = []
+    def loss(prediction, actual_target, y, **kwargs):
+        calls.append((actual_target, y))
+        return criterion(prediction, actual_target, y, **kwargs)
+    counts = {'encode': 0, 'decode': 0}
+    def count_encode(module, inputs):
+        counts['encode'] += 1
+    def count_decode(module, inputs):
+        counts['decode'] += 1
+    # These projections run once per encoding/decoding, including any
+    # recomputation during backward. No graph-breaking hooks in compiled mode.
+    handles = []
+    if not compiled:
+        handles = [model.motion_projection.register_forward_pre_hook(count_encode),
+                   model.output.register_forward_pre_hook(count_decode)]
+    forward = torch.compile(model, backend='eager', fullgraph=True) if compiled else model
+    torch.manual_seed(123)
+    terms = dual_view_training_terms(forward, loss, target, cond, step_scale=.4, kl_weight=.01)
     terms['loss'].backward()
-    for layer in (model.motion_projection, model.to_latent, model.output):
-        assert torch.isfinite(layer.weight.grad).all() and layer.weight.grad.abs().sum() > 0
+    assert len(calls) == 1
+    assert calls[0][0] is other and calls[0][1] is other_cond
+    if not compiled:
+        assert counts == {'encode': 1, 'decode': 1}
+    for handle in handles:
+        handle.remove()
+    _, frame, loop = model_inputs(target, cond)
+    torch.manual_seed(123)
+    prediction, mu, logvar = expected_model(
+        target, cond['ae_source_skeleton'], frame, loop,
+        target_skeleton=other_cond['ae_target_skeleton'], return_posterior=True)
+    expected = criterion(prediction, other, other_cond, step_loss_scale=.4)['loss']
     if variational:
-        assert model.to_logvar.weight.grad.abs().sum() > 0
+        kl = diagonal_gaussian_kl(mu, logvar, frame)
+        torch.testing.assert_close(terms['kl_loss'], kl)
+        expected = expected + .01 * .4 * kl
+    expected.backward()
+    torch.testing.assert_close(terms['loss'], expected)
+    for (name, actual), (_, reference) in zip(model.named_parameters(), expected_model.named_parameters()):
+        assert (actual.grad is None) == (reference.grad is None), name
+        if reference.grad is not None:
+            torch.testing.assert_close(actual.grad, reference.grad, msg=name)
+    assert not {'self_reconstruction_loss', 'cross_reconstruction_loss'}.intersection(terms)
+
+
+def test_old_dual_view_objective_cannot_silently_resume():
+    from train.train_motion_autoencoder import DUAL_VIEW_OBJECTIVE, validate_dual_view_objective
+    args = parser().parse_args(['--save_dir', 'unused', '--dual_view'])
+    with pytest.raises(ValueError, match='single-pass'):
+        validate_dual_view_objective({'args': {'dual_view': True}}, args)
+    validate_dual_view_objective({'dual_view_objective': DUAL_VIEW_OBJECTIVE}, args)
+    validate_dual_view_objective(None, args)
+    args.dual_view = False
+    validate_dual_view_objective({'args': {'dual_view': False}}, args)
+
+
+def test_obsolete_self_reconstruction_weight_is_rejected():
+    with pytest.raises(SystemExit):
+        parser().parse_args(['--save_dir', 'unused', '--dual_view_self_weight', '1'])
 
 
 class DualLoaderFixture(LoaderFixture):
@@ -260,5 +304,6 @@ def test_held_out_dual_view_metrics_replay_without_mutating_loader_or_rng():
     again = evaluate_dual_view_validation(model, loader, args, 'cpu')
     assert first == again
     assert first['dual_view_sample_count'] == 1
-    assert np.isfinite(first['dual_view_cross_mse']) and first['dual_view_self_mse'] > 0
+    assert np.isfinite(first['dual_view_cross_mse']) and first['dual_view_cross_mse'] > 0
+    assert 'dual_view_self_mse' not in first
     assert not getattr(source.opt, 'autoencoder_dual_view', False)

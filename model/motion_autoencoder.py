@@ -324,16 +324,13 @@ class MotionAutoencoder(nn.Module):
         return out.masked_fill(~(joint[:, :, None, None] & frame[:, None, None, :]), 0)
 
     def forward(self, x, skeleton, frame_mask=None, loop_metadata=None, return_posterior=False,
-                target_skeleton=None, self_skeleton=None):
+                target_skeleton=None):
         if frame_mask is None:
             frame_mask = torch.ones(x.shape[0], x.shape[-1], device=x.device, dtype=torch.bool)
         mu, logvar = self.encode_posterior(x, skeleton, frame_mask, loop_metadata)
         z = self.reparameterize(mu, logvar, frame_mask) if self.variational and self.training else mu
         prediction = self.decode(z, skeleton if target_skeleton is None else target_skeleton,
                                  frame_mask, loop_metadata)
-        if self_skeleton is not None:
-            reconstruction = self.decode(z, self_skeleton, frame_mask, loop_metadata)
-            return prediction, reconstruction, mu, logvar
         return (prediction, mu, logvar) if return_posterior else prediction
 
 

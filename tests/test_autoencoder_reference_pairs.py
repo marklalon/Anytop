@@ -82,7 +82,7 @@ def test_uniform_group_including_self_shares_time_map(tmp_path, monkeypatch, is_
     np.testing.assert_array_equal(source.sampler_index_joint_counts(), [7, 7])
 
 
-def test_real_pair_collation_and_bidirectional_backward(tmp_path):
+def test_real_pair_collation_and_single_pass_backward(tmp_path):
     source, _ = paired_dataset(tmp_path)
     source.opt.autoencoder_reference_only_partners = True
     sample = source.prepare_sample_by_name('fixture/test.npy', target_num_frames=12)
@@ -143,6 +143,8 @@ def test_validation_reports_real_pairs_and_preserves_training_sampling(tmp_path)
     assert first == evaluate_dual_view_validation(model, loader, args, 'cpu')
     assert first['reference_pair_sample_count'] == first['dual_view_sample_count'] == 2
     assert np.isfinite(first['reference_pair_cross_mse'])
+    assert 'reference_pair_self_mse' not in first
+    assert 'dual_view_self_mse' not in first
     assert first['reference_pair_cross_mse'] == first['dual_view_cross_mse']
     assert not source.opt.autoencoder_reference_only_partners
     del source.data_dict['fixture/other.npy']
