@@ -40,7 +40,7 @@ AE 的目标是完整动作重建。现有 `ReferenceEncoder` 服务于参考迁
 - `joints_names_embs`、`rest_geom`、`joint_struct`：投影后相加，形成关节静态特征。
 - `graph_dist`、`joints_relations`：供图关系注意力使用。
 
-offsets、尺度、canonical 统计等数据由损失与物理转换链路使用，不作为额外动态内容传入模型。Encoder 和 Decoder 使用同一份增强后的骨架条件；名称及 rest geometry 的条件置空也共享结果。
+offsets、尺度、canonical 统计等数据由损失与物理转换链路使用，不作为额外动态内容传入模型。默认自重建模式中，Encoder 和 Decoder 使用同一份增强后的骨架条件，名称及 rest geometry 的条件置空也共享结果。开启 `--dual_view` 后使用独立骨架视图，只有 Encoder 接收条件置空，Decoder 和损失始终读取各自目标视图的完整条件。
 
 ### 2.3 时间条件
 
@@ -86,6 +86,18 @@ x_hat = ae.decode(z, skeleton, frame_mask, time_metadata)
 `encode` 直接返回 latent 张量，不返回 posterior 对象；默认返回均值，VAE 可通过 `sample=True` 采样。`encode_posterior` 返回均值及可选对数方差。`forward` 串联编码和解码，VAE 在训练模式采样、评估模式使用均值，也可返回 posterior 信息供 KL 计算。
 
 ## 4. 重建监督与数据链路
+
+### 独立双视图跨重建
+
+训练入口支持 `--dual_view`；未指定时保持原自重建行为。全量和 tiny 的 VAE→latent diffusion 批处理入口已开启双视图，并使用新的默认 run 名称，避免自动续训旧训练目标。续训会检查双视图开关和自重建权重，旧 checkpoint 仍可推理，但不能用原 run 直接切换训练目标。
+
+每个样本从同一原始动作、原始骨架生成 A/B 两个视图。rest variant、拓扑、骨长、rest repose 分别独立抽样，各视图保留与自身骨架一致的动作、结构特征、canonical 转换上下文和损失条件。变速、循环闭合帧判定、相位偏移、平铺、裁剪、最终重采样及 loop 条件标签共享同一个时间映射，不通过重放随机数模拟同步。两侧按共同的关节 bucket 上界 padding。
+
+每个视图只编码一次，并将同一 latent 解码到自身及另一视图：A→B、B→A 组成 cross loss，A→A、B→B 组成 self loss。两组内部取均值，重建总损失为 `(cross + w * self) / (1 + w)`，其中 `--dual_view_self_weight` 的默认值为 1。各项几何损失使用解码目标自己的完整条件；VAE 的 KL 对两侧 posterior 取均值，再按原权重及 warmup 加入。
+
+`joint_name_drop_prob`、`rest_geom_drop_prob`、`rest_geom_joint_drop_prob` 只对 Encoder 条件独立采样，不修改干净条件或损失转换上下文。`mirror_twin_drop_prob`、`lateral_drop_prob` 仅在 Encoder 生效，Decoder 两项概率固定为 0；普通网络 dropout 保持原配置。一个视图作源时允许条件缺失，作目标时条件完整。
+
+验证保留原始自重建及 latent 使用诊断，另以固定随机种子在 val 动作上应用训练配置的独立骨架增强，报告 `dual_view_cross_mse`、`dual_view_self_mse` 和样本数；验证条件不做 drop，时间处理沿用 val 设置。这衡量同一原始骨架派生视图间的迁移，不等于异源角色或真实 `reference_pairs` 的质量验证。本功能不启用 `reference_pairs` 或额外 reference encoder。
 
 `MotionReconstructionLosses` 直接计算干净动作的重建监督，与 diffusion 共享动作几何损失组件，不构建 diffusion 对象，也不使用噪声时间衰减。
 

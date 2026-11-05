@@ -81,7 +81,8 @@ class MotionAutoencoder(nn.Module):
                  dropout_prob=0.0, mirror_twin_drop_prob=0.0, lateral_drop_prob=0.0,
                  encoder_layers=None, decoder_layers=None,
                  encoder_width=None, decoder_width=None,
-                 encoder_ff_size=None, decoder_ff_size=None):
+                 encoder_ff_size=None, decoder_ff_size=None,
+                 decoder_mirror_twin_drop_prob=None, decoder_lateral_drop_prob=None):
         super().__init__()
         encoder_layers = layers if encoder_layers is None else encoder_layers
         decoder_layers = layers if decoder_layers is None else decoder_layers
@@ -106,8 +107,13 @@ class MotionAutoencoder(nn.Module):
                            decoder_temporal_kernel=decoder_temporal_kernel, variational=variational,
                            dropout_prob=dropout_prob, mirror_twin_drop_prob=mirror_twin_drop_prob,
                            lateral_drop_prob=lateral_drop_prob)
-        for key in ('dropout_prob', 'mirror_twin_drop_prob', 'lateral_drop_prob'):
-            if not 0 <= self.config[key] <= 1:
+        for key, value in (('decoder_mirror_twin_drop_prob', decoder_mirror_twin_drop_prob),
+                           ('decoder_lateral_drop_prob', decoder_lateral_drop_prob)):
+            if value is not None:
+                self.config[key] = value
+        for key in ('dropout_prob', 'mirror_twin_drop_prob', 'lateral_drop_prob',
+                    'decoder_mirror_twin_drop_prob', 'decoder_lateral_drop_prob'):
+            if key in self.config and not 0 <= self.config[key] <= 1:
                 raise ValueError(f'Invalid {key}: {self.config[key]}')
         if decoder_temporal_kernel < 0 or (decoder_temporal_kernel and decoder_temporal_kernel % 2 == 0):
             raise ValueError('decoder_temporal_kernel must be zero or a positive odd number')
@@ -134,7 +140,10 @@ class MotionAutoencoder(nn.Module):
                 cross_limb=cross_limb_dim > 0, cross_limb_dim=cross_limb_dim or 64,
                 cross_limb_last_n=cross_limb_last_n, graph_relations=True,
                 last_layer_ff=last_layer_ff if decoder else 0, temporal_rope=temporal_rope,
-                mirror_twin_drop_prob=mirror_twin_drop_prob, lateral_drop_prob=lateral_drop_prob)
+                mirror_twin_drop_prob=(self.config.get('decoder_mirror_twin_drop_prob', mirror_twin_drop_prob)
+                                       if decoder else mirror_twin_drop_prob),
+                lateral_drop_prob=(self.config.get('decoder_lateral_drop_prob', lateral_drop_prob)
+                                   if decoder else lateral_drop_prob))
 
         self.encoder = trunk()
         self.decoder = trunk(decoder=True)
@@ -326,12 +335,17 @@ class MotionAutoencoder(nn.Module):
         out = self.output(tokens).permute(1, 2, 3, 0)
         return out.masked_fill(~(joint[:, :, None, None] & frame[:, None, None, :]), 0)
 
-    def forward(self, x, skeleton, frame_mask=None, loop_metadata=None, return_posterior=False):
+    def forward(self, x, skeleton, frame_mask=None, loop_metadata=None, return_posterior=False,
+                target_skeleton=None, self_skeleton=None):
         if frame_mask is None:
             frame_mask = torch.ones(x.shape[0], x.shape[-1], device=x.device, dtype=torch.bool)
         mu, logvar = self.encode_posterior(x, skeleton, frame_mask, loop_metadata)
         z = self.reparameterize(mu, logvar, frame_mask) if self.variational and self.training else mu
-        prediction = self.decode(z, skeleton, frame_mask, loop_metadata)
+        prediction = self.decode(z, skeleton if target_skeleton is None else target_skeleton,
+                                 frame_mask, loop_metadata)
+        if self_skeleton is not None:
+            reconstruction = self.decode(z, self_skeleton, frame_mask, loop_metadata)
+            return prediction, reconstruction, mu, logvar
         return (prediction, mu, logvar) if return_posterior else prediction
 
 

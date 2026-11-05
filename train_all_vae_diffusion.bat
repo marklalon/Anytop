@@ -6,8 +6,8 @@ REM Usage: train_all_vae_diffusion.bat [vae_run_name] [diffusion_run_name]
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
-set "AE_RUN_NAME=all_autoencoder_v1"
-set "DIFFUSION_RUN_NAME=all_latent_diffusion_v1"
+set "AE_RUN_NAME=all_autoencoder_dual_view_v1"
+set "DIFFUSION_RUN_NAME=all_latent_diffusion_dual_view_v1"
 if not "%~1"=="" set "AE_RUN_NAME=%~1"
 if not "%~2"=="" set "DIFFUSION_RUN_NAME=%~2"
 if not exist "%PYTHON_EXE%" (
@@ -26,6 +26,8 @@ echo [1/2] Training full-dataset VAE: %AE_RUN_NAME%
     --cond_path dataset/cond_all.npy ^
     --save_dir "save/%AE_RUN_NAME%" ^
     --seed 10 ^
+    --dual_view ^
+    --dual_view_self_weight 1.0 ^
     --motion_speed_aug 1.3 ^
     --loop_tile_single_prob 0.5 ^
     --loop_cond_prob_free 0.8 ^

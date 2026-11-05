@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from data_loaders.get_data import build_dataset_loader, get_dataset
 from data_loaders.joint_buckets import resolve_joint_buckets
+from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_FEATURE_SPACE, canonical_to_physical_hml,
 )
@@ -63,6 +64,22 @@ class AutoencoderBatchTransform:
 
     def __call__(self, batch):
         motion, conditions = batch
+        y = conditions['y']
+        if 'ae_view_cond' not in y:
+            return self._single(batch)
+        clean = {k: v for k, v in y.items() if not k.startswith(('ref_', 'ae_view_'))}
+        other = {k: v for k, v in y['ae_view_cond'].items() if not k.startswith('ref_')}
+        first_motion, first = self._single((motion, {'y': clean}))
+        second_motion, second = self._single((y['ae_view_motion'], {'y': other}))
+        # Only the encoder receives corrupted conditions. Keep both clean loss
+        # contexts and decoder conditions intact, including rest/bind frames.
+        clean['ae_source_skeleton'] = {k: first['y'][k] for k in SKELETON_KEYS}
+        other['ae_source_skeleton'] = {k: second['y'][k] for k in SKELETON_KEYS}
+        clean.update(ae_view_motion=second_motion, ae_view_cond=other)
+        return first_motion, {'y': clean}
+
+    def _single(self, batch):
+        motion, conditions = batch
         y = {k: v for k, v in conditions['y'].items() if not k.startswith('ref_')}
         # Draw once on CPU with the loader RNG; E and D share these names.
         # Do not mutate cached condition tensors.
@@ -84,6 +101,7 @@ class AutoencoderBatchTransform:
 def create_training_data_loader(args, dataset):
     for key in AUGMENTATION_DEFAULTS:
         setattr(dataset.motion_dataset.opt, key, getattr(args, key))
+    dataset.motion_dataset.opt.autoencoder_dual_view = args.dual_view
     return build_dataset_loader(
         dataset, batch_size=args.batch_size, drop_last=True,
         num_workers=args.num_workers,
@@ -103,10 +121,13 @@ def training_batches(loader):
 
 def training_batch_to_device(batch, device):
     target, conditions = batch
-    return target.to(device, non_blocking=True), {
-        k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v
-        for k, v in conditions['y'].items()
-    }
+    def move(value):
+        if torch.is_tensor(value):
+            return value.to(device, non_blocking=True)
+        if isinstance(value, dict):
+            return {k: move(v) for k, v in value.items()}
+        return value
+    return target.to(device, non_blocking=True), move(conditions['y'])
 
 
 def select_batch(x, y, indices):
@@ -124,6 +145,34 @@ def model_inputs(x, y):
     skeleton = {k: y[k] for k in SKELETON_KEYS}
     frame = torch.arange(x.shape[-1], device=x.device)[None] < y['lengths'][:, None]
     return skeleton, frame, {k: y[k] for k in TIME_KEYS}
+
+
+def dual_view_training_terms(model, criterion, target, cond, *, step_scale=1.0,
+                             kl_weight=0.0, self_weight=1.0):
+    """Average A->B/B->A and retain equally weighted self reconstruction by default."""
+    other, other_cond = cond['ae_view_motion'], cond['ae_view_cond']
+    clean_a, frame, loop = model_inputs(target, cond)
+    clean_b, _, _ = model_inputs(other, other_cond)
+    cross_terms, self_terms, kls = [], [], []
+    for source, source_cond, destination, destination_cond, clean_source, clean_target in (
+            (target, cond, other, other_cond, clean_a, clean_b),
+            (other, other_cond, target, cond, clean_b, clean_a)):
+        prediction, reconstruction, mu, logvar = model(
+            source, source_cond['ae_source_skeleton'], frame, loop,
+            target_skeleton=clean_target, self_skeleton=clean_source)
+        cross_terms.append(criterion(prediction, destination, destination_cond, step_loss_scale=step_scale))
+        self_terms.append(criterion(reconstruction, source, source_cond, step_loss_scale=step_scale))
+        if logvar is not None:
+            kls.append(diagonal_gaussian_kl(mu, logvar, frame))
+    terms = {key: (sum(t[key] for t in cross_terms)
+                   + self_weight * sum(t[key] for t in self_terms)) / (2 * (1 + self_weight))
+             for key in cross_terms[0]}
+    terms['cross_reconstruction_loss'] = sum(t['loss'] for t in cross_terms) / 2
+    terms['self_reconstruction_loss'] = sum(t['loss'] for t in self_terms) / 2
+    if kls:
+        terms['kl_loss'] = sum(kls) / 2
+        terms['loss'] = terms['loss'] + kl_weight * step_scale * terms['kl_loss']
+    return terms
 
 
 def reconstruction_mse(prediction, target, skeleton, frame):
@@ -263,6 +312,41 @@ def evaluate_validation(model, loader, batch_size, device):
     return {'summary': summary, 'samples': records, 'split': 'val'}
 
 
+@torch.no_grad()
+def evaluate_dual_view_validation(model, loader, args, device):
+    """Fixed RNG, held-out motions, independent skeleton views, no condition drops."""
+    if loader is None:
+        return {}
+    device = torch.device(device)
+    # Do not modify the ordinary validation loader (which may be prefetching).
+    source = copy.copy(loader.dataset.motion_dataset)
+    source.opt = copy.copy(source.opt)
+    for key in ('topology_aug_prob', 'bone_length_aug_prob', 'rest_repose_prob', 'rest_variant_prob'):
+        setattr(source.opt, key, getattr(args, key))
+    source.opt.autoencoder_dual_view = True
+    model.eval()
+    totals = dict(cross_reconstruction_loss=0., self_reconstruction_loss=0.)
+    count = 0
+    transform = AutoencoderBatchTransform()
+    criterion = MotionReconstructionLosses()
+    names = source.name_list[source.pointer:]
+    with _fixed_validation_rng(device):
+        for start in range(0, len(names), args.batch_size):
+            selected = names[start:start + args.batch_size]
+            samples = [source.prepare_sample_by_name(name) for name in selected]
+            batch = transform(truebones_batch_collate(samples, joint_buckets=args.joint_buckets or JOINT_BUCKETS))
+            x, y = training_batch_to_device(batch, device)
+            terms = dual_view_training_terms(model, criterion, x, y)
+            for key in totals:
+                totals[key] += float(terms[key]) * len(selected)
+            count += len(selected)
+    if not count:
+        return {}
+    return {'dual_view_cross_mse': totals['cross_reconstruction_loss'] / count,
+            'dual_view_self_mse': totals['self_reconstruction_loss'] / count,
+            'dual_view_sample_count': count}
+
+
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--cond_path', default='dataset/cond_all.npy')
@@ -321,6 +405,10 @@ def parser():
     p.add_argument('--eval_interval', type=int, default=1000)
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--auto_resume', action='store_true')
+    p.add_argument('--dual_view', action='store_true',
+                   help='Independent skeleton views, shared time map; bidirectional cross reconstruction with clean decoder conditions')
+    p.add_argument('--dual_view_self_weight', type=float, default=1.0,
+                   help='Self reconstruction relative to cross reconstruction in dual-view mode (default: equal weight)')
     for argument in LOSS_WEIGHTS.values():
         p.add_argument('--' + argument, type=float, default=0.0)
     p.add_argument('--drot_joint_boost', type=float, default=0.0)
@@ -345,6 +433,8 @@ def main():
         raise ValueError('Lengths, batch size, steps and intervals must be positive')
     if args.motion_step_warmup_steps < 0:
         raise ValueError('motion_step_warmup_steps must be nonnegative')
+    if not np.isfinite(args.dual_view_self_weight) or args.dual_view_self_weight < 0:
+        raise ValueError('dual_view_self_weight must be finite and nonnegative')
     if min(args.num_workers, args.main_process_prefetch_batches, args.motion_cache_size) < 0:
         raise ValueError('Worker, prefetch and cache counts must be nonnegative')
     for key, default in (AUGMENTATION_DEFAULTS | MODEL_REGULARIZATION_DEFAULTS).items():
@@ -416,6 +506,9 @@ def main():
         for key in ('variational', 'kl_weight'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
+        for key, default in (('dual_view', False), ('dual_view_self_weight', 1.0)):
+            if resume['args'].get(key, default) != getattr(args, key):
+                raise ValueError(f'Cannot resume with changed {key}; use a new run for a new objective')
     # Preserve the accepted training contract for inference, including resumes.
     snapshot_training_cond(args.cond_path, save, cond_hash)
     augmentation = {key: getattr(args, key) for key in AUGMENTATION_DEFAULTS}
@@ -438,6 +531,8 @@ def main():
                               layerwise_latent=args.layerwise_latent,
                               decoder_temporal_kernel=args.decoder_temporal_kernel,
                               variational=args.variational,
+                              decoder_mirror_twin_drop_prob=0.0 if args.dual_view else None,
+                              decoder_lateral_drop_prob=0.0 if args.dual_view else None,
                               **{key: getattr(args, key) for key in MODEL_REGULARIZATION_DEFAULTS}).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = torch.amp.GradScaler('cuda', enabled=args.amp_dtype == 'fp16')
@@ -485,6 +580,10 @@ def main():
     active_augmentation = {key: value for key, value in augmentation.items()
                            if value != AUGMENTATION_DEFAULTS[key]}
     tqdm.write(f'[INFO] online augmentation: {active_augmentation or "disabled"}')
+    if args.dual_view:
+        tqdm.write('[INFO] dual views: independent skeleton augmentation, shared temporal map; '
+                   'source-only condition drop, clean decoder conditions; '
+                   f'bidirectional cross/self relative weights=1/{args.dual_view_self_weight:g}')
     del example, x, y
     if resume is not None:
         tqdm.write(f'[INFO] Resuming {checkpoint} at completed step {start:,}/{args.num_steps:,}')
@@ -506,10 +605,14 @@ def main():
     writer.add_text('config', json.dumps(vars(args), indent=2), start)
 
     def run_eval(step):
+        evaluation_model = model_avg if model_avg is not None else model
         report = evaluate_validation(
-            model_avg if model_avg is not None else model, val_loader, args.batch_size, device)
+            evaluation_model, val_loader, args.batch_size, device)
         if report is None:
             return None
+        if args.dual_view:
+            report['summary'].update(evaluate_dual_view_validation(
+                evaluation_model, val_loader, args, device))
         report['step'] = step
         (save / 'reconstruction_metrics.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
         summary = report['summary']
@@ -554,13 +657,18 @@ def main():
                     torch.compiler.cudagraph_mark_step_begin()
                 with torch.autocast(device_type=device.type, dtype=torch.float16,
                                     enabled=args.amp_dtype == 'fp16'):
-                    if args.variational:
+                    if args.dual_view:
+                        terms = dual_view_training_terms(
+                            forward_model, criterion, target, cond, step_scale=step_scale,
+                            kl_weight=args.kl_weight, self_weight=args.dual_view_self_weight)
+                    elif args.variational:
                         prediction, mu, logvar = forward_model(target, skeleton, frame, loop,
                                                                return_posterior=True)
                     else:
                         prediction = forward_model(target, skeleton, frame, loop)
-                terms = criterion(prediction, target, cond, step_loss_scale=step_scale)
-                if args.variational:
+                if not args.dual_view:
+                    terms = criterion(prediction, target, cond, step_loss_scale=step_scale)
+                if args.variational and not args.dual_view:
                     terms['kl_loss'] = diagonal_gaussian_kl(mu, logvar, frame)
                     terms['loss'] = terms['loss'] + args.kl_weight * step_scale * terms['kl_loss']
                 loss = terms['loss']
