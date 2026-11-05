@@ -32,7 +32,7 @@ from utils.checkpoint_cond import snapshot_training_cond
 from utils.latent_util import (
     LATENT_CHECKPOINT_VERSION, TIME_CONTRACT, LatentNormalizer, ae_inputs,
     load_frozen_autoencoder, encode_target, file_sha256)
-from utils.latent_analysis import load_or_analyze
+from utils.latent_analysis import load_or_analyze, validate_sensitivity_loss
 
 
 class LatentBatchTransform:
@@ -86,9 +86,11 @@ def parser():
                            main_process_prefetch_batches=64, motion_cache_size=16384,
                            width=256, layers=8, heads=4, ff_size=1024, skeleton_layers=2,
                            stats_batches=64, num_steps=10000, diffusion_steps=100,
-                           sensitivity_samples=8, sensitivity_probes=8,
+                           sensitivity_probes=8,
                            log_interval=100, save_interval=1000, eval_interval=1000).items():
         p.add_argument('--' + key, type=int, default=value)
+    p.add_argument('--sensitivity_samples', type=int, default=64,
+                   help='Total samples in the uniform global decoder-sensitivity reservoir')
     for key, value in dict(lr=1e-4, lr_final=5e-5, weight_decay=0.0, ema_rate=0.995,
                            dropout=0.05, action_label_cfg_drop_prob=0.2,
                            direction_slot_drop_prob=0.0, modifier_slot_drop_prob=0.0,
@@ -118,7 +120,7 @@ def training_forwards(model, ae, norm, compile_mode):
         return encode_target(ae, norm, x, y)
 
     if compile_mode in ('None', 'cuda-graph'):
-        return model, lambda x, y: target_encoder(x, norm.prepare_conditions(y))
+        return model, target_encoder
     from utils.compile_util import configure_triton_c_compiler
     compiler = configure_triton_c_compiler()
     forward_model = torch.compile(model, mode=compile_mode, dynamic=False, fullgraph=True)
@@ -128,10 +130,7 @@ def training_forwards(model, ae, norm, compile_mode):
         # Ignore clip-name lists and denoiser-only conditions: they are not AE inputs
         # and would otherwise produce unnecessary guards/recompilations.
         skeleton, time = ae_inputs(y, x.shape[-1])
-        prepared = norm.prepare_conditions(y)
-        latent = ({'latent_subset_id': prepared['latent_subset_id']}
-                  if 'latent_subset_id' in prepared else {})
-        target = compiled_encoder(x, {**skeleton, **time, **latent})
+        target = compiled_encoder(x, {**skeleton, **time})
         # Own the storage across denoiser backward/retries and CUDA Graph replays.
         return target.clone()
 
@@ -195,8 +194,7 @@ def build_analysis_loader(args):
 
 
 def analysis_reference_identity(dataset, cond_hash):
-    """Invalidate on selected clips, their content/metadata, skeletons or subset assignment."""
-    from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
+    """Invalidate on selected clips, their content/metadata or skeletons."""
     motion = dataset.motion_dataset
     records = []
     for name in motion.name_list:
@@ -204,13 +202,11 @@ def analysis_reference_identity(dataset, cond_hash):
         path = entry.get('motion_path')
         records.append(dict(name=name, sha256=file_sha256(path) if path else None,
                             metadata=entry.get('motion_metadata'),
-                            high_frequency=bool(entry.get('high_frequency', False)),
-                            subset=dataset_tags().object_subset_for(entry['object_type'])
-                            if entry.get('object_type') else None))
+                            high_frequency=bool(entry.get('high_frequency', False))))
     import hashlib
     digest = hashlib.sha256(json.dumps(records, sort_keys=True, default=str).encode()).hexdigest()
     return dict(cond_sha256=cond_hash, clips_sha256=digest, clip_count=len(records),
-                reference='sequential_clean_all_clips_then_repeat_v2')
+                reference='sequential_clean_complete_passes_global_v3')
 
 
 @torch.no_grad()
@@ -224,11 +220,12 @@ def evaluate(model, ae, norm, diffusion, batch, device):
         noisy = diffusion.q_sample(target, t)
         prediction = diffusion._wrap_model(model)(noisy, t, y=y)
         skeleton, time = ae_inputs(y)
-        decoded = ae.decode(norm.denormalize(prediction, y), skeleton, loop_metadata=time)
-        baseline = ae.decode(norm.denormalize(target, y), skeleton, loop_metadata=time)
+        decoded = ae.decode(norm.denormalize(prediction), skeleton, loop_metadata=time)
+        baseline = ae.decode(norm.denormalize(target), skeleton, loop_metadata=time)
         _, frame = motion_masks(x, skeleton)
-        return dict(latent_mse=float((prediction - target).square().mean()),
-                    decoded_mse=float(reconstruction_mse(decoded, x, skeleton, frame).mean()),
+        metrics = {key: float(value.mean()) for key, value in
+                   diffusion.latent_error_terms(prediction, target).items()}
+        return dict(metrics, decoded_mse=float(reconstruction_mse(decoded, x, skeleton, frame).mean()),
                     ae_mse=float(reconstruction_mse(baseline, x, skeleton, frame).mean()))
 
 
@@ -276,6 +273,11 @@ def main(argv=None):
         raise FileExistsError(f'{path} exists; use --auto_resume or another save_dir')
     resume = torch.load(path, map_location='cpu', weights_only=False) if path.exists() else None
     ae, binding = load_frozen_autoencoder(args.ae_checkpoint, device)
+    if resume:
+        # Changing normalization or enabling this objective requires a fresh
+        # optimizer run, rather than silently changing a saved model's target.
+        LatentNormalizer.from_metadata(resume['normalization'])
+        validate_sensitivity_loss(resume.get('latent_loss'), (ae.slots, ae.latent_dim))
     cond_hash = file_sha256(args.cond_path)
     current_args = recorded_args(args)
     if resume:
@@ -285,8 +287,6 @@ def main(argv=None):
         mutable = {'auto_resume', 'num_steps', 'log_interval', 'eval_interval', 'save_interval',
                    'num_workers', 'main_process_prefetch_batches', 'motion_cache_size', 'device', 'compile'}
         for key, value in current_args.items():
-            if key in ('sensitivity_samples', 'sensitivity_probes') and key not in resume['args']:
-                continue  # Legacy resumes keep their saved global normalization.
             if key not in mutable and value != resume['args'].get(key):
                 raise ValueError(f'Cannot resume with changed {key}')
         if args.num_steps != resume['args']['num_steps']:
@@ -312,11 +312,15 @@ def main(argv=None):
     if resume:
         norm = LatentNormalizer.from_metadata(resume['normalization']).to(device)
         analysis = resume.get('latent_analysis')
+        latent_loss = resume['latent_loss']
     else:
         # Offline work uses its own synchronous stream before training prefetch starts.
         identity = analysis_reference_identity(dataset, cond_hash)
         identity['batch_size'] = args.batch_size
-        count = max(args.stats_batches, math.ceil(len(motion_names) / args.batch_size))
+        batches_per_pass = max(1, math.ceil(len(motion_names) / args.batch_size))
+        # Repeat only complete passes: a partial final pass would overweight
+        # the shortest clips, because the dataset is sorted by source length.
+        count = math.ceil(args.stats_batches / batches_per_pass) * batches_per_pass
         reference_factory = None
 
         def reference_batches():
@@ -325,7 +329,7 @@ def main(argv=None):
                 reference_factory = build_analysis_loader(args)
             return reference_factory()
 
-        norm, analysis = load_or_analyze(
+        norm, latent_loss, analysis = load_or_analyze(
             ae, binding, identity, reference_batches, count, device,
             args.latent_mode, args.seed, args.sensitivity_samples, args.sensitivity_probes)
     config = dict(t5_out_dim=ae.config['t5_out_dim'], slots=ae.slots, latent_channels=ae.latent_dim)
@@ -359,7 +363,8 @@ def main(argv=None):
             torch.cuda.set_rng_state(resume['cuda_rng'], device)
     diffusion_config = dict(steps=args.diffusion_steps, noise_schedule=args.noise_schedule,
                             shift=args.noise_schedule_shift)
-    diffusion = create_latent_diffusion(**diffusion_config)
+    loss_weights = validate_sensitivity_loss(latent_loss, norm.mean.shape).to(device)
+    diffusion = create_latent_diffusion(**diffusion_config, loss_weights=loss_weights)
     forward_model, target_encoder = training_forwards(model, ae, norm, args.compile)
     graph_steps = (EagerCudaGraphSteps(
         model, diffusion, optimizer,
@@ -369,6 +374,9 @@ def main(argv=None):
     print(f'Frozen AE: {binding["path"]} ({binding["weights"]}); latent={ae.slots}x{ae.latent_dim}; '
           f'{args.latent_mode} statistics: {norm.count} frame tokens; resume step={start}')
     print('Online encoding; fixed 60 valid frames; no motion geometry training losses or editing.')
+    print(f'Global latent normalization; decoder-sensitivity weighted x0 MSE; '
+          f'weights mean={float(loss_weights.mean()):.4f}, '
+          f'range=[{float(loss_weights.min()):.4f}, {float(loss_weights.max()):.4f}]')
     if resume:
         print('Resume restores optimizer/model RNG; the shared prefetch data stream restarts.')
     tb_dir = save / datetime.now().strftime('run_%Y%m%d_%H%M%S')
@@ -392,7 +400,8 @@ def main(argv=None):
                     else:
                         optimizer.zero_grad(set_to_none=True)
                         with torch.autocast(device.type, dtype=dtype, enabled=args.amp_dtype != 'fp32'):
-                            loss = diffusion.training_losses(forward_model, target, t, {'y': y}, noise)['loss'].mean()
+                            terms = diffusion.training_losses(forward_model, target, t, {'y': y}, noise)
+                            loss = terms['loss'].mean()
                     if not torch.isfinite(loss):
                         raise FloatingPointError(f'Nonfinite latent loss at step {step}')
                     if graph_steps is not None:
@@ -407,7 +416,10 @@ def main(argv=None):
                     update_autoencoder_ema(average, model, args.ema_rate)
                 scheduler.step()
                 if step % args.log_interval == 0 or step == start + 1:
-                    record = dict(step=step, latent_mse=float(loss.detach()), grad_norm=float(grad_norm),
+                    metrics = (graph_steps.last_metrics if graph_steps is not None else
+                               {key: value.detach().mean() for key, value in terms.items()})
+                    record = dict(step=step, **{key: float(value) for key, value in metrics.items()},
+                                  grad_norm=float(grad_norm),
                                   lr=optimizer.param_groups[0]['lr'], amp_overflow_retries=retry)
                     log.write(json.dumps(record) + '\n'); log.flush()
                     tqdm.write(str(record))
@@ -428,7 +440,7 @@ def main(argv=None):
                                    model_ema=average.state_dict() if average is not None else None,
                                    optimizer=optimizer.state_dict(), grad_scaler=scaler.state_dict(),
                                    ae_binding=binding, normalization=norm.metadata(), cond_sha256=cond_hash,
-                                   latent_analysis=analysis,
+                                   latent_analysis=analysis, latent_loss=latent_loss,
                                    species_sha256=species_hash, time_contract=TIME_CONTRACT,
                                    action_conditioning=model.action_conditioning_metadata,
                                    diffusion_config=diffusion_config, prediction='standardized_z0',

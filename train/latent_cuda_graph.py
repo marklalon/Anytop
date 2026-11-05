@@ -19,6 +19,7 @@ class EagerCudaGraphSteps:
         self.graphs = {}
         self.max_graphs = max_graphs
         self._warned_cache_limit = False
+        self.last_metrics = {}
 
     def _conditions(self, y):
         # Tensor values change through copy_(), not through new cache buckets.
@@ -32,9 +33,10 @@ class EagerCudaGraphSteps:
         self.optimizer.zero_grad(set_to_none=True)
         with torch.autocast('cuda', dtype=self.amp_dtype,
                             enabled=self.amp_dtype is not None):
-            loss = self.diffusion.training_losses(
-                self.model, target, t, {'y': y}, noise)['loss'].mean()
+            terms = self.diffusion.training_losses(self.model, target, t, {'y': y}, noise)
+            loss = terms['loss'].mean()
         self.scaler.scale(loss).backward()
+        self.last_metrics = {key: value.detach().mean() for key, value in terms.items()}
         return loss.detach()
 
     @staticmethod
@@ -105,16 +107,20 @@ class EagerCudaGraphSteps:
             self.optimizer.zero_grad(set_to_none=False)
             with torch.autocast('cuda', dtype=self.amp_dtype,
                                 enabled=self.amp_dtype is not None):
-                captured_loss = self.diffusion.training_losses(
-                    self.model, static_target, static_t, {'y': static_y}, static_noise)['loss'].mean()
+                captured_terms = self.diffusion.training_losses(
+                    self.model, static_target, static_t, {'y': static_y}, static_noise)
+                captured_metrics = {key: value.mean() for key, value in captured_terms.items()}
+                captured_loss = captured_metrics['loss']
             self.scaler.scale(captured_loss).backward()
         # Retain the output storage, not its eager autograd graph/AccumulateGrad
         # nodes, which otherwise keep the previous capture stream alive.
         captured_loss = captured_loss.detach()
+        captured_metrics = {key: value.detach() for key, value in captured_metrics.items()}
         graph.replay()
         gradients = tuple(parameter.grad for parameter in self.model.parameters())
         self.graphs[self._key(target, t, noise, y)] = (
-            graph, static_target, static_t, static_noise, static_y, captured_loss, gradients)
+            graph, static_target, static_t, static_noise, static_y, captured_loss, gradients, captured_metrics)
+        self.last_metrics = captured_metrics
         return captured_loss
 
     def step(self, target, t, noise, y):
@@ -135,7 +141,7 @@ class EagerCudaGraphSteps:
                 return self._eager_step(target, t, noise, y)
             loss = self._build(target, t, noise, y)
         else:
-            graph, static_target, static_t, static_noise, static_y, loss, gradients = self.graphs[key]
+            graph, static_target, static_t, static_noise, static_y, loss, gradients, metrics = self.graphs[key]
             for parameter, gradient in zip(self.model.parameters(), gradients):
                 parameter.grad = gradient
             static_target.copy_(target)
@@ -143,6 +149,7 @@ class EagerCudaGraphSteps:
             static_noise.copy_(noise)
             self._copy_tree(static_y, y)
             graph.replay()
+            self.last_metrics = metrics
         return loss
 
     def optimizer_step(self):

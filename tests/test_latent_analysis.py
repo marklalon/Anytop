@@ -1,4 +1,4 @@
-"""Subset coordinate contracts and offline decoder metric/cache regression tests."""
+"""Global coordinates and offline decoder metric/cache regression tests."""
 import sys
 from pathlib import Path
 
@@ -10,7 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_latent_diffusion import conditions
 from utils.latent_util import LatentNormalizer, estimate_normalizer, encode_target
-from utils.latent_analysis import diagonal_sensitivity, load_or_analyze, sensitivity_features
+from utils.latent_analysis import (diagonal_sensitivity, load_or_analyze, sensitivity_features,
+                                   sensitivity_loss_weights, validate_sensitivity_loss)
 
 
 class LinearAE:
@@ -34,23 +35,21 @@ def batch():
     return x, {'y': y}
 
 
-def test_subset_moments_roundtrip_and_unseen_fallback():
+def test_global_moments_roundtrip_and_subset_labels_cannot_change_coordinates():
     x, cond = batch()
     norm = estimate_normalizer(LinearAE(), iter([(x, cond)]), 1, 'cpu')
-    assert norm.subset_names == ('quadruped', 'winged')
-    for row, name in enumerate(norm.subset_names):
-        index = norm.subset_names.index(name) + 1
-        torch.testing.assert_close(norm.subset_mean[index], x[row].mean(-1))
-        torch.testing.assert_close(norm.subset_std[index], x[row].std(-1, correction=0))
     z = x.permute(0, 3, 1, 2)
+    torch.testing.assert_close(norm.mean, z.mean((0, 1)))
+    torch.testing.assert_close(norm.std, z.std((0, 1), correction=0))
     u = encode_target(LinearAE(), norm, x, cond['y'])
-    torch.testing.assert_close(u.mean(1), torch.zeros_like(u.mean(1)), atol=1e-5, rtol=0)
+    torch.testing.assert_close(u.mean((0, 1)), torch.zeros_like(norm.mean), atol=1e-5, rtol=0)
     restored = LatentNormalizer.from_metadata(norm.metadata())
-    torch.testing.assert_close(restored.denormalize(u, cond['y']), z)
+    torch.testing.assert_close(restored.denormalize(u), z)
     unseen = dict(cond['y'], object_subset=['aquatic', 'unknown'])
-    torch.testing.assert_close(restored.normalize(z, unseen), (z - norm.mean) / norm.std)
-    with pytest.raises(ValueError, match='conditions'):
-        restored.denormalize(u)
+    torch.testing.assert_close(encode_target(LinearAE(), restored, x, unseen), u)
+    assert norm.metadata()['version'] == 1 and 'subsets' not in norm.metadata()
+    with pytest.raises(ValueError, match='Subset normalization'):
+        LatentNormalizer.from_metadata(dict(norm.metadata(), version=2))
 
 
 def test_random_projection_metric_includes_standardization_and_excludes_padding():
@@ -76,22 +75,24 @@ def test_analysis_cache_reuse_invalidation_and_rng_isolation(tmp_path):
 
     binding = dict(path=str(tmp_path / 'autoencoder.pt'), sha256='ae-a', weights='ema')
     kwargs = dict(ae=LinearAE(), binding=binding, identity={'clips': 'a'},
-                  batch_factory=factory, batch_count=1, device='cpu', samples_per_subset=1, probes=2)
+                  batch_factory=factory, batch_count=1, device='cpu', sample_count=1, probes=2)
     state = torch.get_rng_state().clone()
-    norm, reference = load_or_analyze(**kwargs)
+    norm, loss, reference = load_or_analyze(**kwargs)
     torch.testing.assert_close(torch.get_rng_state(), state)
     assert len(calls) == 1
-    cached_norm, cached_reference = load_or_analyze(**kwargs)
+    cached_norm, cached_loss, cached_reference = load_or_analyze(**kwargs)
     assert cached_reference == reference and len(calls) == 1
-    torch.testing.assert_close(cached_norm.subset_mean, norm.subset_mean)
+    torch.testing.assert_close(cached_norm.mean, norm.mean)
+    torch.testing.assert_close(cached_loss['weights'], loss['weights'])
     report = torch.load(reference['path'], weights_only=False)
-    assert report['sample_counts'] == {'quadruped': 1, 'winged': 1}
-    assert not report['applied_to_training_loss']
-    for weights in report['candidate_weights'].values():
-        torch.testing.assert_close(weights.mean(), torch.tensor(1.))
-    _, changed = load_or_analyze(**dict(kwargs, identity={'clips': 'b'}))
+    assert report['sample_count'] == 1 and report['reference_count'] == 2
+    assert torch.is_tensor(report['sensitivity']) and report['sensitivity'].shape == norm.mean.shape
+    assert report['contract']['sampling'] == 'uniform_global_reservoir_v1'
+    assert report['applied_to_training_loss']
+    torch.testing.assert_close(validate_sensitivity_loss(loss, norm.mean.shape).mean(), torch.tensor(1.))
+    _, _, changed = load_or_analyze(**dict(kwargs, identity={'clips': 'b'}))
     assert changed['fingerprint'] != reference['fingerprint'] and len(calls) == 2
-    _, changed_ae = load_or_analyze(**dict(kwargs, binding=dict(binding, sha256='ae-b')))
+    _, _, changed_ae = load_or_analyze(**dict(kwargs, binding=dict(binding, sha256='ae-b')))
     assert changed_ae['fingerprint'] != reference['fingerprint'] and len(calls) == 3
 
 
@@ -109,19 +110,18 @@ def test_stats_and_sensitivity_share_encoder_pass(tmp_path, mode):
             pytest.fail('Sensitivity must reuse the statistics pass posterior')
 
     ae = CountingAE()
-    norm, reference = load_or_analyze(
+    norm, loss, reference = load_or_analyze(
         ae, dict(path=str(tmp_path / 'ae.pt'), sha256='shared-encoder'), {},
         lambda: iter([batch()]), batch_count=3, device='cpu', mode=mode,
-        samples_per_subset=2, probes=2)
+        sample_count=2, probes=2)
     assert ae.calls == 3  # Exactly one encoding per reference batch.
-    assert norm.subset_counts == {'quadruped': 180, 'winged': 180}
+    assert norm.count == 360
     report = torch.load(reference['path'], weights_only=False)
-    assert report['sample_counts'] == {'quadruped': 2, 'winged': 2}
-    for label, sensitivity in report['sensitivity'].items():
-        index = norm.subset_names.index(label) + 1
-        gains = torch.tensor([0., 0., 0., 1., 2., 3., 4., 5., 6.])
-        expected = norm.subset_std[index].square() * gains.square() / (6 * 60)
-        torch.testing.assert_close(sensitivity, expected)
+    assert report['sample_count'] == 2 and report['reference_count'] == 6
+    gains = torch.tensor([0., 0., 0., 1., 2., 3., 4., 5., 6.])
+    expected = norm.std.square() * gains.square() / (6 * 60)
+    torch.testing.assert_close(report['sensitivity'], expected)
+    torch.testing.assert_close(loss['sensitivity'], expected)
 
 
 def test_legacy_normalizer_remains_global_even_with_subset_conditions():
@@ -130,10 +130,10 @@ def test_legacy_normalizer_remains_global_even_with_subset_conditions():
     restored = LatentNormalizer.from_metadata(norm.metadata())
     x, cond = batch()
     z = x.permute(0, 3, 1, 2)
-    torch.testing.assert_close(restored.normalize(z, cond['y']), z)
+    torch.testing.assert_close(restored.normalize(z), z)
 
 
-def test_compiled_encoder_selects_subset_bank_outside_graph(monkeypatch):
+def test_compiled_encoder_uses_global_coordinates_for_all_subsets(monkeypatch):
     from train import train_latent_diffusion as training
     from utils import compile_util
     from test_latent_diffusion import denoiser
@@ -144,15 +144,74 @@ def test_compiled_encoder_selects_subset_bank_outside_graph(monkeypatch):
     monkeypatch.setattr(compile_util, 'configure_triton_c_compiler', lambda: 'test')
     ae = MotionAutoencoder(t5_out_dim=4, width=16, layers=1, heads=2,
                            slots=2, latent_dim=3).eval().requires_grad_(False)
-    norm = LatentNormalizer(torch.zeros(2, 3), torch.ones(2, 3), subsets={
-        'quadruped': dict(mean=torch.ones(2, 3), std=torch.full((2, 3), 2.), count=60),
-        'winged': dict(mean=torch.full((2, 3), -3.), std=torch.full((2, 3), .5), count=60)})
+    norm = LatentNormalizer(torch.ones(2, 3), torch.full((2, 3), 2.))
     x = torch.randn(2, 5, 9, 60)
     y = dict(conditions(), object_subset=['quadruped', 'winged'])
     _, encoder = training.training_forwards(denoiser(), ae, norm, 'default')
-    torch.testing.assert_close(encoder(x, y), encode_target(ae, norm, x, y))
+    first = encoder(x, y)
+    torch.testing.assert_close(first, encode_target(ae, norm, x, y))
     y['object_subset'].reverse()
-    torch.testing.assert_close(encoder(x, y), encode_target(ae, norm, x, y))
+    torch.testing.assert_close(encoder(x, y), first)
+
+
+def test_global_sensitivity_is_the_mean_over_samples_without_group_balancing(monkeypatch, tmp_path):
+    from utils import latent_analysis as analysis
+    from train.train_autoencoder import select_batch
+    x, conditions = batch()
+    # Three identical motions and one different motion, all in the same reservoir.
+    x, y = select_batch(x, conditions['y'], torch.tensor([0, 0, 0, 1]))
+    def sensitivity(ae, norm, motion, cond, probes, latent):
+        value = torch.arange(1., 10.) if latent[0, 0, 0, 0] < 5 else torch.arange(9., 0., -1.)
+        return value[None, None]
+    monkeypatch.setattr(analysis, 'diagonal_sensitivity', sensitivity)
+    _, loss, _ = load_or_analyze(
+        LinearAE(), dict(path=str(tmp_path / 'ae.pt')), {},
+        lambda: iter([(x, {'y': y})]), 1, 'cpu', sample_count=4, probes=1)
+    expected = (.75 * torch.arange(1., 10.) + .25 * torch.arange(9., 0., -1.))[None]
+    torch.testing.assert_close(loss['sensitivity'], expected)
+    torch.testing.assert_close(loss['weights'], sensitivity_loss_weights(expected))
+    wrong = dict(loss, weights=torch.ones_like(loss['weights']))
+    with pytest.raises(ValueError, match='loss contract'):
+        validate_sensitivity_loss(wrong, expected.shape)
+    with pytest.raises(ValueError, match='new save_dir'):
+        validate_sensitivity_loss(None, expected.shape)
+
+
+def test_global_reservoir_is_bounded_and_does_not_read_subset_labels(monkeypatch, tmp_path):
+    from utils import latent_analysis as analysis
+    x, cond = batch()
+    calls = []
+    def sensitivity(ae, norm, motion, conditions, probes, latent):
+        calls.append(latent.clone())
+        return (latent[0, :1] + 1).abs()
+    monkeypatch.setattr(analysis, 'diagonal_sensitivity', sensitivity)
+    # Reject later reservoir candidates, retaining exactly the first sample.
+    monkeypatch.setattr(analysis.random, 'randrange', lambda seen: seen - 1)
+    kwargs = dict(ae=LinearAE(), binding=dict(path=str(tmp_path / 'ae.pt')),
+                  batch_factory=lambda: iter([(x, cond)]), batch_count=3,
+                  device='cpu', sample_count=1, probes=1)
+    _, loss, reference = load_or_analyze(identity={'data': 'a'}, **kwargs)
+    assert len(calls) == 1
+    torch.testing.assert_close(calls[0], x[:1].permute(0, 3, 1, 2))
+    report = torch.load(reference['path'], weights_only=False)
+    assert report['sample_count'] == 1 and report['reference_count'] == 6
+    cond['y']['object_subset'] = ['new', 'completely-different']
+    _, changed, _ = load_or_analyze(identity={'data': 'b'}, **kwargs)
+    torch.testing.assert_close(changed['sensitivity'], loss['sensitivity'])
+    torch.testing.assert_close(changed['weights'], loss['weights'])
+
+
+def test_sensitivity_weights_are_scale_invariant_and_bound_gradient_anisotropy():
+    sensitivity = torch.tensor([[0., 1., 2., 1000.]])
+    weights = sensitivity_loss_weights(sensitivity)
+    for scale in (1e-15, 1e15):
+        torch.testing.assert_close(sensitivity_loss_weights(sensitivity * scale), weights)
+    torch.testing.assert_close(weights.mean(), torch.tensor(1.))
+    assert weights.max() / weights.min() <= 4
+    for invalid in (torch.zeros_like(sensitivity), sensitivity - 1,
+                    torch.full_like(sensitivity, float('nan'))):
+        with pytest.raises(ValueError, match='Decoder sensitivity'):
+            sensitivity_loss_weights(invalid)
 
 
 def test_reference_loader_is_clean_sequential_and_accepts_dataset_contract(monkeypatch):

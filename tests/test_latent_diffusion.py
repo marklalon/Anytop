@@ -153,8 +153,7 @@ def test_generation_without_reference_decodes_and_exports(monkeypatch, tmp_path)
     model = denoiser().eval()
     ae = MotionAutoencoder(t5_out_dim=4, width=16, layers=1, heads=2,
                            slots=2, latent_dim=3).eval()
-    norm = LatentNormalizer(torch.zeros(2, 3), torch.ones(2, 3), subsets={
-        'quadruped': dict(mean=torch.full((2, 3), 10.), std=torch.full((2, 3), 2.), count=120)})
+    norm = LatentNormalizer(torch.full((2, 3), 10.), torch.full((2, 3), 2.))
     checkpoint = dict(step=1, diffusion_config=dict(steps=10, noise_schedule='cosine', shift=1.0))
     cond = {'Target': {'parents': [-1, 0, 0, 0, 0], 'joints_names': ['root', 'a', 'b', 'c', 'd'],
                        'species_tags': ('Quadruped',)}}
@@ -197,7 +196,10 @@ def test_generation_without_reference_decodes_and_exports(monkeypatch, tmp_path)
     assert 'reference_motion' not in metadata
 
 
-def test_training_saves_loads_and_resumes_without_reference(monkeypatch, tmp_path):
+@pytest.mark.parametrize('training_mode', ['cpu', 'cuda-graph'])
+def test_training_saves_loads_and_resumes_without_reference(monkeypatch, tmp_path, training_mode):
+    if training_mode == 'cuda-graph' and not torch.cuda.is_available():
+        pytest.skip('CUDA graph requires CUDA')
     from types import SimpleNamespace
     from train import train_latent_diffusion as training
     from utils.latent_util import load_latent_checkpoint, LATENT_CHECKPOINT_VERSION, TIME_CONTRACT
@@ -246,7 +248,9 @@ def test_training_saves_loads_and_resumes_without_reference(monkeypatch, tmp_pat
     monkeypatch.setattr(training, 'training_forwards', interrupted_forwards)
     save = tmp_path / 'run'
     argv = ['--ae_checkpoint', str(ae_path), '--cond_path', str(cond_path), '--save_dir', str(save),
-            '--device', 'cpu', '--no-action_label_cond', '--no-species_cond',
+            '--device', 'cuda' if training_mode == 'cuda-graph' else 'cpu',
+            '--compile', 'cuda-graph' if training_mode == 'cuda-graph' else 'None',
+            '--no-action_label_cond', '--no-species_cond',
             '--width', '16', '--layers', '1', '--heads', '2', '--ff_size', '32',
             '--skeleton_layers', '1', '--batch_size', '2', '--stats_batches', '1',
             '--num_steps', '2', '--save_interval', '1', '--diffusion_steps', '10',
@@ -254,21 +258,58 @@ def test_training_saves_loads_and_resumes_without_reference(monkeypatch, tmp_pat
     with pytest.raises(RuntimeError, match='simulated interruption'):
         training.main(argv)
     path = save / 'latent_diffusion.pt'
-    assert torch.load(path, weights_only=False)['step'] == 1
+    saved = torch.load(path, weights_only=False)
+    assert saved['step'] == 1
+    analysis_path = Path(saved['latent_analysis']['path'])
+    assert analysis_path.is_file()
+    analysis_path.unlink()  # Resume must use the embedded objective, not an external cache.
     monkeypatch.setattr(training, 'training_forwards', real_forwards)
     training.main(argv + ['--auto_resume'])
     model, _, restored_norm, checkpoint = load_latent_checkpoint(path)
     assert checkpoint['step'] == 2 and checkpoint['kind'] == LATENT_CHECKPOINT_VERSION
     assert checkpoint['time_contract'] == TIME_CONTRACT
     assert checkpoint['capabilities'] == ['generate']
-    assert restored_norm.subset_names == ('quadruped', 'winged')
-    assert checkpoint['normalization']['version'] == 2
-    assert Path(checkpoint['latent_analysis']['path']).is_file()
+    assert checkpoint['normalization']['version'] == 1
+    assert 'subsets' not in checkpoint['normalization']
+    from utils.latent_analysis import validate_sensitivity_loss
+    weights = validate_sensitivity_loss(checkpoint['latent_loss'], restored_norm.mean.shape)
+    assert not torch.allclose(weights, torch.ones_like(weights))
+    import json
+    logs = [json.loads(line) for line in (save / 'training.jsonl').read_text().splitlines()]
+    assert all(row['loss'] == row['latent_sensitivity_mse'] for row in logs)
+    assert any(row['loss'] != row['latent_mse'] for row in logs)
     assert 'reference_contract' not in checkpoint
     for config in (checkpoint['args'], checkpoint['model_config']):
         assert not any(key.startswith('ref_') or key in (
             'temporal_rope_ref_drop_prob', 'temporal_rope_drop_prob') for key in config)
     assert not any('reference' in key or 'ref_' in key for key in model.state_dict())
+    torch.save(dict(checkpoint, latent_loss=None), path)
+    with pytest.raises(ValueError, match='new save_dir'):
+        training.main(argv + ['--auto_resume'])
+
+
+@pytest.mark.parametrize('compiled', [False, True])
+def test_sensitivity_loss_changes_parameter_gradients_in_standardized_coordinates(compiled):
+    class Coordinates(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.value = nn.Parameter(torch.tensor([1., 2.]))
+
+        def forward(self, x, t, y):
+            return self.value.expand_as(x)
+
+    model = Coordinates()
+    forward = torch.compile(model, backend='eager', fullgraph=True) if compiled else model
+    weights = torch.tensor([[.5, 1.5]], requires_grad=True)
+    diffusion = create_latent_diffusion(steps=10, loss_weights=weights)
+    target = torch.zeros(2, 60, 1, 2)
+    terms = diffusion.training_losses(forward, target, torch.zeros(2, dtype=torch.long),
+                                      {'y': {'lengths': torch.tensor([60, 60])}}, torch.zeros_like(target))
+    torch.testing.assert_close(terms['latent_mse'], torch.full((2,), 2.5))
+    torch.testing.assert_close(terms['loss'], torch.full((2,), 3.25))
+    terms['loss'].mean().backward()
+    torch.testing.assert_close(model.value.grad, torch.tensor([.5, 3.]))
+    assert weights.grad is None
 
 
 def test_latent_mse_respacing_and_sampling_without_clipping():

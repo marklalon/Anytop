@@ -4,7 +4,6 @@ from pathlib import Path
 
 import torch
 from torch import nn
-from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 
 from utils.model_config import without_removed_skeleton_drops
 from model.motion_autoencoder import MotionAutoencoder, DECODER_CONTENT_VERSION
@@ -55,7 +54,7 @@ def ae_inputs(y, frames=60):
 
 
 class LatentNormalizer(nn.Module):
-    def __init__(self, mean, std, mode='mean', count=0, subsets=None):
+    def __init__(self, mean, std, mode='mean', count=0):
         super().__init__()
         mean, std = torch.as_tensor(mean).float(), torch.as_tensor(std).float()
         if mean.ndim != 2 or mean.shape != std.shape or mode not in ('mean', 'sample'):
@@ -65,100 +64,33 @@ class LatentNormalizer(nn.Module):
         self.register_buffer('mean', mean)
         self.register_buffer('std', std)
         self.mode, self.count = mode, count
-        self.subset_names = tuple(sorted(subsets or {}))
-        self.subset_counts = {key: int(subsets[key]['count']) for key in self.subset_names}
-        self.register_buffer('subset_mean', torch.stack(
-            [mean] + [torch.as_tensor(subsets[k]['mean']).float() for k in self.subset_names]))
-        self.register_buffer('subset_std', torch.stack(
-            [std] + [torch.as_tensor(subsets[k]['std']).float() for k in self.subset_names]))
-        if (self.subset_mean.shape[1:] != mean.shape or
-                not torch.isfinite(self.subset_mean).all() or
-                not torch.isfinite(self.subset_std).all() or not (self.subset_std > 0).all()):
-            raise ValueError('Invalid subset latent statistics')
 
-    def prepare_conditions(self, y):
-        """Resolve host metadata before compiled encoding; unknown subsets use the global bank."""
-        if not self.subset_names or 'latent_subset_id' in y:
-            return y
-        labels = latent_subset_labels(y, len(y['n_joints']))
-        lookup = {name: i + 1 for i, name in enumerate(self.subset_names)}
-        ids = torch.tensor([lookup.get(name, 0) for name in labels],
-                           device=self.mean.device, dtype=torch.long)
-        return dict(y, latent_subset_id=ids)
+    def normalize(self, z):
+        return (z.float() - self.mean) / self.std
 
-    def _statistics(self, y):
-        if not self.subset_names:
-            return self.mean, self.std
-        if y is None:
-            raise ValueError('Subset normalization requires sample conditions')
-        ids = self.prepare_conditions(y)['latent_subset_id']
-        return self.subset_mean[ids][:, None], self.subset_std[ids][:, None]
-
-    def normalize(self, z, y=None):
-        mean, std = self._statistics(y)
-        return (z.float() - mean) / std
-
-    def denormalize(self, z, y=None):
-        mean, std = self._statistics(y)
-        return z.float() * std + mean
+    def denormalize(self, z):
+        return z.float() * self.std + self.mean
 
     def metadata(self):
-        result = dict(version=2 if self.subset_names else 1, axes='B,T', mode=self.mode, count=self.count,
-                      std_floor=1e-4, mean=self.mean.cpu(), std=self.std.cpu())
-        if self.subset_names:
-            result['subsets'] = {name: dict(mean=self.subset_mean[i + 1].cpu(),
-                                           std=self.subset_std[i + 1].cpu(), count=self.subset_counts[name])
-                                 for i, name in enumerate(self.subset_names)}
-            result['unseen_subset'] = 'global'
-        return result
+        return dict(version=1, axes='B,T', mode=self.mode, count=self.count,
+                    std_floor=1e-4, mean=self.mean.cpu(), std=self.std.cpu())
 
     @classmethod
     def from_metadata(cls, metadata):
-        if metadata.get('version') not in (1, 2) or metadata.get('axes') != 'B,T' or metadata.get('std_floor') != 1e-4:
+        if metadata.get('version') == 2 or metadata.get('subsets'):
+            raise ValueError('Subset normalization is no longer supported; train a new run with global statistics')
+        if metadata.get('version') != 1 or metadata.get('axes') != 'B,T' or metadata.get('std_floor') != 1e-4:
             raise ValueError('Unsupported latent statistics contract')
-        if metadata['version'] == 2 and (not metadata.get('subsets') or metadata.get('unseen_subset') != 'global'):
-            raise ValueError('Invalid subset normalization contract')
-        return cls(metadata['mean'], metadata['std'], metadata['mode'], metadata['count'],
-                   metadata.get('subsets'))
-
-
-def latent_subset_labels(y, batch):
-    explicit = y.get('object_subset')
-    if explicit is not None:
-        labels = [explicit] * batch if isinstance(explicit, str) else list(explicit)
-        if len(labels) != batch:
-            raise ValueError('object_subset must contain one label per sample')
-        return [str(label).lower() if label else '__global__' for label in labels]
-    species = y.get('object_type')
-    if species is None:
-        return ['__global__'] * batch
-    species = [species] * batch if isinstance(species, str) else species
-    if len(species) != batch:
-        raise ValueError('object_type must contain one species per sample')
-    tags = dataset_tags()
-    return [tags.object_subset_for(name) or '__global__' for name in species]
+        return cls(metadata['mean'], metadata['std'], metadata['mode'], metadata['count'])
 
 
 @torch.no_grad()
 def estimate_normalizer(ae, batches, count, device, mode='mean', on_encoded=None):
-    """Pool subset moments; optionally retain reference posteriors without re-encoding."""
+    """Pool one global distribution; optionally retain posteriors without re-encoding."""
     if count < 1:
         raise ValueError('At least one statistics batch is required')
-    moments = {}
-
-    def merge(key, values, variance):
-        size = values.shape[0] * values.shape[1]
-        mean = values.mean((0, 1))
-        m2 = (values - mean).square().sum((0, 1))
-        if variance is not None:
-            m2 = m2 + variance.sum((0, 1))
-        if key in moments:
-            old, old_m2, tokens = moments[key]
-            delta = mean - old
-            m2 = old_m2 + m2 + delta.square() * (tokens * size / (tokens + size))
-            mean = old + delta * (size / (tokens + size))
-            size += tokens
-        moments[key] = mean, m2, size
+    total = second = None
+    tokens = 0
     for _ in range(count):
         x, conditions = next(batches)
         x = x.to(device)
@@ -169,23 +101,26 @@ def estimate_normalizer(ae, batches, count, device, mode='mean', on_encoded=None
             on_encoded(mu, logvar)
         values = mu.double()
         # Parallel Welford merge; sampled VAE statistics include E[posterior variance].
-        variance = logvar.double().exp() if mode == 'sample' and logvar is not None else None
-        merge('__global__', values, variance)
-        labels = latent_subset_labels(y, len(x))
-        for label in sorted(set(labels) - {'__global__'}):
-            indices = [i for i, item in enumerate(labels) if item == label]
-            merge(label, values[indices], variance[indices] if variance is not None else None)
-    stats = {key: dict(mean=mean.float(), std=(m2 / size).sqrt().float().clamp_min(1e-4), count=size)
-             for key, (mean, m2, size) in moments.items()}
-    global_stats = stats.pop('__global__')
-    return LatentNormalizer(global_stats['mean'], global_stats['std'], mode, global_stats['count'], stats).to(device)
+        size = values.shape[0] * values.shape[1]
+        mean = values.mean((0, 1))
+        m2 = (values - mean).square().sum((0, 1))
+        if mode == 'sample' and logvar is not None:
+            m2 = m2 + logvar.double().exp().sum((0, 1))
+        if total is None:
+            total, second = mean, m2
+        else:
+            delta = mean - total
+            second = second + m2 + delta.square() * (tokens * size / (tokens + size))
+            total = total + delta * (size / (tokens + size))
+        tokens += size
+    return LatentNormalizer(total.float(), (second / tokens).sqrt().float().clamp_min(1e-4), mode, tokens).to(device)
 
 
 @torch.no_grad()
 def encode_target(ae, normalizer, x, y):
     skeleton, time = ae_inputs(y, x.shape[-1])
     return normalizer.normalize(ae.encode(x[:, :, :9], skeleton, loop_metadata=time,
-                                          sample=normalizer.mode == 'sample'), y)
+                                          sample=normalizer.mode == 'sample'))
 
 
 def load_latent_checkpoint(path, device='cpu', ae_checkpoint=None):

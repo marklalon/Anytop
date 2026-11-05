@@ -149,14 +149,16 @@ Latent Diffusion 在冻结 AE 的连续 latent 上学习条件生成，与原动
   → 冻结 Encoder → latent → 固定标准化 → z0
   → 加噪 → zt
   → 条件去噪器 → z0_hat
-  → latent MSE
+  → decoder 敏感度加权的 latent MSE
 
 生成：latent 噪声 → 条件去噪 → 逆标准化
   → 冻结 Decoder（目标骨架、真实时间条件）
   → canonical 动作 → 物理转换 → 恢复输出长度与导出
 ```
 
-Encoder 和 Decoder 始终保持 eval 模式并冻结权重。训练目标由 Encoder 在线、无梯度地产生；Decoder 不进入训练图。去噪器预测干净的标准化 latent，损失先对每个样本的时间、槽和通道维求 MSE，再对 batch 平均。训练使用均匀 timestep 采样，不计算动作空间的位置、旋转、骨骼或接缝损失。
+Encoder 和 Decoder 始终保持 eval 模式并冻结权重。训练目标由 Encoder 在线、无梯度地产生；Decoder 只在训练前的敏感度分析中对 latent 求导，不进入每步训练图。去噪器预测干净的标准化 latent，使用固定的 global decoder 对角敏感度权重计算 `mean(w * (z0_hat - z0)^2)`，先对每个样本的时间、槽和通道归约，再对 batch 平均。训练使用均匀 timestep 采样，不计算在线动作空间的位置、旋转、骨骼或接缝损失。
+
+敏感度在同一个 global 标准化坐标中，通过 Rademacher 输出投影估计 `diag(J^T J)`；输出特征包含 canonical 位置、旋转和一帧位置差，排除 padding 关节。使用一个覆盖全部参考样本的均匀全局 reservoir，不按 subset 分组、配额或分别计算；`--sensitivity_samples` 表示全局总样本数，默认 64。直接对选中样本的敏感度求平均，仅保存一份 global 敏感度和训练权重。相对敏感度截断到 `[0.25, 4]` 后与均匀权重各占一半，再归一到均值 1，避免极端通道主导梯度。该权重实际用于普通、compile 和 CUDA Graph 训练，日志分别报告原始 `latent_mse`、`latent_sensitivity_mse` 和实际 `loss`。
 
 潜空间扩散复用现有前向加噪、反向后验、噪声日程和采样步映射，支持普通反向采样与 DDIM。标准化 latent 不套用动作空间的数值裁剪；最终生成完成后逆标准化，并只解码一次。
 
@@ -200,11 +202,11 @@ species FiLM 在启用时对所有样本生效。species override 只替换描�
 
 ### 6.5 数据增强、标准化与 CFG
 
-训练沿用共享 loader，速度、循环拼接、拓扑、骨长及 rest 等增强在目标编码前完成，增强后的动作与目标骨架保持配对。去噪器的名称、geometry、RoPE 和动作 CFG dropout 只改变去噪条件，不改变 AE 的编码目标或最终解码条件。当前使用在线编码，不维护 latent 缓存。
+训练沿用共享 loader，速度、循环拼接、拓扑、骨长及 rest 等增强在目标编码前完成，增强后的动作与目标骨架保持配对。名称和 geometry 的 batch mask 同时作用于 AE 编码与去噪条件；动作 CFG 只改变去噪条件，真实时间条件始终保留。当前使用在线编码，不维护 latent 缓存。
 
 训练入口支持 `--compile None|default|reduce-overhead`，默认 `None`；tiny 启动脚本启用 `--compile reduce-overhead`。编译范围为冻结 AE 的目标编码与去噪器训练前向，使用静态 shape、完整图；各关节桶首次使用时会编译。AE 编码保持 FP32，去噪器沿用 `amp_dtype`。归一化统计和 val 集验证使用 eager；优化器、EMA 和 checkpoint 始终使用原始模块，可在续训时切换编译模式。
 
-latent 标准化统计在训练开始时从训练增强分布采集，沿 batch 和时间维归约，保留槽与通道维；后续保持固定，不对每段动作单独消除均值或幅度。确定性 AE 使用编码结果；VAE 支持 posterior 均值或采样，两者均要求统计与训练分布一致。采样模式的统计计入 posterior 方差，退化维度通过标准差下限处理。
+latent 标准化统计在训练开始前从所选训练动作的独立、干净参考流采集，沿 batch 和时间维归约，保留槽与通道维。所有 subset 始终共用一份 global 均值和标准差；训练和生成都不按 subset 选择统计量，也不对每段动作单独消除均值或幅度。参考流按完整遍历重复，避免按长度排序的数据前缀获得额外权重。确定性 AE 使用编码结果；VAE 支持 posterior 均值或采样，采样模式的统计计入 posterior 方差，退化维度通过标准差下限处理。统计和敏感度共享 Encoder 前向并缓存到 AE 目录；敏感度权重同时嵌入训练 checkpoint，续训不依赖缓存文件继续存在。
 
 动作 CFG 在标准化 latent 的干净样本预测上组合，然后统一逆标准化和解码。条件与 base 分支仅切换动作标签的启用状态，其余条件一致；使用引导前会检查动作条件和训练时的 null 分支支持。引导按实际噪声日程分段，低噪声阶段回到普通条件预测。最终 Decoder 的目标骨架与真实时间条件不随 CFG 分支变化。
 
@@ -221,7 +223,7 @@ latent 标准化统计在训练开始时从训练增强分布采集，沿 batch 
 | `sample/generate_latent.py` | 条件解析、CFG、输出长度恢复及动作导出 |
 | `train_tiny_vae_diffusion.bat`、`train_all_vae_diffusion.bat` | VAE 成功训练后使用其 checkpoint 训练 latent diffusion |
 
-checkpoint 保存去噪器及续训状态，绑定 AE 文件 hash、权重选择、架构、canonical/解码内容版本、latent 布局与标准化统计，以及动作词表/角色槽、species 描述表、时间合同和扩散预测语义。species 描述表随模型目录保存，AE 本体保持独立。加载和续训会校验相应绑定；当前格式为 `latent_diffusion_v2`，时间合同为 `fixed60_v1`，不包含 reference 合同或能力声明；与旧 latent v1 及动作空间 diffusion checkpoint 不兼容，需重新训练。
+checkpoint 保存去噪器及续训状态，绑定 AE 文件 hash、权重选择、架构、canonical/解码内容版本、latent 布局、global 标准化统计、敏感度权重及训练目标版本，以及动作词表/角色槽、species 描述表、时间合同和扩散预测语义。species 描述表随模型目录保存，AE 本体保持独立。加载和续训会校验相应绑定；当前格式为 `latent_diffusion_v2`，时间合同为 `fixed60_v1`，不包含 reference 合同或能力声明。旧 subset 标准化 checkpoint 不再支持；旧 global、均匀 MSE checkpoint 仍可生成，但不能静默切换为敏感度 loss 续训，需使用新的 run。
 
 生成沿用现有动作标签、species、长度先验、loop 判断和周期解析。生成动作由冻结 Decoder 解码后，转换到物理空间、恢复所需输出长度并导出。
 

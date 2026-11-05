@@ -20,7 +20,7 @@ from diffusion.latent_diffusion import create_latent_diffusion
 from model.motion_autoencoder import to_working_motion
 from sample.conditioning import (
     create_condition, _resolve_action_condition, _resolve_species_code_override,
-    _wrap_action_label_cfg, _parse_species_tags)
+    _wrap_action_label_cfg)
 from sample.output_lengths import (
     resolve_loop_condition, loop_period, resolve_loop_cycles,
     _resolve_auto_output_lengths, _finalize_output_lengths, _resample_window_to_output)
@@ -133,13 +133,6 @@ def main(argv=None, runtime=None):
                                  species_code_override=override)
     y = {k: v for k, v in kwargs['y'].items() if not k.startswith('ref_')}
     y = {k: v.to(device) if torch.is_tensor(v) else v for k, v in y.items()}
-    tags = _parse_species_tags(getattr(args, 'species_tags', ''))
-    if not tags:
-        tags = cond[object_type].get('species_tags') or ()
-    if not tags:
-        tags = (cond[object_type].get('species_emb_meta') or {}).get('embedding_text', '').split()
-    if tags:
-        y['object_subset'] = [tags[0].lower()] * args.batch_size
     y['resample_speed_cond'] = torch.full((args.batch_size,), speed, device=device)
     # These true Decoder conditions remain unchanged by action CFG.
     skeleton, time = ae_inputs(y)
@@ -155,7 +148,7 @@ def main(argv=None, runtime=None):
     diffusion = create_latent_diffusion(**schedule, respacing=args.timestep_respacing)
     latent = diffusion.sample(guided, (args.batch_size, 60, ae.slots, ae.latent_dim), y, device,
                               ddim=sampling_method == 'ddim', progress=True)
-    decoded = ae.decode(norm.denormalize(latent, y), skeleton, loop_metadata=time)
+    decoded = ae.decode(norm.denormalize(latent), skeleton, loop_metadata=time)
     if not torch.isfinite(decoded).all():
         raise FloatingPointError('Nonfinite decoded motion')
     physical = canonical_to_physical_hml(to_working_motion(decoded), cond[object_type])

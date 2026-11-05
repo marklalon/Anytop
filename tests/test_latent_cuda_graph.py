@@ -37,7 +37,7 @@ def test_graph_replay_with_numpy_parents_matches_eager_updates():
     device = torch.device('cuda')
     model = ConditionedLinear(3, 3).to(device)
     eager = copy.deepcopy(model)
-    diffusion = create_latent_diffusion(steps=10)
+    diffusion = create_latent_diffusion(steps=10, loss_weights=torch.tensor([[.5, 1., 1.5], [1.5, 1., .5]], device=device))
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     eager_optimizer = torch.optim.AdamW(eager.parameters(), lr=1e-3)
     steps = EagerCudaGraphSteps(model, diffusion, optimizer, None, device,
@@ -52,13 +52,16 @@ def test_graph_replay_with_numpy_parents_matches_eager_updates():
                  unused_tensor=torch.empty(index + 1, device=device),
                  resample_speed_cond=torch.full((2, 1, 1, 1), float(index), device=device))
         eager_optimizer.zero_grad(set_to_none=True)
-        expected = diffusion.training_losses(eager, target, t, {'y': y}, noise)['loss'].mean()
+        terms = diffusion.training_losses(eager, target, t, {'y': y}, noise)
+        expected = terms['loss'].mean()
         expected.backward()
         torch.nn.utils.clip_grad_norm_(eager.parameters(), 1.0)
         eager_optimizer.step()
         actual = steps.step(target, t, noise, y)
         steps.optimizer_step()
         torch.testing.assert_close(actual, expected)
+        for key, value in terms.items():
+            torch.testing.assert_close(steps.last_metrics[key], value.detach().mean())
         for captured, reference in zip(model.parameters(), eager.parameters()):
             torch.testing.assert_close(captured, reference)
     assert len(steps.graphs) == 1
@@ -86,7 +89,7 @@ def test_cache_limit_falls_back_to_eager_and_cached_graph_can_resume():
     device = torch.device('cuda')
     model = ConditionedLinear(3, 3).to(device)
     eager = copy.deepcopy(model)
-    diffusion = create_latent_diffusion(steps=10)
+    diffusion = create_latent_diffusion(steps=10, loss_weights=torch.tensor([[.5, 1., 1.5], [1.5, 1., .5]], device=device))
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     eager_optimizer = torch.optim.AdamW(eager.parameters(), lr=1e-3)
     steps = EagerCudaGraphSteps(model, diffusion, optimizer, None, device,
@@ -136,7 +139,7 @@ def test_real_denoiser_buckets_and_memory_stay_bounded():
         joint_name_drop_prob=0, rest_geom_joint_drop_prob=0,
         action_label_cfg_drop_prob=0, action_conditioning=make_test_bundle()).to(device).train()
     eager = copy.deepcopy(model)
-    diffusion = create_latent_diffusion(steps=10)
+    diffusion = create_latent_diffusion(steps=10, loss_weights=torch.tensor([[.5, 1., 1.5], [1.5, 1., .5]], device=device))
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
     eager_optimizer = torch.optim.SGD(eager.parameters(), lr=1e-3)
     steps = EagerCudaGraphSteps(model, diffusion, optimizer, None, device,

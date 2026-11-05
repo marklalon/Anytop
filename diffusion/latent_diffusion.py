@@ -33,6 +33,29 @@ def validate_latent_conditions(y, frames=60):
 
 
 class LatentDiffusion(SpacedDiffusion):
+    def __init__(self, *args, loss_weights=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.loss_weights = None
+        if loss_weights is not None:
+            weights = torch.as_tensor(loss_weights).detach().float()
+            if (weights.ndim != 2 or not torch.isfinite(weights).all()
+                    or not (weights > 0).all()
+                    or not torch.isclose(weights.mean(), weights.new_tensor(1.), atol=1e-5)):
+                raise ValueError('Latent loss weights must be positive [K,d] with mean one')
+            self.loss_weights = weights
+
+    def latent_error_terms(self, prediction, target):
+        if prediction.shape != target.shape:
+            raise ValueError('Latent prediction shape differs from target')
+        error = (prediction.float() - target.float()).square()
+        mse = error.mean((1, 2, 3))
+        if self.loss_weights is None:
+            return {'loss': mse, 'latent_mse': mse}
+        if tuple(self.loss_weights.shape) != tuple(target.shape[-2:]):
+            raise ValueError('Latent loss weights and target layout mismatch')
+        weighted = (error * self.loss_weights.to(target.device)).mean((1, 2, 3))
+        return {'loss': weighted, 'latent_mse': mse, 'latent_sensitivity_mse': weighted}
+
     def p_mean_variance(self, model, x, t, clip_denoised=False, **kwargs):
         if clip_denoised:
             raise ValueError('Motion-domain clipping is unsupported for standardized latents')
@@ -49,10 +72,7 @@ class LatentDiffusion(SpacedDiffusion):
         noise = torch.randn_like(x_start) if noise is None else noise
         noisy = self.q_sample(x_start.float(), t, noise.float())
         prediction = self._wrap_model(model)(noisy, t, **(model_kwargs or {}))
-        if prediction.shape != x_start.shape:
-            raise ValueError('Latent prediction shape differs from target')
-        mse = (prediction.float() - x_start.float()).square().mean((1, 2, 3))
-        return {'loss': mse, 'latent_mse': mse}
+        return self.latent_error_terms(prediction, x_start)
 
     @torch.no_grad()
     def sample(self, model, shape, y, device, noise=None, ddim=False, progress=False):
@@ -71,11 +91,11 @@ class LatentDiffusion(SpacedDiffusion):
         return x
 
 
-def create_latent_diffusion(steps=100, noise_schedule='cosine', shift=1.0, respacing=''):
+def create_latent_diffusion(steps=100, noise_schedule='cosine', shift=1.0, respacing='', loss_weights=None):
     if steps < 2 or not np.isfinite(shift) or shift <= 0:
         raise ValueError('Invalid diffusion schedule')
     return LatentDiffusion(
         use_timesteps=space_timesteps(steps, respacing or [steps]),
         betas=get_named_beta_schedule(noise_schedule, steps, shift=shift),
         model_mean_type=ModelMeanType.START_X, model_var_type=ModelVarType.FIXED_SMALL,
-        loss_type=LossType.MSE, rescale_timesteps=False)
+        loss_type=LossType.MSE, rescale_timesteps=False, loss_weights=loss_weights)
