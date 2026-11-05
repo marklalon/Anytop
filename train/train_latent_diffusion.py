@@ -43,13 +43,11 @@ class LatentBatchTransform:
 
     def __call__(self, batch):
         motion, conditions = batch
-        # The shared collator supplies reference placeholders for motion-space models.
-        y = dict(conditions['y'])
-        # Latent diffusion does not support hiding selected reference frames,
-        # but it still trains the reference encoder on complete reference inputs.
-        hidden = y.pop('ref_frame_mask', None)
-        if hidden is not None and bool(hidden.any()):
-            raise ValueError('Reference frame hiding is unsupported in latent diffusion')
+        # The shared collator always adds reference-motion placeholders. They
+        # are not conditions for latent diffusion, so keep them out of every
+        # downstream AE and denoiser path.
+        y = {key: value for key, value in conditions['y'].items()
+             if not key.startswith('ref_')}
         # Mask the batch condition once so the frozen AE target encoder and the
         # denoiser receive exactly the same skeleton information.
         if self.joint_name_drop_prob:
