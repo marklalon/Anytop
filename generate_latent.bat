@@ -2,16 +2,18 @@
 setlocal EnableExtensions
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
-set "RUN_NAME=tiny_latent_diffusion_fly_shake_v2"
+set "RUN_NAME=all_latent_diffusion_v1"
 set "MODEL_FILE=latent_diffusion.pt"
-set "NUM_SAMPLES=8"
+set "BATCH_SIZE=8"
 
 REM Usage: generate_latent.bat --object_type Horse [additional sampling arguments]
 REM Examples:
 REM   generate_latent.bat --object_type Horse --action_label Run
+REM   generate_latent.bat --cond_path outputs/test/cond/Human/cond.npy --action_label "run, forward"
 REM   generate_latent.bat --object_type Horse --fullbody_ik --stretch_factor 0
 REM   generate_latent.bat --object_type Horse --reference_motion path\Flamingo_Walk.npy
-REM --object_type is required, including when using a reference motion.
+REM A single-species --cond_path auto-selects its target, as in generate.bat.
+REM Otherwise pass --object_type or infer it from a named reference motion.
 REM --reference_motion and --action_label are mutually exclusive.
 REM The checkpoint loads its bound frozen AE; use --ae_checkpoint to relocate it.
 REM Extra arguments are forwarded to sample/generate_latent.py via %*.
@@ -56,7 +58,7 @@ echo Output dir: %OUTPUT_DIR%
 "%PYTHON_EXE%" sample/generate_latent.py ^
     --model_path "%MODEL_PATH%" ^
     --output_dir "%OUTPUT_DIR%" ^
-    --num_samples %NUM_SAMPLES% %*
+    --batch_size %BATCH_SIZE% %*
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
 exit /b %EXIT_CODE%

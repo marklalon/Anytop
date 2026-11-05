@@ -38,6 +38,7 @@ def test_latent_reference_loop_is_read_before_working_conversion(monkeypatch, tm
     source_cond = {'translation_root_index': 0}
     model = SimpleNamespace(t5_out_dim=4, species_cond=False, ref_encoder=True)
     checkpoint = {'args': {'cond_path': str(tmp_path / 'cond.npy')}, 'cond_sha256': 'test'}
+    (tmp_path / 'cond.npy').touch()
     monkeypatch.setattr(generation, 'load_latent_checkpoint', lambda *a: (model, None, None, checkpoint))
     monkeypatch.setattr(generation, 'file_sha256', lambda *a: 'test')
     monkeypatch.setattr(generation, 'load_cond', lambda *a: {'source': source_cond})
@@ -71,6 +72,58 @@ def test_latent_reference_loop_is_read_before_working_conversion(monkeypatch, tm
     assert f"loop (auto) -> {'on' if is_loop else 'off'} (the reference's stored loop verdict)" in capsys.readouterr().out
     assert len(converted) == 1
     assert np.count_nonzero(converted[0][..., 9:12]) == 0
+
+
+@pytest.mark.parametrize('reference_frames,requested_frames,expected_frames', [
+    (145, None, 120), (10, None, 20), (60, None, 60), (120, None, 120),
+    (145, 80, 80), (145, 145, None), (145, 0, None),
+])
+def test_latent_reference_output_length_matches_motion_generation(
+        monkeypatch, tmp_path, reference_frames, requested_frames, expected_frames):
+    import numpy as np
+    from types import SimpleNamespace
+    from sample import generate_latent as generation
+
+    reference = tmp_path / 'Source_walk.npy'
+    np.save(reference, np.zeros((reference_frames, 3, 12), dtype=np.float32))
+    (tmp_path / 'cond.npy').touch()
+    source_cond = {'translation_root_index': 0, 'parents': [-1, 0, 0]}
+    model = SimpleNamespace(t5_out_dim=4, species_cond=False, ref_encoder=True)
+    monkeypatch.setattr(generation, 'load_latent_checkpoint',
+                        lambda *a: (model, None, None, {'cond_sha256': 'hash'}))
+    monkeypatch.setattr(generation, 'file_sha256', lambda *a: 'hash')
+    monkeypatch.setattr(generation, 'load_cond', lambda *a: {'Source': source_cond, 'Target': source_cond})
+    monkeypatch.setattr(generation, 'mark_canonical_cond_entry', lambda *a: None)
+    monkeypatch.setattr(generation, 'ensure_joint_name_embeddings', lambda *a, **k: None)
+    monkeypatch.setattr(generation, '_resolve_action_condition', lambda *a: None)
+    monkeypatch.setattr(generation, '_resolve_species_code_override', lambda *a: None)
+    monkeypatch.setattr(generation, 'resolve_loop_condition', lambda *a, **k: True)
+    monkeypatch.setattr(generation, 'loop_period', lambda *a, **k: None)
+    monkeypatch.setattr(generation, 'create_condition', lambda *a, **k: (None, {'y': {}}))
+    resample = generation.resample_reference_to_output
+    fitted = []
+
+    class ReferenceBoundary(Exception):
+        pass
+
+    def stop(features, frames):
+        fitted.append(resample(features, frames)[0])
+        raise ReferenceBoundary
+
+    monkeypatch.setattr(generation, 'resample_reference_to_output', stop)
+    flags = ['--model_path', str(tmp_path / 'latent.pt'), '--object_type', 'Target',
+             '--reference_motion', str(reference), '--ref_cfg_scale', '6',
+             '--output_dir', str(tmp_path / 'out'), '--device', '-1']
+    if requested_frames is not None:
+        flags += ['--num_frames', str(requested_frames)]
+    if expected_frames is None:
+        with pytest.raises(SystemExit, match='outside'):
+            generation.main(flags)
+        assert not fitted
+    else:
+        with pytest.raises(ReferenceBoundary):
+            generation.main(flags)
+        assert fitted[0].shape == (expected_frames, 3, 12)
 
 
 def conditions(batch=2, joints=5, source_joints=3, names=4):

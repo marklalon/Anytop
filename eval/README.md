@@ -14,6 +14,13 @@ existing task outputs are re-scored, only new or changed tasks are generated
 (`--overwrite` regenerates everything). See the module docstring for the
 config format.
 
+The backend follows the checkpoint: a latent run (`latent_diffusion*.pt`) is
+generated with `sample/generate_latent.py` against the frozen autoencoder it was
+trained with. `--backend motion|latent` overrides the detection, and
+`--ae_checkpoint <path>` points at a relocated AE (its hash must match
+training). Motion-only flags (inpaint/outpaint) are rejected by the latent
+backend.
+
 ## Quality score
 
 Every clip gets two scores in `[0, 1]`; its quality is their geometric mean and

@@ -26,6 +26,7 @@ from train.train_motion_autoencoder import (
     scaled_optimizer_step, update_autoencoder_ema, reconstruction_mse, create_lr_scheduler)
 from model.motion_autoencoder import motion_masks
 from utils.fixseed import fixseed
+from utils.checkpoint_cond import snapshot_training_cond
 from utils.latent_util import (
     LATENT_CHECKPOINT_VERSION, TIME_CONTRACT, LatentNormalizer, ae_inputs,
     load_frozen_autoencoder, estimate_normalizer, encode_target, file_sha256)
@@ -208,6 +209,9 @@ def main(argv=None):
                 raise ValueError(f'Cannot resume with changed {key}')
         if args.num_steps != resume['args']['num_steps']:
             raise ValueError('num_steps binds the LR schedule; use a new run to change it')
+    # Like motion-space training, refresh cond.npy on every accepted launch,
+    # including resumes. Keep args.cond_path unchanged for the dataset/resume contract.
+    snapshot_training_cond(args.cond_path, save, cond_hash)
     args.resume_checkpoint = str(path) if resume else ''
     bundle = bootstrap_action_conditioning(args)
     if resume and (bundle.checkpoint_metadata() if bundle else None) != resume['action_conditioning']:

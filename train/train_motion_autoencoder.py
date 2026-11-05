@@ -32,6 +32,7 @@ from train.motion_reconstruction_losses import LOSS_WEIGHTS, MotionGeometryLosse
 from train.latent_validation import build_validation_loader
 from train.training_loop import _fixed_validation_rng
 from utils.fixseed import fixseed
+from utils.checkpoint_cond import snapshot_training_cond
 from utils.lr_schedule import cosine_decay_lr_lambda
 from torch.utils.tensorboard import SummaryWriter
 
@@ -415,6 +416,8 @@ def main():
         for key in ('variational', 'kl_weight'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
+    # Preserve the accepted training contract for inference, including resumes.
+    snapshot_training_cond(args.cond_path, save, cond_hash)
     augmentation = {key: getattr(args, key) for key in AUGMENTATION_DEFAULTS}
     train_loader = create_training_data_loader(args, dataset)
     batches = training_batches(train_loader)
