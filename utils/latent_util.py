@@ -47,7 +47,8 @@ def load_frozen_autoencoder(path, device='cpu'):
 
 
 def ae_inputs(y, frames=60):
-    # Truth time and skeleton are selected before any denoiser-side dropout.
+    # Select the shared (possibly masked) skeleton and time conditions used to
+    # encode the target latent.
     validate_latent_conditions(y, frames)
     return {key: y[key] for key in SKELETON_KEYS}, {key: y[key] for key in TIME_KEYS}
 

@@ -33,10 +33,33 @@ from utils.latent_util import (
 
 
 class LatentBatchTransform:
+    def __init__(self, joint_name_drop_prob=0.0, rest_geom_joint_drop_prob=0.0):
+        self.joint_name_drop_prob = float(joint_name_drop_prob)
+        self.rest_geom_joint_drop_prob = float(rest_geom_joint_drop_prob)
+        for name in ('joint_name_drop_prob', 'rest_geom_joint_drop_prob'):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f'{name} must be in [0, 1], got {value}')
+
     def __call__(self, batch):
         motion, conditions = batch
         # The shared collator supplies reference placeholders for motion-space models.
-        y = {key: value for key, value in conditions['y'].items() if not key.startswith('ref_')}
+        y = dict(conditions['y'])
+        # Latent diffusion does not support hiding selected reference frames,
+        # but it still trains the reference encoder on complete reference inputs.
+        hidden = y.pop('ref_frame_mask', None)
+        if hidden is not None and bool(hidden.any()):
+            raise ValueError('Reference frame hiding is unsupported in latent diffusion')
+        # Mask the batch condition once so the frozen AE target encoder and the
+        # denoiser receive exactly the same skeleton information.
+        if self.joint_name_drop_prob:
+            names = y['joints_names_embs']
+            drop = torch.rand(names.shape[:2], device=names.device) < self.joint_name_drop_prob
+            y['joints_names_embs'] = names.masked_fill(drop[..., None], 0)
+        if self.rest_geom_joint_drop_prob:
+            geometry = y['rest_geom']
+            drop = torch.rand(geometry.shape[:2], device=geometry.device) < self.rest_geom_joint_drop_prob
+            y['rest_geom'] = geometry.masked_fill(drop[..., None], 0)
         return motion[:, :, :9].contiguous(), {'y': y}
 
 
@@ -67,13 +90,14 @@ def parser():
                            dropout=0.05, action_label_cfg_drop_prob=0.2,
                            direction_slot_drop_prob=0.0, modifier_slot_drop_prob=0.0,
                            noise_schedule_shift=1.0,
-                           denoiser_joint_name_drop_prob=0.15,
-                           denoiser_rest_geom_joint_drop_prob=0.1).items():
+                           joint_name_drop_prob=0.15,
+                           rest_geom_joint_drop_prob=0.1).items():
         p.add_argument('--' + key, type=float, default=value)
     p.add_argument('--lr_decay_start', type=int, default=0)
     p.add_argument('--noise_schedule', default='cosine', choices=('cosine', 'linear'))
     p.add_argument('--joint_buckets', type=int, nargs='+')
-    # These augment the paired AE target; condition-only drop has separate names.
+    # These augment the paired AE target; joint name and rest geometry dropout
+    # are shared by the AE target encoder and denoiser through LatentBatchTransform.
     for key, value in AUGMENTATION_DEFAULTS.items():
         if key not in ('joint_name_drop_prob', 'rest_geom_joint_drop_prob'):
             p.add_argument('--' + key, type=float, default=value)
@@ -113,10 +137,8 @@ def training_forwards(model, ae, norm, compile_mode):
 
 def build_loader(args):
     kwargs = {key: getattr(args, key) for key in AUGMENTATION_DEFAULTS
-              if hasattr(args, key)}
-    # Never hide static AE truth as part of denoiser CFG/condition regularization.
-    kwargs['joint_name_drop_prob'] = 0.0
-    kwargs.pop('rest_geom_joint_drop_prob', None)
+              if hasattr(args, key) and key not in (
+                  'joint_name_drop_prob', 'rest_geom_joint_drop_prob')}
     dataset = get_dataset(
         num_frames=60, split='train', cond_path=args.cond_path,
         sample_filter=args.sample_filter, sample_filter_seed=args.seed,
@@ -126,7 +148,9 @@ def build_loader(args):
     loader = build_dataset_loader(
         dataset, batch_size=args.batch_size, drop_last=True, num_workers=args.num_workers,
         main_process_prefetch_batches=args.main_process_prefetch_batches,
-        joint_buckets=args.joint_buckets or JOINT_BUCKETS, batch_transform=LatentBatchTransform())
+        joint_buckets=args.joint_buckets or JOINT_BUCKETS,
+        batch_transform=LatentBatchTransform(
+            args.joint_name_drop_prob, args.rest_geom_joint_drop_prob))
     return dataset, loader
 
 
@@ -227,8 +251,10 @@ def main(argv=None):
                 'temporal_rope', 'action_label_cond', 'species_cond',
                 'action_label_cfg_drop_prob', 'direction_slot_drop_prob', 'modifier_slot_drop_prob'):
         config[key] = getattr(args, key)
-    for key in ('joint_name_drop_prob', 'rest_geom_joint_drop_prob'):
-        config[key] = getattr(args, 'denoiser_' + key)
+    # The shared batch transform applies these masks before both target encoding
+    # and denoiser conditioning, so the model must not sample a second mask.
+    config['joint_name_drop_prob'] = 0.0
+    config['rest_geom_joint_drop_prob'] = 0.0
     model = LatentMotionDenoiser(**config, action_conditioning=args.action_conditioning).to(device)
     if resume:
         model.load_state_dict(resume['model'], strict=True)

@@ -166,7 +166,7 @@ Encoder 和 Decoder 始终保持 eval 模式并冻结权重。训练目标由 En
 
 `resample_speed_cond` 表达重采样前源窗口与内部窗口的时长比例，保留原物理时长；`is_loop` 和 `loop_tile_count` 表达开放/循环状态及周期数。开放动作使用绝对位置与源帧时间，循环动作使用循环相位与物理周期长度；可选 temporal RoPE 处理时间关系。这些信息与表示噪声等级的 diffusion timestep 分开。
 
-去噪器直接使用目标周期数；需要时可通过显式 `temporal_rope_off` 对指定样本关闭 RoPE。冻结 AE 编码目标和最终 Decoder 始终使用真实目标时间条件。
+latent diffusion 使用 `joint_name_drop_prob` 和 `rest_geom_joint_drop_prob` 对 batch 条件采样一次 mask，并将相同的条件同时交给冻结 AE 编码目标和 denoiser，避免两侧看到不同的骨架信息。去噪器直接使用目标周期数；需要时可通过显式 `temporal_rope_off` 对指定样本关闭 RoPE。冻结 AE 编码目标和最终 Decoder 始终使用真实目标时间条件。
 
 骨架关节数仍可变化，需要排除 padding 关节；这是骨架有效性处理，与时间 padding、关节编辑 mask 或参考隐藏帧均不同。
 

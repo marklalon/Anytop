@@ -163,8 +163,8 @@ if "%TRAIN_STAGE%"=="diffusion" (
     --species_cond ^
     --temporal_rope ^
     --action_label_cfg_drop_prob 0.2 ^
-    --denoiser_joint_name_drop_prob 0.15 ^
-    --denoiser_rest_geom_joint_drop_prob 0.1 ^
+    --joint_name_drop_prob 0.15 ^
+    --rest_geom_joint_drop_prob 0.1 ^
     --motion_speed_aug 1.3 ^
     --loop_tile_single_prob 0.5 ^
     --loop_cond_prob_free 0.8 ^
