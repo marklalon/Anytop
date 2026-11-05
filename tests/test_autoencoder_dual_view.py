@@ -247,13 +247,32 @@ def test_single_pass_matches_direct_source_to_target_loss_and_gradients(
 
 def test_old_dual_view_objective_cannot_silently_resume():
     from train.train_autoencoder import DUAL_VIEW_OBJECTIVE, validate_dual_view_objective
-    args = parser().parse_args(['--save_dir', 'unused', '--dual_view'])
+    args = vars(parser().parse_args(['--save_dir', 'unused']))
     with pytest.raises(ValueError, match='single-pass'):
-        validate_dual_view_objective({'args': {'dual_view': True}}, args)
-    validate_dual_view_objective({'dual_view_objective': DUAL_VIEW_OBJECTIVE}, args)
-    validate_dual_view_objective(None, args)
-    args.dual_view = False
-    validate_dual_view_objective({'args': {'dual_view': False}}, args)
+        validate_dual_view_objective({'args': args})
+    validate_dual_view_objective({'dual_view_objective': DUAL_VIEW_OBJECTIVE, 'args': args})
+    validate_dual_view_objective(None)
+
+
+@pytest.mark.parametrize('key', ['dual_view', 'reference_pairs', 'layerwise_latent'])
+@pytest.mark.parametrize('missing', [False, True])
+def test_resume_requires_fixed_training_contract(key, missing):
+    from train.train_autoencoder import DUAL_VIEW_OBJECTIVE, validate_dual_view_objective
+    args = vars(parser().parse_args(['--save_dir', 'unused']))
+    if missing:
+        del args[key]
+    else:
+        args[key] = False
+    with pytest.raises(ValueError, match=key):
+        validate_dual_view_objective({'dual_view_objective': DUAL_VIEW_OBJECTIVE, 'args': args})
+
+
+@pytest.mark.parametrize('key', ['dual_view', 'reference_pairs', 'layerwise_latent'])
+def test_fixed_training_options_are_enabled_without_cli_switches(key):
+    args = parser().parse_args(['--save_dir', 'unused'])
+    assert getattr(args, key) is True
+    with pytest.raises(SystemExit):
+        parser().parse_args(['--save_dir', 'unused', '--' + key])
 
 
 def test_obsolete_self_reconstruction_weight_is_rejected():
@@ -275,7 +294,7 @@ class DualLoaderFixture(LoaderFixture):
 @pytest.mark.parametrize('workers', [0, 2])
 def test_dual_view_prefetch_and_spawn_workers(workers, monkeypatch):
     monkeypatch.setattr(torch.cuda, 'is_available', lambda: False)
-    args = parser().parse_args(['--save_dir', 'unused', '--dual_view', '--batch_size', '2',
+    args = parser().parse_args(['--save_dir', 'unused', '--batch_size', '2',
                                '--num_workers', str(workers), '--main_process_prefetch_batches', '2',
                                '--joint_buckets', '8', '16', '100', '--joint_name_drop_prob', '1'])
     loader = create_training_data_loader(args, DualLoaderFixture())
@@ -288,14 +307,15 @@ def test_dual_view_prefetch_and_spawn_workers(workers, monkeypatch):
         assert (cond['n_joints'] > cond['ae_view_cond']['n_joints']).all()
 
 
-def test_dual_view_validation_is_skipped_without_reference_pairs():
+def test_dual_view_validation_is_skipped_without_available_pairs():
     from model.motion_autoencoder import MotionAutoencoder
     source, data = make_dataset()
     source.data_dict = {'test': data}
     source.name_list, source.pointer = ['test'], 0
     source.opt.bone_length_aug_max = .2
+    source.opt.sources = []
     loader = SimpleNamespace(dataset=SimpleNamespace(motion_dataset=source))
-    args = parser().parse_args(['--save_dir', 'unused', '--dual_view', '--bone_length_aug_prob', '1'])
+    args = parser().parse_args(['--save_dir', 'unused', '--bone_length_aug_prob', '1'])
     model = MotionAutoencoder(t5_out_dim=4, width=16, layers=1, heads=2, slots=2, latent_dim=4)
     random.seed(100)
     expected_rng = random.getstate()

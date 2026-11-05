@@ -90,19 +90,18 @@ class AutoencoderBatchTransform:
         return motion[:, :, :9].contiguous(), {'y': clean}
 
 
-def configure_autoencoder_views(source, args):
+def configure_autoencoder_views(source):
     """Resolve pairs within this split/filter before constructing the sampler."""
-    source.opt.autoencoder_dual_view = args.dual_view or args.reference_pairs
-    source.opt.autoencoder_reference_pairs = args.reference_pairs
+    source.opt.autoencoder_dual_view = True
+    source.opt.autoencoder_reference_pairs = True
     source.opt.autoencoder_reference_only_partners = False
-    source.reference_groups = (load_reference_groups(source.opt.sources, source.data_dict)
-                               if args.reference_pairs else {})
+    source.reference_groups = load_reference_groups(source.opt.sources, source.data_dict)
 
 
 def create_training_data_loader(args, dataset):
     for key in AUGMENTATION_DEFAULTS:
         setattr(dataset.motion_dataset.opt, key, getattr(args, key))
-    configure_autoencoder_views(dataset.motion_dataset, args)
+    configure_autoencoder_views(dataset.motion_dataset)
     return build_dataset_loader(
         dataset, batch_size=args.batch_size, drop_last=True,
         num_workers=args.num_workers,
@@ -163,11 +162,16 @@ def dual_view_training_terms(model, criterion, target, cond, *, step_scale=1.0,
     return terms
 
 
-def validate_dual_view_objective(resume, args):
-    if (args.dual_view and resume is not None
-            and resume.get('dual_view_objective') != DUAL_VIEW_OBJECTIVE):
+def validate_dual_view_objective(resume):
+    if resume is None:
+        return
+    if resume.get('dual_view_objective') != DUAL_VIEW_OBJECTIVE:
         raise ValueError('Cannot resume the old bidirectional cross/self objective as '
                          'single-pass source-to-target training; use a new --save_dir')
+    for key in ('dual_view', 'reference_pairs', 'layerwise_latent'):
+        if not resume['args'].get(key, False):
+            raise ValueError(f'Cannot resume with {key} disabled; training now always enables it; '
+                             'use a new --save_dir')
 
 
 def reconstruction_mse(prediction, target, skeleton, frame):
@@ -310,7 +314,7 @@ def evaluate_validation(model, loader, batch_size, device):
 @torch.no_grad()
 def evaluate_dual_view_validation(model, loader, args, device):
     """Fixed RNG, held-out motions, independent skeleton views, no condition drops."""
-    if loader is None or not args.reference_pairs:
+    if loader is None:
         return {}
     device = torch.device(device)
     # Do not modify the ordinary validation loader (which may be prefetching).
@@ -318,8 +322,7 @@ def evaluate_dual_view_validation(model, loader, args, device):
     source.opt = copy.copy(source.opt)
     for key in ('topology_aug_prob', 'bone_length_aug_prob', 'rest_repose_prob', 'rest_variant_prob'):
         setattr(source.opt, key, getattr(args, key))
-    configure_autoencoder_views(source, args)
-    source.opt.autoencoder_dual_view = True
+    configure_autoencoder_views(source)
     source.opt.autoencoder_reference_only_partners = True
     model.eval()
     paired_totals = dict(loss=0.)
@@ -380,7 +383,6 @@ def parser():
     p.add_argument('--cross_limb_dim', type=int, default=0)
     p.add_argument('--cross_limb_last_n', type=int, default=0)
     p.add_argument('--temporal_rope', action='store_true')
-    p.add_argument('--layerwise_latent', action='store_true')
     p.add_argument('--decoder_temporal_kernel', type=int, default=0,
                    help='Optional decoder output temporal residual convolution; zero disables')
     p.add_argument('--compile', choices=('None', 'default', 'reduce-overhead'), default='None')
@@ -401,10 +403,8 @@ def parser():
     p.add_argument('--eval_interval', type=int, default=1000)
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--auto_resume', action='store_true')
-    p.add_argument('--dual_view', action='store_true',
-                   help='Encode source once, decode to independently augmented target once; shared time map')
-    p.add_argument('--reference_pairs', action='store_true',
-                   help='Sample the second view uniformly from reference_pairs.jsonl groups, including self; implies dual_view. Unpaired clips retain synthetic views')
+    # Persist the fixed training contract in args.json and checkpoints.
+    p.set_defaults(dual_view=True, reference_pairs=True, layerwise_latent=True)
     for argument in LOSS_WEIGHTS.values():
         p.add_argument('--' + argument, type=float, default=0.0)
     p.add_argument('--drot_joint_boost', type=float, default=0.0)
@@ -417,7 +417,6 @@ def parser():
 
 def main():
     args = parser().parse_args()
-    args.dual_view = args.dual_view or args.reference_pairs
     if not np.isfinite(args.lr) or args.lr <= 0:
         raise ValueError('lr must be finite and positive')
     if not np.isfinite(args.weight_decay) or args.weight_decay < 0:
@@ -453,7 +452,7 @@ def main():
     if checkpoint.exists() and not args.auto_resume:
         raise FileExistsError(f'{checkpoint} exists; use --auto_resume or a new --save_dir')
     resume = torch.load(checkpoint, map_location='cpu', weights_only=False) if checkpoint.exists() else None
-    validate_dual_view_objective(resume, args)
+    validate_dual_view_objective(resume)
     if resume is not None:
         if resume['decoder_content_version'] != DECODER_CONTENT_VERSION:
             raise ValueError('Checkpoint decoder content version does not match this code')
@@ -493,7 +492,7 @@ def main():
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run for a new objective')
         for key in ('last_layer_ff', 'cross_limb_dim', 'cross_limb_last_n',
-                    'temporal_rope', 'layerwise_latent', 'decoder_temporal_kernel'):
+                    'temporal_rope', 'decoder_temporal_kernel'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
         for key in AUGMENTATION_DEFAULTS | MODEL_REGULARIZATION_DEFAULTS:
@@ -502,9 +501,6 @@ def main():
         for key in ('variational', 'kl_weight'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
-        for key, default in (('dual_view', False), ('reference_pairs', False)):
-            if resume['args'].get(key, default) != getattr(args, key):
-                raise ValueError(f'Cannot resume with changed {key}; use a new run for a new objective')
     # Preserve the accepted training contract for inference, including resumes.
     snapshot_training_cond(args.cond_path, save, cond_hash)
     augmentation = {key: getattr(args, key) for key in AUGMENTATION_DEFAULTS}
@@ -524,7 +520,7 @@ def main():
                               latent_dim=args.latent_dim, ff_size=args.ff_size,
                               last_layer_ff=args.last_layer_ff, cross_limb_dim=args.cross_limb_dim,
                               cross_limb_last_n=args.cross_limb_last_n, temporal_rope=args.temporal_rope,
-                              layerwise_latent=args.layerwise_latent,
+                              layerwise_latent=True,
                               decoder_temporal_kernel=args.decoder_temporal_kernel,
                               variational=args.variational,
                               **{key: getattr(args, key) for key in MODEL_REGULARIZATION_DEFAULTS}).to(device)
@@ -574,14 +570,12 @@ def main():
     active_augmentation = {key: value for key, value in augmentation.items()
                            if value != AUGMENTATION_DEFAULTS[key]}
     tqdm.write(f'[INFO] online augmentation: {active_augmentation or "disabled"}')
-    if args.dual_view:
-        tqdm.write('[INFO] dual views: independent skeleton augmentation, shared temporal map; '
-                   'independent encoder/decoder name drop, source-only joint geometry drop; '
-                   'one source encoding and one target decoding per step; no activation recomputation')
-    if args.reference_pairs:
-        tqdm.write(f'[INFO] reference pairs: {len(source.reference_groups)}/{len(names)} training clips; '
-                   'uniform group sampling includes self as one member; '
-                   'unpaired clips use synthetic views; no latent alignment loss')
+    tqdm.write('[INFO] dual views: independent skeleton augmentation, shared temporal map; '
+               'independent encoder/decoder name drop, source-only joint geometry drop; '
+               'one source encoding and one target decoding per step; no activation recomputation')
+    tqdm.write(f'[INFO] reference pairs: {len(source.reference_groups)}/{len(names)} training clips; '
+               'uniform group sampling includes self as one member; '
+               'unpaired clips use synthetic views; no latent alignment loss')
     del example, x, y
     if resume is not None:
         tqdm.write(f'[INFO] Resuming {checkpoint} at completed step {start:,}/{args.num_steps:,}')
@@ -608,9 +602,8 @@ def main():
             evaluation_model, val_loader, args.batch_size, device)
         if report is None:
             return None
-        if args.reference_pairs:
-            report['summary'].update(evaluate_dual_view_validation(
-                evaluation_model, val_loader, args, device))
+        report['summary'].update(evaluate_dual_view_validation(
+            evaluation_model, val_loader, args, device))
         report['step'] = step
         (save / 'reconstruction_metrics.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
         summary = report['summary']
@@ -646,7 +639,6 @@ def main():
             model.train()
             step_lr = optimizer.param_groups[0]['lr']
             target, cond = training_batch_to_device(next(batches), device)
-            skeleton, frame, loop = model_inputs(target, cond)
             step_scale = (min(step / args.warmup_steps, 1.0)
                           if args.warmup_steps else 1.0)
             # Retry the same batch after overflow: num_steps counts actual optimizer updates.
@@ -656,22 +648,9 @@ def main():
                     torch.compiler.cudagraph_mark_step_begin()
                 with torch.autocast(device_type=device.type, dtype=torch.float16,
                                     enabled=args.amp_dtype == 'fp16'):
-                    if args.dual_view:
-                        terms = dual_view_training_terms(
-                            forward_model, criterion, target, cond, step_scale=step_scale,
-                            kl_weight=args.kl_weight)
-                    elif args.variational:
-                        prediction, mu, logvar = forward_model(
-                            target, cond['ae_source_skeleton'], frame, loop,
-                            target_skeleton=cond['ae_target_skeleton'], return_posterior=True)
-                    else:
-                        prediction = forward_model(target, cond['ae_source_skeleton'], frame, loop,
-                                                   target_skeleton=cond['ae_target_skeleton'])
-                if not args.dual_view:
-                    terms = criterion(prediction, target, cond, step_loss_scale=step_scale)
-                if args.variational and not args.dual_view:
-                    terms['kl_loss'] = diagonal_gaussian_kl(mu, logvar, frame)
-                    terms['loss'] = terms['loss'] + args.kl_weight * step_scale * terms['kl_loss']
+                    terms = dual_view_training_terms(
+                        forward_model, criterion, target, cond, step_scale=step_scale,
+                        kl_weight=args.kl_weight)
                 loss = terms['loss']
                 if not torch.isfinite(loss):
                     raise FloatingPointError(f'Nonfinite reconstruction loss at step {step}')
@@ -710,7 +689,7 @@ def main():
                 writer.flush()
             if step % args.save_interval == 0 or step == args.num_steps:
                 payload = dict(kind='motion_autoencoder_7a', step=step, args=vars(args),
-                               dual_view_objective=DUAL_VIEW_OBJECTIVE if args.dual_view else None,
+                               dual_view_objective=DUAL_VIEW_OBJECTIVE,
                                decoder_content_version=DECODER_CONTENT_VERSION,
                                model_config=model.config, model=model.state_dict(),
                                model_ema=model_avg.state_dict() if model_avg is not None else None,

@@ -75,8 +75,6 @@ if "%TRAIN_STAGE%"=="autoencoder" (
     --cond_path dataset/cond_all.npy ^
     --save_dir "save/%AE_RUN_NAME%" ^
     --seed 10 ^
-    --dual_view ^
-    --reference_pairs ^
     --motion_speed_aug 1.3 ^
     --loop_tile_single_prob 0.5 ^
     --loop_cond_prob_free 0.8 ^
@@ -98,7 +96,6 @@ if "%TRAIN_STAGE%"=="autoencoder" (
     --cross_limb_dim 0 ^
     --cross_limb_last_n 0 ^
     --temporal_rope ^
-    --layerwise_latent ^
     --compile reduce-overhead ^
     --amp_dtype fp16 ^
     --heads 4 ^
@@ -112,7 +109,7 @@ if "%TRAIN_STAGE%"=="autoencoder" (
     --main_process_prefetch_batches 64 ^
     --num_workers 2 ^
     --lr 1e-4 ^
-    --lr_final 3e-5 ^
+    --lr_final 5e-5 ^
     --lr_decay_start 0 ^
     --use_ema ^
     --ema_rate 0.9995 ^

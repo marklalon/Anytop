@@ -79,7 +79,8 @@ class LoaderFixture(torch.utils.data.Dataset):
 
     def __init__(self):
         self.motion_dataset = self
-        self.opt = SimpleNamespace(max_joints=100)
+        self.opt = SimpleNamespace(max_joints=100, sources=[])
+        self.data_dict = {}
         self.use_weighted_sampler = False
         self.counts = [5, 7, 12]
 

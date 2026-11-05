@@ -75,8 +75,6 @@ if "%TRAIN_STAGE%"=="autoencoder" (
     --sample_filter configs/sample_filters/tiny.json ^
     --save_dir "save/%AE_RUN_NAME%" ^
     --seed 10 ^
-    --dual_view ^
-    --reference_pairs ^
     --motion_speed_aug 1.3 ^
     --loop_tile_single_prob 0.5 ^
     --loop_cond_prob_free 0.8 ^
@@ -98,7 +96,6 @@ if "%TRAIN_STAGE%"=="autoencoder" (
     --cross_limb_dim 0 ^
     --cross_limb_last_n 0 ^
     --temporal_rope ^
-    --layerwise_latent ^
     --compile reduce-overhead ^
     --amp_dtype fp16 ^
     --heads 4 ^

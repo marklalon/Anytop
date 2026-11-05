@@ -1,4 +1,4 @@
-"""Real paired rigs use the AE cross/self path without latent alignment."""
+"""Real paired rigs use single-pass source-to-target training without latent alignment."""
 import copy
 import json
 import random
@@ -51,9 +51,9 @@ def paired_dataset(tmp_path, is_loop=False):
     source.opt.bone_length_aug_prob = 0.
     source.name_list = list(source.data_dict)
     source.pointer, source.use_weighted_sampler = 0, False
-    args = parser().parse_args(['--save_dir', 'unused', '--reference_pairs', '--batch_size', '2',
+    args = parser().parse_args(['--save_dir', 'unused', '--batch_size', '2',
                                '--joint_buckets', '5', '7'])
-    configure_autoencoder_views(source, args)
+    configure_autoencoder_views(source)
     return source, args
 
 
@@ -78,7 +78,7 @@ def test_uniform_group_including_self_shares_time_map(tmp_path, monkeypatch, is_
     for key in ('is_loop', 'resample_speed_cond', 'loop_uncond', 'loop_phase_offset',
                 'loop_tile_count', 'motion_speed_applied'):
         assert sample[10][key] == second[10][key]
-    assert source.opt.autoencoder_dual_view  # --reference_pairs alone enables it.
+    assert source.opt.autoencoder_dual_view
     np.testing.assert_array_equal(source.sampler_index_joint_counts(), [7, 7])
 
 
@@ -100,12 +100,12 @@ def test_real_pair_collation_and_single_pass_backward(tmp_path):
 
 @pytest.mark.parametrize('index', [0, 1, 2])
 def test_three_member_group_is_one_uniform_draw_including_self(tmp_path, monkeypatch, index):
-    source, args = paired_dataset(tmp_path)
+    source, _ = paired_dataset(tmp_path)
     source.data_dict['fixture/third.npy'] = copy.deepcopy(source.data_dict['fixture/test.npy'])
     (tmp_path / 'third.npy').touch()
     with (tmp_path / 'reference_pairs.jsonl').open('a', encoding='utf-8') as stream:
         stream.write('\n' + json.dumps(dict(motion='third.npy', source='fixture/test.npy')))
-    configure_autoencoder_views(source, args)
+    configure_autoencoder_views(source)
     group = source.reference_groups['fixture/test.npy']
     assert len(group) == 3
     calls = []
@@ -119,20 +119,20 @@ def test_three_member_group_is_one_uniform_draw_including_self(tmp_path, monkeyp
 
 
 def test_filtered_out_partner_falls_back_to_self(tmp_path):
-    source, args = paired_dataset(tmp_path)
+    source, _ = paired_dataset(tmp_path)
     del source.data_dict['fixture/other.npy']
     source.name_list = ['fixture/test.npy']
-    configure_autoencoder_views(source, args)
+    configure_autoencoder_views(source)
     assert source.reference_groups == {}
     sample = source.prepare_sample_by_name('fixture/test.npy')
     assert sample[12]['autoencoder_view'][11] == 'fixture/test.npy'
 
 
 def test_pair_contract_rejects_mismatched_length(tmp_path):
-    source, args = paired_dataset(tmp_path)
+    source, _ = paired_dataset(tmp_path)
     source.data_dict['fixture/other.npy']['length'] += 1
     with pytest.raises(ValueError, match='same motion frame for frame'):
-        configure_autoencoder_views(source, args)
+        configure_autoencoder_views(source)
 
 
 def test_validation_reports_real_pairs_and_preserves_training_sampling(tmp_path):
