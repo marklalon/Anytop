@@ -143,7 +143,7 @@ def main(argv=None):
     model_path = Path(args.model_path).resolve()
     checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
     if checkpoint['kind'] != 'motion_autoencoder_7a':
-        raise ValueError('Expected a train_motion_autoencoder.py checkpoint')
+        raise ValueError('Expected a train_autoencoder.py checkpoint')
     if checkpoint['canonical_version'] != CANONICAL_FEATURE_SPACE:
         raise ValueError('Checkpoint canonical feature version does not match this code')
     if checkpoint['decoder_content_version'] != DECODER_CONTENT_VERSION:

@@ -71,7 +71,7 @@ if "%TRAIN_STAGE%"=="autoencoder" (
 ) else (
     echo [1/2] Training full-dataset VAE: %AE_RUN_NAME%
 )
-"%PYTHON_EXE%" train/train_motion_autoencoder.py ^
+"%PYTHON_EXE%" train/train_autoencoder.py ^
     --cond_path dataset/cond_all.npy ^
     --save_dir "save/%AE_RUN_NAME%" ^
     --seed 10 ^

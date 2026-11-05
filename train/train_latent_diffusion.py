@@ -21,7 +21,7 @@ from model.latent_motion_denoiser import LatentMotionDenoiser
 from train.train_anytop import bootstrap_action_conditioning, bootstrap_species_descriptor_table
 from train.latent_validation import build_validation_loader
 from train.training_loop import _fixed_validation_rng
-from train.train_motion_autoencoder import (
+from train.train_autoencoder import (
     AUGMENTATION_DEFAULTS, training_batches, training_batch_to_device,
     scaled_optimizer_step, update_autoencoder_ema, reconstruction_mse, create_lr_scheduler)
 from model.motion_autoencoder import motion_masks
@@ -272,7 +272,8 @@ def main(argv=None):
     dtype = torch.bfloat16 if args.amp_dtype == 'bf16' else torch.float16
     try:
         with (save / 'training.jsonl').open('a', encoding='utf-8') as log:
-            for step in tqdm(range(start + 1, args.num_steps + 1)):
+            for step in tqdm(range(start + 1, args.num_steps + 1),
+                             desc='Latent diffusion', unit='step', smoothing=0.05):
                 model.train()
                 if args.compile != 'None':
                     torch.compiler.cudagraph_mark_step_begin()

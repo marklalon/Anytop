@@ -15,7 +15,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import build_j
 from data_loaders.truebones.truebones_utils.leaf_drop import drop_joints_from_cond
 from model.motion_autoencoder import MotionAutoencoder
 from train.motion_reconstruction_losses import MotionReconstructionLosses
-from train.train_motion_autoencoder import (
+from train.train_autoencoder import (
     AutoencoderBatchTransform, configure_autoencoder_views, dual_view_training_terms,
     evaluate_dual_view_validation, parser,
 )

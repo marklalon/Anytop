@@ -13,11 +13,11 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_S
 from model.motion_autoencoder import (
     MotionAutoencoder, TemporalResidualConv, to_working_motion,
 )
-from train.train_motion_autoencoder import reconstruction_mse, scaled_optimizer_step
+from train.train_autoencoder import reconstruction_mse, scaled_optimizer_step
 
 
 def test_cosine_schedule_resume_matches_uninterrupted_optimizer():
-    from train.train_motion_autoencoder import create_lr_scheduler, parser
+    from train.train_autoencoder import create_lr_scheduler, parser
     args = parser().parse_args([
         '--save_dir', 'unused', '--lr', '1e-4', '--lr_final', '5e-5',
         '--lr_decay_start', '0', '--num_steps', '10', '--weight_decay', '.03',
@@ -53,7 +53,7 @@ def test_cosine_schedule_resume_matches_uninterrupted_optimizer():
 
 def test_autoencoder_ema_averages_parameters_copies_stats_and_ignores_caches():
     import copy
-    from train.train_motion_autoencoder import update_autoencoder_ema
+    from train.train_autoencoder import update_autoencoder_ema
     model = torch.nn.Linear(2, 1)
     model.register_buffer('stat', torch.tensor(1.))
     model.register_buffer('cache', torch.zeros(1), persistent=False)
@@ -106,7 +106,7 @@ class LoaderFixture(torch.utils.data.Dataset):
 def test_shared_loader_prefetches_full_bucketed_ae_batches(num_workers, topology_prob, monkeypatch):
     from itertools import islice
     from data_loaders.get_data import BackgroundPrefetchLoader, EagerWorkerLoader
-    from train.train_motion_autoencoder import (
+    from train.train_autoencoder import (
         create_training_data_loader, parser, training_batches, training_batch_to_device,
     )
     monkeypatch.setattr(torch.cuda, 'is_available', lambda: False)
@@ -145,7 +145,7 @@ def test_shared_loader_prefetches_full_bucketed_ae_batches(num_workers, topology
 
 
 def test_ae_loader_defaults_to_diffusion_joint_buckets(monkeypatch):
-    import train.train_motion_autoencoder as trainer
+    import train.train_autoencoder as trainer
     from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
     captured = {}
     monkeypatch.setattr(trainer, 'build_dataset_loader',
@@ -361,7 +361,7 @@ def test_independent_dimension_defaults():
 
 
 def test_independent_dimension_cli():
-    from train.train_motion_autoencoder import parser
+    from train.train_autoencoder import parser
     options = dict(encoder_width=64, decoder_width=128,
                    encoder_ff_size=256, decoder_ff_size=512)
     defaults = parser().parse_args(['--save_dir', 'unused'])
@@ -436,7 +436,7 @@ def test_frame_aligned_fullgraph_training_and_exact_odd_decode_length():
 
 
 def test_temporal_stride_is_removed():
-    from train.train_motion_autoencoder import parser
+    from train.train_autoencoder import parser
     args = parser().parse_args(['--save_dir', 'unused'])
     assert not hasattr(args, 'temporal_stride')
     with pytest.raises(SystemExit):
@@ -533,7 +533,7 @@ def test_decoder_zero_init_tempo_preserves_constant_latent_and_ignores_phase(mon
 
 
 def test_decoder_time_option_is_removed():
-    from train.train_motion_autoencoder import parser
+    from train.train_autoencoder import parser
     args = parser().parse_args(['--save_dir', 'unused'])
     assert not hasattr(args, 'decoder_time_injection')
     model, x, skeleton = fixture(temporal_rope=True, layerwise_latent=True)
@@ -648,7 +648,7 @@ def test_temporal_convolution_wraps_only_loop_rows_and_does_not_mix_joints():
 
 def test_prefetch_transform_filters_reference_and_keeps_nine_channels():
     import numpy as np
-    from train.train_motion_autoencoder import AutoencoderBatchTransform, training_batch_to_device
+    from train.train_autoencoder import AutoencoderBatchTransform, training_batch_to_device
     motion = torch.randn(2, 7, 12, 5)
     y = dict(motion_name=['b', 'a'], ref_unused=torch.ones(1),
              joints_names_embs=torch.ones(2, 7, 6))
@@ -715,7 +715,7 @@ def test_vae_fullgraph_forward_has_fresh_samples():
 @pytest.mark.parametrize('prob', [0.0, 0.5, 1.0])
 def test_training_name_drop_is_independent_reproducible_and_keeps_clean_inputs(prob):
     import numpy as np
-    import train.train_motion_autoencoder as trainer
+    import train.train_autoencoder as trainer
     _, target, skeleton = fixture()
     clean_names = skeleton['joints_names_embs'].clone()
     conditions = dict(skeleton, lengths=torch.full((2,), target.shape[-1]),
@@ -755,7 +755,7 @@ def test_training_name_drop_is_independent_reproducible_and_keeps_clean_inputs(p
 @pytest.mark.parametrize('joint_prob', [0., .5, 1.])
 def test_geometry_drop_preserves_clean_context_and_replays(joint_prob):
     import numpy as np
-    import train.train_motion_autoencoder as trainer
+    import train.train_autoencoder as trainer
     _, target, skeleton = fixture(joints=32)
     geometry = torch.ones_like(skeleton['rest_geom'])
     offsets = torch.randn(2, 32, 3)

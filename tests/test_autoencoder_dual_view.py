@@ -16,7 +16,7 @@ from .test_motion_autoencoder import LoaderFixture, fixture
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
 from train.motion_reconstruction_losses import MotionReconstructionLosses
-from train.train_motion_autoencoder import (
+from train.train_autoencoder import (
     AutoencoderBatchTransform, create_training_data_loader, dual_view_training_terms,
     evaluate_dual_view_validation, parser, training_batches, training_batch_to_device,
 )
@@ -194,7 +194,7 @@ def test_single_pass_matches_direct_source_to_target_loss_and_gradients(
         variational, compiled, fresh_compiler_cache):
     import copy
     from model.motion_autoencoder import diagonal_gaussian_kl
-    from train.train_motion_autoencoder import model_inputs
+    from train.train_autoencoder import model_inputs
     model, _, batch = view_batch(variational)
     model.train()
     expected_model = copy.deepcopy(model)
@@ -246,7 +246,7 @@ def test_single_pass_matches_direct_source_to_target_loss_and_gradients(
 
 
 def test_old_dual_view_objective_cannot_silently_resume():
-    from train.train_motion_autoencoder import DUAL_VIEW_OBJECTIVE, validate_dual_view_objective
+    from train.train_autoencoder import DUAL_VIEW_OBJECTIVE, validate_dual_view_objective
     args = parser().parse_args(['--save_dir', 'unused', '--dual_view'])
     with pytest.raises(ValueError, match='single-pass'):
         validate_dual_view_objective({'args': {'dual_view': True}}, args)

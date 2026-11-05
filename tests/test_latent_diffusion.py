@@ -307,9 +307,9 @@ def test_frozen_ae_target_ignores_denoiser_drop_and_keeps_truth_time():
 
 
 @pytest.mark.parametrize('launcher', ['train_tiny_vae_diffusion.bat', 'train_all_vae_diffusion.bat'])
-@pytest.mark.parametrize('stage', ['train_motion_autoencoder.py', 'train_latent_diffusion.py'])
+@pytest.mark.parametrize('stage', ['train_autoencoder.py', 'train_latent_diffusion.py'])
 def test_batch_launcher_arguments_are_accepted(launcher, stage):
-    from train.train_motion_autoencoder import parser as vae_parser
+    from train.train_autoencoder import parser as vae_parser
 
     bat = (Path(__file__).resolve().parents[1] / launcher).read_text()
     bat = bat.split(f'"%PYTHON_EXE%" train/{stage}', 1)[1].split('set "EXIT_CODE=', 1)[0]
@@ -319,9 +319,9 @@ def test_batch_launcher_arguments_are_accepted(launcher, stage):
     for line in bat.splitlines():
         if line.strip().startswith('--'):
             arguments.extend(line.strip().rstrip('^').strip().replace('"', '').split())
-    args = (vae_parser() if stage == 'train_motion_autoencoder.py' else parser()).parse_args(arguments)
+    args = (vae_parser() if stage == 'train_autoencoder.py' else parser()).parse_args(arguments)
     assert args.num_frames == 60
-    if stage == 'train_motion_autoencoder.py':
+    if stage == 'train_autoencoder.py':
         assert args.variational
     else:
         assert args.latent_mode == 'mean'

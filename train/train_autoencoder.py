@@ -655,7 +655,8 @@ def main():
                f'eval={args.eval_interval}, save={args.save_interval})')
     with (save / 'training.jsonl').open('a', encoding='utf-8') as log, tqdm(
             range(start + 1, args.num_steps + 1), initial=start, total=max(start, args.num_steps),
-            desc='AE training', unit='step', dynamic_ncols=True) as progress:
+            desc='AE training', unit='step', dynamic_ncols=True,
+            smoothing=0.05) as progress:
         for step in progress:
             model.train()
             step_lr = optimizer.param_groups[0]['lr']

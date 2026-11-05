@@ -125,7 +125,7 @@ x_hat = ae.decode(z, skeleton, frame_mask, time_metadata)
 |---|---|
 | `model/motion_autoencoder.py` | AE/VAE、逐帧池化、时间条件、encode/decode 与工作容器适配 |
 | `train/motion_reconstruction_losses.py` | 共享动作几何损失与 AE 重建目标 |
-| `train/train_motion_autoencoder.py` | 独立训练、val 集评估、latent 置零/交换诊断与 checkpoint |
+| `train/train_autoencoder.py` | 独立训练、val 集评估、latent 置零/交换诊断与 checkpoint |
 | `sample/eval_autoencoder.py` | 显式预处理动作文件的整段重建、指标与导出 |
 | `train_tiny_vae_diffusion.bat`、`train_all_vae_diffusion.bat` | tiny / 全量数据的 VAE → latent diffusion 顺序训练入口 |
 | `eval_autoencoder.bat` | 独立重建诊断入口 |

@@ -9,7 +9,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from train import latent_validation as validation
-from train import train_motion_autoencoder as vae
+from train import train_autoencoder as vae
 from train import train_latent_diffusion as diffusion
 from data_loaders.truebones.data import dataset as dataset_module
 from data_loaders.reference import REST_GEOM_DIM
@@ -128,7 +128,7 @@ def test_vae_trains_and_resumes_without_val_or_export_and_uses_first_batch(monke
 
     monkeypatch.setattr(vae, 'MotionReconstructionLosses', ReconstructionLoss)
     monkeypatch.setattr(vae, 'evaluate', unexpected)
-    argv = ['train_motion_autoencoder.py', '--cond_path', str(cond_path), '--save_dir', str(save),
+    argv = ['train_autoencoder.py', '--cond_path', str(cond_path), '--save_dir', str(save),
             '--device', 'cpu', '--width', '16', '--layers', '1', '--heads', '2',
             '--slots', '2', '--latent_dim', '4', '--num_frames', '4', '--batch_size', '2', '--num_steps', '1']
     if dual_view:

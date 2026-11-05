@@ -107,7 +107,7 @@ def test_bone_length_floor_padding_translation_and_collapsed_bone_gradients():
 
 
 def test_evaluation_reports_both_bone_metrics_independently_of_batch_size():
-    from train.train_motion_autoencoder import SKELETON_KEYS, evaluate
+    from train.train_autoencoder import SKELETON_KEYS, evaluate
 
     class OffsetAutoencoder:
         def eval(self):
