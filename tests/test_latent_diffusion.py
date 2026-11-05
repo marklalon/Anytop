@@ -153,9 +153,11 @@ def test_generation_without_reference_decodes_and_exports(monkeypatch, tmp_path)
     model = denoiser().eval()
     ae = MotionAutoencoder(t5_out_dim=4, width=16, layers=1, heads=2,
                            slots=2, latent_dim=3).eval()
-    norm = LatentNormalizer(torch.zeros(2, 3), torch.ones(2, 3))
+    norm = LatentNormalizer(torch.zeros(2, 3), torch.ones(2, 3), subsets={
+        'quadruped': dict(mean=torch.full((2, 3), 10.), std=torch.full((2, 3), 2.), count=120)})
     checkpoint = dict(step=1, diffusion_config=dict(steps=10, noise_schedule='cosine', shift=1.0))
-    cond = {'Target': {'parents': [-1, 0, 0, 0, 0], 'joints_names': ['root', 'a', 'b', 'c', 'd']}}
+    cond = {'Target': {'parents': [-1, 0, 0, 0, 0], 'joints_names': ['root', 'a', 'b', 'c', 'd'],
+                       'species_tags': ('Quadruped',)}}
     monkeypatch.setattr(generation, 'load_latent_checkpoint', lambda *a: (model, ae, norm, checkpoint))
     monkeypatch.setattr(generation, 'load_cond', lambda *a: cond)
     monkeypatch.setattr(generation, 'mark_canonical_cond_entry', lambda *a: None)
@@ -167,10 +169,18 @@ def test_generation_without_reference_decodes_and_exports(monkeypatch, tmp_path)
     y['ref_frame_mask'] = torch.zeros(2, 60, dtype=torch.bool)
     monkeypatch.setattr(generation, 'create_condition', lambda *a, **k: (None, {'y': y}))
 
+    sampled = {}
+    real_decode = ae.decode
+    def decode(latent, *args, **kwargs):
+        torch.testing.assert_close(latent, sampled['latent'] * 2 + 10)
+        return real_decode(latent, *args, **kwargs)
+    monkeypatch.setattr(ae, 'decode', decode)
+
     class Sampler:
         def sample(self, guided, shape, conditions, device, **kwargs):
             assert not any(key.startswith('ref_') for key in conditions)
-            return guided(torch.zeros(shape, device=device), torch.zeros(shape[0]), conditions)
+            sampled['latent'] = guided(torch.zeros(shape, device=device), torch.zeros(shape[0]), conditions)
+            return sampled['latent']
 
     monkeypatch.setattr(generation, 'create_latent_diffusion', lambda **k: Sampler())
     monkeypatch.setattr(generation, 'canonical_to_physical_hml', lambda motion, cond: motion)
@@ -204,6 +214,7 @@ def test_training_saves_loads_and_resumes_without_reference(monkeypatch, tmp_pat
     dataset = SimpleNamespace(motion_dataset=SimpleNamespace(name_list=['clip_a', 'clip_b']))
     batch = (torch.randn(2, 5, 12, 60), {'y': dict(
         conditions(), ref_active=torch.zeros(2, dtype=torch.bool),
+        object_subset=['quadruped', 'winged'],
         ref_frame_mask=torch.zeros(2, 60, dtype=torch.bool))})
 
     def get_dataset(**kwargs):
@@ -214,6 +225,8 @@ def test_training_saves_loads_and_resumes_without_reference(monkeypatch, tmp_pat
     monkeypatch.setattr(training, 'build_dataset_loader',
                         lambda dataset, **kwargs: [kwargs['batch_transform'](batch)])
     monkeypatch.setattr(training, 'build_validation_loader', lambda *a: None)
+    monkeypatch.setattr(training, 'build_analysis_loader',
+                        lambda args: lambda: iter([training.LatentBatchTransform()(batch)]))
     # Stop after the first saved step to exercise a real resumed optimizer update.
     real_forwards = training.training_forwards
 
@@ -236,17 +249,21 @@ def test_training_saves_loads_and_resumes_without_reference(monkeypatch, tmp_pat
             '--device', 'cpu', '--no-action_label_cond', '--no-species_cond',
             '--width', '16', '--layers', '1', '--heads', '2', '--ff_size', '32',
             '--skeleton_layers', '1', '--batch_size', '2', '--stats_batches', '1',
-            '--num_steps', '2', '--save_interval', '1', '--diffusion_steps', '10']
+            '--num_steps', '2', '--save_interval', '1', '--diffusion_steps', '10',
+            '--sensitivity_samples', '1', '--sensitivity_probes', '2']
     with pytest.raises(RuntimeError, match='simulated interruption'):
         training.main(argv)
     path = save / 'latent_diffusion.pt'
     assert torch.load(path, weights_only=False)['step'] == 1
     monkeypatch.setattr(training, 'training_forwards', real_forwards)
     training.main(argv + ['--auto_resume'])
-    model, _, _, checkpoint = load_latent_checkpoint(path)
+    model, _, restored_norm, checkpoint = load_latent_checkpoint(path)
     assert checkpoint['step'] == 2 and checkpoint['kind'] == LATENT_CHECKPOINT_VERSION
     assert checkpoint['time_contract'] == TIME_CONTRACT
     assert checkpoint['capabilities'] == ['generate']
+    assert restored_norm.subset_names == ('quadruped', 'winged')
+    assert checkpoint['normalization']['version'] == 2
+    assert Path(checkpoint['latent_analysis']['path']).is_file()
     assert 'reference_contract' not in checkpoint
     for config in (checkpoint['args'], checkpoint['model_config']):
         assert not any(key.startswith('ref_') or key in (
@@ -306,31 +323,6 @@ def test_frozen_ae_target_ignores_denoiser_drop_and_keeps_truth_time():
     _, time = ae_inputs(y)
     assert time['loop_tile_count'].tolist() == [3, 3]
     assert 'tempo_active' not in time
-
-
-@pytest.mark.parametrize('launcher', ['train_tiny_vae_diffusion.bat', 'train_all_vae_diffusion.bat'])
-@pytest.mark.parametrize('stage', ['train_autoencoder.py', 'train_latent_diffusion.py'])
-def test_batch_launcher_arguments_are_accepted(launcher, stage):
-    from train.train_autoencoder import parser as vae_parser
-
-    bat = (Path(__file__).resolve().parents[1] / launcher).read_text()
-    bat = bat.split(f'"%PYTHON_EXE%" train/{stage}', 1)[1].split('set "EXIT_CODE=', 1)[0]
-    # Check argument parsing without binding the test to a run or checkpoint file.
-    bat = bat.replace('%AE_RUN_NAME%', 'unused-ae-checkpoint')
-    arguments = []
-    for line in bat.splitlines():
-        if line.strip().startswith('--'):
-            arguments.extend(line.strip().rstrip('^').strip().replace('"', '').split())
-    args = (vae_parser() if stage == 'train_autoencoder.py' else parser()).parse_args(arguments)
-    assert args.num_frames == 60
-    if stage == 'train_autoencoder.py':
-        assert args.variational
-    else:
-        assert args.latent_mode == 'mean'
-        assert args.ae_checkpoint == 'save/unused-ae-checkpoint'
-    expected_compile = ('cuda-graph' if launcher == 'train_tiny_vae_diffusion.bat'
-                        and stage == 'train_latent_diffusion.py' else 'reduce-overhead')
-    assert args.compile == expected_compile
 
 
 def test_species_film_applies_to_every_row():

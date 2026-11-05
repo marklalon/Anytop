@@ -2,6 +2,7 @@
 import argparse
 import copy
 import json
+import math
 import random
 import sys
 from datetime import datetime
@@ -30,7 +31,8 @@ from utils.fixseed import fixseed
 from utils.checkpoint_cond import snapshot_training_cond
 from utils.latent_util import (
     LATENT_CHECKPOINT_VERSION, TIME_CONTRACT, LatentNormalizer, ae_inputs,
-    load_frozen_autoencoder, estimate_normalizer, encode_target, file_sha256)
+    load_frozen_autoencoder, encode_target, file_sha256)
+from utils.latent_analysis import load_or_analyze
 
 
 class LatentBatchTransform:
@@ -84,6 +86,7 @@ def parser():
                            main_process_prefetch_batches=64, motion_cache_size=16384,
                            width=256, layers=8, heads=4, ff_size=1024, skeleton_layers=2,
                            stats_batches=64, num_steps=10000, diffusion_steps=100,
+                           sensitivity_samples=8, sensitivity_probes=8,
                            log_interval=100, save_interval=1000, eval_interval=1000).items():
         p.add_argument('--' + key, type=int, default=value)
     for key, value in dict(lr=1e-4, lr_final=5e-5, weight_decay=0.0, ema_rate=0.995,
@@ -114,10 +117,8 @@ def training_forwards(model, ae, norm, compile_mode):
     def target_encoder(x, y):
         return encode_target(ae, norm, x, y)
 
-    if compile_mode == 'None':
-        return model, target_encoder
-    if compile_mode == 'cuda-graph':
-        return model, target_encoder
+    if compile_mode in ('None', 'cuda-graph'):
+        return model, lambda x, y: target_encoder(x, norm.prepare_conditions(y))
     from utils.compile_util import configure_triton_c_compiler
     compiler = configure_triton_c_compiler()
     forward_model = torch.compile(model, mode=compile_mode, dynamic=False, fullgraph=True)
@@ -127,7 +128,10 @@ def training_forwards(model, ae, norm, compile_mode):
         # Ignore clip-name lists and denoiser-only conditions: they are not AE inputs
         # and would otherwise produce unnecessary guards/recompilations.
         skeleton, time = ae_inputs(y, x.shape[-1])
-        target = compiled_encoder(x, {**skeleton, **time})
+        prepared = norm.prepare_conditions(y)
+        latent = ({'latent_subset_id': prepared['latent_subset_id']}
+                  if 'latent_subset_id' in prepared else {})
+        target = compiled_encoder(x, {**skeleton, **time, **latent})
         # Own the storage across denoiser backward/retries and CUDA Graph replays.
         return target.clone()
 
@@ -156,6 +160,59 @@ def build_loader(args):
     return dataset, loader
 
 
+class AnalysisReferenceDataset:
+    """Read clips in order with a fixed loop phase instead of random rolling."""
+    def __init__(self, dataset):
+        self.motion = dataset.motion_dataset
+
+    def __len__(self):
+        return len(self.motion)
+
+    def __getitem__(self, index):
+        name = self.motion.name_list[self.motion.pointer + index]
+        return self.motion.prepare_sample_by_name(name, loop_offset=0)
+
+
+def build_analysis_loader(args):
+    """Synchronous sequential reference pass: no augmentation, weighting or dropout."""
+    from torch.utils.data import DataLoader
+    from data_loaders.tensors import truebones_batch_collate
+    kwargs = {key: 0.0 for key in AUGMENTATION_DEFAULTS
+              if key not in ('joint_name_drop_prob', 'rest_geom_joint_drop_prob')}
+    kwargs.update(motion_speed_aug=1.0, loop_tile_single_prob=1.0, loop_cond_prob=1.0,
+                  loop_cond_prob_free=None, loop_cond_prob_anchored=None)
+    dataset = get_dataset(
+        num_frames=60, split='train', cond_path=args.cond_path,
+        sample_filter=args.sample_filter, sample_filter_seed=args.seed,
+        motion_cache_size=args.motion_cache_size, action_label_cond=args.action_label_cond,
+        action_conditioning=args.action_conditioning, species_table=args.species_descriptor_table,
+        **kwargs)
+    dataset.motion_dataset.use_weighted_sampler = False
+    loader = DataLoader(AnalysisReferenceDataset(dataset), batch_size=args.batch_size, shuffle=False,
+                        drop_last=False, num_workers=0, collate_fn=truebones_batch_collate)
+    transform = LatentBatchTransform()
+    return lambda: (transform(batch) for batch in loader)
+
+
+def analysis_reference_identity(dataset, cond_hash):
+    """Invalidate on selected clips, their content/metadata, skeletons or subset assignment."""
+    from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
+    motion = dataset.motion_dataset
+    records = []
+    for name in motion.name_list:
+        entry = getattr(motion, 'data_dict', {}).get(name, {})
+        path = entry.get('motion_path')
+        records.append(dict(name=name, sha256=file_sha256(path) if path else None,
+                            metadata=entry.get('motion_metadata'),
+                            high_frequency=bool(entry.get('high_frequency', False)),
+                            subset=dataset_tags().object_subset_for(entry['object_type'])
+                            if entry.get('object_type') else None))
+    import hashlib
+    digest = hashlib.sha256(json.dumps(records, sort_keys=True, default=str).encode()).hexdigest()
+    return dict(cond_sha256=cond_hash, clips_sha256=digest, clip_count=len(records),
+                reference='sequential_clean_all_clips_then_repeat_v2')
+
+
 @torch.no_grad()
 def evaluate(model, ae, norm, diffusion, batch, device):
     model.eval()
@@ -167,8 +224,8 @@ def evaluate(model, ae, norm, diffusion, batch, device):
         noisy = diffusion.q_sample(target, t)
         prediction = diffusion._wrap_model(model)(noisy, t, y=y)
         skeleton, time = ae_inputs(y)
-        decoded = ae.decode(norm.denormalize(prediction), skeleton, loop_metadata=time)
-        baseline = ae.decode(norm.denormalize(target), skeleton, loop_metadata=time)
+        decoded = ae.decode(norm.denormalize(prediction, y), skeleton, loop_metadata=time)
+        baseline = ae.decode(norm.denormalize(target, y), skeleton, loop_metadata=time)
         _, frame = motion_masks(x, skeleton)
         return dict(latent_mse=float((prediction - target).square().mean()),
                     decoded_mse=float(reconstruction_mse(decoded, x, skeleton, frame).mean()),
@@ -195,7 +252,8 @@ def main(argv=None):
     args = parser().parse_args(argv)
     if args.num_frames != 60:
         raise ValueError('Only fixed 60-frame training is supported')
-    if min(args.batch_size, args.stats_batches, args.num_steps, args.log_interval,
+    if min(args.batch_size, args.stats_batches, args.sensitivity_samples, args.sensitivity_probes,
+           args.num_steps, args.log_interval,
            args.save_interval) < 1 or args.eval_interval < 0:
         raise ValueError('Batch/step/log/save counts must be positive and eval_interval nonnegative')
     if not np.isfinite(args.lr) or args.lr <= 0 or not np.isfinite(args.weight_decay) or args.weight_decay < 0:
@@ -227,6 +285,8 @@ def main(argv=None):
         mutable = {'auto_resume', 'num_steps', 'log_interval', 'eval_interval', 'save_interval',
                    'num_workers', 'main_process_prefetch_batches', 'motion_cache_size', 'device', 'compile'}
         for key, value in current_args.items():
+            if key in ('sensitivity_samples', 'sensitivity_probes') and key not in resume['args']:
+                continue  # Legacy resumes keep their saved global normalization.
             if key not in mutable and value != resume['args'].get(key):
                 raise ValueError(f'Cannot resume with changed {key}')
         if args.num_steps != resume['args']['num_steps']:
@@ -249,8 +309,25 @@ def main(argv=None):
     batches = training_batches(loader)
     val_loader = (build_validation_loader(args, LatentBatchTransform())
                   if args.eval_interval > 0 else None)
-    norm = (LatentNormalizer.from_metadata(resume['normalization']).to(device) if resume else
-            estimate_normalizer(ae, batches, args.stats_batches, device, args.latent_mode))
+    if resume:
+        norm = LatentNormalizer.from_metadata(resume['normalization']).to(device)
+        analysis = resume.get('latent_analysis')
+    else:
+        # Offline work uses its own synchronous stream before training prefetch starts.
+        identity = analysis_reference_identity(dataset, cond_hash)
+        identity['batch_size'] = args.batch_size
+        count = max(args.stats_batches, math.ceil(len(motion_names) / args.batch_size))
+        reference_factory = None
+
+        def reference_batches():
+            nonlocal reference_factory
+            if reference_factory is None:
+                reference_factory = build_analysis_loader(args)
+            return reference_factory()
+
+        norm, analysis = load_or_analyze(
+            ae, binding, identity, reference_batches, count, device,
+            args.latent_mode, args.seed, args.sensitivity_samples, args.sensitivity_probes)
     config = dict(t5_out_dim=ae.config['t5_out_dim'], slots=ae.slots, latent_channels=ae.latent_dim)
     for key in ('width', 'layers', 'heads', 'ff_size', 'skeleton_layers', 'dropout',
                 'temporal_rope', 'action_label_cond', 'species_cond',
@@ -351,6 +428,7 @@ def main(argv=None):
                                    model_ema=average.state_dict() if average is not None else None,
                                    optimizer=optimizer.state_dict(), grad_scaler=scaler.state_dict(),
                                    ae_binding=binding, normalization=norm.metadata(), cond_sha256=cond_hash,
+                                   latent_analysis=analysis,
                                    species_sha256=species_hash, time_contract=TIME_CONTRACT,
                                    action_conditioning=model.action_conditioning_metadata,
                                    diffusion_config=diffusion_config, prediction='standardized_z0',
