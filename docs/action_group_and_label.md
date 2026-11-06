@@ -73,7 +73,7 @@ action_labels.jsonl ──► dataset loader ──► word / slot / mask ids �
 
 训练入口不再接受 `--action_group`，默认使用当前 split 的全部样本。需要筛选时使用 [`--sample_filter`](sample_filter.md) 的 action_groups 字段；从最终训练池推导 checkpoint 的 action_group，单组记录该组，跨组记录 all。它仅用于记录训练语料，不进入模型条件，也不限制推理侧的先验匹配。
 
-- **`all`**（`train_all.bat` 的做法）：一个模型覆盖整个语料，**不带任何 group 条件**。采样默认对 clip 均匀，因此 group 配比就是语料自身的配比；稀有尾部靠 §6.4 的采样规则补。
+- **`all`**（`train_diffusion_full.bat` 的做法）：一个模型覆盖整个语料，**不带任何 group 条件**。采样默认对 clip 均匀，因此 group 配比就是语料自身的配比；稀有尾部靠 §6.4 的采样规则补。
 - **单组**：只用该组 clip 训练，得到该组专属模型。
 
 推导值写入 checkpoint 的 `args.json`。续训时检查该值和样本快照，避免静默改写旧权重的训练语料信息。更换样本池需要使用新的 `--save_dir`。
@@ -263,7 +263,7 @@ checkpoint 的 load / resume / bind 受两层指纹把关，不兼容的 checkpo
 - **phase-free** vs **phase-anchored**（`loop_is_phase_free`）：**主词为 `idle` 时无条件 phase-free**——idle 没有可区分帧，叠在它上面的状态/事件都视作 idle 状态的一部分，loop 可滚动/平铺（`idle, look` / `idle, rear` / `idle, spin` … 全都不锚定）。非 idle 主词的 loop，才要求每个主词都在 `PHASE_FREE_LOOP_HEADS`（步态、翅拍、呼吸、持续姿态：`walk run swim fly idle crawl climb roll rest fall`）且每个修饰词都在 `PHASE_FREE_LOOP_MODIFIERS`（步态 / 速度 / 保持的姿态 / 手持物 / 细碎次级动作：`look eat yawn scratch sniff`），否则是"离开准备姿态再回来"的一次性事件（打击、跳、吼、`walk, bite`…），frame 0 是准备姿态，窗口里正好一次事件，滚动会打乱事件时序。白名单制：非 idle 的新词默认 anchored（少做一点增强，好过打乱时序）。
 - `--loop_cond_prob`：loop clip 被**告知**自己是 loop 的概率。失败时仍做物理上的 loop 增强，但窗口按开放 clip 重采样、`is_loop=False` 输入，故意引入标签噪声，防止 `is_loop` 被模型当作内容键。
 - `--loop_cond_prob_free` / `--loop_cond_prob_anchored`：分别覆盖 phase-free / phase-anchored loop 的告知概率；省略时回退到 `--loop_cond_prob`。
-- loop 相关损失权重（`--lambda_loop_wrap`）见 `train_all.bat`。
+- loop 相关损失权重（`--lambda_loop_wrap`）见 `train_diffusion_full.bat`。
 
 ---
 
@@ -389,4 +389,4 @@ out = out_uncond + s * (out_cond - out_uncond)
 | 服务端路由 | [`server/anytop_service.py`](../../server/anytop_service.py) |
 | 片长先验 | [`utils/clip_length_prior.py`](../utils/clip_length_prior.py) |
 | 评测参考先验 | [`eval/motion_quality/reference_bank.py`](../eval/motion_quality/reference_bank.py) |
-| 当前训练配置示例 | [`train_all.bat`](../train_all.bat) |
+| 当前训练配置示例 | [`train_diffusion_full.bat`](../train_diffusion_full.bat) |

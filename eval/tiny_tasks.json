@@ -1,5 +1,5 @@
 {
-  "_comment": "Quick battery for train_tiny.bat.",
+  "_comment": "Quick battery for train_diffusion_tiny.bat.",
   "checkpoint": {
     "RUN_NAME": "zoo_locomotion_tiny_v74",
     "OUTPUT_DIR": "zoo_locomotion_tiny_v74_tiny"

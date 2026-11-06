@@ -434,7 +434,7 @@ M 大于窗口时插值不可逆，仍用线性插值。
 
 ## 11. 宽度分配与设计依据
 
-参数预算由训练配置（`train_all.bat`）决定：主干宽度、FFN 宽度、层数、cross-limb 的启用层与瓶颈宽度、
+参数预算由训练配置（`train_diffusion_full.bat`）决定：主干宽度、FFN 宽度、层数、cross-limb 的启用层与瓶颈宽度、
 `last_layer_ff`。action AdaLN 和 species FiLM 的隐藏宽度均固定为 `latent_dim`。冻结的 T5 词表以 buffer 形式保存，
 不计入可训练参数。训练启动时会打印各模块的参数量。
 

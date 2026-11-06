@@ -129,7 +129,7 @@ Diffusion 同样支持 `lambda_acc`（全关节位置加速度）与 `lambda_roo
 | `train/motion_reconstruction_losses.py` | 共享动作几何损失与 AE 重建目标 |
 | `train/train_autoencoder.py` | 独立训练、val 集评估、latent 置零/交换诊断与 checkpoint |
 | `sample/eval_autoencoder.py` | 显式预处理动作文件的整段重建、指标与导出 |
-| `train_tiny_autoencoder.bat`、`train_all_autoencoder.bat` | tiny / 全量数据的独立 AE/VAE 训练入口 |
+| `train_autoencoder_tiny.bat`、`train_autoencoder_all.bat` | tiny / 全量数据的独立 AE/VAE 训练入口 |
 | `eval_autoencoder.bat` | 独立重建诊断入口 |
 
 训练入口遍历独立 val 集的 60 帧窗口，包含正常重建、latent 置零和批内交换对照，并记录姿态、动态、根运动及骨架误差。val 不继承训练集筛选条件，关闭训练增强；为空或没有满足最小长度的片段时跳过评估，不回退到训练集。训练入口只保存指标和 checkpoint，不导出重建动作。这些诊断用于检查瓶颈依赖，不直接证明表示解耦或未见骨架泛化。

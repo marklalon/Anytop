@@ -41,7 +41,7 @@ Its `--reference_motion` option is limited to same-rig img2img editing and requi
 
 TODO: Train dedicated models for inpaint/outpaint; motion diffusion does not provide these capabilities.
 See [docs/motion_autoencoder.md](docs/motion_autoencoder.md) for its architecture and training objective.
-Train with `train_tiny_autoencoder.bat [run_name]` or `train_all_autoencoder.bat [run_name]`;
+Train with `train_autoencoder_tiny.bat [run_name]` or `train_autoencoder_all.bat [run_name]`;
 evaluate with `eval_autoencoder.bat --npy <preprocessed_motion.npy>`.
 The training presets retain the variational bottleneck and resume from the selected run.
 
@@ -171,12 +171,12 @@ lookup that picks an unset `--num_frames`; with neither it stays open.
 ## Train AnyTop 
 
 ```bat
-train_all.bat
+train_diffusion_full.bat
 ```
 
-`train_all.bat` trains one model over all eligible clips in the training split
+`train_diffusion_full.bat` trains one model over all eligible clips in the training split
 (uniform draws + `--rare_head_word_floor` for the tail).
-`train_tiny.bat` uses `--sample_filter configs/sample_filters/tiny.json`.
+`train_diffusion_tiny.bat` uses `--sample_filter configs/sample_filters/tiny.json`.
 To train a single group or another clip combination, supply a filter file; see
 [docs/sample_filter.md](docs/sample_filter.md). The full argument set of
 the current run lives in that script; every flag is a plain CLI option of

@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_all_v70
+set RUN_NAME=tiny_diffusion_v1
 
 rem set MODEL_FILE=model000020000.pt
 

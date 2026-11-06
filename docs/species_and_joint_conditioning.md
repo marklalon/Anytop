@@ -120,7 +120,7 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 
 ## 4. species 对关节名的 per-joint FiLM
 
-开关：`--species_cond`（`train_all.bat` 开启）。
+开关：`--species_cond`（`train_diffusion_full.bat` 开启）。
 
 ### 4.1 结构
 
@@ -214,4 +214,4 @@ padding 行与"无名字"行同为零向量；是否为真实关节由 attention
 | 结构特征 | [`joint_struct_features.py`](../data_loaders/truebones/truebones_utils/joint_struct_features.py) |
 | `--species_tags` 覆盖 | [`sample/conditioning.py`](../sample/conditioning.py) |
 | 新骨架的名字与描述符处理 | [`new_dataset_joint_name_checklist.md`](new_dataset_joint_name_checklist.md) |
-| 训练配置示例 | [`train_all.bat`](../train_all.bat) |
+| 训练配置示例 | [`train_diffusion_full.bat`](../train_diffusion_full.bat) |

@@ -66,6 +66,6 @@
 - 最终训练池只有一个动作组时，将该组写入 checkpoint args.json；跨组时写 `all`，同时记录 `effective_action_groups`。这些字段仅记录训练语料，推理不读取它们，长度先验统一跨组匹配标签。采样权重仍由原有机制管理。
 - 验证集不继承训练过滤文件或训练池的动作组。可单独指定 `--val_sample_filter`；未指定时使用 val split 的全部合格样本。
 - 保存 `sample_filter.json`（规范化规则）与 `sample_selection.json`（规则、split、最终 clip ID / object_type / 标签 / 长度及指纹）。该指纹不对 motion 文件内容做完整哈希。
-- 包括默认全量训练在内，每次训练均保存样本快照。续训比较 checkpoint 所在目录的快照；规则或最终样本元数据变化时拒绝续训。旧 run 没有样本快照，迁移请使用新的 run_name，例如 `train_tiny.bat tiny_filter_v1`。
+- 包括默认全量训练在内，每次训练均保存样本快照。续训比较 checkpoint 所在目录的快照；规则或最终样本元数据变化时拒绝续训。旧 run 没有样本快照，迁移请使用新的 run_name，例如 `train_diffusion_tiny.bat tiny_filter_v1`。
 
 参考配对和稀有主词采样统计都基于筛选后的实际训练池。

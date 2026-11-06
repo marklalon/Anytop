@@ -25,7 +25,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets_all.jsonl
 新增模块：[`dataset_sources.py`](../data_loaders/truebones/truebones_utils/dataset_sources.py)（namespace / 规范键 / 文件名 token / 清单）、
 [`cond_schema.py`](../data_loaders/truebones/truebones_utils/cond_schema.py)（v4 读写与就地升级）。
 
-> 清单与合并 cond 按用途加后缀：`datasets_all.jsonl` → `cond_all.npy`（全部数据集），`datasets_tiny.jsonl` → `cond_tiny.npy`（仅 `truebones/zoo` + `truebones/zoo_upgrade`）；`train_tiny.bat` 与 `train_all.bat` 同用 `cond_all.npy`。tiny 通过 [`--sample_filter configs/sample_filters/tiny.json`](sample_filter.md) 选择样本；不指定过滤文件时使用当前 split 的全部样本，训练入口已移除旧三个筛选参数。
+> 清单与合并 cond 按用途加后缀：`datasets_all.jsonl` → `cond_all.npy`（全部数据集），`datasets_tiny.jsonl` → `cond_tiny.npy`（仅 `truebones/zoo` + `truebones/zoo_upgrade`）；`train_diffusion_tiny.bat` 与 `train_diffusion_full.bat` 同用 `cond_all.npy`。tiny 通过 [`--sample_filter configs/sample_filters/tiny.json`](sample_filter.md) 选择样本；不指定过滤文件时使用当前 split 的全部样本，训练入口已移除旧三个筛选参数。
 > 新建一套只需另写一份清单，再用 `merge_dataset_cond.py --datasets <清单> --out <cond>` 生成。
 
 > 旧版 cond.npy 在**加载时自动升级到 v4**（namespace 由目录推断），所以未迁移的数据集也能直接跑；
@@ -320,7 +320,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 | [utils/validate_anytop_dataset.py](../utils/validate_anytop_dataset.py) | 新增 `--datasets`，逐源循环校验（单源行为不变） |
 | `utils/retarget_pipeline.py`（原 `auto_retarget.py`） | `auto_retarget_pipeline` / `rank_donors` 已移除，donor 读 `motions/` 的依赖随之消失 —— 无需改动 |
 | `data_bridge/restore_glb_from_anytop.py` | 离线工具，读 `tpose_reference_paths.jsonl` + 原始 mesh，仍按单数据集目录运行，不改 |
-| 训练脚本（现为 `train_all.bat`） | 增加 `--cond_path` |
+| 训练脚本（现为 `train_diffusion_full.bat`） | 增加 `--cond_path` |
 
 ---
 

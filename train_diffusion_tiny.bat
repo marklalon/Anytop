@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 REM All-dataset locomotion motion-diffusion training. Optional first argument: a NEW run name.
-REM Usage: train_tiny.bat [run_name]
+REM Usage: train_diffusion_tiny.bat [run_name]
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"

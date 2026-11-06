@@ -8,7 +8,7 @@ probability 100%; other augmentations are disabled:
   loop          — loop closing-key removal, phase roll and tiling, using only
                   loop clips and respecting training's phase-anchored labels
   motion-speed  — time scaling with range --motion-speed-aug (default: 1.3,
-                  matching train_all.bat; 1.0 disables random speed changes)
+                  matching train_diffusion_full.bat; 1.0 disables random speed changes)
   leaf-drop     — remove eligible leaf joints and export the reduced skeleton
   limb-drop     — remove one eligible whole chain and its mirror, if present
   chain-merge   — remove single-child joints whose merged bone stays straight
@@ -301,7 +301,7 @@ def parse_args() -> argparse.Namespace:
                    help="Floor on the probability that a loop window holds one cycle. Match --loop_tile_single_prob.")
     p.add_argument("--motion-speed-aug", type=float, default=1.3,
                    help="Speed range R >= 1, log-uniform in [1/R, R]; default: 1.3, matching "
-                        "train_all.bat (1.0 disables random speed changes). Used only in motion-speed mode.")
+                        "train_diffusion_full.bat (1.0 disables random speed changes). Used only in motion-speed mode.")
     p.add_argument("--no-real-time", dest="real_time", action="store_false", default=True,
                    help="Export the model window at its compressed tempo. By default all modes export "
                         "at the real 30 fps tempo (resample_speed_cond * num-frames frames).")
