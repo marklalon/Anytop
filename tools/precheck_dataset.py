@@ -871,7 +871,7 @@ def _check_root_subtrees(species: str, facts: FileFacts, report: Report) -> None
 
 
 def _check_species_consistency(species: str, facts_list: list[FileFacts], reference: Path | None,
-                               report: Report) -> FileFacts | None:
+                               report: Report, rest_variants: set[Path] | None = None) -> FileFacts | None:
     usable = [f for f in facts_list if f.skeleton is not None]
     if not usable:
         return None
@@ -900,7 +900,10 @@ def _check_species_consistency(species: str, facts_list: list[FileFacts], refere
         if not np.array_equal(skeleton.parents, base_skeleton.parents):
             report.add(ERROR, species, "consistency", f"hierarchy differs from {base.path.name}", facts.path.name)
             continue
-        if skeleton.bind_positions is not None and base_skeleton.bind_positions is not None:
+        # Rest-pose variants intentionally use different joint positions; their
+        # consistency requirement is the skeleton topology checked above.
+        if (facts.path not in (rest_variants or set())
+                and skeleton.bind_positions is not None and base_skeleton.bind_positions is not None):
             error = float(np.abs(skeleton.bind_positions - base_skeleton.bind_positions).max())
             if error > BIND_POSE_RELATIVE_TOLERANCE * max(extent, 1e-6):
                 worst = int(np.abs(skeleton.bind_positions - base_skeleton.bind_positions).max(axis=1).argmax())
@@ -1332,11 +1335,26 @@ def _check_joint_names(species: str, facts: FileFacts, vocabulary: Counter | Non
     # Blanked joints count here too: the side label still reaches the cond.
     lateral = _rest_positions_from_offsets(offsets, skeleton.parents)[:, 0]
     width = float(np.ptp(lateral))
+    def attached_to_same_side(index: int) -> bool:
+        """A midline child can still belong to a limb when its parent is sided.
+
+        Prop/weapon bones commonly sit at the wrist origin while inheriting the
+        hand's side label. Don't call those centre joints with a bad name.
+        """
+        parent = int(skeleton.parents[index])
+        while parent >= 0:
+            if (side_labels[parent] == side_labels[index]
+                    and abs(lateral[parent]) > MIDLINE_SIDE_TOLERANCE * width):
+                return True
+            parent = int(skeleton.parents[parent])
+        return False
+
     on_midline = [
         f"{raw} ({side_labels[index]}, x={lateral[index]:+.4f})"
         for index, raw in enumerate(names)
         if side_labels[index] in ("left", "right") and int(partners[index]) < 0
         and width > 0 and abs(lateral[index]) <= MIDLINE_SIDE_TOLERANCE * width
+        and not attached_to_same_side(index)
     ]
     if on_midline:
         report.add(ERROR, species, "joint-names",
@@ -1526,7 +1544,10 @@ def main() -> int:
         for facts in facts_list:
             _check_file_content(species, facts, facts.path in rest_files, report)
             _check_raw_joint_names(species, facts, report)
-        base = _check_species_consistency(species, facts_list, reference, report)
+        base = _check_species_consistency(
+            species, facts_list, reference, report,
+            rest_variants={path for _tag, path in variants},
+        )
         if base is not None:
             report.joint_tables[species] = _check_joint_names(
                 species, base, vocabulary, t5, report, promote_depths.get(species.lower(), 0),
